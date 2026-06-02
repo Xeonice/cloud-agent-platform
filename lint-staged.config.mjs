@@ -1,20 +1,25 @@
 /**
- * lint-staged config — runs against staged files on the husky pre-commit hook.
+ * lint-staged config — runs on the husky pre-commit hook.
  *
- * Enforcement point (2) of three for strict TypeScript (the others are the
- * Claude Code edit-time hook and the strict base tsconfig surfaced by
+ * Enforcement point (2) of three for strict TypeScript/ESLint (the others are
+ * the Claude Code edit-time hook and the strict base tsconfig surfaced by
  * `turbo typecheck lint build`).
  *
- * For staged .ts/.tsx files: auto-fix with ESLint, then run a workspace-wide
- * typecheck. tsc must run against each member's tsconfig (not the bare staged
- * filenames, which would bypass project settings), so the typecheck command
- * ignores the passed filenames and typechecks every workspace member.
+ * Why delegate to Turborepo instead of running `eslint <files>` directly:
+ * in this pnpm + Turborepo monorepo, ESLint is a per-package devDependency and
+ * is NOT hoisted to a root-resolvable bin, so a root `eslint` (or even
+ * `pnpm exec eslint`) invocation fails with ENOENT. ESLint 9 flat config is
+ * also cwd-scoped, so a single command over a cross-package file list would
+ * apply the wrong config. Turbo runs each package's own `eslint .` + `tsc`
+ * with its own config, and its cache makes the unchanged-package case
+ * near-instant. The callback form ignores the staged filenames (Turbo scopes
+ * by package, not by file), so nothing is appended to the commands.
  *
  * @type {import("lint-staged").Configuration}
  */
 export default {
-  "*.{ts,tsx}": (stagedFiles) => [
-    `eslint --fix ${stagedFiles.join(" ")}`,
-    "pnpm -r typecheck",
+  "*.{ts,tsx}": () => [
+    "pnpm exec turbo run lint",
+    "pnpm exec turbo run typecheck",
   ],
 };
