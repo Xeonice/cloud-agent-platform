@@ -1,0 +1,8 @@
+packages:
+  - "apps/api"
+  - "apps/web"
+  - "apps/runner"
+  - "packages/contracts"
+  - "packages/ui"
+  - "packages/tsconfig"
+  - "packages/eslint-config"

@@ -1,0 +1,11 @@
+/* App-wide styles. Imports the shared @cap/ui design tokens + Tailwind layers
+ * (frontend-console: the web app does NOT re-declare the design system). */
+@import "@cap/ui/styles.css";
+@import "@xterm/xterm/css/xterm.css";
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}

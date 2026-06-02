@@ -55,6 +55,6 @@
 
 ## 7. Track: validation & docs (depends: skill delegation wiring, archive gate)
 
-- [ ] 7.1 Dry-run the full loop (propose-deep → apply-tracks → verify → archive) on a small throwaway change
-- [ ] 7.2 Validate resume by interrupting apply mid-run and re-invoking
+- [x] 7.1 Dry-run the full loop on a throwaway change (`demo-workflow-smoketest`) — validated end-to-end across two sessions. Run 1 exposed bugs B/C/D + the worktree-needs-git-at-session-start constraint (all addressed). Run 2 (git initialized before session start) passed all three stages: propose-deep ✓ (8 agents, 4 artifacts incl. design, 3 research routes, correct Track format), apply-tracks ✓ (real worktree-isolated parallel tracks merged to main; trackFailures:[], pendingTasks:0, success:true), verify ✓ (11/11 requirements met, pass:true). See design.md "Dry-run findings".
+- [x] 7.2 Validate worktree parallelism — confirmed in run 2: two `depends: none` tracks each ran in a dedicated git worktree (`.claude/worktrees/wf_...-2` → CONTRIBUTING.md, `-3` → docs/) and merged cleanly to the main tree. Worktree isolation requires the repo to be git-initialized when the Claude Code session starts (mid-session `git init` is NOT picked up). NOTE: merged worktrees are not auto-cleaned — prune with `git worktree remove --force` + delete the `worktree-*` branches (finding F).
 - [x] 7.3 Document the three workflows and the Track format in the repo (README or skill notes)

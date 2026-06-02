@@ -1,0 +1,26 @@
+{
+  "name": "@cap/runner",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Per-task runner: spawns the interactive Codex CLI under node-pty and dials back to the orchestrator.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@cap/contracts": "workspace:*",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@cap/eslint-config": "workspace:*",
+    "@cap/tsconfig": "workspace:*",
+    "@types/node": "^22.15.21",
+    "@types/ws": "^8.5.12",
+    "eslint": "^9.27.0",
+    "typescript": "^5.8.3"
+  }
+}

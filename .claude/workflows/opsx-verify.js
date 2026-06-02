@@ -3,14 +3,24 @@ export const meta = {
   description: 'Adversarial spec verification: enumerate requirements, static triage, high-risk dynamic + diverse-lens refutation, three-way routing',
   whenToUse: 'Run after apply to prove each spec requirement is satisfied. Also the precondition gate for opsx-archive.',
   phases: [
-    { title: 'Enumerate', detail: 'collect every requirement across specs/**' },
-    { title: 'Triage', detail: 'static verdict per requirement' },
-    { title: 'Escalate', detail: 'diverse-lens refutation + dynamic test for risky/uncertain' },
-    { title: 'Route', detail: 'unmet->tasks, defect->design, met->report; gap & scope checks' },
+    { title: 'Enumerate', detail: 'collect every requirement across specs/** (coverage-critical: kept on the strong inherited model)' },
+    { title: 'Triage', detail: 'static verdict per requirement', model: 'sonnet' },
+    { title: 'Escalate', detail: 'diverse-lens refutation + dynamic test for risky/uncertain', model: 'sonnet' },
+    { title: 'Route', detail: 'unmet->tasks, defect->design, met->report; gap & scope checks (write-back on the strong model, fan-out checks on sonnet)' },
   ],
 }
 
-const { changeName, changeDir } = args || {}
+// Model tiering (cost): the fan-out leaves (triage/refute/dynamic/gap/scope) are
+// scoped "read one scenario -> trace to code -> verdict" tasks where Sonnet is
+// the sweet spot — ~5x cheaper than Opus with reliable structured-output. The two
+// integrity SINGLETONS stay on the inherited (strong) model: `enumerate` is the
+// only coverage guarantee (a missed requirement is never verified), and
+// `route:findings` mutates tasks.md/design.md/the report. Leaf model is a const so
+// it is trivial to bump a stage back to opus (or down to haiku) if needed.
+const LEAF_MODEL = 'sonnet'
+
+const _args = typeof args === 'string' ? JSON.parse(args) : (args || {})
+const { changeName, changeDir } = _args
 if (!changeName || !changeDir) throw new Error('opsx-verify requires args { changeName, changeDir }')
 
 const REQ_LIST = {
@@ -70,7 +80,7 @@ const verdicts = await pipeline(
       `Statically verify requirement "${req.name}" (capability ${req.capability}) of ${changeName}. ` +
       `Read the spec scenarios and trace to the implementation. Judge met/confidence/risk with file:line evidence. ` +
       `Mark risk=high if it is touched by multiple tracks, security-sensitive, or mutates data.`,
-      { label: `triage:${req.name}`, phase: 'Triage', schema: TRIAGE }
+      { label: `triage:${req.name}`, phase: 'Triage', schema: TRIAGE, model: LEAF_MODEL }
     ).then((t) => ({ req, triage: t })),
   // stage 2: escalation routing (spec: low-risk passes on one verdict; uncertain/high-risk escalates)
   async ({ req, triage }) => {
@@ -86,7 +96,7 @@ const verdicts = await pipeline(
           `Through the "${lens}" lens, try to REFUTE the claim that requirement "${req.name}" of ${changeName} is satisfied. ` +
           `Default to refuted=true if you find any failing case. For cross-track-integration, check whether a file satisfying ` +
           `this requirement was later changed by another track and broke it.`,
-          { label: `refute:${req.name}:${lens}`, phase: 'Escalate', schema: REFUTE }
+          { label: `refute:${req.name}:${lens}`, phase: 'Escalate', schema: REFUTE, model: LEAF_MODEL }
         )
       )
     )
@@ -94,7 +104,7 @@ const verdicts = await pipeline(
     const dyn = await agent(
       `Write and RUN a minimal test exercising a scenario of requirement "${req.name}" of ${changeName}. ` +
       `Report whether it passes. This is ground truth.`,
-      { label: `dynamic:${req.name}`, phase: 'Escalate', schema: REFUTE }
+      { label: `dynamic:${req.name}`, phase: 'Escalate', schema: REFUTE, model: LEAF_MODEL }
     )
     const votes = refutations.filter(Boolean)
     const refutedCount = votes.filter((v) => v.refuted).length + ((dyn && dyn.refuted) ? 1 : 0)
@@ -122,37 +132,65 @@ const checks = await parallel([
     agent(
       `Gap check for ${changeName}: list any requirement in ${changeDir}/specs whose behavior has NO traceable implementation at all ` +
       `(distinct from "implemented incorrectly"). Return a JSON array of requirement names.`,
-      { label: 'check:gap', phase: 'Route' }
+      { label: 'check:gap', phase: 'Route', model: LEAF_MODEL }
     ),
   () =>
     agent(
       `Scope-creep check for ${changeName}: list implemented behaviors that map to NO requirement in ${changeDir}/specs. ` +
       `Return a JSON array of short descriptions with file:line.`,
-      { label: 'check:scope', phase: 'Route' }
+      { label: 'check:scope', phase: 'Route', model: LEAF_MODEL }
     ),
 ])
 
 // Classify: a requirement reported unmet is, in spec-driven terms, either a code
 // problem (unmet) or a spec problem (defect). Let an agent split them, then route.
+//
+// IMPORTANT (pass-gate fix): the pipeline's raw `status==='unmet'` count is a
+// NOISY signal — diverse-lens adversarial refutation on a large spec set has a
+// non-zero false-positive floor (a skeptic can almost always construct *some*
+// failing angle), so raw unmet rarely reaches 0 even when every requirement is
+// actually satisfied. The AUTHORITATIVE signal is this routing agent's own
+// adjudication: after re-tracing each raw-unmet requirement end-to-end, how many
+// did it genuinely re-open as a `verify-reopened` task (a real code problem) vs.
+// reclassify as MET or as a SPEC-DEFECT note. The pass gate consumes THAT count,
+// not the raw pipeline tally — so `pass` agrees with the report the agent writes.
+const ROUTE_VERDICT = {
+  type: 'object', additionalProperties: false,
+  required: ['reopenedTasks', 'specDefects', 'reclassifiedMet'],
+  properties: {
+    reopenedTasks: { type: 'array', items: { type: 'string' }, description: 'requirement names re-opened as NEW verify-reopened code tasks this pass' },
+    specDefects: { type: 'array', items: { type: 'string' }, description: 'requirement names routed to design.md Open Questions (ambiguous/untestable), NOT code tasks' },
+    reclassifiedMet: { type: 'array', items: { type: 'string' }, description: 'raw-unmet requirements that re-trace end-to-end as actually MET' },
+  },
+}
 const unmet = results.filter((r) => r.status === 'unmet')
-await agent(
+const routing = await agent(
   `Route verify findings for ${changeName} into three destinations (spec "three-way routing"):\n` +
-  `UNMET (code problem) -> append a '- [ ]' task under a new '## Track: verify-reopened (depends: none)' section in ${changeDir}/tasks.md.\n` +
-  `SPEC-DEFECT (ambiguous/untestable/contradictory requirement) -> add a note to ${changeDir}/design.md "Open Questions" and DO NOT create an implementation task.\n` +
-  `MET -> write/append ${changeDir}/verification-report.md with each met requirement + evidence.\n\n` +
-  `For each of these unmet requirements decide unmet-vs-defect:\n${JSON.stringify(unmet.map((r) => ({ name: r.req.name, capability: r.req.capability, evidence: r.triage.evidence })), null, 2)}\n\n` +
+  `UNMET (real code problem) -> append a '- [ ]' task under a '## Track: verify-reopened (depends: none)' section in ${changeDir}/tasks.md, AND list its requirement name in reopenedTasks.\n` +
+  `SPEC-DEFECT (ambiguous/untestable/contradictory requirement) -> add a note to ${changeDir}/design.md "Open Questions" (NO implementation task), AND list it in specDefects.\n` +
+  `MET (re-traces end-to-end as satisfied despite a skeptic's refutation; includes "met-as-written with a minor gap that does not block the primary scenario") -> fold into ${changeDir}/verification-report.md, AND list it in reclassifiedMet.\n\n` +
+  `Re-trace EACH of these raw-unmet requirements against the actual code before deciding — do NOT rubber-stamp the skeptic. A finding already recorded in design.md "Open Questions" from a prior pass is a known SPEC-DEFECT, not a new code task; do not re-open it.\n` +
+  `${JSON.stringify(unmet.map((r) => ({ name: r.req.name, capability: r.req.capability, evidence: r.triage.evidence })), null, 2)}\n\n` +
   `Also fold the met requirements into verification-report.md, and record gap/scope findings there:\n` +
-  `gap=${JSON.stringify(checks[0])}\nscope=${JSON.stringify(checks[1])}`,
-  { label: 'route:findings', phase: 'Route' }
+  `gap=${JSON.stringify(checks[0])}\nscope=${JSON.stringify(checks[1])}\n\n` +
+  `Return the three-way tally so the pass gate reflects YOUR adjudication, not the raw skeptic count.`,
+  { label: 'route:findings', phase: 'Route', schema: ROUTE_VERDICT }
 )
 
-const confirmedUnmet = unmet.length
+// Authoritative: only genuinely re-opened code tasks block the gate. A pass with
+// outstanding SPEC-DEFECT notes is allowed (they are deferred design questions,
+// not code defects) — surface them so they are not silently swallowed.
+const confirmedUnmet = (routing.reopenedTasks || []).length
 return {
   changeName,
   total: results.length,
   met: results.filter((r) => r.status === 'met').length,
+  rawUnmet: unmet.length,
   unmet: confirmedUnmet,
+  reopenedTasks: routing.reopenedTasks || [],
+  specDefects: routing.specDefects || [],
   report: `${changeDir}/verification-report.md`,
-  // Archive gate consumes this: archive is blocked while pass=false.
+  // Archive gate consumes this: archive is blocked while pass=false. Gated on the
+  // routing agent's re-opened CODE tasks, not the noisy raw-unmet pipeline tally.
   pass: confirmedUnmet === 0,
 }

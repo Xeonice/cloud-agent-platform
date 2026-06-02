@@ -1,0 +1,24 @@
+{
+  "name": "cloud-agent-platform",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Single-user, self-hostable control plane that drives the real interactive Codex CLI and streams its byte-identical terminal to a browser.",
+  "packageManager": "pnpm@10.34.1",
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "build": "turbo build",
+    "typecheck": "turbo typecheck",
+    "lint": "turbo lint",
+    "verify": "turbo typecheck lint build",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
+    "turbo": "^2.5.4",
+    "typescript": "^5.8.3"
+  }
+}

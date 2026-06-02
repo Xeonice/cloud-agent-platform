@@ -10,7 +10,9 @@ export const meta = {
 }
 
 // args: { changeName, changeDir, idea } — passed verbatim from the skill.
-const { changeName, changeDir, idea } = args || {}
+// Tolerate args arriving as a JSON string (some invocation paths stringify it).
+const _args = typeof args === 'string' ? JSON.parse(args) : (args || {})
+const { changeName, changeDir, idea } = _args
 if (!changeName || !changeDir) {
   throw new Error('opsx-propose-deep requires args { changeName, changeDir, idea }')
 }
@@ -74,6 +76,14 @@ await agent(
   `CRITICAL: every requirement has at least one \`#### Scenario\` (exactly 4 hashtags) in WHEN/THEN form. ` +
   `Reject non-observable criteria ("fast", "clean") unless given a measurable threshold — every scenario must be independently checkable by the verify phase.`,
   { label: 'artifact:specs', phase: 'Artifacts' }
+)
+// design: required by the dependency graph before tasks (spec-driven: tasks
+// requires [specs, design]). Skipping it leaves the change in an inconsistent
+// state — the gap the dry-run exposed.
+await agent(
+  `Run \`openspec instructions design --change "${changeName}" --json\`, follow its template, and write ${changeDir}/design.md. ` +
+  `Keep it proportional to the change — for a small/doc-only change a short Context + Decisions + Non-Goals is enough, but the file MUST exist so the dependency graph is satisfied before tasks.`,
+  { label: 'artifact:design', phase: 'Artifacts' }
 )
 // tasks: track-annotated draft (spec: "tasks carry track metadata")
 await agent(

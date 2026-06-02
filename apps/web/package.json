@@ -1,0 +1,30 @@
+{
+  "name": "@cap/web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Next.js console (web-only; deployed to Vercel). Talks to the api over env-configured cross-origin API_BASE_URL/WS_URL.",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "start": "next start",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@cap/contracts": "workspace:*",
+    "@cap/ui": "workspace:*",
+    "next": "^15.1.6",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@cap/eslint-config": "workspace:*",
+    "@cap/tsconfig": "workspace:*",
+    "@types/node": "^22.15.21",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "eslint": "^9.27.0",
+    "typescript": "^5.8.3"
+  }
+}

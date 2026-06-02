@@ -1,0 +1,64 @@
+// Prisma schema for the agent-control-platform orchestrator (apps/api).
+//
+// Track: repo-and-task-management.
+// The `TaskStatus` enum mirrors the single-source-of-truth task-status enum in
+// `@cap/contracts` (packages/contracts). Prisma cannot import the zod enum
+// directly, so the values are kept byte-for-byte identical to the contracts
+// `TaskStatus` literals; the lifecycle state machine validates the values it
+// reads/writes against the contracts schema at runtime.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Task lifecycle states. MUST stay in sync with the contracts task-status enum.
+/// `agent_failed_to_start` is a distinct terminal state, separate from a generic
+/// `failed` and from `running`. `queued` is the admission-control holding state
+/// used by the concurrency semaphore (guardrails track).
+enum TaskStatus {
+  pending
+  queued
+  running
+  awaiting_input
+  completed
+  failed
+  agent_failed_to_start
+}
+
+/// A registered repository the operator can launch tasks against.
+model Repo {
+  id        String   @id @default(uuid())
+  /// Human-friendly display name.
+  name      String
+  /// Git source (clone URL / remote) the runner checks out from.
+  gitSource String   @map("git_source")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tasks Task[]
+
+  @@map("repos")
+}
+
+/// A single agent task scoped to one `Repo`.
+model Task {
+  id     String @id @default(uuid())
+  /// FK to the owning repository.
+  repoId String @map("repo_id")
+  repo   Repo   @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  /// The operator-supplied prompt/instruction driving the agent.
+  prompt String
+
+  /// Current lifecycle state; defaults to `pending` on creation.
+  status TaskStatus @default(pending)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([repoId])
+  @@map("tasks")
+}

@@ -7,6 +7,7 @@ export const meta = {
     { title: 'Implement', detail: 'parallel tracks, one git worktree each' },
     { title: 'Integrate', detail: 'merge worktrees, resolve shared-file conflicts' },
     { title: 'Verify-build', detail: 'build/test + bounded repair loop' },
+    { title: 'Cleanup', detail: 'prune merged isolation worktrees + worktree-* branches' },
   ],
 }
 
@@ -16,7 +17,8 @@ export const meta = {
 const APPLY_PARALLEL_THRESHOLD = 12
 const MAX_REPAIR_ROUNDS = 3
 
-const { changeName, changeDir, buildCmd } = args || {}
+const _args = typeof args === 'string' ? JSON.parse(args) : (args || {})
+const { changeName, changeDir, buildCmd } = _args
 if (!changeName || !changeDir) {
   throw new Error('opsx-apply-tracks requires args { changeName, changeDir, buildCmd? }')
 }
@@ -91,19 +93,33 @@ log(`${plan.tracks.length} tracks in ${waves.length} dependency waves; ${plan.in
 // ── Phase 2: parallel implementation, worktree-isolated (spec: "tracks run in
 //             isolated worktrees", "intra-track order preserved") ──
 phase('Implement')
-function implementTrack(t) {
-  return agent(
-    `Implement track "${t.name}" of change ${changeName}. Tasks (in this exact order — spec "intra-track order preserved"): ${t.tasks.join(', ')}.\n` +
+function trackPrompt(t, noIso) {
+  return `Implement track "${t.name}" of change ${changeName}. Tasks (in this exact order — spec "intra-track order preserved"): ${t.tasks.join(', ')}.\n` +
     `Read ${changeDir}/tasks.md for task text and the change's specs/design for intent. Make minimal, focused edits. ` +
     `Do NOT touch files outside this track's scope: ${t.files.join(', ')}. ` +
-    `Mark each finished task '- [ ]' -> '- [x]' in ${changeDir}/tasks.md.`,
-    { label: `track:${t.name}`, phase: 'Implement', isolation: 'worktree' }
-  )
+    `Mark each finished task '- [ ]' -> '- [x]' in ${changeDir}/tasks.md.` +
+    (noIso ? `\n(Worktree isolation is unavailable — you are editing the MAIN working tree directly, so stay strictly inside this track's files to avoid clobbering sibling tracks.)` : '')
 }
 // Each wave is a barrier: dependent tracks wait for prerequisites. parallel()
 // caps concurrency at 16 automatically, so a wide wave just queues.
+const trackFailures = []
 for (const wave of waves) {
-  await parallel(wave.map((t) => () => implementTrack(t)))
+  const res = await parallel(
+    wave.map((t) => () => agent(trackPrompt(t, false), { label: `track:${t.name}`, phase: 'Implement', isolation: 'worktree' }))
+  )
+  // Graceful degradation: a null result means the track agent failed — most
+  // commonly because worktree isolation is unavailable (repo not git-at-session-
+  // start, no WorktreeCreate hook). Retry that track SERIALLY without isolation so
+  // it still runs; serial execution means no concurrent main-tree conflict.
+  for (let i = 0; i < wave.length; i++) {
+    if (res[i] != null) continue
+    log(`track "${wave[i].name}" failed under worktree isolation; retrying serially without isolation`)
+    try {
+      await agent(trackPrompt(wave[i], true), { label: `track:${wave[i].name}:noiso`, phase: 'Implement' })
+    } catch (e) {
+      trackFailures.push(wave[i].name) // genuine failure even without isolation
+    }
+  }
 }
 
 // ── Phase 3: integration — merge worktrees + shared-file tasks serially ──
@@ -145,12 +161,58 @@ for (let round = 0; round <= MAX_REPAIR_ROUNDS; round++) {
   )
 }
 
+// Ledger reconciliation (fixes the "files created but 0 tasks marked" gap): the
+// `[x]` ledger is what idempotent resume depends on, so success must require it
+// to be fully consumed — not just a green build.
+const LEDGER = {
+  type: 'object', additionalProperties: false, required: ['total', 'pending'],
+  properties: { total: { type: 'number' }, pending: { type: 'number' }, pendingIds: { type: 'array', items: { type: 'string' } } },
+}
+const ledger = await agent(
+  `Read ${changeDir}/tasks.md and count tasks WITHOUT modifying the file: total tasks, how many are still pending ('- [ ]'), and the pending ids.`,
+  { label: 'ledger:count', phase: 'Verify-build', schema: LEDGER }
+)
+
+// ── Phase 5: worktree cleanup (finding F) — merged isolation worktrees persist
+//    under .claude/worktrees/ with `worktree-*` branches. Their work is already in
+//    the main tree (integration phase merged it), so prune them now. Guard: only
+//    runs when the ledger is clean and no tracks failed, so we never discard a
+//    worktree whose work might not have landed.
+phase('Cleanup')
+const CLEANUP = {
+  type: 'object', additionalProperties: false, required: ['removed'],
+  properties: {
+    removed: { type: 'array', items: { type: 'string' } },
+    skipped: { type: 'string' },
+  },
+}
+let cleanup = { removed: [], skipped: 'not attempted' }
+if (trackFailures.length === 0 && ledger.pending === 0) {
+  cleanup = await agent(
+    `Worktree cleanup for change ${changeName}. The parallel tracks' work is already merged into the main tree.\n` +
+    `1. Run \`git worktree list\` and identify isolation worktrees under \`.claude/worktrees/\` (paths containing \`.claude/worktrees/\`). Do NOT touch the main worktree.\n` +
+    `2. For each, run \`git worktree remove --force <path>\`.\n` +
+    `3. Run \`git worktree prune\`.\n` +
+    `4. Delete leftover per-worktree branches matching \`worktree-*\` with \`git branch -D <branch>\`.\n` +
+    `Report the removed worktree paths/branches in "removed". Only remove worktrees under .claude/worktrees/ — never the main tree or unrelated worktrees.`,
+    { label: 'cleanup:worktrees', phase: 'Cleanup', schema: CLEANUP }
+  )
+} else {
+  cleanup = { removed: [], skipped: 'track failures or pending tasks — worktrees left for inspection' }
+  log(`worktree cleanup skipped: ${cleanup.skipped}`)
+}
+
 return {
   changeName,
   tracks: plan.tracks.map((t) => t.name),
   waves: waves.length,
+  trackFailures,
   buildGreen: green,
   buildSummary: lastSummary,
-  // Honest signal: success is false on a red build (spec "never report success on red build").
-  success: green,
+  pendingTasks: ledger.pending,
+  worktreesRemoved: cleanup.removed,
+  // HONEST gate: success requires a green build AND no failed tracks AND an empty
+  // ledger. A green build alone is NOT success if tracks failed or tasks are still
+  // pending (the false-success bug the dry-run exposed).
+  success: green && trackFailures.length === 0 && ledger.pending === 0,
 }

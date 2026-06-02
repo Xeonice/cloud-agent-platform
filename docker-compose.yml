@@ -1,0 +1,58 @@
+# docker-compose deploy target for the apps/api orchestrator.
+#
+# Runs the SAME NestJS WebSocket + PTY orchestrator as the Fly.io target
+# (apps/api/Dockerfile / apps/api/fly.toml), alongside the Postgres database
+# the orchestrator's Prisma layer needs.
+#
+# The named volume `workspaces` is mounted at the orchestrator's WORKSPACES_DIR
+# so that workspaces/<id>/session.log survives an orchestrator restart and the
+# reconnect snapshot + tail-replay still works (design D5/D10, multi-target
+# "session.log survives an orchestrator restart" scenario).
+#
+# This is the platform deploy plane, not the per-task execution sandbox.
+
+services:
+  api:
+    build:
+      # Build from the repo root so the monorepo Dockerfile can copy the
+      # workspace (packages/contracts + apps/api).
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      # session.log lives under here, on the persistent named volume below.
+      WORKSPACES_DIR: /data/workspaces
+      DATABASE_URL: postgresql://cap:cap@postgres:5432/cap?schema=public
+      # Operator bearer token gating REST + WS (wired/enforced in the
+      # integration track); supply via the host environment or an .env file.
+      AUTH_TOKEN: ${AUTH_TOKEN}
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persistent named volume backing workspaces/<id>/session.log so it
+      # survives `docker compose restart api` / a container recreate.
+      - workspaces:/data/workspaces
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cap
+      POSTGRES_PASSWORD: cap
+      POSTGRES_DB: cap
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cap -d cap"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  # Named volume so session.log persists across orchestrator restarts.
+  workspaces:
+  pgdata:

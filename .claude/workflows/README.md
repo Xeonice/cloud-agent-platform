@@ -27,7 +27,7 @@ Rollback = delete `openspec/schemas/spec-driven/` (built-in re-resolves) + remov
 | File | Slash command | Phase | What it does |
 |---|---|---|---|
 | `opsx-propose-deep.js` | `/opsx-propose-deep` | propose | Parallel research fan-out (web + codebase + archive) → `research-brief.md`, then testable specs + Track-annotated tasks |
-| `opsx-apply-tracks.js` | `/opsx-apply-tracks` | apply | Correct track partition → parallel worktree-isolated tracks (≤16) → integration merge → build verify + bounded repair. Idempotent resume via `[x]` ledger |
+| `opsx-apply-tracks.js` | `/opsx-apply-tracks` | apply | Correct track partition → parallel worktree-isolated tracks (≤16) → integration merge → build verify + bounded repair → cleanup (prune merged worktrees). Idempotent resume via `[x]` ledger; honest `success` gate (green build + no track failures + empty ledger) |
 | `opsx-verify.js` | `/opsx-verify` | verify | Enumerate requirements → static triage → high-risk dynamic + diverse-lens refutation → three-way routing (unmet→tasks, defect→design, met→`verification-report.md`) |
 
 All three are invoked with `args: { changeName, changeDir, ... }`.

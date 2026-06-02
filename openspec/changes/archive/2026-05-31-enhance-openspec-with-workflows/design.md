@@ -92,3 +92,22 @@ The schema has no archive/post-apply execution hook (confirmed against OpenSpec 
 - The exact task-count threshold for serial-vs-parallel apply (D2/serial fallback) — tune empirically.
 - Repair-loop budget in D4 (max rounds before surfacing failure to the user).
 - Whether the cross-track-integration skeptic should run on every merged requirement or only those touching files changed by >1 track (cost vs coverage).
+
+## Dry-run findings (demo-workflow-smoketest)
+
+The pipeline was validated end-to-end across two dry-run sessions on a throwaway doc-only change.
+
+**Run 1** exposed four issues, all addressed:
+
+- **Worktree needs git-at-session-start (environmental).** `opsx-apply-tracks` worktree isolation failed with "not in a git repository" even though `git init` had been run mid-session — the capability is gated on the session-start git detection. Mitigation: initialize git before launching the session, or configure `WorktreeCreate`/`WorktreeRemove` hooks in `settings.json`. The workflow now degrades gracefully (retries failed tracks serially without isolation) instead of dropping them.
+- **Bug B — false success (fixed).** When all parallel tracks failed, the workflow still returned `success:true` because the integration agent happened to produce the files and the build was green. `success` now requires `green && no track failures && zero pending tasks`.
+- **Bug C — stale `[x]` ledger (fixed).** Files were created but `tasks.md` showed 0/13 done, which would make resume redo everything. A ledger-reconciliation agent now counts pending tasks and gates `success` on an empty ledger.
+- **Bug D — propose-deep skipped `design` (fixed).** The artifact phase generated proposal→specs→tasks but omitted `design`, leaving the dependency graph (tasks requires design) unsatisfied. A design step was added between specs and tasks.
+- **Named-invocation caching (operational).** Invoking a saved workflow by `name` used the script cached at session start; edits to `.claude/workflows/*.js` only took effect via `scriptPath` (or a session restart). Relevant when iterating on the workflows.
+
+**Run 2** (git initialized before session start, fixes applied) passed all three stages cleanly:
+
+- **propose-deep ✓** — 8 agents, 3 research routes, all **4 artifacts** generated including `design` (bug D confirmed fixed; status 4/4).
+- **apply-tracks ✓** — two `depends: none` tracks ran in **real isolated git worktrees** (`.claude/worktrees/wf_...-2` → CONTRIBUTING.md, `-3` → docs/) and merged to the main tree; returned `trackFailures:[]`, `pendingTasks:0`, `success:true` (bugs B & C confirmed fixed; the honest-success gate held).
+- **verify ✓** — 15 agents, 11/11 requirements met, `pass:true`, `verification-report.md` written with per-requirement evidence; three-way routing correctly wrote only the report (no reopened tasks / spec-defects, as expected on a full pass).
+- **Finding F — worktrees not auto-cleaned (fixed).** Merged isolation worktrees used to persist under `.claude/worktrees/` along with `worktree-*` branches. `opsx-apply-tracks` now has a **Cleanup phase** that prunes them (`git worktree remove --force` + `prune` + `git branch -D worktree-*`) after verification — guarded to run only when no tracks failed and the ledger is clean, so a worktree whose work might not have landed is left for inspection rather than discarded.

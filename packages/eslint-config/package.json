@@ -1,0 +1,23 @@
+{
+  "name": "@cap/eslint-config",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared ESLint flat config consumed by all apps and packages.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ],
+  "dependencies": {
+    "@eslint/js": "^9.27.0",
+    "eslint-config-prettier": "^10.1.5",
+    "globals": "^16.2.0",
+    "typescript-eslint": "^8.33.0"
+  },
+  "peerDependencies": {
+    "eslint": "^9.27.0"
+  }
+}
