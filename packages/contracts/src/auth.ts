@@ -5,12 +5,10 @@ import { FRAME_CHANNEL } from './ws-frames.js';
  * Operator-auth shapes (single-user-auth spec, task 11.1).
  *
  * These are the OPERATOR trust domain: the single shared `AUTH_TOKEN` that gates
- * every REST endpoint and every client (browser) WebSocket connection. This is a
- * DISTINCT trust domain from the runner `TASK_TOKEN` dial-back handshake
- * (`./dialback.js`): the operator token authenticates a human operator's
- * console; the `TASK_TOKEN` authenticates a sandbox dialling back. A
- * `TASK_TOKEN` presented as the operator token is simply a non-matching operator
- * token and MUST be rejected.
+ * every REST endpoint and every client (browser) WebSocket connection. The
+ * operator token authenticates a human operator's console; any value that does
+ * not match the configured `AUTH_TOKEN` is simply a non-matching operator token
+ * and MUST be rejected.
  *
  * Browsers cannot set an `Authorization` header on a WebSocket handshake, so the
  * connect-auth shape carries the operator token over the two browser-available
@@ -58,14 +56,13 @@ export type AuthTokenConfig = z.infer<typeof authTokenConfigSchema>;
  * connection at connect time, before it joins any task stream. Carries the
  * operator token and, optionally, the claimed task id the client wants to stream.
  *
- * This is the operator-auth analogue of the runner `DialbackHandshakeFrame`: it
- * authenticates a console client, never a sandbox. The two are intentionally
- * different frame `type`s so one can never be substituted for the other.
+ * It authenticates a console client only; it is a dedicated control-frame `type`
+ * distinct from every other frame so it can never be substituted for one.
  */
 export const ConnectAuthFrameSchema = z.object({
   channel: z.literal(FRAME_CHANNEL.CONTROL),
   type: z.literal('connect_auth'),
-  /** The shared operator token (`AUTH_TOKEN`); never a runner `TASK_TOKEN`. */
+  /** The shared operator token (`AUTH_TOKEN`). */
   token: z.string().min(1),
   /** The task this client intends to stream, when known at connect time. */
   taskId: z.string().uuid().optional(),

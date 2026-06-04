@@ -6,6 +6,14 @@
 # workspaces/<id>/session.log survives a machine restart and the reconnect
 # snapshot + tail-replay still works (design D5/D10).
 #
+# CONTROL PLANE ONLY — Fly is NOT a per-task execution target. Per-task
+# execution uses Docker-out-of-Docker (DooD) to provision sibling AIO sandbox
+# containers, which requires a host docker socket. Fly runs Firecracker
+# microVMs that expose NO host docker socket, so DooD sibling provisioning is
+# impossible here. The orchestrator MAY still run the control plane on Fly, but
+# task execution requires the docker-compose self-host topology
+# (docker-compose.yml). Both targets keep running the SAME NestJS orchestrator.
+#
 # The web target (Vercel) reaches this api exclusively over the cross-origin
 # API_BASE_URL / WS_URL; CORS / WS-origin allow-listing is wired in the
 # integration track. WebSockets require a single long-lived machine, so

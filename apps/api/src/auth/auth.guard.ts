@@ -20,11 +20,16 @@ import { constantTimeEqual } from './constant-time';
  * Scope boundaries (kept deliberately narrow for this track):
  * - The unauthenticated `/health` liveness endpoint is exempt so platform probes
  *   (Fly, docker-compose) work without injecting the secret.
- * - This operator token is a DISTINCT trust domain from the runner `TASK_TOKEN`
- *   (which authenticates a sandbox dialling back, not a human operator). A
- *   per-task `TASK_TOKEN` presented here is simply a non-matching operator token
- *   and is rejected with 401 by the ordinary comparison — there is no special
- *   case that would let it through.
+ * - The `/v1/approvals` callback endpoint is exempt: under the connect-in model
+ *   the per-task AIO sandbox's Codex hook POSTs its approval/report callback IN
+ *   to the orchestrator over the private `cap-net` network. The sandbox is NOT a
+ *   human operator and holds no operator `AUTH_TOKEN`; its security boundary is
+ *   network isolation (reachable only by container name on `cap-net`, no host
+ *   port), NOT the operator token. Gating it with the operator guard would 401
+ *   every hook callback.
+ * - Any value that does not match the configured `AUTH_TOKEN` is simply a
+ *   non-matching operator token and is rejected with 401 by the ordinary
+ *   comparison — there is no special case that would let it through.
  * - Comparison is delegated to {@link constantTimeEqual} to avoid timing leaks.
  *
  * Intentionally NOT done here (owned by the integration track, Track 14):
@@ -42,15 +47,17 @@ import { constantTimeEqual } from './constant-time';
 @Injectable()
 export class AuthGuard implements CanActivate {
   /**
-   * Request path (lower-cased, slash-normalized) exempt from operator auth.
-   * Kept in sync with the `/health` liveness endpoint contract.
+   * Request paths (lower-cased, slash-normalized) exempt from operator auth:
+   *  - `/health`        — unauthenticated platform liveness probe.
+   *  - `/v1/approvals`  — sandbox→orchestrator hook callback over `cap-net`
+   *    (network-isolation boundary, no operator token; see the class doc).
    */
-  private static readonly HEALTH_PATH = '/health';
+  private static readonly EXEMPT_PATHS: readonly string[] = ['/health', '/v1/approvals'];
 
   canActivate(context: ExecutionContext): boolean {
     const request = context.switchToHttp().getRequest<Request>();
 
-    if (AuthGuard.isHealthCheck(request)) {
+    if (AuthGuard.isExempt(request)) {
       return true;
     }
 
@@ -74,13 +81,13 @@ export class AuthGuard implements CanActivate {
     return true;
   }
 
-  /** True when the request targets the unauthenticated `/health` endpoint. */
-  private static isHealthCheck(request: Request): boolean {
+  /** True when the request targets an auth-exempt endpoint (see EXEMPT_PATHS). */
+  private static isExempt(request: Request): boolean {
     // `path` excludes the query string; fall back to `url` for adapters that only
     // populate `url`. Trailing slashes are normalized so `/health/` also matches.
     const rawPath = request.path ?? request.url ?? '';
     const path = rawPath.split('?')[0].replace(/\/+$/, '').toLowerCase();
-    return path === AuthGuard.HEALTH_PATH;
+    return AuthGuard.EXEMPT_PATHS.includes(path);
   }
 
   /**

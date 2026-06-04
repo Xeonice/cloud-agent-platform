@@ -20,5 +20,11 @@
     "lint-staged": "^15.5.2",
     "turbo": "^2.5.4",
     "typescript": "^5.8.3"
+  },
+  "pnpm": {
+    "//": "pnpm 10 blocks dependency build scripts by default; node-pty needs its node-gyp native build to run, otherwise pty.node is missing at runtime (esp. in the runner Docker image).",
+    "onlyBuiltDependencies": [
+      "node-pty"
+    ]
   }
 }

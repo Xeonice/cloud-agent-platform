@@ -1,0 +1,66 @@
+## MODIFIED Requirements
+
+### Requirement: SandboxConnection handle returned from provisioning
+The `AioSandboxProvider.provision()` SHALL return a `SandboxConnection` handle carrying `taskId`, an HTTP `baseUrl` of the form `http://cap-aio-<taskId>:8080`, and a `wsUrl` of the form `ws://cap-aio-<taskId>:8080/v1/shell/ws`, so that the orchestrator can address the sandbox by container name over `cap-net` and open the terminal WebSocket. The provider SHALL also clone the task repository into a DEDICATED, EMPTY workspace directory (e.g. `/home/gem/workspace`) — never into the non-empty `/home/gem` HOME — via `POST /v1/shell/exec` before returning the handle. The provider SHALL PARSE the `/v1/shell/exec` response body, treating a non-zero command `exit_code` (not merely a non-`ok` HTTP status) as a provisioning failure, and SHALL surface a real provision error rather than logging success on a silent clone failure.
+
+#### Scenario: Provision returns an addressable connection handle
+- **WHEN** provisioning completes for task `<taskId>`
+- **THEN** the returned `SandboxConnection` has `taskId` set, `baseUrl` equal to `http://cap-aio-<taskId>:8080`, and `wsUrl` equal to `ws://cap-aio-<taskId>:8080/v1/shell/ws`
+
+#### Scenario: Task repository is cloned into a dedicated empty workspace dir before the handle is returned
+- **WHEN** the sandbox is ready and before `provision()` returns
+- **THEN** the provider issues a git clone of the task repository into a dedicated, empty workspace directory (e.g. `/home/gem/workspace`) via `POST /v1/shell/exec`
+- **AND** it does NOT clone into the non-empty `/home/gem` HOME directory
+
+#### Scenario: Clone failure surfaces a provision error instead of silent success
+- **WHEN** the `POST /v1/shell/exec` clone command returns a non-zero `exit_code` in its response body (for example because the destination already exists or is non-empty)
+- **THEN** the provider parses the response `exit_code`/`output` and raises a provisioning error
+- **AND** it does NOT log "cloned task repository" or otherwise report success on a failed clone
+
+### Requirement: codex launched in-shell over the terminal channel
+The system SHALL launch codex INSIDE the AIO shell over the `/v1/shell/ws` terminal channel (execution model A), preserving the interactive TUI, and SHALL NOT run codex via the request/response `exec`/MCP surfaces for the interactive terminal channel. The derived sandbox image SHALL be baked FROM the pinned AIO image with codex, `~/.codex/hooks.json`, and the compiled `dist/hooks` included. The provisioned codex version SHALL be PINNED via a documented `CODEX_VERSION` build-arg to a release compatible with the account model in use (verified working: codex `0.131.0` with model `gpt-5.5`); the prior `0.42.0` pin SHALL NOT be used because it 400s on `gpt-5`/`gpt-5-codex`/`o4-mini` for ChatGPT accounts and is unusable with `gpt-5.5`. The baked `~/.codex/hooks.json` and the compiled `dist/hooks` SHALL conform to the codex `0.131` hook protocol.
+
+#### Scenario: codex runs over the interactive terminal channel
+- **WHEN** a task begins execution
+- **THEN** codex is started inside the AIO shell over the `/v1/shell/ws` terminal channel
+- **AND** codex is not launched through the request/response `exec` or MCP surfaces for the interactive terminal channel
+
+#### Scenario: Derived image bakes a compatible pinned codex and 0.131-format hooks
+- **WHEN** the derived sandbox image is inspected
+- **THEN** it is built FROM the pinned AIO image and includes codex, `~/.codex/hooks.json`, and the compiled `dist/hooks`
+- **AND** the codex version is set from a documented `CODEX_VERSION` build-arg pinned to a release compatible with the account model (e.g. `0.131.0` for `gpt-5.5`), not `0.42.0`
+- **AND** the baked `~/.codex/hooks.json` is in the codex `0.131` hook format
+
+### Requirement: Blocking approval hooks re-homed via outbound HTTP callback
+The blocking approval hooks (`permission_request` and `post_tool_use`) SHALL be re-homed to make an OUTBOUND HTTP callback from the sandbox to a NEW orchestrator approvals endpoint reachable over `cap-net`, reusing the EXISTING `onPermissionRequest`/`onDecision` approval routing so that only the transport changes. The approval semantics and routing above the transport SHALL remain unchanged. The in-sandbox hook adapter SHALL speak the codex `0.131` hook protocol: it SHALL read the `0.131` stdin schema (`{session_id, transcript_path, cwd, hook_event_name, model, permission_mode, turn_id, tool_name, tool_use_id, tool_input}`), translate it to cap's `permission_request` frame for the existing `POST /v1/approvals` routing, and emit the `0.131` decision form (`{hookSpecificOutput:{hookEventName, permissionDecision:"allow"|"deny", permissionDecisionReason?}}`, or exit `0` for allow / exit `2` + stderr for deny).
+
+#### Scenario: Approval request travels over HTTP callback to the orchestrator
+- **WHEN** a hook inside the sandbox fires a `permission_request` or `post_tool_use`
+- **THEN** the sandbox makes an outbound HTTP call to the orchestrator approvals endpoint over `cap-net`
+- **AND** the orchestrator handles it through the existing `onPermissionRequest`/`onDecision` routing
+
+#### Scenario: Approval routing is unchanged above the transport
+- **WHEN** an approval decision is produced for a re-homed hook
+- **THEN** the decision flows through the same `onDecision` routing used before the migration, with only the sandbox-to-orchestrator transport changed to an HTTP callback
+
+#### Scenario: Hook adapter speaks the codex 0.131 stdin/stdout protocol
+- **WHEN** the codex `0.131` hook fires and writes its `0.131` stdin payload to the in-sandbox hook adapter
+- **THEN** the adapter parses the `0.131` stdin schema (including `tool_name` and `tool_input`), translates it to cap's `permission_request` frame, and performs the existing `POST /v1/approvals` round-trip
+- **AND** it returns the decision in the codex `0.131` form (`{hookSpecificOutput:{permissionDecision}}`, or exit `0` allow / exit `2` deny)
+
+### Requirement: Exit detection mapped to guardrails
+Because the node-pty `onExit` signal no longer exists, the `AioPtyClient` SHALL detect task termination by observing the terminal WebSocket close and SHALL determine the exit status using `POST /v1/shell/exec` running `echo $?` and/or `/v1/shell/wait`, mapping a zero exit status to guardrails `recordSuccess` and a non-zero or abnormal termination to guardrails `recordFailure`. The orchestrator bridge (`AioPtyClient`/gateway) SHALL ALSO persist the raw PTY output stream by appending it to `workspaces/<taskId>/session.log` as it is received, keeping the byte-offset fed to `snapshots.feed` in lockstep with the bytes written to `session.log`, so that reconnect tail-replay has a durable source of prior output.
+
+#### Scenario: WS close triggers exit-status resolution
+- **WHEN** the sandbox terminal WebSocket closes
+- **THEN** `AioPtyClient` resolves the task exit status via `/v1/shell/exec` `echo $?` and/or `/v1/shell/wait`
+
+#### Scenario: Exit status maps to guardrails outcome
+- **WHEN** the resolved exit status is zero
+- **THEN** the system calls guardrails `recordSuccess`
+- **AND** when the resolved exit status is non-zero or the termination is abnormal, the system calls guardrails `recordFailure`
+
+#### Scenario: Raw PTY output is persisted to session.log in the orchestrator bridge
+- **WHEN** the sandbox emits raw `output` for a task with id `<taskId>`
+- **THEN** the orchestrator bridge appends those raw bytes to `workspaces/<taskId>/session.log`
+- **AND** the byte-offset advanced in `snapshots.feed` stays in lockstep with the bytes written to `session.log`

@@ -1,12 +1,11 @@
 import { forwardRef, Module } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { TasksModule } from '../tasks/tasks.module';
 import {
   DEFAULT_GUARDRAILS_CONFIG,
   GuardrailsConfig,
   GuardrailsService,
 } from './guardrails.service';
-import { TasksService } from '../tasks/tasks.service';
-import { TaskTokenService } from '../tasks/task-token.service';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
 
@@ -28,19 +27,21 @@ import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provi
   providers: [
     {
       provide: GuardrailsService,
+      // TasksService is NOT injected here — GuardrailsService resolves it lazily
+      // via ModuleRef in onModuleInit to break the construction cycle. Under the
+      // connect-in model there is no per-task TASK_TOKEN, so TaskTokenService is
+      // no longer wired (4.4); session-scoped credentials are the sole teardown
+      // boundary.
       inject: [
-        TasksService,
+        ModuleRef,
         SessionCredentialsService,
-        TaskTokenService,
         { token: SANDBOX_PROVIDER, optional: true },
       ],
       useFactory: (
-        tasks: TasksService,
+        moduleRef: ModuleRef,
         creds: SessionCredentialsService,
-        taskTokens: TaskTokenService,
         sandbox?: SandboxProvider,
-      ) =>
-        new GuardrailsService(tasks, creds, taskTokens, sandbox, readGuardrailsConfig()),
+      ) => new GuardrailsService(moduleRef, creds, sandbox, readGuardrailsConfig()),
     },
   ],
   exports: [GuardrailsService],

@@ -1,4 +1,4 @@
-import { BadRequestException, type PipeTransform } from '@nestjs/common';
+import { BadRequestException, type ArgumentMetadata, type PipeTransform } from '@nestjs/common';
 import type { ZodSchema } from 'zod';
 
 /**
@@ -10,7 +10,14 @@ import type { ZodSchema } from 'zod';
 export class ZodValidationPipe<T> implements PipeTransform<unknown, T> {
   constructor(private readonly schema: ZodSchema<T>) {}
 
-  transform(value: unknown): T {
+  transform(value: unknown, metadata: ArgumentMetadata): T {
+    // Validate the request BODY only. Method-scoped `@UsePipes` runs the pipe on
+    // EVERY argument (including `@Param`/`@Query`), so without this guard a body
+    // schema is wrongly applied to path params like `:repoId`, failing with
+    // "Expected object, received string". Non-body args pass through untouched.
+    if (metadata.type !== 'body') {
+      return value as T;
+    }
     const result = this.schema.safeParse(value);
     if (!result.success) {
       throw new BadRequestException({

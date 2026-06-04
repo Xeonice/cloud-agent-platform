@@ -1,9 +1,13 @@
-import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional, type OnModuleInit } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { TaskStatus } from '@cap/contracts';
 import { TasksService } from '../tasks/tasks.service';
-import { TaskTokenService } from '../tasks/task-token.service';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
-import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
+import {
+  SANDBOX_PROVIDER,
+  type SandboxConnection,
+  type SandboxProvider,
+} from '../sandbox/sandbox-provider.port';
 import { ConcurrencySemaphore } from './semaphore';
 import { DeadlineWatcher } from './deadline-watcher';
 import { IdleTracker } from './idle-tracker';
@@ -20,14 +24,63 @@ import { CircuitBreaker, type FailureKind } from './circuit-breaker';
  *    `queued -> running` transition for the oldest queued task when a slot frees.
  *  - force-fail + teardown + slot-release: the deadline / idle / circuit-breaker
  *    callbacks transition the task to `failed`, tear down its session-scoped
- *    credentials (the primary safety boundary) and revoke its `TASK_TOKEN`, and
- *    release its concurrency slot (which may admit the next queued task).
+ *    credentials (the primary safety boundary), and release its concurrency slot
+ *    (which may admit the next queued task). Under the connect-in model there is
+ *    no per-task `TASK_TOKEN` to revoke — the session-scoped credentials are the
+ *    sole authentication boundary.
  *
  * The guardrail CLASSES own no task state and perform no writes; this service is
  * the integration seam that turns their decisions into lifecycle transitions and
  * session teardown. It depends on the {@link SandboxProvider} PORT by token
  * (9.1b), not a concrete impl.
  */
+
+/**
+ * The resolved exit status of a terminated sandbox session, mapped to a
+ * guardrail outcome by {@link GuardrailsService.recordExit} (4.3). Structurally
+ * matches the terminal bridge's `AioExitStatus` so the gateway can pass its
+ * resolved status straight through, without coupling guardrails to the terminal
+ * module's internals.
+ */
+export interface ExitStatus {
+  /** The numeric exit code, or `null` when it could not be resolved. */
+  readonly code: number | null;
+  /**
+   * True when the session terminated abnormally (the WS closed before the
+   * session was established, or the exit status could not be resolved). An
+   * abnormal termination maps to `recordFailure` regardless of `code`.
+   */
+  readonly abnormal: boolean;
+}
+
+/**
+ * Narrow slice of the terminal gateway that this service depends on (4.2).
+ *
+ * Declared as a structural interface — rather than importing the concrete
+ * `TerminalGateway` — to BREAK the module cycle: `TerminalModule` imports
+ * `GuardrailsModule` (the gateway injects `GuardrailsService`), so a direct
+ * dependency back on the gateway would form `GuardrailsModule -> TerminalModule
+ * -> GuardrailsModule`. The runtime gateway instance satisfies this shape; it is
+ * resolved lazily via {@link ModuleRef} in {@link GuardrailsService.onModuleInit}.
+ */
+export interface ITerminalGateway {
+  /**
+   * Open a task's terminal session under the connect-in model: dial the sandbox
+   * terminal OUT (an `AioPtyClient` to `connection.wsUrl`) and register the
+   * `TerminalSession`. Idempotent for an already-open task.
+   */
+  openSession(connection: SandboxConnection): unknown;
+  /** Remove a task's terminal session (e.g. on completion/teardown). */
+  unregisterSession(taskId: string): void;
+}
+
+/**
+ * DI token the terminal gateway is re-provided under (in `TerminalModule`) so
+ * this service can resolve it LAZILY by token via {@link ModuleRef} without a
+ * value import of `TerminalGateway` — keeping the `GuardrailsModule <->
+ * TerminalModule` cycle out of the module graph entirely (4.2).
+ */
+export const TERMINAL_GATEWAY_TOKEN = 'TERMINAL_GATEWAY';
 
 export interface GuardrailsConfig {
   /** Max tasks running concurrently (`MAX_CONCURRENT_TASKS`). */
@@ -46,8 +99,29 @@ export const DEFAULT_GUARDRAILS_CONFIG: GuardrailsConfig = {
 };
 
 @Injectable()
-export class GuardrailsService {
+export class GuardrailsService implements OnModuleInit {
   private readonly logger = new Logger(GuardrailsService.name);
+
+  /**
+   * `TasksService` is resolved lazily in {@link onModuleInit} (not injected in the
+   * constructor) to BREAK the Tasks<->Guardrails construction cycle: TasksService
+   * @Optional-injects GuardrailsService (GUARDRAILS_SERVICE_TOKEN), and a
+   * constructor-time dependency back on TasksService made NestFactory.create()
+   * deadlock — the app silently exited 0 mid-bootstrap (no listen). Resolving it
+   * after all providers are instantiated gives both sides the real instance.
+   */
+  private tasks!: TasksService;
+
+  /**
+   * The terminal gateway, resolved lazily in {@link onModuleInit} (not injected
+   * in the constructor) to break the `GuardrailsModule <-> TerminalModule`
+   * construction cycle — the gateway injects this service, so a constructor-time
+   * dependency back on it would deadlock NestFactory.create() the same way the
+   * Tasks cycle did. Optional: when the terminal module is not present (e.g. a
+   * guardrails-only unit context) this stays undefined and provisioning still
+   * captures the connection handle without opening a session. (4.2)
+   */
+  private gateway?: ITerminalGateway;
 
   private readonly semaphore: ConcurrencySemaphore;
   private readonly deadlines: DeadlineWatcher;
@@ -62,14 +136,22 @@ export class GuardrailsService {
    */
   private readonly pendingDeadlines = new Map<string, number>();
 
+  /**
+   * The addressable {@link SandboxConnection} handle returned by `provision()`
+   * for each running task, keyed by taskId. Captured at `startRunning` (4.1) so
+   * the terminal gateway can open an `AioPtyClient` to `connection.wsUrl`; the
+   * integration track hands this handle through to the gateway (4.2). Cleared on
+   * teardown when the task settles.
+   */
+  private readonly connections = new Map<string, SandboxConnection>();
+
   constructor(
-    private readonly tasks: TasksService,
+    private readonly moduleRef: ModuleRef,
     private readonly creds: SessionCredentialsService,
-    private readonly taskTokens: TaskTokenService,
     @Optional()
     @Inject(SANDBOX_PROVIDER)
     private readonly sandbox?: SandboxProvider,
-    config: GuardrailsConfig = DEFAULT_GUARDRAILS_CONFIG,
+    @Optional() config: GuardrailsConfig = DEFAULT_GUARDRAILS_CONFIG,
   ) {
     // admit-queued: when a slot frees, drive `queued -> running` for the admitted
     // task (FIFO) — the cross-track lifecycle call site for 12.1.
@@ -90,6 +172,30 @@ export class GuardrailsService {
       threshold: config.circuitBreakerThreshold,
       onTrip: (taskId) => void this.forceFail(taskId, 'circuit_breaker'),
     });
+  }
+
+  /**
+   * Resolve `TasksService` and the terminal gateway after all providers are
+   * instantiated, breaking the construction cycles (see the `tasks`/`gateway`
+   * field docs). `strict: false` lets the lookup cross module boundaries to the
+   * TasksModule / TerminalModule providers.
+   *
+   * The gateway is OPTIONAL: when the terminal module is not present (e.g. a
+   * guardrails-only unit context) the lookup is swallowed and `gateway` stays
+   * undefined, so provisioning still captures the connection handle without
+   * opening a session (4.2).
+   */
+  onModuleInit(): void {
+    this.tasks = this.moduleRef.get(TasksService, { strict: false });
+    try {
+      this.gateway = this.moduleRef.get<ITerminalGateway>(TERMINAL_GATEWAY_TOKEN, {
+        strict: false,
+      });
+    } catch {
+      // Terminal module not wired in this context — provisioning still captures
+      // the connection handle; no terminal session is opened.
+      this.gateway = undefined;
+    }
   }
 
   /**
@@ -127,6 +233,36 @@ export class GuardrailsService {
   }
 
   /**
+   * Map a resolved sandbox exit status to the guardrail outcome (4.3). Under the
+   * connect-in model there is no `node-pty` `onExit`: the `AioPtyClient` detects
+   * termination by the terminal WS close and resolves the exit status via the
+   * sandbox `exec`/`wait` surfaces, then the terminal gateway hands it here.
+   *
+   * A ZERO exit code maps to {@link recordSuccess}; a NON-ZERO code, an
+   * unresolved code (`null`), or an `abnormal` termination (the WS closed before
+   * the session was established) maps to {@link recordFailure}. `onTerminal` /
+   * `forceFail` / `teardownSandbox` are unaffected — this only resolves the
+   * start/turn circuit-breaker outcome from the remote exit signal.
+   */
+  recordExit(taskId: string, status: ExitStatus): void {
+    if (!status.abnormal && status.code === 0) {
+      this.recordSuccess(taskId);
+    } else {
+      this.recordFailure(taskId);
+    }
+  }
+
+  /**
+   * The {@link SandboxConnection} handle captured for a running task at
+   * `provision()` time (4.1), or `undefined` if none is provisioned. The
+   * integration track consumes this to hand the handle to the terminal gateway
+   * so it opens an `AioPtyClient` to `connection.wsUrl` (4.2).
+   */
+  connectionFor(taskId: string): SandboxConnection | undefined {
+    return this.connections.get(taskId);
+  }
+
+  /**
    * A task reached a terminal state on its own (completion/failure). Clear its
    * guardrail timers, tear down its session credentials, and release its slot —
    * which admits the next queued task if any (12.1 slot-release; session-end
@@ -134,6 +270,17 @@ export class GuardrailsService {
    */
   async onTerminal(taskId: string): Promise<void> {
     this.clearTimers(taskId);
+    // Tear down the AIO sandbox container so it does not outlive the task on
+    // natural completion, then destroy the session-scoped credentials.
+    if (this.sandbox) {
+      await this.sandbox.teardownSandbox(taskId).catch((err: unknown) => {
+        this.logger.warn(
+          `sandbox teardown for task ${taskId} failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+    }
     this.teardownSession(taskId, 'completed');
     // release() admits the next queued task via the onAdmit callback.
     this.semaphore.release(taskId);
@@ -158,6 +305,42 @@ export class GuardrailsService {
     this.idle.start(taskId);
     if (deadlineMs !== undefined) {
       this.deadlines.armAfter(taskId, deadlineMs);
+    }
+    // Provision the execution sandbox under the connect-in model: `provision()`
+    // creates the per-task AIO container and returns an addressable
+    // `SandboxConnection` the orchestrator dials by container name on `cap-net` —
+    // there is no dial-back to authenticate, so NO per-task TASK_TOKEN is minted.
+    // The returned handle is captured (stashed by taskId) AND handed to the
+    // terminal gateway, which opens an `AioPtyClient` to `connection.wsUrl` and
+    // registers the `TerminalSession` (4.2). Best-effort: a provision failure is
+    // logged, not fatal to the lifecycle transition.
+    if (this.sandbox) {
+      const connection = await this.sandbox.provision({ taskId }).catch((err: unknown) => {
+        this.logger.error(
+          `provision sandbox for task ${taskId} failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return undefined;
+      });
+      if (connection) {
+        this.connections.set(taskId, connection);
+        // 4.2 — hand the handle through to the terminal gateway so it dials the
+        // sandbox terminal OUT and registers the session (replacing the previous
+        // dial-back-registers-the-session flow). Idempotent on the gateway side;
+        // best-effort so a terminal wiring hiccup never fails the lifecycle.
+        if (this.gateway) {
+          try {
+            this.gateway.openSession(connection);
+          } catch (err: unknown) {
+            this.logger.error(
+              `opening terminal session for task ${taskId} failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
+      }
     }
   }
 
@@ -199,12 +382,18 @@ export class GuardrailsService {
 
   /**
    * Tear down a task's session at session end: destroy its ephemeral
-   * session-scoped credentials (the primary safety boundary) and revoke its
-   * `TASK_TOKEN`, so neither can authenticate after the session closes.
+   * session-scoped credentials (the primary safety boundary) so they cannot
+   * authenticate after the session closes, and drop the captured
+   * {@link SandboxConnection} handle. Under the connect-in model there is no
+   * per-task `TASK_TOKEN` to revoke (issuance/revocation removed in 4.4) — the
+   * session-scoped credentials are the sole authentication boundary.
    */
   private teardownSession(taskId: string, reason: 'completed' | 'failed'): void {
     this.creds.destroyForSession(taskId, reason);
-    this.taskTokens.revokeForTask(taskId);
+    this.connections.delete(taskId);
+    // 4.2 — drop the gateway's terminal session for this task so its
+    // `AioPtyClient`/snapshot bookkeeping does not outlive the settled task.
+    this.gateway?.unregisterSession(taskId);
   }
 
   /**

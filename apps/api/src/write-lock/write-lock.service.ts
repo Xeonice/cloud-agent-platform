@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 
 import {
   DEFAULT_WRITE_LOCK_OPTIONS,
@@ -45,7 +45,14 @@ export class WriteLockService {
 
   private readonly now: () => number;
 
-  constructor(options?: Partial<WriteLockOptions>, clock: () => number = Date.now) {
+  // Both params are optional plain VALUES with defaults (not DI providers): under
+  // NestJS DI their `Object`/`Function` paramtypes have no provider, so `@Optional()`
+  // makes Nest inject `undefined` and the JS defaults take over. Direct unit tests
+  // still `new WriteLockService(opts, clock)` to inject a deterministic clock.
+  constructor(
+    @Optional() options?: Partial<WriteLockOptions>,
+    @Optional() clock: () => number = Date.now,
+  ) {
     this.options = { ...DEFAULT_WRITE_LOCK_OPTIONS, ...options };
     this.now = clock;
   }
