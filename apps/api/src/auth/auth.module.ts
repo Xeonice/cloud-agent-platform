@@ -9,8 +9,8 @@ import { AuthGuard } from './auth.guard';
  * the `APP_GUARD` provider. The guard itself exempts `/health` (so platform
  * liveness probes work unauthenticated) and rejects any missing/malformed/
  * non-matching `Authorization: Bearer <token>` with 401, performing no state
- * change. A runner `TASK_TOKEN` presented here is simply a non-matching operator
- * token and is rejected by the ordinary comparison.
+ * change. Any value that does not match the configured `AUTH_TOKEN` is rejected
+ * by the ordinary comparison.
  *
  * The refuse-to-boot check for an unset `AUTH_TOKEN` (11.3b) lives in the
  * bootstrap (`main.ts`); this module wires the per-request enforcement.

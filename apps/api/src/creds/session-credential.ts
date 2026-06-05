@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 
 /**
- * Ephemeral, session-scoped credential (track runner-dialback-and-creds, 8.4).
+ * Ephemeral, session-scoped credential (session-scoped credentials track, 8.4).
  *
  * Design D8 / spec "Ephemeral credentials destroyed with the session": the
  * sandbox-scoped credentials provisioned for a task are the **primary safety

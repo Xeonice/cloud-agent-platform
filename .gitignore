@@ -25,3 +25,4 @@ workspaces/
 
 # os
 .DS_Store
+.claude/worktrees/

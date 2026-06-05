@@ -9,7 +9,25 @@
 # reconnect snapshot + tail-replay still works (design D5/D10, multi-target
 # "session.log survives an orchestrator restart" scenario).
 #
-# This is the platform deploy plane, not the per-task execution sandbox.
+# == Per-task execution topology (DooD self-host; design D) ==
+#
+# This compose self-host topology is the ONLY per-task EXECUTION target. The
+# orchestrator provisions one sibling AIO Sandbox container per task via
+# Docker-out-of-Docker (DooD): it dockerode-creates `cap-aio-<taskId>` from the
+# pinned derived AIO image and dials it BY CONTAINER NAME over the user-defined
+# `cap-net` network. Per-task sandboxes attach to `cap-net`, are reachable only
+# by the orchestrator on that network, and publish NO host port — so NETWORK
+# ISOLATION is the execution security boundary (AIO's HTTP/WS API is open by
+# default; the private network is what confines it).
+#
+# SECURITY (single-user self-host ONLY): mounting /var/run/docker.sock into the
+# `api` service grants the orchestrator container HOST-ROOT-EQUIVALENT access to
+# the Docker daemon (it can create/stop any container and bind-mount any host
+# path). This is ACCEPTED, not mitigated, and is sound ONLY for a single-user
+# self-host deployment. Do NOT use this topology for multi-tenant / multi-user
+# hosting. Fly.io is NOT an execution target: its Firecracker microVMs expose no
+# host docker socket, so DooD sibling provisioning is impossible there (the
+# orchestrator MAY still run the control plane on Fly — see apps/api/fly.toml).
 
 services:
   api:
@@ -19,6 +37,14 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    # DooD needs access to the mounted /var/run/docker.sock. The api image runs as
+    # a non-root user (correct for the Fly.io control-plane deploy, which does NOT
+    # mount the socket), but the host docker.sock is root-owned, so under the
+    # compose self-host topology the orchestrator must run as root to use it (6.6 —
+    # a DooD `docker` call from `api` succeeds with no EACCES). This is consistent
+    # with the already-accepted "docker.sock = host-root-equivalent, single-user
+    # self-host ONLY" threat model documented in the header above.
+    user: root
     depends_on:
       postgres:
         condition: service_healthy
@@ -30,12 +56,50 @@ services:
       # Operator bearer token gating REST + WS (wired/enforced in the
       # integration track); supply via the host environment or an .env file.
       AUTH_TOKEN: ${AUTH_TOKEN}
+      # Pinned derived AIO sandbox image the provider provisions per task
+      # (cap-aio-<taskId>). MUST be a pinned tag, NEVER :latest (design D —
+      # reproducible, version-pinned execution image). Override via .env.
+      AIO_SANDBOX_IMAGE: ${AIO_SANDBOX_IMAGE:-cap-aio-sandbox:pinned}
+      # Concurrency ceiling + per-task clone URL, passed through under the EXACT
+      # names the orchestrator process reads (deploy-config 4.1):
+      #   MAX_CONCURRENT_TASKS -> apps/api/src/guardrails/guardrails.module.ts
+      #                           (process.env.MAX_CONCURRENT_TASKS -> semaphore cap)
+      #   TASK_REPO_URL        -> apps/api/src/sandbox/aio-sandbox.provider.ts
+      #                           (process.env.TASK_REPO_URL -> per-task clone URL)
+      # The code already reads these; compose previously did not pass them through.
+      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-}
+      # OPEN QUESTION (deploy-config follow-up): a single GLOBAL compose env is the
+      # WRONG model for TASK_REPO_URL's per-task semantics. Every task provisioned
+      # by this orchestrator would clone the SAME repo, but the real intent is one
+      # source repo PER task. This global passthrough is a stopgap so the existing
+      # provider code path is exercised; it is NOT the intended per-task design.
+      # The per-task source-of-record (e.g. carried on the task record / create
+      # request and threaded into the provider's ProvisionContext, with per-task
+      # credential sourcing) is UNRESOLVED and deferred to the integration track.
+      # Do NOT mistake this global env for the final per-task design.
+      TASK_REPO_URL: ${TASK_REPO_URL:-}
     ports:
       - "8080:8080"
+    networks:
+      # Join the compose `default` network to reach Postgres. Postgres stays on
+      # `default` ONLY (it does NOT join cap-net), so per-task sandboxes — which
+      # live on cap-net — cannot reach the database. The orchestrator bridges the
+      # two networks (6.5 — `api` reaches Postgres AND a cap-net sandbox, no
+      # P1001). NOTE: a service that declares `networks:` no longer joins
+      # `default` implicitly, so it must be listed explicitly here.
+      - default
+      # AND join the user-defined cap-net so the orchestrator can dial per-task
+      # sandbox containers BY NAME (cap-aio-<taskId>). The default bridge has
+      # no container-name DNS, so cap-net is required for connect-in addressing.
+      - cap-net
     volumes:
       # Persistent named volume backing workspaces/<id>/session.log so it
-      # survives `docker compose restart api` / a container recreate.
+      # survives `docker compose restart api` / a container recreate (4.2).
       - workspaces:/data/workspaces
+      # Docker-out-of-Docker: mount the host docker socket so the orchestrator
+      # can provision SIBLING AIO sandbox containers (design D). HOST-ROOT-
+      # EQUIVALENT — accepted for single-user self-host only (see header).
+      - /var/run/docker.sock:/var/run/docker.sock
 
   postgres:
     image: postgres:16-alpine
@@ -51,6 +115,15 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+networks:
+  # User-defined bridge network with container-name DNS. The `api` service
+  # joins it, and each per-task AIO sandbox (cap-aio-<taskId>) is attached to it
+  # at provision time so the orchestrator can dial sandboxes by container name.
+  # Sandboxes publish no host port; reachability is confined to this network —
+  # network isolation is the execution security boundary (design D).
+  cap-net:
+    name: cap-net
 
 volumes:
   # Named volume so session.log persists across orchestrator restarts.

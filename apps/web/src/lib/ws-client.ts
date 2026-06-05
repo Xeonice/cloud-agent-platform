@@ -6,8 +6,7 @@
  * and authenticates with the operator bearer token (D12). Browsers cannot set
  * an `Authorization` header on a WebSocket handshake, so the token is carried
  * both as a `token` query parameter and as a `bearer.<token>` subprotocol; the
- * orchestrator's connect-time auth (wired in Track 14) accepts either. This is
- * distinct from the runner `TASK_TOKEN` dial-back handshake.
+ * orchestrator's connect-time auth (wired in Track 14) accepts either.
  *
  * Every inbound message is validated against the contracts `WsFrameSchema`, so
  * a raw byte frame is never parsed as a control frame and vice-versa (D4). Raw
