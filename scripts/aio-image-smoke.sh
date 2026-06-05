@@ -9,12 +9,18 @@
 #     6.2  the Dockerfile builds on pnpm 10 and does NOT invoke a filtered
 #          `pnpm --filter X prune --prod` (that filtered prune is the D1 failure;
 #          fail the check if it is ever reintroduced).
+#     D4   (close-aio-execution-gaps Gap C) the image is SLIMMED via `pnpm deploy`:
+#          the Dockerfile no longer COPYs the whole `/repo` workspace (~8.97 GB)
+#          into the final stage and no longer aliases /opt/cap/dist via a symlink
+#          into that /repo; it COPYs the deploy output's node_modules instead.
+#          Fail the check if the full-`/repo` COPY is reintroduced.
 #
 #   DYNAMIC (runs only when the derived image is buildable / present) — builds the
 #   image and inspects the BUILT artifact:
 #     6.3  `import 'zod'` and `@cap/contracts` resolve from the compiled
 #          /opt/cap/dist/hooks inside the built image with NO ERR_MODULE_NOT_FOUND
-#          (D6: the /repo COPY + /opt/cap/dist symlink farm resolves).
+#          (D4: the `pnpm deploy` node_modules sibling of /opt/cap/dist resolves
+#          every hook dep as a REAL, hoisted entry — no /repo, no symlink farm).
 #     6.4  hooks.json is present at the gem HOME (/home/gem/.codex/hooks.json) and
 #          owned 1000:1000 (D5: codex runs as gem, HOME=/home/gem).
 #
@@ -64,6 +70,32 @@ if grep -q 'pnpm install --frozen-lockfile' "$DOCKERFILE"; then
   pass "Dockerfile installs with 'pnpm install --frozen-lockfile' (pnpm 10 path)"
 else
   bad "Dockerfile no longer does a 'pnpm install --frozen-lockfile'"
+fi
+
+# ---------------------------------------------------------------------------
+# STATIC — D4 (close-aio-execution-gaps Gap C): image slimmed via `pnpm deploy`.
+# ---------------------------------------------------------------------------
+log "D4 STATIC: derived image is slimmed via pnpm deploy (no full-/repo COPY)"
+
+# Three load-bearing facts of the slim strategy, all guarded on executable
+# (comment-stripped) lines so the inline docs that NAME the old commands are not
+# false positives: (1) a `pnpm deploy` produces the self-contained tree;
+# (2) the ~8.97 GB full-`/repo` COPY is gone from the final stage; (3) /opt/cap/dist
+# is a real dir, not a symlink into a /repo COPY.
+if printf '%s\n' "$noncomment" | grep -Eq 'pnpm[^#]*\bdeploy\b'; then
+  pass "Dockerfile produces a self-contained tree via 'pnpm deploy'"
+else
+  bad "Dockerfile no longer runs 'pnpm deploy' (D4 slim strategy missing)"
+fi
+if printf '%s\n' "$noncomment" | grep -Eq 'COPY[[:space:]].*--from=hooks-build[[:space:]]+/repo[[:space:]]+/opt/cap/repo'; then
+  bad "full-'/repo' COPY reintroduced into the final stage (D4 regression: ~8.97 GB)"
+else
+  pass "no full-'/repo' COPY in the final stage"
+fi
+if printf '%s\n' "$noncomment" | grep -Eq 'ln[[:space:]]+-s[[:space:]]+/opt/cap/repo'; then
+  bad "/opt/cap/dist symlink into /opt/cap/repo reintroduced (D4: should be a real dir)"
+else
+  pass "/opt/cap/dist is not a symlink into a /repo COPY"
 fi
 
 # ---------------------------------------------------------------------------

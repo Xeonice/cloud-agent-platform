@@ -247,7 +247,16 @@ export class GuardrailsService implements OnModuleInit {
   recordExit(taskId: string, status: ExitStatus): void {
     if (!status.abnormal && status.code === 0) {
       this.recordSuccess(taskId);
+    } else if (status.abnormal) {
+      // Abnormal exit: the sandbox died unexpectedly (container killed, OOM,
+      // etc.). A dead sandbox cannot recover, so force-fail the task now to
+      // release its concurrency slot and admit the next queued task.
+      // `safeTransition` and `semaphore.release` tolerate double-calls, so
+      // this is safe even when `forceFail` was already triggered (e.g. by an
+      // earlier teardownSandbox on the same task).
+      void this.forceFail(taskId, 'idle');
     } else {
+      // Non-zero but clean exit: agent failure; let the circuit breaker decide.
       this.recordFailure(taskId);
     }
   }

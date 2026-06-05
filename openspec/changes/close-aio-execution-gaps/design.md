@@ -50,9 +50,12 @@ suite and the derived image build.
   gates the cap-owned `/v1/shell/exec` boundary: `allow` proceeds; `deny` /
   approval-error / no-decision **FAIL CLOSED**.
 - DOCUMENT the codex-pty approval gap honestly and lay out the four closure
-  options with trade-offs, marking the CHOICE as an **OPEN QUESTION** requiring an
-  operator decision. The spec MUST NOT claim codex's autonomous pty tool calls are
-  approval-gated when they are not.
+  options with trade-offs. The CHOICE is **DECIDED → option (c)** (accept the gap;
+  containment via container + network isolation + ephemeral creds + post-hoc
+  report), grounded in the product positioning that codex's in-sandbox execution
+  is not gated and the trust boundary is the container, not the command. The spec
+  MUST NOT claim codex's autonomous pty tool calls are approval-gated when they
+  are not.
 - Compose **e2e regression guards** for reconnect replay, clone (success + forced
   fail-closed), and the enforcer exec-gate (allow/deny), fossilized in
   `apps/api/test/aio-e2e.mjs` + `scripts/aio-e2e.sh`.
@@ -97,14 +100,13 @@ Alternative considered: trust the unit tests + code review. Rejected — the who
 point of Gap B is that "code-green + unit-tested but never run e2e" is exactly the
 class of false confidence this change exists to remove.
 
-### D2 ★ — The codex-pty approval gap: closure options (OPEN QUESTION, operator decision)
+### D2 ★ — The codex-pty approval gap: closure options (DECIDED → option (c))
 
 This is the deep gap. codex's ACTUAL agent-loop tool calls (editing files,
 running shell inside the `/v1/shell/ws` TUI) have **no working approval gate**:
 the hook doesn't fire (codex#16732) and the enforcer doesn't cover that surface
-(cap is a byte pipe there). The design **does not silently pick a closure as
-done**. It lays out four candidate directions, with trade-offs, and marks the
-CHOICE as an open question for the operator.
+(cap is a byte pipe there). The four candidate directions, with trade-offs, are
+laid out below; the operator's decision follows them.
 
 - **(a) Re-route codex's tool calls through a cap-mediated boundary** instead of
   direct pty exec.
@@ -135,10 +137,24 @@ CHOICE as an open question for the operator.
     (0.131 is a research preview). Until then the gap is exactly option (c) by
     default — so (d) is "(c) now, hope for in-band later."
 
-**CHOICE: OPEN QUESTION — requires an operator decision.** The spec scenario
+**CHOICE: RESOLVED → option (c) — accept the gap and document the threat model.**
+The operator's product positioning is: run multiple mutually-isolated codex
+processes on a VPS, where **codex's execution inside its own sandbox is NOT
+gated** (at least for now). The trust boundary is the **container**, not the
+individual command, so a command-level human-in-the-loop gate on the codex
+agent loop is not a product requirement — the pty coverage limit is therefore
+orthogonal to the goal, not a defect to close. Containment is the existing
+boundary: per-task `cap-aio-<taskId>` container + `cap-net` network isolation
+(no published host port) + ephemeral per-task credentials + post-hoc activity
+report. Options (a)/(b) are explicitly NOT pursued (they exist to serve a
+"distrust the agent" requirement that does not apply here); (d) is subsumed —
+if codex#16732's hook later fires reliably it can layer on as a bonus in-band
+gate, but nothing depends on it. The `AioApprovalEnforcer` + `permission_request`
+machinery is retained as non-essential-but-harmless: it stays as the ready-made
+re-entry point should the operator ever adopt command-level gating, and it keeps
+the cap-owned `/v1/shell/exec` surface fail-closed regardless. The spec scenario
 "codex-pty surface is not individually gated and is an accepted threat-model gap"
-documents the gap honestly REGARDLESS of which option is later chosen; it does not
-encode (a)/(b)/(c)/(d) as done. See Open Questions.
+documents this honestly and makes no overclaim.
 
 ### D3 — Compose e2e regression guards for reconnect / clone / exec-gate (Gap B)
 
@@ -249,15 +265,16 @@ skipped.
 
 ## Open Questions
 
-- **★ Gap A closure direction (THE open question).** Which of (a) re-route codex
-  tool calls through a cap boundary / (b) parse the pty command-by-command / (c)
-  accept + document the threat model / (d) wait for codex#16732 does the operator
-  choose? This is fundamentally an operator/architecture decision because it
-  trades execution-model invasiveness against the existence of a real
-  human-in-the-loop gate on the codex agent loop. Until decided, the effective
-  posture is option (c)/(d) by default (gap accepted, containment via network
-  isolation + ephemeral creds + post-hoc report), and the spec documents it as
-  such — NOT as solved.
+- **★ Gap A closure direction — RESOLVED → option (c).** The operator decided
+  (see D2): codex's execution inside its own sandbox is NOT gated at the command
+  level; the trust boundary is the container, not the command. A human-in-the-loop
+  gate on the codex agent loop is not a product requirement for the
+  "multiple mutually-isolated codex processes on a VPS" positioning, so the pty
+  coverage limit is orthogonal to the goal rather than a defect. The gap is
+  accepted and documented; containment = per-task container + `cap-net` network
+  isolation (no host port) + ephemeral per-task creds + post-hoc report. Options
+  (a)/(b) are not pursued; (d) may layer on for free if codex#16732 is later
+  fixed, but nothing depends on it.
 - **codex#16732 timeline.** If/when the upstream `PreToolUse` hook fires reliably,
   the in-band gate would cover the pty surface and could supersede an accepted
   threat model. No committed timeline exists (0.131 is a research preview).

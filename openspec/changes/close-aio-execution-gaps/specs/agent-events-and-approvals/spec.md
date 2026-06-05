@@ -23,9 +23,10 @@ The interactive codex-pty surface (`/v1/shell/ws` TUI), over which codex issues 
 - **AND** the system does not allow the gated tool call to proceed without an approval decision
 
 #### Scenario: Exec surface fails closed on deny, error, or no decision
-- **WHEN** the orchestrator brokers a command into the sandbox via `POST /v1/shell/exec` and the `AioApprovalEnforcer` resolves the decision to `allow`
-- **THEN** the command is permitted to run on the cap exec surface
-- **AND** WHEN the resolved decision is `deny`, an approval-routing error occurs, or no decision is returned, THEN the command does NOT run (the gate fails closed) regardless of whether the codex `0.131` hook fired
+- **WHEN** the `AioApprovalEnforcer` class is invoked for a gated tool call and the resolved decision is `allow`
+- **THEN** `enforce()` returns `{allowed: true}` and `enforceThen()` proceeds to invoke the gated action
+- **AND** WHEN the resolved decision is `deny`, an approval-routing error occurs, or no decision is returned within the timeout, THEN `enforce()` returns `{allowed: false}` and `enforceThen()` throws `ApprovalDeniedError` — the gate fails closed regardless of whether the codex `0.131` hook fired
+- **AND** this fail-closed contract applies to the enforcer class; currently there are NO cap-owned gated `/v1/shell/exec` call sites in production code that route through it — the enforcer is wired as a DI provider (`AIO_APPROVAL_ENFORCER` in `TerminalModule`) for future use but is dormant; the spec does NOT claim this gate is live on the exec surface in the current production stack
 
 #### Scenario: codex-pty surface is not individually gated and is an accepted threat-model gap
 - **WHEN** codex issues its own autonomous agent-loop tool calls (file edits, shell commands) directly over the interactive `/v1/shell/ws` PTY surface

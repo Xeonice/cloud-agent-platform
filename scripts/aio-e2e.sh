@@ -80,5 +80,10 @@ fi
 echo "api healthy"
 
 # 5. Run the black-box suite against the live stack.
+#    Scenarios: (C) exec-injection, (D) write-lock, (F) reconnect replay,
+#    (G) clone success, (H) forced clone failure, (E) codex CPR start.
+#    TASK_REPO_URL (optional): forwarded so the api container uses it for
+#    provision-time git clone; tests G/H work with or without it.
 log "running aio-e2e suite"
-AUTH_TOKEN="$AUTH_TOKEN" API="$API" node --test --test-force-exit apps/api/test/aio-e2e.mjs
+AUTH_TOKEN="$AUTH_TOKEN" API="$API" \
+  node --test --test-force-exit apps/api/test/aio-e2e.mjs

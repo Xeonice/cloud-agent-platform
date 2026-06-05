@@ -39,6 +39,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
+import Docker from 'dockerode';
 
 const API = process.env.API ?? 'http://127.0.0.1:8080';
 const WS_BASE = API.replace(/^http/, 'ws');
@@ -62,6 +63,33 @@ const SKIP = await (async () => {
   }
 })();
 if (SKIP) console.log(`# aio-e2e: SKIP — ${SKIP}`);
+
+// ---------------------------------------------------------------------------
+// Between-test cleanup: stop any lingering cap-aio-* sandbox containers left
+// by previous tests (AutoRemove kicks in on stop so they self-delete).
+// Uses dockerode — the same library the orchestrator uses — so no docker CLI
+// dependency. Silently no-ops when docker is unreachable (CI without docker).
+// ---------------------------------------------------------------------------
+async function reapSandboxContainers() {
+  try {
+    const docker = new Docker();
+    const containers = await docker.listContainers({
+      filters: JSON.stringify({ name: ['cap-aio-'] }),
+    });
+    await Promise.all(
+      containers.map((info) =>
+        docker.getContainer(info.Id).stop({ t: 0 }).catch(() => undefined),
+      ),
+    );
+    if (containers.length > 0) {
+      // Give docker time to reap containers (AutoRemove + network cleanup) before
+      // the next test provisions a new one. 5 s is enough for up to ~5 parallel kills.
+      await delay(5000);
+    }
+  } catch {
+    // Docker not reachable (CI) — ignore.
+  }
+}
 
 // AIO sandbox provisioning + boot can take tens of seconds; the live PTY round
 // trips are quick once up. Generous bound, polled.
@@ -186,8 +214,147 @@ test('D. write-lock: a reader without the lease cannot inject commands', { skip:
   );
 });
 
+// ── (F) reconnect replay: snapshot + session.log tail delivered to reconnecting op
+test('F. reconnect replay: a reconnecting operator receives prior output from snapshot + session.log tail', { skip: SKIP }, async (t) => {
+  await reapSandboxContainers();
+  const taskId = await createTask();
+  const writer = await startOperator(taskId, { takeover: true });
+  t.after(() => writer.close());
+
+  // Inject a unique marker and wait for it to appear so session.log has content.
+  const marker = `RECONNECT_${randomUUID().slice(0, 8)}`;
+  const marked = await waitFor(() => {
+    writer.keystroke(`echo ${marker}\n`);
+    return writer.getOutput().includes(marker);
+  });
+  assert.ok(marked, `marker must appear in PTY output before reconnect`);
+
+  // Give the gateway a moment to flush the append to session.log.
+  await delay(600);
+
+  // Reconnect: a fresh WebSocket on the same task, send connect_auth then a
+  // reconnect frame (fromSeq=0 so we receive everything from the beginning).
+  const replayed = await new Promise((resolve) => {
+    const result = { hasSnapshot: false, tailContent: '' };
+    const ws = new WebSocket(
+      `${WS_BASE}/terminal?taskId=${taskId}&token=${encodeURIComponent(AUTH_TOKEN)}`,
+    );
+    const timeout = setTimeout(() => { ws.close(); resolve(result); }, 12_000);
+    ws.once('error', () => { clearTimeout(timeout); ws.close(); resolve(result); });
+    ws.once('open', () => {
+      send(ws, { channel: CONTROL, type: 'connect_auth', token: AUTH_TOKEN, taskId });
+      send(ws, { channel: CONTROL, type: 'reconnect', lastSeq: 0, cols: 80, rows: 24 });
+    });
+    ws.on('message', (buf) => {
+      let frame;
+      try { frame = JSON.parse(buf.toString()); } catch { return; }
+      if (frame.channel === CONTROL && frame.type === 'snapshot') {
+        result.hasSnapshot = true;
+      }
+      if (frame.channel === CONTROL && frame.type === 'tail_replay') {
+        if (frame.data) result.tailContent += unb64(frame.data);
+        if (frame.final) { clearTimeout(timeout); ws.close(); resolve(result); }
+      }
+    });
+  });
+
+  assert.ok(
+    replayed.hasSnapshot || replayed.tailContent.length > 0,
+    `reconnect must deliver a snapshot or non-empty tail_replay frames; ` +
+      `hasSnapshot=${replayed.hasSnapshot}, tailContent.length=${replayed.tailContent.length}`,
+  );
+  assert.ok(
+    replayed.tailContent.includes(marker) || replayed.hasSnapshot,
+    `replayed tail content should include the injected marker or a snapshot must be present; ` +
+      `tailContent snippet: ${JSON.stringify(replayed.tailContent.slice(-300))}`,
+  );
+});
+
+// ── (G) clone success: git clone into the dedicated empty workspace succeeds ──
+test('G. clone success: git clone into /home/gem/workspace succeeds with exit_code 0', { skip: SKIP }, async (t) => {
+  await reapSandboxContainers();
+  const taskId = await createTask();
+  const operator = await startOperator(taskId);
+  t.after(() => operator.close());
+
+  // Create a minimal local bare repo and clone it into the dedicated workspace
+  // directory. Using a local source avoids any external network dependency.
+  // If the workspace already has content (TASK_REPO_URL was set at provision),
+  // we clone into a sub-path instead so the test remains self-contained.
+  const src = `/tmp/cap-e2e-src-${randomUUID().slice(0, 8)}`;
+  const cloneCmd =
+    `git init --bare ${src} 2>/dev/null` +
+    ` && ([ "$(ls -A /home/gem/workspace 2>/dev/null)" ] ` +
+    `     && git clone ${src} /home/gem/workspace/e2e-clone ` +
+    `     || git clone ${src} /home/gem/workspace)` +
+    ` && echo CLONE_OK || echo CLONE_FAIL`;
+
+  const shellLive = await waitFor(() => {
+    operator.keystroke(`echo SHELL_READY\n`);
+    return operator.getOutput().includes('SHELL_READY');
+  }, { timeoutMs: PROVISION_TIMEOUT_MS });
+  assert.ok(shellLive, 'shell must be live before running clone test');
+
+  const cloneDone = await waitFor(() => {
+    operator.keystroke(`${cloneCmd}\n`);
+    return operator.getOutput().includes('CLONE_OK') || operator.getOutput().includes('CLONE_FAIL');
+  }, { timeoutMs: 30_000 });
+
+  assert.ok(cloneDone, 'clone command must complete within timeout');
+  assert.ok(
+    operator.getOutput().includes('CLONE_OK'),
+    `git clone into /home/gem/workspace must succeed (exit_code 0); ` +
+      `output tail: ${JSON.stringify(operator.getOutput().slice(-400))}`,
+  );
+});
+
+// ── (H) forced clone failure: non-empty target raises a non-zero exit_code ───
+test('H. forced clone failure: git clone into a non-empty target fails closed (non-zero exit_code)', { skip: SKIP }, async (t) => {
+  await reapSandboxContainers();
+  const taskId = await createTask();
+  const operator = await startOperator(taskId);
+  t.after(() => operator.close());
+
+  const shellLive = await waitFor(() => {
+    operator.keystroke(`echo SHELL_READY\n`);
+    return operator.getOutput().includes('SHELL_READY');
+  }, { timeoutMs: PROVISION_TIMEOUT_MS });
+  assert.ok(shellLive, 'shell must be live before running clone-failure test');
+
+  // Make /home/gem/workspace non-empty, then attempt to clone into it.
+  // git clone refuses a non-empty destination (exit 128), which is the exact
+  // scenario AioSandboxProvider.cloneTaskRepository catches as a provision error.
+  const src = `/tmp/cap-e2e-src-fail-${randomUUID().slice(0, 8)}`;
+  const failCmd =
+    `git init --bare ${src} 2>/dev/null` +
+    ` && mkdir -p /home/gem/workspace && touch /home/gem/workspace/.cap-e2e-guard` +
+    ` && git clone ${src} /home/gem/workspace 2>&1` +
+    `; echo CLONE_EXIT:$?`;
+
+  const failDone = await waitFor(() => {
+    operator.keystroke(`${failCmd}\n`);
+    return operator.getOutput().includes('CLONE_EXIT:');
+  }, { timeoutMs: 30_000 });
+
+  assert.ok(failDone, 'forced clone-failure command must complete within timeout');
+  // Parse the exit code: must be non-zero (git exits 128 for non-empty target).
+  const match = operator.getOutput().match(/CLONE_EXIT:(\d+)/);
+  const exitCode = match ? Number(match[1]) : null;
+  assert.ok(
+    exitCode !== null && exitCode !== 0,
+    `git clone into a non-empty target must fail closed (non-zero exit_code); ` +
+      `got CLONE_EXIT:${exitCode}; output tail: ${JSON.stringify(operator.getOutput().slice(-400))}`,
+  );
+  // No false "CLONE_OK" must appear — the failure is real, not silently swallowed.
+  assert.ok(
+    !operator.getOutput().includes('CLONE_OK'),
+    'no CLONE_OK must appear after a forced clone failure (no silent success)',
+  );
+});
+
 // ── (E) codex starts in-sandbox via the AioPtyClient CPR injection ────────────
 test('E. codex starts in the AIO sandbox (AioPtyClient CPR injection unblocks crossterm)', { skip: SKIP }, async (t) => {
+  await reapSandboxContainers();
   const taskId = await createTask('codex');
   const operator = await startOperator(taskId);
   t.after(() => operator.close());

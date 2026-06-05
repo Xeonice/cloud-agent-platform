@@ -84,13 +84,26 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @cap/contracts build \
   && pnpm --filter @cap/sandbox-hooks build
 
-# NOTE: pnpm 10 does NOT support a filtered `prune` — `pnpm --filter X prune`
-# rejects the implied `--recursive` ("Unknown option: 'recursive'"), the same
-# incompatibility the old runner Dockerfile hit. So we do NOT prune here; the
-# compiled hooks ship with the installed workspace node_modules as-is. Slimming
-# the hook runtime deps into a self-contained tree (e.g. `pnpm deploy`) is a
-# follow-up — it is not needed for the shell-injection close-loop, which never
-# invokes the hooks.
+# Produce a SELF-CONTAINED runtime dependency tree for the hooks
+# (close-aio-execution-gaps Gap C / D4). The hooks import `zod` and
+# `@cap/contracts`; pnpm makes those a symlink FARM into the virtual store
+# (`node_modules/.pnpm`), so copying only the package's node_modules ships
+# DANGLING symlinks (ERR_MODULE_NOT_FOUND at hook runtime). `pnpm deploy`
+# rewrites that farm into a REAL, hoisted node_modules with no external store
+# back-reference — exactly the problem deploy is built to solve, and the right
+# tool here (pnpm 10 rejects the filtered `pnpm --filter X prune` the old
+# Dockerfile tried — "Unknown option: 'recursive'").
+#
+# `--legacy` selects the pre-lockfile deploy implementation, which resolves the
+# tree from the installed workspace node_modules (robust without an injected-
+# workspace-packages config); `--prod` drops devDependencies. The deploy target
+# `/opt/deploy` is OUTSIDE the `/repo` workspace, as pnpm deploy requires.
+#
+# ROLLBACK (design D4 / Migration step 2): if `deploy` cannot produce a tree
+# that resolves at runtime, the documented fallback is the prior full-`/repo`
+# COPY (functional, just ~8.97 GB). The runtime hook-resolution smoke test
+# (`scripts/aio-image-smoke.sh` 6.3) is the gate that catches a missing dep.
+RUN pnpm --filter=@cap/sandbox-hooks --prod deploy --legacy /opt/deploy
 
 # --- derived AIO sandbox image ---------------------------------------------
 # This is the image the orchestrator actually provisions per task.
@@ -106,17 +119,20 @@ ARG CODEX_VERSION
 RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
   && codex --version
 
-# Copy the WHOLE built workspace so the hooks' pnpm symlink farm resolves at
-# runtime. pnpm stores real packages under /repo/node_modules/.pnpm and makes
-# apps/sandbox-hooks/node_modules a farm of SYMLINKS into it; copying only the
-# package's node_modules ships dangling symlinks, so `import 'zod'` /
-# '@cap/contracts' fail with ERR_MODULE_NOT_FOUND (the blocking hook would then
-# fail-closed DENY on every approval). Keeping the full /repo layout preserves
-# every symlink target; `node` realpaths the symlinked dist entry below and then
-# resolves modules from the real package dir up into the .pnpm store.
-COPY --from=hooks-build /repo /opt/cap/repo
-# Stable alias the hooks.json command paths point at (/opt/cap/dist/hooks/*.js).
-RUN ln -s /opt/cap/repo/apps/sandbox-hooks/dist /opt/cap/dist
+# Ship ONLY the slim hook runtime (close-aio-execution-gaps Gap C / D4),
+# replacing the prior full-`/repo` COPY (~8.97 GB) that existed only so the pnpm
+# symlink farm resolved. Two real, self-contained pieces:
+#   1. the deploy output's hoisted node_modules — `zod` and `@cap/contracts` as
+#      REAL entries (no `.pnpm` store back-reference), so `import 'zod'` /
+#      `@cap/contracts` resolve at hook runtime with no ERR_MODULE_NOT_FOUND;
+#   2. the compiled `dist` straight from the build stage (the authoritative
+#      artifact; copied directly rather than via the deploy output so it never
+#      depends on deploy's file-inclusion rules for a private, files-less pkg).
+# `node` resolving /opt/cap/dist/hooks/*.js walks up to /opt/cap/node_modules —
+# so /opt/cap/dist is a REAL directory (no symlink indirection) and its sibling
+# node_modules satisfies every hook import.
+COPY --from=hooks-build /opt/deploy/node_modules /opt/cap/node_modules
+COPY --from=hooks-build /repo/apps/sandbox-hooks/dist /opt/cap/dist
 
 # Ship the hook configuration at the user-level ~/.codex/hooks.json (the only
 # location Codex fires hooks from). The AIO base image's interactive
