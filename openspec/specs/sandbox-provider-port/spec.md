@@ -4,27 +4,34 @@
 TBD - created by archiving change agent-control-platform. Update Purpose after archive.
 ## Requirements
 ### Requirement: SandboxProvider port exposing sandbox-mode as a capability
-The system SHALL define a `SandboxProvider` port abstraction whose interface exposes the execution sandbox mode (one of `read-only`, `workspace-write`, `danger-full-access`) as an explicit capability, so that the concrete OS-isolating implementation can be deferred and later swapped without changing callers.
+The system SHALL define a `SandboxProvider` port abstraction whose `provision()` method accepts a `ProvisionContext` (which no longer carries a `taskToken`, since there is no dial-back to authenticate) and returns a `SandboxConnection { taskId, baseUrl, wsUrl }` rather than `void`, so that callers can address the provisioned sandbox by container name and open its terminal WebSocket. The port SHALL continue to expose the execution sandbox mode (one of `read-only`, `workspace-write`, `danger-full-access`) as an explicit capability via `getSandboxMode()`, but that mode SHALL be treated as INFORMATIONAL only — under AIO Sandbox the real isolation boundary is the container with `seccomp=unconfined` plus network isolation, not the reported mode. The concrete OS-isolating implementation SHALL remain deferrable and swappable without changing callers. `teardownSandbox` SHALL be unchanged.
+
+#### Scenario: provision returns a SandboxConnection, not void
+- **WHEN** a caller invokes `SandboxProvider.provision()` with a `ProvisionContext`
+- **THEN** it returns a `SandboxConnection` carrying `taskId`, `baseUrl`, and `wsUrl`
+- **AND** the returned handle is sufficient for the caller to open the sandbox terminal WebSocket without any further lookup
+
+#### Scenario: ProvisionContext no longer carries a task token
+- **WHEN** the `ProvisionContext` type accepted by `provision()` is inspected
+- **THEN** it does not contain a `taskToken` field, because no dial-back handshake needs authenticating
+
+#### Scenario: getSandboxMode is informational under AIO
+- **WHEN** `getSandboxMode()` is called on the AIO-backed provider
+- **THEN** the returned mode is treated as informational metadata
+- **AND** the actual execution isolation boundary is the AIO container with `seccomp=unconfined` plus network isolation rather than the reported mode
 
 #### Scenario: Port exposes a sandbox-mode capability
 - **WHEN** the `SandboxProvider` port interface is inspected
-- **THEN** it exposes the sandbox mode as a capability whose values include `read-only`, `workspace-write`, and `danger-full-access`
+- **THEN** it exposes the sandbox mode as an informational capability whose values include `read-only`, `workspace-write`, and `danger-full-access`
 
 #### Scenario: Callers depend on the port, not a concrete impl
 - **WHEN** orchestrator and runner code that provisions execution is inspected
 - **THEN** it depends on the `SandboxProvider` port interface rather than directly on a specific sandbox implementation
+- **AND** it consumes the returned `SandboxConnection` handle rather than assuming a `void` provision result
 
-### Requirement: Documented minimal Docker implementation forcing danger-full-access
-The first `SandboxProvider` implementation SHALL be the minimal Docker implementation, and it SHALL document that running Codex inside Docker forces `--sandbox danger-full-access` because the inner Codex OS sandbox (bubblewrap/seccomp) collapses inside the container, and that Docker is therefore the platform deploy plane and not the per-task execution sandbox.
-
-#### Scenario: Docker impl reports danger-full-access mode
-- **WHEN** the minimal Docker `SandboxProvider` implementation reports its effective sandbox mode
-- **THEN** it reports `danger-full-access`
-
-#### Scenario: Trade-off is documented
-- **WHEN** the minimal Docker implementation's documentation is inspected
-- **THEN** it states that Docker-as-execution forces `danger-full-access` because the inner Codex sandbox collapses inside Docker
-- **AND** it states that Docker is the platform deploy plane, not the per-task execution sandbox
+#### Scenario: teardownSandbox is unchanged
+- **WHEN** the `teardownSandbox` signature and behavior are inspected after the redesign
+- **THEN** they are unchanged from before the AIO migration
 
 ### Requirement: Path to restore OS-level isolation is preserved
 The `SandboxProvider` port SHALL be defined such that a future implementation can provide OS-level isolation (for example a Claude Code sandbox-runtime) by satisfying the same interface, without requiring changes to the port's consumers.

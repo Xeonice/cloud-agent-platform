@@ -17,11 +17,10 @@ import { SettingsModule } from './settings/settings.module';
  * Root application module.
  *
  * Composes the full orchestrator after integration:
- *  - data plane: `PrismaModule`, `ReposModule`, `TasksModule` (incl. per-task
- *    `TASK_TOKEN` issuance, 8.3);
- *  - realtime: `TerminalModule` (dual-channel gateway with the integration-track
- *    wiring for connect-auth 11.4, dial-back verify 8.2, keystroke gating 7.5,
- *    and approval routing 6.5) + `WriteLockModule`;
+ *  - data plane: `PrismaModule`, `ReposModule`, `TasksModule`;
+ *  - realtime: `TerminalModule` (dual-channel gateway with connect-auth 11.4,
+ *    keystroke gating 7.5, and approval routing 6.5 — the latter re-homed onto
+ *    the `/v1/approvals` HTTP callback under connect-in) + `WriteLockModule`;
  *  - safety: `CredsModule` (global ephemeral session credentials), `SandboxModule`
  *    (the `SandboxProvider` port bound by token, 9.1b), `GuardrailsModule`
  *    (semaphore / deadline / idle / circuit-breaker wired into the lifecycle +

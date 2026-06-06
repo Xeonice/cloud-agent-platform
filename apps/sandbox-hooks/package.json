@@ -1,0 +1,24 @@
+{
+  "name": "@cap/sandbox-hooks",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Codex approval/report hook scripts baked into the derived AIO sandbox image. Under connect-in each hook makes an OUTBOUND HTTP callback to the orchestrator approvals endpoint over cap-net (no runner dial-back).",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "test": "node src/hooks/codex-0131-adapter.test.mjs"
+  },
+  "dependencies": {
+    "@cap/contracts": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@cap/eslint-config": "workspace:*",
+    "@cap/tsconfig": "workspace:*",
+    "@types/node": "^22.15.21",
+    "eslint": "^9.27.0",
+    "typescript": "^5.8.3"
+  }
+}

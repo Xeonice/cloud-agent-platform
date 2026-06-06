@@ -11,31 +11,35 @@
  * NEVER parsed as a control frame, and every control frame is validated against
  * the contracts `ControlFrameSchema` before it is acted on (5.1).
  *
- * Tracks 5.1–5.4 (this gateway's transport core) own the dual-channel transport,
- * control-frame validation, application-layer backpressure (5.2), the ACK-based
- * pause/resume protocol (5.3), and snapshot + tail-replay reconnect (5.4),
- * delegating bookkeeping to {@link BackpressureController} and
- * {@link SnapshotManager}.
+ * The gateway's transport core owns the dual-channel transport, control-frame
+ * validation, application-layer backpressure (5.2), the ACK-based pause/resume
+ * protocol (5.3), and snapshot + tail-replay reconnect (5.4), delegating
+ * bookkeeping to {@link BackpressureController} and {@link SnapshotManager}.
  *
- * The orchestrator-integration track layers the following onto this gateway:
- *   - 11.4: connect-time OPERATOR authentication of console clients against
- *           `AUTH_TOKEN` (constant-time), closing unauthenticated/invalid
- *           connections before they join any task stream; a runner `TASK_TOKEN`
- *           presented as the operator token is rejected.
- *   - 8.2 : the runner DIAL-BACK handshake verifier — a runner connection's first
- *           frame is a `dialback_handshake` carrying a `TASK_TOKEN`; the gateway
- *           accepts a valid unexpired token bound to the claimed task and
- *           associates the connection with it, rejecting
- *           missing/malformed/expired/mismatched tokens.
- *   - 6.5 : event ingestion + approval routing — a runner's `permission_request`
- *           is fanned out to operator clients (and notification adapters) and the
- *           resolved `decision` is returned to the blocking runner hook by
- *           `requestId` correlation.
- *   - 7.5 : raw keystroke forwarding is GATED on holding the write lease, while
- *           one-shot approval `decision`s are accepted independently of the lease.
+ * Under the CONNECT-IN model the orchestrator is the WebSocket *client* into each
+ * task's sandbox: it dials the per-task AIO Sandbox terminal OUT via an
+ * {@link AioPtyClient} (registered through {@link openSession}), which becomes the
+ * `TerminalSession.pty` backend. There is no inbound runner dial-back — the only
+ * inbound peers are operator console clients. The layers above the `TerminalPty`
+ * seam (auth, lease, approval routing, backpressure, snapshots, guardrails) are
+ * unchanged by this inversion. The gateway layers on:
+ *   - connect-time OPERATOR authentication of console clients via the GitHub-OAuth
+ *     SESSION (cookie or `bearer.<token>` subprotocol) with an allowlist re-check,
+ *     and the gated legacy `AUTH_TOKEN` break-glass path, resolved by the shared
+ *     `resolveOperatorPrincipal` — closing unauthenticated/expired/non-allowlisted
+ *     connections before they join any task stream (be-oauth-allowlist 2.7);
+ *   - approval routing (6.5) — a sandbox `permission_request`, delivered over an
+ *     OUTBOUND HTTP callback (re-homed in the integration track), is fanned out to
+ *     operator clients and the resolved `decision` is returned to the blocked hook
+ *     over its reply transport by `requestId` correlation;
+ *   - raw keystroke forwarding GATED on holding the write lease (7.5), while
+ *     one-shot approval `decision`s are accepted independently of the lease.
  */
 import path from 'node:path';
+import { appendFile, mkdir } from 'node:fs/promises';
 import { Inject, Logger, Optional } from '@nestjs/common';
+import { Terminal as HeadlessXterm } from '@xterm/headless';
+import { SerializeAddon } from '@xterm/addon-serialize';
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
@@ -52,11 +56,11 @@ import {
   type ConnectAuthFrame,
   type ControlFrame,
   type DecisionFrame,
-  type DialbackHandshakeFrame,
   type HeartbeatFrame,
   type KeystrokeFrame,
   type PauseFrame,
   type PermissionRequestFrame,
+  type PostToolUseReportFrame,
   type RawFrame,
   type ReconnectFrame,
   type ResizeFrame,
@@ -68,33 +72,90 @@ import {
   type FlowSignal,
   type PausablePty,
 } from './backpressure';
-import { SnapshotManager, type HeadlessTerminal, type WsControlFrame } from './snapshot';
+import {
+  SnapshotManager,
+  SESSION_LOG_FILENAME,
+  type HeadlessTerminal,
+  type WsControlFrame,
+} from './snapshot';
+import { AioPtyClient, type AioExitStatus } from './aio-pty-client';
+import type { SandboxConnection } from '../sandbox/sandbox-provider.port';
 import { WriteLockService } from '../write-lock/write-lock.service';
-import { TaskTokenService } from '../tasks/task-token.service';
+// be-oauth-allowlist 2.7 — connect-time operator SESSION authentication (replaces
+// the AUTH_TOKEN-only operator check). `resolveOperatorPrincipal` is the shared,
+// transport-agnostic decision point (also used by the REST guard), and it performs
+// the constant-time legacy-bearer comparison internally, so the gateway needs no
+// direct `constantTimeEqual` import.
 import { AuthSessionService } from '../auth/auth-session.service';
 import { resolveOperatorPrincipal } from '../auth/operator-principal';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 
 /**
- * Minimal no-op headless terminal used when `@xterm/headless` is not available
- * in the API process. The `serialize()` method returns an empty string so the
- * snapshot frame carries no visible-frame data, but the `SnapshotManager`'s
- * byte-offset bookkeeping and the tail-replay path (which reads `session.log`
- * directly) still work correctly. Once a real headless xterm is wired here the
- * snapshot frame will carry a genuine serialized frame.
+ * REAL headless xterm terminal backing the {@link SnapshotManager} (D9).
+ *
+ * Replaces the prior `NullHeadlessTerminal` (whose `serialize()` was always
+ * empty, so every periodic snapshot was blank and `buildReconnectFrames`
+ * replayed nothing). It owns a `@xterm/headless` `Terminal` fed the SAME raw PTY
+ * bytes that are appended to `session.log`, with a `SerializeAddon` loaded so
+ * `serialize()` returns the ACTUAL visible frame. The recorded `cols`/`rows`
+ * track the terminal geometry so a reconnecting client of a different size can
+ * reconcile dimensions before applying the snapshot.
+ *
+ * `@xterm/headless`'s `write` is asynchronous internally (it parses on a
+ * microtask), but `serialize()` reflects all bytes written before it is called
+ * within the same synchronous turn because the parser is flushed on demand; the
+ * snapshot cadence (seconds) is far slower than write bursts, so the visible
+ * frame is always current by capture time.
  */
-class NullHeadlessTerminal implements HeadlessTerminal {
-  cols: number;
-  rows: number;
+class XtermHeadlessTerminal implements HeadlessTerminal {
+  private readonly term: HeadlessXterm;
+  private readonly serializer: SerializeAddon;
+
   constructor(cols = 80, rows = 24) {
-    this.cols = cols;
-    this.rows = rows;
+    this.term = new HeadlessXterm({
+      cols,
+      rows,
+      // Required so the SerializeAddon can read the full buffer/styles.
+      allowProposedApi: true,
+      // Keep a bounded scrollback so a long-running session does not grow the
+      // headless buffer without bound (the durable source is session.log).
+      scrollback: 1000,
+    });
+    this.serializer = new SerializeAddon();
+    this.term.loadAddon(this.serializer);
   }
-  write(_data: string | Uint8Array): void { /* no-op: no rendering */ }
-  serialize(): string { return ''; }
+
+  get cols(): number {
+    return this.term.cols;
+  }
+  set cols(value: number) {
+    if (value > 0 && value !== this.term.cols) {
+      this.term.resize(value, this.term.rows);
+    }
+  }
+
+  get rows(): number {
+    return this.term.rows;
+  }
+  set rows(value: number) {
+    if (value > 0 && value !== this.term.rows) {
+      this.term.resize(this.term.cols, value);
+    }
+  }
+
+  write(data: string | Uint8Array): void {
+    this.term.write(data);
+  }
+
+  /** SerializeAddon: the actual current visible frame (non-empty once fed). */
+  serialize(): string {
+    return this.serializer.serialize();
+  }
+
   resize(cols: number, rows: number): void {
-    this.cols = cols;
-    this.rows = rows;
+    if (cols > 0 && rows > 0) {
+      this.term.resize(cols, rows);
+    }
   }
 }
 
@@ -106,7 +167,7 @@ export interface TerminalPty extends PausablePty {
   write(data: string): void;
   /**
    * Resize the PTY to the given dimensions (VR.8). Called by the gateway when
-   * the browser terminal is resized so runner PTY cols/rows stay in sync,
+   * the browser terminal is resized so the sandbox PTY cols/rows stay in sync,
    * making the "identical cols and rows" live-frame parity precondition
    * reachable at runtime.
    */
@@ -116,8 +177,9 @@ export interface TerminalPty extends PausablePty {
 /**
  * The per-task server-side terminal session the gateway streams from. It pairs
  * the live PTY (raw producer) with the snapshot manager that mirrors it for
- * reconnect. The runner-dialback / terminal-execution tracks supply concrete
- * instances; this track defines the shape it consumes.
+ * reconnect. Under the connect-in model the live PTY is an {@link AioPtyClient}
+ * dialed OUT into the sandbox terminal; the caller supplies concrete instances
+ * and this gateway defines the shape it consumes.
  */
 export interface TerminalSession {
   readonly taskId: string;
@@ -125,13 +187,17 @@ export interface TerminalSession {
   readonly snapshots: SnapshotManager;
 }
 
-/** What kind of peer is on the other end of a connection. */
-type ConnectionKind = 'operator' | 'runner';
+/**
+ * What kind of peer is on the other end of a connection. Under the connect-in
+ * model the only inbound peers are operator console clients; the orchestrator
+ * dials sandboxes OUT via {@link AioPtyClient}, so there is no inbound runner.
+ */
+type ConnectionKind = 'operator';
 
 /** Per-connected-client state held by the gateway. */
 interface ClientState {
   readonly clientId: string;
-  /** Operator console client vs runner sandbox dial-back. */
+  /** Operator console client (the only inbound connection kind). */
   kind: ConnectionKind;
   /** True once the connection has passed its auth/handshake gate. */
   authenticated: boolean;
@@ -145,22 +211,28 @@ interface ClientState {
   ptySubscription: { dispose(): void } | null;
 }
 
-/** A blocked runner permission request awaiting an operator decision (6.5). */
+/** A blocked permission request awaiting an operator decision (6.5). */
 interface PendingApproval {
-  /** The runner socket that raised the request (where the decision returns). */
-  readonly runner: WebSocket;
   readonly taskId: string;
   /** The Codex tool name being gated (surfaced by the pending-list read, 6.5). */
   readonly toolName: string;
   /** Raw, opaque tool-call input forwarded for operator review (6.5). */
   readonly toolInput: unknown;
+  /**
+   * How a resolved decision is returned to the blocked hook. Under the connect-in
+   * model the sandbox's `permission_request` arrives over an OUTBOUND HTTP
+   * callback (re-homed in the integration track); the HTTP handler registers a
+   * `reply` so `onDecision` can resolve the blocked call. It is optional so the
+   * approval routing can be unit-driven without a transport attached.
+   */
+  readonly reply?: (frame: DecisionFrame) => void;
 }
 
 /**
  * The operator-facing projection of a {@link PendingApproval} returned by
  * {@link TerminalGateway.listPendingApprovals} (6.5). Carries the
  * correlation/identity fields the pending-list REST read surfaces (matching the
- * contracts `PendingApprovalSchema`), without the internal runner socket.
+ * contracts `PendingApprovalSchema`), without the internal `reply` transport.
  */
 export interface PendingApprovalView {
   readonly requestId: string;
@@ -194,26 +266,39 @@ export class TerminalGateway
   /** Pending blocked approvals keyed by `requestId` (6.5). */
   private readonly pendingApprovals = new Map<string, PendingApproval>();
 
+  /**
+   * Per-task `session.log` append state (D9 / 3.1). Under the connect-in model
+   * there is no in-sandbox runner producer writing `session.log`; the
+   * orchestrator bridge must persist raw PTY output itself. Each entry holds the
+   * absolute log path and a serialized tail-promise so concurrent appends are
+   * ordered (no interleaving) and the byte stream on disk matches, byte-for-byte,
+   * the bytes fed to `snapshots.feed` — keeping the snapshot boundary and the
+   * replayed tail aligned.
+   */
+  private readonly sessionLogs = new Map<
+    string,
+    { logPath: string; tail: Promise<void>; ensured: boolean }
+  >();
+
   private nextClientId = 1;
 
   /**
    * Collaborators are optional so the gateway's transport core can still be
    * constructed in isolation (e.g. transport unit tests). When the integration
-   * module provides them, the auth/lease/token integration paths activate.
+   * module provides them, the auth/lease integration paths activate.
    *
    * VR.3: `guardrails` is injected optionally so the PTY-output path can call
    * `recordActivity()` to feed the IdleTracker and reclaim wedged tasks.
-   * VR.4: used to call `recordSuccess()` when a runner dials back successfully.
    */
   constructor(
     @Optional() private readonly writeLock?: WriteLockService,
-    @Optional() private readonly taskTokens?: TaskTokenService,
     @Optional() @Inject(GuardrailsService) private readonly guardrails?: GuardrailsService,
     @Optional() @Inject(AuthSessionService) private readonly authSession?: AuthSessionService,
   ) {}
 
   // -------------------------------------------------------------------------
-  // Session registry — terminal-execution / runner-dialback register sessions.
+  // Session registry — the caller registers a task's session (PTY + snapshots)
+  // after provisioning the sandbox and opening the AioPtyClient to its wsUrl.
   // -------------------------------------------------------------------------
 
   /** Register a task's terminal session so clients can stream it. */
@@ -224,6 +309,9 @@ export class TerminalGateway
   /** Remove a task's terminal session (e.g. on completion/teardown). */
   unregisterSession(taskId: string): void {
     this.sessions.delete(taskId);
+    // Drop the session.log append state; the file itself persists on the volume
+    // for post-mortem / restart reconnect (multi-target-deploy persistent volume).
+    this.sessionLogs.delete(taskId);
   }
 
   // -------------------------------------------------------------------------
@@ -233,20 +321,20 @@ export class TerminalGateway
   /**
    * A new socket connected. The second argument is the raw HTTP upgrade request
    * (`ws` forwards it via NestJS's `WsAdapter`), from which we read the operator
-   * credentials. Two connection kinds are distinguished:
+   * credentials.
    *
-   *  - OPERATOR (console): authenticated at connect time against a GitHub-OAuth
-   *    SESSION (be-oauth-allowlist, task 2.7), resolved from the URL `token`
-   *    query param or the `bearer.<token>` subprotocol (browsers cannot set an
-   *    `Authorization` header on a WS handshake). The session resolver
-   *    RE-CONFIRMS allowlist membership, so an expired/revoked/de-allowlisted
-   *    session fails. The legacy shared `AUTH_TOKEN` is accepted on this same
-   *    channel ONLY when `AUTH_TOKEN_LEGACY_ENABLED` is on (task 2.8). An
-   *    unauthenticated/invalid operator connection is closed immediately, BEFORE
-   *    it can join any task stream or be sent any bytes/control frames.
-   *  - RUNNER (sandbox dial-back): NOT operator-authenticated; instead its FIRST
-   *    frame must be a `dialback_handshake` carrying a valid `TASK_TOKEN` (8.2).
-   *    A runner is identified by the `?role=runner` marker the runner dials with.
+   * Under the connect-in model the only inbound peer is an OPERATOR console
+   * client; the orchestrator dials sandboxes OUT via {@link AioPtyClient}, so
+   * there is no inbound runner dial-back to handshake. The operator is
+   * authenticated at connect time against a GitHub-OAuth SESSION
+   * (be-oauth-allowlist, task 2.7), resolved from the URL `token` query param or
+   * the `bearer.<token>` subprotocol (browsers cannot set an `Authorization`
+   * header on a WS handshake). The session resolver RE-CONFIRMS allowlist
+   * membership, so an expired/revoked/de-allowlisted session fails. The legacy
+   * shared `AUTH_TOKEN` is accepted on this same channel ONLY when
+   * `AUTH_TOKEN_LEGACY_ENABLED` is on (task 2.8). An unauthenticated/invalid
+   * operator connection is closed immediately, BEFORE it can join any task stream
+   * or be sent any bytes/control frames.
    *
    * Operator authentication is async (the session is resolved against the store),
    * so the connection starts `authenticated: false`; the message handler is
@@ -256,11 +344,10 @@ export class TerminalGateway
   handleConnection(client: WebSocket, request?: IncomingMessage): void {
     const clientId = `c${this.nextClientId++}`;
     const url = this.parseUrl(request);
-    const isRunner = url?.searchParams.get('role') === 'runner';
 
     const state: ClientState = {
       clientId,
-      kind: isRunner ? 'runner' : 'operator',
+      kind: 'operator',
       authenticated: false,
       taskId: null,
       backpressure: new BackpressureController(),
@@ -275,30 +362,28 @@ export class TerminalGateway
     // async operator auth resolves; operator frames are dropped until then.
     client.on('message', (data: RawData) => this.handleMessage(data, client));
 
-    if (state.kind === 'operator') {
-      // 2.7 — connect-time operator SESSION authentication. Reject (close) before
-      // the connection can join any task stream when no valid principal resolves
-      // (missing/expired/revoked/de-allowlisted session, or a runner `TASK_TOKEN`
-      // presented in place of an operator credential).
-      const presented = extractWsOperatorToken({
-        queryToken: url?.searchParams.get('token') ?? null,
-        subprotocols: this.subprotocols(request),
-      });
-      void this.authenticateOperator(presented).then((ok) => {
-        if (!this.clients.has(client)) return; // disconnected mid-resolution
-        if (!ok) {
-          this.logger.warn(`client ${clientId}: operator auth failed; closing`);
-          this.closeUnauthenticated(client);
-          return;
-        }
-        state.authenticated = true;
-        // Associate the operator with the task it asked to stream, if any.
-        const taskId = url?.searchParams.get('taskId') ?? null;
-        if (taskId) state.taskId = taskId;
-        this.logger.debug(`client ${clientId} authenticated as operator`);
-      });
-    }
-    // Runner connections defer authentication to the first-frame handshake (8.2).
+    // 2.7 — connect-time operator SESSION authentication. Reject (close) before
+    // the connection can join any task stream when no valid principal resolves
+    // (missing/expired/revoked/de-allowlisted session, or — with the legacy path
+    // off — a bare `AUTH_TOKEN`). Auth is async (the session is resolved against
+    // the store), so the connection stays `authenticated: false` until it lands.
+    const presented = extractWsOperatorToken({
+      queryToken: url?.searchParams.get('token') ?? null,
+      subprotocols: this.subprotocols(request),
+    });
+    void this.authenticateOperator(presented).then((ok) => {
+      if (!this.clients.has(client)) return; // disconnected mid-resolution
+      if (!ok) {
+        this.logger.warn(`client ${clientId}: operator auth failed; closing`);
+        this.closeUnauthenticated(client);
+        return;
+      }
+      state.authenticated = true;
+      // Associate the operator with the task it asked to stream, if any.
+      const taskId = url?.searchParams.get('taskId') ?? null;
+      if (taskId) state.taskId = taskId;
+      this.logger.debug(`client ${clientId} authenticated as operator`);
+    });
 
     this.logger.debug(`client ${clientId} connected as ${state.kind}`);
   }
@@ -315,18 +400,6 @@ export class TerminalGateway
     if (state.taskId && this.writeLock) {
       const released = this.writeLock.releaseOnDisconnect(state.taskId, state.clientId);
       if (released) this.broadcastLeaseState(state.taskId);
-    }
-
-    // Drop any approvals still blocked on this runner so they cannot wedge.
-    // Also stop the SnapshotManager when the runner disconnects (VR.10).
-    if (state.kind === 'runner') {
-      for (const [requestId, approval] of this.pendingApprovals) {
-        if (approval.runner === client) this.pendingApprovals.delete(requestId);
-      }
-      if (state.taskId) {
-        const session = this.sessions.get(state.taskId);
-        session?.snapshots.stop();
-      }
     }
 
     this.clients.delete(client);
@@ -352,16 +425,12 @@ export class TerminalGateway
     if (!frame) return;
 
     if (frame.channel === FRAME_CHANNEL.RAW) {
-      // Raw channel: opaque bytes — never interpreted as a control frame.
-      // A raw frame from an OPERATOR is not the keystroke path (that is the
+      // Raw channel: opaque bytes — never interpreted as a control frame. An
+      // inbound raw frame from an OPERATOR is not the keystroke path (that is the
       // lock-gated `keystroke` control frame, 7.5); operator raw frames are
-      // dropped.
-      // A raw frame from an authenticated RUNNER carries PTY output bytes that
-      // must be forwarded to every operator watching that task and fed to the
-      // SnapshotManager so tail-replay and periodic snapshots work (VR.10).
-      if (state.kind === 'runner' && state.authenticated && state.taskId) {
-        this.onRunnerRawFrame(frame as unknown as RawFrame, state);
-      }
+      // dropped. Under the connect-in model sandbox PTY output arrives OUT-of-band
+      // via {@link AioPtyClient}'s onData, not as an inbound raw frame, so there
+      // is no inbound producer raw-frame path here.
       return;
     }
 
@@ -412,38 +481,26 @@ export class TerminalGateway
   /**
    * Dispatch a validated control frame. The transport core owns the flow-control
    * (`ack`) and reconnect (`reconnect`) frames; the integration track owns the
-   * dial-back handshake (8.2), keystroke/heartbeat/takeover (7.5), and the
-   * approval round-trip frames (6.5).
+   * keystroke/heartbeat/takeover (7.5) and approval round-trip frames (6.5).
    *
-   * Authentication gate: a RUNNER connection's very first frame MUST be the
-   * dial-back handshake; nothing else is processed until it authenticates. An
-   * OPERATOR connection is already authenticated at connect time (11.4); a stray
-   * `connect_auth` frame from a non-browser client re-affirms it.
+   * Under the connect-in model the only inbound peer is an OPERATOR console
+   * client; the orchestrator dials sandboxes OUT via {@link AioPtyClient}, so
+   * there is no inbound runner dial-back handshake. Because operator SESSION auth
+   * is async (resolved against the store, 2.7), a connection may receive frames
+   * before `authenticated` is set: until it authenticates the only frame acted on
+   * is `connect_auth`, so no task-stream action runs and no bytes/control frames
+   * are emitted to an unauthenticated connection.
    */
   private handleControlFrame(
     frame: ControlFrame,
     client: WebSocket,
     state: ClientState,
   ): void {
-    // 8.2 — runner handshake gate: an unauthenticated runner may only send the
-    // dial-back handshake. Any other frame from it before authentication is
-    // dropped (it never joins a task stream).
-    if (state.kind === 'runner' && !state.authenticated) {
-      if (frame.type === 'dialback_handshake') {
-        this.onDialbackHandshake(frame, client, state);
-      } else {
-        this.logger.warn(
-          `runner ${state.clientId}: non-handshake frame before auth dropped`,
-        );
-      }
-      return;
-    }
-
     // 2.7 — operator auth gate: an operator connection whose connect-time session
     // auth has not (yet) succeeded may only (re)assert auth via a `connect_auth`
     // frame. Any other frame before authentication is dropped, so no task-stream
     // action runs and no bytes/control frames are emitted until it authenticates.
-    if (state.kind === 'operator' && !state.authenticated) {
+    if (!state.authenticated) {
       if (frame.type === 'connect_auth') {
         void this.onConnectAuth(frame, client, state);
       } else {
@@ -473,17 +530,15 @@ export class TerminalGateway
       case 'takeover_request':
         this.onTakeover(frame, client, state);
         break;
-      case 'permission_request':
-        this.onPermissionRequest(frame, client, state);
-        break;
+      // `permission_request` is no longer accepted as an inbound control frame:
+      // under the connect-in model the sandbox hook delivers it over an OUTBOUND
+      // HTTP callback (re-homed in the integration track), which calls
+      // `onPermissionRequest` directly. An operator client cannot inject one.
       case 'decision':
         this.onDecision(frame, client, state);
         break;
       case 'resize':
         this.onResize(frame, state);
-        break;
-      case 'dialback_handshake':
-        // A handshake from an already-associated connection is a no-op.
         break;
       default:
         // Unhandled-but-valid frames (e.g. server->client only) are inert.
@@ -505,7 +560,7 @@ export class TerminalGateway
    * `AUTH_TOKEN_LEGACY_ENABLED` is on (task 2.8).
    *
    * Returns `false` for a missing credential, an unresolved session, or a legacy
-   * bearer while the legacy path is disabled (fail-closed). A runner `TASK_TOKEN`
+   * bearer while the legacy path is disabled (fail-closed). A sandbox `TASK_TOKEN`
    * presented here is neither a valid session nor the configured `AUTH_TOKEN`, so
    * it fails — there is no special case that admits it as an operator.
    *
@@ -542,7 +597,7 @@ export class TerminalGateway
     client: WebSocket,
     state: ClientState,
   ): Promise<void> {
-    if (state.kind === 'operator' && state.authenticated) {
+    if (state.authenticated) {
       if (frame.taskId) state.taskId = frame.taskId;
       return;
     }
@@ -552,72 +607,89 @@ export class TerminalGateway
       this.closeUnauthenticated(client);
       return;
     }
-    state.kind = 'operator';
     state.authenticated = true;
     if (frame.taskId) state.taskId = frame.taskId;
   }
 
   // -------------------------------------------------------------------------
-  // 8.2 — runner dial-back handshake verifier
+  // Connect-in session open — handle-driven session registration seam.
   // -------------------------------------------------------------------------
 
   /**
-   * Verify a runner's first-frame dial-back handshake. Accepts a valid, unexpired
-   * `TASK_TOKEN` bound to the CLAIMED task and associates the connection with it;
-   * rejects (closes) on a missing/malformed/expired token, or a token issued for
-   * a DIFFERENT task than the one claimed (token-A-claims-task-B). A connection
-   * that fails verification is never associated with any task.
+   * Open a task's terminal session under the connect-in model. The caller
+   * (`GuardrailsService.startRunning`, which resolves this gateway lazily by
+   * `TERMINAL_GATEWAY_TOKEN` and calls `openSession` after `provision()`, 4.2)
+   * hands the {@link SandboxConnection} returned by `provision()`; this gateway
+   * dials the sandbox terminal OUT by constructing an {@link AioPtyClient} to
+   * `connection.wsUrl` and registers a {@link TerminalSession} so reconnecting
+   * operator clients get the snapshot + tail-replay path.
+   *
+   * The SnapshotManager is backed by a REAL {@link XtermHeadlessTerminal} (D9) so
+   * periodic snapshots carry the actual visible frame, alongside byte-offset
+   * tracking + tail-replay. Idempotent for an already-open task.
+   *
+   * Exit detection (design D): when the sandbox terminal WS closes, the
+   * `AioPtyClient` resolves the exit status and invokes the gateway's
+   * `onSessionExit` hook so the guardrails mapping (zero → `recordSuccess`,
+   * non-zero/abnormal → `recordFailure`) can be applied. That mapping itself is
+   * wired in the guardrails track; here we only expose the resolved status.
+   *
+   * @returns the registered {@link TerminalSession}, so the caller can hold the
+   *          handle if needed.
    */
-  private onDialbackHandshake(
-    frame: DialbackHandshakeFrame,
-    client: WebSocket,
-    state: ClientState,
-  ): void {
-    const ok =
-      this.taskTokens !== undefined &&
-      this.taskTokens.verify(frame.taskId, frame.TASK_TOKEN);
-    if (!ok) {
-      this.logger.warn(
-        `runner ${state.clientId}: dial-back handshake rejected for task ${frame.taskId}`,
-      );
-      this.closeUnauthenticated(client);
-      return;
-    }
-    state.kind = 'runner';
-    state.authenticated = true;
-    state.taskId = frame.taskId;
-    this.logger.debug(
-      `runner ${state.clientId}: dial-back associated with task ${frame.taskId}`,
-    );
-    // VR.4 — a successful dial-back handshake means the agent started; reset the
-    // circuit-breaker counter for this task so a prior failure streak is cleared.
-    if (this.guardrails) {
-      this.guardrails.recordSuccess(frame.taskId);
-    }
+  openSession(connection: SandboxConnection): TerminalSession {
+    const { taskId, wsUrl, baseUrl } = connection;
+    const existing = this.sessions.get(taskId);
+    if (existing) return existing;
 
-    // VR.10 — register a TerminalSession for this task so reconnecting operator
-    // clients can get the snapshot + tail-replay instead of always hitting
-    // `if (!session) return`. We create a SnapshotManager backed by a
-    // NullHeadlessTerminal (byte-offset tracking + tail-replay work; snapshot
-    // data is empty until a real headless terminal is wired). The RunnerPtyProxy
-    // lets the gateway forward keystrokes and resize events to the runner over
-    // the same WS connection.
-    if (!this.sessions.has(frame.taskId)) {
-      const workspaceDir = resolveWorkspaceDir(frame.taskId);
-      const headless = new NullHeadlessTerminal();
-      const snapshots = new SnapshotManager(headless, workspaceDir);
-      const ptyProxy = new RunnerPtyProxy(client);
-      const session: TerminalSession = {
-        taskId: frame.taskId,
-        pty: ptyProxy,
-        snapshots,
-      };
-      this.registerSession(session);
-      snapshots.start();
-      this.logger.debug(
-        `runner ${state.clientId}: registered session + started snapshot manager for task ${frame.taskId}`,
-      );
+    const workspaceDir = resolveWorkspaceDir(taskId);
+    // D9 — back the SnapshotManager with a REAL xterm headless terminal so
+    // periodic snapshots carry the actual visible frame (the prior
+    // NullHeadlessTerminal serialized to empty, leaving reconnect with nothing).
+    const headless = new XtermHeadlessTerminal();
+    const snapshots = new SnapshotManager(headless, workspaceDir);
+    const pty = new AioPtyClient(taskId, wsUrl, baseUrl, (status) =>
+      this.onSessionExit(taskId, status),
+    );
+    const session: TerminalSession = { taskId, pty, snapshots };
+    this.registerSession(session);
+    // 3.1 — register the per-task session.log append target. The path MUST match
+    // the one SnapshotManager reads for tail-replay (workspaceDir/session.log) so
+    // the persisted bytes are exactly what reconnect replays after a snapshot.
+    if (!this.sessionLogs.has(taskId)) {
+      this.sessionLogs.set(taskId, {
+        logPath: path.join(workspaceDir, SESSION_LOG_FILENAME),
+        tail: Promise.resolve(),
+        ensured: false,
+      });
     }
+    // Feed live PTY output into the SnapshotManager + fan it out to operators
+    // who have not yet reconnected/attached (VR.10). Operators that have called
+    // attachPty receive the same bytes through their own ptySubscription.
+    pty.onData((chunk) => this.onPtyOutput(taskId, chunk));
+    snapshots.start();
+    this.logger.debug(
+      `task ${taskId}: opened AioPtyClient to ${wsUrl} + started snapshot manager`,
+    );
+    return session;
+  }
+
+  /**
+   * Invoked when an {@link AioPtyClient} resolves a task's exit status after the
+   * sandbox terminal WS closes. Applies the guardrails outcome mapping (4.3): a
+   * ZERO exit maps to `recordSuccess`, a NON-ZERO/unresolved/abnormal exit maps
+   * to `recordFailure`. The {@link AioExitStatus} the bridge resolves is
+   * structurally compatible with the guardrails `ExitStatus`, so it is passed
+   * straight through to `recordExit`, which owns the zero/non-zero rule.
+   */
+  protected onSessionExit(taskId: string, status: AioExitStatus): void {
+    this.logger.debug(
+      `task ${taskId}: terminal session exited (code=${status.code}, abnormal=${status.abnormal})`,
+    );
+    // 4.3 — map the resolved remote exit signal to the start/turn circuit-breaker
+    // outcome. `recordExit` applies the zero→success / non-zero|abnormal→failure
+    // rule; `onTerminal`/`forceFail`/teardown are unaffected.
+    this.guardrails?.recordExit(taskId, status);
   }
 
   // -------------------------------------------------------------------------
@@ -705,24 +777,30 @@ export class TerminalGateway
   // -------------------------------------------------------------------------
 
   /**
-   * A runner forwarded a blocking `permission_request`. Route it to the operator
-   * approval surface: fan the request out to every authenticated operator client
-   * for the claimed task (the lock-INDEPENDENT approval surface, D7), and record
-   * the originating runner so the resolved `decision` can be returned to the
-   * blocked hook by `requestId`. Notification-adapter round-trips, when wired,
-   * also consume this same pending entry.
+   * Route a blocking `permission_request` to the operator approval surface: fan
+   * the request out to every authenticated operator client for the claimed task
+   * (the lock-INDEPENDENT approval surface, D7), and record a `reply` transport
+   * so the resolved `decision` can be returned to the blocked hook by `requestId`.
+   *
+   * Under the connect-in model the sandbox's hook delivers this over an OUTBOUND
+   * HTTP callback (re-homed in the integration track), and the HTTP handler
+   * passes the `reply` used to unblock the hook. The approval routing/semantics
+   * above the transport are unchanged. Notification-adapter round-trips, when
+   * wired, also consume this same pending entry.
    */
-  private onPermissionRequest(
+  onPermissionRequest(
     frame: PermissionRequestFrame,
-    client: WebSocket,
-    state: ClientState,
+    reply?: (decision: DecisionFrame) => void,
   ): void {
-    if (state.kind !== 'runner' || !state.authenticated) return;
     this.pendingApprovals.set(frame.requestId, {
-      runner: client,
       taskId: frame.taskId,
+      // Identity fields surfaced by the session-gated pending-list REST read
+      // (be-audit-approvals 6.5; consumed via {@link listPendingApprovals}).
       toolName: frame.toolName,
       toolInput: frame.toolInput,
+      // Connect-in reply transport: the OUTBOUND-HTTP-callback handler registers
+      // this so `onDecision` can unblock the hook by `requestId` correlation.
+      reply,
     });
     // VR.3 — a hook event counts as activity; reset the idle window so the
     // task is not force-failed while it is actively waiting for a decision.
@@ -742,11 +820,44 @@ export class TerminalGateway
   }
 
   /**
+   * Connect-in approval entry point for the OUTBOUND HTTP callback (5.5). The
+   * sandbox's blocking Codex hook POSTs its `permission_request` to the
+   * orchestrator approvals endpoint (over `cap-net`); the approvals controller
+   * calls this, which routes the request through the SAME `onPermissionRequest`
+   * fan-out + `onDecision` resolution path the WS transport used, and resolves
+   * with the operator's {@link DecisionFrame} once a decision arrives. Only the
+   * transport differs — the approval semantics above it are unchanged.
+   *
+   * The returned promise resolves when an operator decides (via `onDecision`,
+   * which fires the `reply` registered here). It never rejects: a timeout is the
+   * caller's concern (the hook fails closed on no/invalid response).
+   */
+  requestApproval(frame: PermissionRequestFrame): Promise<DecisionFrame> {
+    return new Promise<DecisionFrame>((resolve) => {
+      this.onPermissionRequest(frame, resolve);
+    });
+  }
+
+  /**
+   * Connect-in non-blocking `PostToolUse` report entry point for the OUTBOUND
+   * HTTP callback (5.5). The sandbox's post-tool-use hook POSTs its file-edit
+   * report to the approvals endpoint; this records it as task activity (so a
+   * task actively editing files is not force-failed as idle) and returns. It is
+   * post-hoc only — it never gates, blocks, or reverses the executed command.
+   */
+  reportPostToolUse(frame: PostToolUseReportFrame): void {
+    // VR.3 — a tool-use report counts as activity; reset the idle window.
+    if (this.guardrails) {
+      this.guardrails.recordActivity(frame.taskId);
+    }
+  }
+
+  /**
    * An operator submitted a one-shot approval `decision`. This is accepted
    * INDEPENDENTLY of the write lease (7.5 / D7): any authenticated operator may
    * decide even without holding the keyboard. The decision is correlated by
-   * `requestId` and returned to the exact runner connection that blocked on it
-   * (6.5); the runner hook then unblocks and prints the decision to Codex.
+   * `requestId` and returned to the blocked hook via the pending `reply`
+   * transport (6.5); the hook then unblocks and prints the decision to Codex.
    */
   private onDecision(
     frame: DecisionFrame,
@@ -754,15 +865,15 @@ export class TerminalGateway
     state: ClientState,
   ): void {
     // Lock-INDEPENDENT: no lease check here. Only require an authenticated
-    // operator so a runner cannot inject its own decision.
+    // operator so a non-operator cannot inject its own decision.
     if (state.kind !== 'operator' || !state.authenticated) return;
 
     const pending = this.pendingApprovals.get(frame.requestId);
     if (!pending) return;
     this.pendingApprovals.delete(frame.requestId);
 
-    // Return the resolved decision to the blocked runner hook.
-    this.send(pending.runner, frame);
+    // Return the resolved decision to the blocked hook over its reply transport.
+    pending.reply?.(frame);
     // Tell operators the request is resolved so duplicate surfaces clear.
     for (const [socket, s] of this.clients) {
       if (s.kind === 'operator' && s.authenticated) {
@@ -775,7 +886,7 @@ export class TerminalGateway
    * Read-only snapshot of the pending `PermissionRequest` decisions currently
    * awaiting an operator (be-audit-approvals 6.5). Exposed for the session-gated
    * pending-list REST endpoint: it projects each in-flight blocked approval to its
-   * correlation/identity fields, dropping the internal runner socket. The
+   * correlation/identity fields, dropping the internal `reply` transport. The
    * returned array is a fresh copy, so a caller can never mutate the gateway's
    * live `pendingApprovals` map.
    */
@@ -935,8 +1046,8 @@ export class TerminalGateway
 
   /**
    * Dispatch a terminal resize event from an authenticated operator to the
-   * session's runner PTY so the PTY cols/rows stay in sync with the browser.
-   * Without this the runner PTY stays fixed at 80×24 while the browser auto-fits,
+   * session's sandbox PTY so the PTY cols/rows stay in sync with the browser.
+   * Without this the sandbox PTY stays fixed at 80×24 while the browser auto-fits,
    * making the "identical cols and rows" parity precondition unreachable (VR.8).
    */
   private onResize(frame: ResizeFrame, state: ClientState): void {
@@ -944,44 +1055,49 @@ export class TerminalGateway
     if (!state.taskId) return;
     const session = this.sessions.get(state.taskId);
     if (!session) return;
-    // Forward the resize to the runner PTY so cols/rows stay in sync with the
-    // browser (VR.8). Also update the SnapshotManager's headless terminal so
-    // subsequent snapshots record the updated geometry.
+    // Forward the resize to the sandbox PTY (AioPtyClient → AIO `resize` frame)
+    // so cols/rows stay in sync with the browser (VR.8). Also update the
+    // SnapshotManager's headless terminal so subsequent snapshots record the
+    // updated geometry.
     session.pty.resize(frame.cols, frame.rows);
     session.snapshots.resizeHeadless(frame.cols, frame.rows);
   }
 
   // -------------------------------------------------------------------------
-  // VR.10 — runner raw-frame forwarding + SnapshotManager feeding
+  // PTY-output fan-out + SnapshotManager feeding (VR.10)
   // -------------------------------------------------------------------------
 
   /**
-   * Forward a raw PTY-output frame received from an authenticated runner to every
-   * operator watching the task, and feed the bytes to the SnapshotManager so the
-   * byte-offset bookkeeping stays in sync with `session.log` (VR.10).
+   * Handle a chunk of live PTY output produced by the task's {@link AioPtyClient}
+   * (subscribed in {@link openSession}). This is the SINGLE code path where raw
+   * PTY output is received, so it is where the two byte-offset consumers are kept
+   * in lockstep (D9 / 3.1):
+   *   1. the bytes are APPENDED to `workspaces/<taskId>/session.log` (the durable
+   *      tail-replay source — there is no in-sandbox runner producer under
+   *      connect-in), and
+   *   2. the SAME bytes (same `byteLen`) are fed to `snapshots.feed`, advancing
+   *      the snapshot byte-offset by exactly what was written to the file.
+   * Because the file append and the offset advance both use the identical
+   * `payload` buffer, the snapshot boundary (`seq`) and the replayed tail align.
    *
-   * The runner sends raw PTY bytes as `{ channel: "raw", data: <base64>, seq }`.
-   * We re-use the same frame shape to forward to operators, preserving the seq
-   * (byte offset) so operator clients' ACK counters line up.
+   * It also streams the chunk to every operator watching the task who has NOT yet
+   * reconnected/attached (operators that have called `attachPty` receive the same
+   * bytes through their own `ptySubscription`).
    */
-  private onRunnerRawFrame(frame: RawFrame, state: ClientState): void {
-    const taskId = state.taskId!;
+  private onPtyOutput(taskId: string, chunk: string): void {
     const session = this.sessions.get(taskId);
+    // Encode ONCE so the bytes written to disk are byte-for-byte the bytes the
+    // snapshot offset advances by (UTF-8 char length can differ from byte length).
+    const payload = Buffer.from(chunk, 'utf8');
+    const byteLen = payload.byteLength;
 
-    // Decode the base64 payload.
-    const decoded = Buffer.from(frame.data, 'base64').toString('utf8');
-    const byteLen = Buffer.from(frame.data, 'base64').byteLength;
+    // 3.1 — persist the raw PTY output to session.log BEFORE advancing the
+    // snapshot offset, so the file and the offset move together (lockstep).
+    this.appendSessionLog(taskId, payload);
 
     if (session) {
       // VR.10 — Feed the SnapshotManager so the byte-offset tracks session.log.
-      session.snapshots.feed(decoded, byteLen);
-
-      // Emit through the PTY proxy so operator clients that have called
-      // attachPty (via onReconnect) receive the bytes through their
-      // ptySubscription callbacks (which in turn call streamRawChunk).
-      if (session.pty instanceof RunnerPtyProxy) {
-        session.pty.emitData(decoded);
-      }
+      session.snapshots.feed(chunk, byteLen);
     }
 
     // VR.3 — feed the IdleTracker.
@@ -989,9 +1105,9 @@ export class TerminalGateway
       this.guardrails.recordActivity(taskId);
     }
 
-    // Also directly stream to any operator watching this task who has NOT yet
-    // called reconnect/attachPty (i.e. no ptySubscription set up yet). This
-    // ensures they still receive live output from the moment they connect.
+    // Directly stream to any operator watching this task who has NOT yet called
+    // reconnect/attachPty (i.e. no ptySubscription set up yet) so they receive
+    // live output from the moment they connect.
     for (const [socket, s] of this.clients) {
       if (
         s.kind === 'operator' &&
@@ -999,9 +1115,37 @@ export class TerminalGateway
         s.ptySubscription === null &&
         (s.taskId === null || s.taskId === taskId)
       ) {
-        this.streamRawChunk(decoded, socket, s);
+        this.streamRawChunk(chunk, socket, s);
       }
     }
+  }
+
+  /**
+   * Append a raw PTY-output payload to the task's `session.log` (3.1), serializing
+   * appends per task so concurrent chunks land in order (the bytes on disk match
+   * the bytes fed to `snapshots.feed`). The workspace directory is created lazily
+   * on the first append. Append failures are logged but never throw into the hot
+   * output path — a missing tail degrades reconnect, it does not break streaming.
+   */
+  private appendSessionLog(taskId: string, payload: Buffer): void {
+    const entry = this.sessionLogs.get(taskId);
+    if (!entry) return;
+    const { logPath } = entry;
+    // Chain on the prior append so writes are strictly ordered (no interleaving),
+    // keeping the on-disk byte stream identical to the fed-offset byte stream.
+    entry.tail = entry.tail.then(async () => {
+      try {
+        if (!entry.ensured) {
+          await mkdir(path.dirname(logPath), { recursive: true });
+          entry.ensured = true;
+        }
+        await appendFile(logPath, payload);
+      } catch (err) {
+        this.logger.warn(
+          `task ${taskId}: session.log append failed: ${(err as Error).message}`,
+        );
+      }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -1083,71 +1227,4 @@ function resolveWorkspaceDir(taskId: string): string {
     process.env.WORKSPACES_ROOT ??
     path.resolve(process.cwd(), 'workspaces');
   return path.join(root, taskId);
-}
-
-/**
- * A proxy that wraps the runner's dial-back WebSocket as a `TerminalPty`
- * visible to the gateway (VR.10). It:
- *   - delivers PTY output via an event-emitter pattern (fed by `onRunnerRawFrame`
- *     rather than a local `child.onData` subscription, since the bytes arrive
- *     over the WS),
- *   - forwards `write` (keystrokes) to the runner as a `keystroke` control frame,
- *   - forwards `resize` to the runner as a `resize` control frame (VR.8),
- *   - forwards `pause`/`resume` to the runner as flow-control frames.
- */
-class RunnerPtyProxy implements TerminalPty {
-  private readonly dataListeners = new Set<(chunk: string) => void>();
-
-  constructor(private readonly runnerSocket: WebSocket) {}
-
-  onData(listener: (chunk: string) => void): { dispose(): void } {
-    this.dataListeners.add(listener);
-    return { dispose: () => this.dataListeners.delete(listener) };
-  }
-
-  /** Called by the gateway when a raw frame arrives from the runner. */
-  emitData(chunk: string): void {
-    for (const listener of this.dataListeners) {
-      listener(chunk);
-    }
-  }
-
-  write(data: string): void {
-    // Keystrokes forwarded via a keystroke control frame over the runner WS.
-    // This is only called when the operator holds the write lease (7.5).
-    const frame: KeystrokeFrame = {
-      channel: FRAME_CHANNEL.CONTROL,
-      type: 'keystroke',
-      sessionId: '',
-      data: Buffer.from(data).toString('base64'),
-    };
-    this.sendToRunner(frame);
-  }
-
-  resize(cols: number, rows: number): void {
-    // VR.8: forward the resize to the runner so the PTY matches the browser.
-    const frame: ResizeFrame = {
-      channel: FRAME_CHANNEL.CONTROL,
-      type: 'resize',
-      cols,
-      rows,
-    };
-    this.sendToRunner(frame);
-  }
-
-  pause(): void {
-    const frame: PauseFrame = { channel: FRAME_CHANNEL.CONTROL, type: 'pause' };
-    this.sendToRunner(frame);
-  }
-
-  resume(): void {
-    const frame: ResumeFrame = { channel: FRAME_CHANNEL.CONTROL, type: 'resume' };
-    this.sendToRunner(frame);
-  }
-
-  private sendToRunner(frame: ControlFrame): void {
-    if (this.runnerSocket.readyState === this.runnerSocket.OPEN) {
-      this.runnerSocket.send(JSON.stringify(frame));
-    }
-  }
 }

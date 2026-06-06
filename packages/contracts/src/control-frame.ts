@@ -17,7 +17,6 @@ import {
   TakeoverRequestFrameSchema,
   LeaseStateFrameSchema,
 } from './write-lock-frames.js';
-import { DialbackHandshakeFrameSchema } from './dialback.js';
 import { ConnectAuthFrameSchema } from './auth.js';
 
 /**
@@ -46,8 +45,6 @@ export const ControlFrameSchema = z.discriminatedUnion('type', [
   HeartbeatFrameSchema,
   TakeoverRequestFrameSchema,
   LeaseStateFrameSchema,
-  // runner dial-back
-  DialbackHandshakeFrameSchema,
   // operator connect-auth (browser/non-browser WS connect credential)
   ConnectAuthFrameSchema,
 ]);

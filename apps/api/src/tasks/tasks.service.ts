@@ -6,7 +6,6 @@ import {
   type TaskStatus,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
-import { TaskTokenService } from './task-token.service';
 import {
   IllegalTaskTransitionError,
   assertTransition,
@@ -46,8 +45,8 @@ export const GUARDRAILS_SERVICE_TOKEN = 'GUARDRAILS_SERVICE';
  * VR.1 / VR.5: When `GuardrailsService` is wired (optional, injected by the
  * `GUARDRAILS_SERVICE_TOKEN` to avoid a circular module reference), `create`
  * calls `admit()` so the FIFO semaphore actually bounds running tasks, and every
- * terminal-state transition calls `onTerminal()` so credentials + TASK_TOKENs
- * are torn down on the happy path.
+ * terminal-state transition calls `onTerminal()` so the session-scoped
+ * credentials are torn down on the happy path.
  */
 @Injectable()
 export class TasksService {
@@ -55,7 +54,6 @@ export class TasksService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly taskTokens: TaskTokenService,
     @Optional()
     @Inject(GUARDRAILS_SERVICE_TOKEN)
     private readonly guardrails?: IGuardrailsService,
@@ -96,12 +94,10 @@ export class TasksService {
       },
     });
 
-    // 8.3: mint the per-task `TASK_TOKEN` at creation. It is scoped to exactly
-    // this task, non-reusable across tasks, and bounded by a TTL. The token is
-    // injected into the runner's environment when its sandbox is provisioned and
-    // is later verified by the dial-back handshake verifier (8.2). It is NOT
-    // surfaced on the operator-facing task response.
-    this.taskTokens.issue(task.id);
+    // Under the connect-in model there is NO per-task TASK_TOKEN minted at
+    // creation: the orchestrator dials the per-task AIO sandbox by container name
+    // on `cap-net`, so there is no dial-back to authenticate (token issuance +
+    // the dial-back verifier were removed with the runner, migrate-aio 7.4).
 
     // 6.2 — record the creation audit event (201/info), attributed to the
     // creating operator's GitHub identity when known. Emitted BEFORE `admit()` so
@@ -126,15 +122,6 @@ export class TasksService {
     }
 
     return taskResponseSchema.parse(this.toResponse(task));
-  }
-
-  /**
-   * Returns the per-task `TASK_TOKEN` minted at creation so the provisioning
-   * path can inject it into the runner sandbox environment. Distinct from the
-   * operator `AUTH_TOKEN`; never included in any REST response body.
-   */
-  issueTaskToken(taskId: string): string {
-    return this.taskTokens.issue(taskId);
   }
 
   async list(): Promise<TaskResponse[]> {
@@ -187,9 +174,9 @@ export class TasksService {
 
     // VR.5 — on any natural terminal transition (completed / failed /
     // agent_failed_to_start), notify the guardrails service so it clears timers,
-    // tears down ephemeral credentials + TASK_TOKEN, and releases the concurrency
-    // slot. Without this, creds and TASK_TOKENs leak on every cleanly-completing
-    // task (the forced-failure paths already call teardownSession directly).
+    // tears down the session-scoped credentials, and releases the concurrency
+    // slot. Without this, credentials leak on every cleanly-completing task (the
+    // forced-failure paths already call teardownSession directly).
     if (isTerminal(next) && this.guardrails) {
       await this.guardrails.onTerminal(id).catch((err: unknown) => {
         this.logger.warn(

@@ -33,6 +33,17 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  * route handler, so a rejected request never reaches business logic: NO state
  * change occurs on a denial.
  *
+ * Connect-in sandbox callback exemption (migrate-execution-to-aio-sandbox, 5.5):
+ * the `/v1/approvals` callback endpoint is ALSO exempt — but NOT because it is an
+ * identity entry point. Under the connect-in model the per-task AIO sandbox's
+ * baked Codex hook POSTs its approval/report callback IN to the orchestrator over
+ * the private `cap-net` network. The sandbox is NOT a human operator and holds no
+ * operator credential (neither a GitHub-OAuth session nor the legacy `AUTH_TOKEN`);
+ * its security boundary is network isolation (reachable only by sibling sandbox
+ * containers by container name on `cap-net`, which publish no host port), NOT an
+ * operator principal. Gating it with this guard would 401 every hook callback and
+ * deadlock the approval round-trip. See {@link ApprovalsController}.
+ *
  * Trust-domain boundary (task 2.8): the legacy `AUTH_TOKEN` is a DISTINCT domain
  * from the runner `TASK_TOKEN` (which authenticates a sandbox dialling back, not
  * a human operator). A `TASK_TOKEN` presented as the operator bearer is simply a
@@ -47,6 +58,9 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  *     `/auth/session` / `/auth/logout`, which read/clear the session cookie and
  *     return 401 on their own when there is no session.
  *
+ * Plus the network-isolation exemption (NOT an identity probe): `/v1/approvals`,
+ * the connect-in sandbox hook callback described above.
+ *
  * Configuration is read at CHECK time, not module load, so the fail-closed
  * posture (e.g. `AUTH_ALLOWLIST` / `AUTH_TOKEN` unset) is evaluated against the
  * live environment on each request.
@@ -60,6 +74,17 @@ export class AuthGuard implements CanActivate {
    * Kept in sync with the `/health` liveness endpoint contract.
    */
   private static readonly HEALTH_PATH = '/health';
+
+  /**
+   * Paths exempt because the caller is a connect-in AIO sandbox dialling back IN
+   * over `cap-net`, NOT a human operator (migrate-execution-to-aio-sandbox, 5.5):
+   *   - `/v1/approvals` — the baked Codex hook POSTs its approval/report callback
+   *     to the orchestrator by container name on `cap-net`. The sandbox holds no
+   *     operator credential; its security boundary is network isolation (no host
+   *     port), so requiring an operator principal here would 401 every callback
+   *     and deadlock the approval round-trip. See {@link ApprovalsController}.
+   */
+  private static readonly SANDBOX_EXEMPT_PATHS: readonly string[] = ['/v1/approvals'];
 
   /**
    * Paths exempt from the session guard because they ESTABLISH or resolve the
@@ -83,7 +108,11 @@ export class AuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
 
-    if (AuthGuard.isHealthCheck(request) || AuthGuard.isOAuthEntryPoint(request)) {
+    if (
+      AuthGuard.isHealthCheck(request) ||
+      AuthGuard.isOAuthEntryPoint(request) ||
+      AuthGuard.isSandboxCallback(request)
+    ) {
       return true;
     }
 
@@ -115,6 +144,15 @@ export class AuthGuard implements CanActivate {
   /** True when the request targets a GitHub-OAuth session entry point. */
   private static isOAuthEntryPoint(request: Request): boolean {
     return AuthGuard.OAUTH_EXEMPT_PATHS.includes(AuthGuard.normalizePath(request));
+  }
+
+  /**
+   * True when the request targets a connect-in AIO sandbox callback endpoint
+   * (e.g. `/v1/approvals`), whose security boundary is `cap-net` network
+   * isolation rather than an operator principal. See {@link SANDBOX_EXEMPT_PATHS}.
+   */
+  private static isSandboxCallback(request: Request): boolean {
+    return AuthGuard.SANDBOX_EXEMPT_PATHS.includes(AuthGuard.normalizePath(request));
   }
 
   /**

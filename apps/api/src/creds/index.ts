@@ -1,5 +1,5 @@
 /**
- * Ephemeral session-scoped credentials module (track runner-dialback-and-creds,
+ * Ephemeral session-scoped credentials module (session-scoped credentials track,
  * task 8.4).
  *
  * Public surface for the per-session credential provider that is the primary

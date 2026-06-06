@@ -2,7 +2,7 @@
  * @cap/contracts — single source of truth.
  *
  * Exports zod schemas alongside their `z.infer` types. All apps
- * (`apps/api`, `apps/web`, `apps/runner`) consume shared shapes from here via
+ * (`apps/api`, `apps/web`) consume shared shapes from here via
  * `workspace:*` and never re-declare them locally (D11).
  */
 
@@ -20,9 +20,6 @@ export * from './approvals.js';
 
 // Write-lock lease state + keystroke/heartbeat/takeover frames
 export * from './write-lock-frames.js';
-
-// Runner dial-back handshake frame
-export * from './dialback.js';
 
 // Notification adapter payloads (notify / request-decision)
 export * from './notifications.js';

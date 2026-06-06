@@ -6,7 +6,7 @@ import {
 } from './session-credential';
 
 /**
- * Ephemeral session-scoped credential provider (track runner-dialback-and-creds,
+ * Ephemeral session-scoped credential provider (session-scoped credentials track,
  * 8.4).
  *
  * Provisions and tears down the per-session credentials that are the **primary

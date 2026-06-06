@@ -62,8 +62,8 @@ export function wsUrl(): string {
 
 /**
  * The operator bearer token (`AUTH_TOKEN`, D12) attached to every REST and WS
- * call. Distinct from the per-task runner `TASK_TOKEN`. Returns `undefined`
- * when unset so callers can surface an unauthenticated state rather than throw.
+ * call. Returns `undefined` when unset so callers can surface an
+ * unauthenticated state rather than throw.
  */
 export function operatorToken(): string | undefined {
   return readEnv("VITE_AUTH_TOKEN");

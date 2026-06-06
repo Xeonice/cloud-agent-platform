@@ -1,0 +1,27 @@
+{
+  "_comment": "Top-level Codex hook configuration baked into the DERIVED AIO sandbox image at ~/.codex/hooks.json (harden-aio-execution, Track hooks-0131-adapter, task 5.1). Hooks MUST live in the user-level ~/.codex/hooks.json, NOT a repo-local .codex/config.toml (which does not fire). REWRITTEN to the codex 0.131 hook format `{matcher:<regex>, hooks:[{type:\"command\", command:<string>, timeout?}]}` — replacing cap's prior `{blocking, command:[array]}` form, which codex 0.131 does not understand. The `matcher` is the tool-name regex (`.*` matches every tool); `command` is a single shell string (not an argv array). The compiled hook scripts are baked into the derived image at /opt/cap/dist/hooks/*.js (see docker/aio-sandbox.Dockerfile). Each hook reads the codex 0.131 stdin schema, translates it to cap's permission_request frame, makes an OUTBOUND HTTP POST to the orchestrator approvals endpoint (ORCHESTRATOR_APPROVALS_URL, reachable by container name over the private cap-net network), and emits the 0.131 decision form. This file only WIRES codex's PreToolUse/PostToolUse events to those compiled entry points; the transport itself is implemented in the hook scripts.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /opt/cap/dist/hooks/permission-request.hook.js"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /opt/cap/dist/hooks/post-tool-use.hook.js"
+          }
+        ]
+      }
+    ]
+  }
+}
