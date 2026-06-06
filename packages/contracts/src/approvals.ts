@@ -104,3 +104,37 @@ export const PostToolUseReportFrameSchema = z.object({
   edits: z.array(FileEditSchema),
 });
 export type PostToolUseReportFrame = z.infer<typeof PostToolUseReportFrameSchema>;
+
+// ---------------------------------------------------------------------------
+// Pending-approvals read surface (be-audit-approvals 6.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single pending `PermissionRequest` decision awaiting an operator, surfaced by
+ * the session-gated pending-list read endpoint (be-audit-approvals 6.5). It is
+ * the operator-facing PROJECTION of an in-flight {@link PermissionRequestFrame}
+ * the orchestrator is still blocking on — the transport `channel` discriminant is
+ * dropped (this is a REST read, not a WS frame), but the correlation/identity
+ * fields the console needs to render and resolve the request are preserved
+ * verbatim, so the read surface stays consistent with the WS approval round-trip.
+ */
+export const PendingApprovalSchema = z.object({
+  /** Correlation id matching the round-trip decision back to this request. */
+  requestId: z.string().min(1),
+  /** The task whose runner raised the request (deep-links to `/tasks/$taskId`). */
+  taskId: z.string().uuid(),
+  /** The Codex tool name being gated (e.g. `shell`, `apply_patch`). */
+  toolName: z.string().min(1),
+  /** Raw, opaque tool-call input forwarded for operator review. */
+  toolInput: z.unknown(),
+});
+export type PendingApproval = z.infer<typeof PendingApprovalSchema>;
+
+/**
+ * Response body for the pending-approvals read endpoint (6.5): the list of
+ * pending `PermissionRequest` decisions currently awaiting an operator.
+ */
+export const ListPendingApprovalsResponseSchema = z.array(PendingApprovalSchema);
+export type ListPendingApprovalsResponse = z.infer<
+  typeof ListPendingApprovalsResponseSchema
+>;

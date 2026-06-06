@@ -1,0 +1,318 @@
+/*
+ * app.css — Tailwind v4 entry + the SINGLE design-token contract for the
+ * console (rebuild-console-tanstack-start D4; Track 9 fe-tokens-shadcn).
+ *
+ * This file is the one source of truth for tokens. `@cap/ui`'s styles.css
+ * re-imports it, so the shared Button/Card/Badge/Terminal stay color-matched
+ * with the app pages (no "脱色"/desaturation).
+ *
+ * Tailwind v4 is CSS-first: there is NO tailwind.config.js. Tokens are declared
+ * as CSS custom properties on :root (the prototype's `admin-*` light theme — the
+ * real product theme, NOT the marketing oklch theme) and on a synthesized .dark,
+ * then exposed as Tailwind utilities via the `@theme inline` block.
+ *
+ * Notable decisions:
+ *   - Buttons are DARK: --primary #171717 (ink) / --primary-foreground #fff.
+ *   - "Borders" in the prototype are mostly 1px box-shadow rings: prefer the
+ *     shadow-ring / shadow-card utilities over CSS `border`.
+ *   - The terminal has its own dark scope (--terminal-*); xterm does not read
+ *     Tailwind classes, so its theme is resolved to hex at mount from these vars.
+ */
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  /* ── radius ───────────────────────────────────────────────────────────── */
+  --radius: 0.5rem;
+
+  /* ── shadcn semantic tokens ← admin-* light theme ─────────────────────── */
+  --background: #ffffff;
+  --foreground: #171717;
+
+  --card: #ffffff;
+  --card-foreground: #171717;
+
+  --popover: #ffffff;
+  --popover-foreground: #171717;
+
+  /* Buttons are DARK (ink). This is the prototype's hallmark. */
+  --primary: #171717;
+  --primary-foreground: #ffffff;
+
+  --secondary: #f5f5f5;
+  --secondary-foreground: #171717;
+
+  --muted: #f7f7f7;
+  --muted-foreground: #666666;
+
+  /* Accent = the prototype's soft blue surface + blue ink. */
+  --accent: #ebf5ff;
+  --accent-foreground: #0a72ef;
+
+  --destructive: #d92d20;
+  --destructive-foreground: #ffffff;
+
+  --border: #ebebeb;
+  --input: #ebebeb;
+  --ring: #0a72ef;
+
+  /* ── sidebar token set (active item = dark pill) ──────────────────────── */
+  --sidebar: #fafafa;
+  --sidebar-foreground: #171717;
+  --sidebar-primary: #171717;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f0f0f0;
+  --sidebar-accent-foreground: #171717;
+  --sidebar-border: #ebebeb;
+  --sidebar-ring: #0a72ef;
+
+  /* ── chart series ─────────────────────────────────────────────────────── */
+  --chart-1: #0a72ef;
+  --chart-2: #1a7f37;
+  --chart-3: #9a6700;
+  --chart-4: #d92d20;
+  --chart-5: #8250df;
+
+  /* ── extra brand / semantic tokens (shadcn lacks these) ───────────────── */
+  /* Status colors + their SOFT surfaces (used by StatusPill inset rings). */
+  --success: #1a7f37;
+  --success-soft: #ecfdf3;
+  --warning: #9a6700;
+  --warning-soft: #fff8c5;
+  --info: #0a72ef;
+  --info-soft: #ebf5ff;
+  --danger: #d92d20;
+  --danger-soft: #fff1f0;
+
+  /* Dark pill (sidebar active / dark chips). */
+  --dark-pill: #171717;
+
+  /* Brand originals. */
+  --ink: #171717;
+  --ink-soft: #404040;
+  --line: #ebebeb;
+  --blue: #0a72ef;
+  --pink: #d6336c;
+  --red: #d92d20;
+
+  /* ── terminal scope (dark; xterm reads these resolved to hex) ─────────── */
+  --terminal-bg: #050505;
+  --terminal-fg: #e8e8e8;
+  --terminal-muted: #8a8a8a;
+  --terminal-line: #1f1f1f;
+  /* OKLCH log severity colors for the terminal log stream. */
+  --terminal-ok: oklch(0.72 0.17 152);
+  --terminal-warn: oklch(0.8 0.16 85);
+  --terminal-err: oklch(0.66 0.21 25);
+}
+
+/*
+ * .dark — synthesized for completeness (future chrome dark + the terminal
+ * scope). The prototype chrome is light-only this round, so .dark is not
+ * toggled on app chrome; chrome bg/card/fg/border invert toward near-black
+ * while the status/accent hues are preserved and lightened for contrast.
+ */
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+
+  --card: #141414;
+  --card-foreground: #ededed;
+
+  --popover: #141414;
+  --popover-foreground: #ededed;
+
+  /* On dark chrome the primary inverts to light ink. */
+  --primary: #ededed;
+  --primary-foreground: #171717;
+
+  --secondary: #1f1f1f;
+  --secondary-foreground: #ededed;
+
+  --muted: #1a1a1a;
+  --muted-foreground: #a3a3a3;
+
+  --accent: #16243a;
+  --accent-foreground: #6cb2ff;
+
+  --destructive: #f04438;
+  --destructive-foreground: #ffffff;
+
+  --border: #262626;
+  --input: #262626;
+  --ring: #6cb2ff;
+
+  --sidebar: #111111;
+  --sidebar-foreground: #ededed;
+  --sidebar-primary: #ededed;
+  --sidebar-primary-foreground: #171717;
+  --sidebar-accent: #1f1f1f;
+  --sidebar-accent-foreground: #ededed;
+  --sidebar-border: #262626;
+  --sidebar-ring: #6cb2ff;
+
+  --chart-1: #6cb2ff;
+  --chart-2: #4ade80;
+  --chart-3: #fbbf24;
+  --chart-4: #f87171;
+  --chart-5: #c4b5fd;
+
+  /* status hues preserved & lightened for dark surfaces */
+  --success: #4ade80;
+  --success-soft: #0c2a18;
+  --warning: #fbbf24;
+  --warning-soft: #2a2410;
+  --info: #6cb2ff;
+  --info-soft: #16243a;
+  --danger: #f87171;
+  --danger-soft: #2a1414;
+
+  --dark-pill: #ededed;
+
+  --ink: #ededed;
+  --ink-soft: #a3a3a3;
+  --line: #262626;
+  --blue: #6cb2ff;
+  --pink: #f06595;
+  --red: #f87171;
+
+  /* terminal scope is already dark; values carry over unchanged */
+  --terminal-bg: #050505;
+  --terminal-fg: #e8e8e8;
+  --terminal-muted: #8a8a8a;
+  --terminal-line: #1f1f1f;
+  --terminal-ok: oklch(0.72 0.17 152);
+  --terminal-warn: oklch(0.8 0.16 85);
+  --terminal-err: oklch(0.66 0.21 25);
+}
+
+/*
+ * @theme inline — exposes every --xxx as a Tailwind --color-* utility so
+ * bg-background / text-success / bg-success-soft / bg-terminal-bg all work.
+ * Also declares font stacks (mono = JetBrains Mono + tabular-nums), the radius
+ * ladder, and the box-shadow ring tokens (shadow-ring/card/modal/menu/toast/
+ * terminal) that reproduce the prototype's 1px-ring "borders".
+ */
+@theme inline {
+  /* shadcn semantic colors */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  /* sidebar */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* charts */
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  /* brand / status (incl. SOFT surfaces — bg-success-soft etc.) */
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-dark-pill: var(--dark-pill);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-line: var(--line);
+  --color-blue: var(--blue);
+  --color-pink: var(--pink);
+  --color-red: var(--red);
+
+  /* terminal scope */
+  --color-terminal-bg: var(--terminal-bg);
+  --color-terminal-fg: var(--terminal-fg);
+  --color-terminal-muted: var(--terminal-muted);
+  --color-terminal-line: var(--terminal-line);
+  --color-terminal-ok: var(--terminal-ok);
+  --color-terminal-warn: var(--terminal-warn);
+  --color-terminal-err: var(--terminal-err);
+
+  /* fonts — mono is JetBrains Mono with tabular-nums for numerics/eyebrows */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
+    Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+  --font-mono:
+    "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  /* radius ladder: sm 6 / DEFAULT 8 / lg 10 / xl 12 / full */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* box-shadow ring tokens — the prototype's "borders" are 1px shadow rings */
+  --shadow-ring: 0 0 0 1px var(--border);
+  --shadow-card:
+    0 0 0 1px var(--border), 0 1px 2px 0 rgba(16, 24, 40, 0.04),
+    0 1px 3px 0 rgba(16, 24, 40, 0.06);
+  --shadow-modal:
+    0 0 0 1px var(--border), 0 8px 24px -4px rgba(16, 24, 40, 0.12),
+    0 4px 8px -4px rgba(16, 24, 40, 0.08);
+  --shadow-menu:
+    0 0 0 1px var(--border), 0 6px 16px -4px rgba(16, 24, 40, 0.12);
+  --shadow-toast:
+    0 0 0 1px var(--border), 0 8px 20px -6px rgba(16, 24, 40, 0.16);
+  --shadow-terminal:
+    0 0 0 1px var(--terminal-line), 0 12px 32px -8px rgba(0, 0, 0, 0.5);
+}
+
+/* Numeric/eyebrow/meta runs use tabular figures via the mono stack. */
+.font-mono,
+[class~="font-mono"] {
+  font-variant-numeric: tabular-nums;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    outline-color: var(--ring);
+  }
+
+  html,
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+
+  body {
+    font-family: var(--font-sans);
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}

@@ -1,13 +1,14 @@
 /**
  * Central authenticated WebSocket client for the session page
- * (frontend-console spec 13.3/13.6).
+ * (frontend-console spec 13.3/13.6; rebuild-console-tanstack-start D6).
  *
  * Connects to the env-configured cross-origin {@link wsUrl} (never same-origin)
  * and authenticates with the operator bearer token (D12). Browsers cannot set
  * an `Authorization` header on a WebSocket handshake, so the token is carried
  * both as a `token` query parameter and as a `bearer.<token>` subprotocol; the
- * orchestrator's connect-time auth (wired in Track 14) accepts either. This is
- * distinct from the runner `TASK_TOKEN` dial-back handshake.
+ * orchestrator's connect-time auth accepts either. This is distinct from the
+ * runner `TASK_TOKEN` dial-back handshake. Under multi-user the server-side WS
+ * handshake will map this credential to the session/user (D6).
  *
  * Every inbound message is validated against the contracts `WsFrameSchema`, so
  * a raw byte frame is never parsed as a control frame and vice-versa (D4). Raw
@@ -28,7 +29,7 @@ import {
   type ResizeFrame,
   type Decision,
 } from "@cap/contracts";
-import { wsUrl, operatorToken } from "./config.js";
+import { wsUrl, operatorToken } from "./config";
 
 function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64);

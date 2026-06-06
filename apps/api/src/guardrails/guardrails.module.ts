@@ -9,6 +9,10 @@ import { TasksService } from '../tasks/tasks.service';
 import { TaskTokenService } from '../tasks/task-token.service';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
+import {
+  AUDIT_RECORDER_TOKEN,
+  type AuditRecorderPort,
+} from '../audit/audit-recorder.port';
 
 /**
  * Guardrails module (integration 12.1b).
@@ -33,14 +37,23 @@ import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provi
         SessionCredentialsService,
         TaskTokenService,
         { token: SANDBOX_PROVIDER, optional: true },
+        { token: AUDIT_RECORDER_TOKEN, optional: true },
       ],
       useFactory: (
         tasks: TasksService,
         creds: SessionCredentialsService,
         taskTokens: TaskTokenService,
         sandbox?: SandboxProvider,
+        audit?: AuditRecorderPort,
       ) =>
-        new GuardrailsService(tasks, creds, taskTokens, sandbox, readGuardrailsConfig()),
+        new GuardrailsService(
+          tasks,
+          creds,
+          taskTokens,
+          sandbox,
+          readGuardrailsConfig(),
+          audit,
+        ),
     },
   ],
   exports: [GuardrailsService],

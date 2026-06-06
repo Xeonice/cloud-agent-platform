@@ -13,6 +13,10 @@ import {
   isTerminal,
   toAgentFailedToStart,
 } from './task-lifecycle';
+import {
+  AUDIT_RECORDER_TOKEN,
+  type AuditRecorderPort,
+} from '../audit/audit-recorder.port';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
@@ -55,9 +59,23 @@ export class TasksService {
     @Optional()
     @Inject(GUARDRAILS_SERVICE_TOKEN)
     private readonly guardrails?: IGuardrailsService,
+    /**
+     * Best-effort audit recorder (6.2), injected by the {@link AUDIT_RECORDER_TOKEN}
+     * (verify-phase wiring in `app.module.ts`). `TasksService.transition` is the
+     * single status-write chokepoint, so it is the central seam that emits one
+     * audit event per ACCEPTED lifecycle transition. Optional + never-throwing, so
+     * an audit failure can never roll back or block the transition.
+     */
+    @Optional()
+    @Inject(AUDIT_RECORDER_TOKEN)
+    private readonly audit?: AuditRecorderPort,
   ) {}
 
-  async create(repoId: string, body: CreateTaskBody): Promise<TaskResponse> {
+  async create(
+    repoId: string,
+    body: CreateTaskBody,
+    githubId?: number,
+  ): Promise<TaskResponse> {
     const repo = await this.prisma.repo.findUnique({ where: { id: repoId } });
     if (!repo) {
       throw new NotFoundException(`Repo not found: ${repoId}`);
@@ -67,6 +85,13 @@ export class TasksService {
       data: {
         repoId,
         prompt: body.prompt,
+        // 3.2: persist the optional run parameters from the create body so they
+        // are durable and readable on every later read path. They are inert with
+        // respect to clone/provision/lifecycle behavior. Coalesce `undefined`
+        // (field omitted) to `null` so the stored value is the supplied value or
+        // an explicit null — never stale/fabricated on read-back (3.3).
+        branch: body.branch ?? null,
+        strategy: body.strategy ?? null,
         // Initial status is the schema default (`pending`).
       },
     });
@@ -77,6 +102,12 @@ export class TasksService {
     // is later verified by the dial-back handshake verifier (8.2). It is NOT
     // surfaced on the operator-facing task response.
     this.taskTokens.issue(task.id);
+
+    // 6.2 — record the creation audit event (201/info), attributed to the
+    // creating operator's GitHub identity when known. Emitted BEFORE `admit()` so
+    // the `task.created` event precedes any `task.running`/`task.queued` event
+    // for this task in the timeline. Best-effort: never blocks creation.
+    await this.recordAudit(() => this.audit?.recordTaskCreated(task.id, githubId));
 
     // VR.1 — offer the newly created task to the guardrails concurrency semaphore
     // so the FIFO semaphore actually bounds running tasks. When a slot is free the
@@ -129,7 +160,11 @@ export class TasksService {
    *
    * Returns the updated task on success.
    */
-  async transition(id: string, next: TaskStatus): Promise<TaskResponse> {
+  async transition(
+    id: string,
+    next: TaskStatus,
+    githubId?: number,
+  ): Promise<TaskResponse> {
     const task = await this.prisma.task.findUnique({ where: { id } });
     if (!task) {
       throw new NotFoundException(`Task not found: ${id}`);
@@ -142,6 +177,13 @@ export class TasksService {
       where: { id },
       data: { status: next },
     });
+
+    // 6.2 — the status write was ACCEPTED (an illegal edge would have thrown
+    // above, before any write): record one audit event for this transition,
+    // attributed to the operator's GitHub identity when known. This is the single
+    // central per-transition seam every status-changing caller funnels through.
+    // Best-effort: never rolls back or blocks the transition.
+    await this.recordAudit(() => this.audit?.recordTransition(id, next, githubId));
 
     // VR.5 — on any natural terminal transition (completed / failed /
     // agent_failed_to_start), notify the guardrails service so it clears timers,
@@ -177,6 +219,9 @@ export class TasksService {
       data: { status: next },
     });
 
+    // 6.2 — record the `agent_failed_to_start` terminal (422/error). Best-effort.
+    await this.recordAudit(() => this.audit?.recordTransition(id, next));
+
     // VR.4 — record the start failure in the circuit breaker so repeated
     // agent-failed-to-start events trip the breaker and stop the burn loop.
     if (this.guardrails) {
@@ -199,6 +244,25 @@ export class TasksService {
   }
 
   /**
+   * Run a best-effort audit recording call, guaranteeing it NEVER throws into the
+   * lifecycle path (6.2). The recorder swallows its own persistence failures; this
+   * is a defensive second layer so even a synchronous throw or rejected promise
+   * from the optional recorder is caught and logged, never affecting the
+   * create/transition path.
+   */
+  private async recordAudit(call: () => Promise<void> | undefined): Promise<void> {
+    try {
+      await call();
+    } catch (err) {
+      this.logger.warn(
+        `audit record failed (swallowed): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
    * Shapes a Prisma `Task` row into the contracts response shape. The contracts
    * `TaskSchema.createdAt` is a `Date` (`z.coerce.date()`), so the row's native
    * `Date` is passed through unchanged; the HTTP boundary serializes it to an ISO
@@ -210,6 +274,8 @@ export class TasksService {
     prompt: string;
     status: string;
     createdAt: Date;
+    branch: string | null;
+    strategy: string | null;
   }): TaskResponse {
     return {
       id: task.id,
@@ -217,6 +283,12 @@ export class TasksService {
       prompt: task.prompt,
       status: task.status as TaskStatus,
       createdAt: task.createdAt,
+      // 3.3: echo the persisted run parameters back on every read path (create
+      // 201, list, fetch-by-id, and the transition/mark responses, which all
+      // funnel through here). Prisma stores `null` for omitted values, so the
+      // read-back is the supplied value or `null` — never stale/fabricated.
+      branch: task.branch,
+      strategy: task.strategy,
     };
   }
 }

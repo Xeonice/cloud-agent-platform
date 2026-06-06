@@ -3,6 +3,7 @@ import { TerminalGateway } from './terminal.gateway';
 import { WriteLockModule } from '../write-lock/write-lock.module';
 import { TasksModule } from '../tasks/tasks.module';
 import { GuardrailsModule } from '../guardrails/guardrails.module';
+import { AuthModule } from '../auth/auth.module';
 
 /**
  * Realtime terminal feature module (Track 5).
@@ -21,9 +22,15 @@ import { GuardrailsModule } from '../guardrails/guardrails.module';
  * VR.3 / VR.4: `GuardrailsModule` is imported so the gateway can inject
  * `GuardrailsService` to call `recordActivity()` from the PTY-output path and
  * `recordSuccess()` on a successful runner dial-back.
+ *
+ * be-oauth-allowlist 2.7: `AuthModule` is imported so the gateway can inject
+ * the exported {@link AuthSessionService} and authenticate the operator's
+ * GitHub-OAuth SESSION at connect time (resolving the connect query param or
+ * `bearer.<token>` subprotocol), closing unauthenticated/expired/revoked/
+ * non-allowlisted connections before they join any task stream.
  */
 @Module({
-  imports: [WriteLockModule, TasksModule, GuardrailsModule],
+  imports: [WriteLockModule, TasksModule, GuardrailsModule, AuthModule],
   providers: [TerminalGateway],
   exports: [TerminalGateway],
 })

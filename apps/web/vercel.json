@@ -1,9 +1,0 @@
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "nextjs",
-  "buildCommand": "pnpm --filter @cap/web build",
-  "installCommand": "pnpm install --frozen-lockfile",
-  "outputDirectory": ".next",
-  "_comment_web_only": "apps/web is a Vercel web-only target. Vercel serverless functions categorically cannot maintain long-lived WebSocket connections, so no WebSocket server is bundled or run here. The browser reaches the api orchestrator exclusively over the env-configured, cross-origin API_BASE_URL / WS_URL (never same-origin); those env values are read by the centralized web client owned by frontend-console (task 13.6), not declared here.",
-  "_comment_no_ws": "Do NOT add any WebSocket server, rewrite to a socket, or long-running process to this config — the api orchestrator (Fly.io / docker-compose) is the sole WebSocket + PTY host."
-}

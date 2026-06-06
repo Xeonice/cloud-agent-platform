@@ -36,6 +36,13 @@ export const TERMINAL_TASK_STATUSES = [
 
 /**
  * A registered git repository the operator can launch tasks against.
+ *
+ * The GitHub-import metadata fields (`description`, `defaultBranch`,
+ * `branchCount`, `updatedAt`, `githubId`) are OPTIONAL and NULLABLE: they are
+ * populated only when the repo was imported from GitHub. A plain `gitSource`-only
+ * repo created without GitHub import remains valid with these fields null/absent;
+ * the read responses MUST NOT fabricate them. `githubId` is the originating
+ * GitHub repository identity, carried so imports can be de-duplicated.
  */
 export const RepoSchema = z.object({
   id: z.string().uuid(),
@@ -44,6 +51,27 @@ export const RepoSchema = z.object({
   /** Git source the runner clones from (URL or remote spec). */
   gitSource: z.string().min(1),
   createdAt: z.coerce.date(),
+  /** GitHub repo description (import metadata). Null/absent when not imported. */
+  description: z.string().nullable().optional(),
+  /** GitHub default branch name (import metadata). Null/absent when not imported. */
+  defaultBranch: z.string().min(1).nullable().optional(),
+  /** GitHub branch count (import metadata). Null/absent when not imported. */
+  branchCount: z.number().int().nonnegative().nullable().optional(),
+  /** GitHub last-updated timestamp (import metadata). Null/absent when not imported. */
+  updatedAt: z.coerce.date().nullable().optional(),
+  /**
+   * Originating GitHub repository identity, used to de-duplicate imports.
+   * Null/absent for repos not imported from GitHub.
+   */
+  githubId: z.string().min(1).nullable().optional(),
+  /**
+   * Whether this imported Repo is the operator's current DEFAULT repo for
+   * task-creation selection. At most one Repo is ever `true`; designating a new
+   * default clears the prior one. Defaults to `false`. Only an imported Repo may
+   * be defaulted — an available-only GitHub repo (never imported) has no Repo row
+   * and therefore cannot carry this flag.
+   */
+  isDefault: z.boolean().optional(),
 });
 export type Repo = z.infer<typeof RepoSchema>;
 
@@ -62,6 +90,19 @@ export const TaskSchema = z.object({
   prompt: z.string().min(1),
   status: TaskStatusSchema,
   createdAt: z.coerce.date(),
+  /**
+   * Optional run parameter echoed back from the create body: the git branch the
+   * runner checks out. Read back on every task read path (create response, list,
+   * fetch-by-id) as the supplied value or `null` when omitted — never stale or
+   * fabricated (sent value == readable value).
+   */
+  branch: z.string().min(1).nullable().optional(),
+  /**
+   * Optional run parameter echoed back from the create body: the execution
+   * strategy. Inert with respect to the lifecycle; read back as the supplied
+   * value or `null` when omitted.
+   */
+  strategy: z.string().min(1).nullable().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 

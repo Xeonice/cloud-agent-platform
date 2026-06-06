@@ -1,11 +1,19 @@
 {
-  "extends": "@cap/tsconfig/next.json",
+  "extends": "@cap/tsconfig/base.json",
   "compilerOptions": {
+    "moduleResolution": "Bundler",
+    "module": "ESNext",
+    "target": "ES2022",
+    "lib": ["DOM", "DOM.Iterable", "ES2022"],
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "verbatimModuleSyntax": true,
+    "types": ["vite/client", "node"],
     "tsBuildInfoFile": "dist/.tsbuildinfo",
     "paths": {
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "next-env.d.ts"],
-  "exclude": ["node_modules", ".next", "dist"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"],
+  "exclude": ["node_modules", "dist", ".output", ".nitro", ".tanstack"]
 }

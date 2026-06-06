@@ -33,5 +33,20 @@ export * from './sandbox.js';
 // Operator-auth shapes: WS connect-auth frame + shared AUTH_TOKEN config contract
 export * from './auth.js';
 
+// Multi-user GitHub OAuth session identity + GET /auth/session response shape
+export * from './session.js';
+
 // Composed discriminated control-frame union + full WS frame union
 export * from './control-frame.js';
+
+// GitHub repository import: available-GitHub-repo + import request shapes
+export * from './github-import.js';
+
+// Account settings preferences + Codex execution credential (read/write shapes)
+export * from './settings.js';
+
+// Audit/history: append-only audit event record + history-timeline query
+export * from './audit.js';
+
+// Runtime metrics: derived semaphore capacity + sampled CPU/memory aggregation
+export * from './metrics.js';

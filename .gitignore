@@ -25,3 +25,6 @@ workspaces/
 
 # os
 .DS_Store
+
+# Claude Code runtime lock
+.claude/scheduled_tasks.lock

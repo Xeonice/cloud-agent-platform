@@ -4,10 +4,19 @@ import { TasksService } from '../tasks/tasks.service';
 import { TaskTokenService } from '../tasks/task-token.service';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
+import {
+  AUDIT_RECORDER_TOKEN,
+  type AuditRecorderPort,
+} from '../audit/audit-recorder.port';
 import { ConcurrencySemaphore } from './semaphore';
 import { DeadlineWatcher } from './deadline-watcher';
 import { IdleTracker } from './idle-tracker';
 import { CircuitBreaker, type FailureKind } from './circuit-breaker';
+import type { SemaphoreProjectionSource } from '../metrics/metrics-projection';
+import {
+  RunnerMinutesLedger,
+  type RunningInterval,
+} from '../metrics/runner-minutes';
 
 /**
  * Guardrails integration (integration 12.1b).
@@ -62,6 +71,16 @@ export class GuardrailsService {
    */
   private readonly pendingDeadlines = new Map<string, number>();
 
+  /**
+   * Per-process ledger of task running intervals (admission→terminal), the
+   * source for the DERIVED runner-minutes metric (be-metrics 5.4). The
+   * guardrails service is the admission/terminal seam, so it is the natural
+   * place to observe RUNNING durations; the `Task` table persists only
+   * `createdAt`, so this timing is observed in-process and resets on restart —
+   * which is exactly why the metric is labeled derived accounting, not billing.
+   */
+  private readonly runnerMinutes = new RunnerMinutesLedger();
+
   constructor(
     private readonly tasks: TasksService,
     private readonly creds: SessionCredentialsService,
@@ -70,6 +89,16 @@ export class GuardrailsService {
     @Inject(SANDBOX_PROVIDER)
     private readonly sandbox?: SandboxProvider,
     config: GuardrailsConfig = DEFAULT_GUARDRAILS_CONFIG,
+    /**
+     * Best-effort audit recorder (6.2), injected by the {@link AUDIT_RECORDER_TOKEN}
+     * (verify-phase wiring in `app.module.ts`). Optional so the service still
+     * constructs without it; when absent, transitions proceed unaudited. Every
+     * call is fire-and-forget and the recorder never throws (6.2), so it can never
+     * affect a transition.
+     */
+    @Optional()
+    @Inject(AUDIT_RECORDER_TOKEN)
+    private readonly audit?: AuditRecorderPort,
   ) {
     // admit-queued: when a slot frees, drive `queued -> running` for the admitted
     // task (FIFO) — the cross-track lifecycle call site for 12.1.
@@ -134,6 +163,8 @@ export class GuardrailsService {
    */
   async onTerminal(taskId: string): Promise<void> {
     this.clearTimers(taskId);
+    // Close the runner-minutes interval (no-op if the task never ran) (5.4).
+    this.runnerMinutes.recordEnd(taskId);
     this.teardownSession(taskId, 'completed');
     // release() admits the next queued task via the onAdmit callback.
     this.semaphore.release(taskId);
@@ -156,6 +187,8 @@ export class GuardrailsService {
   private async startRunning(taskId: string, deadlineMs?: number): Promise<void> {
     await this.safeTransition(taskId, 'running');
     this.idle.start(taskId);
+    // Begin the runner-minutes interval the moment the task enters RUNNING (5.4).
+    this.runnerMinutes.recordStart(taskId);
     if (deadlineMs !== undefined) {
       this.deadlines.armAfter(taskId, deadlineMs);
     }
@@ -173,6 +206,14 @@ export class GuardrailsService {
   ): Promise<void> {
     this.logger.warn(`force-failing task ${taskId} (${cause})`);
     this.clearTimers(taskId);
+    // Close the runner-minutes interval on the forced-failure terminal too (5.4).
+    this.runnerMinutes.recordEnd(taskId);
+    // 6.2 — record the force-fail naming its CAUSE (deadline / idle /
+    // circuit_breaker), so the timeline shows WHY the task was reclaimed. The
+    // generic `task.failed` transition is also recorded centrally by the tasks
+    // service when the `failed` write below is accepted; the two are distinct
+    // events (the terminal transition + its cause).
+    await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
     await this.safeTransition(taskId, 'failed');
     // VR.2 — tear down the running sandbox so the container/process is stopped,
     // not just the credentials. Idempotent: safe if the sandbox already exited.
@@ -211,6 +252,13 @@ export class GuardrailsService {
    * Apply a lifecycle transition, tolerating an illegal edge (e.g. a task that
    * already settled). Guardrail-driven transitions race with the agent's own
    * transitions, so a rejected edge is logged and swallowed rather than thrown.
+   *
+   * 6.2 — the per-transition audit event is emitted CENTRALLY by
+   * {@link TasksService.transition} (the single status-write chokepoint every
+   * caller funnels through), so it is NOT re-emitted here; this avoids a
+   * double-recorded `task.queued`/`task.running` for guardrail-driven edges. The
+   * force-fail path additionally records its CAUSE-specific event before calling
+   * this (see {@link forceFail}).
    */
   private async safeTransition(taskId: string, next: TaskStatus): Promise<void> {
     try {
@@ -218,6 +266,25 @@ export class GuardrailsService {
     } catch (err) {
       this.logger.debug(
         `guardrail transition ${taskId} -> ${next} skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Run a best-effort audit recording call, guaranteeing it NEVER throws into the
+   * transition path (6.2). The recorder itself swallows persistence failures, but
+   * this is a defensive second layer: even a synchronous throw or a rejected
+   * promise from the (optional) recorder is caught and logged here, so the
+   * guardrail transition/force-fail path can never be affected by audit failure.
+   */
+  private async recordAudit(call: () => Promise<void> | undefined): Promise<void> {
+    try {
+      await call();
+    } catch (err) {
+      this.logger.debug(
+        `guardrail audit record failed (swallowed): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -239,5 +306,38 @@ export class GuardrailsService {
   /** The sandbox mode the bound provider reports, when wired (9.1b). */
   sandboxMode(): string | null {
     return this.sandbox?.getSandboxMode() ?? null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Metrics projection sources (be-metrics 5.1 / 5.2 / 5.4)
+  // -------------------------------------------------------------------------
+
+  /**
+   * A LIVE, read-only projection source over the concurrency semaphore for the
+   * derived capacity block (5.1 / 5.2). Every property/method delegates directly
+   * to the semaphore, so a `/metrics` read reflects the exact admission state at
+   * request time — there is NO parallel counter that could drift. The metrics
+   * layer's pure projection/slot-table builders consume this view.
+   */
+  semaphoreProjection(): SemaphoreProjectionSource {
+    const semaphore = this.semaphore;
+    return {
+      get maxConcurrentTasks() {
+        return semaphore.maxConcurrentTasks;
+      },
+      get runningCount() {
+        return semaphore.runningCount;
+      },
+      get queuedCount() {
+        return semaphore.queuedCount;
+      },
+      snapshotRunning: () => semaphore.snapshotRunning(),
+      snapshotQueue: () => semaphore.snapshotQueue(),
+    };
+  }
+
+  /** Observed running intervals for the derived runner-minutes metric (5.4). */
+  runnerMinuteIntervals(): RunningInterval[] {
+    return this.runnerMinutes.intervals();
   }
 }

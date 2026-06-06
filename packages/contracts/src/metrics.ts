@@ -1,0 +1,194 @@
+import { z } from 'zod';
+
+/**
+ * Runtime metrics contract (resource-metrics spec).
+ *
+ * The orchestrator exposes a single `/metrics` aggregation endpoint composing
+ * two strictly distinguished metric kinds:
+ *
+ *  1. A DERIVED capacity block — exact, point-in-time projections of the live
+ *     `ConcurrencySemaphore` state ({@link CapacityMetricsSchema} +
+ *     {@link SlotEntrySchema}). These are always current and exact; they are read
+ *     from the semaphore at request time and never sampled or cached.
+ *
+ *  2. A SAMPLED resource block — CPU/memory utilization
+ *     ({@link SampledResourcesSchema}) obtained by sampling the container runtime
+ *     (cgroup reads / `docker stats`) on a bounded cadence. These are
+ *     cadence-bounded and possibly slightly stale; each carries a `sampledAt`
+ *     timestamp and an availability flag so a sampling outage degrades ONLY this
+ *     block while the derived capacity block is still returned.
+ *
+ * The console renders these as the dashboard capacity tiles, the `SlotMeter`,
+ * the free-slot pills, and the `ResourceMeter`, replacing the prototype's
+ * hardcoded mock numbers (e.g. `RUNNERS 7/10`, `CPU 42% / 内存 64%`).
+ */
+
+// ---------------------------------------------------------------------------
+// Derived capacity block (exact, semaphore-projected)
+// ---------------------------------------------------------------------------
+
+/**
+ * The exact, point-in-time capacity figures projected directly from the live
+ * `ConcurrencySemaphore`. By construction `active + free === ceiling` and `free`
+ * is never negative, because all four values are derived from the same live
+ * semaphore reading at request time rather than from any parallel counter that
+ * could drift from actual admission decisions.
+ */
+export const CapacityMetricsSchema = z.object({
+  /** Configured slot ceiling (`maxConcurrentTasks` / `MAX_CONCURRENT_TASKS`). */
+  ceiling: z.number().int().nonnegative(),
+  /** Active running-task count (`runningCount`). */
+  active: z.number().int().nonnegative(),
+  /** Free slots (`ceiling - active`); never negative. */
+  free: z.number().int().nonnegative(),
+  /** Queue depth (`queuedCount`) — tasks held queued awaiting a free slot. */
+  queueDepth: z.number().int().nonnegative(),
+});
+export type CapacityMetrics = z.infer<typeof CapacityMetricsSchema>;
+
+/**
+ * A single slot in the occupancy table. `busy` slots carry the occupying
+ * `taskId`; `idle` slots carry `null`. The table lists exactly `ceiling`-many
+ * entries (`slot` 0-indexed), never inventing slot identities beyond the
+ * configured ceiling.
+ */
+export const SlotEntrySchema = z.object({
+  /** 0-indexed slot position within the configured ceiling. */
+  slot: z.number().int().nonnegative(),
+  /** Whether this slot is occupied. */
+  busy: z.boolean(),
+  /** The occupying task id when `busy`, else `null`. */
+  taskId: z.string().nullable(),
+});
+export type SlotEntry = z.infer<typeof SlotEntrySchema>;
+
+/**
+ * The slot occupancy table, derived from `snapshotRunning()` / `snapshotQueue()`.
+ *
+ * `slots` enumerates exactly `ceiling`-many entries; the count of `busy` slots
+ * equals {@link CapacityMetricsSchema.active}, the count of `idle` slots equals
+ * `free`. `queuedTaskIds` lists the backlog in FIFO order, reported separately
+ * from free slots; its length equals {@link CapacityMetricsSchema.queueDepth}.
+ */
+export const SlotOccupancySchema = z.object({
+  /** Exactly `ceiling`-many slot entries, each busy(taskId) or idle(null). */
+  slots: z.array(SlotEntrySchema),
+  /** Queued task ids in FIFO order, distinct from free slots. */
+  queuedTaskIds: z.array(z.string()),
+});
+export type SlotOccupancy = z.infer<typeof SlotOccupancySchema>;
+
+/**
+ * Runner-minutes (compute-minutes) accounting derived from observed task
+ * running durations over the reporting window (admission→terminal timestamp,
+ * in-flight tasks counted up to now). Labeled as DERIVED accounting, not a
+ * sampled host metric.
+ *
+ * `available` is `false` and `minutes` is `null` when the figure cannot be
+ * derived (insufficient persisted timing data) — never fabricated or reported
+ * as a zero that implies an exact value. This is an operational accounting
+ * estimate over the window, not an exact billing figure.
+ */
+export const RunnerMinutesSchema = z.object({
+  /** Whether the figure could be derived from the available timing data. */
+  available: z.boolean(),
+  /** Summed running minutes over the window, or `null` when unavailable. */
+  minutes: z.number().nonnegative().nullable(),
+});
+export type RunnerMinutes = z.infer<typeof RunnerMinutesSchema>;
+
+// ---------------------------------------------------------------------------
+// Sampled resource block (cadence-bounded, possibly stale)
+// ---------------------------------------------------------------------------
+
+/**
+ * Availability of the sampled resource block:
+ *  - `available`: a fresh sample within the configured cadence.
+ *  - `stale`: the latest sample is older than the staleness threshold.
+ *  - `unavailable`: the container-runtime stats source is unreachable / no
+ *    usable sample exists. A sampling outage marks this `unavailable` rather
+ *    than failing the whole `/metrics` response.
+ */
+export const SampledResourceStatusSchema = z.enum([
+  'available',
+  'stale',
+  'unavailable',
+]);
+export type SampledResourceStatus = z.infer<typeof SampledResourceStatusSchema>;
+
+/**
+ * Sampled CPU/memory utilization for a single sandbox container.
+ *
+ * `cpuPercent` is derived from the delta between two cgroup/stats readings.
+ * `memoryBytes` is the current usage and `memoryLimitBytes` the cgroup limit
+ * when one is set (so memory utilization is expressed against the limit, not
+ * raw host memory); `memoryPercent` is usage against that limit.
+ */
+export const ContainerResourceSampleSchema = z.object({
+  /** The sampled task's id (the `cap-aio-<taskId>` container). */
+  taskId: z.string(),
+  /** CPU utilization percent, from the delta of two readings. */
+  cpuPercent: z.number().nonnegative(),
+  /** Current memory usage in bytes (`memory.current`). */
+  memoryBytes: z.number().nonnegative(),
+  /** Memory cgroup limit in bytes (`memory.max`), or `null` when unlimited. */
+  memoryLimitBytes: z.number().nonnegative().nullable(),
+  /** Memory usage as a percent of the cgroup limit, or `null` when unlimited. */
+  memoryPercent: z.number().nonnegative().nullable(),
+});
+export type ContainerResourceSample = z.infer<
+  typeof ContainerResourceSampleSchema
+>;
+
+/**
+ * The sampled resource block: per-container samples plus an aggregate, tagged
+ * with the most-recent `sampledAt` time and an availability `status`.
+ *
+ * When no sandbox containers are running, `containers` is empty and the
+ * aggregate figures are zero with `status: 'unavailable'`-or-`'available'`
+ * accompanied by an explicit "no active containers" reading rather than echoing
+ * a stale prior sample.
+ */
+export const SampledResourcesSchema = z.object({
+  /** Block availability: fresh, stale-beyond-threshold, or source unreachable. */
+  status: SampledResourceStatusSchema,
+  /** Time the most recent sample was taken, or `null` when no sample exists. */
+  sampledAt: z.coerce.date().nullable(),
+  /** Age of the most recent sample in milliseconds, or `null` when none exists. */
+  ageMs: z.number().int().nonnegative().nullable(),
+  /** Whether any sandbox container was running at sample time. */
+  hasActiveContainers: z.boolean(),
+  /** Per-container CPU/memory samples (empty when no containers run). */
+  containers: z.array(ContainerResourceSampleSchema),
+  /** Aggregate CPU percent across sampled containers (0 when none). */
+  aggregateCpuPercent: z.number().nonnegative(),
+  /** Aggregate memory usage in bytes across sampled containers (0 when none). */
+  aggregateMemoryBytes: z.number().nonnegative(),
+});
+export type SampledResources = z.infer<typeof SampledResourcesSchema>;
+
+// ---------------------------------------------------------------------------
+// Aggregation response
+// ---------------------------------------------------------------------------
+
+/**
+ * Response body for the session-gated `GET /metrics` aggregation endpoint.
+ *
+ * Composes the exact derived capacity block (`capacity`, `occupancy`,
+ * `runnerMinutes`) with the cadence-bounded sampled resource block
+ * (`resources`) in one round trip. The derived block is always present and
+ * exact; the sampled block self-describes its freshness via
+ * {@link SampledResourcesSchema.status}, so the console can render live capacity
+ * even when host sampling is degraded.
+ */
+export const MetricsResponseSchema = z.object({
+  /** Exact, semaphore-derived scalar capacity figures. */
+  capacity: CapacityMetricsSchema,
+  /** Exact, semaphore-derived slot occupancy table + FIFO queue. */
+  occupancy: SlotOccupancySchema,
+  /** Derived runner-minutes accounting over the reporting window. */
+  runnerMinutes: RunnerMinutesSchema,
+  /** Cadence-bounded sampled CPU/memory block with freshness/availability. */
+  resources: SampledResourcesSchema,
+});
+export type MetricsResponse = z.infer<typeof MetricsResponseSchema>;

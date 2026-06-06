@@ -32,7 +32,7 @@ export interface ConcurrencySemaphoreOptions {
 export type AdmissionResult = 'running' | 'queued';
 
 export class ConcurrencySemaphore {
-  private readonly maxConcurrentTasks: number;
+  private readonly _maxConcurrentTasks: number;
   private readonly onAdmit?: AdmitCallback;
 
   /** Task ids currently occupying a running slot. */
@@ -48,8 +48,17 @@ export class ConcurrencySemaphore {
         )}`,
       );
     }
-    this.maxConcurrentTasks = options.maxConcurrentTasks;
+    this._maxConcurrentTasks = options.maxConcurrentTasks;
     this.onAdmit = options.onAdmit;
+  }
+
+  /**
+   * Configured slot ceiling (`MAX_CONCURRENT_TASKS`). Exposed read-only for the
+   * derived capacity projection (be-metrics 5.1) so `ceiling` is read from the
+   * same live instance as `runningCount`/`queuedCount`, never a separate copy.
+   */
+  get maxConcurrentTasks(): number {
+    return this._maxConcurrentTasks;
   }
 
   /** Number of tasks currently holding a running slot. */

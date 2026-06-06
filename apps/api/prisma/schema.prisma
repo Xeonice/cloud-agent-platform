@@ -31,6 +31,13 @@ enum TaskStatus {
 }
 
 /// A registered repository the operator can launch tasks against.
+///
+/// The GitHub-import metadata columns (`description`, `defaultBranch`,
+/// `branchCount`, `updatedAt`, `githubId`) are all NULLABLE: they are populated
+/// only when the repo was imported from GitHub. A plain `gitSource`-only repo
+/// created without GitHub import stays valid with these columns null. `githubId`
+/// is the originating GitHub repository identity, carried so imports can be
+/// de-duplicated. Names mirror the `@cap/contracts` `RepoSchema`.
 model Repo {
   id        String   @id @default(uuid())
   /// Human-friendly display name.
@@ -38,6 +45,22 @@ model Repo {
   /// Git source (clone URL / remote) the runner checks out from.
   gitSource String   @map("git_source")
   createdAt DateTime @default(now()) @map("created_at")
+
+  /// GitHub repo description (import metadata). Null when not imported.
+  description String? @map("description")
+  /// GitHub default branch name (import metadata). Null when not imported.
+  defaultBranch String? @map("default_branch")
+  /// GitHub branch count (import metadata). Null when not imported.
+  branchCount Int? @map("branch_count")
+  /// GitHub last-updated timestamp (import metadata). Null when not imported.
+  updatedAt DateTime? @map("updated_at")
+  /// Originating GitHub repository identity, used to de-duplicate imports.
+  /// Null when not imported from GitHub.
+  githubId String? @map("github_id")
+  /// Whether this imported Repo is the operator's current DEFAULT repo for
+  /// task-creation selection. At most one Repo is ever `true`; designating a new
+  /// default clears the prior one. Only an imported Repo may carry `true`.
+  isDefault Boolean @default(false) @map("is_default")
 
   tasks Task[]
 
@@ -57,8 +80,205 @@ model Task {
   /// Current lifecycle state; defaults to `pending` on creation.
   status TaskStatus @default(pending)
 
+  /// Optional run parameter echoed back from the create body: the git branch the
+  /// runner checks out. Inert with respect to the lifecycle; null when omitted.
+  branch String? @map("branch")
+  /// Optional run parameter echoed back from the create body: the execution
+  /// strategy. Inert with respect to the lifecycle; null when omitted.
+  strategy String? @map("strategy")
+
   createdAt DateTime @default(now()) @map("created_at")
+
+  /// Append-only audit events recorded for this task's lifecycle transitions.
+  auditEvents AuditEvent[]
 
   @@index([repoId])
   @@map("tasks")
+}
+
+/// An authenticated GitHub operator identity (multi-user-oauth spec).
+///
+/// Keyed on the immutable GitHub numeric `id` (`githubId`), NOT the mutable
+/// `login`, mirroring `@cap/contracts` `SessionUserSchema`. Contracts models
+/// `githubId` as `z.number().int()`, so it is stored as `Int` here. `login`,
+/// `name`, and `avatarUrl` are mutable profile fields refreshed on each login.
+/// `allowed` is the load-bearing fail-closed allowlist gate: only an
+/// allowlisted identity is ever surfaced as a session user.
+model User {
+  id        String   @id @default(uuid())
+  /// Stable, immutable GitHub numeric account id; the allowlist + user-record key.
+  githubId  Int      @unique @map("github_id")
+  /// GitHub `login` (mutable username), refreshed on each login.
+  login     String
+  /// GitHub display name, captured for console rendering.
+  name      String
+  /// GitHub avatar reference, captured for console rendering.
+  avatarUrl String   @map("avatar_url")
+  /// Whether this identity is presently on the fail-closed allowlist.
+  allowed   Boolean
+  /// The operator's GitHub OAuth access token, stored server-side (never exposed
+  /// to the browser) for later GitHub-import calls (`/user/repos`). Nullable: a
+  /// record predating token capture, or a refresh that did not re-capture a
+  /// token, leaves it null. Only ever written for an identity that has already
+  /// passed the fail-closed allowlist gate.
+  githubAccessToken String? @map("github_access_token")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sessions Session[]
+  /// Audit events attributed to this GitHub-identity user (nullable on the
+  /// event side for system-originated events).
+  auditEvents AuditEvent[]
+  /// Per-account console preferences (zero or one).
+  accountSettings AccountSettings?
+  /// Per-account Codex execution credential (zero or one).
+  codexCredential CodexCredential?
+
+  @@map("users")
+}
+
+/// An opaque server-side session for an authenticated {@link User}.
+///
+/// `tokenHash` stores a HASH of the opaque session token, never the raw token,
+/// so a database read can never recover a usable credential. Sessions cascade
+/// when the owning user is deleted.
+model Session {
+  id        String   @id @default(uuid())
+  /// FK to the owning user.
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// HASH of the opaque session token (never the raw token).
+  tokenHash String   @map("token_hash")
+  /// Absolute expiry; a session past this is treated as unauthenticated.
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([tokenHash])
+  @@index([userId])
+  @@map("sessions")
+}
+
+/// An immutable, append-only audit event (audit-history spec).
+///
+/// One row is written at the moment of each task lifecycle transition and
+/// notable operational outcome. By convention these rows are NEVER mutated or
+/// deleted by lifecycle progression: a task's full ordered history stays
+/// queryable even after it reaches a terminal state. Every event references a
+/// REAL task id via the `taskId` FK and is never orphaned (cascade on task
+/// delete). `userId` attributes the event to the GitHub-identity operator under
+/// whom the action occurred; it is NULLABLE for system-originated events with no
+/// attributed user.
+///
+/// Shape mirrors `@cap/contracts` `AuditEventSchema`. The contracts `userId`
+/// wire field is the GitHub numeric account id (`githubId`); at this storage
+/// layer the column is an FK to `users.id` (the user-record key), and the
+/// service maps between the two.
+model AuditEvent {
+  id     String @id @default(uuid())
+  /// FK to the owning task; every event references a real task and cascades on
+  /// task delete.
+  taskId String @map("task_id")
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  /// FK to the attributed GitHub-identity user (the operator the action occurred
+  /// under). NULL for system-originated events with no attributed user.
+  userId String? @map("user_id")
+  user   User?   @relation(fields: [userId], references: [id])
+
+  /// The lifecycle/audit kind, e.g. `task.created`, `task.running`,
+  /// `task.completed`, `task.failed`, `task.cancelled`, `agent_failed_to_start`,
+  /// `force_failed`.
+  type String
+
+  /// Severity governing the colored audit-dot: `info` | `warning` | `error`.
+  level String
+
+  /// Short, human-readable title for the timeline row.
+  title String
+
+  /// Human-readable description; for a force-fail it names the cause (deadline /
+  /// idle / circuit-break).
+  description String
+
+  /// Server-assigned UTC timestamp at which the event was recorded.
+  timestamp DateTime @default(now())
+
+  /// Optional HTTP-status-like result code the console renders verbatim
+  /// (`201`/`200`/`409`/`422`). Null when the event carries no result code.
+  resultCode Int? @map("result_code")
+
+  /// Session linkage: the most recent run identifier where one applies, letting
+  /// the console deep-link the event's task to its live session route. Null when
+  /// the event has no associated run.
+  runId String? @map("run_id")
+
+  @@index([taskId, timestamp])
+  @@index([timestamp])
+  @@map("audit_events")
+}
+
+/// Per-account console preferences (account-settings spec).
+///
+/// Scoped one-per-user via the UNIQUE `userId`. `allowedAccount` is intentionally
+/// NOT stored: it is the read-only allowlisted account display identity sourced
+/// from the OAuth identity at read time. `defaultRepoId` references an imported
+/// `Repo` by id and is NULLABLE; it is validated in the service layer (the
+/// account must have imported that repo) rather than enforced as a DB FK.
+/// Mirrors `@cap/contracts` `AccountSettingsSchema` (writable fields only).
+model AccountSettings {
+  id     String @id @default(uuid())
+  /// FK to the owning user; UNIQUE so there is at most one settings row per
+  /// account.
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Selected default repository (a `Repo` id), or null when unset. Validated in
+  /// the service layer, not enforced as a DB foreign key.
+  defaultRepoId String? @map("default_repo_id")
+
+  /// History/audit retention window in days (contracts constrains to 7/30/90/180).
+  retention Int
+
+  /// Destructive-action gate toggle ("破坏性写入前停止" / write-confirm).
+  writeConfirm Boolean @map("write_confirm")
+
+  @@map("account_settings")
+}
+
+/// Per-account Codex execution credential (account-settings spec).
+///
+/// Scoped one-per-user via the UNIQUE `userId`. This is the Codex EXECUTION
+/// credential ("任务运行用什么模型"), entirely distinct from the console login
+/// identity. Secret discipline: only `apiKeyCiphertext` (ENCRYPTED at rest — the
+/// ciphertext only, NEVER plaintext) is persisted for the key, alongside
+/// `apiKeyLast4`, a masked suffix kept solely for display. The plaintext key is
+/// never stored or returned. Mirrors the persisted side of `@cap/contracts`
+/// `CodexCredentialSchema` / `SaveCodexCredentialRequestSchema`.
+model CodexCredential {
+  id     String @id @default(uuid())
+  /// FK to the owning user; UNIQUE so there is at most one credential per account.
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Active provider mode: `official` | `compatible`.
+  mode String
+
+  /// Connection state: `not_connected` | `not_saved` | `connected`.
+  state String
+
+  /// Compatible-provider base URL (non-secret). Null for official mode.
+  baseUrl String? @map("base_url")
+
+  /// The API key ENCRYPTED at rest — ciphertext only, never plaintext. Null when
+  /// no key is stored.
+  apiKeyCiphertext String? @map("api_key_ciphertext")
+
+  /// Masked suffix of the stored key (e.g. last 4 chars) for display only. Null
+  /// when no key is stored.
+  apiKeyLast4 String? @map("api_key_last4")
+
+  /// Selected default model persisted with the credential (non-secret). Null
+  /// when unset.
+  defaultModel String? @map("default_model")
+
+  @@map("codex_credentials")
 }
