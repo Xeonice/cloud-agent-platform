@@ -20,10 +20,10 @@ person is REMOVED.
 
 ### Requirement: Operator token gates the REST API
 
-Every REST endpoint other than the unauthenticated health check and the
-unauthenticated GitHub OAuth start/callback endpoints (see **multi-user-oauth**)
-SHALL require an authenticated principal. The orchestrator SHALL accept a request
-as authenticated if EITHER:
+Every protected REST endpoint SHALL require an authenticated principal (the
+unauthenticated health check and the GitHub OAuth start/callback endpoints, owned
+by **multi-user-oauth**, are exempt). The orchestrator SHALL accept a request as
+authenticated if EITHER:
 
 1. it carries a valid GitHub-OAuth-derived session whose GitHub login is on the hard
    allowlist (session establishment, allowlist gating, and cookie/CSRF handling are

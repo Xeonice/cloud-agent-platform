@@ -286,9 +286,3 @@ The console SHALL define its design tokens once in `src/styles/app.css` (Tailwin
 - **WHEN** `apps/web` is built for deployment
 - **THEN** it produces a Nitro `vercel`-preset output (not a Next.js build) and the cross-origin `VITE_*` endpoint configuration is honored at runtime
 
-## REMOVED Requirements
-
-### Requirement: Next.js console application
-**Reason**: The console is being rebuilt on TanStack Start (Vite-native, full-stack) per the operator's decision; the Next.js `apps/web` (App Router, `next.config.mjs`, `next-env.d.ts`, Next-shaped `vercel.json`, `NEXT_PUBLIC_*` env, `/` dashboard convention) is fully replaced. There was no standalone "Next.js console application" requirement in the prior spec, but the Next.js assumptions were implicit in the dashboard route (`/`), env naming (`NEXT_PUBLIC_*`), and deployment shape; this entry records their removal so no requirement implies a Next.js runtime remains.
-
-**Migration**: The dashboard moves from `/` to `/dashboard` behind the `_app` auth gate (with `/` now the Landing page); `NEXT_PUBLIC_API_BASE_URL`/`NEXT_PUBLIC_WS_URL` become `VITE_API_BASE_URL`/`VITE_WS_URL` (read via `import.meta.env`); the Next-shaped `vercel.json` is replaced by the Nitro `vercel` preset; `apps/web/src/lib/api-client.ts`/`ws-client.ts`/`config.ts` are reused as `lib/api/real.ts`/`ws-client.ts`/`config.ts` with only the env-name change. All ten pages and their data wiring are re-specified in the ADDED/MODIFIED requirements above.
