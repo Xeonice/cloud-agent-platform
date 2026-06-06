@@ -14,7 +14,19 @@ import prettier from "eslint-config-prettier";
  */
 export default [
   {
-    ignores: ["**/dist/**", "**/.next/**", "**/node_modules/**", "**/*.config.js"],
+    ignores: [
+      "**/dist/**",
+      "**/.next/**",
+      "**/node_modules/**",
+      "**/*.config.js",
+      // TanStack Start / Nitro / Vite build output + generated route tree
+      // (gitignored, but eslint flat config does not read .gitignore).
+      "**/.output/**",
+      "**/.vercel/**",
+      "**/.nitro/**",
+      "**/.tanstack/**",
+      "**/routeTree.gen.ts",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

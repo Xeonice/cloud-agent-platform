@@ -48,14 +48,23 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Backend secrets/config (legacy AUTH_TOKEN, OAuth client, SESSION_SECRET,
+    # CODEX_CRED_ENC_KEY, AUTH_ALLOWLIST, WEB_ORIGIN, metrics) come from this
+    # gitignored env file so the committed compose carries NO secrets. Copy
+    # apps/api/.env.example to apps/api/.env and fill it for a self-host deploy.
+    # required:false so `docker compose config`/CI parses without the local file.
+    env_file:
+      - path: apps/api/.env
+        required: false
     environment:
       PORT: "8080"
       # session.log lives under here, on the persistent named volume below.
       WORKSPACES_DIR: /data/workspaces
       DATABASE_URL: postgresql://cap:cap@postgres:5432/cap?schema=public
-      # Operator bearer token gating REST + WS (wired/enforced in the
-      # integration track); supply via the host environment or an .env file.
-      AUTH_TOKEN: ${AUTH_TOKEN}
+      # AUTH_TOKEN (legacy break-glass) + the OAuth/session/Codex-key config now
+      # come from the env_file above (apps/api/.env). Declaring AUTH_TOKEN here as
+      # ${AUTH_TOKEN} would override the env_file with an empty shell value, so it
+      # is intentionally NOT redeclared in this environment block.
       # Pinned derived AIO sandbox image the provider provisions per task
       # (cap-aio-<taskId>). MUST be a pinned tag, NEVER :latest (design D —
       # reproducible, version-pinned execution image). Override via .env.

@@ -167,7 +167,7 @@ export async function listAuditEvents(
   if (query?.limit != null) params.set("limit", String(query.limit));
   const qs = params.toString();
   return ListAuditEventsResponseSchema.parse(
-    await request(`/history${qs ? `?${qs}` : ""}`),
+    await request(`/audit/events${qs ? `?${qs}` : ""}`),
   );
 }
 
@@ -208,22 +208,22 @@ export async function saveCodexCredential(
 }
 
 /**
- * `GET /github/repos` — the operator's importable GitHub repositories, sourced
- * server-side via the stored OAuth token (the token never reaches the browser).
- * Gated by `BACKEND_CAPABILITIES.githubImport`.
+ * `GET /repos/github/available` — the operator's importable GitHub repositories,
+ * sourced server-side via the stored OAuth token (the token never reaches the
+ * browser). Gated by `BACKEND_CAPABILITIES.githubImport`.
  */
 export async function listGithubRepos(): Promise<ListAvailableGithubReposResponse> {
   return ListAvailableGithubReposResponseSchema.parse(
-    await request("/github/repos"),
+    await request("/repos/github/available"),
   );
 }
 
-/** `POST /github/import` — import a GitHub repo into the platform as a `Repo`. */
+/** `POST /repos/github/import` — import a GitHub repo into the platform as a `Repo`. */
 export async function importRepo(
   body: ImportRepoRequest,
 ): Promise<RepoResponse> {
   return RepoResponseSchema.parse(
-    await request("/github/import", {
+    await request("/repos/github/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -231,17 +231,17 @@ export async function importRepo(
   );
 }
 
-/** `GET /repos/default` — the current default repo, or `null` when unset. */
+/** `GET /repos/github/default` — the current default repo, or `null` when unset. */
 export async function getDefaultRepo(): Promise<DefaultRepoResponse> {
-  return DefaultRepoResponseSchema.parse(await request("/repos/default"));
+  return DefaultRepoResponseSchema.parse(await request("/repos/github/default"));
 }
 
-/** `POST /repos/default` — designate one imported repo as the default. */
+/** `POST /repos/github/default` — designate one imported repo as the default. */
 export async function setDefaultRepo(
   body: SetDefaultRepoRequest,
 ): Promise<DefaultRepoResponse> {
   return DefaultRepoResponseSchema.parse(
-    await request("/repos/default", {
+    await request("/repos/github/default", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
