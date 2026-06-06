@@ -23,9 +23,11 @@
  * inbound peers are operator console clients. The layers above the `TerminalPty`
  * seam (auth, lease, approval routing, backpressure, snapshots, guardrails) are
  * unchanged by this inversion. The gateway layers on:
- *   - connect-time OPERATOR authentication of console clients against `AUTH_TOKEN`
- *     (constant-time), closing unauthenticated/invalid connections before they
- *     join any task stream;
+ *   - connect-time OPERATOR authentication of console clients via the GitHub-OAuth
+ *     SESSION (cookie or `bearer.<token>` subprotocol) with an allowlist re-check,
+ *     and the gated legacy `AUTH_TOKEN` break-glass path, resolved by the shared
+ *     `resolveOperatorPrincipal` — closing unauthenticated/expired/non-allowlisted
+ *     connections before they join any task stream (be-oauth-allowlist 2.7);
  *   - approval routing (6.5) — a sandbox `permission_request`, delivered over an
  *     OUTBOUND HTTP callback (re-homed in the integration track), is fanned out to
  *     operator clients and the resolved `decision` is returned to the blocked hook
@@ -79,7 +81,13 @@ import {
 import { AioPtyClient, type AioExitStatus } from './aio-pty-client';
 import type { SandboxConnection } from '../sandbox/sandbox-provider.port';
 import { WriteLockService } from '../write-lock/write-lock.service';
-import { constantTimeEqual } from '../auth/constant-time';
+// be-oauth-allowlist 2.7 — connect-time operator SESSION authentication (replaces
+// the AUTH_TOKEN-only operator check). `resolveOperatorPrincipal` is the shared,
+// transport-agnostic decision point (also used by the REST guard), and it performs
+// the constant-time legacy-bearer comparison internally, so the gateway needs no
+// direct `constantTimeEqual` import.
+import { AuthSessionService } from '../auth/auth-session.service';
+import { resolveOperatorPrincipal } from '../auth/operator-principal';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 
 /**
@@ -206,6 +214,10 @@ interface ClientState {
 /** A blocked permission request awaiting an operator decision (6.5). */
 interface PendingApproval {
   readonly taskId: string;
+  /** The Codex tool name being gated (surfaced by the pending-list read, 6.5). */
+  readonly toolName: string;
+  /** Raw, opaque tool-call input forwarded for operator review (6.5). */
+  readonly toolInput: unknown;
   /**
    * How a resolved decision is returned to the blocked hook. Under the connect-in
    * model the sandbox's `permission_request` arrives over an OUTBOUND HTTP
@@ -214,6 +226,19 @@ interface PendingApproval {
    * approval routing can be unit-driven without a transport attached.
    */
   readonly reply?: (frame: DecisionFrame) => void;
+}
+
+/**
+ * The operator-facing projection of a {@link PendingApproval} returned by
+ * {@link TerminalGateway.listPendingApprovals} (6.5). Carries the
+ * correlation/identity fields the pending-list REST read surfaces (matching the
+ * contracts `PendingApprovalSchema`), without the internal `reply` transport.
+ */
+export interface PendingApprovalView {
+  readonly requestId: string;
+  readonly taskId: string;
+  readonly toolName: string;
+  readonly toolInput: unknown;
 }
 
 /**
@@ -268,6 +293,7 @@ export class TerminalGateway
   constructor(
     @Optional() private readonly writeLock?: WriteLockService,
     @Optional() @Inject(GuardrailsService) private readonly guardrails?: GuardrailsService,
+    @Optional() @Inject(AuthSessionService) private readonly authSession?: AuthSessionService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -295,14 +321,25 @@ export class TerminalGateway
   /**
    * A new socket connected. The second argument is the raw HTTP upgrade request
    * (`ws` forwards it via NestJS's `WsAdapter`), from which we read the operator
-   * token (11.4).
+   * credentials.
    *
    * Under the connect-in model the only inbound peer is an OPERATOR console
-   * client, authenticated at connect time against `AUTH_TOKEN` using the URL
-   * `token` query param or the `bearer.<token>` subprotocol. An
-   * unauthenticated/invalid operator connection is closed immediately, before it
-   * can join any task stream. The orchestrator dials sandboxes OUT via
-   * {@link AioPtyClient}, so there is no inbound runner dial-back to handshake.
+   * client; the orchestrator dials sandboxes OUT via {@link AioPtyClient}, so
+   * there is no inbound runner dial-back to handshake. The operator is
+   * authenticated at connect time against a GitHub-OAuth SESSION
+   * (be-oauth-allowlist, task 2.7), resolved from the URL `token` query param or
+   * the `bearer.<token>` subprotocol (browsers cannot set an `Authorization`
+   * header on a WS handshake). The session resolver RE-CONFIRMS allowlist
+   * membership, so an expired/revoked/de-allowlisted session fails. The legacy
+   * shared `AUTH_TOKEN` is accepted on this same channel ONLY when
+   * `AUTH_TOKEN_LEGACY_ENABLED` is on (task 2.8). An unauthenticated/invalid
+   * operator connection is closed immediately, BEFORE it can join any task stream
+   * or be sent any bytes/control frames.
+   *
+   * Operator authentication is async (the session is resolved against the store),
+   * so the connection starts `authenticated: false`; the message handler is
+   * attached immediately but every operator frame is gated on `authenticated`
+   * (see {@link handleControlFrame}) so nothing is acted on until auth resolves.
    */
   handleConnection(client: WebSocket, request?: IncomingMessage): void {
     const clientId = `c${this.nextClientId++}`;
@@ -319,27 +356,35 @@ export class TerminalGateway
     };
     this.clients.set(client, state);
 
-    // 11.4 — connect-time operator authentication. Reject (close) before the
-    // connection can join any task stream when the presented token is
-    // missing/invalid.
+    // The contracts frame protocol (`channel`/`type`) does not match the `ws`
+    // adapter's default `{event,data}` routing, so we consume raw messages
+    // directly off the socket and discriminate them ourselves. Attached BEFORE
+    // async operator auth resolves; operator frames are dropped until then.
+    client.on('message', (data: RawData) => this.handleMessage(data, client));
+
+    // 2.7 — connect-time operator SESSION authentication. Reject (close) before
+    // the connection can join any task stream when no valid principal resolves
+    // (missing/expired/revoked/de-allowlisted session, or — with the legacy path
+    // off — a bare `AUTH_TOKEN`). Auth is async (the session is resolved against
+    // the store), so the connection stays `authenticated: false` until it lands.
     const presented = extractWsOperatorToken({
       queryToken: url?.searchParams.get('token') ?? null,
       subprotocols: this.subprotocols(request),
     });
-    if (!this.authenticateOperator(presented)) {
-      this.logger.warn(`client ${clientId}: operator auth failed; closing`);
-      this.closeUnauthenticated(client);
-      return;
-    }
-    state.authenticated = true;
-    // Associate the operator with the task it asked to stream, if any.
-    const taskId = url?.searchParams.get('taskId') ?? null;
-    if (taskId) state.taskId = taskId;
+    void this.authenticateOperator(presented).then((ok) => {
+      if (!this.clients.has(client)) return; // disconnected mid-resolution
+      if (!ok) {
+        this.logger.warn(`client ${clientId}: operator auth failed; closing`);
+        this.closeUnauthenticated(client);
+        return;
+      }
+      state.authenticated = true;
+      // Associate the operator with the task it asked to stream, if any.
+      const taskId = url?.searchParams.get('taskId') ?? null;
+      if (taskId) state.taskId = taskId;
+      this.logger.debug(`client ${clientId} authenticated as operator`);
+    });
 
-    // The contracts frame protocol (`channel`/`type`) does not match the `ws`
-    // adapter's default `{event,data}` routing, so we consume raw messages
-    // directly off the socket and discriminate them ourselves.
-    client.on('message', (data: RawData) => this.handleMessage(data, client));
     this.logger.debug(`client ${clientId} connected as ${state.kind}`);
   }
 
@@ -438,15 +483,34 @@ export class TerminalGateway
    * (`ack`) and reconnect (`reconnect`) frames; the integration track owns the
    * keystroke/heartbeat/takeover (7.5) and approval round-trip frames (6.5).
    *
-   * Under the connect-in model an OPERATOR connection is already authenticated at
-   * connect time (11.4); a stray `connect_auth` frame from a non-browser client
-   * re-affirms it. There is no inbound runner dial-back handshake.
+   * Under the connect-in model the only inbound peer is an OPERATOR console
+   * client; the orchestrator dials sandboxes OUT via {@link AioPtyClient}, so
+   * there is no inbound runner dial-back handshake. Because operator SESSION auth
+   * is async (resolved against the store, 2.7), a connection may receive frames
+   * before `authenticated` is set: until it authenticates the only frame acted on
+   * is `connect_auth`, so no task-stream action runs and no bytes/control frames
+   * are emitted to an unauthenticated connection.
    */
   private handleControlFrame(
     frame: ControlFrame,
     client: WebSocket,
     state: ClientState,
   ): void {
+    // 2.7 — operator auth gate: an operator connection whose connect-time session
+    // auth has not (yet) succeeded may only (re)assert auth via a `connect_auth`
+    // frame. Any other frame before authentication is dropped, so no task-stream
+    // action runs and no bytes/control frames are emitted until it authenticates.
+    if (!state.authenticated) {
+      if (frame.type === 'connect_auth') {
+        void this.onConnectAuth(frame, client, state);
+      } else {
+        this.logger.warn(
+          `operator ${state.clientId}: frame before auth dropped`,
+        );
+      }
+      return;
+    }
+
     switch (frame.type) {
       case 'ack':
         this.onAck(frame, client, state);
@@ -455,7 +519,7 @@ export class TerminalGateway
         void this.onReconnect(frame, client, state);
         break;
       case 'connect_auth':
-        this.onConnectAuth(frame, client, state);
+        void this.onConnectAuth(frame, client, state);
         break;
       case 'keystroke':
         this.onKeystroke(frame, client, state);
@@ -483,37 +547,63 @@ export class TerminalGateway
   }
 
   // -------------------------------------------------------------------------
-  // Operator connect-time authentication
+  // 2.7 — operator connect-time SESSION authentication
   // -------------------------------------------------------------------------
 
   /**
-   * Returns true iff `presented` matches the configured operator `AUTH_TOKEN`
-   * in constant time. Rejects a missing token and an unset/empty `AUTH_TOKEN`
-   * (fail-closed).
+   * Resolves a presented operator credential to a valid principal at connect
+   * time (be-oauth-allowlist, task 2.7). The credential is treated FIRST as a
+   * GitHub-OAuth session token (resolved via {@link AuthSessionService}, which
+   * RE-CONFIRMS allowlist membership so expired/revoked/de-allowlisted sessions
+   * fail) and, only when the session does not resolve, as the legacy shared
+   * `AUTH_TOKEN` operator bearer — accepted in CONSTANT TIME and ONLY when
+   * `AUTH_TOKEN_LEGACY_ENABLED` is on (task 2.8).
+   *
+   * Returns `false` for a missing credential, an unresolved session, or a legacy
+   * bearer while the legacy path is disabled (fail-closed). A sandbox `TASK_TOKEN`
+   * presented here is neither a valid session nor the configured `AUTH_TOKEN`, so
+   * it fails — there is no special case that admits it as an operator.
+   *
+   * When {@link AuthSessionService} is not provided (transport-only unit
+   * construction), no session can resolve; only the gated legacy path remains.
    */
-  private authenticateOperator(presented: string | null): boolean {
+  private async authenticateOperator(presented: string | null): Promise<boolean> {
     if (presented === null) return false;
-    const configured = process.env.AUTH_TOKEN;
-    if (configured === undefined || configured.length === 0) return false;
-    return constantTimeEqual(presented, configured);
+    // A WS handshake carries a SINGLE operator credential on ONE channel (the
+    // `token` query param or the `bearer.<token>` subprotocol), so — unlike REST,
+    // where the session cookie and the `Authorization` header are distinct — the
+    // same string is the candidate for both trust domains. We try it FIRST as a
+    // GitHub-OAuth session token; only if that does not resolve do we try it as
+    // the gated legacy `AUTH_TOKEN` bearer (task 2.8). Both checks route through
+    // the shared {@link resolveOperatorPrincipal} so the WS surface cannot drift
+    // from REST on the session re-check or the constant-time legacy comparison.
+    const credentials = { sessionToken: presented, legacyBearerToken: presented };
+    const principal = await resolveOperatorPrincipal(credentials, (token) =>
+      this.authSession ? this.authSession.resolveSession(token) : Promise.resolve(null),
+    );
+    return principal !== null;
   }
 
   /**
-   * A non-browser client may (re)assert operator auth via an explicit
-   * `connect_auth` frame. An operator already authenticated at connect time is
-   * unaffected; an as-yet-unauthenticated connection presenting a valid token is
-   * promoted to an authenticated operator. An invalid token closes it.
+   * A client may (re)assert operator auth via an explicit `connect_auth` frame
+   * (e.g. a non-browser client, or to re-confirm after connect). An operator
+   * already authenticated is only updated (its claimed `taskId`); an
+   * unauthenticated connection presenting a valid session (or, when enabled, the
+   * legacy bearer) is promoted to an authenticated operator. An invalid
+   * credential closes the connection before it joins any task stream.
    */
-  private onConnectAuth(
+  private async onConnectAuth(
     frame: ConnectAuthFrame,
     client: WebSocket,
     state: ClientState,
-  ): void {
+  ): Promise<void> {
     if (state.authenticated) {
       if (frame.taskId) state.taskId = frame.taskId;
       return;
     }
-    if (!this.authenticateOperator(frame.token)) {
+    const ok = await this.authenticateOperator(frame.token);
+    if (!this.clients.has(client)) return; // disconnected mid-resolution
+    if (!ok) {
       this.closeUnauthenticated(client);
       return;
     }
@@ -704,6 +794,12 @@ export class TerminalGateway
   ): void {
     this.pendingApprovals.set(frame.requestId, {
       taskId: frame.taskId,
+      // Identity fields surfaced by the session-gated pending-list REST read
+      // (be-audit-approvals 6.5; consumed via {@link listPendingApprovals}).
+      toolName: frame.toolName,
+      toolInput: frame.toolInput,
+      // Connect-in reply transport: the OUTBOUND-HTTP-callback handler registers
+      // this so `onDecision` can unblock the hook by `requestId` correlation.
       reply,
     });
     // VR.3 — a hook event counts as activity; reset the idle window so the
@@ -784,6 +880,27 @@ export class TerminalGateway
         this.send(socket, frame);
       }
     }
+  }
+
+  /**
+   * Read-only snapshot of the pending `PermissionRequest` decisions currently
+   * awaiting an operator (be-audit-approvals 6.5). Exposed for the session-gated
+   * pending-list REST endpoint: it projects each in-flight blocked approval to its
+   * correlation/identity fields, dropping the internal `reply` transport. The
+   * returned array is a fresh copy, so a caller can never mutate the gateway's
+   * live `pendingApprovals` map.
+   */
+  listPendingApprovals(): PendingApprovalView[] {
+    const out: PendingApprovalView[] = [];
+    for (const [requestId, approval] of this.pendingApprovals) {
+      out.push({
+        requestId,
+        taskId: approval.taskId,
+        toolName: approval.toolName,
+        toolInput: approval.toolInput,
+      });
+    }
+    return out;
   }
 
   // -------------------------------------------------------------------------

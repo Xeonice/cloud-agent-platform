@@ -16,8 +16,12 @@ export const badgeVariants = cva(
         secondary: "border-transparent bg-secondary text-secondary-foreground",
         destructive:
           "border-transparent bg-destructive text-destructive-foreground",
-        success: "border-transparent bg-emerald-600 text-white",
-        warning: "border-transparent bg-amber-500 text-black",
+        // Status variants consume the SHARED v4 token contract (success/warning/
+        // info + their soft surfaces) so the shared Badge stays color-matched
+        // with apps/web's StatusPill instead of using hardcoded palette colors.
+        success: "border-transparent bg-success-soft text-success",
+        warning: "border-transparent bg-warning-soft text-warning",
+        info: "border-transparent bg-info-soft text-info",
         outline: "text-foreground",
       },
     },

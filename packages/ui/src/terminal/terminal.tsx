@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import type { Terminal as XTerm, IDisposable } from "@xterm/xterm";
+import type { Terminal as XTerm, IDisposable, ITheme } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SerializeAddon } from "@xterm/addon-serialize";
 
@@ -58,6 +58,25 @@ export interface TerminalProps {
   onResize?: (geometry: TerminalGeometry) => void;
   /** Extra className for the mount container. */
   className?: string;
+  /**
+   * OPTIONAL xterm color theme (background / foreground / cursor …) forwarded
+   * verbatim into the underlying `new Terminal({ theme })`. Omitted ⇒ xterm's
+   * default theme (the bare styleguide usage keeps working unchanged). The
+   * session page resolves its `--terminal-*` CSS variables to hex client-side
+   * and passes them here so the surface matches the design's dark terminal.
+   */
+  theme?: ITheme;
+  /** OPTIONAL font size (px). Omitted ⇒ the component default (13). */
+  fontSize?: number;
+  /** OPTIONAL line height (multiplier). Omitted ⇒ xterm's default. */
+  lineHeight?: number;
+  /**
+   * OPTIONAL CSS `font-family` for the terminal canvas. Omitted ⇒ the component
+   * default monospace stack (the bare styleguide usage is unchanged). The
+   * session page passes the resolved `--font-mono` stack ("JetBrains Mono" …)
+   * so the live canvas matches the prototype's `.xterm-host`/`.terminal-body`.
+   */
+  fontFamily?: string;
 }
 
 export function Terminal({
@@ -65,6 +84,10 @@ export function Terminal({
   onReady,
   onResize,
   className,
+  theme,
+  fontSize,
+  lineHeight,
+  fontFamily,
 }: TerminalProps): React.ReactElement {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const termRef = React.useRef<XTerm | null>(null);
@@ -79,6 +102,18 @@ export function Terminal({
   onDataRef.current = onData;
   onReadyRef.current = onReady;
   onResizeRef.current = onResize;
+
+  // Appearance props are read once at mount (xterm is expensive to re-instantiate);
+  // keeping them in refs avoids re-running the mount effect when the parent
+  // re-renders with a freshly-resolved (but value-equal) theme object.
+  const themeRef = React.useRef(theme);
+  const fontSizeRef = React.useRef(fontSize);
+  const lineHeightRef = React.useRef(lineHeight);
+  const fontFamilyRef = React.useRef(fontFamily);
+  themeRef.current = theme;
+  fontSizeRef.current = fontSize;
+  lineHeightRef.current = lineHeight;
+  fontFamilyRef.current = fontFamily;
 
   React.useEffect(() => {
     const container = containerRef.current;
@@ -106,11 +141,20 @@ export function Terminal({
       const term = new XTermCtor({
         convertEol: false,
         cursorBlink: true,
+        // Optional fontFamily — undefined falls back to the component's default
+        // monospace stack, so the bare (family-less) usage is unchanged.
         fontFamily:
+          fontFamilyRef.current ??
           'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-        fontSize: 13,
+        fontSize: fontSizeRef.current ?? 13,
         scrollback: 10_000,
         allowProposedApi: true,
+        // Optional appearance props — undefined falls back to xterm's defaults,
+        // so the bare (theme-less) usage is unchanged.
+        ...(themeRef.current ? { theme: themeRef.current } : {}),
+        ...(lineHeightRef.current !== undefined
+          ? { lineHeight: lineHeightRef.current }
+          : {}),
       });
 
       const fitAddon = new FitAddon();

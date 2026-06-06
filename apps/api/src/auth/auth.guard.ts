@@ -5,99 +5,184 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { constantTimeEqual } from './constant-time';
+import type { SessionUser } from '@cap/contracts';
+import { AuthSessionService } from './auth-session.service';
+import {
+  resolveOperatorPrincipal,
+  type OperatorPrincipal,
+} from './operator-principal';
+import { SESSION_COOKIE_NAME, readCookie } from './session-token';
 
 /**
- * Operator-auth guard (auth 11.2).
+ * Operator session guard (be-oauth-allowlist, task 2.6; supersedes the
+ * shared-`AUTH_TOKEN`-only guard from single-user-auth 11.2).
  *
- * Enforces that every protected REST request carries an
- * `Authorization: Bearer <token>` whose token matches the configured operator
- * token (`AUTH_TOKEN`). On a missing, malformed, or non-matching token it rejects
- * with HTTP 401 (`UnauthorizedException`) and performs NO state change — the guard
- * runs before the route handler, so a rejected request never reaches business
- * logic.
+ * Enforces that every protected REST request carries a VALID operator principal
+ * before the route handler runs. A request is admitted when EITHER:
+ *   - it carries a valid GitHub-OAuth SESSION — resolved from the `cap_session`
+ *     cookie OR a `bearer.<token>` subprotocol-carried token — whose owning user
+ *     is STILL allowlisted (membership is RE-CONFIRMED at request time inside
+ *     {@link AuthSessionService.resolveSession}, so a de-allowlisted operator is
+ *     denied on their very next request); or
+ *   - the legacy shared-`AUTH_TOKEN` operator bearer is presented AND the legacy
+ *     path is enabled (task 2.8) — see {@link resolveOperatorPrincipal}.
  *
- * Scope boundaries (kept deliberately narrow for this track):
- * - The unauthenticated `/health` liveness endpoint is exempt so platform probes
- *   (Fly, docker-compose) work without injecting the secret.
- * - The `/v1/approvals` callback endpoint is exempt: under the connect-in model
- *   the per-task AIO sandbox's Codex hook POSTs its approval/report callback IN
- *   to the orchestrator over the private `cap-net` network. The sandbox is NOT a
- *   human operator and holds no operator `AUTH_TOKEN`; its security boundary is
- *   network isolation (reachable only by container name on `cap-net`, no host
- *   port), NOT the operator token. Gating it with the operator guard would 401
- *   every hook callback.
- * - Any value that does not match the configured `AUTH_TOKEN` is simply a
- *   non-matching operator token and is rejected with 401 by the ordinary
- *   comparison — there is no special case that would let it through.
- * - Comparison is delegated to {@link constantTimeEqual} to avoid timing leaks.
+ * Anything else — missing/malformed credentials, an expired/revoked session, a
+ * de-allowlisted user, or the legacy bearer while the legacy path is disabled —
+ * is rejected with HTTP 401 (`UnauthorizedException`). The guard runs BEFORE the
+ * route handler, so a rejected request never reaches business logic: NO state
+ * change occurs on a denial.
  *
- * Intentionally NOT done here (owned by the integration track, Track 14):
- * - Registering this guard GLOBALLY across all REST endpoints (via `APP_GUARD` /
- *   `app.useGlobalGuards`) — that edits the shared bootstrap.
- * - Refusing to boot when `AUTH_TOKEN` is unset/empty — a bootstrap concern.
- * - Authenticating client WebSocket connections at connect time — that edits the
- *   shared realtime-terminal gateway.
+ * Connect-in sandbox callback exemption (migrate-execution-to-aio-sandbox, 5.5):
+ * the `/v1/approvals` callback endpoint is ALSO exempt — but NOT because it is an
+ * identity entry point. Under the connect-in model the per-task AIO sandbox's
+ * baked Codex hook POSTs its approval/report callback IN to the orchestrator over
+ * the private `cap-net` network. The sandbox is NOT a human operator and holds no
+ * operator credential (neither a GitHub-OAuth session nor the legacy `AUTH_TOKEN`);
+ * its security boundary is network isolation (reachable only by sibling sandbox
+ * containers by container name on `cap-net`, which publish no host port), NOT an
+ * operator principal. Gating it with this guard would 401 every hook callback and
+ * deadlock the approval round-trip. See {@link ApprovalsController}.
  *
- * The guard reads `AUTH_TOKEN` from the process environment at check time. When it
- * is unset/empty there is no token any presented credential could match, so the
- * guard rejects every protected request with 401 (fail-closed) until the
- * refuse-to-boot bootstrap check (Track 14) makes an unconfigured token fatal.
+ * Trust-domain boundary (task 2.8): the legacy `AUTH_TOKEN` is a DISTINCT domain
+ * from the runner `TASK_TOKEN` (which authenticates a sandbox dialling back, not
+ * a human operator). A `TASK_TOKEN` presented as the operator bearer is simply a
+ * non-matching `AUTH_TOKEN` and is rejected by the ordinary constant-time
+ * comparison in {@link resolveOperatorPrincipal} — there is no special case that
+ * would let it authenticate an operator.
+ *
+ * Exemptions (these ESTABLISH or probe identity rather than presenting one):
+ *   - `/health` liveness so platform probes work without a credential;
+ *   - the GitHub-OAuth entry points (`/auth/github/login`, `/auth/github/callback`)
+ *     an unauthenticated operator must reach to obtain a session, plus
+ *     `/auth/session` / `/auth/logout`, which read/clear the session cookie and
+ *     return 401 on their own when there is no session.
+ *
+ * Plus the network-isolation exemption (NOT an identity probe): `/v1/approvals`,
+ * the connect-in sandbox hook callback described above.
+ *
+ * Configuration is read at CHECK time, not module load, so the fail-closed
+ * posture (e.g. `AUTH_ALLOWLIST` / `AUTH_TOKEN` unset) is evaluated against the
+ * live environment on each request.
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
-  /**
-   * Request paths (lower-cased, slash-normalized) exempt from operator auth:
-   *  - `/health`        — unauthenticated platform liveness probe.
-   *  - `/v1/approvals`  — sandbox→orchestrator hook callback over `cap-net`
-   *    (network-isolation boundary, no operator token; see the class doc).
-   */
-  private static readonly EXEMPT_PATHS: readonly string[] = ['/health', '/v1/approvals'];
+  constructor(private readonly authSession: AuthSessionService) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  /**
+   * Request path (lower-cased, slash-normalized) exempt from operator auth.
+   * Kept in sync with the `/health` liveness endpoint contract.
+   */
+  private static readonly HEALTH_PATH = '/health';
+
+  /**
+   * Paths exempt because the caller is a connect-in AIO sandbox dialling back IN
+   * over `cap-net`, NOT a human operator (migrate-execution-to-aio-sandbox, 5.5):
+   *   - `/v1/approvals` — the baked Codex hook POSTs its approval/report callback
+   *     to the orchestrator by container name on `cap-net`. The sandbox holds no
+   *     operator credential; its security boundary is network isolation (no host
+   *     port), so requiring an operator principal here would 401 every callback
+   *     and deadlock the approval round-trip. See {@link ApprovalsController}.
+   */
+  private static readonly SANDBOX_EXEMPT_PATHS: readonly string[] = ['/v1/approvals'];
+
+  /**
+   * Paths exempt from the session guard because they ESTABLISH or resolve the
+   * GitHub-OAuth operator session rather than presenting an operator principal
+   * (be-oauth-allowlist, tasks 2.2–2.6):
+   *   - `/auth/github/login` / `/auth/github/callback` — the OAuth round trip an
+   *     unauthenticated operator must reach to obtain a session;
+   *   - `/auth/session` / `/auth/logout` — read/clear the session cookie and
+   *     enforce their own 401 when no session resolves.
+   * Requiring an operator principal here would make login impossible. The
+   * fail-closed allowlist gate inside the callback (not this guard) governs
+   * admission; this guard protects the rest of the REST surface.
+   */
+  private static readonly OAUTH_EXEMPT_PATHS: readonly string[] = [
+    '/auth/github/login',
+    '/auth/github/callback',
+    '/auth/session',
+    '/auth/logout',
+  ];
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
 
-    if (AuthGuard.isExempt(request)) {
+    if (
+      AuthGuard.isHealthCheck(request) ||
+      AuthGuard.isOAuthEntryPoint(request) ||
+      AuthGuard.isSandboxCallback(request)
+    ) {
       return true;
     }
 
-    const presented = AuthGuard.extractBearerToken(request.headers.authorization);
-    if (presented === null) {
-      // Missing header or malformed (non-`Bearer`) authorization.
-      throw new UnauthorizedException('Missing or malformed operator bearer token');
+    const principal = await resolveOperatorPrincipal(
+      {
+        sessionToken: AuthGuard.extractSessionToken(request),
+        legacyBearerToken: AuthGuard.extractBearerToken(request.headers.authorization),
+      },
+      (token) => this.authSession.resolveSession(token),
+    );
+
+    if (principal === null) {
+      // Fail-closed: missing/malformed/expired/revoked/non-allowlisted, or the
+      // legacy bearer while the legacy path is disabled. No state change.
+      throw new UnauthorizedException('Operator authentication required');
     }
 
-    const configured = process.env.AUTH_TOKEN;
-    if (configured === undefined || configured.length === 0) {
-      // Fail closed: with no configured token, nothing can authenticate. The
-      // refuse-to-boot check (Track 14) turns this into a startup failure.
-      throw new UnauthorizedException('Operator token is not configured');
-    }
-
-    if (!constantTimeEqual(presented, configured)) {
-      throw new UnauthorizedException('Invalid operator bearer token');
-    }
-
+    // Attach the resolved principal for downstream handlers (e.g. per-user
+    // scoping in later tracks). Never trusted from the client — set here only.
+    (request as AuthenticatedRequest).operatorPrincipal = principal;
     return true;
   }
 
-  /** True when the request targets an auth-exempt endpoint (see EXEMPT_PATHS). */
-  private static isExempt(request: Request): boolean {
-    // `path` excludes the query string; fall back to `url` for adapters that only
-    // populate `url`. Trailing slashes are normalized so `/health/` also matches.
-    const rawPath = request.path ?? request.url ?? '';
-    const path = rawPath.split('?')[0].replace(/\/+$/, '').toLowerCase();
-    return AuthGuard.EXEMPT_PATHS.includes(path);
+  /** True when the request targets the unauthenticated `/health` endpoint. */
+  private static isHealthCheck(request: Request): boolean {
+    return AuthGuard.normalizePath(request) === AuthGuard.HEALTH_PATH;
+  }
+
+  /** True when the request targets a GitHub-OAuth session entry point. */
+  private static isOAuthEntryPoint(request: Request): boolean {
+    return AuthGuard.OAUTH_EXEMPT_PATHS.includes(AuthGuard.normalizePath(request));
   }
 
   /**
-   * Extracts the token from an `Authorization: Bearer <token>` header.
+   * True when the request targets a connect-in AIO sandbox callback endpoint
+   * (e.g. `/v1/approvals`), whose security boundary is `cap-net` network
+   * isolation rather than an operator principal. See {@link SANDBOX_EXEMPT_PATHS}.
+   */
+  private static isSandboxCallback(request: Request): boolean {
+    return AuthGuard.SANDBOX_EXEMPT_PATHS.includes(AuthGuard.normalizePath(request));
+  }
+
+  /**
+   * Lower-cased, query-stripped, trailing-slash-normalized request path, so e.g.
+   * `/health/` and `/Auth/Session?x=1` match their canonical exempt forms.
+   */
+  private static normalizePath(request: Request): string {
+    // `path` excludes the query string; fall back to `url` for adapters that only
+    // populate `url`.
+    const rawPath = request.path ?? request.url ?? '';
+    return rawPath.split('?')[0].replace(/\/+$/, '').toLowerCase();
+  }
+
+  /**
+   * Reads the opaque GitHub-OAuth session token a REST request carries, from the
+   * `cap_session` cookie. Returns `null` when no session cookie is present.
+   */
+  private static extractSessionToken(request: Request): string | null {
+    return readCookie(request.headers.cookie, SESSION_COOKIE_NAME);
+  }
+
+  /**
+   * Extracts the token from an `Authorization: Bearer <token>` header — the
+   * candidate for the gated legacy `AUTH_TOKEN` operator path (task 2.8).
    *
    * Returns the token string when the header is exactly a `Bearer` scheme
    * followed by a single non-empty token, or `null` for a missing header, a
    * non-`Bearer` scheme, or a malformed value (no token, extra segments). The
    * scheme match is case-insensitive per RFC 7235; the token itself is compared
-   * verbatim.
+   * verbatim downstream.
    */
   private static extractBearerToken(header: string | undefined): string | null {
     if (header === undefined) {
@@ -114,3 +199,11 @@ export class AuthGuard implements CanActivate {
     return token;
   }
 }
+
+/** An Express request after the {@link AuthGuard} has attached the principal. */
+export interface AuthenticatedRequest extends Request {
+  operatorPrincipal?: OperatorPrincipal;
+}
+
+// Re-export for downstream consumers that only need the session-user shape.
+export type { SessionUser };

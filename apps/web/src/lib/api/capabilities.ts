@@ -1,0 +1,86 @@
+/**
+ * Backend capability flags — the SINGLE real/mock switch point
+ * (rebuild-console-tanstack-start D5; tasks 10.1).
+ *
+ * Every page reads data EXCLUSIVELY through TanStack Query, and the queryFn is
+ * the only place real-vs-mock is chosen: `if (BACKEND_CAPABILITIES[domain])
+ * return real() else return mock()`. Flipping ONE flag here is therefore the
+ * entire integration step for a domain — implement its `real.ts` function, flip
+ * the flag to `true`, done. No page is rewritten to "go real".
+ *
+ * Current posture (2026-06): the backend NOW implements
+ * auth / metrics / history(audit) / settings / githubImport / branch+strategy
+ * persistence — those backend tracks have shipped. But end-to-end REAL wiring
+ * additionally requires (a) the api process running and reachable at
+ * `VITE_API_BASE_URL`, and (b) an established, allowlisted GitHub-OAuth SESSION
+ * (the OAuth App registration is still pending). Until BOTH are verified against
+ * the running api, these domains default to `false` (mock) so all 10 pages
+ * render today on typed mocks. Each flag flips to `true` the moment its real
+ * path is verified against the running api + a live session — that is the
+ * "render today on mock, flip one flag to go real" seam.
+ */
+
+/** The data domains the console reads, each independently real-or-mock gated. */
+export interface BackendCapabilities {
+  /** `GET /tasks`, `GET /tasks/:id` — the live task list + single task. */
+  tasks: boolean;
+  /** `GET /repos` — registered platform repos for the new-task form. */
+  repos: boolean;
+  /** `POST /repos/:repoId/tasks` — create a task under a repo. */
+  createTask: boolean;
+  /** `GET /auth/session` — the GitHub-OAuth session identity + allowlist gate. */
+  auth: boolean;
+  /** `GET /metrics` — semaphore-derived capacity + sampled CPU/memory. */
+  metrics: boolean;
+  /** Audit/history event recording + query (`GET /history` family). */
+  history: boolean;
+  /** Account settings CRUD + Codex credential read/write. */
+  settings: boolean;
+  /** GitHub repository import (`GET /user/repos`, import, set-default). */
+  githubImport: boolean;
+  /**
+   * `Task.branch` / `Task.strategy` persistence + read-back. Gates the session
+   * task-context read path: when `false`, the context strip falls back to
+   * `mockTaskContexts`; when `true`, branch/strategy come back from the real
+   * task read (closing the "sendable but unreadable" trap, D5.5).
+   */
+  branches: boolean;
+}
+
+/**
+ * The live flag map — ALL real.
+ *
+ * Every domain reads from the running api. The four core endpoints
+ * (`tasks` / `repos` / `createTask`) plus the session-gated domains
+ * (`auth` / `metrics` / `history` / `settings` / `githubImport` / `branches`)
+ * were verified end-to-end (2026-06-06) against the compose api with a real
+ * GitHub-OAuth session: OAuth login → allowlist admit → cross-origin session
+ * cookie (SameSite=None+Secure) → real `/auth/session`, `/metrics`, `/settings`,
+ * `/audit/events`, `/repos/github/*`, and `Task.branch/strategy` read-back, on
+ * both client navigation and SSR first paint (the SSR loader forwards the
+ * browser cookie — see `lib/server-cookie.ts`).
+ *
+ * DEPLOY NOTE: with these `true`, the app targets the real api on every surface,
+ * so a deployment MUST have the api reachable (`VITE_API_BASE_URL`/`VITE_WS_URL`)
+ * and, for the gated domains, an established allowlisted OAuth session. To render
+ * on typed mocks instead (e.g. a backend-less preview), flip a domain to `false`.
+ */
+export const BACKEND_CAPABILITIES: BackendCapabilities = {
+  // Core REST endpoints the api ships.
+  tasks: true,
+  repos: true,
+  createTask: true,
+
+  // Session-gated domains — verified e2e against the running api + OAuth session.
+  auth: true, // GET /auth/session — OAuth login + allowlist gate.
+  metrics: true, // GET /metrics — semaphore capacity + docker-stats sampling.
+  history: true, // GET /audit/events — audit timeline.
+  settings: true, // /settings + /settings/codex — per-account, GitHub-identity session.
+  githubImport: true, // /repos/github/* — import via the operator's OAuth token.
+  branches: true, // Task.branch/strategy read-back on the real task read.
+};
+
+/** True when the named domain reads from the real api rather than typed mocks. */
+export function isCapable(domain: keyof BackendCapabilities): boolean {
+  return BACKEND_CAPABILITIES[domain];
+}

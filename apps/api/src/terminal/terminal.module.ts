@@ -4,6 +4,7 @@ import { ApprovalsController } from './approvals.controller';
 import { WriteLockModule } from '../write-lock/write-lock.module';
 import { TasksModule } from '../tasks/tasks.module';
 import { GuardrailsModule } from '../guardrails/guardrails.module';
+import { AuthModule } from '../auth/auth.module';
 import { TERMINAL_GATEWAY_TOKEN } from '../guardrails/guardrails.service';
 import {
   AioApprovalEnforcer,
@@ -54,9 +55,15 @@ export const AIO_APPROVAL_ENFORCER = Symbol('AioApprovalEnforcer');
  * the provisioned `SandboxConnection` to `openSession()` — without a value
  * import of the gateway, which would re-form the `GuardrailsModule <->
  * TerminalModule` cycle.
+ *
+ * be-oauth-allowlist 2.7: `AuthModule` is imported so the gateway can inject
+ * the exported {@link AuthSessionService} and authenticate the operator's
+ * GitHub-OAuth SESSION at connect time (resolving the connect query param or
+ * `bearer.<token>` subprotocol), closing unauthenticated/expired/revoked/
+ * non-allowlisted connections before they join any task stream.
  */
 @Module({
-  imports: [WriteLockModule, TasksModule, GuardrailsModule],
+  imports: [WriteLockModule, TasksModule, GuardrailsModule, AuthModule],
   controllers: [ApprovalsController],
   providers: [
     TerminalGateway,

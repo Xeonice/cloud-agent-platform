@@ -8,6 +8,10 @@ import {
 } from './guardrails.service';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
+import {
+  AUDIT_RECORDER_TOKEN,
+  type AuditRecorderPort,
+} from '../audit/audit-recorder.port';
 
 /**
  * Guardrails module (integration 12.1b).
@@ -36,12 +40,21 @@ import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provi
         ModuleRef,
         SessionCredentialsService,
         { token: SANDBOX_PROVIDER, optional: true },
+        { token: AUDIT_RECORDER_TOKEN, optional: true },
       ],
       useFactory: (
         moduleRef: ModuleRef,
         creds: SessionCredentialsService,
         sandbox?: SandboxProvider,
-      ) => new GuardrailsService(moduleRef, creds, sandbox, readGuardrailsConfig()),
+        audit?: AuditRecorderPort,
+      ) =>
+        new GuardrailsService(
+          moduleRef,
+          creds,
+          sandbox,
+          readGuardrailsConfig(),
+          audit,
+        ),
     },
   ],
   exports: [GuardrailsService],
