@@ -21,6 +21,12 @@
  *   5. /auth/session returns 401 when no session resolves (no user:null body).
  *   6. /auth/logout invalidates server-side (revokeSession called) and clears the
  *      cookie, idempotently (always 204).
+ *   7. CROSS-ORIGIN deploy (WEB_ORIGIN set, != the api request origin): the
+ *      success/denial redirects target the ABSOLUTE web origin (not a relative
+ *      path the browser would resolve against the api origin) and the session
+ *      cookie is SameSite=None; Secure so the cross-site front-end fetch carries
+ *      it. SAME-ORIGIN (WEB_ORIGIN unset, or == the api origin) keeps relative
+ *      redirects + the tighter SameSite=Lax. (Cross-origin defects 1 + 2.)
  *
  * The real GitHub login->callback round-trip (live code exchange + /user fetch)
  * is NOT exercised here and is SKIPPED — pending a configured OAuth App.
@@ -39,6 +45,7 @@ const DIST = path.resolve(here, '../../dist/auth');
 const { GitHubOAuthController } = require(path.join(DIST, 'github-oauth.controller.js'));
 const { signState, OAUTH_STATE_COOKIE_NAME, SESSION_COOKIE_NAME } =
   require(path.join(DIST, 'session-token.js'));
+const { readWebOrigin, parseWebOrigins } = require(path.join(DIST, 'oauth-config.js'));
 
 // ---- fakes -----------------------------------------------------------------
 
@@ -81,10 +88,15 @@ function makeRes() {
   return { res, captured };
 }
 
-/** Fake Express request. https by default so Secure cookies are set. */
-function makeReq({ cookie, code, state, proto = 'https' } = {}) {
+/**
+ * Fake Express request. https by default so Secure cookies are set. `host`
+ * supplies the api's own `Host` header so the controller can derive the api
+ * origin and decide whether a configured `WEB_ORIGIN` is cross- or same-origin.
+ */
+function makeReq({ cookie, code, state, proto = 'https', host } = {}) {
   const headers = { 'x-forwarded-proto': proto };
   if (cookie !== undefined) headers.cookie = cookie;
+  if (host !== undefined) headers.host = host;
   return { headers, protocol: proto, query: { code, state } };
 }
 
@@ -104,12 +116,40 @@ function assert(cond, label) {
 
 const SESSION_SECRET = 'session-secret-for-tests';
 
+const WEB_ORIGIN = 'https://web.example';
+
+/**
+ * SAME-ORIGIN deploy env: OAuth configured, WEB_ORIGIN UNSET. The callback uses
+ * relative redirect paths and the tighter SameSite=Lax session cookie. We delete
+ * WEB_ORIGIN explicitly because requiring the compiled controller transitively
+ * loads `.env` (which sets WEB_ORIGIN locally) — the deletion makes this case
+ * deterministic instead of inheriting whatever `.env` carries.
+ */
 function withOAuthEnv(fn) {
   const saved = { ...process.env };
   process.env.GITHUB_CLIENT_ID = 'client-id';
   process.env.GITHUB_CLIENT_SECRET = 'client-secret';
   process.env.SESSION_SECRET = SESSION_SECRET;
   process.env.AUTH_ALLOWLIST = '12345';
+  delete process.env.WEB_ORIGIN;
+  return Promise.resolve(fn()).finally(() => {
+    process.env = saved;
+  });
+}
+
+/**
+ * CROSS-ORIGIN deploy env: OAuth configured AND WEB_ORIGIN set to a web origin
+ * distinct from the api. The callback must redirect to ABSOLUTE URLs on the web
+ * origin and set the session cookie SameSite=None; Secure so the cross-origin
+ * front-end fetch(credentials:"include") carries it.
+ */
+function withCrossOriginEnv(fn) {
+  const saved = { ...process.env };
+  process.env.GITHUB_CLIENT_ID = 'client-id';
+  process.env.GITHUB_CLIENT_SECRET = 'client-secret';
+  process.env.SESSION_SECRET = SESSION_SECRET;
+  process.env.AUTH_ALLOWLIST = '12345';
+  process.env.WEB_ORIGIN = WEB_ORIGIN;
   return Promise.resolve(fn()).finally(() => {
     process.env = saved;
   });
@@ -127,6 +167,22 @@ function withoutOAuthEnv(fn) {
 
 const run = async () => {
   console.log('\n=== GitHubOAuthController: orchestration security (real compiled source) ===\n');
+
+  // T0: readWebOrigin / parseWebOrigins — the SINGLE source of truth shared with
+  // main.ts CORS. Drives both the redirect target and the cookie SameSite policy.
+  assert(readWebOrigin({}) === null, 'T0a: unset WEB_ORIGIN -> null (same-origin signal)');
+  assert(readWebOrigin({ WEB_ORIGIN: '   ' }) === null, 'T0b: blank WEB_ORIGIN -> null');
+  assert(readWebOrigin({ WEB_ORIGIN: '  https://web.example  ' }) === 'https://web.example',
+    'T0c: WEB_ORIGIN trimmed to the single web origin');
+  assert(readWebOrigin({ WEB_ORIGIN: 'https://a.example, https://b.example' }) === 'https://a.example',
+    'T0d: WEB_ORIGIN takes the FIRST comma-separated entry');
+  assert(
+    JSON.stringify(parseWebOrigins('https://a.example, https://b.example, https://a.example')) ===
+      JSON.stringify(['https://a.example', 'https://b.example']),
+    'T0e: parseWebOrigins trims + de-duplicates (same parser as CORS)',
+  );
+  assert(JSON.stringify(parseWebOrigins(undefined)) === JSON.stringify([]),
+    'T0f: parseWebOrigins(undefined) -> [] (CORS maps this to origin:false)');
 
   // T1: refuse-to-start when OAuth credentials / session secret are unset.
   await withoutOAuthEnv(async () => {
@@ -212,12 +268,16 @@ const run = async () => {
       'T5a: valid state DOES exchange the code and consult the allowlist gate');
     assert(captured.status === 302 && String(captured.redirect).includes('denied=allowlist'),
       'T5b: non-allowlisted identity redirected to login gate with denial marker');
+    // SAME-ORIGIN: denial redirect is the RELATIVE login-gate path (no origin prefix).
+    assert(captured.redirect === '/login?denied=allowlist',
+      'T5b2: same-origin denial redirect is the relative /login?denied=allowlist path');
     const cookies = setCookieValues(captured);
     assert(!cookies.some((c) => c.startsWith(`${SESSION_COOKIE_NAME}=`) && !c.includes(`${SESSION_COOKIE_NAME}=;`)),
       'T5c: NO session cookie set for a denied identity');
   });
 
-  // T6: valid state + allowlisted identity -> session cookie set (HttpOnly).
+  // T6: SAME-ORIGIN valid state + allowlisted identity -> relative redirect +
+  // SameSite=Lax session cookie (WEB_ORIGIN unset).
   await withOAuthEnv(async () => {
     const oauth = makeOAuthService();
     const sess = makeSessionService(); // default establish returns a session
@@ -229,11 +289,76 @@ const run = async () => {
       res, 'the-code', state,
     );
     assert(captured.status === 302, 'T6a: allowlisted identity redirected into the app');
+    assert(captured.redirect === '/repositories',
+      'T6a2: same-origin success redirect is the relative /repositories path');
     const cookies = setCookieValues(captured);
     const sessionCookie = cookies.find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=minted-session`));
     assert(sessionCookie !== undefined, 'T6b: session cookie set with the minted token');
     assert(sessionCookie?.includes('HttpOnly') && sessionCookie?.includes('SameSite=Lax'),
-      'T6c: session cookie is HttpOnly + SameSite=Lax');
+      'T6c: same-origin session cookie is HttpOnly + SameSite=Lax');
+  });
+
+  // T9: CROSS-ORIGIN valid state + allowlisted identity -> ABSOLUTE redirect on
+  // the web origin + SameSite=None; Secure session cookie (the cross-site cookie
+  // contract). DEFECT 1 + DEFECT 2 regression.
+  await withCrossOriginEnv(async () => {
+    const oauth = makeOAuthService();
+    const sess = makeSessionService(); // default establish returns a session
+    const ctrl = new GitHubOAuthController(oauth, sess);
+    const { res, captured } = makeRes();
+    const state = signState(SESSION_SECRET);
+    // api on a DIFFERENT origin (api.example) from WEB_ORIGIN (web.example).
+    await ctrl.callback(
+      makeReq({ cookie: `${OAUTH_STATE_COOKIE_NAME}=${state}`, code: 'the-code', state, host: 'api.example' }),
+      res, 'the-code', state,
+    );
+    assert(captured.redirect === `${WEB_ORIGIN}/repositories`,
+      'T9a: cross-origin success redirect targets the ABSOLUTE web-origin /repositories (DEFECT 1)');
+    const cookies = setCookieValues(captured);
+    const sessionCookie = cookies.find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=minted-session`));
+    assert(sessionCookie !== undefined, 'T9b: session cookie set with the minted token');
+    assert(sessionCookie?.includes('HttpOnly') && sessionCookie?.includes('SameSite=None') && sessionCookie?.includes('Secure'),
+      'T9c: cross-origin session cookie is HttpOnly + SameSite=None + Secure (DEFECT 2)');
+  });
+
+  // T10: CROSS-ORIGIN non-allowlisted identity -> ABSOLUTE web-origin login-gate
+  // denial redirect, NO session cookie. DEFECT 1 (denial path).
+  await withCrossOriginEnv(async () => {
+    const oauth = makeOAuthService();
+    const sess = makeSessionService({ establish: null }); // allowlist denial
+    const ctrl = new GitHubOAuthController(oauth, sess);
+    const { res, captured } = makeRes();
+    const state = signState(SESSION_SECRET);
+    await ctrl.callback(
+      makeReq({ cookie: `${OAUTH_STATE_COOKIE_NAME}=${state}`, code: 'the-code', state, host: 'api.example' }),
+      res, 'the-code', state,
+    );
+    assert(captured.redirect === `${WEB_ORIGIN}/login?denied=allowlist`,
+      'T10a: cross-origin denial redirect targets the ABSOLUTE web-origin /login?denied=allowlist (DEFECT 1)');
+    const cookies = setCookieValues(captured);
+    assert(!cookies.some((c) => c.startsWith(`${SESSION_COOKIE_NAME}=`) && !c.includes(`${SESSION_COOKIE_NAME}=;`)),
+      'T10b: NO session cookie set for a cross-origin denied identity');
+  });
+
+  // T11: WEB_ORIGIN configured but the api request arrives ON THAT SAME origin
+  // (self-host where WEB_ORIGIN == api origin) -> NOT cross-origin: redirect stays
+  // absolute (web origin == api origin so harmless) and the cookie stays the
+  // tighter SameSite=Lax (no need for None+Secure when it's truly same-origin).
+  await withCrossOriginEnv(async () => {
+    const oauth = makeOAuthService();
+    const sess = makeSessionService();
+    const ctrl = new GitHubOAuthController(oauth, sess);
+    const { res, captured } = makeRes();
+    const state = signState(SESSION_SECRET);
+    // Host = web.example so api origin (https://web.example) == WEB_ORIGIN.
+    await ctrl.callback(
+      makeReq({ cookie: `${OAUTH_STATE_COOKIE_NAME}=${state}`, code: 'the-code', state, host: 'web.example' }),
+      res, 'the-code', state,
+    );
+    const cookies = setCookieValues(captured);
+    const sessionCookie = cookies.find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=minted-session`));
+    assert(sessionCookie?.includes('SameSite=Lax') && !sessionCookie?.includes('SameSite=None'),
+      'T11: api origin == WEB_ORIGIN => same-origin => session cookie stays SameSite=Lax');
   });
 
   // T7: GET /auth/session returns 401 when no session resolves (no user:null body).

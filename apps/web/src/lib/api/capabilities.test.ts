@@ -28,12 +28,12 @@ describe("isCapable", () => {
     expect(isCapable("createTask")).toBe(true);
   });
 
-  it("reports the not-yet-verified session-gated domains as mock", () => {
-    expect(isCapable("auth")).toBe(false);
-    expect(isCapable("metrics")).toBe(false);
-    expect(isCapable("history")).toBe(false);
-    expect(isCapable("settings")).toBe(false);
-    expect(isCapable("githubImport")).toBe(false);
-    expect(isCapable("branches")).toBe(false);
+  it("reports the session-gated domains as capable now their real paths are wired", () => {
+    expect(isCapable("auth")).toBe(true);
+    expect(isCapable("metrics")).toBe(true);
+    expect(isCapable("history")).toBe(true);
+    expect(isCapable("settings")).toBe(true);
+    expect(isCapable("githubImport")).toBe(true);
+    expect(isCapable("branches")).toBe(true);
   });
 });

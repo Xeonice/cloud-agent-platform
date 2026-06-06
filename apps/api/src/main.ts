@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { authTokenConfigSchema } from '@cap/contracts';
 import { AppModule } from './app.module';
+import { parseWebOrigins } from './auth/oauth-config';
 
 /**
  * Orchestrator bootstrap.
@@ -49,7 +50,13 @@ async function bootstrap(): Promise<void> {
   // allow-list is env-configured (comma-separated); an unset list allows no
   // cross-origin browser app (same-origin/cURL still work) rather than `*`,
   // because the operator bearer token travels on these requests.
-  const allowedOrigins = parseAllowedOrigins(process.env.WEB_ORIGIN);
+  //
+  // The parse is shared with the OAuth callback via `parseWebOrigins`
+  // (auth/oauth-config) so the CORS allow-list and the post-login redirect
+  // target can never diverge: the callback's `readWebOrigin` is the FIRST entry
+  // of this very list. CORS behaviour is unchanged — an empty list still maps to
+  // `origin: false` (no cross-origin browser app), never `*`.
+  const allowedOrigins = parseWebOrigins(process.env.WEB_ORIGIN);
   app.enableCors({
     origin: allowedOrigins.length > 0 ? allowedOrigins : false,
     credentials: true,
@@ -59,22 +66,6 @@ async function bootstrap(): Promise<void> {
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);
-}
-
-/**
- * Parse the comma-separated `WEB_ORIGIN` allow-list into a trimmed, de-duplicated
- * list of cross-origin web origins permitted to reach the api (10.1b).
- */
-function parseAllowedOrigins(raw: string | undefined): string[] {
-  if (!raw) return [];
-  return [
-    ...new Set(
-      raw
-        .split(',')
-        .map((origin) => origin.trim())
-        .filter((origin) => origin.length > 0),
-    ),
-  ];
 }
 
 void bootstrap();

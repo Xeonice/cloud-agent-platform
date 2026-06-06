@@ -11,7 +11,7 @@ import type { Request, Response } from 'express';
 import type { AuthSessionResponse, SessionUser } from '@cap/contracts';
 import { GitHubOAuthService } from './github-oauth.service';
 import { AuthSessionService } from './auth-session.service';
-import { readOAuthAppConfig, readSessionSecret } from './oauth-config';
+import { readOAuthAppConfig, readSessionSecret, readWebOrigin } from './oauth-config';
 import {
   OAUTH_STATE_COOKIE_NAME,
   SESSION_COOKIE_NAME,
@@ -163,26 +163,48 @@ export class GitHubOAuthController {
       return;
     }
 
+    // The web app may live on a DIFFERENT origin from the api (web on Vercel /
+    // :3000, api on Fly/compose / :8080). Compute the configured web origin once;
+    // it drives BOTH the redirect target (must be an absolute URL on the web
+    // origin, not a relative path the browser would resolve against the api
+    // origin) AND the session-cookie SameSite policy below. `null` => same-origin
+    // self-host deploy, where relative paths + the default Lax cookie are correct.
+    const webOrigin = readWebOrigin();
+
     if (session === null) {
       // Non-allowlisted identity: NO session, returned to the login gate as a
       // security denial.
       res.setHeader('Set-Cookie', clearStateCookie);
-      res.redirect(HttpStatus.FOUND, `${GitHubOAuthController.LOGIN_GATE_PATH}?denied=allowlist`);
+      res.redirect(HttpStatus.FOUND, GitHubOAuthController.loginGateUrl(webOrigin));
       return;
     }
 
-    // --- allowlisted: set httpOnly + Secure + SameSite=Lax session cookie ---
+    // --- allowlisted: set httpOnly session cookie with a cross-origin-aware policy ---
+    //
+    // The STATE cookie above stays SameSite=Lax: GitHub redirects back here via a
+    // TOP-LEVEL navigation, on which the browser DOES send Lax cookies, so Lax is
+    // the correct (tighter) choice for the one-shot state.
+    //
+    // The SESSION cookie is different: the FRONT-END reads it via a CROSS-ORIGIN
+    // `fetch(..., { credentials: "include" })` (e.g. GET /auth/session), and the
+    // browser does NOT attach a Lax cookie on cross-site sub-resource requests.
+    // So when the deployment is cross-origin we must set SameSite=None; Secure
+    // (the cross-site cookie contract — browsers require Secure for None). On
+    // localhost http this is still accepted because browsers treat
+    // http://localhost as a secure context. When same-origin (no WEB_ORIGIN) we
+    // keep the tighter Lax + the observed-protocol Secure logic.
+    const crossOrigin = GitHubOAuthController.isCrossOrigin(req, webOrigin);
     res.setHeader('Set-Cookie', [
       clearStateCookie,
       serializeCookie(SESSION_COOKIE_NAME, session.token, {
         httpOnly: true,
-        secure: GitHubOAuthController.isSecureRequest(req),
-        sameSite: 'Lax',
+        secure: crossOrigin ? true : GitHubOAuthController.isSecureRequest(req),
+        sameSite: crossOrigin ? 'None' : 'Lax',
         path: '/',
         maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1000),
       }),
     ]);
-    res.redirect(HttpStatus.FOUND, GitHubOAuthController.POST_LOGIN_PATH);
+    res.redirect(HttpStatus.FOUND, GitHubOAuthController.postLoginUrl(webOrigin));
   }
 
   /**
@@ -236,5 +258,65 @@ export class GitHubOAuthController {
       (typeof forwardedProto === 'string' ? forwardedProto.split(',')[0].trim() : undefined) ??
       req.protocol;
     return proto !== 'http';
+  }
+
+  /**
+   * The post-login redirect target. When a web origin is configured (cross-origin
+   * deploy) the browser is sent to the ABSOLUTE `${webOrigin}/repositories`,
+   * because a relative `302 Location` would be resolved by the browser against
+   * the CURRENT (api) origin and 404. With no web origin (same-origin self-host)
+   * the relative path is correct and is kept.
+   */
+  private static postLoginUrl(webOrigin: string | null): string {
+    return webOrigin === null
+      ? GitHubOAuthController.POST_LOGIN_PATH
+      : `${webOrigin}${GitHubOAuthController.POST_LOGIN_PATH}`;
+  }
+
+  /**
+   * The allowlist-denial redirect target, mirroring {@link postLoginUrl}: the
+   * absolute `${webOrigin}/login?denied=allowlist` cross-origin, else the relative
+   * path same-origin. (The `?denied=allowlist` marker, not the origin, is what the
+   * front-end gate reads.)
+   */
+  private static loginGateUrl(webOrigin: string | null): string {
+    const path = `${GitHubOAuthController.LOGIN_GATE_PATH}?denied=allowlist`;
+    return webOrigin === null ? path : `${webOrigin}${path}`;
+  }
+
+  /**
+   * Whether this deployment is CROSS-ORIGIN for cookie purposes: a web origin is
+   * configured AND it differs from the api's own request origin. When they are the
+   * same origin (or no web origin is configured) the session cookie stays the
+   * tighter `SameSite=Lax`; only a genuine cross-site front-end needs
+   * `SameSite=None; Secure` to have its `credentials:"include"` fetches carry the
+   * cookie. The api origin is derived from the observed protocol + `Host` header.
+   */
+  private static isCrossOrigin(req: Request, webOrigin: string | null): boolean {
+    if (webOrigin === null) {
+      return false;
+    }
+    const apiOrigin = GitHubOAuthController.apiOrigin(req);
+    if (apiOrigin === null) {
+      // No reliable Host: treat as cross-origin (fail toward the policy that lets
+      // the configured cross-origin front-end work) rather than silently breaking
+      // login for the deployment that bothered to set WEB_ORIGIN.
+      return true;
+    }
+    return apiOrigin !== webOrigin;
+  }
+
+  /**
+   * The api's own origin (`<scheme>://<host>`) as the browser saw it, derived from
+   * the observed protocol (honouring `X-Forwarded-Proto`) and the `Host` header,
+   * or `null` when no `Host` is present.
+   */
+  private static apiOrigin(req: Request): string | null {
+    const host = req.headers.host;
+    if (typeof host !== 'string' || host.length === 0) {
+      return null;
+    }
+    const scheme = GitHubOAuthController.isSecureRequest(req) ? 'https' : 'http';
+    return `${scheme}://${host}`;
   }
 }

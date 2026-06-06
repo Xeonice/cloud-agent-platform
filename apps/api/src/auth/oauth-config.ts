@@ -23,6 +23,7 @@ export const ENV = {
   SESSION_SECRET: 'SESSION_SECRET',
   AUTH_TOKEN_LEGACY_ENABLED: 'AUTH_TOKEN_LEGACY_ENABLED',
   AUTH_TOKEN: 'AUTH_TOKEN',
+  WEB_ORIGIN: 'WEB_ORIGIN',
 } as const;
 
 /** GitHub OAuth 2.0 endpoints (authorize / token / user). */
@@ -97,6 +98,50 @@ export function isLegacyTokenEnabled(env: NodeJS.ProcessEnv = process.env): bool
   }
   const v = raw.trim().toLowerCase();
   return v === 'true' || v === '1' || v === 'yes';
+}
+
+/**
+ * Parse the comma-separated `WEB_ORIGIN` allow-list into a trimmed, de-duplicated
+ * list of cross-origin web origins permitted to reach the api.
+ *
+ * This is the SINGLE source of truth for the web-origin allow-list: `main.ts`
+ * uses it to configure CORS (the set of origins allowed to call the api with the
+ * operator credentials) and the OAuth callback uses {@link readWebOrigin} (built
+ * on this) to know where to send the browser after login. Keeping both on the
+ * same parser guarantees the CORS allow-list and the post-login redirect target
+ * never diverge — e.g. we can never accept a fetch from an origin we then refuse
+ * to redirect to, or redirect to an origin CORS would reject.
+ */
+export function parseWebOrigins(raw: string | undefined): string[] {
+  if (typeof raw !== 'string') {
+    return [];
+  }
+  return [
+    ...new Set(
+      raw
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter((origin) => origin.length > 0),
+    ),
+  ];
+}
+
+/**
+ * The PRIMARY web origin the operator's browser should be sent to after the
+ * OAuth callback resolves: the FIRST entry of the `WEB_ORIGIN` allow-list
+ * (trimmed), or `null` when `WEB_ORIGIN` is unset/empty.
+ *
+ * A `null` result signals a SAME-ORIGIN deployment (the api also serves the web
+ * app), where the callback must keep using relative redirect paths and the
+ * default `SameSite=Lax` session cookie. A non-null result signals a CROSS-ORIGIN
+ * deployment (web on Vercel / a different host from the Fly/compose api), where
+ * the callback must redirect to an ABSOLUTE URL on this origin and — because the
+ * front-end reads the session via a cross-origin `fetch(credentials:"include")` —
+ * set the session cookie `SameSite=None; Secure`.
+ */
+export function readWebOrigin(env: NodeJS.ProcessEnv = process.env): string | null {
+  const origins = parseWebOrigins(env[ENV.WEB_ORIGIN]);
+  return origins.length > 0 ? origins[0] : null;
 }
 
 /** Returns a trimmed non-empty string, or `null` for undefined/blank input. */

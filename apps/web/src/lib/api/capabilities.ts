@@ -48,31 +48,36 @@ export interface BackendCapabilities {
 }
 
 /**
- * The live flag map.
+ * The live flag map — ALL real.
  *
- * `tasks` / `repos` / `createTask` are `true`: these four REST endpoints exist
- * on the running api today and are the verified real path.
+ * Every domain reads from the running api. The four core endpoints
+ * (`tasks` / `repos` / `createTask`) plus the session-gated domains
+ * (`auth` / `metrics` / `history` / `settings` / `githubImport` / `branches`)
+ * were verified end-to-end (2026-06-06) against the compose api with a real
+ * GitHub-OAuth session: OAuth login → allowlist admit → cross-origin session
+ * cookie (SameSite=None+Secure) → real `/auth/session`, `/metrics`, `/settings`,
+ * `/audit/events`, `/repos/github/*`, and `Task.branch/strategy` read-back, on
+ * both client navigation and SSR first paint (the SSR loader forwards the
+ * browser cookie — see `lib/server-cookie.ts`).
  *
- * `auth` / `metrics` / `history` / `settings` / `githubImport` / `branches` are
- * `false`: their backend endpoints are IMPLEMENTED, but real wiring is not yet
- * verified end-to-end because it needs the running api + an established
- * allowlisted OAuth session (OAuth App registration pending). Each flips to
- * `true` independently once its real path is confirmed against the running api.
+ * DEPLOY NOTE: with these `true`, the app targets the real api on every surface,
+ * so a deployment MUST have the api reachable (`VITE_API_BASE_URL`/`VITE_WS_URL`)
+ * and, for the gated domains, an established allowlisted OAuth session. To render
+ * on typed mocks instead (e.g. a backend-less preview), flip a domain to `false`.
  */
 export const BACKEND_CAPABILITIES: BackendCapabilities = {
-  // Verified real: the four endpoints the api ships today.
+  // Core REST endpoints the api ships.
   tasks: true,
   repos: true,
   createTask: true,
 
-  // Implemented backend, NOT yet verified end-to-end (needs running api + OAuth
-  // session). Flip to `true` per-domain once the real path is confirmed.
-  auth: false, // GET /auth/session — OAuth App registration pending.
-  metrics: false, // GET /metrics — needs a session-gated reachable api.
-  history: false, // audit query — needs a session-gated reachable api.
-  settings: false, // settings CRUD + Codex cred — needs a session-gated api.
-  githubImport: false, // GET /user/repos import — needs the OAuth GitHub token.
-  branches: false, // Task.branch/strategy read-back — verify with a real task.
+  // Session-gated domains — verified e2e against the running api + OAuth session.
+  auth: true, // GET /auth/session — OAuth login + allowlist gate.
+  metrics: true, // GET /metrics — semaphore capacity + docker-stats sampling.
+  history: true, // GET /audit/events — audit timeline.
+  settings: true, // /settings + /settings/codex — per-account, GitHub-identity session.
+  githubImport: true, // /repos/github/* — import via the operator's OAuth token.
+  branches: true, // Task.branch/strategy read-back on the real task read.
 };
 
 /** True when the named domain reads from the real api rather than typed mocks. */

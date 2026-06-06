@@ -49,6 +49,7 @@ import {
 } from "@cap/contracts";
 import { RepoResponseSchema } from "@cap/contracts";
 import { apiBaseUrl, operatorToken } from "../config";
+import { getIncomingCookieHeader } from "../server-cookie";
 
 /** A REST error carrying the HTTP status so callers can branch on 401/404/etc. */
 export class ApiError extends Error {
@@ -70,11 +71,18 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
 }
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
+  const headers = authHeaders(init?.headers as Record<string, string> | undefined);
+  // SSR-only: forward the incoming browser request's Cookie header so the
+  // server-side fetch carries the same OAuth session cookie the browser would
+  // send. On the client this is a no-op ("") — the browser attaches the cookie
+  // to fetch itself via `credentials: "include"` below. Never throws.
+  const incomingCookie = await getIncomingCookieHeader();
+  if (incomingCookie) headers["Cookie"] = incomingCookie;
   const res = await fetch(`${apiBaseUrl()}${path}`, {
     ...init,
     // D6: carry the (future) httpOnly session cookie cross-origin.
     credentials: "include",
-    headers: authHeaders(init?.headers as Record<string, string> | undefined),
+    headers,
   });
   if (!res.ok) {
     let detail = res.statusText;
