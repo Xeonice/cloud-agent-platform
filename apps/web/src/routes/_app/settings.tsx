@@ -37,9 +37,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CodexCredentialMode } from "@cap/contracts";
 import {
   codexCredentialQuery,
+  queryKeys,
   reposQuery,
   settingsQuery,
 } from "@/lib/api/queries";
+import { isCapable } from "@/lib/api/capabilities";
 import {
   saveCodexCredentialMutation,
   saveSettingsMutation,
@@ -162,12 +164,15 @@ function SettingsPage() {
         onOpenChange={(open) => setDialogMode(open ? "official" : null)}
         connected={cred.mode === "official" && cred.state === "connected"}
         login={login}
-        saving={saveCredential.isPending}
-        onConnect={(body) =>
-          saveCredential.mutate(body, {
-            onSuccess: () => setDialogMode(null),
-          })
-        }
+        capable={isCapable("settings")}
+        onConnected={() => {
+          // The device login stored the credential server-side; refresh the read
+          // so the panel flips to connected. Keep the dialog OPEN so it can show
+          // the "✓ 已连接" affirmation; the operator closes it with 完成.
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.codexCredential,
+          });
+        }}
       />
       <CodexApiKeyDialog
         open={dialogMode === "compatible"}

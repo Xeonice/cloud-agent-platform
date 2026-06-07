@@ -1,29 +1,20 @@
 /**
- * `CodexDirectDialog` — the 官方 Codex 账号 configuration dialog (Track 14, 14.4).
+ * `CodexDirectDialog` — the 官方 Codex 账号 connect dialog (OAuth device-code flow).
  *
- * A shadcn `Dialog` (Radix supplies Esc / backdrop close / focus trap /
- * `aria-modal` / `aria-labelledby` / focus-return). Header ("连接官方 Codex
- * 账号"), a `.credential-scope-list` (会话范围 / 密钥存储 / 仓库权限), then either
- * the empty-state note OR — when the official credential is already connected —
- * the `.codex-connected-state` strip (官方账号已连接 + the login + a green pill).
- * Footer: 连接官方账号 (saves `mode:'official'` → state `connected`) + 取消.
+ * The official ChatGPT credential is connected via OpenAI's DEVICE-CODE flow (the
+ * only remote-web-compatible path — codex's first-party OAuth client cannot
+ * redirect back to this web app). On "连接官方账号" the server runs
+ * `codex login --device-auth` in a transient sandbox and returns a verification
+ * URL + one-time code; this dialog displays them, auto-opens the URL, and polls
+ * until the operator authorizes (in their ChatGPT browser session) and codex's
+ * tokens are captured + stored encrypted server-side. No secret is ever entered
+ * here or echoed back.
  *
- * The official flow never accepts an API key (the dialog has no key field): it
- * establishes a short-lived run session, distinct from both the OAuth login
- * identity and the compatible-provider key.
- *
- * SSR-safe: Radix portals the content on the client only; no window/clock/random
- * during render. The connected display reflects the live credential, not local
- * state.
- *
- * Fidelity: dialog `min(720px, 100vw-32px)`; modal body 0/22/18 pad, 14px gap;
- * `.credential-scope-list` rows = soft `#fafafa`, radius 8, ring,
- * `minmax(110px,.42fr) 1fr` grid; connected strip = soft-green tinted, radius 8,
- * green ring, `auto 1fr auto` grid; modal actions = top hairline, 14/22/18 pad.
+ * SSR-safe: Radix portals on the client; all network/clipboard/window touches are
+ * in handlers/effects, never during render.
  */
 import * as React from "react";
 
-import type { SaveCodexCredentialRequest } from "@cap/contracts";
 import {
   Dialog,
   DialogClose,
@@ -32,6 +23,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { StatusPill } from "@/components/status-pill";
+import {
+  startCodexDeviceLogin,
+  pollCodexDeviceLogin,
+  cancelCodexDeviceLogin,
+} from "@/lib/api/real";
 
 /** One credential-scope row (label ⟷ value). */
 function ScopeRow({
@@ -53,6 +49,9 @@ function ScopeRow({
   );
 }
 
+/** Device-login UI phases. */
+type Phase = "idle" | "starting" | "awaiting" | "connected" | "error";
+
 export interface CodexDirectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -60,32 +59,146 @@ export interface CodexDirectDialogProps {
   connected: boolean;
   /** The console login shown in the connected strip (from settings). */
   login: string;
-  /** Whether a save is in flight. */
-  saving?: boolean;
-  /** Persist the official credential (`saveCodexCredentialMutation`). */
-  onConnect: (body: SaveCodexCredentialRequest) => void;
+  /** Whether the real settings backend is wired (device login needs it). */
+  capable: boolean;
+  /** Called once the device login completes + the credential is stored. */
+  onConnected: () => void;
 }
 
-/** The official-account configuration dialog. */
+/** The official-account device-code connect dialog. */
 export function CodexDirectDialog({
   open,
   onOpenChange,
   connected,
   login,
-  saving = false,
-  onConnect,
+  capable,
+  onConnected,
 }: CodexDirectDialogProps) {
-  // The pasted `~/.codex/auth.json` (from `codex login`). Held only while the
-  // dialog is open and cleared on close so the secret never lingers in state.
-  const [authJson, setAuthJson] = React.useState("");
+  const [phase, setPhase] = React.useState<Phase>("idle");
+  const [verificationUri, setVerificationUri] = React.useState<string>("");
+  const [userCode, setUserCode] = React.useState<string>("");
+  const [message, setMessage] = React.useState<string>("");
+  const [copied, setCopied] = React.useState(false);
+  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  // Refs so the close/unmount cleanups read the LATEST phase/capable without
+  // re-subscribing, and a re-entrancy guard for the connect button.
+  const phaseRef = React.useRef<Phase>(phase);
+  phaseRef.current = phase;
+  const capableRef = React.useRef(capable);
+  capableRef.current = capable;
+  const startingRef = React.useRef(false);
+
+  const stopPoll = React.useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  // Reset + cancel the in-flight server session whenever the dialog closes, so a
+  // transient login container is never left running and the dialog reopens clean.
+  // Only cancel when a login was ACTIVE (starting/awaiting) — after `connected`
+  // the server already tore the session down on harvest, so a cancel here is a
+  // pointless extra request.
   React.useEffect(() => {
-    if (!open) setAuthJson("");
-  }, [open]);
-  const trimmed = authJson.trim();
-  // A login must be pasted to connect when none is stored yet. When already
-  // connected, an empty paste re-saves official and PRESERVES the stored login
-  // (the backend "keep" action); a fresh paste replaces it (token refresh).
-  const canSubmit = !saving && (connected || trimmed.length > 0);
+    if (open) return;
+    const wasActive =
+      phaseRef.current === "starting" || phaseRef.current === "awaiting";
+    stopPoll();
+    setPhase("idle");
+    setVerificationUri("");
+    setUserCode("");
+    setMessage("");
+    setCopied(false);
+    if (capable && wasActive) void cancelCodexDeviceLogin().catch(() => undefined);
+  }, [open, capable, stopPoll]);
+
+  // On UNMOUNT (e.g. navigating away from /settings while a login is awaiting —
+  // the dialog is permanently mounted, so the close effect above does NOT run),
+  // stop polling AND cancel the server session so the transient container is
+  // reclaimed immediately rather than waiting for the sweep/TTL.
+  React.useEffect(
+    () => () => {
+      stopPoll();
+      if (
+        capableRef.current &&
+        (phaseRef.current === "starting" || phaseRef.current === "awaiting")
+      ) {
+        void cancelCodexDeviceLogin().catch(() => undefined);
+      }
+    },
+    [stopPoll],
+  );
+
+  const beginPolling = React.useCallback(() => {
+    stopPoll();
+    pollRef.current = setInterval(async () => {
+      try {
+        const status = await pollCodexDeviceLogin();
+        if (status.status === "connected") {
+          stopPoll();
+          setPhase("connected");
+          onConnected();
+        } else if (status.status === "expired" || status.status === "error") {
+          stopPoll();
+          setPhase("error");
+          setMessage(status.message ?? "登录未完成，请重试。");
+        }
+        // awaiting_authorization → keep polling
+      } catch {
+        // transient poll error — keep polling; the window/expiry guard will stop it
+      }
+    }, 3000);
+  }, [stopPoll, onConnected]);
+
+  const startConnect = React.useCallback(async () => {
+    // Re-entrancy guard: a fast double-click on 连接/重试 must not fire two starts
+    // (the server also serializes per operator, this is defense-in-depth).
+    if (startingRef.current) return;
+    if (!capable) {
+      setPhase("error");
+      setMessage("设备登录需要已部署的后端（当前为本地模拟模式）。");
+      return;
+    }
+    startingRef.current = true;
+    setPhase("starting");
+    setMessage("");
+    setCopied(false);
+    try {
+      const res = await startCodexDeviceLogin();
+      setVerificationUri(res.verificationUri);
+      setUserCode(res.userCode);
+      setPhase("awaiting");
+      // Auto-open the verification page in a new tab; the operator authorizes
+      // there (signed into ChatGPT), then this dialog polls until connected.
+      if (typeof window !== "undefined") {
+        window.open(res.verificationUri, "_blank", "noopener,noreferrer");
+      }
+      beginPolling();
+    } catch (err) {
+      setPhase("error");
+      setMessage(
+        err instanceof Error
+          ? err.message
+          : "无法发起设备登录，请稍后重试。",
+      );
+    } finally {
+      startingRef.current = false;
+    }
+  }, [capable, beginPolling]);
+
+  async function copyCode() {
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(userCode);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }
+    } catch {
+      // clipboard may be unavailable; the code is shown for manual copy anyway.
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -105,7 +218,7 @@ export function CodexDirectDialog({
               连接官方 Codex 账号
             </DialogTitle>
             <DialogDescription className="text-[13px] leading-[1.55] text-muted-foreground">
-              在本机运行 <code className="font-mono text-[12px]">codex login</code>（ChatGPT 登录），把生成的 <code className="font-mono text-[12px]">~/.codex/auth.json</code> 粘贴到下方。登录态会加密存于服务端，每个任务的沙箱按它认证 codex。GitHub 仓库权限仍由左侧账户身份控制。
+              通过 ChatGPT 的设备码授权连接（无需 API Key）。点「连接官方账号」会打开 OpenAI 授权页，登录并确认后，登录态加密存于服务端，每个任务的沙箱按它认证 codex。
             </DialogDescription>
           </div>
           <DialogClose
@@ -123,7 +236,7 @@ export function CodexDirectDialog({
             <ScopeRow label="仓库权限" value="沿用 GitHub OAuth 与仓库导入范围" />
           </div>
 
-          {connected ? (
+          {connected && phase === "idle" ? (
             <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-md bg-[color-mix(in_oklch,var(--success)_10%,white)] p-3 shadow-[color-mix(in_oklch,var(--success)_34%,rgba(0,0,0,0.08))_0_0_0_1px]">
               <span
                 aria-hidden="true"
@@ -143,40 +256,66 @@ export function CodexDirectDialog({
             </div>
           ) : null}
 
-          <div className="grid gap-2">
-            <label
-              htmlFor="codexAuthJson"
-              className="font-mono text-[11px] font-medium text-muted-foreground"
-            >
-              {connected ? "更新登录态（粘贴新的 auth.json）" : "粘贴 ~/.codex/auth.json"}
-            </label>
-            <textarea
-              id="codexAuthJson"
-              value={authJson}
-              onChange={(event) => setAuthJson(event.target.value)}
-              spellCheck={false}
-              rows={6}
-              placeholder={'{"auth_mode":"chatgpt","tokens":{ … },"last_refresh":"…"}'}
-              className="w-full resize-y rounded-md bg-[#fafafa] p-3 font-mono text-[12px] leading-[1.5] text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--primary)]"
-            />
-            <p className="text-[12px] leading-[1.5] text-muted-foreground">
-              {connected
-                ? "已连接。留空并点「重新连接」保留当前登录态；粘贴新内容则更新（token 过期时用它刷新）。"
-                : "内容仅用于服务端加密存储，不会回显，也不写入仓库。"}
+          {phase === "awaiting" ? (
+            <div className="grid gap-2.5 rounded-md bg-[#fafafa] p-3.5 shadow-[inset_0_0_0_1px_var(--border)]">
+              <p className="text-[13px] leading-[1.55] text-foreground">
+                1. 已打开 OpenAI 授权页（未弹出请点
+                <a
+                  href={verificationUri}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mx-1 underline decoration-dotted underline-offset-2"
+                >
+                  这里
+                </a>
+                ），登录你的 ChatGPT 账号。
+              </p>
+              <p className="text-[13px] leading-[1.55] text-foreground">
+                2. 在页面输入这个一次性码（15 分钟内有效）：
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="select-all rounded-md bg-background px-3 py-2 font-mono text-[18px] font-bold tracking-[2px] text-ink shadow-[inset_0_0_0_1px_var(--border)]">
+                  {userCode}
+                </code>
+                <button
+                  type="button"
+                  onClick={copyCode}
+                  className="inline-flex min-h-8 items-center rounded-md bg-secondary px-2.5 text-[12px] font-medium text-foreground shadow-ring hover:bg-secondary/80"
+                >
+                  {copied ? "已复制" : "复制"}
+                </button>
+              </div>
+              <p className="flex items-center gap-2 text-[12px] text-muted-foreground">
+                <span className="inline-block size-2 animate-pulse rounded-full bg-[var(--success)]" />
+                授权完成后会自动连接，请勿关闭此窗口…
+              </p>
+            </div>
+          ) : null}
+
+          {phase === "connected" ? (
+            <p className="text-[13px] font-medium text-[var(--success)]">
+              ✓ 已连接官方账号，登录态已加密存储。
             </p>
-          </div>
+          ) : null}
+
+          {phase === "error" ? (
+            <p className="text-[13px] leading-[1.55] text-[var(--destructive)]">
+              {message}
+            </p>
+          ) : null}
+
+          {phase === "idle" && !connected ? (
+            <p className="text-[13px] leading-[1.55] text-muted-foreground">
+              前提：先在 ChatGPT「设置 → 安全」里启用「设备码登录」，再点下方连接。
+            </p>
+          ) : null}
         </div>
 
         <div className="flex flex-wrap gap-2.5 border-t border-border p-[14px_22px_18px] max-[560px]:grid max-[560px]:grid-cols-1">
           <button
             type="button"
-            disabled={!canSubmit}
-            onClick={() =>
-              onConnect({
-                mode: "official",
-                ...(trimmed.length > 0 ? { authJson: trimmed } : {}),
-              })
-            }
+            disabled={phase === "starting" || phase === "awaiting"}
+            onClick={() => void startConnect()}
             className="inline-flex min-h-9 items-center justify-center gap-2.5 rounded-md bg-primary px-3.5 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
           >
             <span
@@ -185,10 +324,20 @@ export function CodexDirectDialog({
             >
               C
             </span>
-            <span>{connected ? "重新连接" : "连接官方账号"}</span>
+            <span>
+              {phase === "starting"
+                ? "准备中…"
+                : phase === "awaiting"
+                  ? "等待授权…"
+                  : phase === "error"
+                    ? "重试"
+                    : connected
+                      ? "重新连接"
+                      : "连接官方账号"}
+            </span>
           </button>
           <DialogClose className="inline-flex min-h-9 items-center justify-center rounded-md bg-secondary px-3.5 text-[13px] font-medium text-foreground shadow-ring hover:bg-secondary/80">
-            取消
+            {phase === "connected" ? "完成" : "取消"}
           </DialogClose>
         </div>
       </DialogContent>

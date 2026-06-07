@@ -178,3 +178,45 @@ export const SaveCodexCredentialRequestSchema = z.object({
 export type SaveCodexCredentialRequest = z.infer<
   typeof SaveCodexCredentialRequestSchema
 >;
+
+// ---------------------------------------------------------------------------
+// Official ChatGPT connect — OAuth device-code flow
+// ---------------------------------------------------------------------------
+
+/**
+ * Response to STARTING an official-account device-code login. The server runs
+ * `codex login --device-auth` in a transient sandbox and surfaces the OpenAI
+ * verification URL + one-time code; the operator authorizes in their browser
+ * (signed into ChatGPT), then the client polls {@link CodexDeviceLoginStatus}
+ * until codex receives the tokens and the server stores them encrypted. No
+ * secret is in this response — only the public verification URL + user code.
+ */
+export const CodexDeviceLoginStartResponseSchema = z.object({
+  /** OpenAI's device verification URL the operator opens (e.g. https://auth.openai.com/codex/device). */
+  verificationUri: z.string().url(),
+  /** The one-time code the operator enters at the verification URL. */
+  userCode: z.string().min(1),
+  /** Seconds until the code expires (codex's device codes last ~15 minutes). */
+  expiresInSeconds: z.number().int().positive().optional(),
+});
+export type CodexDeviceLoginStartResponse = z.infer<
+  typeof CodexDeviceLoginStartResponseSchema
+>;
+
+/**
+ * Poll status of an in-flight device-code login:
+ *  - `awaiting_authorization`: code issued, waiting for the operator to authorize.
+ *  - `connected`: codex received the tokens; the credential is now stored.
+ *  - `expired`: the code/window lapsed before authorization.
+ *  - `error`: the login could not start/complete (e.g. device-auth not enabled).
+ * The verification URL + user code are echoed back while awaiting so a client
+ * that polls fresh (no start response) can still render them.
+ */
+export const CodexDeviceLoginStatusSchema = z.object({
+  status: z.enum(['awaiting_authorization', 'connected', 'expired', 'error']),
+  verificationUri: z.string().url().nullable().optional(),
+  userCode: z.string().min(1).nullable().optional(),
+  /** Human-readable detail for `error`/`expired` (never a secret). */
+  message: z.string().nullable().optional(),
+});
+export type CodexDeviceLoginStatus = z.infer<typeof CodexDeviceLoginStatusSchema>;

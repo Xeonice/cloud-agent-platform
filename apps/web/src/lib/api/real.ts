@@ -26,6 +26,8 @@ import {
   ListAuditEventsResponseSchema,
   AccountSettingsSchema,
   CodexCredentialSchema,
+  CodexDeviceLoginStartResponseSchema,
+  CodexDeviceLoginStatusSchema,
   ListAvailableGithubReposResponseSchema,
   DefaultRepoResponseSchema,
   type ListTasksResponse,
@@ -41,6 +43,8 @@ import {
   type UpdateSettingsRequest,
   type CodexCredential,
   type SaveCodexCredentialRequest,
+  type CodexDeviceLoginStartResponse,
+  type CodexDeviceLoginStatus,
   type ListAvailableGithubReposResponse,
   type ImportRepoRequest,
   type RepoResponse,
@@ -213,6 +217,29 @@ export async function saveCodexCredential(
       body: JSON.stringify(body),
     }),
   );
+}
+
+/**
+ * `POST /settings/codex/device-login` — start the OFFICIAL ChatGPT OAuth
+ * device-code login (server runs `codex login --device-auth`); returns the
+ * verification URL + one-time code to display.
+ */
+export async function startCodexDeviceLogin(): Promise<CodexDeviceLoginStartResponse> {
+  return CodexDeviceLoginStartResponseSchema.parse(
+    await request("/settings/codex/device-login", { method: "POST" }),
+  );
+}
+
+/** `GET /settings/codex/device-login` — poll the in-flight device login. */
+export async function pollCodexDeviceLogin(): Promise<CodexDeviceLoginStatus> {
+  return CodexDeviceLoginStatusSchema.parse(
+    await request("/settings/codex/device-login"),
+  );
+}
+
+/** `DELETE /settings/codex/device-login` — cancel + reclaim the in-flight login. */
+export async function cancelCodexDeviceLogin(): Promise<void> {
+  await request("/settings/codex/device-login", { method: "DELETE" });
 }
 
 /**

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { ModelDiscoveryClient } from './model-discovery.client';
+import { CodexDeviceLoginService } from './codex-device-login.service';
 
 /**
  * Account-settings feature module (account-settings, tasks 7.2–7.6).
@@ -19,7 +20,7 @@ import { ModelDiscoveryClient } from './model-discovery.client';
  */
 @Module({
   controllers: [SettingsController],
-  providers: [SettingsService, ModelDiscoveryClient],
+  providers: [SettingsService, ModelDiscoveryClient, CodexDeviceLoginService],
   exports: [SettingsService],
 })
 export class SettingsModule {}

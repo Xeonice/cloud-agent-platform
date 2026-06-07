@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -17,6 +18,8 @@ import {
   UpdateSettingsRequestSchema,
   type AccountSettings,
   type CodexCredential,
+  type CodexDeviceLoginStartResponse,
+  type CodexDeviceLoginStatus,
   type SaveCodexCredentialRequest,
   type SessionUser,
   type UpdateSettingsRequest,
@@ -24,6 +27,7 @@ import {
 import type { AuthenticatedRequest } from '../auth/auth.guard';
 import { ZodValidationPipe } from '../repos/zod-validation.pipe';
 import { SettingsService } from './settings.service';
+import { CodexDeviceLoginService } from './codex-device-login.service';
 import type { ModelDiscoveryResult } from './model-discovery.client';
 
 /**
@@ -66,7 +70,10 @@ export type DiscoverModelsRequest = z.infer<typeof DiscoverModelsRequestSchema>;
  */
 @Controller('settings')
 export class SettingsController {
-  constructor(private readonly settings: SettingsService) {}
+  constructor(
+    private readonly settings: SettingsService,
+    private readonly deviceLogin: CodexDeviceLoginService,
+  ) {}
 
   @Get()
   async read(@Req() req: AuthenticatedRequest): Promise<AccountSettings> {
@@ -120,6 +127,35 @@ export class SettingsController {
       body.baseUrl,
       body.apiKey,
     );
+  }
+
+  /**
+   * Start an OFFICIAL-account OAuth device-code login: provisions a transient
+   * codex container, launches `codex login --device-auth`, and returns the OpenAI
+   * verification URL + one-time code for the operator to authorize. The client
+   * then polls `GET /settings/codex/device-login`.
+   */
+  @Post('codex/device-login')
+  @HttpCode(HttpStatus.OK)
+  async startDeviceLogin(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<CodexDeviceLoginStartResponse> {
+    return this.deviceLogin.start(this.requireOperator(req));
+  }
+
+  /** Poll the in-flight device login; `connected` once the credential is stored. */
+  @Get('codex/device-login')
+  async pollDeviceLogin(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<CodexDeviceLoginStatus> {
+    return this.deviceLogin.pollStatus(this.requireOperator(req));
+  }
+
+  /** Cancel + reclaim the in-flight device login (operator dismissed the dialog). */
+  @Delete('codex/device-login')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async cancelDeviceLogin(@Req() req: AuthenticatedRequest): Promise<void> {
+    await this.deviceLogin.cancel(this.requireOperator(req));
   }
 
   /**
