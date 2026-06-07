@@ -56,6 +56,13 @@ services:
     env_file:
       - path: apps/api/.env
         required: false
+      # Dokploy self-host deploy target: secrets are provided as a Dokploy
+      # "file mount" written to <appName>/files/api.env, a SIBLING of the
+      # cloned code dir — hence ../files relative to this compose file. The
+      # path does not exist for local dev / CI / other targets, so it is
+      # required:false there, exactly like the apps/api/.env entry above.
+      - path: ../files/api.env
+        required: false
     environment:
       PORT: "8080"
       # session.log lives under here, on the persistent named volume below.
