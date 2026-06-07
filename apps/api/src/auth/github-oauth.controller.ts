@@ -11,7 +11,12 @@ import type { Request, Response } from 'express';
 import type { AuthSessionResponse, SessionUser } from '@cap/contracts';
 import { GitHubOAuthService } from './github-oauth.service';
 import { AuthSessionService } from './auth-session.service';
-import { readOAuthAppConfig, readSessionSecret, readWebOrigin } from './oauth-config';
+import {
+  readOAuthAppConfig,
+  readSessionSecret,
+  readWebOrigin,
+  readSessionCookieDomain,
+} from './oauth-config';
 import {
   OAUTH_STATE_COOKIE_NAME,
   SESSION_COOKIE_NAME,
@@ -194,6 +199,12 @@ export class GitHubOAuthController {
     // http://localhost as a secure context. When same-origin (no WEB_ORIGIN) we
     // keep the tighter Lax + the observed-protocol Secure logic.
     const crossOrigin = GitHubOAuthController.isCrossOrigin(req, webOrigin);
+    // A cross-SUBDOMAIN deploy (web `cap.douglasdong.com`, api
+    // `cap-api.douglasdong.com`) sets SESSION_COOKIE_DOMAIN=.douglasdong.com so
+    // the session cookie rides the browser's top-level requests to the web
+    // origin too — letting the web app's SSR loader (which fetches the api
+    // server-side) receive it. Unset (host-only) for same-origin / cross-site.
+    const cookieDomain = readSessionCookieDomain() ?? undefined;
     res.setHeader('Set-Cookie', [
       clearStateCookie,
       serializeCookie(SESSION_COOKIE_NAME, session.token, {
@@ -201,6 +212,7 @@ export class GitHubOAuthController {
         secure: crossOrigin ? true : GitHubOAuthController.isSecureRequest(req),
         sameSite: crossOrigin ? 'None' : 'Lax',
         path: '/',
+        domain: cookieDomain,
         maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1000),
       }),
     ]);
@@ -233,6 +245,8 @@ export class GitHubOAuthController {
   async logout(@Req() req: Request, @Res() res: Response): Promise<void> {
     const token = readCookie(req.headers.cookie, SESSION_COOKIE_NAME);
     await this.authSession.revokeSession(token);
+    // Clear must carry the SAME Domain the session cookie was set with, or the
+    // browser keeps a domain-scoped cookie the host-only clear can't match.
     res.setHeader(
       'Set-Cookie',
       serializeCookie(SESSION_COOKIE_NAME, '', {
@@ -240,6 +254,7 @@ export class GitHubOAuthController {
         secure: GitHubOAuthController.isSecureRequest(req),
         sameSite: 'Lax',
         path: '/',
+        domain: readSessionCookieDomain() ?? undefined,
         maxAgeSeconds: 0,
       }),
     );

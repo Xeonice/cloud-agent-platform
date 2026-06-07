@@ -24,6 +24,7 @@ export const ENV = {
   AUTH_TOKEN_LEGACY_ENABLED: 'AUTH_TOKEN_LEGACY_ENABLED',
   AUTH_TOKEN: 'AUTH_TOKEN',
   WEB_ORIGIN: 'WEB_ORIGIN',
+  SESSION_COOKIE_DOMAIN: 'SESSION_COOKIE_DOMAIN',
 } as const;
 
 /** GitHub OAuth 2.0 endpoints (authorize / token / user). */
@@ -142,6 +143,27 @@ export function parseWebOrigins(raw: string | undefined): string[] {
 export function readWebOrigin(env: NodeJS.ProcessEnv = process.env): string | null {
   const origins = parseWebOrigins(env[ENV.WEB_ORIGIN]);
   return origins.length > 0 ? origins[0] : null;
+}
+
+/**
+ * The `Domain` attribute to set on the session cookie, or `null` when unset.
+ *
+ * Default (`null`) keeps the cookie HOST-ONLY — scoped to the exact api host —
+ * which is correct for same-origin and same-host deploys. Set
+ * `SESSION_COOKIE_DOMAIN` to a registrable parent (e.g. `.douglasdong.com`) for
+ * a cross-SUBDOMAIN deploy where the web app lives on a SIBLING subdomain of the
+ * api (web `cap.douglasdong.com`, api `cap-api.douglasdong.com`): the cookie
+ * then rides BOTH the browser's top-level requests to the web origin (so the
+ * SSR loader, fetching the api server-side, receives it) AND the api's own
+ * cross-origin reads. Leave UNSET for cross-SITE deploys (web on `*.vercel.app`,
+ * api on `*.douglasdong.com`) — no parent domain can bridge two registrable
+ * domains, so a host-only `SameSite=None` cookie is the only (browser-limited)
+ * option there.
+ */
+export function readSessionCookieDomain(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  return nonEmpty(env[ENV.SESSION_COOKIE_DOMAIN]);
 }
 
 /** Returns a trimmed non-empty string, or `null` for undefined/blank input. */

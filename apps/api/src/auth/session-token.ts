@@ -140,6 +140,16 @@ export interface CookieOptions {
   readonly secure?: boolean;
   readonly sameSite?: 'Lax' | 'Strict' | 'None';
   readonly path?: string;
+  /**
+   * Cookie `Domain` attribute. Omit (default) for a host-only cookie scoped to
+   * the exact response host. Set to a registrable parent (e.g. `.example.com`)
+   * so a cross-SUBDOMAIN deploy — web on `app.example.com`, api on
+   * `api.example.com` — shares one session cookie across both the browser's
+   * top-level requests AND the api's cross-origin reads. A leading dot is
+   * optional in modern browsers (RFC 6265 treats `example.com` and
+   * `.example.com` alike); we pass the value through verbatim.
+   */
+  readonly domain?: string;
   /** Max-Age in seconds. Use `0` to expire immediately (clear the cookie). */
   readonly maxAgeSeconds?: number;
 }
@@ -152,6 +162,9 @@ export interface CookieOptions {
 export function serializeCookie(name: string, value: string, options: CookieOptions = {}): string {
   const segments = [`${name}=${value}`];
   segments.push(`Path=${options.path ?? '/'}`);
+  if (options.domain) {
+    segments.push(`Domain=${options.domain}`);
+  }
   if (options.httpOnly) {
     segments.push('HttpOnly');
   }
