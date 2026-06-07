@@ -15,6 +15,7 @@ import type {
 } from './sandbox-provider.port.js';
 import { CODEX_AUTH_SOURCE, type CodexAuthSource } from './codex-auth-source.port';
 import { PROVISION_LOOKUP, type ProvisionLookup } from './provision-lookup.port';
+import { CODEX_PROMPT_FILE_PATH } from '../terminal/codex-launch';
 
 /**
  * AIO Sandbox `SandboxProvider` (aio-sandbox-execution, design D — connect-in).
@@ -193,6 +194,10 @@ export class AioSandboxProvider
       // the PTY and codex auto-launches — so codex authenticates on startup. Then
       // clone the task repo. Both AFTER readiness and BEFORE the handle returns.
       await this.injectCodexAuth(baseUrl, ctx.taskId);
+      // Inject the operator's task prompt as a file so codex starts with the goal
+      // pre-filled (aio-codex-prompt-autostart). After auth (same ~/.codex dir),
+      // before the handle returns; fails CLOSED on a write error like the others.
+      await this.injectTaskPrompt(baseUrl, ctx.taskId);
       await this.cloneTaskRepository(baseUrl, ctx.taskId);
     } catch (err) {
       await this.teardownSandbox(ctx.taskId).catch(() => undefined);
@@ -450,6 +455,58 @@ export class AioSandboxProvider
     this.logger.debug(
       `wrote codex setup (config.toml${material ? ' + auth.json' : ''}) into sandbox for task ${taskId}`,
     );
+  }
+
+  /**
+   * Write the operator's task prompt into the sandbox at
+   * {@link CODEX_PROMPT_FILE_PATH} so the bridge pre-fills codex's composer with
+   * the goal via `"$(cat <file>)"` (aio-codex-prompt-autostart). The prompt is
+   * base64-decoded in-container — the SAME shell-injection-safe idiom as the
+   * auth/config injection — so arbitrary free-text (quotes, backticks, `$`,
+   * newlines) is never touched by the shell and never reaches the launch argv (so
+   * it cannot trip the hook-disabling launch guard).
+   *
+   * When the task has no prompt this is a no-op (no file written); the launch line
+   * then opens codex with a blank composer. A non-zero exit IS a real provision
+   * failure — fail closed, mirroring {@link injectCodexAuth}, since a task that
+   * silently launches goal-less would burn a run slot doing nothing.
+   */
+  private async injectTaskPrompt(baseUrl: string, taskId: string): Promise<void> {
+    const prompt = await this.lookup.getTaskPrompt(taskId);
+    if (!prompt) {
+      this.logger.debug(
+        `no task prompt for task ${taskId}; codex opens a blank composer`,
+      );
+      return;
+    }
+    const promptB64 = Buffer.from(prompt, 'utf8').toString('base64');
+    // base64 has no single quote, so single-quoting the payload is safe and stops
+    // the shell from touching it. mkdir is idempotent (the auth injection already
+    // made the dir; kept so this method is order-independent).
+    const dir = '/home/gem/.codex';
+    const command =
+      `mkdir -p ${dir} && printf %s '${promptB64}' | base64 -d > ${CODEX_PROMPT_FILE_PATH} && chmod 600 ${CODEX_PROMPT_FILE_PATH}`;
+    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command }),
+    });
+    if (!res.ok) {
+      throw new Error(
+        `task prompt injection for task ${taskId} failed: /v1/shell/exec responded ${res.status}`,
+      );
+    }
+    const { exitCode, output } = AioSandboxProvider.parseExecResult(
+      await res.json().catch(() => undefined),
+    );
+    if (exitCode !== 0) {
+      const scrubbed = AioSandboxProvider.scrubSecrets(output);
+      throw new Error(
+        `task prompt injection for task ${taskId} failed: exit_code ${exitCode}` +
+          (scrubbed ? ` — ${scrubbed.trim()}` : ''),
+      );
+    }
+    this.logger.debug(`wrote task prompt into sandbox for task ${taskId}`);
   }
 
   /**

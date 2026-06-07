@@ -36,6 +36,16 @@ export interface ProvisionLookup {
    * Returns `null` when no repo/url resolves — the provider then SKIPS the clone.
    */
   getCloneSpec(taskId: string): Promise<CloneSpec | null>;
+
+  /**
+   * Resolve `taskId`'s operator-supplied prompt (`task.prompt`) — the goal the
+   * provider injects into the sandbox at provision time so codex starts with it
+   * pre-filled (aio-codex-prompt-autostart). Returns `null`/empty when the task
+   * has no prompt; the provider then launches codex with a blank composer.
+   * Lives behind the port (not a provider DB call) so the provider stays a pure
+   * port consumer.
+   */
+  getTaskPrompt(taskId: string): Promise<string | null>;
 }
 
 /**

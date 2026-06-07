@@ -37,6 +37,21 @@ export class PrismaProvisionLookup implements ProvisionLookup {
   }
 
   /**
+   * The operator-supplied prompt (`task.prompt`) for `taskId`, used by the
+   * provider to pre-fill codex's composer with the goal. Returns `null` when the
+   * task is missing or its prompt is empty. This is where the DB access lives so
+   * {@link AioSandboxProvider} stays a pure port consumer.
+   */
+  async getTaskPrompt(taskId: string): Promise<string | null> {
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { prompt: true },
+    });
+    const raw = task?.prompt;
+    return raw && raw.trim().length > 0 ? raw : null;
+  }
+
+  /**
    * The single allowed operator's stored GitHub OAuth access token (single-user
    * self-host: the allowlist admits exactly one identity, so the earliest allowed
    * user holding a captured token IS the operator). Used only to authenticate the

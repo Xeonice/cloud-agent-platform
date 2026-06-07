@@ -22,7 +22,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -68,6 +68,11 @@ function compileProvider() {
       providerSrc,
       join(__dirname, 'codex-auth-source.port.ts'),
       join(__dirname, 'provision-lookup.port.ts'),
+      // The provider now imports the shared launch contract (the prompt-file path)
+      // from ../terminal/codex-launch — a dependency-free leaf. Listed so its .js
+      // is emitted; the cross-directory import makes tsc preserve the src/ tree, so
+      // the emitted provider lands under a nested path (findFile resolves it).
+      join(__dirname, '..', 'terminal', 'codex-launch.ts'),
       '--outDir',
       outDir,
       '--module',
@@ -83,7 +88,26 @@ function compileProvider() {
     ],
     { cwd: apiRoot, stdio: 'pipe' },
   );
-  return join(outDir, 'aio-sandbox.provider.js');
+  const flat = join(outDir, 'aio-sandbox.provider.js');
+  if (existsSync(flat)) return flat;
+  const nested = join(outDir, 'sandbox', 'aio-sandbox.provider.js');
+  if (existsSync(nested)) return nested;
+  const hit = findFile(outDir, 'aio-sandbox.provider.js');
+  if (hit) return hit;
+  throw new Error('compiled aio-sandbox.provider.js not found under ' + outDir);
+}
+
+function findFile(dir, name) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const found = findFile(p, name);
+      if (found) return found;
+    } else if (entry.name === name) {
+      return p;
+    }
+  }
+  return null;
 }
 
 // ---- test fixtures ----------------------------------------------------------
@@ -173,10 +197,16 @@ function installFetchMock(execExitCode = 0, execOutput = '') {
  * instead of reading `TASK_REPO_URL` directly. `cloneUrl` becomes `{ url }`
  * (no auth header — the option/clone assertions use a public test URL).
  */
-function makeLookup(cloneUrl = null) {
+function makeLookup(cloneUrl = null, taskPrompt = null) {
   return {
     async getCloneSpec() {
       return cloneUrl ? { url: cloneUrl } : null;
+    },
+    // aio-codex-prompt-autostart: the provider resolves the task's prompt through
+    // this port and injects it as a file. Null/empty → no prompt file written
+    // (blank composer) and no extra /v1/shell/exec.
+    async getTaskPrompt() {
+      return taskPrompt;
     },
   };
 }
@@ -387,6 +417,112 @@ try {
     } finally {
       authMock.restore();
     }
+
+    // ---- task prompt injection (aio-codex-prompt-autostart) ------------------
+    // A non-empty task prompt is written into the sandbox at
+    // /home/gem/.codex/task-prompt.txt via /v1/shell/exec, base64-decoded +
+    // chmod 600 — the shell-injection-safe idiom, so arbitrary free-text never
+    // reaches the shell or the launch argv.
+    const promptMock = installFetchMock(0, '');
+    try {
+      const prompt = 'fix the bug; do NOT use --yolo & echo "$HOME" `whoami`';
+      const pPrompt = new AioSandboxProvider(
+        makeLookup(null, prompt), // skip clone — isolate the prompt-inject exec
+        makeCodexAuthSource(),
+      );
+      pPrompt.docker = makeFakeDocker(makeFakeContainer());
+      await pPrompt.provision({ taskId: 'task-prompt' });
+      const promptCall = promptMock.fetchCalls.find(
+        (c) =>
+          c.url.endsWith('/v1/shell/exec') &&
+          JSON.parse(c.init.body).command.includes('/home/gem/.codex/task-prompt.txt'),
+      );
+      assert(
+        promptCall !== undefined,
+        'task prompt injected via POST /v1/shell/exec to /home/gem/.codex/task-prompt.txt',
+      );
+      const pcmd = promptCall ? JSON.parse(promptCall.init.body).command : '';
+      const expectedB64 = Buffer.from(prompt, 'utf8').toString('base64');
+      assert(
+        pcmd.includes(`'${expectedB64}'`),
+        'prompt payload is the single-quoted base64 of task.prompt (no raw text inlined)',
+      );
+      assert(
+        !pcmd.includes('--yolo') && !pcmd.includes('whoami') && !pcmd.includes('$HOME'),
+        'raw prompt free-text (quotes/$/backticks/--yolo) never appears in the shell command',
+      );
+      assert(
+        pcmd.includes('base64 -d') && pcmd.includes('chmod 600'),
+        'prompt injection base64-decodes the payload and chmod 600 the file',
+      );
+    } finally {
+      promptMock.restore();
+    }
+
+    // ---- empty prompt → NO task-prompt.txt write (codex opens a blank composer)
+    const noPromptMock = installFetchMock(0, '');
+    try {
+      const pNo = new AioSandboxProvider(makeLookup(null, null), makeCodexAuthSource());
+      pNo.docker = makeFakeDocker(makeFakeContainer());
+      await pNo.provision({ taskId: 'task-no-prompt' });
+      const promptCall = noPromptMock.fetchCalls.find(
+        (c) =>
+          c.url.endsWith('/v1/shell/exec') &&
+          JSON.parse(c.init.body).command.includes('task-prompt.txt'),
+      );
+      assert(
+        promptCall === undefined,
+        'empty prompt → no task-prompt.txt write (codex opens a blank composer)',
+      );
+    } finally {
+      noPromptMock.restore();
+    }
+
+    // ---- prompt injection fails CLOSED on a non-zero exit --------------------
+    // Bespoke mock: the config.toml/auth exec succeeds (exit 0) but the
+    // task-prompt.txt write exits non-zero, isolating the prompt-inject failure.
+    const promptFailContainer = makeFakeContainer();
+    const origFetch = globalThis.fetch;
+    let promptFailThrew = false;
+    let pfMsg = '';
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.endsWith('/v1/shell/exec')) {
+        const cmd = JSON.parse(init.body).command;
+        const exit_code = cmd.includes('task-prompt.txt') ? 1 : 0;
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              success: true,
+              data: { status: 'completed', exit_code, output: exit_code ? 'prompt write boom' : '' },
+            };
+          },
+        };
+      }
+      return { ok: true, status: 200, async json() { return {}; } };
+    };
+    try {
+      const pPf = new AioSandboxProvider(makeLookup(null, 'some goal'), makeCodexAuthSource());
+      pPf.docker = makeFakeDocker(promptFailContainer);
+      await pPf.provision({ taskId: 'task-prompt-fail' });
+    } catch (err) {
+      promptFailThrew = true;
+      pfMsg = err instanceof Error ? err.message : String(err);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+    assert(promptFailThrew, 'provision rejects when prompt injection exits non-zero (fail-closed)');
+    assert(
+      pfMsg.includes('prompt injection') && pfMsg.includes('1'),
+      'fail-closed error identifies the prompt-injection failure and exit code',
+    );
+    assert(
+      promptFailContainer.calls.started === 1 &&
+        (promptFailContainer.calls.stopped >= 1 || promptFailContainer.calls.removed >= 1),
+      'a prompt-injection failure tears the started container down (no leak)',
+    );
 
     // ---- post-start provision failure tears the container down (no leak) -------
     // A non-zero codex-auth-inject exit fails provision (fail-closed); the already

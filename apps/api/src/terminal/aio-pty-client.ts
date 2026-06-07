@@ -33,6 +33,7 @@
 import { Logger } from '@nestjs/common';
 import WebSocket from 'ws';
 import type { TerminalPty } from './terminal.gateway';
+import { argvDisablesHooks, buildCodexLaunchLine } from './codex-launch';
 
 /**
  * The DSR (Device Status Report) cursor-position query crossterm emits on
@@ -72,9 +73,35 @@ const SYNTHETIC_CPR_REPLY = '\x1b[1;1R';
  * The derived image bakes the SAME string as `CODEX_LAUNCH_ARGV`
  * (docker/aio-sandbox.Dockerfile) as the single source of truth; this default
  * mirrors it so the bridge stays correct when the env is not threaded through.
+ *
+ * This is the BASE argv only. `launchCodex` wraps it with `buildCodexLaunchLine`,
+ * which appends the task's prompt as codex's positional `[PROMPT]` via
+ * `"$(cat <prompt-file>)"` (pre-filling the composer) without inlining the prompt
+ * text. Because the positional prompt only PRE-FILLS (it does not auto-run),
+ * `onOutput` injects a single Enter once the startup DSR is seen and output
+ * quiesces — the zero-touch auto-submit (aio-codex-prompt-autostart).
  */
 const DEFAULT_CODEX_LAUNCH_ARGV =
   'codex -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
+
+/**
+ * The Enter key (carriage return) codex's TUI composer submits on. Injected ONCE
+ * as the zero-touch prompt auto-submit (aio-codex-prompt-autostart): codex's
+ * positional `[PROMPT]` only PRE-FILLS the composer, so a single `\r` after the
+ * TUI is up and idle submits the pre-filled goal with no operator keystroke.
+ */
+const CODEX_SUBMIT_KEY = '\r';
+
+/**
+ * Output-quiescence window (ms) the prompt auto-submit waits for AFTER codex's
+ * startup DSR is observed before injecting {@link CODEX_SUBMIT_KEY}: a stretch of
+ * no output means the initial render is done and the pre-filled composer is idle
+ * and ready for Enter. Env-tunable (`CODEX_AUTOSUBMIT_QUIESCE_MS`) so the live
+ * value can be tuned without a rebuild and tests can drive it fast.
+ */
+const CODEX_PROMPT_AUTOSUBMIT_QUIESCE_MS = Number(
+  process.env['CODEX_AUTOSUBMIT_QUIESCE_MS'] ?? 800,
+);
 
 /** A sandbox AIO JSON frame received over the terminal WebSocket. */
 interface AioInboundFrame {
@@ -118,6 +145,19 @@ export class AioPtyClient implements TerminalPty {
 
   /** Resolves once exit detection has resolved the status, to dedupe. */
   private exitResolved = false;
+
+  /**
+   * True once codex's startup DSR (`\x1b[6n`) has been observed in the output —
+   * the signal that codex's TUI (not the shell) now owns the terminal. Gates the
+   * zero-touch prompt auto-submit so a `\r` can never land in the bash shell.
+   */
+  private dsrSeen = false;
+
+  /** True once the zero-touch prompt auto-submit Enter has been injected (once). */
+  private promptSubmitted = false;
+
+  /** Debounce timer backing the output-quiescence prompt auto-submit. */
+  private autoSubmitTimer?: ReturnType<typeof setTimeout>;
 
   /**
    * @param taskId   The task this terminal belongs to.
@@ -189,12 +229,20 @@ export class AioPtyClient implements TerminalPty {
     // Guard: never launch codex with a flag that DISABLES hooks. `-s` /
     // bypass-approvals turn the baked approval hooks off, which would fail OPEN
     // on approvals; refuse rather than launch an unguarded agent.
-    if (/(^|\s)-s(\s|$)|bypass-approvals|(^|\s)--yolo(\s|$)/.test(argv)) {
+    // Guard inspects ONLY the fixed launch flags (`argv`), never the operator
+    // prompt text — the prompt rides the injected file referenced via
+    // `"$(cat …)"` inside buildCodexLaunchLine, so a prompt that merely mentions
+    // `-s`/`--yolo`/`bypass-approvals` cannot false-positive here.
+    if (argvDisablesHooks(argv)) {
       throw new Error(
         `refusing to launch codex with hook-disabling flags (-s / --yolo / bypass-approvals would fail open on approvals): ${argv}`,
       );
     }
-    this.sendInput(`${argv}\n`);
+    // Launch codex with the task prompt PRE-FILLED into the composer (when one
+    // was injected at provision time) without inlining the prompt text. The
+    // pre-filled goal is then auto-submitted by the output-quiescence trigger in
+    // `onOutput` (codex's positional prompt does not auto-run on its own).
+    this.sendInput(`${buildCodexLaunchLine(argv)}\n`);
   }
 
   /**
@@ -291,11 +339,40 @@ export class AioPtyClient implements TerminalPty {
     // reply immediately so codex proceeds past startup (design D ★).
     if (data.includes(DSR_CURSOR_POSITION_QUERY)) {
       this.sendInput(SYNTHETIC_CPR_REPLY);
+      // The DSR is emitted only by codex's crossterm at TUI startup, never by the
+      // shell — observing it confirms codex (not the shell) now owns the terminal,
+      // the gate for the zero-touch prompt auto-submit below.
+      this.dsrSeen = true;
     }
+
+    // Zero-touch prompt auto-submit: codex's positional prompt only PRE-FILLS the
+    // composer, so once its TUI has started (DSR seen) and output has quiesced
+    // (initial render done, composer idle), inject a single Enter to submit the
+    // pre-filled goal. Re-armed (debounced) on every output frame after the DSR.
+    this.maybeArmPromptAutoSubmit();
 
     // Emit the decoded output into the existing raw pipeline; the gateway
     // base64-encodes it as a `raw` frame for the browser (unchanged protocol).
     this.emitData(data);
+  }
+
+  /**
+   * Arm/re-arm the output-quiescence timer that injects the prompt auto-submit
+   * Enter exactly once. Only active when codex was auto-launched and its startup
+   * DSR has been seen; each output frame resets the timer so the Enter fires only
+   * after a stretch of NO output (the rendered composer sitting idle, ready for
+   * input). A misfire degrades to a still-pre-filled composer the operator can
+   * submit manually — never a lost goal — so this is best-effort and never throws.
+   */
+  private maybeArmPromptAutoSubmit(): void {
+    if (!this.autoLaunchCodex || !this.dsrSeen || this.promptSubmitted) return;
+    if (this.autoSubmitTimer) clearTimeout(this.autoSubmitTimer);
+    this.autoSubmitTimer = setTimeout(() => {
+      this.autoSubmitTimer = undefined;
+      if (this.promptSubmitted) return;
+      this.promptSubmitted = true;
+      this.sendInput(CODEX_SUBMIT_KEY);
+    }, CODEX_PROMPT_AUTOSUBMIT_QUIESCE_MS);
   }
 
   /** Fan a translated raw output chunk out to every `onData` subscriber. */
@@ -318,6 +395,11 @@ export class AioPtyClient implements TerminalPty {
    * guardrails-wiring).
    */
   private onSocketClose(): void {
+    // Cancel any pending prompt auto-submit so it cannot fire after the WS closed.
+    if (this.autoSubmitTimer) {
+      clearTimeout(this.autoSubmitTimer);
+      this.autoSubmitTimer = undefined;
+    }
     if (this.exitResolved) return;
     this.exitResolved = true;
     void this.resolveExitStatus().then((status) => {
