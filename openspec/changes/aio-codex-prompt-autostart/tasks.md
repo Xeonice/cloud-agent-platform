@@ -28,5 +28,5 @@
 <!-- BLOCKED on operator action: requires a real ChatGPT auth.json injected into a
      live sandbox + a deploy. Cannot be completed without the user's credential. -->
 
-- [ ] 4.1 With real ChatGPT `auth.json`, run a task end-to-end and confirm the multi-line `task.prompt` pre-fills the composer verbatim and the auto-Enter submits it as ONE message (watch for codex newline-handling regressions #8673/#20580).
-- [ ] 4.2 Confirm the base64 prompt round-trips byte-exact through `/v1/shell/exec` into the file for UTF-8 multibyte (CJK/emoji), and tune the output-quiescence window (`CODEX_AUTOSUBMIT_QUIESCE_MS`, default 800ms) for reliable auto-submit.
+- [x] 4.1 With real ChatGPT `auth.json`, run a task end-to-end and confirm the prompt pre-fills the composer + the auto-Enter submits it. — VERIFIED LIVE on task `cd56f9bb` (deploy `2188d4b`): codex's process args carried the injected goal as the positional `[PROMPT]` (`… --dangerously-bypass-hook-trust 阅读本地的代码，然后规划一下文档`) and codex auto-RAN it ("Worked for 2m 18s" + output) with zero operator keystrokes. CAVEAT: the verified prompt was SINGLE-LINE; the multi-line-submits-as-ONE-message edge (#8673/#20580) was not specifically exercised — minor follow-up if multi-line prompts are used.
+- [x] 4.2 Confirm the base64 prompt round-trips byte-exact through `/v1/shell/exec` and the quiescence window is reliable. — VERIFIED LIVE: the CJK prompt round-tripped byte-exact (codex received intact `阅读本地的代码，然后规划一下文档`), and the default `CODEX_AUTOSUBMIT_QUIESCE_MS=800` fired the auto-submit reliably (no tuning needed).

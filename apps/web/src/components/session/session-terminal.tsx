@@ -283,6 +283,14 @@ export const SessionTerminal = React.forwardRef<
       onOpen() {
         const geo = handleRef.current?.geometry();
         socket.sendReconnect(lastSeqRef.current, geo?.cols, geo?.rows);
+        // Sync the sandbox PTY to the browser size NOW that the socket is OPEN.
+        // The xterm `onResize` that fires at mount races this open and is dropped
+        // (sendFrame only transmits when OPEN), and the reconnect frame above does
+        // not resize the PTY — so without this the sandbox PTY stays at the AIO
+        // default 80×24 while the browser auto-fits wider, misaligning codex's
+        // cursor-addressed history. Drives gateway.onResize → pty.resize +
+        // snapshot headless resize.
+        if (geo) socket.sendResize(geo.cols, geo.rows);
         // sessionId == taskId; capture it on connect so the command input is
         // enabled. Safe (no longer the swallowed-keystroke hazard) because the
         // operator's first interaction SEIZES the write lease (sendCommand /

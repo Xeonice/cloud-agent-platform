@@ -1136,6 +1136,22 @@ export class TerminalGateway
     const session = this.sessions.get(taskId);
     if (!session) return;
 
+    // Sync the sandbox PTY (and snapshot headless) to the reconnecting operator's
+    // terminal geometry so codex renders at the client's cols/rows, not the AIO
+    // default 80×24 — without this codex's cursor-addressed history misaligns in a
+    // wider browser grid. The reconnect frame carries cols/rows for exactly this
+    // reconciliation; the explicit resize frame the client also sends on open is
+    // belt-and-suspenders. Guarded to an authenticated operator, mirroring onResize.
+    if (
+      state.authenticated &&
+      state.kind === 'operator' &&
+      typeof frame.cols === 'number' &&
+      typeof frame.rows === 'number'
+    ) {
+      session.pty.resize(frame.cols, frame.rows);
+      session.snapshots.resizeHeadless(frame.cols, frame.rows);
+    }
+
     const frames: WsControlFrame[] = await session.snapshots.buildReconnectFrames(
       {
         fromSeq: frame.lastSeq,
