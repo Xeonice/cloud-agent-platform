@@ -172,6 +172,8 @@ export class AuditService {
         return '空闲超时';
       case 'circuit_breaker':
         return '熔断器触发';
+      case 'provision_failed':
+        return '沙箱置备失败';
     }
   }
 

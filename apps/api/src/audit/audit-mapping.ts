@@ -35,10 +35,15 @@ export type AuditEventKind =
   | 'agent_failed_to_start'
   | 'force_failed:deadline'
   | 'force_failed:idle'
-  | 'force_failed:circuit_breaker';
+  | 'force_failed:circuit_breaker'
+  | 'force_failed:provision_failed';
 
 /** The force-fail causes the guardrails service reclaims a task under. */
-export type ForceFailCause = 'deadline' | 'idle' | 'circuit_breaker';
+export type ForceFailCause =
+  | 'deadline'
+  | 'idle'
+  | 'circuit_breaker'
+  | 'provision_failed';
 
 /**
  * An HTTP-status-like result code the console renders verbatim (6.3):
@@ -196,6 +201,11 @@ export const AUDIT_KIND_DESCRIPTORS: Readonly<Record<AuditEventKind, AuditKindDe
     level: 'error',
     resultCode: 422,
     title: '任务被强制失败（熔断器触发）',
+  },
+  'force_failed:provision_failed': {
+    level: 'error',
+    resultCode: 422,
+    title: '任务被强制失败（沙箱置备失败）',
   },
 };
 

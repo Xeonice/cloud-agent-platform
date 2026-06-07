@@ -1,6 +1,10 @@
 import { Global, Module } from '@nestjs/common';
 import { AioSandboxProvider } from './aio-sandbox.provider';
 import { SANDBOX_PROVIDER, type SandboxProvider } from './sandbox-provider.port';
+import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
+import { EnvCodexAuthSource } from './env-codex-auth-source';
+import { PROVISION_LOOKUP } from './provision-lookup.port';
+import { PrismaProvisionLookup } from './prisma-provision-lookup';
 
 /**
  * Sandbox-provider DI wiring (sandbox-provider-port 9.1, integration 9.1b).
@@ -27,6 +31,18 @@ import { SANDBOX_PROVIDER, type SandboxProvider } from './sandbox-provider.port'
 @Global()
 @Module({
   providers: [
+    // Deployment-level codex auth source the provider injects into each sandbox.
+    // Bound by token so a multi-user/settings-backed source can replace it later.
+    {
+      provide: CODEX_AUTH_SOURCE,
+      useClass: EnvCodexAuthSource,
+    },
+    // Prisma-backed per-task clone-URL lookup (task → repo.gitSource + operator
+    // token). Behind a token so the provider never depends on PrismaService.
+    {
+      provide: PROVISION_LOOKUP,
+      useClass: PrismaProvisionLookup,
+    },
     {
       provide: SANDBOX_PROVIDER,
       useClass: AioSandboxProvider,

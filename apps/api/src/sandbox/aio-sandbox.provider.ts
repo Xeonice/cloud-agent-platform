@@ -1,4 +1,4 @@
-import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import Docker from 'dockerode';
 
 import type {
@@ -7,6 +7,8 @@ import type {
   SandboxMode,
   SandboxProvider,
 } from './sandbox-provider.port.js';
+import { CODEX_AUTH_SOURCE, type CodexAuthSource } from './codex-auth-source.port';
+import { PROVISION_LOOKUP, type ProvisionLookup } from './provision-lookup.port';
 
 /**
  * AIO Sandbox `SandboxProvider` (aio-sandbox-execution, design D — connect-in).
@@ -43,10 +45,17 @@ import type {
  *     sandbox joins so it is reachable by container name; default `cap-net`.
  *   - `AIO_SANDBOX_READINESS_TIMEOUT_MS` (optional) — upper bound on the
  *     `/v1/docs` readiness poll; default 60000.
- *   - `TASK_REPO_URL` (optional) — the git clone URL for the task workspace.
- *     When set, the repository is cloned into the sandbox workspace before the
- *     handle is returned. (Credential/URL sourcing per task is an Open Question
- *     deferred to integration; the provider only needs the clone URL here.)
+ *   - `TASK_REPO_URL` (optional) — a GLOBAL FALLBACK clone URL only. The per-task
+ *     clone URL is now resolved via the {@link ProvisionLookup} port
+ *     (`task → repo.gitSource`, with the operator's GitHub token attached as an
+ *     `http.extraHeader` auth — never embedded in the URL — for private repos);
+ *     `TASK_REPO_URL` is used only when that task/repo lookup yields nothing.
+ *
+ * Codex auth: `/home/gem/.codex/auth.json` is injected via the
+ * {@link CodexAuthSource} port AFTER readiness and BEFORE the handle returns, so
+ * codex authenticates when the gateway auto-launches it. A post-start failure
+ * (readiness / auth-inject / clone) tears the container down before rethrowing,
+ * so a failed provision never leaks a running container.
  */
 @Injectable()
 export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
@@ -56,6 +65,22 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
   private readonly containers = new Map<string, Docker.Container>();
   /** taskId -> the connection handle returned for an already-provisioned task. */
   private readonly connections = new Map<string, SandboxConnection>();
+
+  /**
+   * @param lookup           Resolves the per-task clone URL (`task → repo.gitSource`
+   *                         with the operator's GitHub token spliced in for private
+   *                         repos), replacing the global `TASK_REPO_URL` stopgap.
+   *                         Behind a port so the provider never touches the DB
+   *                         directly (keeps its focused unit test compilable in
+   *                         isolation).
+   * @param codexAuthSource  Supplies the codex `auth.json` injected into each
+   *                         sandbox before codex launches (deployment-level env
+   *                         source today; see {@link CodexAuthSource}).
+   */
+  constructor(
+    @Inject(PROVISION_LOOKUP) private readonly lookup: ProvisionLookup,
+    @Inject(CODEX_AUTH_SOURCE) private readonly codexAuthSource: CodexAuthSource,
+  ) {}
 
   /** The exposed AIO HTTP/WS port inside the container (never published to the host). */
   private static readonly AIO_PORT = 8080;
@@ -144,12 +169,25 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
     await container.start();
     this.logger.debug(`provisioned AIO container ${containerName} from ${image}`);
 
-    // Readiness: do not treat the sandbox as usable until its HTTP API answers.
-    await this.waitForReadiness(baseUrl, ctx.taskId);
-
-    // Clone the task repository into the sandbox workspace AFTER readiness and
-    // BEFORE returning the handle.
-    await this.cloneTaskRepository(baseUrl, ctx.taskId);
+    // Post-start steps run against the now-LIVE, already-registered container and
+    // can fail (injectCodexAuth / cloneTaskRepository fail CLOSED on a non-zero
+    // exit). On ANY failure here the container is running + in `this.containers`,
+    // so tear it down before rethrowing — otherwise a failed provision leaks a
+    // running cap-aio-<taskId> AND a clean retry (which clones into the now
+    // non-empty workspace) is impossible. The caller (guardrails) then fails the
+    // task and releases the run slot.
+    try {
+      // Readiness: do not treat the sandbox as usable until its HTTP API answers.
+      await this.waitForReadiness(baseUrl, ctx.taskId);
+      // Inject the codex auth.json into /home/gem/.codex BEFORE the gateway opens
+      // the PTY and codex auto-launches — so codex authenticates on startup. Then
+      // clone the task repo. Both AFTER readiness and BEFORE the handle returns.
+      await this.injectCodexAuth(baseUrl, ctx.taskId);
+      await this.cloneTaskRepository(baseUrl, ctx.taskId);
+    } catch (err) {
+      await this.teardownSandbox(ctx.taskId).catch(() => undefined);
+      throw err;
+    }
 
     const connection: SandboxConnection = { taskId: ctx.taskId, baseUrl, wsUrl };
     this.connections.set(ctx.taskId, connection);
@@ -243,19 +281,25 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
    * on a genuinely successful clone.
    */
   private async cloneTaskRepository(baseUrl: string, taskId: string): Promise<void> {
-    const repoUrl = process.env.TASK_REPO_URL;
-    if (!repoUrl) {
-      this.logger.debug(`no TASK_REPO_URL configured; skipping clone for task ${taskId}`);
+    const spec = await this.lookup.getCloneSpec(taskId);
+    if (!spec) {
+      this.logger.debug(`no clone spec resolved for task ${taskId}; skipping clone`);
       return;
     }
 
     const workspaceDir = AioSandboxProvider.WORKSPACE_DIR;
+    // Auth (when present) rides `git -c http.extraHeader=...`, NEVER the URL — so a
+    // clone-failure stderr that echoes the URL cannot carry the token. The header
+    // value is base64 + fixed text (no single quote), so single-quoting it for the
+    // shell is safe. Clone into a dedicated EMPTY workspace dir, never the
+    // non-empty HOME. No trailing pipe, so the reported exit_code is the clone's.
+    const command = spec.authHeader
+      ? `git -c http.extraHeader='${spec.authHeader}' clone ${spec.url} ${workspaceDir}`
+      : `git clone ${spec.url} ${workspaceDir}`;
     const res = await fetch(`${baseUrl}/v1/shell/exec`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      // Clone into a dedicated empty workspace dir, never the non-empty HOME.
-      // No trailing pipe, so the reported exit_code is the clone's own status.
-      body: JSON.stringify({ command: `git clone ${repoUrl} ${workspaceDir}` }),
+      body: JSON.stringify({ command }),
     });
     if (!res.ok) {
       throw new Error(
@@ -279,11 +323,12 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
       body?.exit_code ?? body?.exitCode ?? body?.code,
     );
     if (exitCode !== 0) {
-      const output =
+      const output = AioSandboxProvider.scrubSecrets(
         (typeof body?.output === 'string' && body.output) ||
-        (typeof body?.stderr === 'string' && body.stderr) ||
-        (typeof body?.stdout === 'string' && body.stdout) ||
-        '';
+          (typeof body?.stderr === 'string' && body.stderr) ||
+          (typeof body?.stdout === 'string' && body.stdout) ||
+          '',
+      );
       throw new Error(
         `git clone into AIO sandbox for task ${taskId} failed: exit_code ${exitCode}` +
           (output ? ` — ${output.trim()}` : ''),
@@ -291,6 +336,82 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
     }
 
     this.logger.debug(`cloned task repository into AIO sandbox for task ${taskId}`);
+  }
+
+  /**
+   * Write the codex `auth.json` into `/home/gem/.codex` via `/v1/shell/exec`
+   * BEFORE codex launches, so codex authenticates on startup. Material comes from
+   * the {@link CodexAuthSource} (deployment env today); when none is configured
+   * this is a LOGGED no-op (codex then runs unauthenticated) rather than a
+   * provision failure. The auth.json is base64-decoded in-container to avoid
+   * shell/JSON double-escaping of its multi-line content, and written `chmod 600`
+   * under the `gem`-owned `~/.codex`. A non-zero exit (when material WAS
+   * configured) IS a real provision failure — fail closed, since a silently
+   * unauthenticated codex would burn a run slot doing nothing.
+   */
+  private async injectCodexAuth(baseUrl: string, taskId: string): Promise<void> {
+    const material = await this.codexAuthSource.getCodexAuth();
+    if (!material) {
+      this.logger.warn(
+        `no codex auth configured (CodexAuthSource returned null); codex in task ${taskId} will be unauthenticated`,
+      );
+      return;
+    }
+    const b64 = Buffer.from(material.authJson, 'utf8').toString('base64');
+    const dir = '/home/gem/.codex';
+    // The base64 alphabet contains no single quote, so single-quoting the payload
+    // is safe and stops the shell from touching it. mkdir is idempotent (the image
+    // already created ~/.codex); chmod 600 keeps the secret to the gem user.
+    const command =
+      `mkdir -p ${dir} && printf %s '${b64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`;
+    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command }),
+    });
+    if (!res.ok) {
+      throw new Error(
+        `codex auth injection for task ${taskId} failed: /v1/shell/exec responded ${res.status}`,
+      );
+    }
+    const body = (await res.json().catch(() => undefined)) as
+      | {
+          exit_code?: unknown;
+          exitCode?: unknown;
+          code?: unknown;
+          output?: unknown;
+          stderr?: unknown;
+        }
+      | undefined;
+    const exitCode = AioSandboxProvider.coerceExitCode(
+      body?.exit_code ?? body?.exitCode ?? body?.code,
+    );
+    if (exitCode !== 0) {
+      const output = AioSandboxProvider.scrubSecrets(
+        (typeof body?.output === 'string' && body.output) ||
+          (typeof body?.stderr === 'string' && body.stderr) ||
+          '',
+      );
+      throw new Error(
+        `codex auth injection for task ${taskId} failed: exit_code ${exitCode}` +
+          (output ? ` — ${output.trim()}` : ''),
+      );
+    }
+    this.logger.debug(`injected codex auth into sandbox for task ${taskId}`);
+  }
+
+  /**
+   * Strip credential material from untrusted `/v1/shell/exec` output BEFORE it
+   * enters a thrown Error / the orchestrator log: redact the userinfo of any
+   * https URL (`https://user:pass@` → `https://***:***@`) and the value of any
+   * `Authorization: Basic <...>` header. Defense-in-depth on top of keeping the
+   * token out of the clone URL/argv in the first place — git failure messages
+   * are exactly where a credential-bearing URL would otherwise surface.
+   */
+  private static scrubSecrets(output: string): string {
+    return output
+      .replace(/https:\/\/[^@\s/]+:[^@\s/]+@/g, 'https://***:***@')
+      .replace(/(Authorization:\s*Basic\s+)\S+/gi, '$1***');
   }
 
   /**

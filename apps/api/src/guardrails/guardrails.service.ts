@@ -382,6 +382,15 @@ export class GuardrailsService implements OnModuleInit {
             );
           }
         }
+      } else {
+        // provision REJECTED (or returned no handle): the provider already tore
+        // down any partially-started container (its own try/catch). Reclaim NOW
+        // instead of waiting for the idle ceiling — forceFail transitions the
+        // task to `failed`, clears its timers, tears down the session, and
+        // RELEASES the run slot (admitting the next queued task). Without this
+        // the slot stays held until idle-timeout, starving the queue whenever a
+        // provision fails (e.g. codex auth / clone fail-closed).
+        await this.forceFail(taskId, 'provision_failed');
       }
     }
   }
@@ -394,7 +403,7 @@ export class GuardrailsService implements OnModuleInit {
    */
   private async forceFail(
     taskId: string,
-    cause: 'deadline' | 'idle' | 'circuit_breaker',
+    cause: 'deadline' | 'idle' | 'circuit_breaker' | 'provision_failed',
   ): Promise<void> {
     this.logger.warn(`force-failing task ${taskId} (${cause})`);
     this.clearTimers(taskId);

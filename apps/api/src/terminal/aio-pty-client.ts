@@ -127,6 +127,14 @@ export class AioPtyClient implements TerminalPty {
     wsUrl: string,
     private readonly baseUrl: string,
     private readonly onExit?: (status: AioExitStatus) => void,
+    /**
+     * When true, codex is auto-launched (via {@link launchCodex}) the moment the
+     * sandbox terminal reports `ready` — the connect-in execution trigger. The
+     * `auth.json` injected into `/home/gem/.codex` at provision time is already
+     * in place by then, so codex authenticates on startup. Defaults to false so
+     * terminals opened only for attach/replay never spawn an agent.
+     */
+    private readonly autoLaunchCodex: boolean = false,
   ) {
     // Connect WITHOUT any `?session_id=` query parameter so the sandbox creates a
     // fresh tmux-backed session per task. Rejoining an existing session by
@@ -174,9 +182,9 @@ export class AioPtyClient implements TerminalPty {
     // Guard: never launch codex with a flag that DISABLES hooks. `-s` /
     // bypass-approvals turn the baked approval hooks off, which would fail OPEN
     // on approvals; refuse rather than launch an unguarded agent.
-    if (/(^|\s)-s(\s|$)|bypass-approvals/.test(argv)) {
+    if (/(^|\s)-s(\s|$)|bypass-approvals|(^|\s)--yolo(\s|$)/.test(argv)) {
       throw new Error(
-        `refusing to launch codex with hook-disabling flags (would fail open on approvals): ${argv}`,
+        `refusing to launch codex with hook-disabling flags (-s / --yolo / bypass-approvals would fail open on approvals): ${argv}`,
       );
     }
     this.sendInput(`${argv}\n`);
@@ -229,6 +237,23 @@ export class AioPtyClient implements TerminalPty {
         // `session_id` then `ready` is the session-established signal: the
         // terminal is now live. We never rejoin a prior session.
         this.established = true;
+        // Connect-in execution trigger: once the terminal is live, launch codex
+        // in-shell. The auth.json was written into /home/gem/.codex at provision
+        // time, so codex authenticates on startup; the CPR injection in onOutput
+        // unblocks its TUI. Gated by autoLaunchCodex so attach/replay-only
+        // terminals never spawn an agent. Best-effort: a launch error is logged,
+        // never thrown, so it cannot break the WS message handler.
+        if (this.autoLaunchCodex) {
+          try {
+            this.launchCodex();
+          } catch (err) {
+            this.logger.warn(
+              `task ${this.taskId}: codex auto-launch failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
         break;
       case 'output':
         this.onOutput(frame);

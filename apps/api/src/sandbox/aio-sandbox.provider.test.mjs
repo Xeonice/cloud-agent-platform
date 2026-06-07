@@ -56,12 +56,18 @@ function assert(condition, label) {
 const outDir = mkdtempSync(join(apiRoot, '.aio-provider-test-'));
 
 function compileProvider() {
-  // Compile only the provider; its sole non-type import is `dockerode`, and the
-  // `./sandbox-provider.port.js` import is type-only and gets elided.
+  // Compile the provider PLUS its value-imported, same-directory ports
+  // (codex-auth-source.port, provision-lookup.port) so their emitted .js sit
+  // beside provider.js in outDir and the provider's `require('./...port')`
+  // resolves. The `./sandbox-provider.port.js` import is type-only and gets
+  // elided; `dockerode` / `@nestjs/common` resolve from the repo node_modules at
+  // runtime (outDir lives under apps/api so module resolution walks up to them).
   execFileSync(
     tscBin,
     [
       providerSrc,
+      join(__dirname, 'codex-auth-source.port.ts'),
+      join(__dirname, 'provision-lookup.port.ts'),
       '--outDir',
       outDir,
       '--module',
@@ -154,6 +160,33 @@ function installFetchMock(execExitCode = 0, execOutput = '') {
   };
 }
 
+/**
+ * Stub {@link ProvisionLookup}: returns a fixed clone spec (or null to skip the
+ * clone). The provider now resolves the per-task clone spec through this port
+ * instead of reading `TASK_REPO_URL` directly. `cloneUrl` becomes `{ url }`
+ * (no auth header — the option/clone assertions use a public test URL).
+ */
+function makeLookup(cloneUrl = null) {
+  return {
+    async getCloneSpec() {
+      return cloneUrl ? { url: cloneUrl } : null;
+    },
+  };
+}
+
+/**
+ * Stub {@link CodexAuthSource}: returns fixed material (or null to skip codex
+ * auth injection). Returning null keeps these option/clone-focused assertions
+ * from seeing an extra `/v1/shell/exec` (the auth.json write) before the clone.
+ */
+function makeCodexAuthSource(material = null) {
+  return {
+    async getCodexAuth() {
+      return material;
+    },
+  };
+}
+
 // ---- run --------------------------------------------------------------------
 
 console.log('\n=== AioSandboxProvider: per-task container provisioning ===\n');
@@ -178,7 +211,7 @@ try {
 
   let connection;
   try {
-    const provider = new AioSandboxProvider();
+    const provider = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
     // Inject the mocked dockerode in place of the real `new Docker()`.
     provider.docker = fakeDocker;
 
@@ -232,7 +265,7 @@ try {
     process.env.AIO_SANDBOX_IMAGE = 'cap-aio-sandbox:latest';
     let rejectedLatest = false;
     try {
-      const p2 = new AioSandboxProvider();
+      const p2 = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
       p2.docker = makeFakeDocker(makeFakeContainer());
       await p2.provision({ taskId: 'task-latest' });
     } catch {
@@ -249,7 +282,10 @@ try {
     const okClone = installFetchMock(0, '');
     let cloneConnection;
     try {
-      const p3 = new AioSandboxProvider();
+      const p3 = new AioSandboxProvider(
+        makeLookup('https://example.test/repo.git'),
+        makeCodexAuthSource(),
+      );
       p3.docker = makeFakeDocker(makeFakeContainer());
       cloneConnection = await p3.provision({ taskId: 'task-clone-ok' });
 
@@ -286,7 +322,10 @@ try {
     let cloneRejected = false;
     let cloneErrMsg = '';
     try {
-      const p4 = new AioSandboxProvider();
+      const p4 = new AioSandboxProvider(
+        makeLookup('https://example.test/repo.git'),
+        makeCodexAuthSource(),
+      );
       p4.docker = makeFakeDocker(makeFakeContainer());
       await p4.provision({ taskId: 'task-clone-fail' });
     } catch (err) {
@@ -299,6 +338,70 @@ try {
     assert(
       cloneErrMsg.includes('128') && cloneErrMsg.includes('already exists'),
       'provision error carries the clone exit_code and output',
+    );
+
+    // ---- codex auth injection (material non-null) writes auth.json correctly ----
+    // With a CodexAuthSource returning material, provision injects auth.json into
+    // /home/gem/.codex via /v1/shell/exec, base64-decoding the authJson + chmod 600.
+    const authMock = installFetchMock(0, '');
+    try {
+      const authJson = '{"auth_mode":"chatgpt","tokens":{}}';
+      const pAuth = new AioSandboxProvider(
+        makeLookup(null), // skip clone — isolate the auth-inject exec
+        makeCodexAuthSource({ authJson }),
+      );
+      pAuth.docker = makeFakeDocker(makeFakeContainer());
+      await pAuth.provision({ taskId: 'task-auth' });
+      const injectCall = authMock.fetchCalls.find(
+        (c) =>
+          c.url.endsWith('/v1/shell/exec') &&
+          JSON.parse(c.init.body).command.includes('/home/gem/.codex/auth.json'),
+      );
+      assert(
+        injectCall !== undefined,
+        'codex auth injected via POST /v1/shell/exec to /home/gem/.codex/auth.json',
+      );
+      const acmd = injectCall ? JSON.parse(injectCall.init.body).command : '';
+      const expectedB64 = Buffer.from(authJson, 'utf8').toString('base64');
+      assert(
+        acmd.includes(`'${expectedB64}'`),
+        'auth payload is the single-quoted base64 of material.authJson',
+      );
+      assert(
+        acmd.includes('base64 -d') && acmd.includes('chmod 600'),
+        'injection base64-decodes the payload and chmod 600 the auth.json',
+      );
+    } finally {
+      authMock.restore();
+    }
+
+    // ---- post-start provision failure tears the container down (no leak) -------
+    // A non-zero codex-auth-inject exit fails provision (fail-closed); the already
+    // STARTED container MUST be stopped/removed (teardownSandbox), never left
+    // running — the high-severity container-leak fix.
+    const teardownContainer = makeFakeContainer();
+    const teardownMock = installFetchMock(1, 'inject boom'); // every exec exits 1
+    let teardownProvisionThrew = false;
+    try {
+      const pTd = new AioSandboxProvider(
+        makeLookup(null),
+        makeCodexAuthSource({ authJson: '{"auth_mode":"chatgpt"}' }),
+      );
+      pTd.docker = makeFakeDocker(teardownContainer);
+      await pTd.provision({ taskId: 'task-teardown' });
+    } catch {
+      teardownProvisionThrew = true;
+    } finally {
+      teardownMock.restore();
+    }
+    assert(
+      teardownProvisionThrew,
+      'provision rejects when codex auth injection exits non-zero (fail-closed)',
+    );
+    assert(
+      teardownContainer.calls.started === 1 &&
+        (teardownContainer.calls.stopped >= 1 || teardownContainer.calls.removed >= 1),
+      'a post-start provision failure tears the started container down (no leak)',
     );
   } finally {
     fetchMock.restore();

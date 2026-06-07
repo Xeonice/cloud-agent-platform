@@ -648,8 +648,17 @@ export class TerminalGateway
     // NullHeadlessTerminal serialized to empty, leaving reconnect with nothing).
     const headless = new XtermHeadlessTerminal();
     const snapshots = new SnapshotManager(headless, workspaceDir);
-    const pty = new AioPtyClient(taskId, wsUrl, baseUrl, (status) =>
-      this.onSessionExit(taskId, status),
+    const pty = new AioPtyClient(
+      taskId,
+      wsUrl,
+      baseUrl,
+      (status) => this.onSessionExit(taskId, status),
+      // Connect-in execution trigger: auto-launch codex once the sandbox
+      // terminal reports `ready`. provision() has already injected the codex
+      // auth.json into the container by the time we get here, so codex
+      // authenticates on startup. This is the call site that was missing —
+      // without it codex was never launched.
+      true,
     );
     const session: TerminalSession = { taskId, pty, snapshots };
     this.registerSession(session);
