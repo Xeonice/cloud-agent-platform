@@ -43,6 +43,13 @@ export interface TerminalHandle {
   geometry(): TerminalGeometry | null;
   /** Clear the terminal screen and scrollback. */
   clear(): void;
+  /**
+   * Move keyboard focus into the terminal (xterm's public `Terminal.focus()`,
+   * which targets its hidden helper textarea). Scoped to THIS instance, so
+   * consumers never reach for an unscoped `document.querySelector` on xterm's
+   * internal class names.
+   */
+  focus(): void;
 }
 
 export interface TerminalProps {
@@ -228,6 +235,9 @@ export function Terminal({
         },
         clear() {
           term.clear();
+        },
+        focus() {
+          term.focus();
         },
       };
 

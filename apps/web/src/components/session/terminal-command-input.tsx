@@ -1,6 +1,9 @@
 /**
- * `TerminalCommandInput` — the `$`-prompted command row shared by the live
- * terminal and the fallback line-view (prototype `.terminal-input`).
+ * `TerminalCommandInput` — the `$`-prompted command row for the FALLBACK
+ * line-view ONLY (prototype `.terminal-input`). The live xterm path is a true
+ * 1:1 surface (direct `onData` keystrokes); this row is rendered only when xterm
+ * fails to mount (the xterm-unavailable degraded path), where there is no
+ * terminal to type into.
  *
  * Pure/controlled: the parent owns the input value + submit. Enter or the
  * 发送命令 button submits; the parent clears the value after a successful send

@@ -12,8 +12,10 @@
  *       onClose/onError → reflect the state; NEVER crash.
  *       onControl → the control-frame bridge (snapshot / tail_replay /
  *                   lease_state / permission_request / pause / resume).
- *   - Forward command input as `sendKeystroke(sessionId, input + "\n")` once a
- *     sessionId has been captured from a lease_state/snapshot frame.
+ *   - Forward LIVE input as a true 1:1 surface: each xterm keystroke flows
+ *     verbatim through `onData → sendKeystroke` (no separate command box, no
+ *     submit hack). The command input is retained ONLY for the xterm-unavailable
+ *     fallback line-view, where there is no terminal to type into.
  *   - Surface the {@link ApprovalSurface} for a `permission_request` and resolve
  *     it lock-INDEPENDENTLY via `sendDecision` (D7).
  *   - Degrade to the {@link TerminalFallback} DOM line-view if xterm never
@@ -33,6 +35,13 @@ import * as React from "react";
 // xterm's stylesheet is loaded once on the client (task 18.3). This route is
 // `ssr: false`, so this CSS-only import is reached on the client where xterm
 // actually renders; it carries no JS side effects that touch `window`.
+//
+// NOTE (rendering fidelity): `@xterm/xterm` is pinned ^5.5.0, which does NOT
+// support DEC synchronized-output (mode 2026, landed in xterm 6.0.0). codex's
+// TUI emits `ESC[?2026h/l` around each full-grid repaint; 5.5.0 ignores them
+// harmlessly (no corruption), but rapid repaints may briefly FLICKER without
+// atomic batching. A `@xterm/xterm` 6.x upgrade is a separate, OPTIONAL anti-
+// flicker follow-up — it is NOT required for input/render correctness.
 import "@xterm/xterm/css/xterm.css";
 
 import type { ITheme } from "@xterm/xterm";
@@ -400,7 +409,10 @@ export const SessionTerminal = React.forwardRef<
     [],
   );
 
-  // ── Command send (lease-constrained server-side) ──────────────────────────
+  // ── Command send — FALLBACK line-view ONLY ────────────────────────────────
+  // The LIVE xterm is 1:1 direct-input via onData (this submit path is NOT wired
+  // there). This remains only for the xterm-unavailable fallback, where there is
+  // no terminal to type into and a line input is the only way to drive codex.
   const sendCommand = React.useCallback(() => {
     const value = input.trim();
     if (!value) return;
@@ -409,19 +421,18 @@ export const SessionTerminal = React.forwardRef<
     // sessionId == taskId in this protocol. SEIZE the write lease for THIS
     // connection first (takeover) so the active operator's command is never
     // silently dropped because a stale/ghost connection still holds the lease,
-    // then send the text and a CARRIAGE RETURN. codex's TUI submits the composer
-    // on `\r` (the Enter key); a `\n` linefeed is treated as an inserted newline
-    // and does NOT submit — that was why a sent command had "no effect".
+    // then send the text and a CARRIAGE RETURN (codex's TUI submits the composer
+    // on `\r`, the Enter key; a `\n` linefeed is an inserted newline, not submit).
     sock.sendTakeover(taskId, clientIdRef.current);
     claimedRef.current = true;
-    sock.sendKeystroke(taskId, input);
-    // Send Enter (CR) as a SEPARATE, slightly-delayed keystroke. codex's TUI
-    // coalesces a text burst immediately followed by `\r` into one PASTE (it
-    // inserts the `\r` as a newline instead of submitting, exactly like a real
-    // terminal paste); a `\r` that arrives after a brief gap is a genuine Enter
-    // keypress and submits the composer. The delay (mirroring a human pressing
-    // Return after typing) is what actually runs the command — without it the
-    // text sits unsubmitted in the composer.
+    sock.sendKeystroke(taskId, value);
+    // Send Enter (CR) as a SEPARATE, slightly-delayed keystroke. NOTE: the prior
+    // rationale (codex coalesces a text+immediate-CR burst into a PASTE) was found
+    // INACCURATE — paste is detected by the ESC[200~/201~ bracketed-paste markers
+    // a terminal adds, never by arrival timing. The small delay is retained here
+    // only as a conservative belt-and-suspenders for this rarely-exercised,
+    // PROGRAMMATIC burst in the degraded fallback; the live 1:1 path (human typing
+    // via onData) needs no such delay and has none.
     window.setTimeout(() => socketRef.current?.sendKeystroke(taskId, "\r"), 150);
     setInput("");
   }, [input, taskId]);
@@ -434,6 +445,18 @@ export const SessionTerminal = React.forwardRef<
     }, XTERM_READY_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
   }, [xtermReady]);
+
+  // ── Focus the live xterm on mount ─────────────────────────────────────────
+  // With the command input removed from the live path, focus the terminal so
+  // keystrokes are captured without requiring a click first. Uses the scoped
+  // TerminalHandle.focus() (xterm's public Terminal.focus()) — NOT an unscoped
+  // document.querySelector on xterm's internal class. Defers when an approval is
+  // pending so it never yanks focus from the allow/deny surface (which has no
+  // focus-restore of its own); re-runs when `pending` clears to return focus.
+  React.useEffect(() => {
+    if (!xtermReady || pending !== null) return;
+    handleRef.current?.focus();
+  }, [xtermReady, pending]);
 
   // ── Imperative API for the topbar buttons ─────────────────────────────────
   React.useImperativeHandle(
@@ -483,11 +506,24 @@ export const SessionTerminal = React.forwardRef<
       {/* permission_request approval (lock-independent, D7) */}
       {pending ? <ApprovalSurface request={pending} onDecide={decide} /> : null}
 
-      {/* xterm-host — live terminal, OR the fallback line-view when unavailable */}
+      {/* xterm-host — live terminal (direct 1:1 input via onData), OR the
+          fallback line-view (which keeps the command input) when xterm fails. */}
       {showFallback ? (
-        <TerminalFallback lines={fallbackLines(connection)} />
+        <>
+          <TerminalFallback lines={fallbackLines(connection)} />
+          {/* The fallback DOM line-view has NO live terminal to type into, so it
+              retains the command input as its only input path. The LIVE xterm
+              path below does NOT render this — direct keystrokes flow through
+              onData (the 1:1 surface), with no separate box and no submit hack. */}
+          <TerminalCommandInput
+            value={input}
+            onValueChange={setInput}
+            onSubmit={sendCommand}
+            disabled={commandDisabled}
+          />
+        </>
       ) : (
-        <div className="min-h-[min(680px,calc(100vh-348px))] bg-[#050505] px-4 py-3.5">
+        <div className="relative min-h-[min(680px,calc(100vh-348px))] bg-[#050505] px-4 py-3.5">
           {theme ? (
             <Terminal
               theme={theme}
@@ -503,11 +539,13 @@ export const SessionTerminal = React.forwardRef<
                 socketRef.current?.sendResize(geometry.cols, geometry.rows);
               }}
               onData={(data) => {
-                // Direct xterm keystrokes go through the same lease-gated path.
-                // Seize the write lease ONCE per connection on first input (the
-                // act of typing claims control) so the active operator is the
-                // writer even if a stale connection still held the lease. xterm
-                // already encodes Enter as `\r`, so no newline translation here.
+                // THE sole live input path (the command box is gone from this
+                // path). Each xterm keystroke flows verbatim through the
+                // lease-gated channel. Seize the write lease ONCE per connection
+                // on first input (the act of typing claims control) so the active
+                // operator is the writer even if a stale connection still held the
+                // lease. xterm already encodes Enter as `\r`, so NO newline
+                // translation here — a real Enter submits codex's composer.
                 const sock = socketRef.current;
                 if (!sock) return;
                 if (!claimedRef.current) {
@@ -518,16 +556,29 @@ export const SessionTerminal = React.forwardRef<
               }}
             />
           ) : null}
+          {/* Connection-state affordance: with the command box gone from the live
+              path, keystrokes typed while the socket is not OPEN are silently
+              dropped by sendFrame. Surface that as a small NON-blocking corner
+              badge — NOT a full overlay — so an auto-reconnect window never hides
+              the last codex frame the operator was watching. pointer-events-none
+              keeps the terminal interactive; role=status/aria-live announces the
+              state to assistive tech. */}
+          {connection !== "open" ? (
+            <div
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+              className="pointer-events-none absolute right-3 top-3 rounded border border-terminal-line bg-black/70 px-2 py-1 font-mono text-xs text-terminal-muted"
+            >
+              {connection === "connecting"
+                ? "○ 正在连接…键入暂不发送"
+                : connection === "error"
+                  ? "× 连接失败…键入暂不发送"
+                  : "○ 连接已断开…键入暂不发送"}
+            </div>
+          ) : null}
         </div>
       )}
-
-      {/* command input (shared with the fallback) */}
-      <TerminalCommandInput
-        value={input}
-        onValueChange={setInput}
-        onSubmit={sendCommand}
-        disabled={commandDisabled}
-      />
     </article>
   );
 });
