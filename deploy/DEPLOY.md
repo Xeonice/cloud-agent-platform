@@ -51,8 +51,9 @@ Set in `apps/api/.env` (see `apps/api/.env.example` for the full annotated list)
 | `GITHUB_OAUTH_REDIRECT_URI` | `https://<domain>/auth/github/callback` |
 | `AUTH_ALLOWLIST` | Comma-separated numeric GitHub user ids allowed in (fail-closed if empty). |
 | `SESSION_SECRET` | Long random string. `openssl rand -hex 32` |
-| `CODEX_CRED_ENC_KEY` | 64 hex chars (32 bytes). `openssl rand -hex 32` |
+| `CODEX_CRED_ENC_KEY` | **Required** — 64 hex chars (32 bytes). `openssl rand -hex 32`. AES-256-GCM key that encrypts the Codex credential (the official ChatGPT `auth.json` + the compatible API key) at rest. Saving the credential FAILS CLOSED if unset. |
 | `WEB_ORIGIN` | The Vercel URL, e.g. `https://<your-app>.vercel.app` (CORS allow-list). |
+| `CODEX_CHATGPT_AUTH_JSON_B64` | **Optional fallback only.** Base64 of a ChatGPT `~/.codex/auth.json`. The Codex credential is normally configured in the **Settings page** (step 8) and stored encrypted in the DB; this env var is only used when no Settings credential is connected (or its key can't be decrypted). Prefer the Settings flow. |
 
 > The api also accepts an `AIO_SANDBOX_IMAGE` override and concurrency/repo env;
 > the compose file defaults `AIO_SANDBOX_IMAGE` to `cap-aio-sandbox:pinned`, which
@@ -167,6 +168,36 @@ VITE_WS_URL       = wss://<domain>
 
 And make sure the api's `WEB_ORIGIN` (step 2) equals the Vercel origin so CORS +
 cross-origin credentialed requests are allowed.
+
+---
+
+## 8. Configure the Codex execution credential (in the Settings page)
+
+The credential codex authenticates with is configured IN THE APP, not via a
+deploy env var. After logging in, open **设置 (Settings) → Codex**:
+
+- **官方 (official / ChatGPT subscription)** — the normal path. On a machine with
+  the Codex CLI, run `codex login` (ChatGPT) to produce `~/.codex/auth.json`, then
+  paste that JSON into the official dialog and connect. The api encrypts it at
+  rest (AES-256-GCM under `CODEX_CRED_ENC_KEY`) and the per-task sandbox provider
+  decrypts + injects it into `/home/gem/.codex/auth.json` so codex authenticates
+  per task. Nothing about the login is ever echoed back to the browser.
+  - ChatGPT OAuth refresh tokens are single-use/rotating: when codex reports
+    "your refresh token was already used", re-run `codex login` and paste the
+    fresh `auth.json` to update the connection.
+- **兼容 (compatible)** — a base URL + API key is accepted and stored encrypted,
+  but per-task INJECTION of compatible providers is not wired yet (the stored key
+  is not yet formatted into codex's custom-provider config). Use official for now;
+  compatible injection is a tracked follow-up.
+
+Fallback: if no official credential is connected (or its ciphertext can't be
+decrypted), the provider falls back to the optional `CODEX_CHATGPT_AUTH_JSON_B64`
+env var (step 2). Prefer the Settings flow so the credential is per-account,
+encrypted, and rotatable from the UI.
+
+The `auth_json_ciphertext` column is added by migration
+`20260607120000_add_codex_official_auth_json`, applied automatically on api
+container start (`prisma migrate deploy`).
 
 ---
 

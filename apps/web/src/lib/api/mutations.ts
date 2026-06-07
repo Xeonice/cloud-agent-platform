@@ -241,11 +241,16 @@ export function projectCodexCredential(
   const apiKeySuffix =
     hasApiKey && body.apiKey ? body.apiKey.slice(-4) : undefined;
   if (body.mode === "official") {
+    // Official "connected" now means a ChatGPT login (authJson) was actually
+    // supplied — mirrors the backend, which only marks connected once the
+    // encrypted auth.json is stored. (A re-save with no new authJson preserves a
+    // prior login server-side; the mock has no prior state so treats it as kept.)
+    const hasAuthJson = typeof body.authJson === "string" && body.authJson.length > 0;
     return {
       mode: "official",
-      state: "connected",
-      hasApiKey,
-      apiKeySuffix,
+      state: hasAuthJson ? "connected" : "not_connected",
+      hasApiKey: false,
+      apiKeySuffix: undefined,
     };
   }
   // compatible: a base URL but no key yet is "not_saved"; key present is connected.

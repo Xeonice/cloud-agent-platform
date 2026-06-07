@@ -75,6 +75,17 @@ export function CodexDirectDialog({
   saving = false,
   onConnect,
 }: CodexDirectDialogProps) {
+  // The pasted `~/.codex/auth.json` (from `codex login`). Held only while the
+  // dialog is open and cleared on close so the secret never lingers in state.
+  const [authJson, setAuthJson] = React.useState("");
+  React.useEffect(() => {
+    if (!open) setAuthJson("");
+  }, [open]);
+  const trimmed = authJson.trim();
+  // A login must be pasted to connect when none is stored yet. When already
+  // connected, an empty paste re-saves official and PRESERVES the stored login
+  // (the backend "keep" action); a fresh paste replaces it (token refresh).
+  const canSubmit = !saving && (connected || trimmed.length > 0);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -94,7 +105,7 @@ export function CodexDirectDialog({
               连接官方 Codex 账号
             </DialogTitle>
             <DialogDescription className="text-[13px] leading-[1.55] text-muted-foreground">
-              通过官方 OAuth 建立短期运行会话。控制台不会保存模型 API Key，GitHub 仓库权限仍由左侧账户身份控制。
+              在本机运行 <code className="font-mono text-[12px]">codex login</code>（ChatGPT 登录），把生成的 <code className="font-mono text-[12px]">~/.codex/auth.json</code> 粘贴到下方。登录态会加密存于服务端，每个任务的沙箱按它认证 codex。GitHub 仓库权限仍由左侧账户身份控制。
             </DialogDescription>
           </div>
           <DialogClose
@@ -108,7 +119,7 @@ export function CodexDirectDialog({
         <div className="grid gap-3.5 p-[0_22px_18px]">
           <div className="grid gap-2" aria-label="授权范围">
             <ScopeRow label="会话范围" value="仅用于远端 Agent 执行当前任务" />
-            <ScopeRow label="密钥存储" value="不在设置页保存模型 API Key" />
+            <ScopeRow label="登录态存储" value="auth.json 经 AES-256-GCM 加密存于服务端，永不回显" />
             <ScopeRow label="仓库权限" value="沿用 GitHub OAuth 与仓库导入范围" />
           </div>
 
@@ -125,25 +136,47 @@ export function CodexDirectDialog({
                   官方账号已连接
                 </strong>
                 <span className="mt-0.5 block text-xs text-muted-foreground">
-                  {login} · 短期运行会话
+                  {login} · 登录态已加密存储
                 </span>
               </div>
               <StatusPill variant="green">已连接</StatusPill>
             </div>
-          ) : (
-            <div className="grid gap-2.5">
-              <p className="text-[13px] leading-[1.55] text-muted-foreground">
-                连接后，创建任务时默认使用官方短期认证会话；你仍可以随时切换到兼容提供方。
-              </p>
-            </div>
-          )}
+          ) : null}
+
+          <div className="grid gap-2">
+            <label
+              htmlFor="codexAuthJson"
+              className="font-mono text-[11px] font-medium text-muted-foreground"
+            >
+              {connected ? "更新登录态（粘贴新的 auth.json）" : "粘贴 ~/.codex/auth.json"}
+            </label>
+            <textarea
+              id="codexAuthJson"
+              value={authJson}
+              onChange={(event) => setAuthJson(event.target.value)}
+              spellCheck={false}
+              rows={6}
+              placeholder={'{"auth_mode":"chatgpt","tokens":{ … },"last_refresh":"…"}'}
+              className="w-full resize-y rounded-md bg-[#fafafa] p-3 font-mono text-[12px] leading-[1.5] text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--primary)]"
+            />
+            <p className="text-[12px] leading-[1.5] text-muted-foreground">
+              {connected
+                ? "已连接。留空并点「重新连接」保留当前登录态；粘贴新内容则更新（token 过期时用它刷新）。"
+                : "内容仅用于服务端加密存储，不会回显，也不写入仓库。"}
+            </p>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2.5 border-t border-border p-[14px_22px_18px] max-[560px]:grid max-[560px]:grid-cols-1">
           <button
             type="button"
-            disabled={saving}
-            onClick={() => onConnect({ mode: "official" })}
+            disabled={!canSubmit}
+            onClick={() =>
+              onConnect({
+                mode: "official",
+                ...(trimmed.length > 0 ? { authJson: trimmed } : {}),
+              })
+            }
             className="inline-flex min-h-9 items-center justify-center gap-2.5 rounded-md bg-primary px-3.5 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
           >
             <span
@@ -152,7 +185,7 @@ export function CodexDirectDialog({
             >
               C
             </span>
-            <span>连接官方账号</span>
+            <span>{connected ? "重新连接" : "连接官方账号"}</span>
           </button>
           <DialogClose className="inline-flex min-h-9 items-center justify-center rounded-md bg-secondary px-3.5 text-[13px] font-medium text-foreground shadow-ring hover:bg-secondary/80">
             取消

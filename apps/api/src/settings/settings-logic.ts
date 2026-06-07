@@ -154,6 +154,12 @@ export interface StoredCredentialFacts {
   readonly hasApiKey: boolean;
   readonly apiKeyLast4: string | null;
   readonly defaultModel: string | null;
+  /**
+   * Whether an OFFICIAL-mode ChatGPT login (`auth.json`) is stored encrypted.
+   * For official mode this is what "connected" means; the value itself (like the
+   * compatible apiKey) is never projected onto a read shape.
+   */
+  readonly hasAuthJson: boolean;
 }
 
 /**
@@ -260,8 +266,10 @@ export interface NextCredentialPlan {
   readonly mode: CodexCredentialMode;
   readonly baseUrl: string | null;
   readonly defaultModel: string | null;
-  /** What to do with the stored ciphertext: clear it, keep the prior one, or replace. */
+  /** What to do with the stored compatible apiKey ciphertext. */
   readonly keyAction: CredentialKeyAction;
+  /** What to do with the stored official ChatGPT auth.json ciphertext. */
+  readonly authJsonAction: CredentialKeyAction;
 }
 
 export function projectCredentialSave(
@@ -271,35 +279,44 @@ export function projectCredentialSave(
     defaultModel?: string;
     /** True when a plaintext apiKey was supplied on this request. */
     hasNewKey: boolean;
+    /** True when an official ChatGPT auth.json was supplied on this request. */
+    hasNewAuthJson: boolean;
   },
   previous: StoredCredentialFacts | null,
 ): NextCredentialPlan {
   if (request.mode === 'official') {
-    // Official mode is connection-state only: no base URL, no key, no model.
+    // Official mode carries the ChatGPT login (auth.json), no base URL/model.
     // Always clear any compatible secret so it never lingers for an unused mode.
+    // The auth.json is replaced when a fresh one is supplied, else preserved on a
+    // same-mode (official -> official) re-save; switching IN from compatible has
+    // no official auth.json to preserve, so it stays absent (clear).
+    const switchingIntoOfficial = previous === null || previous.mode !== 'official';
+    const authJsonAction: CredentialKeyAction = request.hasNewAuthJson
+      ? 'replace'
+      : switchingIntoOfficial
+        ? 'clear'
+        : 'keep';
     return {
       mode: 'official',
       baseUrl: null,
       defaultModel: null,
       keyAction: 'clear',
+      authJsonAction,
     };
   }
 
   // compatible mode
   const baseUrl = request.baseUrl ?? null;
   const defaultModel = request.defaultModel ?? null;
+  // Switching to compatible always clears any stored official auth.json.
+  const base = { mode: 'compatible' as const, baseUrl, defaultModel, authJsonAction: 'clear' as const };
 
   if (request.hasNewKey) {
-    return { mode: 'compatible', baseUrl, defaultModel, keyAction: 'replace' };
+    return { ...base, keyAction: 'replace' };
   }
   // No new key supplied. Preserve the previous compatible key ONLY on a
   // same-mode (compatible -> compatible) update; switching IN from official has
   // no compatible key to preserve, so the key stays absent (clear).
   const switchingIntoCompatible = previous === null || previous.mode !== 'compatible';
-  return {
-    mode: 'compatible',
-    baseUrl,
-    defaultModel,
-    keyAction: switchingIntoCompatible ? 'clear' : 'keep',
-  };
+  return { ...base, keyAction: switchingIntoCompatible ? 'clear' : 'keep' };
 }

@@ -166,11 +166,15 @@ export class SettingsService {
           hasApiKey: row.apiKeyCiphertext !== null && row.apiKeyCiphertext.length > 0,
           apiKeyLast4: row.apiKeyLast4,
           defaultModel: row.defaultModel,
+          hasAuthJson:
+            row.authJsonCiphertext !== null && row.authJsonCiphertext.length > 0,
         }
       : null;
-    // Official-mode connection state is derived from whether a row exists for
-    // that mode; this product treats a saved official row as connected.
-    const officialConnected = facts?.mode === 'official';
+    // Official-mode "connected" now means a ChatGPT login (auth.json) is actually
+    // stored — not merely that an official row exists — so the sandbox provider
+    // has real material to inject. A bare official row with no auth.json reads as
+    // not_connected.
+    const officialConnected = facts?.mode === 'official' && facts.hasAuthJson;
     return CodexCredentialSchema.parse(
       projectCredentialRead(facts, officialConnected),
     );
@@ -198,6 +202,8 @@ export class SettingsService {
             existing.apiKeyCiphertext !== null && existing.apiKeyCiphertext.length > 0,
           apiKeyLast4: existing.apiKeyLast4,
           defaultModel: existing.defaultModel,
+          hasAuthJson:
+            existing.authJsonCiphertext !== null && existing.authJsonCiphertext.length > 0,
         }
       : null;
 
@@ -207,12 +213,33 @@ export class SettingsService {
         baseUrl: request.baseUrl,
         defaultModel: request.defaultModel,
         hasNewKey: typeof request.apiKey === 'string' && request.apiKey.length > 0,
+        hasNewAuthJson:
+          typeof request.authJson === 'string' && request.authJson.length > 0,
       },
       previous,
     );
 
-    // Resolve the encrypted key fields for the planned action. FAIL CLOSED on a
-    // replace when no server key is configured — persist nothing.
+    // Encrypt a plaintext secret into the joined `ciphertext.iv.authTag` storage
+    // string, resolving the server key per replace. FAIL CLOSED when no server
+    // key is configured — persist nothing (a secret is never stored unencrypted).
+    const encryptToStored = (plaintext: string): string => {
+      let envelope: { ciphertext: string; iv: string; authTag: string };
+      try {
+        const key = resolveEncryptionKey(env[CODEX_CRED_ENC_KEY_ENV]);
+        envelope = encryptSecret(plaintext, key);
+      } catch (error) {
+        if (error instanceof EncryptionKeyUnavailableError) {
+          throw new InternalServerErrorException({
+            error: 'encryption_key_unavailable',
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+      return `${envelope.ciphertext}.${envelope.iv}.${envelope.authTag}`;
+    };
+
+    // Resolve the compatible apiKey fields for the planned action.
     let apiKeyCiphertext: string | null;
     let apiKeyLast4: string | null;
     if (plan.keyAction === 'clear') {
@@ -222,36 +249,33 @@ export class SettingsService {
       apiKeyCiphertext = existing?.apiKeyCiphertext ?? null;
       apiKeyLast4 = existing?.apiKeyLast4 ?? null;
     } else {
-      // replace: encrypt the freshly-supplied plaintext key.
       const plaintext = request.apiKey as string;
-      let envelope: { ciphertext: string; iv: string; authTag: string };
-      try {
-        const key = resolveEncryptionKey(env[CODEX_CRED_ENC_KEY_ENV]);
-        envelope = encryptSecret(plaintext, key);
-      } catch (error) {
-        if (error instanceof EncryptionKeyUnavailableError) {
-          // Clear error, no row written: a key is never stored unencrypted.
-          throw new InternalServerErrorException({
-            error: 'encryption_key_unavailable',
-            message: error.message,
-          });
-        }
-        throw error;
-      }
-      // Store ciphertext + iv + authTag joined; the read path only needs presence
-      // + masked suffix, the execution path (out of scope here) decrypts.
-      apiKeyCiphertext = `${envelope.ciphertext}.${envelope.iv}.${envelope.authTag}`;
+      apiKeyCiphertext = encryptToStored(plaintext);
       apiKeyLast4 = maskApiKeySuffix(plaintext);
+    }
+
+    // Resolve the OFFICIAL ChatGPT auth.json field — encrypted at rest exactly
+    // like the apiKey, so the sandbox provider can decrypt + inject it per task
+    // (replacing the deployment-level env var). Only presence is ever read back.
+    let authJsonCiphertext: string | null;
+    if (plan.authJsonAction === 'clear') {
+      authJsonCiphertext = null;
+    } else if (plan.authJsonAction === 'keep') {
+      authJsonCiphertext = existing?.authJsonCiphertext ?? null;
+    } else {
+      authJsonCiphertext = encryptToStored(request.authJson as string);
     }
 
     const state =
       plan.mode === 'official'
-        ? 'connected'
-        : (plan.baseUrl && apiKeyCiphertext
-            ? 'connected'
-            : plan.baseUrl || apiKeyCiphertext
-              ? 'not_saved'
-              : 'not_connected');
+        ? authJsonCiphertext
+          ? 'connected'
+          : 'not_connected'
+        : plan.baseUrl && apiKeyCiphertext
+          ? 'connected'
+          : plan.baseUrl || apiKeyCiphertext
+            ? 'not_saved'
+            : 'not_connected';
 
     await this.prisma.codexCredential.upsert({
       where: { userId },
@@ -263,6 +287,7 @@ export class SettingsService {
         apiKeyCiphertext,
         apiKeyLast4,
         defaultModel: plan.defaultModel,
+        authJsonCiphertext,
       },
       update: {
         mode: plan.mode,
@@ -271,6 +296,7 @@ export class SettingsService {
         apiKeyCiphertext,
         apiKeyLast4,
         defaultModel: plan.defaultModel,
+        authJsonCiphertext,
       },
     });
 

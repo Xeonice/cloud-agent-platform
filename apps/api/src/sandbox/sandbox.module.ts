@@ -2,7 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { AioSandboxProvider } from './aio-sandbox.provider';
 import { SANDBOX_PROVIDER, type SandboxProvider } from './sandbox-provider.port';
 import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
-import { EnvCodexAuthSource } from './env-codex-auth-source';
+import { PrismaCodexAuthSource } from './prisma-codex-auth-source';
 import { PROVISION_LOOKUP } from './provision-lookup.port';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
 
@@ -31,11 +31,14 @@ import { PrismaProvisionLookup } from './prisma-provision-lookup';
 @Global()
 @Module({
   providers: [
-    // Deployment-level codex auth source the provider injects into each sandbox.
-    // Bound by token so a multi-user/settings-backed source can replace it later.
+    // Settings-backed codex auth source the provider injects into each sandbox:
+    // resolves the OFFICIAL ChatGPT login the operator connected via the Settings
+    // page (encrypted at rest), falling back to the legacy deployment env var
+    // (CODEX_CHATGPT_AUTH_JSON_B64) when none is stored. Bound by token so the
+    // provider stays a pure port consumer.
     {
       provide: CODEX_AUTH_SOURCE,
-      useClass: EnvCodexAuthSource,
+      useClass: PrismaCodexAuthSource,
     },
     // Prisma-backed per-task clone-URL lookup (task → repo.gitSource + operator
     // token). Behind a token so the provider never depends on PrismaService.

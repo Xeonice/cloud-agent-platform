@@ -74,13 +74,25 @@ function projectCredentialRead(facts, officialConnected) {
 
 function projectCredentialSave(request, previous) {
   if (request.mode === 'official') {
-    return { mode: 'official', baseUrl: null, defaultModel: null, keyAction: 'clear' };
+    // Official carries the ChatGPT login (auth.json): replace on a fresh paste,
+    // else preserve on an official->official re-save, else clear when switching
+    // IN from compatible (nothing to preserve). The compatible apiKey is always
+    // cleared for an unused mode.
+    const switchingIntoOfficial = previous === null || previous.mode !== 'official';
+    const authJsonAction = request.hasNewAuthJson
+      ? 'replace'
+      : switchingIntoOfficial
+        ? 'clear'
+        : 'keep';
+    return { mode: 'official', baseUrl: null, defaultModel: null, keyAction: 'clear', authJsonAction };
   }
   const baseUrl = request.baseUrl ?? null;
   const defaultModel = request.defaultModel ?? null;
-  if (request.hasNewKey) return { mode: 'compatible', baseUrl, defaultModel, keyAction: 'replace' };
+  // Switching to compatible always clears any stored official auth.json.
+  const base = { mode: 'compatible', baseUrl, defaultModel, authJsonAction: 'clear' };
+  if (request.hasNewKey) return { ...base, keyAction: 'replace' };
   const switchingIntoCompatible = previous === null || previous.mode !== 'compatible';
-  return { mode: 'compatible', baseUrl, defaultModel, keyAction: switchingIntoCompatible ? 'clear' : 'keep' };
+  return { ...base, keyAction: switchingIntoCompatible ? 'clear' : 'keep' };
 }
 
 // 1. defaults + read-only identity + scoping
@@ -142,9 +154,36 @@ test('applySettingsUpdate only mutates supplied keys', () => {
 
 // 3. mode mutual-exclusivity
 test('official mode clears base URL, key, and model (mutual exclusivity)', () => {
-  const prev = { mode: 'compatible', baseUrl: 'https://p', hasApiKey: true, apiKeyLast4: 'abcd', defaultModel: 'm' };
-  const plan = projectCredentialSave({ mode: 'official', hasNewKey: false }, prev);
-  assert.deepEqual(plan, { mode: 'official', baseUrl: null, defaultModel: null, keyAction: 'clear' });
+  const prev = { mode: 'compatible', baseUrl: 'https://p', hasApiKey: true, apiKeyLast4: 'abcd', defaultModel: 'm', hasAuthJson: false };
+  const plan = projectCredentialSave({ mode: 'official', hasNewKey: false, hasNewAuthJson: false }, prev);
+  // Switching compatible -> official with NO pasted login must NOT resurrect a
+  // stale auth.json (there is none on a compatible row): authJsonAction clears.
+  assert.deepEqual(plan, { mode: 'official', baseUrl: null, defaultModel: null, keyAction: 'clear', authJsonAction: 'clear' });
+});
+
+// 3b. official ChatGPT auth.json: replace on a fresh paste, keep on re-save,
+//     clear on a switch IN from compatible (security-critical for the new flow).
+test('official: a fresh authJson paste REPLACES the stored login', () => {
+  const prev = { mode: 'official', baseUrl: null, hasApiKey: false, apiKeyLast4: null, defaultModel: null, hasAuthJson: true };
+  const plan = projectCredentialSave({ mode: 'official', hasNewKey: false, hasNewAuthJson: true }, prev);
+  assert.equal(plan.authJsonAction, 'replace');
+});
+
+test('official: re-save with NO new paste KEEPS the prior login (token preserved)', () => {
+  const prev = { mode: 'official', baseUrl: null, hasApiKey: false, apiKeyLast4: null, defaultModel: null, hasAuthJson: true };
+  const plan = projectCredentialSave({ mode: 'official', hasNewKey: false, hasNewAuthJson: false }, prev);
+  assert.equal(plan.authJsonAction, 'keep');
+});
+
+test('official: a fresh connect (no prior row) with no paste CLEARS (no phantom login)', () => {
+  const plan = projectCredentialSave({ mode: 'official', hasNewKey: false, hasNewAuthJson: false }, null);
+  assert.equal(plan.authJsonAction, 'clear');
+});
+
+test('compatible: switching IN from official always CLEARS the official auth.json', () => {
+  const prevOfficial = { mode: 'official', baseUrl: null, hasApiKey: false, apiKeyLast4: null, defaultModel: null, hasAuthJson: true };
+  const plan = projectCredentialSave({ mode: 'compatible', baseUrl: 'https://p', hasNewKey: true, hasNewAuthJson: false }, prevOfficial);
+  assert.equal(plan.authJsonAction, 'clear');
 });
 
 test('compatible: a new key REPLACES; no new key on same-mode update KEEPS', () => {

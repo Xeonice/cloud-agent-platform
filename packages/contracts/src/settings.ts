@@ -147,9 +147,11 @@ export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;
  * save and is NEVER returned by any read shape. Omitting `apiKey` on update
  * preserves the previously stored encrypted key rather than clearing it.
  *
- * For `official` mode, `baseUrl`/`apiKey`/`defaultModel` are unused. For
- * `compatible` mode, `baseUrl` identifies the provider and `defaultModel` is
- * the selected default; both are non-secret.
+ * For `official` mode, the ChatGPT login state is provided as `authJson` (the
+ * `~/.codex/auth.json` from `codex login`) and `baseUrl`/`apiKey`/`defaultModel`
+ * are unused. For `compatible` mode, `baseUrl` identifies the provider,
+ * `defaultModel` is the selected default (both non-secret), and `apiKey` is the
+ * write-only secret.
  */
 export const SaveCodexCredentialRequestSchema = z.object({
   /** Provider mode being saved. */
@@ -161,6 +163,15 @@ export const SaveCodexCredentialRequestSchema = z.object({
    * back. Omit to preserve the previously stored key on update.
    */
   apiKey: z.string().min(1).optional(),
+  /**
+   * Write-only OFFICIAL-mode ChatGPT login state — the full `~/.codex/auth.json`
+   * document produced by `codex login` (`{auth_mode:"chatgpt", tokens:{…}}`).
+   * Encrypted at rest on save and NEVER echoed back; the sandbox provider reads
+   * the decrypted value to authenticate codex per task (replacing the
+   * deployment-level env injection). Omit to preserve the previously stored
+   * login on an official-mode re-save.
+   */
+  authJson: z.string().min(1).optional(),
   /** Selected default model to persist with the credential. */
   defaultModel: z.string().min(1).optional(),
 });
