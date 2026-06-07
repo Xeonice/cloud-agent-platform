@@ -172,11 +172,18 @@ COPY apps/sandbox-hooks/hooks.json /home/gem/.codex/hooks.json
 # approval path.
 
 # The exact launch argv the orchestrator bridge injects in-shell over
-# /v1/shell/ws (kept here as the single source of truth for the launch contract;
-# the bridge reads/echoes it). `--full-auto` KEEPS hooks; the bypass-hook-trust
-# flag trusts the baked hooks.json non-interactively. NEVER add `-s` /
-# bypass-approvals here — those DISABLE the very hooks we depend on.
-ENV CODEX_LAUNCH_ARGV="codex --full-auto --dangerously-bypass-hook-trust"
+# /v1/shell/ws (kept here as the launch contract; the bridge mirrors it as its
+# DEFAULT_CODEX_LAUNCH_ARGV). Updated for codex 0.131: `--full-auto` was REMOVED
+# upstream (0.131 rejects it as "unexpected argument"). `-C /home/gem/workspace`
+# runs codex in the cloned task repo; `--ask-for-approval never --sandbox
+# danger-full-access` is the 0.131 non-interactive auto-run (LONG-form `--sandbox`
+# is deliberate — the bridge guard rejects short `-s`/bypass-approvals/`--yolo`);
+# `--dangerously-bypass-hook-trust` trusts the baked hooks.json. The DIRECTORY
+# trust prompt is handled separately by the provider writing
+# ~/.codex/config.toml at provision time, NOT a launch flag. NEVER add
+# `--dangerously-bypass-approvals-and-sandbox`/`-s`/bypass-approvals — those
+# DISABLE the baked hooks.
+ENV CODEX_LAUNCH_ARGV="codex -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust"
 
 RUN chown -R 1000:1000 /home/gem
 

@@ -296,7 +296,13 @@ try {
       p3.docker = makeFakeDocker(makeFakeContainer());
       cloneConnection = await p3.provision({ taskId: 'task-clone-ok' });
 
-      const execCall = okClone.fetchCalls.find((c) => c.url.endsWith('/v1/shell/exec'));
+      // provision now emits the codex config.toml exec FIRST, then the clone, so
+      // match the clone command specifically (not merely the first /v1/shell/exec).
+      const execCall = okClone.fetchCalls.find(
+        (c) =>
+          c.url.endsWith('/v1/shell/exec') &&
+          JSON.parse(c.init.body).command.includes('git clone'),
+      );
       assert(execCall !== undefined, 'clone issued via POST /v1/shell/exec');
       const cmd = execCall ? JSON.parse(execCall.init.body).command : '';
       assert(

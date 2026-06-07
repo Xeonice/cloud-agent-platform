@@ -243,6 +243,20 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
       <DialogContent
         showCloseButton={false}
         aria-labelledby="new-task-title"
+        onInteractOutside={(event) => {
+          // The repo/strategy Select renders its options in a Radix PORTAL
+          // OUTSIDE this DialogContent's DOM, so picking an option registers as an
+          // "interact outside" and would auto-dismiss the dialog — clearing the
+          // form before the create POST ever fires (the gap-4 bug: dialog closed,
+          // no POST). Treat clicks landing in the portaled select-content as
+          // INSIDE and cancel the dismiss.
+          const original = (event.detail as { originalEvent?: Event } | undefined)
+            ?.originalEvent;
+          const target = (original?.target ?? event.target) as HTMLElement | null;
+          if (target?.closest?.('[data-slot="select-content"]')) {
+            event.preventDefault();
+          }
+        }}
         className="sm:max-w-[1040px] gap-0 overflow-hidden rounded-xl p-0 shadow-[0_0_0_1px_rgba(0,0,0,0.12),0_32px_90px_rgba(0,0,0,0.22)]"
       >
         {/* Head */}

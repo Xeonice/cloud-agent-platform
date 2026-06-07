@@ -88,6 +88,7 @@ import { WriteLockService } from '../write-lock/write-lock.service';
 // direct `constantTimeEqual` import.
 import { AuthSessionService } from '../auth/auth-session.service';
 import { resolveOperatorPrincipal } from '../auth/operator-principal';
+import { readCookie, SESSION_COOKIE_NAME } from '../auth/session-token';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 
 /**
@@ -371,7 +372,14 @@ export class TerminalGateway
       queryToken: url?.searchParams.get('token') ?? null,
       subprotocols: this.subprotocols(request),
     });
-    void this.authenticateOperator(presented).then((ok) => {
+    // Browser clients authenticate via the httpOnly `cap_session` cookie the
+    // browser auto-attaches to the cross-site wss upgrade (SameSite=None+Secure),
+    // exactly like REST. The query/subprotocol `token` stays the legacy/non-browser
+    // channel. Reading BOTH here is what lets the WS surface accept the same
+    // session cookie the REST AuthGuard does — it previously read NEITHER cookie,
+    // so a browser (empty VITE_AUTH_TOKEN) always failed with 1008.
+    const cookieToken = readCookie(request?.headers?.cookie, SESSION_COOKIE_NAME);
+    void this.authenticateOperator({ cookieToken, presentedToken: presented }).then((ok) => {
       if (!this.clients.has(client)) return; // disconnected mid-resolution
       if (!ok) {
         this.logger.warn(`client ${clientId}: operator auth failed; closing`);
@@ -567,17 +575,22 @@ export class TerminalGateway
    * When {@link AuthSessionService} is not provided (transport-only unit
    * construction), no session can resolve; only the gated legacy path remains.
    */
-  private async authenticateOperator(presented: string | null): Promise<boolean> {
-    if (presented === null) return false;
-    // A WS handshake carries a SINGLE operator credential on ONE channel (the
-    // `token` query param or the `bearer.<token>` subprotocol), so — unlike REST,
-    // where the session cookie and the `Authorization` header are distinct — the
-    // same string is the candidate for both trust domains. We try it FIRST as a
-    // GitHub-OAuth session token; only if that does not resolve do we try it as
-    // the gated legacy `AUTH_TOKEN` bearer (task 2.8). Both checks route through
-    // the shared {@link resolveOperatorPrincipal} so the WS surface cannot drift
-    // from REST on the session re-check or the constant-time legacy comparison.
-    const credentials = { sessionToken: presented, legacyBearerToken: presented };
+  private async authenticateOperator(args: {
+    cookieToken: string | null;
+    presentedToken: string | null;
+  }): Promise<boolean> {
+    const { cookieToken, presentedToken } = args;
+    // Keep the two credentials on their CORRECT trust domains (unlike the old
+    // single-string handling): the browser's `cap_session` COOKIE is a session
+    // token; the query/subprotocol `token` is the legacy/non-browser channel
+    // (also tried as a session token for non-browser session clients). Cookie
+    // takes precedence as the session candidate. Both route through the shared
+    // {@link resolveOperatorPrincipal} so the WS surface cannot drift from REST
+    // on the session re-check or the constant-time legacy `AUTH_TOKEN` compare.
+    const sessionToken = cookieToken ?? presentedToken;
+    const legacyBearerToken = presentedToken;
+    if (sessionToken === null && legacyBearerToken === null) return false;
+    const credentials = { sessionToken, legacyBearerToken };
     const principal = await resolveOperatorPrincipal(credentials, (token) =>
       this.authSession ? this.authSession.resolveSession(token) : Promise.resolve(null),
     );
@@ -601,7 +614,11 @@ export class TerminalGateway
       if (frame.taskId) state.taskId = frame.taskId;
       return;
     }
-    const ok = await this.authenticateOperator(frame.token);
+    // connect_auth carries the token explicitly in the frame (no cookie context).
+    const ok = await this.authenticateOperator({
+      cookieToken: null,
+      presentedToken: frame.token,
+    });
     if (!this.clients.has(client)) return; // disconnected mid-resolution
     if (!ok) {
       this.closeUnauthenticated(client);

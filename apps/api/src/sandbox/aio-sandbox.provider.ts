@@ -324,31 +324,44 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
   }
 
   /**
-   * Write the codex `auth.json` into `/home/gem/.codex` via `/v1/shell/exec`
-   * BEFORE codex launches, so codex authenticates on startup. Material comes from
-   * the {@link CodexAuthSource} (deployment env today); when none is configured
-   * this is a LOGGED no-op (codex then runs unauthenticated) rather than a
-   * provision failure. The auth.json is base64-decoded in-container to avoid
-   * shell/JSON double-escaping of its multi-line content, and written `chmod 600`
-   * under the `gem`-owned `~/.codex`. A non-zero exit (when material WAS
-   * configured) IS a real provision failure — fail closed, since a silently
-   * unauthenticated codex would burn a run slot doing nothing.
+   * Write codex's `~/.codex` setup into the sandbox via `/v1/shell/exec` BEFORE
+   * codex launches:
+   *   - ALWAYS a `config.toml` pre-trusting the clone dir
+   *     (`[projects."<workspace>"] trust_level="trusted"`), so codex 0.131 does
+   *     NOT block on the interactive "Do you trust the contents of this
+   *     directory?" prompt — there is no operator in the sandbox to answer it,
+   *     and `--dangerously-bypass-hook-trust` covers HOOK trust only, not the
+   *     directory-trust prompt.
+   *   - the `auth.json` from {@link CodexAuthSource} when configured, so codex
+   *     authenticates on startup; when none is configured codex still launches
+   *     (unauthenticated) but the trust config is written regardless.
+   * Each payload is base64-decoded in-container to avoid shell/JSON
+   * double-escaping of multi-line content, and written `chmod 600` under the
+   * `gem`-owned `~/.codex`. A non-zero exit IS a real provision failure — fail
+   * closed, since a broken setup would burn a run slot doing nothing.
    */
   private async injectCodexAuth(baseUrl: string, taskId: string): Promise<void> {
-    const material = await this.codexAuthSource.getCodexAuth();
-    if (!material) {
-      this.logger.warn(
-        `no codex auth configured (CodexAuthSource returned null); codex in task ${taskId} will be unauthenticated`,
-      );
-      return;
-    }
-    const b64 = Buffer.from(material.authJson, 'utf8').toString('base64');
     const dir = '/home/gem/.codex';
-    // The base64 alphabet contains no single quote, so single-quoting the payload
-    // is safe and stops the shell from touching it. mkdir is idempotent (the image
-    // already created ~/.codex); chmod 600 keeps the secret to the gem user.
-    const command =
-      `mkdir -p ${dir} && printf %s '${b64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`;
+    // Pre-trust the clone dir so codex 0.131's directory-trust prompt never
+    // blocks. Project-scoped to the exact dir codex runs in (`-C <WORKSPACE_DIR>`).
+    const configToml =
+      `[projects."${AioSandboxProvider.WORKSPACE_DIR}"]\ntrust_level = "trusted"\n`;
+    const configB64 = Buffer.from(configToml, 'utf8').toString('base64');
+    // The base64 alphabet has no single quote, so single-quoting each payload is
+    // safe and stops the shell from touching it. mkdir is idempotent.
+    let command =
+      `mkdir -p ${dir} && printf %s '${configB64}' | base64 -d > ${dir}/config.toml && chmod 600 ${dir}/config.toml`;
+
+    const material = await this.codexAuthSource.getCodexAuth();
+    if (material) {
+      const authB64 = Buffer.from(material.authJson, 'utf8').toString('base64');
+      command +=
+        ` && printf %s '${authB64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`;
+    } else {
+      this.logger.warn(
+        `no codex auth configured (CodexAuthSource returned null); codex in task ${taskId} will be unauthenticated (workspace trust still written)`,
+      );
+    }
     const res = await fetch(`${baseUrl}/v1/shell/exec`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -369,7 +382,9 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
           (scrubbed ? ` — ${scrubbed.trim()}` : ''),
       );
     }
-    this.logger.debug(`injected codex auth into sandbox for task ${taskId}`);
+    this.logger.debug(
+      `wrote codex setup (config.toml${material ? ' + auth.json' : ''}) into sandbox for task ${taskId}`,
+    );
   }
 
   /**

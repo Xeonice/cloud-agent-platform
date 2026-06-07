@@ -85,9 +85,15 @@ function SessionPage(): React.ReactElement {
     },
     {
       label: "运行环境",
-      title: context ? `${context.runtime} · ${context.resources}` : "—",
-      // Not derivable from the contract today — kept as descriptive static copy.
-      body: "worktree 2 个文件改动 · pty:/dev/pts/4",
+      // runtime is a TRUTHFUL label (AIO Sandbox = the provider); resources +
+      // worktree-diff have no backend field today, so show runtime alone + an
+      // honest "未上报" rather than the prototype's fabricated "2 vCPU·4 GiB /
+      // worktree 2 个文件改动" (D5.5 — never render an unsent value).
+      title: context?.runtime ?? "—",
+      body:
+        context?.resources && context.resources !== "—"
+          ? context.resources
+          : "运行规格未上报",
     },
     {
       label: "安全边界",

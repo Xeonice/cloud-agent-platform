@@ -56,18 +56,25 @@ const SYNTHETIC_CPR_REPLY = '\x1b[1;1R';
 
 /**
  * The codex launch argv injected in-shell over `/v1/shell/ws` (harden-aio-execution
- * integration task 6.1). `--full-auto` KEEPS the baked PreToolUse/PostToolUse
- * hooks (the `-s` sandbox / bypass-approvals flags DISABLE them, so they are
- * never used here), and `--dangerously-bypass-hook-trust` trusts the baked
- * `~/.codex/hooks.json` non-interactively (there is no operator in the sandbox to
- * answer codex's interactive trust prompt). The derived image bakes the SAME
- * string as `CODEX_LAUNCH_ARGV` (docker/aio-sandbox.Dockerfile) as the single
- * source of truth; this default mirrors it so the bridge launch path stays
- * correct even when the env is not threaded through. NOTE (codex#16732, D8 ★):
- * this launch is NOT assumed to make hooks fire reliably — it is gated by the
- * live fire-test (6.8) and backed by the cap-controlled fallback (6.9).
+ * integration task 6.1). Updated for codex 0.131 (the old `--full-auto` was
+ * REMOVED upstream — 0.131 rejects it with "unexpected argument", verified live):
+ *   - `-C /home/gem/workspace` runs codex in the cloned task repo (the
+ *     /v1/shell/ws shell's cwd is HOME=/home/gem, not the clone dir).
+ *   - `--ask-for-approval never --sandbox danger-full-access` is the 0.131
+ *     non-interactive auto-run equivalent. LONG-form `--sandbox` is deliberate:
+ *     the {@link launchCodex} guard rejects `-s`/`bypass-approvals`/`--yolo`, and
+ *     `--sandbox`/`--ask-for-approval` clear it.
+ *   - `--dangerously-bypass-hook-trust` trusts the baked `~/.codex/hooks.json`
+ *     non-interactively. NOTE: it does NOT skip the DIRECTORY-trust prompt — that
+ *     is handled out-of-band by writing `~/.codex/config.toml`
+ *     `[projects."/home/gem/workspace"] trust_level="trusted"` at provision time
+ *     (AioSandboxProvider), NOT via a launch flag.
+ * The derived image bakes the SAME string as `CODEX_LAUNCH_ARGV`
+ * (docker/aio-sandbox.Dockerfile) as the single source of truth; this default
+ * mirrors it so the bridge stays correct when the env is not threaded through.
  */
-const DEFAULT_CODEX_LAUNCH_ARGV = 'codex --full-auto --dangerously-bypass-hook-trust';
+const DEFAULT_CODEX_LAUNCH_ARGV =
+  'codex -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
 
 /** A sandbox AIO JSON frame received over the terminal WebSocket. */
 interface AioInboundFrame {

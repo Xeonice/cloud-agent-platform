@@ -205,15 +205,27 @@ export function taskContextQuery(id: string) {
     queryKey: queryKeys.taskContext(id),
     queryFn: async () => {
       const ctx = await mock.mockTaskContext(id);
-      if (isCapable("branches")) {
-        const task = await real.getTask(id);
-        return {
-          ...ctx,
-          branch: task.branch ?? ctx.branch,
-          strategy: task.strategy ?? ctx.strategy,
-        };
-      }
-      return ctx;
+      if (!isCapable("tasks")) return ctx;
+      // Bind to REAL data: the repo name from the task's repoId, branch/strategy
+      // from the task. agent/runtime/resources have NO backend field yet, so
+      // downgrade them to honest placeholders instead of the mock's fabricated
+      // "gpt-5-codex / 2 vCPU·4 GiB" (D5.5 — never render an unsent field). The
+      // sandbox IS AIO Sandbox (the provider), so that one is a truthful label.
+      const task = await real.getTask(id);
+      const repos = await real.listRepos();
+      const repo = repos.find((r) => r.id === task.repoId);
+      const repoName = repo
+        ? (repo.gitSource.match(/[:/]([^/:]+\/[^/]+?)(?:\.git)?$/)?.[1] ?? repo.name)
+        : ctx.repo;
+      return {
+        ...ctx,
+        repo: repoName,
+        branch: task.branch ?? ctx.branch,
+        strategy: task.strategy ?? ctx.strategy,
+        agent: "Codex",
+        runtime: "AIO Sandbox",
+        resources: "—",
+      };
     },
   });
 }
