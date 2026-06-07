@@ -29,7 +29,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname);
+const repoRoot = resolve(__dirname, '..');
 const COMPOSE = resolve(repoRoot, 'docker-compose.yml');
 
 let passed = 0;

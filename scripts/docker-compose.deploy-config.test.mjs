@@ -15,7 +15,7 @@
  *     backs the WORKSPACES_DIR path the orchestrator bridge writes session.log to (4.2)
  *
  * No YAML dependency: parse the `api` service env + volume block from text so the
- * test stays standalone (run with `node docker-compose.deploy-config.test.mjs`).
+ * test stays standalone (run with `node scripts/docker-compose.deploy-config.test.mjs`).
  */
 
 import { readFileSync } from 'node:fs';
@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const composePath = join(here, 'docker-compose.yml');
+const composePath = join(here, '..', 'docker-compose.yml');
 const compose = readFileSync(composePath, 'utf8');
 
 let passed = 0;
