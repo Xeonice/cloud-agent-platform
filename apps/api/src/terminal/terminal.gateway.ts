@@ -781,6 +781,9 @@ export class TerminalGateway
     if (!session) return;
     const input = Buffer.from(frame.data, 'base64').toString('utf8');
     session.pty.write(input);
+    // VR.3 — operator input is activity: reset the idle window so an operator
+    // actively driving codex keeps the task alive even between codex outputs.
+    this.guardrails?.recordActivity(frame.sessionId);
   }
 
   /** Renew the write lease for a heartbeat from the current holder (7.2). */
@@ -789,7 +792,16 @@ export class TerminalGateway
     _client: WebSocket,
     state: ClientState,
   ): void {
-    if (!state.authenticated || !this.writeLock) return;
+    if (!state.authenticated) return;
+    // VR.3 — an operator heartbeat means a human is ATTENDING this task. Reset the
+    // idle window so an operator-driven session (codex idling at its composer,
+    // waiting for the next instruction and therefore producing NO PTY output) is
+    // not force-failed as "idle" while someone is watching it. Closing the session
+    // tab stops the heartbeat, so a genuinely abandoned task still reclaims after
+    // `maxIdleMs`. Runs before the writeLock guard so attendance counts even for a
+    // reader connection.
+    this.guardrails?.recordActivity(frame.sessionId);
+    if (!this.writeLock) return;
     this.writeLock.heartbeat(frame.sessionId, state.clientId);
     // Self-heal, SCOPED to the prior holder: if the lease is FREE after the
     // heartbeat (this connection's own lease expired while its tab was throttled

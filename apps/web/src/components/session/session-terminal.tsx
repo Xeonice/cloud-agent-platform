@@ -128,6 +128,8 @@ export const SessionTerminal = React.forwardRef<
   const sessionIdRef = React.useRef<string | null>(null);
   const pausedRef = React.useRef(false);
   const clientIdRef = React.useRef<string>("server");
+  /** True once this connection has seized the write lease via takeover. */
+  const claimedRef = React.useRef(false);
 
   // Resolved xterm theme (client-only). `null` until the effect resolves it.
   const [theme, setTheme] = React.useState<ITheme | null>(null);
@@ -281,6 +283,15 @@ export const SessionTerminal = React.forwardRef<
       onOpen() {
         const geo = handleRef.current?.geometry();
         socket.sendReconnect(lastSeqRef.current, geo?.cols, geo?.rows);
+        // sessionId == taskId; capture it on connect so the command input is
+        // enabled. Safe (no longer the swallowed-keystroke hazard) because the
+        // operator's first interaction SEIZES the write lease (sendCommand /
+        // onData), so an enabled input the operator types into always becomes the
+        // writer rather than silently dropping. Reset the claim flag so a fresh
+        // connection re-seizes on the next interaction.
+        claimedRef.current = false;
+        sessionIdRef.current = taskId;
+        setSessionId(taskId);
         setConnectionState("open");
       },
       onClose() {
@@ -325,26 +336,22 @@ export const SessionTerminal = React.forwardRef<
     return () => window.clearInterval(timer);
   }, []);
 
-  // NOTE: the operator does NOT claim the write lease from the client. The
-  // gateway auto-grants it the instant connect-time auth resolves (when free)
-  // and broadcasts the lease_state captured above — this removes the
-  // client-side takeover/retry that RACED async auth (a bounded retry could be
-  // fully consumed before auth landed on a cold session store, leaving the
-  // terminal permanently read-only). The 15s heartbeat then renews it; the
-  // gateway self-heals a lapsed lease for its PRIOR holder on the next heartbeat,
-  // and on a writer disconnect re-grants the freed lease to a still-connected
-  // operator (so a sole operator's reload can't strand a free lease).
+  // WRITE-LEASE MODEL: the gateway auto-grants the lease on connect-time auth
+  // (when free), AND the operator SEIZES it on first interaction via takeover
+  // (see sendCommand / onData) — so the ACTIVE operator is always the writer,
+  // even when a stale/ghost connection (e.g. a navigated-away tab whose WS
+  // lingered server-side over the tunnel) still holds the lease. The takeover is
+  // interaction-triggered, i.e. well after connect-time auth, so it never races
+  // the async auth the way an earlier connect-time claim did. The 15s heartbeat
+  // renews the held lease; the gateway self-heals a lapsed lease for its prior
+  // holder and re-grants a freed lease to a still-connected operator on disconnect.
   //
-  // KNOWN LIMITATIONS (acceptable for the single-operator owner model):
-  //  1. A transient WS close drops the lease (auto-released on disconnect) and
-  //     TerminalSocket does not auto-reconnect, so a network blip needs a reload
-  //     — the same pre-existing limitation as live streaming.
-  //  2. MULTI-OPERATOR: the server keys the lease by its own connection id, which
-  //     this client cannot match, so a SECOND operator on the same task sees a
-  //     non-null lease_state and shows an enabled input even though it is a reader
-  //     whose keystrokes the server silently drops. Correctly fixing this needs a
-  //     per-recipient `youAreWriter` flag on the lease_state frame (a contracts
-  //     change); deferred until concurrent multi-operator editing is required.
+  // Trade-off (fine for the single-operator owner model): two operators on the
+  // SAME task is last-typer-wins — whoever types takes the lease. There is no
+  // per-recipient ownership signal on the wire, so a reader's input box still
+  // shows enabled, but typing now CLAIMS the lease rather than being dropped.
+  // KNOWN LIMITATION: a transient WS close drops the lease and TerminalSocket
+  // does not auto-reconnect, so a network blip needs a reload (same as streaming).
 
   // ── Decision (lock-independent approval resolution, D7) ───────────────────
   const decide = React.useCallback(
@@ -361,11 +368,20 @@ export const SessionTerminal = React.forwardRef<
   const sendCommand = React.useCallback(() => {
     const value = input.trim();
     if (!value) return;
-    const sid = sessionIdRef.current;
-    // No-op without a captured sessionId/socket (no lease established yet).
-    if (sid) socketRef.current?.sendKeystroke(sid, `${input}\n`);
+    const sock = socketRef.current;
+    if (!sock) return;
+    // sessionId == taskId in this protocol. SEIZE the write lease for THIS
+    // connection first (takeover) so the active operator's command is never
+    // silently dropped because a stale/ghost connection still holds the lease,
+    // then send the text and a CARRIAGE RETURN. codex's TUI submits the composer
+    // on `\r` (the Enter key); a `\n` linefeed is treated as an inserted newline
+    // and does NOT submit — that was why a sent command had "no effect".
+    sock.sendTakeover(taskId, clientIdRef.current);
+    claimedRef.current = true;
+    sock.sendKeystroke(taskId, input);
+    sock.sendKeystroke(taskId, "\r");
     setInput("");
-  }, [input]);
+  }, [input, taskId]);
 
   // ── xterm readiness watchdog → fallback if it never mounts ────────────────
   React.useEffect(() => {
@@ -440,10 +456,18 @@ export const SessionTerminal = React.forwardRef<
                 socketRef.current?.sendResize(geometry.cols, geometry.rows);
               }}
               onData={(data) => {
-                // Direct xterm keystrokes are lease-gated server-side; forward
-                // them through the same keystroke path when a session is known.
-                const sid = sessionIdRef.current;
-                if (sid) socketRef.current?.sendKeystroke(sid, data);
+                // Direct xterm keystrokes go through the same lease-gated path.
+                // Seize the write lease ONCE per connection on first input (the
+                // act of typing claims control) so the active operator is the
+                // writer even if a stale connection still held the lease. xterm
+                // already encodes Enter as `\r`, so no newline translation here.
+                const sock = socketRef.current;
+                if (!sock) return;
+                if (!claimedRef.current) {
+                  sock.sendTakeover(taskId, clientIdRef.current);
+                  claimedRef.current = true;
+                }
+                sock.sendKeystroke(taskId, data);
               }}
             />
           ) : null}
