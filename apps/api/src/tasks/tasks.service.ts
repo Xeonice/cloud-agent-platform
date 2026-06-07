@@ -1,4 +1,11 @@
-import { Inject, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  type OnApplicationBootstrap,
+  Optional,
+} from '@nestjs/common';
 import {
   taskResponseSchema,
   type CreateTaskBody,
@@ -49,7 +56,7 @@ export const GUARDRAILS_SERVICE_TOKEN = 'GUARDRAILS_SERVICE';
  * credentials are torn down on the happy path.
  */
 @Injectable()
-export class TasksService {
+export class TasksService implements OnApplicationBootstrap {
   private readonly logger = new Logger(TasksService.name);
 
   constructor(
@@ -68,6 +75,52 @@ export class TasksService {
     @Inject(AUDIT_RECORDER_TOKEN)
     private readonly audit?: AuditRecorderPort,
   ) {}
+
+  /**
+   * On process start, reclaim tasks stranded by the PREVIOUS process. A task in
+   * a session-bound non-terminal status (`running` / `awaiting_input`) holds a
+   * live sandbox + in-memory runner/guardrail state that lived in the prior
+   * process and is gone after a restart (deploy, crash); it can never resume, so
+   * it is transitioned to `failed` rather than left lingering with a dead
+   * session (and a leaked sandbox the provider reaps in parallel on startup).
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    await this.reclaimOrphanedOnStartup();
+  }
+
+  /**
+   * Transition every `running` / `awaiting_input` task to `failed` — the
+   * startup reclaim of orphaned in-flight tasks. Returns the count reclaimed.
+   * Reuses {@link transition} so each reclaim is edge-validated, audited, and
+   * runs the terminal guardrail teardown through the single status-write
+   * chokepoint. Best-effort per task: a failure is logged and skipped, never
+   * blocking boot.
+   */
+  async reclaimOrphanedOnStartup(): Promise<number> {
+    const orphaned = await this.prisma.task.findMany({
+      where: { status: { in: ['running', 'awaiting_input'] } },
+      select: { id: true },
+    });
+    let reclaimed = 0;
+    for (const { id } of orphaned) {
+      try {
+        await this.transition(id, 'failed');
+        reclaimed += 1;
+      } catch (err) {
+        this.logger.warn(
+          `startup reclaim: could not fail orphaned task ${id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    if (reclaimed > 0) {
+      this.logger.log(
+        `startup reclaim: failed ${reclaimed} orphaned in-flight task(s)`,
+      );
+    }
+    return reclaimed;
+  }
 
   async create(
     repoId: string,

@@ -416,6 +416,72 @@ try {
         (teardownContainer.calls.stopped >= 1 || teardownContainer.calls.removed >= 1),
       'a post-start provision failure tears the started container down (no leak)',
     );
+
+    // ---- startup reap: orphaned cap-aio-* containers from a prior process ----
+    // onApplicationBootstrap lists every cap-aio-* container and force-removes it
+    // (after a restart the orchestrator owns no live session, so all are orphans).
+    {
+      const removed = [];
+      let listFilter;
+      const reapDocker = {
+        async listContainers(options) {
+          listFilter = options?.filters;
+          return [{ Id: 'orphan-1' }, { Id: 'orphan-2' }];
+        },
+        getContainer(id) {
+          return {
+            async remove() {
+              removed.push(id);
+            },
+          };
+        },
+      };
+      const pReap = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      pReap.docker = reapDocker;
+      await pReap.onApplicationBootstrap();
+      assert(
+        Array.isArray(listFilter?.name) &&
+          listFilter.name.some((n) => n.includes('cap-aio-')),
+        'startup reap lists containers filtered by the cap-aio- name prefix',
+      );
+      assert(
+        removed.length === 2 && removed.includes('orphan-1') && removed.includes('orphan-2'),
+        'startup reap force-removes every orphaned cap-aio-* container',
+      );
+
+      // No orphans -> nothing removed, no throw.
+      const removed2 = [];
+      const pReap2 = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      pReap2.docker = {
+        async listContainers() {
+          return [];
+        },
+        getContainer() {
+          return {
+            async remove() {
+              removed2.push(1);
+            },
+          };
+        },
+      };
+      await pReap2.onApplicationBootstrap();
+      assert(removed2.length === 0, 'startup reap removes nothing when there are no orphans');
+
+      // A docker failure during reap is swallowed (never blocks app startup).
+      const pReap3 = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      pReap3.docker = {
+        async listContainers() {
+          throw new Error('docker down');
+        },
+      };
+      let reapThrew = false;
+      try {
+        await pReap3.onApplicationBootstrap();
+      } catch {
+        reapThrew = true;
+      }
+      assert(!reapThrew, 'startup reap swallows docker errors (never blocks app startup)');
+    }
   } finally {
     fetchMock.restore();
     if (prevImage === undefined) delete process.env.AIO_SANDBOX_IMAGE;

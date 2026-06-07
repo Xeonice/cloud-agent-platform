@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  type OnApplicationBootstrap,
+  type OnModuleDestroy,
+} from '@nestjs/common';
 import Docker from 'dockerode';
 
 import type {
@@ -58,7 +64,9 @@ import { PROVISION_LOOKUP, type ProvisionLookup } from './provision-lookup.port'
  * so a failed provision never leaks a running container.
  */
 @Injectable()
-export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
+export class AioSandboxProvider
+  implements SandboxProvider, OnApplicationBootstrap, OnModuleDestroy
+{
   private readonly logger = new Logger(AioSandboxProvider.name);
   private readonly docker = new Docker();
   /** taskId -> the per-task AIO container. */
@@ -94,6 +102,8 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
    * "destination path already exists and is not an empty directory").
    */
   private static readonly WORKSPACE_DIR = '/home/gem/workspace';
+  /** Name prefix for the per-task sandbox containers (`cap-aio-<taskId>`). */
+  private static readonly CONTAINER_PREFIX = 'cap-aio-';
 
   /**
    * Reported sandbox mode, surfaced as INFORMATIONAL metadata only. The real
@@ -126,7 +136,7 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
     }
     const network = process.env.AIO_SANDBOX_NETWORK ?? 'cap-net';
 
-    const containerName = `cap-aio-${ctx.taskId}`;
+    const containerName = `${AioSandboxProvider.CONTAINER_PREFIX}${ctx.taskId}`;
     const baseUrl = `http://${containerName}:${AioSandboxProvider.AIO_PORT}`;
     const wsUrl = `ws://${containerName}:${AioSandboxProvider.AIO_PORT}/v1/shell/ws`;
 
@@ -212,6 +222,49 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
     await container.remove({ force: true }).catch(() => {
       // AutoRemove already deleted it (or it never started) — fine.
     });
+  }
+
+  /**
+   * Reap orphaned `cap-aio-*` containers left by a PRIOR process on startup.
+   *
+   * The per-task idle/teardown reclaim only tracks containers THIS process
+   * provisioned (its in-memory `containers` map); after a restart (deploy,
+   * crash, OOM) that map starts empty, so any `cap-aio-*` container still on the
+   * host is an orphan whose task/session/guardrail state died with the previous
+   * process — left running it leaks host resources forever. The orchestrator
+   * owns no live session at boot (single-instance deployment: one orchestrator
+   * per docker host), so EVERY such container is by definition an orphan to
+   * reap. The matching stranded task rows are transitioned to `failed`
+   * separately by the tasks service on startup.
+   *
+   * Best-effort and never throws: a docker hiccup must not block app startup.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      const orphans = await this.docker.listContainers({
+        all: true,
+        filters: { name: [AioSandboxProvider.CONTAINER_PREFIX] },
+      });
+      if (orphans.length === 0) return;
+      await Promise.all(
+        orphans.map((info) =>
+          this.docker
+            .getContainer(info.Id)
+            .remove({ force: true })
+            .catch(() => undefined),
+        ),
+      );
+      this.logger.warn(
+        `startup reap: removed ${orphans.length} orphaned ` +
+          `${AioSandboxProvider.CONTAINER_PREFIX}* sandbox container(s) from a prior process`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `startup reap of orphaned sandboxes failed (continuing): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /** Stop every provisioned container on app shutdown so none is orphaned. */
