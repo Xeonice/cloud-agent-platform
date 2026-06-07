@@ -138,8 +138,15 @@ function installFetchMock(execExitCode = 0, execOutput = '') {
       return {
         ok: true,
         status: 200,
+        // The live AIO server NESTS the result under `data` — mirror that so the
+        // test exercises the real shape the provider must parse (a flat top-level
+        // exit_code would mask the data-vs-top-level bug).
         async json() {
-          return { exit_code: execExitCode, output: execOutput };
+          return {
+            success: true,
+            message: 'Command executed',
+            data: { status: 'completed', exit_code: execExitCode, output: execOutput },
+          };
         },
       };
     }

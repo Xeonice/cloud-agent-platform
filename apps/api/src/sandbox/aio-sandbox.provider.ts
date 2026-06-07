@@ -307,31 +307,16 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
       );
     }
 
-    // Parse the response body and treat a non-zero clone exit_code as a real
+    // Parse the response and treat a non-zero clone exit_code as a real
     // provisioning failure — an HTTP 200 with a failed command is NOT success.
-    const body = (await res.json().catch(() => undefined)) as
-      | {
-          exit_code?: unknown;
-          exitCode?: unknown;
-          code?: unknown;
-          output?: unknown;
-          stdout?: unknown;
-          stderr?: unknown;
-        }
-      | undefined;
-    const exitCode = AioSandboxProvider.coerceExitCode(
-      body?.exit_code ?? body?.exitCode ?? body?.code,
+    const { exitCode, output } = AioSandboxProvider.parseExecResult(
+      await res.json().catch(() => undefined),
     );
     if (exitCode !== 0) {
-      const output = AioSandboxProvider.scrubSecrets(
-        (typeof body?.output === 'string' && body.output) ||
-          (typeof body?.stderr === 'string' && body.stderr) ||
-          (typeof body?.stdout === 'string' && body.stdout) ||
-          '',
-      );
+      const scrubbed = AioSandboxProvider.scrubSecrets(output);
       throw new Error(
         `git clone into AIO sandbox for task ${taskId} failed: exit_code ${exitCode}` +
-          (output ? ` — ${output.trim()}` : ''),
+          (scrubbed ? ` — ${scrubbed.trim()}` : ''),
       );
     }
 
@@ -374,27 +359,14 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
         `codex auth injection for task ${taskId} failed: /v1/shell/exec responded ${res.status}`,
       );
     }
-    const body = (await res.json().catch(() => undefined)) as
-      | {
-          exit_code?: unknown;
-          exitCode?: unknown;
-          code?: unknown;
-          output?: unknown;
-          stderr?: unknown;
-        }
-      | undefined;
-    const exitCode = AioSandboxProvider.coerceExitCode(
-      body?.exit_code ?? body?.exitCode ?? body?.code,
+    const { exitCode, output } = AioSandboxProvider.parseExecResult(
+      await res.json().catch(() => undefined),
     );
     if (exitCode !== 0) {
-      const output = AioSandboxProvider.scrubSecrets(
-        (typeof body?.output === 'string' && body.output) ||
-          (typeof body?.stderr === 'string' && body.stderr) ||
-          '',
-      );
+      const scrubbed = AioSandboxProvider.scrubSecrets(output);
       throw new Error(
         `codex auth injection for task ${taskId} failed: exit_code ${exitCode}` +
-          (output ? ` — ${output.trim()}` : ''),
+          (scrubbed ? ` — ${scrubbed.trim()}` : ''),
       );
     }
     this.logger.debug(`injected codex auth into sandbox for task ${taskId}`);
@@ -412,6 +384,29 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
     return output
       .replace(/https:\/\/[^@\s/]+:[^@\s/]+@/g, 'https://***:***@')
       .replace(/(Authorization:\s*Basic\s+)\S+/gi, '$1***');
+  }
+
+  /**
+   * Parse an AIO `/v1/shell/exec` response into `{exitCode, output}`. The live
+   * AIO server NESTS the command result under a `data` object
+   * (`{success, message, data:{exit_code, output, status, ...}}`), so reading the
+   * fields off the TOP level yields `undefined` → a NaN exit code that fails
+   * closed even on a successful command (the bug that blocked auth-inject/clone).
+   * We read from `data` and tolerate a flat shape (older servers / unit mocks)
+   * too. A missing code stays NaN — never `=== 0` — so absence is a failure.
+   */
+  private static parseExecResult(raw: unknown): { exitCode: number; output: string } {
+    const top = (raw ?? {}) as Record<string, unknown>;
+    const d = (top.data ?? top) as Record<string, unknown>;
+    const exitCode = AioSandboxProvider.coerceExitCode(
+      d.exit_code ?? d.exitCode ?? d.code,
+    );
+    const output =
+      (typeof d.output === 'string' && d.output) ||
+      (typeof d.stderr === 'string' && d.stderr) ||
+      (typeof d.stdout === 'string' && d.stdout) ||
+      '';
+    return { exitCode, output };
   }
 
   /**
