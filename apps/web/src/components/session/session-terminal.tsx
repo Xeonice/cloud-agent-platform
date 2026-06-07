@@ -379,7 +379,14 @@ export const SessionTerminal = React.forwardRef<
     sock.sendTakeover(taskId, clientIdRef.current);
     claimedRef.current = true;
     sock.sendKeystroke(taskId, input);
-    sock.sendKeystroke(taskId, "\r");
+    // Send Enter (CR) as a SEPARATE, slightly-delayed keystroke. codex's TUI
+    // coalesces a text burst immediately followed by `\r` into one PASTE (it
+    // inserts the `\r` as a newline instead of submitting, exactly like a real
+    // terminal paste); a `\r` that arrives after a brief gap is a genuine Enter
+    // keypress and submits the composer. The delay (mirroring a human pressing
+    // Return after typing) is what actually runs the command — without it the
+    // text sits unsubmitted in the composer.
+    window.setTimeout(() => socketRef.current?.sendKeystroke(taskId, "\r"), 150);
     setInput("");
   }, [input, taskId]);
 
