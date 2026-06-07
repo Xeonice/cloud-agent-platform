@@ -294,8 +294,11 @@ export const SessionTerminal = React.forwardRef<
         setSessionId(taskId);
         setConnectionState("open");
       },
-      onClose() {
-        setConnectionState("closed");
+      onClose(_event, willReconnect) {
+        // A transient drop auto-reconnects (backoff): surface "connecting" so the
+        // pill reads as reconnecting rather than a dead session. A terminal close
+        // (clean / auth / retry budget exhausted) stays "closed".
+        setConnectionState(willReconnect ? "connecting" : "closed");
       },
       onError() {
         setConnectionState("error");
@@ -336,6 +339,28 @@ export const SessionTerminal = React.forwardRef<
     return () => window.clearInterval(timer);
   }, []);
 
+  // ── Recover a silently-dropped socket on focus / network return ───────────
+  // A backgrounded tab's WS can be closed by the proxy (Cloudflare's ~100s idle
+  // timeout) or by a laptop sleep without the page noticing until the operator
+  // returns. When the tab regains visibility or the browser reports the network
+  // is back, eagerly re-open the socket (skipping the backoff wait) so the
+  // operator never types into a dead connection. `ensureConnected` is a no-op
+  // when the socket is already open/connecting or was intentionally closed.
+  React.useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        socketRef.current?.ensureConnected();
+      }
+    };
+    const onOnline = () => socketRef.current?.ensureConnected();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", onOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", onOnline);
+    };
+  }, []);
+
   // WRITE-LEASE MODEL: the gateway auto-grants the lease on connect-time auth
   // (when free), AND the operator SEIZES it on first interaction via takeover
   // (see sendCommand / onData) — so the ACTIVE operator is always the writer,
@@ -350,8 +375,11 @@ export const SessionTerminal = React.forwardRef<
   // SAME task is last-typer-wins — whoever types takes the lease. There is no
   // per-recipient ownership signal on the wire, so a reader's input box still
   // shows enabled, but typing now CLAIMS the lease rather than being dropped.
-  // KNOWN LIMITATION: a transient WS close drops the lease and TerminalSocket
-  // does not auto-reconnect, so a network blip needs a reload (same as streaming).
+  // RESILIENCE: a transient WS close (e.g. Cloudflare's ~100s idle timeout) now
+  // AUTO-RECONNECTS with backoff inside TerminalSocket; onOpen re-sends the
+  // restoration frame and the next interaction re-seizes the lease, so a network
+  // blip self-heals without a reload. The tab also eagerly reconnects on focus /
+  // network-return via ensureConnected (see the visibility/online effect above).
 
   // ── Decision (lock-independent approval resolution, D7) ───────────────────
   const decide = React.useCallback(
@@ -430,7 +458,11 @@ export const SessionTerminal = React.forwardRef<
   );
 
   const showFallback = xtermFailed;
-  const commandDisabled = !sessionId; // No lease/session captured → send is a no-op.
+  // Disable unless we have a session AND the socket is actually OPEN: a frame
+  // sent while reconnecting/closed/errored is silently dropped by the socket
+  // (sendFrame only sends when OPEN), which is the exact "command had no effect"
+  // trap — so the input must not invite typing into a non-deliverable socket.
+  const commandDisabled = !sessionId || connection !== "open";
 
   return (
     <article className="overflow-hidden rounded-md bg-terminal-bg text-terminal-fg shadow-terminal min-h-[min(820px,calc(100vh-210px))]">

@@ -1,14 +1,11 @@
-import { exec } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { promisify } from 'node:util';
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import Docker from 'dockerode';
 import type {
   ContainerResourceSample,
   SampledResources,
   SampledResourceStatus,
 } from '@cap/contracts';
-
-const execAsync = promisify(exec);
 
 /**
  * Background CPU/memory sampler for `cap-aio-<taskId>` sandbox containers
@@ -23,14 +20,20 @@ const execAsync = promisify(exec);
  * Source preference (per design D2): cgroup v2 file reads
  * (`/sys/fs/cgroup/.../cpu.stat`, `memory.current`, `memory.max`) are CHEAP and
  * preferred where the container cgroups are visible to this process; the
- * portable fallback is `docker stats --no-stream`.
+ * portable fallback reads the Docker API directly via dockerode
+ * (`container.stats({ stream: false })`) over the mounted socket. We do NOT
+ * shell out to the `docker` CLI: the slim api runtime image ships no `docker`
+ * binary, so `exec('docker stats …')` would ENOENT — but dockerode is already a
+ * dependency and the daemon socket is the same one the sandbox provider uses.
  *
  * CPU% has two honest sources, never conflated:
  *  - cgroup readings carry a CUMULATIVE `cpuUsageUsec`; CPU% is derived from the
  *    DELTA between two consecutive readings (a single reading cannot yield a
  *    rate, so a container's first tick reports 0% until a baseline exists);
- *  - `docker stats` already computes the instantaneous rate, so its readings
- *    carry a pre-computed `cpuPercent` directly and bypass the delta math.
+ *  - the Docker API path computes the instantaneous rate from the snapshot's
+ *    `cpu_stats` vs `precpu_stats` (the daemon populates `precpu_stats` on a
+ *    `stream:false` read), so its readings carry a pre-computed `cpuPercent`
+ *    directly and bypass the cgroup delta math.
  * A reading carries exactly ONE of the two (`cpuUsageUsec` XOR `cpuPercent`).
  *
  * Memory utilization is always expressed against the cgroup LIMIT, not raw host
@@ -205,6 +208,17 @@ export class ResourceSamplerService implements OnModuleDestroy {
   private sourceUnavailable = false;
 
   /**
+   * Docker API client over the default daemon socket — the SAME socket the
+   * sandbox provider uses. The portable fallback reads container stats through
+   * this (dockerode) instead of shelling out to a `docker` CLI the slim runtime
+   * image does not ship.
+   */
+  private readonly docker = new Docker();
+
+  /** True while a sampling tick is in flight, to skip overlapping ticks. */
+  private sampling = false;
+
+  /**
    * Supplies the task ids whose `cap-aio-<taskId>` containers are currently
    * running. Injected (set by the metrics module) so the sampler reads the LIVE
    * running set from the semaphore rather than owning a parallel list.
@@ -298,42 +312,57 @@ export class ResourceSamplerService implements OnModuleDestroy {
    * the source unavailable but never throws into the loop.
    */
   async sampleOnce(now: number = Date.now()): Promise<void> {
-    const taskIds = this.runningTaskIds();
-
-    if (taskIds.length === 0) {
-      // No containers — cache the explicit empty reading, not a stale sample.
-      this.lastSnapshot = buildSampledResources([], new Map(), now);
-      this.previousReadings = new Map();
-      this.sourceUnavailable = false;
-      return;
-    }
-
-    let readings: ContainerReading[];
+    // Reentrancy guard: the fixed-cadence interval fires regardless of whether
+    // the prior tick finished. A slow daemon read must not let two ticks overlap
+    // and race on previousReadings/lastSnapshot (the later-resolving tick would
+    // clobber the baseline with a stale one). Skip a tick while one is in flight.
+    if (this.sampling) return;
+    this.sampling = true;
     try {
-      readings = await this.readContainers(taskIds, now);
-      this.sourceUnavailable = false;
-    } catch (err) {
-      // Outage: degrade ONLY the sampled block. Keep the prior cache (it will be
-      // re-stamped stale via `sourceUnavailable`) and flag the source down.
-      this.sourceUnavailable = true;
-      this.logger.warn(
-        `resource sampling failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-      return;
-    }
+      const taskIds = this.runningTaskIds();
 
-    this.lastSnapshot = buildSampledResources(readings, this.previousReadings, now);
-    this.previousReadings = new Map(readings.map((r) => [r.taskId, r]));
+      if (taskIds.length === 0) {
+        // No containers — cache the explicit empty reading, not a stale sample.
+        this.lastSnapshot = buildSampledResources([], new Map(), now);
+        this.previousReadings = new Map();
+        this.sourceUnavailable = false;
+        return;
+      }
+
+      let readings: ContainerReading[];
+      try {
+        readings = await this.readContainers(taskIds, now);
+        this.sourceUnavailable = false;
+      } catch (err) {
+        // Outage: degrade ONLY the sampled block. Keep the prior cache (it will
+        // be re-stamped stale via `sourceUnavailable`) and flag the source down.
+        this.sourceUnavailable = true;
+        this.logger.warn(
+          `resource sampling failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return;
+      }
+
+      this.lastSnapshot = buildSampledResources(
+        readings,
+        this.previousReadings,
+        now,
+      );
+      this.previousReadings = new Map(readings.map((r) => [r.taskId, r]));
+    } finally {
+      this.sampling = false;
+    }
   }
 
   /**
    * Reads each running container, preferring cheap cgroup v2 file reads and
-   * falling back to `docker stats --no-stream` when the cgroup fs is not visible
-   * to this process. A container that cannot be read by EITHER source is skipped
-   * (it may have just exited); only a wholesale failure (nothing readable)
-   * throws, so the block degrades rather than silently reporting "no containers".
+   * falling back to the Docker API (dockerode) over the socket when the cgroup
+   * fs is not visible to this process. A container that cannot be read by EITHER
+   * source is skipped (it may have just exited); only a wholesale failure
+   * (nothing readable) throws, so the block degrades rather than silently
+   * reporting "no containers".
    */
   private async readContainers(
     taskIds: readonly string[],
@@ -349,7 +378,7 @@ export class ResourceSamplerService implements OnModuleDestroy {
         readings.push(cgroup);
         continue;
       }
-      // cgroup not visible — lazily fetch the docker-stats fallback once.
+      // cgroup not visible — lazily fetch the Docker API fallback once.
       if (!dockerStatsFetched) {
         dockerStatsFetched = true;
         dockerStats = await this.readDockerStats(taskIds);
@@ -411,40 +440,145 @@ export class ResourceSamplerService implements OnModuleDestroy {
     };
   }
 
-  /** Resolves the full docker container id for `cap-aio-<taskId>`. */
+  /** Resolves the full docker container id for `cap-aio-<taskId>` via the API. */
   private async resolveContainerId(taskId: string): Promise<string> {
     const name = `${AIO_CONTAINER_PREFIX}${taskId}`;
-    const { stdout } = await execAsync(
-      `docker inspect --format '{{.Id}}' ${shellEscape(name)}`,
+    const info = await this.withTimeout(
+      this.docker.getContainer(name).inspect(),
+      this.cadenceMs,
     );
-    const id = stdout.trim();
+    const id = info.Id;
     if (!id) throw new Error(`container ${name} not found`);
     return id;
   }
 
   /**
-   * Portable fallback: one-shot `docker stats --no-stream` over the running
-   * `cap-aio-*` containers. docker computes the CPU rate itself, so the parsed
-   * `cpuPercent` is carried directly (no second-reading delta needed).
+   * Portable fallback: read each running `cap-aio-*` container's stats through
+   * the Docker API (dockerode) over the socket — NOT the `docker` CLI (absent
+   * from the slim image). Each container is sampled INDEPENDENTLY via
+   * `Promise.allSettled`, so one container exiting between the running-set
+   * snapshot and the stats call (a 404) drops only that entry instead of failing
+   * the whole tick (the CLI's batched `docker stats a b c` fails wholesale when
+   * any one name is gone). The daemon populates `precpu_stats` on a `stream:false`
+   * read, so `dockerStatsToLine` derives the CPU rate from the single snapshot.
    */
   private async readDockerStats(
     taskIds: readonly string[],
   ): Promise<Map<string, DockerStatLine>> {
-    const names = taskIds.map((t) => `${AIO_CONTAINER_PREFIX}${t}`);
-    const { stdout } = await execAsync(
-      `docker stats --no-stream --format '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}' ${names
-        .map(shellEscape)
-        .join(' ')}`,
+    const out = new Map<string, DockerStatLine>();
+    const results = await Promise.allSettled(
+      taskIds.map(async (taskId) => {
+        const name = `${AIO_CONTAINER_PREFIX}${taskId}`;
+        const stats = await this.withTimeout(
+          this.docker.getContainer(name).stats({ stream: false }),
+          this.cadenceMs,
+        );
+        return { taskId, line: dockerStatsToLine(stats) };
+      }),
     );
-    return parseDockerStats(stdout);
+    for (const result of results) {
+      // A rejected entry (e.g. 404 — the container exited mid-tick, or a timeout
+      // on a wedged read) is skipped; it surfaces as a missing reading, not a
+      // whole-tick outage.
+      if (result.status === 'fulfilled' && result.value.line) {
+        out.set(result.value.taskId, result.value.line);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Reject if `promise` does not settle within `ms`, bounding a wedged Docker
+   * socket read so a single hung call cannot stall the whole sampling tick. The
+   * timer is cleared on settle so it never keeps the process alive.
+   */
+  private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`docker request timed out after ${ms}ms`));
+      }, ms);
+      timer.unref?.();
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err: unknown) => {
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        },
+      );
+    });
   }
 }
 
-/** Parsed `docker stats` line: a pre-computed CPU rate + memory used/limit. */
+/** A container's resource line: a pre-computed CPU rate + memory used/limit. */
 export interface DockerStatLine {
   readonly cpuPercent: number;
   readonly memoryBytes: number;
   readonly memoryLimitBytes: number | null;
+}
+
+/**
+ * Reduces a Docker API stats snapshot (dockerode `container.stats({stream:false})`)
+ * to a {@link DockerStatLine} (PURE — unit-testable).
+ *
+ * CPU%: the daemon populates `precpu_stats` on a `stream:false` read, so the
+ * instantaneous rate is `(Δcontainer_cpu / Δsystem_cpu) * onlineCpus * 100`
+ * (docker's own formula). A missing baseline or non-positive delta yields 0%
+ * rather than a fabricated spike.
+ *
+ * Memory: matches `docker stats` (calculateMemUsageUnixNoCache) — subtract the
+ * reclaimable page cache, preferring cgroup v1's `total_inactive_file` (the
+ * hierarchical total) then cgroup v2's `inactive_file`, and ONLY when it is
+ * below `usage` (else report raw `usage`, as the CLI does). A cgroup v1 payload
+ * carries BOTH keys, so a nullish `inactive_file ?? total_inactive_file` would
+ * wrongly pick the leaf value — the field order + the `< usage` guard mirror the
+ * CLI exactly. The cgroup `limit` is carried as the limit (it reports host total
+ * when no per-container limit is set, exactly as `docker stats` displays it).
+ *
+ * Returns null when the payload lacks the cpu/memory blocks (nothing to read).
+ */
+export function dockerStatsToLine(
+  stats: Docker.ContainerStats,
+): DockerStatLine | null {
+  const cpu = stats.cpu_stats;
+  const pre = stats.precpu_stats;
+  const mem = stats.memory_stats;
+  if (!cpu || !mem) return null;
+
+  const cpuDelta =
+    (cpu.cpu_usage?.total_usage ?? 0) - (pre?.cpu_usage?.total_usage ?? 0);
+  const systemDelta = (cpu.system_cpu_usage ?? 0) - (pre?.system_cpu_usage ?? 0);
+  const onlineCpus = cpu.online_cpus || cpu.cpu_usage?.percpu_usage?.length || 1;
+  const cpuPercent =
+    systemDelta > 0 && cpuDelta > 0
+      ? (cpuDelta / systemDelta) * onlineCpus * 100
+      : 0;
+
+  const usage = mem.usage ?? 0;
+  // dockerode's type over-promises these as always-present numbers; real
+  // payloads omit one depending on the cgroup version, so view them as optional.
+  const memStats = mem.stats as
+    | { total_inactive_file?: number; inactive_file?: number }
+    | undefined;
+  const totalInactive = memStats?.total_inactive_file;
+  const inactive = memStats?.inactive_file;
+  let memoryBytes: number;
+  if (typeof totalInactive === 'number' && totalInactive < usage) {
+    memoryBytes = usage - totalInactive; // cgroup v1 hierarchical total
+  } else if (typeof inactive === 'number' && inactive < usage) {
+    memoryBytes = usage - inactive; // cgroup v2
+  } else {
+    memoryBytes = usage; // cache ≥ usage (or absent) → raw usage, as the CLI does
+  }
+  const limit = mem.limit ?? 0;
+
+  return {
+    cpuPercent: Math.max(0, cpuPercent),
+    memoryBytes,
+    memoryLimitBytes: limit > 0 ? limit : null,
+  };
 }
 
 /** Parses `usage_usec <n>` out of a cgroup v2 `cpu.stat` blob. */
@@ -462,63 +596,4 @@ export function parseMemoryMax(memMax: string): number | null {
   if (trimmed === 'max') return null;
   const value = Number.parseInt(trimmed, 10);
   return Number.isNaN(value) ? null : value;
-}
-
-/**
- * Parses `docker stats --no-stream` tab-separated `Name\tCPUPerc\tMemUsage`
- * lines into per-task readings (PURE — unit-testable). `cap-aio-<taskId>` names
- * are mapped back to `taskId`. `MemUsage` is `"<used> / <limit>"` (e.g.
- * `"128MiB / 512MiB"`); both sides are parsed to bytes. Lines whose name is not
- * a `cap-aio-` container are ignored.
- */
-export function parseDockerStats(stdout: string): Map<string, DockerStatLine> {
-  const out = new Map<string, DockerStatLine>();
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const [name, cpuPerc, memUsage] = trimmed.split('\t');
-    if (!name || !name.startsWith(AIO_CONTAINER_PREFIX)) continue;
-    const taskId = name.slice(AIO_CONTAINER_PREFIX.length);
-    const [usedRaw, limitRaw] = (memUsage ?? '').split('/').map((s) => s.trim());
-    out.set(taskId, {
-      cpuPercent: parsePercent(cpuPerc),
-      memoryBytes: parseMemBytes(usedRaw),
-      memoryLimitBytes: limitRaw ? parseMemBytes(limitRaw) : null,
-    });
-  }
-  return out;
-}
-
-/** Parses a `"42.50%"` docker percent token to a number; NaN → 0. */
-function parsePercent(token: string | undefined): number {
-  if (!token) return 0;
-  const value = Number.parseFloat(token.replace('%', ''));
-  return Number.isNaN(value) ? 0 : value;
-}
-
-/** Parses a docker memory token like `"128MiB"` / `"1.5GiB"` / `"512MB"` to bytes. */
-export function parseMemBytes(token: string | undefined): number {
-  if (!token) return 0;
-  const match = token.match(/^([\d.]+)\s*([KMGT]?i?B)?$/i);
-  if (!match) return 0;
-  const value = Number.parseFloat(match[1]);
-  if (Number.isNaN(value)) return 0;
-  const unit = (match[2] ?? 'B').toUpperCase();
-  const factor: Record<string, number> = {
-    B: 1,
-    KB: 1_000,
-    MB: 1_000_000,
-    GB: 1_000_000_000,
-    TB: 1_000_000_000_000,
-    KIB: 1_024,
-    MIB: 1_024 ** 2,
-    GIB: 1_024 ** 3,
-    TIB: 1_024 ** 4,
-  };
-  return Math.round(value * (factor[unit] ?? 1));
-}
-
-/** Minimal shell-escape for a docker container name argument. */
-function shellEscape(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }

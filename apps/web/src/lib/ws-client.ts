@@ -59,13 +59,36 @@ export function decodeTailReplay(b64: string): Uint8Array {
   return base64ToBytes(b64);
 }
 
+/**
+ * Reconnection backoff (full jitter — AWS "Exponential Backoff and Jitter"):
+ * each retry waits a random delay in `[0, min(cap, base · 2^attempt)]`, which
+ * desynchronizes reconnect waves and avoids a tight loop. Tuned for a single
+ * terminal socket behind Cloudflare's ~100s idle WebSocket window.
+ */
+const RECONNECT_BASE_DELAY_MS = 500;
+const RECONNECT_MAX_DELAY_MS = 30_000;
+const RECONNECT_MAX_ATTEMPTS = 15;
+/**
+ * Forward-progress watchdog for a stalled handshake: if a socket sits in
+ * CONNECTING past this deadline (a dead tunnel that completes TCP but never
+ * returns the WS upgrade), force-close it so the reconnect path runs instead of
+ * waiting out the browser's much longer handshake timeout.
+ */
+const CONNECT_TIMEOUT_MS = 12_000;
+
 export interface TerminalSocketHandlers {
   /** Decoded raw PTY bytes (already base64-decoded). Carries the frame `seq`. */
   onRaw?: (bytes: Uint8Array, seq: number) => void;
   /** Any validated control frame, dispatched by the consumer on `type`. */
   onControl?: (frame: ControlFrame) => void;
   onOpen?: () => void;
-  onClose?: (event: CloseEvent) => void;
+  /**
+   * The socket closed. `willReconnect` is true when the client will auto-retry
+   * (a transient drop) so the consumer can show a "reconnecting" state rather
+   * than a terminal "closed"; false on an intentional close, a clean (1000) or
+   * policy/auth (1008) close, or once the retry budget is exhausted.
+   */
+  onClose?: (event: CloseEvent, willReconnect: boolean) => void;
   onError?: (event: Event) => void;
 }
 
@@ -74,17 +97,48 @@ export interface TerminalSocketHandlers {
  * The session page constructs one of these, wires handlers, and uses the
  * `send*` helpers to drive keystrokes, ACKs, heartbeats, takeover, and
  * one-shot approval decisions.
+ *
+ * Resilience: the socket AUTO-RECONNECTS with exponential backoff + full jitter
+ * on a transient drop (e.g. Cloudflare closing an idle tunnel after ~100s). A
+ * clean close (1000), a policy/auth close (1008), an intentional {@link close},
+ * or an exhausted retry budget stops the retries. On every (re)open the
+ * consumer's `onOpen` re-sends the reconnect-restoration frame (snapshot + tail
+ * from the last ACK'd seq) and re-arms takeover, so the live frame and the write
+ * lease are restored without a page reload. A monotonic generation token fences
+ * off a superseded socket's late events so a stale connection can never mutate
+ * state for the live one. {@link ensureConnected} lets the page recover an
+ * idle-dropped socket immediately on tab focus / network return.
  */
 export class TerminalSocket {
   private socket: WebSocket | null = null;
+  /**
+   * Monotonic connection id, bumped on every connect()/close(). Each socket's
+   * event handlers capture their generation and no-op once superseded, so a
+   * lingering old socket's late onclose/onmessage can't touch live state.
+   */
+  private generation = 0;
+  /** Set by close() so the onclose-driven reconnect is suppressed on teardown. */
+  private intentionallyClosed = false;
+  /** Consecutive failed-connection count; reset to 0 on a healthy open. */
+  private reconnectAttempt = 0;
+  /** Pending backoff timer, or null when no reconnect is scheduled. */
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Watchdog timer that abandons a handshake stuck in CONNECTING. */
+  private connectWatchdog: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly taskId: string,
     private readonly handlers: TerminalSocketHandlers = {},
   ) {}
 
-  /** Open the authenticated socket for this task. */
+  /** Open the authenticated socket for this task (auto-reconnecting). */
   connect(): void {
+    this.intentionallyClosed = false;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     const token = operatorToken();
     const base = wsUrl();
     const url = new URL(`${base}/terminal`);
@@ -97,10 +151,39 @@ export class TerminalSocket {
     socket.binaryType = "arraybuffer";
     this.socket = socket;
 
-    socket.onopen = () => this.handlers.onOpen?.();
-    socket.onclose = (event) => this.handlers.onClose?.(event);
-    socket.onerror = (event) => this.handlers.onError?.(event);
-    socket.onmessage = (event) => this.handleMessage(event.data);
+    // Fence this socket's events to its generation so a superseded socket that
+    // settles late (a delayed close/message after we moved on) is ignored.
+    const gen = (this.generation += 1);
+    const isCurrent = () => gen === this.generation && this.socket === socket;
+
+    socket.onopen = () => {
+      if (!isCurrent()) return;
+      this.clearConnectWatchdog();
+      this.reconnectAttempt = 0; // a healthy open resets the backoff ramp
+      this.handlers.onOpen?.();
+    };
+    socket.onclose = (event) => {
+      if (!isCurrent()) return;
+      this.clearConnectWatchdog();
+      this.socket = null;
+      const willReconnect = this.shouldReconnect(event);
+      this.handlers.onClose?.(event, willReconnect);
+      if (willReconnect) this.scheduleReconnect();
+    };
+    socket.onerror = (event) => {
+      if (!isCurrent()) return;
+      // A WebSocket error is always followed by a close event; the reconnect
+      // decision is made there to avoid double-scheduling.
+      this.handlers.onError?.(event);
+    };
+    socket.onmessage = (event) => {
+      if (!isCurrent()) return;
+      this.handleMessage(event.data);
+    };
+
+    // Force-close a handshake that stalls in CONNECTING so onclose drives a
+    // retry instead of the page hanging on a half-open socket.
+    this.armConnectWatchdog(socket, isCurrent);
   }
 
   private handleMessage(data: unknown): void {
@@ -224,10 +307,101 @@ export class TerminalSocket {
     this.sendFrame(frame);
   }
 
-  /** Close the socket. */
+  /** Decide whether a close warrants an auto-reconnect. */
+  private shouldReconnect(event: CloseEvent): boolean {
+    if (this.intentionallyClosed) return false;
+    // 1000 = normal closure (clean shutdown); 1008 = policy violation (e.g. an
+    // expired/invalid session) — neither is resolved by retrying.
+    if (event.code === 1000 || event.code === 1008) return false;
+    return this.reconnectAttempt < RECONNECT_MAX_ATTEMPTS;
+  }
+
+  /** Schedule a reconnect after a full-jitter backoff delay. */
+  private scheduleReconnect(): void {
+    const cap = Math.min(
+      RECONNECT_MAX_DELAY_MS,
+      RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempt,
+    );
+    const delay = Math.random() * cap; // full jitter: random in [0, cap]
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      try {
+        this.connect();
+      } catch {
+        // wsUrl()/config unresolved — a permanent error, not a transient drop;
+        // stop retrying and surface it (the consumer maps onError → error UI).
+        this.handlers.onError?.(new Event("error"));
+      }
+    }, delay);
+  }
+
+  /** Arm the handshake watchdog for `socket`, replacing any prior one. */
+  private armConnectWatchdog(socket: WebSocket, isCurrent: () => boolean): void {
+    this.clearConnectWatchdog();
+    this.connectWatchdog = setTimeout(() => {
+      this.connectWatchdog = null;
+      if (isCurrent() && socket.readyState === WebSocket.CONNECTING) {
+        // Still handshaking past the deadline — abandon it. close() makes the
+        // browser fire onclose (abnormal), which runs the normal reconnect path.
+        socket.close();
+      }
+    }, CONNECT_TIMEOUT_MS);
+  }
+
+  /** Cancel a pending handshake watchdog, if any. */
+  private clearConnectWatchdog(): void {
+    if (this.connectWatchdog !== null) {
+      clearTimeout(this.connectWatchdog);
+      this.connectWatchdog = null;
+    }
+  }
+
+  /**
+   * Re-open the socket immediately if it is not already open/connecting and was
+   * not intentionally closed. The page calls this when the tab regains focus or
+   * the network returns, so a silently-dropped connection recovers at once
+   * instead of waiting out the backoff. `reconnectAttempt` is deliberately NOT
+   * reset here: resetting on a mere connect attempt would collapse the backoff
+   * ramp and defeat the give-up budget every time the tab refocuses against a
+   * still-down server. A genuine recovery resets the ramp honestly in onopen.
+   */
+  ensureConnected(): void {
+    if (this.intentionallyClosed) return;
+    const state = this.socket?.readyState ?? WebSocket.CLOSED;
+    if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) return;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    try {
+      this.connect();
+    } catch {
+      this.handlers.onError?.(new Event("error"));
+    }
+  }
+
+  /** Close the socket and stop auto-reconnecting. */
   close(): void {
-    this.socket?.close();
+    this.intentionallyClosed = true;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.clearConnectWatchdog();
+    // Bump the generation so any in-flight event is fenced off, and detach the
+    // handlers before closing so the onclose-driven reconnect never fires for an
+    // intentional teardown (taskId change / unmount).
+    this.generation += 1;
+    const socket = this.socket;
     this.socket = null;
+    if (socket) {
+      socket.onopen = null;
+      socket.onclose = null;
+      socket.onerror = null;
+      socket.onmessage = null;
+      socket.close();
+    }
   }
 
   get readyState(): number {

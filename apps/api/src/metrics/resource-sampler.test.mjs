@@ -6,14 +6,14 @@
  *      containers" reading (NOT a stale prior sample): hasActiveContainers false,
  *      empty containers, zero aggregates, status 'available'.
  *   2. CPU% from cgroup delta of two readings; no prior baseline → 0% this tick.
- *   3. docker-stats reading carries a pre-computed cpuPercent used directly.
+ *   3. a reading carrying a pre-computed cpuPercent is used directly.
  *   4. memory% vs cgroup LIMIT; unlimited limit → memoryPercent null.
  *   5. freshnessStatus: within threshold available, beyond stale.
- *   6. parsers: cpu.stat usage_usec, memory.max (max→null), docker stats line,
- *      memory byte units.
+ *   6. parsers: cpu.stat usage_usec, memory.max (max→null).
+ *   7. dockerStatsToLine: CPU% from cpu_stats/precpu_stats deltas; memory
+ *      (usage − reclaimable cache, v1 total_inactive_file before v2
+ *      inactive_file, guarded by < usage) vs the cgroup limit; missing → null.
  */
-
-const AIO_CONTAINER_PREFIX = 'cap-aio-';
 
 // ---- inline the pure helpers (mirror resource-sampler.service.ts) ----
 
@@ -87,40 +87,37 @@ function parseMemoryMax(memMax) {
   return Number.isNaN(value) ? null : value;
 }
 
-function parseDockerStats(stdout) {
-  const out = new Map();
-  for (const line of stdout.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const [name, cpuPerc, memUsage] = trimmed.split('\t');
-    if (!name || !name.startsWith(AIO_CONTAINER_PREFIX)) continue;
-    const taskId = name.slice(AIO_CONTAINER_PREFIX.length);
-    const [usedRaw, limitRaw] = (memUsage ?? '').split('/').map((s) => s.trim());
-    out.set(taskId, {
-      cpuPercent: parsePercent(cpuPerc),
-      memoryBytes: parseMemBytes(usedRaw),
-      memoryLimitBytes: limitRaw ? parseMemBytes(limitRaw) : null,
-    });
+function dockerStatsToLine(stats) {
+  const cpu = stats.cpu_stats;
+  const pre = stats.precpu_stats;
+  const mem = stats.memory_stats;
+  if (!cpu || !mem) return null;
+  const cpuDelta =
+    (cpu.cpu_usage?.total_usage ?? 0) - (pre?.cpu_usage?.total_usage ?? 0);
+  const systemDelta = (cpu.system_cpu_usage ?? 0) - (pre?.system_cpu_usage ?? 0);
+  const onlineCpus = cpu.online_cpus || cpu.cpu_usage?.percpu_usage?.length || 1;
+  const cpuPercent =
+    systemDelta > 0 && cpuDelta > 0
+      ? (cpuDelta / systemDelta) * onlineCpus * 100
+      : 0;
+  const usage = mem.usage ?? 0;
+  const memStats = mem.stats;
+  const totalInactive = memStats?.total_inactive_file;
+  const inactive = memStats?.inactive_file;
+  let memoryBytes;
+  if (typeof totalInactive === 'number' && totalInactive < usage) {
+    memoryBytes = usage - totalInactive; // cgroup v1 hierarchical total
+  } else if (typeof inactive === 'number' && inactive < usage) {
+    memoryBytes = usage - inactive; // cgroup v2
+  } else {
+    memoryBytes = usage; // cache ≥ usage (or absent) → raw usage
   }
-  return out;
-}
-function parsePercent(token) {
-  if (!token) return 0;
-  const value = Number.parseFloat(token.replace('%', ''));
-  return Number.isNaN(value) ? 0 : value;
-}
-function parseMemBytes(token) {
-  if (!token) return 0;
-  const match = token.match(/^([\d.]+)\s*([KMGT]?i?B)?$/i);
-  if (!match) return 0;
-  const value = Number.parseFloat(match[1]);
-  if (Number.isNaN(value)) return 0;
-  const unit = (match[2] ?? 'B').toUpperCase();
-  const factor = {
-    B: 1, KB: 1_000, MB: 1_000_000, GB: 1_000_000_000, TB: 1_000_000_000_000,
-    KIB: 1_024, MIB: 1_024 ** 2, GIB: 1_024 ** 3, TIB: 1_024 ** 4,
+  const limit = mem.limit ?? 0;
+  return {
+    cpuPercent: Math.max(0, cpuPercent),
+    memoryBytes,
+    memoryLimitBytes: limit > 0 ? limit : null,
   };
-  return Math.round(value * (factor[unit] ?? 1));
 }
 
 const cg = (taskId, cpuUsageUsec, readAtMs, memoryBytes, memoryLimitBytes) => ({
@@ -230,24 +227,100 @@ function approx(a, b, eps = 1e-6) {
   assert(parseMemoryMax('max\n') === null, 'T10b: max → null (unlimited)');
 }
 
-// T11: docker stats line parsing, name→taskId, mem used/limit.
+// T11: dockerStatsToLine — CPU% from cpu_stats vs precpu_stats deltas, and
+//   memory = usage − inactive_file (cgroup v2 cache subtraction).
+//   Δcpu = 1e6, Δsystem = 5e6, 4 online cpus → (1/5)*4*100 = 80%.
 {
-  const out = parseDockerStats(
-    'cap-aio-abc\t42.50%\t128MiB / 512MiB\nsome-other\t9%\t1MiB / 2MiB\n',
-  );
-  assert(out.size === 1, 'T11a: only cap-aio- lines kept');
-  const stat = out.get('abc');
-  assert(stat && approx(stat.cpuPercent, 42.5), 'T11b: cpu percent parsed');
-  assert(stat.memoryBytes === 128 * 1024 ** 2, 'T11c: used MiB → bytes');
-  assert(stat.memoryLimitBytes === 512 * 1024 ** 2, 'T11d: limit MiB → bytes');
+  const stats = {
+    cpu_stats: {
+      cpu_usage: { total_usage: 2_000_000, percpu_usage: [0, 0, 0, 0] },
+      system_cpu_usage: 10_000_000,
+      online_cpus: 4,
+    },
+    precpu_stats: {
+      cpu_usage: { total_usage: 1_000_000, percpu_usage: [0, 0, 0, 0] },
+      system_cpu_usage: 5_000_000,
+      online_cpus: 4,
+    },
+    memory_stats: {
+      usage: 200 * 1024 ** 2, // 200MiB raw
+      stats: { inactive_file: 72 * 1024 ** 2 }, // 72MiB reclaimable cache
+      limit: 512 * 1024 ** 2, // 512MiB cgroup limit
+    },
+  };
+  const line = dockerStatsToLine(stats);
+  assert(line !== null, 'T11a: line produced');
+  assert(approx(line.cpuPercent, 80), 'T11b: CPU% = (Δcpu/Δsys)*onlineCpus*100');
+  assert(line.memoryBytes === 128 * 1024 ** 2, 'T11c: memory = usage − inactive_file');
+  assert(line.memoryLimitBytes === 512 * 1024 ** 2, 'T11d: cgroup limit carried');
 }
 
-// T12: memory byte unit parsing.
+// T12: dockerStatsToLine — zero deltas → 0% (no fabricated spike), cgroup v1
+//   total_inactive_file fallback, limit 0 → unlimited (null), missing → null.
 {
-  assert(parseMemBytes('1.5GiB') === Math.round(1.5 * 1024 ** 3), 'T12a: GiB');
-  assert(parseMemBytes('512MB') === 512_000_000, 'T12b: MB (decimal)');
-  assert(parseMemBytes('100B') === 100, 'T12c: bytes');
-  assert(parseMemBytes('') === 0, 'T12d: empty → 0');
+  const flat = {
+    cpu_stats: {
+      cpu_usage: { total_usage: 1_000_000, percpu_usage: [0] },
+      system_cpu_usage: 5_000_000,
+      online_cpus: 1,
+    },
+    precpu_stats: {
+      cpu_usage: { total_usage: 1_000_000, percpu_usage: [0] },
+      system_cpu_usage: 5_000_000,
+      online_cpus: 1,
+    },
+    memory_stats: {
+      usage: 50 * 1024 ** 2,
+      stats: { total_inactive_file: 10 * 1024 ** 2 }, // cgroup v1 field name
+      limit: 0, // no per-container limit
+    },
+  };
+  const line = dockerStatsToLine(flat);
+  assert(line.cpuPercent === 0, 'T12a: zero deltas → 0% CPU (no fabricated spike)');
+  assert(line.memoryBytes === 40 * 1024 ** 2, 'T12b: cgroup v1 total_inactive_file subtracted');
+  assert(line.memoryLimitBytes === null, 'T12c: limit 0 → unlimited (null)');
+  assert(dockerStatsToLine({}) === null, 'T12d: missing cpu/memory blocks → null');
+}
+
+// T13: cgroup v1 DUAL-KEY payload — both inactive_file (leaf) and
+//   total_inactive_file (hierarchical) present. Must subtract the hierarchical
+//   total (docker CLI precedence), NOT the leaf — a nullish-coalescing
+//   `inactive_file ?? total_inactive_file` would wrongly pick the leaf 0.
+{
+  const z = { total_usage: 0, percpu_usage: [0] };
+  const v1 = {
+    cpu_stats: { cpu_usage: z, system_cpu_usage: 0, online_cpus: 1 },
+    precpu_stats: { cpu_usage: z, system_cpu_usage: 0, online_cpus: 1 },
+    memory_stats: {
+      usage: 200 * 1024 ** 2,
+      stats: {
+        inactive_file: 0, // leaf — must NOT be chosen
+        total_inactive_file: 72 * 1024 ** 2, // hierarchical cache
+      },
+      limit: 512 * 1024 ** 2,
+    },
+  };
+  const line = dockerStatsToLine(v1);
+  assert(
+    line.memoryBytes === 128 * 1024 ** 2,
+    'T13: v1 dual-key → total_inactive_file wins (200−72=128MiB), not the leaf',
+  );
+}
+
+// T14: cache ≥ usage → report raw usage (CLI `< usage` guard), no collapse to 0.
+{
+  const z = { total_usage: 0, percpu_usage: [0] };
+  const odd = {
+    cpu_stats: { cpu_usage: z, system_cpu_usage: 0, online_cpus: 1 },
+    precpu_stats: { cpu_usage: z, system_cpu_usage: 0, online_cpus: 1 },
+    memory_stats: {
+      usage: 100 * 1024 ** 2,
+      stats: { total_inactive_file: 150 * 1024 ** 2 }, // cache > usage
+      limit: 512 * 1024 ** 2,
+    },
+  };
+  const line = dockerStatsToLine(odd);
+  assert(line.memoryBytes === 100 * 1024 ** 2, 'T14: cache≥usage → raw usage (CLI guard)');
 }
 
 // ---- summary ----
