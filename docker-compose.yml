@@ -110,6 +110,38 @@ services:
       # EQUIVALENT — accepted for single-user self-host only (see header).
       - /var/run/docker.sock:/var/run/docker.sock
 
+  # ── OPT-IN reverse proxy for the VPS deploy (Cloudflare -> nginx -> api) ────
+  # Gated behind the `proxy` profile so a plain `docker compose up` (local dev,
+  # which hits the api directly on :8080) does NOT start nginx. Enable on the VPS
+  # only: `docker compose --profile proxy up -d --build`.
+  #
+  # Cloudflare (orange-cloud, TLS to the browser) connects to this proxy, which
+  # forwards X-Forwarded-Proto: https so the api emits SameSite=None+Secure
+  # session cookies and https redirects (see deploy/nginx/nginx.conf), and which
+  # proxies the /terminal WebSocket upgrade for the live PTY. The api stays on the
+  # `default` network so nginx reaches it by service name `api:8080`.
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["proxy"]
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      # Uncomment for the Cloudflare "Full (strict)" origin-cert path, together
+      # with the :443 server block + cert mount below.
+      # - "443:443"
+    volumes:
+      # The reverse-proxy config, read-only.
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Optional Cloudflare Origin Certificate dir (origin.pem / origin.key),
+      # read-only. Only needed if you uncomment the :443 server block + publish.
+      # - ./deploy/nginx/certs:/etc/nginx/certs:ro
+    networks:
+      # Join `default` to reach the api by service name (api:8080). nginx does
+      # NOT need cap-net (that is only for orchestrator -> per-task sandbox DNS).
+      - default
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
