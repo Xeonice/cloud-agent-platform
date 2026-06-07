@@ -161,6 +161,14 @@ export function CodexDirectDialog({
       return;
     }
     startingRef.current = true;
+    // Open the verification tab SYNCHRONOUSLY here, inside the click gesture, so
+    // the popup blocker allows it; we navigate it to the real URL once start()
+    // resolves. Opening it AFTER the `await` (the previous bug) lost the
+    // user-gesture context and the browser blocked the popup. No `noopener` so we
+    // keep the handle to set its location; the dialog also shows the URL as a
+    // fallback link if the popup is blocked outright.
+    const authTab =
+      typeof window !== "undefined" ? window.open("about:blank", "_blank") : null;
     setPhase("starting");
     setMessage("");
     setCopied(false);
@@ -169,13 +177,15 @@ export function CodexDirectDialog({
       setVerificationUri(res.verificationUri);
       setUserCode(res.userCode);
       setPhase("awaiting");
-      // Auto-open the verification page in a new tab; the operator authorizes
-      // there (signed into ChatGPT), then this dialog polls until connected.
-      if (typeof window !== "undefined") {
+      if (authTab && !authTab.closed) {
+        authTab.location.href = res.verificationUri;
+      } else if (typeof window !== "undefined") {
+        // Popup was blocked/closed — best-effort re-open (also shown as a link).
         window.open(res.verificationUri, "_blank", "noopener,noreferrer");
       }
       beginPolling();
     } catch (err) {
+      if (authTab && !authTab.closed) authTab.close();
       setPhase("error");
       setMessage(
         err instanceof Error
