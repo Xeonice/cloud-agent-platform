@@ -149,6 +149,31 @@ services:
       # NOT need cap-net (that is only for orchestrator -> per-task sandbox DNS).
       - default
 
+  # ── Build-only vehicle for the per-task AIO sandbox image ──────────────────
+  # The orchestrator dockerode-provisions one cap-aio-<taskId> container per
+  # task from the pinned derived image (AIO_SANDBOX_IMAGE, defaulted to
+  # cap-aio-sandbox:pinned above). That image is NOT a compose runtime service,
+  # so without this entry nothing in the deploy pipeline would ever rebuild it.
+  # This service exists purely so `docker compose up -d --build` (the deploy
+  # command) rebuilds + retags the pinned image from the in-repo Dockerfile on
+  # every deploy — docker/aio-sandbox.Dockerfile changes ship with the same
+  # push that ships orchestrator changes (build args stay pinned by the
+  # Dockerfile ARG defaults; see deploy/DEPLOY.md §3).
+  #
+  # It is deliberately NOT a runtime container: the entrypoint override exits
+  # immediately (the AIO base entrypoint would otherwise start a full sandbox
+  # server), restart "no" keeps it down, and network_mode none keeps it off
+  # cap-net/default. Running per-task sandboxes keep their already-created
+  # image; only NEWLY provisioned tasks pick up the rebuilt tag.
+  aio-sandbox-image:
+    build:
+      context: .
+      dockerfile: docker/aio-sandbox.Dockerfile
+    image: cap-aio-sandbox:pinned
+    entrypoint: ["true"]
+    restart: "no"
+    network_mode: none
+
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
