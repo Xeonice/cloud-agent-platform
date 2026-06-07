@@ -268,6 +268,19 @@ export class TerminalGateway
   private readonly pendingApprovals = new Map<string, PendingApproval>();
 
   /**
+   * The clientId the write lease was last GRANTED to, per task. Used to scope the
+   * heartbeat self-heal: only the connection that previously held a task's lease
+   * may re-acquire it once it lapses (e.g. its tab was throttled past the TTL).
+   * Without this scoping a mere reader's heartbeat could acquire a lapsed-but-
+   * uncontended lease and silently STEAL write access from a still-connected
+   * operator — preemption the lease model forbids outside an explicit takeover.
+   * A stale entry (writer long gone) is harmless: self-heal also requires the
+   * lease to be free AND the clientId to match a LIVE connection, and the normal
+   * grant paths overwrite it.
+   */
+  private readonly lastWriterClientId = new Map<string, string>();
+
+  /**
    * Per-task `session.log` append state (D9 / 3.1). Under the connect-in model
    * there is no in-sandbox runner producer writing `session.log`; the
    * orchestrator bridge must persist raw PTY output itself. Each entry holds the
@@ -313,6 +326,10 @@ export class TerminalGateway
     // Drop the session.log append state; the file itself persists on the volume
     // for post-mortem / restart reconnect (multi-target-deploy persistent volume).
     this.sessionLogs.delete(taskId);
+    // An unregistered task will never legitimately reclaim its old lease, so drop
+    // its last-writer record too (bounds the map to live tasks; harmless either
+    // way since a stale id can never match a future monotonic clientId).
+    this.lastWriterClientId.delete(taskId);
   }
 
   // -------------------------------------------------------------------------
@@ -390,6 +407,12 @@ export class TerminalGateway
       // Associate the operator with the task it asked to stream, if any.
       const taskId = url?.searchParams.get('taskId') ?? null;
       if (taskId) state.taskId = taskId;
+      // 7.1 — auto-grant the write lease the instant auth resolves (when free),
+      // so operator keystrokes reach the PTY without a client-driven takeover
+      // RACING this async auth resolution (a fixed client retry window could be
+      // fully consumed before auth lands on a cold/contended session store,
+      // leaving the terminal permanently read-only). See grantWriteLeaseIfFree.
+      this.grantWriteLeaseIfFree(state);
       this.logger.debug(`client ${clientId} authenticated as operator`);
     });
 
@@ -403,14 +426,26 @@ export class TerminalGateway
     // a wedged pause cannot outlive the client that caused it.
     state.ptySubscription?.dispose();
     state.backpressure.reset();
+    // Remove the client BEFORE the lease handoff so the re-grant below never
+    // picks the disconnecting socket and broadcastLeaseState never targets it.
+    this.clients.delete(client);
 
-    // 7.3 — auto-release the write lease immediately on writer disconnect.
+    // 7.3 — auto-release the write lease immediately on writer disconnect, then
+    // hand it to a still-connected operator on the SAME task (if any). This is
+    // what makes a sole operator's RELOAD safe: the new connection's connect-time
+    // auto-grant can race ahead of this close and find the lease still held by the
+    // OLD connection (so it skips the grant); when the old socket finally closes
+    // here, the freed lease is immediately re-granted to that remaining new
+    // connection instead of being left free with the only operator holding
+    // nothing (which left the terminal permanently read-only).
     if (state.taskId && this.writeLock) {
       const released = this.writeLock.releaseOnDisconnect(state.taskId, state.clientId);
-      if (released) this.broadcastLeaseState(state.taskId);
+      if (released) {
+        this.regrantWriteLeaseToRemaining(state.taskId);
+        this.broadcastLeaseState(state.taskId);
+      }
     }
 
-    this.clients.delete(client);
     this.logger.debug(`client ${state.clientId} disconnected`);
   }
 
@@ -626,6 +661,9 @@ export class TerminalGateway
     }
     state.authenticated = true;
     if (frame.taskId) state.taskId = frame.taskId;
+    // Mirror the connect-time auto-grant on the explicit connect_auth path so a
+    // non-browser/re-asserting client also gets the lease when it is free.
+    this.grantWriteLeaseIfFree(state);
   }
 
   // -------------------------------------------------------------------------
@@ -753,6 +791,21 @@ export class TerminalGateway
   ): void {
     if (!state.authenticated || !this.writeLock) return;
     this.writeLock.heartbeat(frame.sessionId, state.clientId);
+    // Self-heal, SCOPED to the prior holder: if the lease is FREE after the
+    // heartbeat (this connection's own lease expired while its tab was throttled
+    // past the TTL) AND this connection was the last grantee, re-acquire it so a
+    // throttled operator recovers write access without a page reload. The
+    // `lastWriterClientId` gate is essential — without it ANY reader's heartbeat
+    // could acquire a lapsed-but-uncontended lease and silently STEAL write
+    // access from a still-connected operator (preemption the model forbids
+    // outside an explicit takeover). `getLease` non-null also short-circuits, so
+    // a LIVE holder is never preempted.
+    if (
+      !this.writeLock.getLease(frame.sessionId) &&
+      this.lastWriterClientId.get(frame.sessionId) === state.clientId
+    ) {
+      this.writeLock.acquire(frame.sessionId, state.clientId);
+    }
     this.broadcastLeaseState(frame.sessionId);
   }
 
@@ -767,6 +820,7 @@ export class TerminalGateway
   ): void {
     if (!state.authenticated || !this.writeLock) return;
     this.writeLock.takeover(frame.sessionId, state.clientId);
+    this.lastWriterClientId.set(frame.sessionId, state.clientId);
     this.broadcastLeaseState(frame.sessionId);
   }
 
@@ -778,10 +832,52 @@ export class TerminalGateway
     const state = this.clients.get(client);
     if (!state || !state.authenticated || !this.writeLock) return;
     this.writeLock.acquire(sessionId, state.clientId);
+    this.lastWriterClientId.set(sessionId, state.clientId);
     this.broadcastLeaseState(sessionId);
   }
 
-  /** Broadcast the current lease for a session to every operator client. */
+  /**
+   * After a writer disconnects and its lease is released, hand the now-free lease
+   * to a still-connected authenticated operator on the same task (if any), so a
+   * sole operator that RELOADED — whose new connection raced ahead of the old
+   * socket's close and skipped its connect-time auto-grant — is promoted to
+   * writer immediately rather than being left read-only with a free lease. No-op
+   * when the lease is somehow already re-held or no operator remains.
+   */
+  private regrantWriteLeaseToRemaining(taskId: string): void {
+    if (!this.writeLock) return;
+    if (this.writeLock.getLease(taskId)) return; // already re-held
+    for (const state of this.clients.values()) {
+      if (state.kind === 'operator' && state.authenticated && state.taskId === taskId) {
+        this.writeLock.acquire(taskId, state.clientId);
+        this.lastWriterClientId.set(taskId, state.clientId);
+        return;
+      }
+    }
+  }
+
+  /**
+   * Auto-grant the write lease to an operator the moment its connect-time auth
+   * resolves, WHEN the lease is free (7.1 `acquire` — non-preemptive). This is
+   * what lets operator keystrokes reach the PTY without a client-driven takeover
+   * handshake racing the async auth: the grant happens server-side exactly when
+   * `state.authenticated` flips, then broadcasts a `lease_state` so the client
+   * captures the sessionId and enables input. A second operator on the same task
+   * finds a LIVE lease and stays a reader — no preemption (explicit takeover is
+   * the only way to seize a held lease). The lease is keyed by this connection's
+   * server-assigned `clientId`, the same id the keystroke gate checks, so the
+   * grant and the gate cannot drift.
+   */
+  private grantWriteLeaseIfFree(state: ClientState): void {
+    const taskId = state.taskId;
+    if (!taskId || !this.writeLock) return;
+    if (this.writeLock.getLease(taskId)) return; // a live writer already holds it
+    this.writeLock.acquire(taskId, state.clientId);
+    this.lastWriterClientId.set(taskId, state.clientId);
+    this.broadcastLeaseState(taskId);
+  }
+
+  /** Broadcast the current lease for a session to operators watching it. */
   private broadcastLeaseState(sessionId: string): void {
     if (!this.writeLock) return;
     const lease = this.writeLock.getLease(sessionId);
@@ -792,7 +888,16 @@ export class TerminalGateway
       lease: lease ? { ...lease } : null,
     };
     for (const [socket, state] of this.clients) {
-      if (state.kind === 'operator' && state.authenticated) {
+      // Fan a session's lease state ONLY to operators actually watching THAT
+      // session (or not yet joined to any). Without this taskId filter a
+      // heartbeat/takeover on task B would push a lease_state(sessionId=B) down a
+      // socket joined to task A, corrupting that client's sessionId binding and
+      // silently routing its keystrokes to the wrong session.
+      if (
+        state.kind === 'operator' &&
+        state.authenticated &&
+        (state.taskId === null || state.taskId === sessionId)
+      ) {
         this.send(socket, frame);
       }
     }

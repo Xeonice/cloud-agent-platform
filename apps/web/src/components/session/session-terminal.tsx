@@ -128,8 +128,6 @@ export const SessionTerminal = React.forwardRef<
   const sessionIdRef = React.useRef<string | null>(null);
   const pausedRef = React.useRef(false);
   const clientIdRef = React.useRef<string>("server");
-  /** True while THIS client holds the write lease (drives heartbeat renewal). */
-  const holdsLeaseRef = React.useRef(false);
 
   // Resolved xterm theme (client-only). `null` until the effect resolves it.
   const [theme, setTheme] = React.useState<ITheme | null>(null);
@@ -206,14 +204,22 @@ export const SessionTerminal = React.forwardRef<
           break;
         }
         case "lease_state": {
-          // Capture the sessionId used by keystroke sends, and track whether
-          // THIS client holds the write lease (drives heartbeat renewal). The
-          // write-lease ownership is read via `holdsLeaseRef` (the heartbeat),
-          // so it lives in a ref, not render state.
-          sessionIdRef.current = frame.sessionId;
-          setSessionId(frame.sessionId);
-          holdsLeaseRef.current =
-            frame.lease?.writerClientId === clientIdRef.current;
+          // The server AUTO-GRANTS this connection the write lease the moment its
+          // auth resolves (gateway grantWriteLeaseIfFree), then broadcasts here.
+          // Ignore a foreign sessionId defensively (the broadcast is already
+          // recipient-filtered by task server-side). A NON-NULL lease means write
+          // access is held for this session, so capture the sessionId (== taskId)
+          // that the keystroke/heartbeat sends use — which also enables the
+          // command input (commandDisabled = !sessionId). We do NOT compare
+          // `writerClientId` (the server keys the lease by its own connection id,
+          // never our getClientId()), and once captured we KEEP the sessionId so
+          // the 15s heartbeat keeps renewing/self-healing across a transient
+          // lease=null frame rather than going silently read-only.
+          if (frame.sessionId !== taskId) break;
+          if (frame.lease) {
+            sessionIdRef.current = frame.sessionId;
+            setSessionId(frame.sessionId);
+          }
           break;
         }
         case "permission_request": {
@@ -241,7 +247,9 @@ export const SessionTerminal = React.forwardRef<
           break;
       }
     },
-    [],
+    // `taskId` is read in the lease_state guard, so the closure must track it
+    // (the route can swap params without remounting this component).
+    [taskId],
   );
   const handleControlRef = React.useRef(handleControl);
   handleControlRef.current = handleControl;
@@ -300,18 +308,43 @@ export const SessionTerminal = React.forwardRef<
     };
   }, [taskId, setConnectionState]);
 
-  // ── Lease heartbeat: renew the write lease while THIS client holds it ──────
-  // Only renews when a lease was actually granted to this client (D7); a no-op
-  // otherwise (no session/lease yet, or another client is the writer).
+  // ── Lease heartbeat: renew the write lease by CONNECTION identity ──────────
+  // The server keys the lease by the socket's own clientId and IGNORES the
+  // frame's `writerClientId`, so a heartbeat from THIS connection renews ITS
+  // lease (and is a harmless Denied no-op from a non-writer reader). We cannot
+  // gate on a clientId compare here — the server's lease holder is a
+  // server-assigned connection id, never our `getClientId()`. Gating on a known
+  // sessionId is sufficient: only a session we've joined gets a heartbeat.
   React.useEffect(() => {
     const timer = window.setInterval(() => {
       const sid = sessionIdRef.current;
-      if (sid && holdsLeaseRef.current) {
+      if (sid) {
         socketRef.current?.sendHeartbeat(sid, clientIdRef.current);
       }
     }, 15_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  // NOTE: the operator does NOT claim the write lease from the client. The
+  // gateway auto-grants it the instant connect-time auth resolves (when free)
+  // and broadcasts the lease_state captured above — this removes the
+  // client-side takeover/retry that RACED async auth (a bounded retry could be
+  // fully consumed before auth landed on a cold session store, leaving the
+  // terminal permanently read-only). The 15s heartbeat then renews it; the
+  // gateway self-heals a lapsed lease for its PRIOR holder on the next heartbeat,
+  // and on a writer disconnect re-grants the freed lease to a still-connected
+  // operator (so a sole operator's reload can't strand a free lease).
+  //
+  // KNOWN LIMITATIONS (acceptable for the single-operator owner model):
+  //  1. A transient WS close drops the lease (auto-released on disconnect) and
+  //     TerminalSocket does not auto-reconnect, so a network blip needs a reload
+  //     — the same pre-existing limitation as live streaming.
+  //  2. MULTI-OPERATOR: the server keys the lease by its own connection id, which
+  //     this client cannot match, so a SECOND operator on the same task sees a
+  //     non-null lease_state and shows an enabled input even though it is a reader
+  //     whose keystrokes the server silently drops. Correctly fixing this needs a
+  //     per-recipient `youAreWriter` flag on the lease_state frame (a contracts
+  //     change); deferred until concurrent multi-operator editing is required.
 
   // ── Decision (lock-independent approval resolution, D7) ───────────────────
   const decide = React.useCallback(

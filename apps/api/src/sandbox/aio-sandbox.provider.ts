@@ -326,6 +326,16 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
   /**
    * Write codex's `~/.codex` setup into the sandbox via `/v1/shell/exec` BEFORE
    * codex launches:
+   *   - REMOVE the baked `~/.codex/hooks.json`. codex 0.131 detects the baked
+   *     hooks as "new or changed" and blocks startup on an interactive "Hooks
+   *     need review" prompt that `--dangerously-bypass-hook-trust` does NOT skip —
+   *     and there is no operator in the sandbox to answer it, so codex never
+   *     starts. The hooks are vestigial anyway (codex#16732: codex 0.131's
+   *     PreToolUse hook was verified NOT to fire, so they enforce nothing; the
+   *     container is the trust boundary per the codex-execution-not-gated product
+   *     decision). Removing the file is the unblock — codex then launches into a
+   *     clean TUI. `rm -f` is idempotent (a future image that stops baking the
+   *     file makes this a no-op).
    *   - ALWAYS a `config.toml` pre-trusting the clone dir
    *     (`[projects."<workspace>"] trust_level="trusted"`), so codex 0.131 does
    *     NOT block on the interactive "Do you trust the contents of this
@@ -348,9 +358,11 @@ export class AioSandboxProvider implements SandboxProvider, OnModuleDestroy {
       `[projects."${AioSandboxProvider.WORKSPACE_DIR}"]\ntrust_level = "trusted"\n`;
     const configB64 = Buffer.from(configToml, 'utf8').toString('base64');
     // The base64 alphabet has no single quote, so single-quoting each payload is
-    // safe and stops the shell from touching it. mkdir is idempotent.
+    // safe and stops the shell from touching it. mkdir is idempotent. `rm -f
+    // hooks.json` removes the baked hooks so codex 0.131 does not block on its
+    // "Hooks need review" prompt (see the method doc — the hooks are vestigial).
     let command =
-      `mkdir -p ${dir} && printf %s '${configB64}' | base64 -d > ${dir}/config.toml && chmod 600 ${dir}/config.toml`;
+      `mkdir -p ${dir} && rm -f ${dir}/hooks.json && printf %s '${configB64}' | base64 -d > ${dir}/config.toml && chmod 600 ${dir}/config.toml`;
 
     const material = await this.codexAuthSource.getCodexAuth();
     if (material) {
