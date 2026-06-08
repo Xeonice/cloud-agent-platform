@@ -64,6 +64,8 @@ The browser client SHALL coalesce incoming raw bytes and flush them to `term.wri
 ### Requirement: Snapshot plus tail-replay reconnect
 On client reconnect the orchestrator SHALL restore terminal state by first writing a periodic headless SerializeAddon snapshot that records the cols and rows it was taken at, then replaying the tail of `session.log` appended after the snapshot, reconciling any size difference between the snapshot and the current terminal. This SHALL hold under the connect-in AIO execution model: the orchestrator bridge (`AioPtyClient`/gateway) SHALL persist the raw PTY output to `workspaces/<id>/session.log` (there is no in-sandbox runner producer), and the `SnapshotManager` SHALL be backed by a REAL xterm headless terminal whose `serialize()` returns the actual visible frame — NOT a `NullHeadlessTerminal` whose `serialize()` is empty — so that a periodic snapshot is non-empty and `buildReconnectFrames` replays prior output to a reconnecting operator.
 
+This reconnect replay SHALL be VERIFIED END-TO-END on a live compose stack (not merely unit-tested), as a fossilized black-box regression scenario in the compose e2e suite (`apps/api/test/aio-e2e.mjs` + `scripts/aio-e2e.sh`): after a task running under the connect-in AIO model has produced terminal output, a reconnecting operator SHALL be observed to replay that prior output from the REAL `@xterm/headless` `SerializeAddon` snapshot followed by the tail of the persisted `workspaces/<id>/session.log`, and the suite SHALL assert the replayed frames are non-empty rather than nothing.
+
 #### Scenario: Reconnect restores from snapshot then tail
 - **WHEN** a client reconnects to an active task
 - **THEN** the orchestrator first delivers the most recent SerializeAddon snapshot
@@ -81,6 +83,12 @@ On client reconnect the orchestrator SHALL restore terminal state by first writi
 #### Scenario: session.log is persisted by the orchestrator, not the sandbox
 - **WHEN** raw PTY output flows through the orchestrator bridge for an AIO-executed task
 - **THEN** the orchestrator appends that output to `workspaces/<id>/session.log` so reconnect tail-replay has a durable source even though no in-sandbox runner producer writes it
+
+#### Scenario: Reconnect replay is verified end-to-end on a live compose stack
+- **WHEN** the compose e2e suite (`apps/api/test/aio-e2e.mjs` + `scripts/aio-e2e.sh`) runs a task under the connect-in AIO model on a live stack, lets it produce terminal output, and reconnects an operator
+- **THEN** the reconnecting operator replays the prior output sourced from the real `@xterm/headless` `SerializeAddon` snapshot plus the tail of `workspaces/<id>/session.log`
+- **AND** the suite asserts the replayed reconnect frames are non-empty rather than nothing
+
 
 ### Requirement: Terminal geometry synced to the sandbox PTY on connect
 The orchestrator SHALL size the sandbox PTY (and the snapshot headless terminal) to the operator's browser terminal geometry on every connect AND reconnect, so codex renders at the client's cols/rows rather than the AIO sandbox default (80×24). The browser SHALL send its current geometry once the terminal WebSocket is OPEN — NOT only from the xterm resize event, which fires at mount and races the socket open and is silently dropped when the socket is not yet OPEN. On receiving a (re)connecting client's geometry, the orchestrator SHALL resize the sandbox PTY and the snapshot headless terminal to that geometry. This makes the "identical cols and rows" live-frame parity precondition reachable at runtime; without it the sandbox PTY stays at the default 80×24 while the browser auto-fits wider, so codex's cursor-addressed full-screen redraws and scrollback history misalign in the wider browser grid.
