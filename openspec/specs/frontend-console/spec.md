@@ -82,7 +82,7 @@ The `/dashboard` page (mounted under the authenticated app-shell layout) SHALL b
 - **THEN** the task query refetches every 5 seconds so statuses stay current without a manual reload
 
 ### Requirement: New task creation from the console
-The console SHALL provide BOTH a modal (on `/dashboard`) and a full-page form (`/tasks/new`) to create a task, sharing the same form, live command preview, and submit logic. The form SHALL select a registered repo (options from `GET /repos`, restricted to imported repos as the security scope), a branch, an execution strategy, and a prompt/description (with a live client-side word count), default the "破坏性写入前停止" checkbox to checked, and render a side preflight (3 ReviewStep cards complete/warn) plus a live `agentctl` `CommandPreview` derived from form state. Submission SHALL POST to `POST /repos/:repoId/tasks` via a `createTaskMutation`; on success it SHALL NAVIGATE the operator directly into the created task's session (`/tasks/$taskId`) using the `id` from the create response — rather than only surfacing a deep link the operator must click — persist `selectedRepo`/`branch`/`latestRunId` to local store, invalidate the tasks query, and emit a Sonner toast as a transient confirmation. On navigation the dashboard modal SHALL close (it unmounts with the route change). The console SHALL render branch and strategy controls even though the current backend does not read these fields back (branch/strategy persistence is specified in `repo-and-task-management`); the page SHALL NOT misrepresent unsent/unread fields as confirmed task state.
+The console SHALL provide BOTH a modal (on `/dashboard`) and a full-page form (`/tasks/new`) to create a task, sharing the same form, live command preview, and submit logic. The form SHALL select a registered repo (options from `GET /repos`, restricted to imported repos as the security scope), a branch, an execution strategy, an OPTIONAL multi-select of SKILLS to preinstall (e.g. OpenSpec, BMAD — options from a static catalog matching the server-side skill allowlist), and a prompt/description (with a live client-side word count), default the "破坏性写入前停止" checkbox to checked, and render a side preflight (3 ReviewStep cards complete/warn) plus a live `agentctl` `CommandPreview` derived from form state (including the selected skills). Submission SHALL POST to `POST /repos/:repoId/tasks` via a `createTaskMutation`, sending the selected skill ids in the create body's `skills` field; on success it SHALL NAVIGATE the operator directly into the created task's session (`/tasks/$taskId`) using the `id` from the create response — rather than only surfacing a deep link the operator must click — persist `selectedRepo`/`branch`/`latestRunId` to local store, invalidate the tasks query, and emit a Sonner toast as a transient confirmation. On navigation the dashboard modal SHALL close (it unmounts with the route change). The console SHALL render branch and strategy controls even though the current backend does not read these fields back (branch/strategy persistence is specified in `repo-and-task-management`); the page SHALL NOT misrepresent unsent/unread fields as confirmed task state. An empty skill selection submits no `skills` and preserves the no-preinstall behavior.
 
 #### Scenario: Operator creates a task from the dashboard modal
 - **WHEN** the operator submits the new-task modal with a repo, branch, strategy, and prompt
@@ -91,6 +91,15 @@ The console SHALL provide BOTH a modal (on `/dashboard`) and a full-page form (`
 #### Scenario: Full-page create mirrors the modal
 - **WHEN** the operator opens `/tasks/new` and submits the form
 - **THEN** it uses the same shared form, command preview, and `createTaskMutation` as the dashboard modal and, on success, navigates directly into the created task's `/tasks/$taskId` session
+
+#### Scenario: Operator selects skills to preinstall
+- **WHEN** the operator selects one or more skills (e.g. OpenSpec) in the create form and submits
+- **THEN** the create body includes the selected skill ids in its `skills` field, and the command preview reflects the selected skills
+- **AND** an empty skill selection submits no `skills` (or an empty list) and preserves the prior no-preinstall behavior
+
+#### Scenario: Skill options come from the allowlisted catalog
+- **WHEN** the skill multi-select is populated
+- **THEN** its options come from a static catalog matching the server-side skill allowlist, so the operator cannot select a skill the orchestrator would not execute
 
 #### Scenario: Command preview reacts to form state
 - **WHEN** the operator edits any field of the create form
