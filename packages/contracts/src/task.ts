@@ -103,6 +103,14 @@ export const TaskSchema = z.object({
    * value or `null` when omitted.
    */
   strategy: z.string().min(1).nullable().optional(),
+  /**
+   * Optional run parameter echoed back from the create body: the ids of the
+   * skills/methods (e.g. `openspec`, `bmad`) the operator chose to preinstall
+   * into the task workspace at provision time (see `task-preinstall-skills`).
+   * Inert with respect to the lifecycle; read back as the supplied list (or an
+   * empty array / `null` when none were selected) — never stale or fabricated.
+   */
+  skills: z.array(z.string().min(1)).nullable().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -152,6 +160,13 @@ export const CreateTaskRequestSchema = z.object({
   prompt: z.string().min(1),
   branch: z.string().min(1).optional(),
   strategy: z.string().min(1).optional(),
+  /**
+   * Optional skill/method ids to preinstall into the task workspace at provision
+   * time (e.g. `["openspec"]`, `["bmad"]`). Validated server-side against the
+   * skill allowlist; only allowlisted ids are ever executed. Absent/empty ⇒ no
+   * preinstall (unchanged behavior). See `task-preinstall-skills`.
+   */
+  skills: z.array(z.string().min(1)).optional(),
   /**
    * Optional wall-clock deadline in milliseconds from admission. When present it
    * is passed to the guardrails semaphore (`admit(taskId, deadlineMs)`) so the

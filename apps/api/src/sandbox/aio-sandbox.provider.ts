@@ -16,6 +16,7 @@ import type {
 import { CODEX_AUTH_SOURCE, type CodexAuthSource } from './codex-auth-source.port';
 import { PROVISION_LOOKUP, type ProvisionLookup } from './provision-lookup.port';
 import { CODEX_PROMPT_FILE_PATH } from '../terminal/codex-launch';
+import { resolveSkillInstaller } from './skill-allowlist';
 
 /**
  * AIO Sandbox `SandboxProvider` (aio-sandbox-execution, design D — connect-in).
@@ -105,6 +106,13 @@ export class AioSandboxProvider
   private static readonly WORKSPACE_DIR = '/home/gem/workspace';
   /** Name prefix for the per-task sandbox containers (`cap-aio-<taskId>`). */
   private static readonly CONTAINER_PREFIX = 'cap-aio-';
+  /**
+   * Upper bound on a single skill installer's wall-clock (task-preinstall-skills).
+   * The live spike measured ~3–6s with warm egress; this generous ceiling covers
+   * a cold `npx` fetch. On timeout the skill is skipped (fail-soft), never
+   * blocking the provision.
+   */
+  private static readonly SKILL_INSTALL_TIMEOUT_MS = 120_000;
 
   /**
    * Reported sandbox mode, surfaced as INFORMATIONAL metadata only. The real
@@ -199,6 +207,12 @@ export class AioSandboxProvider
       // before the handle returns; fails CLOSED on a write error like the others.
       await this.injectTaskPrompt(baseUrl, ctx.taskId);
       await this.cloneTaskRepository(baseUrl, ctx.taskId);
+      // task-preinstall-skills: AFTER the clone (the installers run against the
+      // cloned workspace) and before the handle returns. FAIL-SOFT — a skill
+      // installer failure is logged but does NOT abort provision (codex still
+      // launches without that skill), so this is NOT in the fail-closed try/throw
+      // contract of auth/clone above; it swallows its own errors internally.
+      await this.preinstallSkills(baseUrl, ctx.taskId);
     } catch (err) {
       await this.teardownSandbox(ctx.taskId).catch(() => undefined);
       throw err;
@@ -507,6 +521,90 @@ export class AioSandboxProvider
       );
     }
     this.logger.debug(`wrote task prompt into sandbox for task ${taskId}`);
+  }
+
+  /**
+   * Preinstall the task's selected skills into the cloned workspace
+   * (task-preinstall-skills). For each selected skill id that is on the
+   * server-side allowlist, run its PINNED non-interactive installer command
+   * against {@link WORKSPACE_DIR} over `/v1/shell/exec`; codex (launched with
+   * `-C <workspace>`) then discovers the skill files the installer drops
+   * (`.codex/skills` / `.agents/skills`).
+   *
+   * FAIL-SOFT (in deliberate contrast to the fail-closed auth/clone steps): a
+   * non-allowlisted id is skipped; an installer that errors / exits non-zero is
+   * logged and skipped but NEVER aborts provision — a missing skill is a
+   * degraded-but-usable session, not a security gate. Each skill installs
+   * independently, so one failing does not block the others. This method
+   * swallows all its own errors and never throws into the provision path.
+   */
+  private async preinstallSkills(baseUrl: string, taskId: string): Promise<void> {
+    let skills: string[] = [];
+    try {
+      skills = await this.lookup.getTaskSkills(taskId);
+    } catch (err) {
+      this.logger.warn(
+        `task ${taskId}: could not resolve selected skills (skipping preinstall): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return;
+    }
+    if (skills.length === 0) return;
+
+    for (const id of skills) {
+      const installer = resolveSkillInstaller(id);
+      if (!installer) {
+        // Not on the allowlist — never execute operator-supplied text.
+        this.logger.warn(
+          `task ${taskId}: skill "${id}" is not allowlisted; skipping (not executed)`,
+        );
+        continue;
+      }
+      // The argv is entirely server-defined allowlist literals + the fixed
+      // workspace path (no operator free-text, no shell metacharacters), so a
+      // plain space-join is a safe shell command. Always read stdin from
+      // /dev/null so the non-interactive installer cannot block on a TTY.
+      const command = `${installer
+        .command(AioSandboxProvider.WORKSPACE_DIR)
+        .join(' ')} < /dev/null`;
+      try {
+        const res = await fetch(`${baseUrl}/v1/shell/exec`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ command }),
+          signal: AbortSignal.timeout(
+            AioSandboxProvider.SKILL_INSTALL_TIMEOUT_MS,
+          ),
+        });
+        if (!res.ok) {
+          this.logger.warn(
+            `task ${taskId}: skill "${id}" (${installer.label}) preinstall HTTP ${res.status} — degrading (codex launches without it)`,
+          );
+          continue;
+        }
+        const { exitCode, output } = AioSandboxProvider.parseExecResult(
+          await res.json().catch(() => undefined),
+        );
+        if (exitCode !== 0) {
+          const scrubbed = AioSandboxProvider.scrubSecrets(output);
+          this.logger.warn(
+            `task ${taskId}: skill "${id}" (${installer.label}) installer exit_code ${exitCode} — degrading (codex launches without it)` +
+              (scrubbed ? ` — ${scrubbed.trim().slice(0, 300)}` : ''),
+          );
+          continue;
+        }
+        this.logger.debug(
+          `task ${taskId}: preinstalled skill "${id}" (${installer.label})`,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `task ${taskId}: skill "${id}" (${installer.label}) preinstall failed/timed out — degrading (codex launches without it): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
   }
 
   /**

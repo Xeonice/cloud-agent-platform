@@ -73,6 +73,7 @@ function compileProvider() {
       // is emitted; the cross-directory import makes tsc preserve the src/ tree, so
       // the emitted provider lands under a nested path (findFile resolves it).
       join(__dirname, '..', 'terminal', 'codex-launch.ts'),
+      join(__dirname, 'skill-allowlist.ts'),
       '--outDir',
       outDir,
       '--module',
@@ -197,7 +198,7 @@ function installFetchMock(execExitCode = 0, execOutput = '') {
  * instead of reading `TASK_REPO_URL` directly. `cloneUrl` becomes `{ url }`
  * (no auth header — the option/clone assertions use a public test URL).
  */
-function makeLookup(cloneUrl = null, taskPrompt = null) {
+function makeLookup(cloneUrl = null, taskPrompt = null, taskSkills = []) {
   return {
     async getCloneSpec() {
       return cloneUrl ? { url: cloneUrl } : null;
@@ -207,6 +208,11 @@ function makeLookup(cloneUrl = null, taskPrompt = null) {
     // (blank composer) and no extra /v1/shell/exec.
     async getTaskPrompt() {
       return taskPrompt;
+    },
+    // task-preinstall-skills: the provider resolves the task's selected skill ids
+    // through this port and preinstalls each allowlisted one (fail-soft).
+    async getTaskSkills() {
+      return taskSkills;
     },
   };
 }
@@ -523,6 +529,134 @@ try {
         (promptFailContainer.calls.stopped >= 1 || promptFailContainer.calls.removed >= 1),
       'a prompt-injection failure tears the started container down (no leak)',
     );
+
+    // ---- task-preinstall-skills: selected allowlisted skills run their installers
+    // A capturing fetch mock records every /v1/shell/exec command so we can assert
+    // which installer commands ran. All exits 0 (happy path).
+    {
+      const cmds = [];
+      const orig = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          cmds.push(JSON.parse(init.body).command);
+          return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      try {
+        const p = new AioSandboxProvider(
+          makeLookup(null, null, ['openspec', 'bmad']),
+          makeCodexAuthSource(),
+        );
+        p.docker = makeFakeDocker(makeFakeContainer());
+        await p.provision({ taskId: 'task-skills' });
+      } finally {
+        globalThis.fetch = orig;
+      }
+      const openspecCmd = cmds.find((c) => c.includes('@fission-ai/openspec'));
+      const bmadCmd = cmds.find((c) => c.includes('bmad-method'));
+      assert(
+        openspecCmd && openspecCmd.includes('init') && openspecCmd.includes('--tools codex') && openspecCmd.includes('/home/gem/workspace'),
+        'openspec skill runs its allowlisted init --tools codex against the workspace',
+      );
+      assert(
+        bmadCmd && bmadCmd.includes('install') && bmadCmd.includes('--tools codex') && bmadCmd.includes('--yes'),
+        'bmad skill runs its allowlisted install --tools codex --yes',
+      );
+      assert(
+        cmds.every((c) => c.includes('< /dev/null') || !c.includes('npx')),
+        'skill installer commands read stdin from /dev/null (non-interactive, no TTY)',
+      );
+    }
+
+    // ---- a non-allowlisted skill id is NEVER executed --------------------------
+    {
+      const cmds = [];
+      const orig = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          cmds.push(JSON.parse(init.body).command);
+          return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      try {
+        const p = new AioSandboxProvider(
+          makeLookup(null, null, ['rm-rf-evil', 'openspec']),
+          makeCodexAuthSource(),
+        );
+        p.docker = makeFakeDocker(makeFakeContainer());
+        await p.provision({ taskId: 'task-skills-evil' });
+      } finally {
+        globalThis.fetch = orig;
+      }
+      assert(
+        !cmds.some((c) => c.includes('rm-rf-evil')),
+        'a non-allowlisted skill id is never serialized into an exec command',
+      );
+      assert(
+        cmds.some((c) => c.includes('@fission-ai/openspec')),
+        'the allowlisted skill alongside it still installs',
+      );
+    }
+
+    // ---- a failing skill installer is FAIL-SOFT (provision still succeeds) ------
+    {
+      const orig = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          const cmd = JSON.parse(init.body).command;
+          // openspec installer fails (exit 1); everything else succeeds.
+          const exit_code = cmd.includes('@fission-ai/openspec') ? 1 : 0;
+          return { ok: true, status: 200, async json() { return { data: { exit_code, output: exit_code ? 'install boom' : '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      let connection;
+      let threw = false;
+      try {
+        const p = new AioSandboxProvider(makeLookup(null, null, ['openspec']), makeCodexAuthSource());
+        p.docker = makeFakeDocker(makeFakeContainer());
+        connection = await p.provision({ taskId: 'task-skill-softfail' });
+      } catch {
+        threw = true;
+      } finally {
+        globalThis.fetch = orig;
+      }
+      assert(!threw, 'a failing skill installer does NOT throw (fail-soft, not fail-closed)');
+      assert(
+        connection && connection.taskId === 'task-skill-softfail',
+        'provision still returns the handle (codex launches without the failed skill)',
+      );
+    }
+
+    // ---- no skills selected → no installer exec (no-op) ------------------------
+    {
+      const cmds = [];
+      const orig = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          cmds.push(JSON.parse(init.body).command);
+          return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      try {
+        const p = new AioSandboxProvider(makeLookup(null, null, []), makeCodexAuthSource());
+        p.docker = makeFakeDocker(makeFakeContainer());
+        await p.provision({ taskId: 'task-no-skills' });
+      } finally {
+        globalThis.fetch = orig;
+      }
+      assert(
+        !cmds.some((c) => c.includes('npx')),
+        'no skills selected → no installer command is run (no-op)',
+      );
+    }
 
     // ---- post-start provision failure tears the container down (no leak) -------
     // A non-zero codex-auth-inject exit fails provision (fail-closed); the already

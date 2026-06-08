@@ -57,6 +57,17 @@ const STRATEGIES = [
   "允许修改代码，但提交前停止",
 ] as const;
 
+/**
+ * Selectable preinstall skills (task-preinstall-skills). The `id`s MUST match the
+ * server-side skill allowlist (`apps/api/src/sandbox/skill-allowlist.ts`) — the
+ * backend only executes allowlisted ids, so an id here that the server does not
+ * know is simply ignored at provision time. Exported so `/tasks/new` shares it.
+ */
+export const SKILL_CATALOG: ReadonlyArray<{ id: string; label: string; hint: string }> = [
+  { id: "openspec", label: "OpenSpec", hint: "spec-driven 变更工作流 (/opsx:)" },
+  { id: "bmad", label: "BMAD", hint: "Agile AI 开发方法 (agent 人设)" },
+];
+
 /** One launch-review step (01/02 complete green, 03 write-confirm warn). */
 function ReviewStep({
   index,
@@ -98,11 +109,14 @@ export function buildCommandPreview(input: {
   strategy: string | null;
   prompt: string;
   stopOnWrite: boolean;
+  skills?: readonly string[];
 }): string[] {
   const lines = ["agentctl run \\"];
   if (input.repoFullName) lines.push(`  --repo ${input.repoFullName} \\`);
   if (input.branch) lines.push(`  --branch ${input.branch} \\`);
   if (input.strategy) lines.push(`  --strategy "${input.strategy}" \\`);
+  if (input.skills && input.skills.length > 0)
+    lines.push(`  --skills ${input.skills.join(",")} \\`);
   if (input.stopOnWrite) lines.push("  --confirm-before-write \\");
   const prompt = input.prompt.trim();
   lines.push(prompt ? `  --prompt "${prompt}"` : "  --prompt <待填写>");
@@ -183,6 +197,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
 
   const [branch, setBranch] = React.useState(defaultBranch);
   const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0]);
+  const [skills, setSkills] = React.useState<string[]>([]);
   const [prompt, setPrompt] = React.useState("");
   const [stopOnWrite, setStopOnWrite] = React.useState(true);
   const [createdTaskId, setCreatedTaskId] = React.useState<string | null>(null);
@@ -197,6 +212,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     if (!open) return;
     setCreatedTaskId(null);
     setPrompt("");
+    setSkills([]);
     resetMutation();
   }, [open, resetMutation]);
 
@@ -217,9 +233,16 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     strategy: strategy || null,
     prompt,
     stopOnWrite,
+    skills,
   });
 
   const createdTask = mutation.data;
+
+  function toggleSkill(id: string) {
+    setSkills((cur) =>
+      cur.includes(id) ? cur.filter((s) => s !== id) : [...cur, id],
+    );
+  }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -227,6 +250,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     const body: CreateTaskRequest = { prompt: prompt.trim() };
     if (branch) body.branch = branch;
     if (strategy) body.strategy = strategy;
+    if (skills.length > 0) body.skills = skills;
     mutation.mutate(
       { repoId, body },
       {
@@ -352,6 +376,36 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
               </Select>
               <small className="text-xs text-muted-foreground">
                 策略会写入派发命令，并影响会话内的停顿点。
+              </small>
+            </div>
+
+            <div className="grid gap-2">
+              <span className="text-[13px] font-medium text-foreground">
+                预装技能（可选）
+              </span>
+              <div className="grid gap-2">
+                {SKILL_CATALOG.map((sk) => (
+                  <label
+                    key={sk.id}
+                    htmlFor={`modalSkill-${sk.id}`}
+                    className="flex items-start gap-2.5 text-[13px] text-foreground"
+                  >
+                    <Checkbox
+                      id={`modalSkill-${sk.id}`}
+                      checked={skills.includes(sk.id)}
+                      onCheckedChange={() => toggleSkill(sk.id)}
+                    />
+                    <span>
+                      {sk.label}
+                      <small className="ml-1.5 text-xs text-muted-foreground">
+                        {sk.hint}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <small className="text-xs text-muted-foreground">
+                选中的技能会在沙箱创建时预装进工作区，codex 启动即可用。
               </small>
             </div>
 

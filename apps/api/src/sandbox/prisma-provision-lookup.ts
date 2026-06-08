@@ -52,6 +52,20 @@ export class PrismaProvisionLookup implements ProvisionLookup {
   }
 
   /**
+   * The selected skill ids (`task.skills`) for `taskId`, used by the provider to
+   * preinstall those skills into the workspace. Returns an empty array when the
+   * task is missing or selected none. DB access lives here so
+   * {@link AioSandboxProvider} stays a pure port consumer.
+   */
+  async getTaskSkills(taskId: string): Promise<string[]> {
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { skills: true },
+    });
+    return task?.skills ?? [];
+  }
+
+  /**
    * The single allowed operator's stored GitHub OAuth access token (single-user
    * self-host: the allowlist admits exactly one identity, so the earliest allowed
    * user holding a captured token IS the operator). Used only to authenticate the

@@ -46,6 +46,15 @@ export interface ProvisionLookup {
    * port consumer.
    */
   getTaskPrompt(taskId: string): Promise<string | null>;
+
+  /**
+   * Resolve `taskId`'s selected skill ids (`task.skills`) — the skills/methods
+   * the operator chose to preinstall into the workspace at provision time
+   * (task-preinstall-skills). Returns an empty array when none were selected.
+   * Behind the port (not a provider DB call) so the provider stays a pure port
+   * consumer (mirrors {@link getTaskPrompt}).
+   */
+  getTaskSkills(taskId: string): Promise<string[]>;
 }
 
 /**

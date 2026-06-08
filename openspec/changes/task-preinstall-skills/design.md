@@ -40,10 +40,23 @@ First-hand verified (codex 0.131 binary `strings` + live sandbox probe + npm), N
 - Additive: a nullable `Task.skills` column (Prisma migration), optional contract field, an optional provision step that no-ops when no skills are selected. Deploy api via dokploy, web via Vercel.
 - Rollback: drop the provision step + the picker; the column can remain unused (nullable) or be reverted.
 
-## Open Questions (LIVE SPIKES before/within apply)
+## Live spike results (Track 1 — RESOLVED on a real sandbox, 2026-06-09)
 
-- Does `npx -y @fission-ai/openspec init --tools codex --force <workspace>` run cleanly inside a real `cap-aio` sandbox (network egress, runtime, no TTY)? What files does it drop, and does codex 0.131 actually read them in a session?
-- Does `bmad-method install` support a `--tools codex` target? What does it drop, and is it codex-readable?
-- Egress/latency of cold `npx` from inside the sandbox — is a Dockerfile prefetch needed for v1 UX?
-- Storage shape for `skills` (comma-joined string like a single column vs JSON array) — match whatever is least friction with the existing inert-param read path.
+Ran both installers in a throwaway `cap-aio-sandbox:pinned` container, as the `gem` user, against a fresh git workspace mimicking post-clone:
+
+- **Egress**: npm registry + GitHub reachable from the sandbox on BOTH the default bridge AND `cap-net` (the real task network) — `registry.npmjs.org` HTTP 200 in <300ms, on cap-net 77ms. No egress restriction. So provision-time `npx` works.
+- **OpenSpec** (`npx -y @fission-ai/openspec@latest init --tools codex --force .` < /dev/null): EXIT 0, **~6s**, fully non-interactive. Drops `openspec/` (config.yaml schema spec-driven + specs/ + changes/) and **`.codex/skills/<name>/SKILL.md`** × 5 (openspec-propose/apply/archive/explore/sync-specs), each a proper SKILL.md with `name`/`description`/`license` frontmatter. Output: "Created: Codex — 5 skills and 5 commands in .codex/".
+- **BMAD** (`npx -y bmad-method@latest install --directory . --modules bmm --tools codex --yes` < /dev/null): EXIT 0, **~3s**, non-interactive. `--list-tools` confirms a native **`codex` tool id → target dir `.agents/skills`**. Installs `_bmad/` + **44 skills → `.agents/skills`**.
+- **codex skill discovery**: the codex 0.131 binary references BOTH `CODEX_HOME/skills` (user-level) AND repo-level `.codex/skills` / `.agents/skills`. Since codex launches with `-C /home/gem/workspace`, the workspace-level `.codex/skills` (openspec) and `.agents/skills` (bmad) are in scope. NOTE: this is the WORKSPACE-relative location, NOT `~/.codex/skills` as the early design assumed — corrected. (Whether codex actually surfaces them in a live session is the one remaining check that needs real ChatGPT auth — see below.)
+
+**Locked decisions from the spike:**
+- **Per-skill target dirs differ** (openspec → `.codex/skills` + `openspec/`; bmad → `.agents/skills` + `_bmad/`), but both are codex-discovered workspace dirs — no per-skill special handling needed beyond running the right installer.
+- **No Dockerfile prefetch needed for v1**: cold `npx` is 3–6s with egress working; acceptable provision latency. (A prefetch/bake remains an optional latency optimization, not a blocker.)
+- **Allowlist (locked):** `openspec → npx -y @fission-ai/openspec@<pin> init --tools codex --force <WORKSPACE> < /dev/null`; `bmad → npx -y bmad-method@<pin> install --directory <WORKSPACE> --modules bmm --tools codex --yes < /dev/null`. Pin the `@version` for reproducibility (mirror the codex version-pin discipline). Always redirect `< /dev/null` (no TTY).
+
+## Open Questions (remaining)
+
+- Does codex 0.131 actually SURFACE the dropped `.codex/skills` / `.agents/skills` skills in a live authed session (e.g. via `/skills`)? Only verifiable with real ChatGPT auth — the one check deferred to apply/live. (Discovery PATH is confirmed in-scope; session-surfacing is the open bit.)
+- Storage shape for `skills` (comma-joined string vs JSON array) — match the least-friction inert-param read path (lean toward a JSON/text column like a small string list).
 - Catalog/allowlist location + shape (static const vs config) and how the frontend catalog stays in sync with the server allowlist.
+- BMAD default `--modules`: spike used `bmm`; confirm the default module set we want to ship (bmm = the core method module).

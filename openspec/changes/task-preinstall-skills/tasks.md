@@ -6,31 +6,31 @@
 
 <!-- Resolve the design Open Questions on a real sandbox BEFORE locking the installer commands. -->
 
-- [ ] 1.1 In a real `cap-aio` sandbox, run `npx -y @fission-ai/openspec init --tools codex --force /home/gem/workspace` and record: does it complete with no TTY, what files it drops (AGENTS.md? openspec/? a codex skill dir?), wall-clock, and any network-egress failure.
-- [ ] 1.2 In a real sandbox, determine BMAD's codex support: `npx -y bmad-method install --help` (or docs) — does `--tools` accept a codex target? If yes, run it non-interactively and record dropped files; if no, record the fallback (generic output / AGENTS.md / defer BMAD).
-- [ ] 1.3 Confirm codex 0.131 actually READS the dropped files in a live session (AGENTS.md auto-included / `~/.codex/skills/<name>/SKILL.md` discovered). Decide whether a Dockerfile prefetch of the skill packages is needed for acceptable provision latency.
-- [ ] 1.4 Lock the server-side skill→installer allowlist (skill id, pinned installer argv, which workspace path, expected dropped files) from 1.1–1.3 findings; record it in design.md.
+- [x] 1.1 openspec init in a real sandbox. — `npx -y @fission-ai/openspec@latest init --tools codex --force . < /dev/null`: EXIT 0, ~6s, non-interactive; drops `openspec/` + `.codex/skills/<name>/SKILL.md` ×5. Egress (npm+GitHub) confirmed on bridge AND cap-net. (design.md "Live spike results")
+- [x] 1.2 BMAD codex support. — `--list-tools` confirms native `codex` id → target `.agents/skills`; `npx -y bmad-method@latest install --directory . --modules bmm --tools codex --yes < /dev/null`: EXIT 0, ~3s, installs `_bmad/` + 44 skills → `.agents/skills`.
+- [x] 1.3 codex discovery path + prefetch decision. — codex 0.131 binary references repo-level `.codex/skills` AND `.agents/skills` (in scope via `-C /home/gem/workspace`); corrected the earlier `~/.codex/skills` assumption. Cold npx 3–6s with egress → NO Dockerfile prefetch needed for v1. (Whether codex SURFACES them in a live authed session is the one deferred check — needs ChatGPT auth, moved to Open Questions / apply.)
+- [x] 1.4 Allowlist locked in design.md: openspec + bmad pinned non-interactive installer argv, workspace target, `< /dev/null` (no TTY), per-skill target dirs (.codex/skills vs .agents/skills).
 
 ## 2. Track: contracts-and-schema (depends: live-spike)
 
-- [ ] 2.1 Add OPTIONAL `skills` to `CreateTaskRequest` + `TaskResponse`/`Task` in `@cap/contracts` (a string array; shape per the inert-param read path), agreeing create-body and response shapes (mirror branch/strategy).
-- [ ] 2.2 Add a nullable `Task.skills` column to the Prisma schema (+ migration), modeled inert like `branch`/`strategy` (no lifecycle effect); persist from the create body and echo on create/list/fetch read paths.
-- [ ] 2.3 Unit-cover: skills round-trips write/read in the DB; omitted skills read back as empty/null (never fabricated); the task lifecycle is unaffected by skills.
+- [x] 2.1 Added OPTIONAL `skills` to `CreateTaskRequest` (`z.array(z.string().min(1)).optional()`) + `TaskSchema`/`TaskResponse` (`.nullable().optional()`) in `@cap/contracts`, mirroring branch/strategy.
+- [x] 2.2 Added `Task.skills String[] @default([])` (Postgres text[]) to the Prisma schema + migration `20260609000000_add_task_skills`; `tasks.service.create` persists `body.skills ?? []`, `toResponse` echoes it on every read path. Inert (no lifecycle effect).
+- [x] 2.3 `packages/contracts/src/task-skills.test.mjs` (6/6): skills round-trips through CreateTaskRequest/TaskResponse; omitted reads back undefined/[]; empty-string id rejected; accepted under every status (inert vs lifecycle).
 
 ## 3. Track: provision-preinstall (depends: contracts-and-schema)
 
-- [ ] 3.1 Add `getTaskSkills(taskId)` to the `ProvisionLookup` port + `PrismaProvisionLookup` (mirror `getTaskPrompt`), returning the selected skill ids (or empty).
-- [ ] 3.2 Add a server-side skill→installer allowlist (from Track 1) in the api (static const), validating that only allowlisted skill ids are ever executed.
-- [ ] 3.3 In `AioSandboxProvider`, add a `preinstallSkills` step AFTER `cloneTaskRepository`: for each selected (allowlisted) skill, run its pinned installer argv against `/home/gem/workspace` via `/v1/shell/exec`. Run independently per skill; bound each with a timeout.
-- [ ] 3.4 Fail SOFT: a non-zero/timed-out installer logs + records a per-task "skill X failed to preinstall" signal but does NOT abort provision (codex still launches). One skill failing does not block the others. (Contrast with auth/clone fail-closed.)
-- [ ] 3.5 Unit-cover the provision step: selected allowlisted skills run their pinned commands against the workspace; a non-allowlisted id is never executed; an installer failure is swallowed (provision proceeds, signal recorded); empty selection is a no-op.
+- [x] 3.1 Added `getTaskSkills(taskId)` to the `ProvisionLookup` port + `PrismaProvisionLookup` (mirrors `getTaskPrompt`), returns selected ids or `[]`.
+- [x] 3.2 `apps/api/src/sandbox/skill-allowlist.ts`: server-side `SKILL_ALLOWLIST` (openspec/bmad → pinned non-interactive installer argv from the Track 1 spike) + `resolveSkillInstaller`/`isAllowlistedSkill`; only allowlisted ids are ever built into a command.
+- [x] 3.3 `AioSandboxProvider.preinstallSkills` runs AFTER `cloneTaskRepository`: per selected allowlisted skill, runs its pinned argv (`+ < /dev/null`) against `WORKSPACE_DIR` via `/v1/shell/exec`, each bounded by `SKILL_INSTALL_TIMEOUT_MS` (120s) via `AbortSignal.timeout`; skills install independently.
+- [x] 3.4 FAIL-SOFT: non-allowlisted id skipped (never executed); HTTP error / non-zero exit / timeout is logged ("degrading (codex launches without it)") and skipped, NEVER aborting provision (NOT in the fail-closed try/throw of auth/clone); method swallows all its own errors.
+- [x] 3.5 `aio-sandbox.provider.test.mjs` (now 47/47): allowlisted skills run their pinned commands against the workspace; non-allowlisted id never serialized into a command; a failing installer is fail-soft (provision still returns the handle); empty selection is a no-op.
 
 ## 4. Track: web-skill-picker (depends: contracts-and-schema)
 
-- [ ] 4.1 Add a static skill catalog to `apps/web` (matching the server allowlist ids/labels) and a multi-select skill picker in the shared new-task form (mirror the `strategy` select), in BOTH the dashboard modal and `/tasks/new`.
-- [ ] 4.2 Submit chosen `skills` in the create body and reflect them in the `CommandPreview`; empty selection preserves today's behavior.
+- [x] 4.1 `SKILL_CATALOG` (exported from new-task-dialog, ids matching the server allowlist) + a Checkbox multi-select skill picker in BOTH the dashboard modal and `/tasks/new` (mirrors the strategy control).
+- [x] 4.2 Selected `skills` submitted in the create body (`if (skills.length) body.skills = skills`) and reflected in `buildCommandPreview` (`--skills a,b`); empty selection preserves prior behavior.
 
 ## 5. Track: verify (depends: provision-preinstall, web-skill-picker)
 
-- [ ] 5.1 Static gates: api + web `tsc`, nest build, web vitest, eslint on changed files; new unit tests green.
-- [ ] 5.2 Live: create a task with OpenSpec selected; confirm provision runs the installer, the workspace gets the skill files, codex starts already aware of the workflow, and a deliberately-broken skill install degrades (codex still launches) instead of failing the task.
+- [x] 5.1 Static gates GREEN: api + web `tsc` (0), nest + vite build (0), full api suite (provider 47/47 incl 4 skill blocks; contracts task-skills 6/6; no regression), web vitest 40/40, eslint on changed api/web/contracts files (0).
+- [ ] 5.2 Live (post-deploy, needs ChatGPT auth): create a task with OpenSpec selected; confirm provision runs the installer, the workspace gets `.codex/skills`, codex surfaces the skills (e.g. `/skills`), and a deliberately-broken skill install degrades (codex still launches) instead of failing the task.

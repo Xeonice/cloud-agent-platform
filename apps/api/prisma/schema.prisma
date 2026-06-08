@@ -87,6 +87,12 @@ model Task {
   /// strategy. Inert with respect to the lifecycle; null when omitted.
   strategy String? @map("strategy")
 
+  /// Optional run parameter: the skill/method ids (e.g. "openspec", "bmad") the
+  /// operator chose to preinstall into the task workspace at provision time
+  /// (task-preinstall-skills). Inert with respect to the lifecycle; empty when
+  /// none were selected. Postgres text[] — echoed back on every task read path.
+  skills String[] @default([]) @map("skills")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   /// Append-only audit events recorded for this task's lifecycle transitions.

@@ -143,6 +143,11 @@ export class TasksService implements OnApplicationBootstrap {
         // an explicit null — never stale/fabricated on read-back (3.3).
         branch: body.branch ?? null,
         strategy: body.strategy ?? null,
+        // task-preinstall-skills: persist the selected skill ids (inert, like
+        // branch/strategy). Omitted ⇒ empty array (the column default), echoed
+        // back on every read path. Validation against the server allowlist
+        // happens at provision time, not here (storage is permissive).
+        skills: body.skills ?? [],
         // Initial status is the schema default (`pending`).
       },
     });
@@ -316,6 +321,7 @@ export class TasksService implements OnApplicationBootstrap {
     createdAt: Date;
     branch: string | null;
     strategy: string | null;
+    skills: string[];
   }): TaskResponse {
     return {
       id: task.id,
@@ -329,6 +335,9 @@ export class TasksService implements OnApplicationBootstrap {
       // read-back is the supplied value or `null` — never stale/fabricated.
       branch: task.branch,
       strategy: task.strategy,
+      // task-preinstall-skills: echo the persisted skill ids (Postgres text[],
+      // empty array when none selected — never stale/fabricated).
+      skills: task.skills,
     };
   }
 }

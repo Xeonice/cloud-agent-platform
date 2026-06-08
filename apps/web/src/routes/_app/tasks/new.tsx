@@ -39,7 +39,10 @@ import type { CreateTaskRequest, Repo } from "@cap/contracts";
 import { metricsQuery, reposQuery } from "@/lib/api/queries";
 import { createTaskMutation } from "@/lib/api/mutations";
 import { setState } from "@/lib/store";
-import { buildCommandPreview } from "@/components/dashboard/new-task-dialog";
+import {
+  buildCommandPreview,
+  SKILL_CATALOG,
+} from "@/components/dashboard/new-task-dialog";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { StatusPill } from "@/components/status-pill";
@@ -151,9 +154,16 @@ function NewTaskPage() {
 
   const [branch, setBranch] = React.useState(defaultBranch);
   const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0]);
+  const [skills, setSkills] = React.useState<string[]>([]);
   const [prompt, setPrompt] = React.useState("");
   const [stopOnWrite, setStopOnWrite] = React.useState(true);
   const [createdTaskId, setCreatedTaskId] = React.useState<string | null>(null);
+
+  function toggleSkill(id: string) {
+    setSkills((cur) =>
+      cur.includes(id) ? cur.filter((s) => s !== id) : [...cur, id],
+    );
+  }
 
   // When the selected repo changes, reset the branch to that repo's default
   // (the contract exposes no branch list — the runner gets a clean workspace
@@ -176,6 +186,7 @@ function NewTaskPage() {
     strategy: strategy || null,
     prompt,
     stopOnWrite,
+    skills,
   });
 
   // Free remote slots, when the (mock-today) metrics resolve; else keep the
@@ -194,6 +205,7 @@ function NewTaskPage() {
     const body: CreateTaskRequest = { prompt: prompt.trim() };
     if (branch) body.branch = branch;
     if (strategy) body.strategy = strategy;
+    if (skills.length > 0) body.skills = skills;
     mutation.mutate(
       { repoId, body },
       {
@@ -319,6 +331,36 @@ function NewTaskPage() {
             </Select>
             <small className="text-xs text-muted-foreground">
               策略会进入命令预览，帮助操作者在派发前确认边界。
+            </small>
+          </div>
+
+          <div className="grid gap-2">
+            <span className="text-[13px] font-semibold text-ink">
+              预装技能（可选）
+            </span>
+            <div className="grid gap-2">
+              {SKILL_CATALOG.map((sk) => (
+                <label
+                  key={sk.id}
+                  htmlFor={`skill-${sk.id}`}
+                  className="flex items-start gap-2.5 text-[13px] text-ink"
+                >
+                  <Checkbox
+                    id={`skill-${sk.id}`}
+                    checked={skills.includes(sk.id)}
+                    onCheckedChange={() => toggleSkill(sk.id)}
+                  />
+                  <span>
+                    {sk.label}
+                    <small className="ml-1.5 text-xs text-muted-foreground">
+                      {sk.hint}
+                    </small>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <small className="text-xs text-muted-foreground">
+              选中的技能会在沙箱创建时预装进工作区，codex 启动即可用。
             </small>
           </div>
 
