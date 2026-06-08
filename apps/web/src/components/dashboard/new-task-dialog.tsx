@@ -259,9 +259,12 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
           // Persist the operator's last selection + the created run for re-entry.
           setState({ selectedRepo: repoId });
           // Navigate straight into the created task's session instead of making
-          // the operator click the "进入会话" link. The dialog unmounts with the
-          // route change; the session page shows a friendly pre-running state
-          // until the sandbox is provisioned.
+          // the operator click the "进入会话" link. CLOSE the dialog FIRST: a Radix
+          // modal still `open` traps focus + overlays the route, which swallowed
+          // the navigation (task landed but the URL stayed on /dashboard). Closing
+          // it unmounts the modal layer so the navigate actually takes effect; the
+          // session page shows a friendly pre-running state until the sandbox is up.
+          onOpenChange(false);
           void navigate({ to: "/tasks/$taskId", params: { taskId: task.id } });
         },
       },
