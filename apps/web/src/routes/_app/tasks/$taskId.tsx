@@ -32,7 +32,12 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { taskQuery, taskContextQuery, queryKeys } from "@/lib/api/queries";
+import {
+  taskQuery,
+  taskContextQuery,
+  taskResourceQuery,
+  queryKeys,
+} from "@/lib/api/queries";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { SessionHeader } from "@/components/session/session-header";
 import { SessionContextStrip } from "@/components/session/session-context-strip";
@@ -49,6 +54,18 @@ export const Route = createFileRoute("/_app/tasks/$taskId")({
   component: SessionPage,
 });
 
+/** Human-readable bytes (MiB/GiB) for the per-task memory readout. */
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return "0 B";
+  const gib = 1024 * 1024 * 1024;
+  const mib = 1024 * 1024;
+  if (bytes >= gib) return `${(bytes / gib).toFixed(1)} GiB`;
+  return `${Math.round(bytes / mib)} MiB`;
+}
+
+/** Pre-running statuses where no sandbox/terminal exists yet (friendly wait). */
+const PRE_RUNNING_STATUSES = new Set(["pending", "queued"]);
+
 function SessionPage(): React.ReactElement {
   const { taskId } = Route.useParams();
   const queryClient = useQueryClient();
@@ -56,6 +73,9 @@ function SessionPage(): React.ReactElement {
   // REAL task read + MOCK context view (both via useQuery; ssr:false ⇒ no loader).
   const { data: task } = useQuery(taskQuery(taskId));
   const { data: context } = useQuery(taskContextQuery(taskId));
+  // This task's own live CPU/memory (real-time per-task sampler read). Polls
+  // only while this page is mounted; `not-running` → honest "未运行/未采样".
+  const { data: taskResource } = useQuery(taskResourceQuery(taskId));
 
   const terminalRef = React.useRef<SessionTerminalHandle | null>(null);
   const [connection, setConnection] = React.useState<ConnectionState>(
@@ -74,6 +94,22 @@ function SessionPage(): React.ReactElement {
   const lead = `${repo}#${branch} · ${agent}`;
   const headLabel = `${agent} · ${repo}#${branch}`;
 
+  // Per-task live resource line: this task's OWN CPU%/memory from the real-time
+  // sampler read, or an honest "未运行/未采样" when it has no live container
+  // (never fabricated zeros, D5.5). Replaces the prior hard-coded placeholder.
+  const resourceBody =
+    taskResource?.state === "sampled"
+      ? `CPU ${taskResource.sample.cpuPercent.toFixed(0)}% · 内存 ${formatBytes(
+          taskResource.sample.memoryBytes,
+        )}${
+          taskResource.sample.memoryPercent != null
+            ? ` (${taskResource.sample.memoryPercent.toFixed(0)}%)`
+            : ""
+        }`
+      : taskResource?.state === "not-running"
+        ? "未运行 / 未采样"
+        : "加载运行规格…";
+
   // Context strip: bind to query data where derivable; keep the prototype's
   // descriptive copy VERBATIM where the field is not derivable (worktree/pty).
   const contextItems = [
@@ -85,15 +121,11 @@ function SessionPage(): React.ReactElement {
     },
     {
       label: "运行环境",
-      // runtime is a TRUTHFUL label (AIO Sandbox = the provider); resources +
-      // worktree-diff have no backend field today, so show runtime alone + an
-      // honest "未上报" rather than the prototype's fabricated "2 vCPU·4 GiB /
-      // worktree 2 个文件改动" (D5.5 — never render an unsent value).
+      // runtime is a TRUTHFUL label (AIO Sandbox = the provider); the resource
+      // line is now the task's OWN live CPU/memory from the per-task sampler
+      // read (resourceBody), degrading honestly to "未运行/未采样" (D5.5).
       title: context?.runtime ?? "—",
-      body:
-        context?.resources && context.resources !== "—"
-          ? context.resources
-          : "运行规格未上报",
+      body: resourceBody,
     },
     {
       label: "安全边界",
@@ -141,14 +173,44 @@ function SessionPage(): React.ReactElement {
       <SessionContextStrip items={contextItems} />
 
       <section className="grid grid-cols-[minmax(0,1fr)]">
-        <SessionTerminal
-          ref={terminalRef}
-          taskId={taskId}
-          headLabel={headLabel}
-          onConnectionChange={handleConnectionChange}
-          onPausedChange={setPaused}
-        />
+        {task && PRE_RUNNING_STATUSES.has(task.status) ? (
+          // A freshly-created task has no provisioned sandbox/terminal yet
+          // (pending/queued). Show a friendly wait instead of mounting the
+          // terminal into a "connecting" void; once the task reaches `running`
+          // (the tasksQuery polls every 5s) this swaps to the live terminal.
+          <PreRunningPlaceholder status={task.status} />
+        ) : (
+          <SessionTerminal
+            ref={terminalRef}
+            taskId={taskId}
+            headLabel={headLabel}
+            onConnectionChange={handleConnectionChange}
+            onPausedChange={setPaused}
+          />
+        )}
       </section>
     </>
+  );
+}
+
+/** Friendly pre-running state shown before the sandbox/terminal exists. */
+function PreRunningPlaceholder({
+  status,
+}: {
+  status: string;
+}): React.ReactElement {
+  const label =
+    status === "queued"
+      ? "排队中 · 等待并发槽位释放…"
+      : "正在启动沙箱 · 准备会话环境…";
+  return (
+    <article className="overflow-hidden rounded-md bg-terminal-bg text-terminal-fg shadow-terminal min-h-[min(820px,calc(100vh-210px))]">
+      <div className="flex min-h-[40px] items-center justify-between border-b border-terminal-line bg-[#0d0d0d] px-3.5 font-mono text-xs text-terminal-muted">
+        <span>{label}</span>
+      </div>
+      <div className="flex min-h-[min(680px,calc(100vh-348px))] items-center justify-center bg-[#050505] px-4 py-3.5 font-mono text-sm text-terminal-muted">
+        <span className="animate-pulse">○ {label}</span>
+      </div>
+    </article>
   );
 }

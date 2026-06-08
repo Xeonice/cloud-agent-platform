@@ -31,7 +31,7 @@
  * top-level.
  */
 import * as React from "react";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -128,6 +128,7 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
 
 function NewTaskPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { data: repos } = useQuery(reposQuery());
   const { data: metrics } = useQuery(metricsQuery());
   const mutation = useMutation(createTaskMutation(queryClient));
@@ -201,6 +202,10 @@ function NewTaskPage() {
           // Persist the operator's last repo selection for re-entry.
           setState({ selectedRepo: repoId });
           toast.success("任务已进入远端 Agent 队列");
+          // Navigate straight into the created task's session (mirrors the
+          // dashboard dialog); the session page shows a friendly pre-running
+          // state until the sandbox is provisioned.
+          void navigate({ to: "/tasks/$taskId", params: { taskId: task.id } });
         },
       },
     );

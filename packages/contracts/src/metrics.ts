@@ -192,3 +192,38 @@ export const MetricsResponseSchema = z.object({
   resources: SampledResourcesSchema,
 });
 export type MetricsResponse = z.infer<typeof MetricsResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Per-task resource read (GET /tasks/:taskId/metrics)
+// ---------------------------------------------------------------------------
+
+/**
+ * Response body for the per-task resource read (`GET /tasks/:taskId/metrics`).
+ *
+ * REAL-TIME ONLY: it reflects the latest sampler snapshot, NOT any persisted
+ * history. A discriminated union over `state`:
+ *  - `sampled`: the task's `cap-aio-<taskId>` container is in the latest
+ *    snapshot — `sample` carries its CPU/memory, with the snapshot's `sampledAt`
+ *    / `ageMs` freshness; this is the only state that carries a reading.
+ *  - `not-running`: the task has no live sampled container (it is not `running`,
+ *    or its container is not yet/no-longer in the snapshot). NOT an error and
+ *    NOT fabricated zeros — the console renders "未运行/未采样".
+ *
+ * The endpoint is auth-gated identically to `/metrics` (allowlisted session;
+ * 401 otherwise) — a per-task figure is still host-execution operational data.
+ */
+export const TaskResourceResponseSchema = z.discriminatedUnion('state', [
+  z.object({
+    state: z.literal('sampled'),
+    /** The task's container CPU/memory from the latest snapshot. */
+    sample: ContainerResourceSampleSchema,
+    /** Time the most recent sample was taken. */
+    sampledAt: z.coerce.date().nullable(),
+    /** Age of the most recent sample in milliseconds. */
+    ageMs: z.number().int().nonnegative().nullable(),
+  }),
+  z.object({
+    state: z.literal('not-running'),
+  }),
+]);
+export type TaskResourceResponse = z.infer<typeof TaskResourceResponseSchema>;

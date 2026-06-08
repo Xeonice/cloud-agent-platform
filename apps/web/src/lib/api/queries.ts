@@ -24,6 +24,7 @@ import type {
   ListReposResponse,
   AuthSession,
   MetricsResponse,
+  TaskResourceResponse,
   CapacityMetrics,
   ListAuditEventsResponse,
   AccountSettings,
@@ -59,6 +60,7 @@ export const queryKeys = {
   authSession: ["auth", "session"] as const,
   githubRepos: ["github", "repos"] as const,
   taskContext: (id: string) => ["tasks", id, "context"] as const,
+  taskResource: (id: string) => ["tasks", id, "resource"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -103,6 +105,22 @@ export function metricsQuery() {
   return queryOptions<MetricsResponse>({
     queryKey: queryKeys.metrics,
     queryFn: () => (isCapable("metrics") ? real.getMetrics() : mock.mockMetrics()),
+    refetchInterval: 5000,
+  });
+}
+
+/**
+ * A single task's own sampled CPU/memory (`GET /tasks/:id/metrics`), real-time
+ * from the latest sampler snapshot. Returns a `sampled` state (carrying the
+ * reading) or `not-running` (no live container) so the session page renders the
+ * task's resources or "未运行/未采样" honestly. Polls at the metrics cadence;
+ * callers enable it only while the session page is mounted.
+ */
+export function taskResourceQuery(id: string) {
+  return queryOptions<TaskResourceResponse>({
+    queryKey: queryKeys.taskResource(id),
+    queryFn: () =>
+      isCapable("metrics") ? real.getTaskResource(id) : mock.mockTaskResource(id),
     refetchInterval: 5000,
   });
 }

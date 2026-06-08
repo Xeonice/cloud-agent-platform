@@ -20,6 +20,7 @@ import type {
   ListReposResponse,
   AuthSession,
   MetricsResponse,
+  TaskResourceResponse,
   ListAuditEventsResponse,
   AuditEvent,
   AuditQuery,
@@ -332,6 +333,33 @@ export async function mockMetrics(): Promise<MetricsResponse> {
       aggregateCpuPercent: 42,
       aggregateMemoryBytes: memUsed,
     },
+  };
+}
+
+/**
+ * A single task's own sampled CPU/memory (mirrors `GET /tasks/:id/metrics`).
+ * A known busy task returns a `sampled` reading; any other id returns
+ * `not-running` so the not-running UI path is exercisable in mock mode too.
+ */
+export async function mockTaskResource(id: string): Promise<TaskResourceResponse> {
+  await delay();
+  const busy: string[] = [TASK_IDS.a, TASK_IDS.b, TASK_IDS.c, TASK_IDS.d];
+  if (!busy.includes(id)) {
+    return { state: "not-running" };
+  }
+  const memLimit = 2 * 1024 * 1024 * 1024;
+  const memUsed = Math.round(memLimit * 0.46);
+  return {
+    state: "sampled",
+    sample: {
+      taskId: id,
+      cpuPercent: 37.5,
+      memoryBytes: memUsed,
+      memoryLimitBytes: memLimit,
+      memoryPercent: 46,
+    },
+    sampledAt: new Date(Date.now() - 2_000),
+    ageMs: 2_000,
   };
 }
 

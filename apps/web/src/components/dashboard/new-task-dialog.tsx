@@ -27,7 +27,7 @@
  */
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 
 import type { CreateTaskRequest, Repo } from "@cap/contracts";
 import { createTaskMutation } from "@/lib/api/mutations";
@@ -164,6 +164,7 @@ function repoFullName(repo: Repo): string {
 /** The new-task dialog. */
 export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const mutation = useMutation(createTaskMutation(queryClient));
 
   const firstRepoId = repos[0]?.id ?? "";
@@ -233,6 +234,11 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
           setCreatedTaskId(task.id);
           // Persist the operator's last selection + the created run for re-entry.
           setState({ selectedRepo: repoId });
+          // Navigate straight into the created task's session instead of making
+          // the operator click the "进入会话" link. The dialog unmounts with the
+          // route change; the session page shows a friendly pre-running state
+          // until the sandbox is provisioned.
+          void navigate({ to: "/tasks/$taskId", params: { taskId: task.id } });
         },
       },
     );

@@ -23,6 +23,7 @@ import {
   ListReposResponseSchema,
   AuthSessionResponseSchema,
   MetricsResponseSchema,
+  TaskResourceResponseSchema,
   ListAuditEventsResponseSchema,
   AccountSettingsSchema,
   CodexCredentialSchema,
@@ -37,6 +38,7 @@ import {
   type AuthSession,
   type AuthSessionResponse,
   type MetricsResponse,
+  type TaskResourceResponse,
   type ListAuditEventsResponse,
   type AuditQuery,
   type AccountSettings,
@@ -162,6 +164,20 @@ export async function getAuthSession(): Promise<AuthSession> {
  */
 export async function getMetrics(): Promise<MetricsResponse> {
   return MetricsResponseSchema.parse(await request("/metrics"));
+}
+
+/**
+ * `GET /tasks/:taskId/metrics` — this task's own sampled CPU/memory (real-time,
+ * from the latest sampler snapshot), or a `not-running` state when the task has
+ * no live sampled container. Gated by `BACKEND_CAPABILITIES.metrics` (same as
+ * `getMetrics`).
+ */
+export async function getTaskResource(
+  taskId: string,
+): Promise<TaskResourceResponse> {
+  return TaskResourceResponseSchema.parse(
+    await request(`/tasks/${encodeURIComponent(taskId)}/metrics`),
+  );
 }
 
 /**

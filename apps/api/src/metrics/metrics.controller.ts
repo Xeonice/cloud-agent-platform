@@ -1,5 +1,5 @@
-import { Controller, Get } from '@nestjs/common';
-import type { MetricsResponse } from '@cap/contracts';
+import { Controller, Get, Param } from '@nestjs/common';
+import type { MetricsResponse, TaskResourceResponse } from '@cap/contracts';
 import { MetricsService } from './metrics.service';
 
 /**
@@ -20,5 +20,18 @@ export class MetricsController {
   @Get('metrics')
   get(): MetricsResponse {
     return this.metrics.build();
+  }
+
+  /**
+   * Per-task resource read. Same global `APP_GUARD` auth as `/metrics` (a
+   * per-task CPU/memory figure is still host-execution operational data, so an
+   * unauthenticated / de-allowlisted request is rejected 401 before this runs).
+   * Real-time only — filters the latest sampler snapshot for this task; returns
+   * an explicit `not-running` state (not an error) when the task has no live
+   * sampled container.
+   */
+  @Get('tasks/:taskId/metrics')
+  getTaskResource(@Param('taskId') taskId: string): TaskResourceResponse {
+    return this.metrics.buildTaskResource(taskId);
   }
 }

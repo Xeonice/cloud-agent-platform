@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { MetricsResponse } from '@cap/contracts';
+import type { MetricsResponse, TaskResourceResponse } from '@cap/contracts';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 import { buildSlotOccupancy, projectCapacity } from './metrics-projection';
 import { deriveRunnerMinutes } from './runner-minutes';
@@ -41,6 +41,28 @@ export class MetricsService {
       // Sampled block from the cache; its own status flags freshness/outage so a
       // degraded sample never fails the whole response.
       resources: this.sampler.currentSnapshot(now),
+    };
+  }
+
+  /**
+   * Per-task resource read (`GET /tasks/:taskId/metrics`). Real-time only: it
+   * filters the SAME sampler snapshot that backs {@link build} for this task's
+   * `cap-aio-<taskId>` container — no additional sampling pass, no persistence.
+   * Returns the task's sample when present, or an explicit `not-running` state
+   * (never an error, never fabricated zeros) when the task has no live sampled
+   * container, so the console can honestly render "未运行/未采样".
+   */
+  buildTaskResource(taskId: string, now: number = Date.now()): TaskResourceResponse {
+    const snapshot = this.sampler.currentSnapshot(now);
+    const sample = snapshot.containers.find((c) => c.taskId === taskId);
+    if (!sample) {
+      return { state: 'not-running' };
+    }
+    return {
+      state: 'sampled',
+      sample,
+      sampledAt: snapshot.sampledAt,
+      ageMs: snapshot.ageMs,
     };
   }
 }
