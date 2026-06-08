@@ -35,7 +35,6 @@ export interface SkillInstaller {
 }
 
 /** Pinned versions — bump deliberately (live-verified at these majors). */
-const OPENSPEC_PKG = '@fission-ai/openspec@1.4.1';
 const BMAD_PKG = 'bmad-method@6.8.0';
 
 /**
@@ -45,16 +44,14 @@ export const SKILL_ALLOWLIST: Readonly<Record<string, SkillInstaller>> = {
   openspec: {
     id: 'openspec',
     label: 'OpenSpec',
-    command: (ws) => [
-      'npx',
-      '-y',
-      OPENSPEC_PKG,
-      'init',
-      '--tools',
-      'codex',
-      '--force',
-      ws,
-    ],
+    // The `openspec` CLI is BAKED into the sandbox image (docker/aio-sandbox.
+    // Dockerfile, OPENSPEC_VERSION) — it cannot be `npm i -g`'d at provision time
+    // because the exec channel runs as the unprivileged `gem` user. So scaffold
+    // the workspace with the baked CLI directly (`openspec init`): this both
+    // drops `.codex/skills/*/SKILL.md` + `openspec/`, AND guarantees the same
+    // `openspec` the skills shell out to is present on PATH at runtime (single
+    // version source = the Dockerfile pin; no per-task npx fetch).
+    command: (ws) => ['openspec', 'init', '--tools', 'codex', '--force', ws],
   },
   bmad: {
     id: 'bmad',

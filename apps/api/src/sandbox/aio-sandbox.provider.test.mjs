@@ -554,11 +554,11 @@ try {
       } finally {
         globalThis.fetch = orig;
       }
-      const openspecCmd = cmds.find((c) => c.includes('@fission-ai/openspec'));
+      const openspecCmd = cmds.find((c) => /(^|\s)openspec init\b/.test(c));
       const bmadCmd = cmds.find((c) => c.includes('bmad-method'));
       assert(
-        openspecCmd && openspecCmd.includes('init') && openspecCmd.includes('--tools codex') && openspecCmd.includes('/home/gem/workspace'),
-        'openspec skill runs its allowlisted init --tools codex against the workspace',
+        openspecCmd && openspecCmd.includes('--tools codex') && openspecCmd.includes('/home/gem/workspace'),
+        'openspec skill runs the baked `openspec init --tools codex` against the workspace',
       );
       assert(
         bmadCmd && bmadCmd.includes('install') && bmadCmd.includes('--tools codex') && bmadCmd.includes('--yes'),
@@ -597,7 +597,7 @@ try {
         'a non-allowlisted skill id is never serialized into an exec command',
       );
       assert(
-        cmds.some((c) => c.includes('@fission-ai/openspec')),
+        cmds.some((c) => /(^|\s)openspec init\b/.test(c)),
         'the allowlisted skill alongside it still installs',
       );
     }
@@ -610,7 +610,7 @@ try {
         if (u.endsWith('/v1/shell/exec')) {
           const cmd = JSON.parse(init.body).command;
           // openspec installer fails (exit 1); everything else succeeds.
-          const exit_code = cmd.includes('@fission-ai/openspec') ? 1 : 0;
+          const exit_code = /(^|\s)openspec init\b/.test(cmd) ? 1 : 0;
           return { ok: true, status: 200, async json() { return { data: { exit_code, output: exit_code ? 'install boom' : '' } }; } };
         }
         return { ok: true, status: 200, async json() { return {}; } };

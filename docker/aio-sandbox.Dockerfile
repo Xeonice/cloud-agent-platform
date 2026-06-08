@@ -62,6 +62,17 @@ ARG AIO_SANDBOX_TAG=1.0.0.125
 # ---------------------------------------------------------------------------
 ARG CODEX_VERSION=0.131
 
+# PINNED OpenSpec CLI version (task-preinstall-skills). The `openspec` skill the
+# operator can select drops `.codex/skills/*/SKILL.md` whose steps shell out to
+# the `openspec` CLI (`openspec status`/`list`/`instructions`/`new`); without the
+# CLI on PATH those skills cannot run. The per-task `/v1/shell/exec` provision
+# channel runs as the unprivileged `gem` user (uid 1000) and CANNOT `npm i -g`
+# (the npm prefix is root-owned `/usr`), so the CLI is BAKED here (as root, at
+# build time) — exactly like the Codex CLI above — landing it at `/usr/bin/openspec`
+# on everyone's PATH. The same pin drives the per-task `openspec init` scaffolding
+# (skill-allowlist.ts) so the CLI and the generated skills are always one version.
+ARG OPENSPEC_VERSION=1.4.1
+
 # --- build the compiled hook scripts ---------------------------------------
 # A throwaway Node toolchain stage that compiles apps/sandbox-hooks/src/hooks/**.ts
 # to dist/hooks/**.js. The hook scripts were relocated OUT of the (now deleted)
@@ -109,6 +120,7 @@ RUN pnpm --filter=@cap/sandbox-hooks --prod deploy --legacy /opt/deploy
 # This is the image the orchestrator actually provisions per task.
 FROM ghcr.io/agent-infra/sandbox:${AIO_SANDBOX_TAG} AS sandbox
 ARG CODEX_VERSION
+ARG OPENSPEC_VERSION
 
 # Install the Codex CLI at the version pinned by the CODEX_VERSION build-arg
 # (default 0.131; overridable per the matrix above; never an unpinned latest).
@@ -118,6 +130,16 @@ ARG CODEX_VERSION
 # requested CODEX_VERSION.
 RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
   && codex --version
+
+# Bake the OpenSpec CLI (task-preinstall-skills): the `openspec` skill's
+# SKILL.md steps shell out to this CLI, and the per-task provision channel (gem,
+# uid 1000) cannot `npm i -g` to the root-owned prefix — so install it here as
+# root, landing `/usr/bin/openspec` on PATH for the codex process. Pinned via the
+# OPENSPEC_VERSION build-arg (same pin the per-task `openspec init` uses). Only
+# OpenSpec needs this — BMAD's skills are self-contained agent personas that do
+# not hard-depend on a `bmad` CLI at runtime. `openspec --version` asserts the bake.
+RUN npm install -g "@fission-ai/openspec@${OPENSPEC_VERSION}" \
+  && openspec --version
 
 # Ship ONLY the slim hook runtime (close-aio-execution-gaps Gap C / D4),
 # replacing the prior full-`/repo` COPY (~8.97 GB) that existed only so the pnpm
