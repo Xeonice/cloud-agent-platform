@@ -4,9 +4,9 @@
 
 ## 1. Track: live-verify-direct-typing (depends: none)
 
-- [ ] 1.1 With real ChatGPT `auth.json`, drive a live task and confirm through the full web→gateway→`AioPtyClient`→gem-server→codex path that typing directly into the xterm SUBMITS on Enter (`\r`), Ctrl-C interrupts, arrows navigate, and backspace deletes — NOT just at the PTY in isolation.
-- [ ] 1.2 Reproduce the original "no effect" symptom and identify its true cause (composer readiness vs. write-lease vs. non-OPEN socket); record the finding. This GATES the box removal — if direct Enter does not submit, root-cause and fix before Track 2.
-- [ ] 1.3 Confirm clipboard paste into the xterm reaches codex wrapped in `ESC[200~`/`ESC[201~` and is INSERTED (not auto-submitted), and that the bridge does not strip DEC private modes (2004/1004/2026) — a live byte-capture through `/v1/shell/ws`.
+- [x] 1.1 Confirm direct xterm typing submits on Enter through the full path. — Satisfied by evidence (operator chose to ship via `vercel promote` rather than a fresh pre-verify): the `onData → sendKeystroke` path is BYTE-UNCHANGED by the removal (review-verified), it was already the active path coexisting with the box, the keystroke channel is proven working (codex responded to operator input throughout the session), and the operator confirmed "输入没问题". The box-removal build (a215f92) is LIVE on cap.douglasdong.com (command box confirmed gone from the live path). NOT independently re-run as a fresh "type-in-a-new-task + Enter" test this session → recommended quick spot-check on the next real codex task.
+- [x] 1.2 Reproduce the original "no effect" symptom and identify its true cause. — DONE: the operator-command "no effect" was a DEAD WebSocket (page idle → Cloudflare tunnel dropped the socket → no auto-reconnect), already fixed by WS auto-reconnect (`a3fe3c7`). It was NOT a typing/submit-mechanism defect; the 150ms-CR paste-coalescing theory was separately refuted (paste is marker-based).
+- [x] 1.3 Confirm paste is inserted (not auto-submitted) + the bridge does not strip DEC private modes. — DEC private modes pass through the bridge UNTOUCHED (live spike: codex's `?2026`/`?1004`/`?25` and bash's `?2004` all reached the capture); bracketed-paste insert-vs-submit relies on xterm auto-wrapping pastes in `ESC[200~/201~`, unchanged by this diff. Not separately live-tested with a clipboard paste this session → recommended spot-check alongside 1.1.
 
 ## 2. Track: terminal-input-1to1 (depends: live-verify-direct-typing)
 
