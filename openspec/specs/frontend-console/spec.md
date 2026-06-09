@@ -193,19 +193,27 @@ The pathless `_app` layout SHALL render the shared app-shell for all six app pag
 - **THEN** pressing `Escape` or clicking outside closes it, and its trigger reflects state via `aria-expanded`
 
 ### Requirement: Client auth gate on the app-shell
-The `_app` layout SHALL enforce an authentication gate in `beforeLoad`: an unauthenticated visitor to any app-shell route SHALL be redirected to `/login`. Authentication state SHALL be read through the auth session source (real GitHub OAuth session when the auth capability is enabled per the capabilities switch, otherwise the client token gate). Sign-out from the `AccountMenu` SHALL clear the session and navigate to `/login`. Because backend tasks run under a host-root docker.sock model, this gate is a load-bearing security boundary and the console SHALL NOT render app-shell content to an unauthenticated visitor.
+The `_app` layout SHALL enforce an authentication gate in `beforeLoad`: an unauthenticated visitor to any app-shell route SHALL be redirected to `/login`, CARRYING the attempted app path as a `redirect` search param (e.g. `/login?redirect=/tasks/abc`) so the post-login flow can return the operator to where they were headed. Authentication state SHALL be read through the auth session source (real GitHub OAuth session when the auth capability is enabled per the capabilities switch, otherwise the client token gate). The gate SHALL fire on a DIRECT page load / refresh / deep-link, not only on in-app soft navigation — because `beforeLoad` does NOT re-run on the client during hydration of a direct load. When the auth capability is enabled, the gate SHALL therefore resolve the session on the SERVER (forwarding the browser session cookie during SSR) as well as on the client, and SHALL treat the backend's HTTP 401 for an unauthenticated `/auth/session` as the logged-out signal (resolved to a null session) so it redirects cleanly rather than rendering a degraded shell or a raw error page; when the auth capability is disabled (local mock gate) the decision MAY be deferred to the client because the mock signal is not server-readable. Sign-out from the `AccountMenu` SHALL clear the session and navigate to the public landing `/` (NOT `/login`), because the landing is the logged-out home. Because backend tasks run under a host-root docker.sock model, this gate is a load-bearing security boundary and the console SHALL NOT render app-shell content to an unauthenticated visitor.
 
-#### Scenario: Unauthenticated visitor is redirected
-- **WHEN** an unauthenticated visitor requests any `_app` route (e.g. `/dashboard`)
-- **THEN** `beforeLoad` redirects them to `/login` before any app-shell content renders
+#### Scenario: Unauthenticated visitor is redirected with the attempted path
+- **WHEN** an unauthenticated visitor requests an `_app` route (e.g. `/tasks/abc`)
+- **THEN** `beforeLoad` redirects them to `/login` before any app-shell content renders, carrying the attempted path as a `redirect` search param
 
-#### Scenario: Sign-out returns to login
+#### Scenario: Gate fires on a direct load / refresh / deep-link, not only soft navigation
+- **WHEN** an unauthenticated visitor opens or refreshes an `_app` URL directly (e.g. pasting `/tasks/abc`, or hard-refreshing `/dashboard`) with the auth capability enabled
+- **THEN** the gate resolves the session server-side (forwarding the session cookie on SSR, mapping the backend 401 to a null session) and redirects to `/login` carrying the attempted path BEFORE the app-shell or any per-page data loader renders — it does NOT render a degraded shell with failed data, nor a raw 401 error page
+
+#### Scenario: Sign-out returns to the landing
 - **WHEN** the operator chooses 退出登录 in the `AccountMenu`
-- **THEN** the session is cleared and the console navigates to `/login`
+- **THEN** the session is cleared and the console navigates to the public landing `/` rather than `/login`
 
 #### Scenario: Authenticated operator reaches the dashboard
 - **WHEN** an authenticated operator opens an `_app` route
 - **THEN** the gate allows it and the app-shell content renders
+
+#### Scenario: Gate preserves the attempted destination for post-login return
+- **WHEN** the gate bounces an unauthenticated visitor from a specific app route and the visitor subsequently completes login
+- **THEN** the carried `redirect` path is threaded through the login flow so the operator is returned to that destination after authentication (subject to the open-redirect guard defined in `multi-user-oauth`), rather than always landing on a fixed page
 
 ### Requirement: Unified TanStack Query data layer with real/mock capability switch
 ALL page data SHALL be read through TanStack Query `queryOptions` factories in `src/lib/api/queries.ts`, where each `queryFn` selects between `real.ts` and `mock.ts` based on a single `BACKEND_CAPABILITIES` flag map in `src/lib/api/capabilities.ts` (`tasks`/`repos`/`createTask` enabled; `auth`/`metrics`/`history`/`settings`/`githubImport`/`branches` flags toggle as those backend capabilities land). Loaders SHALL share these factories via `ensureQueryData` so prefetch and component reads use the same query keys. Mock modules SHALL be typed against `@cap/contracts` (`Repo`/`Task`/`TaskStatus`) as their base, extending with local view types for backend-absent fields, and SHALL apply a realistic `delay()` to mirror the prototype's async cadence. Switching a domain from mock to real SHALL require only flipping its capability flag and adding the corresponding `real.ts` function — no change to component code. Derived view state (command preview, word count, client search/level/status filters) SHALL be computed with `useMemo` and SHALL NOT enter the query cache.
@@ -238,15 +246,32 @@ Locally writable client state — `githubConnected`, `importedRepos`, `selectedR
 - **THEN** the imported set deduplicates and exactly one repo remains marked as default
 
 ### Requirement: Landing-family standalone pages
-The four standalone pages SHALL faithfully reproduce the prototype. `/` (Landing) SHALL render the landing-nav, hero (eyebrow/title/dual CTA/trust pills/3 proof tiles), `HeroPreview` (macOS window-bar traffic dots + mini task rows + stat tiles + static terminal), a `#workflow` 3-step section, and a `#security` 3-card section, with smooth anchor scrolling (scroll-margin offsetting the fixed nav); its data is fully static with CTAs to `/login` and `/dashboard`. `/login` SHALL render the dual-column auth card (brand + GitHub 授权 button with mutually-exclusive empty/success states + a 3-step install-step sidebar + config-list); the authorize action SHALL trigger the auth/login flow, toast success, and route into 仓库导入 `/repositories` on success, and an already-authenticated visitor MAY be redirected away from `/login`. `/workspace` (Launcher) SHALL render the landing-nav, hero, a 3 stat-tile ops-strip (REPOSITORIES from the repos query; RUNNERS/QUEUE from metrics), and 6 screen-cards (each a full-card link, with a footer "open tasks" count and latest run id derived from the tasks query). `/resume` (Handoff) SHALL render the landing-nav, a main panel (eyebrow/title/lead/dual CTA), and 3 stat-tiles (NEXT ACTION derived from the highest-priority waiting-input task and used to parameterize the second CTA's task deep link; DEFAULT SCOPE from `selectedRepo`; SAFETY static). All four pages SHALL be SSR-safe (no `Date.now()`/`Math.random()` rendered directly to avoid hydration warnings).
+The four standalone pages SHALL faithfully reproduce the prototype's design language. `/` (Landing) SHALL render the landing-nav, hero (eyebrow/title/CTA/trust pills/3 proof tiles), `HeroPreview` (macOS window-bar traffic dots + mini task rows + stat tiles + static terminal), a `#workflow` 3-step section, a `#security` 3-card section, and a minimal footer, with smooth anchor scrolling (scroll-margin offsetting the fixed nav). The landing SHALL be SESSION-AWARE: when the operator is authenticated it SHALL present a primary "进入控制台" CTA routing to `/dashboard` (and an account affordance) in place of the login CTA; when unauthenticated it SHALL present the "GitHub 登录" CTA. The anonymous console entries (the nav "控制台" link and the hero "查看控制台" action) SHALL NOT silently dead-bounce through the auth gate — for an unauthenticated visitor they SHALL route to `/login` (or scroll to the in-page preview) rather than appearing to open the console and being gated. The landing's visual presentation SHALL be polished within the existing design language (not a new visual system): the trust pills SHALL render as discrete chips rather than bare link-colored text; the large CJK display headings SHALL control line-breaking so words are not split mid-token; the hero CTA hierarchy SHALL present a single clear primary action; and inter-section spacing/card density SHALL avoid large dead bands. `/login` SHALL render the dual-column auth card (brand + GitHub 授权 button with mutually-exclusive empty/success states + a 3-step install-step sidebar + config-list); the authorize action SHALL trigger the auth/login flow and, on success, route into the CONSOLE — `/dashboard` by default, or the `redirect` deep-link destination when one was carried (per `multi-user-oauth`) — with copy that reflects the console destination; an already-authenticated visitor MAY be redirected away from `/login`. `/workspace` (Launcher) SHALL render the landing-nav, hero, a 3 stat-tile ops-strip (REPOSITORIES from the repos query; RUNNERS/QUEUE from metrics), and 6 screen-cards (each a full-card link, with a footer "open tasks" count and latest run id derived from the tasks query). `/resume` (Handoff) SHALL render the landing-nav, a main panel (eyebrow/title/lead/dual CTA), and 3 stat-tiles (NEXT ACTION derived from the highest-priority waiting-input task and used to parameterize the second CTA's task deep link; DEFAULT SCOPE from `selectedRepo`; SAFETY static). All four pages SHALL be SSR-safe (no `Date.now()`/`Math.random()` rendered directly to avoid hydration warnings); the landing's session-aware swap in particular SHALL render the unauthenticated state on the server/first paint and reconcile to the authenticated affordance after client hydration so no hydration mismatch occurs.
 
-#### Scenario: Landing renders statically with working anchors
+#### Scenario: Landing renders with working anchors and a footer
 - **WHEN** the operator opens `/` and clicks the `#workflow` or `#security` anchor
-- **THEN** the page renders the hero, proof tiles, workflow steps, and security cards, and the anchor smooth-scrolls with the fixed-nav offset applied
+- **THEN** the page renders the hero, proof tiles, workflow steps, security cards, and a footer, and the anchor smooth-scrolls with the fixed-nav offset applied
 
-#### Scenario: Login toggles empty and success states
-- **WHEN** the operator clicks the GitHub 授权 button on `/login`
-- **THEN** the empty state switches to the success state, a success toast is shown, and the operator is routed to `/repositories`
+#### Scenario: Landing is session-aware
+- **WHEN** an authenticated operator opens `/`
+- **THEN** the landing presents a primary "进入控制台" CTA to `/dashboard` (and an account affordance) instead of a "GitHub 登录" CTA
+- **AND** an unauthenticated visitor instead sees the "GitHub 登录" CTA
+
+#### Scenario: Anonymous console entries do not dead-bounce
+- **WHEN** an unauthenticated visitor activates the nav "控制台" link or the hero "查看控制台" action
+- **THEN** they are taken to `/login` (or scrolled to the in-page preview) rather than appearing to open the console and being silently redirected by the gate
+
+#### Scenario: Login routes to the console on success
+- **WHEN** the operator completes authorization on `/login` with no deep-link carried
+- **THEN** the operator is routed to `/dashboard` (the console), and the page copy reflects the console destination rather than the repository-import page
+
+#### Scenario: Login honors a carried deep-link destination
+- **WHEN** the login flow was reached with a `redirect` destination and authorization succeeds
+- **THEN** the operator is returned to that destination (subject to the `multi-user-oauth` open-redirect guard) rather than the default dashboard
+
+#### Scenario: Standalone pages hydrate without warnings
+- **WHEN** any of `/`, `/login`, `/workspace`, `/resume` is server-rendered and hydrated
+- **THEN** no hydration mismatch occurs because no nondeterministic value is rendered directly, and the landing renders its unauthenticated state on first paint before reconciling to the authenticated affordance after hydration
 
 #### Scenario: Workspace counts reflect live queries
 - **WHEN** `/workspace` renders
@@ -255,10 +280,6 @@ The four standalone pages SHALL faithfully reproduce the prototype. `/` (Landing
 #### Scenario: Resume next-action drives the CTA deep link
 - **WHEN** `/resume` renders with a waiting-input task present
 - **THEN** the NEXT ACTION tile reflects the highest-priority waiting-input task and the second CTA links into that task's `/tasks/$taskId` session
-
-#### Scenario: Standalone pages hydrate without warnings
-- **WHEN** any of `/`, `/login`, `/workspace`, `/resume` is server-rendered and hydrated
-- **THEN** no hydration mismatch occurs because no nondeterministic value is rendered directly
 
 ### Requirement: Repositories import page
 The `/repositories` page SHALL render a screen-header (添加仓库 button), 4 stat-tiles (the DEFAULT tile bound to `selectedRepo`), an imported-repos panel (Card list with column headers and an imported-count Badge sourced from the repos query), and an import Dialog with a pending-empty → loading → filterable-list flow (the candidate list from the GitHub import query, the imported list from the repos query). Importing SHALL add to `importedRepos`, set the default, and toast; the page SHALL provide `setAsDefault`. The Dialog SHALL be accessible (`role`/`aria-modal`/`aria-labelledby`, `Escape`, backdrop dismiss, focus management).
