@@ -58,6 +58,36 @@ Node/pnpm are workspace-managed (pnpm 10, Node ≥ 22). Run from the repo root.
 | Typecheck all | `turbo typecheck` |
 | Lint all | `turbo lint` |
 
+## Local one-command start
+
+A freshly-cloned repo goes from zero to a running, **login-able** backend with a
+single command (requires Docker + a host `docker.sock`):
+
+```bash
+make up        # bootstrap apps/api/.env (if absent) + build & start the full stack,
+               # then wait for /health and print a local auth token
+make up-cp     # control-plane only (api + postgres) — skips the heavy amd64
+               # sandbox image build; fast on Apple Silicon
+make down      # stop the stack (PRESERVES the pgdata / workspaces volumes)
+make down-v    # stop AND drop the volumes (DESTRUCTIVE — local data loss)
+```
+
+`make up` generates `apps/api/.env` **only when it does not already exist** (a
+real local env is reused untouched). The generated env enables the **legacy
+operator-token** path with random secrets, so you authenticate locally with the
+printed `Authorization: Bearer <token>` — no GitHub OAuth app required for local
+dev. Production stays OAuth-first / fail-closed; the generated legacy env is
+gitignored and never committed.
+
+Notes:
+
+- The per-task sandbox image (`cap-aio-sandbox:pinned`) is **build-only** — an
+  actual `cap-aio-<taskId>` sandbox is provisioned per task when you create one.
+- On Apple Silicon the `amd64` AIO base builds under emulation on the first run
+  (slow, then cached); use `make up-cp` for a fast control-plane-only bring-up.
+- The **web console is not in compose** — run it separately
+  (`pnpm --filter @cap/web dev`, port 3000) pointed at the local API.
+
 ## Auth & the host-root boundary
 
 The platform runs tasks as **host-root via `docker.sock`**. Consequently
