@@ -155,6 +155,28 @@ function withCrossOriginEnv(fn) {
   });
 }
 
+/**
+ * CROSS-SUBDOMAIN deploy env: WEB_ORIGIN set AND SESSION_COOKIE_DOMAIN set to a
+ * registrable parent (the real shape: web `cap.douglasdong.com`, api
+ * `cap-api.douglasdong.com`, cookie `Domain=.douglasdong.com`). The session
+ * cookie is domain-scoped so the web SSR can read it on the browser's top-level
+ * request; callback + logout must ALSO clear the host-only variant so a stale
+ * shadow from an earlier (host-only) config can't ride alongside it and 401
+ * every browser->api call.
+ */
+function withCrossSubdomainEnv(fn) {
+  const saved = { ...process.env };
+  process.env.GITHUB_CLIENT_ID = 'client-id';
+  process.env.GITHUB_CLIENT_SECRET = 'client-secret';
+  process.env.SESSION_SECRET = SESSION_SECRET;
+  process.env.AUTH_ALLOWLIST = '12345';
+  process.env.WEB_ORIGIN = WEB_ORIGIN;
+  process.env.SESSION_COOKIE_DOMAIN = '.example';
+  return Promise.resolve(fn()).finally(() => {
+    process.env = saved;
+  });
+}
+
 function withoutOAuthEnv(fn) {
   const saved = { ...process.env };
   delete process.env.GITHUB_CLIENT_ID;
@@ -417,6 +439,52 @@ const run = async () => {
     const cookies = setCookieValues(captured);
     assert(cookies.some((c) => c.startsWith(`${SESSION_COOKIE_NAME}=;`) || c.includes('Max-Age=0')),
       'T8c: logout clears the session cookie (Max-Age=0)');
+  });
+
+  // T12: CROSS-SUBDOMAIN success (WEB_ORIGIN + SESSION_COOKIE_DOMAIN) -> the
+  // session cookie is DOMAIN-scoped (SameSite=None; Secure) AND a HOST-ONLY
+  // `cap_session` clear is also emitted, so a stale host-only shadow from an
+  // earlier config cannot ride alongside it and 401 every browser->api request.
+  await withCrossSubdomainEnv(async () => {
+    const ctrl = new GitHubOAuthController(makeOAuthService(), makeSessionService());
+    const { res, captured } = makeRes();
+    const state = signState(SESSION_SECRET);
+    await ctrl.callback(
+      makeReq({ cookie: `${OAUTH_STATE_COOKIE_NAME}=${state}`, code: 'the-code', state, host: 'api.example' }),
+      res, 'the-code', state,
+    );
+    const cookies = setCookieValues(captured);
+    const set = cookies.find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=minted-session`));
+    assert(
+      set?.includes('Domain=.example') && set?.includes('SameSite=None') && set?.includes('Secure'),
+      'T12a: cross-subdomain session cookie is Domain-scoped + SameSite=None + Secure',
+    );
+    const hostOnlyClear = cookies.find(
+      (c) =>
+        c.startsWith(`${SESSION_COOKIE_NAME}=;`) && c.includes('Max-Age=0') && !c.includes('Domain='),
+    );
+    assert(
+      hostOnlyClear !== undefined,
+      'T12b: a HOST-ONLY (no Domain) session-cookie clear is emitted to purge a stale shadow',
+    );
+  });
+
+  // T13: CROSS-SUBDOMAIN logout clears BOTH scopes — the host-only variant AND
+  // the configured parent-domain variant — so neither lingers to shadow a later
+  // login (and logout is actually complete).
+  await withCrossSubdomainEnv(async () => {
+    const sess = makeSessionService();
+    const ctrl = new GitHubOAuthController(makeOAuthService(), sess);
+    const { res, captured } = makeRes();
+    await ctrl.logout(makeReq({ cookie: `${SESSION_COOKIE_NAME}=the-session-token` }), res);
+    assert(captured.status === 204, 'T13a: cross-subdomain logout returns 204');
+    const clears = setCookieValues(captured).filter(
+      (c) => c.startsWith(`${SESSION_COOKIE_NAME}=;`) && c.includes('Max-Age=0'),
+    );
+    assert(
+      clears.some((c) => !c.includes('Domain=')) && clears.some((c) => c.includes('Domain=.example')),
+      'T13b: logout clears BOTH the host-only and the .example domain-scoped session cookie',
+    );
   });
 
   console.log(`\n${'─'.repeat(48)}`);

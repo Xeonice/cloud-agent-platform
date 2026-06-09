@@ -247,9 +247,19 @@ export class GitHubOAuthController {
     // origin too — letting the web app's SSR loader (which fetches the api
     // server-side) receive it. Unset (host-only) for same-origin / cross-site.
     const cookieDomain = readSessionCookieDomain() ?? undefined;
-    res.setHeader('Set-Cookie', [
-      clearStateCookie,
-      clearRedirectCookie,
+    // When the canonical cookie is DOMAIN-scoped (cross-subdomain deploy), also
+    // emit a host-only clear FIRST: a stale host-only `cap_session` left by a
+    // previous cookie-domain config would otherwise ride the browser's requests
+    // to the api host ALONGSIDE the canonical cookie (two same-name cookies). The
+    // server reads only the first occurrence, so a stale shadow makes every
+    // browser->api call 401 even with a valid session. Clearing it here makes the
+    // next login self-healing. (A host-only clear and a domain-scoped set target
+    // different cookies, so they don't conflict.)
+    const sessionCookies: string[] = [clearStateCookie, clearRedirectCookie];
+    if (cookieDomain) {
+      sessionCookies.push(GitHubOAuthController.clearedSessionCookie(req, undefined));
+    }
+    sessionCookies.push(
       serializeCookie(SESSION_COOKIE_NAME, session.token, {
         httpOnly: true,
         secure: crossOrigin ? true : GitHubOAuthController.isSecureRequest(req),
@@ -258,7 +268,8 @@ export class GitHubOAuthController {
         domain: cookieDomain,
         maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1000),
       }),
-    ]);
+    );
+    res.setHeader('Set-Cookie', sessionCookies);
     res.redirect(HttpStatus.FOUND, GitHubOAuthController.postLoginUrl(webOrigin, targetPath));
   }
 
@@ -288,19 +299,18 @@ export class GitHubOAuthController {
   async logout(@Req() req: Request, @Res() res: Response): Promise<void> {
     const token = readCookie(req.headers.cookie, SESSION_COOKIE_NAME);
     await this.authSession.revokeSession(token);
-    // Clear must carry the SAME Domain the session cookie was set with, or the
-    // browser keeps a domain-scoped cookie the host-only clear can't match.
-    res.setHeader(
-      'Set-Cookie',
-      serializeCookie(SESSION_COOKIE_NAME, '', {
-        httpOnly: true,
-        secure: GitHubOAuthController.isSecureRequest(req),
-        sameSite: 'Lax',
-        path: '/',
-        domain: readSessionCookieDomain() ?? undefined,
-        maxAgeSeconds: 0,
-      }),
-    );
+    // Clear EVERY scope the session cookie could have been set under, or a stale
+    // variant lingers and shadows future logins (duplicate same-name cookies =>
+    // the api reads only the first => 401, and logout would leave a cookie
+    // behind). Always clear the host-only variant; when a parent
+    // SESSION_COOKIE_DOMAIN is configured, also clear that scope — a host-only
+    // clear cannot match a domain-scoped cookie, and vice versa.
+    const cookieDomain = readSessionCookieDomain() ?? undefined;
+    const clears = [GitHubOAuthController.clearedSessionCookie(req, undefined)];
+    if (cookieDomain) {
+      clears.push(GitHubOAuthController.clearedSessionCookie(req, cookieDomain));
+    }
+    res.setHeader('Set-Cookie', clears);
     res.status(HttpStatus.NO_CONTENT).send();
   }
 
@@ -316,6 +326,24 @@ export class GitHubOAuthController {
       (typeof forwardedProto === 'string' ? forwardedProto.split(',')[0].trim() : undefined) ??
       req.protocol;
     return proto !== 'http';
+  }
+
+  /**
+   * A `Set-Cookie` directive that EXPIRES the session cookie for one scope
+   * (`domain` undefined => the host-only variant; a value => that parent domain).
+   * Browsers match a deletion on name+domain+path only, so this clears a cookie
+   * regardless of its original SameSite/Secure. Used to purge stale shadow
+   * cookies left by an earlier cookie-domain config, on both login and logout.
+   */
+  private static clearedSessionCookie(req: Request, domain: string | undefined): string {
+    return serializeCookie(SESSION_COOKIE_NAME, '', {
+      httpOnly: true,
+      secure: GitHubOAuthController.isSecureRequest(req),
+      sameSite: 'Lax',
+      path: '/',
+      domain,
+      maxAgeSeconds: 0,
+    });
   }
 
   /**
