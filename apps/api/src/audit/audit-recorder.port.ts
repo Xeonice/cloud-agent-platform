@@ -22,10 +22,13 @@ import type { ForceFailCause } from './audit-mapping';
 export interface AuditRecorderPort {
   /** Record `task.created`, attributed to the GitHub-identity user when known. */
   recordTaskCreated(taskId: string, githubId?: number): Promise<void>;
-  /** Record a lifecycle transition event for `status` (no-op for `pending`). */
+  /**
+   * Record a lifecycle transition event for `status` (no-op for `pending`). The
+   * operator-driven `task.cancelled` terminal flows through here too —
+   * `recordTransition(id, 'cancelled')` emits the `task.cancelled` event — so no
+   * dedicated cancel method is needed.
+   */
   recordTransition(taskId: string, status: TaskStatus, githubId?: number): Promise<void>;
-  /** Record an operator-driven `task.cancelled` terminal. */
-  recordCancelled(taskId: string, githubId?: number): Promise<void>;
   /** Record a force-fail naming its cause (deadline / idle / circuit_breaker). */
   recordForceFailed(taskId: string, cause: ForceFailCause): Promise<void>;
 }

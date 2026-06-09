@@ -68,7 +68,8 @@ export class AuditService {
 
   /**
    * Record a lifecycle transition event for `status` (6.2): `task.queued`,
-   * `task.running`, `task.awaiting_input`, `task.completed`, `task.failed`, or
+   * `task.running`, `task.awaiting_input`, `task.completed`, `task.failed`,
+   * `task.cancelled` (the operator-driven stop terminal), or
    * `agent_failed_to_start`. A `pending` target has no distinct audit kind and is
    * a no-op. Best-effort.
    */
@@ -80,14 +81,6 @@ export class AuditService {
     const kind = kindForStatus(status);
     if (kind === null) return;
     await this.record(kind, taskId, { githubId });
-  }
-
-  /**
-   * Record an explicit `task.cancelled` event (6.2) — the operator-driven
-   * terminal that is distinct from a generic `failed`. Best-effort.
-   */
-  async recordCancelled(taskId: string, githubId?: number): Promise<void> {
-    await this.record('task.cancelled', taskId, { githubId });
   }
 
   /**
@@ -174,6 +167,8 @@ export class AuditService {
         return '熔断器触发';
       case 'provision_failed':
         return '沙箱置备失败';
+      case 'abnormal_exit':
+        return '会话异常退出';
     }
   }
 

@@ -8,14 +8,17 @@ import type { TaskStatus } from '@cap/contracts';
  * are permitted. Any other requested transition (for example `completed` back to
  * `pending`) is rejected, and callers MUST leave the persisted status unchanged.
  *
- * Terminal states (`completed`, `failed`, `agent_failed_to_start`) have no
- * outgoing edges — once a task settles it cannot move again.
+ * Terminal states (`completed`, `failed`, `cancelled`, `agent_failed_to_start`)
+ * have no outgoing edges — once a task settles it cannot move again. `cancelled`
+ * is the operator-initiated stop terminal, distinct from `completed` (clean agent
+ * exit) and `failed` (crash / guardrail force-fail).
  */
 
 /** States from which no further transition is allowed. */
 export const TERMINAL_STATUSES = [
   'completed',
   'failed',
+  'cancelled',
   'agent_failed_to_start',
 ] as const satisfies readonly TaskStatus[];
 
@@ -26,20 +29,25 @@ export type TerminalTaskStatus = (typeof TERMINAL_STATUSES)[number];
  *
  * - `pending`        : initial state; may be admitted to `running`, held in
  *                      `queued` by the concurrency semaphore, or fail to start.
- * - `queued`         : admission-control holding state; may start running or, if
- *                      the agent never starts, surface `agent_failed_to_start`.
- * - `running`        : may pause for input, settle, or surface a start failure
- *                      that is only observable once the process is up.
- * - `awaiting_input` : resumes to `running` or settles.
+ * - `queued`         : admission-control holding state; may start running, be
+ *                      stopped by the operator (`cancelled`), or, if the agent
+ *                      never starts, surface `agent_failed_to_start`.
+ * - `running`        : may pause for input, settle, be stopped (`cancelled`), or
+ *                      surface a start failure observable once the process is up.
+ * - `awaiting_input` : resumes to `running`, settles, or is stopped (`cancelled`).
  * - terminal states  : no outgoing transitions.
+ *
+ * An operator stop (`POST /tasks/:taskId/stop`) drives the `-> cancelled` edge
+ * from any active state (`queued`/`running`/`awaiting_input`).
  */
 export const ALLOWED_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   pending: ['queued', 'running', 'agent_failed_to_start', 'failed'],
-  queued: ['running', 'agent_failed_to_start', 'failed'],
-  running: ['awaiting_input', 'completed', 'failed', 'agent_failed_to_start'],
-  awaiting_input: ['running', 'completed', 'failed'],
+  queued: ['running', 'agent_failed_to_start', 'failed', 'cancelled'],
+  running: ['awaiting_input', 'completed', 'failed', 'agent_failed_to_start', 'cancelled'],
+  awaiting_input: ['running', 'completed', 'failed', 'cancelled'],
   completed: [],
   failed: [],
+  cancelled: [],
   agent_failed_to_start: [],
 };
 

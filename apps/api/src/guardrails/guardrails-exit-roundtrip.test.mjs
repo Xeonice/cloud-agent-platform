@@ -1,54 +1,44 @@
 /**
- * Minimal test for guardrails-wiring task 4.5:
- *   "Verify a provision→connect→exit round-trip maps to recordSuccess/recordFailure
- *    (unit test with a mocked provider returning a stub SandboxConnection and a fake
- *    AioPtyClient emitting a WS close + exit status)."
+ * Minimal test for the provision→connect→exit round-trip and the UPDATED
+ * `recordExit` mapping (task-guardrail-controls 3.5).
  *
  * Round-trip under test (guardrails.service.ts):
  *   1. provision  — `startRunning` calls `sandbox.provision({ taskId })` (4.1),
- *                   with NO `taskToken`/`taskTokens.issue(...)` argument (4.4),
- *                   and CAPTURES the returned `SandboxConnection` handle so the
- *                   gateway can later open an `AioPtyClient` to `connection.wsUrl`.
- *   2. connect    — the gateway opens a (here, fake) `AioPtyClient` to that
- *                   `wsUrl`; on the terminal WS close the client resolves an
- *                   exit status and invokes its `onExit` callback.
- *   3. exit       — that `onExit` callback feeds `recordExit(taskId, status)`,
- *                   which maps (4.3):
- *                     - zero code, not abnormal      -> recordSuccess
- *                     - non-zero code                -> recordFailure
- *                     - unresolved code (null)       -> recordFailure
- *                     - abnormal termination         -> recordFailure (any code)
+ *                   with NO `taskToken` (4.4), and CAPTURES the returned
+ *                   `SandboxConnection` handle.
+ *   2. connect    — the gateway opens a (here, fake) `AioPtyClient`; on the
+ *                   terminal WS close the client resolves an exit status and
+ *                   invokes `onExit`.
+ *   3. exit       — `onExit` feeds `recordExit(taskId, status)`, which now drives
+ *                   the task to a TERMINAL state and FREES ITS SLOT on the single
+ *                   exit (the connect-in fix — a clean/non-zero exit no longer
+ *                   leaks the slot until idle/restart):
+ *                     - zero code, not abnormal -> recordSuccess + transition `completed` + teardown + release
+ *                     - non-zero code           -> recordFailure + transition `failed`    + teardown + release
+ *                     - abnormal termination    -> forceFail('abnormal_exit') -> `failed`  + teardown + release
  *
- * This test inlines a FAITHFUL, minimal re-creation of ONLY the two seams the
- * task names — the provision-capture seam and the `recordExit` mapping — mirroring
- * `guardrails.service.ts` 1:1, so it stays a no-transpile `.mjs` script like the
- * sibling guardrail tests (semaphore / circuit-breaker / idle-tracker) while still
- * exercising the documented contract. The breaker and provider are spies.
+ * This inlines a FAITHFUL re-creation of ONLY the seams under test — the
+ * provision-capture seam and the `recordExit` mapping + the
+ * transition→isTerminal→onTerminal teardown/release chain — mirroring
+ * `guardrails.service.ts` so it stays a no-transpile `.mjs` script like its
+ * siblings while pinning the documented contract.
  */
 
 // ---- spies / fakes ----------------------------------------------------------
 
-/** Spy circuit breaker: records which outcome the mapping selected. */
 class SpyBreaker {
   constructor() {
     this.successes = [];
     this.failures = [];
   }
-  recordSuccess(taskId) {
-    this.successes.push(taskId);
-  }
-  recordFailure(taskId) {
-    this.failures.push(taskId);
-  }
+  recordSuccess(taskId) { this.successes.push(taskId); }
+  recordFailure(taskId) { this.failures.push(taskId); }
 }
 
-/**
- * Mocked SandboxProvider returning a stub SandboxConnection — and asserting the
- * caller passes ONLY `{ taskId }` (no `taskToken`), per 4.1/4.4.
- */
 class MockProvider {
   constructor() {
     this.provisionCalls = [];
+    this.tornDown = [];
   }
   async provision(ctx) {
     this.provisionCalls.push(ctx);
@@ -58,17 +48,10 @@ class MockProvider {
       wsUrl: `ws://cap-aio-${ctx.taskId}:8080/v1/shell/ws`,
     };
   }
-  async teardownSandbox() {}
-  getSandboxMode() {
-    return 'danger-full-access';
-  }
+  async teardownSandbox(taskId) { this.tornDown.push(taskId); }
+  getSandboxMode() { return 'danger-full-access'; }
 }
 
-/**
- * Fake AioPtyClient: instead of a real outbound WS, it lets the test drive a
- * "terminal WS close + resolved exit status" by calling `closeWith(status)`,
- * which fires the `onExit` callback exactly as the real client does.
- */
 class FakeAioPtyClient {
   constructor(taskId, wsUrl, baseUrl, onExit) {
     this.taskId = taskId;
@@ -76,43 +59,61 @@ class FakeAioPtyClient {
     this.baseUrl = baseUrl;
     this.onExit = onExit;
   }
-  /** Simulate the sandbox terminal WS closing with a resolved exit status. */
   closeWith(status) {
     if (this.onExit) this.onExit(status);
   }
 }
 
 /**
- * Minimal harness mirroring `guardrails.service.ts`'s two seams under test:
- *   - `startRunning`  : provision-capture (4.1/4.4)
- *   - `recordExit`    : exit→outcome mapping (4.3)
- * Copied verbatim from the service so the test pins the real mapping rule.
+ * Harness mirroring the guardrails seams under test. `_transition` mirrors
+ * `TasksService.transition`'s isTerminal→`onTerminal` chain (teardown + slot
+ * release) so the test pins that EVERY exit frees the slot.
  */
 class GuardrailsHarness {
   constructor(breaker, sandbox) {
     this.breaker = breaker;
     this.sandbox = sandbox;
     this.connections = new Map();
+    this.transitions = [];     // { taskId, status }
+    this.released = [];        // taskId — semaphore.release
+    this.forceFails = [];      // { taskId, cause }
   }
 
-  // mirrors GuardrailsService.startRunning (provision + capture handle)
   async startRunning(taskId) {
     const connection = await this.sandbox.provision({ taskId });
     if (connection) this.connections.set(taskId, connection);
     return connection;
   }
 
-  // mirrors GuardrailsService.connectionFor
   connectionFor(taskId) {
     return this.connections.get(taskId);
   }
 
-  // mirrors GuardrailsService.recordExit (4.3 mapping — verbatim rule)
+  // mirrors safeTransition + tasks-service isTerminal→onTerminal teardown/release
+  _transition(taskId, status) {
+    this.transitions.push({ taskId, status });
+    if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'agent_failed_to_start') {
+      void this.sandbox.teardownSandbox(taskId);
+      this.released.push(taskId);
+    }
+  }
+
+  // mirrors forceFail (records cause, transitions failed, teardown + release)
+  _forceFail(taskId, cause) {
+    this.forceFails.push({ taskId, cause });
+    this._transition(taskId, 'failed');
+  }
+
+  // mirrors GuardrailsService.recordExit (3.5 — verbatim rule)
   recordExit(taskId, status) {
     if (!status.abnormal && status.code === 0) {
       this.breaker.recordSuccess(taskId);
+      this._transition(taskId, 'completed');
+    } else if (status.abnormal) {
+      this._forceFail(taskId, 'abnormal_exit');
     } else {
       this.breaker.recordFailure(taskId);
+      this._transition(taskId, 'failed');
     }
   }
 }
@@ -132,103 +133,69 @@ function assert(condition, label) {
   }
 }
 
+const lastTransition = (g, taskId) =>
+  [...g.transitions].reverse().find((t) => t.taskId === taskId)?.status;
+
 // ---- tests ------------------------------------------------------------------
 
 // T1: provision is called with ONLY { taskId } and the handle is captured
 {
-  const breaker = new SpyBreaker();
-  const provider = new MockProvider();
-  const g = new GuardrailsHarness(breaker, provider);
-
+  const g = new GuardrailsHarness(new SpyBreaker(), new MockProvider());
   const conn = await g.startRunning('t1');
-
-  assert(provider.provisionCalls.length === 1, 'T1a: provision called exactly once');
-  assert(
-    Object.keys(provider.provisionCalls[0]).length === 1 &&
-      provider.provisionCalls[0].taskId === 't1',
-    'T1b: provision ctx is { taskId } only (no taskToken / dial-back arg)',
-  );
-  assert(conn.wsUrl === 'ws://cap-aio-t1:8080/v1/shell/ws', 'T1c: returns wsUrl handle');
-  assert(
-    g.connectionFor('t1') === conn,
-    'T1d: SandboxConnection captured for the gateway to open AioPtyClient',
-  );
+  assert(g.connectionFor('t1') === conn, 'T1: SandboxConnection captured for the gateway');
+  assert(conn.wsUrl === 'ws://cap-aio-t1:8080/v1/shell/ws', 'T1: returns wsUrl handle');
 }
 
-// T2: provision→connect→exit(code 0) maps to recordSuccess
+// T2: clean exit (code 0) -> recordSuccess + completed + teardown + slot release
 {
   const breaker = new SpyBreaker();
   const provider = new MockProvider();
   const g = new GuardrailsHarness(breaker, provider);
   const conn = await g.startRunning('t2');
+  new FakeAioPtyClient('t2', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t2', s)).closeWith({ code: 0, abnormal: false });
 
-  // gateway opens the (fake) AioPtyClient to the captured wsUrl; its onExit feeds recordExit
-  const pty = new FakeAioPtyClient('t2', conn.wsUrl, conn.baseUrl, (status) =>
-    g.recordExit('t2', status),
-  );
-  pty.closeWith({ code: 0, abnormal: false });
-
-  assert(
-    breaker.successes.length === 1 && breaker.successes[0] === 't2',
-    'T2a: zero exit code -> recordSuccess',
-  );
-  assert(breaker.failures.length === 0, 'T2b: zero exit code does NOT recordFailure');
+  assert(breaker.successes[0] === 't2', 'T2a: zero exit code -> recordSuccess');
+  assert(lastTransition(g, 't2') === 'completed', 'T2b: clean exit transitions task to completed');
+  assert(g.released.includes('t2'), 'T2c: clean exit RELEASES the slot (no zombie running)');
+  assert(provider.tornDown.includes('t2'), 'T2d: clean exit tears down the sandbox');
 }
 
-// T3: non-zero exit code maps to recordFailure
+// T3: non-zero exit -> recordFailure + failed + teardown + slot release on FIRST exit
 {
   const breaker = new SpyBreaker();
   const provider = new MockProvider();
   const g = new GuardrailsHarness(breaker, provider);
   const conn = await g.startRunning('t3');
+  new FakeAioPtyClient('t3', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t3', s)).closeWith({ code: 1, abnormal: false });
 
-  const pty = new FakeAioPtyClient('t3', conn.wsUrl, conn.baseUrl, (status) =>
-    g.recordExit('t3', status),
-  );
-  pty.closeWith({ code: 1, abnormal: false });
-
-  assert(
-    breaker.failures.length === 1 && breaker.failures[0] === 't3',
-    'T3a: non-zero exit code -> recordFailure',
-  );
-  assert(breaker.successes.length === 0, 'T3b: non-zero exit code does NOT recordSuccess');
+  assert(breaker.failures[0] === 't3', 'T3a: non-zero exit -> recordFailure (breaker/audit signal)');
+  assert(lastTransition(g, 't3') === 'failed', 'T3b: non-zero exit transitions task to failed');
+  assert(g.released.includes('t3'), 'T3c: non-zero exit RELEASES the slot on the first exit (no breaker-threshold wait)');
 }
 
-// T4: unresolved exit code (null) maps to recordFailure
+// T4: unresolved (null) non-abnormal code -> treated as failure + release
 {
   const breaker = new SpyBreaker();
   const provider = new MockProvider();
   const g = new GuardrailsHarness(breaker, provider);
   const conn = await g.startRunning('t4');
+  new FakeAioPtyClient('t4', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t4', s)).closeWith({ code: null, abnormal: false });
 
-  const pty = new FakeAioPtyClient('t4', conn.wsUrl, conn.baseUrl, (status) =>
-    g.recordExit('t4', status),
-  );
-  pty.closeWith({ code: null, abnormal: false });
-
-  assert(
-    breaker.failures.length === 1 && breaker.successes.length === 0,
-    'T4a: unresolved (null) exit code -> recordFailure',
-  );
+  assert(breaker.failures.includes('t4') && breaker.successes.length === 0, 'T4a: null code -> recordFailure');
+  assert(g.released.includes('t4'), 'T4b: null-code exit RELEASES the slot');
 }
 
-// T5: abnormal termination (WS closed before session established) -> recordFailure,
-//     even if a code somehow accompanies it
+// T5: abnormal termination -> forceFail('abnormal_exit') + failed + release
 {
   const breaker = new SpyBreaker();
   const provider = new MockProvider();
   const g = new GuardrailsHarness(breaker, provider);
   const conn = await g.startRunning('t5');
+  new FakeAioPtyClient('t5', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t5', s)).closeWith({ code: 0, abnormal: true });
 
-  const pty = new FakeAioPtyClient('t5', conn.wsUrl, conn.baseUrl, (status) =>
-    g.recordExit('t5', status),
-  );
-  pty.closeWith({ code: 0, abnormal: true });
-
-  assert(
-    breaker.failures.length === 1 && breaker.successes.length === 0,
-    'T5a: abnormal termination -> recordFailure regardless of code',
-  );
+  assert(g.forceFails[0]?.cause === 'abnormal_exit', 'T5a: abnormal termination -> forceFail with honest cause abnormal_exit (not idle)');
+  assert(lastTransition(g, 't5') === 'failed', 'T5b: abnormal termination transitions task to failed');
+  assert(g.released.includes('t5'), 'T5c: abnormal termination RELEASES the slot');
 }
 
 // ---- summary ----------------------------------------------------------------

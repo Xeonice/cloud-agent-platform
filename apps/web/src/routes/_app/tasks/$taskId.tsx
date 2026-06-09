@@ -29,15 +29,17 @@
  */
 import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+import { TERMINAL_TASK_STATUSES } from "@cap/contracts";
 import {
   taskQuery,
   taskContextQuery,
   taskResourceQuery,
   queryKeys,
 } from "@/lib/api/queries";
+import { stopTaskMutation } from "@/lib/api/mutations";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { SessionHeader } from "@/components/session/session-header";
 import { SessionContextStrip } from "@/components/session/session-context-strip";
@@ -66,6 +68,14 @@ function formatBytes(bytes: number): string {
 /** Pre-running statuses where no sandbox/terminal exists yet (friendly wait). */
 const PRE_RUNNING_STATUSES = new Set(["pending", "queued"]);
 
+/** Compact human duration for the configured-guardrail readout (whole-unit ms). */
+function formatDuration(ms: number): string {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000} 小时`;
+  if (ms % 60_000 === 0) return `${ms / 60_000} 分钟`;
+  if (ms % 1000 === 0) return `${ms / 1000} 秒`;
+  return `${ms} 毫秒`;
+}
+
 function SessionPage(): React.ReactElement {
   const { taskId } = Route.useParams();
   const queryClient = useQueryClient();
@@ -76,6 +86,14 @@ function SessionPage(): React.ReactElement {
   // This task's own live CPU/memory (real-time per-task sampler read). Polls
   // only while this page is mounted; `not-running` → honest "未运行/未采样".
   const { data: taskResource } = useQuery(taskResourceQuery(taskId));
+
+  // Operator-initiated stop (task-guardrail-controls): only offered for an ACTIVE
+  // (non-terminal) task. On success the mutation reconciles the task cache so the
+  // header re-renders without the stop control.
+  const stopMutation = useMutation(stopTaskMutation(queryClient));
+  const canStop =
+    task != null &&
+    !(TERMINAL_TASK_STATUSES as readonly string[]).includes(task.status);
 
   const terminalRef = React.useRef<SessionTerminalHandle | null>(null);
   const [connection, setConnection] = React.useState<ConnectionState>(
@@ -132,6 +150,19 @@ function SessionPage(): React.ReactElement {
       title: "写入前确认",
       body: context?.safetyBoundary ?? "commit / push / secret / PR 创建会暂停。",
     },
+    {
+      // The task's CONFIGURED guardrails, read back from the task (never
+      // fabricated): idle reclaim + wall-clock deadline, both OFF/none by default
+      // (task-guardrail-controls). Idle-reclaim off means the task is not killed
+      // for being quiet; the operator stops it manually from the header instead.
+      label: "守护栏",
+      title: "空闲 / 时限",
+      body: `空闲回收 ${
+        task?.idleTimeoutMs != null ? formatDuration(task.idleTimeoutMs) : "关闭"
+      } · 运行时限 ${
+        task?.deadlineMs != null ? formatDuration(task.deadlineMs) : "无"
+      }`,
+    },
   ] as const;
 
   // When the socket opens, reconcile the task read so the (shell) topbar status
@@ -159,6 +190,16 @@ function SessionPage(): React.ReactElement {
     toast.message(next ? "已暂停输出" : "已恢复输出");
   }
 
+  function handleStop() {
+    stopMutation.mutate(taskId, {
+      onSuccess: (stopped) =>
+        toast.message(
+          stopped.status === "cancelled" ? "已停止任务" : "任务已结束",
+        ),
+      onError: (err) => toast.error(`停止失败：${err.message}`),
+    });
+  }
+
   return (
     <>
       <SessionHeader
@@ -168,6 +209,9 @@ function SessionPage(): React.ReactElement {
         paused={paused}
         onCopySession={handleCopySession}
         onTogglePause={handleTogglePause}
+        canStop={canStop}
+        stopPending={stopMutation.isPending}
+        onStop={handleStop}
       />
 
       <SessionContextStrip items={contextItems} />

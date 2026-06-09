@@ -19,7 +19,9 @@ datasource db {
 /// Task lifecycle states. MUST stay in sync with the contracts task-status enum.
 /// `agent_failed_to_start` is a distinct terminal state, separate from a generic
 /// `failed` and from `running`. `queued` is the admission-control holding state
-/// used by the concurrency semaphore (guardrails track).
+/// used by the concurrency semaphore (guardrails track). `cancelled` is the
+/// terminal state for an operator-initiated stop, distinct from both `completed`
+/// (clean agent exit) and `failed` (crash / guardrail force-fail).
 enum TaskStatus {
   pending
   queued
@@ -27,6 +29,7 @@ enum TaskStatus {
   awaiting_input
   completed
   failed
+  cancelled
   agent_failed_to_start
 }
 
@@ -92,6 +95,18 @@ model Task {
   /// (task-preinstall-skills). Inert with respect to the lifecycle; empty when
   /// none were selected. Postgres text[] — echoed back on every task read path.
   skills String[] @default([]) @map("skills")
+
+  /// Optional per-task guardrail parameter: the idle ceiling in milliseconds.
+  /// Idle reclamation is OPT-IN and OFF by default — null means the task is never
+  /// force-failed for idleness (unless an operator-level `MAX_IDLE_MS` default is
+  /// configured). Consumed at admission to arm the idle watcher AND persisted so
+  /// the configured value is readable on every task read path.
+  idleTimeoutMs Int? @map("idle_timeout_ms")
+  /// Optional per-task guardrail parameter: the wall-clock deadline in
+  /// milliseconds from admission. Null means no deadline. Consumed at admission to
+  /// arm the deadline watcher AND persisted (previously transient) so the
+  /// configured value is readable on every task read path.
+  deadlineMs Int? @map("deadline_ms")
 
   createdAt DateTime @default(now()) @map("created_at")
 

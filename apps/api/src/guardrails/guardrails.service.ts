@@ -94,8 +94,13 @@ export const TERMINAL_GATEWAY_TOKEN = 'TERMINAL_GATEWAY';
 export interface GuardrailsConfig {
   /** Max tasks running concurrently (`MAX_CONCURRENT_TASKS`). */
   readonly maxConcurrentTasks: number;
-  /** Idle ceiling in ms (`MAX_IDLE`) before a wedged task is force-failed. */
-  readonly maxIdleMs: number;
+  /**
+   * OPERATOR-LEVEL default idle ceiling in ms (`MAX_IDLE_MS`), applied to tasks
+   * created WITHOUT a per-task `idleTimeoutMs`. `null` ⇒ no default: idle
+   * reclamation is OFF unless a task opts in. A per-task `idleTimeoutMs` always
+   * overrides this. (Renamed from the prior always-on `maxIdleMs`.)
+   */
+  readonly defaultIdleTimeoutMs: number | null;
   /** Consecutive start/turn failures that trip the circuit breaker. */
   readonly circuitBreakerThreshold: number;
 }
@@ -103,9 +108,24 @@ export interface GuardrailsConfig {
 /** Defaults sourced from env at module construction; safe for local/dev. */
 export const DEFAULT_GUARDRAILS_CONFIG: GuardrailsConfig = {
   maxConcurrentTasks: 5,
-  maxIdleMs: 10 * 60 * 1000, // 10 minutes
+  // Idle reclamation is OPT-IN and OFF by default: no implicit ceiling. An
+  // operator sets `MAX_IDLE_MS` for a global default, or a task supplies its own
+  // `idleTimeoutMs`; with neither, a task is never force-failed for idleness.
+  defaultIdleTimeoutMs: null,
   circuitBreakerThreshold: 3,
 };
+
+/**
+ * Optional per-task guardrail parameters supplied at admission. Both are opt-in:
+ * an absent `idleTimeoutMs` leaves idle reclamation to the operator-level default
+ * (off when unset); an absent `deadlineMs` means no wall-clock deadline.
+ */
+export interface GuardrailParams {
+  /** Wall-clock deadline in ms from admission; absent ⇒ no deadline. */
+  readonly deadlineMs?: number;
+  /** Per-task idle ceiling in ms; absent ⇒ operator-level default (off when unset). */
+  readonly idleTimeoutMs?: number;
+}
 
 @Injectable()
 export class GuardrailsService implements OnModuleInit {
@@ -137,13 +157,19 @@ export class GuardrailsService implements OnModuleInit {
   private readonly idle: IdleTracker;
   private readonly breaker: CircuitBreaker;
   /**
-   * Deadlines parked for tasks admitted to `queued` (no free slot at admit time).
-   * The semaphore's `AdmitCallback` is taskId-only, so the deadline is stashed
-   * here at `admit()` and consumed when the task is later promoted
-   * `queued -> running` in {@link onAdmit} — so a queued-then-admitted task still
-   * arms its wall-clock deadline, not only a task that runs immediately.
+   * Operator-level default idle ceiling (ms) for tasks created without a per-task
+   * `idleTimeoutMs`; `null` ⇒ no default (idle reclamation off unless opted in).
    */
-  private readonly pendingDeadlines = new Map<string, number>();
+  private readonly defaultIdleTimeoutMs: number | null;
+  /**
+   * Guardrail params ({deadlineMs?, idleTimeoutMs?}) parked for tasks admitted to
+   * `queued` (no free slot at admit time). The semaphore's `AdmitCallback` is
+   * taskId-only, so the params are stashed here at `admit()` and consumed when the
+   * task is later promoted `queued -> running` in {@link onAdmit} — so a
+   * queued-then-admitted task still arms its deadline/idle watchers, not only a
+   * task that runs immediately.
+   */
+  private readonly pendingGuardrails = new Map<string, GuardrailParams>();
 
   /**
    * Per-process ledger of task running intervals (admission→terminal), the
@@ -189,12 +215,16 @@ export class GuardrailsService implements OnModuleInit {
       onAdmit: (taskId) => void this.onAdmit(taskId),
     });
 
+    // Operator-level idle default (off when null); per-task idleTimeoutMs overrides.
+    this.defaultIdleTimeoutMs = config.defaultIdleTimeoutMs;
+
     // force-fail call sites (12.2 / 12.3 / 12.4) all converge on `forceFail`.
     this.deadlines = new DeadlineWatcher({
       onDeadlineExceeded: (taskId) => void this.forceFail(taskId, 'deadline'),
     });
+    // Idle ceilings are per-task now (supplied to `idle.start`), so the tracker no
+    // longer carries a single process-wide `maxIdleMs`.
     this.idle = new IdleTracker({
-      maxIdleMs: config.maxIdleMs,
       onIdleExceeded: (taskId) => void this.forceFail(taskId, 'idle'),
     });
     this.breaker = new CircuitBreaker({
@@ -233,14 +263,16 @@ export class GuardrailsService implements OnModuleInit {
    * otherwise it is held `queued` (no sandbox provisioned) and its lifecycle is
    * moved to `queued`. Returns the admission outcome.
    */
-  async admit(taskId: string, deadlineMs?: number): Promise<'running' | 'queued'> {
+  async admit(taskId: string, params: GuardrailParams = {}): Promise<'running' | 'queued'> {
     const outcome = this.semaphore.offer(taskId);
     if (outcome === 'running') {
-      await this.startRunning(taskId, deadlineMs);
+      await this.startRunning(taskId, params);
     } else {
-      // Park the deadline so it is armed when the slot frees and this queued task
-      // is promoted to running (onAdmit), not silently dropped.
-      if (deadlineMs !== undefined) this.pendingDeadlines.set(taskId, deadlineMs);
+      // Park the guardrail params so they arm when the slot frees and this queued
+      // task is promoted to running (onAdmit), not silently dropped.
+      if (params.deadlineMs !== undefined || params.idleTimeoutMs !== undefined) {
+        this.pendingGuardrails.set(taskId, params);
+      }
       await this.safeTransition(taskId, 'queued');
     }
     return outcome;
@@ -275,18 +307,31 @@ export class GuardrailsService implements OnModuleInit {
    */
   recordExit(taskId: string, status: ExitStatus): void {
     if (!status.abnormal && status.code === 0) {
+      // Clean exit: the agent finished. Reset the breaker AND drive the task to a
+      // terminal `completed` state — under the connect-in model a clean WS-close
+      // is a single terminal event with no re-launch, so `completed` (via
+      // `TasksService.transition` → `isTerminal` → `onTerminal`) tears down the
+      // sandbox/session and frees the slot. Without this the task would linger
+      // `running`, leaking its slot until idle reclamation or a restart — a
+      // permanent leak once idle reclamation is off by default.
       this.recordSuccess(taskId);
+      void this.safeTransition(taskId, 'completed');
     } else if (status.abnormal) {
-      // Abnormal exit: the sandbox died unexpectedly (container killed, OOM,
-      // etc.). A dead sandbox cannot recover, so force-fail the task now to
-      // release its concurrency slot and admit the next queued task.
-      // `safeTransition` and `semaphore.release` tolerate double-calls, so
-      // this is safe even when `forceFail` was already triggered (e.g. by an
-      // earlier teardownSandbox on the same task).
-      void this.forceFail(taskId, 'idle');
+      // Abnormal exit: the sandbox died unexpectedly (WS closed before the session
+      // was established, container killed, OOM, or an unresolvable exit code). A
+      // dead sandbox cannot recover, so force-fail the task now to release its
+      // concurrency slot and admit the next queued task. `safeTransition` and
+      // `semaphore.release` tolerate double-calls, so this is safe even when a
+      // teardown was already triggered for the same task.
+      void this.forceFail(taskId, 'abnormal_exit');
     } else {
-      // Non-zero but clean exit: agent failure; let the circuit breaker decide.
+      // Non-zero clean exit: a single connect-in exit is terminal (no re-launch),
+      // so this task is done regardless of any breaker threshold. Record the
+      // failure for the breaker/audit AND transition to `failed` so the slot is
+      // freed on THIS exit rather than waiting for a consecutive-failure threshold
+      // that can never accumulate for a one-shot terminal exit.
       this.recordFailure(taskId);
+      void this.safeTransition(taskId, 'failed');
     }
   }
 
@@ -332,21 +377,28 @@ export class GuardrailsService implements OnModuleInit {
 
   /** Admit a previously-queued task: `queued -> running` + arm timers (12.1). */
   private async onAdmit(taskId: string): Promise<void> {
-    // Consume the deadline parked at admit() so a queued-then-admitted task arms
-    // its wall-clock deadline just like one that ran immediately.
-    const deadlineMs = this.pendingDeadlines.get(taskId);
-    this.pendingDeadlines.delete(taskId);
-    await this.startRunning(taskId, deadlineMs);
+    // Consume the guardrail params parked at admit() so a queued-then-admitted
+    // task arms its deadline/idle watchers just like one that ran immediately.
+    const parked = this.pendingGuardrails.get(taskId) ?? {};
+    this.pendingGuardrails.delete(taskId);
+    await this.startRunning(taskId, parked);
   }
 
-  /** Transition to `running`, arm the idle tracker (and deadline, if any). */
-  private async startRunning(taskId: string, deadlineMs?: number): Promise<void> {
+  /** Transition to `running`, arm the idle tracker (if opted in) and deadline (if any). */
+  private async startRunning(taskId: string, params: GuardrailParams = {}): Promise<void> {
     await this.safeTransition(taskId, 'running');
-    this.idle.start(taskId);
+    // Idle tracking is OPT-IN: arm only when an effective ceiling exists — the
+    // task's own `idleTimeoutMs`, else the operator-level default. With neither,
+    // the task is NOT idle-tracked and is never force-failed for idleness, so a
+    // legitimately long, quiet task is not reclaimed.
+    const idleMs = params.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
+    if (idleMs !== undefined) {
+      this.idle.start(taskId, idleMs);
+    }
     // Begin the runner-minutes interval the moment the task enters RUNNING (5.4).
     this.runnerMinutes.recordStart(taskId);
-    if (deadlineMs !== undefined) {
-      this.deadlines.armAfter(taskId, deadlineMs);
+    if (params.deadlineMs !== undefined) {
+      this.deadlines.armAfter(taskId, params.deadlineMs);
     }
     // Provision the execution sandbox under the connect-in model: `provision()`
     // creates the per-task AIO container and returns an addressable
@@ -403,7 +455,7 @@ export class GuardrailsService implements OnModuleInit {
    */
   private async forceFail(
     taskId: string,
-    cause: 'deadline' | 'idle' | 'circuit_breaker' | 'provision_failed',
+    cause: 'deadline' | 'idle' | 'circuit_breaker' | 'provision_failed' | 'abnormal_exit',
   ): Promise<void> {
     this.logger.warn(`force-failing task ${taskId} (${cause})`);
     this.clearTimers(taskId);
@@ -435,8 +487,8 @@ export class GuardrailsService implements OnModuleInit {
   private clearTimers(taskId: string): void {
     this.deadlines.clear(taskId);
     this.idle.stop(taskId);
-    // Drop any deadline parked while the task was queued but never promoted.
-    this.pendingDeadlines.delete(taskId);
+    // Drop any guardrail params parked while the task was queued but never promoted.
+    this.pendingGuardrails.delete(taskId);
   }
 
   /**

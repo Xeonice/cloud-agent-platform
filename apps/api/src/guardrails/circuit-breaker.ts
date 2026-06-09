@@ -6,6 +6,14 @@
  * automatic retry, preventing a burn loop where a task repeatedly fails to start
  * and is endlessly re-provisioned, holding a slot and burning provider quota.
  *
+ * Scope under the connect-in model: this accumulation is for PROVISION-TIME start
+ * failures (`agent_failed_to_start`), where a task may legitimately be retried
+ * before tripping. It is NOT the mechanism that reclaims a RUNNING task whose
+ * sandbox terminal session has exited — a running task's terminal WS-close is a
+ * single terminal event with no re-launch, so that exit is handled by
+ * `GuardrailsService.recordExit` (which transitions the task and frees its slot on
+ * the FIRST exit), not by waiting for a threshold of consecutive failures.
+ *
  * A recorded success resets the consecutive-failure counter to zero, so a task
  * that recovers before the threshold is not penalized for earlier hiccups.
  *

@@ -42,6 +42,10 @@ import { setState } from "@/lib/store";
 import {
   buildCommandPreview,
   SKILL_CATALOG,
+  IDLE_TIMEOUT_OPTIONS,
+  DEADLINE_OPTIONS,
+  guardrailSelectValue,
+  parseGuardrailSelectValue,
 } from "@/components/dashboard/new-task-dialog";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { Panel, PanelHead } from "@/components/settings/panel";
@@ -157,6 +161,9 @@ function NewTaskPage() {
   const [skills, setSkills] = React.useState<string[]>([]);
   const [prompt, setPrompt] = React.useState("");
   const [stopOnWrite, setStopOnWrite] = React.useState(true);
+  // Guardrails are OPT-IN, default off/none (task-guardrail-controls).
+  const [idleTimeoutMs, setIdleTimeoutMs] = React.useState<number | null>(null);
+  const [deadlineMs, setDeadlineMs] = React.useState<number | null>(null);
   const [createdTaskId, setCreatedTaskId] = React.useState<string | null>(null);
 
   function toggleSkill(id: string) {
@@ -187,6 +194,8 @@ function NewTaskPage() {
     prompt,
     stopOnWrite,
     skills,
+    idleTimeoutMs,
+    deadlineMs,
   });
 
   // Free remote slots, when the (mock-today) metrics resolve; else keep the
@@ -206,6 +215,9 @@ function NewTaskPage() {
     if (branch) body.branch = branch;
     if (strategy) body.strategy = strategy;
     if (skills.length > 0) body.skills = skills;
+    // Opt-in guardrails: only send when the operator chose a value.
+    if (idleTimeoutMs != null) body.idleTimeoutMs = idleTimeoutMs;
+    if (deadlineMs != null) body.deadlineMs = deadlineMs;
     mutation.mutate(
       { repoId, body },
       {
@@ -361,6 +373,52 @@ function NewTaskPage() {
             </div>
             <small className="text-xs text-muted-foreground">
               选中的技能会在沙箱创建时预装进工作区，codex 启动即可用。
+            </small>
+          </div>
+
+          <div className="grid gap-2 min-[821px]:grid-cols-2">
+            <div className="grid gap-2">
+              <label htmlFor="idleTimeout" className="text-[13px] font-semibold text-ink">
+                空闲自动回收
+              </label>
+              <Select
+                value={guardrailSelectValue(idleTimeoutMs)}
+                onValueChange={(v) => setIdleTimeoutMs(parseGuardrailSelectValue(v))}
+              >
+                <SelectTrigger id="idleTimeout" className="w-full">
+                  <SelectValue placeholder="关闭" />
+                </SelectTrigger>
+                <SelectContent>
+                  {IDLE_TIMEOUT_OPTIONS.map((o) => (
+                    <SelectItem key={o.label} value={guardrailSelectValue(o.ms)}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <label htmlFor="deadline" className="text-[13px] font-semibold text-ink">
+                运行时限
+              </label>
+              <Select
+                value={guardrailSelectValue(deadlineMs)}
+                onValueChange={(v) => setDeadlineMs(parseGuardrailSelectValue(v))}
+              >
+                <SelectTrigger id="deadline" className="w-full">
+                  <SelectValue placeholder="无" />
+                </SelectTrigger>
+                <SelectContent>
+                  {DEADLINE_OPTIONS.map((o) => (
+                    <SelectItem key={o.label} value={guardrailSelectValue(o.ms)}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <small className="text-xs text-muted-foreground min-[821px]:col-span-2">
+              默认不回收、不限时；仅在此选择后，任务空闲 / 超时才会被自动结束。运行中可随时手动停止。
             </small>
           </div>
 

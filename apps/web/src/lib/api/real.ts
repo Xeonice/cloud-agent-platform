@@ -134,6 +134,19 @@ export async function createTask(
   return TaskResponseSchema.parse(created);
 }
 
+/**
+ * `POST /tasks/:taskId/stop` — operator-initiated stop (task-guardrail-controls).
+ * Transitions an active task to `cancelled`, tearing down its sandbox and freeing
+ * its concurrency slot. Idempotent: a task already in a terminal state is returned
+ * unchanged. Returns the resulting task (200); 404 when the task does not exist.
+ */
+export async function stopTask(taskId: string): Promise<TaskResponse> {
+  const stopped = await request(`/tasks/${encodeURIComponent(taskId)}/stop`, {
+    method: "POST",
+  });
+  return TaskResponseSchema.parse(stopped);
+}
+
 // ---------------------------------------------------------------------------
 // Not-yet-flipped domains (D5).
 //

@@ -240,12 +240,14 @@ test('6.2 recordTaskCreated swallows a persistence failure (never throws)', asyn
   await assert.doesNotReject(() => svc.recordTaskCreated(randomUUID(), 123));
 });
 
-test('6.2 recordTransition / recordCancelled / recordForceFailed are all best-effort', async () => {
+test('6.2 recordTransition (incl. cancelled) / recordForceFailed are all best-effort', async () => {
   const svc = new AuditService(throwingPrisma());
   await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'running', 1));
   await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'completed'));
-  await assert.doesNotReject(() => svc.recordCancelled(randomUUID(), 7));
-  for (const cause of ['deadline', 'idle', 'circuit_breaker']) {
+  // The operator-stop terminal flows through recordTransition('cancelled') — the
+  // same path stop() uses — so this covers the cancelled audit's best-effort rule.
+  await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'cancelled', 7));
+  for (const cause of ['deadline', 'idle', 'circuit_breaker', 'abnormal_exit']) {
     await assert.doesNotReject(() => svc.recordForceFailed(randomUUID(), cause));
   }
 });

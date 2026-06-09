@@ -10,6 +10,12 @@ import { z } from 'zod';
  * `queued` is the admission-control holding state: when the concurrency
  * semaphore (guardrails track) is at `MAX_CONCURRENT_TASKS`, a newly created
  * task is held `queued` (no sandbox provisioned) until a running slot frees up.
+ *
+ * `cancelled` is the terminal state for an operator-initiated stop
+ * (`POST /tasks/:taskId/stop`), DISTINCT from both `completed` (a clean agent
+ * exit) and the generic `failed` (a crash / guardrail force-fail), so the
+ * timeline can tell a deliberate stop apart from a failure.
+ *
  * It is kept byte-for-byte in sync with the Prisma `TaskStatus` enum.
  */
 export const TaskStatusSchema = z.enum([
@@ -19,6 +25,7 @@ export const TaskStatusSchema = z.enum([
   'awaiting_input',
   'completed',
   'failed',
+  'cancelled',
   'agent_failed_to_start',
 ]);
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
@@ -27,6 +34,7 @@ export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export const TERMINAL_TASK_STATUSES = [
   'completed',
   'failed',
+  'cancelled',
   'agent_failed_to_start',
 ] as const satisfies readonly TaskStatus[];
 
@@ -111,6 +119,23 @@ export const TaskSchema = z.object({
    * empty array / `null` when none were selected) — never stale or fabricated.
    */
   skills: z.array(z.string().min(1)).nullable().optional(),
+  /**
+   * Optional guardrail parameter echoed back from the create body: the per-task
+   * idle ceiling in milliseconds. Idle reclamation is OPT-IN and OFF by default —
+   * when this is null/absent (and no operator-level `MAX_IDLE_MS` default is
+   * configured) the task is never force-failed for idleness. Consumed at
+   * admission to arm the idle watcher AND persisted, so the configured value is
+   * readable on every task read path — never stale or fabricated.
+   */
+  idleTimeoutMs: z.number().int().positive().nullable().optional(),
+  /**
+   * Optional guardrail parameter echoed back from the create body: the wall-clock
+   * deadline in milliseconds from admission. When null/absent the task has no
+   * deadline. Consumed at admission to arm the deadline watcher AND persisted
+   * (previously it was transient), so the configured value is readable on every
+   * task read path — never stale or fabricated.
+   */
+  deadlineMs: z.number().int().positive().nullable().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -169,11 +194,19 @@ export const CreateTaskRequestSchema = z.object({
   skills: z.array(z.string().min(1)).optional(),
   /**
    * Optional wall-clock deadline in milliseconds from admission. When present it
-   * is passed to the guardrails semaphore (`admit(taskId, deadlineMs)`) so the
+   * is passed to the guardrails semaphore (`admit(taskId, { deadlineMs })`) so the
    * deadline watcher arms and a task that overruns is force-failed and reclaimed
    * (guardrails: "Wall-clock deadline force-fails a task"). Absent ⇒ no deadline.
    */
   deadlineMs: z.number().int().positive().optional(),
+  /**
+   * Optional per-task idle ceiling in milliseconds. Idle reclamation is OPT-IN
+   * and OFF by default: when present it is passed to admission
+   * (`admit(taskId, { idleTimeoutMs })`) so the idle watcher arms; when absent
+   * (and no operator-level `MAX_IDLE_MS` default is set) the task is NEVER
+   * force-failed for idleness, so a legitimately long, quiet task is not killed.
+   */
+  idleTimeoutMs: z.number().int().positive().optional(),
 });
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
 

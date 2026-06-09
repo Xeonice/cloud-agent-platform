@@ -31,7 +31,9 @@ export interface HistoryResultPresentation {
  * Prototype rows: running→运行中 (green), completed→已合并 (green),
  * awaiting_input→等待输入 (warn), failed→已停止 (warn — the prototype renders the
  * stopped row with the `warn` pill), queued/pending→排队中/已归档 (neutral).
- * `agent_failed_to_start` is a terminal failure → 已停止 (danger).
+ * `agent_failed_to_start` is a terminal failure → 已停止 (danger). `cancelled` is
+ * the operator-initiated stop → 已取消 (neutral — a deliberate stop, not a
+ * failure).
  */
 export const HISTORY_RESULT_PRESENTATION: Record<
   TaskStatus,
@@ -41,6 +43,7 @@ export const HISTORY_RESULT_PRESENTATION: Record<
   completed: { label: "已合并", variant: "green" },
   awaiting_input: { label: "等待输入", variant: "warn" },
   failed: { label: "已停止", variant: "warn" },
+  cancelled: { label: "已取消", variant: "neutral" },
   agent_failed_to_start: { label: "已停止", variant: "danger" },
   queued: { label: "排队中", variant: "neutral" },
   pending: { label: "已归档", variant: "neutral" },

@@ -32,7 +32,10 @@ import {
  * The runtime instance satisfies this shape; NestJS injects it by token.
  */
 export interface IGuardrailsService {
-  admit(taskId: string, deadlineMs?: number): Promise<'running' | 'queued'>;
+  admit(
+    taskId: string,
+    params?: { deadlineMs?: number; idleTimeoutMs?: number },
+  ): Promise<'running' | 'queued'>;
   onTerminal(taskId: string): Promise<void>;
   recordFailure(taskId: string, kind?: string): void;
   recordSuccess(taskId: string): void;
@@ -148,6 +151,13 @@ export class TasksService implements OnApplicationBootstrap {
         // back on every read path. Validation against the server allowlist
         // happens at provision time, not here (storage is permissive).
         skills: body.skills ?? [],
+        // task-guardrail-controls: persist the optional guardrail parameters.
+        // They are consumed at admission (arming the idle/deadline watchers) AND
+        // persisted so the configured value is readable on every task read path.
+        // Coalesce `undefined` (omitted) to `null` — never stale/fabricated; a
+        // null `idleTimeoutMs` means "no idle reclaim" (opt-in, off by default).
+        idleTimeoutMs: body.idleTimeoutMs ?? null,
+        deadlineMs: body.deadlineMs ?? null,
         // Initial status is the schema default (`pending`).
       },
     });
@@ -168,9 +178,16 @@ export class TasksService implements OnApplicationBootstrap {
     // semaphore transitions the task to `running` and arms its deadline + idle
     // timers; otherwise it holds the task in `queued` (no sandbox provisioned).
     if (this.guardrails) {
-      // VR.11 — plumb the optional wall-clock deadline through so the guardrails
-      // deadline watcher actually arms (`startRunning → deadlines.armAfter`).
-      await this.guardrails.admit(task.id, body.deadlineMs).catch((err: unknown) => {
+      // VR.11 — plumb the optional guardrail params through so the deadline and
+      // idle watchers arm (`startRunning → deadlines.armAfter` / `idle.start`).
+      // Idle is OPT-IN: an omitted `idleTimeoutMs` leaves reclamation to the
+      // operator-level default (off when unset), so the task is not reclaimed.
+      await this.guardrails
+        .admit(task.id, {
+          deadlineMs: body.deadlineMs,
+          idleTimeoutMs: body.idleTimeoutMs,
+        })
+        .catch((err: unknown) => {
         this.logger.warn(
           `guardrails admit for task ${task.id} failed: ${
             err instanceof Error ? err.message : String(err)
@@ -289,6 +306,44 @@ export class TasksService implements OnApplicationBootstrap {
   }
 
   /**
+   * Operator-initiated stop (`POST /tasks/:taskId/stop`, task-guardrail-controls).
+   * Transitions an ACTIVE task (`queued`/`running`/`awaiting_input`) to the
+   * terminal `cancelled` state, which — via {@link transition}'s `isTerminal`
+   * hook — runs `GuardrailsService.onTerminal`: sandbox teardown, session-scoped
+   * credential destruction, and concurrency-slot release (admitting the next
+   * queued task). This is the deliberate, operator-driven mechanism that replaces
+   * automatic idle reclamation as the routine way to free a slot.
+   *
+   * Idempotent: stopping a task already in a terminal state is a safe no-op that
+   * returns the task unchanged rather than corrupting state or double-releasing a
+   * slot. A task that races to a terminal state between the read and the
+   * transition is likewise surfaced as a no-op (the illegal `-> cancelled` edge
+   * is swallowed and the current task returned).
+   */
+  async stop(id: string, githubId?: number): Promise<TaskResponse> {
+    const task = await this.prisma.task.findUnique({ where: { id } });
+    if (!task) {
+      throw new NotFoundException(`Task not found: ${id}`);
+    }
+    if (isTerminal(task.status as TaskStatus)) {
+      // Already settled — no-op (never double-release a slot).
+      return taskResponseSchema.parse(this.toResponse(task));
+    }
+    try {
+      // `cancelled` is terminal, so transition() fires onTerminal (teardown +
+      // slot release) and records the `task.cancelled` audit event centrally.
+      return await this.transition(id, 'cancelled', githubId);
+    } catch (err) {
+      if (err instanceof IllegalTaskTransitionError) {
+        // Raced to a terminal state between the read and the transition — treat
+        // as an idempotent no-op and return the now-current task.
+        return this.findById(id);
+      }
+      throw err;
+    }
+  }
+
+  /**
    * Run a best-effort audit recording call, guaranteeing it NEVER throws into the
    * lifecycle path (6.2). The recorder swallows its own persistence failures; this
    * is a defensive second layer so even a synchronous throw or rejected promise
@@ -322,6 +377,8 @@ export class TasksService implements OnApplicationBootstrap {
     branch: string | null;
     strategy: string | null;
     skills: string[];
+    idleTimeoutMs: number | null;
+    deadlineMs: number | null;
   }): TaskResponse {
     return {
       id: task.id,
@@ -338,6 +395,11 @@ export class TasksService implements OnApplicationBootstrap {
       // task-preinstall-skills: echo the persisted skill ids (Postgres text[],
       // empty array when none selected — never stale/fabricated).
       skills: task.skills,
+      // task-guardrail-controls: echo the persisted guardrail parameters (null
+      // when omitted — never stale/fabricated). A null `idleTimeoutMs` reads back
+      // honestly as "no idle reclaim configured" for the console.
+      idleTimeoutMs: task.idleTimeoutMs,
+      deadlineMs: task.deadlineMs,
     };
   }
 }

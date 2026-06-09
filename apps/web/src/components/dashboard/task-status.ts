@@ -41,9 +41,10 @@ export interface TaskStatusPresentation {
 }
 
 /**
- * Exhaustive status → presentation map. Note the contract `TaskStatus` enum has
- * seven members (no `cancelled`); each is handled here. `awaiting_input` is the
- * only `needs-input` state and is sorted to the top of the queue by the panel.
+ * Exhaustive status → presentation map. The contract `TaskStatus` enum has eight
+ * members (including `cancelled`, the operator-initiated stop terminal); each is
+ * handled here. `awaiting_input` is the only `needs-input` state and is sorted to
+ * the top of the queue by the panel.
  */
 export const TASK_STATUS_PRESENTATION: Record<TaskStatus, TaskStatusPresentation> = {
   running: {
@@ -86,6 +87,13 @@ export const TASK_STATUS_PRESENTATION: Record<TaskStatus, TaskStatusPresentation
     label: "失败",
     variant: "danger",
     phase: "已失败",
+    connectable: true,
+  },
+  cancelled: {
+    state: "done",
+    label: "已取消",
+    variant: "neutral",
+    phase: "已取消",
     connectable: true,
   },
   agent_failed_to_start: {

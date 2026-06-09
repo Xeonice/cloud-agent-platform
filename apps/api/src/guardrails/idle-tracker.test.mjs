@@ -1,24 +1,24 @@
 /**
  * Minimal test for requirement:
- *   "Idle ceiling reclaims wedged tasks"
+ *   "Idle ceiling reclaims wedged tasks" — now PER-TASK and OPT-IN.
  *
- * Requirement semantics (from idle-tracker.ts JSDoc):
- *   1. When a running task produces no terminal output and no hook activity for
- *      maxIdleMs, onIdleExceeded is fired exactly once and the task is removed
- *      from tracking.
+ * Requirement semantics (from idle-tracker.ts JSDoc, task-guardrail-controls):
+ *   1. A task is tracked only when explicitly started WITH its own ceiling
+ *      (`start(taskId, maxIdleMs)`); after `maxIdleMs` with no activity,
+ *      onIdleExceeded fires exactly once and the task is removed from tracking.
  *   2. Any qualifying activity (terminal output OR hook event) resets the idle
- *      window; the full ceiling must elapse again before reclamation.
+ *      window against THAT task's own ceiling; the full ceiling must elapse again.
  *   3. A task stopped voluntarily (stop()) before the ceiling elapses does NOT
  *      fire onIdleExceeded.
- *   4. Recording activity for an untracked (already-reclaimed or stopped) task
- *      is a no-op and does NOT re-arm the task.
- *   5. Multiple tasks are tracked independently; one idle-out does not affect
- *      the other.
- *   6. Invalid maxIdleMs (0 or non-finite) throws on construction.
+ *   4. Recording activity for an untracked (already-reclaimed/stopped/never-armed)
+ *      task is a no-op and does NOT re-arm the task — this is the default for a
+ *      task created without an idle ceiling (never tracked → never reclaimed).
+ *   5. Multiple tasks are tracked independently, each at its OWN ceiling.
+ *   6. Invalid maxIdleMs (0 or non-finite) throws from start() (the ceiling is
+ *      now per-task, so validation moved off the constructor).
  *   7. stopAll() clears all tracked tasks; none fire onIdleExceeded after that.
  *   8. Stale-timer guard: a timer scheduled before a reset does NOT cause a
- *      premature fire when it eventually fires; it re-arms for the remaining gap
- *      instead.
+ *      premature fire; it re-arms for the remaining gap against the task ceiling.
  */
 
 // ---------------------------------------------------------------------------
@@ -32,12 +32,6 @@ const defaultTimer = {
 
 class IdleTracker {
   constructor(options) {
-    if (!(options.maxIdleMs > 0) || !Number.isFinite(options.maxIdleMs)) {
-      throw new Error(
-        `MAX_IDLE must be a positive number of milliseconds, received: ${String(options.maxIdleMs)}`,
-      );
-    }
-    this.maxIdleMs = options.maxIdleMs;
     this.onIdleExceeded = options.onIdleExceeded;
     this.now = options.now ?? (() => Date.now());
     this.timer = options.timer ?? defaultTimer;
@@ -47,11 +41,19 @@ class IdleTracker {
   get trackedCount() { return this.tracked.size; }
   isTracking(taskId) { return this.tracked.has(taskId); }
 
-  start(taskId) { this._armFromNow(taskId); }
+  start(taskId, maxIdleMs) {
+    if (!(maxIdleMs > 0) || !Number.isFinite(maxIdleMs)) {
+      throw new Error(
+        `idle ceiling must be a positive number of milliseconds, received: ${String(maxIdleMs)}`,
+      );
+    }
+    this._armFromNow(taskId, maxIdleMs);
+  }
 
   recordActivity(taskId) {
-    if (!this.tracked.has(taskId)) return;
-    this._armFromNow(taskId);
+    const existing = this.tracked.get(taskId);
+    if (!existing) return;
+    this._armFromNow(taskId, existing.maxIdleMs);
   }
 
   stop(taskId) {
@@ -68,20 +70,20 @@ class IdleTracker {
     this.tracked.clear();
   }
 
-  _armFromNow(taskId) {
+  _armFromNow(taskId, maxIdleMs) {
     const existing = this.tracked.get(taskId);
     if (existing) this.timer.clearTimeout(existing.handle);
     const startedAt = this.now();
-    const handle = this.timer.setTimeout(() => this._onIdle(taskId), this.maxIdleMs);
-    this.tracked.set(taskId, { lastActivityEpochMs: startedAt, handle });
+    const handle = this.timer.setTimeout(() => this._onIdle(taskId), maxIdleMs);
+    this.tracked.set(taskId, { lastActivityEpochMs: startedAt, handle, maxIdleMs });
   }
 
   _onIdle(taskId) {
     const entry = this.tracked.get(taskId);
     if (!entry) return;
     const idleFor = this.now() - entry.lastActivityEpochMs;
-    if (idleFor < this.maxIdleMs) {
-      const remaining = this.maxIdleMs - idleFor;
+    if (idleFor < entry.maxIdleMs) {
+      const remaining = entry.maxIdleMs - idleFor;
       entry.handle = this.timer.setTimeout(() => this._onIdle(taskId), remaining);
       return;
     }
@@ -96,7 +98,6 @@ class IdleTracker {
 
 function makeVirtualClock(startMs = 0) {
   let nowMs = startMs;
-  // Queue of { fireAt, handler, id }
   const pending = [];
   let nextId = 1;
 
@@ -113,13 +114,8 @@ function makeVirtualClock(startMs = 0) {
         if (idx !== -1) pending.splice(idx, 1);
       },
     },
-    /**
-     * Advance virtual time by `deltaMs`, firing every scheduled callback
-     * whose fireAt <= new now (in order).
-     */
     advance(deltaMs) {
       nowMs += deltaMs;
-      // Sort ascending so we fire in order.
       pending.sort((a, b) => a.fireAt - b.fireAt);
       while (pending.length > 0 && pending[0].fireAt <= nowMs) {
         const { handler } = pending.shift();
@@ -162,204 +158,169 @@ function assertThrows(fn, label) {
 // Tests
 // ---------------------------------------------------------------------------
 
-console.log('\n=== IdleTracker: idle ceiling reclaims wedged tasks ===\n');
+console.log('\n=== IdleTracker: per-task, opt-in idle ceiling ===\n');
 
-// T1 — basic reclamation: after maxIdleMs elapses with no activity,
-//       onIdleExceeded fires exactly once for the task.
+// T1 — basic reclamation at the task's own ceiling.
 {
   const clock = makeVirtualClock();
   const exceeded = [];
   const tracker = new IdleTracker({
-    maxIdleMs: 1000,
     onIdleExceeded: (id) => exceeded.push(id),
     now: clock.now,
     timer: clock.timer,
   });
 
-  tracker.start('task-A');
-  assert(tracker.isTracking('task-A'), 'T1a: task is tracked after start()');
+  tracker.start('task-A', 1000);
+  assert(tracker.isTracking('task-A'), 'T1a: task is tracked after start(id, ceiling)');
 
-  clock.advance(999); // just under ceiling — must not fire
+  clock.advance(999);
   assert(exceeded.length === 0, 'T1b: onIdleExceeded not called before ceiling');
 
-  clock.advance(1);   // exactly at ceiling — must fire
+  clock.advance(1);
   assert(exceeded.length === 1, 'T1c: onIdleExceeded called exactly once at ceiling');
   assert(exceeded[0] === 'task-A', 'T1d: onIdleExceeded receives correct taskId');
   assert(!tracker.isTracking('task-A'), 'T1e: task removed from tracking after reclamation');
   assert(tracker.trackedCount === 0, 'T1f: trackedCount is 0 after reclamation');
 }
 
-// T2 — activity resets the window: activity before the ceiling resets the
-//       timer; the full ceiling must elapse again before reclamation.
+// T2 — activity resets the window against the task's own ceiling.
 {
   const clock = makeVirtualClock();
   const exceeded = [];
   const tracker = new IdleTracker({
-    maxIdleMs: 1000,
     onIdleExceeded: (id) => exceeded.push(id),
     now: clock.now,
     timer: clock.timer,
   });
 
-  tracker.start('task-B');
-  clock.advance(800);                  // 800 ms idle — under ceiling
-  tracker.recordActivity('task-B');    // reset; window restarts from t=800
-  clock.advance(999);                  // 999 ms after reset — still under
+  tracker.start('task-B', 1000);
+  clock.advance(800);
+  tracker.recordActivity('task-B');
+  clock.advance(999);
   assert(exceeded.length === 0, 'T2a: no reclamation 999 ms after activity reset');
 
-  clock.advance(1);                    // 1000 ms after reset — fires
+  clock.advance(1);
   assert(exceeded.length === 1, 'T2b: reclaimed after full ceiling post-reset');
   assert(exceeded[0] === 'task-B', 'T2c: correct taskId reclaimed after reset');
 }
 
-// T3 — voluntary stop cancels reclamation: stop() before the ceiling does
-//       not fire onIdleExceeded.
+// T3 — voluntary stop cancels reclamation.
 {
   const clock = makeVirtualClock();
   const exceeded = [];
   const tracker = new IdleTracker({
-    maxIdleMs: 1000,
     onIdleExceeded: (id) => exceeded.push(id),
     now: clock.now,
     timer: clock.timer,
   });
 
-  tracker.start('task-C');
+  tracker.start('task-C', 1000);
   clock.advance(500);
   tracker.stop('task-C');
   assert(!tracker.isTracking('task-C'), 'T3a: task removed after stop()');
 
-  clock.advance(600); // advance past where ceiling would have fired
+  clock.advance(600);
   assert(exceeded.length === 0, 'T3b: onIdleExceeded NOT fired after voluntary stop()');
 }
 
-// T4 — activity on untracked task is no-op: does not re-arm the tracker.
+// T4 — activity on untracked task is no-op (the DEFAULT for a task never armed).
 {
   const clock = makeVirtualClock();
   const exceeded = [];
   const tracker = new IdleTracker({
-    maxIdleMs: 500,
     onIdleExceeded: (id) => exceeded.push(id),
     now: clock.now,
     timer: clock.timer,
   });
 
-  tracker.start('task-D');
-  clock.advance(500); // fires and reclaims
-  assert(exceeded.length === 1, 'T4a: task-D reclaimed');
-  assert(!tracker.isTracking('task-D'), 'T4b: task-D no longer tracked');
+  // A task that was never start()-ed (no idle ceiling) is not tracked, and
+  // recording activity for it never arms a timer — it can never be reclaimed.
+  tracker.recordActivity('never-armed');
+  assert(!tracker.isTracking('never-armed'), 'T4a: recordActivity never arms an unstarted task');
+  clock.advance(10_000);
+  assert(exceeded.length === 0, 'T4b: an unstarted task is never reclaimed for idleness');
 
-  // Now record activity for the already-reclaimed task.
-  tracker.recordActivity('task-D');
-  assert(!tracker.isTracking('task-D'), 'T4c: recordActivity does not re-arm reclaimed task');
-
-  clock.advance(1000); // no further fire expected
-  assert(exceeded.length === 1, 'T4d: no second onIdleExceeded for untracked task');
-}
-
-// T5 — multiple tasks tracked independently.
-{
-  const clock = makeVirtualClock();
-  const exceeded = [];
-  const tracker = new IdleTracker({
-    maxIdleMs: 1000,
-    onIdleExceeded: (id) => exceeded.push(id),
-    now: clock.now,
-    timer: clock.timer,
-  });
-
-  tracker.start('alpha');
+  tracker.start('task-D', 500);
   clock.advance(500);
-  tracker.start('beta');   // beta's window starts 500 ms later
-
-  clock.advance(500);      // now=1000 — alpha hits ceiling
-  assert(exceeded.includes('alpha'), 'T5a: alpha reclaimed at its ceiling');
-  assert(!exceeded.includes('beta'), 'T5b: beta not yet reclaimed (only 500 ms idle)');
-
-  clock.advance(500);      // now=1500 — beta hits its ceiling
-  assert(exceeded.includes('beta'), 'T5c: beta reclaimed at its own ceiling');
-  assert(exceeded.length === 2, 'T5d: exactly two reclamations, one each');
+  assert(exceeded.length === 1, 'T4c: task-D reclaimed at its ceiling');
+  tracker.recordActivity('task-D');
+  assert(!tracker.isTracking('task-D'), 'T4d: recordActivity does not re-arm reclaimed task');
+  clock.advance(1000);
+  assert(exceeded.length === 1, 'T4e: no second onIdleExceeded for untracked task');
 }
 
-// T6 — invalid maxIdleMs throws on construction.
-{
-  assertThrows(
-    () => new IdleTracker({ maxIdleMs: 0, onIdleExceeded: () => {} }),
-    'T6a: maxIdleMs=0 throws',
-  );
-  assertThrows(
-    () => new IdleTracker({ maxIdleMs: -1, onIdleExceeded: () => {} }),
-    'T6b: maxIdleMs=-1 throws',
-  );
-  assertThrows(
-    () => new IdleTracker({ maxIdleMs: Infinity, onIdleExceeded: () => {} }),
-    'T6c: maxIdleMs=Infinity throws',
-  );
-  assertThrows(
-    () => new IdleTracker({ maxIdleMs: NaN, onIdleExceeded: () => {} }),
-    'T6d: maxIdleMs=NaN throws',
-  );
-}
-
-// T7 — stopAll() cancels all tracked tasks; none fire after stopAll.
+// T5 — multiple tasks tracked independently, each at its OWN ceiling.
 {
   const clock = makeVirtualClock();
   const exceeded = [];
   const tracker = new IdleTracker({
-    maxIdleMs: 1000,
     onIdleExceeded: (id) => exceeded.push(id),
     now: clock.now,
     timer: clock.timer,
   });
 
-  tracker.start('x1');
-  tracker.start('x2');
+  tracker.start('short', 1000); // small ceiling
+  tracker.start('long', 5000);  // large ceiling, started at the same instant
+
+  clock.advance(1000); // short hits its ceiling, long is far from its
+  assert(exceeded.includes('short'), 'T5a: short reclaimed at its own 1000ms ceiling');
+  assert(!exceeded.includes('long'), 'T5b: long not reclaimed (its ceiling is 5000ms)');
+
+  clock.advance(4000); // now=5000 — long hits its own ceiling
+  assert(exceeded.includes('long'), 'T5c: long reclaimed at its own 5000ms ceiling');
+  assert(exceeded.length === 2, 'T5d: exactly two reclamations, each at its own ceiling');
+}
+
+// T6 — invalid ceiling throws from start() (validation moved off the constructor).
+{
+  const tracker = new IdleTracker({ onIdleExceeded: () => {} });
+  assertThrows(() => tracker.start('z', 0), 'T6a: start ceiling=0 throws');
+  assertThrows(() => tracker.start('z', -1), 'T6b: start ceiling=-1 throws');
+  assertThrows(() => tracker.start('z', Infinity), 'T6c: start ceiling=Infinity throws');
+  assertThrows(() => tracker.start('z', NaN), 'T6d: start ceiling=NaN throws');
+  assert(tracker.trackedCount === 0, 'T6e: no task is tracked after a rejected ceiling');
+}
+
+// T7 — stopAll() cancels all tracked tasks.
+{
+  const clock = makeVirtualClock();
+  const exceeded = [];
+  const tracker = new IdleTracker({
+    onIdleExceeded: (id) => exceeded.push(id),
+    now: clock.now,
+    timer: clock.timer,
+  });
+
+  tracker.start('x1', 1000);
+  tracker.start('x2', 1000);
   assert(tracker.trackedCount === 2, 'T7a: two tasks tracked');
 
   tracker.stopAll();
   assert(tracker.trackedCount === 0, 'T7b: trackedCount=0 after stopAll');
 
-  clock.advance(2000); // advance well past ceiling
+  clock.advance(2000);
   assert(exceeded.length === 0, 'T7c: no onIdleExceeded fired after stopAll');
 }
 
-// T8 — stale-timer guard: a timer scheduled before a recordActivity reset
-//       does NOT cause a premature fire; it re-arms for the remaining gap.
-//
-//   Mechanics: start at t=0. At t=600 record activity (window restarts).
-//   The original timer fires at t=1000 (only 400 ms after the reset, not
-//   1000 ms), so the guard re-arms for the remaining 600 ms. The task must
-//   NOT be reclaimed until t=1600.
+// T8 — stale-timer guard re-arms against the task's own ceiling.
 {
   const clock = makeVirtualClock();
   const exceeded = [];
   const tracker = new IdleTracker({
-    maxIdleMs: 1000,
     onIdleExceeded: (id) => exceeded.push(id),
     now: clock.now,
     timer: clock.timer,
   });
 
-  tracker.start('stale-guard');
-
-  // Manually inject a stale timer by manipulating the tracked entry's
-  // lastActivityEpochMs AFTER armFromNow, so the pending timer has a stale
-  // "start" timestamp. We simulate this by directly updating the entry.
-  // (This replicates the race described in the JSDoc.)
+  tracker.start('stale-guard', 1000);
   clock.advance(600);
+  tracker.recordActivity('stale-guard'); // new lastActivity = t=600
 
-  // Reset the window via recordActivity — new lastActivity = t=600.
-  tracker.recordActivity('stale-guard');
-
-  // The original timer (scheduled to fire at t=1000 from t=0) is cancelled
-  // by armFromNow. A new timer fires at t=1600. Verify no early reclamation.
-  clock.advance(399); // t=999: still 601 ms before new ceiling
+  clock.advance(399); // t=999
   assert(exceeded.length === 0, 'T8a: no reclamation at t=999 after reset at t=600');
-
-  clock.advance(1); // t=1000: 400 ms after reset — not yet ceiling
+  clock.advance(1); // t=1000 — only 400ms since reset
   assert(exceeded.length === 0, 'T8b: no reclamation at t=1000 (only 400ms since reset)');
-
-  clock.advance(600); // t=1600: exactly 1000 ms after reset — fires now
+  clock.advance(600); // t=1600 — full ceiling after reset
   assert(exceeded.length === 1, 'T8c: reclaimed at t=1600 (full ceiling after reset)');
   assert(exceeded[0] === 'stale-guard', 'T8d: correct taskId reclaimed');
 }

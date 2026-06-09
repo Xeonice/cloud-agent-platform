@@ -1,29 +1,4 @@
-# guardrails Specification
-
-## Purpose
-TBD - created by archiving change agent-control-platform. Update Purpose after archive.
-## Requirements
-### Requirement: Concurrency semaphore bounds running tasks
-The orchestrator SHALL enforce a configured maximum number of concurrently running tasks (`MAX_CONCURRENT_TASKS`). When the limit is reached, newly created tasks SHALL remain queued rather than provisioning a sandbox, and when a running task reaches a terminal state (completed/failed/cancelled) the orchestrator SHALL admit the next queued task in FIFO order.
-
-#### Scenario: Task over the limit stays queued
-- **WHEN** `MAX_CONCURRENT_TASKS` tasks are already running and a new task is created
-- **THEN** the new task remains in the queued state and no sandbox is provisioned for it
-
-#### Scenario: Freeing a slot admits the next queued task
-- **WHEN** a running task reaches a terminal state while at least one task is queued
-- **THEN** the orchestrator provisions the oldest queued task, bringing the running count back to at most `MAX_CONCURRENT_TASKS`
-
-### Requirement: Wall-clock deadline force-fails a task
-A task MAY carry a wall-clock deadline, supplied via the task create request (`deadlineMs`) and passed to concurrency admission (`admit(taskId, deadlineMs)`) so the deadline watcher arms. When a running task passes its deadline, the orchestrator SHALL transition it to `failed`, invoke `SandboxProvider.teardownSandbox()` for the task, and free its concurrency slot. Teardown is a **port-level** call: per design D9 the deferred minimal Docker provider documents it as a no-op (Docker is the deploy plane, not the per-task execution sandbox), while a future OS-isolating provider performs a real teardown through the same port.
-
-#### Scenario: Task exceeding its deadline is failed and torn down
-- **WHEN** a running task's wall-clock deadline passes
-- **THEN** the orchestrator transitions the task to `failed`, invokes `SandboxProvider.teardownSandbox()` for the task, and releases its concurrency slot
-
-#### Scenario: Task finishing before its deadline is unaffected
-- **WHEN** a task reaches a terminal state before its deadline
-- **THEN** no deadline-based force-fail is applied
+## MODIFIED Requirements
 
 ### Requirement: Idle ceiling reclaims wedged tasks
 Idle reclamation SHALL be OPT-IN PER TASK and OFF BY DEFAULT. The orchestrator SHALL track a running task's idle time (no terminal output and no agent-hook activity) and force-fail it on exceeding an idle ceiling ONLY when an idle ceiling is in effect for that task. An idle ceiling is in effect when the task carries an explicit per-task `idleTimeoutMs` (supplied via the task create request and passed through concurrency admission), OR when an operator-level global default is configured (`MAX_IDLE_MS`). When NEITHER is present — the default for a task created without an idle timeout in a deployment that has not set `MAX_IDLE_MS` — the task SHALL NOT be idle-tracked and SHALL NEVER be force-failed for idleness, so a legitimately long, quiet task is not reclaimed. The per-task `idleTimeoutMs` SHALL take precedence over the operator-level default. The idle ceiling is per task (not a single process-wide constant): when armed, the timer is sized to that task's effective ceiling and activity resets it against that same ceiling. (This remains distinct from the shorter "awaiting input" notification driven by the `Stop` hook, which does not fail the task.)
@@ -63,6 +38,8 @@ The orchestrator SHALL count consecutive agent-failed-to-start (and turn-failure
 - **WHEN** a running task's terminal session exits once (cleanly or with a non-zero code)
 - **THEN** the task is transitioned and its slot freed by the terminal-exit handling immediately, rather than remaining `running` until a threshold of consecutive failures is reached
 
+## ADDED Requirements
+
 ### Requirement: A terminal sandbox exit transitions the task and frees its slot
 When a running task's sandbox terminal session terminates (the connect-in terminal WebSocket closes and the orchestrator resolves an exit status), the orchestrator SHALL drive the task to a terminal lifecycle state and release its concurrency slot on that SINGLE exit — it SHALL NOT leave the task in `running` with a held slot. A resolved exit code of zero SHALL transition the task to `completed`; a resolved non-zero exit code SHALL transition the task to `failed`; an abnormal termination (the session never established, or the exit code is unresolvable) SHALL force-fail the task. In every case the orchestrator SHALL invoke `SandboxProvider.teardownSandbox()`, tear down the session-scoped credentials, and free the concurrency slot (admitting the next queued task), reusing the same terminal-teardown path as natural completion. This closes the gap whereby a cleanly-exited or single-non-zero-exit session previously remained `running` and leaked its slot until idle reclamation or a process restart — a gap that becomes a permanent leak once idle reclamation is off by default.
 
@@ -81,4 +58,3 @@ When a running task's sandbox terminal session terminates (the connect-in termin
 #### Scenario: Terminal teardown is idempotent under concurrent close handling
 - **WHEN** the exit-driven terminal transition runs while the terminal gateway is also handling the same session's close
 - **THEN** the teardown + slot release completes exactly once without error (double-calls to teardown and slot release are tolerated)
-

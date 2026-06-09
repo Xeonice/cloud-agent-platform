@@ -49,6 +49,15 @@ export interface SessionHeaderProps {
   paused: boolean;
   onCopySession: () => void;
   onTogglePause: () => void;
+  /**
+   * Whether the manual "停止任务" control is offered — true only for an ACTIVE
+   * (non-terminal) task. Hidden/inert for a completed/failed/cancelled task.
+   */
+  canStop?: boolean;
+  /** Whether the stop request is in flight (disables the confirm button). */
+  stopPending?: boolean;
+  /** Confirmed-stop handler (POSTs `/tasks/:taskId/stop`). */
+  onStop?: () => void;
 }
 
 export function SessionHeader({
@@ -58,8 +67,17 @@ export function SessionHeader({
   paused,
   onCopySession,
   onTogglePause,
+  canStop = false,
+  stopPending = false,
+  onStop,
 }: SessionHeaderProps): React.ReactElement {
   const pill = connectionPill(connection);
+  // Two-step confirm (no blocking window.confirm): first click arms, second
+  // confirms. Reset whenever the control stops being offered (task settled).
+  const [confirmingStop, setConfirmingStop] = React.useState(false);
+  React.useEffect(() => {
+    if (!canStop) setConfirmingStop(false);
+  }, [canStop]);
   return (
     <>
       {/* topbar actions band */}
@@ -93,6 +111,40 @@ export function SessionHeader({
           >
             {paused ? "恢复输出" : "暂停输出"}
           </button>
+          {canStop && onStop ? (
+            confirmingStop ? (
+              <span className="inline-flex items-center gap-1.5">
+                <button
+                  type="button"
+                  data-confirm-stop
+                  disabled={stopPending}
+                  onClick={() => {
+                    setConfirmingStop(false);
+                    onStop();
+                  }}
+                  className="inline-flex h-8 items-center justify-center rounded-md bg-danger px-3 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:pointer-events-none disabled:opacity-50"
+                >
+                  {stopPending ? "停止中…" : "确认停止"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmingStop(false)}
+                  className="inline-flex h-8 items-center justify-center rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary"
+                >
+                  取消
+                </button>
+              </span>
+            ) : (
+              <button
+                type="button"
+                data-stop-task
+                onClick={() => setConfirmingStop(true)}
+                className="inline-flex h-8 items-center justify-center rounded-md border border-danger/40 bg-card px-3 text-xs font-medium text-danger transition-colors hover:bg-danger/10"
+              >
+                停止任务
+              </button>
+            )
+          ) : null}
         </div>
       </header>
 

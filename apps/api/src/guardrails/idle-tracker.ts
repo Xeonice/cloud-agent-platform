@@ -2,10 +2,14 @@
  * Per-task idle tracker (guardrail 12.3).
  *
  * Tracks how long a running task has gone with *no terminal output and no agent
- * hook activity*. When the idle gap exceeds the configured ceiling (`MAX_IDLE`)
- * the task is force-failed: the integration layer (Track 14) transitions it to
- * `failed`, tears down its sandbox, and releases its slot, so a wedged session
- * cannot hold a scarce slot indefinitely.
+ * hook activity*. Idle tracking is OPT-IN PER TASK: each tracked task carries its
+ * OWN idle ceiling (supplied to {@link IdleTracker.start}), and a task is tracked
+ * only when an effective ceiling exists (a per-task `idleTimeoutMs` or an
+ * operator-level default). When the idle gap exceeds that task's ceiling the task
+ * is force-failed: the integration layer (Track 14) transitions it to `failed`,
+ * tears down its sandbox, and releases its slot, so a wedged session cannot hold
+ * a scarce slot indefinitely. A task with no ceiling is never tracked and never
+ * reclaimed for idleness.
  *
  * Any qualifying activity — terminal output or a hook event — resets the idle
  * timer. The full ceiling must then elapse again before the task can be
@@ -31,11 +35,9 @@ export interface TimerLike {
 }
 
 export interface IdleTrackerOptions {
-  /** Idle ceiling in milliseconds (`MAX_IDLE`). Must be a positive number. */
-  readonly maxIdleMs: number;
   /**
-   * Invoked exactly once per task when its idle gap exceeds `maxIdleMs`. Wired
-   * by the integration layer to: lifecycle `running -> failed`, sandbox
+   * Invoked exactly once per task when its idle gap exceeds that task's ceiling.
+   * Wired by the integration layer to: lifecycle `running -> failed`, sandbox
    * teardown, and slot release.
    */
   readonly onIdleExceeded: IdleExceededCallback;
@@ -48,6 +50,8 @@ export interface IdleTrackerOptions {
 interface Tracked {
   lastActivityEpochMs: number;
   handle: ReturnType<typeof setTimeout>;
+  /** This task's own idle ceiling in ms (per-task, not a process-wide constant). */
+  maxIdleMs: number;
 }
 
 const defaultTimer: TimerLike = {
@@ -56,7 +60,6 @@ const defaultTimer: TimerLike = {
 };
 
 export class IdleTracker {
-  private readonly maxIdleMs: number;
   private readonly onIdleExceeded: IdleExceededCallback;
   private readonly now: () => number;
   private readonly timer: TimerLike;
@@ -64,14 +67,6 @@ export class IdleTracker {
   private readonly tracked = new Map<string, Tracked>();
 
   constructor(options: IdleTrackerOptions) {
-    if (!(options.maxIdleMs > 0) || !Number.isFinite(options.maxIdleMs)) {
-      throw new Error(
-        `MAX_IDLE must be a positive number of milliseconds, received: ${String(
-          options.maxIdleMs,
-        )}`,
-      );
-    }
-    this.maxIdleMs = options.maxIdleMs;
     this.onIdleExceeded = options.onIdleExceeded;
     this.now = options.now ?? (() => Date.now());
     this.timer = options.timer ?? defaultTimer;
@@ -88,13 +83,26 @@ export class IdleTracker {
   }
 
   /**
-   * Begins tracking a running task. The idle window starts now; the ceiling must
-   * fully elapse with no recorded activity before the task is reclaimed.
-   * Starting an already-tracked task resets its window (equivalent to recording
-   * activity).
+   * Begins tracking a running task at its OWN idle ceiling (`maxIdleMs`, a
+   * positive number of ms). The idle window starts now; the ceiling must fully
+   * elapse with no recorded activity before the task is reclaimed. Starting an
+   * already-tracked task resets its window (equivalent to recording activity)
+   * and re-pins the ceiling to the supplied value.
+   *
+   * Idle tracking is OPT-IN per task: the integration layer calls this ONLY when
+   * an effective ceiling exists (a per-task `idleTimeoutMs` or an operator-level
+   * default). A task with no ceiling is never `start`-ed and so is never
+   * reclaimed for idleness.
    */
-  start(taskId: string): void {
-    this.armFromNow(taskId);
+  start(taskId: string, maxIdleMs: number): void {
+    if (!(maxIdleMs > 0) || !Number.isFinite(maxIdleMs)) {
+      throw new Error(
+        `idle ceiling must be a positive number of milliseconds, received: ${String(
+          maxIdleMs,
+        )}`,
+      );
+    }
+    this.armFromNow(taskId, maxIdleMs);
   }
 
   /**
@@ -107,10 +115,11 @@ export class IdleTracker {
    * reclaimed or stopped it is not implicitly resurrected.
    */
   recordActivity(taskId: string): void {
-    if (!this.tracked.has(taskId)) {
+    const existing = this.tracked.get(taskId);
+    if (!existing) {
       return;
     }
-    this.armFromNow(taskId);
+    this.armFromNow(taskId, existing.maxIdleMs);
   }
 
   /**
@@ -139,7 +148,7 @@ export class IdleTracker {
    * (Re)arms the idle timer for a task relative to "now", recording the current
    * time as the last activity and scheduling the ceiling check.
    */
-  private armFromNow(taskId: string): void {
+  private armFromNow(taskId: string, maxIdleMs: number): void {
     const existing = this.tracked.get(taskId);
     if (existing) {
       this.timer.clearTimeout(existing.handle);
@@ -148,9 +157,9 @@ export class IdleTracker {
     const startedAt = this.now();
     const handle = this.timer.setTimeout(() => {
       this.onIdle(taskId);
-    }, this.maxIdleMs);
+    }, maxIdleMs);
 
-    this.tracked.set(taskId, { lastActivityEpochMs: startedAt, handle });
+    this.tracked.set(taskId, { lastActivityEpochMs: startedAt, handle, maxIdleMs });
   }
 
   /**
@@ -166,9 +175,10 @@ export class IdleTracker {
     }
 
     const idleFor = this.now() - entry.lastActivityEpochMs;
-    if (idleFor < this.maxIdleMs) {
-      // A reset happened after this timer was scheduled; re-arm for the rest.
-      const remaining = this.maxIdleMs - idleFor;
+    if (idleFor < entry.maxIdleMs) {
+      // A reset happened after this timer was scheduled; re-arm for the rest
+      // against this task's own ceiling.
+      const remaining = entry.maxIdleMs - idleFor;
       entry.handle = this.timer.setTimeout(() => this.onIdle(taskId), remaining);
       return;
     }

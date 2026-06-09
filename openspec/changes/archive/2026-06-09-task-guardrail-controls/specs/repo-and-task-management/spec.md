@@ -1,8 +1,5 @@
-# repo-and-task-management Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change agent-control-platform. Update Purpose after archive.
-## Requirements
 ### Requirement: Postgres + Prisma data model for repos and tasks
 The system SHALL persist repositories and tasks in Postgres via a Prisma schema, where a `Repo` record holds at least an id, a name, a git source, a created-at timestamp, and OPTIONAL GitHub-import metadata (`description`, `defaultBranch`, `branchCount`, `updatedAt`), and a `Task` record holds at least an id, a foreign key to a `Repo`, a prompt, a status, a created-at timestamp, and the OPTIONAL run parameters `branch`, `strategy`, `skills`, `idleTimeoutMs`, and `deadlineMs`. The `Task.branch`, `Task.strategy`, `Task.skills`, `Task.idleTimeoutMs`, and `Task.deadlineMs` columns MUST persist the values accepted by the create-task request body so they can be read back on every task read path (the prior model dropped branch/strategy and never persisted the deadline at all). `Task.skills` is the operator's selected skill ids (an optional list); `Task.idleTimeoutMs` and `Task.deadlineMs` are OPTIONAL nullable integer (millisecond) guardrail parameters. `branch`/`strategy`/`skills` are inert run parameters; `idleTimeoutMs`/`deadlineMs` are guardrail parameters that are consumed at admission (they arm the idle/deadline watchers) yet are ALSO persisted so the configured guardrails are readable on every task read path. The GitHub-import metadata on `Repo` is nullable so that repos created without GitHub import (plain `gitSource` only) remain valid.
 
@@ -28,28 +25,6 @@ The system SHALL persist repositories and tasks in Postgres via a Prisma schema,
 - **WHEN** a `Repo` row is created with only id, name, gitSource, and createdAt and no GitHub-import metadata
 - **THEN** the row persists with `description`, `defaultBranch`, `branchCount`, and `updatedAt` all null
 - **AND** the record is still a valid `Repo`
-
-### Requirement: REST API for repos
-The system SHALL expose REST endpoints to create a repo, list repos, and fetch a single repo by id, validating request and response bodies against the shared contracts schemas. Repo read responses (list and fetch-by-id) SHALL include the OPTIONAL GitHub-import metadata fields `description`, `defaultBranch`, `branchCount`, and `updatedAt` when present on the record, so the repository console page can render the imported repo's description, default branch, branch count, and last-updated time without fabricating them. A repo created from a plain git source without GitHub metadata SHALL remain valid, with those fields returned as null/absent. Validation behavior for the create body is unchanged: an invalid repo body is rejected with HTTP 400 and no record is created.
-
-#### Scenario: Create and list repos
-- **WHEN** a client POSTs a valid repo body to the create-repo endpoint and then GETs the list-repos endpoint
-- **THEN** the create call returns HTTP 201 with the created repo including a generated id
-- **AND** the listed repos include the newly created repo
-
-#### Scenario: Invalid repo body is rejected
-- **WHEN** a client POSTs a body that fails the repo contracts schema
-- **THEN** the API responds with HTTP 400 and does not create a repo record
-
-#### Scenario: Repo read responses carry GitHub-import metadata when present
-- **WHEN** a client GETs a repo (by id or via the list) that was imported from GitHub with metadata persisted
-- **THEN** the response includes the repo's `description`, `defaultBranch`, `branchCount`, and `updatedAt`
-- **AND** these values match what was persisted on the record
-
-#### Scenario: Repo without GitHub metadata returns null fields
-- **WHEN** a client GETs a repo created from a plain `gitSource` with no GitHub-import metadata
-- **THEN** the response is a valid repo
-- **AND** its `description`, `defaultBranch`, `branchCount`, and `updatedAt` are null or absent rather than fabricated
 
 ### Requirement: REST API for tasks
 The system SHALL expose REST endpoints to create a task for a repo, list tasks, and fetch a single task by id, validating bodies against the shared contracts schemas. The create-task endpoint SHALL accept the OPTIONAL `branch`, `strategy`, `skills`, `idleTimeoutMs`, and `deadlineMs` parameters in the request body, and SHALL persist them on the created `Task` record. Every task read path — the create response, the list-tasks response, and the fetch-by-id response — SHALL include the persisted `branch`, `strategy`, `skills`, `idleTimeoutMs`, and `deadlineMs` (echoing whatever was supplied, or null/empty when omitted), so that values submitted by the console are always readable back rather than silently dropped. `idleTimeoutMs` and `deadlineMs` SHALL ALSO be passed through concurrency admission so the idle/deadline watchers arm for that task (see `guardrails`); a `deadlineMs` previously consumed at admission but never persisted SHALL now be both consumed AND persisted. When a `branch` is supplied, clone/provision behavior is unchanged. The `skills` value selects which server-side allowlisted skills are preinstalled at provision time (see `aio-sandbox-execution`); it does NOT alter task lifecycle.
@@ -103,6 +78,8 @@ The system SHALL model task status as an explicit enumerated set that includes a
 - **THEN** the same status transitions are permitted and rejected as for a task created without those fields (aside from the idle/deadline watchers' existing force-fail edges)
 - **AND** the persisted parameters remain unchanged across status transitions
 
+## ADDED Requirements
+
 ### Requirement: Operator can stop a running or queued task
 The system SHALL expose an authenticated endpoint `POST /tasks/:taskId/stop` that lets an operator deliberately stop an active task. Stopping a task in `queued`, `running`, or `awaiting_input` SHALL transition it to the terminal `cancelled` state and run the standard terminal-teardown path: invoke `SandboxProvider.teardownSandbox()` (a no-op when no sandbox was provisioned, e.g. a queued task), tear down session-scoped credentials, and release its concurrency slot (admitting the next queued task). The endpoint is the deliberate, operator-driven mechanism that replaces automatic idle reclamation as the routine way to free a slot from a finished or unwanted session; it SHALL be subject to the same authentication/authorization guard as the other task routes. Stopping a task already in a terminal state SHALL be a safe no-op (idempotent) rather than an error that corrupts state.
 
@@ -121,4 +98,3 @@ The system SHALL expose an authenticated endpoint `POST /tasks/:taskId/stop` tha
 #### Scenario: Stop endpoint is authenticated
 - **WHEN** an unauthenticated or de-allowlisted caller hits `POST /tasks/:taskId/stop`
 - **THEN** the request is rejected by the same auth guard that protects the other task routes before any state change occurs
-

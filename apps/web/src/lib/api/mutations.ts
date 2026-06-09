@@ -60,6 +60,25 @@ export function createTaskMutation(
   };
 }
 
+/**
+ * Operator-initiated stop of a task (REAL `POST /tasks/:taskId/stop`,
+ * task-guardrail-controls). The variable is the target task id. On success
+ * reconciles the cached single-task entry AND the task list so the session view
+ * and the dashboard queue both reflect the `cancelled` terminal. Like
+ * `createTask`, this core endpoint is always real (no mock branch).
+ */
+export function stopTaskMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<TaskResponse, Error, string> {
+  return {
+    mutationFn: (taskId) => real.stopTask(taskId),
+    onSuccess: (task) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.task(task.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Import repo (store-write today; real POST once githubImport flips)
 // ---------------------------------------------------------------------------

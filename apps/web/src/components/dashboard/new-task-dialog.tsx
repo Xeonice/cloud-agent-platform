@@ -68,6 +68,47 @@ export const SKILL_CATALOG: ReadonlyArray<{ id: string; label: string; hint: str
   { id: "bmad", label: "BMAD", hint: "Agile AI 开发方法 (agent 人设)" },
 ];
 
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+/** Sentinel Select value for "no guardrail" (Radix Select needs a non-empty value). */
+export const GUARDRAIL_OFF = "off";
+
+/**
+ * Idle-reclaim presets (task-guardrail-controls). DEFAULT is OFF: a task created
+ * with no idle timeout is never reclaimed for idleness. `ms: null` is the off
+ * choice. Exported so `/tasks/new` shares the same catalog.
+ */
+export const IDLE_TIMEOUT_OPTIONS: ReadonlyArray<{ label: string; ms: number | null }> = [
+  { label: "关闭（默认，不自动回收）", ms: null },
+  { label: "10 分钟", ms: 10 * MINUTE },
+  { label: "30 分钟", ms: 30 * MINUTE },
+  { label: "1 小时", ms: HOUR },
+  { label: "3 小时", ms: 3 * HOUR },
+];
+
+/**
+ * Wall-clock deadline presets (task-guardrail-controls). DEFAULT is none. `ms:
+ * null` is the none choice. Exported so `/tasks/new` shares the same catalog.
+ */
+export const DEADLINE_OPTIONS: ReadonlyArray<{ label: string; ms: number | null }> = [
+  { label: "无（默认，不限运行时长）", ms: null },
+  { label: "30 分钟", ms: 30 * MINUTE },
+  { label: "1 小时", ms: HOUR },
+  { label: "2 小时", ms: 2 * HOUR },
+  { label: "6 小时", ms: 6 * HOUR },
+];
+
+/** The Select value (string) for a guardrail ms, or the OFF sentinel for null. */
+export function guardrailSelectValue(ms: number | null): string {
+  return ms == null ? GUARDRAIL_OFF : String(ms);
+}
+
+/** Parse a guardrail Select value back to ms, or null for the OFF sentinel. */
+export function parseGuardrailSelectValue(value: string): number | null {
+  return value === GUARDRAIL_OFF ? null : Number(value);
+}
+
 /** One launch-review step (01/02 complete green, 03 write-confirm warn). */
 function ReviewStep({
   index,
@@ -110,6 +151,8 @@ export function buildCommandPreview(input: {
   prompt: string;
   stopOnWrite: boolean;
   skills?: readonly string[];
+  idleTimeoutMs?: number | null;
+  deadlineMs?: number | null;
 }): string[] {
   const lines = ["agentctl run \\"];
   if (input.repoFullName) lines.push(`  --repo ${input.repoFullName} \\`);
@@ -117,6 +160,12 @@ export function buildCommandPreview(input: {
   if (input.strategy) lines.push(`  --strategy "${input.strategy}" \\`);
   if (input.skills && input.skills.length > 0)
     lines.push(`  --skills ${input.skills.join(",")} \\`);
+  // Guardrails are opt-in: only emit a line when the operator chose a value
+  // (flag names mirror the contract fields idleTimeoutMs/deadlineMs — honest, no
+  // implied default).
+  if (input.idleTimeoutMs != null)
+    lines.push(`  --idle-timeout-ms ${input.idleTimeoutMs} \\`);
+  if (input.deadlineMs != null) lines.push(`  --deadline-ms ${input.deadlineMs} \\`);
   if (input.stopOnWrite) lines.push("  --confirm-before-write \\");
   const prompt = input.prompt.trim();
   lines.push(prompt ? `  --prompt "${prompt}"` : "  --prompt <待填写>");
@@ -200,6 +249,9 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   const [skills, setSkills] = React.useState<string[]>([]);
   const [prompt, setPrompt] = React.useState("");
   const [stopOnWrite, setStopOnWrite] = React.useState(true);
+  // Guardrails are OPT-IN, default off/none (task-guardrail-controls).
+  const [idleTimeoutMs, setIdleTimeoutMs] = React.useState<number | null>(null);
+  const [deadlineMs, setDeadlineMs] = React.useState<number | null>(null);
   const [createdTaskId, setCreatedTaskId] = React.useState<string | null>(null);
 
   // Reset the create + prompt state whenever the dialog (re)opens, so a reopened
@@ -213,6 +265,8 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     setCreatedTaskId(null);
     setPrompt("");
     setSkills([]);
+    setIdleTimeoutMs(null);
+    setDeadlineMs(null);
     resetMutation();
   }, [open, resetMutation]);
 
@@ -234,6 +288,8 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     prompt,
     stopOnWrite,
     skills,
+    idleTimeoutMs,
+    deadlineMs,
   });
 
   const createdTask = mutation.data;
@@ -251,6 +307,9 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     if (branch) body.branch = branch;
     if (strategy) body.strategy = strategy;
     if (skills.length > 0) body.skills = skills;
+    // Opt-in guardrails: only send when the operator chose a value.
+    if (idleTimeoutMs != null) body.idleTimeoutMs = idleTimeoutMs;
+    if (deadlineMs != null) body.deadlineMs = deadlineMs;
     mutation.mutate(
       { repoId, body },
       {
@@ -409,6 +468,52 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
               </div>
               <small className="text-xs text-muted-foreground">
                 选中的技能会在沙箱创建时预装进工作区，codex 启动即可用。
+              </small>
+            </div>
+
+            <div className="grid gap-2 min-[821px]:grid-cols-2">
+              <div className="grid gap-2">
+                <label htmlFor="modalIdle" className="text-[13px] font-medium text-foreground">
+                  空闲自动回收
+                </label>
+                <Select
+                  value={guardrailSelectValue(idleTimeoutMs)}
+                  onValueChange={(v) => setIdleTimeoutMs(parseGuardrailSelectValue(v))}
+                >
+                  <SelectTrigger id="modalIdle" className="w-full">
+                    <SelectValue placeholder="关闭" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {IDLE_TIMEOUT_OPTIONS.map((o) => (
+                      <SelectItem key={o.label} value={guardrailSelectValue(o.ms)}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-2">
+                <label htmlFor="modalDeadline" className="text-[13px] font-medium text-foreground">
+                  运行时限
+                </label>
+                <Select
+                  value={guardrailSelectValue(deadlineMs)}
+                  onValueChange={(v) => setDeadlineMs(parseGuardrailSelectValue(v))}
+                >
+                  <SelectTrigger id="modalDeadline" className="w-full">
+                    <SelectValue placeholder="无" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DEADLINE_OPTIONS.map((o) => (
+                      <SelectItem key={o.label} value={guardrailSelectValue(o.ms)}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <small className="text-xs text-muted-foreground min-[821px]:col-span-2">
+                默认不回收、不限时；仅在此选择后，任务空闲 / 超时才会被自动结束。运行中可随时手动停止。
               </small>
             </div>
 

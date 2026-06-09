@@ -71,7 +71,7 @@ async function waitFor(predicate, { timeoutMs = 15000, stepMs = 300 } = {}) {
 }
 
 /** Create a repo + task via REST. Creating the task triggers admit -> (best-effort) provision. */
-async function createTaskViaRest(prompt = 'do a thing') {
+async function createTaskViaRest(prompt = 'do a thing', extra = {}) {
   const repoRes = await fetch(`${base()}/repos`, {
     method: 'POST',
     headers: authHeaders,
@@ -81,10 +81,10 @@ async function createTaskViaRest(prompt = 'do a thing') {
   const taskRes = await fetch(`${base()}/repos/${repo.id}/tasks`, {
     method: 'POST',
     headers: authHeaders,
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, ...extra }),
   });
   const task = await taskRes.json();
-  return { repoId: repo.id, taskId: task.id };
+  return { repoId: repo.id, taskId: task.id, task };
 }
 
 // ── (A) API up + operator-auth gate ─────────────────────────────────────────
@@ -125,5 +125,56 @@ test('B. repos/tasks CRUD + guardrails admits the task (pending -> running)', as
     ).status,
     400,
     'invalid repo body -> 400',
+  );
+});
+
+// ── (C) guardrail params persist + echo; operator stop -> cancelled ──────────
+test('C. guardrail params round-trip and operator stop cancels the task', async () => {
+  const { taskId, task } = await createTaskViaRest('guardrail task', {
+    idleTimeoutMs: 1_800_000,
+    deadlineMs: 7_200_000,
+  });
+  // create response echoes the persisted guardrail params (sent == readable).
+  assert.equal(task.idleTimeoutMs, 1_800_000, 'create echoes idleTimeoutMs');
+  assert.equal(task.deadlineMs, 7_200_000, 'create echoes deadlineMs');
+
+  // a subsequent GET reads back the same persisted values.
+  const fetched = await (
+    await fetch(`${base()}/tasks/${taskId}`, { headers: authHeaders })
+  ).json();
+  assert.equal(fetched.idleTimeoutMs, 1_800_000, 'GET echoes persisted idleTimeoutMs');
+  assert.equal(fetched.deadlineMs, 7_200_000, 'GET echoes persisted deadlineMs');
+
+  // a task created WITHOUT guardrail params reads them back as null (opt-in/off).
+  const { task: plain } = await createTaskViaRest('plain task');
+  assert.equal(plain.idleTimeoutMs ?? null, null, 'omitted idleTimeoutMs reads back null (no idle reclaim)');
+  assert.equal(plain.deadlineMs ?? null, null, 'omitted deadlineMs reads back null');
+
+  // operator stop -> cancelled (transition fires onTerminal: teardown + slot release).
+  const stopRes = await fetch(`${base()}/tasks/${taskId}/stop`, {
+    method: 'POST',
+    headers: authHeaders,
+  });
+  assert.equal(stopRes.status, 200, 'stop -> 200');
+  assert.equal((await stopRes.json()).status, 'cancelled', 'stop transitions the task to cancelled');
+
+  // idempotent: stopping a now-terminal task is a safe no-op, still cancelled.
+  const again = await fetch(`${base()}/tasks/${taskId}/stop`, {
+    method: 'POST',
+    headers: authHeaders,
+  });
+  assert.equal(again.status, 200, 'second stop -> 200 (idempotent)');
+  assert.equal((await again.json()).status, 'cancelled', 'still cancelled after a repeat stop');
+
+  // stop unknown -> 404; stop without the operator token -> 401 (gated).
+  assert.equal(
+    (await fetch(`${base()}/tasks/${randomUUID()}/stop`, { method: 'POST', headers: authHeaders })).status,
+    404,
+    'stop unknown task -> 404',
+  );
+  assert.equal(
+    (await fetch(`${base()}/tasks/${taskId}/stop`, { method: 'POST' })).status,
+    401,
+    'stop without token -> 401',
   );
 });
