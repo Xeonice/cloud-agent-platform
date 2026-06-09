@@ -30,27 +30,31 @@ const DIST = path.resolve(here, '../../dist/metrics');
 
 const { MetricsService } = require(path.join(DIST, 'metrics.service.js'));
 
-const SAMPLE = {
+const PROC = {
   taskId: 'task-abc',
-  cpuPercent: 42.5,
-  memoryBytes: 123_456_789,
-  memoryLimitBytes: 2_000_000_000,
-  memoryPercent: 6.17,
+  cpuPercent: 5.0,
+  memoryBytes: 126_000_000, // codex process RSS (~126MB)
+  memoryLimitBytes: 8_000_000_000,
+  memoryPercent: 1.58,
+};
+const CONTAINER = {
+  taskId: 'task-abc',
+  cpuPercent: 2.3,
+  memoryBytes: 1_500_000_000, // whole-container total (~1.5GB)
+  memoryLimitBytes: 8_000_000_000,
+  memoryPercent: 18.75,
 };
 
-/** Fake sampler whose currentSnapshot returns a fixed snapshot. */
-function makeSampler(containers, sampledAtMs) {
+/**
+ * Fake sampler exposing `taskReading(taskId)` (the seam buildTaskResource now
+ * uses). buildTaskResource is a thin mapper of this reading → the contract
+ * response; the scope-selection / carry-forward logic lives in the real sampler
+ * (covered by resource-sampler-process.test.mjs).
+ */
+function makeSampler(readingByTask) {
   return {
-    currentSnapshot() {
-      return {
-        status: containers.length ? 'available' : 'unavailable',
-        sampledAt: sampledAtMs == null ? null : new Date(sampledAtMs),
-        ageMs: sampledAtMs == null ? null : 1000,
-        hasActiveContainers: containers.length > 0,
-        containers,
-        aggregateCpuPercent: containers.reduce((a, c) => a + c.cpuPercent, 0),
-        aggregateMemoryBytes: containers.reduce((a, c) => a + c.memoryBytes, 0),
-      };
+    taskReading(taskId) {
+      return readingByTask[taskId] ?? null;
     },
   };
 }
@@ -58,33 +62,42 @@ function makeSampler(containers, sampledAtMs) {
 // guardrails is unused by buildTaskResource; pass a minimal stub.
 const guardrailsStub = {};
 
-test('sampled task returns its own CPU/memory with freshness', () => {
-  const svc = new MetricsService(guardrailsStub, makeSampler([SAMPLE], 1_700_000_000_000));
+test('process-scope reading maps to a sampled response (codex primary + container background)', () => {
+  const reading = {
+    scope: 'process',
+    sample: PROC,
+    container: CONTAINER,
+    sampledAt: new Date(1_700_000_000_000),
+    ageMs: 1000,
+  };
+  const svc = new MetricsService(guardrailsStub, makeSampler({ 'task-abc': reading }));
   const res = svc.buildTaskResource('task-abc');
   assert.equal(res.state, 'sampled');
-  assert.deepEqual(res.sample, SAMPLE);
+  assert.equal(res.scope, 'process');
+  assert.deepEqual(res.sample, PROC, 'primary = codex process figure');
+  assert.deepEqual(res.container, CONTAINER, 'container total carried as background');
   assert.ok(res.sampledAt instanceof Date, 'carries sampledAt');
   assert.equal(res.ageMs, 1000, 'carries ageMs');
 });
 
-test('task with no live container returns not-running (not an error, no zeros)', () => {
-  const svc = new MetricsService(guardrailsStub, makeSampler([], null));
+test('container-scope fallback maps through with null background', () => {
+  const reading = {
+    scope: 'container',
+    sample: CONTAINER,
+    container: null,
+    sampledAt: new Date(1_700_000_000_000),
+    ageMs: 1000,
+  };
+  const svc = new MetricsService(guardrailsStub, makeSampler({ 'task-abc': reading }));
+  const res = svc.buildTaskResource('task-abc');
+  assert.equal(res.state, 'sampled');
+  assert.equal(res.scope, 'container');
+  assert.equal(res.container, null);
+});
+
+test('no reading (null) maps to not-running (not an error, no zeros)', () => {
+  const svc = new MetricsService(guardrailsStub, makeSampler({}));
   const res = svc.buildTaskResource('task-abc');
   assert.equal(res.state, 'not-running');
   assert.equal(res.sample, undefined, 'no fabricated sample');
-});
-
-test('read filters by taskId — returns THIS task, not another running one', () => {
-  const other = { ...SAMPLE, taskId: 'task-other', cpuPercent: 99 };
-  const svc = new MetricsService(guardrailsStub, makeSampler([other, SAMPLE], 1_700_000_000_000));
-  const res = svc.buildTaskResource('task-abc');
-  assert.equal(res.state, 'sampled');
-  assert.equal(res.sample.taskId, 'task-abc');
-  assert.equal(res.sample.cpuPercent, 42.5, 'not the other task’s 99%');
-});
-
-test('a task whose container just left the snapshot reads not-running', () => {
-  const svc = new MetricsService(guardrailsStub, makeSampler([{ ...SAMPLE, taskId: 'task-other' }], 1_700_000_000_000));
-  const res = svc.buildTaskResource('task-abc');
-  assert.equal(res.state, 'not-running');
 });

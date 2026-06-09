@@ -53,16 +53,22 @@ export class MetricsService {
    * container, so the console can honestly render "未运行/未采样".
    */
   buildTaskResource(taskId: string, now: number = Date.now()): TaskResourceResponse {
-    const snapshot = this.sampler.currentSnapshot(now);
-    const sample = snapshot.containers.find((c) => c.taskId === taskId);
-    if (!sample) {
+    // The sampler resolves the per-task reading: codex's OWN process subtree as
+    // the PRIMARY figure (`scope: 'process'`) with the container aggregate as
+    // background; the container aggregate as FALLBACK (`scope: 'container'`) when
+    // the in-sandbox process read is unavailable; `null` (not-running) only when
+    // the task has no live reading at all (not running / gone past carry-forward).
+    const reading = this.sampler.taskReading(taskId, now);
+    if (!reading) {
       return { state: 'not-running' };
     }
     return {
       state: 'sampled',
-      sample,
-      sampledAt: snapshot.sampledAt,
-      ageMs: snapshot.ageMs,
+      scope: reading.scope,
+      sample: reading.sample,
+      container: reading.container,
+      sampledAt: reading.sampledAt,
+      ageMs: reading.ageMs,
     };
   }
 }

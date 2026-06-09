@@ -348,13 +348,24 @@ export async function mockTaskResource(id: string): Promise<TaskResourceResponse
     return { state: "not-running" };
   }
   const memLimit = 2 * 1024 * 1024 * 1024;
-  const memUsed = Math.round(memLimit * 0.46);
+  const containerMem = Math.round(memLimit * 0.46);
+  const codexMem = 126 * 1024 * 1024; // codex process subtree RSS (primary)
   return {
     state: "sampled",
+    // codex's OWN process figure is the PRIMARY reading; the whole-container total
+    // (dominated by the sandbox's resident services) is carried as background.
+    scope: "process",
     sample: {
       taskId: id,
       cpuPercent: 37.5,
-      memoryBytes: memUsed,
+      memoryBytes: codexMem,
+      memoryLimitBytes: memLimit,
+      memoryPercent: Number(((codexMem / memLimit) * 100).toFixed(1)),
+    },
+    container: {
+      taskId: id,
+      cpuPercent: 40,
+      memoryBytes: containerMem,
       memoryLimitBytes: memLimit,
       memoryPercent: 46,
     },

@@ -202,24 +202,40 @@ export type MetricsResponse = z.infer<typeof MetricsResponseSchema>;
  *
  * REAL-TIME ONLY: it reflects the latest sampler snapshot, NOT any persisted
  * history. A discriminated union over `state`:
- *  - `sampled`: the task's `cap-aio-<taskId>` container is in the latest
- *    snapshot — `sample` carries its CPU/memory, with the snapshot's `sampledAt`
- *    / `ageMs` freshness; this is the only state that carries a reading.
- *  - `not-running`: the task has no live sampled container (it is not `running`,
- *    or its container is not yet/no-longer in the snapshot). NOT an error and
- *    NOT fabricated zeros — the console renders "未运行/未采样".
+ *  - `sampled`: the task has a live reading in the latest snapshot. `sample` is
+ *    the PRIMARY figure and `scope` says what it represents:
+ *      - `scope: 'process'` — codex's OWN process-subtree CPU/memory (the launched
+ *        `codex` process plus its descendants), sampled in-sandbox; the container
+ *        aggregate is ALSO carried in `container` as background context. This is
+ *        the normal per-task reading (the container aggregate is dominated by the
+ *        sandbox's resident services and misrepresents codex, esp. memory).
+ *      - `scope: 'container'` — the FALLBACK when the in-sandbox process reading is
+ *        unavailable (sandbox unreachable / exec timed out): `sample` is the
+ *        container aggregate and `container` is null (it would duplicate `sample`).
+ *    `sampledAt`/`ageMs` carry freshness; a carried-forward reading on a missed
+ *    tick simply shows a larger `ageMs` rather than flipping to not-running.
+ *  - `not-running`: the task has no live sampled reading (it is not `running`, or
+ *    it has genuinely left the sampled set beyond the carry-forward bound). NOT an
+ *    error and NOT fabricated zeros — the console renders "未运行/未采样".
  *
  * The endpoint is auth-gated identically to `/metrics` (allowlisted session;
  * 401 otherwise) — a per-task figure is still host-execution operational data.
  */
+export const TaskResourceScopeSchema = z.enum(['process', 'container']);
+export type TaskResourceScope = z.infer<typeof TaskResourceScopeSchema>;
+
 export const TaskResourceResponseSchema = z.discriminatedUnion('state', [
   z.object({
     state: z.literal('sampled'),
-    /** The task's container CPU/memory from the latest snapshot. */
+    /** Which reading `sample` represents: codex `process` (primary) or the `container` fallback. */
+    scope: TaskResourceScopeSchema,
+    /** The PRIMARY reading — codex's process subtree when `scope==='process'`, else the container aggregate. */
     sample: ContainerResourceSampleSchema,
+    /** Background container-aggregate reading when `scope==='process'`; null when `scope==='container'` (it would duplicate `sample`). */
+    container: ContainerResourceSampleSchema.nullable(),
     /** Time the most recent sample was taken. */
     sampledAt: z.coerce.date().nullable(),
-    /** Age of the most recent sample in milliseconds. */
+    /** Age of the most recent sample in milliseconds (larger when carried forward). */
     ageMs: z.number().int().nonnegative().nullable(),
   }),
   z.object({

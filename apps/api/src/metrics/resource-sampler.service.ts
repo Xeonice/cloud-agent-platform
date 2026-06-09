@@ -74,6 +74,17 @@ export interface ContainerReading {
   readonly memoryLimitBytes: number | null;
 }
 
+/**
+ * Per-task tracking of the latest codex-process subtree sample (the per-task
+ * PRIMARY reading), with the last-FRESH-sample time (so `ageMs` grows on a
+ * carried-forward tick) and a consecutive-miss counter for bounded carry-forward.
+ */
+interface ProcessSampleState {
+  sample: ContainerResourceSample;
+  freshAtMs: number;
+  misses: number;
+}
+
 export interface ResourceSamplerOptions {
   /** Sampling cadence in ms (bounded). Defaults to ~5s. */
   readonly cadenceMs?: number;
@@ -86,6 +97,63 @@ export interface ResourceSamplerOptions {
 
 /** Default sampling cadence (~5s) per design D2. */
 export const DEFAULT_CADENCE_MS = 5_000;
+
+/**
+ * Max consecutive ticks a still-running task's reading is carried forward when a
+ * sample could not be obtained that tick, before it is dropped to not-sampled
+ * (task-codex-process-metrics D2). A single transient `docker stats`/exec miss
+ * therefore never flips a live task to not-running; a container that genuinely
+ * vanished degrades to not-sampled after this bound (it also leaves the running
+ * set on real termination, which drops it immediately).
+ */
+export const CARRY_FORWARD_MAX = 3;
+
+/**
+ * In-sandbox shell that sums codex's OWN process subtree CPU + memory (method A,
+ * per the spike): find the `codex` PID, recursively collect it + descendants via
+ * `/proc/<pid>/task/<pid>/children`, sum utime+stime (CLK_TCK ticks) and VmRSS
+ * (kB). The `${s##*) }` strip handles a `comm` containing spaces/parens so the
+ * positional utime(12)/stime(13) AFTER the comm are read correctly. Prints
+ * `OK <ticks> <rssKB> <clkTck>`, or `NONE` when codex is not yet running.
+ */
+export const CODEX_PROC_PROBE =
+  'walk(){ echo $1; for c in $(cat /proc/$1/task/$1/children 2>/dev/null); do walk $c; done; }; ' +
+  'P=$(pgrep -x codex 2>/dev/null|head -1); [ -z "$P" ] && echo NONE && exit 0; ' +
+  'CK=$(getconf CLK_TCK); T=0; R=0; ' +
+  'for p in $(walk $P 2>/dev/null|sort -un); do ' +
+  's=$(cat /proc/$p/stat 2>/dev/null) || continue; aft=${s##*) }; set -- $aft; ' +
+  'T=$((T + ${12:-0} + ${13:-0})); ' +
+  'v=$(awk "/^VmRSS:/{print \\$2}" /proc/$p/status 2>/dev/null); R=$((R + ${v:-0})); ' +
+  'done; echo "OK $T $R $CK"';
+
+/** A parsed codex process-subtree probe reading: cumulative CPU seconds + RSS bytes. */
+export interface ProcProbeReading {
+  /** Cumulative CPU time (utime+stime) of the codex subtree, in seconds. */
+  readonly cpuSeconds: number;
+  /** Resident memory of the codex subtree, in bytes. */
+  readonly memoryBytes: number;
+}
+
+/**
+ * Parse the {@link CODEX_PROC_PROBE} stdout (`OK <ticks> <rssKB> <clkTck>` or
+ * `NONE`) into a {@link ProcProbeReading} (PURE — unit-testable). Returns null for
+ * `NONE` (codex not running yet) or any unparseable/zero-clk output.
+ */
+export function parseProcProbe(output: string): ProcProbeReading | null {
+  const line = output
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .reverse()
+    .find((l) => l === 'NONE' || l.startsWith('OK '));
+  if (!line || line === 'NONE') return null;
+  const [, ticksRaw, rssRaw, clkRaw] = line.split(/\s+/);
+  const ticks = Number.parseInt(ticksRaw, 10);
+  const rssKB = Number.parseInt(rssRaw, 10);
+  const clk = Number.parseInt(clkRaw, 10);
+  if (!Number.isFinite(ticks) || !Number.isFinite(rssKB) || !(clk > 0)) return null;
+  return { cpuSeconds: ticks / clk, memoryBytes: rssKB * 1024 };
+}
 
 /**
  * Computes per-container CPU% from two readings and aggregates a sampled
@@ -225,6 +293,23 @@ export class ResourceSamplerService implements OnModuleDestroy {
    */
   private runningTaskIds: () => string[] = () => [];
 
+  /**
+   * Supplies a running task's sandbox base URL (`http://cap-aio-<id>:8080`) so the
+   * sampler can `POST /v1/shell/exec` to read codex's own process subtree from
+   * INSIDE the sandbox (D7). Injected by the metrics module from the guardrails
+   * per-task `SandboxConnection`. A task with no connection yields `undefined` →
+   * no process reading → the per-task read falls back to the container scope.
+   */
+  private taskBaseUrl: (taskId: string) => string | undefined = () => undefined;
+
+  /** Consecutive container-read misses per task, for bounded carry-forward (D2). */
+  private containerMisses = new Map<string, number>();
+
+  /** Last codex-process sample per task (the per-task primary reading). */
+  private processSamples = new Map<string, ProcessSampleState>();
+  /** Prior codex-process CPU reading per task, for the CPU-delta computation. */
+  private previousProcessCpu = new Map<string, { cpuSeconds: number; atMs: number }>();
+
   constructor(options: ResourceSamplerOptions = {}) {
     this.cadenceMs = options.cadenceMs ?? DEFAULT_CADENCE_MS;
     this.staleAfterMs = options.staleAfterMs ?? this.cadenceMs * 3;
@@ -233,6 +318,11 @@ export class ResourceSamplerService implements OnModuleDestroy {
   /** Wire the live running-task-id source (the semaphore's running snapshot). */
   setRunningTaskIdSource(source: () => string[]): void {
     this.runningTaskIds = source;
+  }
+
+  /** Wire the per-task sandbox base-URL source (the guardrails connection map). */
+  setTaskBaseUrlSource(source: (taskId: string) => string | undefined): void {
+    this.taskBaseUrl = source;
   }
 
   /**
@@ -305,6 +395,155 @@ export class ResourceSamplerService implements OnModuleDestroy {
   }
 
   /**
+   * The per-task reading for `GET /tasks/:taskId/metrics` (task-codex-process-metrics):
+   * codex's OWN process subtree as the PRIMARY figure (`scope: 'process'`) with the
+   * container aggregate as background; when no process reading is available, the
+   * container aggregate is the FALLBACK (`scope: 'container'`); when neither exists
+   * (task not running, or gone past the carry-forward bound) → `null` (not-running).
+   * A carried-forward reading surfaces a larger `ageMs` rather than flipping to
+   * not-running. Real-time only — reads the latest cached state, never samples here.
+   */
+  taskReading(
+    taskId: string,
+    now: number = Date.now(),
+  ): {
+    scope: 'process' | 'container';
+    sample: ContainerResourceSample;
+    container: ContainerResourceSample | null;
+    sampledAt: Date | null;
+    ageMs: number | null;
+  } | null {
+    const snapshot = this.currentSnapshot(now);
+    const containerSample =
+      snapshot.containers.find((c) => c.taskId === taskId) ?? null;
+
+    const proc = this.processSamples.get(taskId);
+    if (proc) {
+      return {
+        scope: 'process',
+        sample: proc.sample,
+        container: containerSample,
+        sampledAt: new Date(proc.freshAtMs),
+        ageMs: Math.max(0, now - proc.freshAtMs),
+      };
+    }
+    if (containerSample) {
+      return {
+        scope: 'container',
+        sample: containerSample,
+        container: null,
+        sampledAt: snapshot.sampledAt,
+        ageMs: snapshot.ageMs,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Sample each running task's codex process subtree from inside its sandbox
+   * (best-effort, independent per task via `allSettled` so one slow/unreachable
+   * sandbox never stalls the others). A miss carries forward (bounded) / falls
+   * back to the container scope.
+   */
+  private async sampleProcesses(
+    taskIds: readonly string[],
+    now: number,
+  ): Promise<void> {
+    await Promise.allSettled(
+      taskIds.map((taskId) => this.sampleOneProcess(taskId, now)),
+    );
+  }
+
+  /** Sample one task's codex subtree; on any miss, carry forward (bounded). */
+  private async sampleOneProcess(taskId: string, now: number): Promise<void> {
+    const baseUrl = this.taskBaseUrl(taskId);
+    if (!baseUrl) {
+      this.markProcessMiss(taskId);
+      return;
+    }
+    let reading: ProcProbeReading | null;
+    try {
+      reading = await this.execProcProbe(baseUrl);
+    } catch {
+      this.markProcessMiss(taskId);
+      return;
+    }
+    if (!reading) {
+      // `NONE` (codex not yet running) or unparseable → a miss: carry a prior
+      // process sample forward if we had one, else simply no process reading
+      // (the per-task read falls back to the container scope).
+      this.markProcessMiss(taskId);
+      return;
+    }
+
+    // CPU% from the delta of two cumulative readings (0 until a baseline exists).
+    const prev = this.previousProcessCpu.get(taskId);
+    let cpuPercent = 0;
+    if (prev) {
+      const dWallSec = (now - prev.atMs) / 1000;
+      const dCpuSec = reading.cpuSeconds - prev.cpuSeconds;
+      if (dWallSec > 0 && dCpuSec > 0) cpuPercent = (dCpuSec / dWallSec) * 100;
+    }
+    this.previousProcessCpu.set(taskId, { cpuSeconds: reading.cpuSeconds, atMs: now });
+
+    // Express codex memory against the CONTAINER cgroup limit (same denominator the
+    // container reading uses), so the process % is comparable to the container %.
+    const limit = this.previousReadings.get(taskId)?.memoryLimitBytes ?? null;
+    const sample: ContainerResourceSample = {
+      taskId,
+      cpuPercent,
+      memoryBytes: reading.memoryBytes,
+      memoryLimitBytes: limit,
+      memoryPercent:
+        limit !== null && limit > 0 ? (reading.memoryBytes / limit) * 100 : null,
+    };
+    this.processSamples.set(taskId, { sample, freshAtMs: now, misses: 0 });
+  }
+
+  /**
+   * Record a codex-process read miss for a task: carry the prior process sample
+   * forward up to {@link CARRY_FORWARD_MAX} consecutive misses, then drop it (the
+   * per-task read falls back to the container scope). A no-op for a task that never
+   * had a process sample (e.g. codex not started yet).
+   */
+  private markProcessMiss(taskId: string): void {
+    const st = this.processSamples.get(taskId);
+    if (!st) return;
+    if (st.misses + 1 > CARRY_FORWARD_MAX) {
+      this.processSamples.delete(taskId);
+      this.previousProcessCpu.delete(taskId);
+      return;
+    }
+    this.processSamples.set(taskId, { ...st, misses: st.misses + 1 });
+  }
+
+  /**
+   * `POST <baseUrl>/v1/shell/exec` the {@link CODEX_PROC_PROBE}, bounded by the
+   * sample cadence, and parse codex's subtree reading from the AIO response (the
+   * live server NESTS the result under `data`). Returns null on a non-2xx, an
+   * unparseable body, or a `NONE` (codex not running yet).
+   */
+  private async execProcProbe(baseUrl: string): Promise<ProcProbeReading | null> {
+    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: CODEX_PROC_PROBE }),
+      signal: AbortSignal.timeout(this.cadenceMs),
+    });
+    if (!res.ok) return null;
+    const raw = (await res.json().catch(() => undefined)) as
+      | Record<string, unknown>
+      | undefined;
+    const top = raw ?? {};
+    const d = ((top.data as Record<string, unknown>) ?? top) as Record<string, unknown>;
+    const output =
+      (typeof d.output === 'string' && d.output) ||
+      (typeof d.stdout === 'string' && d.stdout) ||
+      '';
+    return parseProcProbe(output);
+  }
+
+  /**
    * Performs ONE sampling pass: reads the live running task ids, samples each
    * `cap-aio-<taskId>` container (cgroup preferred, docker-stats fallback), and
    * caches the resulting snapshot. Skips the runtime entirely when zero
@@ -320,6 +559,8 @@ export class ResourceSamplerService implements OnModuleDestroy {
     this.sampling = true;
     try {
       const taskIds = this.runningTaskIds();
+      // Forget per-task state for tasks that left the running set (real exits).
+      this.pruneStale(new Set(taskIds));
 
       if (taskIds.length === 0) {
         // No containers — cache the explicit empty reading, not a stale sample.
@@ -329,31 +570,88 @@ export class ResourceSamplerService implements OnModuleDestroy {
         return;
       }
 
-      let readings: ContainerReading[];
+      // --- container readings (aggregate block + per-task background) ----------
+      let fresh: ContainerReading[];
       try {
-        readings = await this.readContainers(taskIds, now);
+        fresh = await this.readContainers(taskIds, now);
         this.sourceUnavailable = false;
       } catch (err) {
-        // Outage: degrade ONLY the sampled block. Keep the prior cache (it will
-        // be re-stamped stale via `sourceUnavailable`) and flag the source down.
+        // Whole-tick container outage: flag the source down (currentSnapshot will
+        // mark the block stale). Carry-forward below still presents prior readings
+        // for up to CARRY_FORWARD_MAX ticks instead of dropping every task at once.
         this.sourceUnavailable = true;
         this.logger.warn(
           `resource sampling failed: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
-        return;
+        fresh = [];
+      }
+      // Carry forward a still-running task missing from this tick's fresh readings
+      // (bounded) so a transient single-container miss never drops it (D2 / P1).
+      const effective = this.carryForwardContainers(taskIds, fresh);
+      if (effective.length === 0) {
+        // Running tasks exist (taskIds non-empty) but NOTHING is readable this tick
+        // — an outage, or carry-forward exhausted. Flag the source down and KEEP the
+        // prior cache (currentSnapshot → 'stale', or 'unavailable' if never sampled).
+        // Do NOT cache an empty 'available' reading: that would falsely mean "no
+        // containers running" while the semaphore says tasks ARE running.
+        this.sourceUnavailable = true;
+      } else {
+        this.lastSnapshot = buildSampledResources(effective, this.previousReadings, now);
+        this.previousReadings = new Map(effective.map((r) => [r.taskId, r]));
       }
 
-      this.lastSnapshot = buildSampledResources(
-        readings,
-        this.previousReadings,
-        now,
-      );
-      this.previousReadings = new Map(readings.map((r) => [r.taskId, r]));
+      // --- codex process subtree readings (per-task PRIMARY), in-sandbox -------
+      // Best-effort per task; failures carry forward / fall back to container.
+      await this.sampleProcesses(taskIds, now);
     } finally {
       this.sampling = false;
     }
+  }
+
+  /**
+   * Forget per-task carry-forward / CPU-baseline state for tasks that are no
+   * longer in the running set, so a terminated task is immediately not-sampled
+   * (it does not linger via carry-forward).
+   */
+  private pruneStale(live: ReadonlySet<string>): void {
+    for (const id of [...this.containerMisses.keys()]) if (!live.has(id)) this.containerMisses.delete(id);
+    for (const id of [...this.processSamples.keys()]) if (!live.has(id)) this.processSamples.delete(id);
+    for (const id of [...this.previousProcessCpu.keys()]) if (!live.has(id)) this.previousProcessCpu.delete(id);
+  }
+
+  /**
+   * Returns the effective container readings for this tick: each running task's
+   * fresh reading when present, else its most recent prior reading carried forward
+   * for up to {@link CARRY_FORWARD_MAX} consecutive misses, else dropped. A single
+   * transient `docker stats` timeout therefore cannot flip a live task to
+   * not-sampled (the bug that surfaced with concurrent sandboxes).
+   */
+  private carryForwardContainers(
+    taskIds: readonly string[],
+    fresh: readonly ContainerReading[],
+  ): ContainerReading[] {
+    const freshById = new Map(fresh.map((r) => [r.taskId, r]));
+    const out: ContainerReading[] = [];
+    const nextMisses = new Map<string, number>();
+    for (const taskId of taskIds) {
+      const f = freshById.get(taskId);
+      if (f) {
+        out.push(f);
+        nextMisses.set(taskId, 0);
+        continue;
+      }
+      const prior = this.previousReadings.get(taskId);
+      const misses = (this.containerMisses.get(taskId) ?? 0) + 1;
+      if (prior && misses <= CARRY_FORWARD_MAX) {
+        out.push(prior);
+        nextMisses.set(taskId, misses);
+      }
+      // else: no prior or past the bound → dropped (genuinely not-sampled).
+    }
+    this.containerMisses = nextMisses;
+    return out;
   }
 
   /**

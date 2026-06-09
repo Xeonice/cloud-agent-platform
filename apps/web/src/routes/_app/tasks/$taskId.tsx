@@ -49,21 +49,13 @@ import {
   type ConnectionState,
 } from "@/components/session/session-terminal";
 import { TerminalSkeleton } from "@/components/session/terminal-skeleton";
+import { formatTaskResource } from "@/components/session/format-resource";
 
 export const Route = createFileRoute("/_app/tasks/$taskId")({
   ssr: false,
   pendingComponent: TerminalSkeleton,
   component: SessionPage,
 });
-
-/** Human-readable bytes (MiB/GiB) for the per-task memory readout. */
-function formatBytes(bytes: number): string {
-  if (bytes <= 0) return "0 B";
-  const gib = 1024 * 1024 * 1024;
-  const mib = 1024 * 1024;
-  if (bytes >= gib) return `${(bytes / gib).toFixed(1)} GiB`;
-  return `${Math.round(bytes / mib)} MiB`;
-}
 
 /** Pre-running statuses where no sandbox/terminal exists yet (friendly wait). */
 const PRE_RUNNING_STATUSES = new Set(["pending", "queued"]);
@@ -112,21 +104,12 @@ function SessionPage(): React.ReactElement {
   const lead = `${repo}#${branch} · ${agent}`;
   const headLabel = `${agent} · ${repo}#${branch}`;
 
-  // Per-task live resource line: this task's OWN CPU%/memory from the real-time
-  // sampler read, or an honest "未运行/未采样" when it has no live container
-  // (never fabricated zeros, D5.5). Replaces the prior hard-coded placeholder.
-  const resourceBody =
-    taskResource?.state === "sampled"
-      ? `CPU ${taskResource.sample.cpuPercent.toFixed(0)}% · 内存 ${formatBytes(
-          taskResource.sample.memoryBytes,
-        )}${
-          taskResource.sample.memoryPercent != null
-            ? ` (${taskResource.sample.memoryPercent.toFixed(0)}%)`
-            : ""
-        }`
-      : taskResource?.state === "not-running"
-        ? "未运行 / 未采样"
-        : "加载运行规格…";
+  // Per-task live resource line: codex's OWN process CPU/memory as the PRIMARY
+  // figure with the container total as background, labeled by the reading's
+  // `scope` (process vs the container fallback), or an honest "未运行/未采样" when
+  // there is no live reading. A transient sampling miss keeps the carried-forward
+  // numbers (never flips to not-running). See `formatTaskResource`.
+  const resourceBody = formatTaskResource(taskResource);
 
   // Context strip: bind to query data where derivable; keep the prototype's
   // descriptive copy VERBATIM where the field is not derivable (worktree/pty).

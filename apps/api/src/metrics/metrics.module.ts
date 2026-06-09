@@ -56,6 +56,13 @@ export class MetricsModule implements OnModuleInit {
     this.sampler.setRunningTaskIdSource(() =>
       this.guardrails.semaphoreProjection().snapshotRunning(),
     );
+    // Per-task sandbox base URL for the in-sandbox codex-process read (D7): the
+    // guardrails service holds each running task's SandboxConnection. A task with
+    // no captured connection yields undefined → the sampler takes no process
+    // reading and the per-task read falls back to the container scope.
+    this.sampler.setTaskBaseUrlSource(
+      (taskId) => this.guardrails.connectionFor(taskId)?.baseUrl,
+    );
     if (samplingEnabled()) {
       this.sampler.start();
     }
