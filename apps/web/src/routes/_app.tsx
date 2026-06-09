@@ -14,11 +14,20 @@
  * clear the fixed mobile nav). Nav highlighting derives from the live pathname.
  *
  * Auth gate (`beforeLoad`, D1): an unauthenticated visitor to ANY `_app` route
- * is redirected to `/login` BEFORE the shell renders. The decision is deferred
- * to the client — the server can neither read the client gate (sessionStorage)
- * nor forward a cross-origin session cookie, so a server-side check would false-
- * redirect during SSR. On the client it reads the real session query when `auth`
- * is capable, else the mock gate.
+ * is redirected to `/login` BEFORE the shell renders.
+ *
+ *   - REAL OAuth (`auth` capable): the gate resolves the session on BOTH the
+ *     server and the client. This is load-bearing: `beforeLoad` does NOT re-run
+ *     on the client during hydration of a DIRECT load / refresh / deep-link, so
+ *     a client-only check would silently let an unauthenticated visitor land on
+ *     a console URL typed/opened directly. The server-side check closes that:
+ *     `lib/server-cookie.ts` forwards the browser's session cookie on SSR, and
+ *     `getAuthSession` maps the backend's 401 (logged out) to `null`, so the
+ *     gate cleanly redirects server-side (a 302) instead of throwing into the
+ *     error boundary. Soft (in-app) navigation runs the same check on the client.
+ *   - MOCK gate (`auth` NOT capable, local dev): the signal is `sessionStorage`,
+ *     which the server cannot read, so the decision is deferred to the client to
+ *     avoid a false SSR redirect for a mock-authenticated session.
  */
 import {
   createFileRoute,
@@ -36,17 +45,21 @@ import { MobileNav } from "@/components/shell/mobile-nav";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: async ({ context, location }) => {
-    // Server can't read the client gate (sessionStorage) nor forward a cross-
-    // origin session cookie, so defer the decision to the client to avoid a
-    // false redirect during SSR.
-    if (typeof document === "undefined") return;
     let authed: boolean;
     if (isAuthCapable()) {
+      // Real OAuth: resolve the session on BOTH server and client so a DIRECT
+      // load / refresh / deep-link is gated (beforeLoad does not re-run on the
+      // client during hydration). On SSR the session cookie is forwarded
+      // (lib/server-cookie.ts) and `getAuthSession` maps a 401 to `null`, so an
+      // unauthenticated visitor redirects cleanly instead of throwing.
       const session = await context.queryClient.ensureQueryData(
         authSessionQuery(),
       );
       authed = session != null;
     } else {
+      // Mock gate: the signal lives in `sessionStorage`, unreadable on the
+      // server, so defer to the client to avoid a false SSR redirect.
+      if (typeof document === "undefined") return;
       authed = isAuthenticated();
     }
     if (!authed) {

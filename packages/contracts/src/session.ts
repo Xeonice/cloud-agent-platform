@@ -72,10 +72,12 @@ export type AuthSession = z.infer<typeof AuthSessionSchema>;
 /**
  * Response body for `GET /auth/session`.
  *
- * Wraps the current {@link AuthSessionSchema} under a `user` key: the
- * authenticated session user, or `null` when unauthenticated. The console reads
- * this to choose between the authenticated app shell and the login gate; an
- * unauthenticated state is a normal `200` with `user: null`, not an error.
+ * The 200 body wraps the authenticated session user under a `user` key. Note
+ * the WIRE protocol per `multi-user-oauth`: an unauthenticated caller is NOT a
+ * 200 with `user: null` — like every authenticated endpoint it is rejected with
+ * HTTP 401 (no body of this shape). The nullable `user` models the CLIENT-SIDE
+ * resolved {@link AuthSessionSchema} (`getAuthSession` maps that 401 to `null`),
+ * which the console reads to choose between the app shell and the login gate.
  */
 export const AuthSessionResponseSchema = z.object({
   user: AuthSessionSchema,

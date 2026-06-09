@@ -161,14 +161,26 @@ export async function stopTask(taskId: string): Promise<TaskResponse> {
 
 /**
  * `GET /auth/session` — the current GitHub-OAuth session identity, or `null`
- * when unauthenticated (a normal `200` with `user: null`, NOT a 401, per the
- * `AuthSessionResponse` contract). Gated by `BACKEND_CAPABILITIES.auth`.
+ * when unauthenticated. Per `multi-user-oauth`, EVERY authenticated endpoint
+ * (this one included) answers a missing/expired/revoked/non-allowlisted session
+ * with HTTP 401 — there is NO `200 { user: null }` body. So a 401 here is the
+ * normal "logged out" signal, NOT an error: we map it to `null` (a resolved
+ * `AuthSession`) so the auth gate and session-aware UI treat it as logged out
+ * and redirect, instead of rejecting into an error boundary. Genuine failures
+ * (network, 5xx) still propagate. Gated by `BACKEND_CAPABILITIES.auth`.
  */
 export async function getAuthSession(): Promise<AuthSession> {
-  const body: AuthSessionResponse = AuthSessionResponseSchema.parse(
-    await request("/auth/session"),
-  );
-  return body.user;
+  try {
+    const body: AuthSessionResponse = AuthSessionResponseSchema.parse(
+      await request("/auth/session"),
+    );
+    return body.user;
+  } catch (err) {
+    // 401 = unauthenticated (no / expired / revoked / non-allowlisted session);
+    // that is "logged out", not a failure — resolve it to `null`.
+    if (err instanceof ApiError && err.status === 401) return null;
+    throw err;
+  }
 }
 
 /**
