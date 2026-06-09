@@ -134,6 +134,14 @@ export function statesMatch(
 export const SESSION_COOKIE_NAME = 'cap_session';
 /** Cookie name carrying the signed anti-CSRF state for the OAuth round trip. */
 export const OAUTH_STATE_COOKIE_NAME = 'cap_oauth_state';
+/**
+ * Cookie name carrying the (open-redirect-guarded) post-login deep-link path
+ * across the OAuth round trip (auth-redirects-and-landing). Short-lived, httpOnly,
+ * SameSite=Lax like the state cookie — it survives GitHub's top-level redirect
+ * back and is cleared one-shot at the callback. Distinct from the CSRF state; its
+ * value is re-validated with `safeRedirectPath` at read time.
+ */
+export const OAUTH_REDIRECT_COOKIE_NAME = 'cap_oauth_redirect';
 
 export interface CookieOptions {
   readonly httpOnly?: boolean;

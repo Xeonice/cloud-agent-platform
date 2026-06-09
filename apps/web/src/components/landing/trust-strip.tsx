@@ -25,7 +25,7 @@ export function TrustStrip({ items }: TrustStripProps) {
       {items.map((item) => (
         <span
           key={item}
-          className="inline-flex min-h-[22px] w-fit items-center gap-1.5 rounded-full bg-[#ebf5ff] px-2.5 text-xs font-medium whitespace-nowrap text-[#0068d6]"
+          className="inline-flex min-h-[24px] w-fit items-center gap-1.5 rounded-full bg-[#ebf5ff] px-3 text-xs font-medium whitespace-nowrap text-[#0068d6] ring-1 ring-inset ring-[#cfe4fb]"
         >
           {item}
         </span>

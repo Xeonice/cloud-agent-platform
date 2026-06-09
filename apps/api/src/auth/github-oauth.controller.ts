@@ -18,6 +18,7 @@ import {
   readSessionCookieDomain,
 } from './oauth-config';
 import {
+  OAUTH_REDIRECT_COOKIE_NAME,
   OAUTH_STATE_COOKIE_NAME,
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -27,6 +28,7 @@ import {
   statesMatch,
   verifyStateSignature,
 } from './session-token';
+import { safeRedirectPath } from './redirect-target';
 
 /**
  * GitHub OAuth identity + session HTTP surface (be-oauth-allowlist, tasks
@@ -51,7 +53,8 @@ import {
 export class GitHubOAuthController {
   /** Where the browser lands after the callback resolves (front-end gate routes from here). */
   private static readonly LOGIN_GATE_PATH = '/login';
-  private static readonly POST_LOGIN_PATH = '/repositories';
+  /** Default post-login console target (auth-redirects-and-landing); a safe `redirect` overrides it. */
+  private static readonly POST_LOGIN_PATH = '/dashboard';
 
   constructor(
     private readonly githubOAuth: GitHubOAuthService,
@@ -65,7 +68,11 @@ export class GitHubOAuthController {
    * secret are unset (never a fall-back login).
    */
   @Get('github/login')
-  login(@Req() req: Request, @Res() res: Response): void {
+  login(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Query('redirect') redirect?: string,
+  ): void {
     const config = readOAuthAppConfig();
     const secret = readSessionSecret();
     if (config === null || secret === null) {
@@ -81,18 +88,35 @@ export class GitHubOAuthController {
     }
 
     const state = signState(secret);
-    // Short-lived (10 min), httpOnly, SameSite=Lax so it survives GitHub's
+    const secure = GitHubOAuthController.isSecureRequest(req);
+    // Short-lived (10 min), httpOnly, SameSite=Lax so they survive GitHub's
     // top-level redirect back. Secure unless explicitly on http (local dev).
-    res.setHeader(
-      'Set-Cookie',
+    const cookies = [
       serializeCookie(OAUTH_STATE_COOKIE_NAME, state, {
         httpOnly: true,
-        secure: GitHubOAuthController.isSecureRequest(req),
+        secure,
         sameSite: 'Lax',
         path: '/',
         maxAgeSeconds: 600,
       }),
-    );
+    ];
+    // Carry an OPEN-REDIRECT-GUARDED deep-link target alongside (not inside) the
+    // CSRF state, so the callback can return the operator to where the gate
+    // bounced them from. Only set it when it passes `safeRedirectPath`; an unsafe
+    // value is simply not carried (callback falls back to the default console).
+    const safe = safeRedirectPath(redirect);
+    if (safe !== null) {
+      cookies.push(
+        serializeCookie(OAUTH_REDIRECT_COOKIE_NAME, encodeURIComponent(safe), {
+          httpOnly: true,
+          secure,
+          sameSite: 'Lax',
+          path: '/',
+          maxAgeSeconds: 600,
+        }),
+      );
+    }
+    res.setHeader('Set-Cookie', cookies);
 
     res.redirect(HttpStatus.FOUND, this.githubOAuth.buildAuthorizeUrl(config, state));
   }
@@ -123,14 +147,32 @@ export class GitHubOAuthController {
 
     // --- anti-CSRF state verification BEFORE any code exchange ---
     const cookieState = readCookie(req.headers.cookie, OAUTH_STATE_COOKIE_NAME);
-    // Always clear the one-shot state cookie.
-    const clearStateCookie = serializeCookie(OAUTH_STATE_COOKIE_NAME, '', {
-      httpOnly: true,
-      secure: GitHubOAuthController.isSecureRequest(req),
-      sameSite: 'Lax',
-      path: '/',
-      maxAgeSeconds: 0,
-    });
+    // Always clear the one-shot state + deep-link redirect cookies.
+    const clearOneShot = (name: string): string =>
+      serializeCookie(name, '', {
+        httpOnly: true,
+        secure: GitHubOAuthController.isSecureRequest(req),
+        sameSite: 'Lax',
+        path: '/',
+        maxAgeSeconds: 0,
+      });
+    const clearStateCookie = clearOneShot(OAUTH_STATE_COOKIE_NAME);
+    const clearRedirectCookie = clearOneShot(OAUTH_REDIRECT_COOKIE_NAME);
+
+    // Resolve the (open-redirect-guarded) deep-link target carried from /login,
+    // re-validating at this trust boundary; falls back to the default console. The
+    // decode is defensive (a tampered cookie could be malformed percent-encoding).
+    const carriedRedirect = readCookie(req.headers.cookie, OAUTH_REDIRECT_COOKIE_NAME);
+    let decodedRedirect: string | null = null;
+    if (carriedRedirect !== null) {
+      try {
+        decodedRedirect = decodeURIComponent(carriedRedirect);
+      } catch {
+        decodedRedirect = null;
+      }
+    }
+    const targetPath =
+      safeRedirectPath(decodedRedirect) ?? GitHubOAuthController.POST_LOGIN_PATH;
 
     if (
       typeof state !== 'string' ||
@@ -138,7 +180,7 @@ export class GitHubOAuthController {
       !statesMatch(cookieState, state)
     ) {
       // Reject WITHOUT exchanging the code. No session established.
-      res.setHeader('Set-Cookie', clearStateCookie);
+      res.setHeader('Set-Cookie', [clearStateCookie, clearRedirectCookie]);
       res
         .status(HttpStatus.BAD_REQUEST)
         .json({ error: 'Invalid or missing OAuth state; authorization rejected.' });
@@ -146,7 +188,7 @@ export class GitHubOAuthController {
     }
 
     if (typeof code !== 'string' || code.length === 0) {
-      res.setHeader('Set-Cookie', clearStateCookie);
+      res.setHeader('Set-Cookie', [clearStateCookie, clearRedirectCookie]);
       res
         .status(HttpStatus.BAD_REQUEST)
         .json({ error: 'Missing authorization code.' });
@@ -161,7 +203,7 @@ export class GitHubOAuthController {
       // --- single session-mint point: allowlist gate + gated upsert ---
       session = await this.authSession.establishSessionForGitHubUser(githubUser, accessToken);
     } catch {
-      res.setHeader('Set-Cookie', clearStateCookie);
+      res.setHeader('Set-Cookie', [clearStateCookie, clearRedirectCookie]);
       res
         .status(HttpStatus.BAD_GATEWAY)
         .json({ error: 'GitHub authentication failed.' });
@@ -179,7 +221,7 @@ export class GitHubOAuthController {
     if (session === null) {
       // Non-allowlisted identity: NO session, returned to the login gate as a
       // security denial.
-      res.setHeader('Set-Cookie', clearStateCookie);
+      res.setHeader('Set-Cookie', [clearStateCookie, clearRedirectCookie]);
       res.redirect(HttpStatus.FOUND, GitHubOAuthController.loginGateUrl(webOrigin));
       return;
     }
@@ -207,6 +249,7 @@ export class GitHubOAuthController {
     const cookieDomain = readSessionCookieDomain() ?? undefined;
     res.setHeader('Set-Cookie', [
       clearStateCookie,
+      clearRedirectCookie,
       serializeCookie(SESSION_COOKIE_NAME, session.token, {
         httpOnly: true,
         secure: crossOrigin ? true : GitHubOAuthController.isSecureRequest(req),
@@ -216,7 +259,7 @@ export class GitHubOAuthController {
         maxAgeSeconds: Math.floor(SESSION_TTL_MS / 1000),
       }),
     ]);
-    res.redirect(HttpStatus.FOUND, GitHubOAuthController.postLoginUrl(webOrigin));
+    res.redirect(HttpStatus.FOUND, GitHubOAuthController.postLoginUrl(webOrigin, targetPath));
   }
 
   /**
@@ -276,16 +319,17 @@ export class GitHubOAuthController {
   }
 
   /**
-   * The post-login redirect target. When a web origin is configured (cross-origin
-   * deploy) the browser is sent to the ABSOLUTE `${webOrigin}/repositories`,
-   * because a relative `302 Location` would be resolved by the browser against
-   * the CURRENT (api) origin and 404. With no web origin (same-origin self-host)
-   * the relative path is correct and is kept.
+   * The post-login redirect target for a resolved app path (default `/dashboard`,
+   * or an open-redirect-guarded deep-link). When a web origin is configured
+   * (cross-origin deploy) the browser is sent to the ABSOLUTE `${webOrigin}${path}`,
+   * because a relative `302 Location` would be resolved by the browser against the
+   * CURRENT (api) origin and 404. With no web origin (same-origin self-host) the
+   * relative path is correct and is kept. `path` is always a guarded same-origin
+   * relative path (`safeRedirectPath` / the `/dashboard` default), so concatenating
+   * it onto `webOrigin` cannot escape the web origin.
    */
-  private static postLoginUrl(webOrigin: string | null): string {
-    return webOrigin === null
-      ? GitHubOAuthController.POST_LOGIN_PATH
-      : `${webOrigin}${GitHubOAuthController.POST_LOGIN_PATH}`;
+  private static postLoginUrl(webOrigin: string | null, path: string): string {
+    return webOrigin === null ? path : `${webOrigin}${path}`;
   }
 
   /**

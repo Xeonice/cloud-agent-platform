@@ -35,7 +35,7 @@ import { Topbar } from "@/components/shell/topbar";
 import { MobileNav } from "@/components/shell/mobile-nav";
 
 export const Route = createFileRoute("/_app")({
-  beforeLoad: async ({ context }) => {
+  beforeLoad: async ({ context, location }) => {
     // Server can't read the client gate (sessionStorage) nor forward a cross-
     // origin session cookie, so defer the decision to the client to avoid a
     // false redirect during SSR.
@@ -49,7 +49,13 @@ export const Route = createFileRoute("/_app")({
     } else {
       authed = isAuthenticated();
     }
-    if (!authed) throw redirect({ to: "/login" });
+    if (!authed) {
+      // Carry the attempted app path so the post-login flow can return the
+      // operator here (deep-link). The backend re-validates it via its
+      // open-redirect guard. `location.href` is the in-app path (pathname +
+      // search), which is exactly what we want to return to.
+      throw redirect({ to: "/login", search: { redirect: location.href } });
+    }
   },
   component: AppLayout,
 });

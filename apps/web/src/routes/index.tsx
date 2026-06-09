@@ -1,41 +1,34 @@
 /**
- * `/` — 营销落地 Landing (standalone, SSR; Track 12 fe-page-landing-login 12.1).
+ * `/` — 营销落地 Landing (standalone, SSR; Track 12 fe-page-landing-login 12.1;
+ * session-awareness + polish per auth-redirects-and-landing).
  *
- * The public marketing page, faithful to the prototype `landing.html`. It is a
- * top-level route (NOT under `_app`), so the auth gate never runs here and it
- * ships its OWN chrome via the configurable `LandingNav` (the landing link-set:
- * 流程 / 权限 / 控制台 + the「GitHub 登录」CTA).
+ * The public marketing page. It is a top-level route (NOT under `_app`), so the
+ * auth gate never runs here and it ships its OWN chrome via the configurable
+ * `LandingNav`.
  *
- * Composition:
- *   - `LandingNav` (landing links + CTA).
- *   - Hero (`.hero-grid` 2-col): LEFT = eyebrow / h1 / lead / hero-actions /
- *     `TrustStrip` / `ProofGrid` of 3 `ProofTile`; RIGHT = `HeroPreview`.
- *   - `#workflow` section: header + `WorkflowRow` of 3 `WorkflowStep`.
- *   - `#security` section: header (+ 检查登录流程 button) + `FeatureGrid` of 3
- *     `FeatureCard`.
+ * SESSION-AWARE (auth-redirects-and-landing): the page reads the auth session and
+ * adapts its entries WITHOUT a hydration mismatch — the SSR/first paint renders
+ * the UNAUTHENTICATED state (login CTA), and after client mount it reconciles to
+ * the authenticated affordance ("进入控制台" → `/dashboard`). The console entries
+ * (nav "控制台", hero primary) therefore never silently dead-bounce through the
+ * gate: anonymous → `/login`; authenticated → `/dashboard`.
  *
- * Behavior: fully STATIC — no queries, no client data, no effects. Same-page
- * anchor links (流程 → #workflow, 权限 → #security) smooth-scroll; the section
- * ids carry `scroll-mt-20` so they clear the fixed 64px nav. Route CTAs go
- * through `<Link>`. SSR-safe: all copy is literal; no window/clock/random in
- * render.
- *
- * Fidelity (NON-console-body cascade — base styles.css + the non-.console-body
- * audit-refinement overrides win):
- *   .hero = max-w 1200 centered, py clamp; .hero-grid = `0.9fr 1.1fr`, gap
- *     clamp(32,6vw,72) (1-col ≤820px). h1 = display 42→72 clamp, 600, tight
- *     tracking, line-height 1. lead = ink-soft 18→22 clamp / 1.68.
- *   .section = max-w 1200 centered, py clamp(56,8vw,96); .section-header = flex
- *     end-aligned between; h2 = 32→48 clamp / 600 ink / tight.
+ * SSR-safe: no window/clock/random in render; the authed swap is gated behind a
+ * post-mount flag so server and first client paint agree (mirrors the `_app`
+ * gate's client-deferred pattern).
  */
+import * as React from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 
+import { authSessionQuery } from "@/lib/api/queries";
 import { Button } from "@/components/ui/button";
 import {
   LandingNav,
   type LandingNavLink,
   type LandingNavCta,
 } from "@/components/shell/landing-nav";
+import { LandingFooter } from "@/components/landing/landing-footer";
 import { HeroPreview } from "@/components/landing/hero-preview";
 import { ProofGrid, ProofTile } from "@/components/landing/proof-tile";
 import { TrustStrip } from "@/components/landing/trust-strip";
@@ -46,16 +39,6 @@ export const Route = createFileRoute("/")({
   component: LandingPage,
 });
 
-/** The landing-specific nav links (流程 / 权限 anchors + 控制台 route). */
-const LANDING_NAV_LINKS: readonly LandingNavLink[] = [
-  { label: "流程", href: "#workflow" },
-  { label: "权限", href: "#security" },
-  { label: "控制台", to: "/dashboard" },
-];
-
-/** The landing CTA →「GitHub 登录」. */
-const LANDING_NAV_CTA: LandingNavCta = { label: "GitHub 登录", to: "/login" };
-
 /** Access-mode trust pills (verbatim prototype copy). */
 const TRUST_PILLS = [
   "GitHub OAuth 白名单",
@@ -64,9 +47,29 @@ const TRUST_PILLS = [
 ] as const;
 
 function LandingPage() {
+  // SSR-safe session awareness: render the anonymous state on the server + first
+  // client paint, then reconcile to the authenticated affordance after mount.
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => setMounted(true), []);
+  const { data: session } = useQuery(authSessionQuery());
+  const authed = mounted && session != null;
+
+  // The console entry routes to the dashboard when authed, else to login — so an
+  // anonymous click never silently bounces through the `_app` gate.
+  const consoleTarget = authed ? "/dashboard" : "/login";
+
+  const navLinks: readonly LandingNavLink[] = [
+    { label: "流程", href: "#workflow" },
+    { label: "权限", href: "#security" },
+    { label: "控制台", to: consoleTarget },
+  ];
+  const navCta: LandingNavCta = authed
+    ? { label: "进入控制台", to: "/dashboard" }
+    : { label: "GitHub 登录", to: "/login" };
+
   return (
     <>
-      <LandingNav links={LANDING_NAV_LINKS} cta={LANDING_NAV_CTA} />
+      <LandingNav links={navLinks} cta={navCta} />
 
       <main>
         {/* Hero */}
@@ -77,24 +80,37 @@ function LandingPage() {
               <div className="font-mono text-xs font-semibold text-muted-foreground">
                 Private remote agent control
               </div>
-              <h1 className="mt-[14px] mb-[18px] max-w-[900px] text-[clamp(42px,5.4vw,72px)] leading-none font-semibold tracking-[clamp(-2.88px,-0.03em,-1.8px)] text-balance text-ink">
-                一个面向操作者的远端 Agent 运行池。
+              {/* `keep-all` + `<wbr>` give controlled CJK line breaks so words like
+                  "操作者" never split mid-token (the prior text-balance break). */}
+              <h1 className="mt-[14px] mb-[18px] max-w-[900px] text-[clamp(42px,5.4vw,72px)] leading-none font-semibold tracking-[clamp(-2.88px,-0.03em,-1.8px)] text-ink [word-break:keep-all]">
+                一个面向<wbr />操作者的<wbr />远端 Agent <wbr />运行池。
               </h1>
               <p className="max-w-[680px] text-[clamp(18px,2.1vw,22px)] leading-[1.68] text-pretty text-ink-soft">
                 GitHub OAuth 只负责确认身份；仓库导入决定 Agent
                 能碰什么；任务队列负责调度；实时终端把最后的控制权留给你。整个产品围绕“可派发、可暂停、可审计”设计。
               </p>
 
-              <div className="mt-7 flex flex-wrap gap-3">
-                <Button asChild>
-                  <Link to="/login">使用 GitHub 登录</Link>
-                </Button>
-                <Button
-                  asChild
-                  className="bg-card text-foreground shadow-ring hover:bg-secondary"
-                >
-                  <Link to="/dashboard">查看控制台</Link>
-                </Button>
+              <div className="mt-7 flex flex-wrap items-center gap-3">
+                {authed ? (
+                  // Authenticated: a single clear primary into the console.
+                  <Button asChild>
+                    <Link to="/dashboard">进入控制台</Link>
+                  </Button>
+                ) : (
+                  <>
+                    <Button asChild>
+                      <Link to="/login">使用 GitHub 登录</Link>
+                    </Button>
+                    {/* Secondary is a non-bouncing in-page jump to the preview, not
+                        a console route that the gate would silently reject. */}
+                    <Button
+                      asChild
+                      className="bg-card text-foreground shadow-ring hover:bg-secondary"
+                    >
+                      <a href="#preview">查看演示</a>
+                    </Button>
+                  </>
+                )}
               </div>
 
               <TrustStrip items={TRUST_PILLS} />
@@ -110,25 +126,35 @@ function LandingPage() {
                   commit、push、secret 和 PR 创建前必须由操作者确认。
                 </ProofTile>
               </ProofGrid>
+
+              {/* Subtle scroll cue into the workflow section. */}
+              <a
+                href="#workflow"
+                className="mt-7 inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground transition-colors hover:text-ink"
+              >
+                <span aria-hidden="true">↓</span> 向下了解操作者流程
+              </a>
             </div>
 
-            {/* Right column */}
-            <HeroPreview />
+            {/* Right column — the preview is the anchor target for "查看演示". */}
+            <div id="preview" className="scroll-mt-20">
+              <HeroPreview />
+            </div>
           </div>
         </section>
 
         {/* Workflow section */}
         <section
           id="workflow"
-          className="mx-auto max-w-[1200px] scroll-mt-20 px-[clamp(16px,4vw,40px)] py-[clamp(56px,8vw,96px)]"
+          className="mx-auto max-w-[1200px] scroll-mt-20 px-[clamp(16px,4vw,40px)] py-[clamp(40px,5vw,72px)]"
         >
           <div className="mb-7 flex items-end justify-between gap-6">
             <div>
               <div className="font-mono text-xs font-semibold text-muted-foreground">
                 操作者流程
               </div>
-              <h2 className="mt-2 max-w-[720px] text-[clamp(32px,4vw,48px)] leading-[1.08] font-semibold tracking-[clamp(-2.4px,-0.03em,-1.28px)] text-ink">
-                从首次授权、仓库导入到远端 CLI，每一步都有明确的控制边界。
+              <h2 className="mt-2 max-w-[720px] text-[clamp(32px,4vw,48px)] leading-[1.08] font-semibold tracking-[clamp(-2.4px,-0.03em,-1.28px)] text-ink [word-break:keep-all]">
+                从首次授权、<wbr />仓库导入到<wbr />远端 CLI，<wbr />每一步都有明确的控制边界。
               </h2>
             </div>
           </div>
@@ -149,15 +175,15 @@ function LandingPage() {
         {/* Security section */}
         <section
           id="security"
-          className="mx-auto max-w-[1200px] scroll-mt-20 px-[clamp(16px,4vw,40px)] py-[clamp(56px,8vw,96px)]"
+          className="mx-auto max-w-[1200px] scroll-mt-20 px-[clamp(16px,4vw,40px)] py-[clamp(40px,5vw,72px)]"
         >
           <div className="mb-7 flex items-end justify-between gap-6">
             <div>
               <div className="font-mono text-xs font-semibold text-muted-foreground">
                 默认私有
               </div>
-              <h2 className="mt-2 max-w-[720px] text-[clamp(32px,4vw,48px)] leading-[1.08] font-semibold tracking-[clamp(-2.4px,-0.03em,-1.28px)] text-ink">
-                产品结构围绕“单用户私有后台”和可审计操作设计。
+              <h2 className="mt-2 max-w-[720px] text-[clamp(32px,4vw,48px)] leading-[1.08] font-semibold tracking-[clamp(-2.4px,-0.03em,-1.28px)] text-ink [word-break:keep-all]">
+                产品结构围绕<wbr />“单用户私有后台”<wbr />和可审计操作设计。
               </h2>
             </div>
             <Button
@@ -179,6 +205,8 @@ function LandingPage() {
             </FeatureCard>
           </FeatureGrid>
         </section>
+
+        <LandingFooter />
       </main>
     </>
   );

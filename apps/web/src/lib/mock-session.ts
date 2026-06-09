@@ -19,6 +19,7 @@
 import { BACKEND_CAPABILITIES } from "./api/capabilities";
 import { resetState, setState } from "./store";
 import { apiBaseUrl } from "./config";
+import { safeRelativePath } from "./safe-redirect";
 
 /** The allowlisted account the prototype gate admits (design D1; "tanghehui"). */
 export const ALLOWED_ACCOUNT = "tanghehui" as const;
@@ -49,12 +50,18 @@ export function isAuthenticated(): boolean {
 /**
  * Begin a login. Under the mock gate, flips the local flag on (the caller then
  * navigates into the app shell). Under real OAuth, redirects the browser to the
- * backend's GitHub authorization-code start endpoint.
+ * backend's GitHub authorization-code start endpoint, forwarding an optional
+ * `redirect` deep-link (the app path the auth gate bounced the operator from) as a
+ * query param. The backend re-validates it with its open-redirect guard, so a
+ * malformed value is harmless; we still only forward a same-origin relative path.
  */
-export function login(): void {
+export function login(redirect?: string): void {
   if (isAuthCapable()) {
     if (typeof window !== "undefined") {
-      window.location.href = `${apiBaseUrl()}/auth/github/login`;
+      const safe = safeRelativePath(redirect);
+      const url = new URL(`${apiBaseUrl()}/auth/github/login`);
+      if (safe) url.searchParams.set("redirect", safe);
+      window.location.href = url.toString();
     }
     return;
   }

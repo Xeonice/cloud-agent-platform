@@ -49,27 +49,39 @@ import {
 import { toast } from "sonner";
 
 import { isAuthCapable, isAuthenticated, login } from "@/lib/mock-session";
+import { safeRelativePath } from "@/lib/safe-redirect";
 import { StatusPill } from "@/components/status-pill";
 import { InstallStep } from "@/components/auth/install-step";
 import { ConfigList } from "@/components/auth/config-list";
 
-/** `?error`/`?denied` carry a rejected/non-allowlisted OAuth callback (real mode). */
+/**
+ * `?error`/`?denied` carry a rejected/non-allowlisted OAuth callback (real mode).
+ * `?redirect` is the app path the auth gate bounced the operator from, threaded so
+ * the post-login flow can return them there (open-redirect-guarded server-side).
+ */
 export interface LoginSearch {
   error?: string;
   denied?: boolean;
+  redirect?: string;
 }
 
 export const Route = createFileRoute("/login")({
   validateSearch: (search: Record<string, unknown>): LoginSearch => ({
     error: typeof search.error === "string" ? search.error : undefined,
     denied: search.denied === true || search.denied === "true",
+    redirect: typeof search.redirect === "string" ? search.redirect : undefined,
   }),
   component: LoginPage,
 });
 
+/** A same-origin relative path is safe to navigate to; else fall back to the console. */
+function safeClientRedirect(redirect: string | undefined): string {
+  return safeRelativePath(redirect) ?? "/dashboard";
+}
+
 function LoginPage() {
   const navigate = useNavigate();
-  const { error, denied } = useSearch({ from: "/login" });
+  const { error, denied, redirect } = useSearch({ from: "/login" });
 
   // The empty↔success swap is CLIENT view state (mock mode only). Starts empty so
   // the server render matches the first client paint.
@@ -92,15 +104,16 @@ function LoginPage() {
   }, [navigate, rejected]);
 
   function handleLogin() {
-    // Real mode: `login()` redirects to `GET /auth/github/login` and never
-    // returns to client state below.
-    login();
+    // Real mode: `login(redirect)` redirects to `GET /auth/github/login?redirect=…`
+    // and never returns to client state below (the backend owns the post-login
+    // redirect, open-redirect-guarded).
+    login(redirect);
     if (isAuthCapable()) return;
     // Mock mode: the gate + `githubConnected` are now set; swap to success,
-    // toast, then enter the repositories import scope.
+    // toast, then enter the console (or the deep-link destination).
     setAuthed(true);
     toast.success("已完成授权");
-    void navigate({ to: "/repositories" });
+    void navigate({ to: safeClientRedirect(redirect) });
   }
 
   return (
@@ -159,13 +172,13 @@ function LoginPage() {
                 GitHub 账号已绑定。
               </h2>
               <p className="m-0 text-muted-foreground">
-                下一步导入需要进入调度台的仓库。
+                直接进入控制台开始派发与接管任务。
               </p>
               <Link
-                to="/repositories"
+                to="/dashboard"
                 className="inline-flex min-h-9 items-center justify-center gap-2 rounded-md bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors"
               >
-                进入仓库导入
+                进入控制台
               </Link>
             </div>
           ) : (
@@ -184,7 +197,7 @@ function LoginPage() {
                 <span>使用 GitHub 授权登录</span>
               </button>
               <p className="m-0 text-[13px] leading-[1.6] text-muted-foreground">
-                登录成功后进入仓库导入页，不会直接创建任务。
+                登录成功后直接进入控制台；若是从某个任务被拦截登录，会回到原页面。
               </p>
             </div>
           )}
@@ -217,7 +230,7 @@ function LoginPage() {
             rows={[
               { label: "访问范围", value: "单用户白名单" },
               { label: "默认策略", value: "写入前确认" },
-              { label: "下一步", value: "导入仓库" },
+              { label: "下一步", value: "进入控制台" },
             ]}
           />
         </div>

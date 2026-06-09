@@ -71,7 +71,9 @@ export function AccountMenu({ variant = "sidebar" }: AccountMenuProps) {
 
   async function handleLogout() {
     await logout();
-    navigate({ to: "/login" });
+    // The public landing is the logged-out home (it is session-aware and shows the
+    // login CTA there), so sign-out returns to `/` rather than `/login`.
+    navigate({ to: "/" });
   }
 
   return (

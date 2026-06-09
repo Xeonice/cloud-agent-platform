@@ -43,7 +43,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.resolve(here, '../../dist/auth');
 
 const { GitHubOAuthController } = require(path.join(DIST, 'github-oauth.controller.js'));
-const { signState, OAUTH_STATE_COOKIE_NAME, SESSION_COOKIE_NAME } =
+const { signState, OAUTH_STATE_COOKIE_NAME, OAUTH_REDIRECT_COOKIE_NAME, SESSION_COOKIE_NAME } =
   require(path.join(DIST, 'session-token.js'));
 const { readWebOrigin, parseWebOrigins } = require(path.join(DIST, 'oauth-config.js'));
 
@@ -289,13 +289,47 @@ const run = async () => {
       res, 'the-code', state,
     );
     assert(captured.status === 302, 'T6a: allowlisted identity redirected into the app');
-    assert(captured.redirect === '/repositories',
-      'T6a2: same-origin success redirect is the relative /repositories path');
+    assert(captured.redirect === '/dashboard',
+      'T6a2: same-origin success redirect defaults to the relative /dashboard console path');
     const cookies = setCookieValues(captured);
     const sessionCookie = cookies.find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=minted-session`));
     assert(sessionCookie !== undefined, 'T6b: session cookie set with the minted token');
     assert(sessionCookie?.includes('HttpOnly') && sessionCookie?.includes('SameSite=Lax'),
       'T6c: same-origin session cookie is HttpOnly + SameSite=Lax');
+  });
+
+  // T6d: a SAFE deep-link redirect cookie carried from /login is honored.
+  await withOAuthEnv(async () => {
+    const ctrl = new GitHubOAuthController(makeOAuthService(), makeSessionService());
+    const { res, captured } = makeRes();
+    const state = signState(SESSION_SECRET);
+    await ctrl.callback(
+      makeReq({
+        cookie: `${OAUTH_STATE_COOKIE_NAME}=${state}; ${OAUTH_REDIRECT_COOKIE_NAME}=${encodeURIComponent('/tasks/abc')}`,
+        code: 'the-code', state,
+      }),
+      res, 'the-code', state,
+    );
+    assert(captured.redirect === '/tasks/abc',
+      'T6d: a safe carried deep-link redirect is honored over the dashboard default');
+    const cleared = setCookieValues(captured).find((c) => c.startsWith(`${OAUTH_REDIRECT_COOKIE_NAME}=`));
+    assert(cleared?.includes('Max-Age=0'), 'T6d2: the one-shot redirect cookie is cleared');
+  });
+
+  // T6e: an UNSAFE deep-link redirect cookie is ignored (open-redirect guard) -> dashboard.
+  await withOAuthEnv(async () => {
+    const ctrl = new GitHubOAuthController(makeOAuthService(), makeSessionService());
+    const { res, captured } = makeRes();
+    const state = signState(SESSION_SECRET);
+    await ctrl.callback(
+      makeReq({
+        cookie: `${OAUTH_STATE_COOKIE_NAME}=${state}; ${OAUTH_REDIRECT_COOKIE_NAME}=${encodeURIComponent('//evil.example')}`,
+        code: 'the-code', state,
+      }),
+      res, 'the-code', state,
+    );
+    assert(captured.redirect === '/dashboard',
+      'T6e: an unsafe carried redirect is rejected and falls back to /dashboard (open-redirect guard)');
   });
 
   // T9: CROSS-ORIGIN valid state + allowlisted identity -> ABSOLUTE redirect on
@@ -312,8 +346,8 @@ const run = async () => {
       makeReq({ cookie: `${OAUTH_STATE_COOKIE_NAME}=${state}`, code: 'the-code', state, host: 'api.example' }),
       res, 'the-code', state,
     );
-    assert(captured.redirect === `${WEB_ORIGIN}/repositories`,
-      'T9a: cross-origin success redirect targets the ABSOLUTE web-origin /repositories (DEFECT 1)');
+    assert(captured.redirect === `${WEB_ORIGIN}/dashboard`,
+      'T9a: cross-origin success redirect targets the ABSOLUTE web-origin /dashboard (DEFECT 1)');
     const cookies = setCookieValues(captured);
     const sessionCookie = cookies.find((c) => c.startsWith(`${SESSION_COOKIE_NAME}=minted-session`));
     assert(sessionCookie !== undefined, 'T9b: session cookie set with the minted token');

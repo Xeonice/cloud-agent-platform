@@ -57,7 +57,7 @@ export function WorkflowStep({
     <article
       data-slot="workflow-step"
       data-step={step}
-      className="min-h-[220px] bg-card p-[22px]"
+      className="min-h-[180px] bg-card p-[22px]"
     >
       <div
         className={cn(
