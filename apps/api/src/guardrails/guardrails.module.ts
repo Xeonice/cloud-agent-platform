@@ -6,6 +6,7 @@ import {
   GuardrailsConfig,
   GuardrailsService,
 } from './guardrails.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
 import {
@@ -24,7 +25,12 @@ import {
  * `MAX_IDLE_MS`, circuit-breaker threshold) is read from the environment at
  * construction, falling back to {@link DEFAULT_GUARDRAILS_CONFIG} (where the idle
  * default is `null` — idle reclamation off unless opted in per task or via
- * `MAX_IDLE_MS`). The {@link SandboxProvider} is injected by
+ * `MAX_IDLE_MS`). For the slot ceiling, the env value is only the
+ * construction-time SEED (configurable-task-slots): at bootstrap the service
+ * loads the persisted `SystemSettings` ceiling (when a row exists) over it via
+ * the injected {@link PrismaService}, and a settings save pushes new values at
+ * runtime through `GuardrailsService.setMaxConcurrentTasks`. The
+ * {@link SandboxProvider} is injected by
  * the global `SANDBOX_PROVIDER` token (9.1b), so the guardrails depend on the
  * port, not a concrete impl.
  */
@@ -43,12 +49,17 @@ import {
         SessionCredentialsService,
         { token: SANDBOX_PROVIDER, optional: true },
         { token: AUDIT_RECORDER_TOKEN, optional: true },
+        // PrismaService resolves from the @Global PrismaModule; optional so a
+        // guardrails-only unit context still constructs without a database —
+        // the bootstrap ceiling load then degrades to the env seed.
+        { token: PrismaService, optional: true },
       ],
       useFactory: (
         moduleRef: ModuleRef,
         creds: SessionCredentialsService,
         sandbox?: SandboxProvider,
         audit?: AuditRecorderPort,
+        prisma?: PrismaService,
       ) =>
         new GuardrailsService(
           moduleRef,
@@ -56,6 +67,7 @@ import {
           sandbox,
           readGuardrailsConfig(),
           audit,
+          prisma,
         ),
     },
   ],

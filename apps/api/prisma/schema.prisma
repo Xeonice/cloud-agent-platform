@@ -265,6 +265,29 @@ model AccountSettings {
   @@map("account_settings")
 }
 
+/// Single-row system-wide settings (configurable-task-slots change).
+///
+/// Holds GLOBAL operator settings shared by every account — explicitly NOT a
+/// column on the per-account `AccountSettings` row (its `userId @unique`
+/// scoping and cross-account isolation semantics are wrong for one shared
+/// concurrency pool). The service layer addresses the single row via a FIXED
+/// id upsert, so at most one row ever exists. Absence of the row means the
+/// env seed applies: the effective ceiling resolves as
+/// `dbSetting ?? env MAX_CONCURRENT_TASKS ?? 5`.
+model SystemSettings {
+  /// Fixed singleton id (the service upserts on a constant; no default — the
+  /// row is only ever created by the fixed-id upsert).
+  id String @id
+
+  /// The system-wide task concurrency ceiling (contracts constrain to 1–20).
+  maxConcurrentTasks Int @map("max_concurrent_tasks")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
 /// Per-account Codex execution credential (account-settings spec).
 ///
 /// Scoped one-per-user via the UNIQUE `userId`. This is the Codex EXECUTION

@@ -39,6 +39,16 @@ export interface IGuardrailsService {
   onTerminal(taskId: string): Promise<void>;
   recordFailure(taskId: string, kind?: string): void;
   recordSuccess(taskId: string): void;
+  /**
+   * configurable-task-slots (6.2): load the persisted system-level slot ceiling
+   * (when a row exists) into the live semaphore, so the effective ceiling
+   * resolves as `dbSetting ?? envDefault ?? 5`. Invoked by the startup recovery
+   * BEFORE Phase 2 re-offers queued tasks, so re-offer admits against the
+   * persisted ceiling rather than the env seed. Optional on the interface so the
+   * narrow slice stays satisfied by builds where guardrails-bootstrap has not
+   * wired it yet; the bootstrap caller optional-chains the invocation.
+   */
+  loadPersistedCeiling?(): Promise<void>;
 }
 
 /** DI token used when injecting the guardrails service into the tasks service. */
@@ -80,15 +90,40 @@ export class TasksService implements OnApplicationBootstrap {
   ) {}
 
   /**
-   * On process start, reclaim tasks stranded by the PREVIOUS process. A task in
-   * a session-bound non-terminal status (`running` / `awaiting_input`) holds a
-   * live sandbox + in-memory runner/guardrail state that lived in the prior
-   * process and is gone after a restart (deploy, crash); it can never resume, so
-   * it is transitioned to `failed` rather than left lingering with a dead
-   * session (and a leaked sandbox the provider reaps in parallel on startup).
+   * Two-phase startup recovery (configurable-task-slots 6.1) so a process
+   * restart never strands work.
+   *
+   * Phase 1 (reclaim): a task in a session-bound non-terminal status
+   * (`running` / `awaiting_input`) holds a live sandbox + in-memory
+   * runner/guardrail state that lived in the prior process and is gone after a
+   * restart (deploy, crash); it can never resume, so it is transitioned to
+   * `failed` rather than left lingering with a dead session (and a leaked
+   * sandbox the provider reaps in parallel on startup).
+   *
+   * Ceiling-first ordering (6.2): between the phases, the persisted system-level
+   * slot ceiling is loaded into the live semaphore, so Phase 2 admits against
+   * the persisted value rather than the env seed (persisted 2, env 5, 3 queued
+   * ⇒ exactly 2 admitted). Best-effort: a load failure logs and falls through —
+   * re-offering against the env seed beats stranding the queue.
+   *
+   * Phase 2 (re-offer): DB `queued` tasks survived the restart as data but lost
+   * their in-memory semaphore entry; they are re-offered FIFO so the oldest
+   * min(K, ceiling) begin admission and the remainder stay queued in order.
    */
   async onApplicationBootstrap(): Promise<void> {
     await this.reclaimOrphanedOnStartup();
+    if (this.guardrails?.loadPersistedCeiling) {
+      try {
+        await this.guardrails.loadPersistedCeiling();
+      } catch (err) {
+        this.logger.warn(
+          `startup recovery: could not load the persisted slot ceiling (env seed stays effective): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    await this.reofferQueuedOnStartup();
   }
 
   /**
@@ -123,6 +158,53 @@ export class TasksService implements OnApplicationBootstrap {
       );
     }
     return reclaimed;
+  }
+
+  /**
+   * Phase 2 of startup recovery (configurable-task-slots 6.1): re-offer every
+   * DB `queued` task to the in-memory concurrency semaphore in `createdAt asc`
+   * (FIFO) order, restoring each task's persisted per-task guardrail parameters
+   * (`deadlineMs`, `idleTimeoutMs`) from its task row — zero new columns, since
+   * task-guardrail-controls already persisted them. `admit()` arms the deadline
+   * / idle watchers for tasks within capacity exactly as at creation time, and
+   * holds the remainder `queued` in offer order, so a queued task is never
+   * stranded (never re-offered) after a restart. Returns the count re-offered.
+   * Best-effort per task: a failure is logged and skipped, never blocking boot.
+   * Prisma stores omitted params as `null`; they are coalesced back to
+   * `undefined` so a re-offered task arms (or skips) its watchers identically
+   * to a task admitted before the restart.
+   */
+  async reofferQueuedOnStartup(): Promise<number> {
+    if (!this.guardrails) {
+      return 0;
+    }
+    const queued = await this.prisma.task.findMany({
+      where: { status: 'queued' },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, deadlineMs: true, idleTimeoutMs: true },
+    });
+    let reoffered = 0;
+    for (const task of queued) {
+      try {
+        await this.guardrails.admit(task.id, {
+          deadlineMs: task.deadlineMs ?? undefined,
+          idleTimeoutMs: task.idleTimeoutMs ?? undefined,
+        });
+        reoffered += 1;
+      } catch (err) {
+        this.logger.warn(
+          `startup re-offer: could not re-offer queued task ${task.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    if (reoffered > 0) {
+      this.logger.log(
+        `startup re-offer: re-offered ${reoffered} queued task(s) to the semaphore`,
+      );
+    }
+    return reoffered;
   }
 
   async create(

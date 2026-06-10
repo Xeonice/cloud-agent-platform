@@ -2,7 +2,7 @@
  * `SettingsForm` — the "访问与默认值" form (`#github` + `#safety`, task 14.3).
  *
  * The prototype `.panel.settings-form`: a panel-head ("访问与默认值" + a mono
- * "保存到本地状态" note), then four controls and an action row:
+ * "保存到本地状态" note), then five controls and an action row:
  *   1. 允许进入的 GitHub 账号 — a READ-ONLY display of `allowedAccount`. This is
  *      governed by the multi-user-oauth allowlist ("谁能进控制台"), NOT an editable
  *      preference, so the input is rendered `readOnly`/`disabled` and is never
@@ -11,10 +11,15 @@
  *      (`reposQuery`); saving validates the choice references an imported repo.
  *   3. 会话记录保留 — a `Select` over the allowed retention windows (30/7/90 天,
  *      the prototype order), value mirrored from `settingsQuery().retention`.
- *   4. 写入前必须确认 — the `#safety` destructive-write gate checkbox.
+ *   4. 任务槽位上限 — the SYSTEM-WIDE `maxConcurrentTasks` slot ceiling
+ *      (configurable-task-slots): a numeric control client-validated as an
+ *      integer in 1–20; an invalid value blocks the submit so it is never sent.
+ *      This is one shared value for all allowlisted operators, NOT a per-account
+ *      preference.
+ *   5. 写入前必须确认 — the `#safety` destructive-write gate checkbox.
  * 保存设置 runs `saveSettingsMutation`; 恢复默认 restores the contract defaults
- * (default repo cleared, retention 30, write-confirm on) WITHOUT auto-saving —
- * matching the prototype's local reset.
+ * (default repo cleared, retention 30, slot ceiling 5, write-confirm on)
+ * WITHOUT auto-saving — matching the prototype's local reset.
  *
  * SECURITY/CONCEPT split: the editable preferences here NEVER touch the OAuth
  * login identity (read-only above) or the Codex execution credential (the
@@ -56,12 +61,33 @@ const RETENTION_OPTIONS: readonly { value: RetentionDays; label: string }[] = [
   { value: 90, label: "90 天" },
 ];
 
+/** Slot ceiling bounds + default (contracts `maxConcurrentTasks`, 1–20, default 5). */
+const SLOT_CEILING_MIN = 1;
+const SLOT_CEILING_MAX = 20;
+const SLOT_CEILING_DEFAULT = 5;
+
 /** The contract defaults restored by 恢复默认 (matches `DEFAULT_STATE.settings`). */
 const DEFAULTS = {
   defaultRepoId: null as string | null,
   retention: 30 as RetentionDays,
   writeConfirm: true,
+  maxConcurrentTasks: SLOT_CEILING_DEFAULT,
 };
+
+/**
+ * Read the system-wide slot ceiling off the settings payload. Structural read
+ * (the `maxConcurrentTasks` contract field is optional on the wire), falling
+ * back to the backend default 5 when absent or out of the 1–20 integer range.
+ */
+function readSlotCeiling(settings: AccountSettings): number {
+  const value = (settings as { maxConcurrentTasks?: unknown }).maxConcurrentTasks;
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= SLOT_CEILING_MIN &&
+    value <= SLOT_CEILING_MAX
+    ? value
+    : SLOT_CEILING_DEFAULT;
+}
 
 /** Resolve a repo's `owner/name` display from its gitSource (or fall back). */
 function repoFullName(repo: Repo): string {
@@ -105,6 +131,12 @@ export function SettingsForm({
   const [writeConfirm, setWriteConfirm] = React.useState<boolean>(
     settings.writeConfirm,
   );
+  // Slot ceiling draft kept as the raw input string so intermediate typing is
+  // possible; validated as an integer in 1–20 on submit (never sent invalid).
+  const seededSlotCeiling = readSlotCeiling(settings);
+  const [slotCeiling, setSlotCeiling] = React.useState<string>(
+    String(seededSlotCeiling),
+  );
   const [error, setError] = React.useState<string | null>(null);
 
   // Re-seed if the hydrated settings change underneath (e.g. after a save).
@@ -112,7 +144,13 @@ export function SettingsForm({
     setDefaultRepoId(settings.defaultRepoId);
     setRetention(settings.retention);
     setWriteConfirm(settings.writeConfirm);
-  }, [settings.defaultRepoId, settings.retention, settings.writeConfirm]);
+    setSlotCeiling(String(seededSlotCeiling));
+  }, [
+    settings.defaultRepoId,
+    settings.retention,
+    settings.writeConfirm,
+    seededSlotCeiling,
+  ]);
 
   const importedIds = React.useMemo(
     () => new Set(repos.map((r) => r.id)),
@@ -126,8 +164,28 @@ export function SettingsForm({
       setError("默认仓库必须是已导入的仓库；请重新选择或清除默认值。");
       return;
     }
+    // The slot ceiling MUST be an integer in 1–20; an invalid value blocks the
+    // submit entirely so no save request ever carries it.
+    const ceiling = Number(slotCeiling);
+    if (
+      slotCeiling.trim() === "" ||
+      !Number.isInteger(ceiling) ||
+      ceiling < SLOT_CEILING_MIN ||
+      ceiling > SLOT_CEILING_MAX
+    ) {
+      setError("任务槽位上限必须是 1–20 之间的整数。");
+      return;
+    }
     setError(null);
-    onSave({ defaultRepoId, retention, writeConfirm });
+    // Built as a variable (not an inline literal) so the system-level
+    // `maxConcurrentTasks` rides the request alongside the per-account keys.
+    const body = {
+      defaultRepoId,
+      retention,
+      writeConfirm,
+      maxConcurrentTasks: ceiling,
+    };
+    onSave(body);
   }
 
   function handleReset() {
@@ -135,6 +193,7 @@ export function SettingsForm({
     setDefaultRepoId(DEFAULTS.defaultRepoId);
     setRetention(DEFAULTS.retention);
     setWriteConfirm(DEFAULTS.writeConfirm);
+    setSlotCeiling(String(DEFAULTS.maxConcurrentTasks));
   }
 
   return (
@@ -219,6 +278,29 @@ export function SettingsForm({
         </Select>
         <small className={fieldHint}>
           影响历史日志和 CLI 会话记录的默认保留周期。
+        </small>
+      </div>
+
+      {/* 任务槽位上限 — SYSTEM-WIDE maxConcurrentTasks (1–20, default 5). */}
+      <div className="mb-3.5 grid gap-2">
+        <label htmlFor="maxConcurrentTasks" className={fieldLabel}>
+          任务槽位上限
+        </label>
+        <input
+          id="maxConcurrentTasks"
+          name="maxConcurrentTasks"
+          type="number"
+          inputMode="numeric"
+          min={SLOT_CEILING_MIN}
+          max={SLOT_CEILING_MAX}
+          step={1}
+          value={slotCeiling}
+          onChange={(e) => setSlotCeiling(e.target.value)}
+          className={fieldControl}
+        />
+        <small className={fieldHint}>
+          系统级共享设置：1–20 之间的整数（默认
+          5），所有操作者共用同一个并发任务上限，保存后立即生效。
         </small>
       </div>
 

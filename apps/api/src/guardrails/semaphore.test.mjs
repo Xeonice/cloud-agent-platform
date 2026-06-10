@@ -12,6 +12,14 @@
  *      replacement (it held no slot).
  *   6. offer() is idempotent for already-tracked tasks.
  *   7. Invalid maxConcurrentTasks (0 or non-integer) throws on construction.
+ *
+ * Runtime-mutable ceiling semantics (configurable-task-slots):
+ *   8. Raising the ceiling from N to N+k with k tasks queued promotes the k
+ *      oldest queued tasks in FIFO order immediately (no release needed).
+ *   9. Lowering the ceiling below the running count evicts nothing; the running
+ *      count converges down as tasks release, then FIFO admission resumes.
+ *  10. Invalid setter values (0, negative, non-integer) are rejected and leave
+ *      the ceiling, running set, and queue unchanged.
  */
 
 // ---- inline the class (mirrors semaphore.ts, no transpile step needed) ----
@@ -54,6 +62,18 @@ class ConcurrencySemaphore {
       return null;
     }
     return this._admitNext();
+  }
+
+  setMaxConcurrentTasks(maxConcurrentTasks) {
+    if (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1) {
+      throw new Error(
+        `maxConcurrentTasks must be a positive integer, received: ${String(maxConcurrentTasks)}`,
+      );
+    }
+    this.maxConcurrentTasks = maxConcurrentTasks;
+    while (this._admitNext() !== null) {
+      // back-fill on raise; first call returns null on lower / empty queue
+    }
   }
 
   _admitNext() {
@@ -243,6 +263,107 @@ console.log('\n=== Concurrency semaphore: bounds running tasks ===\n');
     () => new ConcurrencySemaphore({ maxConcurrentTasks: 1.5 }),
     'T8c: maxConcurrentTasks=1.5 throws',
   );
+}
+
+// T9: raising the ceiling from N to N+k with k queued promotes the k oldest
+//     queued tasks in FIFO order immediately (no release required)
+{
+  const admitted = [];
+  const sem = new ConcurrencySemaphore({
+    maxConcurrentTasks: 2, // N = 2
+    onAdmit: (id) => admitted.push(id),
+  });
+
+  sem.offer('r1');
+  sem.offer('r2'); // cap reached
+  sem.offer('q1');
+  sem.offer('q2');
+  sem.offer('q3');
+
+  sem.setMaxConcurrentTasks(4); // raise by k = 2
+
+  assert(sem.maxConcurrentTasks === 4, 'T9a: ceiling reflects the raise (4)');
+  assert(admitted.length === 2, 'T9b: exactly k=2 tasks promoted immediately');
+  assert(admitted[0] === 'q1', 'T9c: oldest queued task promoted first (FIFO)');
+  assert(admitted[1] === 'q2', 'T9d: second-oldest promoted second (FIFO)');
+  assert(sem.runningCount === 4, 'T9e: runningCount filled to the new ceiling');
+  assert(sem.queuedCount === 1, 'T9f: remaining task stays queued');
+  assert(sem.isRunning('q1') && sem.isRunning('q2'), 'T9g: promoted tasks are running');
+  assert(sem.isQueued('q3'), 'T9h: q3 is the remaining queued task');
+
+  // Raising past the backlog size empties the queue without overshooting.
+  sem.setMaxConcurrentTasks(10);
+  assert(admitted[2] === 'q3', 'T9i: further raise promotes the last queued task');
+  assert(sem.runningCount === 5, 'T9j: runningCount only grows by available backlog');
+  assert(sem.queuedCount === 0, 'T9k: queue emptied by the raise');
+}
+
+// T10: lowering the ceiling below the running count evicts nothing and the
+//      running count converges as tasks release; FIFO admission then resumes
+{
+  const admitted = [];
+  const sem = new ConcurrencySemaphore({
+    maxConcurrentTasks: 3,
+    onAdmit: (id) => admitted.push(id),
+  });
+
+  sem.offer('r1');
+  sem.offer('r2');
+  sem.offer('r3'); // cap reached
+  sem.offer('q1'); // queued
+
+  sem.setMaxConcurrentTasks(1); // lower below running count
+
+  assert(sem.maxConcurrentTasks === 1, 'T10a: ceiling reflects the lower (1)');
+  assert(sem.runningCount === 3, 'T10b: no running task evicted by the lower');
+  assert(
+    sem.isRunning('r1') && sem.isRunning('r2') && sem.isRunning('r3'),
+    'T10c: all three running tasks keep their slots',
+  );
+  assert(sem.queuedCount === 1, 'T10d: queued task stays queued (no admission)');
+  assert(admitted.length === 0, 'T10e: onAdmit not called on a lower');
+
+  sem.release('r1'); // running 3 -> 2, still above ceiling 1
+  assert(sem.runningCount === 2, 'T10f: release converges count without back-fill');
+  assert(admitted.length === 0, 'T10g: no admission while over the new ceiling');
+
+  sem.release('r2'); // running 2 -> 1, at ceiling, still no capacity
+  assert(sem.runningCount === 1, 'T10h: count converges to the new ceiling');
+  assert(admitted.length === 0, 'T10i: no admission at the ceiling');
+
+  sem.release('r3'); // running 1 -> 0, capacity free again: FIFO resumes
+  assert(admitted.length === 1 && admitted[0] === 'q1', 'T10j: FIFO admission resumes (q1)');
+  assert(sem.runningCount === 1, 'T10k: runningCount back at the ceiling');
+  assert(sem.queuedCount === 0, 'T10l: queue drained after convergence');
+}
+
+// T11: invalid setter values are rejected and leave ceiling/running/queue intact
+{
+  const admitted = [];
+  const sem = new ConcurrencySemaphore({
+    maxConcurrentTasks: 2,
+    onAdmit: (id) => admitted.push(id),
+  });
+
+  sem.offer('r1');
+  sem.offer('r2');
+  sem.offer('q1');
+
+  for (const bad of [0, -1, 2.5, NaN]) {
+    assertThrows(
+      () => sem.setMaxConcurrentTasks(bad),
+      `T11-throw(${String(bad)}): setter rejects invalid value`,
+    );
+  }
+
+  assert(sem.maxConcurrentTasks === 2, 'T11a: ceiling unchanged after rejections');
+  assert(sem.runningCount === 2, 'T11b: running set size unchanged');
+  assert(
+    sem.isRunning('r1') && sem.isRunning('r2'),
+    'T11c: running membership unchanged',
+  );
+  assert(sem.queuedCount === 1 && sem.isQueued('q1'), 'T11d: queue unchanged');
+  assert(admitted.length === 0, 'T11e: onAdmit never fired during rejections');
 }
 
 // ---- summary ----

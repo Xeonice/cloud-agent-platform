@@ -37,6 +37,23 @@ export const RetentionDaysSchema = z.union([
 export type RetentionDays = z.infer<typeof RetentionDaysSchema>;
 
 /**
+ * Default system-wide task slot ceiling applied when no value has been
+ * persisted and env `MAX_CONCURRENT_TASKS` is unset.
+ */
+export const DEFAULT_MAX_CONCURRENT_TASKS = 5;
+
+/**
+ * The SYSTEM-LEVEL (instance-wide, shared across all accounts) task slot
+ * ceiling — how many tasks may run concurrently. Constrained to an integer in
+ * 1–20 (default {@link DEFAULT_MAX_CONCURRENT_TASKS}) so an out-of-range or
+ * non-integer value is rejected by the settings update API without mutating
+ * the stored value or the live semaphore. Floor ≥ 1 is mandatory: a ceiling of
+ * 0 would starve the queue.
+ */
+export const MaxConcurrentTasksSchema = z.number().int().min(1).max(20);
+export type MaxConcurrentTasks = z.infer<typeof MaxConcurrentTasksSchema>;
+
+/**
  * Per-account console preferences (read shape).
  *
  * `allowedAccount` is the read-only allowlisted account display identity
@@ -57,6 +74,15 @@ export const AccountSettingsSchema = z.object({
   retention: RetentionDaysSchema,
   /** Destructive-action gate toggle ("破坏性写入前停止" / write-confirm). */
   writeConfirm: z.boolean(),
+  /**
+   * SYSTEM-LEVEL task slot ceiling, shared across every account (NOT a
+   * per-account preference — a write by one operator is observed by all).
+   * Optional on the wire for backward compatibility; defaults to
+   * {@link DEFAULT_MAX_CONCURRENT_TASKS} when absent.
+   */
+  maxConcurrentTasks: MaxConcurrentTasksSchema.default(
+    DEFAULT_MAX_CONCURRENT_TASKS,
+  ),
 });
 export type AccountSettings = z.infer<typeof AccountSettingsSchema>;
 
@@ -137,6 +163,13 @@ export const UpdateSettingsRequestSchema = z.object({
   retention: RetentionDaysSchema.optional(),
   /** New destructive-action gate toggle value. */
   writeConfirm: z.boolean().optional(),
+  /**
+   * New SYSTEM-LEVEL task slot ceiling (integer 1–20, shared across accounts).
+   * Omit to leave the current ceiling unchanged; out-of-range or non-integer
+   * values are rejected (400) without mutating the stored value or the live
+   * semaphore.
+   */
+  maxConcurrentTasks: MaxConcurrentTasksSchema.optional(),
 });
 export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;
 

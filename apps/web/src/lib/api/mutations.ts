@@ -162,7 +162,9 @@ export function setDefaultRepoMutation(
 /**
  * Update writable account preferences. Real `PATCH /settings` when capable; else
  * merges the supplied keys into the store `settings` draft. Invalidates settings
- * (and the repo list when the default selection changed).
+ * (and the repo list when the default selection changed), PLUS the metrics key:
+ * a saved system-level slot ceiling (`maxConcurrentTasks`) must reflect on the
+ * dashboard capacity surfaces immediately, not after the next 5-second poll.
  */
 export function saveSettingsMutation(
   queryClient: QueryClient,
@@ -172,6 +174,9 @@ export function saveSettingsMutation(
       if (isCapable("settings")) {
         return real.saveSettings(body);
       }
+      // Structural read: `maxConcurrentTasks` is optional on the wire.
+      const ceiling = (body as { maxConcurrentTasks?: number })
+        .maxConcurrentTasks;
       setState((prev) => ({
         selectedRepo:
           body.defaultRepoId !== undefined
@@ -184,12 +189,16 @@ export function saveSettingsMutation(
               : prev.settings.defaultRepoId,
           retention: body.retention ?? prev.settings.retention,
           writeConfirm: body.writeConfirm ?? prev.settings.writeConfirm,
+          maxConcurrentTasks: ceiling ?? prev.settings.maxConcurrentTasks,
         },
       }));
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.settings });
       void queryClient.invalidateQueries({ queryKey: queryKeys.repos });
+      // Refresh capacity surfaces (slot meter, RUNNERS tile) before the next
+      // 5s metrics poll so a changed slot ceiling shows up immediately.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.metrics });
     },
   };
 }

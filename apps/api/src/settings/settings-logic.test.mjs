@@ -17,9 +17,15 @@
  *   4. deriveCredentialState / projectCredentialRead: connection state is shared;
  *      the API key is NEVER returned (only hasApiKey + masked suffix); official
  *      reads null the compatible-only fields.
+ *   5. SYSTEM-LEVEL slot ceiling (configurable-task-slots 5.1–5.4):
+ *      resolveMaxConcurrentTasks resolves `dbSetting ?? env ?? 5`; a valid save
+ *      persists on ONE shared fixed-id row, reads back exactly, and pushes the
+ *      live semaphore ceiling synchronously (no restart); an invalid value is
+ *      rejected mutating neither the stored value nor the live ceiling; a write
+ *      by one operator is observed by another operator's read.
  *
- * Logic is inlined (mirrors settings-logic.ts) so the test runs under plain
- * node:test with no transpile.
+ * Logic is inlined (mirrors settings-logic.ts / settings.service.ts) so the
+ * test runs under plain node:test with no transpile.
  */
 
 import test from 'node:test';
@@ -233,4 +239,139 @@ test('projectCredentialRead nulls compatible-only fields for official mode', () 
 test('projectCredentialRead: null facts => not_connected official default', () => {
   const read = projectCredentialRead(null, false);
   assert.deepEqual(read, { mode: 'official', state: 'not_connected', baseUrl: null, hasApiKey: false, apiKeySuffix: null, defaultModel: null });
+});
+
+// ---------------------------------------------------------------------------
+// 5. SYSTEM-LEVEL slot ceiling (configurable-task-slots 5.1–5.4)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MAX_CONCURRENT_TASKS = 5;
+const MAX_CONCURRENT_TASKS_MIN = 1;
+const MAX_CONCURRENT_TASKS_MAX = 20;
+
+// Mirrors settings-logic.ts isValidMaxConcurrentTasks.
+function isValidMaxConcurrentTasks(value) {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= MAX_CONCURRENT_TASKS_MIN &&
+    value <= MAX_CONCURRENT_TASKS_MAX
+  );
+}
+
+// Mirrors settings-logic.ts resolveMaxConcurrentTasks: `dbSetting ?? env ?? 5`.
+function resolveMaxConcurrentTasks(stored, envSeed) {
+  if (isValidMaxConcurrentTasks(stored)) return stored;
+  const parsed = envSeed === undefined || envSeed.trim() === '' ? Number.NaN : Number(envSeed);
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return Math.min(Math.max(parsed, MAX_CONCURRENT_TASKS_MIN), MAX_CONCURRENT_TASKS_MAX);
+  }
+  return DEFAULT_MAX_CONCURRENT_TASKS;
+}
+
+/**
+ * Mirrors the settings.service.ts system-ceiling save/read flow: ONE shared
+ * fixed-id `SystemSettings` row (operator-independent), a guard rejecting an
+ * invalid value BEFORE any mutation, and a SYNCHRONOUS push of a successful
+ * save into the live semaphore ceiling (env value seeds the semaphore at
+ * construction; the read path never touches it).
+ */
+function makeSystemCeilingHarness(env) {
+  const db = { row: null }; // the single system_settings row (fixed id)
+  const semaphore = { ceiling: resolveMaxConcurrentTasks(null, env) }; // env-seeded live ceiling
+  return {
+    db,
+    semaphore,
+    // PATCH /settings with { maxConcurrentTasks } — `operator` is deliberately
+    // unused on the write path: the row is system-level, not per-account.
+    save(_operator, value) {
+      if (value !== undefined && !isValidMaxConcurrentTasks(value)) {
+        return { status: 400 }; // rejected pre-mutation: db row + ceiling untouched
+      }
+      if (value !== undefined) {
+        db.row = { id: 'system', maxConcurrentTasks: value }; // fixed-id upsert
+        semaphore.ceiling = value; // synchronous push — effective without restart
+      }
+      return { status: 200, maxConcurrentTasks: this.read(_operator) };
+    },
+    // GET /settings — same single row regardless of which operator reads.
+    read(_operator) {
+      return resolveMaxConcurrentTasks(db.row?.maxConcurrentTasks ?? null, env);
+    },
+  };
+}
+
+test('resolveMaxConcurrentTasks: persisted value wins over env', () => {
+  assert.equal(resolveMaxConcurrentTasks(8, '3'), 8);
+});
+
+test('resolveMaxConcurrentTasks: env seeds when no row exists; default 5 when unset', () => {
+  assert.equal(resolveMaxConcurrentTasks(null, '7'), 7);
+  assert.equal(resolveMaxConcurrentTasks(null, undefined), 5);
+  assert.equal(resolveMaxConcurrentTasks(undefined, ''), 5);
+});
+
+test('resolveMaxConcurrentTasks: invalid env seeds fall back to 5; oversized env clamps for the read shape', () => {
+  for (const bad of ['abc', '0', '-2', '5.5']) {
+    assert.equal(resolveMaxConcurrentTasks(null, bad), 5);
+  }
+  // The semaphore may seed >20 from env, but the contracts read shape is 1–20.
+  assert.equal(resolveMaxConcurrentTasks(null, '50'), 20);
+});
+
+test('isValidMaxConcurrentTasks: accepts integers 1–20, rejects 0/21/negatives/non-integers', () => {
+  assert.equal(isValidMaxConcurrentTasks(1), true);
+  assert.equal(isValidMaxConcurrentTasks(5), true);
+  assert.equal(isValidMaxConcurrentTasks(20), true);
+  for (const bad of [0, 21, -3, 4.5, Number.NaN, '8', null, undefined]) {
+    assert.equal(isValidMaxConcurrentTasks(bad), false);
+  }
+});
+
+test('valid ceiling save persists, reads back exactly, and updates the live ceiling immediately', () => {
+  const h = makeSystemCeilingHarness('5');
+  const res = h.save('alice', 8);
+  assert.equal(res.status, 200);
+  assert.equal(res.maxConcurrentTasks, 8); // sanitized response carries the new value
+  assert.equal(h.read('alice'), 8); // read-back-after-write
+  assert.deepEqual(h.db.row, { id: 'system', maxConcurrentTasks: 8 }); // fixed-id row persisted
+  assert.equal(h.semaphore.ceiling, 8); // pushed synchronously — no restart needed
+});
+
+test('invalid ceiling body mutates neither the stored value nor the live semaphore', () => {
+  const h = makeSystemCeilingHarness('5');
+  h.save('alice', 8); // establish a persisted value first
+  for (const bad of [0, 21, -1, 3.5]) {
+    const res = h.save('alice', bad);
+    assert.equal(res.status, 400);
+    assert.deepEqual(h.db.row, { id: 'system', maxConcurrentTasks: 8 }); // stored unchanged
+    assert.equal(h.semaphore.ceiling, 8); // live ceiling unchanged
+  }
+});
+
+test('a write by one operator is observed by another operator: one shared system value', () => {
+  const h = makeSystemCeilingHarness(undefined);
+  assert.equal(h.read('alice'), 5); // both start at the default
+  assert.equal(h.read('bob'), 5);
+  h.save('alice', 12);
+  assert.equal(h.read('bob'), 12); // bob reads alice's write — single shared row
+  assert.equal(h.read('alice'), 12);
+});
+
+test('first boot (no persisted row) reads the env seed; a save then becomes authoritative', () => {
+  const h = makeSystemCeilingHarness('7');
+  assert.equal(h.read('alice'), 7); // env seed applies while no row exists
+  h.save('alice', 4);
+  assert.equal(h.read('alice'), 4); // persisted value wins over env thereafter
+  assert.equal(h.semaphore.ceiling, 4);
+});
+
+test('save without maxConcurrentTasks leaves the ceiling and stored row untouched', () => {
+  const h = makeSystemCeilingHarness('5');
+  h.save('alice', 9);
+  const res = h.save('alice', undefined); // e.g. a retention-only PATCH
+  assert.equal(res.status, 200);
+  assert.equal(res.maxConcurrentTasks, 9);
+  assert.deepEqual(h.db.row, { id: 'system', maxConcurrentTasks: 9 });
+  assert.equal(h.semaphore.ceiling, 9);
 });

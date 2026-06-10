@@ -15,6 +15,7 @@ import {
   type UpdateSettingsRequest,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
+import { GuardrailsService } from '../guardrails/guardrails.service';
 import {
   ModelDiscoveryClient,
   type ModelDiscoveryResult,
@@ -23,9 +24,11 @@ import {
   applySettingsUpdate,
   DEFAULT_RETENTION_DAYS,
   DEFAULT_WRITE_CONFIRM,
+  isValidMaxConcurrentTasks,
   projectCredentialRead,
   projectCredentialSave,
   resolveAccountSettings,
+  resolveMaxConcurrentTasks,
   validateDefaultRepoSelection,
   type StoredAccountPrefs,
   type StoredCredentialFacts,
@@ -41,6 +44,14 @@ import {
 export const CODEX_CRED_ENC_KEY_ENV = 'CODEX_CRED_ENC_KEY';
 
 /**
+ * Fixed primary key of the single `SystemSettings` row (configurable-task-slots
+ * 5.1). The system-level slot ceiling is one shared value for the whole
+ * deployment, so every read/write addresses this one row via upsert — at most
+ * one row ever exists.
+ */
+export const SYSTEM_SETTINGS_ROW_ID = 'system';
+
+/**
  * Account-settings + Codex-credential service (account-settings, tasks 7.2–7.6).
  *
  * Per-account scoping (7.2/7.3): every read/write is keyed on the OWNING user
@@ -48,6 +59,15 @@ export const CODEX_CRED_ENC_KEY_ENV = 'CODEX_CRED_ENC_KEY';
  * caller can therefore only ever read or mutate THEIR OWN account's settings —
  * the user id is taken from the guard-attached principal, never from the body —
  * so settings never leak across accounts.
+ *
+ * EXCEPTION — the SYSTEM-LEVEL slot ceiling (configurable-task-slots 5.1–5.3):
+ * `maxConcurrentTasks` is deliberately carved out of per-account scoping. It is
+ * ONE shared value for the deployment, stored on the single fixed-id
+ * `SystemSettings` row (NOT on the per-account `AccountSettings` row), so a
+ * write by one operator is observed by every operator's subsequent read. GET
+ * resolves `dbSetting ?? env MAX_CONCURRENT_TASKS ?? 5` (first boot reads the
+ * env seed); a successful save pushes the new ceiling SYNCHRONOUSLY into the
+ * live guardrails semaphore so it takes effect without a restart.
  *
  * Secret discipline (7.5): the compatible-provider API key is encrypted at rest
  * with AES-256-GCM under {@link CODEX_CRED_ENC_KEY_ENV}; saving a key with no
@@ -65,6 +85,12 @@ export class SettingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly modelDiscovery: ModelDiscoveryClient,
+    /**
+     * Live guardrails semaphore owner (configurable-task-slots 5.3): a
+     * successful `maxConcurrentTasks` save is pushed here synchronously after
+     * the upsert so the new ceiling takes effect without a process restart.
+     */
+    private readonly guardrails: GuardrailsService,
   ) {}
 
   /**
@@ -72,6 +98,10 @@ export class SettingsService {
    * account. `allowedAccount` is the read-only OAuth-sourced display identity
    * (the GitHub login), never stored; the rest comes from the account's own
    * stored row, or the documented defaults when nothing has been saved.
+   *
+   * Additionally surfaces the SYSTEM-LEVEL `maxConcurrentTasks` (5.1) resolved
+   * from the single shared `SystemSettings` row — the same value for every
+   * operator — falling back to the env seed / default when no row exists.
    */
   async readSettings(operator: SessionUser): Promise<AccountSettings> {
     const userId = await this.requireUserId(operator);
@@ -84,7 +114,11 @@ export class SettingsService {
         }
       : null;
     return AccountSettingsSchema.parse(
-      resolveAccountSettings(this.displayAccount(operator), stored),
+      resolveAccountSettings(
+        this.displayAccount(operator),
+        stored,
+        await this.readSystemCeiling(),
+      ),
     );
   }
 
@@ -94,11 +128,33 @@ export class SettingsService {
    * account has imported/can see (un-imported is rejected 4xx WITHOUT mutating
    * anything); `null` clears it. The read-only `allowedAccount` is not present
    * in the body and cannot be changed here.
+   *
+   * configurable-task-slots 5.1–5.3 — a supplied `maxConcurrentTasks` is the
+   * SYSTEM-LEVEL slot ceiling: validated against the shared contracts range
+   * (1–20, enforced by the route's `UpdateSettingsRequestSchema` pipe and
+   * re-checked here) BEFORE any write, persisted via fixed-id upsert on the
+   * single `SystemSettings` row, then pushed synchronously into the live
+   * guardrails semaphore so the save takes effect without a restart. An
+   * invalid value is rejected 400 and mutates neither the stored value nor
+   * the live ceiling.
    */
   async updateSettings(
     operator: SessionUser,
     patch: UpdateSettingsRequest,
   ): Promise<AccountSettings> {
+    // Slot-ceiling guard (5.2): the controller pipe already rejects an
+    // out-of-range/non-integer body with 400 before this method runs; this
+    // re-check keeps "invalid mutates nothing" true for any non-HTTP caller.
+    if (
+      patch.maxConcurrentTasks !== undefined &&
+      !isValidMaxConcurrentTasks(patch.maxConcurrentTasks)
+    ) {
+      throw new BadRequestException({
+        error: 'invalid_max_concurrent_tasks',
+        message: 'maxConcurrentTasks must be an integer between 1 and 20.',
+      });
+    }
+
     const userId = await this.requireUserId(operator);
     const existing = await this.prisma.accountSettings.findUnique({ where: { userId } });
     const current: StoredAccountPrefs = existing
@@ -146,8 +202,29 @@ export class SettingsService {
       },
     });
 
+    // System-level slot ceiling (5.1/5.3): persist on the single fixed-id row
+    // shared by every account, then push the new value SYNCHRONOUSLY into the
+    // live semaphore — read-back-after-write and immediate effect, no restart.
+    // A push failure surfaces as a 5xx here; bootstrap reloads the persisted
+    // value on the next restart, restoring DB/live consistency.
+    let effectiveCeiling: number;
+    if (patch.maxConcurrentTasks !== undefined) {
+      effectiveCeiling = patch.maxConcurrentTasks;
+      await this.prisma.systemSettings.upsert({
+        where: { id: SYSTEM_SETTINGS_ROW_ID },
+        create: {
+          id: SYSTEM_SETTINGS_ROW_ID,
+          maxConcurrentTasks: effectiveCeiling,
+        },
+        update: { maxConcurrentTasks: effectiveCeiling },
+      });
+      this.guardrails.setMaxConcurrentTasks(effectiveCeiling);
+    } else {
+      effectiveCeiling = await this.readSystemCeiling();
+    }
+
     return AccountSettingsSchema.parse(
-      resolveAccountSettings(this.displayAccount(operator), next),
+      resolveAccountSettings(this.displayAccount(operator), next, effectiveCeiling),
     );
   }
 
@@ -321,6 +398,23 @@ export class SettingsService {
   }
 
   // ----- internals -----------------------------------------------------------
+
+  /**
+   * Reads the effective SYSTEM-LEVEL slot ceiling (configurable-task-slots
+   * 5.1): the single fixed-id `SystemSettings` row when one has been persisted,
+   * else the env `MAX_CONCURRENT_TASKS` seed, else the default 5 — i.e.
+   * `dbSetting ?? envDefault ?? 5`. The row is shared by every operator, so
+   * all accounts read the same value.
+   */
+  private async readSystemCeiling(): Promise<number> {
+    const row = await this.prisma.systemSettings.findUnique({
+      where: { id: SYSTEM_SETTINGS_ROW_ID },
+    });
+    return resolveMaxConcurrentTasks(
+      row?.maxConcurrentTasks ?? null,
+      process.env.MAX_CONCURRENT_TASKS,
+    );
+  }
 
   /**
    * Resolves the OWNING user row id from the operator principal's immutable

@@ -32,7 +32,7 @@ export interface ConcurrencySemaphoreOptions {
 export type AdmissionResult = 'running' | 'queued';
 
 export class ConcurrencySemaphore {
-  private readonly _maxConcurrentTasks: number;
+  private _maxConcurrentTasks: number;
   private readonly onAdmit?: AdmitCallback;
 
   /** Task ids currently occupying a running slot. */
@@ -53,12 +53,42 @@ export class ConcurrencySemaphore {
   }
 
   /**
-   * Configured slot ceiling (`MAX_CONCURRENT_TASKS`). Exposed read-only for the
-   * derived capacity projection (be-metrics 5.1) so `ceiling` is read from the
-   * same live instance as `runningCount`/`queuedCount`, never a separate copy.
+   * Configured slot ceiling (seeded from `MAX_CONCURRENT_TASKS`, runtime-mutable
+   * via {@link setMaxConcurrentTasks}). Exposed for the derived capacity
+   * projection (be-metrics 5.1) so `ceiling` is read from the same live instance
+   * as `runningCount`/`queuedCount`, never a separate copy.
    */
   get maxConcurrentTasks(): number {
     return this._maxConcurrentTasks;
+  }
+
+  /**
+   * Updates the slot ceiling at runtime (configurable-task-slots).
+   *
+   * - A non-integer or non-positive value is rejected (throws) without mutating
+   *   the ceiling, the running set, or the queue.
+   * - RAISING the ceiling immediately admits queued tasks in FIFO order (via the
+   *   same {@link admitNext} path as slot release) until the new capacity is
+   *   filled or the queue empties — no waiting for the next release.
+   * - LOWERING the ceiling never interrupts, evicts, or kills running tasks:
+   *   {@link hasCapacity} going false simply stops back-filling, and the running
+   *   count converges down naturally as tasks reach terminal states.
+   */
+  setMaxConcurrentTasks(maxConcurrentTasks: number): void {
+    if (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1) {
+      throw new Error(
+        `maxConcurrentTasks must be a positive integer, received: ${String(maxConcurrentTasks)}`,
+      );
+    }
+
+    this._maxConcurrentTasks = maxConcurrentTasks;
+
+    // On a raise, back-fill the freed capacity from the FIFO backlog right away.
+    // On a lower (or an empty queue) the first call returns null immediately.
+    while (this.admitNext() !== null) {
+      // admitNext() promotes one queued task per iteration and stops on its own
+      // when capacity is filled or the queue empties.
+    }
   }
 
   /** Number of tasks currently holding a running slot. */

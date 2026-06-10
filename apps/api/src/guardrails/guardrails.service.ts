@@ -1,7 +1,15 @@
-import { Inject, Injectable, Logger, Optional, type OnModuleInit } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  type OnApplicationBootstrap,
+  type OnModuleInit,
+} from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { TaskStatus } from '@cap/contracts';
 import { TasksService } from '../tasks/tasks.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import {
   SANDBOX_PROVIDER,
@@ -92,7 +100,15 @@ export interface ITerminalGateway {
 export const TERMINAL_GATEWAY_TOKEN = 'TERMINAL_GATEWAY';
 
 export interface GuardrailsConfig {
-  /** Max tasks running concurrently (`MAX_CONCURRENT_TASKS`). */
+  /**
+   * Max tasks running concurrently. Seeded from env `MAX_CONCURRENT_TASKS` at
+   * construction; the persisted system-level setting (when a `SystemSettings`
+   * row exists) overrides it at bootstrap via
+   * {@link GuardrailsService.loadPersistedCeiling}, and a settings save pushes
+   * a new value at runtime via
+   * {@link GuardrailsService.setMaxConcurrentTasks} — so the effective ceiling
+   * resolves as `dbSetting ?? env MAX_CONCURRENT_TASKS ?? 5`.
+   */
   readonly maxConcurrentTasks: number;
   /**
    * OPERATOR-LEVEL default idle ceiling in ms (`MAX_IDLE_MS`), applied to tasks
@@ -128,7 +144,7 @@ export interface GuardrailParams {
 }
 
 @Injectable()
-export class GuardrailsService implements OnModuleInit {
+export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private readonly logger = new Logger(GuardrailsService.name);
 
   /**
@@ -207,6 +223,17 @@ export class GuardrailsService implements OnModuleInit {
     @Optional()
     @Inject(AUDIT_RECORDER_TOKEN)
     private readonly audit?: AuditRecorderPort,
+    /**
+     * Prisma client for the bootstrap-time persisted-ceiling read
+     * (configurable-task-slots). Optional so guardrails-only unit contexts
+     * still construct without a database; when absent,
+     * {@link loadPersistedCeiling} degrades to the env-seeded ceiling. The
+     * admission hot path NEVER touches it — the in-memory ceiling is
+     * authoritative and is written only at bootstrap load and on a
+     * settings-save push.
+     */
+    @Optional()
+    private readonly prisma?: PrismaService,
   ) {
     // admit-queued: when a slot frees, drive `queued -> running` for the admitted
     // task (FIFO) — the cross-track lifecycle call site for 12.1.
@@ -255,6 +282,67 @@ export class GuardrailsService implements OnModuleInit {
       // the connection handle; no terminal session is opened.
       this.gateway = undefined;
     }
+  }
+
+  /**
+   * Apply the persisted system-level slot ceiling once the application has
+   * bootstrapped (configurable-task-slots). The env value seeded the semaphore
+   * at construction; this load lets a previously saved setting win across
+   * restarts even when no other bootstrap participant asks for it.
+   */
+  async onApplicationBootstrap(): Promise<void> {
+    await this.loadPersistedCeiling();
+  }
+
+  /**
+   * Runtime pass-through to the semaphore's slot-ceiling setter
+   * (configurable-task-slots): the settings save path pushes a validated value
+   * here synchronously after its upsert so the new ceiling takes effect without
+   * a restart. Raising promotes queued tasks in FIFO order immediately;
+   * lowering never evicts running tasks (the count converges as tasks release).
+   * A non-positive or non-integer value is rejected by the semaphore (throws)
+   * without mutating the ceiling, the running set, or the queue. Env
+   * `MAX_CONCURRENT_TASKS` remains only the construction-time seed.
+   */
+  setMaxConcurrentTasks(maxConcurrentTasks: number): void {
+    this.semaphore.setMaxConcurrentTasks(maxConcurrentTasks);
+  }
+
+  /**
+   * Load the persisted system-level ceiling — the single `SystemSettings` row —
+   * into the live semaphore, AFTER the env construction seed, so the effective
+   * ceiling resolves as `dbSetting ?? env MAX_CONCURRENT_TASKS ?? 5` and the
+   * persisted value wins across restarts (configurable-task-slots).
+   *
+   * Called from {@link onApplicationBootstrap} here AND awaited by the tasks
+   * startup recovery BEFORE it re-offers DB `queued` tasks (ceiling-first
+   * ordering, so re-offer admits against the persisted ceiling rather than the
+   * env seed). Idempotent — the double call is harmless. Returns the effective
+   * ceiling after the load; degrades to the current (env-seeded) ceiling when
+   * no row exists, no prisma client is wired, the stored value is invalid, or
+   * the read fails — bootstrap must never crash on a missing/unreadable row.
+   */
+  async loadPersistedCeiling(): Promise<number> {
+    if (!this.prisma) {
+      return this.semaphore.maxConcurrentTasks;
+    }
+    try {
+      const row = await this.prisma.systemSettings.findFirst();
+      const persisted = row?.maxConcurrentTasks;
+      // Defensive validity guard (contracts constrain writes to 1–20 already):
+      // an invalid stored value is ignored rather than thrown by the setter.
+      if (persisted !== undefined && Number.isInteger(persisted) && persisted >= 1) {
+        this.semaphore.setMaxConcurrentTasks(persisted);
+        this.logger.log(`slot ceiling loaded from system settings: ${persisted}`);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `loading persisted slot ceiling failed (keeping ceiling ${
+          this.semaphore.maxConcurrentTasks
+        }): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return this.semaphore.maxConcurrentTasks;
   }
 
   /**

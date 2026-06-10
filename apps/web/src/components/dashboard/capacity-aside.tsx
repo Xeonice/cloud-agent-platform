@@ -1,8 +1,9 @@
 /**
  * `CapacityAside` — the dashboard `.capacity-panel` (Track 16, task 16.4).
  *
- * The right column of the workspace: an Agent-capacity summary, a 10-cell
- * `SlotMeter` (one cell per `occupancy.slots` entry), a `ResourceMeter` list
+ * The right column of the workspace: an Agent-capacity summary, a `SlotMeter`
+ * sized to the live ceiling (one cell AND one grid column per `occupancy.slots`
+ * entry — works for any configured ceiling in 1–20), a `ResourceMeter` list
  * (CPU + memory bars), and a compact `ConfigList` (scheduling region / takeover
  * policy / write boundary). Reads `metricsQuery()` via `useQuery` — MOCK today
  * (the `/metrics` capability needs an OAuth session), non-blocking, so the panel
@@ -185,7 +186,12 @@ function CapacityBody({ metrics }: { metrics: MetricsResponse }) {
 
       <div
         aria-label={`${capacity.ceiling} 个 Agent 槽位，${capacity.active} 个已占用`}
-        className="mb-4 grid grid-cols-10 gap-1"
+        className="mb-4 grid gap-1"
+        // One column per live slot (occupancy.slots.length, ceiling 1–20) —
+        // never a hardcoded ten-column grid (configurable-task-slots).
+        style={{
+          gridTemplateColumns: `repeat(${Math.max(occupancy.slots.length, 1)}, minmax(0, 1fr))`,
+        }}
       >
         {occupancy.slots.map((entry) => (
           <SlotCell

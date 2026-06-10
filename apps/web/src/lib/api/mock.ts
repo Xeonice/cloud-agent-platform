@@ -271,17 +271,22 @@ export async function mockAuthSession(): Promise<AuthSession> {
 }
 
 // ---------------------------------------------------------------------------
-// Metrics — RUNNERS 7/10, QUEUE 11, CPU 42 / mem 64, 10-slot table
+// Metrics — RUNNERS 4/5, QUEUE 11, CPU 42 / mem 64, 5-slot table
 // ---------------------------------------------------------------------------
 
-const CEILING = 10;
-const ACTIVE = 7;
+/**
+ * Mock slot ceiling, aligned to the REAL backend default of 5
+ * (`maxConcurrentTasks`: dbSetting ?? env MAX_CONCURRENT_TASKS ?? 5), so the
+ * mock and real capacity renders agree (configurable-task-slots).
+ */
+const CEILING = 5;
+const ACTIVE = 4;
 const QUEUE_DEPTH = 11;
 
 /**
- * The full `/metrics` payload: semaphore-derived capacity + a 10-slot occupancy
- * table (7 busy / 3 idle) + a sampled CPU/memory block at 42% / 64%, matching
- * the prototype's hardcoded numbers (RUNNERS 7/10, QUEUE 11, CPU 42% 内存 64%).
+ * The full `/metrics` payload: semaphore-derived capacity + a 5-slot occupancy
+ * table (4 busy / 1 idle, ceiling aligned to the backend default 5) + a sampled
+ * CPU/memory block at 42% / 64% (QUEUE 11, CPU 42% 内存 64%).
  */
 export async function mockMetrics(): Promise<MetricsResponse> {
   await delay();
@@ -410,7 +415,7 @@ const MOCK_EVENTS: AuditEvent[] = [
     type: "task.queued",
     level: "warning",
     title: "任务进入队列",
-    description: "并发信号量已满（10/10），任务排队等待空闲槽位",
+    description: "并发信号量已满（5/5），任务排队等待空闲槽位",
     timestamp: minsAgo(21),
     resultCode: 409,
     runId: "run-b-001",
@@ -480,12 +485,16 @@ export async function mockHistory(
 export async function mockSettings(): Promise<AccountSettings> {
   await delay();
   const { settings } = getState();
-  return {
+  // Built as a variable so the system-level `maxConcurrentTasks` (store-backed,
+  // default 5 — aligned to the real backend default) rides the read shape.
+  const result = {
     allowedAccount: ALLOWED_ACCOUNT,
     defaultRepoId: settings.defaultRepoId,
     retention: settings.retention,
     writeConfirm: settings.writeConfirm,
+    maxConcurrentTasks: settings.maxConcurrentTasks,
   };
+  return result;
 }
 
 /** The Codex execution credential state (never a plaintext key). */

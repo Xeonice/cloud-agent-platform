@@ -59,7 +59,15 @@ export type DiscoverModelsRequest = z.infer<typeof DiscoverModelsRequestSchema>;
  * - `PATCH /settings` / `PUT`       -> 200 updated sanitized preferences; a
  *                                      defaultRepoId MUST be imported (else 4xx,
  *                                      nothing mutated); allowedAccount is
- *                                      read-only.
+ *                                      read-only. May also carry the
+ *                                      SYSTEM-LEVEL `maxConcurrentTasks` slot
+ *                                      ceiling (configurable-task-slots): the
+ *                                      shared `UpdateSettingsRequestSchema`
+ *                                      pipe rejects out-of-range/non-integer
+ *                                      values 400 BEFORE the handler (nothing
+ *                                      mutated); a valid save persists the one
+ *                                      system-wide value and takes effect
+ *                                      immediately, no restart.
  * - `GET   /settings/codex`         -> 200 the secret-free Codex credential
  *                                      (mode + state + hasApiKey + masked suffix).
  * - `PUT   /settings/codex`         -> 200 saves the credential (modes mutually

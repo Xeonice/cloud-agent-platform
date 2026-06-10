@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { ModelDiscoveryClient } from './model-discovery.client';
@@ -15,10 +16,16 @@ import { CodexDeviceLoginService } from './codex-device-login.service';
  *  - {@link ModelDiscoveryClient}, the compatible-provider model-discovery HTTP
  *    boundary (validate a candidate before persisting).
  *
+ * Imports {@link GuardrailsModule} (acyclic — precedent: `MetricsModule`) for
+ * the `GuardrailsService` so a successful save of the SYSTEM-LEVEL
+ * `maxConcurrentTasks` is pushed synchronously into the live concurrency
+ * semaphore and takes effect without a restart (configurable-task-slots 5.3).
+ *
  * Relies on the global `PrismaModule` for DB access. Registered in
  * `app.module.ts` alongside the other feature modules.
  */
 @Module({
+  imports: [GuardrailsModule],
   controllers: [SettingsController],
   providers: [SettingsService, ModelDiscoveryClient, CodexDeviceLoginService],
   exports: [SettingsService],

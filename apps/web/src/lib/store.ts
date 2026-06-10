@@ -53,6 +53,11 @@ export interface SettingsDraft {
   retention: RetentionDays;
   /** Destructive-write gate ("破坏性写入前停止"). */
   writeConfirm: boolean;
+  /**
+   * System-wide concurrent task slot ceiling (`maxConcurrentTasks`), an integer
+   * in 1–20. Aligned to the real backend default of 5 (configurable-task-slots).
+   */
+  maxConcurrentTasks: number;
 }
 
 /** The full persisted store shape. */
@@ -78,6 +83,7 @@ export const DEFAULT_STATE: PersistedState = {
     defaultRepoId: null,
     retention: 30,
     writeConfirm: true,
+    maxConcurrentTasks: 5,
   },
   codexCredential: {
     mode: "official",
@@ -97,6 +103,19 @@ function normalizeRetention(value: unknown): RetentionDays {
   return RETENTION_VALUES.includes(value as RetentionDays)
     ? (value as RetentionDays)
     : 30;
+}
+
+/**
+ * Coerce an arbitrary value to a valid slot ceiling (integer in 1–20), falling
+ * back to the backend default 5 (configurable-task-slots contract range).
+ */
+function normalizeSlotCeiling(value: unknown): number {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 20
+    ? value
+    : 5;
 }
 
 /**
@@ -170,6 +189,7 @@ export function normalizeState(raw: unknown): PersistedState {
       defaultRepoId: settingsDefaultRepoId,
       retention: normalizeRetention(settingsRaw.retention),
       writeConfirm: settingsRaw.writeConfirm !== false,
+      maxConcurrentTasks: normalizeSlotCeiling(settingsRaw.maxConcurrentTasks),
     },
     codexCredential: {
       mode,
