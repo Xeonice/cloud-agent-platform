@@ -19,6 +19,12 @@
  *     performs native smooth-scroll to the section (paired with `scroll-mt-*` on
  *     the target section to clear this fixed 64px nav).
  *
+ * Account affordance (verify-reopened V1): the optional `account` prop renders
+ * the authenticated operator's identity (avatar-or-initials + GitHub login)
+ * alongside the CTA, per the "Landing is session-aware" scenario. Pages pass it
+ * only once the session is known on the client, so the SSR/first-paint markup
+ * stays the anonymous state (no hydration mismatch).
+ *
  * SSR-safe: pure, deterministic render — no window/document/clock/random access.
  *
  * Fidelity (prototype assets/styles.css `.landing-nav`):
@@ -48,11 +54,21 @@ export interface LandingNavCta {
   to: RouteTarget;
 }
 
+/** The authenticated operator identity shown alongside the CTA. */
+export interface LandingNavAccount {
+  /** GitHub login (the allowlist identity). */
+  login: string;
+  /** GitHub avatar URL; falls back to login-derived initials when absent. */
+  avatarUrl?: string;
+}
+
 export interface LandingNavProps {
   /** Plain text links shown before the CTA. Defaults to the workspace set. */
   links?: readonly LandingNavLink[];
   /** The trailing primary button. Defaults to 进入工作台 → /dashboard. */
   cta?: LandingNavCta;
+  /** Authenticated operator identity chip; omitted = anonymous nav. */
+  account?: LandingNavAccount;
 }
 
 /**
@@ -70,6 +86,7 @@ const DEFAULT_CTA: LandingNavCta = { label: "进入工作台", to: "/dashboard" 
 export function LandingNav({
   links = DEFAULT_LINKS,
   cta = DEFAULT_CTA,
+  account,
 }: LandingNavProps = {}) {
   return (
     <nav
@@ -110,6 +127,32 @@ export function LandingNav({
             </a>
           ),
         )}
+        {account ? (
+          <span
+            data-slot="landing-nav-account"
+            aria-label={`当前账户 ${account.login}`}
+            className="inline-flex items-center gap-2 rounded-full bg-card py-1 pr-2.5 pl-1 shadow-ring"
+          >
+            {account.avatarUrl ? (
+              <img
+                src={account.avatarUrl}
+                alt=""
+                aria-hidden="true"
+                className="size-[22px] rounded-full"
+              />
+            ) : (
+              <span
+                aria-hidden="true"
+                className="grid size-[22px] place-items-center rounded-full bg-dark-pill font-mono text-[10px] text-background"
+              >
+                {account.login.slice(0, 2).toUpperCase()}
+              </span>
+            )}
+            <span className="font-mono text-xs text-muted-foreground">
+              {account.login}
+            </span>
+          </span>
+        ) : null}
         <Button asChild size="sm" className="min-h-[30px] px-2.5 text-xs">
           <Link to={cta.to}>{cta.label}</Link>
         </Button>

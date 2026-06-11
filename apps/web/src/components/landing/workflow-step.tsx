@@ -1,84 +1,94 @@
 /**
- * `WorkflowStep` — one cell of the landing `#workflow` section's `.workflow-row`
- * (Track 12).
+ * `ProcessRail` / `WorkflowStep` — the landing `#workflow` operator-flow rail
+ * (console-design-pixel-merge Track 5, task 5.3).
  *
- * Renders a single `<article>` of the prototype's 3-up operator-flow strip:
- * `<div class="eyebrow">01 连接</div><h3>title</h3><p>copy</p>`. The row
- * container (`WorkflowRow`) owns the hairline-separated 3-up grid; this step is
- * presentation only.
- *
- * The eyebrow is tinted per step via the `step` prop, matching the prototype's
- * `[data-step]` accent rules: develop → blue, preview → pink, ship → red.
- *
- * IMPORTANT fidelity note: the prototype defines NO `.workflow-step h3` /
- * `.workflow-step p` rule, so in the (non-Tailwind, non-reset) prototype the
- * `<h3>`/`<p>` render with browser UA defaults. Our Tailwind v4 build resets
- * headings/paragraphs, so we re-apply the UA-default metrics explicitly here:
- * h3 = 1.17em / bold / 1em block margins; p = 1em block margins / muted body.
+ * Replaces the former 3-up hairline `WorkflowRow` strip with the design
+ * revision's `process-rail`: a vertical rail (1px line behind the index discs)
+ * carrying four numbered `workflow-step` entries, each a 38px disc column plus
+ * a body (title / copy / mono meta pills). The design marks one step
+ * `is-current` (dark disc) — exposed here as the `current` prop.
  *
  * SSR-safe: pure render, no window/clock/random.
  *
- * Fidelity (`.workflow-step` base): white surface, padding 22, min-h 220 (the
- * `.workflow-row` supplies the 1px hairline grid + rounded clip).
+ * Fidelity (design index.html `.process-rail` / `.workflow-step`):
+ *   rail = relative grid, mt 30, ::before 1px line at left 18px inset 18px.
+ *   step = grid `38px minmax(0,1fr)`, gap 14, pb 24 (last 0).
+ *   step-index = 36px circle, card bg + ring, muted mono 12px/500 tabular;
+ *     is-current → foreground bg / card ink.
+ *   step-body h3 = 18px/600, -0.32px; p = max-w 560, mt 7, muted 14px/1.55.
+ *   step-meta = flex wrap gap 6 mt 12; pills = subtle bg, muted mono 11px,
+ *     4px 8px, rounded-full.
  */
 import * as React from "react";
 
 import { cn } from "@/utils";
 
-/** The three prototype steps, each keying an eyebrow accent color. */
-export type WorkflowStepKind = "develop" | "preview" | "ship";
-
-/** Per-step eyebrow accent (prototype `[data-step] .eyebrow` rules). */
-const EYEBROW_ACCENT: Record<WorkflowStepKind, string> = {
-  develop: "text-blue",
-  preview: "text-pink",
-  ship: "text-red",
-};
-
 export interface WorkflowStepProps {
-  /** Which step (drives the eyebrow accent color). */
-  step: WorkflowStepKind;
-  /** Mono numbered eyebrow (e.g. "01 连接"). */
-  eyebrow: React.ReactNode;
-  /** The step title (e.g. "GitHub 授权登录"). */
+  /** Zero-padded mono rail index (e.g. "01"). */
+  index: string;
+  /** The step title (e.g. "GitHub 身份进入控制台"). */
   title: React.ReactNode;
+  /** The design's `is-current` step (dark index disc). */
+  current?: boolean;
+  /** Mono meta pills under the copy (e.g. ["OAuth", "Allowlist"]). */
+  meta?: readonly string[];
   /** The supporting paragraph. */
   children: React.ReactNode;
 }
 
-/** A single operator-flow step. */
+/** A single operator-flow step on the rail. */
 export function WorkflowStep({
-  step,
-  eyebrow,
+  index,
   title,
+  current = false,
+  meta,
   children,
 }: WorkflowStepProps) {
   return (
     <article
       data-slot="workflow-step"
-      data-step={step}
-      className="min-h-[180px] bg-card p-[22px]"
+      data-current={current || undefined}
+      className="relative grid min-w-0 grid-cols-[38px_minmax(0,1fr)] gap-3.5 pb-6 last:pb-0"
     >
-      <div
+      <span
         className={cn(
-          "font-mono text-xs font-semibold",
-          EYEBROW_ACCENT[step],
+          "relative z-[1] grid size-9 place-items-center rounded-full font-mono text-xs font-medium tabular-nums shadow-ring",
+          current ? "bg-foreground text-card" : "bg-card text-muted-foreground",
         )}
       >
-        {eyebrow}
+        {index}
+      </span>
+      <div className="min-w-0 pt-0.5">
+        <h3 className="text-lg font-semibold tracking-[-0.32px] text-foreground">
+          {title}
+        </h3>
+        <p className="mt-[7px] max-w-[560px] text-sm leading-[1.55] text-muted-foreground">
+          {children}
+        </p>
+        {meta && meta.length > 0 ? (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {meta.map((item) => (
+              <span
+                key={item}
+                className="rounded-full bg-[#fafafa] px-2 py-1 font-mono text-[11px] text-muted-foreground"
+              >
+                {item}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
-      <h3 className="my-[1em] text-[1.17em] font-bold text-foreground">
-        {title}
-      </h3>
-      <p className="my-[1em] leading-normal text-foreground">{children}</p>
     </article>
   );
 }
 
-/** The hairline-separated 3-up row wrapping the workflow steps (`.workflow-row`). */
-export function WorkflowRow({ children }: { children: React.ReactNode }) {
+/** The vertical rail wrapping the workflow steps (`.process-rail`). */
+export function ProcessRail({ children }: { children: React.ReactNode }) {
   return (
-    <div className="grid grid-cols-3 gap-px overflow-hidden rounded-md bg-line shadow-ring max-[820px]:grid-cols-1">
+    <div
+      aria-label="操作者流程"
+      className="relative mt-[30px] grid before:absolute before:top-[18px] before:bottom-[18px] before:left-[18px] before:w-px before:bg-line before:content-['']"
+    >
       {children}
     </div>
   );

@@ -1,10 +1,12 @@
 /**
  * `LandingFooter` — minimal footer for the marketing landing
- * (auth-redirects-and-landing). The prototype landing ended abruptly after the
- * `#security` section with no footer; this adds a quiet closing band with the
- * repo link, a security-model jump, and a copyright line, in the existing design
- * language (ink-soft mono labels, hairline top border). SSR-safe: static copy,
- * no window/clock/random.
+ * (auth-redirects-and-landing; pixel pass in console-design-pixel-merge
+ * Track 5). A quiet closing band with the repo link, a security-model jump
+ * (`#security` — resolving to the boundary-ledger aside), and a copyright
+ * line. SSR-safe: static copy, no window/clock/random.
+ *
+ * Fidelity (design index.html `.landing-footer` / `.landing-links`):
+ *   max-w 1200, hairline top, py 32; links = gap 24, 13px/500 muted.
  */
 import { Link } from "@tanstack/react-router";
 
@@ -22,7 +24,7 @@ export function LandingFooter() {
         </div>
         <nav
           aria-label="页脚导航"
-          className="flex flex-wrap items-center gap-5 text-[13px] text-ink-soft"
+          className="flex flex-wrap items-center gap-6 text-[13px] font-medium text-muted-foreground"
         >
           <a
             href={REPO_URL}

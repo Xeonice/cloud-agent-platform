@@ -75,28 +75,26 @@ const HOUR = 60 * MINUTE;
 export const GUARDRAIL_OFF = "off";
 
 /**
- * Idle-reclaim presets (task-guardrail-controls). DEFAULT is OFF: a task created
- * with no idle timeout is never reclaimed for idleness. `ms: null` is the off
- * choice. Exported so `/tasks/new` shares the same catalog.
+ * Idle-reclaim presets (console-design-pixel-merge design ladder: 关闭 / 15 分钟 /
+ * 30 分钟). DEFAULT is OFF: a task created with no idle timeout is never reclaimed
+ * for idleness. `ms: null` is the off choice and submits NO field. Exported so
+ * `/tasks/new` shares the same catalog (one module, no drift).
  */
 export const IDLE_TIMEOUT_OPTIONS: ReadonlyArray<{ label: string; ms: number | null }> = [
   { label: "关闭（默认，不自动回收）", ms: null },
-  { label: "10 分钟", ms: 10 * MINUTE },
+  { label: "15 分钟", ms: 15 * MINUTE },
   { label: "30 分钟", ms: 30 * MINUTE },
-  { label: "1 小时", ms: HOUR },
-  { label: "3 小时", ms: 3 * HOUR },
 ];
 
 /**
- * Wall-clock deadline presets (task-guardrail-controls). DEFAULT is none. `ms:
- * null` is the none choice. Exported so `/tasks/new` shares the same catalog.
+ * Wall-clock deadline presets (console-design-pixel-merge design ladder: 无 /
+ * 1 小时 / 4 小时). DEFAULT is none. `ms: null` is the none choice and submits NO
+ * field. Exported so `/tasks/new` shares the same catalog (one module, no drift).
  */
 export const DEADLINE_OPTIONS: ReadonlyArray<{ label: string; ms: number | null }> = [
   { label: "无（默认，不限运行时长）", ms: null },
-  { label: "30 分钟", ms: 30 * MINUTE },
   { label: "1 小时", ms: HOUR },
-  { label: "2 小时", ms: 2 * HOUR },
-  { label: "6 小时", ms: 6 * HOUR },
+  { label: "4 小时", ms: 4 * HOUR },
 ];
 
 /** The Select value (string) for a guardrail ms, or the OFF sentinel for null. */

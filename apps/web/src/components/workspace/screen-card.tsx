@@ -112,7 +112,7 @@ export function LauncherGrid({ children }: { children: React.ReactNode }) {
   return (
     <section
       aria-label="工作区入口"
-      className="grid grid-cols-3 gap-2.5 max-[1180px]:grid-cols-2 max-[820px]:grid-cols-1"
+      className="grid grid-cols-3 gap-2.5 max-[1180px]:grid-cols-2 max-[821px]:grid-cols-1"
     >
       {children}
     </section>

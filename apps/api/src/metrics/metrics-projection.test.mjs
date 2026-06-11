@@ -12,6 +12,11 @@
  *   4. Reads are LIVE: mutating the fake between reads changes the projection
  *      (no cached/parallel counter).
  *   5. Never invents slots beyond ceiling, even if running > ceiling.
+ *   6. foldTaskSamples (console-design-pixel-merge): per-task entries keyed by
+ *      taskId for running tasks only, latest frame ONLY (no history), scope
+ *      passthrough (process primary / container fallback), carried-forward
+ *      frames flagged stale instead of dropped, non-running/left-set tasks
+ *      omitted — never fabricated zeros.
  */
 
 // ---- inline the pure functions (mirror metrics-projection.ts) ----
@@ -34,6 +39,27 @@ function buildSlotOccupancy(semaphore) {
     slots.push({ slot, busy: taskId !== null, taskId });
   }
   return { slots, queuedTaskIds };
+}
+
+function foldTaskSamples(runningTaskIds, readTask, resources) {
+  const samples = {};
+  const blockFresh = resources.status === 'available';
+  for (const taskId of runningTaskIds) {
+    const reading = readTask(taskId);
+    if (!reading || reading.sampledAt === null || reading.ageMs === null) {
+      continue;
+    }
+    const carriedForward =
+      resources.ageMs === null || reading.ageMs > resources.ageMs;
+    samples[taskId] = {
+      scope: reading.scope,
+      sample: reading.sample,
+      sampledAt: reading.sampledAt,
+      ageMs: reading.ageMs,
+      stale: !blockFresh || carriedForward,
+    };
+  }
+  return samples;
 }
 
 // ---- a fake semaphore source (mutable, live) ----
@@ -174,6 +200,102 @@ function eq(a, b) {
   assert(after.free === 1, 'T8c: free recomputed live (no drift)');
   assert(after.queueDepth === 1, 'T8d: queueDepth reflects the new queued task');
   assert(occAfter.slots.filter((s) => s.busy).length === 2, 'T8e: slot table re-derived live');
+}
+
+// ---- foldTaskSamples (per-task process-scope section) ----
+
+const mkSample = (taskId, cpu, mem) => ({
+  taskId,
+  cpuPercent: cpu,
+  memoryBytes: mem,
+  memoryLimitBytes: 8e9,
+  memoryPercent: (mem / 8e9) * 100,
+});
+const mkReading = (scope, sample, container, atMs, ageMs) => ({
+  scope,
+  sample,
+  container,
+  sampledAt: new Date(atMs),
+  ageMs,
+});
+const FRESH_BLOCK = { status: 'available', ageMs: 0 };
+
+// T9: per-task entries present for running tasks, keyed by taskId.
+{
+  const readings = {
+    t1: mkReading('process', mkSample('t1', 5, 1.26e8), mkSample('t1', 2.3, 1.5e9), 1000, 0),
+    t2: mkReading('process', mkSample('t2', 1, 0.9e8), mkSample('t2', 1.1, 0.9e9), 1000, 0),
+  };
+  const folded = foldTaskSamples(['t1', 't2'], (id) => readings[id] ?? null, FRESH_BLOCK);
+  assert(eq(Object.keys(folded).sort(), ['t1', 't2']), 'T9a: entries keyed by taskId for running tasks');
+  assert(folded.t1.scope === 'process', 'T9b: process scope is primary');
+  assert(folded.t1.sample.cpuPercent === 5, 'T9c: server-computed cpuPercent passes through');
+  assert(folded.t1.sample.memoryPercent !== null, 'T9d: server-computed memoryPercent present');
+  assert(folded.t1.stale === false, 'T9e: fresh frame in a fresh block is not stale');
+}
+
+// T10: latest-frame-only shape — exactly one frame per task, no history arrays.
+{
+  const folded = foldTaskSamples(
+    ['t1'],
+    () => mkReading('process', mkSample('t1', 5, 1e8), null, 1000, 0),
+    FRESH_BLOCK,
+  );
+  assert(
+    eq(Object.keys(folded.t1).sort(), ['ageMs', 'sample', 'sampledAt', 'scope', 'stale']),
+    'T10a: entry carries exactly scope/sample/sampledAt/ageMs/stale',
+  );
+  assert(
+    !Array.isArray(folded.t1.sample) && Object.values(folded.t1).every((v) => !Array.isArray(v)),
+    'T10b: no history/time-series structure anywhere in the entry',
+  );
+}
+
+// T11: container fallback when the in-sandbox process reading is unavailable.
+{
+  const folded = foldTaskSamples(
+    ['t1'],
+    () => mkReading('container', mkSample('t1', 2.3, 1.5e9), null, 1000, 0),
+    FRESH_BLOCK,
+  );
+  assert(folded.t1.scope === 'container', 'T11a: entry tagged scope container, not dropped');
+  assert(folded.t1.sample.memoryBytes === 1.5e9, 'T11b: container-aggregate figure carried');
+}
+
+// T12: carry-forward on a transient miss — frame older than the block's latest
+// tick stays present, flagged stale (never disappears, never zero-filled).
+{
+  const carried = mkReading('process', mkSample('t1', 5, 1e8), null, 1000, 5000);
+  const folded = foldTaskSamples(['t1'], () => carried, FRESH_BLOCK);
+  assert('t1' in folded, 'T12a: carried-forward task still present');
+  assert(folded.t1.stale === true, 'T12b: carried-forward frame flagged stale');
+  assert(folded.t1.sample.cpuPercent === 5, 'T12c: prior reading surfaced, not zeros');
+  // A degraded block (stale/unavailable) marks even same-tick frames stale.
+  const degraded = foldTaskSamples(
+    ['t1'],
+    () => mkReading('process', mkSample('t1', 5, 1e8), null, 1000, 0),
+    { status: 'stale', ageMs: 0 },
+  );
+  assert(degraded.t1.stale === true, 'T12d: degraded block bounds per-task freshness');
+}
+
+// T13: non-running/left-set tasks omitted — never fabricated zeros.
+{
+  const readings = {
+    t1: mkReading('process', mkSample('t1', 5, 1e8), null, 1000, 0),
+  };
+  // 'gone' is in the running list but has no live frame (left the sampled set
+  // past the carry-forward bound) → readTask null → omitted.
+  const folded = foldTaskSamples(['t1', 'gone'], (id) => readings[id] ?? null, FRESH_BLOCK);
+  assert(!('gone' in folded), 'T13a: no-frame task omitted from the section');
+  assert(
+    Object.values(folded).every((e) => e.sample.cpuPercent !== 0 || e.sample.memoryBytes !== 0),
+    'T13b: no fabricated zero entries',
+  );
+  // Only the running set is consulted: a non-running id never reaches an entry.
+  let asked = [];
+  foldTaskSamples(['t1'], (id) => (asked.push(id), readings[id] ?? null), FRESH_BLOCK);
+  assert(eq(asked, ['t1']), 'T13c: fold consults exactly the running set');
 }
 
 // ---- summary ----

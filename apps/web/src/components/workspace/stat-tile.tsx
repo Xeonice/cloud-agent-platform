@@ -52,7 +52,7 @@ export function OpsStrip({ children }: { children: React.ReactNode }) {
   return (
     <section
       aria-label="当前运行状态"
-      className="my-3.5 grid grid-cols-3 gap-2.5 max-[1180px]:grid-cols-2 max-[820px]:grid-cols-1"
+      className="my-3.5 grid grid-cols-3 gap-2.5 max-[1180px]:grid-cols-2 max-[821px]:grid-cols-1"
     >
       {children}
     </section>

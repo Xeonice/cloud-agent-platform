@@ -80,7 +80,23 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   branches: true, // Task.branch/strategy read-back on the real task read.
 };
 
+/**
+ * Mock data mode — `VITE_FORCE_MOCK=1` pins EVERY domain to its typed mock,
+ * overriding the flag map above without editing it. This is the deterministic
+ * data mode the visual-verification harness (console-design-pixel-merge task
+ * 8.1, `apps/web/e2e/visual/`) runs the app under: fixed fixtures, no live
+ * backend, no nondeterministic data in screenshots. It is read from the
+ * environment at build/dev-serve time and is OFF in every normal deployment
+ * (the variable is simply unset), so the shipped real/mock posture is
+ * unchanged.
+ */
+function forceMock(): boolean {
+  const env = import.meta.env as Record<string, string | undefined>;
+  return env.VITE_FORCE_MOCK === "1";
+}
+
 /** True when the named domain reads from the real api rather than typed mocks. */
 export function isCapable(domain: keyof BackendCapabilities): boolean {
+  if (forceMock()) return false;
   return BACKEND_CAPABILITIES[domain];
 }

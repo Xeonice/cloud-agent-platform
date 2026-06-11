@@ -117,31 +117,30 @@ function LoginPage() {
   }
 
   return (
-    <main className="grid min-h-screen place-items-center bg-[radial-gradient(circle_at_18%_18%,rgba(10,114,239,0.09),transparent_30%),radial-gradient(circle_at_82%_10%,rgba(88,198,135,0.08),transparent_26%),var(--background)] p-[clamp(18px,4vw,48px)]">
-      <section className="grid w-[min(1040px,100%)] grid-cols-1 gap-px overflow-hidden rounded-2xl bg-line shadow-card min-[820px]:grid-cols-[minmax(0,1fr)_minmax(300px,0.72fr)]">
+    <main className="grid min-h-screen place-items-center bg-[radial-gradient(circle_at_18%_18%,rgba(10,114,239,0.09),transparent_30%),radial-gradient(circle_at_82%_10%,rgba(26,127,55,0.08),transparent_26%),var(--background)] p-[clamp(18px,4vw,48px)]">
+      <section className="grid w-[min(1040px,100%)] grid-cols-1 gap-px overflow-hidden rounded-2xl bg-line shadow-card min-[821px]:grid-cols-[minmax(0,1fr)_minmax(300px,0.72fr)]">
         {/* LEFT — brand + access copy + the empty/success/rejection states */}
         <div className="grid content-start gap-6 bg-background p-[clamp(24px,4vw,44px)]">
           <Link
             to="/"
             aria-label="Agent 控制台"
-            className="inline-flex w-fit items-center gap-2.5 font-semibold tracking-tight text-ink"
+            className="inline-flex min-h-[34px] w-fit items-center gap-2.5 p-1 text-[15px] font-semibold tracking-[-0.32px] text-ink"
           >
-            <span className="grid size-[26px] place-items-center rounded-md bg-dark-pill font-mono text-xs text-background">
+            <span className="grid size-[26px] place-items-center rounded-md bg-dark-pill font-mono text-xs font-bold text-background">
               AC
             </span>
             <span>Agent 控制台</span>
           </Link>
 
-          <div className="grid gap-3">
+          <div>
             <div className="font-mono text-xs font-semibold text-muted-foreground">
               Private access
             </div>
-            <h1 className="my-3 max-w-[760px] text-[clamp(36px,6vw,64px)] leading-none tracking-[clamp(-2.2px,-0.03em,-1.4px)] text-ink">
+            <h1 className="mt-3 max-w-[760px] text-[clamp(36px,6vw,64px)] font-semibold leading-none tracking-[clamp(-2.2px,-0.03em,-1.4px)] text-ink">
               用 GitHub 身份打开你的私有 Agent 运行池。
             </h1>
-            <p className="m-0 max-w-[680px] text-[17px] leading-[1.7] text-ink-soft">
-              登录不是注册流程，而是访问边界：只有白名单账号能进入控制台，后续仓库范围、Codex
-              接入和写入确认都绑定到这个身份。
+            <p className="m-0 max-w-[680px] text-[17px] leading-[1.7] text-muted-foreground">
+              登录不是注册流程，而是访问边界：只有白名单账号能进入控制台，后续仓库范围、模型凭据、写入确认和终端会话都绑定到这个身份。
             </p>
           </div>
 
@@ -171,8 +170,9 @@ function LoginPage() {
               <h2 className="m-0 text-2xl tracking-[-0.8px] text-ink">
                 GitHub 账号已绑定。
               </h2>
-              <p className="m-0 text-muted-foreground">
-                直接进入控制台开始派发与接管任务。
+              <p className="m-0 text-[13px] text-muted-foreground">
+                当前身份：
+                <span className="font-mono tabular-nums">github.com/tanghehui</span>
               </p>
               <Link
                 to="/dashboard"
@@ -197,7 +197,7 @@ function LoginPage() {
                 <span>使用 GitHub 授权登录</span>
               </button>
               <p className="m-0 text-[13px] leading-[1.6] text-muted-foreground">
-                登录成功后直接进入控制台；若是从某个任务被拦截登录，会回到原页面。
+                登录成功后进入控制台；如果是从某个任务会话被拦截登录，会回到原页面。
               </p>
             </div>
           )}
@@ -205,8 +205,8 @@ function LoginPage() {
 
         {/* RIGHT — the "进入控制台前会确认" assurance panel */}
         <div className="grid content-start gap-6 bg-[#fafafa] p-[clamp(24px,4vw,44px)]">
-          <div className="mb-2.5 flex items-center justify-between gap-3">
-            <h3 className="m-0 text-[1.17em] font-bold text-ink">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="m-0 text-[17px] font-bold text-ink">
               进入控制台前会确认
             </h3>
             <StatusPill variant="blue">3 steps</StatusPill>
@@ -219,10 +219,10 @@ function LoginPage() {
               没有公开注册入口。
             </InstallStep>
             <InstallStep index="02" title="绑定可审计身份">
-              所有任务、仓库导入和终端命令都归属到当前操作者。
+              所有任务、仓库导入、终端输入和危险写入确认都归属到当前操作者。
             </InstallStep>
             <InstallStep index="03" title="进入仓库范围选择">
-              只把明确导入的仓库交给远端 Agent 工作区。
+              只把明确导入的仓库交给远端 Agent 工作区，不默认暴露账号下全部项目。
             </InstallStep>
           </div>
 
@@ -230,7 +230,7 @@ function LoginPage() {
             rows={[
               { label: "访问范围", value: "单用户白名单" },
               { label: "默认策略", value: "写入前确认" },
-              { label: "下一步", value: "进入控制台" },
+              { label: "下一步", value: "任务控制台" },
             ]}
           />
         </div>

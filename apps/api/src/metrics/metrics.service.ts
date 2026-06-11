@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import type { MetricsResponse, TaskResourceResponse } from '@cap/contracts';
 import { GuardrailsService } from '../guardrails/guardrails.service';
-import { buildSlotOccupancy, projectCapacity } from './metrics-projection';
+import {
+  buildSlotOccupancy,
+  foldTaskSamples,
+  projectCapacity,
+} from './metrics-projection';
 import { deriveRunnerMinutes } from './runner-minutes';
 import { ResourceSamplerService } from './resource-sampler.service';
 
@@ -34,13 +38,24 @@ export class MetricsService {
     // Read the semaphore ONCE so all derived figures reflect the same instant.
     const projection = this.guardrails.semaphoreProjection();
 
+    // Sampled block from the cache; its own status flags freshness/outage so a
+    // degraded sample never fails the whole response.
+    const resources = this.sampler.currentSnapshot(now);
+    // Fold each running task's LATEST cached frame (codex process scope,
+    // container fallback) into the sampled block, keyed by taskId — pure cache
+    // reads of the SAME sampler snapshot, never an extra sampling pass, so one
+    // /metrics poll replaces the per-task GET /tasks/:taskId/metrics fan-out.
+    const taskSamples = foldTaskSamples(
+      projection.snapshotRunning(),
+      (taskId) => this.sampler.taskReading(taskId, now),
+      resources,
+    );
+
     return {
       capacity: projectCapacity(projection),
       occupancy: buildSlotOccupancy(projection),
       runnerMinutes: deriveRunnerMinutes(this.guardrails.runnerMinuteIntervals(), now),
-      // Sampled block from the cache; its own status flags freshness/outage so a
-      // degraded sample never fails the whole response.
-      resources: this.sampler.currentSnapshot(now),
+      resources: { ...resources, taskSamples },
     };
   }
 

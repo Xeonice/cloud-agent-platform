@@ -111,8 +111,9 @@ function SessionPage(): React.ReactElement {
   // numbers (never flips to not-running). See `formatTaskResource`.
   const resourceBody = formatTaskResource(taskResource);
 
-  // Context strip: bind to query data where derivable; keep the prototype's
-  // descriptive copy VERBATIM where the field is not derivable (worktree/pty).
+  // Context strip (design 3+1 grouping): the three task-context cells grouped
+  // in the top row; the guardrail readout is the SEPARATED fourth cell. Bind to
+  // query data where derivable; keep descriptive copy where not derivable.
   const contextItems = [
     {
       label: "任务目标",
@@ -133,20 +134,21 @@ function SessionPage(): React.ReactElement {
       title: "写入前确认",
       body: context?.safetyBoundary ?? "commit / push / secret / PR 创建会暂停。",
     },
-    {
-      // The task's CONFIGURED guardrails, read back from the task (never
-      // fabricated): idle reclaim + wall-clock deadline, both OFF/none by default
-      // (task-guardrail-controls). Idle-reclaim off means the task is not killed
-      // for being quiet; the operator stops it manually from the header instead.
-      label: "守护栏",
-      title: "空闲 / 时限",
-      body: `空闲回收 ${
-        task?.idleTimeoutMs != null ? formatDuration(task.idleTimeoutMs) : "关闭"
-      } · 运行时限 ${
-        task?.deadlineMs != null ? formatDuration(task.deadlineMs) : "无"
-      }`,
-    },
   ] as const;
+
+  // The task's CONFIGURED guardrails, read back from the task (never
+  // fabricated): idle reclaim + wall-clock deadline, both OFF/none by default
+  // (task-guardrail-controls). Idle-reclaim off means the task is not killed
+  // for being quiet; the operator stops it manually from the header instead.
+  const guardrailItem = {
+    label: "守护栏",
+    title: "空闲 / 时限",
+    body: `空闲回收 ${
+      task?.idleTimeoutMs != null ? formatDuration(task.idleTimeoutMs) : "关闭"
+    } · 运行时限 ${
+      task?.deadlineMs != null ? formatDuration(task.deadlineMs) : "无"
+    }`,
+  } as const;
 
   // When the socket opens, reconcile the task read so the (shell) topbar status
   // reflects the live session — an honest, real signal (no fabricated status).
@@ -197,7 +199,7 @@ function SessionPage(): React.ReactElement {
         onStop={handleStop}
       />
 
-      <SessionContextStrip items={contextItems} />
+      <SessionContextStrip items={contextItems} guardrail={guardrailItem} />
 
       <section className="grid grid-cols-[minmax(0,1fr)]">
         {task && PRE_RUNNING_STATUSES.has(task.status) ? (

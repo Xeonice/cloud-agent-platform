@@ -185,7 +185,16 @@ export async function getAuthSession(): Promise<AuthSession> {
 
 /**
  * `GET /metrics` — semaphore-derived capacity + sampled CPU/memory in one
- * round trip. Gated by `BACKEND_CAPABILITIES.metrics`.
+ * round trip. The sampled block ALSO carries the per-task process-scope
+ * section (`resources.taskSamples`, console-design-pixel-merge): each running
+ * task's LATEST frame keyed by `taskId`, with server-computed
+ * `cpuPercent`/`memoryPercent`, the shared `scope` discriminator (`process`,
+ * falling back to `container`), and `sampledAt`/`ageMs`/`stale` freshness —
+ * so the pool panel's per-runner rows render from this ONE poll instead of a
+ * per-task fan-out. The section rides the SAME shared
+ * `MetricsResponseSchema` from `@cap/contracts` (no web-side re-declaration),
+ * so this client validates it with no shape of its own to drift. Gated by
+ * `BACKEND_CAPABILITIES.metrics`.
  */
 export async function getMetrics(): Promise<MetricsResponse> {
   return MetricsResponseSchema.parse(await request("/metrics"));

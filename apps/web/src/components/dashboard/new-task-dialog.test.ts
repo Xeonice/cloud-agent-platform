@@ -35,9 +35,35 @@ describe("buildCommandPreview guardrail lines", () => {
   });
 
   it("emits idle/deadline lines (with the chosen ms) when set", () => {
-    const lines = buildCommandPreview({ ...base, idleTimeoutMs: 1_800_000, deadlineMs: 7_200_000 });
-    expect(lines.some((l) => l.includes("--idle-timeout-ms 1800000"))).toBe(true);
-    expect(lines.some((l) => l.includes("--deadline-ms 7200000"))).toBe(true);
+    const lines = buildCommandPreview({ ...base, idleTimeoutMs: 900_000, deadlineMs: 14_400_000 });
+    expect(lines.some((l) => l.includes("--idle-timeout-ms 900000"))).toBe(true);
+    expect(lines.some((l) => l.includes("--deadline-ms 14400000"))).toBe(true);
+  });
+});
+
+describe("guardrail preset ladders (console-design-pixel-merge)", () => {
+  it("idle ladder is exactly 关闭 / 15 分钟 (900000) / 30 分钟 (1800000)", () => {
+    expect(IDLE_TIMEOUT_OPTIONS.map((o) => o.ms)).toEqual([null, 900_000, 1_800_000]);
+    expect(IDLE_TIMEOUT_OPTIONS[0]?.label).toContain("关闭");
+    expect(IDLE_TIMEOUT_OPTIONS[1]?.label).toBe("15 分钟");
+    expect(IDLE_TIMEOUT_OPTIONS[2]?.label).toBe("30 分钟");
+  });
+
+  it("deadline ladder is exactly 无 / 1 小时 (3600000) / 4 小时 (14400000)", () => {
+    expect(DEADLINE_OPTIONS.map((o) => o.ms)).toEqual([null, 3_600_000, 14_400_000]);
+    expect(DEADLINE_OPTIONS[0]?.label).toContain("无");
+    expect(DEADLINE_OPTIONS[1]?.label).toBe("1 小时");
+    expect(DEADLINE_OPTIONS[2]?.label).toBe("4 小时");
+  });
+
+  it("关闭/无 (ms null) emit no command line — no field is submitted", () => {
+    const lines = buildCommandPreview({
+      ...base,
+      idleTimeoutMs: IDLE_TIMEOUT_OPTIONS[0]?.ms ?? null,
+      deadlineMs: DEADLINE_OPTIONS[0]?.ms ?? null,
+    });
+    expect(lines.some((l) => l.includes("--idle-timeout-ms"))).toBe(false);
+    expect(lines.some((l) => l.includes("--deadline-ms"))).toBe(false);
   });
 });
 

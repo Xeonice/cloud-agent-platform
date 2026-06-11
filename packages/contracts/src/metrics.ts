@@ -141,6 +141,47 @@ export type ContainerResourceSample = z.infer<
 >;
 
 /**
+ * Which reading a per-task sample represents: codex's OWN process subtree
+ * (`process`, the PRIMARY scope — the launched `codex` process plus its
+ * descendants, sampled in-sandbox) or the whole-container aggregate
+ * (`container`, the FALLBACK when the in-sandbox process reading is
+ * unavailable). Shared by the `/metrics` per-task section and the per-task
+ * read (`GET /tasks/:taskId/metrics`) so both surfaces speak the same scope
+ * language.
+ */
+export const TaskResourceScopeSchema = z.enum(['process', 'container']);
+export type TaskResourceScope = z.infer<typeof TaskResourceScopeSchema>;
+
+/**
+ * One task's LATEST resource frame inside the `/metrics` per-task section
+ * (console-design-pixel-merge): the pool panel's per-runner CPU/MEM rows
+ * render from this, so ONE `/metrics` poll replaces an N-request
+ * `GET /tasks/:taskId/metrics` fan-out.
+ *
+ * Latest frame ONLY — no history or time-series structure. `sample` carries
+ * SERVER-computed `cpuPercent`/`memoryPercent` (the console performs no
+ * metric arithmetic). `scope` is the same discriminator the per-task read
+ * uses: `process` (codex's own subtree, primary), falling back to
+ * `container` when the in-sandbox reading is unavailable. `stale` is the
+ * honest freshness flag: true for a carried-forward frame (the task missed
+ * the latest sampling tick) or when the whole sampled block is degraded —
+ * never replaced by fabricated zeros.
+ */
+export const TaskMetricsSampleSchema = z.object({
+  /** Scope of `sample`: codex `process` (primary) or the `container` fallback. */
+  scope: TaskResourceScopeSchema,
+  /** The latest frame, with server-computed `cpuPercent`/`memoryPercent`. */
+  sample: ContainerResourceSampleSchema,
+  /** Time this frame was freshly sampled. */
+  sampledAt: z.coerce.date(),
+  /** Frame age in milliseconds (grows past the cadence when carried forward). */
+  ageMs: z.number().int().nonnegative(),
+  /** True when carried forward past the latest tick or the block is degraded. */
+  stale: z.boolean(),
+});
+export type TaskMetricsSample = z.infer<typeof TaskMetricsSampleSchema>;
+
+/**
  * The sampled resource block: per-container samples plus an aggregate, tagged
  * with the most-recent `sampledAt` time and an availability `status`.
  *
@@ -164,6 +205,18 @@ export const SampledResourcesSchema = z.object({
   aggregateCpuPercent: z.number().nonnegative(),
   /** Aggregate memory usage in bytes across sampled containers (0 when none). */
   aggregateMemoryBytes: z.number().nonnegative(),
+  /**
+   * Per-task process-scope section, keyed by `taskId`: each running task's
+   * LATEST frame (see {@link TaskMetricsSampleSchema}). STRICTLY ADDITIVE
+   * extension (console-design-pixel-merge): every prior field is unchanged in
+   * name/type/semantics, no new endpoint family, no new capability flag. A
+   * task that is not running, or that has genuinely left the sampled set past
+   * the carry-forward bound, is simply ABSENT — never given fabricated zeros.
+   * Declared optional ONLY so the sampler's internal snapshot builders (which
+   * run before the fold) stay valid; the served `/metrics` response always
+   * carries it.
+   */
+  taskSamples: z.record(z.string(), TaskMetricsSampleSchema).optional(),
 });
 export type SampledResources = z.infer<typeof SampledResourcesSchema>;
 
@@ -220,10 +273,10 @@ export type MetricsResponse = z.infer<typeof MetricsResponseSchema>;
  *
  * The endpoint is auth-gated identically to `/metrics` (allowlisted session;
  * 401 otherwise) — a per-task figure is still host-execution operational data.
+ *
+ * The `scope` discriminator is {@link TaskResourceScopeSchema}, declared with
+ * the sampled block above and SHARED with the `/metrics` per-task section.
  */
-export const TaskResourceScopeSchema = z.enum(['process', 'container']);
-export type TaskResourceScope = z.infer<typeof TaskResourceScopeSchema>;
-
 export const TaskResourceResponseSchema = z.discriminatedUnion('state', [
   z.object({
     state: z.literal('sampled'),

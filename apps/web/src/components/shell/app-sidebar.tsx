@@ -6,7 +6,7 @@
  * card anchored at the bottom. Built on shadcn `Sidebar collapsible="none"` —
  * the design has NO collapse and ships its own mobile bottom-nav (see
  * `MobileNav`), so the shadcn off-canvas sheet is intentionally disabled. The
- * whole column is hidden at ≤820px (`max-[820px]:hidden`), where `MobileNav`
+ * whole column is hidden at ≤820px (`max-[821px]:hidden`), where `MobileNav`
  * takes over.
  *
  * Active highlighting is computed from the current pathname via the pure
@@ -91,7 +91,7 @@ export function AppSidebar({ pathname }: AppSidebarProps) {
         "sticky top-0 h-screen justify-between p-3.5",
         "bg-[rgba(255,255,255,0.9)] backdrop-blur-md",
         "shadow-[inset_-1px_0_0_var(--border)]",
-        "max-[820px]:hidden",
+        "max-[821px]:hidden",
       )}
     >
       <SidebarHeader className="gap-[22px] p-0">

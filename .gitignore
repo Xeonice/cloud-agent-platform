@@ -23,6 +23,13 @@ workspaces/
 .env.*
 !.env.example
 
+# visual-verification artifacts (console-design-pixel-merge Track 8):
+# living baselines are re-captured from the design HTML on every run, and
+# test-results/ holds per-run actual/diff images — neither is source.
+apps/web/e2e/visual/__screenshots__/
+apps/web/e2e/test-results/
+apps/web/playwright-report/
+
 # os
 .DS_Store
 

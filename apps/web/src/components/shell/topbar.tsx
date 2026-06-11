@@ -27,11 +27,18 @@ export interface TopbarProps {
   eyebrow?: React.ReactNode;
   /** The right-hand action slot. Defaults to the green Runner-pool status pill. */
   actions?: React.ReactNode;
+  /**
+   * Extra classes from the shell — e.g. the dashboard hides the whole bar at
+   * ≤820px (design `.page-dashboard .topbar { display: none }`): the
+   * mobile-workbench-meta strip already carries the Runner readout there.
+   */
+  className?: string;
 }
 
 export function Topbar({
   eyebrow = "tanghehui / agent-control",
   actions = <StatusPill variant="green">Runner 池正常</StatusPill>,
+  className,
 }: TopbarProps) {
   return (
     <header
@@ -40,10 +47,11 @@ export function Topbar({
         "-mx-[clamp(18px,3vw,40px)] -mt-[18px] mb-[18px] px-[clamp(18px,3vw,40px)]",
         "bg-[rgba(255,255,255,0.78)] backdrop-blur-md",
         "shadow-[0_1px_0_0_rgba(0,0,0,0.08)]",
-        "max-[820px]:-mx-[14px] max-[820px]:px-[14px]",
+        "max-[821px]:-mx-[14px] max-[821px]:px-[14px]",
+        className,
       )}
     >
-      <div className="font-mono text-xs text-muted-foreground max-[820px]:hidden">
+      <div className="font-mono text-xs text-muted-foreground max-[821px]:hidden">
         {eyebrow}
       </div>
       <div className="flex items-center gap-2">{actions}</div>

@@ -9,7 +9,8 @@
  * Layout: a shadcn `SidebarProvider` with `--sidebar-width` pinned to 244px and
  * a `Sidebar collapsible="none"` (no collapse — the design ships its own mobile
  * bottom-nav, not the off-canvas sheet). `SidebarInset` is the main content
- * area (the `.console-body .main` canvas: bg `#f8f9fb`, padding
+ * area (the `.console-body .main` canvas: the console bg comes from the
+ * body-level `var(--console)` rule in app.css — no wrapper bg class; padding
  * `18px clamp(18px,3vw,40px) 68px`, tightened to `18px 14px 94px` ≤820px to
  * clear the fixed mobile nav). Nav highlighting derives from the live pathname.
  *
@@ -80,11 +81,18 @@ function AppLayout() {
     <SidebarProvider
       // Pin the sidebar to the prototype's fixed 244px column; no collapse.
       style={{ "--sidebar-width": "244px" } as React.CSSProperties}
-      className="min-h-screen bg-[#f8f9fb]"
+      className="min-h-screen"
     >
       <AppSidebar pathname={pathname} />
-      <SidebarInset className="min-w-0 bg-transparent px-[clamp(18px,3vw,40px)] pt-[18px] pb-[68px] max-[820px]:px-[14px] max-[820px]:pb-[94px]">
-        <Topbar />
+      <SidebarInset className="min-w-0 bg-transparent px-[clamp(18px,3vw,40px)] pt-[18px] pb-[68px] max-[821px]:px-[14px] max-[821px]:pb-[94px]">
+        {/* Dashboard ≤820px hides the whole topbar (design `.page-dashboard
+            .topbar{display:none}`) — its mobile-workbench-meta strip already
+            carries the Runner readout. Other pages keep the mobile topbar. */}
+        <Topbar
+          className={
+            pathname === "/dashboard" ? "max-[821px]:hidden" : undefined
+          }
+        />
         <Outlet />
       </SidebarInset>
       <MobileNav pathname={pathname} />

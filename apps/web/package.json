@@ -10,6 +10,7 @@
     "start": "node .output/server/index.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:visual": "playwright test",
     "lint": "eslint ."
   },
   "dependencies": {
@@ -37,6 +38,7 @@
   "devDependencies": {
     "@cap/eslint-config": "workspace:*",
     "@cap/tsconfig": "workspace:*",
+    "@playwright/test": "^1.60.0",
     "@tailwindcss/vite": "4.3.0",
     "@tanstack/react-router-devtools": "1.167.0",
     "@types/node": "^22.15.21",

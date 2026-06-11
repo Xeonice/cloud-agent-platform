@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务会话 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html" aria-current="page"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="eyebrow">tanghehui / agent-control</div>
+        <div class="topbar-actions">
+          <span class="status-pill green">Runner 池正常</span>
+        </div>
+      </header>
+
+      <section class="session-toolbar">
+        <div class="eyebrow">tanghehui / agent-control / tasks / task_task</div>
+        <div class="session-actions compact-mobile">
+          <span class="status-pill warn">连接中...</span>
+          <a class="btn" href="dashboard.html">返回任务</a>
+          <button class="btn" type="button" data-terminal-action="copy">复制会话记录</button>
+          <button class="btn primary" type="button" aria-pressed="false" data-terminal-action="pause">暂停输出</button>
+          <button class="btn danger" type="button" data-terminal-action="stop task_task requested" data-line="operator requested stop for task_task" data-line-class="warn">停止任务</button>
+        </div>
+      </section>
+
+      <section class="screen-header with-action">
+        <div>
+          <div class="eyebrow">实时 CLI</div>
+          <h1 class="screen-title">task_task</h1>
+          <p class="screen-lead">tanghehui/cloud-agent-platform#main · Codex (gpt-5-codex)</p>
+        </div>
+        <div class="actions compact-mobile">
+          <span class="status-pill warn">连接中...</span>
+          <span class="mono small-muted">stdout / stderr</span>
+        </div>
+      </section>
+
+      <section class="context-strip" aria-label="会话上下文">
+        <div class="context-top">
+          <article class="context-cell">
+            <span class="metric-label">任务目标</span>
+            <h3>会话目标</h3>
+            <p>会话回放（mock）</p>
+          </article>
+          <article class="context-cell">
+            <span class="metric-label">运行环境</span>
+            <h3>AIO Sandbox · linux/amd64</h3>
+            <p>未运行 / 未采样</p>
+          </article>
+          <article class="context-cell">
+            <span class="metric-label">安全边界</span>
+            <h3>写入前确认</h3>
+            <p>破坏性写入需操作员确认；容器即信任边界，沙箱内执行不二次门禁。</p>
+          </article>
+        </div>
+        <article class="context-bottom">
+          <span class="metric-label">守护栏</span>
+          <h3>空闲 / 时限</h3>
+          <p>空闲回收 关闭 · 运行时限 无</p>
+        </article>
+      </section>
+
+      <section class="terminal-shell" style="margin-top:12px">
+        <div class="terminal-head">
+          <span>Codex (gpt-5-codex) · tanghehui/cloud-agent-platform#main</span>
+          <span>pty: /dev/pts/4</span>
+        </div>
+        <div class="terminal-empty" data-terminal-log>
+          <span class="terminal-status">○ 正在连接…键入暂不发送</span>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html" aria-current="page">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>
+

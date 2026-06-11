@@ -55,17 +55,17 @@ function TaskRow({
   const result = presentHistoryResult(task.status);
   return (
     <tr className="border-b border-border last:border-b-0">
-      <td className="py-2.5 pr-3 font-mono text-[13px] text-ink">
+      <td className="py-2.5 pr-3 align-top font-mono text-[13px] text-ink">
         {shortTaskId(task.id)}
       </td>
-      <td className="py-2.5 pr-3 text-[13px] text-foreground">{repoName}</td>
-      <td className="py-2.5 pr-3">
+      <td className="py-2.5 pr-3 align-top text-[13px] text-foreground">{repoName}</td>
+      <td className="py-2.5 pr-3 align-top">
         <StatusPill variant={result.variant}>{result.label}</StatusPill>
       </td>
-      <td className="py-2.5 pr-3 font-mono text-[13px] text-ink tabular-nums">
+      <td className="py-2.5 pr-3 align-top font-mono text-[13px] text-ink tabular-nums">
         {formatElapsed(task.createdAt, now)}
       </td>
-      <td className="py-2.5">
+      <td className="py-2.5 align-top">
         <Link
           to="/tasks/$taskId"
           params={{ taskId: task.id }}

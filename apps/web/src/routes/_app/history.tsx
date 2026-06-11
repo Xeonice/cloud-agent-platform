@@ -186,7 +186,7 @@ function HistoryPage() {
         <div className="font-mono text-xs font-semibold text-muted-foreground">
           历史
         </div>
-        <h1 className="mt-2 max-w-[760px] text-[clamp(24px,3vw,32px)] font-semibold leading-[1.18] tracking-[-0.8px] text-ink">
+        <h1 className="max-w-[880px] text-[clamp(24px,3vw,32px)] font-semibold leading-[1.18] tracking-[-0.8px] text-ink">
           审计时间线
         </h1>
         <p className="mt-[7px] max-w-[820px] text-sm leading-[1.58] text-muted-foreground">
@@ -202,7 +202,7 @@ function HistoryPage() {
 
       {/* audit-toolbar */}
       <section
-        className="mb-3 grid items-center gap-2.5 rounded-lg bg-card p-3 shadow-card min-[821px]:grid-cols-[minmax(280px,380px)_auto_auto]"
+        className="mb-3 grid items-center gap-3 rounded-lg bg-card px-[18px] py-3 shadow-card min-[821px]:grid-cols-[minmax(280px,380px)_auto_auto]"
         aria-label="审计筛选"
       >
         <label className="grid min-h-9 min-w-0 grid-cols-[32px_minmax(0,1fr)] items-center rounded-md bg-card shadow-[inset_0_0_0_1px_var(--border)] focus-within:shadow-[inset_0_0_0_1px_var(--foreground),0_0_0_3px_rgba(10,114,239,0.12)]">

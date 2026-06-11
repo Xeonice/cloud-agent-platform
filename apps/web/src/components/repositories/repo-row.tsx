@@ -101,7 +101,7 @@ export function RepoListHead() {
         "grid gap-4 border-b border-border px-4 pt-2 pb-[9px]",
         "font-mono text-[11px] font-medium text-muted-foreground",
         "grid-cols-[minmax(220px,1fr)_minmax(270px,1.25fr)_minmax(150px,0.62fr)_104px]",
-        "max-[820px]:hidden",
+        "max-[821px]:hidden",
       )}
     >
       <span>仓库</span>

@@ -48,7 +48,7 @@ export function SettingsSideNav() {
         "grid gap-1 self-start rounded-lg bg-card p-3 shadow-card",
         "sticky top-[76px]",
         // <1100px: become a 4-col strip; <820px: stack to 1 col.
-        "max-[1100px]:grid-cols-4 max-[820px]:grid-cols-1",
+        "max-[1100px]:grid-cols-4 max-[821px]:grid-cols-1",
       )}
     >
       <span className="px-2 pt-1 pb-2 font-mono text-xs font-semibold text-muted-foreground max-[1100px]:col-span-full">

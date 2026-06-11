@@ -26,6 +26,8 @@ import type {
   MetricsResponse,
   TaskResourceResponse,
   CapacityMetrics,
+  SlotEntry,
+  TaskMetricsSample,
   ListAuditEventsResponse,
   AccountSettings,
   CodexCredential,
@@ -136,6 +138,68 @@ export function capacityQuery() {
     queryFn: () => (isCapable("metrics") ? real.getMetrics() : mock.mockMetrics()),
     refetchInterval: 5000,
     select: (data) => data.capacity,
+  });
+}
+
+/**
+ * The capacity-modern pool panel's view of the ONE `/metrics` payload
+ * (console-design-pixel-merge D1/D2): live ceiling + occupancy scalars for the
+ * pool-hero ("N/M 在线" computed client-side, never the design's 7/10 sample),
+ * the exactly-`ceiling`-many slot entries the numbered slot grid sizes to, the
+ * FIFO queue, and the per-task latest frames the per-runner resource rows read.
+ */
+export interface PoolPanelMetrics {
+  /** Live configured slot ceiling (`capacity.ceiling`). */
+  ceiling: number;
+  /** Active running-task count — the pool-hero's "N" of "N/M 在线". */
+  active: number;
+  /** Free slots (`ceiling - active`). */
+  free: number;
+  /** Queue depth (equals `queuedTaskIds.length`). */
+  queueDepth: number;
+  /** Exactly `ceiling`-many slot entries (busy(taskId) | idle) for the grid. */
+  slots: SlotEntry[];
+  /** Queued task ids in FIFO order. */
+  queuedTaskIds: string[];
+  /**
+   * Per-task LATEST frames keyed by `taskId` (scope/stale-honest, server-
+   * computed percentages). A busy slot whose task is absent here renders the
+   * explicit 未运行/未采样 state — never fabricated zeros. `{}` when the
+   * sampled block carries no section.
+   */
+  taskSamples: Record<string, TaskMetricsSample>;
+}
+
+/**
+ * Module-scoped (stable-identity) select so TanStack Query memoizes the
+ * projection — the pool panel re-renders only when the `/metrics` data
+ * actually changes, not on every component render.
+ */
+const selectPoolPanel = (data: MetricsResponse): PoolPanelMetrics => ({
+  ceiling: data.capacity.ceiling,
+  active: data.capacity.active,
+  free: data.capacity.free,
+  queueDepth: data.capacity.queueDepth,
+  slots: data.occupancy.slots,
+  queuedTaskIds: data.occupancy.queuedTaskIds,
+  taskSamples: data.resources.taskSamples ?? {},
+});
+
+/**
+ * The pool-panel projection of the SAME `/metrics` poll (same key, same 5s
+ * cadence as {@link metricsQuery}/{@link capacityQuery}) via `select` — one
+ * network read feeds the hero, slot grid, pool-lane, and per-runner rows. The
+ * per-runner repo/title/status legs come from the separately-cached
+ * `tasksQuery` via a client-side join in the panel (design D2) — deliberately
+ * NOT folded in here so the metrics cache never carries task presentation
+ * fields. No per-task `GET /tasks/:taskId/metrics` fan-out, no SSE.
+ */
+export function poolPanelQuery() {
+  return queryOptions<MetricsResponse, Error, PoolPanelMetrics>({
+    queryKey: queryKeys.metrics,
+    queryFn: () => (isCapable("metrics") ? real.getMetrics() : mock.mockMetrics()),
+    refetchInterval: 5000,
+    select: selectPoolPanel,
   });
 }
 

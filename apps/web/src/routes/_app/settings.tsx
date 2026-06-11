@@ -99,10 +99,10 @@ function SettingsPage() {
           <div className="font-mono text-xs font-semibold text-muted-foreground">
             设置
           </div>
-          <h1 className="mt-2 max-w-[760px] text-[clamp(24px,3vw,32px)] font-semibold leading-[1.18] tracking-[-0.8px] text-ink">
+          <h1 className="max-w-[880px] text-[clamp(24px,3vw,32px)] font-semibold leading-[1.18] tracking-[-0.8px] text-ink">
             账户与模型凭据
           </h1>
-          <p className="mt-[7px] max-w-[780px] text-sm leading-[1.58] text-muted-foreground">
+          <p className="mt-[7px] max-w-[820px] text-sm leading-[1.58] text-muted-foreground">
             把访问身份、仓库默认值、会话保留和 Agent 模型凭据放在同一个安全面板里管理。
           </p>
         </div>
@@ -110,10 +110,10 @@ function SettingsPage() {
       </section>
 
       {/* settings-page-layout (LEFT side-nav · RIGHT content) */}
-      <section className="grid items-start gap-4 min-[1101px]:grid-cols-[230px_minmax(0,1fr)]">
+      <section className="grid items-start gap-3 min-[1101px]:grid-cols-[230px_minmax(0,1fr)]">
         <SettingsSideNav />
 
-        <div className="grid min-w-0 gap-3.5">
+        <div className="grid min-w-0 gap-3">
           {/* settings-system-strip */}
           <SystemStrip>
             <SystemTile
@@ -136,7 +136,7 @@ function SettingsPage() {
           {/* #account: identity + access/defaults form */}
           <section
             id="account"
-            className="grid scroll-mt-24 items-start gap-3.5 min-[981px]:grid-cols-2"
+            className="grid scroll-mt-24 items-start gap-3 min-[981px]:grid-cols-2"
           >
             <AccountPanel login={login} />
             <SettingsForm

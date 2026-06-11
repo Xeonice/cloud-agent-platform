@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>历史日志 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html" aria-current="page"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="eyebrow">tanghehui / agent-control</div>
+        <div class="topbar-actions">
+          <span class="status-pill green">Runner 池正常</span>
+        </div>
+      </header>
+
+      <section class="screen-header">
+        <div>
+          <div class="eyebrow">历史</div>
+          <h1 class="screen-title">审计时间线</h1>
+          <p class="screen-lead">按任务查看结果、耗时和会话记录；事件流用于快速定位 runner、GitHub token、测试和 PR 事件。</p>
+        </div>
+      </section>
+
+      <section class="grid-3" aria-label="审计摘要">
+        <article class="stat-tile">
+          <span class="metric-label">ACTIVE WINDOW</span>
+          <strong class="metric-value">42m 当前会话</strong>
+          <p>task_27c9 仍在输出 runner 日志。</p>
+        </article>
+        <article class="stat-tile">
+          <span class="metric-label">ATTENTION</span>
+          <strong class="metric-value">1 条确认等待</strong>
+          <p>commit 前需要操作者确认。</p>
+        </article>
+        <article class="stat-tile">
+          <span class="metric-label">RETENTION</span>
+          <strong class="metric-value">30 天记录保留</strong>
+          <p>可从设置页调整历史保留周期。</p>
+        </article>
+      </section>
+
+      <section data-filter-root="history" style="margin-top:12px">
+        <div class="audit-toolbar" aria-label="审计筛选">
+          <label class="search-field">
+            <span aria-hidden="true">⌕</span>
+            <input type="search" aria-label="搜索历史日志" placeholder="搜索任务、仓库、事件类型" data-filter-search>
+          </label>
+          <div class="segmented" data-filter-target="history" aria-label="事件级别">
+            <button type="button" aria-pressed="true" data-value="all">全部</button>
+            <button type="button" aria-pressed="false" data-value="info">信息</button>
+            <button type="button" aria-pressed="false" data-value="warning">警告</button>
+            <button type="button" aria-pressed="false" data-value="error">错误</button>
+          </div>
+          <span class="count-chip" data-filter-count data-count-selector=".audit-event" data-suffix=" 条事件">6 条事件</span>
+        </div>
+
+        <section class="grid-2 equal" style="grid-template-columns:minmax(0,1.05fr) minmax(320px,.95fr)">
+          <article class="panel">
+            <div class="panel-head">
+              <h2>最近任务</h2>
+              <span class="mono small-muted">最新在前</span>
+            </div>
+            <div class="panel-body table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>任务</th>
+                    <th>仓库</th>
+                    <th>结果</th>
+                    <th>耗时</th>
+                    <th>会话记录</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr data-filter-row data-level="info" data-search="task_aaaa cloud-agent-platform running 迁移 console TanStack Start">
+                    <td class="mono">task_aaaa</td>
+                    <td>cloud-agent-platform</td>
+                    <td><span class="status-pill green">运行中</span></td>
+                    <td class="mono">8m</td>
+                    <td><a class="mono" style="color:var(--info)" href="session.html">打开</a></td>
+                  </tr>
+                  <tr data-filter-row data-level="warning" data-search="task_dddd cloud-agent-platform 等待输入 历史页审计时间线筛选">
+                    <td class="mono">task_dddd</td>
+                    <td>cloud-agent-platform</td>
+                    <td><span class="status-pill warn">等待输入</span></td>
+                    <td class="mono">36m</td>
+                    <td><a class="mono" style="color:var(--info)" href="session.html">查看</a></td>
+                  </tr>
+                  <tr data-filter-row data-level="warning" data-search="task_bbbb agent-api queued metrics docker-stats">
+                    <td class="mono">task_bbbb</td>
+                    <td>agent-api</td>
+                    <td><span class="status-pill blue">排队中</span></td>
+                    <td class="mono">21m</td>
+                    <td><a class="mono" style="color:var(--info)" href="session.html">查看</a></td>
+                  </tr>
+                  <tr data-filter-row data-level="info" data-search="task_cccc agent-runner completed runner 拨回重连">
+                    <td class="mono">task_cccc</td>
+                    <td>agent-runner</td>
+                    <td><span class="status-pill">已完成</span></td>
+                    <td class="mono">94m</td>
+                    <td><a class="mono" style="color:var(--info)" href="session.html">查看</a></td>
+                  </tr>
+                  <tr data-filter-row data-level="error" data-search="task_eeee infra failed AIO 镜像 e2e">
+                    <td class="mono">task_eeee</td>
+                    <td>infra</td>
+                    <td><span class="status-pill danger">已停止</span></td>
+                    <td class="mono">180m</td>
+                    <td><a class="mono" style="color:var(--info)" href="session.html">查看</a></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>事件流</h2>
+              <span class="status-pill dark">可过滤</span>
+            </div>
+            <div class="panel-body">
+              <div class="audit-event" data-filter-row data-level="info" data-search="任务开始运行 task.running 沙箱 已就绪">
+                <time class="audit-time">17:09:23</time>
+                <span class="dot green"></span>
+                <div>
+                  <strong>任务开始运行</strong>
+                  <p>已分配运行槽位，沙箱已就绪</p>
+                </div>
+                <span class="result-code">200</span>
+              </div>
+              <div class="audit-event" data-filter-row data-level="info" data-search="创建任务 task.created cloud-agent-platform aio-execution-hardening">
+                <time class="audit-time">17:08:23</time>
+                <span class="dot green"></span>
+                <div>
+                  <strong>创建任务</strong>
+                  <p>在 cloud-agent-platform#aio-execution-hardening 上派发任务</p>
+                </div>
+                <span class="result-code">201</span>
+              </div>
+              <div class="audit-event" data-filter-row data-level="warning" data-search="任务进入队列 task.queued 并发信号量已满">
+                <time class="audit-time">18:39:17</time>
+                <span class="dot warn"></span>
+                <div>
+                  <strong>任务进入队列</strong>
+                  <p>并发信号量已满（10/10），任务排队等待空闲槽位</p>
+                </div>
+                <span class="result-code">409</span>
+              </div>
+              <div class="audit-event" data-filter-row data-level="warning" data-search="等待审批 approval.requested Codex 请求执行 shell 命令">
+                <time class="audit-time">18:25:33</time>
+                <span class="dot warn"></span>
+                <div>
+                  <strong>等待审批</strong>
+                  <p>Codex 请求执行 shell 命令，等待操作员决策</p>
+                </div>
+                <span class="result-code">422</span>
+              </div>
+              <div class="audit-event" data-filter-row data-level="info" data-search="任务完成 task.completed runner 拨回重连修复">
+                <time class="audit-time">17:31:42</time>
+                <span class="dot green"></span>
+                <div>
+                  <strong>任务完成</strong>
+                  <p>runner 拨回重连修复已通过，耗时 4m12s</p>
+                </div>
+                <span class="result-code">200</span>
+              </div>
+              <div class="audit-event" data-filter-row data-level="error" data-search="任务被强制失败 force_failed deadline 回收槽位">
+                <time class="audit-time">15:24:09</time>
+                <span class="dot danger"></span>
+                <div>
+                  <strong>任务被强制失败</strong>
+                  <p>超过墙钟截止时间（deadline），已回收槽位，耗时 30m00s</p>
+                </div>
+                <span class="result-code">409</span>
+              </div>
+            </div>
+          </article>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html" aria-current="page">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>
+

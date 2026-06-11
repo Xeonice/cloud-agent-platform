@@ -3,7 +3,7 @@
  * / 11.5).
  *
  * Replaces the desktop sidebar on small screens (the sidebar is
- * `max-[820px]:hidden`; this bar is `hidden max-[820px]:grid`). Four equal
+ * `max-[821px]:hidden`; this bar is `hidden max-[821px]:grid`). Four equal
  * cells: 控制台 / 仓库 / 历史 as `Link`s, plus 账户 which reuses `AccountMenu`
  * in its compact `mobile` variant (its DropdownMenu opens upward).
  *
@@ -47,7 +47,7 @@ export function MobileNav({ pathname }: MobileNavProps) {
     <nav
       aria-label="移动端导航"
       className={cn(
-        "fixed inset-x-3 bottom-3 z-30 hidden grid-cols-4 gap-1 p-1.5 max-[820px]:grid",
+        "fixed inset-x-3 bottom-3 z-30 hidden grid-cols-4 gap-1 p-1.5 max-[821px]:grid",
         "rounded-[18px] bg-[rgba(255,255,255,0.92)] backdrop-blur-md",
         "shadow-[0_0_0_1px_rgba(0,0,0,0.08),0_18px_48px_-28px_rgba(0,0,0,0.14)]",
       )}

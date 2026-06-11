@@ -497,10 +497,11 @@ export const SessionTerminal = React.forwardRef<
 
   return (
     <article className="overflow-hidden rounded-md bg-terminal-bg text-terminal-fg shadow-terminal min-h-[min(820px,calc(100vh-210px))]">
-      {/* terminal-head */}
+      {/* terminal-head — `{agent} · {repo}#{branch}` only. The design mock's
+          `pty: /dev/pts/4` line is intentionally NOT rendered: no backend field
+          backs a pty path, and fabricated values are prohibited. */}
       <div className="flex min-h-[40px] items-center justify-between border-b border-terminal-line bg-[#0d0d0d] px-3.5 font-mono text-xs text-terminal-muted">
         <span>{headLabel}</span>
-        <span className="font-mono">pty: /dev/pts/4</span>
       </div>
 
       {/* permission_request approval (lock-independent, D7) */}

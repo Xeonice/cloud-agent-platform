@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务控制台 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css?v=mobile-inbox-1">
+  <link rel="stylesheet" href="../css/responsive.css?v=mobile-inbox-1">
+</head>
+<body class="page-dashboard">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html" aria-current="page"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="eyebrow">tanghehui / agent-control</div>
+        <div class="topbar-actions">
+          <span class="status-pill green">Runner 池正常</span>
+        </div>
+      </header>
+
+      <section class="screen-header with-action">
+        <div>
+          <div class="eyebrow">任务</div>
+          <h1 class="screen-title">运行工作台</h1>
+          <p class="screen-lead">把远端 Agent 当成一组可排队、可接管、可审计的运行资源；这里优先处理等待输入和正在执行的任务。</p>
+          <div class="mobile-workbench-meta" aria-label="移动端工作台状态">
+            <span><span class="dot green"></span> Runner 池正常</span>
+            <strong>3 个待关注任务</strong>
+          </div>
+        </div>
+        <div class="actions compact-mobile">
+          <div class="segmented" aria-label="时间范围">
+            <button type="button" aria-pressed="true" data-value="24h">24h</button>
+            <button type="button" aria-pressed="false" data-value="7d">7d</button>
+            <button type="button" aria-pressed="false" data-value="30d">30d</button>
+          </div>
+          <button class="btn primary" type="button" data-open-dialog="#new-task-dialog">新建任务</button>
+        </div>
+      </section>
+
+      <section class="grid-2" style="margin-top:12px" data-filter-root="tasks">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>任务队列与接管</h2>
+              <p>等待输入会置顶；排队任务只有接入 runner 后才能进入会话。</p>
+            </div>
+            <span class="mono small-muted">3 open</span>
+          </div>
+
+          <div class="filterbar task-filterbar">
+            <label class="search-field">
+              <span aria-hidden="true">⌕</span>
+              <input type="search" aria-label="筛选任务" placeholder="搜索任务、仓库或分支" data-filter-search>
+            </label>
+            <div class="actions">
+              <div class="segmented task-filter-tabs" data-filter-target="tasks" aria-label="任务状态">
+                <button type="button" aria-pressed="true" data-value="all">
+                  <span>全部</span>
+                  <span class="tab-count">5</span>
+                </button>
+                <button type="button" aria-pressed="false" data-value="needs-input">
+                  <span>待处理</span>
+                  <span class="tab-count">1</span>
+                </button>
+                <button type="button" aria-pressed="false" data-value="active">
+                  <span>运行</span>
+                  <span class="tab-count">1</span>
+                </button>
+                <button type="button" aria-pressed="false" data-value="queued">
+                  <span>排队</span>
+                  <span class="tab-count">1</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="task-table-head table-wrap" aria-hidden="true">
+            <div class="repo-list-head task-list-head">
+              <span>任务 / GitHub 仓库</span>
+              <span>阶段 / 分支</span>
+              <span>操作</span>
+            </div>
+          </div>
+
+          <div>
+            <article class="task-row" data-filter-row data-state="needs-input" data-search="task_dddd cloud-agent-platform feat/history-filter 实现历史页审计时间线筛选 等待输入">
+              <div class="task-row-grid">
+                <div class="task-main">
+                  <div class="task-kicker">
+                    <span class="dot warn"></span>
+                    <span class="task-id">task_dddd</span>
+                    <span class="status-pill warn">等待输入</span>
+                  </div>
+                  <h3 class="task-title">实现历史页审计时间线筛选</h3>
+                  <p class="task-repo"><strong class="mono">tanghehui/cloud-agent-platform</strong></p>
+                </div>
+                <div class="task-context">
+                  <strong>等待确认</strong>
+                  <span class="mono">feat/history-filter</span>
+                </div>
+                <div class="task-actions">
+                  <a class="btn primary" href="session.html">处理输入</a>
+                </div>
+              </div>
+            </article>
+
+            <article class="task-row" data-filter-row data-state="active" data-search="task_aaaa cloud-agent-platform aio-execution-hardening 迁移 console 至 TanStack Start 并补齐数据层 running">
+              <div class="task-row-grid">
+                <div class="task-main">
+                  <div class="task-kicker">
+                    <span class="dot green"></span>
+                    <span class="task-id">task_aaaa</span>
+                    <span class="status-pill green">运行中</span>
+                  </div>
+                  <h3 class="task-title">迁移 console 至 TanStack Start 并补齐数据层</h3>
+                  <p class="task-repo"><strong class="mono">tanghehui/cloud-agent-platform</strong></p>
+                </div>
+                <div class="task-context">
+                  <strong>编码中</strong>
+                  <span class="mono">aio-execution-hardening</span>
+                </div>
+                <div class="task-actions">
+                  <a class="btn" href="session.html">接管会话</a>
+                </div>
+              </div>
+            </article>
+
+            <article class="task-row" data-filter-row data-state="queued" data-search="task_bbbb agent-api main 为 metrics 增加 docker-stats 采样 queued">
+              <div class="task-row-grid">
+                <div class="task-main">
+                  <div class="task-kicker">
+                    <span class="dot blue"></span>
+                    <span class="task-id">task_bbbb</span>
+                    <span class="status-pill blue">等待接入</span>
+                  </div>
+                  <h3 class="task-title">为 /metrics 增加 docker-stats 采样</h3>
+                  <p class="task-repo"><strong class="mono">tanghehui/agent-api</strong></p>
+                </div>
+                <div class="task-context">
+                  <strong>排队</strong>
+                  <span class="mono">main</span>
+                </div>
+                <div class="task-actions">
+                  <span class="btn is-disabled">等待 runner</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="task-row" data-filter-row data-state="done" data-search="task_cccc 33333333-3333-4333-8333-333333333333 fix dialback reconnect 修复 runner 拨回握手在断线后的重连 completed">
+              <div class="task-row-grid">
+                <div class="task-main">
+                  <div class="task-kicker">
+                    <span class="dot"></span>
+                    <span class="task-id">task_cccc</span>
+                    <span class="status-pill">已完成</span>
+                  </div>
+                  <h3 class="task-title">修复 runner 拨回握手在断线后的重连</h3>
+                  <p class="task-repo"><strong class="mono">33333333-3333-4333-8333-333333333333</strong></p>
+                </div>
+                <div class="task-context">
+                  <strong>完成</strong>
+                  <span class="mono">fix/dialback-reconnect</span>
+                </div>
+                <div class="task-actions">
+                  <a class="btn ghost" href="session.html">查看记录</a>
+                </div>
+              </div>
+            </article>
+
+            <article class="task-row" data-filter-row data-state="done" data-search="task_eeee 44444444-4444-4444-8444-444444444444 main 收紧 AIO 镜像体积并补充 e2e 守卫 failed">
+              <div class="task-row-grid">
+                <div class="task-main">
+                  <div class="task-kicker">
+                    <span class="dot danger"></span>
+                    <span class="task-id">task_eeee</span>
+                    <span class="status-pill danger">失败</span>
+                  </div>
+                  <h3 class="task-title">收紧 AIO 镜像体积并补充 e2e 守卫</h3>
+                  <p class="task-repo"><strong class="mono">44444444-4444-4444-8444-444444444444</strong></p>
+                </div>
+                <div class="task-context">
+                  <strong>失败</strong>
+                  <span class="mono">main</span>
+                </div>
+                <div class="task-actions">
+                  <a class="btn ghost" href="session.html">查看错误</a>
+                </div>
+              </div>
+            </article>
+          </div>
+        </article>
+
+        <aside class="capacity-modern" aria-label="远端 Agent 运行池">
+          <div class="mobile-pool-summary" aria-label="运行池摘要">
+            <span><span class="dot green"></span> Runner</span>
+            <strong>7 / 10 online</strong>
+            <span>CPU 42%</span>
+            <span>MEM 64%</span>
+          </div>
+          <div class="pool-hero">
+            <div class="pool-hero-head">
+              <div>
+                <span class="metric-label">REMOTE RUNNER POOL</span>
+                <h2>远端 Agent 运行池</h2>
+              </div>
+              <span class="pool-state"><span class="dot green"></span> healthy</span>
+            </div>
+
+            <div class="pool-console">
+              <div class="pool-primary-readout">
+                <span>online capacity</span>
+                <strong>7 / 10</strong>
+                <small>iad-02 private runners</small>
+              </div>
+            </div>
+
+            <div class="pool-slots" aria-label="10 个 Agent 槽位，7 个已占用">
+              <span class="pool-slot busy"><span>01</span></span>
+              <span class="pool-slot busy"><span>02</span></span>
+              <span class="pool-slot busy"><span>03</span></span>
+              <span class="pool-slot busy"><span>04</span></span>
+              <span class="pool-slot busy hot"><span>05</span></span>
+              <span class="pool-slot busy hot"><span>06</span></span>
+              <span class="pool-slot busy hot"><span>07</span></span>
+              <span class="pool-slot"><span>08</span></span>
+              <span class="pool-slot"><span>09</span></span>
+              <span class="pool-slot"><span>10</span></span>
+            </div>
+
+            <div class="pool-lane" aria-label="当前调度状态">
+              <span>idle runner</span>
+              <i aria-hidden="true"></i>
+              <strong>assigned</strong>
+              <i aria-hidden="true"></i>
+              <span>take over ready</span>
+            </div>
+          </div>
+
+          <div class="pool-grid">
+            <article class="pool-stat">
+              <span>CPU</span>
+              <strong>42%</strong>
+            </article>
+            <article class="pool-stat">
+              <span>MEM</span>
+              <strong>64%</strong>
+            </article>
+          </div>
+
+          <div class="runner-list" aria-label="运行中的 runner">
+            <article class="runner-row">
+              <div class="runner-node">
+                <strong>iad-02-01</strong>
+                <span>private runner</span>
+              </div>
+              <div class="runner-resources" aria-label="runner-iad-02-01 资源">
+                <span><small>CPU</small><strong>38%</strong></span>
+                <span><small>MEM</small><strong>61%</strong></span>
+              </div>
+              <span class="status-pill green">running</span>
+            </article>
+            <article class="runner-row">
+              <div class="runner-node">
+                <strong>iad-02-04</strong>
+                <span>private runner</span>
+              </div>
+              <div class="runner-resources" aria-label="runner-iad-02-04 资源">
+                <span><small>CPU</small><strong>22%</strong></span>
+                <span><small>MEM</small><strong>49%</strong></span>
+              </div>
+              <span class="status-pill warn">reserved</span>
+            </article>
+            <article class="runner-row">
+              <div class="runner-node">
+                <strong>iad-02-08</strong>
+                <span>private runner</span>
+              </div>
+              <div class="runner-resources" aria-label="runner-iad-02-08 资源">
+                <span><small>CPU</small><strong>04%</strong></span>
+                <span><small>MEM</small><strong>18%</strong></span>
+              </div>
+              <span class="status-pill">idle</span>
+            </article>
+          </div>
+
+          <div class="pool-policy">
+            <div><span>调度区域</span><strong>iad-02</strong></div>
+            <div><span>接管策略</span><strong>任务级终端</strong></div>
+            <div><span>写入边界</span><strong>确认后执行</strong></div>
+          </div>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html" aria-current="page">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="dialog-backdrop" id="new-task-dialog" hidden>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="new-task-title">
+      <header class="dialog-head">
+        <div>
+          <div class="eyebrow">新建任务</div>
+          <h2 id="new-task-title">派发到远端 Agent 队列</h2>
+          <p>轻量任务可以直接从控制台创建；需要更明确边界时进入高级派发页。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="grid-3">
+          <article class="stat-tile">
+            <span class="metric-label">01</span>
+            <strong>选择仓库</strong>
+            <p>来自已导入仓库范围。</p>
+          </article>
+          <article class="stat-tile">
+            <span class="metric-label">02</span>
+            <strong>Runner 可接入</strong>
+            <p>创建后进入 iad-02 队列。</p>
+          </article>
+          <article class="stat-tile">
+            <span class="metric-label">03</span>
+            <strong>写入前确认</strong>
+            <p>危险写入会暂停等待确认。</p>
+          </article>
+        </div>
+        <div class="grid-2 equal">
+          <div class="field">
+            <label for="quick-repo">仓库</label>
+            <select id="quick-repo">
+              <option>tanghehui/cloud-agent-platform</option>
+              <option>tanghehui/agent-api</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="quick-branch">分支</label>
+            <select id="quick-branch">
+              <option>main</option>
+              <option>aio-execution-hardening</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="quick-prompt">任务描述</label>
+          <textarea id="quick-prompt" placeholder="清楚描述远端 Agent 需要完成什么。"></textarea>
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="button" data-close-dialog>创建任务</button>
+          <a class="btn" href="queue.html">进入高级派发</a>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>
+

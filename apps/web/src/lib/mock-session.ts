@@ -16,7 +16,7 @@
  * This keeps the mock/real switch in ONE place and never lets the mock gate
  * masquerade as a real session once the capability is on.
  */
-import { BACKEND_CAPABILITIES } from "./api/capabilities";
+import { isCapable } from "./api/capabilities";
 import { resetState, setState } from "./store";
 import { apiBaseUrl } from "./config";
 import { safeRelativePath } from "./safe-redirect";
@@ -29,7 +29,10 @@ const GATE_KEY = "agent-control-plane-session";
 
 /** True while real OAuth is wired in; callers should read `authSessionQuery`. */
 export function isAuthCapable(): boolean {
-  return BACKEND_CAPABILITIES.auth;
+  // Via `isCapable` (not the raw flag map) so `VITE_FORCE_MOCK=1` — the visual
+  // harness's deterministic mock data mode — also returns the AUTH GATE to the
+  // sessionStorage mock path, consistent with every data domain.
+  return isCapable("auth");
 }
 
 /**

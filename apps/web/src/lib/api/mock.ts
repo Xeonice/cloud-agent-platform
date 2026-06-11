@@ -20,6 +20,7 @@ import type {
   ListReposResponse,
   AuthSession,
   MetricsResponse,
+  TaskMetricsSample,
   TaskResourceResponse,
   ListAuditEventsResponse,
   AuditEvent,
@@ -287,6 +288,21 @@ const QUEUE_DEPTH = 11;
  * The full `/metrics` payload: semaphore-derived capacity + a 5-slot occupancy
  * table (4 busy / 1 idle, ceiling aligned to the backend default 5) + a sampled
  * CPU/memory block at 42% / 64% (QUEUE 11, CPU 42% 内存 64%).
+ *
+ * In lockstep with the real `/metrics` (console-design-pixel-merge), the
+ * sampled block carries the per-task process-scope section
+ * (`resources.taskSamples`, latest frame ONLY, keyed by `taskId`). The
+ * fixtures deliberately exercise every HONEST state the pool panel must
+ * render — never zero-filled:
+ *  - slot 0's task: the normal PRIMARY reading (`scope: 'process'`, codex's
+ *    own subtree), fresh;
+ *  - slot 1's task: the `scope: 'container'` FALLBACK (in-sandbox process
+ *    reading unavailable);
+ *  - slot 2's task: a carried-forward frame past a missed tick
+ *    (`stale: true`, `ageMs` beyond the cadence);
+ *  - slot 3's task: ABSENT from the section (the not-sampled leg — a busy
+ *    slot with no frame renders 未采样, not fabricated zeros).
+ * Queued ids never appear in the section (queued tasks are not sampled).
  */
 export async function mockMetrics(): Promise<MetricsResponse> {
   await delay();
@@ -314,6 +330,59 @@ export async function mockMetrics(): Promise<MetricsResponse> {
   // 42% of 10 cores ≈ 4.2 cores; memory 64% of an 8GiB host roll-up.
   const memLimit = 8 * 1024 * 1024 * 1024;
   const memUsed = Math.round(memLimit * 0.64);
+  // Per-task frames (see the doc comment): each busy slot gets a 2GiB cgroup
+  // limit; codex's process subtree sits well below the container aggregate.
+  const perTaskLimit = Math.round(memLimit / ACTIVE);
+  const codexMem = 126 * 1024 * 1024;
+  const pct = (bytes: number) =>
+    Number(((bytes / perTaskLimit) * 100).toFixed(1));
+  const taskSamples: Record<string, TaskMetricsSample> = {
+    // Slot 0 — the normal PRIMARY reading: codex's own process subtree, fresh.
+    [busyTaskIds[0]!]: {
+      scope: "process",
+      sample: {
+        taskId: busyTaskIds[0]!,
+        cpuPercent: 23.4,
+        memoryBytes: codexMem,
+        memoryLimitBytes: perTaskLimit,
+        memoryPercent: pct(codexMem),
+      },
+      sampledAt: new Date(Date.now() - 2_000),
+      ageMs: 2_000,
+      stale: false,
+    },
+    // Slot 1 — container-scope FALLBACK: the in-sandbox process reading was
+    // unavailable, so the frame carries the container aggregate instead.
+    [busyTaskIds[1]!]: {
+      scope: "container",
+      sample: {
+        taskId: busyTaskIds[1]!,
+        cpuPercent: 34,
+        memoryBytes: Math.round(perTaskLimit * 0.46),
+        memoryLimitBytes: perTaskLimit,
+        memoryPercent: 46,
+      },
+      sampledAt: new Date(Date.now() - 2_000),
+      ageMs: 2_000,
+      stale: false,
+    },
+    // Slot 2 — carried forward past a missed sampling tick: the prior frame
+    // surfaces with `stale: true` and an age beyond the 5s cadence.
+    [busyTaskIds[2]!]: {
+      scope: "process",
+      sample: {
+        taskId: busyTaskIds[2]!,
+        cpuPercent: 11.2,
+        memoryBytes: 96 * 1024 * 1024,
+        memoryLimitBytes: perTaskLimit,
+        memoryPercent: pct(96 * 1024 * 1024),
+      },
+      sampledAt: new Date(Date.now() - 14_000),
+      ageMs: 14_000,
+      stale: true,
+    },
+    // Slot 3's task is deliberately ABSENT — the honest not-sampled leg.
+  };
   return {
     capacity: {
       ceiling: CEILING,
@@ -337,6 +406,7 @@ export async function mockMetrics(): Promise<MetricsResponse> {
       })),
       aggregateCpuPercent: 42,
       aggregateMemoryBytes: memUsed,
+      taskSamples,
     },
   };
 }

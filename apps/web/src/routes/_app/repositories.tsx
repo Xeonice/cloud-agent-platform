@@ -74,20 +74,20 @@ function RepositoriesPage() {
   return (
     <>
       {/* Screen header */}
-      <section className="mb-[18px] grid items-center gap-4 min-[821px]:grid-cols-[minmax(0,1fr)_auto]">
+      <section className="mb-[18px] grid items-end gap-4 min-[821px]:grid-cols-[minmax(0,1fr)_auto]">
         <div className="min-w-0">
           <div className="font-mono text-xs font-semibold text-muted-foreground">仓库</div>
-          <h1 className="mt-1 text-[clamp(24px,3vw,32px)] leading-[1.18] font-semibold tracking-[-0.8px] text-foreground">
+          <h1 className="max-w-[880px] text-[clamp(24px,3vw,32px)] leading-[1.18] font-semibold tracking-[-0.8px] text-foreground">
             仓库范围
           </h1>
-          <p className="mt-[7px] max-w-[760px] text-sm leading-[1.58] text-muted-foreground">
+          <p className="mt-[7px] max-w-[820px] text-sm leading-[1.58] text-muted-foreground">
             只让明确导入的仓库进入调度池；默认仓库决定新建任务的初始上下文。
           </p>
         </div>
         <button
           type="button"
           onClick={() => setDialogOpen(true)}
-          className="inline-flex h-9 items-center justify-center justify-self-start rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 min-[821px]:justify-self-end"
+          className="inline-flex min-h-[34px] items-center justify-center justify-self-start whitespace-nowrap rounded-md bg-primary px-[13px] text-[13px] font-medium text-primary-foreground hover:bg-[#2a2a2a] min-[821px]:justify-self-end"
         >
           添加仓库
         </button>

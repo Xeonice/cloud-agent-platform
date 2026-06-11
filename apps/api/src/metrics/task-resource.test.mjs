@@ -8,7 +8,10 @@
  *     container's sample + the snapshot's sampledAt/ageMs;
  *   - a task with NO live container → state 'not-running' (NOT an error, NOT
  *     fabricated zeros);
- *   - the read filters by taskId (returns THIS task's sample, not another's).
+ *   - the read filters by taskId (returns THIS task's sample, not another's);
+ *   - (console-design-pixel-merge) ONE /metrics poll carries the equivalent
+ *     per-task data (same snapshot, same scope semantics) the per-task fan-out
+ *     would return, with running-but-unsampled tasks omitted, never zeroed.
  *
  * (The 401 auth-gate is enforced by the global APP_GUARD before the controller
  * handler runs — same as GET /metrics — so it is covered by the existing auth
@@ -100,4 +103,54 @@ test('no reading (null) maps to not-running (not an error, no zeros)', () => {
   const res = svc.buildTaskResource('task-abc');
   assert.equal(res.state, 'not-running');
   assert.equal(res.sample, undefined, 'no fabricated sample');
+});
+
+test('one /metrics poll carries the equivalent per-task data the fan-out would return', () => {
+  const reading = {
+    scope: 'process',
+    sample: PROC,
+    container: CONTAINER,
+    sampledAt: new Date(5_000),
+    ageMs: 0,
+  };
+  const sampler = {
+    taskReading: (taskId) => (taskId === 'task-abc' ? reading : null),
+    currentSnapshot: () => ({
+      status: 'available',
+      sampledAt: new Date(5_000),
+      ageMs: 0,
+      hasActiveContainers: true,
+      containers: [CONTAINER],
+      aggregateCpuPercent: CONTAINER.cpuPercent,
+      aggregateMemoryBytes: CONTAINER.memoryBytes,
+    }),
+  };
+  // 'task-gone' is running per the semaphore but has NO live frame.
+  const guardrails = {
+    semaphoreProjection: () => ({
+      maxConcurrentTasks: 3,
+      runningCount: 2,
+      queuedCount: 0,
+      snapshotRunning: () => ['task-abc', 'task-gone'],
+      snapshotQueue: () => [],
+    }),
+    runnerMinuteIntervals: () => [],
+  };
+  const svc = new MetricsService(guardrails, sampler);
+
+  const aggregate = svc.build(5_000);
+  const fanout = svc.buildTaskResource('task-abc', 5_000);
+
+  const entry = aggregate.resources.taskSamples['task-abc'];
+  assert.ok(entry, 'running task rides the aggregate per-task section');
+  assert.equal(entry.scope, fanout.scope, 'same scope semantics as the fan-out');
+  assert.deepEqual(entry.sample, fanout.sample, 'same snapshot data as the fan-out');
+  assert.equal(entry.stale, false, 'fresh same-tick frame is not stale');
+  // Unsampled-but-running task: omitted from the section AND not-running via
+  // the fan-out — equivalent honesty, never fabricated zeros.
+  assert.ok(!('task-gone' in aggregate.resources.taskSamples), 'no-frame task omitted');
+  assert.equal(svc.buildTaskResource('task-gone', 5_000).state, 'not-running');
+  // Prior fields of the resources block ride along unchanged.
+  assert.equal(aggregate.resources.status, 'available');
+  assert.deepEqual(aggregate.resources.containers, [CONTAINER]);
 });

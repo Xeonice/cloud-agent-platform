@@ -132,6 +132,49 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
   );
 
   it(
+    "mockMetrics per-task section stays in lockstep (ceiling 5, honest states, never zero-filled)",
+    async () => {
+      const out = await mockMetrics();
+
+      // The mock default ceiling stays 5, matching the backend default
+      // (`maxConcurrentTasks`: dbSetting ?? env ?? 5).
+      expect(out.capacity.ceiling).toBe(5);
+      expect(out.occupancy.slots).toHaveLength(5);
+
+      const samples = out.resources.taskSamples;
+      expect(samples).toBeDefined();
+      const busyIds = out.occupancy.slots
+        .filter((s) => s.busy && s.taskId !== null)
+        .map((s) => s.taskId!);
+
+      for (const [taskId, frame] of Object.entries(samples!)) {
+        // Only busy-slot tasks are sampled — queued/non-running ids are never
+        // fabricated into the section.
+        expect(busyIds).toContain(taskId);
+        expect(frame.sample.taskId).toBe(taskId);
+        // Never zero-filled: every frame carries a real, non-zero reading.
+        expect(
+          frame.sample.cpuPercent > 0 || frame.sample.memoryBytes > 0,
+        ).toBe(true);
+      }
+      for (const queued of out.occupancy.queuedTaskIds) {
+        expect(samples).not.toHaveProperty(queued);
+      }
+
+      // The fixtures exercise every honest pool-panel state: the primary
+      // fresh process-scope frame, the container-scope fallback, a stale
+      // carried-forward frame, and a busy slot with NO frame (not-sampled —
+      // rendered 未采样, never zeros).
+      const frames = Object.values(samples!);
+      expect(frames.some((f) => f.scope === "process" && !f.stale)).toBe(true);
+      expect(frames.some((f) => f.scope === "container")).toBe(true);
+      expect(frames.some((f) => f.stale)).toBe(true);
+      expect(busyIds.some((id) => !(id in samples!))).toBe(true);
+    },
+    TIMEOUT,
+  );
+
+  it(
     "mockHistory -> ListAuditEventsResponse (unfiltered and level-filtered)",
     async () => {
       const all = await mockHistory();

@@ -1,11 +1,12 @@
 /**
- * `SessionHeader` — the page-level topbar action band + `.session-command-header`
- * (prototype `topbar-actions` + `session-command-header`).
+ * `SessionHeader` — the design revision's `.session-toolbar` band + the
+ * `.screen-header.with-action` command header.
  *
  * The shell already supplies the global topbar (Track 11), but this page needs
- * session-specific topbar ACTIONS, so — following how the other pages supplied
- * page identity via a screen-header — this renders a page-level header band
- * reproducing the prototype's topbar actions and the command header.
+ * session-specific ACTIONS, so — following how the other pages supplied page
+ * identity via a screen-header — this renders the design's session-toolbar
+ * (breadcrumb + connection pill + 返回任务/复制会话记录/暂停输出/停止任务)
+ * directly below the shell topbar, then the screen-header.
  *
  * The live-connection pill is DRIVEN BY THE REAL socket state (never hardcoded
  * 实时连接): green「实时连接」when open, warn「连接中…」while connecting, danger
@@ -80,12 +81,13 @@ export function SessionHeader({
   }, [canStop]);
   return (
     <>
-      {/* topbar actions band */}
-      <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="font-mono text-xs text-muted-foreground">
+      {/* session-toolbar (design `.session-toolbar`): breadcrumb left, session
+          actions right; stacks to a column on ≤820px with actions left-aligned. */}
+      <header className="mb-[18px] flex items-center justify-between gap-4 max-[821px]:flex-col max-[821px]:items-start">
+        <div className="font-mono text-[13px] font-semibold text-muted-foreground">
           tanghehui / agent-control / tasks / {shortId}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 max-[821px]:justify-start">
           <StatusPill variant={pill.variant} data-connection={connection}>
             {pill.label}
           </StatusPill>
@@ -148,10 +150,10 @@ export function SessionHeader({
         </div>
       </header>
 
-      {/* session-command-header */}
+      {/* screen-header (design `.screen-header.with-action`) */}
       <section
         aria-label="会话头部"
-        className="mb-2.5 grid items-end gap-4 grid-cols-[minmax(0,1fr)] min-[821px]:grid-cols-[minmax(0,1fr)_auto]"
+        className="mb-[18px] grid items-end gap-4 grid-cols-[minmax(0,1fr)] min-[821px]:grid-cols-[minmax(0,1fr)_auto]"
       >
         <div className="min-w-0">
           <div className="font-mono text-xs font-semibold text-muted-foreground">

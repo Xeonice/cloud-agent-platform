@@ -1,4 +1,12 @@
-import type { CapacityMetrics, SlotEntry, SlotOccupancy } from '@cap/contracts';
+import type {
+  CapacityMetrics,
+  ContainerResourceSample,
+  SampledResources,
+  SlotEntry,
+  SlotOccupancy,
+  TaskMetricsSample,
+  TaskResourceScope,
+} from '@cap/contracts';
 
 /**
  * Pure derived-capacity projection (be-metrics, tasks 5.1 & 5.2).
@@ -102,4 +110,73 @@ export function buildSlotOccupancy(
   }
 
   return { slots, queuedTaskIds };
+}
+
+/**
+ * The narrow per-task reading view the fold consumes — structurally the
+ * sampler's `taskReading()` result: the LATEST cached frame for one task
+ * (codex `process` primary, `container` fallback), or `null` when the task has
+ * no live frame at all (not running / genuinely left the sampled set past the
+ * carry-forward bound). The fold depends on THIS shape, not the concrete
+ * sampler class, so a fake reader can be injected in tests.
+ */
+export interface TaskResourceReading {
+  /** Which reading `sample` is: codex `process` (primary) or the `container` fallback. */
+  scope: TaskResourceScope;
+  /** The latest frame with server-computed `cpuPercent`/`memoryPercent`. */
+  sample: ContainerResourceSample;
+  /** Background container aggregate when `scope==='process'` (unused by the fold). */
+  container: ContainerResourceSample | null;
+  /** Time the frame was freshly sampled. */
+  sampledAt: Date | null;
+  /** Frame age in ms (grows when carried forward across missed ticks). */
+  ageMs: number | null;
+}
+
+/**
+ * Folds the sampler's latest per-task frames into the `/metrics` per-task
+ * process-scope section (console-design-pixel-merge D1), keyed by `taskId`.
+ *
+ * Sourcing: `readTask` reads the SAME cached sampler snapshot that backs the
+ * rest of `/metrics` — pure cache reads, never an extra sampling pass per
+ * request. Latest frame ONLY; no history.
+ *
+ * Honesty / degradation semantics (mirroring the per-task read):
+ *  - only the RUNNING set is consulted; a non-running task, or one that has
+ *    genuinely left the sampled set past the carry-forward bound (`readTask`
+ *    returns `null`), is OMITTED — never fabricated zeros;
+ *  - a still-running task that missed the latest tick surfaces its
+ *    carried-forward frame flagged `stale: true` instead of disappearing.
+ *    Carried-forward detection needs no threshold plumbing: a fresh frame is
+ *    stamped with the same instant as the block's snapshot, so a frame
+ *    STRICTLY OLDER than the block (`ageMs` larger) ⇔ it missed that tick;
+ *  - when the whole sampled block is degraded (`status` not `available` —
+ *    stale beyond threshold or source outage), every entry is flagged stale
+ *    too: the block freshness bounds the per-task freshness.
+ */
+export function foldTaskSamples(
+  runningTaskIds: readonly string[],
+  readTask: (taskId: string) => TaskResourceReading | null,
+  resources: Pick<SampledResources, 'status' | 'ageMs'>,
+): Record<string, TaskMetricsSample> {
+  const samples: Record<string, TaskMetricsSample> = {};
+  const blockFresh = resources.status === 'available';
+  for (const taskId of runningTaskIds) {
+    const reading = readTask(taskId);
+    // No live frame → omitted, never fabricated. (The null-timestamp guard is
+    // defensive: a non-null reading always carries its frame's timestamp/age.)
+    if (!reading || reading.sampledAt === null || reading.ageMs === null) {
+      continue;
+    }
+    const carriedForward =
+      resources.ageMs === null || reading.ageMs > resources.ageMs;
+    samples[taskId] = {
+      scope: reading.scope,
+      sample: reading.sample,
+      sampledAt: reading.sampledAt,
+      ageMs: reading.ageMs,
+      stale: !blockFresh || carriedForward,
+    };
+  }
+  return samples;
 }

@@ -89,6 +89,11 @@
   /* Dark pill (sidebar active / dark chips). */
   --dark-pill: #171717;
 
+  /* Console page canvas (applied at body level, see @layer base) and the
+     secondary muted ink — first-class tokens per console-design-pixel-merge D5. */
+  --console: #f8f9fb;
+  --muted-2: #808080;
+
   /* Brand originals. */
   --ink: #171717;
   --ink-soft: #404040;
@@ -171,6 +176,11 @@
 
   --dark-pill: #ededed;
 
+  /* Dark canvas equals the dark background; muted-2 drops contrast below
+     --muted-foreground, mirroring the light-theme relationship. */
+  --console: #0a0a0a;
+  --muted-2: #8a8a8a;
+
   --ink: #ededed;
   --ink-soft: #a3a3a3;
   --line: #262626;
@@ -244,6 +254,8 @@
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
   --color-dark-pill: var(--dark-pill);
+  --color-console: var(--console);
+  --color-muted-2: var(--muted-2);
   --color-ink: var(--ink);
   --color-ink-soft: var(--ink-soft);
   --color-line: var(--line);
@@ -277,9 +289,10 @@
 
   /* box-shadow ring tokens — the prototype's "borders" are 1px shadow rings */
   --shadow-ring: 0 0 0 1px var(--border);
+  /* shadow-card retuned to the design-revision values (console-design-pixel-merge D5) */
   --shadow-card:
-    0 0 0 1px var(--border), 0 1px 2px 0 rgba(16, 24, 40, 0.04),
-    0 1px 3px 0 rgba(16, 24, 40, 0.06);
+    0 0 0 1px rgba(0, 0, 0, 0.08), 0 2px 2px rgba(0, 0, 0, 0.04),
+    0 8px 8px -8px rgba(0, 0, 0, 0.04);
   --shadow-modal:
     0 0 0 1px var(--border), 0 8px 24px -4px rgba(16, 24, 40, 0.12),
     0 4px 8px -4px rgba(16, 24, 40, 0.08);
@@ -303,9 +316,15 @@
     outline-color: var(--ring);
   }
 
+  /*
+   * Console canvas at BODY level (console-design-pixel-merge D5): the design
+   * baseline paints html/body with var(--console), so @cap/ui components and
+   * standalone pages inherit it automatically — no per-layout wrapper class
+   * (the old `bg-[#f8f9fb]` in _app.tsx) and no per-package divergence.
+   */
   html,
   body {
-    background-color: var(--background);
+    background-color: var(--console);
     color: var(--foreground);
   }
 

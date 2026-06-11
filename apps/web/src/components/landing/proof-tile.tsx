@@ -49,7 +49,7 @@ export function ProofGrid({ children }: { children: React.ReactNode }) {
   return (
     <div
       aria-label="产品边界"
-      className="mt-6 grid grid-cols-3 gap-2.5 max-[1180px]:grid-cols-2 max-[820px]:grid-cols-1"
+      className="mt-6 grid grid-cols-3 gap-2.5 max-[1180px]:grid-cols-2 max-[821px]:grid-cols-1"
     >
       {children}
     </div>
