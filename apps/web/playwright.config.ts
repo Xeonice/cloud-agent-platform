@@ -7,7 +7,7 @@
  *
  *   1. `design-baseline` (baseline.capture.ts) — screenshots the design
  *      prototype (the LIVING baseline source,
- *      `openspec/changes/console-design-pixel-merge/design-baseline/`, served
+ *      `openspec/changes/archive/2026-06-11-console-design-pixel-merge/design-baseline/`, served
  *      by webServer[0]) into `e2e/visual/__screenshots__/` (gitignored;
  *      regenerated every run — see e2e/visual/manifest.ts for the full
  *      baseline-source / regeneration / threshold-calibration procedure).

@@ -2,7 +2,7 @@
  * Static file server for the design-baseline prototype
  * (console-design-pixel-merge task 8.1).
  *
- * Serves `openspec/changes/console-design-pixel-merge/design-baseline/` — the
+ * Serves `openspec/changes/archive/2026-06-11-console-design-pixel-merge/design-baseline/` — the
  * design revision's HTML/CSS/JS prototype — so the visual suite can render the
  * LIVING baselines in the same browser/viewport as the app (design.md D7).
  * Started by `playwright.config.ts` (webServer[0]); not meant to be deployed.
@@ -19,7 +19,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 /** Repo-relative root of the design prototype — the baseline SOURCE OF TRUTH. */
 const ROOT = path.resolve(
   here,
-  "../../../openspec/changes/console-design-pixel-merge/design-baseline",
+  "../../../openspec/changes/archive/2026-06-11-console-design-pixel-merge/design-baseline",
 );
 
 const PORT = Number(process.argv[2] ?? 4317);

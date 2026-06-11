@@ -10,7 +10,7 @@
  * Baselines are NOT checked-in PNGs. They are re-captured on every suite run
  * from the design prototype ("living baselines", design.md D7):
  *
- *   openspec/changes/console-design-pixel-merge/design-baseline/
+ *   openspec/changes/archive/2026-06-11-console-design-pixel-merge/design-baseline/
  *
  * served locally by `e2e/serve-design-baseline.mjs` and screenshotted by the
  * `design-baseline` Playwright project (baseline.capture.ts) into

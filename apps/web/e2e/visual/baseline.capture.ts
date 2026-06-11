@@ -3,7 +3,7 @@
  *
  * The `design-baseline` Playwright project: renders every design prototype
  * page (served by `e2e/serve-design-baseline.mjs` from
- * `openspec/changes/console-design-pixel-merge/design-baseline/`) at every
+ * `openspec/changes/archive/2026-06-11-console-design-pixel-merge/design-baseline/`) at every
  * breakpoint and writes the screenshot to the EXACT snapshot path the
  * comparison project's `toHaveScreenshot()` resolves
  * (`e2e/visual/__screenshots__/<page>-<breakpoint>.png`, via the config's
