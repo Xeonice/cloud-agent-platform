@@ -9,6 +9,13 @@
 # Exits non-zero (blocking) when a check fails so the operator sees the error.
 set -euo pipefail
 
+# Hooks run in a non-interactive shell without the user's PATH (node is managed
+# by fnm, pnpm lives in ~/Library/pnpm). Bootstrap both so node/pnpm resolve.
+export PATH="$HOME/Library/pnpm:/opt/homebrew/bin:/usr/local/bin:$PATH"
+if ! command -v node >/dev/null 2>&1 && command -v fnm >/dev/null 2>&1; then
+  eval "$(fnm env)" 2>/dev/null || true
+fi
+
 PAYLOAD="$(cat)"
 
 # Extract the edited file path from the tool input (Edit/Write use file_path).
