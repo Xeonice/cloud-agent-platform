@@ -335,3 +335,20 @@
     -moz-osx-font-smoothing: grayscale;
   }
 }
+
+/*
+ * Cockpit session-status pulse (session-cockpit-redesign): gated to the
+ * in-flight 等待审批 (`SessionStatusBadge` gate) state only — running/stopped/
+ * failed dots stay static. Subtle 45% opacity dip, matching the design baseline.
+ */
+@keyframes status-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@layer utilities {
+  .animate-status-pulse {
+    animation: status-pulse 2s ease-in-out infinite;
+  }
+}

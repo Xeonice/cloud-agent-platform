@@ -54,12 +54,16 @@ import { TerminalFallback, type FallbackLine } from "./terminal-fallback";
 import { TerminalCommandInput } from "./terminal-command-input";
 import { ApprovalSurface, type PendingApprovalView } from "./approval-surface";
 
-/** Live socket lifecycle as the topbar/header pills should reflect it. */
+/** Live socket lifecycle as the terminal-head connection readout reflects it. */
 export type ConnectionState = "connecting" | "open" | "closed" | "error";
 
-/** Imperative API the page's topbar buttons drive the terminal through. */
+/**
+ * Imperative API. The terminal's OWN ⋯ menu drives copy/pause directly. (The
+ * page-level approval banner + the lift of `pending`/`decide` to the route are
+ * DEFERRED to a follow-up approval change; the approval stays in-terminal here.)
+ */
 export interface SessionTerminalHandle {
-  /** Toggle the paused flag (暂停输出 / 恢复输出); returns the new paused state. */
+  /** Toggle the paused flag (暂停滚动 / 恢复滚动); returns the new paused state. */
   togglePause(): boolean;
   /** Serialize the current frame to the clipboard; resolves false on failure. */
   copySession(): Promise<boolean>;
@@ -69,9 +73,15 @@ export interface SessionTerminalProps {
   taskId: string;
   /** Left label of the terminal-head (`{agent} · {repo}#{branch}`). */
   headLabel: string;
+  /** Statusline phase label (degraded: 等待审批 while pending | generic 运行中). */
+  phaseLabel: string;
+  /** Whether the phase is the in-flight write-gate (drives the amber tone). */
+  phasePending?: boolean;
+  /** Statusline CPU·内存 readout (already honest-rendered by `formatTaskResource`). */
+  resourceLabel: string;
   /** Lifted so the header/topbar pills reflect the REAL socket state. */
   onConnectionChange?: (state: ConnectionState) => void;
-  /** Lifted so the 暂停输出 button copy flips with the paused flag. */
+  /** Lifted so the 暂停滚动 menu copy flips with the paused flag. */
   onPausedChange?: (paused: boolean) => void;
 }
 
@@ -124,15 +134,39 @@ function resolveVar(styles: CSSStyleDeclaration, name: string): string {
   return styles.getPropertyValue(name).trim();
 }
 
+/**
+ * Terminal-head connection readout — a dot + text reflecting the REAL socket
+ * state (never hardcoded). Only the in-flight `connecting` dot pulses.
+ */
+const CONNECTION_META: Record<
+  ConnectionState,
+  { label: string; dot: string; pulse: boolean }
+> = {
+  open: { label: "已连接", dot: "bg-[#34d399]", pulse: false },
+  connecting: { label: "连接中", dot: "bg-[#fbbf24]", pulse: true },
+  error: { label: "连接失败", dot: "bg-[#ff7b72]", pulse: false },
+  closed: { label: "未连接", dot: "bg-terminal-muted", pulse: false },
+};
+
 export const SessionTerminal = React.forwardRef<
   SessionTerminalHandle,
   SessionTerminalProps
 >(function SessionTerminal(
-  { taskId, headLabel, onConnectionChange, onPausedChange },
+  {
+    taskId,
+    headLabel,
+    phaseLabel,
+    phasePending = false,
+    resourceLabel,
+    onConnectionChange,
+    onPausedChange,
+  },
   ref,
 ): React.ReactElement {
   const socketRef = React.useRef<TerminalSocket | null>(null);
   const handleRef = React.useRef<TerminalHandle | null>(null);
+  /** The terminal `<article>` — the fullscreen target (full window, no overlay). */
+  const shellRef = React.useRef<HTMLElement | null>(null);
   const lastSeqRef = React.useRef(0);
   const sessionIdRef = React.useRef<string | null>(null);
   const pausedRef = React.useRef(false);
@@ -157,6 +191,11 @@ export const SessionTerminal = React.forwardRef<
   const [pending, setPending] = React.useState<PendingApprovalView | null>(null);
   const [sessionId, setSessionId] = React.useState<string | null>(null);
   const [input, setInput] = React.useState("");
+  // `paused` mirrors `pausedRef` for the ⋯ menu label (暂停滚动/恢复滚动); the ref
+  // stays the source of truth on the hot onRaw path. `fullscreen` tracks the
+  // article's fullscreen state for the 全屏/退出全屏 toggle icon.
+  const [paused, setPaused] = React.useState(false);
+  const [fullscreen, setFullscreen] = React.useState(false);
 
   // Keep lifted-state callbacks fresh without re-running the mount effect.
   const onConnectionChangeRef = React.useRef(onConnectionChange);
@@ -243,11 +282,13 @@ export const SessionTerminal = React.forwardRef<
         }
         case "pause": {
           pausedRef.current = true;
+          setPaused(true);
           onPausedChangeRef.current?.(true);
           break;
         }
         case "resume": {
           pausedRef.current = false;
+          setPaused(false);
           onPausedChangeRef.current?.(false);
           break;
         }
@@ -409,6 +450,48 @@ export const SessionTerminal = React.forwardRef<
     [],
   );
 
+  // ── Pause + copy (driven by the terminal's OWN ⋯ menu and the handle) ─────
+  const togglePause = React.useCallback(() => {
+    const next = !pausedRef.current;
+    pausedRef.current = next;
+    setPaused(next);
+    onPausedChangeRef.current?.(next);
+    return next;
+  }, []);
+
+  const copySession = React.useCallback(async () => {
+    // Custom copy (NOT native selection): xterm sets user-select:none on its
+    // a11y tree, so rely on the serialized frame + Clipboard API.
+    const serialized = handleRef.current?.serialize() ?? null;
+    if (serialized == null) return false;
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(serialized);
+        return true;
+      }
+    } catch {
+      // Clipboard may be unavailable/denied; degrade gracefully.
+    }
+    return false;
+  }, []);
+
+  // ── Fullscreen the terminal window (the `<article>`, no overlay) ──────────
+  const toggleFullscreen = React.useCallback(() => {
+    const el = shellRef.current;
+    if (!el) return;
+    if (document.fullscreenElement === el) {
+      void document.exitFullscreen?.();
+    } else {
+      void el.requestFullscreen?.();
+    }
+  }, []);
+  React.useEffect(() => {
+    const onChange = () =>
+      setFullscreen(document.fullscreenElement === shellRef.current);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
   // ── Command send — FALLBACK line-view ONLY ────────────────────────────────
   // The LIVE xterm is 1:1 direct-input via onData (this submit path is NOT wired
   // there). This remains only for the xterm-unavailable fallback, where there is
@@ -458,34 +541,11 @@ export const SessionTerminal = React.forwardRef<
     handleRef.current?.focus();
   }, [xtermReady, pending]);
 
-  // ── Imperative API for the topbar buttons ─────────────────────────────────
+  // ── Imperative API for the terminal ⋯ menu / page ─────────────────────────
   React.useImperativeHandle(
     ref,
-    () => ({
-      togglePause() {
-        const next = !pausedRef.current;
-        pausedRef.current = next;
-        onPausedChangeRef.current?.(next);
-        return next;
-      },
-      async copySession() {
-        const serialized = handleRef.current?.serialize() ?? null;
-        if (serialized == null) return false;
-        try {
-          if (
-            typeof navigator !== "undefined" &&
-            navigator.clipboard?.writeText
-          ) {
-            await navigator.clipboard.writeText(serialized);
-            return true;
-          }
-        } catch {
-          // Clipboard may be unavailable/denied; degrade gracefully.
-        }
-        return false;
-      },
-    }),
-    [],
+    () => ({ togglePause, copySession }),
+    [togglePause, copySession],
   );
 
   const showFallback = xtermFailed;
@@ -495,22 +555,119 @@ export const SessionTerminal = React.forwardRef<
   // trap — so the input must not invite typing into a non-deliverable socket.
   const commandDisabled = !sessionId || connection !== "open";
 
+  const conn = CONNECTION_META[connection];
+
   return (
-    <article className="overflow-hidden rounded-md bg-terminal-bg text-terminal-fg shadow-terminal min-h-[min(820px,calc(100vh-210px))]">
-      {/* terminal-head — `{agent} · {repo}#{branch}` only. The design mock's
-          `pty: /dev/pts/4` line is intentionally NOT rendered: no backend field
-          backs a pty path, and fabricated values are prohibited. */}
-      <div className="flex min-h-[40px] items-center justify-between border-b border-terminal-line bg-[#0d0d0d] px-3.5 font-mono text-xs text-terminal-muted">
-        <span>{headLabel}</span>
+    <article
+      ref={shellRef}
+      className="flex min-h-[min(820px,calc(100vh-210px))] flex-col overflow-hidden rounded-lg bg-terminal-bg text-terminal-fg shadow-terminal [&:fullscreen]:rounded-none"
+    >
+      {/* terminal-head (three-segment, dark) — `{agent} · {repo}#{branch}` label
+          + connection readout (left); ⋯ menu (复制 / 暂停滚动) + 全屏 (right). The
+          design mock's `pty: /dev/pts/4` line is intentionally NOT rendered: no
+          backend field backs a pty path, and fabricated values are prohibited. */}
+      <div className="flex min-h-[38px] flex-none items-center justify-between gap-3 border-b border-terminal-line bg-[#0d0d0d] px-3.5 font-mono text-xs text-terminal-muted">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="truncate font-semibold text-terminal-fg">
+            {headLabel}
+          </span>
+          <span className="inline-flex flex-none items-center gap-1.5 text-[11px]">
+            <span
+              aria-hidden="true"
+              className={`h-1.5 w-1.5 rounded-full ${conn.dot} ${conn.pulse ? "animate-status-pulse" : ""}`}
+            />
+            {conn.label}
+          </span>
+        </div>
+        <div className="flex flex-none items-center gap-1">
+          <details className="relative">
+            <summary
+              aria-label="更多终端操作"
+              className="grid size-7 cursor-pointer list-none place-items-center rounded-md text-terminal-muted transition-colors hover:bg-white/10 hover:text-terminal-fg [&::-webkit-details-marker]:hidden"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+                className="size-[15px]"
+              >
+                <circle cx="5" cy="12" r="1.6" />
+                <circle cx="12" cy="12" r="1.6" />
+                <circle cx="19" cy="12" r="1.6" />
+              </svg>
+            </summary>
+            <div className="absolute right-0 top-[calc(100%+8px)] z-10 grid min-w-[148px] gap-0.5 rounded-lg bg-[#111] p-1 shadow-[0_0_0_1px_var(--terminal-line),0_14px_36px_rgba(0,0,0,0.4)]">
+              <button
+                type="button"
+                data-copy-session
+                onClick={(e) => {
+                  void copySession();
+                  e.currentTarget.closest("details")?.removeAttribute("open");
+                }}
+                className="min-h-[30px] rounded-md px-2.5 text-left text-terminal-fg transition-colors hover:bg-white/10"
+              >
+                复制记录
+              </button>
+              <button
+                type="button"
+                data-terminal-pause
+                onClick={(e) => {
+                  togglePause();
+                  e.currentTarget.closest("details")?.removeAttribute("open");
+                }}
+                className="min-h-[30px] rounded-md px-2.5 text-left text-terminal-fg transition-colors hover:bg-white/10"
+              >
+                {paused ? "恢复滚动" : "暂停滚动"}
+              </button>
+            </div>
+          </details>
+          <button
+            type="button"
+            data-terminal-fullscreen
+            onClick={toggleFullscreen}
+            aria-pressed={fullscreen}
+            aria-label="切换终端全屏"
+            className="grid size-7 place-items-center rounded-md text-terminal-muted transition-colors hover:bg-white/10 hover:text-terminal-fg"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+              className="size-[14px]"
+            >
+              {fullscreen ? (
+                <>
+                  <polyline points="4 14 10 14 10 20" />
+                  <polyline points="20 10 14 10 14 4" />
+                  <line x1="14" x2="21" y1="10" y2="3" />
+                  <line x1="3" x2="10" y1="21" y2="14" />
+                </>
+              ) : (
+                <>
+                  <polyline points="15 3 21 3 21 9" />
+                  <polyline points="9 21 3 21 3 15" />
+                  <line x1="21" x2="14" y1="3" y2="10" />
+                  <line x1="3" x2="10" y1="21" y2="14" />
+                </>
+              )}
+            </svg>
+          </button>
+        </div>
       </div>
 
-      {/* permission_request approval (lock-independent, D7) */}
+      {/* permission_request approval (lock-independent, D7) — rendered INSIDE the
+          terminal. (The page-level banner + state-lift to the route are deferred
+          to a follow-up approval change.) */}
       {pending ? <ApprovalSurface request={pending} onDecide={decide} /> : null}
 
       {/* xterm-host — live terminal (direct 1:1 input via onData), OR the
           fallback line-view (which keeps the command input) when xterm fails. */}
       {showFallback ? (
-        <>
+        <div className="flex flex-1 flex-col">
           <TerminalFallback lines={fallbackLines(connection)} />
           {/* The fallback DOM line-view has NO live terminal to type into, so it
               retains the command input as its only input path. The LIVE xterm
@@ -522,9 +679,9 @@ export const SessionTerminal = React.forwardRef<
             onSubmit={sendCommand}
             disabled={commandDisabled}
           />
-        </>
+        </div>
       ) : (
-        <div className="relative min-h-[min(680px,calc(100vh-348px))] bg-[#050505] px-4 py-3.5">
+        <div className="relative min-h-0 flex-1 bg-[#050505] px-4 py-3.5">
           {theme ? (
             <Terminal
               theme={theme}
@@ -580,6 +737,22 @@ export const SessionTerminal = React.forwardRef<
           ) : null}
         </div>
       )}
+
+      {/* statusline footer (tmux-style) — the per-task resource readout + a
+          degraded phase, INSIDE the terminal window (D3). CPU·内存 is already
+          honest-rendered (未运行/未采样) by the route's `formatTaskResource`; the
+          phase degrades to {等待审批 while pending | generic 运行中}. */}
+      <div className="flex min-h-[30px] flex-none items-center justify-between gap-3 border-t border-terminal-line bg-[#0d0d0d] px-3.5 font-mono text-[11px] text-terminal-muted">
+        <span
+          className={
+            "font-semibold " +
+            (phasePending ? "text-[#fbbf24]" : "text-terminal-fg")
+          }
+        >
+          {phaseLabel}
+        </span>
+        <span className="truncate">{resourceLabel}</span>
+      </div>
     </article>
   );
 });

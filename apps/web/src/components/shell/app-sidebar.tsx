@@ -16,12 +16,11 @@
  * SSR-safe: nav state derives from the router pathname (available on the
  * server); no window/clock/random access during render.
  *
- * Fidelity (prototype audit-refinement `.console-body` FINAL values, resolved
- * across the cascading override blocks): padding 14px, white@90% + blur(18px),
- * right-edge inset hairline; nav item min-h 36px + rounded-md (from the last
- * override) with font-size 13px + padding 0 9px (from the highest-specificity
- * block that sets them); muted text; ACTIVE = solid dark pill (#171717) + white
- * text with the shortcut hint dimmed to white/60.
+ * Fidelity (cockpit design-revision FINAL values): white@90% + blur(18px),
+ * right-edge inset hairline; nav item rounded-md, font-size 13px, muted text;
+ * ACTIVE = a Geist-style LEFT VERTICAL ACCENT BAR (inset 2px foreground) over a
+ * light `secondary` surface with bold text — NOT a solid dark pill — with the
+ * shortcut hint kept muted. The 228px column width is pinned in `_app.tsx`.
  */
 import { Link } from "@tanstack/react-router";
 
@@ -117,20 +116,15 @@ export function AppSidebar({ pathname }: AppSidebarProps) {
                 to={entry.to}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "flex min-h-9 items-center justify-between rounded-md px-[9px] text-[13px] font-medium",
+                  "flex min-h-9 items-center justify-between rounded-md py-0 pl-3 pr-[9px] text-[13px] font-medium",
                   "transition-colors",
                   isActive
-                    ? "bg-dark-pill text-background"
+                    ? "bg-secondary font-semibold text-foreground shadow-[inset_2px_0_0_var(--foreground)]"
                     : "text-muted-foreground hover:bg-secondary hover:text-foreground",
                 )}
               >
                 <span>{entry.label}</span>
-                <span
-                  className={cn(
-                    "font-mono",
-                    isActive ? "text-background/60" : "text-muted-foreground",
-                  )}
-                >
+                <span className="font-mono text-muted-foreground">
                   {entry.shortcut}
                 </span>
               </Link>

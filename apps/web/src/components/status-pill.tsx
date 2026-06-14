@@ -72,3 +72,89 @@ export function StatusPill({
     </span>
   );
 }
+
+/**
+ * The cockpit task-lifecycle state vocabulary. State is conveyed by BOTH the dot
+ * color AND the text label (never color-alone), and only the in-flight `gate`
+ * (等待审批) state animates — `running`/`stopped`/`failed` render a static dot.
+ */
+export type SessionTaskState = "running" | "gate" | "stopped" | "failed";
+
+const SESSION_STATE_META: Record<
+  SessionTaskState,
+  { label: string; dot: string; pulse: boolean }
+> = {
+  running: { label: "运行中", dot: "bg-success", pulse: false },
+  gate: { label: "等待审批", dot: "bg-warning", pulse: true },
+  stopped: { label: "已停止", dot: "bg-muted-foreground", pulse: false },
+  failed: { label: "失败", dot: "bg-danger", pulse: false },
+};
+
+/**
+ * `SessionStatusBadge` — the session-page H1 task-status badge (cockpit design).
+ * dot + canonical text label; the dot pulses ONLY for the in-flight 等待审批
+ * state (`.animate-status-pulse` keyframe lives in `app.css`).
+ */
+export function SessionStatusBadge({
+  state,
+  className,
+  ...props
+}: { state: SessionTaskState } & React.ComponentProps<"span">) {
+  const meta = SESSION_STATE_META[state];
+  return (
+    <span
+      data-slot="session-state"
+      data-state={state}
+      aria-label="任务状态"
+      className={cn(
+        "inline-flex flex-none items-center gap-2 text-xs font-medium text-muted-foreground/80",
+        className,
+      )}
+      {...props}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "h-2 w-2 flex-none rounded-full",
+          meta.dot,
+          meta.pulse && "animate-status-pulse",
+        )}
+      />
+      {meta.label}
+    </span>
+  );
+}
+
+/**
+ * `SessionTag` — a non-interactive cockpit metadata chip: white background + a
+ * 1px ring (Geist Badge). The `warning` tone (amber soft surface + amber ring) is
+ * reserved for the 写入前确认 write-gate chip — the ONLY warning-colored tag.
+ */
+export function SessionTag({
+  tone = "neutral",
+  mono = false,
+  className,
+  children,
+  ...props
+}: {
+  tone?: "neutral" | "warning";
+  mono?: boolean;
+} & React.ComponentProps<"span">) {
+  return (
+    <span
+      data-slot="session-tag"
+      data-tone={tone}
+      className={cn(
+        "inline-flex min-h-6 flex-none items-center gap-1.5 rounded-full px-2.5 text-xs font-medium leading-none ring-1 ring-inset",
+        tone === "warning"
+          ? "bg-warning-soft text-warning ring-warning/25"
+          : "bg-card text-foreground/80 ring-border",
+        mono && "font-mono text-[11px]",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+    </span>
+  );
+}

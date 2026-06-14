@@ -47,6 +47,17 @@
  *   repositories  0.0126              0.0169             0.030 / 0.035
  *   history       0.0263              0.0303             0.045 / 0.050
  *   settings      0.0232              0.0219             0.040 / 0.040
+ *
+ * Re-validation (session-cockpit-redesign, VV_MEASURE=1, 2026-06-14): the design
+ * baseline was rebuilt = the pixel-merge archive + the 228px sidebar accent
+ * delta + the cockpit `session.html` (running-state, mock-fixture content) +
+ * `session-cockpit.css` (the session/terminal cockpit styles overlaid on the
+ * archive platform.css, with the terminal pinned to the app's `min-h` model so
+ * the masked terminal aligns). All UNTOUCHED pages re-measured at their original
+ * actuals (≤ a few 1e-4 drift), so their thresholds are unchanged. The session
+ * page re-measured 0.0388 / 0.0491 against the fresh cockpit baseline — within
+ * the unchanged 0.055 / 0.065 — and its mask moved to the whole terminal window
+ * (the old header connection pill is gone). All 16 comparisons pass.
  */
 
 export interface Breakpoint {
@@ -149,9 +160,13 @@ export const PAGES: readonly VisualPage[] = [
     appPath: `/tasks/${SESSION_TASK_ID}`,
     designPath: "/screens/session.html",
     authed: true,
+    // Re-calibrated for the cockpit redesign (VV_MEASURE=1, see header record).
     maxDiffPixelRatio: ratio(0.055, 0.065),
-    appMask: ["article.bg-terminal-bg", "[data-connection]"],
-    designMask: ["section.terminal-shell", ".session-actions .status-pill"],
+    // The whole dark terminal window (head + PTY + statusline) is dynamic/masked
+    // in both captures; the cockpit dropped the header connection pill, so the
+    // old `[data-connection]` / `.session-actions .status-pill` masks are gone.
+    appMask: ["article.bg-terminal-bg"],
+    designMask: ["section.terminal-shell"],
     readySelector: "article.bg-terminal-bg",
   },
   {

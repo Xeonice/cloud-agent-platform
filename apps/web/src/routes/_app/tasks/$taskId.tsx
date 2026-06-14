@@ -42,7 +42,7 @@ import {
 import { stopTaskMutation } from "@/lib/api/mutations";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { SessionHeader } from "@/components/session/session-header";
-import { SessionContextStrip } from "@/components/session/session-context-strip";
+import type { SessionTaskState } from "@/components/status-pill";
 import {
   SessionTerminal,
   type SessionTerminalHandle,
@@ -50,6 +50,14 @@ import {
 } from "@/components/session/session-terminal";
 import { TerminalSkeleton } from "@/components/session/terminal-skeleton";
 import { formatTaskResource } from "@/components/session/format-resource";
+
+/** Statusline / H1 phase label per cockpit state vocabulary (never fabricated). */
+const STATE_LABELS: Record<SessionTaskState, string> = {
+  running: "运行中",
+  gate: "等待审批",
+  stopped: "已停止",
+  failed: "失败",
+};
 
 export const Route = createFileRoute("/_app/tasks/$taskId")({
   ssr: false,
@@ -88,10 +96,6 @@ function SessionPage(): React.ReactElement {
     !(TERMINAL_TASK_STATUSES as readonly string[]).includes(task.status);
 
   const terminalRef = React.useRef<SessionTerminalHandle | null>(null);
-  const [connection, setConnection] = React.useState<ConnectionState>(
-    "connecting",
-  );
-  const [paused, setPaused] = React.useState(false);
 
   const shortId = shortTaskId(taskId);
 
@@ -101,60 +105,42 @@ function SessionPage(): React.ReactElement {
   const repo = context?.repo ?? "—";
   const branch = task?.branch ?? context?.branch ?? "main";
   const agent = context?.agent ?? "—";
-  const lead = `${repo}#${branch} · ${agent}`;
+  const runtime = context?.runtime ?? "AIO Sandbox";
   const headLabel = `${agent} · ${repo}#${branch}`;
 
+  // Cockpit task-lifecycle state: failed → failed; other terminal → stopped;
+  // else running. Drives the H1 Badge and the statusline phase (mirrored, never
+  // a fabricated phase). The `gate`/等待审批 state lands with the follow-up
+  // approval change that lifts the pending request to the page.
+  const taskState: SessionTaskState =
+    task?.status === "failed"
+      ? "failed"
+      : task != null &&
+          (TERMINAL_TASK_STATUSES as readonly string[]).includes(task.status)
+        ? "stopped"
+        : "running";
+
   // Per-task live resource line: codex's OWN process CPU/memory as the PRIMARY
-  // figure with the container total as background, labeled by the reading's
-  // `scope` (process vs the container fallback), or an honest "未运行/未采样" when
-  // there is no live reading. A transient sampling miss keeps the carried-forward
-  // numbers (never flips to not-running). See `formatTaskResource`.
+  // figure, labeled by the reading's `scope`, degrading honestly to "未运行/未采样"
+  // (never fabricated zeros). Presented in the terminal statusline footer (D3).
   const resourceBody = formatTaskResource(taskResource);
 
-  // Context strip (design 3+1 grouping): the three task-context cells grouped
-  // in the top row; the guardrail readout is the SEPARATED fourth cell. Bind to
-  // query data where derivable; keep descriptive copy where not derivable.
-  const contextItems = [
-    {
-      label: "任务目标",
-      title: "会话目标",
-      body: task?.prompt ?? "正在加载任务目标…",
-      primary: true,
-    },
-    {
-      label: "运行环境",
-      // runtime is a TRUTHFUL label (AIO Sandbox = the provider); the resource
-      // line is now the task's OWN live CPU/memory from the per-task sampler
-      // read (resourceBody), degrading honestly to "未运行/未采样" (D5.5).
-      title: context?.runtime ?? "—",
-      body: resourceBody,
-    },
-    {
-      label: "安全边界",
-      title: "写入前确认",
-      body: context?.safetyBoundary ?? "commit / push / secret / PR 创建会暂停。",
-    },
-  ] as const;
+  // The task's CONFIGURED guardrails read back from the task (never fabricated):
+  // idle reclaim + wall-clock deadline. Folded into one neutral chip — "默认守护栏"
+  // when both are default-off, else the honest configured values (关闭/无 absent).
+  const guardrail =
+    task?.idleTimeoutMs == null && task?.deadlineMs == null
+      ? "默认守护栏"
+      : `空闲${
+          task?.idleTimeoutMs != null ? formatDuration(task.idleTimeoutMs) : "关闭"
+        } · 时限${
+          task?.deadlineMs != null ? formatDuration(task.deadlineMs) : "无"
+        }`;
 
-  // The task's CONFIGURED guardrails, read back from the task (never
-  // fabricated): idle reclaim + wall-clock deadline, both OFF/none by default
-  // (task-guardrail-controls). Idle-reclaim off means the task is not killed
-  // for being quiet; the operator stops it manually from the header instead.
-  const guardrailItem = {
-    label: "守护栏",
-    title: "空闲 / 时限",
-    body: `空闲回收 ${
-      task?.idleTimeoutMs != null ? formatDuration(task.idleTimeoutMs) : "关闭"
-    } · 运行时限 ${
-      task?.deadlineMs != null ? formatDuration(task.deadlineMs) : "无"
-    }`,
-  } as const;
-
-  // When the socket opens, reconcile the task read so the (shell) topbar status
-  // reflects the live session — an honest, real signal (no fabricated status).
+  // When the socket opens, reconcile the task read so other views reflect the
+  // live session — an honest, real signal (no fabricated status).
   const handleConnectionChange = React.useCallback(
     (state: ConnectionState) => {
-      setConnection(state);
       if (state === "open") {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.task(taskId),
@@ -163,17 +149,6 @@ function SessionPage(): React.ReactElement {
     },
     [queryClient, taskId],
   );
-
-  async function handleCopySession() {
-    const ok = (await terminalRef.current?.copySession()) ?? false;
-    if (ok) toast.success("已复制会话记录到剪贴板");
-    else toast.error("复制失败：终端内容暂不可用");
-  }
-
-  function handleTogglePause() {
-    const next = terminalRef.current?.togglePause() ?? false;
-    toast.message(next ? "已暂停输出" : "已恢复输出");
-  }
 
   function handleStop() {
     stopMutation.mutate(taskId, {
@@ -189,17 +164,16 @@ function SessionPage(): React.ReactElement {
     <>
       <SessionHeader
         shortId={shortId}
-        lead={lead}
-        connection={connection}
-        paused={paused}
-        onCopySession={handleCopySession}
-        onTogglePause={handleTogglePause}
+        taskState={taskState}
+        prompt={task?.prompt ?? "正在加载任务目标…"}
+        branch={branch}
+        agent={agent}
+        runtime={runtime}
+        guardrail={guardrail}
         canStop={canStop}
         stopPending={stopMutation.isPending}
         onStop={handleStop}
       />
-
-      <SessionContextStrip items={contextItems} guardrail={guardrailItem} />
 
       <section className="grid grid-cols-[minmax(0,1fr)]">
         {task && PRE_RUNNING_STATUSES.has(task.status) ? (
@@ -213,8 +187,10 @@ function SessionPage(): React.ReactElement {
             ref={terminalRef}
             taskId={taskId}
             headLabel={headLabel}
+            phaseLabel={STATE_LABELS[taskState]}
+            phasePending={false}
+            resourceLabel={resourceBody}
             onConnectionChange={handleConnectionChange}
-            onPausedChange={setPaused}
           />
         )}
       </section>

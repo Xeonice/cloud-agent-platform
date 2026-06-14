@@ -8,6 +8,11 @@
  * so it is NOT gated by the keystroke lease state. The parent calls
  * `sendDecision(requestId, { behavior })` and removes the panel once decided.
  *
+ * NOTE (session-cockpit-redesign): the page-level amber banner + the lift of
+ * `pending`/`decide` to the route are DEFERRED to a follow-up approval change
+ * (alongside the real `permission_request` flow + payload). This phase keeps the
+ * approval surface inside the terminal exactly as it shipped previously.
+ *
  * SSR-safe: pure render off props (only ever mounted client-side from a live
  * frame, but touches no window APIs).
  */

@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>账户与模型凭据 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="dashboard.html" data-menu-close>返回控制台</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="eyebrow">tanghehui / agent-control</div>
+        <div class="topbar-actions">
+          <span class="status-pill green">Runner 池正常</span>
+        </div>
+      </header>
+
+      <section class="screen-header with-action">
+        <div>
+          <div class="eyebrow">设置</div>
+          <h1 class="screen-title">账户与模型凭据</h1>
+          <p class="screen-lead">把访问身份、仓库默认值、会话保留和 Agent 模型凭据放在同一个安全面板里管理。</p>
+        </div>
+        <span class="status-pill green">单用户模式</span>
+      </section>
+
+      <section class="grid-2" style="grid-template-columns:230px minmax(0,1fr)">
+        <aside class="panel pad" style="position:sticky;top:78px">
+          <nav class="settings-nav" aria-label="设置分组">
+            <div class="settings-nav-title">Settings</div>
+            <a href="#account"><strong>账户身份</strong><span>GitHub OAuth 与访问范围</span></a>
+            <a href="#github"><strong>仓库默认值</strong><span>默认仓库、记录保留</span></a>
+            <a href="#codex"><strong>Agent 模型凭据</strong><span>官方账号或兼容提供方</span></a>
+            <a href="#safety"><strong>安全边界</strong><span>写入前确认策略</span></a>
+          </nav>
+        </aside>
+
+        <div class="grid">
+          <section class="grid-3" aria-label="设置摘要">
+            <article class="stat-tile">
+              <span class="metric-label">ACCOUNT</span>
+              <strong class="metric-value">tanghehui</strong>
+              <p>唯一允许进入控制台的 GitHub 身份。</p>
+            </article>
+            <article class="stat-tile">
+              <span class="metric-label">CREDENTIAL</span>
+              <strong class="metric-value">Agent 模型凭据</strong>
+              <p>任务运行时使用的模型访问方式。</p>
+            </article>
+            <article class="stat-tile">
+              <span class="metric-label">SAFETY</span>
+              <strong class="metric-value">写入前确认</strong>
+              <p>危险动作必须在会话里确认。</p>
+            </article>
+          </section>
+
+          <section id="account" class="grid-2 equal">
+            <article class="panel pad identity-card">
+              <div class="split-line" style="margin-bottom:14px">
+                <h2 style="margin:0;font-size:16px">当前身份</h2>
+                <span class="status-pill green">已验证</span>
+              </div>
+              <div class="identity-avatar-row">
+                <span class="identity-avatar">TA</span>
+                <div>
+                  <strong>tanghehui</strong>
+                  <p class="small-muted" style="margin:4px 0 0">github.com/tanghehui</p>
+                </div>
+              </div>
+              <div class="config-list">
+                <div class="config-row"><span>登录方式</span><strong>GitHub OAuth</strong></div>
+                <div class="config-row"><span>控制台范围</span><strong>私有访问</strong></div>
+                <div class="config-row"><span>仓库来源</span><strong>已导入仓库</strong></div>
+              </div>
+            </article>
+
+            <form id="github" class="panel pad form-grid">
+              <div class="split-line" style="margin-bottom:2px">
+                <h2 style="margin:0;font-size:16px">访问与默认值</h2>
+                <span class="mono small-muted">保存到本地状态</span>
+              </div>
+              <div class="field">
+                <label for="allowed-account">允许进入的 GitHub 账号</label>
+                <input id="allowed-account" value="tanghehui" readonly>
+                <small class="small-muted">只有这个 GitHub OAuth 账号可以进入控制台；没有公开注册入口。</small>
+              </div>
+              <div class="field">
+                <label for="default-repo">默认仓库</label>
+                <select id="default-repo">
+                  <option>tanghehui/cloud-agent-platform</option>
+                  <option>tanghehui/agent-api</option>
+                  <option>不设置默认仓库</option>
+                </select>
+                <small class="small-muted">新建任务时优先选中这个仓库；仓库列表由“仓库导入”页面维护。</small>
+              </div>
+              <div class="field">
+                <label for="retention">会话记录保留</label>
+                <select id="retention">
+                  <option>30 天</option>
+                  <option>7 天</option>
+                  <option>90 天</option>
+                </select>
+                <small class="small-muted">影响历史日志和 CLI 会话记录的默认保留周期。</small>
+              </div>
+              <label class="check-row" id="safety">
+                <input type="checkbox" checked>
+                <span>
+                  <strong>写入前必须确认</strong><br>
+                  <small class="small-muted">Commit、push、secret 变更和 GitHub PR 创建前暂停，等待操作者确认。</small>
+                </span>
+              </label>
+              <div class="actions" style="margin-top:12px">
+                <button class="btn primary" type="button">保存设置</button>
+                <button class="btn" type="button">恢复默认</button>
+              </div>
+            </form>
+          </section>
+
+          <section id="codex" class="grid-2" style="grid-template-columns:minmax(260px,.45fr) minmax(0,1fr)">
+            <article class="panel pad">
+              <div class="split-line" style="margin-bottom:14px">
+                <h2 style="margin:0;font-size:16px">Agent 模型凭据</h2>
+                <span class="status-pill">未连接</span>
+              </div>
+              <p style="margin:0 0 14px;color:var(--muted);font-size:13px;line-height:1.58">GitHub OAuth 只决定谁能进入控制台；这里选择远端 Agent 在任务运行时使用的模型凭据。</p>
+              <strong>未配置运行凭据</strong>
+              <p class="small-muted" style="margin:8px 0 0">选择官方账号或兼容提供方；创建任务时只选择仓库和执行策略。</p>
+            </article>
+
+            <article class="panel pad">
+              <div class="split-line" style="margin-bottom:14px">
+                <h2 style="margin:0;font-size:16px">激活方式</h2>
+              </div>
+              <div data-tabs>
+                <div class="tabs" role="tablist" aria-label="Agent 模型凭据">
+                  <button id="codex-tab-official" type="button" role="tab" aria-controls="codex-panel-official" aria-selected="true">
+                    <strong>官方 Codex 账号</strong>
+                    <span>未连接</span>
+                  </button>
+                  <button id="codex-tab-compatible" type="button" role="tab" aria-controls="codex-panel-compatible" aria-selected="false">
+                    <strong>兼容模型提供方</strong>
+                    <span>未保存</span>
+                  </button>
+                </div>
+
+                <section id="codex-panel-official" class="tab-panel" role="tabpanel" aria-labelledby="codex-tab-official" style="margin-top:14px">
+                  <div class="provider-card">
+                    <div class="provider-head">
+                      <span class="provider-mark">C</span>
+                      <div>
+                        <h3>官方 Codex 账号</h3>
+                        <p>通过官方认证建立短期运行会话，不在设置页保存模型 API Key。</p>
+                      </div>
+                    </div>
+                    <div class="provider-meta">
+                      <span class="metric-label">运行身份</span>
+                      <strong>未连接</strong>
+                    </div>
+                    <div class="split-line">
+                      <span class="status-pill">未连接</span>
+                      <button class="btn" type="button" data-open-dialog="#official-dialog">配置官方账号</button>
+                    </div>
+                  </div>
+                </section>
+
+                <section id="codex-panel-compatible" class="tab-panel" role="tabpanel" aria-labelledby="codex-tab-compatible" style="margin-top:14px" hidden>
+                  <div class="provider-card">
+                    <div class="provider-head">
+                      <span class="provider-mark" style="background:#f5f6f7;color:var(--muted)">Key</span>
+                      <div>
+                        <h3>兼容模型提供方</h3>
+                        <p>使用 OpenAI-compatible Base URL 与 API Key，适合自建网关或代理服务。</p>
+                      </div>
+                    </div>
+                    <div class="provider-meta">
+                      <span class="metric-label">默认模型</span>
+                      <strong>未配置</strong>
+                    </div>
+                    <div class="split-line">
+                      <span class="status-pill">未启用</span>
+                      <button class="btn" type="button" data-open-dialog="#api-key-dialog">配置提供方</button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </article>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-current="page" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="dashboard.html" data-menu-close>返回控制台</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="dialog-backdrop" id="official-dialog" hidden>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="official-title">
+      <header class="dialog-head">
+        <div>
+          <div class="eyebrow">官方 Codex 账号</div>
+          <h2 id="official-title">设备登录状态</h2>
+          <p>官方认证已连接。完成后远端 Agent 将继续使用短期运行会话。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <span class="status-pill green">已连接</span>
+        <button class="btn primary" type="button" data-close-dialog>完成</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="api-key-dialog" hidden>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="api-key-title">
+      <header class="dialog-head">
+        <div>
+          <div class="eyebrow">兼容模型提供方</div>
+          <h2 id="api-key-title">配置 API Key</h2>
+          <p>保存后只展示连接状态、Base URL 和 Key 后缀，明文不会再次显示。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="base-url">Base URL</label>
+          <input id="base-url" value="https://api.openai.com/v1">
+        </div>
+        <div class="field">
+          <label for="api-key">API Key</label>
+          <div class="split-line" style="flex-wrap:nowrap">
+            <input id="api-key" type="password" value="sk-proj-••••••••••••••••2a9f">
+            <button class="btn" type="button" data-reveal="#api-key">显示</button>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="button" data-close-dialog>保存凭据</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>
+

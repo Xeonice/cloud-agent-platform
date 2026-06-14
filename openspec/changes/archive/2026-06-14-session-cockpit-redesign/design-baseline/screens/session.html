@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务会话 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css?v=session-cockpit-4">
+  <link rel="stylesheet" href="../css/responsive.css?v=session-cockpit-4">
+  <link rel="stylesheet" href="../css/session-cockpit.css?v=session-cockpit-4">
+</head>
+<body class="page-session">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html" aria-current="page"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main session-main">
+      <section class="session-header" aria-label="当前任务会话">
+        <div class="session-identity">
+          <a class="session-crumb" href="dashboard.html" aria-label="返回任务控制台">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+            任务控制台
+          </a>
+          <div class="session-title-row">
+            <h1 class="session-title">task_aaaa</h1>
+            <span class="session-state" data-state="running" aria-label="任务状态">运行中</span>
+          </div>
+          <button class="session-prompt" type="button" data-prompt-toggle aria-expanded="false" title="展开任务目标">
+            <span class="session-prompt-text">迁移 console 至 TanStack Start 并补齐数据层</span>
+            <span class="session-prompt-toggle" aria-hidden="true"></span>
+          </button>
+          <div class="session-tags" aria-label="会话元数据">
+            <span class="session-tag mono" title="分支">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+              aio-execution-hardening
+            </span>
+            <span class="session-tag" title="Agent">Codex (gpt-5-codex)</span>
+            <span class="session-tag" title="运行时">AIO Sandbox</span>
+            <span class="session-tag mono" title="平台架构">linux/amd64</span>
+            <span class="session-tag" title="守护栏：空闲不自动回收沙箱、无运行时限（均为默认）">默认守护栏</span>
+          </div>
+        </div>
+        <div class="session-actions compact-mobile" aria-label="会话操作">
+          <button class="btn session-stop" type="button" data-terminal-action="stop task_27c9 requested" data-line="operator requested stop for task_27c9" data-line-class="warn">
+            <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+            停止
+          </button>
+        </div>
+      </section>
+
+      <div class="session-body">
+        <div class="session-primary">
+
+          <section class="terminal-shell session-terminal" data-terminal-shell>
+            <div class="terminal-head">
+              <div class="terminal-title-group">
+                <span class="terminal-title"><span class="terminal-title-app">Terminal · </span>/workspace</span>
+                <span class="terminal-state" data-state="open">已连接</span>
+              </div>
+              <span class="terminal-head-actions">
+                <details class="terminal-menu">
+                  <summary aria-label="更多终端操作">
+                    <svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+                  </summary>
+                  <div class="terminal-menu-popover">
+                    <button type="button" data-terminal-action="copy">复制记录</button>
+                    <button type="button" aria-pressed="false" data-terminal-action="pause" data-pause-label="暂停滚动" data-resume-label="恢复滚动">暂停滚动</button>
+                  </div>
+                </details>
+                <button class="terminal-icon-btn" type="button" data-terminal-action="fullscreen" aria-pressed="false" aria-label="切换终端全屏">
+                  <svg class="icon-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" x2="14" y1="3" y2="10"/><line x1="3" x2="10" y1="21" y2="14"/></svg>
+                  <svg class="icon-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" x2="21" y1="10" y2="3"/><line x1="3" x2="10" y1="21" y2="14"/></svg>
+                </button>
+              </span>
+            </div>
+            <div class="terminal-empty terminal" data-terminal-log>
+              <span><span class="muted">$ </span>codex exec --workspace /workspace</span>
+              <span class="dim">• 正在分析 apps/web/src/components/session/ 下的 3 个组件…</span>
+              <span class="dim">• 修改 session-header.tsx（+42 −18）</span>
+              <span class="dim">• 运行 pnpm vitest session-header.test.ts … 6 passed</span>
+              <span class="warn">⚠ 命中写入门禁：git push origin feat/session-redesign，等待操作员确认</span>
+            </div>
+            <div class="terminal-status" aria-label="运行状态">
+              <span class="ts-left">
+                <span class="ts-phase" data-ts-phase>运行中</span>
+                <span class="ts-elapsed">已运行 12m34s</span>
+              </span>
+              <span class="ts-res">CPU 2.1% · 内存 384 MB / 1.5 GB</span>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html" aria-current="page">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>

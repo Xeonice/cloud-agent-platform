@@ -6,7 +6,7 @@
  * `Topbar`, the routed `<Outlet />`, and a `MobileNav` that takes over ≤820px.
  * The pathless segment contributes no URL path.
  *
- * Layout: a shadcn `SidebarProvider` with `--sidebar-width` pinned to 244px and
+ * Layout: a shadcn `SidebarProvider` with `--sidebar-width` pinned to 228px and
  * a `Sidebar collapsible="none"` (no collapse — the design ships its own mobile
  * bottom-nav, not the off-canvas sheet). `SidebarInset` is the main content
  * area (the `.console-body .main` canvas: the console bg comes from the
@@ -79,20 +79,23 @@ function AppLayout() {
 
   return (
     <SidebarProvider
-      // Pin the sidebar to the prototype's fixed 244px column; no collapse.
-      style={{ "--sidebar-width": "244px" } as React.CSSProperties}
+      // Pin the sidebar to the cockpit design's fixed 228px column; no collapse.
+      style={{ "--sidebar-width": "228px" } as React.CSSProperties}
       className="min-h-screen"
     >
       <AppSidebar pathname={pathname} />
       <SidebarInset className="min-w-0 bg-transparent px-[clamp(18px,3vw,40px)] pt-[18px] pb-[68px] max-[821px]:px-[14px] max-[821px]:pb-[94px]">
-        {/* Dashboard ≤820px hides the whole topbar (design `.page-dashboard
-            .topbar{display:none}`) — its mobile-workbench-meta strip already
-            carries the Runner readout. Other pages keep the mobile topbar. */}
-        <Topbar
-          className={
-            pathname === "/dashboard" ? "max-[821px]:hidden" : undefined
-          }
-        />
+        {/* The cockpit session page (`/tasks/:id`) has NO topbar — its `← 任务控制台`
+            crumb is the top chrome (session-cockpit-redesign). `/tasks/new` keeps
+            the topbar. Dashboard ≤820px hides the topbar (its mobile-workbench-meta
+            strip carries the Runner readout); other pages keep the mobile topbar. */}
+        {pathname.startsWith("/tasks/") && pathname !== "/tasks/new" ? null : (
+          <Topbar
+            className={
+              pathname === "/dashboard" ? "max-[821px]:hidden" : undefined
+            }
+          />
+        )}
         <Outlet />
       </SidebarInset>
       <MobileNav pathname={pathname} />
