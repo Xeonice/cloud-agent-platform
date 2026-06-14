@@ -378,8 +378,9 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
 
         <DialogBody>
         <form
+          id="new-task-form"
           onSubmit={handleSubmit}
-          className="grid gap-[18px] p-5 min-[821px]:grid-cols-[minmax(0,1fr)_minmax(340px,0.76fr)]"
+          className="grid items-start gap-[18px] p-5 min-[821px]:grid-cols-[minmax(0,1fr)_minmax(340px,0.76fr)]"
         >
           {/* Left: form */}
           <div className="grid content-start gap-3.5">
@@ -580,25 +581,30 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
               </p>
             ) : null}
 
-            <div className="flex justify-end gap-2.5 pt-1">
-              <button
-                type="button"
-                onClick={() => onOpenChange(false)}
-                className="inline-flex h-9 items-center justify-center rounded-md bg-card px-4 text-sm font-medium text-foreground shadow-ring hover:bg-secondary"
-              >
-                取消
-              </button>
-              <button
-                type="submit"
-                disabled={mutation.isPending || prompt.trim().length === 0}
-                className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
-              >
-                {mutation.isPending ? "创建中…" : "创建任务"}
-              </button>
-            </div>
           </aside>
         </form>
         </DialogBody>
+
+        {/* Pinned footer action area — buttons live OUTSIDE the scrolling body so
+            they stay reachable at any scroll position; the submit button binds to
+            the form via the `form` attribute since it is no longer a descendant. */}
+        <footer className="flex shrink-0 justify-end gap-2.5 border-t border-border p-5">
+          <button
+            type="button"
+            onClick={() => onOpenChange(false)}
+            className="inline-flex h-9 items-center justify-center rounded-md bg-card px-4 text-sm font-medium text-foreground shadow-ring hover:bg-secondary"
+          >
+            取消
+          </button>
+          <button
+            type="submit"
+            form="new-task-form"
+            disabled={mutation.isPending || prompt.trim().length === 0}
+            className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+          >
+            {mutation.isPending ? "创建中…" : "创建任务"}
+          </button>
+        </footer>
       </DialogContent>
     </Dialog>
   );
