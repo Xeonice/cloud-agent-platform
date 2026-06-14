@@ -62,7 +62,7 @@ export function RepoRow({
       className={cn(
         "grid min-h-[88px] items-center gap-4 border-b border-border bg-card px-4 py-3.5 last:border-b-0",
         "grid-cols-[minmax(0,1fr)] gap-y-3",
-        "min-[821px]:grid-cols-[minmax(220px,1fr)_minmax(270px,1.25fr)_minmax(150px,0.62fr)_104px]",
+        "min-[821px]:grid-cols-[minmax(180px,1fr)_minmax(220px,1.25fr)_minmax(120px,0.62fr)_104px]",
       )}
     >
       {/* Name */}
@@ -100,7 +100,7 @@ export function RepoListHead() {
       className={cn(
         "grid gap-4 border-b border-border px-4 pt-2 pb-[9px]",
         "font-mono text-[11px] font-medium text-muted-foreground",
-        "grid-cols-[minmax(220px,1fr)_minmax(270px,1.25fr)_minmax(150px,0.62fr)_104px]",
+        "grid-cols-[minmax(180px,1fr)_minmax(220px,1.25fr)_minmax(120px,0.62fr)_104px]",
         "max-[821px]:hidden",
       )}
     >

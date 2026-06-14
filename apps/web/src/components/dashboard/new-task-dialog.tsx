@@ -36,6 +36,7 @@ import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogTitle,
@@ -347,10 +348,10 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
             event.preventDefault();
           }
         }}
-        className="sm:max-w-[1040px] gap-0 overflow-hidden rounded-xl p-0 shadow-[0_0_0_1px_rgba(0,0,0,0.12),0_32px_90px_rgba(0,0,0,0.22)]"
+        className="flex max-h-[85vh] flex-col gap-0 overflow-hidden rounded-xl p-0 shadow-[0_0_0_1px_rgba(0,0,0,0.12),0_32px_90px_rgba(0,0,0,0.22)] sm:max-w-[1040px]"
       >
         {/* Head */}
-        <header className="flex items-start justify-between gap-4 border-b border-border bg-card p-5">
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border bg-card p-5">
           <div>
             <span className="font-mono text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
               新建任务
@@ -375,6 +376,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
           </button>
         </header>
 
+        <DialogBody>
         <form
           onSubmit={handleSubmit}
           className="grid gap-[18px] p-5 min-[821px]:grid-cols-[minmax(0,1fr)_minmax(340px,0.76fr)]"
@@ -596,6 +598,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
             </div>
           </aside>
         </form>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );

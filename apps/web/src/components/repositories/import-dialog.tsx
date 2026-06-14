@@ -46,6 +46,7 @@ import { StatusPill } from "@/components/status-pill";
 import { CountChip } from "@/components/count-chip";
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogTitle,
@@ -178,10 +179,10 @@ export function ImportDialog({
       <DialogContent
         showCloseButton={false}
         aria-labelledby="repo-import-title"
-        className="grid sm:max-w-[820px] gap-0 overflow-hidden rounded-xl p-0 shadow-[0_0_0_1px_rgba(0,0,0,0.12),0_28px_90px_rgba(0,0,0,0.22)]"
+        className="flex max-h-[85vh] flex-col gap-0 overflow-hidden rounded-xl p-0 shadow-[0_0_0_1px_rgba(0,0,0,0.12),0_28px_90px_rgba(0,0,0,0.22)] sm:max-w-[820px]"
       >
         {/* Head */}
-        <header className="flex items-start justify-between gap-4 border-b border-border bg-card px-5 py-[18px]">
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border bg-card px-5 py-[18px]">
           <div>
             <span className="font-mono text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
               仓库导入
@@ -206,6 +207,7 @@ export function ImportDialog({
           </button>
         </header>
 
+        <DialogBody>
         <div className="grid gap-3.5 px-5 pt-0.5 pb-[22px]">
           {/* State 1: 待拉取 (empty) */}
           {showEmptyState ? (
@@ -362,6 +364,7 @@ export function ImportDialog({
             </div>
           ) : null}
         </div>
+        </DialogBody>
       </DialogContent>
     </Dialog>
   );

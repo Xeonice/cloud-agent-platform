@@ -38,6 +38,7 @@ import type { SaveCodexCredentialRequest } from "@cap/contracts";
 import { cn } from "@/utils";
 import {
   Dialog,
+  DialogBody,
   DialogClose,
   DialogContent,
   DialogDescription,
@@ -171,10 +172,10 @@ export function CodexApiKeyDialog({
       <DialogContent
         showCloseButton={false}
         aria-labelledby="codexApiTitle"
-        className="sm:max-w-[720px] gap-0 overflow-hidden rounded-xl p-0 shadow-modal"
+        className="flex max-h-[85vh] flex-col gap-0 overflow-hidden rounded-xl p-0 shadow-modal sm:max-w-[720px]"
       >
-        <form onSubmit={handleSubmit}>
-          <header className="flex items-start justify-between gap-4 p-[22px_22px_14px]">
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
+          <header className="flex shrink-0 items-start justify-between gap-4 p-[22px_22px_14px]">
             <div className="min-w-0">
               <span className="font-mono text-[11px] font-medium text-muted-foreground">
                 兼容提供方
@@ -197,6 +198,7 @@ export function CodexApiKeyDialog({
             </DialogClose>
           </header>
 
+          <DialogBody>
           <div className="grid gap-3.5 p-[0_22px_18px]">
             <div className="grid gap-3">
               <div className="grid gap-2">
@@ -304,8 +306,9 @@ export function CodexApiKeyDialog({
               </p>
             ) : null}
           </div>
+          </DialogBody>
 
-          <div className="flex flex-wrap gap-2.5 border-t border-border p-[14px_22px_18px] max-[560px]:grid max-[560px]:grid-cols-1">
+          <div className="flex shrink-0 flex-wrap gap-2.5 border-t border-border p-[14px_22px_18px] max-[560px]:grid max-[560px]:grid-cols-1">
             <button
               type="submit"
               disabled={saving}

@@ -18,6 +18,7 @@ import * as React from "react";
 import {
   Dialog,
   DialogClose,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogTitle,
@@ -214,9 +215,9 @@ export function CodexDirectDialog({
       <DialogContent
         showCloseButton={false}
         aria-labelledby="codexDirectTitle"
-        className="sm:max-w-[720px] gap-0 overflow-hidden rounded-xl p-0 shadow-modal"
+        className="flex max-h-[85vh] flex-col gap-0 overflow-hidden rounded-xl p-0 shadow-modal sm:max-w-[720px]"
       >
-        <header className="flex items-start justify-between gap-4 p-[22px_22px_14px]">
+        <header className="flex shrink-0 items-start justify-between gap-4 p-[22px_22px_14px]">
           <div className="min-w-0">
             <span className="font-mono text-[11px] font-medium text-muted-foreground">
               官方账号
@@ -239,6 +240,7 @@ export function CodexDirectDialog({
           </DialogClose>
         </header>
 
+        <DialogBody>
         <div className="grid gap-3.5 p-[0_22px_18px]">
           <div className="grid gap-2" aria-label="授权范围">
             <ScopeRow label="会话范围" value="仅用于远端 Agent 执行当前任务" />
@@ -320,8 +322,9 @@ export function CodexDirectDialog({
             </p>
           ) : null}
         </div>
+        </DialogBody>
 
-        <div className="flex flex-wrap gap-2.5 border-t border-border p-[14px_22px_18px] max-[560px]:grid max-[560px]:grid-cols-1">
+        <div className="flex shrink-0 flex-wrap gap-2.5 border-t border-border p-[14px_22px_18px] max-[560px]:grid max-[560px]:grid-cols-1">
           <button
             type="button"
             disabled={phase === "starting" || phase === "awaiting"}
