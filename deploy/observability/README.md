@@ -91,6 +91,22 @@ Grafana ships with `admin/admin` and is reachable ONLY inside the compose networ
 BEFORE pointing the tunnel at it: set `GF_SECURITY_ADMIN_PASSWORD` (or change the
 admin password on first login). Anonymous + sign-up are already disabled.
 
+## Operational note: dashboard/provisioning changes need a Grafana restart
+
+Grafana mounts `deploy/observability/grafana/{provisioning,dashboards}` as bind
+mounts. Docker does NOT recreate a container when only bind-mount CONTENT changes,
+and on a Dokploy redeploy the `code` dir is re-cloned (new inode) while a
+config-unchanged Grafana container is left running — so it keeps serving the OLD
+provisioned dashboards/datasources. After changing anything under
+`deploy/observability/grafana/` and deploying, if the UI still shows the old
+version:
+
+```bash
+docker restart cloud-agent-platform-grafana-1
+```
+
+(Loki/Alloy config changes are picked up the same way — restart that container.)
+
 ## Footprint
 
 `mem_limit`: loki 256m, grafana 256m, alloy 128m (~640m ceiling). Stop the
