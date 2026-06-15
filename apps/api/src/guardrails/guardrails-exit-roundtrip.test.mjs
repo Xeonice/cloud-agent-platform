@@ -38,7 +38,8 @@ class SpyBreaker {
 class MockProvider {
   constructor() {
     this.provisionCalls = [];
-    this.tornDown = [];
+    this.tornDown = [];   // taskId — STOP-only settle (retention: container KEPT)
+    this.removed = [];    // taskId — force-remove (cleaner only; never lifecycle)
   }
   async provision(ctx) {
     this.provisionCalls.push(ctx);
@@ -48,7 +49,13 @@ class MockProvider {
       wsUrl: `ws://cap-aio-${ctx.taskId}:8080/v1/shell/ws`,
     };
   }
+  // session-sandbox-retention: teardown STOPS only (retains the container); the
+  // separate removeSandbox is the cleaner-only force-remove. The lifecycle must
+  // never call removeSandbox — asserted below.
   async teardownSandbox(taskId) { this.tornDown.push(taskId); }
+  async removeSandbox(taskId) { this.removed.push(taskId); }
+  async readRolloutFromContainer() { return null; }
+  async sandboxExists() { return true; }
   getSandboxMode() { return 'danger-full-access'; }
 }
 
@@ -196,6 +203,26 @@ const lastTransition = (g, taskId) =>
   assert(g.forceFails[0]?.cause === 'abnormal_exit', 'T5a: abnormal termination -> forceFail with honest cause abnormal_exit (not idle)');
   assert(lastTransition(g, 't5') === 'failed', 'T5b: abnormal termination transitions task to failed');
   assert(g.released.includes('t5'), 'T5c: abnormal termination RELEASES the slot');
+  assert(provider.tornDown.includes('t5'), 'T5d: abnormal termination STOPS the sandbox (settle)');
+  assert(!provider.removed.includes('t5'), 'T5e: abnormal termination RETAINS the container (stop-only, never removeSandbox)');
+}
+
+// T6 (session-sandbox-retention 6.1/6.2): teardown at BOTH chokepoints is
+// stop-only-retain — the container is STOPPED (kept for replay) and the slot is
+// freed, and the lifecycle NEVER force-removes (that is the cleaner's job).
+{
+  const provider = new MockProvider();
+  const g = new GuardrailsHarness(new SpyBreaker(), provider);
+
+  // clean exit (onTerminal path) + abnormal exit (forceFail path)
+  let conn = await g.startRunning('t6a');
+  new FakeAioPtyClient('t6a', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t6a', s)).closeWith({ code: 0, abnormal: false });
+  conn = await g.startRunning('t6b');
+  new FakeAioPtyClient('t6b', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t6b', s)).closeWith({ code: 0, abnormal: true });
+
+  assert(provider.tornDown.includes('t6a') && provider.tornDown.includes('t6b'), 'T6a: both natural-completion and forced-failure STOP (settle) the sandbox');
+  assert(g.released.includes('t6a') && g.released.includes('t6b'), 'T6b: both chokepoints still FREE the slot');
+  assert(provider.removed.length === 0, 'T6c: the lifecycle NEVER force-removes a container (retention: only the cleaner removes)');
 }
 
 // ---- summary ----------------------------------------------------------------

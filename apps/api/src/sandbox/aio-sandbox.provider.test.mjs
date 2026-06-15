@@ -25,6 +25,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Readable } from 'node:stream';
 
 import 'reflect-metadata';
 
@@ -74,6 +75,10 @@ function compileProvider() {
       // the emitted provider lands under a nested path (findFile resolves it).
       join(__dirname, '..', 'terminal', 'codex-launch.ts'),
       join(__dirname, 'skill-allowlist.ts'),
+      // The provider now imports the minimal tar reader (`./tar-extract`) for the
+      // read-only rollout extraction (session-sandbox-retention 3.5). Listed so
+      // its .js is emitted beside provider.js and the require resolves.
+      join(__dirname, 'tar-extract.ts'),
       '--outDir',
       outDir,
       '--module',
@@ -276,6 +281,13 @@ try {
     const hasPortBindings =
       opts?.HostConfig?.PortBindings !== undefined && opts.HostConfig.PortBindings !== null;
     assert(!hasPortBindings, 'no PortBindings (no host port published)');
+
+    // RETENTION D1: AutoRemove must be false so a stopped container is NOT
+    // auto-deleted by the daemon — it is kept for read-only history replay.
+    assert(
+      opts?.HostConfig?.AutoRemove === false,
+      'HostConfig.AutoRemove is false (settled container retained, not auto-removed)',
+    );
 
     assert(fakeContainer.calls.started === 1, 'container was started');
 
@@ -687,15 +699,255 @@ try {
       'a post-start provision failure tears the started container down (no leak)',
     );
 
+    // ---- V.2: a provision FAILURE after auth-inject STILL zeros auth.json ------
+    // A provision that fails AFTER injectCodexAuth (here the clone exits non-zero)
+    // tears down via the FAILURE path, where no connection was ever registered.
+    // The pre-stop trim must STILL fire (reconstructed deterministic baseUrl) and
+    // zero auth.json — a retained container must never hold a live credential.
+    {
+      const execCmds = [];
+      const orig = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          const cmd = JSON.parse(init.body).command;
+          execCmds.push(cmd);
+          // git clone fails (exit 128); config/auth/trim execs succeed (exit 0).
+          const exit_code = cmd.includes('git clone') ? 128 : 0;
+          return { ok: true, status: 200, async json() { return { data: { exit_code, output: exit_code ? 'clone boom' : '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      const c = makeFakeContainer();
+      let threw = false;
+      try {
+        const p = new AioSandboxProvider(
+          makeLookup('https://example.test/repo.git'), // clone runs (and fails)
+          makeCodexAuthSource({ authJson: '{"auth_mode":"chatgpt"}' }), // auth IS injected
+        );
+        p.docker = makeFakeDocker(c);
+        await p.provision({ taskId: 'task-provfail-cred' });
+      } catch {
+        threw = true;
+      } finally {
+        globalThis.fetch = orig;
+      }
+      assert(threw, 'V.2: a post-auth provision failure (clone non-zero) rejects provision');
+      const trim = execCmds.find(
+        (cmd) =>
+          cmd.includes('rm -rf /home/gem/.codex/cache') &&
+          cmd.includes(': > /home/gem/.codex/auth.json'),
+      );
+      assert(
+        trim !== undefined,
+        'V.2: the provision-failure teardown ran the pre-stop trim (zeroing auth.json) despite no registered connection',
+      );
+      assert(
+        c.calls.stopped >= 1 && c.calls.removed === 0,
+        'V.2: the failed-provision container is stopped + retained (not removed)',
+      );
+    }
+
+    // ---- retention D1/D4: settle = STOP-ONLY + pre-stop ~/.codex trim ----------
+    // teardownSandbox must STOP (retain) the container — never remove — after a
+    // best-effort trim that drops the codex cache/sqlite logs + zeroes auth.json
+    // while KEEPING ~/.codex/sessions (the rollout).
+    {
+      const execCmds = [];
+      const orig = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          execCmds.push(JSON.parse(init.body).command);
+          return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      const retainContainer = makeFakeContainer();
+      try {
+        const p = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+        p.docker = makeFakeDocker(retainContainer);
+        await p.provision({ taskId: 'task-retain' });
+        const execsBefore = execCmds.length;
+        await p.teardownSandbox('task-retain');
+        assert(retainContainer.calls.stopped >= 1, 'settle teardown STOPS the container');
+        assert(
+          retainContainer.calls.removed === 0,
+          'settle teardown does NOT remove the container (kept as read-only history)',
+        );
+        const trimCmd = execCmds.slice(execsBefore).find((c) => c.includes('/home/gem/.codex'));
+        assert(trimCmd !== undefined, 'teardown issues a pre-stop ~/.codex trim exec while the sandbox is live');
+        assert(
+          trimCmd.includes('auth.json'),
+          'pre-stop trim zeroes auth.json (a kept container holds no live credential)',
+        );
+        assert(
+          trimCmd.includes('cache') && trimCmd.includes('logs_'),
+          'pre-stop trim drops the codex cache + sqlite logs (the trimmable bulk)',
+        );
+        assert(
+          !/\bsessions\b/.test(trimCmd),
+          'pre-stop trim KEEPS ~/.codex/sessions (the rollout) — it is never a delete target',
+        );
+      } finally {
+        globalThis.fetch = orig;
+      }
+    }
+
+    // ---- a trim failure (wedged sandbox) still stops + retains, never throws ----
+    {
+      const orig = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          const cmd = JSON.parse(init.body).command;
+          // Fail ONLY the teardown trim (it truncates auth.json); provision execs ok.
+          if (cmd.includes('> /home/gem/.codex/auth.json')) throw new Error('exec down');
+          return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      const c = makeFakeContainer();
+      let threw = false;
+      try {
+        const p = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+        p.docker = makeFakeDocker(c);
+        await p.provision({ taskId: 'task-retain-trimfail' });
+        await p.teardownSandbox('task-retain-trimfail');
+      } catch {
+        threw = true;
+      } finally {
+        globalThis.fetch = orig;
+      }
+      assert(!threw, 'a pre-stop trim failure never throws into the teardown caller');
+      assert(
+        c.calls.stopped >= 1 && c.calls.removed === 0,
+        'a trim failure still stops + retains the container (no remove)',
+      );
+    }
+
+    // ---- removeSandbox: the cleaner-only force-remove of a retained container ----
+    {
+      const c = makeFakeContainer();
+      const p = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      p.docker = makeFakeDocker(c);
+      await p.provision({ taskId: 'task-remove' });
+      await p.removeSandbox('task-remove');
+      assert(c.calls.removed >= 1, 'removeSandbox force-removes the (retained) container');
+
+      // When the container was NOT provisioned by this process (cleaner removing a
+      // prior process's container), removeSandbox addresses it by cap-aio-<id> name.
+      let gotName;
+      const removed = [];
+      const p2 = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      p2.docker = {
+        getContainer(name) {
+          gotName = name;
+          return { async remove() { removed.push(name); } };
+        },
+      };
+      await p2.removeSandbox('task-orphan');
+      assert(
+        gotName === 'cap-aio-task-orphan',
+        'removeSandbox addresses the container by cap-aio-<taskId> name when not in the live map',
+      );
+      assert(removed.length === 1, 'removeSandbox force-removes the addressed container');
+    }
+
+    // ---- 3.5: read the rollout out of a STOPPED container via getArchive --------
+    // A minimal USTAR builder so the test feeds the real tar reader a real tar.
+    function makeTar(entries) {
+      const blocks = [];
+      for (const { name, content } of entries) {
+        const data = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+        const header = Buffer.alloc(512);
+        header.write(name, 0, 'utf8');
+        header.write('0000644', 100, 'ascii');
+        header.write('0000000', 108, 'ascii');
+        header.write('0000000', 116, 'ascii');
+        header.write(data.length.toString(8).padStart(11, '0'), 124, 'ascii');
+        header.write('00000000000', 136, 'ascii');
+        header[156] = '0'.charCodeAt(0);
+        header.write('ustar\0', 257, 'ascii');
+        header.write('00', 263, 'ascii');
+        for (let i = 148; i < 156; i += 1) header[i] = 0x20;
+        let sum = 0;
+        for (let i = 0; i < 512; i += 1) sum += header[i];
+        header.write(`${sum.toString(8).padStart(6, '0')}\0 `, 148, 'ascii');
+        blocks.push(header, data);
+        const pad = (512 - (data.length % 512)) % 512;
+        if (pad) blocks.push(Buffer.alloc(pad));
+      }
+      blocks.push(Buffer.alloc(1024)); // two zero blocks = archive end
+      return Buffer.concat(blocks);
+    }
+    {
+      const rolloutBody =
+        '{"timestamp":"t","type":"session_meta","payload":{}}\n' +
+        '{"timestamp":"t","type":"event_msg","payload":{"type":"user_message"}}\n';
+      const tar = makeTar([
+        // A history.jsonl sibling that MUST be ignored, plus the real rollout.
+        { name: 'sessions/2026/06/11/history.jsonl', content: '{"ignored":true}\n' },
+        { name: 'sessions/2026/06/11/rollout-2026-06-11T00-00-00-abc.jsonl', content: rolloutBody },
+      ]);
+      let archivePath;
+      const c = {
+        async start() {},
+        async stop() {},
+        async remove() {},
+        async getArchive(opts) {
+          archivePath = opts?.path;
+          return Readable.from([tar]);
+        },
+      };
+      const p = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      p.docker = makeFakeDocker(c);
+      await p.provision({ taskId: 'task-rollout' });
+      const text = await p.readRolloutFromContainer('task-rollout');
+      assert(text === rolloutBody, 'readRolloutFromContainer returns the rollout JSONL text (not history.jsonl)');
+      assert(
+        archivePath === '/home/gem/.codex/sessions',
+        'getArchive is scoped to ~/.codex/sessions only (never auth.json or any credential)',
+      );
+    }
+
+    // ---- getArchive 404 / no rollout → null, never throws ----------------------
+    {
+      const c = {
+        async start() {},
+        async stop() {},
+        async remove() {},
+        async getArchive() {
+          throw Object.assign(new Error('no such file or directory'), { statusCode: 404 });
+        },
+      };
+      const p = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      p.docker = makeFakeDocker(c);
+      await p.provision({ taskId: 'task-no-rollout' });
+      let threw = false;
+      let text;
+      try {
+        text = await p.readRolloutFromContainer('task-no-rollout');
+      } catch {
+        threw = true;
+      }
+      assert(!threw, 'readRolloutFromContainer never throws when the rollout is absent');
+      assert(text === null, 'readRolloutFromContainer returns null when the container/rollout is gone');
+    }
+
     // ---- startup reap: orphaned cap-aio-* containers from a prior process ----
     // onApplicationBootstrap lists every cap-aio-* container and force-removes it
     // (after a restart the orchestrator owns no live session, so all are orphans).
     {
       const removed = [];
       let listFilter;
+      let listAll;
       const reapDocker = {
         async listContainers(options) {
           listFilter = options?.filters;
+          listAll = options?.all;
+          // The mock returns only what a `status:['running']` query would: stopped
+          // retained history is never listed, so it is never reaped.
           return [{ Id: 'orphan-1' }, { Id: 'orphan-2' }];
         },
         getContainer(id) {
@@ -715,8 +967,16 @@ try {
         'startup reap lists containers filtered by the cap-aio- name prefix',
       );
       assert(
+        Array.isArray(listFilter?.status) && listFilter.status.includes('running'),
+        'startup reap lists ONLY running containers (retention: stopped history is spared)',
+      );
+      assert(
+        listAll === false,
+        'startup reap does not list stopped containers (all:false)',
+      );
+      assert(
         removed.length === 2 && removed.includes('orphan-1') && removed.includes('orphan-2'),
-        'startup reap force-removes every orphaned cap-aio-* container',
+        'startup reap force-removes every orphaned RUNNING cap-aio-* container',
       );
 
       // No orphans -> nothing removed, no throw.

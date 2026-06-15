@@ -124,6 +124,27 @@ export interface SandboxProvider {
    * @param taskId - The task whose sandbox should be torn down.
    */
   teardownSandbox(taskId: string): Promise<void>;
+
+  /**
+   * Read the codex rollout transcript out of a settled, RETAINED sandbox for
+   * read-only history replay (session-sandbox-retention, design D3). Returns the
+   * newest rollout's raw text, or `null` when none is present — the container was
+   * reaped/expired, or the agent never produced a transcript. Implementations
+   * MUST NOT restart the sandbox, MUST scope the read to the transcript only
+   * (never exporting any credential file), and MUST NOT throw into the caller.
+   *
+   * @param taskId - The task whose retained sandbox transcript to read.
+   */
+  readRolloutFromContainer(taskId: string): Promise<string | null>;
+
+  /**
+   * Whether the per-task retained sandbox still EXISTS (running or settled). Lets
+   * the history endpoint distinguish an aged-out/reaped session (`expired`) from
+   * one whose sandbox exists but produced no transcript (`empty`). Never throws.
+   *
+   * @param taskId - The task whose sandbox existence to check.
+   */
+  sandboxExists(taskId: string): Promise<boolean>;
 }
 
 /**

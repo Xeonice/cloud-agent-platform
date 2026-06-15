@@ -1,38 +1,4 @@
-# guardrails Specification
-
-## Purpose
-TBD - created by archiving change agent-control-platform. Update Purpose after archive.
-## Requirements
-### Requirement: Concurrency semaphore bounds running tasks
-The orchestrator SHALL enforce a maximum number of concurrently running tasks (the slot ceiling). The effective ceiling SHALL resolve as `persisted system setting ?? env MAX_CONCURRENT_TASKS ?? 5`: the persisted system-level setting (see `account-settings`) is authoritative once saved; the env variable `MAX_CONCURRENT_TASKS` is only the first-boot seed used when no persisted value exists. The ceiling SHALL be runtime-mutable without a process restart via a semaphore setter: a non-integer or non-positive value SHALL be rejected without changing the current ceiling; RAISING the ceiling SHALL immediately admit queued tasks in FIFO order until the new capacity is filled or the queue empties (no waiting for the next slot release); LOWERING the ceiling SHALL NOT interrupt, evict, or kill any running task — it SHALL only stop admitting new tasks while the running count exceeds the new ceiling, so the running count converges naturally as tasks release. When the limit is reached, newly created tasks SHALL remain queued rather than provisioning a sandbox, and when a running task reaches a terminal state (completed/failed/cancelled) the orchestrator SHALL admit the next queued task in FIFO order only while the running count is below the ceiling. The admission hot path SHALL NOT read the database: the in-memory ceiling is authoritative and is written only at bootstrap load and on a settings-save push.
-
-#### Scenario: Task over the limit stays queued
-- **WHEN** the effective ceiling of tasks are already running and a new task is created
-- **THEN** the new task remains in the queued state and no sandbox is provisioned for it
-
-#### Scenario: Freeing a slot admits the next queued task
-- **WHEN** a running task reaches a terminal state while at least one task is queued and the running count is below the ceiling after release
-- **THEN** the orchestrator provisions the oldest queued task, bringing the running count back to at most the effective ceiling
-
-#### Scenario: Persisted setting overrides the env value
-- **WHEN** the process boots with a persisted slot ceiling of N while `MAX_CONCURRENT_TASKS` is set to a different value M
-- **THEN** the effective ceiling after bootstrap is N (the persisted value), not M
-
-#### Scenario: Env seeds the ceiling only when no persisted value exists
-- **WHEN** the process boots with no persisted slot ceiling
-- **THEN** the effective ceiling is the value of `MAX_CONCURRENT_TASKS`, or 5 when the env variable is also unset
-
-#### Scenario: Raising the ceiling promotes queued tasks immediately
-- **WHEN** the ceiling is raised from N to N+k while the semaphore holds N running tasks and at least k queued tasks
-- **THEN** the k oldest queued tasks are admitted in FIFO order immediately upon the raise, without waiting for any running task to release its slot
-
-#### Scenario: Lowering the ceiling never evicts running tasks
-- **WHEN** the ceiling is lowered below the current running count
-- **THEN** no running task is interrupted, evicted, or transitioned by the resize; no new task is admitted while the running count exceeds the new ceiling; and as running tasks reach terminal states the running count converges down to the new ceiling, after which FIFO admission resumes
-
-#### Scenario: Invalid ceiling value is rejected without effect
-- **WHEN** the semaphore setter is invoked with zero, a negative number, or a non-integer
-- **THEN** the call is rejected and the current ceiling, running set, and queue are unchanged
+## MODIFIED Requirements
 
 ### Requirement: Wall-clock deadline force-fails a task
 A task MAY carry a wall-clock deadline, supplied via the task create request (`deadlineMs`) and passed to concurrency admission (`admit(taskId, deadlineMs)`) so the deadline watcher arms. When a running task passes its deadline, the orchestrator SHALL transition it to `failed`, invoke `SandboxProvider.teardownSandbox()` for the task, and free its concurrency slot. Teardown is a **port-level** call: per design D9 the deferred minimal Docker provider documents it as a no-op (Docker is the deploy plane, not the per-task execution sandbox), while a future OS-isolating provider performs a real teardown through the same port. For the AIO provider, `teardownSandbox()` is STOP-ONLY (it stops and RETAINS the container, performing the pre-stop `/home/gem/.codex` trim + `auth.json` clear), so the frozen container survives for read-only session-history replay; the slot is still freed.
@@ -75,21 +41,6 @@ Idle reclamation SHALL be OPT-IN PER TASK and OFF BY DEFAULT. The orchestrator S
 #### Scenario: Activity resets the idle timer against the task's own ceiling
 - **WHEN** an idle-tracked task emits terminal output or a hook event before reaching its ceiling
 - **THEN** the idle timer resets and the task is not force-failed, re-armed against that task's own ceiling rather than a process-wide constant
-
-### Requirement: Circuit breaker on repeated start/turn failure
-The orchestrator SHALL count consecutive agent-failed-to-start (and turn-failure) events for a task and, on reaching a configured threshold, SHALL circuit-break the task to `failed` without further automatic retry, preventing a burn loop. This accumulation applies to PROVISION-TIME / start failures (`agent_failed_to_start`) where a task may legitimately be retried before tripping; it SHALL NOT be the mechanism that reclaims a RUNNING task whose sandbox terminal session has exited. Under the connect-in execution model a running task's terminal WebSocket close is a single terminal event with no automatic re-launch, so that exit is handled by the terminal-exit requirement (which transitions the task and frees its slot on the FIRST exit), not by waiting for a threshold of consecutive failures.
-
-#### Scenario: Threshold consecutive start failures trip the breaker
-- **WHEN** a task accumulates the configured number of consecutive agent-start/turn failures
-- **THEN** the orchestrator transitions it to `failed` and does not automatically retry
-
-#### Scenario: A success resets the failure counter
-- **WHEN** a task records a successful start/turn before reaching the threshold
-- **THEN** the consecutive-failure counter resets to zero
-
-#### Scenario: A single running-task exit does not wait for the breaker threshold
-- **WHEN** a running task's terminal session exits once (cleanly or with a non-zero code)
-- **THEN** the task is transitioned and its slot freed by the terminal-exit handling immediately, rather than remaining `running` until a threshold of consecutive failures is reached
 
 ### Requirement: A terminal sandbox exit transitions the task and frees its slot
 When a running task's sandbox terminal session terminates (the connect-in terminal WebSocket closes and the orchestrator resolves an exit status), the orchestrator SHALL drive the task to a terminal lifecycle state and release its concurrency slot on that SINGLE exit — it SHALL NOT leave the task in `running` with a held slot. A resolved exit code of zero SHALL transition the task to `completed`; a resolved non-zero exit code SHALL transition the task to `failed`; an abnormal termination (the session never established, or the exit code is unresolvable) SHALL force-fail the task. In every case the orchestrator SHALL invoke `SandboxProvider.teardownSandbox()`, tear down the session-scoped credentials, and free the concurrency slot (admitting the next queued task), reusing the same terminal-teardown path as natural completion. For the AIO provider this `teardownSandbox()` is STOP-ONLY: the container is stopped and RETAINED (not removed), after the pre-stop `/home/gem/.codex` trim + `auth.json` clear, so the frozen `rollout-*.jsonl` survives for read-only session-history replay; the slot is still freed. This closes the gap whereby a cleanly-exited or single-non-zero-exit session previously remained `running` and leaked its slot until idle reclamation or a process restart — a gap that becomes a permanent leak once idle reclamation is off by default.
@@ -143,6 +94,8 @@ The bootstrap container reap SHALL remove ONLY RUNNING orphan `cap-aio-*` contai
 - **WHEN** the process restarts with a persisted ceiling of 2, `MAX_CONCURRENT_TASKS=5`, and 3 queued tasks in the database
 - **THEN** the re-offer admits exactly 2 tasks (the persisted ceiling), not 5, proving the DB override is applied before the queued re-offer runs
 
+## ADDED Requirements
+
 ### Requirement: Retention cleaner reaps stopped retained sandbox containers
 The orchestrator SHALL run a periodic, unref'd retention cleaner (modeled on the existing `CodexDeviceLoginService` sweep) wired in the guardrails layer that removes STOPPED `cap-aio-*` containers under MULTIPLE simultaneous policies, removing a container when ANY policy trips. Policy 1 (age): a stopped `cap-aio-*` container whose stopped age exceeds the configured retention window SHALL be removed, where the retention window is read from account settings (the persisted retention-days value, default 30 days when unset). Policy 2 (free-disk high-water-mark): when host free disk drops below a configured floor, the cleaner SHALL evict OLDEST-stopped `cap-aio-*` containers FIRST until free disk recovers above the floor, even if those containers are younger than the retention window. The cleaner SHALL only remove containers that are STOPPED and carry the `cap-aio-*` identity, and SHALL NEVER remove a RUNNING container. The cleaner SHALL carry an in-process `isRunning` overlap guard so a slow sweep never overlaps the next tick; the single-instance assumption SHALL be stated explicitly (no distributed lock).
 
@@ -165,4 +118,3 @@ The orchestrator SHALL run a periodic, unref'd retention cleaner (modeled on the
 #### Scenario: Overlapping sweeps are prevented by the in-process guard
 - **WHEN** a cleaner sweep is still in progress and the next scheduled tick fires
 - **THEN** the second tick is skipped by the `isRunning` guard and only one sweep runs at a time
-

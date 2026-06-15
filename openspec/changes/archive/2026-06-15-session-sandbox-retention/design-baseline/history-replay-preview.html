@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>历史会话回看 · 页面设计预览</title>
+<!--
+  设计基线：已结束任务的【只读会话回看】页面。
+  - 头部复用已定稿的 cockpit（crumb / H1+状态点 / prompt / tags），右上无操作按钮（纯只读）。
+  - 回看区双源：对话记录(主) + 终端回放(次) 两个 tab。
+  - 借鉴 masonc15/codex-transcript-viewer 的成熟模式：左侧 sidebar(搜索 + 5 个过滤预设 + 事件树)、
+    最终答案绿底高亮 + "最终回答"标签、commentary(过程碎语)斜体+muted 与 final answer 区分、token 计数 inline。
+  - 5 种终态诚实降级：已完成 / 已停止(终端为中断画面) / 失败 / 未能启动(空) / 已过期(空)。
+  - 恢复运行入口【刻意不放】：该功能未落地，先聚焦只读回看。
+  右下角切换器用于演示 5 种状态。
+-->
+<style>
+  :root{
+    --console:#f8f9fb; --card:#fff; --fg:#171717; --muted:#666; --muted2:#808080;
+    --border:#ebebeb; --secondary:#f5f5f5; --success:#1a7f37; --success-soft:#ecfdf3;
+    --warning:#9a6700; --warning-soft:#fff8c5; --danger:#d92d20; --info:#0a72ef; --info-soft:#ebf5ff;
+    --t-bg:#050505; --t-head:#0d0d0d; --t-fg:#e8e8e8; --t-muted:#8a8a8a; --t-line:#1f1f1f;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--console);color:var(--fg);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  .shell{display:grid;grid-template-columns:228px minmax(0,1fr);min-height:100vh}
+  /* app sidebar */
+  .sidebar{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;justify-content:space-between;
+    padding:10px 8px;background:rgba(255,255,255,.94);backdrop-filter:blur(18px);box-shadow:inset -1px 0 0 var(--border)}
+  .brand{display:inline-flex;align-items:center;gap:9px;min-height:32px;padding:4px 6px;font-size:14px;font-weight:600;letter-spacing:-.32px}
+  .brand-mark{display:grid;width:24px;height:24px;place-items:center;border-radius:5px;background:var(--fg);color:#fff;font-family:var(--mono);font-size:11px;font-weight:700}
+  .nav{display:grid;gap:2px;margin-top:18px}
+  .nav a{display:flex;align-items:center;justify-content:space-between;min-height:34px;border-radius:5px;padding:0 8px 0 12px;color:var(--muted);font-size:13px;font-weight:500;text-decoration:none}
+  .nav a.active{background:var(--secondary);color:var(--fg);font-weight:600;box-shadow:inset 2px 0 0 var(--fg)}
+  .nav a .sc{font-family:var(--mono);font-size:11px;color:var(--muted);opacity:.58}
+  .acct{display:grid;grid-template-columns:24px 1fr auto;align-items:center;gap:8px;padding:6px 7px;border-radius:5px}
+  .acct .av{display:grid;width:24px;height:24px;place-items:center;border-radius:50%;background:#f4f4f4;color:var(--muted);font-size:11px;font-weight:600}
+  .acct .nm{font-size:12px;font-weight:600}
+  .acct .st{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .acct .st::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--success)}
+  /* main */
+  .main{min-width:0;padding:18px clamp(18px,3vw,40px) 40px;display:flex;flex-direction:column}
+  .crumb{display:inline-flex;align-items:center;gap:6px;width:fit-content;color:var(--muted);font-size:12px;text-decoration:none;margin-bottom:8px}
+  .crumb svg{width:13px;height:13px}
+  .title-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+  h1{margin:0;font-size:24px;font-weight:600;letter-spacing:-.9px;line-height:1.04}
+  .state{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:500;color:rgba(102,102,102,.85)}
+  .state::before{content:"";width:8px;height:8px;border-radius:50%}
+  .state.done::before{background:var(--muted2)}
+  .state.failed::before{background:var(--danger)}
+  .prompt{display:flex;align-items:baseline;gap:8px;max-width:880px;color:rgba(102,102,102,.85);font-size:13px;line-height:1.55;margin-bottom:8px;cursor:pointer}
+  .prompt .txt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .prompt .tg{flex:none;font-size:12px;color:var(--muted)}
+  .header-row{border-bottom:1px solid var(--border);padding-bottom:14px;margin-bottom:12px}
+  .tags{display:flex;flex-wrap:wrap;gap:6px}
+  .tag{display:inline-flex;align-items:center;gap:5px;min-height:24px;padding:0 10px;border-radius:999px;background:var(--card);box-shadow:0 0 0 1px var(--border);color:rgba(23,23,23,.8);font-size:12px;font-weight:500}
+  .tag.mono{font-family:var(--mono);font-size:11px}
+  .tag svg{width:12px;height:12px;color:var(--muted)}
+  /* replay region: review-sidebar + content */
+  .replay{display:flex;flex-direction:column;flex:1;min-height:560px;border-radius:10px;overflow:hidden;background:var(--card);box-shadow:0 0 0 1px var(--border)}
+  .replay-head{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:42px;padding:0 14px;border-bottom:1px solid var(--border)}
+  .seg{display:inline-flex;background:var(--secondary);border-radius:8px;padding:3px}
+  .seg button{border:0;background:transparent;font:inherit;font-size:12px;font-weight:500;color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer}
+  .seg button.on{background:var(--card);color:var(--fg);box-shadow:0 0 0 1px var(--border)}
+  .replay-meta{font-size:12px;color:var(--muted)}
+  .replay-main{display:grid;grid-template-columns:212px minmax(0,1fr);flex:1;min-height:0}
+  /* review sidebar (borrowed: search + 5 filter presets + event tree) */
+  .rsb{border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0;background:#fcfcfd}
+  .rsb .search{margin:12px;display:flex;align-items:center;gap:7px;height:32px;padding:0 10px;border-radius:7px;background:var(--card);box-shadow:0 0 0 1px var(--border)}
+  .rsb .search svg{width:14px;height:14px;color:var(--muted2);flex:none}
+  .rsb .search input{border:0;outline:0;background:transparent;font:inherit;font-size:12px;width:100%}
+  .rsb .filters{display:flex;flex-wrap:wrap;gap:4px;padding:0 12px 10px}
+  .rsb .filters button{border:0;background:var(--secondary);color:var(--muted);font:inherit;font-size:11px;font-weight:500;padding:4px 8px;border-radius:6px;cursor:pointer}
+  .rsb .filters button.on{background:var(--fg);color:#fff}
+  .rsb .tree{flex:1;overflow:auto;padding:0 8px 12px;display:flex;flex-direction:column;gap:1px}
+  .rsb .tree a{display:flex;align-items:center;gap:7px;padding:6px 8px;border-radius:6px;font-size:12px;color:var(--muted);text-decoration:none;line-height:1.3}
+  .rsb .tree a:hover{background:var(--secondary)}
+  .rsb .tree a.cur{background:var(--secondary);color:var(--fg);font-weight:500}
+  .rsb .tree a .ic{width:14px;text-align:center;flex:none;font-size:11px}
+  .rsb .tree a.user .ic{color:var(--fg)} .rsb .tree a.asst .ic{color:var(--success)} .rsb .tree a.tool .ic{color:var(--info)} .rsb .tree a.ans .ic{color:var(--success)}
+  .rsb .tree a .lb{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* content pane */
+  .replay-body{overflow:auto;padding:18px 22px}
+  .conv{display:flex;flex-direction:column;gap:16px;max-width:760px}
+  .turn{display:grid;gap:6px;scroll-margin-top:12px}
+  .turn .role{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:600;color:var(--muted)}
+  .turn .role .dot{width:6px;height:6px;border-radius:50%}
+  .turn.user .role .dot{background:var(--fg)}
+  .turn.assistant .role .dot{background:var(--success)}
+  .turn.tool .role .dot{background:var(--info)}
+  .turn .bubble{font-size:13px;line-height:1.6}
+  .turn.user .bubble{background:var(--secondary);border-radius:8px;padding:10px 12px;font-weight:500}
+  .turn.assistant .bubble{padding:0 2px}
+  /* borrowed: commentary(过程碎语) italic + muted left border; distinct from final answer */
+  .turn.assistant.commentary .bubble{font-style:italic;color:var(--muted);border-left:2px solid var(--border);padding-left:10px}
+  /* borrowed: final answer green-tinted + label */
+  .turn.assistant.final .bubble{background:var(--success-soft);border-radius:8px;padding:12px 14px;box-shadow:inset 0 0 0 1px rgba(26,127,55,.16)}
+  .ans-label{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;color:var(--success);background:#fff;border-radius:4px;padding:1px 6px;margin-bottom:8px;box-shadow:inset 0 0 0 1px rgba(26,127,55,.25)}
+  .tool-call{border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .tool-call .tc-head{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--secondary);font-family:var(--mono);font-size:12px}
+  .tool-call .tc-head .badge{font-size:10px;font-weight:600;color:var(--info);background:var(--info-soft);border-radius:4px;padding:1px 6px;font-family:var(--sans)}
+  .tool-call .tc-head .tok{margin-left:auto;font-size:10px;color:var(--muted2);font-family:var(--sans)}
+  .tool-call .tc-body{padding:8px 12px;font-family:var(--mono);font-size:12px;color:var(--muted);white-space:pre-wrap;line-height:1.5}
+  /* raw terminal tab */
+  .term{display:none;background:var(--t-bg);margin:-18px -22px;padding:16px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.55;color:var(--t-fg);white-space:pre-wrap;min-height:480px}
+  .term .cmd{color:#e8e8e8}.term .dollar{color:#8a8a8a}.term .dim{color:#b0b0b0}.term .ok{color:#6ee7b7}.term .cyan{color:#56b6c2}
+  .note{margin-top:14px;font-size:12px;color:var(--muted2);display:flex;align-items:center;gap:8px}
+  .note::before{content:"ⓘ";color:var(--muted)}
+  /* empty states */
+  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;color:var(--muted);padding:48px}
+  .empty .ic{width:44px;height:44px;border-radius:11px;background:var(--secondary);display:grid;place-items:center;color:var(--muted2);font-size:22px}
+  .empty .t{font-size:14px;font-weight:600;color:var(--fg)}
+  .empty .d{font-size:12.5px;max-width:380px;line-height:1.5}
+  .hidden{display:none!important}
+  /* demo switcher */
+  .demo-bar{position:fixed;right:16px;bottom:16px;display:flex;gap:6px;background:var(--card);border-radius:10px;padding:6px;box-shadow:0 8px 28px -10px rgba(0,0,0,.25),0 0 0 1px var(--border);z-index:50}
+  .demo-bar button{border:0;background:var(--secondary);font:inherit;font-size:12px;padding:6px 10px;border-radius:7px;cursor:pointer}
+  .demo-bar button.on{background:var(--fg);color:#fff}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div>
+      <span class="brand"><span class="brand-mark">AC</span>Agent 控制台</span>
+      <nav class="nav">
+        <a href="#"><span>任务控制台</span><span class="sc">⌘1</span></a>
+        <a href="#"><span>仓库导入</span><span class="sc">⌘2</span></a>
+        <a href="#" class="active"><span>历史日志</span><span class="sc">⌘3</span></a>
+      </nav>
+    </div>
+    <div class="acct"><span class="av">TH</span><span><div class="nm">tanghehui</div><div class="st">OAuth 已验证</div></span><span style="color:var(--muted)">⌄</span></div>
+  </aside>
+
+  <main class="main">
+    <a class="crumb" href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>历史日志</a>
+    <div class="header-row">
+      <div class="title-row">
+        <h1>task_8c9c</h1>
+        <span class="state done" id="hState">已完成</span>
+      </div>
+      <div class="prompt"><span class="txt">用一句话说明这个仓库</span><span class="tg">展开</span></div>
+      <div class="tags">
+        <span class="tag mono"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>main</span>
+        <span class="tag">Codex (gpt-5-codex)</span>
+        <span class="tag">AIO Sandbox</span>
+        <span class="tag mono">linux/amd64</span>
+        <span class="tag">默认守护栏</span>
+      </div>
+    </div>
+
+    <!-- ===== REPLAY: conversation primary (with review sidebar) + terminal secondary ===== -->
+    <section class="replay" id="replayCard">
+      <div class="replay-head">
+        <div class="seg">
+          <button class="on" data-view="conv">对话记录</button>
+          <button data-view="term">终端回放</button>
+        </div>
+        <span class="replay-meta" id="replayMeta">已结束 · 只读 · 7 条记录</span>
+      </div>
+      <div class="replay-main" id="replayMain">
+        <!-- review sidebar: search + filter presets + event tree (borrowed from codex-transcript-viewer) -->
+        <aside class="rsb" id="rsb">
+          <div class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="搜索本次会话…"></div>
+          <div class="filters">
+            <button class="on">默认</button><button>无工具</button><button>用户</button><button>答案</button><button>全部</button>
+          </div>
+          <div class="tree">
+            <a class="user" href="#"><span class="ic">›</span><span class="lb">用一句话说明这个仓库</span></a>
+            <a class="asst" href="#"><span class="ic">•</span><span class="lb">我会先快速看顶层文件…</span></a>
+            <a class="tool" href="#"><span class="ic">⌘</span><span class="lb">List .</span></a>
+            <a class="tool" href="#"><span class="ic">⌘</span><span class="lb">rg --files README*</span></a>
+            <a class="asst" href="#"><span class="ic">•</span><span class="lb">几乎只有一个 README…</span></a>
+            <a class="tool" href="#"><span class="ic">⌘</span><span class="lb">Read README</span></a>
+            <a class="ans cur" href="#"><span class="ic">✓</span><span class="lb">最终回答</span></a>
+          </div>
+        </aside>
+        <!-- content pane -->
+        <div class="replay-body" id="replayBody">
+          <div class="conv" id="convView">
+            <div class="turn user"><div class="role"><span class="dot"></span>操作员指令</div><div class="bubble">用一句话说明这个仓库</div></div>
+            <div class="turn assistant commentary"><div class="role"><span class="dot"></span>Codex · 过程</div><div class="bubble">我会先快速看仓库的顶层文件和说明文档，提炼成一句话。</div></div>
+            <div class="turn tool"><div class="role"><span class="dot"></span>工具调用</div>
+              <div class="tool-call"><div class="tc-head"><span class="badge">shell</span>Explored · List .<span class="tok">312 tok</span></div><div class="tc-body">/home/gem/workspace
+README</div></div>
+            </div>
+            <div class="turn tool"><div class="role"><span class="dot"></span>工具调用</div>
+              <div class="tool-call"><div class="tc-head"><span class="badge">shell</span>Ran rg --files -g 'README*' …<span class="tok">540 tok</span></div><div class="tc-body">/home/gem/workspace
+README</div></div>
+            </div>
+            <div class="turn assistant commentary"><div class="role"><span class="dot"></span>Codex · 过程</div><div class="bubble">仓库里目前几乎只有一个 README，我会直接读它来判断项目用途。</div></div>
+            <div class="turn tool"><div class="role"><span class="dot"></span>工具调用</div>
+              <div class="tool-call"><div class="tc-head"><span class="badge">shell</span>Explored · Read README<span class="tok">188 tok</span></div><div class="tc-body">Hello World!</div></div>
+            </div>
+            <div class="turn assistant final"><div class="role"><span class="dot"></span>Codex</div><div class="bubble"><span class="ans-label">✓ 最终回答</span>这是一个只包含 README 且内容为 “Hello World!” 的最小示例仓库。</div></div>
+          </div>
+          <pre class="term" id="termView"><span class="dollar">$ </span><span class="cmd">codex exec --workspace /workspace</span>
+<span class="dim">  >_ OpenAI Codex (v0.131.0)</span>
+<span class="dim">  model:  gpt-5.5    directory: ~/workspace</span>
+
+<span class="cyan">› 用一句话说明这个仓库</span>
+
+<span class="dim">• 我会先快速看仓库的顶层文件和说明文档，提炼成一句话。</span>
+<span class="dim">• Explored └ List .</span>
+<span class="dim">• Ran <span class="cyan">pwd && rg --files</span> -g 'README*' | head -80</span>
+<span class="dim">  └ /home/gem/workspace  README</span>
+<span class="dim">• 仓库里目前几乎只有一个 README，我会直接读它来判断项目用途。</span>
+<span class="dim">• Explored └ Read README</span>
+<span class="ok">• 这是一个只包含 README 且内容为 "Hello World!" 的最小示例仓库。</span></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- empty-state card (revealed by demo switcher) -->
+    <section class="replay hidden" id="emptyCard">
+      <div class="replay-head"><div class="seg"><button class="on">对话记录</button></div><span class="replay-meta" id="emptyMeta"></span></div>
+      <div class="empty" id="emptyBody"></div>
+    </section>
+
+    <p class="note">会话记录在任务结束后保留 30 天，过期自动清理。</p>
+  </main>
+</div>
+
+<div class="demo-bar">
+  <button class="on" data-state="done">已完成</button>
+  <button data-state="aborted">已停止(中断)</button>
+  <button data-state="failed">失败</button>
+  <button data-state="nostart">未能启动</button>
+  <button data-state="expired">已过期</button>
+</div>
+
+<script>
+  // tab switch
+  document.querySelectorAll('.seg button[data-view]').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('.seg button[data-view]').forEach(x=>x.classList.toggle('on',x===b));
+    document.getElementById('convView').style.display=b.dataset.view==='conv'?'flex':'none';
+    document.getElementById('termView').style.display=b.dataset.view==='term'?'block':'none';
+    document.getElementById('rsb').style.display=b.dataset.view==='conv'?'flex':'none';
+  });
+  // filter presets (visual demo)
+  document.querySelectorAll('.rsb .filters button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('.rsb .filters button').forEach(x=>x.classList.toggle('on',x===b));
+    const f=b.textContent;
+    document.querySelectorAll('#convView .turn').forEach(t=>{
+      let show=true;
+      if(f==='无工具')show=!t.classList.contains('tool');
+      else if(f==='用户')show=t.classList.contains('user');
+      else if(f==='答案')show=t.classList.contains('user')||t.classList.contains('final');
+      t.style.display=show?'grid':'none';
+    });
+  });
+  // demo state switcher (read-only replay only — resume-run NOT shipped)
+  const hState=document.getElementById('hState'),replayCard=document.getElementById('replayCard'),
+    emptyCard=document.getElementById('emptyCard'),emptyBody=document.getElementById('emptyBody'),
+    emptyMeta=document.getElementById('emptyMeta'),meta=document.getElementById('replayMeta'),
+    termTab=document.querySelector('#replayCard .seg button[data-view="term"]');
+  const states={
+    done:{label:'已完成',cls:'state done',card:'replay',meta:'已结束 · 只读 · 7 条记录',termOn:true},
+    aborted:{label:'已停止',cls:'state done',card:'replay',meta:'操作员已停止 · 只读 · 对话完整 / 终端为中断画面',termOn:true},
+    failed:{label:'失败',cls:'state failed',card:'replay',meta:'失败 · 只读 · 对话到失败处',termOn:true},
+    nostart:{label:'启动失败',cls:'state failed',card:'empty',ic:'⚠',t:'会话未能启动',
+      d:'Codex 沙箱已创建，但 agent 未能启动，没有产生可回看的对话内容。失败原因：codex 启动超时。'},
+    expired:{label:'已过期',cls:'state done',card:'empty',ic:'🗄',t:'会话记录已过期',
+      d:'该任务的沙箱与会话记录已超过 30 天保留期被清理，无法回看。'},
+  };
+  document.querySelectorAll('.demo-bar button').forEach(b=>b.onclick=()=>{
+    document.querySelectorAll('.demo-bar button').forEach(x=>x.classList.toggle('on',x===b));
+    const s=states[b.dataset.state];
+    hState.className=s.cls;hState.textContent=s.label;
+    if(s.card==='replay'){replayCard.classList.remove('hidden');emptyCard.classList.add('hidden');
+      meta.textContent=s.meta;termTab.style.display=s.termOn?'block':'none';}
+    else{replayCard.classList.add('hidden');emptyCard.classList.remove('hidden');
+      emptyBody.innerHTML='<div class="ic">'+s.ic+'</div><div class="t">'+s.t+'</div><div class="d">'+s.d+'</div>';
+      emptyMeta.textContent=s.label;}
+  });
+</script>
+</body>
+</html>

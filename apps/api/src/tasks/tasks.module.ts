@@ -1,5 +1,6 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { TasksController } from './tasks.controller';
+import { SessionHistoryController } from './session-history.controller';
 import { TasksService } from './tasks.service';
 import { GUARDRAILS_SERVICE_TOKEN } from './tasks.service';
 import { GuardrailsModule } from '../guardrails/guardrails.module';
@@ -21,7 +22,9 @@ import { GuardrailsService } from '../guardrails/guardrails.service';
  */
 @Module({
   imports: [forwardRef(() => GuardrailsModule)],
-  controllers: [TasksController],
+  // SessionHistoryController is a standalone read-only REST surface; it injects
+  // the global SANDBOX_PROVIDER port (no extra module import needed) + TasksService.
+  controllers: [TasksController, SessionHistoryController],
   providers: [
     TasksService,
     // Bridge the GuardrailsService under a token that TasksService injects

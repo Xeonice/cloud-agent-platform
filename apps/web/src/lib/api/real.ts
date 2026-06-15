@@ -24,6 +24,7 @@ import {
   AuthSessionResponseSchema,
   MetricsResponseSchema,
   TaskResourceResponseSchema,
+  SessionHistorySchema,
   ListAuditEventsResponseSchema,
   AccountSettingsSchema,
   CodexCredentialSchema,
@@ -39,6 +40,7 @@ import {
   type AuthSessionResponse,
   type MetricsResponse,
   type TaskResourceResponse,
+  type SessionHistory,
   type ListAuditEventsResponse,
   type AuditQuery,
   type AccountSettings,
@@ -211,6 +213,22 @@ export async function getTaskResource(
 ): Promise<TaskResourceResponse> {
   return TaskResourceResponseSchema.parse(
     await request(`/tasks/${encodeURIComponent(taskId)}/metrics`),
+  );
+}
+
+/**
+ * `GET /tasks/:id/session-history` — the parsed, read-only codex transcript of a
+ * FINISHED task (or an honest empty/expired state), read from its settled
+ * retained sandbox (session-sandbox-retention). The wire shape is the
+ * discriminated `SessionHistorySchema` from `@cap/contracts` — validated here so
+ * no malformed transcript reaches the replay UI. Gated by
+ * `BACKEND_CAPABILITIES.sessionHistory`.
+ */
+export async function getSessionHistory(
+  taskId: string,
+): Promise<SessionHistory> {
+  return SessionHistorySchema.parse(
+    await request(`/tasks/${encodeURIComponent(taskId)}/session-history`),
   );
 }
 

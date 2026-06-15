@@ -26,6 +26,7 @@ vi.mock("./capabilities", () => ({
 vi.mock("./real", () => ({
   listTasks: vi.fn(async () => "REAL_tasks"),
   getMetrics: vi.fn(async () => "REAL_metrics"),
+  getSessionHistory: vi.fn(async () => "REAL_sessionHistory"),
   listAuditEvents: vi.fn(async () => "REAL_history"),
   getSettings: vi.fn(async () => "REAL_settings"),
   getAuthSession: vi.fn(async () => "REAL_auth"),
@@ -35,6 +36,7 @@ vi.mock("./real", () => ({
 vi.mock("./mock", () => ({
   mockListTasks: vi.fn(async () => "MOCK_tasks"),
   mockMetrics: vi.fn(async () => "MOCK_metrics"),
+  mockSessionHistory: vi.fn(async () => "MOCK_sessionHistory"),
   mockHistory: vi.fn(async () => "MOCK_history"),
   mockSettings: vi.fn(async () => "MOCK_settings"),
   mockAuthSession: vi.fn(async () => "MOCK_auth"),
@@ -46,6 +48,7 @@ vi.mock("./mock", () => ({
 import {
   tasksQuery,
   metricsQuery,
+  sessionHistoryQuery,
   historyEventsQuery,
   settingsQuery,
   authSessionQuery,
@@ -81,6 +84,14 @@ const cases: Case[] = [
     mockFn: mock.mockMetrics as unknown as Spy,
     realValue: "REAL_metrics",
     mockValue: "MOCK_metrics",
+  },
+  {
+    domain: "sessionHistory",
+    factory: () => sessionHistoryQuery("task-x"),
+    realFn: real.getSessionHistory as unknown as Spy,
+    mockFn: mock.mockSessionHistory as unknown as Spy,
+    realValue: "REAL_sessionHistory",
+    mockValue: "MOCK_sessionHistory",
   },
   {
     domain: "history",

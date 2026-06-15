@@ -443,8 +443,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     this.clearTimers(taskId);
     // Close the runner-minutes interval (no-op if the task never ran) (5.4).
     this.runnerMinutes.recordEnd(taskId);
-    // Tear down the AIO sandbox container so it does not outlive the task on
-    // natural completion, then destroy the session-scoped credentials.
+    // Settle the AIO sandbox: STOP it but KEEP it (session-sandbox-retention
+    // 6.1). `teardownSandbox` is now stop-only — the stopped container's codex
+    // rollout stays readable for history replay (the retention cleaner removes
+    // it later). Then destroy the session-scoped credentials. Slot release below
+    // is independent of this (the `.catch` ensures a teardown hiccup never holds
+    // the slot), so a completed task is retained AND its slot is freed.
     if (this.sandbox) {
       await this.sandbox.teardownSandbox(taskId).catch((err: unknown) => {
         this.logger.warn(
@@ -556,8 +560,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // events (the terminal transition + its cause).
     await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
     await this.safeTransition(taskId, 'failed');
-    // VR.2 — tear down the running sandbox so the container/process is stopped,
-    // not just the credentials. Idempotent: safe if the sandbox already exited.
+    // VR.2 / session-sandbox-retention 6.2 — STOP the running sandbox (not just
+    // the credentials) for ALL five abnormal causes, INCLUDING a SIGKILL'd exit:
+    // `teardownSandbox` is stop-only, so the container is RETAINED (its rollout
+    // readable for replay) while its slot is freed below. The pre-stop trim has
+    // already zeroed the credential. Idempotent: safe if the sandbox already
+    // exited.
     if (this.sandbox) {
       await this.sandbox.teardownSandbox(taskId).catch((err: unknown) => {
         this.logger.warn(

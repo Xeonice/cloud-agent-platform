@@ -32,7 +32,11 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { TERMINAL_TASK_STATUSES } from "@cap/contracts";
+import {
+  TERMINAL_TASK_STATUSES,
+  isReplayableStatus,
+  replayPresentationState,
+} from "@cap/contracts";
 import {
   taskQuery,
   taskContextQuery,
@@ -49,6 +53,7 @@ import {
   type ConnectionState,
 } from "@/components/session/session-terminal";
 import { TerminalSkeleton } from "@/components/session/terminal-skeleton";
+import { SessionReplay } from "@/components/session/session-replay";
 import { formatTaskResource } from "@/components/session/format-resource";
 
 /** Statusline / H1 phase label per cockpit state vocabulary (never fabricated). */
@@ -176,7 +181,16 @@ function SessionPage(): React.ReactElement {
       />
 
       <section className="grid grid-cols-[minmax(0,1fr)]">
-        {task && PRE_RUNNING_STATUSES.has(task.status) ? (
+        {task && isReplayableStatus(task.status) ? (
+          // A FINISHED task (completed / cancelled / failed / agent_failed_to_start):
+          // render the read-only replay of its settled-sandbox transcript in
+          // place of the live terminal — NO WebSocket, NO input, NO resume/stop.
+          // The live path below is untouched for non-terminal tasks.
+          <SessionReplay
+            taskId={taskId}
+            presentationState={replayPresentationState(task.status)}
+          />
+        ) : task && PRE_RUNNING_STATUSES.has(task.status) ? (
           // A freshly-created task has no provisioned sandbox/terminal yet
           // (pending/queued). Show a friendly wait instead of mounting the
           // terminal into a "connecting" void; once the task reaches `running`

@@ -45,6 +45,13 @@ export interface BackendCapabilities {
    * task read (closing the "sendable but unreadable" trap, D5.5).
    */
   branches: boolean;
+  /**
+   * `GET /tasks/:id/session-history` — the parsed, read-only codex transcript of
+   * a FINISHED task, read from its settled retained sandbox
+   * (session-sandbox-retention). `false` until the endpoint is verified e2e
+   * against a running api with a retained container.
+   */
+  sessionHistory: boolean;
 }
 
 /**
@@ -78,6 +85,12 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   settings: true, // /settings + /settings/codex — per-account, GitHub-identity session.
   githubImport: true, // /repos/github/* — import via the operator's OAuth token.
   branches: true, // Task.branch/strategy read-back on the real task read.
+
+  // NOT yet verified e2e against a running api with a retained sandbox — the
+  // replay page renders on the typed mock until the endpoint is confirmed
+  // against the live api, then this flips to `true` (the standard "render on
+  // mock, flip one flag to go real" seam).
+  sessionHistory: false, // GET /tasks/:id/session-history — read-only codex transcript.
 };
 
 /**

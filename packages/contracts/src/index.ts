@@ -47,3 +47,6 @@ export * from './audit.js';
 
 // Runtime metrics: derived semaphore capacity + sampled CPU/memory aggregation
 export * from './metrics.js';
+
+// Read-only session-history replay model (finished-task transcript read-model)
+export * from './session-history.js';

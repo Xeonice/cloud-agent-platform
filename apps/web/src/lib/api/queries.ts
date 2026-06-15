@@ -25,6 +25,7 @@ import type {
   AuthSession,
   MetricsResponse,
   TaskResourceResponse,
+  SessionHistory,
   CapacityMetrics,
   SlotEntry,
   TaskMetricsSample,
@@ -63,6 +64,7 @@ export const queryKeys = {
   githubRepos: ["github", "repos"] as const,
   taskContext: (id: string) => ["tasks", id, "context"] as const,
   taskResource: (id: string) => ["tasks", id, "resource"] as const,
+  sessionHistory: (id: string) => ["tasks", id, "session-history"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -124,6 +126,22 @@ export function taskResourceQuery(id: string) {
     queryFn: () =>
       isCapable("metrics") ? real.getTaskResource(id) : mock.mockTaskResource(id),
     refetchInterval: 5000,
+  });
+}
+
+/**
+ * The read-only codex transcript of a FINISHED task (session-sandbox-retention),
+ * for the session page's replay region. A static read (NO `refetchInterval`): a
+ * settled task's transcript is frozen. Real-vs-mock is the only switch — gated by
+ * `sessionHistory`, mirroring the `taskResource` seam.
+ */
+export function sessionHistoryQuery(id: string) {
+  return queryOptions<SessionHistory>({
+    queryKey: queryKeys.sessionHistory(id),
+    queryFn: () =>
+      isCapable("sessionHistory")
+        ? real.getSessionHistory(id)
+        : mock.mockSessionHistory(id),
   });
 }
 

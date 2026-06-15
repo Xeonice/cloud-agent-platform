@@ -20,6 +20,8 @@ import type {
   ListReposResponse,
   AuthSession,
   MetricsResponse,
+  SessionHistory,
+  SessionTurn,
   TaskMetricsSample,
   TaskResourceResponse,
   ListAuditEventsResponse,
@@ -447,6 +449,85 @@ export async function mockTaskResource(id: string): Promise<TaskResourceResponse
     sampledAt: new Date(Date.now() - 2_000),
     ageMs: 2_000,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Session history — read-only codex transcript replay (session-sandbox-retention)
+// ---------------------------------------------------------------------------
+
+/** Build a representative parsed-transcript `available` history. */
+function availableSessionHistory(
+  id: string,
+  variant: "completed" | "failed",
+): SessionHistory {
+  const turns: SessionTurn[] = [
+    { kind: "user", text: "修复登录页在移动端的样式错位问题" },
+    {
+      kind: "assistant",
+      text: "我先查看登录页的样式与结构，定位错位的根因，再做最小修改。",
+      isFinalAnswer: false,
+    },
+    {
+      kind: "tool",
+      name: "exec_command",
+      args: '{"cmd":"sed -n \'1,80p\' src/routes/login.tsx"}',
+      output:
+        "export function Login() {\n  return (\n    <div className=\"login\">…</div>\n  );\n}",
+      tokenCount: 1280,
+    },
+    {
+      kind: "tool",
+      name: "apply_patch",
+      args: "*** Update File: src/routes/login.css\n@@\n-  display: block;\n+  display: flex;",
+      output: "Success. Updated src/routes/login.css (1 hunk).",
+      tokenCount: 642,
+    },
+  ];
+  if (variant === "completed") {
+    turns.push({
+      kind: "assistant",
+      text: "已修复：登录容器改为 flex 居中并约束最大宽度，移动端不再错位。",
+      isFinalAnswer: true,
+    });
+  }
+  // variant "failed": the transcript ends at the interruption (no final answer).
+  return {
+    status: "available",
+    turns,
+    meta: {
+      taskId: id,
+      model: "gpt-5-codex",
+      cwd: "/home/gem/workspace",
+      startedAt: "2026-06-12T09:30:00Z",
+    },
+    // Neither mock terminal task (completed / failed) is an operator-cancelled
+    // mid-run interruption, so the wire indication is false here.
+    isInterrupted: false,
+  };
+}
+
+/**
+ * The read-only codex transcript of a FINISHED task (mirrors
+ * `GET /tasks/:id/session-history`). The two real terminal mock tasks render a
+ * transcript; otherwise a deterministic bucket (by the id's first hex digit)
+ * makes EVERY discriminated state — available / empty(no-rollout) /
+ * empty(agent-failed-to-start) / expired — previewable under `VITE_FORCE_MOCK`.
+ */
+export async function mockSessionHistory(id: string): Promise<SessionHistory> {
+  await delay();
+  if (id === TASK_IDS.c) return availableSessionHistory(id, "completed");
+  if (id === TASK_IDS.e) return availableSessionHistory(id, "failed");
+  const firstHex = id.replace(/[^0-9a-f]/gi, "").charAt(0) || "0";
+  switch (parseInt(firstHex, 16) % 4) {
+    case 1:
+      return { status: "empty", reason: "no-rollout" };
+    case 2:
+      return { status: "empty", reason: "agent-failed-to-start" };
+    case 3:
+      return { status: "expired" };
+    default:
+      return availableSessionHistory(id, "completed");
+  }
 }
 
 // ---------------------------------------------------------------------------

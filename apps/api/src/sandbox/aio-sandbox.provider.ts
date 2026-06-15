@@ -17,6 +17,7 @@ import { CODEX_AUTH_SOURCE, type CodexAuthSource } from './codex-auth-source.por
 import { PROVISION_LOOKUP, type ProvisionLookup } from './provision-lookup.port';
 import { CODEX_PROMPT_FILE_PATH } from '../terminal/codex-launch';
 import { resolveSkillInstaller } from './skill-allowlist';
+import { extractFilesFromTar } from './tar-extract';
 
 /**
  * AIO Sandbox `SandboxProvider` (aio-sandbox-execution, design D — connect-in).
@@ -104,6 +105,12 @@ export class AioSandboxProvider
    * "destination path already exists and is not an empty directory").
    */
   private static readonly WORKSPACE_DIR = '/home/gem/workspace';
+  /**
+   * codex's home inside the sandbox. `sessions/` under it holds the rollout
+   * JSONL (the replay source, D3); `cache` + `logs_*.sqlite` are the trimmable
+   * bulk; `auth.json` is the credential that retention zeroes before stop (D4).
+   */
+  private static readonly CODEX_HOME_DIR = '/home/gem/.codex';
   /** Name prefix for the per-task sandbox containers (`cap-aio-<taskId>`). */
   private static readonly CONTAINER_PREFIX = 'cap-aio-';
   /**
@@ -113,6 +120,14 @@ export class AioSandboxProvider
    * blocking the provision.
    */
   private static readonly SKILL_INSTALL_TIMEOUT_MS = 120_000;
+
+  /**
+   * Upper bound on the pre-stop `~/.codex` trim's wall-clock (D4). The trim is a
+   * single `rm`/truncate over the live sandbox; this ceiling keeps a wedged
+   * sandbox from stalling settle. On timeout the trim is skipped (the kept
+   * container is just larger) and the stop proceeds — never fatal.
+   */
+  private static readonly TRIM_TIMEOUT_MS = 10_000;
 
   /**
    * Reported sandbox mode, surfaced as INFORMATIONAL metadata only. The real
@@ -176,7 +191,12 @@ export class AioSandboxProvider
       HostConfig: {
         SecurityOpt: securityOpt,
         ShmSize: AioSandboxProvider.SHM_SIZE_BYTES,
-        AutoRemove: true,
+        // RETENTION (session-sandbox-retention D1): `false`, NOT `true` — a
+        // settled task's container is STOPPED, not removed, so its codex rollout
+        // transcript + workspace survive for read-only history replay (and the
+        // deferred resume-run). The retention cleaner removes it past the
+        // retention window; `teardownSandbox` stops only.
+        AutoRemove: false,
         // Join the private network so the orchestrator can dial by container
         // name; the default bridge has no container-name DNS.
         NetworkMode: network,
@@ -224,45 +244,206 @@ export class AioSandboxProvider
   }
 
   /**
-   * Tear down the running sandbox for a task: stop + remove. With `AutoRemove`
-   * the stop is sufficient to delete the container. Idempotent — tearing down a
-   * task that already exited or was never started is a safe no-op.
+   * Settle a task's sandbox: STOP it but KEEP it (retention D1). The stopped
+   * container's codex rollout + workspace stay readable for history replay; the
+   * retention cleaner removes it later via {@link removeSandbox}. Before stop we
+   * trim `~/.codex` (drop the ~92MB cache + zero `auth.json`) so a kept container
+   * is ~15MB and holds no live credential (D4). Idempotent + never throws —
+   * settling a task that already exited or never started is a safe no-op.
    */
   async teardownSandbox(taskId: string): Promise<void> {
+    const connection = this.connections.get(taskId);
     this.connections.delete(taskId);
     const container = this.containers.get(taskId);
     if (!container) return;
     this.containers.delete(taskId);
-    // `t: 0` = stop immediately; AutoRemove then deletes the container. If the
-    // container already exited/was removed, removing explicitly is a safe no-op.
+    // D4 / V.2 — best-effort, time-boxed pre-stop trim. The baseUrl is
+    // DETERMINISTIC from the container name, so this ALSO fires on the
+    // provision-FAILURE teardown (`provision()` tears down before
+    // `connections.set`, so `connection` is undefined) — a retained container
+    // must NEVER hold a live `auth.json`, even when provision failed AFTER the
+    // auth inject. A sandbox whose HTTP server never came up fast-fails
+    // (ECONNREFUSED); a trim failure NEVER blocks the stop.
+    const baseUrl =
+      connection?.baseUrl ??
+      `http://${AioSandboxProvider.CONTAINER_PREFIX}${taskId}:${AioSandboxProvider.AIO_PORT}`;
+    await this.trimCodexHomeBeforeStop(baseUrl, taskId);
+    // `t: 0` = stop immediately. With AutoRemove:false the container persists in
+    // an `Exited` state (the rollout/workspace frozen) until the retention
+    // cleaner removes it. Already stopped → safe no-op.
     await container.stop({ t: 0 }).catch(() => {
-      // Already stopped/removed — fine.
-    });
-    await container.remove({ force: true }).catch(() => {
-      // AutoRemove already deleted it (or it never started) — fine.
+      // Already stopped — fine.
     });
   }
 
   /**
-   * Reap orphaned `cap-aio-*` containers left by a PRIOR process on startup.
+   * Force-remove a STOPPED retained container (the retention cleaner / disk-floor
+   * eviction path). Separate from {@link teardownSandbox} (which only stops) so
+   * the lifecycle keeps the container and only the cleaner deletes it. Idempotent.
+   */
+  async removeSandbox(taskId: string): Promise<void> {
+    const container =
+      this.containers.get(taskId) ??
+      this.docker.getContainer(`${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`);
+    this.containers.delete(taskId);
+    await container.remove({ force: true }).catch(() => {
+      // Already removed / never existed — fine.
+    });
+  }
+
+  /**
+   * D4 — trim a settling container's `~/.codex` BEFORE stop, while its
+   * `/v1/shell/exec` is still live: drop the model `cache` + `logs_*.sqlite`
+   * (the ~92MB bulk, NOT the conversation) and ZERO `auth.json` (a kept,
+   * read-only container must not hold a refreshable ChatGPT credential), keeping
+   * `sessions/` (the rollout). Best-effort + time-boxed: a failure is logged and
+   * never blocks the stop, so settling stays fast even if the sandbox is wedged.
+   */
+  private async trimCodexHomeBeforeStop(
+    baseUrl: string,
+    taskId: string,
+  ): Promise<void> {
+    const dir = AioSandboxProvider.CODEX_HOME_DIR;
+    // Keep `sessions/` (rollout); drop caches + sqlite logs; zero auth.json.
+    const command =
+      `rm -rf ${dir}/cache ${dir}/logs_*.sqlite ${dir}/logs_*.sqlite-shm ${dir}/logs_*.sqlite-wal 2>/dev/null; ` +
+      `: > ${dir}/auth.json 2>/dev/null; true`;
+    try {
+      const res = await fetch(`${baseUrl}/v1/shell/exec`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command }),
+        signal: AbortSignal.timeout(AioSandboxProvider.TRIM_TIMEOUT_MS),
+      });
+      if (!res.ok) {
+        this.logger.warn(
+          `pre-stop ~/.codex trim for task ${taskId} returned HTTP ${res.status} (kept container will be larger; not fatal)`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `pre-stop ~/.codex trim for task ${taskId} failed (kept container will be larger; not fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * RESUME-RUN SEAM (deferred follow-up; verified in spike-findings.md but NOT
+   * shipped this change). A retained stopped container resumes via:
+   *   `docker commit <cap-aio-id>` → run a NEW container from that image with
+   *   `--entrypoint /opt/gem/entrypoint.sh` (skipping AIO's non-idempotent
+   *   `run.sh` init — `run.sh` itself ends with `exec /opt/gem/entrypoint.sh`),
+   *   then re-inject fresh codex auth + re-attach the gateway PTY + take a slot.
+   * This documents the named extension point only — no behavior lands here yet.
+   */
+  // resumeRun(taskId): commit + runFromResumeImage — see spike-findings.md §D.
+
+  /**
+   * Read the codex rollout JSONL out of a STOPPED, retained `cap-aio-<taskId>`
+   * container for read-only history replay (D3). Uses dockerode `getArchive`,
+   * which streams a tar of the container's FROZEN layer WITHOUT restarting it —
+   * so an `Exited` sandbox is read in place. Scoped to `~/.codex/sessions` only:
+   * it never pulls `auth.json` or any credential file out of the container.
+   *
+   * Returns the newest `rollout-*.jsonl`'s raw text, or `null` when the rollout
+   * is absent — container reaped/expired, path missing, or codex never ran
+   * (provision_failed / agent_failed_to_start). The endpoint maps `null` to the
+   * honest `empty`/`expired` states; this method never throws into the caller.
+   */
+  async readRolloutFromContainer(taskId: string): Promise<string | null> {
+    const container =
+      this.containers.get(taskId) ??
+      this.docker.getContainer(`${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`);
+    let stream: NodeJS.ReadableStream;
+    try {
+      // `~/.codex/sessions` holds the rollout (one file per session). Globbing
+      // `history.jsonl` would be WRONG — that is only the global user-input log.
+      stream = await container.getArchive({
+        path: `${AioSandboxProvider.CODEX_HOME_DIR}/sessions`,
+      });
+    } catch {
+      // 404 (container removed / path absent) → no rollout to replay.
+      return null;
+    }
+    let tar: Buffer;
+    try {
+      tar = await AioSandboxProvider.streamToBuffer(stream);
+    } catch {
+      return null;
+    }
+    const rollouts = extractFilesFromTar(tar, (name) =>
+      /(^|\/)rollout-.*\.jsonl$/.test(name),
+    );
+    if (rollouts.length === 0) return null;
+    // One rollout per session; if several, the ISO-timestamp in the filename
+    // sorts chronologically — take the newest.
+    rollouts.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return rollouts[rollouts.length - 1]!.content.toString('utf8');
+  }
+
+  /** Collect a (dockerode getArchive) readable stream fully into a Buffer. */
+  private static async streamToBuffer(
+    stream: NodeJS.ReadableStream,
+  ): Promise<Buffer> {
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream as AsyncIterable<Buffer | string>) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  }
+
+  /**
+   * Whether the per-task `cap-aio-<taskId>` container still EXISTS (running OR
+   * stopped/retained). Lets the history endpoint tell an aged-out/reaped session
+   * (`expired`) apart from a container that exists but produced no rollout
+   * (`empty`). `inspect()` 404s when the container is gone → false; never throws.
+   */
+  async sandboxExists(taskId: string): Promise<boolean> {
+    const container =
+      this.containers.get(taskId) ??
+      this.docker.getContainer(`${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`);
+    try {
+      await container.inspect();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Reap orphaned RUNNING `cap-aio-*` containers left by a PRIOR process on
+   * startup.
    *
    * The per-task idle/teardown reclaim only tracks containers THIS process
    * provisioned (its in-memory `containers` map); after a restart (deploy,
-   * crash, OOM) that map starts empty, so any `cap-aio-*` container still on the
-   * host is an orphan whose task/session/guardrail state died with the previous
-   * process — left running it leaks host resources forever. The orchestrator
-   * owns no live session at boot (single-instance deployment: one orchestrator
-   * per docker host), so EVERY such container is by definition an orphan to
-   * reap. The matching stranded task rows are transitioned to `failed`
-   * separately by the tasks service on startup.
+   * crash, OOM) that map starts empty, so any RUNNING `cap-aio-*` container is an
+   * orphan whose task/session/guardrail state died with the previous process —
+   * left running it leaks host resources forever. The orchestrator owns no live
+   * session at boot (single-instance deployment: one orchestrator per docker
+   * host), so every RUNNING such container is by definition an orphan to reap.
+   * The matching stranded task rows are transitioned to `failed` separately by
+   * the tasks service on startup.
+   *
+   * RETENTION (D1): STOPPED `cap-aio-*` containers are NOT orphans — they are
+   * intentionally-kept settled sandboxes the history-replay page reads from. So
+   * this filters `status: ['running']` and never touches `Exited` containers; a
+   * Dokploy redeploy / api restart must not wipe the kept history. The retention
+   * cleaner (not this reap) is the only path that removes stopped containers.
    *
    * Best-effort and never throws: a docker hiccup must not block app startup.
    */
   async onApplicationBootstrap(): Promise<void> {
     try {
       const orphans = await this.docker.listContainers({
-        all: true,
-        filters: { name: [AioSandboxProvider.CONTAINER_PREFIX] },
+        // Only running containers: `all` defaults to false, but be explicit so
+        // the retention intent (spare stopped/`Exited` history) is unmistakable.
+        all: false,
+        filters: {
+          name: [AioSandboxProvider.CONTAINER_PREFIX],
+          status: ['running'],
+        },
       });
       if (orphans.length === 0) return;
       await Promise.all(
@@ -274,8 +455,9 @@ export class AioSandboxProvider
         ),
       );
       this.logger.warn(
-        `startup reap: removed ${orphans.length} orphaned ` +
-          `${AioSandboxProvider.CONTAINER_PREFIX}* sandbox container(s) from a prior process`,
+        `startup reap: removed ${orphans.length} orphaned RUNNING ` +
+          `${AioSandboxProvider.CONTAINER_PREFIX}* sandbox container(s) from a prior process ` +
+          `(stopped containers spared as retained history)`,
       );
     } catch (err) {
       this.logger.warn(

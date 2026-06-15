@@ -24,6 +24,7 @@ import {
   AuthSessionSchema,
   SessionUserSchema,
   MetricsResponseSchema,
+  SessionHistorySchema,
   ListAuditEventsResponseSchema,
   AccountSettingsSchema,
   CodexCredentialSchema,
@@ -41,6 +42,7 @@ import {
   mockCodexCredential,
   mockGithubRepos,
   mockTaskContext,
+  mockSessionHistory,
 } from "./mock";
 import { setState, resetState } from "../store";
 
@@ -91,6 +93,34 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
       expect(out.length).toBeGreaterThan(0);
     },
     TIMEOUT,
+  );
+
+  it(
+    "mockSessionHistory -> SessionHistory across every discriminated state",
+    async () => {
+      // ids bucketed by their first hex digit (see mockSessionHistory): 0→available,
+      // 1→empty/no-rollout, 2→empty/agent-failed-to-start, 3→expired.
+      const ids = {
+        available: "00000000-0000-4000-8000-000000000000",
+        noRollout: "10000000-0000-4000-8000-000000000000",
+        agentFailed: "20000000-0000-4000-8000-000000000000",
+        expired: "30000000-0000-4000-8000-000000000000",
+      };
+      const out: Record<string, unknown> = {};
+      for (const [k, id] of Object.entries(ids)) out[k] = await mockSessionHistory(id);
+
+      // Every state PARSES against the discriminated contract schema.
+      for (const value of Object.values(out)) {
+        expect(() => SessionHistorySchema.parse(value)).not.toThrow();
+      }
+      // And each id maps to its intended state (no fabricated transcript on the
+      // empty/expired variants).
+      expect(out.available).toMatchObject({ status: "available" });
+      expect(out.noRollout).toMatchObject({ status: "empty", reason: "no-rollout" });
+      expect(out.agentFailed).toMatchObject({ status: "empty", reason: "agent-failed-to-start" });
+      expect(out.expired).toEqual({ status: "expired" });
+    },
+    4000,
   );
 
   it(

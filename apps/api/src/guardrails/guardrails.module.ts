@@ -7,6 +7,7 @@ import {
   GuardrailsService,
 } from './guardrails.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { RetentionCleaner } from './retention-cleaner';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
 import {
@@ -70,6 +71,13 @@ import {
           prisma,
         ),
     },
+    // Retention cleaner (session-sandbox-retention Track 5): a self-starting
+    // unref'd sweeper that removes settled, retained `cap-aio-*` containers past
+    // the retention window or under disk pressure. Lives in the guardrails layer
+    // alongside the teardown chokepoints; PrismaService (for the retention
+    // window) resolves from the @Global PrismaModule, optional so a guardrails
+    // unit context still constructs without a database (window → default).
+    RetentionCleaner,
   ],
   exports: [GuardrailsService],
 })
