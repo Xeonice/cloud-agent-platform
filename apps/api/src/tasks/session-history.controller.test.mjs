@@ -1,16 +1,23 @@
 /**
  * Focused unit test for the read-only session-history endpoint
- * (session-sandbox-retention, Track 4). Drives the REAL
+ * (persist-session-transcripts, Track 4 read-path). Drives the REAL
  * `SessionHistoryController` (compiled with tsc, instantiated directly with
  * stubs — Nest's DI container is not involved) against a stub TasksService +
- * stub SandboxProvider, asserting the discriminated SessionHistory mapping.
+ * stub SandboxProvider + stub TranscriptStore, asserting the durable-first
+ * resolution (design D4) AND the discriminated SessionHistory mapping.
  *
  * Covers (task 4.4):
+ *   - durable hit              → 'available' parsed from the archive, with the
+ *     CONTAINER never touched (readDurable wins; no readRolloutFromContainer)
+ *   - container fallback + backfill → durable miss falls back to the container,
+ *     read-through backfills the archive, and the NEXT read is a durable hit
+ *     (no second container touch)
+ *   - both sources gone        → 'expired' only when neither durable nor
+ *     container yields a rollout (and the sandbox is gone)
  *   - completed + rollout      → status 'available' (parsed transcript)
  *   - cancelled + rollout      → 'available' (rollout up to the interruption)
  *   - failed + rollout         → 'available' (rollout up to the failure)
  *   - agent_failed_to_start    → 'empty' reason 'agent-failed-to-start' (no read)
- *   - terminal + no rollout + sandbox gone   → 'expired' (aged-out / reaped)
  *   - terminal + no rollout + sandbox exists → 'empty' reason 'no-rollout'
  *   - unknown task             → the findById 404 propagates (no fabrication)
  *   - credentials-never-exported → the controller only ever asks the provider for
@@ -109,6 +116,29 @@ function makeProvider({ rollout = null, exists = false } = {}) {
   return { provider, calls };
 }
 
+/**
+ * Stub TranscriptStore (the durable archive). `durable` is the persisted raw
+ * JSONL returned by `readDurable` (default null = miss). `backfill` records the
+ * rollout it is handed AND (by default) makes the next `readDurable` a hit, so a
+ * fallback-then-reread exercises the read-through path end-to-end. A best-effort
+ * store: `backfill` resolves; the controller awaits it only to sequence.
+ */
+function makeTranscripts({ durable = null, backfillPersists = true } = {}) {
+  const calls = { readDurable: 0, backfill: 0, backfilled: [] };
+  const state = { durable };
+  return {
+    transcripts: {
+      async readDurable() { calls.readDurable++; return state.durable; },
+      async backfill(taskId, rawJsonl) {
+        calls.backfill++;
+        calls.backfilled.push({ taskId, rawJsonl });
+        if (backfillPersists) state.durable = rawJsonl;
+      },
+    },
+    calls,
+  };
+}
+
 // A minimal synthetic rollout (real codex line shapes, synthetic content).
 const ROLLOUT = [
   JSON.stringify({ type: 'session_meta', payload: { cwd: '/home/gem/workspace', timestamp: '2026-06-01T10:00:00Z' } }),
@@ -121,9 +151,11 @@ async function main() {
   const { SessionHistoryController } = await import(pathToFileURL(controllerJs).href);
 
   // ---- completed / cancelled / failed + rollout → 'available' ----------------
+  // (durable miss → container fallback; see the dedicated backfill case below.)
   for (const status of ['completed', 'cancelled', 'failed']) {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks(status), provider);
+    const { transcripts } = makeTranscripts();
+    const ctrl = new SessionHistoryController(makeTasks(status), provider, transcripts);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'available', `${status} + rollout → status 'available'`);
     assert(res.meta?.taskId === TASK_ID, `${status}: meta.taskId is the requested id`);
@@ -137,36 +169,72 @@ async function main() {
     );
   }
 
-  // ---- agent_failed_to_start → 'empty' (no container read at all) -------------
+  // ---- durable hit → 'available' WITHOUT touching the container ---------------
+  {
+    const { provider, calls } = makeProvider({ rollout: null /* container empty on purpose */ });
+    const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts);
+    const res = await ctrl.get(TASK_ID);
+    assert(res.status === 'available', 'durable hit → status available (parsed from the archive)');
+    assert(Array.isArray(res.turns) && res.turns.length >= 1, 'durable hit: the archive parses into turns');
+    assert(tCalls.readDurable === 1, 'durable hit: readDurable was consulted');
+    assert(calls.readRollout === 0 && calls.sandboxExists === 0, 'durable hit: the CONTAINER is never read (durable-first)');
+    assert(tCalls.backfill === 0, 'durable hit: no backfill on a hit (already durable)');
+  }
+
+  // ---- container fallback + backfill; next read is a durable hit --------------
   {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('agent_failed_to_start'), provider);
+    const { transcripts, calls: tCalls } = makeTranscripts({ durable: null });
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts);
+
+    const first = await ctrl.get(TASK_ID);
+    assert(first.status === 'available', 'fallback: durable miss → container read → available');
+    assert(tCalls.readDurable === 1 && calls.readRollout === 1, 'fallback: readDurable missed, then the container was read once');
+    assert(tCalls.backfill === 1, 'fallback: the container rollout is read-through backfilled');
+    assert(tCalls.backfilled[0]?.rawJsonl === ROLLOUT && tCalls.backfilled[0]?.taskId === TASK_ID, 'fallback: backfill persists the RAW rollout keyed by taskId');
+
+    const second = await ctrl.get(TASK_ID);
+    assert(second.status === 'available', 'fallback: the NEXT read is still available');
+    assert(tCalls.readDurable === 2, 'fallback: the next read consults the durable store again');
+    assert(calls.readRollout === 1, 'fallback: the next read is a durable hit — the container is NOT read a second time');
+  }
+
+  // ---- agent_failed_to_start → 'empty' (no archive/container read at all) -----
+  {
+    const { provider, calls } = makeProvider({ rollout: ROLLOUT });
+    const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
+    const ctrl = new SessionHistoryController(makeTasks('agent_failed_to_start'), provider, transcripts);
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'empty' && res.reason === 'agent-failed-to-start', 'agent_failed_to_start → empty/agent-failed-to-start');
     assert(calls.readRollout === 0 && calls.sandboxExists === 0, 'agent_failed_to_start: NO container is read (nothing ever existed)');
+    assert(tCalls.readDurable === 0, 'agent_failed_to_start: NO durable archive is read either');
   }
 
-  // ---- terminal + no rollout + sandbox gone → 'expired' -----------------------
+  // ---- both sources gone (no durable + no rollout + sandbox reaped) → expired -
   {
     const { provider } = makeProvider({ rollout: null, exists: false });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider);
+    const { transcripts } = makeTranscripts({ durable: null });
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts);
     const res = await ctrl.get(TASK_ID);
-    assert(res.status === 'expired', 'no rollout + sandbox reaped → expired (aged-out record)');
+    assert(res.status === 'expired', 'no durable AND no rollout AND sandbox reaped → expired (aged-out record)');
   }
 
   // ---- terminal + no rollout + sandbox exists → 'empty' / no-rollout ----------
   {
     const { provider } = makeProvider({ rollout: null, exists: true });
-    const ctrl = new SessionHistoryController(makeTasks('failed'), provider);
+    const { transcripts } = makeTranscripts({ durable: null });
+    const ctrl = new SessionHistoryController(makeTasks('failed'), provider, transcripts);
     const res = await ctrl.get(TASK_ID);
-    assert(res.status === 'empty' && res.reason === 'no-rollout', 'no rollout + sandbox still present → empty/no-rollout');
+    assert(res.status === 'empty' && res.reason === 'no-rollout', 'no durable + no rollout + sandbox still present → empty/no-rollout');
   }
 
   // ---- unknown task: the findById 404 propagates ------------------------------
   {
     const err = Object.assign(new Error('Task not found'), { status: 404 });
     const { provider } = makeProvider({ rollout: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks(err), provider);
+    const { transcripts } = makeTranscripts({ durable: ROLLOUT });
+    const ctrl = new SessionHistoryController(makeTasks(err), provider, transcripts);
     let threw = false;
     try { await ctrl.get('nope'); } catch (e) { threw = e === err; }
     assert(threw, 'an unknown task propagates the 404 (no fabricated transcript)');
@@ -175,7 +243,8 @@ async function main() {
   // ---- credentials-never-exported (explicit): served payload carries no secret-
   {
     const { provider } = makeProvider({ rollout: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider);
+    const { transcripts } = makeTranscripts({ durable: ROLLOUT });
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts);
     const res = await ctrl.get(TASK_ID);
     const serialized = JSON.stringify(res).toLowerCase();
     assert(

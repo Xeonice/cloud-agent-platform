@@ -47,9 +47,13 @@ export interface BackendCapabilities {
   branches: boolean;
   /**
    * `GET /tasks/:id/session-history` — the parsed, read-only codex transcript of
-   * a FINISHED task, read from its settled retained sandbox
-   * (session-sandbox-retention). `false` until the endpoint is verified e2e
-   * against a running api with a retained container.
+   * a FINISHED task. As of `persist-session-transcripts` the endpoint resolves
+   * DURABLE-FIRST: it reads the gzipped raw rollout archived on the workspace
+   * volume (indexed in `SessionTranscript`), falling back to the retained
+   * container only when no archive exists, so the transcript survives container
+   * reaping. Live as of `persist-session-transcripts`; the live e2e against a
+   * retained-then-reaped sandbox (deploy/DEPLOY.md §9) is still TO BE CONFIRMED
+   * on the deployed env post-release.
    */
   sessionHistory: boolean;
 }
@@ -86,11 +90,12 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   githubImport: true, // /repos/github/* — import via the operator's OAuth token.
   branches: true, // Task.branch/strategy read-back on the real task read.
 
-  // NOT yet verified e2e against a running api with a retained sandbox — the
-  // replay page renders on the typed mock until the endpoint is confirmed
-  // against the live api, then this flips to `true` (the standard "render on
-  // mock, flip one flag to go real" seam).
-  sessionHistory: false, // GET /tasks/:id/session-history — read-only codex transcript.
+  // Durable-first session-history (persist-session-transcripts): the rollout is
+  // archived on the workspace volume + indexed in Postgres, so the read path
+  // survives container reaping. Shipped LIVE per operator decision; the live e2e
+  // against a retained-then-reaped sandbox (deploy/DEPLOY.md §9) is TO BE
+  // CONFIRMED on the deployed env post-release (task 5.1).
+  sessionHistory: true, // GET /tasks/:id/session-history — durable-first codex transcript.
 };
 
 /**

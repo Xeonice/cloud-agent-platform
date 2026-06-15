@@ -113,6 +113,11 @@ model Task {
   /// Append-only audit events recorded for this task's lifecycle transitions.
   auditEvents AuditEvent[]
 
+  /// The durable, container-independent transcript index for this task (zero or
+  /// one). Populated at terminal capture or read-through backfill; survives
+  /// container reaping (persist-session-transcripts).
+  sessionTranscript SessionTranscript?
+
   @@index([repoId])
   @@map("tasks")
 }
@@ -332,4 +337,52 @@ model CodexCredential {
   authJsonCiphertext String? @map("auth_json_ciphertext")
 
   @@map("codex_credentials")
+}
+
+/// Durable, container-independent index of a task's captured codex transcript
+/// (persist-session-transcripts).
+///
+/// One row per task (keyed by the UNIQUE `taskId`, 1:1 with {@link Task}),
+/// upserted on proactive terminal capture OR a later read-through backfill — never
+/// duplicated. The RAW, gzip-compressed rollout JSONL itself lives on the durable
+/// per-task workspace volume at `archivePath`
+/// (`workspaces/<taskId>/transcript.jsonl.gz`) and remains the SOURCE OF TRUTH;
+/// this row is a derivable catalog entry that survives container reaping and lets
+/// transcripts be looked up by id AND searched across history by content.
+///
+/// `model`/`cwd`/`startedAt`/`turnCount`/`isInterrupted` are the parsed session
+/// meta. `content` is the concatenated turn text, made full-text searchable via a
+/// Postgres GIN `tsvector` index added in the accompanying migration (Prisma has
+/// no native `tsvector` type, so the index is declared in raw SQL, not here).
+model SessionTranscript {
+  id     String @id @default(uuid())
+  /// FK to the owning task; UNIQUE so there is at most one transcript index row
+  /// per task (1:1). Cascades when the task is deleted.
+  taskId String @unique @map("task_id")
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  /// Parsed session meta: the codex model id. Null when the rollout did not
+  /// surface one.
+  model String? @map("model")
+  /// Parsed session meta: the working directory the session ran in. Null when
+  /// absent from the rollout.
+  cwd String? @map("cwd")
+  /// Parsed session meta: when the codex session started. Null when absent.
+  startedAt DateTime? @map("started_at")
+  /// Parsed session meta: number of turns in the transcript.
+  turnCount Int @default(0) @map("turn_count")
+  /// Parsed session meta: whether the session ended mid-flight (interrupted).
+  isInterrupted Boolean @default(false) @map("is_interrupted")
+
+  /// Path to the RAW gzip-compressed rollout JSONL archive on the durable
+  /// workspace volume (the source of truth).
+  archivePath String @map("archive_path")
+  /// When this transcript was captured/last upserted.
+  capturedAt DateTime @default(now()) @map("captured_at")
+
+  /// Concatenated transcript turn text, full-text-searchable across history via
+  /// the Postgres GIN `tsvector` index declared in the migration.
+  content String @map("content")
+
+  @@map("session_transcripts")
 }

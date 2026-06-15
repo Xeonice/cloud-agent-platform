@@ -66,8 +66,29 @@ class FakeAioPtyClient {
     this.baseUrl = baseUrl;
     this.onExit = onExit;
   }
+  // Returns the (possibly async) onExit result so callers can AWAIT the full
+  // exit→transition→capture→teardown→release chain before asserting (3.4).
   closeWith(status) {
-    if (this.onExit) this.onExit(status);
+    if (this.onExit) return this.onExit(status);
+    return undefined;
+  }
+}
+
+/**
+ * Best-effort transcript service spy (persist-session-transcripts 3.1). Records
+ * every `capture(taskId)` call; when constructed with `{ throws: true }` it
+ * REJECTS to prove a capture failure cannot block the terminal transition,
+ * stop-only teardown, or slot release at either chokepoint (3.4).
+ */
+class SpyTranscripts {
+  constructor({ throws = false } = {}) {
+    this.throws = throws;
+    this.captured = []; // taskId
+  }
+  async capture(taskId) {
+    this.captured.push(taskId);
+    if (this.throws) throw new Error(`boom capturing ${taskId}`);
+    return { archived: true };
   }
 }
 
@@ -77,20 +98,41 @@ class FakeAioPtyClient {
  * release) so the test pins that EVERY exit frees the slot.
  */
 class GuardrailsHarness {
-  constructor(breaker, sandbox) {
+  constructor(breaker, sandbox, transcripts) {
     this.breaker = breaker;
     this.sandbox = sandbox;
+    // persist-session-transcripts 3.1 — OPTIONAL best-effort transcript service.
+    // Undefined in a guardrails-only context; capture then becomes a no-op.
+    this.transcripts = transcripts;
     this.connections = new Map();
     this.transitions = [];     // { taskId, status }
     this.released = [];        // taskId — semaphore.release
     this.forceFails = [];      // { taskId, cause }
     this.exitDetails = [];     // { taskId, code, abnormal } — record-task-failure-reason
+    // Ordered side-effect trace per task to pin capture-BEFORE-teardown ordering
+    // and the unconditional teardown/release-after-capture-throw guarantees (3.4):
+    // entries are 'capture:<id>' / 'teardown:<id>' / 'release:<id>'.
+    this.events = [];
   }
 
   // mirrors GuardrailsService.recordExitDetail (best-effort `task.exited` detail
   // capture; here it records the resolved code+abnormal into a spy)
   _recordExitDetail(taskId, status) {
     this.exitDetails.push({ taskId, code: status.code, abnormal: status.abnormal });
+  }
+
+  // mirrors GuardrailsService.captureTranscript (persist-session-transcripts
+  // 3.2/3.3): best-effort, AWAITED-and-swallowed — any throw/rejection from the
+  // injected service is caught here so the terminal transition / teardown /
+  // slot release that follow proceed unconditionally. No-op when unwired.
+  async _captureTranscript(taskId) {
+    if (!this.transcripts) return;
+    this.events.push(`capture:${taskId}`);
+    try {
+      await this.transcripts.capture(taskId);
+    } catch {
+      // swallowed — never blocks the stop-only teardown or the slot release
+    }
   }
 
   async startRunning(taskId) {
@@ -103,33 +145,45 @@ class GuardrailsHarness {
     return this.connections.get(taskId);
   }
 
-  // mirrors safeTransition + tasks-service isTerminal→onTerminal teardown/release
-  _transition(taskId, status) {
+  // mirrors safeTransition + tasks-service isTerminal→onTerminal teardown/release.
+  // onTerminal now captures the transcript (3.2) BEFORE the stop-only teardown.
+  async _transition(taskId, status) {
     this.transitions.push({ taskId, status });
     if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'agent_failed_to_start') {
+      // persist-session-transcripts 3.2 — capture BEFORE the stop-only teardown.
+      await this._captureTranscript(taskId);
+      this.events.push(`teardown:${taskId}`);
       void this.sandbox.teardownSandbox(taskId);
+      this.events.push(`release:${taskId}`);
       this.released.push(taskId);
     }
   }
 
-  // mirrors forceFail (records cause, transitions failed, teardown + release)
-  _forceFail(taskId, cause) {
+  // mirrors forceFail: records cause, transitions failed, then captures the
+  // transcript (3.3) BEFORE the stop-only teardown, then releases the slot.
+  async _forceFail(taskId, cause) {
     this.forceFails.push({ taskId, cause });
-    this._transition(taskId, 'failed');
+    this.transitions.push({ taskId, status: 'failed' });
+    // persist-session-transcripts 3.3 — capture BEFORE the stop-only teardown.
+    await this._captureTranscript(taskId);
+    this.events.push(`teardown:${taskId}`);
+    void this.sandbox.teardownSandbox(taskId);
+    this.events.push(`release:${taskId}`);
+    this.released.push(taskId);
   }
 
   // mirrors GuardrailsService.recordExit (3.5 — verbatim rule)
-  recordExit(taskId, status) {
+  async recordExit(taskId, status) {
     if (!status.abnormal && status.code === 0) {
       this.breaker.recordSuccess(taskId);
-      this._transition(taskId, 'completed');
+      await this._transition(taskId, 'completed');
     } else if (status.abnormal) {
       this._recordExitDetail(taskId, status);
-      this._forceFail(taskId, 'abnormal_exit');
+      await this._forceFail(taskId, 'abnormal_exit');
     } else {
       this.breaker.recordFailure(taskId);
       this._recordExitDetail(taskId, status);
-      this._transition(taskId, 'failed');
+      await this._transition(taskId, 'failed');
     }
   }
 }
@@ -168,7 +222,7 @@ const lastTransition = (g, taskId) =>
   const provider = new MockProvider();
   const g = new GuardrailsHarness(breaker, provider);
   const conn = await g.startRunning('t2');
-  new FakeAioPtyClient('t2', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t2', s)).closeWith({ code: 0, abnormal: false });
+  await new FakeAioPtyClient('t2', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t2', s)).closeWith({ code: 0, abnormal: false });
 
   assert(breaker.successes[0] === 't2', 'T2a: zero exit code -> recordSuccess');
   assert(lastTransition(g, 't2') === 'completed', 'T2b: clean exit transitions task to completed');
@@ -183,7 +237,7 @@ const lastTransition = (g, taskId) =>
   const provider = new MockProvider();
   const g = new GuardrailsHarness(breaker, provider);
   const conn = await g.startRunning('t3');
-  new FakeAioPtyClient('t3', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t3', s)).closeWith({ code: 1, abnormal: false });
+  await new FakeAioPtyClient('t3', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t3', s)).closeWith({ code: 1, abnormal: false });
 
   assert(breaker.failures[0] === 't3', 'T3a: non-zero exit -> recordFailure (breaker/audit signal)');
   assert(lastTransition(g, 't3') === 'failed', 'T3b: non-zero exit transitions task to failed');
@@ -200,7 +254,7 @@ const lastTransition = (g, taskId) =>
   const provider = new MockProvider();
   const g = new GuardrailsHarness(breaker, provider);
   const conn = await g.startRunning('t4');
-  new FakeAioPtyClient('t4', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t4', s)).closeWith({ code: null, abnormal: false });
+  await new FakeAioPtyClient('t4', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t4', s)).closeWith({ code: null, abnormal: false });
 
   assert(breaker.failures.includes('t4') && breaker.successes.length === 0, 'T4a: null code -> recordFailure');
   assert(g.released.includes('t4'), 'T4b: null-code exit RELEASES the slot');
@@ -212,7 +266,7 @@ const lastTransition = (g, taskId) =>
   const provider = new MockProvider();
   const g = new GuardrailsHarness(breaker, provider);
   const conn = await g.startRunning('t5');
-  new FakeAioPtyClient('t5', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t5', s)).closeWith({ code: 0, abnormal: true });
+  await new FakeAioPtyClient('t5', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t5', s)).closeWith({ code: 0, abnormal: true });
 
   assert(g.forceFails[0]?.cause === 'abnormal_exit', 'T5a: abnormal termination -> forceFail with honest cause abnormal_exit (not idle)');
   assert(lastTransition(g, 't5') === 'failed', 'T5b: abnormal termination transitions task to failed');
@@ -234,13 +288,70 @@ const lastTransition = (g, taskId) =>
 
   // clean exit (onTerminal path) + abnormal exit (forceFail path)
   let conn = await g.startRunning('t6a');
-  new FakeAioPtyClient('t6a', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t6a', s)).closeWith({ code: 0, abnormal: false });
+  await new FakeAioPtyClient('t6a', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t6a', s)).closeWith({ code: 0, abnormal: false });
   conn = await g.startRunning('t6b');
-  new FakeAioPtyClient('t6b', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t6b', s)).closeWith({ code: 0, abnormal: true });
+  await new FakeAioPtyClient('t6b', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t6b', s)).closeWith({ code: 0, abnormal: true });
 
   assert(provider.tornDown.includes('t6a') && provider.tornDown.includes('t6b'), 'T6a: both natural-completion and forced-failure STOP (settle) the sandbox');
   assert(g.released.includes('t6a') && g.released.includes('t6b'), 'T6b: both chokepoints still FREE the slot');
   assert(provider.removed.length === 0, 'T6c: the lifecycle NEVER force-removes a container (retention: only the cleaner removes)');
+}
+
+// T7 (persist-session-transcripts 3.2/3.3): the transcript is CAPTURED at BOTH
+// terminal chokepoints — natural completion (onTerminal) and force-fail — and
+// the capture is ORDERED before the stop-only teardown while the container is
+// still present.
+{
+  // onTerminal path: a clean exit drives `completed` -> capture -> teardown.
+  const transcripts = new SpyTranscripts();
+  const provider = new MockProvider();
+  const g = new GuardrailsHarness(new SpyBreaker(), provider, transcripts);
+  let conn = await g.startRunning('t7a');
+  await new FakeAioPtyClient('t7a', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t7a', s)).closeWith({ code: 0, abnormal: false });
+
+  assert(transcripts.captured.includes('t7a'), 'T7a: onTerminal (natural completion) invokes transcript capture');
+  assert(
+    g.events.indexOf('capture:t7a') < g.events.indexOf('teardown:t7a'),
+    'T7b: onTerminal captures BEFORE the stop-only teardown (container still present)',
+  );
+
+  // forceFail path: an abnormal exit drives forceFail -> capture -> teardown.
+  conn = await g.startRunning('t7b');
+  await new FakeAioPtyClient('t7b', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t7b', s)).closeWith({ code: 0, abnormal: true });
+
+  assert(transcripts.captured.includes('t7b'), 'T7c: forceFail (abnormal cause) invokes transcript capture');
+  assert(
+    g.events.indexOf('capture:t7b') < g.events.indexOf('teardown:t7b'),
+    'T7d: forceFail captures BEFORE the stop-only teardown (container still present)',
+  );
+}
+
+// T8 (persist-session-transcripts 3.4): a THROWN capture error is swallowed and
+// does NOT block the terminal transition, the stop-only teardown, or the slot
+// release — at EITHER chokepoint.
+{
+  const transcripts = new SpyTranscripts({ throws: true });
+  const provider = new MockProvider();
+  const g = new GuardrailsHarness(new SpyBreaker(), provider, transcripts);
+
+  // onTerminal path (clean exit) — capture throws.
+  let conn = await g.startRunning('t8a');
+  await new FakeAioPtyClient('t8a', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t8a', s)).closeWith({ code: 0, abnormal: false });
+
+  assert(transcripts.captured.includes('t8a'), 'T8a: onTerminal still attempts capture even though it throws');
+  assert(lastTransition(g, 't8a') === 'completed', 'T8b: capture throw does NOT block the onTerminal transition');
+  assert(provider.tornDown.includes('t8a'), 'T8c: capture throw does NOT block the stop-only teardown (onTerminal)');
+  assert(g.released.includes('t8a'), 'T8d: capture throw does NOT block the slot release (onTerminal)');
+
+  // forceFail path (abnormal exit) — capture throws.
+  conn = await g.startRunning('t8b');
+  await new FakeAioPtyClient('t8b', conn.wsUrl, conn.baseUrl, (s) => g.recordExit('t8b', s)).closeWith({ code: 0, abnormal: true });
+
+  assert(transcripts.captured.includes('t8b'), 'T8e: forceFail still attempts capture even though it throws');
+  assert(lastTransition(g, 't8b') === 'failed', 'T8f: capture throw does NOT block the forceFail transition');
+  assert(provider.tornDown.includes('t8b'), 'T8g: capture throw does NOT block the stop-only teardown (forceFail)');
+  assert(g.released.includes('t8b'), 'T8h: capture throw does NOT block the slot release (forceFail)');
+  assert(provider.removed.length === 0, 'T8i: capture throw never causes a force-remove (retention preserved)');
 }
 
 // ---- summary ----------------------------------------------------------------

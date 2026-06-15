@@ -201,6 +201,53 @@ container start (`prisma migrate deploy`).
 
 ---
 
+## 9. Durable session transcripts — REQUIRED backup policy
+
+`persist-session-transcripts` makes a terminal task's codex conversation survive
+container reaping by archiving the RAW rollout as gzipped JSONL on the durable
+workspace volume — `workspaces/<taskId>/transcript.jsonl.gz`, co-located with
+`session.log` — and indexing it in the Postgres `SessionTranscript` table. The
+read path (`GET /tasks/:id/session-history`) resolves DURABLE-FIRST, so a reaped
+container no longer loses the conversation.
+
+**"Permanent" is only as durable as the volume.** A transcript's lifetime is now
+decoupled from the container's, but it lives ONLY on the named `workspaces`
+volume (compose `volumes: workspaces:`, mounted at `WORKSPACES_DIR=/data/workspaces`)
+plus its `SessionTranscript` index row in `pgdata`. A host loss takes BOTH with
+it. Therefore:
+
+- The `workspaces` volume MUST be in the host's backup policy (snapshot,
+  rsync/restic to off-host storage, or block-volume snapshots) so transcripts
+  survive host loss. Back up `pgdata` alongside it so the index stays consistent
+  with the archives.
+- Back the two together (consistent point-in-time) — the archive is the source of
+  truth; the DB index can be rebuilt from the archives if it drifts, but the
+  archives cannot be rebuilt if the volume is lost.
+- A future secondary push to object storage (S3/R2) is the durable off-host
+  option if host snapshots are not available; it is OUT OF SCOPE for this change.
+
+Without this backup policy "permanent queryability" holds only against container
+reaping, NOT against host loss.
+
+### e2e verification at deploy (before flipping the console flag)
+
+After deploying the durable-first read path, verify against the live api with a
+RETAINED sandbox, then flip the web `capabilities.ts` `sessionHistory` flag:
+
+1. Run a task to a terminal state (`completed`/`cancelled`/`failed`) so guardrails
+   captures the rollout. Confirm the archive exists:
+   `docker compose exec api ls -l /data/workspaces/<taskId>/transcript.jsonl.gz`
+   and that a `SessionTranscript` row was upserted for that `taskId`.
+2. Reap the task's container (force-remove `cap-aio-<taskId>`, or wait out
+   `RetentionCleaner`).
+3. `GET /tasks/<taskId>/session-history` and confirm it STILL returns the parsed
+   transcript — served from the durable archive, NOT the (now-gone) container.
+4. Once confirmed, set `sessionHistory: true` in
+   `apps/web/src/lib/api/capabilities.ts` and confirm the console renders the real
+   durable-first transcript.
+
+---
+
 ## Local dev (unaffected)
 
 ```bash

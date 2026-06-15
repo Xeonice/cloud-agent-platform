@@ -5,7 +5,10 @@ import {
   DEFAULT_GUARDRAILS_CONFIG,
   GuardrailsConfig,
   GuardrailsService,
+  TRANSCRIPT_SERVICE_TOKEN,
+  type ITranscriptCapture,
 } from './guardrails.service';
+import { SessionTranscriptService } from '../tasks/session-transcript.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RetentionCleaner } from './retention-cleaner';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
@@ -54,6 +57,12 @@ import {
         // guardrails-only unit context still constructs without a database —
         // the bootstrap ceiling load then degrades to the env seed.
         { token: PrismaService, optional: true },
+        // persist-session-transcripts I.2 — the durable transcript capture
+        // provider, supplied under TRANSCRIPT_SERVICE_TOKEN (re-provided below
+        // from the already-imported TasksModule). Optional so a guardrails-only
+        // unit context still constructs without it; when absent the terminal
+        // chokepoints skip capture and proceed exactly as before.
+        { token: TRANSCRIPT_SERVICE_TOKEN, optional: true },
       ],
       useFactory: (
         moduleRef: ModuleRef,
@@ -61,6 +70,7 @@ import {
         sandbox?: SandboxProvider,
         audit?: AuditRecorderPort,
         prisma?: PrismaService,
+        transcripts?: ITranscriptCapture,
       ) =>
         new GuardrailsService(
           moduleRef,
@@ -69,7 +79,18 @@ import {
           readGuardrailsConfig(),
           audit,
           prisma,
+          transcripts,
         ),
+    },
+    // persist-session-transcripts I.2 — re-provide the durable
+    // SessionTranscriptService (exported by the already-imported TasksModule,
+    // see I.1) under the token the GuardrailsService capture call sites resolve.
+    // `useExisting` reuses the single TasksModule-owned instance rather than
+    // constructing a second one, mirroring the GUARDRAILS_SERVICE_TOKEN /
+    // TERMINAL_GATEWAY_TOKEN re-provide pattern used across the module cycle.
+    {
+      provide: TRANSCRIPT_SERVICE_TOKEN,
+      useExisting: SessionTranscriptService,
     },
     // Retention cleaner (session-sandbox-retention Track 5): a self-starting
     // unref'd sweeper that removes settled, retained `cap-aio-*` containers past

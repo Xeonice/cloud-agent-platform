@@ -106,6 +106,34 @@ export interface ITerminalGateway {
  */
 export const TERMINAL_GATEWAY_TOKEN = 'TERMINAL_GATEWAY';
 
+/**
+ * Narrow slice of the `SessionTranscriptService` this service depends on
+ * (persist-session-transcripts 3.1). Declared as a STRUCTURAL interface — rather
+ * than importing the concrete `SessionTranscriptService` from the tasks module —
+ * to avoid a value import across the `GuardrailsModule -> TasksModule` boundary
+ * here; the Integration track (I.2) supplies the real provider under
+ * {@link TRANSCRIPT_SERVICE_TOKEN} (resolved from the already-imported
+ * `TasksModule`). The runtime service instance satisfies this shape.
+ */
+export interface ITranscriptCapture {
+  /**
+   * Persist the task's codex rollout to durable storage while the container is
+   * still present (gzipped archive + index upsert). Best-effort by contract: it
+   * logs and swallows its own errors and resolves to a status flag, never
+   * throwing — but the guardrails call sites still wrap it defensively so even a
+   * surprise throw can never block a terminal transition / teardown / slot release.
+   */
+  capture(taskId: string): Promise<unknown>;
+}
+
+/**
+ * DI token the `SessionTranscriptService` is supplied under to this service by
+ * the Integration track (I.2), so the Track-3 capture call sites bind to a live
+ * provider WITHOUT a value import of the tasks-module service — mirroring the
+ * lazy, token-based wiring used for the terminal gateway (4.2).
+ */
+export const TRANSCRIPT_SERVICE_TOKEN = 'TRANSCRIPT_SERVICE';
+
 export interface GuardrailsConfig {
   /**
    * Max tasks running concurrently. Seeded from env `MAX_CONCURRENT_TASKS` at
@@ -241,6 +269,18 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
      */
     @Optional()
     private readonly prisma?: PrismaService,
+    /**
+     * Best-effort durable transcript capture (persist-session-transcripts 3.1),
+     * supplied under {@link TRANSCRIPT_SERVICE_TOKEN} by the Integration track
+     * (I.2) from the already-imported `TasksModule`. Optional so guardrails-only
+     * unit contexts still construct without it; when absent, the terminal
+     * chokepoints skip capture and proceed exactly as before. The provider is
+     * best-effort by contract, but the call sites wrap it defensively so even a
+     * surprise throw can never block a terminal transition / teardown / slot release.
+     */
+    @Optional()
+    @Inject(TRANSCRIPT_SERVICE_TOKEN)
+    private readonly transcripts?: ITranscriptCapture,
   ) {
     // admit-queued: when a slot frees, drive `queued -> running` for the admitted
     // task (FIFO) — the cross-track lifecycle call site for 12.1.
@@ -465,6 +505,32 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   /**
+   * Best-effort durable transcript capture invoked at BOTH terminal chokepoints
+   * (`onTerminal` 3.2 / `forceFail` 3.3) BEFORE the stop-only `teardownSandbox`,
+   * while the container is still present (persist-session-transcripts).
+   *
+   * The injected service is best-effort by contract (it logs and swallows its
+   * own errors, returning a status flag rather than throwing). This wrapper is a
+   * defensive SECOND layer: it is awaited so the archive write ordering before
+   * the stop holds, but ANY surprise throw / rejection is caught and logged, so
+   * the terminal transition, stop-only teardown, and slot release proceed
+   * unconditionally. A no-op when no transcript provider is wired (e.g. a
+   * guardrails-only unit context).
+   */
+  private async captureTranscript(taskId: string): Promise<void> {
+    if (!this.transcripts) return;
+    try {
+      await this.transcripts.capture(taskId);
+    } catch (err) {
+      this.logger.warn(
+        `transcript capture for task ${taskId} failed (swallowed): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
    * The {@link SandboxConnection} handle captured for a running task at
    * `provision()` time (4.1), or `undefined` if none is provisioned. The
    * integration track consumes this to hand the handle to the terminal gateway
@@ -484,6 +550,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     this.clearTimers(taskId);
     // Close the runner-minutes interval (no-op if the task never ran) (5.4).
     this.runnerMinutes.recordEnd(taskId);
+    // persist-session-transcripts 3.2 — capture the task's rollout to durable
+    // storage WHILE the container is still present, immediately before the
+    // stop-only teardown below. Best-effort + awaited-and-swallowed: a capture
+    // error never blocks the stop-only teardown or the slot release that follow.
+    await this.captureTranscript(taskId);
     // Settle the AIO sandbox: STOP it but KEEP it (session-sandbox-retention
     // 6.1). `teardownSandbox` is now stop-only — the stopped container's codex
     // rollout stays readable for history replay (the retention cleaner removes
@@ -604,6 +675,13 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // events (the terminal transition + its cause).
     await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
     await this.safeTransition(taskId, 'failed');
+    // persist-session-transcripts 3.3 — capture the rollout to durable storage
+    // for ALL abnormal causes (deadline / idle / circuit_breaker /
+    // provision_failed / abnormal_exit) WHILE the container is still present,
+    // immediately before the stop-only teardown below. Best-effort +
+    // awaited-and-swallowed: a capture error never blocks the stop-only teardown
+    // or the slot release that follow.
+    await this.captureTranscript(taskId);
     // VR.2 / session-sandbox-retention 6.2 — STOP the running sandbox (not just
     // the credentials) for ALL five abnormal causes, INCLUDING a SIGKILL'd exit:
     // `teardownSandbox` is stop-only, so the container is RETAINED (its rollout
