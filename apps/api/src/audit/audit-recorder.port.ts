@@ -31,6 +31,21 @@ export interface AuditRecorderPort {
   recordTransition(taskId: string, status: TaskStatus, githubId?: number): Promise<void>;
   /** Record a force-fail naming its cause (deadline / idle / circuit_breaker). */
   recordForceFailed(taskId: string, cause: ForceFailCause): Promise<void>;
+  /**
+   * Record a failure-detail event for a non-success process exit
+   * (record-task-failure-reason): the resolved exit `code` (or `null` when
+   * unresolved), the `abnormal` flag, and an already-sampled, ANSI-stripped
+   * `tail` of the task transcript. The description carries the code + the mapped
+   * human reason + the tail so a failure is diagnosable without the sandbox.
+   * This is a DETAIL event ALONGSIDE the central `task.failed` transition — it
+   * does not replace it. Best-effort; never throws.
+   */
+  recordExited(
+    taskId: string,
+    code: number | null,
+    abnormal: boolean,
+    tail: string,
+  ): Promise<void>;
 }
 
 /** DI token used when injecting the audit recorder into the lifecycle services. */

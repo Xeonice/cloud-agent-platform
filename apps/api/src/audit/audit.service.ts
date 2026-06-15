@@ -13,6 +13,7 @@ import {
   forceFailKind,
   kindForStatus,
   orderTaskSequence,
+  reasonForExit,
   type AuditEventKind,
   type ForceFailCause,
   type TaskStatusLookup,
@@ -91,6 +92,27 @@ export class AuditService {
     await this.record(forceFailKind(cause), taskId, {
       description: `任务被守护栏强制失败，原因：${this.causeLabel(cause)}`,
     });
+  }
+
+  /**
+   * Record a `task.exited` failure-detail event (record-task-failure-reason):
+   * the resolved exit code + the mapped human reason + the sampled transcript
+   * tail, so a failed task is diagnosable without the sandbox. A DETAIL event
+   * alongside the central `task.failed` transition. System-originated. Best-effort.
+   */
+  async recordExited(
+    taskId: string,
+    code: number | null,
+    abnormal: boolean,
+    tail: string,
+  ): Promise<void> {
+    const codeLabel = code === null ? '未解析' : String(code);
+    const reason = reasonForExit(code, abnormal);
+    const trimmed = tail.trim();
+    const description = trimmed
+      ? `退出码 ${codeLabel} · ${reason}\n—— 输出末尾 ——\n${trimmed}`
+      : `退出码 ${codeLabel} · ${reason}`;
+    await this.record('task.exited', taskId, { description });
   }
 
   /**

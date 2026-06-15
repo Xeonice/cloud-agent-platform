@@ -89,6 +89,12 @@ export interface ITerminalGateway {
   openSession(connection: SandboxConnection): unknown;
   /** Remove a task's terminal session (e.g. on completion/teardown). */
   unregisterSession(taskId: string): void;
+  /**
+   * Sample the tail of a task's API-side `session.log` for the failure-detail
+   * audit (record-task-failure-reason). Returns `''` when no transcript exists;
+   * never throws. Reads the API-side log, so it works after sandbox teardown.
+   */
+  readSessionLogTail(taskId: string): Promise<string>;
 }
 
 /**
@@ -411,6 +417,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       // concurrency slot and admit the next queued task. `safeTransition` and
       // `semaphore.release` tolerate double-calls, so this is safe even when a
       // teardown was already triggered for the same task.
+      // record-task-failure-reason: capture the exit code + transcript tail
+      // BEFORE teardown so an abnormal failure is diagnosable (best-effort).
+      void this.recordExitDetail(taskId, status);
       void this.forceFail(taskId, 'abnormal_exit');
     } else {
       // Non-zero clean exit: a single connect-in exit is terminal (no re-launch),
@@ -419,7 +428,33 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       // freed on THIS exit rather than waiting for a consecutive-failure threshold
       // that can never accumulate for a one-shot terminal exit.
       this.recordFailure(taskId);
+      // record-task-failure-reason: capture the non-zero exit code + transcript
+      // tail into the `task.exited` detail event (best-effort), alongside the
+      // central generic `task.failed` transition below.
+      void this.recordExitDetail(taskId, status);
       void this.safeTransition(taskId, 'failed');
+    }
+  }
+
+  /**
+   * Emit the `task.exited` failure-detail audit (exit code + mapped reason +
+   * sampled transcript tail) for a non-success exit (record-task-failure-reason).
+   * Fire-and-forget + best-effort: it reads the API-SIDE `session.log` tail (so
+   * it works after sandbox teardown) and records a DETAIL event ALONGSIDE the
+   * central `task.failed` transition. ANY failure is swallowed so it can never
+   * affect the lifecycle transition, teardown, or slot release.
+   */
+  private async recordExitDetail(taskId: string, status: ExitStatus): Promise<void> {
+    if (!this.audit) return;
+    try {
+      const tail = (await this.gateway?.readSessionLogTail(taskId)) ?? '';
+      await this.audit.recordExited(taskId, status.code, status.abnormal, tail);
+    } catch (err) {
+      this.logger.debug(
+        `exit-detail audit for task ${taskId} skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 

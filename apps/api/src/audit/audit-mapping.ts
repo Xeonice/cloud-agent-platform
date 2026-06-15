@@ -31,6 +31,7 @@ export type AuditEventKind =
   | 'task.awaiting_input'
   | 'task.completed'
   | 'task.failed'
+  | 'task.exited'
   | 'task.cancelled'
   | 'agent_failed_to_start'
   | 'force_failed:deadline'
@@ -183,6 +184,7 @@ export const AUDIT_KIND_DESCRIPTORS: Readonly<Record<AuditEventKind, AuditKindDe
   'task.awaiting_input': { level: 'info', resultCode: 200, title: '任务等待输入' },
   'task.completed': { level: 'info', resultCode: 200, title: '任务已完成' },
   'task.failed': { level: 'error', resultCode: 422, title: '任务失败' },
+  'task.exited': { level: 'error', resultCode: 422, title: '进程退出码' },
   'task.cancelled': { level: 'info', resultCode: 200, title: '任务已取消' },
   'agent_failed_to_start': {
     level: 'error',
@@ -219,6 +221,38 @@ export const AUDIT_KIND_DESCRIPTORS: Readonly<Record<AuditEventKind, AuditKindDe
 /** The force-fail kind for a given cause (6.2 force-fail causes). */
 export function forceFailKind(cause: ForceFailCause): AuditEventKind {
   return `force_failed:${cause}` as AuditEventKind;
+}
+
+/**
+ * Human-readable reason for a process exit code, recorded on the `task.exited`
+ * failure-detail event so an operator can diagnose WHY a task failed without the
+ * sandbox (record-task-failure-reason). PURE — no I/O.
+ *
+ * `abnormal` (the sandbox died / the WS closed before the session was
+ * established / the code could not be resolved) takes precedence: a `null` /
+ * unresolved code is always reported as an abnormal disconnect. Numeric codes
+ * follow the Unix `128 + signal` convention for the common signals; any other
+ * non-zero code is codex's own non-zero exit, whose AUTHORITATIVE reason is the
+ * transcript tail (codex suppresses sub-command stderr on non-zero — see
+ * openai/codex#1367 — and can hang when out of credits — openai/codex#6512 — so
+ * the code is a HINT, the tail is the answer).
+ */
+export function reasonForExit(code: number | null, abnormal: boolean): string {
+  if (abnormal || code === null) {
+    return '沙箱异常断开（会话建立前 WS 关闭 / 退出码未解析，疑似容器被杀或网络中断）';
+  }
+  switch (code) {
+    case 124:
+      return '超时（timeout 终止）';
+    case 130:
+      return 'SIGINT（中断 / Ctrl-C）';
+    case 137:
+      return 'SIGKILL（被强杀，疑似 OOM 或容器被杀）';
+    case 143:
+      return 'SIGTERM（被终止，常见于部署 / 重启）';
+    default:
+      return `codex 自身错误或任务提交失败（退出码 ${code}，见输出末尾）`;
+  }
 }
 
 /**

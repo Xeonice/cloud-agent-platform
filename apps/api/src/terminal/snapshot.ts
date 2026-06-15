@@ -17,7 +17,7 @@
  * tail read that fills the gap since the snapshot.
  */
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   type SnapshotFrame,
@@ -27,6 +27,70 @@ import {
 
 /** The fixed session-log file name within each task workspace (matches Track 4). */
 export const SESSION_LOG_FILENAME = 'session.log';
+
+/** Bytes read from the END of `session.log` when sampling a failure tail. */
+const SESSION_LOG_TAIL_BYTES = 4096;
+/** Max non-empty lines kept from the sampled tail. */
+const SESSION_LOG_TAIL_LINES = 20;
+/** Hard cap on the stored tail excerpt (chars), applied after line selection. */
+const SESSION_LOG_TAIL_MAX_CHARS = 2000;
+
+/**
+ * Strip ANSI/CSI/OSC escape sequences and bare control chars from terminal
+ * bytes so a sampled transcript tail is readable plain text. PURE.
+ */
+export function stripAnsi(input: string): string {
+  /* eslint-disable no-control-regex -- ANSI/control stripping must match the
+     ESC (\x1b) + C0 control bytes by definition. */
+  return (
+    input
+      // CSI sequences (SGR colors, cursor moves, …): ESC [ … final-byte
+      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+      // OSC sequences (titles, …): ESC ] … (BEL | ESC \)
+      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+      // other 2-char ESC sequences
+      .replace(/\x1b[@-Z\\-_]/g, '')
+      // remaining control chars except tab (\x09) and newline (\x0a)
+      .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
+  );
+  /* eslint-enable no-control-regex */
+}
+
+/**
+ * Sample the tail of a task's `session.log` for the failure-detail audit
+ * (record-task-failure-reason): read the last ~4 KB, strip ANSI, return the last
+ * ~20 non-empty lines capped to a stored budget. Returns `''` when the log is
+ * absent/empty (e.g. a task that failed before any PTY output). A pure fs read
+ * of the API-side log, so it works even after the sandbox is torn down — and
+ * never throws (a read error degrades to `''`).
+ */
+export async function readSessionLogTail(workspaceDir: string): Promise<string> {
+  const logPath = path.join(workspaceDir, SESSION_LOG_FILENAME);
+  try {
+    const { size } = await stat(logPath);
+    if (size === 0) return '';
+    const start = Math.max(0, size - SESSION_LOG_TAIL_BYTES);
+    const length = size - start;
+    const fh = await open(logPath, 'r');
+    try {
+      const buf = Buffer.alloc(length);
+      await fh.read(buf, 0, length, start);
+      const lines = stripAnsi(buf.toString('utf8'))
+        .split(/\r?\n/)
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim().length > 0);
+      const tail = lines.slice(-SESSION_LOG_TAIL_LINES).join('\n');
+      return tail.length > SESSION_LOG_TAIL_MAX_CHARS
+        ? tail.slice(-SESSION_LOG_TAIL_MAX_CHARS)
+        : tail;
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    // Absent log / read error: degrade to empty so capture is best-effort.
+    return '';
+  }
+}
 
 /** Default cadence for capturing a fresh SerializeAddon snapshot, in ms. */
 export const DEFAULT_SNAPSHOT_INTERVAL_MS = 2_000;

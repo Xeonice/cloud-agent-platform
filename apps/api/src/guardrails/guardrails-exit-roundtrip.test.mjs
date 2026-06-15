@@ -84,6 +84,13 @@ class GuardrailsHarness {
     this.transitions = [];     // { taskId, status }
     this.released = [];        // taskId — semaphore.release
     this.forceFails = [];      // { taskId, cause }
+    this.exitDetails = [];     // { taskId, code, abnormal } — record-task-failure-reason
+  }
+
+  // mirrors GuardrailsService.recordExitDetail (best-effort `task.exited` detail
+  // capture; here it records the resolved code+abnormal into a spy)
+  _recordExitDetail(taskId, status) {
+    this.exitDetails.push({ taskId, code: status.code, abnormal: status.abnormal });
   }
 
   async startRunning(taskId) {
@@ -117,9 +124,11 @@ class GuardrailsHarness {
       this.breaker.recordSuccess(taskId);
       this._transition(taskId, 'completed');
     } else if (status.abnormal) {
+      this._recordExitDetail(taskId, status);
       this._forceFail(taskId, 'abnormal_exit');
     } else {
       this.breaker.recordFailure(taskId);
+      this._recordExitDetail(taskId, status);
       this._transition(taskId, 'failed');
     }
   }
@@ -165,6 +174,7 @@ const lastTransition = (g, taskId) =>
   assert(lastTransition(g, 't2') === 'completed', 'T2b: clean exit transitions task to completed');
   assert(g.released.includes('t2'), 'T2c: clean exit RELEASES the slot (no zombie running)');
   assert(provider.tornDown.includes('t2'), 'T2d: clean exit tears down the sandbox');
+  assert(g.exitDetails.length === 0, 'T2e: clean exit records NO task.exited failure-detail');
 }
 
 // T3: non-zero exit -> recordFailure + failed + teardown + slot release on FIRST exit
@@ -178,6 +188,10 @@ const lastTransition = (g, taskId) =>
   assert(breaker.failures[0] === 't3', 'T3a: non-zero exit -> recordFailure (breaker/audit signal)');
   assert(lastTransition(g, 't3') === 'failed', 'T3b: non-zero exit transitions task to failed');
   assert(g.released.includes('t3'), 'T3c: non-zero exit RELEASES the slot on the first exit (no breaker-threshold wait)');
+  assert(
+    g.exitDetails.some((d) => d.taskId === 't3' && d.code === 1 && d.abnormal === false),
+    'T3d: non-zero exit records a task.exited detail carrying the exit code',
+  );
 }
 
 // T4: unresolved (null) non-abnormal code -> treated as failure + release
@@ -205,6 +219,10 @@ const lastTransition = (g, taskId) =>
   assert(g.released.includes('t5'), 'T5c: abnormal termination RELEASES the slot');
   assert(provider.tornDown.includes('t5'), 'T5d: abnormal termination STOPS the sandbox (settle)');
   assert(!provider.removed.includes('t5'), 'T5e: abnormal termination RETAINS the container (stop-only, never removeSandbox)');
+  assert(
+    g.exitDetails.some((d) => d.taskId === 't5' && d.abnormal === true),
+    'T5f: abnormal termination records a task.exited detail flagged abnormal',
+  );
 }
 
 // T6 (session-sandbox-retention 6.1/6.2): teardown at BOTH chokepoints is

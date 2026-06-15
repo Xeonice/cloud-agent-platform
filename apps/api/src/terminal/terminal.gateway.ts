@@ -75,6 +75,7 @@ import {
 import {
   SnapshotManager,
   SESSION_LOG_FILENAME,
+  readSessionLogTail,
   type HeadlessTerminal,
   type WsControlFrame,
 } from './snapshot';
@@ -321,6 +322,16 @@ export class TerminalGateway
   }
 
   /** Remove a task's terminal session (e.g. on completion/teardown). */
+  /**
+   * Sample the tail of a task's API-side `session.log` for the failure-detail
+   * audit (record-task-failure-reason). Delegates to the pure snapshot helper;
+   * the file lives on the API-side workspace volume, so it is readable even after
+   * the sandbox is torn down. Best-effort: returns `''` on any error.
+   */
+  readSessionLogTail(taskId: string): Promise<string> {
+    return readSessionLogTail(resolveWorkspaceDir(taskId));
+  }
+
   unregisterSession(taskId: string): void {
     this.sessions.delete(taskId);
     // Drop the session.log append state; the file itself persists on the volume
