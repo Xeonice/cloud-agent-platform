@@ -8,7 +8,7 @@
 
 - [x] 1.1 Add a `loki` service to `docker-compose.yml` under `profiles: [observability]`: single-binary Grafana Loki, pinned image, bound to the private compose network ONLY (no published port), named volume for chunks/index, `mem_limit` (~256m start).
 - [x] 1.2 Add the Loki config (mounted file): TSDB single-store on filesystem, `limits_config.retention_period: 336h` (14d), `compactor { retention_enabled: true, delete_request_store: filesystem }` + compaction interval. Confirm NO object-storage dependency.
-- [ ] 1.3 Sanity-boot Loki alone (`--profile observability`) and confirm it's ready + the retention/compactor config is loaded (Loki `/config` or logs).
+- [x] 1.3 Sanity-boot Loki alone (`--profile observability`) and confirm it's ready + the retention/compactor config is loaded (Loki `/config` or logs).
 
 ## 2. Track: alloy-collection (depends: loki-storage)
 
@@ -22,7 +22,7 @@
 - [x] 3.1 Add a `grafana` service under a SEPARATE `profiles: [grafana]`: pinned image, named volume for state, `mem_limit` (~256m), reachable ONLY via the existing Cloudflare tunnel + auth (nginx route; never a bare public port).
 - [x] 3.2 Provision two datasources (as code): Loki, and Postgres pointed at `audit_events` via a READ-ONLY DB role/grant (add the role; no schema change; audit stays append-only/permanent).
 - [x] 3.3 Provision baseline dashboards: error stream, by-`taskId` drill-down, HTTP overview (from Loki), and an audit-timeline panel (from the Postgres datasource).
-- [ ] 3.4 Confirm the layering invariant: stop the `grafana` profile and verify Loki data is still queryable via LogCLI / the Loki HTTP API.
+- [x] 3.4 Confirm the layering invariant: stop the `grafana` profile and verify Loki data is still queryable via LogCLI / the Loki HTTP API.
 
 ## 4. Track: alerting (depends: grafana-ui)
 
@@ -32,8 +32,8 @@
 
 ## 5. Track: verify (depends: alloy-collection, grafana-ui)
 
-- [ ] 5.1 `--profile observability` up: produce task logs, restart the api, and confirm the task's logs are still retrievable from Loki by a single `taskId` query (the ddba scenario).
-- [ ] 5.2 `--profile observability --profile grafana` up: confirm Grafana renders Loki logs AND `audit_events` (PG datasource) in one view, audit read in place (not copied).
-- [ ] 5.3 Confirm 14-day retention/compactor is active and that `audit_events` is NOT affected by it (old audit rows persist).
-- [ ] 5.4 Confirm Grafana is unreachable except via the authenticated tunnel; Loki/Alloy expose no public port; `mem_limit`s are set on all three.
+- [x] 5.1 `--profile observability` up: produce task logs, restart the api, and confirm the task's logs are still retrievable from Loki by a single `taskId` query (the ddba scenario).
+- [x] 5.2 `--profile observability --profile grafana` up: confirm Grafana renders Loki logs AND `audit_events` (PG datasource) in one view, audit read in place (not copied).
+- [x] 5.3 Confirm 14-day retention/compactor is active and that `audit_events` is NOT affected by it (old audit rows persist).
+- [x] 5.4 Confirm Grafana is unreachable except via the authenticated tunnel; Loki/Alloy expose no public port; `mem_limit`s are set on all three.
 - [x] 5.5 Confirm `docker compose up` with NO profiles starts none of these services and the api still logs to stdout (Tier 0 floor intact).

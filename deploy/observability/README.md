@@ -67,6 +67,30 @@ tunnel / an nginx `location` to `grafana:3000`); Grafana's own login is the gate
    `provisioning/alerting/error-spike.yaml.example` → `error-spike.yaml`, set
    `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, restart the `grafana` profile.
 
+## Persisting across Dokploy redeploys (IMPORTANT)
+
+The profiles above are enabled by the OPERATOR — a plain Dokploy auto-deploy runs
+`docker compose up` WITHOUT them, so a manual `--profile … up` is NOT managed by
+Dokploy and may be dropped on the next deploy (`--remove-orphans`). To make the
+stack durable, set these in the Dokploy compose ENV for this app:
+
+```
+COMPOSE_PROFILES=observability,grafana        # or just `observability` for no UI
+GRAFANA_PG_USER=grafana_ro
+GRAFANA_PG_PASSWORD=<the password from grafana-ro-role.sql / the live setup>
+GRAFANA_ROOT_URL=https://<grafana-tunnel-host>/
+GF_SECURITY_ADMIN_PASSWORD=<set a strong admin password before exposing>
+```
+
+Then Dokploy manages loki/alloy/grafana like the other services on every deploy.
+
+## Security before exposing Grafana
+
+Grafana ships with `admin/admin` and is reachable ONLY inside the compose network
+(no published port) until you route the Cloudflare tunnel to `grafana:3000`.
+BEFORE pointing the tunnel at it: set `GF_SECURITY_ADMIN_PASSWORD` (or change the
+admin password on first login). Anonymous + sign-up are already disabled.
+
 ## Footprint
 
 `mem_limit`: loki 256m, grafana 256m, alloy 128m (~640m ceiling). Stop the

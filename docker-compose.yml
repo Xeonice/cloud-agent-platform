@@ -259,10 +259,17 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-}
+      # Strong admin password (required before public exposure); set in Dokploy env.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
     volumes:
       - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./deploy/observability/grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
+    # Published to LOOPBACK only (127.0.0.1) so the host-network cloudflared tunnel
+    # can reach it as http://localhost:3001 while it stays OFF the public IP. Public
+    # access is ONLY via the Cloudflare tunnel ingress (grafana.douglasdong.com).
+    ports:
+      - "127.0.0.1:3001:3000"
     networks:
       - default
     mem_limit: 256m

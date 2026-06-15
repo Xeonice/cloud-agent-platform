@@ -4,14 +4,14 @@
   "tags": ["cap", "observability"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
-  "time": { "from": "now-6h", "to": "now" },
+  "time": { "from": "now-3h", "to": "now" },
   "templating": {
     "list": [
       {
         "name": "taskId",
-        "label": "Task ID",
+        "label": "Task ID 过滤",
         "type": "textbox",
         "query": "",
         "current": { "text": "", "value": "" }
@@ -21,56 +21,93 @@
   "panels": [
     {
       "id": 1,
-      "title": "Error rate (api)",
+      "title": "日志量 / 容器(每分钟行数)",
       "type": "timeseries",
       "datasource": { "type": "loki", "uid": "loki" },
       "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } } },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(count_over_time({container=~\".+\"} | json | level=~\"error|50\" [5m]))"
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum by (container) (count_over_time({container=~\".+\"}[1m]))",
+          "legendFormat": "{{container}}"
         }
       ]
     },
     {
       "id": 2,
-      "title": "Recent audit events (Postgres)",
-      "type": "table",
-      "datasource": { "type": "postgres", "uid": "postgres-audit" },
+      "title": "HTTP 请求 / 状态码(每分钟)",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "loki" },
       "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } } },
       "targets": [
         {
           "refId": "A",
-          "format": "table",
-          "rawSql": "SELECT timestamp, type, level, title, description, task_id FROM audit_events ORDER BY timestamp DESC LIMIT 100"
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum by (res_statusCode) (count_over_time({container=~\".+\"} | json | msg=`request completed` [1m]))",
+          "legendFormat": "{{res_statusCode}}"
         }
       ]
     },
     {
       "id": 3,
-      "title": "Logs for $taskId",
+      "title": "错误日志(pino level ≥ 50 / 含 stderr)",
       "type": "logs",
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 7 },
-      "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 7 },
+      "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none", "enableLogDetails": true },
       "targets": [
         {
           "refId": "A",
-          "expr": "{container=~\".+\"} | json | taskId=`$taskId`"
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container=~\".+\"} | json | level=~\"5[0-9]|60\""
         }
       ]
     },
     {
       "id": 4,
-      "title": "HTTP overview (status by req)",
+      "title": "HTTP 访问日志(method url → status, ms)",
       "type": "logs",
       "datasource": { "type": "loki", "uid": "loki" },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 18 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 15 },
       "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none" },
       "targets": [
         {
           "refId": "A",
-          "expr": "{container=~\".+\"} | json | req_method!=\"\""
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container=~\".+\"} | json | msg=`request completed` | line_format \"{{.req_method}} {{.req_url}} → {{.res_statusCode}} ({{.responseTime}}ms) user={{.userId}} req={{.req_id}}\""
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "按 Task ID 过滤日志(在上方变量输入 taskId,留空=全部)",
+      "type": "logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+      "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none", "enableLogDetails": true },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container=~\".+\"} |= \"$taskId\""
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "审计事件(Postgres · audit_events,永久保留)",
+      "type": "table",
+      "datasource": { "type": "postgres", "uid": "postgres-audit" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "postgres-audit" },
+          "format": "table",
+          "rawSql": "SELECT timestamp, type, level, title, description, task_id FROM audit_events ORDER BY timestamp DESC LIMIT 200"
         }
       ]
     }
