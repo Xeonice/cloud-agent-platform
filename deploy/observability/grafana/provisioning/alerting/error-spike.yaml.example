@@ -1,0 +1,54 @@
+# OPT-IN error-spike alerting (observability-stack Tier 3) — OFF BY DEFAULT.
+#
+# Grafana only auto-loads *.yaml from provisioning/alerting/. This file ends in
+# `.example` so NOTHING is evaluated until an operator explicitly enables it:
+#   1. fill TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID below (reuse the existing bot),
+#   2. rename to `error-spike.yaml`,
+#   3. restart the grafana profile.
+# Until then no rules exist and no alerts are delivered (design D4 — alerting is
+# itself opt-in, independent of the storage/UI layers).
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: telegram-ops
+    receivers:
+      - uid: telegram-ops
+        type: telegram
+        settings:
+          bottoken: "${TELEGRAM_BOT_TOKEN}"
+          chatid: "${TELEGRAM_CHAT_ID}"
+          message: "CAP error spike: {{ len .Alerts.Firing }} firing"
+
+policies:
+  - orgId: 1
+    receiver: telegram-ops
+    group_by: ["alertname"]
+
+groups:
+  - orgId: 1
+    name: cap-errors
+    folder: CAP
+    interval: 1m
+    rules:
+      - uid: cap-error-spike
+        title: API error spike
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: loki
+            model:
+              expr: 'sum(count_over_time({container=~".+"} | json | level=~"error|50" [5m]))'
+              queryType: instant
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [10] }
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "API error log rate exceeded threshold in the last 5m"

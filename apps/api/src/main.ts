@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
+import { Logger } from 'nestjs-pino';
 import { authTokenConfigSchema } from '@cap/contracts';
 import { AppModule } from './app.module';
 import { parseWebOrigins } from './auth/oauth-config';
@@ -39,7 +40,11 @@ async function bootstrap(): Promise<void> {
     process.exit(1);
   }
 
-  const app = await NestFactory.create(AppModule);
+  // structured-logging: buffer early logs until pino is ready, then promote the
+  // nestjs-pino Logger to the app logger so framework bootstrap/route-mapping
+  // logs AND the existing `this.logger.*` call sites all emit structured JSON.
+  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  app.useLogger(app.get(Logger));
   app.enableShutdownHooks();
 
   // Realtime terminal: serve the custom dual-channel frame protocol over `ws`.

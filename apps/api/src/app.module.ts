@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { LoggerModule } from 'nestjs-pino';
+import { buildLoggerOptions } from './observability/logger.options';
 import { PrismaModule } from './prisma/prisma.module';
 import { ReposModule } from './repos/repos.module';
 import { TasksModule } from './tasks/tasks.module';
@@ -45,6 +47,10 @@ import { SettingsModule } from './settings/settings.module';
  */
 @Module({
   imports: [
+    // structured-logging: pino-backed JSON stdout logging + reqId/taskId
+    // correlation + secret redaction. First so it backs every other module's
+    // Logger; main.ts promotes it to the app logger via `useLogger`.
+    LoggerModule.forRoot(buildLoggerOptions()),
     PrismaModule,
     CredsModule,
     SandboxModule,

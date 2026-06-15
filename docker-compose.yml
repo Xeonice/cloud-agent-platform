@@ -29,6 +29,17 @@
 # host docker socket, so DooD sibling provisioning is impossible there (the
 # orchestrator MAY still run the control plane on Fly — see apps/api/fly.toml).
 
+# structured-logging: bound every long-lived container's json-file logs so the
+# stdout stream rotates with a hard disk ceiling (~100MB/container) instead of
+# growing unbounded — the latent disk-fill the unconfigured driver risked, and
+# the cause of the ddba "logs vanished" loss. Referenced via the *default-logging
+# anchor on each service below.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   api:
     build:
@@ -37,6 +48,7 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     # DooD needs access to the mounted /var/run/docker.sock. The api image runs as
     # a non-root user (correct for the Fly.io control-plane deploy, which does NOT
     # mount the socket), but the host docker.sock is root-owned, so under the
@@ -131,6 +143,7 @@ services:
     image: nginx:1.27-alpine
     profiles: ["proxy"]
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
       - api
     ports:
@@ -177,6 +190,7 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: cap
       POSTGRES_PASSWORD: cap
@@ -188,6 +202,70 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # ── Observability stack (observability-stack) — OPT-IN via profiles ─────────
+  # Tier 1 (storage+collection): `--profile observability` → loki + grafana-alloy
+  # Tier 2 (UI):                 `--profile grafana`       → grafana
+  # Disabling an upper tier never breaks a lower one; with NO profile, none start
+  # and the api still logs to stdout (structured-logging Tier 0 floor).
+
+  loki:
+    image: grafana/loki:3.1.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./deploy/observability/loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    # Private network only — NO published port (reachable by alloy/grafana by name).
+    networks:
+      - default
+    mem_limit: 256m
+
+  grafana-alloy:
+    image: grafana/alloy:v1.3.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - "run"
+      - "/etc/alloy/config.alloy"
+      - "--storage.path=/var/lib/alloy/data"
+    depends_on:
+      - loki
+    volumes:
+      - ./deploy/observability/alloy-config.alloy:/etc/alloy/config.alloy:ro
+      # READ-ONLY docker logs (design D1 — NO docker.sock).
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy-data:/var/lib/alloy/data
+    networks:
+      - default
+    mem_limit: 128m
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ["grafana"]
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - loki
+    environment:
+      # Read-only Postgres datasource creds (see deploy/observability/grafana-ro-role.sql).
+      GRAFANA_PG_USER: ${GRAFANA_PG_USER:-grafana_ro}
+      GRAFANA_PG_PASSWORD: ${GRAFANA_PG_PASSWORD:-}
+      # NOT publicly exposed — served ONLY behind the authenticated Cloudflare
+      # tunnel (nginx route). Lock down anonymous + sign-up.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-}
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - default
+    mem_limit: 256m
 
 networks:
   # User-defined bridge network with container-name DNS. The `api` service
@@ -202,3 +280,8 @@ volumes:
   # Named volume so session.log persists across orchestrator restarts.
   workspaces:
   pgdata:
+  # Observability stack state (observability-stack); only used when the
+  # observability/grafana profiles are enabled.
+  loki-data:
+  alloy-data:
+  grafana-data:

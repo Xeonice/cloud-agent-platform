@@ -1,0 +1,54 @@
+# Loki single-binary config (observability-stack Tier 1).
+#
+# Single-node, filesystem-backed (TSDB single-store) — NO object storage. Holds
+# the high-volume operational logs (api app/HTTP + per-task sandbox + nginx),
+# shipped by Grafana Alloy. 14-DAY retention applies ONLY here; audit_events
+# (Postgres) stays permanent append-only and is queried in place by Grafana.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9095
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# 14-day retention: the compactor deletes chunks/index older than the window.
+limits_config:
+  retention_period: 336h          # 14 days
+  reject_old_samples: true
+  reject_old_samples_max_age: 336h
+  # Keep per-stream churn sane on a small box.
+  max_streams_per_user: 10000
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem
+  compaction_interval: 10m
+  retention_delete_delay: 2h
+
+# No ruler target enabled by default — alerting is opt-in (see design D4); when
+# enabled via the alerting track it is wired here or in Grafana.
+analytics:
+  reporting_enabled: false

@@ -1,0 +1,13 @@
+# Grafana dashboard provider (observability-stack Tier 2). Loads JSON dashboards
+# baked into the image-mounted /etc/grafana/dashboards directory.
+apiVersion: 1
+
+providers:
+  - name: cap-observability
+    folder: CAP
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

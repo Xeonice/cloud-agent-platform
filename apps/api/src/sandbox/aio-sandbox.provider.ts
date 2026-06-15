@@ -202,6 +202,13 @@ export class AioSandboxProvider
         NetworkMode: network,
         // NO PortBindings — the sandbox publishes no host port; network
         // isolation on `cap-net` is the execution security boundary.
+        // structured-logging: bound the per-task container's json-file logs so a
+        // chatty codex run cannot exhaust host disk (mirrors the compose
+        // *default-logging ceiling, which does not apply to DooD-created siblings).
+        LogConfig: {
+          Type: 'json-file',
+          Config: { 'max-size': '20m', 'max-file': '5' },
+        },
       },
     });
     this.containers.set(ctx.taskId, container);

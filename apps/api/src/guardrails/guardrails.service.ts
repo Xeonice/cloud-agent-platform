@@ -29,6 +29,7 @@ import {
   RunnerMinutesLedger,
   type RunningInterval,
 } from '../metrics/runner-minutes';
+import { runWithTaskLog } from '../observability/log-context';
 
 /**
  * Guardrails integration (integration 12.1b).
@@ -400,6 +401,10 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * start/turn circuit-breaker outcome from the remote exit signal.
    */
   recordExit(taskId: string, status: ExitStatus): void {
+    // structured-logging: bind taskId to the log context for this exit and the
+    // fire-and-forget detail/transition calls it spawns (they capture the ALS
+    // context), so the ddba-style exit-handling logs all carry `taskId`.
+    runWithTaskLog(taskId, () => {
     if (!status.abnormal && status.code === 0) {
       // Clean exit: the agent finished. Reset the breaker AND drive the task to a
       // terminal `completed` state — under the connect-in model a clean WS-close
@@ -434,6 +439,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       void this.recordExitDetail(taskId, status);
       void this.safeTransition(taskId, 'failed');
     }
+    });
   }
 
   /**
@@ -584,6 +590,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     taskId: string,
     cause: 'deadline' | 'idle' | 'circuit_breaker' | 'provision_failed' | 'abnormal_exit',
   ): Promise<void> {
+    // structured-logging: bind taskId for all force-fail logs (incl. timer-driven
+    // deadline/idle/circuit_breaker entrypoints that run outside any request).
+    return runWithTaskLog(taskId, async () => {
     this.logger.warn(`force-failing task ${taskId} (${cause})`);
     this.clearTimers(taskId);
     // Close the runner-minutes interval on the forced-failure terminal too (5.4).
@@ -612,6 +621,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
     this.teardownSession(taskId, 'failed');
     this.semaphore.release(taskId);
+    });
   }
 
   /** Clear deadline + idle timers for a task (it has settled). */

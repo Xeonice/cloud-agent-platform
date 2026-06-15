@@ -1,0 +1,78 @@
+{
+  "uid": "cap-observability",
+  "title": "CAP · Observability",
+  "tags": ["cap", "observability"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "taskId",
+        "label": "Task ID",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Error rate (api)",
+      "type": "timeseries",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(count_over_time({container=~\".+\"} | json | level=~\"error|50\" [5m]))"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Recent audit events (Postgres)",
+      "type": "table",
+      "datasource": { "type": "postgres", "uid": "postgres-audit" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "table",
+          "rawSql": "SELECT timestamp, type, level, title, description, task_id FROM audit_events ORDER BY timestamp DESC LIMIT 100"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Logs for $taskId",
+      "type": "logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 7 },
+      "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{container=~\".+\"} | json | taskId=`$taskId`"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "HTTP overview (status by req)",
+      "type": "logs",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 18 },
+      "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{container=~\".+\"} | json | req_method!=\"\""
+        }
+      ]
+    }
+  ]
+}

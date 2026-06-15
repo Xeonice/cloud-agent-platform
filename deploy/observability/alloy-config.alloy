@@ -1,0 +1,73 @@
+// Grafana Alloy collector (observability-stack Tier 1).
+//
+// NO docker.sock (design D1): discovers + tails the Docker json-file logs
+// READ-ONLY from the host bind mount, unwraps the docker envelope, and ships to
+// Loki. The api's lines are pino JSON, so correlation fields (taskId/reqId) ride
+// INSIDE the log line and are queried with `| json` at read time — they are NOT
+// promoted to stream labels (high cardinality). Only low-cardinality labels
+// (container, stream, level) become stream labels.
+//
+// Limitation (accepted, design open-q): without the socket, the only container
+// identity available is the container ID from the file path (`container` label);
+// per-task `cap-aio-<taskId>` sandbox stdout is NOT pino JSON, so it carries the
+// `container` label only (no taskId field) — its id maps to a task out-of-band.
+
+local.file_match "containers" {
+  path_targets = [{ __path__ = "/var/lib/docker/containers/*/*-json.log" }]
+  sync_period  = "5s"
+}
+
+loki.source.file "containers" {
+  targets    = local.file_match.containers.targets
+  forward_to = [loki.process.docker.receiver]
+}
+
+loki.process "docker" {
+  // 1) Unwrap the docker json-file envelope: {"log","stream","time"}.
+  stage.json {
+    expressions = {
+      log    = "log",
+      stream = "stream",
+      ts     = "time",
+    }
+  }
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339Nano"
+  }
+  stage.labels {
+    values = { stream = "stream" }
+  }
+
+  // 2) The api lines are pino JSON; pull `level` for a (low-cardinality) label.
+  //    taskId/reqId stay in the line body — query with `| json | taskId="..."`.
+  stage.json {
+    source      = "log"
+    expressions = { level = "level" }
+  }
+  stage.labels {
+    values = { level = "level" }
+  }
+
+  // 3) Container id from the file path → a `container` label (no socket needed).
+  stage.regex {
+    source     = "filename"
+    expression = "/containers/(?P<container>[^/]+)/"
+  }
+  stage.labels {
+    values = { container = "container" }
+  }
+
+  // 4) Emit the unwrapped application line (the pino JSON / raw stdout) to Loki.
+  stage.output {
+    source = "log"
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
