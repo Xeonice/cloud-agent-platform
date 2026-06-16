@@ -66,6 +66,6 @@
 
 ## 5. Track: verify-and-flip (depends: integration)
 
-- [ ] 5.1 Verify e2e against the live api with a retained sandbox: confirm a terminal task is archived durably, then reap its container and confirm `GET /tasks/:id/session-history` still returns the transcript from the archive.
+- [x] 5.1 Verify e2e against the live api with a retained sandbox: confirm a terminal task is archived durably, then reap its container and confirm `GET /tasks/:id/session-history` still returns the transcript from the archive. (VERIFIED LIVE 2026-06-16 on cap-api.douglasdong.com: task f151ad7c reached terminal via deadline→forceFail; capture wrote a session_transcripts row (turn_count=12) + /data/workspaces/<id>/transcript.jsonl.gz; container reaped via `docker rm`; GET session-history then returned HTTP 200 status=available with 12 turns from the archive while the container was GONE. This live run also caught + fixed a prod-down DI bug — fix commit 2fb16b8.)
 - [x] 5.2 Flip `apps/web/src/lib/api/capabilities.ts` `sessionHistory` from `false` to `true` and confirm the console renders real durable-first transcripts.
 - [x] 5.3 Document the operational requirement that the `workspaces/` durable volume MUST be in a backup policy for host-loss survival of transcripts (deploy/ops note).
