@@ -27,6 +27,18 @@ import { nitro } from "nitro/vite";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 export default defineConfig({
+  // Bake the build id into the client bundle so the running console can report
+  // its own build (versioned-release-pipeline web-buildid). Read from
+  // `VITE_BUILD_ID` (passed as a build arg by CI / the web Dockerfile) and
+  // default to the `"dev"` sentinel for a plain source build so it degrades
+  // honestly rather than being undefined. Defined here (not just relying on
+  // Vite's `import.meta.env.VITE_*` inlining) so the value is a compile-time
+  // constant even when the var is absent from the build environment.
+  define: {
+    "import.meta.env.VITE_BUILD_ID": JSON.stringify(
+      process.env.VITE_BUILD_ID ?? "dev",
+    ),
+  },
   server: {
     port: 3000,
   },

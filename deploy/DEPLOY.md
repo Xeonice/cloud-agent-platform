@@ -307,6 +307,92 @@ this change still interrupts running tasks — see the warning above):
 
 ---
 
+## 11. Versioned releases via GHCR — OPERATOR-GATED ACTIVATION (owner only)
+
+> **These are OWNER actions, NOT performed by the `versioned-release-pipeline`
+> change.** That change only ships INERT/SAFE code — the `/version` endpoint, the
+> web build id, the `release: published` CI workflow (`.github/workflows/release.yml`),
+> and the opt-in `docker-compose.images.yml` override. Committing them changes
+> nothing about the running system. The steps below are the manual, one-time
+> activation only the repository owner can take to turn the substrate ON. Until
+> they are done, every deploy stays build-from-source exactly as Sections 1–10
+> describe.
+
+`release-and-versioning` (Phase 1 of the [OSS self-update epic](../docs/oss-self-update-epic.md))
+adds the **version substrate**: the running api self-reports its build at an
+unauthenticated `GET /version`, and cutting a GitHub Release publishes a
+**matched, version-pinned set** of images to GHCR — `ghcr.io/xeonice/cap-api`,
+`cap-web`, and `cap-aio-sandbox`, ALL tagged with the single Release version
+`vX.Y.Z` (decision ⑤) — so a self-hoster can pull a mutually-compatible set
+instead of building (see the prebuilt-image override in
+[`docs/self-hosting.md`](../docs/self-hosting.md)).
+
+### 11.1 Make the repo + GHCR packages public (owner)
+
+For self-hosters to `docker compose pull` the images without `docker login`, the
+published GHCR packages must be **public**.
+
+- The release workflow sets the published packages' visibility to public, OR set
+  it once per package by hand: GitHub → your profile → **Packages** → the
+  `cap-api` / `cap-web` / `cap-aio-sandbox` package → **Package settings** →
+  **Change visibility → Public**.
+- If the source repo itself is still private, decide whether to make it public
+  too (the images can be public independently, but a public prebuilt-image path
+  with a private repo means self-hosters pull images they cannot build from
+  source).
+
+### 11.2 Cut the first GitHub Release (owner) — this is what triggers CI
+
+The workflow is **inert until a Release is published**. To publish the first
+image set:
+
+1. Tag the commit and create a GitHub Release whose tag is the cap version,
+   `vX.Y.Z` (e.g. `v0.1.0`). The tag name becomes `CAP_VERSION` and the image
+   tag for all three images.
+2. Publishing the Release fires `release: published`, which runs
+   `.github/workflows/release.yml`. It builds and pushes the matched set to GHCR
+   at `vX.Y.Z`, injecting `CAP_VERSION` / `GIT_SHA` / `BUILD_TIME` (and the web
+   `VITE_BUILD_ID`) so the published images self-report.
+3. Verify: pull `ghcr.io/xeonice/cap-api:vX.Y.Z`, run it, and confirm
+   `curl -s http://<host>/version` reports `version: vX.Y.Z`. (`workflow_dispatch`
+   is available for a manual re-run if a Release build needs to be repeated.)
+
+> This is the true end-to-end of the pipeline and is **verified at the first real
+> Release**, not by committing the change — a Release publishing real images
+> cannot be exercised on a normal push.
+
+### 11.3 Migrate this prod from build-on-push to deploy-a-pinned-release (owner, decision ④)
+
+Today the maintainer's prod (this VPS / Dokploy) **builds from source on every
+push** (Sections 3–4). Decision ④ (unified release line) is to converge the
+maintainer's own deploy onto the SAME pinned-release path self-hosters use, so
+prod runs the exact published, version-stamped set rather than an ad-hoc
+build-of-HEAD.
+
+After the first Release exists (11.2):
+
+1. Pick the Release tag to run and pin it, e.g. `export CAP_VERSION=v0.1.0`.
+2. Deploy with the image override layered on the base compose (pull, don't build):
+
+   ```bash
+   export CAP_VERSION=v0.1.0
+   docker compose -f docker-compose.yml -f docker-compose.images.yml --profile proxy pull
+   docker compose -f docker-compose.yml -f docker-compose.images.yml --profile proxy up -d
+   ```
+
+   (In Dokploy: point the app at the layered compose files and set `CAP_VERSION`
+   in its env. Do NOT pass `--build` — that rebuilds from source and defeats the
+   pin.)
+3. Confirm `GET /version` on prod now reports the pinned `vX.Y.Z`, and that newly
+   provisioned `cap-aio-<taskId>` sandboxes use `ghcr.io/xeonice/cap-aio-sandbox:vX.Y.Z`
+   (the override sets the api's `AIO_SANDBOX_IMAGE` to the matched pinned tag).
+
+> **This migration is optional and reversible.** Build-from-source (Sections 3–4)
+> keeps working; converging prod onto the pinned-release line is the owner's call,
+> and dropping the second `-f docker-compose.images.yml` reverts to building.
+
+---
+
 ## Local dev (unaffected)
 
 ```bash

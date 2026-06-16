@@ -68,3 +68,14 @@ export function wsUrl(): string {
 export function operatorToken(): string | undefined {
   return readEnv("VITE_AUTH_TOKEN");
 }
+
+/**
+ * The build identifier baked into the console bundle at build time
+ * (versioned-release-pipeline web-buildid). `VITE_BUILD_ID` is defined as a
+ * compile-time constant in `vite.config.ts` (from the CI/Dockerfile build arg),
+ * so the running console can report its own build. Falls back to the `"dev"`
+ * sentinel for a plain source build rather than failing.
+ */
+export function buildId(): string {
+  return readEnv("VITE_BUILD_ID") ?? "dev";
+}

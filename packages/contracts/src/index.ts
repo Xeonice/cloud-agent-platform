@@ -50,3 +50,6 @@ export * from './metrics.js';
 
 // Read-only session-history replay model (finished-task transcript read-model)
 export * from './session-history.js';
+
+// Build-version metadata: unauthenticated GET /version response shape + fallback
+export * from './version.js';

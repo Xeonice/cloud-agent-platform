@@ -128,6 +128,58 @@ test('B. repos/tasks CRUD + guardrails admits the task (pending -> running)', as
   );
 });
 
+// ── (D) /version build-metadata: unauthenticated, env-driven, honest fallback ─
+// versioned-release-pipeline (api-version track, task 1.4 / integration 5.1-5.2).
+// The handler reads process.env at REQUEST time via resolveVersionResponse, so we
+// mutate the version env across fetches against the SAME booted app. /version is a
+// guard-exempt sibling of /health: it is served with NO Authorization header.
+test('D. /version reports injected build metadata, unauthenticated + honest fallback', async () => {
+  const VERSION_ENV = ['CAP_VERSION', 'GIT_SHA', 'BUILD_TIME'];
+  const saved = Object.fromEntries(VERSION_ENV.map((k) => [k, process.env[k]]));
+  const clearVersionEnv = () => {
+    for (const k of VERSION_ENV) delete process.env[k];
+  };
+  try {
+    // (1) all three injected -> reported verbatim, unauthenticated (no token).
+    process.env.CAP_VERSION = 'v1.2.3';
+    process.env.GIT_SHA = 'abc1234';
+    process.env.BUILD_TIME = '2026-06-17T00:00:00Z';
+    const injected = await fetch(`${base()}/version`); // deliberately no auth header
+    assert.equal(injected.status, 200, '/version served unauthenticated (guard-exempt like /health)');
+    assert.deepEqual(await injected.json(), {
+      version: 'v1.2.3',
+      gitSha: 'abc1234',
+      buildTime: '2026-06-17T00:00:00Z',
+    });
+
+    // (2) only one injected -> the other two degrade honestly to "unknown".
+    clearVersionEnv();
+    process.env.CAP_VERSION = 'v9.9.9';
+    const partial = await fetch(`${base()}/version`);
+    assert.equal(partial.status, 200);
+    assert.deepEqual(await partial.json(), {
+      version: 'v9.9.9',
+      gitSha: 'unknown',
+      buildTime: 'unknown',
+    });
+
+    // (3) a no-arg source build (no version env at all) -> all "unknown", not an error.
+    clearVersionEnv();
+    const bare = await fetch(`${base()}/version`);
+    assert.equal(bare.status, 200, '/version reports honestly rather than erroring with no env');
+    assert.deepEqual(await bare.json(), {
+      version: 'unknown',
+      gitSha: 'unknown',
+      buildTime: 'unknown',
+    });
+  } finally {
+    for (const k of VERSION_ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});
+
 // ── (C) guardrail params persist + echo; operator stop -> cancelled ──────────
 test('C. guardrail params round-trip and operator stop cancels the task', async () => {
   const { taskId, task } = await createTaskViaRest('guardrail task', {

@@ -33,6 +33,13 @@ ARG VITE_WS_URL=ws://localhost:8080
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 ENV VITE_WS_URL=${VITE_WS_URL}
 
+# Build id baked into the client bundle (versioned-release-pipeline web-buildid).
+# CI passes the release tag as this build arg so the running console reports its
+# own build; defaults to the "dev" sentinel for a plain source build (matching
+# the vite.config.ts `define` fallback).
+ARG VITE_BUILD_ID=dev
+ENV VITE_BUILD_ID=${VITE_BUILD_ID}
+
 # Select the compose-hosted Node-server target (vite.config.ts reads this).
 ENV NITRO_PRESET=node-server
 

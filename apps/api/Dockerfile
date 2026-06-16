@@ -51,6 +51,20 @@ ENV NODE_ENV=production
 ENV WORKSPACES_DIR=/data/workspaces
 ENV PORT=8080
 
+# Build-version metadata (versioned-release-pipeline). The release workflow
+# passes these as `docker/build-push-action` build args; carry each ARG into the
+# runtime stage as an ENV so the running api self-reports them at GET /version
+# (read from process.env). Each DEFAULTS to "unknown" so a plain source build
+# with no build args reports honestly rather than failing — and reports NO
+# secrets (build metadata only). Declared in this stage because build args do not
+# cross FROM boundaries; only the runtime stage consumes them.
+ARG CAP_VERSION=unknown
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ENV CAP_VERSION=${CAP_VERSION}
+ENV GIT_SHA=${GIT_SHA}
+ENV BUILD_TIME=${BUILD_TIME}
+
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*

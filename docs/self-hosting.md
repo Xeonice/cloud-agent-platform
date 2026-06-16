@@ -14,8 +14,10 @@ break-glass; see [Optional: legacy token](#optional-legacy-token-dev-only)).
 
 This guide is Phase 0 of the [OSS self-update epic](./oss-self-update-epic.md)
 ("a stranger can run it"): a complete, env-configurable, OAuth-first compose
-stack. Later phases add `/version`, prebuilt images, and in-app upgrades — none
-of which you need to self-host today.
+stack. The default path below builds everything from source; once a Release has
+published prebuilt images you can pull them instead — see
+[Optional: run prebuilt images](#optional-run-prebuilt-images-instead-of-building-from-source).
+In-app upgrades are a later phase you do not need to self-host today.
 
 ## What the stack brings up
 
@@ -244,6 +246,56 @@ If login bounces or the cookie doesn't stick, re-read
 [Step 3](#step-3--configure-your-public-domains-the-error-prone-step) — a
 mismatch between `WEB_ORIGIN`, `SESSION_COOKIE_DOMAIN`, and the baked
 `VITE_API_BASE_URL` is the cause ~every time.
+
+## Optional: run prebuilt images instead of building from source
+
+Everything above builds the `api` / `web` / AIO-sandbox images **from source** on
+your host — the default, and the only path that works before a Release exists.
+Once the maintainer cuts a GitHub Release, that Release publishes a **matched,
+version-pinned set** of images to GHCR
+(`ghcr.io/xeonice/cap-api`, `cap-web`, `cap-aio-sandbox`, all at the SAME
+`vX.Y.Z`). You can then **pull** that pinned set instead of compiling, using the
+`docker-compose.images.yml` **override** layered on top of the base compose.
+
+> **You still need Steps 1–5.** The override only changes WHERE the images come
+> from (pull vs. build). Your OAuth app, allowlist, domains, secrets, and (optional)
+> external DB are configured exactly as above — the prebuilt images read the same
+> `apps/api/.env` and the same build-time `VITE_*` (already baked into the
+> published `cap-web` by the Release).
+
+Pin the whole stack to one published Release tag and bring it up **without
+`--build`**:
+
+```bash
+# Replace v1.2.3 with the Release tag you want to run.
+export CAP_VERSION=v1.2.3
+
+# Pull the matched set, then start it. Do NOT pass --build (that rebuilds from
+# source and defeats the override).
+COMPOSE_PROFILES=web \
+  docker compose -f docker-compose.yml -f docker-compose.images.yml pull
+COMPOSE_PROFILES=web \
+  docker compose -f docker-compose.yml -f docker-compose.images.yml up -d
+```
+
+- **One version for all three.** `${CAP_VERSION}` pins `cap-api`, `cap-web`, AND
+  `cap-aio-sandbox` (the per-task execution image) to the same tag, so you never
+  run a mismatched set. It is intentionally REQUIRED — leaving `CAP_VERSION` unset
+  makes `docker compose config` warn/fail loudly rather than silently resolving a
+  blank tag. Always set it to a real published Release tag.
+- **The default is unchanged.** Drop the second `-f docker-compose.images.yml`
+  (i.e. plain `docker compose up --build`) and you are back to building from
+  source. The override is purely additive and opt-in — nothing about the
+  build-from-source path changes by its existence.
+- **Confirm what you're running.** A published `cap-api` self-reports its build
+  at `GET /version` (unauthenticated): `curl -s https://<api-origin>/version`
+  returns `{ version, gitSha, buildTime }` — `version` is the Release tag.
+
+> The published GHCR packages are **public** (set by the release workflow / a
+> one-time owner setting), so `docker compose pull` works without `docker login`.
+> See [`deploy/DEPLOY.md`](../deploy/DEPLOY.md) for the operator-gated activation
+> (making the repo + packages public, cutting the first Release, and migrating an
+> existing build-on-push deploy to a pinned Release).
 
 ## Optional: legacy token (dev only)
 

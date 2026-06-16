@@ -70,10 +70,19 @@ export class AuthGuard implements CanActivate {
   constructor(private readonly authSession: AuthSessionService) {}
 
   /**
-   * Request path (lower-cased, slash-normalized) exempt from operator auth.
-   * Kept in sync with the `/health` liveness endpoint contract.
+   * Request paths (lower-cased, slash-normalized) exempt from operator auth
+   * because they expose only liveness / build-metadata and carry NO secrets:
+   *   - `/health` — the liveness probe (single-user-auth 11.2b);
+   *   - `/version` — the unauthenticated build-version sibling of `/health`
+   *     (versioned-release-pipeline, design D1) reporting
+   *     `{ version, gitSha, buildTime }`. It is build metadata, so it needs no
+   *     operator principal, exactly like `/health`.
+   * Kept in sync with the `/health` + `/version` unauthenticated endpoints.
    */
-  private static readonly HEALTH_PATH = '/health';
+  private static readonly PUBLIC_METADATA_PATHS: readonly string[] = [
+    '/health',
+    '/version',
+  ];
 
   /**
    * Paths exempt because the caller is a connect-in AIO sandbox dialling back IN
@@ -136,9 +145,15 @@ export class AuthGuard implements CanActivate {
     return true;
   }
 
-  /** True when the request targets the unauthenticated `/health` endpoint. */
+  /**
+   * True when the request targets an unauthenticated public-metadata endpoint
+   * (`/health` liveness or `/version` build metadata). See
+   * {@link PUBLIC_METADATA_PATHS}.
+   */
   private static isHealthCheck(request: Request): boolean {
-    return AuthGuard.normalizePath(request) === AuthGuard.HEALTH_PATH;
+    return AuthGuard.PUBLIC_METADATA_PATHS.includes(
+      AuthGuard.normalizePath(request),
+    );
   }
 
   /** True when the request targets a GitHub-OAuth session entry point. */

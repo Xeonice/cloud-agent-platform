@@ -1,0 +1,55 @@
+# Prebuilt-image OVERRIDE — opt-in, additive, NEVER the default.
+#
+# The base docker-compose.yml builds api/web/aio-sandbox FROM SOURCE. This
+# override flips those three services to PULL the matched, version-pinned GHCR
+# images a Release publishes (release-and-versioning, decision ④/⑤) instead of
+# building locally, so a self-hoster runs prebuilt images they did not compile.
+#
+# Use it by LAYERING it on top of the base compose (the second -f wins):
+#
+#   CAP_VERSION=v1.2.3 \
+#   docker compose -f docker-compose.yml -f docker-compose.images.yml pull
+#   CAP_VERSION=v1.2.3 \
+#   docker compose -f docker-compose.yml -f docker-compose.images.yml up -d
+#
+# Do NOT pass `--build` with this override — that would rebuild from source and
+# defeat the point. `pull` then `up -d` (no build) runs the pinned images.
+#
+# == The single version pin (decision ⑤) ==
+# A Release publishes cap-api, cap-web, and cap-aio-sandbox as a MATCHED set at
+# ONE cap version. ${CAP_VERSION} below pins ALL THREE to that same tag, so the
+# stack only ever runs a mutually-compatible image set — never a mix. There is no
+# default for ${CAP_VERSION} ON PURPOSE: leaving it unset makes `docker compose
+# config` fail loudly rather than silently pulling some stray/implicit tag, which
+# would let the three drift apart. Always set it explicitly to a published
+# Release tag (e.g. v1.2.3). The published images self-report it via GET /version.
+#
+# The base compose's `build:` blocks still MERGE in (compose unions services), but
+# because each service below also sets `image:` to a pinned GHCR ref, a plain
+# `pull` + `up` (no `--build`) uses the pulled image and never invokes the build.
+#
+# The DEFAULT path (just `docker compose up`, WITHOUT this -f) is unchanged and
+# still builds from source — the published images do not exist until a Release is
+# cut, so nothing here breaks an existing build-from-source deploy.
+
+services:
+  api:
+    image: ghcr.io/xeonice/cap-api:${CAP_VERSION}
+    environment:
+      # Point the orchestrator at the PULLED, version-matched per-task sandbox
+      # image instead of the locally-built cap-aio-sandbox:pinned tag, so newly
+      # provisioned cap-aio-<taskId> containers run the SAME release as the api
+      # (decision ⑤ — one matched set). Pinned tag, never :latest.
+      AIO_SANDBOX_IMAGE: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}
+
+  web:
+    image: ghcr.io/xeonice/cap-web:${CAP_VERSION}
+
+  # The build-only vehicle for the per-task AIO image (base compose) becomes the
+  # PULL vehicle here: pinning its `image:` to the same release tag makes
+  # `docker compose ... pull` fetch cap-aio-sandbox:${CAP_VERSION} locally so the
+  # DooD provider (now pointed at this ref via AIO_SANDBOX_IMAGE above) finds it.
+  # It stays a non-runtime service (the base compose's `entrypoint: ["true"]` +
+  # `restart: "no"` + `network_mode: none` merge in), so it pulls but never runs.
+  aio-sandbox-image:
+    image: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}

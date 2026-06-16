@@ -1,0 +1,128 @@
+# Release pipeline — versioned-release-pipeline, Track release-ci.
+#
+# Builds and pushes the MATCHED, version-pinned image set
+#   ghcr.io/xeonice/cap-api
+#   ghcr.io/xeonice/cap-web
+#   ghcr.io/xeonice/cap-aio-sandbox
+# ALL tagged with the SINGLE release version (`github.event.release.tag_name`,
+# e.g. vX.Y.Z) plus `latest`, so one Release is one mutually-compatible set
+# (design D2 / decision ⑤). Each image is injected with the version build-args
+# (`CAP_VERSION`/`GIT_SHA`/`BUILD_TIME`) so the published api self-reports via
+# `GET /version` and the web bundle bakes its build id (`VITE_BUILD_ID`). The
+# cap-aio-sandbox image's coupled triplet (AIO base tag + codex + openspec) is
+# surfaced as overridable build-args here but DEFAULTS to the pinned values in
+# docker/aio-sandbox.Dockerfile (never `:latest`).
+#
+# INERT UNTIL A RELEASE IS CUT (design D3): the only triggers are
+# `release: published` and the manual `workflow_dispatch`. Merely committing or
+# pushing this file builds and pushes NOTHING — a normal push to any branch does
+# not match either trigger. The first real publish happens when the operator
+# publishes a GitHub Release.
+
+name: release
+
+on:
+  # Publishing a GitHub Release `vX.Y.Z` is the ONLY automatic trigger. A plain
+  # push never matches, so committing this workflow is inert.
+  release:
+    types: [published]
+  # Manual re-run (e.g. to re-push a set or build off a chosen tag). The version
+  # is taken from the `version` input here, since there is no release payload.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to build and push (e.g. v1.2.3)."
+        required: true
+        type: string
+
+# Least-privilege: write to GHCR (packages) only; read the repo to build.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    strategy:
+      # Build every image even if one fails, so a partial failure is visible
+      # per-image rather than masking the rest.
+      fail-fast: false
+      matrix:
+        include:
+          - name: cap-api
+            dockerfile: apps/api/Dockerfile
+          - name: cap-web
+            dockerfile: apps/web/Dockerfile
+          - name: cap-aio-sandbox
+            dockerfile: docker/aio-sandbox.Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The single user-facing cap version that unifies all three image tags.
+      # From the Release tag on a `release: published` run, or the manual input
+      # on a `workflow_dispatch` run.
+      - name: Resolve release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          VERSION="${RELEASE_TAG:-$INPUT_VERSION}"
+          if [ -z "$VERSION" ]; then
+            echo "No version available (no release tag and no workflow_dispatch input)." >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.name }}
+        uses: docker/build-push-action@v6
+        with:
+          # Build from the repo root so each monorepo Dockerfile can COPY the
+          # workspace (packages/contracts + the app), matching docker-compose.yml.
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ghcr.io/xeonice/${{ matrix.name }}:${{ steps.version.outputs.version }}
+            ghcr.io/xeonice/${{ matrix.name }}:latest
+          # Version build-args injected into EVERY image so the published api
+          # self-reports via /version and the web bundle bakes its build id.
+          # VITE_BUILD_ID is consumed by apps/web/Dockerfile; the api/sandbox
+          # Dockerfiles consume CAP_VERSION/GIT_SHA/BUILD_TIME. Build-args a
+          # given Dockerfile does not declare are simply ignored, so the same
+          # block is safe across all three images. The cap-aio-sandbox triplet
+          # (AIO base tag + codex + openspec) is left to the pinned defaults in
+          # docker/aio-sandbox.Dockerfile (never overridden to :latest here).
+          build-args: |
+            CAP_VERSION=${{ steps.version.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ steps.version.outputs.build_time }}
+            VITE_BUILD_ID=${{ steps.version.outputs.version }}
+
+      # Make the published package publicly pullable so self-hosters
+      # `docker pull` without auth (design D3 / decision: GHCR packages public).
+      # The package exists only after the push above. This is best-effort: on a
+      # brand-new package the owner may still need the one-time GHCR UI setting
+      # documented in deploy/DEPLOY.md, hence continue-on-error.
+      - name: Set ${{ matrix.name }} package visibility public
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/user/packages/container/${{ matrix.name }}/visibility" \
+            -f visibility=public
