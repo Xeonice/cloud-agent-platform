@@ -56,6 +56,21 @@ export interface BackendCapabilities {
    * on the deployed env post-release.
    */
   sessionHistory: boolean;
+  /**
+   * `GET /update-status` — the cached, server-side update check that compares the
+   * running `CAP_VERSION` against the latest GitHub Release for the configured
+   * repo (update-availability-check, Phase 2 of the OSS self-update epic). When
+   * `false` the "update available" banner reads the typed `mockUpdateStatus` via
+   * the standard seam — and that mock is MODE-AWARE: it degrades to
+   * `updateAvailable: false` in normal source-build prod (so the change ships
+   * INERT — no fabricated banner, integration task 4.1) and only surfaces an
+   * available update under the `VITE_FORCE_MOCK=1` visual harness. It flips to
+   * `true` after the live endpoint is verified against a public repo with a
+   * published Release (Phase 1 activation), repointing the read at the real api.
+   * The banner is hidden in every case until `updateAvailable` is genuinely
+   * `true`, so flipping the flag never fabricates a prompt.
+   */
+  updateCheck: boolean;
 }
 
 /**
@@ -96,6 +111,14 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   // against a retained-then-reaped sandbox (deploy/DEPLOY.md §9) is TO BE
   // CONFIRMED on the deployed env post-release (task 5.1).
   sessionHistory: true, // GET /tasks/:id/session-history — durable-first codex transcript.
+
+  // Update-availability check (update-availability-check, Phase 2). Initially
+  // `false`: the banner reads the mode-aware `mockUpdateStatus`, which is INERT
+  // (`updateAvailable: false`) in normal source-build prod and only surfaces an
+  // available update under the `VITE_FORCE_MOCK=1` visual harness, until the live
+  // `GET /update-status` is verified against a public repo with a published
+  // Release (Phase 1 activation), then this flips to `true`.
+  updateCheck: false, // GET /update-status — cached server-side GitHub-Release compare.
 };
 
 /**
@@ -108,7 +131,7 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
  * (the variable is simply unset), so the shipped real/mock posture is
  * unchanged.
  */
-function forceMock(): boolean {
+export function forceMock(): boolean {
   const env = import.meta.env as Record<string, string | undefined>;
   return env.VITE_FORCE_MOCK === "1";
 }

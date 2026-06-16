@@ -12,6 +12,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
+    "pretest": "pnpm -w exec turbo run build --filter=@cap/api",
+    "test": "node --test --test-force-exit \"dist/**/*.spec.js\"",
     "test:e2e": "node --env-file=../../.env --test --test-force-exit test/api-e2e.mjs",
     "pretest:e2e": "pnpm -w exec turbo run build --filter=@cap/api",
     "test:e2e:aio": "bash ../../scripts/aio-e2e.sh"

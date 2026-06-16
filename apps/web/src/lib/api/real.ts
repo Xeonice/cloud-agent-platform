@@ -32,6 +32,8 @@ import {
   CodexDeviceLoginStatusSchema,
   ListAvailableGithubReposResponseSchema,
   DefaultRepoResponseSchema,
+  UpdateStatusSchema,
+  type UpdateStatus,
   type ListTasksResponse,
   type TaskResponse,
   type ListReposResponse,
@@ -350,4 +352,21 @@ export async function setDefaultRepo(
       body: JSON.stringify(body),
     }),
   );
+}
+
+/**
+ * `GET /update-status` — the cached, server-side update check
+ * (update-availability-check, Phase 2). The api does ONE TTL'd GitHub-Release
+ * fetch shared across all browsers and returns the discriminated, honest
+ * `UpdateStatus` `{ currentVersion, latestVersion, updateAvailable, releaseUrl,
+ * releaseName, checkedAt }` — `updateAvailable` is true ONLY when the current
+ * version is known AND a newer Release exists; otherwise it degrades to `false`
+ * with `latestVersion: null` (source build / no releases / fetch failure), never
+ * a fabricated prompt. Validated against the shared `@cap/contracts`
+ * `UpdateStatusSchema` so no shape is re-declared web-side. The endpoint is
+ * operator-guarded (like `/metrics`); this rides the same session-cookie
+ * transport. Gated by `BACKEND_CAPABILITIES.updateCheck`.
+ */
+export async function getUpdateStatus(): Promise<UpdateStatus> {
+  return UpdateStatusSchema.parse(await request("/update-status"));
 }

@@ -44,6 +44,7 @@ import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/shell/app-sidebar";
 import { Topbar } from "@/components/shell/topbar";
 import { MobileNav } from "@/components/shell/mobile-nav";
+import { UpdateBanner } from "@/components/shell/update-banner";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: async ({ context, location }) => {
@@ -126,6 +127,11 @@ function AppLayout() {
             }
           />
         )}
+        {/* The dismissible "update available" strip (update-availability-check).
+            Shown only when the check honestly reports a newer version; absent
+            otherwise (it renders nothing on its own). Kept off the fixed-height
+            cockpit session route, whose top chrome is its own crumb. */}
+        {isSession ? null : <UpdateBanner />}
         <Outlet />
       </SidebarInset>
       <MobileNav pathname={pathname} />

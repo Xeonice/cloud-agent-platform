@@ -10,6 +10,7 @@ import { CredsModule } from './creds/creds.module';
 import { SandboxModule } from './sandbox/sandbox.module';
 import { GuardrailsModule } from './guardrails/guardrails.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { UpdateStatusModule } from './update-status/update-status.module';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { AuditModule } from './audit/audit.module';
@@ -29,7 +30,10 @@ import { SettingsModule } from './settings/settings.module';
  *    teardown, 12.1b);
  *  - observability: `MetricsModule` exposes the session-gated `GET /metrics`
  *    composing the exact semaphore-derived capacity block with the cached
- *    sampled CPU/memory block (be-metrics 5.1–5.5);
+ *    sampled CPU/memory block (be-metrics 5.1–5.5); `UpdateStatusModule` exposes
+ *    the operator-guarded `GET /update-status` (update-availability-check,
+ *    Phase 2) — a cached, best-effort GitHub-Release comparison against the
+ *    running `CAP_VERSION` that degrades honestly to `updateAvailable: false`;
  *  - auth: `AuthModule` registers the operator-auth guard GLOBALLY on all REST
  *    endpoints (exempting `/health`), 11.2b. The refuse-to-boot check on an unset
  *    `AUTH_TOKEN` (11.3b) and CORS/WS-origin allow-listing (10.1b) live in the
@@ -61,6 +65,7 @@ import { SettingsModule } from './settings/settings.module';
     TerminalModule,
     GuardrailsModule,
     MetricsModule,
+    UpdateStatusModule,
     AuthModule,
     AuditModule,
     SettingsModule,

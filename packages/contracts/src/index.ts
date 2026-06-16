@@ -53,3 +53,6 @@ export * from './session-history.js';
 
 // Build-version metadata: unauthenticated GET /version response shape + fallback
 export * from './version.js';
+
+// Update availability: operator-guarded GET /update-status shape + version compare
+export * from './update-status.js';

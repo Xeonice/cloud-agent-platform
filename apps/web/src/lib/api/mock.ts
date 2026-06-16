@@ -32,9 +32,11 @@ import type {
   ListAvailableGithubReposResponse,
   DefaultRepoResponse,
   Repo,
+  UpdateStatus,
 } from "@cap/contracts";
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
+import { forceMock } from "./capabilities";
 
 // ---------------------------------------------------------------------------
 // Cadence
@@ -752,4 +754,52 @@ export async function mockTaskContext(taskId: string): Promise<TaskContextView> 
       safetyBoundary: SAFETY,
     }
   );
+}
+
+// ---------------------------------------------------------------------------
+// Update status (update-availability-check, Phase 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The typed `UpdateStatus` mock (update-availability-check D4), shaped by
+ * `@cap/contracts` `UpdateStatus` so it cannot drift off the real response.
+ *
+ * It is MODE-AWARE so the change ships INERT on the current source-build prod
+ * (integration task 4.1) while still exercising the banner under the visual
+ * harness (design D4):
+ *  - In the deterministic visual-harness data mode (`VITE_FORCE_MOCK=1`), it
+ *    returns an AVAILABLE update so the dismissible app-shell banner renders on
+ *    the seam — exercising the "newer version + release link" presentation and
+ *    per-version dismissal — with a FIXED `checkedAt` (not `Date.now()`) so the
+ *    snapshot data stays stable across renders.
+ *  - In normal source-build prod the only mock-read of this domain happens
+ *    because `capabilities.updateCheck` is the lone `false` flag (every other
+ *    domain is real). There a fabricated "update available" banner would be
+ *    dishonest, so the mock degrades to `updateAvailable: false` (latest null) —
+ *    the banner is absent until the live `GET /update-status` is verified and the
+ *    flag flips to `true`, repointing this read at the real api.
+ */
+export async function mockUpdateStatus(): Promise<UpdateStatus> {
+  await delay();
+  if (!forceMock()) {
+    // Normal source-build prod: honestly inert — no fabricated prompt (task 4.1).
+    return {
+      currentVersion: "v0.3.0",
+      latestVersion: null,
+      updateAvailable: false,
+      releaseUrl: null,
+      releaseName: null,
+      checkedAt: "2026-06-17T00:00:00.000Z",
+    };
+  }
+  // Visual harness only: surface an available update so the banner is exercised.
+  return {
+    currentVersion: "v0.3.0",
+    latestVersion: "v0.4.0",
+    updateAvailable: true,
+    releaseUrl:
+      "https://github.com/Xeonice/cloud-agent-platform/releases/tag/v0.4.0",
+    releaseName: "v0.4.0",
+    checkedAt: "2026-06-17T00:00:00.000Z",
+  };
 }

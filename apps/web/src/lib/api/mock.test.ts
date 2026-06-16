@@ -15,7 +15,7 @@
  * `githubConnected` gate explicitly so the populated `mockAuthSession` branch is
  * also validated, then reset the store.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   ListTasksResponseSchema,
   TaskResponseSchema,
@@ -29,6 +29,7 @@ import {
   AccountSettingsSchema,
   CodexCredentialSchema,
   ListAvailableGithubReposResponseSchema,
+  UpdateStatusSchema,
 } from "@cap/contracts";
 import {
   mockListTasks,
@@ -43,6 +44,7 @@ import {
   mockGithubRepos,
   mockTaskContext,
   mockSessionHistory,
+  mockUpdateStatus,
 } from "./mock";
 import { setState, resetState } from "../store";
 
@@ -267,6 +269,50 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
       expect(typeof out.runtime).toBe("string");
       expect(typeof out.resources).toBe("string");
       expect(typeof out.safetyBoundary).toBe("string");
+    },
+    TIMEOUT,
+  );
+});
+
+/**
+ * `mockUpdateStatus` is the lone mock that is MODE-AWARE (update-availability-
+ * check, integration task 4.1): with `capabilities.updateCheck` the only `false`
+ * flag, normal source-build prod reads this mock, so a fabricated
+ * `updateAvailable: true` would surface a dishonest banner. It therefore degrades
+ * to inert by default and only surfaces an available update under the
+ * `VITE_FORCE_MOCK=1` visual harness. Both branches must still PARSE against the
+ * `@cap/contracts` schema (the drift guard).
+ */
+describe("mockUpdateStatus is mode-aware and ships inert by default", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it(
+    "default (no VITE_FORCE_MOCK) -> inert UpdateStatus: updateAvailable false, latest null",
+    async () => {
+      vi.stubEnv("VITE_FORCE_MOCK", "");
+      const out = await mockUpdateStatus();
+      expect(() => UpdateStatusSchema.parse(out)).not.toThrow();
+      // The task-4.1 invariant: absent banner on the current source-build prod —
+      // the pure selectBannerView hides on updateAvailable:false / latest null.
+      expect(out.updateAvailable).toBe(false);
+      expect(out.latestVersion).toBeNull();
+      expect(out.releaseUrl).toBeNull();
+      expect(out.releaseName).toBeNull();
+    },
+    TIMEOUT,
+  );
+
+  it(
+    "visual harness (VITE_FORCE_MOCK=1) -> available UpdateStatus with a release link",
+    async () => {
+      vi.stubEnv("VITE_FORCE_MOCK", "1");
+      const out = await mockUpdateStatus();
+      expect(() => UpdateStatusSchema.parse(out)).not.toThrow();
+      expect(out.updateAvailable).toBe(true);
+      expect(out.latestVersion).toBe("v0.4.0");
+      expect(out.releaseUrl).toContain("/releases/tag/v0.4.0");
     },
     TIMEOUT,
   );

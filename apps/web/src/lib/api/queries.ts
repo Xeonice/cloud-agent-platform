@@ -33,6 +33,7 @@ import type {
   AccountSettings,
   CodexCredential,
   ListAvailableGithubReposResponse,
+  UpdateStatus,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
@@ -65,6 +66,7 @@ export const queryKeys = {
   taskContext: (id: string) => ["tasks", id, "context"] as const,
   taskResource: (id: string) => ["tasks", id, "resource"] as const,
   sessionHistory: (id: string) => ["tasks", id, "session-history"] as const,
+  updateStatus: ["update-status"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -327,5 +329,28 @@ export function taskContextQuery(id: string) {
         resources: "—",
       };
     },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Update status (update-availability-check, Phase 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The cached, server-side update check (`GET /update-status`,
+ * update-availability-check D4) the app-shell banner reads. Rides the standard
+ * real/mock seam: gated by `BACKEND_CAPABILITIES.updateCheck`, it reads
+ * `real.getUpdateStatus` (Zod `.parse` against the `@cap/contracts`
+ * `UpdateStatusSchema`) when capable and the typed `mock.mockUpdateStatus`
+ * otherwise — so the banner renders on the mock until the live endpoint is
+ * verified, then ONE flag flip repoints it. The api already caches the upstream
+ * GitHub fetch (one per TTL across all browsers), so this is a plain read with
+ * no client-side poll.
+ */
+export function updateStatusQuery() {
+  return queryOptions<UpdateStatus>({
+    queryKey: queryKeys.updateStatus,
+    queryFn: () =>
+      isCapable("updateCheck") ? real.getUpdateStatus() : mock.mockUpdateStatus(),
   });
 }
