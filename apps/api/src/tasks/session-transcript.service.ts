@@ -59,16 +59,18 @@ export type CaptureStatus = 'captured' | 'no-rollout' | 'error';
 export class SessionTranscriptService {
   private readonly logger = new Logger(SessionTranscriptService.name);
 
+  /**
+   * The workspace-dir resolver that already roots `session.log`. A plain class
+   * field (NOT a constructor parameter) defaulting to the deploy resolver:
+   * NestJS DI cannot inject a bare `Function`-typed constructor param (it would
+   * try to resolve a `Function` provider and fail bootstrap), so tests override
+   * this by assignment after construction rather than via the constructor.
+   */
+  resolveWorkspace: (taskId: string) => string = resolveWorkspaceDir;
+
   constructor(
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
     private readonly prisma: PrismaService,
-    /**
-     * The workspace-dir resolver that already roots `session.log`. Injectable so
-     * tests can point it at a tmp dir; defaults to the deploy resolver.
-     */
-    private readonly resolveWorkspace: (
-      taskId: string,
-    ) => string = resolveWorkspaceDir,
   ) {}
 
   /** Absolute path to a task's transcript archive on the durable volume. */

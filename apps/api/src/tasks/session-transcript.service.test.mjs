@@ -189,7 +189,7 @@ async function main() {
   {
     const sb = makeSandbox({ rollout: ROLLOUT });
     const db = makePrisma();
-    const svc = new SessionTranscriptService(sb.provider, db.prisma, resolveWs);
+    const svc = Object.assign(new SessionTranscriptService(sb.provider, db.prisma), { resolveWorkspace: resolveWs });
     const status = await svc.capture(TASK_ID);
     assert(status === 'captured', 'capture(rollout present) → "captured"');
     assert(sb.calls.readRollout === 1, 'capture reuses readRolloutFromContainer (once)');
@@ -225,7 +225,7 @@ async function main() {
   {
     const sb = makeSandbox({ rollout: null });
     const db = makePrisma();
-    const svc = new SessionTranscriptService(sb.provider, db.prisma, resolveWs);
+    const svc = Object.assign(new SessionTranscriptService(sb.provider, db.prisma), { resolveWorkspace: resolveWs });
     const status = await svc.capture('task-none');
     assert(status === 'no-rollout', 'capture(no rollout) → "no-rollout"');
     assert(!existsSync(archiveFor('task-none')), 'no rollout → NO archive written');
@@ -236,7 +236,7 @@ async function main() {
   {
     const sb = makeSandbox({ throws: true });
     const db = makePrisma();
-    const svc = new SessionTranscriptService(sb.provider, db.prisma, resolveWs);
+    const svc = Object.assign(new SessionTranscriptService(sb.provider, db.prisma), { resolveWorkspace: resolveWs });
     let threw = false;
     let status;
     try {
@@ -256,7 +256,7 @@ async function main() {
     // Point the resolver at a path whose parent is a FILE → mkdir/writeFile fails.
     const fileAsDir = archiveFor(TASK_ID); // an existing FILE from the first case
     const badResolve = () => join(fileAsDir, 'nested');
-    const svc = new SessionTranscriptService(sb.provider, db.prisma, badResolve);
+    const svc = Object.assign(new SessionTranscriptService(sb.provider, db.prisma), { resolveWorkspace: badResolve });
     let threw = false;
     let status;
     try {
@@ -273,7 +273,7 @@ async function main() {
   {
     const sb = makeSandbox({ rollout: ROLLOUT });
     const db = makePrisma();
-    const svc = new SessionTranscriptService(sb.provider, db.prisma, resolveWs);
+    const svc = Object.assign(new SessionTranscriptService(sb.provider, db.prisma), { resolveWorkspace: resolveWs });
     await svc.capture('task-idem');
     await svc.capture('task-idem'); // proactive re-capture
     await svc.backfill('task-idem', ROLLOUT); // read-through backfill
@@ -290,7 +290,7 @@ async function main() {
   {
     const sb = makeSandbox({ rollout: null }); // backfill does NOT read the container
     const db = makePrisma();
-    const svc = new SessionTranscriptService(sb.provider, db.prisma, resolveWs);
+    const svc = Object.assign(new SessionTranscriptService(sb.provider, db.prisma), { resolveWorkspace: resolveWs });
     const status = await svc.backfill('task-bf', ROLLOUT);
     assert(status === 'captured', 'backfill(rawJsonl) → "captured"');
     assert(sb.calls.readRollout === 0, 'backfill does NOT touch the container');
@@ -302,7 +302,7 @@ async function main() {
   {
     const sb = makeSandbox({ rollout: ROLLOUT });
     const db = makePrisma();
-    const svc = new SessionTranscriptService(sb.provider, db.prisma, resolveWs);
+    const svc = Object.assign(new SessionTranscriptService(sb.provider, db.prisma), { resolveWorkspace: resolveWs });
     await svc.capture('task-read');
     const raw = await svc.readDurable('task-read');
     assert(raw === ROLLOUT, 'readDurable returns the EXACT raw JSONL from the archive');
@@ -312,7 +312,7 @@ async function main() {
   {
     const sb = makeSandbox();
     const db = makePrisma();
-    const svc = new SessionTranscriptService(sb.provider, db.prisma, resolveWs);
+    const svc = Object.assign(new SessionTranscriptService(sb.provider, db.prisma), { resolveWorkspace: resolveWs });
     const raw = await svc.readDurable('task-absent');
     assert(raw === null, 'readDurable(no index row) → null (caller falls back to container)');
   }
@@ -321,7 +321,7 @@ async function main() {
   {
     const sb = makeSandbox({ rollout: ROLLOUT });
     const db = makePrisma();
-    const svc = new SessionTranscriptService(sb.provider, db.prisma, resolveWs);
+    const svc = Object.assign(new SessionTranscriptService(sb.provider, db.prisma), { resolveWorkspace: resolveWs });
     await svc.capture('task-gone');
     // Delete the archive bytes but keep the index row.
     rmSync(archiveFor('task-gone'), { force: true });
