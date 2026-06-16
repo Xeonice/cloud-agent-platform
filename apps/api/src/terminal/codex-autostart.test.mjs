@@ -1,31 +1,52 @@
 /**
- * Focused integration test for the codex prompt auto-start in the AIO terminal
- * bridge (aio-codex-prompt-autostart), driving the REAL AioPtyClient against a
- * fake AIO terminal WS server.
+ * Focused integration test for the AIO terminal bridge (`AioPtyClient`) under the
+ * survive-api-redeploy detached-session model, driving the REAL client against a
+ * fake AIO sandbox (terminal WS + `/v1/shell/exec` + `/v1/shell/wait` HTTP).
  *
- * Spec scenarios under test (aio-sandbox-execution / codex launched in-shell):
- *   1. On `ready`, the auto-launched codex command is the file-based launch line
- *      (`"$(cat <prompt-file>)"`), NOT a raw `codex …` with an inlined prompt.
+ * Spec scenarios under test:
+ *   aio-codex-prompt-autostart (preserved WITHIN the detached session):
+ *   1. On `ready` (session GONE), the bridge launches codex in a DETACHED named
+ *      tmux session (`tmux new-session -d -s task<id> …`) carrying the file-based
+ *      launch line (`"$(cat <prompt-file>)"`), then attaches to it.
  *   2. Zero-touch auto-submit: AFTER codex's startup DSR is seen AND output has
  *      quiesced, the bridge injects exactly ONE Enter (`\r`) to submit the
  *      pre-filled prompt.
- *   3. The auto-submit is gated on autoLaunchCodex: an attach/replay terminal
- *      (autoLaunchCodex=false) neither launches codex nor injects the Enter.
+ *   3. A `'replay-only'` terminal neither launches codex nor injects the Enter.
  *
- * The quiescence window is forced small via env so the test runs fast. Compiles
- * the REAL aio-pty-client.ts with tsc, imports it, drives a fake WS (mirrors the
- * repo's cpr-detector.test.mjs harness).
+ *   survive-api-redeploy (detached-session 2.2–2.4):
+ *   4. Attach-vs-fresh: when the named session is ALREADY alive on `ready`, the
+ *      bridge ATTACHES (`tmux attach -t task<id>`) and does NOT launch a fresh
+ *      codex (no `tmux new-session`, no auto-submit Enter into a running codex).
+ *   5. A WS close while the session is still ALIVE is NON-TERMINAL: it does NOT
+ *      resolve an exit (onExit is not called) — codex is left for re-adoption.
+ *   6. Session-gone resolves the exit: when liveness polling observes the named
+ *      session GONE, the bridge resolves the exit status (via /v1/shell/wait or
+ *      echo $?) and calls onExit exactly once.
+ *   7. Single-writer seam: the bridge's `write()` forwards operator input verbatim
+ *      as an `{type:"input"}` frame — the lease gate lives ABOVE the seam in the
+ *      gateway, so the bridge itself is the unconditional input forwarder.
+ *   8. Terminal-teardown release (4.3): once `close()` is called (the D5 release the
+ *      gateway's `unregisterSession` invokes after a task is already terminal), a
+ *      subsequently-GONE session does NOT fire a second `onExit` — the
+ *      liveness-driven termination drives `recordExit` EXACTLY ONCE even when a
+ *      `forceFail` backstop tore the session down while the poller was still armed.
+ *
+ * The quiescence + liveness windows are forced small via env so the test runs
+ * fast. Compiles the REAL aio-pty-client.ts with tsc, imports it, drives a fake
+ * sandbox (mirrors the repo's cpr-detector.test.mjs harness).
  */
 
 import { execFileSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 
-// MUST be set before importing the compiled client — the quiescence window is
-// read from env at module eval time.
+// MUST be set before importing the compiled client — both windows are read from
+// env at module eval time.
 process.env.CODEX_AUTOSUBMIT_QUIESCE_MS = '40';
+process.env.CODEX_LIVENESS_POLL_MS = '30';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const apiRoot = resolve(__dirname, '..', '..'); // apps/api
@@ -89,10 +110,52 @@ function compileClient() {
   throw new Error('compiled aio-pty-client.js not found under ' + outDir);
 }
 
-/** Fake AIO terminal WS server: sends session_id+ready, records inbound frames. */
-function startFakeSandbox() {
+/**
+ * Fake AIO sandbox: terminal WS (sends session_id+ready, records inbound frames)
+ * PLUS an HTTP surface for `/v1/shell/exec` (tmux has-session probe + echo $?)
+ * and `/v1/shell/wait` (authoritative exit). `sessionAlive` is mutable so a test
+ * can flip a live session to gone and observe the liveness-driven termination.
+ */
+function startFakeSandbox(opts = {}) {
   const inbound = [];
-  const wss = new WebSocketServer({ port: 0 });
+  let sessionAlive = opts.sessionAlive ?? false; // false = no named session yet
+  const waitExitCode = opts.waitExitCode ?? 0;
+
+  const http = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => (raw += c));
+    req.on('end', () => {
+      const url = req.url || '';
+      if (url.startsWith('/v1/shell/exec')) {
+        let command = '';
+        try {
+          command = JSON.parse(raw).command ?? '';
+        } catch {
+          command = '';
+        }
+        let stdout = '';
+        if (command.includes('has-session')) {
+          // Mirror the bridge's `tmux has-session -t <name>; echo __cap_has__$?`:
+          // exit 0 when alive, non-zero when gone.
+          stdout = `__cap_has__${sessionAlive ? 0 : 1}\n`;
+        } else if (command.includes('echo $?')) {
+          stdout = `${waitExitCode}\n`;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ stdout }));
+        return;
+      }
+      if (url.startsWith('/v1/shell/wait')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ exitCode: waitExitCode }));
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+  });
+
+  const wss = new WebSocketServer({ server: http });
   let socket;
   const ready = new Promise((resolveReady) => {
     wss.on('connection', (ws) => {
@@ -109,17 +172,35 @@ function startFakeSandbox() {
       resolveReady();
     });
   });
-  const port = wss.address().port;
+
+  const listening = new Promise((r) => http.listen(0, '127.0.0.1', r));
   return {
     inbound,
     ready,
+    listening,
+    setSessionAlive(v) {
+      sessionAlive = v;
+    },
+    closeServerSocket() {
+      // Close the SERVER side of the WS so the client observes a WS close while
+      // the (mocked) named session may still be alive.
+      socket?.close();
+    },
     sendOutput(data) {
       socket.send(JSON.stringify({ type: 'output', data }));
     },
-    wsUrl: `ws://127.0.0.1:${port}/v1/shell/ws`,
-    baseUrl: `http://127.0.0.1:${port}`,
+    get port() {
+      return http.address().port;
+    },
+    get wsUrl() {
+      return `ws://127.0.0.1:${http.address().port}/v1/shell/ws`;
+    },
+    get baseUrl() {
+      return `http://127.0.0.1:${http.address().port}`;
+    },
     close() {
       wss.close();
+      http.close();
     },
   };
 }
@@ -129,29 +210,51 @@ const DSR_QUERY = '\x1b[6n';
 const CPR_REPLY = '\x1b[1;1R';
 const ENTER = '\r';
 const inputs = (inbound) => inbound.filter((f) => f.type === 'input');
+const inputData = (inbound) =>
+  inputs(inbound).map((f) => (typeof f.data === 'string' ? f.data : ''));
 
 async function main() {
   const { AioPtyClient } = await import(pathToFileURL(compileClient()).href);
 
-  // --- Case 1+2: autoLaunchCodex=true → file-based launch line, then auto-submit
+  // --- Case 1+2: launch-or-attach with a GONE session → fresh detached launch,
+  //     then auto-submit. ------------------------------------------------------
   {
-    const sandbox = startFakeSandbox();
-    const client = new AioPtyClient('task-autostart-1', sandbox.wsUrl, sandbox.baseUrl, undefined, true);
-    await sandbox.ready;
-    await delay(80); // let the client process `ready` and send the launch line
-
-    const launch = inputs(sandbox.inbound).find(
-      (f) => typeof f.data === 'string' && f.data.includes('cat /home/gem/.codex/task-prompt.txt'),
+    const sandbox = startFakeSandbox({ sessionAlive: false });
+    await sandbox.listening;
+    const client = new AioPtyClient(
+      'autostart-1',
+      sandbox.wsUrl,
+      sandbox.baseUrl,
+      undefined,
+      'launch-or-attach',
     );
-    assert(!!launch, 'auto-launches codex with the file-based prompt launch line');
+    await sandbox.ready;
+    await delay(120); // process `ready`, run the has-session probe, send launch
+
+    const launch = inputData(sandbox.inbound).find((d) =>
+      d.includes('cat /home/gem/.codex/task-prompt.txt'),
+    );
+    assert(!!launch, 'launches codex with the file-based prompt launch line');
     if (launch) {
-      assert(launch.data.includes('if [ -n "$P" ]'), 'launch line branches on a non-empty prompt');
-      assert(launch.data.includes('codex'), 'launch line invokes codex');
       assert(
-        !launch.data.includes('--yolo') && !launch.data.includes(' -s '),
-        'launch line carries no hook-disabling flags',
+        launch.startsWith('tmux new-session -d -s taskautostart-1 '),
+        'fresh launch wraps codex in a DETACHED named tmux session',
+      );
+      assert(launch.includes('if [ -n "$P" ]'), 'launch line branches on a non-empty prompt');
+      // The hook-disabling forms are codex `--yolo` / `bypass-approvals` / a codex
+      // `-s` flag. (tmux's own `-s <session-name>` is NOT a codex flag and must not
+      // be mistaken for one — so match `codex -s`, not a bare ` -s `.)
+      assert(
+        !launch.includes('--yolo') &&
+          !launch.includes('bypass-approvals') &&
+          !/\bcodex\s+-s\b/.test(launch),
+        'launch line carries no hook-disabling codex flags',
       );
     }
+    assert(
+      inputData(sandbox.inbound).some((d) => d.startsWith('tmux attach -t taskautostart-1')),
+      'after a fresh launch the bridge attaches to the new session',
+    );
 
     // No Enter should have been injected before the startup DSR is observed.
     assert(
@@ -161,7 +264,7 @@ async function main() {
 
     // codex starts: emit the startup DSR, then go quiet so output quiesces.
     sandbox.sendOutput(`codex tui boot ${DSR_QUERY}`);
-    await delay(200); // > quiescence window (40ms) + margin
+    await delay(200);
 
     const cpr = inputs(sandbox.inbound).filter((f) => f.data === CPR_REPLY);
     assert(cpr.length === 1, 'injects exactly one CPR reply on the startup DSR');
@@ -169,28 +272,184 @@ async function main() {
     const enters = inputs(sandbox.inbound).filter((f) => f.data === ENTER);
     assert(enters.length === 1, 'injects exactly ONE Enter (auto-submit) after DSR + quiescence');
 
-    client.pause();
+    client.close();
     sandbox.close();
   }
 
-  // --- Case 3: autoLaunchCodex=false → no launch, no auto-submit ---------------
+  // --- Case 3: replay-only → no launch, no attach, no auto-submit -------------
   {
-    const sandbox = startFakeSandbox();
-    new AioPtyClient('task-autostart-2', sandbox.wsUrl, sandbox.baseUrl, undefined, false);
+    const sandbox = startFakeSandbox({ sessionAlive: true });
+    await sandbox.listening;
+    new AioPtyClient('autostart-2', sandbox.wsUrl, sandbox.baseUrl, undefined, 'replay-only');
     await sandbox.ready;
-    await delay(80);
+    await delay(120);
 
-    const launched = inputs(sandbox.inbound).some(
-      (f) => typeof f.data === 'string' && f.data.includes('cat /home/gem/.codex/task-prompt.txt'),
+    assert(
+      inputs(sandbox.inbound).length === 0,
+      'replay-only terminal sends NO input (no launch, no attach)',
     );
-    assert(!launched, 'attach/replay terminal (autoLaunchCodex=false) does NOT auto-launch codex');
 
-    // CPR is still injected (it is unconditional), but the auto-submit is NOT.
+    // CPR is still injected (unconditional), but the auto-submit is NOT.
     sandbox.sendOutput(`something ${DSR_QUERY}`);
     await delay(200);
-
     const enters = inputs(sandbox.inbound).filter((f) => f.data === ENTER);
-    assert(enters.length === 0, 'no auto-submit Enter when autoLaunchCodex is false');
+    assert(enters.length === 0, 'no auto-submit Enter for a replay-only terminal');
+    // The CPR reply is the only inbound input.
+    assert(
+      inputData(sandbox.inbound).every((d) => d === CPR_REPLY),
+      'replay-only terminal only ever injects the unconditional CPR reply',
+    );
+
+    sandbox.close();
+  }
+
+  // --- Case 4: attach-vs-fresh — session ALREADY alive on ready → ATTACH ------
+  {
+    const sandbox = startFakeSandbox({ sessionAlive: true });
+    await sandbox.listening;
+    const client = new AioPtyClient(
+      'autostart-3',
+      sandbox.wsUrl,
+      sandbox.baseUrl,
+      undefined,
+      'launch-or-attach',
+    );
+    await sandbox.ready;
+    await delay(120);
+
+    const attached = inputData(sandbox.inbound).some((d) =>
+      d.startsWith('tmux attach -t taskautostart-3'),
+    );
+    assert(attached, 'a live named session is RE-ATTACHED on ready (re-adoption)');
+    assert(
+      !inputData(sandbox.inbound).some((d) => d.includes('tmux new-session')),
+      'attach does NOT launch a fresh codex (no `tmux new-session`)',
+    );
+
+    // Even with a DSR (e.g. from a redraw of the attached codex), NO auto-submit
+    // Enter is injected into an already-running codex.
+    sandbox.sendOutput(`redraw ${DSR_QUERY}`);
+    await delay(200);
+    assert(
+      inputs(sandbox.inbound).filter((f) => f.data === ENTER).length === 0,
+      'attach never injects a stray auto-submit Enter into a running codex',
+    );
+
+    client.close();
+    sandbox.close();
+  }
+
+  // --- Case 5: WS close while the session is ALIVE is NON-TERMINAL ------------
+  {
+    const sandbox = startFakeSandbox({ sessionAlive: true });
+    await sandbox.listening;
+    let exitCalls = 0;
+    const client = new AioPtyClient(
+      'autostart-4',
+      sandbox.wsUrl,
+      sandbox.baseUrl,
+      () => {
+        exitCalls++;
+      },
+      'launch-or-attach',
+    );
+    await sandbox.ready;
+    await delay(120); // established + attached + liveness poller armed
+
+    // Close the SERVER side of the WS — the operator/api "disconnects" — while the
+    // named session is still alive. This must NOT resolve an exit.
+    sandbox.closeServerSocket();
+    await delay(200); // > several liveness poll ticks (30ms)
+
+    assert(exitCalls === 0, 'a WS close with a LIVE session does NOT resolve an exit');
+
+    client.close();
+    sandbox.close();
+  }
+
+  // --- Case 6: session GONE resolves the exit exactly once --------------------
+  {
+    const sandbox = startFakeSandbox({ sessionAlive: true, waitExitCode: 0 });
+    await sandbox.listening;
+    const exits = [];
+    const client = new AioPtyClient(
+      'autostart-5',
+      sandbox.wsUrl,
+      sandbox.baseUrl,
+      (status) => exits.push(status),
+      'launch-or-attach',
+    );
+    await sandbox.ready;
+    await delay(120); // attached + poller armed; still alive → no exit yet
+    assert(exits.length === 0, 'while the session is alive no exit is resolved');
+
+    // The detached codex finishes: the named session disappears.
+    sandbox.setSessionAlive(false);
+    await delay(200); // let the liveness poller observe it gone
+
+    assert(exits.length === 1, 'a GONE session resolves the exit exactly once');
+    if (exits.length === 1) {
+      assert(exits[0].code === 0 && exits[0].abnormal === false, 'exit 0 maps to a clean exit status');
+    }
+
+    // Further ticks must not re-fire the exit.
+    await delay(120);
+    assert(exits.length === 1, 'the exit is not re-resolved on subsequent liveness ticks');
+
+    client.close();
+    sandbox.close();
+  }
+
+  // --- Case 7: single-writer seam — write() forwards input verbatim -----------
+  {
+    const sandbox = startFakeSandbox({ sessionAlive: true });
+    await sandbox.listening;
+    const client = new AioPtyClient('autostart-6', sandbox.wsUrl, sandbox.baseUrl, undefined, 'replay-only');
+    await sandbox.ready;
+    await delay(60);
+
+    client.write('ls -la\r');
+    await delay(60);
+    const forwarded = inputData(sandbox.inbound).some((d) => d === 'ls -la\r');
+    assert(
+      forwarded,
+      'write() forwards operator input verbatim as an {type:"input"} frame (lease gating lives above the seam)',
+    );
+
+    client.close();
+    sandbox.close();
+  }
+
+  // --- Case 8: terminal-teardown release suppresses a second exit (4.3) --------
+  // Models the `forceFail` backstop: the task is force-failed (deadline/idle/
+  // circuit) while the liveness poller is STILL ARMED, the gateway's
+  // `unregisterSession` calls `pty.close()`, and only THEN does the session
+  // disappear (the stop took effect). The closed bridge must NOT re-fire onExit.
+  {
+    const sandbox = startFakeSandbox({ sessionAlive: true, waitExitCode: 0 });
+    await sandbox.listening;
+    const exits = [];
+    const client = new AioPtyClient(
+      'autostart-7',
+      sandbox.wsUrl,
+      sandbox.baseUrl,
+      (status) => exits.push(status),
+      'launch-or-attach',
+    );
+    await sandbox.ready;
+    await delay(120); // attached + poller armed; session still alive
+
+    // The gateway tears the session down (terminal teardown path) BEFORE the
+    // session is observed gone — exactly what unregisterSession → pty.close() does.
+    client.close();
+    // Now the session disappears (the forceFail's stop took effect).
+    sandbox.setSessionAlive(false);
+    await delay(200); // > several liveness poll ticks — but the poller is stopped
+
+    assert(
+      exits.length === 0,
+      'after close() (terminal-teardown release) a GONE session does NOT re-fire onExit (exactly-once)',
+    );
 
     sandbox.close();
   }

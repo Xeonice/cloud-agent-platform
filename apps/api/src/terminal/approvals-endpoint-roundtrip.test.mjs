@@ -114,9 +114,12 @@ console.log('\n=== orchestrator /v1/approvals endpoint round-trip ===\n');
     body: JSON.stringify(permissionFrame({ requestId: 'req-allow' })),
   }).then((r) => r.json());
 
-  // Give the controller a tick to register the pending approval on the gateway,
-  // then simulate an operator deciding through the gateway's public seam.
-  await delay(50);
+  // Wait until the in-flight HTTP POST has reached the controller and the
+  // gateway has registered the pending approval, then simulate an operator
+  // deciding through the gateway's public seam. (A fixed sleep races under
+  // full-parallel test load: the request may not have transited the HTTP
+  // server + async controller yet — poll the registration instead.)
+  await waitForPending(gateway, 'req-allow');
   const decided = gateway.onPermissionRequest; // (sanity: method exists)
   assert(typeof decided === 'function', 'T0: gateway exposes onPermissionRequest');
 
@@ -144,7 +147,7 @@ console.log('\n=== orchestrator /v1/approvals endpoint round-trip ===\n');
     body: JSON.stringify(permissionFrame({ requestId: 'req-deny' })),
   }).then((r) => r.json());
 
-  await delay(50);
+  await waitForPending(gateway, 'req-deny');
   fireOperatorDecision(gateway, 'req-deny', { behavior: 'deny', message: 'blocked' });
 
   const decision = await httpDone;
@@ -216,6 +219,22 @@ function fireOperatorDecision(gateway, requestId, decision) {
 
 function delay(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * Poll until the gateway has registered the pending approval for `requestId`
+ * (i.e. the in-flight HTTP POST has transited the server + async controller and
+ * reached `requestApproval` -> `onPermissionRequest` -> `pendingApprovals.set`).
+ * Replaces a fixed sleep that raced under full-parallel test load.
+ */
+async function waitForPending(gateway, requestId, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!gateway.pendingApprovals?.has(requestId)) {
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for pending approval ${requestId}`);
+    }
+    await delay(5);
+  }
 }
 
 // ---- summary ----

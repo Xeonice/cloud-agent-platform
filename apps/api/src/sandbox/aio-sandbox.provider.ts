@@ -76,6 +76,17 @@ export class AioSandboxProvider
   private readonly containers = new Map<string, Docker.Container>();
   /** taskId -> the connection handle returned for an already-provisioned task. */
   private readonly connections = new Map<string, SandboxConnection>();
+  /**
+   * Re-adoption (survive-api-redeploy D3): the taskIds whose RUNNING
+   * `cap-aio-<taskId>` container AND live detached `task<taskId>` tmux session
+   * were re-adopted at {@link onApplicationBootstrap} — re-registered into the
+   * provider/connection maps above rather than reaped. The guardrails recovery
+   * (Track 4) reads this via {@link listReadoptable} to DB-validate each candidate
+   * (`running`/`awaiting_input`) and re-attach the live ones; the provider itself
+   * holds no DB reference, so the DB cross-check is layered by the caller. An entry
+   * is dropped once its task settles (its handle leaves the maps via teardown).
+   */
+  private readonly readopted = new Set<string>();
 
   /**
    * @param lookup           Resolves the per-task clone URL (`task → repo.gitSource`
@@ -128,6 +139,16 @@ export class AioSandboxProvider
    * container is just larger) and the stop proceeds — never fatal.
    */
   private static readonly TRIM_TIMEOUT_MS = 10_000;
+
+  /**
+   * Upper bound on the boot-time detached-session liveness probe
+   * (survive-api-redeploy D3). `tmux has-session` over `/v1/shell/exec` is a
+   * single fast in-container command; this tight ceiling keeps an unreachable or
+   * wedged sandbox from stalling startup — on timeout the probe returns NOT alive
+   * so the container is reaped rather than re-adopted (fail toward reaping a
+   * sandbox we cannot confirm is live).
+   */
+  private static readonly SESSION_PROBE_TIMEOUT_MS = 5_000;
 
   /**
    * Reported sandbox mode, surfaced as INFORMATIONAL metadata only. The real
@@ -261,6 +282,10 @@ export class AioSandboxProvider
   async teardownSandbox(taskId: string): Promise<void> {
     const connection = this.connections.get(taskId);
     this.connections.delete(taskId);
+    // A re-adopted task that reaches a terminal state settles through here — drop
+    // it from the re-adopted set so {@link listReadoptable} reflects only tasks
+    // still held alive (a settled task is no longer re-adoptable).
+    this.readopted.delete(taskId);
     const container = this.containers.get(taskId);
     if (!container) return;
     this.containers.delete(taskId);
@@ -293,6 +318,7 @@ export class AioSandboxProvider
       this.containers.get(taskId) ??
       this.docker.getContainer(`${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`);
     this.containers.delete(taskId);
+    this.readopted.delete(taskId);
     await container.remove({ force: true }).catch(() => {
       // Already removed / never existed — fine.
     });
@@ -420,30 +446,39 @@ export class AioSandboxProvider
   }
 
   /**
-   * Reap orphaned RUNNING `cap-aio-*` containers left by a PRIOR process on
-   * startup.
+   * Boot RE-ADOPTION pass (survive-api-redeploy D3) — supersedes the old
+   * "force-remove every RUNNING `cap-aio-*` orphan" reap.
    *
-   * The per-task idle/teardown reclaim only tracks containers THIS process
-   * provisioned (its in-memory `containers` map); after a restart (deploy,
-   * crash, OOM) that map starts empty, so any RUNNING `cap-aio-*` container is an
-   * orphan whose task/session/guardrail state died with the previous process —
-   * left running it leaks host resources forever. The orchestrator owns no live
-   * session at boot (single-instance deployment: one orchestrator per docker
-   * host), so every RUNNING such container is by definition an orphan to reap.
-   * The matching stranded task rows are transitioned to `failed` separately by
-   * the tasks service on startup.
+   * Because codex now runs in a DETACHED named tmux session (`task<taskId>`) that
+   * outlives the orchestrator's `/v1/shell/ws` connection, a RUNNING `cap-aio-*`
+   * container left by a prior process is NOT automatically an orphan: its codex
+   * may still be executing. So on boot we list RUNNING `cap-aio-*`, parse each
+   * `taskId`, and probe the detached session via {@link hasLiveSession}
+   * (`tmux has-session -t task<taskId>` over the container's own
+   * `/v1/shell/exec` — the Track-2 has-session check, issued as the provider's
+   * OWN exec call, not a shared-file edit):
+   *   - LIVE session  → RE-ADOPT: re-register the provider/connection maps and
+   *     mark the task in {@link readopted} so the guardrails recovery (Track 4)
+   *     can DB-validate it (`running`/`awaiting_input`) and re-attach its
+   *     terminal (the re-attach is orchestrated by 4.2 via guardrails — the
+   *     provider holds no gateway reference). The container is SPARED.
+   *   - NO live session → FORCE-REMOVE: a RUNNING container whose codex session is
+   *     gone is a true orphan (its task/session state died with the prior process
+   *     or codex already exited without settling), so it is reaped to avoid
+   *     leaking host resources. The matching stranded task row is failed by the
+   *     tasks service Phase 1 (which excludes the re-adopted tasks).
    *
-   * RETENTION (D1): STOPPED `cap-aio-*` containers are NOT orphans — they are
-   * intentionally-kept settled sandboxes the history-replay page reads from. So
-   * this filters `status: ['running']` and never touches `Exited` containers; a
-   * Dokploy redeploy / api restart must not wipe the kept history. The retention
-   * cleaner (not this reap) is the only path that removes stopped containers.
+   * RETENTION (D1): STOPPED `cap-aio-*` containers are NOT touched — they are
+   * intentionally-kept settled sandboxes the history-replay page reads from. This
+   * filters `status: ['running']` and never lists `Exited` containers; a Dokploy
+   * redeploy / api restart must not wipe the kept history (the retention cleaner
+   * is the only path that removes stopped containers).
    *
    * Best-effort and never throws: a docker hiccup must not block app startup.
    */
   async onApplicationBootstrap(): Promise<void> {
     try {
-      const orphans = await this.docker.listContainers({
+      const running = await this.docker.listContainers({
         // Only running containers: `all` defaults to false, but be explicit so
         // the retention intent (spare stopped/`Exited` history) is unmistakable.
         all: false,
@@ -452,35 +487,169 @@ export class AioSandboxProvider
           status: ['running'],
         },
       });
-      if (orphans.length === 0) return;
+      if (running.length === 0) return;
+
+      let readopted = 0;
+      let reaped = 0;
       await Promise.all(
-        orphans.map((info) =>
-          this.docker
+        running.map(async (info) => {
+          const taskId = AioSandboxProvider.parseTaskId(info.Names);
+          // Could not parse a taskId from any of the container's names → treat as
+          // an unknown/foreign container and reap it (it cannot be re-adopted).
+          if (taskId && (await this.hasLiveSession(taskId))) {
+            // RE-ADOPT: re-register the maps so this process owns the still-running
+            // sandbox again; Track 4 DB-validates + re-attaches the terminal.
+            this.reregister(taskId);
+            this.readopted.add(taskId);
+            readopted += 1;
+            return;
+          }
+          // FORCE-REMOVE: RUNNING but no live codex session → true orphan.
+          await this.docker
             .getContainer(info.Id)
             .remove({ force: true })
-            .catch(() => undefined),
-        ),
+            .catch(() => undefined);
+          reaped += 1;
+        }),
       );
-      this.logger.warn(
-        `startup reap: removed ${orphans.length} orphaned RUNNING ` +
-          `${AioSandboxProvider.CONTAINER_PREFIX}* sandbox container(s) from a prior process ` +
+
+      this.logger.log(
+        `startup re-adoption: re-adopted ${readopted} still-running ` +
+          `${AioSandboxProvider.CONTAINER_PREFIX}* sandbox(es) with a live codex session, ` +
+          `force-removed ${reaped} orphan(s) with no live task ` +
           `(stopped containers spared as retained history)`,
       );
     } catch (err) {
       this.logger.warn(
-        `startup reap of orphaned sandboxes failed (continuing): ${
+        `startup re-adoption of running sandboxes failed (continuing): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
     }
   }
 
-  /** Stop every provisioned container on app shutdown so none is orphaned. */
-  async onModuleDestroy(): Promise<void> {
-    const containers = [...this.containers.values()];
+  /**
+   * NON-DESTRUCTIVE shutdown (survive-api-redeploy D5). On api shutdown
+   * (SIGTERM / `onModuleDestroy`) RELEASE the in-memory handles WITHOUT stopping
+   * the provisioned `cap-aio-*` containers, so the next api process re-adopts the
+   * still-running sandboxes ({@link onApplicationBootstrap}) and the in-flight
+   * tasks survive the redeploy.
+   *
+   * This deliberately NO LONGER stops containers here — the old "stop every
+   * provisioned container on shutdown" behavior is what welded a task's life to
+   * the api process. The stop-only retention teardown (with pre-stop credential
+   * zeroing) on a REAL terminal task ({@link teardownSandbox}) is unchanged and
+   * still runs on the normal teardown path; only this shutdown hook is now inert
+   * with respect to the running sandboxes.
+   */
+  onModuleDestroy(): void {
     this.containers.clear();
     this.connections.clear();
-    await Promise.all(containers.map((c) => c.stop({ t: 0 }).catch(() => undefined)));
+    this.readopted.clear();
+  }
+
+  /**
+   * The taskIds re-adopted at {@link onApplicationBootstrap} — RUNNING
+   * `cap-aio-<taskId>` containers whose detached `task<taskId>` codex session was
+   * still alive — surfaced for the guardrails recovery (Track 4). The caller
+   * DB-validates each (only `running`/`awaiting_input` rows are genuinely
+   * re-adoptable) and calls {@link reattach} for the survivors. Returns a fresh
+   * array snapshot so the caller cannot mutate the provider's internal set.
+   */
+  listReadoptable(): string[] {
+    return [...this.readopted];
+  }
+
+  /**
+   * Re-attach a single re-adopted task's sandbox by container name (the guardrails
+   * recovery surface, Track 4). Idempotent: re-registers the provider/connection
+   * maps for `cap-aio-<taskId>` (a no-op when already registered) and returns the
+   * addressable {@link SandboxConnection} the caller hands to the terminal gateway
+   * so it dials the live session OUT and re-attaches. Returns `null` when the task
+   * was not among the boot-time re-adopted set (nothing to re-attach).
+   */
+  reattach(taskId: string): SandboxConnection | null {
+    if (!this.readopted.has(taskId)) return null;
+    this.reregister(taskId);
+    return this.connections.get(taskId) ?? null;
+  }
+
+  /**
+   * Re-register the provider/connection maps for an already-RUNNING
+   * `cap-aio-<taskId>` container this process did not provision (re-adoption /
+   * re-attach). The container handle is addressed by its deterministic name and
+   * the {@link SandboxConnection} reconstructed from the same name → URLs the
+   * gateway dials, so a re-adopted task is indistinguishable from a freshly
+   * provisioned one to every consumer. Idempotent.
+   */
+  private reregister(taskId: string): void {
+    if (!this.containers.has(taskId)) {
+      this.containers.set(
+        taskId,
+        this.docker.getContainer(
+          `${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`,
+        ),
+      );
+    }
+    if (!this.connections.has(taskId)) {
+      const containerName = `${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`;
+      this.connections.set(taskId, {
+        taskId,
+        baseUrl: `http://${containerName}:${AioSandboxProvider.AIO_PORT}`,
+        wsUrl: `ws://${containerName}:${AioSandboxProvider.AIO_PORT}/v1/shell/ws`,
+      });
+    }
+  }
+
+  /**
+   * Whether the task's DETACHED codex session is still alive — the Track-2
+   * `has-session` liveness check, issued as the provider's OWN
+   * `POST /v1/shell/exec` running `tmux has-session -t task<taskId>` (exit 0 when
+   * the session exists). This is a CONSUMED contract, not a shared-file edit: the
+   * provider already reaches the sandbox HTTP API directly elsewhere
+   * (readiness/clone/auth), so probing liveness over the same surface keeps this
+   * track's file set disjoint from the terminal module. A non-zero exit, a
+   * non-`ok` HTTP status, or any transport error is treated as NOT alive (so a
+   * wedged/unreachable sandbox is reaped, never re-adopted). Never throws.
+   */
+  private async hasLiveSession(taskId: string): Promise<boolean> {
+    const containerName = `${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`;
+    const baseUrl = `http://${containerName}:${AioSandboxProvider.AIO_PORT}`;
+    const command = `tmux has-session -t task${taskId}`;
+    try {
+      const res = await fetch(`${baseUrl}/v1/shell/exec`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command }),
+        signal: AbortSignal.timeout(AioSandboxProvider.SESSION_PROBE_TIMEOUT_MS),
+      });
+      if (!res.ok) return false;
+      const { exitCode } = AioSandboxProvider.parseExecResult(
+        await res.json().catch(() => undefined),
+      );
+      return exitCode === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Parse the `taskId` out of a docker container's `Names` (the `listContainers`
+   * shape gives leading-slash names, e.g. `/cap-aio-<taskId>`). Returns the first
+   * name that matches the `cap-aio-` prefix with a non-empty suffix, or `null`
+   * when none does (a foreign / unparseable container that cannot be re-adopted).
+   */
+  private static parseTaskId(names: readonly string[] | undefined): string | null {
+    for (const raw of names ?? []) {
+      const name = raw.startsWith('/') ? raw.slice(1) : raw;
+      if (
+        name.startsWith(AioSandboxProvider.CONTAINER_PREFIX) &&
+        name.length > AioSandboxProvider.CONTAINER_PREFIX.length
+      ) {
+        return name.slice(AioSandboxProvider.CONTAINER_PREFIX.length);
+      }
+    }
+    return null;
   }
 
   /**

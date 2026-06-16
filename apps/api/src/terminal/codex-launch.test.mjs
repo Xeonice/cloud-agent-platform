@@ -68,7 +68,13 @@ function compile() {
 
 async function main() {
   const mod = await import(pathToFileURL(compile()).href);
-  const { buildCodexLaunchLine, argvDisablesHooks, CODEX_PROMPT_FILE_PATH } = mod;
+  const {
+    buildCodexLaunchLine,
+    buildDetachedCodexLaunchLine,
+    detachedSessionName,
+    argvDisablesHooks,
+    CODEX_PROMPT_FILE_PATH,
+  } = mod;
 
   const BASE =
     'codex -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
@@ -107,6 +113,40 @@ async function main() {
   );
   // 2>/dev/null guards a missing file so it degrades to a blank composer.
   assert(line.includes('2>/dev/null'), 'missing prompt file is tolerated (2>/dev/null)');
+
+  // ---- detachedSessionName: deterministic `task<taskId>` --------------------
+  assert(
+    detachedSessionName('b3ee3f63') === 'taskb3ee3f63',
+    'detached session name is `task<taskId>`',
+  );
+
+  // ---- buildDetachedCodexLaunchLine: WRAPS the in-shell line in detached tmux
+  const detached = buildDetachedCodexLaunchLine('b3ee3f63', BASE);
+  assert(
+    detached.startsWith('tmux new-session -d -s taskb3ee3f63 '),
+    'detached launch creates a DETACHED named session `task<taskId>` (survive WS close)',
+  );
+  assert(
+    detached.includes('-c /home/gem/workspace'),
+    'detached session cwd is the cloned task repo (/home/gem/workspace)',
+  );
+  // The inner codex launch line is wrapped VERBATIM (prompt-injection contract
+  // unchanged WITHIN the detached session) as a single-quoted tmux argument.
+  assert(
+    detached.includes(`'${line}'`),
+    'detached launch wraps the existing in-shell codex launch line verbatim',
+  );
+  assert(
+    detached.includes(`cat ${CODEX_PROMPT_FILE_PATH}`) &&
+      detached.includes('if [ -n "$P" ]'),
+    'detached launch preserves the `"$(cat …)"` positional prompt contract',
+  );
+  // The hook-disabling guard inspects ONLY the fixed argv; wrapping in tmux must
+  // not change what the guard sees, and the BASE argv is still NOT flagged.
+  assert(
+    argvDisablesHooks(BASE) === false,
+    'wrapping in detached tmux does not change the hook-disabling guard verdict',
+  );
 
   console.log(`\n${passed} passed, ${failed} failed`);
 }

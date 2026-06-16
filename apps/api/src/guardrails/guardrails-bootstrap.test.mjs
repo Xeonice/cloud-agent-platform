@@ -95,7 +95,9 @@ class ConcurrencySemaphore {
 
 class GuardrailsBootstrapHarness {
   /**
-   * @param config  `{ maxConcurrentTasks }` — the env-resolved construction seed.
+   * @param config  `{ maxConcurrentTasks, defaultIdleTimeoutMs?, onAdmit? }` —
+   *                the env-resolved construction seed (+ optional operator idle
+   *                default, mirroring `GuardrailsService`).
    * @param prisma  optional `{ systemSettings: { findFirst() } }` slice, or
    *                undefined for a guardrails-only context without a database.
    */
@@ -106,11 +108,39 @@ class GuardrailsBootstrapHarness {
     });
     this.prisma = prisma;
     this.warnings = []; // mirrors logger.warn on a failed read (swallowed)
+    // Mirror the operator-level idle default + the in-memory maps/recorders the
+    // real `readopt` touches, so the re-adoption seam is exercised faithfully.
+    this.defaultIdleTimeoutMs = config.defaultIdleTimeoutMs ?? null;
+    this.connections = new Map(); // taskId -> connection handle (captured)
+    this.attached = []; // taskId — gateway.openSession (attach-to-live) calls
+    this.armedIdle = new Map(); // taskId -> idle ceiling armed
+    this.armedDeadline = new Map(); // taskId -> deadline armed
+    this.runnerStarted = []; // taskId — runner-minutes interval opened
   }
 
   /** Mirrors `GuardrailsService.setMaxConcurrentTasks` (pass-through). */
   setMaxConcurrentTasks(maxConcurrentTasks) {
     this.semaphore.setMaxConcurrentTasks(maxConcurrentTasks);
+  }
+
+  /**
+   * Mirrors `GuardrailsService.readopt` (survive-api-redeploy 4.1): re-account
+   * the slot via `offer()`, capture the connection handle, re-attach the
+   * terminal (gateway.openSession), and re-arm the idle/deadline watchers from
+   * the persisted params — with NO lifecycle transition and NO fresh provision.
+   */
+  readopt(taskId, connection, params = {}) {
+    this.semaphore.offer(taskId);
+    this.connections.set(taskId, connection);
+    this.attached.push(taskId);
+    const idleMs = params.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
+    if (idleMs !== undefined) {
+      this.armedIdle.set(taskId, idleMs);
+    }
+    if (params.deadlineMs !== undefined) {
+      this.armedDeadline.set(taskId, params.deadlineMs);
+    }
+    this.runnerStarted.push(taskId);
   }
 
   /** Mirrors `GuardrailsService.loadPersistedCeiling`. */
@@ -256,6 +286,73 @@ console.log('\n=== Guardrails bootstrap: persisted ceiling load ===\n');
   const second = await svc.loadPersistedCeiling();
   assert(first === 2 && second === 2, 'T8a: repeated loads converge on the persisted ceiling (2)');
   assert(svc.semaphore.runningCount === 0 && svc.semaphore.queuedCount === 0, 'T8b: repeated loads mutate no admission state');
+}
+
+// ---- re-adoption (survive-api-redeploy guardrails-recovery 4.1) ----
+
+console.log('\n=== Guardrails re-adoption: readopt holds a slot + re-arms timers ===\n');
+
+const conn = (taskId) => ({
+  taskId,
+  baseUrl: `http://cap-aio-${taskId}:8080`,
+  wsUrl: `ws://cap-aio-${taskId}:8080/v1/shell/ws`,
+});
+
+// R1: a live-session task is re-adopted — slot held, terminal re-attached,
+//     deadline + idle watchers armed from the PERSISTED params, runner started.
+{
+  const svc = new GuardrailsBootstrapHarness({ maxConcurrentTasks: seedMaxConcurrentTasks('5') });
+  svc.readopt('t-live', conn('t-live'), { deadlineMs: 60000, idleTimeoutMs: 30000 });
+
+  assert(svc.semaphore.isRunning?.('t-live') ?? svc.semaphore.runningCount === 1, 'R1a: re-adopt holds a running slot');
+  assert(svc.semaphore.runningCount === 1 && svc.semaphore.queuedCount === 0, 'R1b: exactly one slot accounted, none queued');
+  assert(svc.connections.get('t-live')?.wsUrl === conn('t-live').wsUrl, 'R1c: the surviving connection handle is captured');
+  assert(svc.attached.length === 1 && svc.attached[0] === 't-live', 'R1d: the terminal is re-attached (openSession) once');
+  assert(svc.armedDeadline.get('t-live') === 60000, 'R1e: deadline re-armed from persisted deadlineMs');
+  assert(svc.armedIdle.get('t-live') === 30000, 'R1f: idle re-armed from persisted idleTimeoutMs');
+  assert(svc.runnerStarted.includes('t-live'), 'R1g: runner-minutes interval re-opened');
+}
+
+// R2: re-adopt with NO persisted params — no deadline, idle left to the
+//     operator-level default (off when unset): no fabricated watcher values.
+{
+  const svc = new GuardrailsBootstrapHarness({ maxConcurrentTasks: seedMaxConcurrentTasks('5') });
+  svc.readopt('t-bare', conn('t-bare'), {});
+
+  assert(svc.semaphore.runningCount === 1, 'R2a: slot still held without params');
+  assert(!svc.armedDeadline.has('t-bare'), 'R2b: no deadline armed when none persisted');
+  assert(!svc.armedIdle.has('t-bare'), 'R2c: idle NOT armed (no per-task value, operator default off)');
+}
+
+// R3: an operator-level idle default arms idle on re-adopt even with no per-task
+//     idleTimeoutMs (mirrors `idleTimeoutMs ?? defaultIdleTimeoutMs`).
+{
+  const svc = new GuardrailsBootstrapHarness({
+    maxConcurrentTasks: seedMaxConcurrentTasks('5'),
+    defaultIdleTimeoutMs: 45000,
+  });
+  svc.readopt('t-def', conn('t-def'), { deadlineMs: undefined, idleTimeoutMs: undefined });
+  assert(svc.armedIdle.get('t-def') === 45000, 'R3a: idle arms from the operator-level default on re-adopt');
+}
+
+// R4: re-adopted slots reduce the capacity the later queued re-offer admits
+//     against — with ceiling 2 and one re-adopted task, only ONE queued task is
+//     admitted, the rest stay queued (the slot-accounting that 4.2 relies on).
+{
+  const admitted = [];
+  const svc = new GuardrailsBootstrapHarness({
+    maxConcurrentTasks: seedMaxConcurrentTasks('2'),
+    onAdmit: (id) => admitted.push(id),
+  });
+  // Phase 0: re-adopt one survivor (takes a slot, no admit callback).
+  svc.readopt('survivor', conn('survivor'), {});
+  // Phase 2: re-offer two queued tasks against the remaining capacity.
+  const o1 = svc.semaphore.offer('q1');
+  const o2 = svc.semaphore.offer('q2');
+
+  assert(svc.semaphore.runningCount === 2, 'R4a: ceiling 2 = 1 re-adopted + 1 admitted from the queue');
+  assert(o1 === 'running' && o2 === 'queued', 'R4b: capacity reduced by the re-adopted slot (only q1 admitted)');
+  assert(svc.semaphore.queuedCount === 1, 'R4c: q2 stays queued behind the re-adopted slot');
 }
 
 // ---- summary ----

@@ -229,7 +229,7 @@ it. Therefore:
 Without this backup policy "permanent queryability" holds only against container
 reaping, NOT against host loss.
 
-### e2e verification at deploy (before flipping the console flag)
+### e2e verification at deploy (before flipping the console flag, transcripts)
 
 After deploying the durable-first read path, verify against the live api with a
 RETAINED sandbox, then flip the web `capabilities.ts` `sessionHistory` flag:
@@ -245,6 +245,65 @@ RETAINED sandbox, then flip the web `capabilities.ts` `sessionHistory` flag:
 4. Once confirmed, set `sessionHistory: true` in
    `apps/web/src/lib/api/capabilities.ts` and confirm the console renders the real
    durable-first transcript.
+
+---
+
+## 10. Backend redeploys now PRESERVE running tasks (sandbox re-adoption)
+
+`survive-api-redeploy` decouples a running task's lifetime from the api process.
+Codex no longer runs as a foreground child of the terminal WebSocket — it runs in
+a **detached, named tmux session** (`task<taskId>`) inside its per-task
+`cap-aio-<taskId>` sandbox container. Because that session is a child of the
+container's tmux daemon, it KEEPS RUNNING when the api process exits or the
+terminal WS closes. On the next boot the api **re-adopts** it instead of killing
+it:
+
+- **Non-destructive shutdown.** On `SIGTERM`/`onModuleDestroy` the api releases
+  its in-memory sandbox handles WITHOUT stopping the provisioned containers, so
+  the next process can find them. (The stop-only retention teardown for a task
+  that genuinely reached a terminal state is unchanged.)
+- **Re-adopt on boot (PHASE 0, before reclaim).** `onApplicationBootstrap` lists
+  RUNNING `cap-aio-*` containers, parses each `taskId`, and re-adopts it when it
+  matches a `running`/`awaiting_input` DB row AND its tmux session is still alive
+  (`tmux has-session -t task<taskId>`). A re-adopted task KEEPS its state, holds
+  its concurrency slot, and re-arms its deadline/idle watchers from the persisted
+  values. The operator terminal reconnects by ATTACHING to the live session
+  (`tmux attach`) with `session.log` snapshot + tail replay, rather than launching
+  a fresh codex.
+- **Only genuine orphans are force-failed.** A RUNNING container with no matching
+  live task — and a `running`/`awaiting_input` DB task whose session is gone — is
+  reclaimed (force-failed, slot freed). The queued re-offer admits against
+  capacity REDUCED by the re-adopted slots, so re-adoption never over-commits the
+  concurrency ceiling. A re-adopted task that later ends is detected by liveness
+  polling (the named session disappearing) and transitions through the normal
+  terminal path EXACTLY ONCE, freeing its slot (idle/deadline reclamation remains
+  a backstop).
+
+> ⚠️ **The FIRST deploy shipping this change still interrupts then-running tasks.**
+> Re-adoption only works for tasks that were ALREADY launched into a detached tmux
+> session, i.e. by an api that already had this change. The api you are replacing
+> ran codex in-foreground, so its in-flight tasks have NO detached session to
+> survive the restart and will be reclaimed (force-failed) on the new api's boot.
+> **Ship this change on an EMPTY queue** (no `running`/`awaiting_input` tasks) so
+> the cutover interrupts nothing. Every redeploy AFTER this one preserves running
+> tasks.
+
+### e2e verification at deploy (redeploy survival, 5.2)
+
+Run this against the live api ONLY WHEN THE QUEUE IS EMPTY (the first deploy of
+this change still interrupts running tasks — see the warning above):
+
+1. Start a task and let codex begin working (task is `running`, terminal streaming).
+2. Redeploy / restart the api mid-run (`docker compose --profile proxy up -d
+   --build`, or restart just the `api` service).
+3. Confirm codex KEPT RUNNING through the restart: the `cap-aio-<taskId>` container
+   is still up and `docker exec cap-aio-<taskId> tmux has-session -t task<taskId>`
+   succeeds.
+4. Confirm the new api RE-ADOPTED it: the task is still `running` (not failed),
+   it still holds its slot, and reopening the operator terminal reconnects via the
+   `session.log` replay to the live session (codex's in-progress output is intact).
+5. Confirm the task proceeds to its natural terminal state and frees its slot
+   exactly once.
 
 ---
 

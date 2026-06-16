@@ -174,6 +174,18 @@ export interface TerminalPty extends PausablePty {
    * reachable at runtime.
    */
   resize(cols: number, rows: number): void;
+  /**
+   * Release the bridge's resources WITHOUT terminating the task
+   * (survive-api-redeploy D5 / 4.3): stop the liveness poller and close the
+   * outbound WS, leaving the DETACHED tmux session running. Called by
+   * {@link TerminalGateway.unregisterSession} on terminal teardown so the
+   * bridge's liveness poller can no longer fire a SECOND `onSessionExit` after
+   * the task has already been transitioned (e.g. a deadline/idle `forceFail`
+   * backstop stopped the sandbox while the poller was still armed). Optional so
+   * transport-only `TerminalPty` fakes need not implement it; the
+   * {@link AioPtyClient} provides it.
+   */
+  close?(): void;
 }
 
 /**
@@ -333,6 +345,20 @@ export class TerminalGateway
   }
 
   unregisterSession(taskId: string): void {
+    const session = this.sessions.get(taskId);
+    // 4.3 — release the bridge BEFORE dropping the session so a re-adopted (or
+    // freshly-launched) task that ends drives the normal `onTerminal`/`recordExit`
+    // path EXACTLY ONCE. `unregisterSession` is only reached from a TERMINAL
+    // teardown (`onTerminal` after a clean exit, or a `forceFail` backstop after a
+    // deadline/idle/circuit trip), at which point the task is already transitioned.
+    // Closing the `AioPtyClient` here stops its liveness poller + outbound WS, so a
+    // poller that is still armed (a `forceFail` stopped the sandbox while the WS was
+    // attached) cannot observe the now-gone session and fire a SECOND
+    // `onSessionExit` → `recordExit`. `close()` is the D5 release-without-terminate
+    // path: it never resolves an exit, so it is safe to call after the transition.
+    // Idempotent: the bridge guards its own teardown; a missing `close` (transport
+    // fake) is a no-op.
+    session?.pty.close?.();
     this.sessions.delete(taskId);
     // Drop the session.log append state; the file itself persists on the volume
     // for post-mortem / restart reconnect (multi-target-deploy persistent volume).
@@ -694,11 +720,19 @@ export class TerminalGateway
    * periodic snapshots carry the actual visible frame, alongside byte-offset
    * tracking + tail-replay. Idempotent for an already-open task.
    *
-   * Exit detection (design D): when the sandbox terminal WS closes, the
-   * `AioPtyClient` resolves the exit status and invokes the gateway's
-   * `onSessionExit` hook so the guardrails mapping (zero → `recordSuccess`,
-   * non-zero/abnormal → `recordFailure`) can be applied. That mapping itself is
-   * wired in the guardrails track; here we only expose the resolved status.
+   * Create-vs-attach (survive-api-redeploy D2 / 2.5): the {@link AioPtyClient} is
+   * opened in `'launch-or-attach'` mode, so once the AIO shell is `ready` it probes
+   * whether the detached session `task<taskId>` is already alive — ATTACHING to a
+   * still-running codex (operator reconnect / freshly-booted api re-adoption) or
+   * launching a FRESH detached session as the fallback. This single seam serves
+   * both first launch and re-adoption.
+   *
+   * Exit detection (D4): a WS close NO LONGER terminates the task — it only
+   * detaches; the detached codex keeps running for re-adoption. The `AioPtyClient`
+   * polls the named session's liveness and invokes the gateway's `onSessionExit`
+   * hook ONLY when the session is observed GONE, so the guardrails mapping
+   * (zero → `recordSuccess`, non-zero/abnormal → `recordFailure`) is applied at the
+   * true termination, not on an operator disconnect or an api restart.
    *
    * @returns the registered {@link TerminalSession}, so the caller can hold the
    *          handle if needed.
@@ -719,12 +753,13 @@ export class TerminalGateway
       wsUrl,
       baseUrl,
       (status) => this.onSessionExit(taskId, status),
-      // Connect-in execution trigger: auto-launch codex once the sandbox
-      // terminal reports `ready`. provision() has already injected the codex
-      // auth.json into the container by the time we get here, so codex
-      // authenticates on startup. This is the call site that was missing —
-      // without it codex was never launched.
-      true,
+      // Connect-in execution trigger with create-vs-attach (D2 / 2.5): once the
+      // AIO shell is ready, probe the detached session `task<taskId>` — ATTACH if
+      // it is already alive (re-adopt a still-running codex), else launch a FRESH
+      // detached session. provision() has already injected the codex auth.json into
+      // the container by the time we get here, so a fresh launch authenticates on
+      // startup.
+      'launch-or-attach',
     );
     const session: TerminalSession = { taskId, pty, snapshots };
     this.registerSession(session);
@@ -750,12 +785,14 @@ export class TerminalGateway
   }
 
   /**
-   * Invoked when an {@link AioPtyClient} resolves a task's exit status after the
-   * sandbox terminal WS closes. Applies the guardrails outcome mapping (4.3): a
-   * ZERO exit maps to `recordSuccess`, a NON-ZERO/unresolved/abnormal exit maps
-   * to `recordFailure`. The {@link AioExitStatus} the bridge resolves is
-   * structurally compatible with the guardrails `ExitStatus`, so it is passed
-   * straight through to `recordExit`, which owns the zero/non-zero rule.
+   * Invoked when an {@link AioPtyClient} resolves a task's exit status because its
+   * detached named tmux session was observed GONE by the liveness poller (D4) —
+   * NOT on a mere WS close (an operator disconnect / api restart leaves the session
+   * alive for re-adoption and never reaches here). Applies the guardrails outcome
+   * mapping (4.3): a ZERO exit maps to `recordSuccess`, a NON-ZERO/unresolved/
+   * abnormal exit maps to `recordFailure`. The {@link AioExitStatus} the bridge
+   * resolves is structurally compatible with the guardrails `ExitStatus`, so it is
+   * passed straight through to `recordExit`, which owns the zero/non-zero rule.
    */
   protected onSessionExit(taskId: string, status: AioExitStatus): void {
     this.logger.debug(

@@ -935,82 +935,170 @@ try {
       assert(text === null, 'readRolloutFromContainer returns null when the container/rollout is gone');
     }
 
-    // ---- startup reap: orphaned cap-aio-* containers from a prior process ----
-    // onApplicationBootstrap lists every cap-aio-* container and force-removes it
-    // (after a restart the orchestrator owns no live session, so all are orphans).
+    // ---- 3.x: boot RE-ADOPTION — keep live-session sandboxes, reap only no-live ----
+    // onApplicationBootstrap now lists RUNNING cap-aio-* and, per container, probes
+    // the detached `task<taskId>` tmux session via POST /v1/shell/exec
+    // (`tmux has-session`): a LIVE session is re-adopted (re-registered, NOT
+    // removed); a RUNNING container with NO live session is force-removed; stopped
+    // retained history is never even listed (status:['running'] filter).
     {
+      // A fetch mock that answers the has-session probe per task: task-live exits 0
+      // (alive), task-dead exits non-zero (gone). Any other exec is exit 0.
+      const orig = globalThis.fetch;
+      const probed = [];
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          const cmd = JSON.parse(init.body).command;
+          if (cmd.startsWith('tmux has-session')) {
+            probed.push({ url: u, cmd });
+            // Alive when the probe targets the live task's named session.
+            const exit_code = cmd.includes('task-live') ? 0 : 1;
+            return { ok: true, status: 200, async json() { return { data: { exit_code, output: '' } }; } };
+          }
+          return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+
       const removed = [];
       let listFilter;
       let listAll;
-      const reapDocker = {
+      const readoptDocker = {
         async listContainers(options) {
           listFilter = options?.filters;
           listAll = options?.all;
-          // The mock returns only what a `status:['running']` query would: stopped
-          // retained history is never listed, so it is never reaped.
-          return [{ Id: 'orphan-1' }, { Id: 'orphan-2' }];
+          // Only RUNNING cap-aio-* are listed (status:['running']); stopped
+          // retained history is never returned here, so it is never reaped. One
+          // container has a live codex session (re-adopt), one does not (reap).
+          return [
+            { Id: 'id-live', Names: ['/cap-aio-task-live'] },
+            { Id: 'id-dead', Names: ['/cap-aio-task-dead'] },
+          ];
         },
         getContainer(id) {
           return {
+            // dockerode addresses both by Id (reap path) and by name (reregister).
             async remove() {
               removed.push(id);
+            },
+            async stop() {
+              throw new Error('shutdown must not stop a re-adopted container');
             },
           };
         },
       };
-      const pReap = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
-      pReap.docker = reapDocker;
-      await pReap.onApplicationBootstrap();
+      const pReadopt = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      pReadopt.docker = readoptDocker;
+      try {
+        await pReadopt.onApplicationBootstrap();
+      } finally {
+        globalThis.fetch = orig;
+      }
+
       assert(
         Array.isArray(listFilter?.name) &&
           listFilter.name.some((n) => n.includes('cap-aio-')),
-        'startup reap lists containers filtered by the cap-aio- name prefix',
+        'boot re-adoption lists containers filtered by the cap-aio- name prefix',
       );
       assert(
         Array.isArray(listFilter?.status) && listFilter.status.includes('running'),
-        'startup reap lists ONLY running containers (retention: stopped history is spared)',
+        'boot re-adoption lists ONLY running containers (retention: stopped history is spared)',
+      );
+      assert(listAll === false, 'boot re-adoption does not list stopped containers (all:false)');
+      assert(
+        probed.some((p) => p.cmd === 'tmux has-session -t tasktask-live') &&
+          probed.some((p) => p.cmd === 'tmux has-session -t tasktask-dead'),
+        'boot re-adoption probes each RUNNING container with tmux has-session -t task<taskId>',
       );
       assert(
-        listAll === false,
-        'startup reap does not list stopped containers (all:false)',
+        removed.length === 1 && removed.includes('id-dead') && !removed.includes('id-live'),
+        'boot re-adoption force-removes ONLY the running orphan with no live session (live one spared)',
       );
       assert(
-        removed.length === 2 && removed.includes('orphan-1') && removed.includes('orphan-2'),
-        'startup reap force-removes every orphaned RUNNING cap-aio-* container',
+        pReadopt.listReadoptable().includes('task-live') &&
+          !pReadopt.listReadoptable().includes('task-dead'),
+        'the live-session task is surfaced as re-adoptable; the dead one is not',
       );
 
-      // No orphans -> nothing removed, no throw.
+      // reattach(taskId) returns the addressable handle for a re-adopted task, and
+      // null for an unknown one (nothing to re-attach).
+      const handle = pReadopt.reattach('task-live');
+      assert(
+        handle &&
+          handle.taskId === 'task-live' &&
+          handle.baseUrl === 'http://cap-aio-task-live:8080' &&
+          handle.wsUrl === 'ws://cap-aio-task-live:8080/v1/shell/ws',
+        'reattach re-registers a re-adopted task and returns its addressable connection',
+      );
+      assert(
+        pReadopt.reattach('task-unknown') === null,
+        'reattach returns null for a task that was not re-adopted at boot',
+      );
+
+      // D5 — shutdown is NON-destructive: release in-memory handles WITHOUT stopping
+      // the re-adopted running container (its getContainer().stop throws if called).
+      let destroyThrew = false;
+      try {
+        pReadopt.onModuleDestroy();
+      } catch {
+        destroyThrew = true;
+      }
+      assert(!destroyThrew, 'onModuleDestroy does not stop provisioned/re-adopted sandboxes (handles released only)');
+      assert(
+        pReadopt.listReadoptable().length === 0,
+        'onModuleDestroy releases the in-memory re-adopted handles',
+      );
+    }
+
+    // ---- D5: shutdown does NOT stop a freshly-provisioned running sandbox --------
+    // A normally-provisioned container must survive onModuleDestroy so the next
+    // process re-adopts it; the old "stop every container on shutdown" is gone.
+    {
+      const c = makeFakeContainer();
+      const p = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      p.docker = makeFakeDocker(c);
+      await p.provision({ taskId: 'task-survive-shutdown' });
+      assert(c.calls.started === 1, 'sandbox provisioned + started before shutdown');
+      p.onModuleDestroy();
+      assert(
+        c.calls.stopped === 0 && c.calls.removed === 0,
+        'onModuleDestroy leaves the running sandbox container alive (not stopped/removed)',
+      );
+    }
+
+    // ---- boot re-adoption with no running containers — nothing reaped, no throw --
+    {
       const removed2 = [];
-      const pReap2 = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
-      pReap2.docker = {
+      const pNone = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      pNone.docker = {
         async listContainers() {
           return [];
         },
         getContainer() {
-          return {
-            async remove() {
-              removed2.push(1);
-            },
-          };
+          return { async remove() { removed2.push(1); } };
         },
       };
-      await pReap2.onApplicationBootstrap();
-      assert(removed2.length === 0, 'startup reap removes nothing when there are no orphans');
+      await pNone.onApplicationBootstrap();
+      assert(removed2.length === 0, 'boot re-adoption removes nothing when there are no running containers');
+      assert(pNone.listReadoptable().length === 0, 'no running containers → nothing re-adopted');
+    }
 
-      // A docker failure during reap is swallowed (never blocks app startup).
-      const pReap3 = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
-      pReap3.docker = {
+    // ---- a docker failure during boot re-adoption is swallowed (never blocks boot)
+    {
+      const pErr = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      pErr.docker = {
         async listContainers() {
           throw new Error('docker down');
         },
       };
-      let reapThrew = false;
+      let readoptThrew = false;
       try {
-        await pReap3.onApplicationBootstrap();
+        await pErr.onApplicationBootstrap();
       } catch {
-        reapThrew = true;
+        readoptThrew = true;
       }
-      assert(!reapThrew, 'startup reap swallows docker errors (never blocks app startup)');
+      assert(!readoptThrew, 'boot re-adoption swallows docker errors (never blocks app startup)');
     }
   } finally {
     fetchMock.restore();

@@ -141,6 +141,17 @@ RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
 RUN npm install -g "@fission-ai/openspec@${OPENSPEC_VERSION}" \
   && openspec --version
 
+# --- tmux build-time guarantee (survive-api-redeploy, image-guarantee) ------
+# The detached-session sidestep this image enables (codex launched in a detached
+# NAMED tmux session that outlives the terminal WebSocket) DEPENDS on tmux being
+# present in the sandbox. tmux 3.2a is ALREADY in the pinned AIO base above — this
+# layer is INSURANCE: if a future base bump (AIO_SANDBOX_TAG) silently drops tmux,
+# this build-time check fails the IMAGE BUILD (loud, early) rather than letting a
+# tmux-less image reach production where every detached launch/re-adoption would
+# break (design Risk: "tmux socket / image drift"). When tmux is already present
+# (the expected case) the `command -v tmux` short-circuits and nothing installs.
+RUN command -v tmux >/dev/null 2>&1 || (apt-get update && apt-get install -y tmux && rm -rf /var/lib/apt/lists/*)
+
 # Ship ONLY the slim hook runtime (close-aio-execution-gaps Gap C / D4),
 # replacing the prior full-`/repo` COPY (~8.97 GB) that existed only so the pnpm
 # symlink farm resolved. Two real, self-contained pieces:

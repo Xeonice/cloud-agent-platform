@@ -23,6 +23,10 @@ import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
 } from '../audit/audit-recorder.port';
+import {
+  SANDBOX_PROVIDER,
+  type SandboxConnection,
+} from '../sandbox/sandbox-provider.port';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
@@ -40,6 +44,20 @@ export interface IGuardrailsService {
   recordFailure(taskId: string, kind?: string): void;
   recordSuccess(taskId: string): void;
   /**
+   * survive-api-redeploy (guardrails-recovery 4.1): re-account a re-adopted
+   * still-running task into the semaphore running set and re-arm its
+   * deadline/idle watchers from the persisted params — WITHOUT a lifecycle
+   * transition or a fresh provision (the sandbox survived). Invoked by the
+   * bootstrap recovery PHASE 0 for every provider-re-adopted task. Optional on
+   * the interface so the narrow slice stays satisfied by builds where this
+   * change has not wired it yet; the bootstrap caller optional-chains it.
+   */
+  readopt?(
+    taskId: string,
+    connection: SandboxConnection,
+    params?: { deadlineMs?: number; idleTimeoutMs?: number },
+  ): void;
+  /**
    * configurable-task-slots (6.2): load the persisted system-level slot ceiling
    * (when a row exists) into the live semaphore, so the effective ceiling
    * resolves as `dbSetting ?? envDefault ?? 5`. Invoked by the startup recovery
@@ -53,6 +71,27 @@ export interface IGuardrailsService {
 
 /** DI token used when injecting the guardrails service into the tasks service. */
 export const GUARDRAILS_SERVICE_TOKEN = 'GUARDRAILS_SERVICE';
+
+/**
+ * Narrow slice of the {@link SandboxProvider} re-adoption surface (Track 3.3)
+ * the bootstrap recovery PHASE 0 consumes (survive-api-redeploy). Declared
+ * structurally (rather than widening the {@link SandboxProvider} port import
+ * here) and OPTIONAL on the injected provider so this file stays decoupled from
+ * the provider impl and compiles both before and after Track 3 wires the
+ * surface — the Phase 0 caller optional-chains both calls.
+ *
+ *  - `listReadoptable()` lists the taskIds whose RUNNING `cap-aio-*` container
+ *    AND detached `task<taskId>` tmux session survived (validated against the DB
+ *    `running`/`awaiting_input` state + session liveness), with the provider's
+ *    own connection tracking already re-registered.
+ *  - `reattach(taskId)` re-registers/returns the still-valid
+ *    {@link SandboxConnection} handle for a survivor, or `undefined` when it can
+ *    no longer be re-adopted (raced to gone between the list and the reattach).
+ */
+export interface ISandboxReadoption {
+  listReadoptable?(): Promise<string[]>;
+  reattach?(taskId: string): Promise<SandboxConnection | undefined>;
+}
 
 /**
  * Task persistence + lifecycle service.
@@ -87,31 +126,52 @@ export class TasksService implements OnApplicationBootstrap {
     @Optional()
     @Inject(AUDIT_RECORDER_TOKEN)
     private readonly audit?: AuditRecorderPort,
+    /**
+     * survive-api-redeploy: the global {@link SandboxProvider} port, consumed
+     * ONLY through its narrow re-adoption surface ({@link ISandboxReadoption})
+     * in the bootstrap recovery PHASE 0. Optional so the tasks service still
+     * constructs in unit contexts without a provider; when absent, Phase 0 is a
+     * no-op and recovery degrades to the prior reclaim + re-offer behavior.
+     */
+    @Optional()
+    @Inject(SANDBOX_PROVIDER)
+    private readonly sandbox?: ISandboxReadoption,
   ) {}
 
   /**
-   * Two-phase startup recovery (configurable-task-slots 6.1) so a process
-   * restart never strands work.
+   * THREE-phase startup recovery (configurable-task-slots 6.1 +
+   * survive-api-redeploy guardrails-recovery 4.2) so a process restart never
+   * strands work AND never needlessly kills a still-running task.
    *
-   * Phase 1 (reclaim): a task in a session-bound non-terminal status
-   * (`running` / `awaiting_input`) holds a live sandbox + in-memory
-   * runner/guardrail state that lived in the prior process and is gone after a
-   * restart (deploy, crash); it can never resume, so it is transitioned to
-   * `failed` rather than left lingering with a dead session (and a leaked
-   * sandbox the provider reaps in parallel on startup).
+   * Phase 0 (re-adopt): codex now runs in a DETACHED tmux session that outlives
+   * the api, so a task whose `cap-aio-*` container AND `task<taskId>` session
+   * survived the restart is RE-ADOPTED — the provider re-registers its tracking
+   * and the guardrails service re-accounts the slot + re-arms the deadline/idle
+   * watchers from the persisted params — and KEPT in its current
+   * `running`/`awaiting_input` state, NOT failed. Runs FIRST so the slots it
+   * holds reduce the capacity the later re-offer admits against.
+   *
+   * Phase 1 (reclaim): a `running`/`awaiting_input` task that was NOT re-adopted
+   * in Phase 0 (its sandbox/session did not survive) holds in-memory
+   * runner/guardrail state that is gone after the restart and can never resume,
+   * so it is transitioned to `failed` rather than left lingering with a dead
+   * session.
    *
    * Ceiling-first ordering (6.2): between the phases, the persisted system-level
    * slot ceiling is loaded into the live semaphore, so Phase 2 admits against
    * the persisted value rather than the env seed (persisted 2, env 5, 3 queued
-   * ⇒ exactly 2 admitted). Best-effort: a load failure logs and falls through —
-   * re-offering against the env seed beats stranding the queue.
+   * ⇒ exactly 2 admitted, minus any re-adopted slots). Best-effort: a load
+   * failure logs and falls through — re-offering against the env seed beats
+   * stranding the queue.
    *
    * Phase 2 (re-offer): DB `queued` tasks survived the restart as data but lost
-   * their in-memory semaphore entry; they are re-offered FIFO so the oldest
-   * min(K, ceiling) begin admission and the remainder stay queued in order.
+   * their in-memory semaphore entry; they are re-offered FIFO so the oldest fit
+   * the REMAINING capacity (after re-adopted tasks hold their slots) begin
+   * admission and the remainder stay queued in order.
    */
   async onApplicationBootstrap(): Promise<void> {
-    await this.reclaimOrphanedOnStartup();
+    const readopted = await this.readoptSurvivorsOnStartup();
+    await this.reclaimOrphanedOnStartup(readopted);
     if (this.guardrails?.loadPersistedCeiling) {
       try {
         await this.guardrails.loadPersistedCeiling();
@@ -127,20 +187,95 @@ export class TasksService implements OnApplicationBootstrap {
   }
 
   /**
+   * PHASE 0 of startup recovery (survive-api-redeploy 4.2): RE-ADOPT every
+   * still-running task whose sandbox + detached codex session survived the
+   * restart. Lists the provider-validated survivors (Track 3.3 — DB
+   * `running`/`awaiting_input` AND session liveness already checked, provider
+   * tracking re-registered), and for each calls `guardrails.readopt(...)` with
+   * the task's PERSISTED `deadlineMs`/`idleTimeoutMs` so it re-accounts the slot
+   * and re-arms its watchers, leaving the task in its CURRENT state (NOT
+   * transitioned). Returns the set of re-adopted taskIds so Phase 1 can skip
+   * them. Best-effort + fully optional: no provider / no `listReadoptable` / no
+   * `guardrails.readopt` makes this a no-op (recovery degrades to the prior
+   * reclaim + re-offer), and a per-task failure is logged and skipped, never
+   * blocking boot.
+   */
+  async readoptSurvivorsOnStartup(): Promise<Set<string>> {
+    const readopted = new Set<string>();
+    if (!this.sandbox?.listReadoptable || !this.guardrails?.readopt) {
+      return readopted;
+    }
+    let candidates: string[];
+    try {
+      candidates = await this.sandbox.listReadoptable();
+    } catch (err) {
+      this.logger.warn(
+        `startup re-adopt: could not list re-adoptable sandboxes (none re-adopted): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return readopted;
+    }
+    for (const taskId of candidates) {
+      try {
+        // Pull the still-valid connection handle (provider re-registers its maps).
+        const connection = await this.sandbox.reattach?.(taskId);
+        if (!connection) {
+          // Raced to gone between the list and the reattach — let Phase 1 fail it.
+          continue;
+        }
+        // Restore the persisted per-task guardrail params (null -> undefined, so
+        // a re-adopted task arms identically to one admitted before the restart).
+        const row = await this.prisma.task.findUnique({
+          where: { id: taskId },
+          select: { deadlineMs: true, idleTimeoutMs: true },
+        });
+        this.guardrails.readopt(taskId, connection, {
+          deadlineMs: row?.deadlineMs ?? undefined,
+          idleTimeoutMs: row?.idleTimeoutMs ?? undefined,
+        });
+        // KEEP the task in its current state — NO transition to failed.
+        readopted.add(taskId);
+      } catch (err) {
+        this.logger.warn(
+          `startup re-adopt: could not re-adopt task ${taskId} (will be reclaimed): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    if (readopted.size > 0) {
+      this.logger.log(
+        `startup re-adopt: re-adopted ${readopted.size} still-running task(s) across the restart`,
+      );
+    }
+    return readopted;
+  }
+
+  /**
    * Transition every `running` / `awaiting_input` task to `failed` — the
-   * startup reclaim of orphaned in-flight tasks. Returns the count reclaimed.
+   * startup reclaim of orphaned in-flight tasks. Tasks RE-ADOPTED in Phase 0
+   * (their sandbox + detached codex session survived the restart) are SKIPPED
+   * so they stay in their current state (survive-api-redeploy 4.2); only the
+   * truly-dead in-flight tasks are force-failed. Returns the count reclaimed.
    * Reuses {@link transition} so each reclaim is edge-validated, audited, and
    * runs the terminal guardrail teardown through the single status-write
    * chokepoint. Best-effort per task: a failure is logged and skipped, never
    * blocking boot.
    */
-  async reclaimOrphanedOnStartup(): Promise<number> {
+  async reclaimOrphanedOnStartup(
+    readopted: ReadonlySet<string> = new Set(),
+  ): Promise<number> {
     const orphaned = await this.prisma.task.findMany({
       where: { status: { in: ['running', 'awaiting_input'] } },
       select: { id: true },
     });
     let reclaimed = 0;
     for (const { id } of orphaned) {
+      // Re-adopted survivors are kept in their current state, not failed.
+      if (readopted.has(id)) {
+        continue;
+      }
       try {
         await this.transition(id, 'failed');
         reclaimed += 1;

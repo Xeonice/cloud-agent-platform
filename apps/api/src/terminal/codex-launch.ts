@@ -58,3 +58,55 @@ export function buildCodexLaunchLine(
     `if [ -n "$P" ]; then ${baseArgv} "$P"; else ${baseArgv}; fi`
   );
 }
+
+/**
+ * The detached named tmux session for a task, `task<taskId>` (survive-api-redeploy
+ * D1). Codex runs INSIDE this session so it is a child of the container's tmux
+ * daemon — not a foreground child of the WS-spawned shell — and therefore KEEPS
+ * RUNNING when the orchestrator's `/v1/shell/ws` connection closes (api restart /
+ * operator disconnect). The same name is what the boot re-adoption pass and the
+ * liveness poller use to find / attach / probe the running codex, so it MUST be a
+ * pure deterministic function of `taskId` shared on all sides — hence one helper.
+ */
+export function detachedSessionName(taskId: string): string {
+  return `task${taskId}`;
+}
+
+/**
+ * Build the launch line that starts codex in a DETACHED, NAMED tmux session
+ * (survive-api-redeploy D1). It WRAPS — does not replace — the existing in-shell
+ * launch line from {@link buildCodexLaunchLine}:
+ *
+ *   tmux new-session -d -s task<taskId> -c /home/gem/workspace '<codex launch line>'
+ *
+ * Why this shape:
+ * - `-d` creates the session DETACHED, so codex becomes a child of the container
+ *   tmux daemon. When the WS-spawned shell that issued this command dies (the WS
+ *   closes on api restart / operator disconnect), the detached session and codex
+ *   KEEP RUNNING — the survive-api-redeploy sidestep, verified by spike #2.
+ * - `-s task<taskId>` names the session deterministically so it can be probed
+ *   (`tmux has-session`), attached (`tmux attach`), and re-adopted on boot.
+ * - `-c /home/gem/workspace` sets the session's working directory to the cloned
+ *   task repo, matching the `-C /home/gem/workspace` the codex argv already used
+ *   (the WS shell's own cwd is HOME, not the clone dir).
+ * - The codex launch line is passed as ONE single-quoted argument so tmux runs it
+ *   verbatim inside the session. The inner line still reads the prompt from
+ *   {@link CODEX_PROMPT_FILE_PATH} via `"$(cat …)"` and passes it positionally —
+ *   the prompt-injection contract is unchanged WITHIN the detached session.
+ *
+ * Single-quote safety: the inner line is fixed launch text (no operator prompt is
+ * ever inlined — the prompt rides the injected file), so it contains no single
+ * quote; `'<line>'` is therefore a clean single-quoted shell word. The
+ * hook-disabling guard ({@link argvDisablesHooks}) still inspects ONLY the fixed
+ * `argv`, so wrapping in tmux changes nothing for that guard.
+ */
+export function buildDetachedCodexLaunchLine(
+  taskId: string,
+  baseArgv: string,
+  promptFilePath: string = CODEX_PROMPT_FILE_PATH,
+  workspaceDir = '/home/gem/workspace',
+): string {
+  const inner = buildCodexLaunchLine(baseArgv, promptFilePath);
+  const session = detachedSessionName(taskId);
+  return `tmux new-session -d -s ${session} -c ${workspaceDir} '${inner}'`;
+}

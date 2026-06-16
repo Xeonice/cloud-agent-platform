@@ -413,6 +413,71 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     return outcome;
   }
 
+  /**
+   * RE-ADOPT a task whose sandbox + detached codex session survived an api
+   * restart (survive-api-redeploy, guardrails-recovery 4.1). Called by the tasks
+   * bootstrap recovery PHASE 0 for every provider-re-adopted taskId, BEFORE the
+   * reclaim phase and the queued re-offer, so a still-running task keeps its slot
+   * and timers across a redeploy rather than being force-failed.
+   *
+   * Unlike {@link admit} / {@link startRunning} this performs NO lifecycle
+   * transition (the task is KEPT in its current `running`/`awaiting_input` state
+   * by the caller) and NO fresh `provision()` (the sandbox already exists — the
+   * provider has re-registered its own tracking and supplies the still-valid
+   * {@link SandboxConnection} handle here). It:
+   *
+   *  - re-inserts the task into the semaphore running set via `offer()` so the
+   *    slot is re-accounted (at boot the running set starts empty, so each
+   *    re-adopt takes a slot; this is what reduces the capacity the later queued
+   *    re-offer admits against). Idempotent: a re-offer of an already-running
+   *    task is a no-op in the semaphore.
+   *  - captures the connection handle (so terminal reconnect / teardown find it)
+   *    and hands it to the terminal gateway, whose `openSession` ATTACHES to the
+   *    live named session rather than launching fresh (Track 2 D2). Best-effort:
+   *    a terminal-wiring hiccup never fails the re-adoption.
+   *  - re-arms the idle tracker (when an effective ceiling exists) and the
+   *    deadline watcher from the PERSISTED `deadlineMs`/`idleTimeoutMs`, identical
+   *    to a task admitted before the restart, and re-opens the runner-minutes
+   *    interval so the derived accounting resumes.
+   */
+  readopt(
+    taskId: string,
+    connection: SandboxConnection,
+    params: GuardrailParams = {},
+  ): void {
+    // Re-account the slot. At boot the running set is empty so this takes a slot;
+    // idempotent if the same task is re-adopted twice. This is the slot the later
+    // queued re-offer's capacity is reduced by.
+    this.semaphore.offer(taskId);
+    // Capture the still-valid handle so terminal reconnect + teardown resolve it.
+    this.connections.set(taskId, connection);
+    // Re-attach the terminal: openSession ATTACHES to the live named session
+    // (Track 2 D2) rather than launching a fresh codex. Best-effort.
+    if (this.gateway) {
+      try {
+        this.gateway.openSession(connection);
+      } catch (err: unknown) {
+        this.logger.error(
+          `re-attaching terminal session for re-adopted task ${taskId} failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    // Re-arm the idle ceiling (opt-in: only when a per-task or operator-level
+    // ceiling exists) and the wall-clock deadline from the persisted values.
+    const idleMs = params.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
+    if (idleMs !== undefined) {
+      this.idle.start(taskId, idleMs);
+    }
+    if (params.deadlineMs !== undefined) {
+      this.deadlines.armAfter(taskId, params.deadlineMs);
+    }
+    // Resume the runner-minutes interval for the re-adopted running task (5.4).
+    this.runnerMinutes.recordStart(taskId);
+    this.logger.log(`re-adopted running task ${taskId} (slot held, timers re-armed)`);
+  }
+
   /** Record terminal output or a hook event — resets the idle window (12.3). */
   recordActivity(taskId: string): void {
     this.idle.recordActivity(taskId);
