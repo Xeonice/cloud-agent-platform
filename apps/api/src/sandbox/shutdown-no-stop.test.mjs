@@ -194,7 +194,7 @@ try {
     );
     // In-memory maps must be cleared so the process is ready to exit cleanly
     assert(
-      provider.listReadoptable().length === 0,
+      (await provider.listReadoptable()).length === 0,
       '[A] SIGTERM: in-memory readopted set is cleared after onModuleDestroy',
     );
   }
@@ -236,7 +236,7 @@ try {
 
     assert(hasSessionCalled, '[B] boot re-adoption probed tmux has-session for the running container');
     assert(
-      provider.listReadoptable().includes('task-readopted'),
+      (await provider.listReadoptable()).includes('task-readopted'),
       '[B] boot re-adoption registered the live-session container as re-adoptable',
     );
     assert(adopted.calls.stopped === 0, '[B] boot re-adoption does NOT stop the re-adopted container');
@@ -254,7 +254,7 @@ try {
       '[B] SIGTERM: onModuleDestroy does NOT remove the re-adopted running container',
     );
     assert(
-      provider.listReadoptable().length === 0,
+      (await provider.listReadoptable()).length === 0,
       '[B] SIGTERM: in-memory readopted set is cleared after onModuleDestroy',
     );
   }

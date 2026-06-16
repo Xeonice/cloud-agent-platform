@@ -1015,9 +1015,9 @@ try {
         removed.length === 1 && removed.includes('id-dead') && !removed.includes('id-live'),
         'boot re-adoption force-removes ONLY the running orphan with no live session (live one spared)',
       );
+      const readoptable = await pReadopt.listReadoptable();
       assert(
-        pReadopt.listReadoptable().includes('task-live') &&
-          !pReadopt.listReadoptable().includes('task-dead'),
+        readoptable.includes('task-live') && !readoptable.includes('task-dead'),
         'the live-session task is surfaced as re-adoptable; the dead one is not',
       );
 
@@ -1046,9 +1046,61 @@ try {
       }
       assert(!destroyThrew, 'onModuleDestroy does not stop provisioned/re-adopted sandboxes (handles released only)');
       assert(
-        pReadopt.listReadoptable().length === 0,
+        (await pReadopt.listReadoptable()).length === 0,
         'onModuleDestroy releases the in-memory re-adopted handles',
       );
+    }
+
+    // ---- REGRESSION (survive-api-redeploy split-brain): listReadoptable MUST
+    // trigger the boot scan even when called BEFORE onApplicationBootstrap. In
+    // production the tasks-service recovery hook ran first and called
+    // listReadoptable() before the provider's own onApplicationBootstrap had
+    // populated `readopted` → it read an EMPTY set and force-failed a live task
+    // whose sandbox the provider then independently re-adopted (container alive,
+    // task row failed). The memoized scan makes the result order-independent. ----
+    {
+      const orig = globalThis.fetch;
+      const probed = [];
+      globalThis.fetch = async (url, opts) => {
+        // gem-server /v1/shell/exec liveness probe: the single task has a LIVE
+        // session. Response shape is the AIO-nested `{ data: { exit_code } }`.
+        const body = JSON.parse(opts?.body ?? '{}');
+        probed.push(body.command);
+        return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+      };
+      let scans = 0;
+      const pRace = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
+      pRace.docker = {
+        async listContainers() {
+          scans += 1; // count how many times the scan actually lists containers
+          return [{ Id: 'id-live', Names: ['/cap-aio-task-race'] }];
+        },
+        getContainer() {
+          return { async remove() {}, async stop() {} };
+        },
+      };
+      try {
+        // Call listReadoptable() FIRST — WITHOUT onApplicationBootstrap. The bug
+        // would return [] here; the fix makes it trigger the scan and return the set.
+        const first = await pRace.listReadoptable();
+        // Now the provider's own hook fires (as Nest would, in either order).
+        await pRace.onApplicationBootstrap();
+        const second = await pRace.listReadoptable();
+        assert(
+          first.includes('task-race'),
+          'listReadoptable() called BEFORE onApplicationBootstrap still triggers the scan (split-brain fix)',
+        );
+        assert(
+          second.includes('task-race'),
+          'listReadoptable() is stable after onApplicationBootstrap too',
+        );
+        assert(
+          scans === 1,
+          'the re-adoption scan runs EXACTLY ONCE (memoized) across listReadoptable + onApplicationBootstrap, in any order',
+        );
+      } finally {
+        globalThis.fetch = orig;
+      }
     }
 
     // ---- D5: shutdown does NOT stop a freshly-provisioned running sandbox --------
@@ -1081,7 +1133,7 @@ try {
       };
       await pNone.onApplicationBootstrap();
       assert(removed2.length === 0, 'boot re-adoption removes nothing when there are no running containers');
-      assert(pNone.listReadoptable().length === 0, 'no running containers → nothing re-adopted');
+      assert((await pNone.listReadoptable()).length === 0, 'no running containers → nothing re-adopted');
     }
 
     // ---- a docker failure during boot re-adoption is swallowed (never blocks boot)

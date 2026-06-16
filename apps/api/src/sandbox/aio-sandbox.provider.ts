@@ -87,6 +87,18 @@ export class AioSandboxProvider
    * is dropped once its task settles (its handle leaves the maps via teardown).
    */
   private readonly readopted = new Set<string>();
+  /**
+   * Memoized boot-time re-adoption scan (survive-api-redeploy D3 fix). The scan
+   * that populates {@link readopted} MUST run exactly once and MUST be observable
+   * to BOTH callers regardless of order: the provider's own
+   * {@link onApplicationBootstrap} AND the tasks-service recovery's
+   * {@link listReadoptable}. NestJS does NOT guarantee cross-provider
+   * `onApplicationBootstrap` ordering, so whichever caller runs first triggers
+   * this single promise and the other awaits the SAME settled scan — eliminating
+   * the split-brain where the tasks service read an empty set (and force-failed a
+   * live task) because its hook ran before the provider populated {@link readopted}.
+   */
+  private readoptScan?: Promise<void>;
 
   /**
    * @param lookup           Resolves the per-task clone URL (`task → repo.gitSource`
@@ -477,6 +489,22 @@ export class AioSandboxProvider
    * Best-effort and never throws: a docker hiccup must not block app startup.
    */
   async onApplicationBootstrap(): Promise<void> {
+    await this.ensureReadoptionScan();
+  }
+
+  /**
+   * Run the boot-time re-adoption scan AT MOST ONCE (memoized via
+   * {@link readoptScan}). Both {@link onApplicationBootstrap} and
+   * {@link listReadoptable} await this, so the scan result is order-independent:
+   * whichever lifecycle hook fires first triggers it, the other awaits the same
+   * promise. NEVER throws (the inner scan swallows its own errors).
+   */
+  private ensureReadoptionScan(): Promise<void> {
+    return (this.readoptScan ??= this.scanForReadoption());
+  }
+
+  /** The actual re-adoption scan body (memoized by {@link ensureReadoptionScan}). */
+  private async scanForReadoption(): Promise<void> {
     try {
       const running = await this.docker.listContainers({
         // Only running containers: `all` defaults to false, but be explicit so
@@ -546,6 +574,10 @@ export class AioSandboxProvider
     this.containers.clear();
     this.connections.clear();
     this.readopted.clear();
+    // Neutralize the memoized scan so a post-shutdown {@link listReadoptable}
+    // cannot trigger a FRESH re-adoption scan that re-populates the just-cleared
+    // set — the instance is being destroyed; there is nothing left to re-adopt.
+    this.readoptScan = Promise.resolve();
   }
 
   /**
@@ -556,7 +588,10 @@ export class AioSandboxProvider
    * re-adoptable) and calls {@link reattach} for the survivors. Returns a fresh
    * array snapshot so the caller cannot mutate the provider's internal set.
    */
-  listReadoptable(): string[] {
+  async listReadoptable(): Promise<string[]> {
+    // Await the memoized scan so a caller that races ahead of the provider's own
+    // onApplicationBootstrap still observes the populated set (the split-brain fix).
+    await this.ensureReadoptionScan();
     return [...this.readopted];
   }
 
