@@ -112,10 +112,14 @@ function CommandPreview({ lines }: { lines: readonly string[] }) {
   return (
     <pre
       data-command-preview
-      className="grid max-h-[230px] gap-1.5 overflow-auto rounded-md bg-[#080808] p-3.5 font-mono text-xs leading-[1.6] text-[#e8e8e8]"
+      className="flex max-h-[230px] min-w-0 flex-col gap-1.5 overflow-auto rounded-md bg-[#080808] p-3.5 font-mono text-xs leading-[1.6] text-[#e8e8e8]"
     >
       {lines.map((line, i) => (
-        <code key={i} className="whitespace-pre">
+        // `whitespace-pre-wrap` keeps the command indentation but WRAPS long
+        // content (a long --prompt) inside the box; `overflow-wrap:anywhere`
+        // breaks an unbroken token so the line can never force the preview wider
+        // than its column (which previously broke the whole new-task layout).
+        <code key={i} className="whitespace-pre-wrap [overflow-wrap:anywhere]">
           {line}
         </code>
       ))}
@@ -502,7 +506,7 @@ function NewTaskPage() {
         </form>
 
         {/* Right: command preview + execution boundary */}
-        <aside className="grid content-start gap-3">
+        <aside className="grid min-w-0 content-start gap-3">
           <Panel>
             <PanelHead right={<StatusPill variant="dark">agentctl</StatusPill>}>
               <h3 className="text-[15px] font-semibold text-foreground">命令预览</h3>

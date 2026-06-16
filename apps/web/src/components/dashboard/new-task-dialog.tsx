@@ -176,10 +176,14 @@ function CommandPreview({ lines }: { lines: readonly string[] }) {
   return (
     <pre
       data-command-preview
-      className="grid max-h-[230px] gap-1.5 overflow-auto rounded-md bg-[#080808] p-3.5 font-mono text-xs leading-[1.6] text-[#e8e8e8]"
+      className="flex max-h-[230px] min-w-0 flex-col gap-1.5 overflow-auto rounded-md bg-[#080808] p-3.5 font-mono text-xs leading-[1.6] text-[#e8e8e8]"
     >
       {lines.map((line, i) => (
-        <code key={i} className="whitespace-pre">
+        // `whitespace-pre-wrap` keeps the command indentation but WRAPS long
+        // content (a long --prompt) inside the box; `overflow-wrap:anywhere`
+        // breaks an unbroken token so the line can never force the preview wider
+        // than its column (which previously broke the whole new-task layout).
+        <code key={i} className="whitespace-pre-wrap [overflow-wrap:anywhere]">
           {line}
         </code>
       ))}
@@ -553,7 +557,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
           </div>
 
           {/* Right: preview */}
-          <aside className="grid content-start gap-3.5 rounded-md bg-[#fafafa] p-3.5">
+          <aside className="grid min-w-0 content-start gap-3.5 rounded-md bg-[#fafafa] p-3.5">
             <div className="grid gap-2">
               <ReviewStep index="01" title="仓库已导入" caption="只使用当前授权范围内的仓库。" />
               <ReviewStep index="02" title="Runner 可接入" caption="创建后进入 iad-02 队列。" />
