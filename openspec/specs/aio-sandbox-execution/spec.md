@@ -177,11 +177,15 @@ The blocking approval hooks (`permission_request` and `post_tool_use`) SHALL be 
 - **AND** it returns the decision in the codex `0.131` form (`{hookSpecificOutput:{permissionDecision}}`, or exit `0` allow / exit `2` deny)
 
 ### Requirement: Exit detection mapped to guardrails
-Because the node-pty `onExit` signal no longer exists, the `AioPtyClient` SHALL detect task termination by observing the terminal WebSocket close and SHALL determine the exit status using `POST /v1/shell/exec` running `echo $?` and/or `/v1/shell/wait`, mapping a zero exit status to guardrails `recordSuccess` and a non-zero or abnormal termination to guardrails `recordFailure`. The orchestrator bridge (`AioPtyClient`/gateway) SHALL ALSO persist the raw PTY output stream by appending it to `workspaces/<taskId>/session.log` as it is received, keeping the byte-offset fed to `snapshots.feed` in lockstep with the bytes written to `session.log`, so that reconnect tail-replay has a durable source of prior output.
+The `AioPtyClient` SHALL detect task termination by LIVENESS of the detached codex session — NOT by the terminal WebSocket closing — because once codex runs in a detached named tmux session a WS close no longer means the task ended (the operator merely disconnected, or the api restarted). The system SHALL poll the named tmux session existence (`tmux has-session -t task<taskId>`) and/or the codex process liveness; only when the session/process is GONE SHALL it treat the task as terminated, and SHALL then determine the exit status using `POST /v1/shell/exec` (e.g. a recorded `$?` / a sentinel the session writes on exit) and/or `/v1/shell/wait`, mapping a zero exit status to guardrails `recordSuccess` and a non-zero or abnormal termination to guardrails `recordFailure`. A WS close while the session is still alive SHALL NOT call `recordSuccess`/`recordFailure`. The orchestrator bridge (`AioPtyClient`/gateway) SHALL ALSO persist the raw PTY output stream by appending it to `workspaces/<taskId>/session.log` as it is received, keeping the byte-offset fed to `snapshots.feed` in lockstep with the bytes written to `session.log`, so that reconnect tail-replay has a durable source of prior output.
 
-#### Scenario: WS close triggers exit-status resolution
-- **WHEN** the sandbox terminal WebSocket closes
-- **THEN** `AioPtyClient` resolves the task exit status via `/v1/shell/exec` `echo $?` and/or `/v1/shell/wait`
+#### Scenario: Session-gone (not WS close) triggers exit-status resolution
+- **WHEN** the detached codex session for a task is observed to no longer exist (tmux session gone / codex process exited)
+- **THEN** `AioPtyClient` resolves the task exit status via `/v1/shell/exec` and/or `/v1/shell/wait` and reports the terminal outcome to guardrails
+
+#### Scenario: A WS close with a live session does not terminate the task
+- **WHEN** the orchestrator's terminal WebSocket closes (operator disconnect or api restart) while the named tmux session is still alive
+- **THEN** the system does NOT call guardrails `recordSuccess` or `recordFailure`, and the task remains running for re-adoption
 
 #### Scenario: Exit status maps to guardrails outcome
 - **WHEN** the resolved exit status is zero
