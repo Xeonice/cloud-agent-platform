@@ -4,7 +4,7 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import { Logger } from 'nestjs-pino';
 import { authTokenConfigSchema } from '@cap/contracts';
 import { AppModule } from './app.module';
-import { parseWebOrigins } from './auth/oauth-config';
+import { isLegacyTokenEnabled, parseWebOrigins } from './auth/oauth-config';
 
 /**
  * Orchestrator bootstrap.
@@ -13,10 +13,14 @@ import { parseWebOrigins } from './auth/oauth-config';
  * are wired in {@link AppModule}. The integration track layers the following
  * cross-cutting bootstrap concerns here:
  *
- *   - 11.3b: REFUSE TO BOOT (clear error, non-zero exit) when `AUTH_TOKEN` is
- *            unset or empty — the operator token is the single credential gating
- *            the whole control plane, so an unconfigured token is fatal rather
- *            than fail-open.
+ *   - 11.3b: REFUSE TO BOOT (clear error, non-zero exit) when the LEGACY operator
+ *            token path is enabled (`AUTH_TOKEN_LEGACY_ENABLED`) but `AUTH_TOKEN`
+ *            is unset/empty — when that break-glass path is on, the token is the
+ *            credential gating it, so an unconfigured token is fatal rather than
+ *            fail-open. An OAuth-FIRST instance (legacy path NOT enabled) needs no
+ *            `AUTH_TOKEN` at all and boots on GitHub-OAuth config alone
+ *            (self-hostable-deployment — "OAuth-first self-host boots without a
+ *            legacy operator token").
  *   - 11.2b: register the operator-auth guard GLOBALLY on all REST endpoints
  *            (exempting `/health`). The global `APP_GUARD` binding lives in
  *            {@link AppModule}; this bootstrap only guarantees the token exists.
@@ -27,17 +31,24 @@ import { parseWebOrigins } from './auth/oauth-config';
  * here so the gateway's custom dual-channel frame protocol is served correctly.
  */
 async function bootstrap(): Promise<void> {
-  // 11.3b — refuse to boot on an unset/empty AUTH_TOKEN. The constant-time helper
-  // (11.3) underpins the runtime comparison; here we only require the token to be
-  // a non-empty string per the contracts config schema, failing fast otherwise.
-  const tokenCheck = authTokenConfigSchema.safeParse(process.env.AUTH_TOKEN);
-  if (!tokenCheck.success) {
-    console.error(
-      'FATAL: AUTH_TOKEN is not configured. The orchestrator refuses to boot ' +
-        'without the operator token that gates every REST endpoint and client ' +
-        'WebSocket connection. Set a non-empty AUTH_TOKEN and restart.',
-    );
-    process.exit(1);
+  // 11.3b — refuse to boot on an unset/empty AUTH_TOKEN ONLY when the legacy
+  // operator-token break-glass path is enabled. The constant-time helper (11.3)
+  // underpins the runtime comparison; here we require the token to be a non-empty
+  // string per the contracts config schema, failing fast otherwise. An OAuth-first
+  // instance leaves the legacy path off and authenticates operators via GitHub
+  // OAuth, so it needs no AUTH_TOKEN and skips this gate entirely.
+  if (isLegacyTokenEnabled(process.env)) {
+    const tokenCheck = authTokenConfigSchema.safeParse(process.env.AUTH_TOKEN);
+    if (!tokenCheck.success) {
+      console.error(
+        'FATAL: AUTH_TOKEN_LEGACY_ENABLED is set but AUTH_TOKEN is not configured. ' +
+          'The legacy operator-token path is the credential gating every REST ' +
+          'endpoint and client WebSocket connection when enabled, so the ' +
+          'orchestrator refuses to boot without it. Set a non-empty AUTH_TOKEN ' +
+          '(or disable the legacy path for an OAuth-first deploy) and restart.',
+      );
+      process.exit(1);
+    }
   }
 
   // structured-logging: buffer early logs until pino is ready, then promote the

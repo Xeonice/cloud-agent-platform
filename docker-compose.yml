@@ -79,7 +79,10 @@ services:
       PORT: "8080"
       # session.log lives under here, on the persistent named volume below.
       WORKSPACES_DIR: /data/workspaces
-      DATABASE_URL: postgresql://cap:cap@postgres:5432/cap?schema=public
+      # Env-overridable so a self-hoster can point at an EXTERNAL Postgres (or
+      # different credentials); leaving it unset uses the compose-internal
+      # `postgres` service default below (design D2 — no maintainer-hardcoded DB).
+      DATABASE_URL: ${DATABASE_URL:-postgresql://cap:cap@postgres:5432/cap?schema=public}
       # AUTH_TOKEN (legacy break-glass) + the OAuth/session/Codex-key config now
       # come from the env_file above (apps/api/.env). Declaring AUTH_TOKEN here as
       # ${AUTH_TOKEN} would override the env_file with an empty shell value, so it
@@ -128,6 +131,48 @@ services:
       # can provision SIBLING AIO sandbox containers (design D). HOST-ROOT-
       # EQUIVALENT — accepted for single-user self-host only (see header).
       - /var/run/docker.sock:/var/run/docker.sock
+
+  # ── Self-contained web console (design D1) ─────────────────────────────────
+  # The Nitro `node-server` build of apps/web, run as a long-lived Node process
+  # (`node .output/server/index.mjs`) so `docker compose up` yields a COMPLETE
+  # cap a stranger can use WITHOUT a separate Vercel deploy. It runs NO WebSocket
+  # server of its own: the live PTY rides the api's `/terminal` WS, which the
+  # browser dials directly via the build-time-baked VITE_WS_URL.
+  #
+  # VITE_API_BASE_URL / VITE_WS_URL are BUILD-TIME values: Vite inlines them into
+  # the client bundle, so they are passed as build `args` (baked into this
+  # domain-specific image), NOT runtime env. Set them to YOUR api's public
+  # origin/ws url before `docker compose up --build`. PORT is the only runtime
+  # value (the Node server's listen port); publish it on the host (default 3000).
+  web:
+    # OPT-IN via the `web` profile (mirrors observability/grafana/proxy). A
+    # self-hoster enables the full in-compose frontend with `COMPOSE_PROFILES=web`
+    # (or `--profile web`); a maintainer deploy that serves the web console
+    # elsewhere (e.g. Vercel) leaves the profile off and this service is neither
+    # built nor run. Phase 1 (unified release-gated deploy) flips this default-on
+    # once everyone consumes the published cap-web image.
+    profiles: ["web"]
+    build:
+      # apps/web/Dockerfile builds with NITRO_PRESET=node-server (the Vercel
+      # path stays selectable via that build arg — design D1).
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+        VITE_WS_URL: ${VITE_WS_URL:-}
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - api
+    environment:
+      PORT: "3000"
+    ports:
+      - "${WEB_HOST_PORT:-3000}:3000"
+    networks:
+      # The default network is enough — the web server only needs to be reachable
+      # by the browser (host-published) and does NOT dial per-task sandboxes, so
+      # it stays OFF cap-net.
+      - default
 
   # ── OPT-IN reverse proxy for the VPS deploy (Cloudflare -> nginx -> api) ────
   # Gated behind the `proxy` profile so a plain `docker compose up` (local dev,
@@ -267,7 +312,7 @@ services:
       - grafana-data:/var/lib/grafana
     # Published to LOOPBACK only (127.0.0.1) so the host-network cloudflared tunnel
     # can reach it as http://localhost:3001 while it stays OFF the public IP. Public
-    # access is ONLY via the Cloudflare tunnel ingress (grafana.douglasdong.com).
+    # access is ONLY via your own authenticated Cloudflare tunnel ingress.
     ports:
       - "127.0.0.1:3001:3000"
     networks:

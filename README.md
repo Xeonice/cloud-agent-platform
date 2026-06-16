@@ -85,8 +85,15 @@ Notes:
   actual `cap-aio-<taskId>` sandbox is provisioned per task when you create one.
 - On Apple Silicon the `amd64` AIO base builds under emulation on the first run
   (slow, then cached); use `make up-cp` for a fast control-plane-only bring-up.
-- The **web console is not in compose** — run it separately
-  (`pnpm --filter @cap/web dev`, port 3000) pointed at the local API.
+- The **web console now ships in the compose stack** (a `web` Node-server
+  service, port 3000) so `docker compose up` brings up web + api + Postgres
+  together; for local dev you can still run it standalone
+  (`pnpm --filter @cap/web dev`).
+
+For a real, OAuth-first **production self-host** (the full web + api + Postgres
+stack via `docker compose up`, GitHub OAuth app, allowlist, and public-domain /
+cookie-scope configuration), see the
+[Self-hosting guide](docs/self-hosting.md).
 
 ## Auth & the host-root boundary
 

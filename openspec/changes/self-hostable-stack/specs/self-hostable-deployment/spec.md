@@ -1,0 +1,57 @@
+## ADDED Requirements
+
+### Requirement: The compose stack is a complete self-hostable unit including the frontend
+The docker-compose stack SHALL bring up a COMPLETE cap instance — the web console, the api orchestrator, and Postgres — so a stranger who clones the repo can stand up a usable cap with a single documented compose bring-up WITHOUT deploying the frontend separately. The web console SHALL run as a self-contained Node server service (the Nitro `node-server` build output, `.output/server/index.mjs`) joined to the stack's default network, reaching the api by its env-configured URLs. The in-compose web service SHALL be gated behind a `web` compose profile (consistent with the existing `observability`/`grafana`/`proxy` profiles), enabled by the documented self-host bring-up (e.g. `COMPOSE_PROFILES=web`), so a deploy that serves the console elsewhere can leave it off. The existing Vercel deployment path for the web app SHALL remain available (selectable at build time), so this ADDS a compose-hosted web target rather than removing the Vercel one.
+
+#### Scenario: The documented bring-up yields a complete cap with a web console
+- **WHEN** a stranger with a configured env runs the documented self-host bring-up (the `web` profile enabled, e.g. `COMPOSE_PROFILES=web docker compose up`) on a fresh clone
+- **THEN** the stack starts the web console, the api, and Postgres, and the web console is reachable and talks to the api — no separate frontend deployment is required
+
+#### Scenario: The in-compose web service is profile-gated
+- **WHEN** the compose stack is brought up WITHOUT the `web` profile
+- **THEN** the in-compose web service is neither built nor run (api + Postgres still come up), so a deploy that serves the console elsewhere is unaffected
+
+#### Scenario: The web console runs as a self-contained Node server
+- **WHEN** the web service in the compose stack is inspected
+- **THEN** it runs the Nitro `node-server` output (`.output/server/index.mjs`) as a long-running Node process, not a Vercel-only artifact
+
+#### Scenario: The Vercel web path is preserved
+- **WHEN** the web app is built for Vercel (the maintainer's deploy)
+- **THEN** the Vercel preset is still selectable at build time and the Vercel deployment continues to work, unaffected by the added compose-hosted web target
+
+### Requirement: Every deployment-specific value is env-overridable with no maintainer-hardcoded values
+The deployment SHALL NOT hardcode any value specific to the maintainer's own environment that a self-hoster cannot override. The database connection (`DATABASE_URL`) SHALL be env-overridable (the compose-internal default is permitted, but an external DB / different credentials SHALL be honored when set). The public URLs (api base, ws url, web origin, cookie scope) and the GitHub OAuth app credentials and the operator allowlist SHALL all be env-driven. No maintainer-specific domain (e.g. a personal production hostname) SHALL be baked into the shipped configuration.
+
+#### Scenario: DATABASE_URL can point at an external database
+- **WHEN** a self-hoster sets `DATABASE_URL` to an external Postgres
+- **THEN** the api connects to that database, while leaving the value unset uses the compose-internal Postgres default
+
+#### Scenario: No maintainer-specific domain is baked in
+- **WHEN** the shipped compose file and configuration are inspected
+- **THEN** they contain no hardcoded maintainer-specific production hostname that a self-hoster cannot override (the prior `grafana.douglasdong.com` reference is removed)
+
+#### Scenario: Public URLs, OAuth credentials, and allowlist are all env-driven
+- **WHEN** a self-hoster configures their own domains, GitHub OAuth app, and allowlist via environment
+- **THEN** the instance uses those values with no source edit required
+
+### Requirement: An OAuth-first self-host boots without a legacy operator token
+A production, OAuth-first self-host SHALL NOT require the legacy `AUTH_TOKEN` to be set: when the legacy operator-token path is not enabled, the api SHALL boot with GitHub-OAuth configuration alone. The existing local-dev bring-up that generates a legacy token and enables the legacy path SHALL remain unchanged.
+
+#### Scenario: OAuth-only instance boots with no legacy token
+- **WHEN** the api starts with GitHub-OAuth configured and the legacy operator-token path NOT enabled, and no `AUTH_TOKEN` set
+- **THEN** the api boots successfully and authenticates operators via GitHub OAuth, without requiring a legacy token
+
+#### Scenario: Local-dev legacy-token path is unchanged
+- **WHEN** the one-command local dev bring-up generates a legacy token and enables the legacy path
+- **THEN** local operators can still authenticate with the generated token exactly as before
+
+### Requirement: A self-host setup guide documents the human configuration steps
+The project SHALL provide an operator-facing self-host setup guide, discoverable from the README, that documents the steps a self-hoster must perform by hand: creating a GitHub OAuth app (client id/secret and the callback URL derived from their api origin), setting the operator allowlist, configuring the public domains and the session cookie scope (covering both same-origin and cross-subdomain deploys), generating the required secrets, and bringing up the compose stack. The guide SHALL make explicit the values most likely to be misconfigured (web origin / cookie domain for cross-origin deploys).
+
+#### Scenario: Setup guide exists and is discoverable
+- **WHEN** the repository documentation is inspected
+- **THEN** a self-host setup guide exists and is linked from the README
+
+#### Scenario: Guide covers the OAuth app + allowlist + domain steps
+- **WHEN** a self-hoster follows the guide
+- **THEN** it walks them through creating a GitHub OAuth app (including the callback URL), setting the allowlist, configuring the public domains + cookie scope, generating secrets, and running `docker compose up`

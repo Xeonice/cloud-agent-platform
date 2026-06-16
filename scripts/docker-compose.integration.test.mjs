@@ -55,10 +55,20 @@ let config = null;
 let usedComposeCli = false;
 if (dockerAvailable()) {
   try {
+    // `--env-file /dev/null` makes compose ignore the developer's local `./.env`,
+    // and we strip any inherited DATABASE_URL, so this resolves the SHIPPED deploy
+    // contract — not a host-dev override. DATABASE_URL is now env-overridable
+    // (`${DATABASE_URL:-postgresql://cap:cap@postgres:5432/cap?...}`,
+    // self-hostable-stack task 2.2); a stray `./.env` (e.g. the local-dev value
+    // pointing at 127.0.0.1:5433) would otherwise mask the in-network `@postgres`
+    // default this test asserts. Verifying the default is the correct contract:
+    // the override is the operator's, the in-network default is what compose ships.
+    const baseEnv = { ...process.env, AUTH_TOKEN: process.env.AUTH_TOKEN ?? 'x' };
+    delete baseEnv.DATABASE_URL;
     const json = execFileSync(
       'docker',
-      ['compose', '-f', COMPOSE, 'config', '--format', 'json'],
-      { cwd: repoRoot, stdio: 'pipe', env: { ...process.env, AUTH_TOKEN: process.env.AUTH_TOKEN ?? 'x' } },
+      ['compose', '-f', COMPOSE, '--env-file', '/dev/null', 'config', '--format', 'json'],
+      { cwd: repoRoot, stdio: 'pipe', env: baseEnv },
     ).toString('utf8');
     config = JSON.parse(json);
     usedComposeCli = true;

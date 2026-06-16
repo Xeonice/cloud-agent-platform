@@ -35,9 +35,13 @@ export default defineConfig({
     tailwindcss(),
     tanstackStart({ srcDirectory: "src" }),
     viteReact(),
-    // Vercel deploy target via the Nitro `vercel` preset (verified against the
-    // installed nitro 3.0.260603-beta `NitroConfig.preset: PresetNameInput`).
-    // `NITRO_PRESET` (e.g. on CI) overrides this in-config default.
-    nitro({ preset: "vercel" }),
+    // Deploy target is SELECTED at build time via `NITRO_PRESET` (read here
+    // explicitly — an in-config literal preset is NOT overridden by the env var
+    // in this nitro version, so we must read it ourselves). Default `vercel`
+    // keeps the Vercel deploy unchanged with zero Vercel-config edit; the
+    // compose web image sets `NITRO_PRESET=node-server` (emits
+    // `.output/server/index.mjs`). Verified against nitro 3.0.260603-beta
+    // `NitroConfig.preset: PresetNameInput` (includes "vercel" / "node-server").
+    nitro({ preset: process.env.NITRO_PRESET ?? "vercel" }),
   ],
 });
