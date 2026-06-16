@@ -393,6 +393,105 @@ After the first Release exists (11.2):
 
 ---
 
+## 12. One-click self-update — `SELF_UPDATE_ENABLED` (default OFF, host-root, opt-in)
+
+`self-update-action` (Phase 3 of the [OSS self-update epic](../docs/oss-self-update-epic.md))
+adds an in-app **Upgrade** button: an operator-admin can apply an available update
+straight from the console. Phase 2 (`GET /update-status`) only *tells* you a new
+version is out; Phase 3 *applies* it — the api pulls the matched, version-pinned
+GHCR image set and recreates the cap services, and `survive-api-redeploy`
+(Section 10) keeps in-flight tasks alive across the recreate.
+
+> ⚠️ **This is the most security-sensitive surface in the whole stack.** The
+> button drives the host's Docker socket — the same host-root power tasks already
+> run with. **Who can press it = who can run as root on the host.** Enabling it is
+> a deliberate operator decision, never a default. It ships **INERT**: committing
+> and deploying `self-update-action` changes nothing observable until you opt in.
+
+### 12.1 What ships by default (inert)
+
+With `SELF_UPDATE_ENABLED` unset (the default):
+
+- `POST /self-update` **refuses** (403/404) — the endpoint is hard-gated off.
+- The console's `selfUpdate` capability flag is `false`, so the Upgrade action is
+  **absent** from the update banner (it stays notify-only, exactly Phase 2).
+
+So merely shipping this change adds **no live host-root button**. There is nothing
+to do here unless you choose to activate it.
+
+### 12.2 The bounded guarantees (what it can and cannot do — even when enabled)
+
+The endpoint is deliberately narrow. Even fully enabled it CANNOT run an arbitrary
+container operation:
+
+- **Validated target only.** The upgrade target is a semver tag that MUST match the
+  latest reported by the cached `GET /update-status` (a server-side cross-check),
+  not free-form client input. A mismatched/invalid target is rejected.
+- **cap namespace only.** The updater pulls ONLY `ghcr.io/xeonice/cap-*:<target>`
+  (the matched api/web/aio-sandbox triplet at one `CAP_VERSION`).
+- **cap services only.** It recreates ONLY the cap compose services via
+  `docker compose -f docker-compose.yml -f docker-compose.images.yml pull && up -d`
+  at `CAP_VERSION=<target>`.
+- **No arbitrary command.** There is no path to an arbitrary image, tag, or shell
+  command. The bound is the load-bearing control.
+- **Pull-then-recreate.** It pulls BEFORE recreating; if a pull fails mid-way,
+  compose `up -d` is idempotent and the prior containers keep running (no
+  destructive teardown before the new images are in place).
+
+### 12.3 The admin gate + the threat model
+
+The endpoint requires the operator-auth guard AND an **admin** check — an
+allowlisted admin (the narrowest principal), set via an env admin allowlist
+(a comma-separated set of numeric GitHub ids, a strict subset of `AUTH_ALLOWLIST`).
+A non-admin operator is refused.
+
+The console shows a **confirmation dialog with an explicit host-root warning**
+before it POSTs. Because the button drives `docker.sock`, treat the admin
+allowlist exactly like root-on-the-host access — keep it tight, and prefer making
+it a strict subset of `AUTH_ALLOWLIST`.
+
+### 12.4 How the upgrade runs (detached self-recreate)
+
+The api cannot cleanly `compose up` itself while it is the thing being recreated.
+So on an enabled, confirmed, validated request it:
+
+1. **Acks "update started" BEFORE going down**, then
+2. launches a **DETACHED one-shot updater** (a helper that outlives the api's own
+   recreate — the same detached idiom as `survive-api-redeploy`'s tmux sessions)
+   that runs the bounded `compose pull && up -d` at the target `CAP_VERSION`.
+3. The api recreates onto the new images. **Running tasks survive** — Section 10's
+   re-adoption keeps the `cap-aio-<taskId>` sandboxes alive and re-adopts them on
+   the new api's boot.
+4. The console shows an "updating… reconnecting" state and resumes the session via
+   the existing WS auto-reconnect once the new api is up.
+
+### 12.5 Activate it (owner decision) — only after Phase-1 is live
+
+> Prerequisite: Phase-1 activation (Section 11) must be done first — the repo +
+> GHCR packages public, at least one published Release, and prod running the
+> pinned-release line (`docker-compose.images.yml`). Without real GHCR images
+> there is nothing for the updater to pull, so the feature has no effect.
+
+To turn it on, deliberately:
+
+1. Set `SELF_UPDATE_ENABLED=true` in `apps/api/.env` and define the admin
+   allowlist (the numeric GitHub ids permitted to press Upgrade).
+2. Flip the web `selfUpdate` capability flag to `true` in
+   `apps/web/src/lib/api/capabilities.ts` and redeploy the console.
+3. Re-run the prod bring-up (Section 11.3) so the new env takes effect.
+
+Then verify the true end-to-end (operator-gated — it needs the GHCR image set):
+press **Upgrade** → the detached updater pulls the GHCR image set → the api
+recreates → the console reconnects → `GET /version` reports the new tag, and a
+task that was running survived the recreate.
+
+> **Rollback:** the change is additive and default-off. To deactivate, unset
+> `SELF_UPDATE_ENABLED` (endpoint refuses again) and/or set `selfUpdate: false`
+> (button gone). The feature is supported only for the documented compose
+> topology; on other topologies leave it disabled (notify-only).
+
+---
+
 ## Local dev (unaffected)
 
 ```bash

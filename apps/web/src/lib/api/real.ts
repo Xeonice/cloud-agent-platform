@@ -370,3 +370,62 @@ export async function setDefaultRepo(
 export async function getUpdateStatus(): Promise<UpdateStatus> {
   return UpdateStatusSchema.parse(await request("/update-status"));
 }
+
+// ---------------------------------------------------------------------------
+// Self-update (self-update-action, Phase 3) — LOCAL request/response shape
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /self-update` request — the bounded upgrade target.
+ *
+ * DELIBERATELY a LOCAL web type, NOT a `@cap/contracts` schema: a shared contract
+ * would be imported by both api + web and become a cross-track shared file
+ * (tasks.md NOTE). The shape is intentionally minimal — just the `target` version
+ * tag the banner already reads from `UpdateStatus.latestVersion`. The api does the
+ * load-bearing validation server-side (the target MUST be a semver tag matching the
+ * cached `/update-status` latest; cap GHCR namespace + cap services only), so this
+ * is never an arbitrary image/tag/command channel (design D3).
+ */
+export interface SelfUpdateRequest {
+  /** The validated target version tag to upgrade to (e.g. `v0.4.0`). */
+  target: string;
+}
+
+/**
+ * `POST /self-update` acknowledgement — "update started", returned BEFORE the api
+ * goes down to recreate itself via the detached updater (design D4). The console
+ * then shows an "updating… reconnecting" state and resumes over the existing WS
+ * auto-reconnect once the new api is up. Local web type (see {@link SelfUpdateRequest}).
+ */
+export interface SelfUpdateAck {
+  /** `true` once the api has launched the detached updater (acked before restart). */
+  started: boolean;
+  /** The target version the updater is pulling/recreating to. */
+  target: string;
+}
+
+/**
+ * `POST /self-update` — trigger the gated, bounded, admin-only host-root upgrade
+ * (self-update-action). The api is operator-guarded AND admin-gated AND refuses
+ * unless `SELF_UPDATE_ENABLED=true` (403/404 otherwise — the change ships inert,
+ * design D1/D2). On a valid request it acks "update started" then launches a
+ * DETACHED updater that pulls the target cap image set and recreates the cap
+ * services, outliving its own restart; running tasks survive via
+ * survive-api-redeploy and the console reconnects over the existing WS. Gated by
+ * `BACKEND_CAPABILITIES.selfUpdate` — never called until an operator activates it.
+ */
+export async function postSelfUpdate(
+  body: SelfUpdateRequest,
+): Promise<SelfUpdateAck> {
+  const ack = (await request("/self-update", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })) as Partial<SelfUpdateAck> | undefined;
+  // The api acks before going down; normalize a possibly-empty/204 body into the
+  // local ack shape (the target is echoed from the request when the api omits it).
+  return {
+    started: ack?.started ?? true,
+    target: ack?.target ?? body.target,
+  };
+}

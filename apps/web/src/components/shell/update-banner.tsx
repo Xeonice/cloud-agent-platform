@@ -25,13 +25,24 @@
  * the server.
  */
 import * as React from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ArrowUpCircle, X } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowUpCircle, Loader2, X } from "lucide-react";
 
-import type { UpdateStatus } from "@cap/contracts";
-import { updateStatusQuery } from "@/lib/api/queries";
+import type { AuthSession, UpdateStatus } from "@cap/contracts";
+import { authSessionQuery, updateStatusQuery } from "@/lib/api/queries";
+import { isCapable } from "@/lib/api/capabilities";
+import { selfUpdateMutation } from "@/lib/api/mutations";
 import { cn } from "@/utils";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 /**
  * The `localStorage` key the dismissed version is persisted under. Namespaced
@@ -77,6 +88,78 @@ export function selectBannerView(
     releaseUrl: status.releaseUrl,
     releaseName: status.releaseName,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Admin gate (self-update-action D2) — read the auth session INSIDE the banner
+// ---------------------------------------------------------------------------
+
+/**
+ * The admin allowlist the web upgrade gate consults — the comma-separated GitHub
+ * logins in `VITE_ADMIN_LOGINS`. This MIRRORS the api's self-contained
+ * env-allowlist admin gate (Track 1 `apps/api/src/auth/admin.ts`): there is no
+ * `admin` field on the shared `SessionUser` contract (it would be a cross-track
+ * shared file), so the web side keeps its own local, env-driven predicate. The UI
+ * gate is convenience only — the api re-enforces the admin check server-side on
+ * every `POST /self-update`, so a non-admin who forced the action through still
+ * gets a 403 (defense in depth; spec "operator-admin-only").
+ *
+ * SSR-safe: reads `import.meta.env` (a build-time constant map), never `window`.
+ */
+function adminLogins(): readonly string[] {
+  const env = import.meta.env as Record<string, string | undefined>;
+  const raw = env.VITE_ADMIN_LOGINS;
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Whether the resolved auth session belongs to an admin operator (the narrowest
+ * available admin principal, design D2). PURE w.r.t. the session it is handed and
+ * the env allowlist, so the "absent for a non-admin" contract is unit-testable.
+ * A `null`/unresolved session (logged out, or before the query resolves) is never
+ * an admin — fail closed. A non-allowlisted session, or an empty allowlist (no
+ * admins configured), is likewise not an admin.
+ */
+export function isAdminSession(
+  session: AuthSession | undefined,
+  admins: readonly string[] = adminLogins(),
+): boolean {
+  if (!session) return false;
+  if (!session.allowed) return false;
+  if (admins.length === 0) return false;
+  return admins.includes(session.login.toLowerCase());
+}
+
+// ---------------------------------------------------------------------------
+// Upgrade-action gate (self-update-action D1/D2) — pure show/hide decision
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure decision for whether the admin-gated "Upgrade to vY" action is present
+ * (self-update-action task 2.2/2.3). Returns `true` ONLY when ALL three hold:
+ *   - self-update is ENABLED (the `selfUpdate` capability flag — off by default,
+ *     so the shipped posture never shows the action; design D1/D5),
+ *   - the operator is an ADMIN (design D2), and
+ *   - an update is genuinely AVAILABLE (a non-null banner view — i.e. a known
+ *     newer, non-dismissed version; reuses {@link selectBannerView}).
+ *
+ * Returns `false` otherwise, so the banner stays NOTIFY-ONLY (Phase 2 behavior)
+ * whenever self-update is off / the operator is not an admin / no update is
+ * available. Pure (no `window`, no React, no network), so the four-way matrix is
+ * directly unit-testable.
+ */
+export function selectUpgradeAction(
+  view: UpdateBannerView | null,
+  opts: { selfUpdateEnabled: boolean; isAdmin: boolean },
+): boolean {
+  if (!view) return false;
+  if (!opts.selfUpdateEnabled) return false;
+  if (!opts.isAdmin) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -153,14 +236,46 @@ export interface UpdateBannerProps {
 /**
  * The slim, dismissible app-shell strip. Renders nothing unless the check
  * reports an available, non-dismissed update (see {@link selectBannerView}).
+ *
+ * When self-update is ENABLED (the `selfUpdate` capability flag) AND the operator
+ * is an ADMIN (read from the auth session INSIDE the banner — `_app.tsx` renders
+ * `<UpdateBanner/>` with no props and is untouched) the strip additionally offers
+ * an "Upgrade to vY" action (self-update-action task 2.2). Clicking it opens a
+ * confirmation dialog carrying an explicit HOST-ROOT warning; only after explicit
+ * confirmation does it `POST /self-update`, after which the banner shows an
+ * "updating… reconnecting" state while the api recreates itself via the detached
+ * updater and the existing WS auto-reconnect resumes the session (design D4).
+ * With self-update off / a non-admin / no update, the action is ABSENT and the
+ * banner stays notify-only (Phase 2 behavior).
  */
 export function UpdateBanner({ className }: UpdateBannerProps) {
   const { data: status } = useQuery(updateStatusQuery());
+  const { data: session } = useQuery(authSessionQuery());
   const dismissedVersion = useDismissedVersion();
+  const queryClient = useQueryClient();
+  const upgrade = useMutation(selfUpdateMutation(queryClient));
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
+
   const view = selectBannerView(status, dismissedVersion);
+  const showUpgrade = selectUpgradeAction(view, {
+    selfUpdateEnabled: isCapable("selfUpdate"),
+    isAdmin: isAdminSession(session),
+  });
   if (!view) return null;
 
   const label = view.releaseName ?? view.version;
+  // The detached updater is launched on a successful ack; once that happens the
+  // api is going down to recreate itself, so the strip shows "updating…
+  // reconnecting" until the WS auto-reconnect brings the (new) api back.
+  const updating = upgrade.isPending || upgrade.isSuccess;
+
+  function confirmUpgrade() {
+    if (!view) return;
+    setConfirmOpen(false);
+    // The target is the validated latest version the banner already read — never
+    // free-form input (design D3); the api re-validates it against /update-status.
+    upgrade.mutate({ target: view.version });
+  }
 
   return (
     <div
@@ -188,11 +303,75 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
           </>
         ) : null}
       </span>
+
+      {updating ? (
+        // After a successful ack the api is recreating itself; surface the
+        // "updating… reconnecting" state. The existing WS auto-reconnect resumes
+        // the session once the new api is up (design D4).
+        <span
+          data-update-state="updating"
+          className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-muted-foreground"
+        >
+          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+          正在更新… 重新连接中
+        </span>
+      ) : showUpgrade ? (
+        <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+          <Button
+            type="button"
+            variant="default"
+            size="sm"
+            className="shrink-0"
+            data-update-upgrade=""
+            onClick={() => setConfirmOpen(true)}
+          >
+            升级到 {view.version}
+          </Button>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>确认升级到 {view.version}？</DialogTitle>
+              <DialogDescription>
+                此操作以宿主机 root 权限运行容器编排。
+              </DialogDescription>
+            </DialogHeader>
+            <DialogBody className="text-sm text-muted-foreground">
+              <p>
+                升级将拉取目标版本的镜像并就地重建服务进程。能点击此按钮的人，等同于能在宿主机上以
+                root 身份运行命令——请确认你信任此次升级目标（{view.version}）。
+              </p>
+              <p className="mt-2">
+                进行中的任务会被保留并在新进程上重新接管，操作台将通过现有连接自动重连。
+              </p>
+            </DialogBody>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setConfirmOpen(false)}
+              >
+                取消
+              </Button>
+              <Button
+                type="button"
+                variant="default"
+                size="sm"
+                data-update-confirm=""
+                onClick={confirmUpgrade}
+              >
+                确认升级
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
+
       <Button
         type="button"
         variant="ghost"
         size="icon-sm"
         aria-label="忽略此版本提示"
+        disabled={updating}
         onClick={() => setDismissedVersion(view.version)}
       >
         <X aria-hidden="true" />

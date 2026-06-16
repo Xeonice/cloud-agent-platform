@@ -297,6 +297,41 @@ COMPOSE_PROFILES=web \
 > (making the repo + packages public, cutting the first Release, and migrating an
 > existing build-on-push deploy to a pinned Release).
 
+## Optional: in-app one-click self-update (`SELF_UPDATE_ENABLED`, default OFF)
+
+Once you run the pinned-release line above, cap can apply an available update
+**from inside the console**: an admin presses an **Upgrade** button on the update
+banner and the api pulls the matched, version-pinned GHCR image set and recreates
+the cap services — running tasks survive the recreate. This is **opt-in and
+default-off**; you do not need it to self-host.
+
+> **Security note — this is host-root behind a button.** The Upgrade action drives
+> the host's Docker socket, the same host-root power tasks already run with. **Who
+> can press it = who can run as root on the host.** Enabling it is a deliberate
+> decision, not a default. The feature ships **inert**: with `SELF_UPDATE_ENABLED`
+> unset, `POST /self-update` refuses and the button is absent (the banner stays
+> notify-only). Keep it off unless you have a reason to turn it on.
+
+What it can do — even when enabled — is deliberately **bounded**:
+
+- It only upgrades to a target that **matches the latest** reported by the
+  update check (`GET /update-status`); an arbitrary/mismatched target is rejected.
+- It pulls **only** the cap GHCR namespace (`ghcr.io/xeonice/cap-*:<target>`) and
+  recreates **only** the cap compose services. There is no path to an arbitrary
+  image, tag, or shell command.
+- It pulls **before** recreating, so a failed pull leaves the running stack intact.
+
+To activate it (after a Release exists and prod runs the pinned-release line):
+
+- set `SELF_UPDATE_ENABLED=true` and the admin allowlist (a strict subset of
+  `AUTH_ALLOWLIST` — the numeric GitHub ids permitted to press Upgrade) in
+  `apps/api/.env`, and
+- flip the web `selfUpdate` capability flag to `true`
+  (`apps/web/src/lib/api/capabilities.ts`) and redeploy the console.
+
+See [`deploy/DEPLOY.md`](../deploy/DEPLOY.md) (the self-update section) for the full
+activation steps, the detached self-recreate mechanism, and the threat model.
+
 ## Optional: legacy token (dev only)
 
 The legacy single shared-`AUTH_TOKEN` operator path is **OFF by default** and

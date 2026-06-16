@@ -71,6 +71,20 @@ export interface BackendCapabilities {
    * `true`, so flipping the flag never fabricates a prompt.
    */
   updateCheck: boolean;
+  /**
+   * `POST /self-update` — the one-click, host-root upgrade action
+   * (self-update-action, Phase 3 of the OSS self-update epic). When `false`
+   * (the DEFAULT, and the shipped posture) the console upgrade action is ABSENT
+   * entirely — the banner stays notify-only (Phase 2 behavior) and `postSelfUpdate`
+   * is never called, so deploying the change adds NO live host-root button
+   * (design D1/D5; spec "ships INERT"). It flips to `true` ONLY as a deliberate
+   * operator activation step, in lockstep with the api's `SELF_UPDATE_ENABLED`
+   * env gate and a published GHCR release (Phase 1 activation). Even then the
+   * action is additionally gated, inside the banner, on the operator being an
+   * admin AND an update being genuinely available — so flipping this flag alone
+   * never surfaces an unconfirmed upgrade trigger.
+   */
+  selfUpdate: boolean;
 }
 
 /**
@@ -119,6 +133,15 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   // `GET /update-status` is verified against a public repo with a published
   // Release (Phase 1 activation), then this flips to `true`.
   updateCheck: false, // GET /update-status — cached server-side GitHub-Release compare.
+
+  // Self-update action (self-update-action, Phase 3). Default `false`: the
+  // host-root one-click upgrade is the most dangerous surface in the epic, so the
+  // change ships INERT — with this off the console upgrade action is absent and
+  // `POST /self-update` is never invoked, so deploying it adds no live upgrade
+  // button (design D1/D5). Flips to `true` ONLY as a deliberate operator
+  // activation step, paired with the api's `SELF_UPDATE_ENABLED` env gate and a
+  // published GHCR release set.
+  selfUpdate: false, // POST /self-update — gated, confirmed, admin-only host-root upgrade.
 };
 
 /**

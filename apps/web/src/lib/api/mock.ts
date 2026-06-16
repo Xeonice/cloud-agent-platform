@@ -37,6 +37,7 @@ import type {
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
 import { forceMock } from "./capabilities";
+import type { SelfUpdateRequest, SelfUpdateAck } from "./real";
 
 // ---------------------------------------------------------------------------
 // Cadence
@@ -802,4 +803,24 @@ export async function mockUpdateStatus(): Promise<UpdateStatus> {
     releaseName: "v0.4.0",
     checkedAt: "2026-06-17T00:00:00.000Z",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Self-update (self-update-action, Phase 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The mock `POST /self-update` ack (mirrors `real.postSelfUpdate`). Used only
+ * under the visual harness / when `BACKEND_CAPABILITIES.selfUpdate` is off —
+ * which is the SHIPPED posture, where the upgrade action is absent entirely, so
+ * in normal prod this is never reached. It simply echoes "update started" for the
+ * requested target so the banner's "updating… reconnecting" state is previewable
+ * without performing (or faking) a real recreate. The local ack shape is owned by
+ * `real.ts` (no `@cap/contracts` schema — see the tasks NOTE).
+ */
+export async function mockPostSelfUpdate(
+  body: SelfUpdateRequest,
+): Promise<SelfUpdateAck> {
+  await delay();
+  return { started: true, target: body.target };
 }

@@ -67,6 +67,14 @@ export const queryKeys = {
   taskResource: (id: string) => ["tasks", id, "resource"] as const,
   sessionHistory: (id: string) => ["tasks", id, "session-history"] as const,
   updateStatus: ["update-status"] as const,
+  /**
+   * The self-update action (self-update-action). There is no self-update READ —
+   * the upgrade is a one-shot `POST /self-update` whose target comes from
+   * `updateStatus`. This key exists only so the mutation's invalidation has a
+   * stable, centralized handle alongside the cross-checked `updateStatus` it also
+   * refreshes (mirroring the no-string-drift discipline of the other keys).
+   */
+  selfUpdate: ["self-update"] as const,
 };
 
 // ---------------------------------------------------------------------------

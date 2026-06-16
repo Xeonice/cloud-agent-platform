@@ -30,6 +30,8 @@ import type {
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
+import * as mock from "./mock";
+import type { SelfUpdateRequest, SelfUpdateAck } from "./real";
 import { queryKeys } from "./queries";
 import { setState, upsertImportedRepo } from "../store";
 
@@ -225,6 +227,38 @@ export function saveCodexCredentialMutation(
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.codexCredential });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Self-update (self-update-action, Phase 3) — gated, admin-confirmed upgrade
+// ---------------------------------------------------------------------------
+
+/**
+ * Trigger the gated, bounded, host-root self-update (`POST /self-update`,
+ * self-update-action). Real when `selfUpdate` is on (the api enforces the
+ * `SELF_UPDATE_ENABLED` env gate + admin check + the target cross-check against
+ * `/update-status` — design D1/D2/D3); the mock ack is used otherwise (the
+ * shipped posture keeps `selfUpdate` off, so the banner hides the action and this
+ * is never invoked). The variable is the validated target version the banner read
+ * from `UpdateStatus.latestVersion` — never free-form client input.
+ *
+ * On success the api has launched the DETACHED updater and is about to recreate
+ * itself (design D4), so we invalidate `updateStatus` (the cross-checked source)
+ * so the banner re-derives once the new api is up and the WS reconnects; the
+ * caller surfaces the "updating… reconnecting" state from the pending mutation.
+ */
+export function selfUpdateMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<SelfUpdateAck, Error, SelfUpdateRequest> {
+  return {
+    mutationFn: (body) =>
+      isCapable("selfUpdate")
+        ? real.postSelfUpdate(body)
+        : mock.mockPostSelfUpdate(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.updateStatus });
     },
   };
 }

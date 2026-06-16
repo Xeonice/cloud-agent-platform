@@ -13,9 +13,14 @@
  * per-version match) would fail here — it is not a tautology.
  */
 import { describe, it, expect } from "vitest";
-import type { UpdateStatus } from "@cap/contracts";
+import type { AuthSession, UpdateStatus } from "@cap/contracts";
 
-import { selectBannerView } from "./update-banner";
+import {
+  isAdminSession,
+  selectBannerView,
+  selectUpgradeAction,
+  type UpdateBannerView,
+} from "./update-banner";
 
 /** An "update available for vY" status, overridable per case. */
 function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
@@ -88,5 +93,110 @@ describe("selectBannerView — the banner's show/hide decision", () => {
       expect(view).not.toBeNull();
       expect(view?.version).toBe("v0.4.0");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Self-update upgrade action gate (self-update-action task 2.3)
+// ---------------------------------------------------------------------------
+
+/** An allowlisted session user, overridable per case. */
+function session(overrides: Partial<NonNullable<AuthSession>> = {}): AuthSession {
+  return {
+    githubId: 4_829_173,
+    login: "tanghehui",
+    name: "Tang Hehui",
+    avatarUrl: "https://avatars.githubusercontent.com/u/4829173?v=4",
+    allowed: true,
+    ...overrides,
+  };
+}
+
+/** A non-null banner view (an update IS available for vY). */
+const VIEW: UpdateBannerView = {
+  version: "v0.4.0",
+  releaseUrl:
+    "https://github.com/Xeonice/cloud-agent-platform/releases/tag/v0.4.0",
+  releaseName: "v0.4.0",
+};
+
+describe("isAdminSession — the banner's admin gate (env allowlist, design D2)", () => {
+  it("is an admin when the allowlisted login is in the admin allowlist (case-insensitive)", () => {
+    expect(isAdminSession(session({ login: "tanghehui" }), ["tanghehui"])).toBe(true);
+    expect(isAdminSession(session({ login: "TangHehui" }), ["tanghehui"])).toBe(true);
+  });
+
+  it("is NOT an admin when the login is absent from the allowlist", () => {
+    expect(isAdminSession(session({ login: "someoneelse" }), ["tanghehui"])).toBe(false);
+  });
+
+  it("fails closed for a logged-out / unresolved session", () => {
+    expect(isAdminSession(null, ["tanghehui"])).toBe(false);
+    expect(isAdminSession(undefined, ["tanghehui"])).toBe(false);
+  });
+
+  it("fails closed for a non-allowlisted session even if the login matches", () => {
+    expect(isAdminSession(session({ allowed: false }), ["tanghehui"])).toBe(false);
+  });
+
+  it("fails closed when NO admins are configured (empty allowlist)", () => {
+    // No admin set ⇒ nobody is admin (the shipped posture before activation).
+    expect(isAdminSession(session(), [])).toBe(false);
+  });
+});
+
+describe("selectUpgradeAction — present only when enabled + admin + update available", () => {
+  it("is PRESENT when self-update is enabled, the operator is admin, and an update is available", () => {
+    expect(
+      selectUpgradeAction(VIEW, { selfUpdateEnabled: true, isAdmin: true }),
+    ).toBe(true);
+  });
+
+  it("is ABSENT when self-update is DISABLED (the shipped, inert posture)", () => {
+    // Even an admin with an available update sees no action while selfUpdate is off
+    // — deploying the change adds no live host-root button (design D1/D5).
+    expect(
+      selectUpgradeAction(VIEW, { selfUpdateEnabled: false, isAdmin: true }),
+    ).toBe(false);
+  });
+
+  it("is ABSENT for a NON-admin operator (even enabled + update available)", () => {
+    expect(
+      selectUpgradeAction(VIEW, { selfUpdateEnabled: true, isAdmin: false }),
+    ).toBe(false);
+  });
+
+  it("is ABSENT when NO update is available (a null banner view)", () => {
+    // No update to apply ⇒ the banner is notify-only; nothing to upgrade to.
+    expect(
+      selectUpgradeAction(null, { selfUpdateEnabled: true, isAdmin: true }),
+    ).toBe(false);
+  });
+
+  it("requires ALL THREE conditions — any single one off hides the action", () => {
+    // The full off-matrix: only (true,true,available) is present; every other
+    // combination is absent. A regression that OR'd the gates (showing on any one)
+    // would fail here — it is not a tautology.
+    const cases: Array<{
+      view: UpdateBannerView | null;
+      selfUpdateEnabled: boolean;
+      isAdmin: boolean;
+      expected: boolean;
+    }> = [
+      { view: VIEW, selfUpdateEnabled: true, isAdmin: true, expected: true },
+      { view: VIEW, selfUpdateEnabled: true, isAdmin: false, expected: false },
+      { view: VIEW, selfUpdateEnabled: false, isAdmin: true, expected: false },
+      { view: VIEW, selfUpdateEnabled: false, isAdmin: false, expected: false },
+      { view: null, selfUpdateEnabled: true, isAdmin: true, expected: false },
+      { view: null, selfUpdateEnabled: false, isAdmin: false, expected: false },
+    ];
+    for (const c of cases) {
+      expect(
+        selectUpgradeAction(c.view, {
+          selfUpdateEnabled: c.selfUpdateEnabled,
+          isAdmin: c.isAdmin,
+        }),
+      ).toBe(c.expected);
+    }
   });
 });

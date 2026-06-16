@@ -11,6 +11,7 @@ import { SandboxModule } from './sandbox/sandbox.module';
 import { GuardrailsModule } from './guardrails/guardrails.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { UpdateStatusModule } from './update-status/update-status.module';
+import { SelfUpdateModule } from './self-update/self-update.module';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { AuditModule } from './audit/audit.module';
@@ -33,7 +34,12 @@ import { SettingsModule } from './settings/settings.module';
  *    sampled CPU/memory block (be-metrics 5.1–5.5); `UpdateStatusModule` exposes
  *    the operator-guarded `GET /update-status` (update-availability-check,
  *    Phase 2) — a cached, best-effort GitHub-Release comparison against the
- *    running `CAP_VERSION` that degrades honestly to `updateAvailable: false`;
+ *    running `CAP_VERSION` that degrades honestly to `updateAvailable: false`.
+ *    `SelfUpdateModule` (self-update-action, Phase 3) exposes the admin-gated,
+ *    env-gated `POST /self-update` — the one-click host-root upgrade trigger.
+ *    Default-OFF (`SELF_UPDATE_ENABLED` unset → the endpoint refuses) so merely
+ *    composing it is INERT: no live upgrade capability exists until an operator
+ *    deliberately enables it;
  *  - auth: `AuthModule` registers the operator-auth guard GLOBALLY on all REST
  *    endpoints (exempting `/health`), 11.2b. The refuse-to-boot check on an unset
  *    `AUTH_TOKEN` (11.3b) and CORS/WS-origin allow-listing (10.1b) live in the
@@ -66,6 +72,7 @@ import { SettingsModule } from './settings/settings.module';
     GuardrailsModule,
     MetricsModule,
     UpdateStatusModule,
+    SelfUpdateModule,
     AuthModule,
     AuditModule,
     SettingsModule,

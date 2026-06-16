@@ -85,17 +85,23 @@ agent-infra) — redistribution of a derived image is permitted, so publishing
 - Update-check: poll Releases `latest` vs `/version` → console banner + changelog +
   the documented upgrade path. Universal and safe (no mutation).
 
-### Phase 3 — "one-click self-update" (depends: 2; the differentiator; opt-in)
+### Phase 3 — "one-click self-update" (depends: 2; the differentiator; opt-in) — SHIPPED INERT (`self-update-action`)
 - Console **upgrade button** → api uses `docker.sock` to pull the new image tags +
   recreate the cap services → `survive-api-redeploy` keeps running tasks alive.
-- Two hard design points to resolve in this phase:
-  1. **Security**: the button exposes host-root-equivalent `docker.sock` power. Gate it
-     hard — allowlisted admin only, behind OAuth, with confirmation, and BOUNDED (pull
-     only the cap GHCR namespace's pinned tags + recreate only cap services; never
-     arbitrary container ops).
-  2. **The api cannot cleanly recreate itself** while running. Use a detached one-shot
-     updater (a `compose pull && up -d` that outlives the api's own restart) or a small
-     sidecar — same detached-process idiom as survive-api-redeploy's tmux approach.
+- Two hard design points, both resolved in `self-update-action`:
+  1. **Security**: the button exposes host-root-equivalent `docker.sock` power. Gated
+     hard — hard env gate `SELF_UPDATE_ENABLED` (default off → endpoint refuses),
+     allowlisted admin only behind OAuth, with confirmation, and BOUNDED (target
+     validated against `/update-status`'s latest; pull only the cap GHCR namespace's
+     pinned tags + recreate only cap services; never arbitrary container ops).
+  2. **The api cannot cleanly recreate itself** while running. Resolved with a detached
+     one-shot updater (a `compose pull && up -d` at the target `CAP_VERSION` that
+     outlives the api's own restart) — same detached-process idiom as
+     survive-api-redeploy's tmux approach.
+- **Ships INERT**: `SELF_UPDATE_ENABLED` default off → `POST /self-update` refuses, and
+  the `selfUpdate` capability flag is false → no button. Deploying it adds no live
+  host-root button; activation (the env + flag + a real Release) is a deliberate
+  operator step, documented in `deploy/DEPLOY.md` + `docs/self-hosting.md`.
 
 ## Risks / trade-offs
 
