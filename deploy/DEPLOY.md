@@ -372,24 +372,46 @@ build-of-HEAD.
 After the first Release exists (11.2):
 
 1. Pick the Release tag to run and pin it, e.g. `export CAP_VERSION=v0.1.0`.
-2. Deploy with the image override layered on the base compose (pull, don't build):
+2. Deploy the prebuilt, version-pinned images (pull, don't build). There are two
+   shapes depending on your platform:
 
-   ```bash
-   export CAP_VERSION=v0.1.0
-   docker compose -f docker-compose.yml -f docker-compose.images.yml --profile proxy pull
-   docker compose -f docker-compose.yml -f docker-compose.images.yml --profile proxy up -d
-   ```
+   - **Plain Docker Compose (can layer `-f`):** the additive override on the base.
 
-   (In Dokploy: point the app at the layered compose files and set `CAP_VERSION`
-   in its env. Do NOT pass `--build` — that rebuilds from source and defeats the
-   pin.)
+     ```bash
+     export CAP_VERSION=v0.1.0
+     docker compose -f docker-compose.yml -f docker-compose.images.yml --profile proxy pull
+     docker compose -f docker-compose.yml -f docker-compose.images.yml --profile proxy up -d
+     ```
+
+   - **Single-compose-file platforms (e.g. Dokploy — CANNOT layer `-f a -f b`):**
+     use the SELF-CONTAINED `docker-compose.prod.yml` (full stack, cap services
+     already `image:`-pinned, no `build:` blocks). In Dokploy: set the app's
+     **Compose file path** to `docker-compose.prod.yml` and set `CAP_VERSION` (and
+     any profile vars, e.g. `COMPOSE_PROFILES=proxy`) in its **Environment**, then
+     redeploy. Equivalent raw command:
+
+     ```bash
+     export CAP_VERSION=v0.1.0
+     docker compose -f docker-compose.prod.yml --profile proxy pull
+     docker compose -f docker-compose.prod.yml --profile proxy up -d
+     ```
+
+   Either way: do NOT `--build` (that rebuilds from source and defeats the pin).
+   `docker-compose.prod.yml` has no `build:` blocks, so it can only pull.
 3. Confirm `GET /version` on prod now reports the pinned `vX.Y.Z`, and that newly
    provisioned `cap-aio-<taskId>` sandboxes use `ghcr.io/xeonice/cap-aio-sandbox:vX.Y.Z`
-   (the override sets the api's `AIO_SANDBOX_IMAGE` to the matched pinned tag).
+   (both compose shapes set the api's `AIO_SANDBOX_IMAGE` to the matched pinned tag).
+4. **Updating thereafter (the dogfood loop):** cut a newer Release (e.g. `v0.1.1`),
+   bump `CAP_VERSION` (in Dokploy env / your shell), and re-pull + re-up. This is
+   how the maintainer's own prod "updates from the remote release images" — the
+   same release→pull→update flow shipped to downstream self-hosters. (The in-app
+   one-click self-update button, §12, is for plain-compose self-hosters NOT managed
+   by a deploy platform; on Dokploy you update via Dokploy + `CAP_VERSION`.)
 
 > **This migration is optional and reversible.** Build-from-source (Sections 3–4)
-> keeps working; converging prod onto the pinned-release line is the owner's call,
-> and dropping the second `-f docker-compose.images.yml` reverts to building.
+> keeps working; converging prod onto the pinned-release line is the owner's call.
+> `docker-compose.prod.yml` must be kept in sync with `docker-compose.yml` when
+> services change (it mirrors the stack with `build:`→`image:`).
 
 ---
 

@@ -1,0 +1,194 @@
+# SELF-CONTAINED production compose — runs the PREBUILT, version-pinned GHCR
+# release images instead of building from source (OSS self-update epic,
+# decision ④/⑤: the maintainer's own prod consumes the same images it ships).
+#
+# WHY a separate self-contained file (not the docker-compose.images.yml OVERLAY):
+# single-file deploy platforms (e.g. Dokploy) cannot layer `-f base -f images`,
+# so this file is COMPLETE on its own — point the platform's one compose path at
+# it. It carries NO `build:` blocks, so `up -d` can only ever PULL + run the
+# pinned images, never compile.
+#
+# USAGE:
+#   CAP_VERSION=v0.1.0 docker compose -f docker-compose.prod.yml pull
+#   CAP_VERSION=v0.1.0 docker compose -f docker-compose.prod.yml up -d
+# Updating = bump CAP_VERSION to a newer published Release tag and re-pull/up.
+# `${CAP_VERSION}` has NO default ON PURPOSE: an unset value makes compose fail
+# loudly rather than run a stray tag. All three cap images share ONE tag so the
+# stack is always a mutually-compatible matched set (decision ⑤).
+#
+# KEEP IN SYNC with docker-compose.yml: this mirrors the base stack with the
+# api/web/aio-sandbox services switched from `build:` to `image:` and is
+# otherwise identical (networks, volumes, env, ports, docker.sock, profiles).
+# When you change a service in docker-compose.yml, mirror it here.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  api:
+    image: ghcr.io/xeonice/cap-api:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
+    restart: unless-stopped
+    logging: *default-logging
+    # DooD: host-root-equivalent docker.sock access (single-user self-host only —
+    # see docker-compose.yml header). root so the root-owned socket is readable.
+    user: root
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: apps/api/.env
+        required: false
+      - path: ../files/api.env
+        required: false
+    environment:
+      PORT: "8080"
+      WORKSPACES_DIR: /data/workspaces
+      DATABASE_URL: ${DATABASE_URL:-postgresql://cap:cap@postgres:5432/cap?schema=public}
+      # The pulled, version-matched per-task sandbox image (decision ⑤): newly
+      # provisioned cap-aio-<taskId> run the SAME release as the api. Pinned tag.
+      AIO_SANDBOX_IMAGE: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
+      # The single user-facing version, reported by GET /version on this image.
+      CAP_VERSION: ${CAP_VERSION}
+      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-}
+      TASK_REPO_URL: ${TASK_REPO_URL:-}
+    ports:
+      - "8080:8080"
+    networks:
+      - default
+      - cap-net
+    volumes:
+      - workspaces:/data/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # In-compose web console (profile-gated, like the base). NOTE: the published
+  # cap-web image bakes VITE_API_BASE_URL/VITE_WS_URL AT BUILD time; the release
+  # workflow builds it with the defaults (localhost), so the prebuilt image is
+  # only correct for a same-host/localhost console. A maintainer serving the
+  # console on Vercel (or any custom domain) leaves the `web` profile OFF and the
+  # frontend is deployed separately; a self-hoster who wants a custom-domain
+  # in-compose console must rebuild cap-web with their own VITE_* (build-time).
+  web:
+    profiles: ["web"]
+    image: ghcr.io/xeonice/cap-web:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - api
+    environment:
+      PORT: "3000"
+    ports:
+      - "${WEB_HOST_PORT:-3000}:3000"
+    networks:
+      - default
+
+  # OPT-IN reverse proxy (Cloudflare -> nginx -> api), `proxy` profile.
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: ["proxy"]
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - default
+
+  # PULL vehicle for the per-task AIO sandbox image: pinning its `image:` to the
+  # release tag makes `docker compose -f docker-compose.prod.yml pull` fetch
+  # cap-aio-sandbox:${CAP_VERSION} onto the host so the DooD provider (pointed at
+  # it via AIO_SANDBOX_IMAGE above) finds it. Non-runtime: it never starts.
+  aio-sandbox-image:
+    image: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
+    entrypoint: ["true"]
+    restart: "no"
+    network_mode: none
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: cap
+      POSTGRES_PASSWORD: cap
+      POSTGRES_DB: cap
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cap -d cap"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Observability — OPT-IN via `observability` / `grafana` profiles (as base).
+  loki:
+    image: grafana/loki:3.1.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./deploy/observability/loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    networks:
+      - default
+    mem_limit: 256m
+
+  grafana-alloy:
+    image: grafana/alloy:v1.3.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - "run"
+      - "/etc/alloy/config.alloy"
+      - "--storage.path=/var/lib/alloy/data"
+    depends_on:
+      - loki
+    volumes:
+      - ./deploy/observability/alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy-data:/var/lib/alloy/data
+    networks:
+      - default
+    mem_limit: 128m
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ["grafana"]
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - loki
+    environment:
+      GRAFANA_PG_USER: ${GRAFANA_PG_USER:-grafana_ro}
+      GRAFANA_PG_PASSWORD: ${GRAFANA_PG_PASSWORD:-}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+    volumes:
+      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/observability/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    networks:
+      - default
+    mem_limit: 256m
+
+networks:
+  cap-net:
+    name: cap-net
+
+volumes:
+  workspaces:
+  pgdata:
+  loki-data:
+  alloy-data:
+  grafana-data:
