@@ -37,6 +37,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 
+import { cn } from "@/utils";
 import { authSessionQuery } from "@/lib/api/queries";
 import { isAuthCapable, isAuthenticated } from "@/lib/mock-session";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -77,19 +78,48 @@ export const Route = createFileRoute("/_app")({
 function AppLayout() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
+  // The LIVE session page (`/tasks/:id`, NOT `/tasks/new`) is a fixed-height
+  // cockpit: it has no topbar AND it pins the content area to the viewport so the
+  // terminal fills the space and scrolls INSIDE. Every other page keeps the
+  // topbar + the default grow-with-content, document-scroll model.
+  const isSession =
+    pathname.startsWith("/tasks/") && pathname !== "/tasks/new";
+
   return (
     <SidebarProvider
       // Pin the sidebar to the cockpit design's fixed 228px column; no collapse.
       style={{ "--sidebar-width": "228px" } as React.CSSProperties}
-      className="min-h-screen"
+      // The shell wrapper's min-height MUST use the SAME viewport unit as the
+      // session inset's `h-dvh` (below). `min-h-screen` (100vh) is right for the
+      // grow-with-content pages, but on the session route the inset is pinned to
+      // `h-dvh` (100dvh) — and on MOBILE 100vh (URL-bar-retracted) > 100dvh
+      // (current). With the sidebar hidden ≤821px the inset is the wrapper's only
+      // in-flow child, so a `min-h-screen` wrapper would stand ~one URL-bar taller
+      // than the visible viewport → a spurious OUTER document scroll + a reflow
+      // jump as the URL bar collapses. `min-h-dvh` on the session route keeps the
+      // wrapper exactly the visible viewport, matching the inset.
+      className={cn("min-h-screen", isSession && "min-h-dvh")}
     >
       <AppSidebar pathname={pathname} />
-      <SidebarInset className="min-w-0 bg-transparent px-[clamp(18px,3vw,40px)] pt-[18px] pb-[68px] max-[821px]:px-[14px] max-[821px]:pb-[94px]">
+      <SidebarInset
+        className={cn(
+          "min-w-0 bg-transparent px-[clamp(18px,3vw,40px)] pt-[18px] pb-[68px] max-[821px]:px-[14px] max-[821px]:pb-[94px]",
+          // Session route: pin the inset to the viewport height so the terminal
+          // section (`flex-1 min-h-0`, see `$taskId.tsx`) flexes to fill exactly
+          // the space below the page header — no fixed `100dvh − Npx` magic number
+          // (which mis-estimated the variable-height header and overflowed the
+          // page). `overflow-y-auto` (not `-hidden`): the LIVE terminal shrinks to
+          // fit so the DOCUMENT shows NO scrollbar (the wheel scrolls INSIDE the
+          // xterm), while the read-only REPLAY — whose transcript has a min-height
+          // floor — scrolls the inset instead of being clipped on a short viewport.
+          isSession && "h-dvh overflow-y-auto",
+        )}
+      >
         {/* The cockpit session page (`/tasks/:id`) has NO topbar — its `← 任务控制台`
             crumb is the top chrome (session-cockpit-redesign). `/tasks/new` keeps
             the topbar. Dashboard ≤820px hides the topbar (its mobile-workbench-meta
             strip carries the Runner readout); other pages keep the mobile topbar. */}
-        {pathname.startsWith("/tasks/") && pathname !== "/tasks/new" ? null : (
+        {isSession ? null : (
           <Topbar
             className={
               pathname === "/dashboard" ? "max-[821px]:hidden" : undefined

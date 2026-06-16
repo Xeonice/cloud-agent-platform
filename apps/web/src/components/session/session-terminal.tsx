@@ -560,7 +560,15 @@ export const SessionTerminal = React.forwardRef<
   return (
     <article
       ref={shellRef}
-      className="flex min-h-[min(820px,calc(100vh-210px))] flex-col overflow-hidden rounded-lg bg-terminal-bg text-terminal-fg shadow-terminal [&:fullscreen]:rounded-none"
+      // FILLS its flex slot rather than sizing itself off a fixed `100dvh − Npx`
+      // magic number. The route wraps this in a `flex-1 min-h-0` section inside
+      // the app-shell inset, which is pinned to the viewport on the session route
+      // (`h-dvh overflow-hidden` in `_app.tsx`). So `h-full min-h-0` makes the
+      // terminal occupy exactly the space below the (variable-height) page header
+      // down to the inset's bottom padding — no page overflow, no empty gap.
+      // `overflow-hidden` keeps the xterm scrolling INSIDE (its viewport scrollbar
+      // is hidden via app.css). Fullscreen fills the whole screen.
+      className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg bg-terminal-bg text-terminal-fg shadow-terminal [&:fullscreen]:h-screen [&:fullscreen]:rounded-none"
     >
       {/* terminal-head (three-segment, dark) — `{agent} · {repo}#{branch}` label
           + connection readout (left); ⋯ menu (复制 / 暂停滚动) + 全屏 (right). The

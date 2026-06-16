@@ -180,7 +180,12 @@ function SessionPage(): React.ReactElement {
         onStop={handleStop}
       />
 
-      <section className="grid grid-cols-[minmax(0,1fr)]">
+      {/* The terminal slot FILLS the space below the SessionHeader: `flex-1
+          min-h-0` absorbs the inset's remaining height (the inset is pinned to
+          the viewport on the session route, see `_app.tsx`), and the single
+          `minmax(0,1fr)` row+col lets the child stretch to fill while still
+          clamping width so long output can't blow out the column. */}
+      <section className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] grid-cols-[minmax(0,1fr)]">
         {task && isReplayableStatus(task.status) ? (
           // A FINISHED task (completed / cancelled / failed / agent_failed_to_start):
           // render the read-only replay of its settled-sandbox transcript in
@@ -223,11 +228,11 @@ function PreRunningPlaceholder({
       ? "排队中 · 等待并发槽位释放…"
       : "正在启动沙箱 · 准备会话环境…";
   return (
-    <article className="overflow-hidden rounded-md bg-terminal-bg text-terminal-fg shadow-terminal min-h-[min(820px,calc(100vh-210px))]">
-      <div className="flex min-h-[40px] items-center justify-between border-b border-terminal-line bg-[#0d0d0d] px-3.5 font-mono text-xs text-terminal-muted">
+    <article className="flex h-full min-h-0 flex-col overflow-hidden rounded-md bg-terminal-bg text-terminal-fg shadow-terminal">
+      <div className="flex min-h-[40px] flex-none items-center justify-between border-b border-terminal-line bg-[#0d0d0d] px-3.5 font-mono text-xs text-terminal-muted">
         <span>{label}</span>
       </div>
-      <div className="flex min-h-[min(680px,calc(100vh-348px))] items-center justify-center bg-[#050505] px-4 py-3.5 font-mono text-sm text-terminal-muted">
+      <div className="flex min-h-0 flex-1 items-center justify-center bg-[#050505] px-4 py-3.5 font-mono text-sm text-terminal-muted">
         <span className="animate-pulse">○ {label}</span>
       </div>
     </article>

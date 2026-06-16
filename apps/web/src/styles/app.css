@@ -352,3 +352,19 @@
     animation: status-pulse 2s ease-in-out infinite;
   }
 }
+
+/*
+ * Hide the live terminal's scrollbar (SessionTerminal). xterm renders a visible
+ * scrollbar on its `.xterm-viewport`; the cockpit wants a clean, chromeless
+ * terminal surface, so the bar is hidden while scrolling stays fully functional
+ * (wheel / keyboard / programmatic). Scoped to xterm so no other surface is
+ * affected. Covers Firefox (`scrollbar-width`) + WebKit/Blink (`::-webkit-*`).
+ */
+.xterm .xterm-viewport {
+  scrollbar-width: none;
+}
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
