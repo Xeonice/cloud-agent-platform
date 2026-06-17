@@ -330,11 +330,20 @@ docker compose -f docker-compose.prod.yml up -d            # add: --profile web 
 - **Requires an amd64 / x86_64 host** — the published images are amd64-only (the
   per-task AIO sandbox base is amd64-only). On arm64 (e.g. Apple Silicon) the pull
   errors with "no matching manifest for linux/arm64"; use an x86_64 host.
-- **Core run unit only.** It runs api + the per-task sandbox image + Postgres
-  (+ optional `web` profile). It does NOT bundle a reverse proxy or the
-  observability stack (their configs are source-coupled) — front the api (`:8080`)
-  with your own TLS/proxy (Cloudflare Tunnel / Caddy / Traefik / nginx), and run
-  observability from the full source compose if you want it.
+- **Core + opt-in observability.** It runs api + the per-task sandbox image +
+  Postgres (+ optional `web` profile), and ALSO carries an opt-in observability
+  stack (loki + alloy + grafana) whose config ships INLINE so it stays source-free.
+  Only the reverse proxy is excluded (its nginx config is source-coupled) — front
+  the api (`:8080`) with your own TLS/proxy (Cloudflare Tunnel / Caddy / Traefik /
+  nginx).
+- **Enable observability on startup** (default: none of it runs):
+  ```bash
+  # logs (Loki+Alloy); add ,grafana for the UI (loopback 127.0.0.1:3001, front with your proxy):
+  COMPOSE_PROFILES=observability,grafana docker compose -f docker-compose.prod.yml up -d
+  ```
+  Grafana's Loki dashboards work out-of-box; the Postgres-Audit panel needs a one-time
+  `deploy/observability/grafana-ro-role.sql` + `GRAFANA_PG_*`/`GRAFANA_ADMIN_PASSWORD` env
+  (see `docker-compose.prod.env.example`). Needs Docker Compose ≥ v2.23.1 (inline configs).
 - **Single-file platforms (Dokploy):** point the app's compose file at
   `docker-compose.prod.yml` and set the env in its Environment (`CAP_VERSION`
   optional — defaults `latest`); updating = redeploy (or bump a pinned

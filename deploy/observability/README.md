@@ -22,6 +22,27 @@ Disabling an upper tier never breaks a lower one: stop `grafana` and Loki data i
 still queryable; stop `observability` and the api still logs to stdout with
 bounded Docker rotation.
 
+## Config delivery — this dir is the SINGLE editable source
+
+The files in this directory (`loki-config.yaml`, `alloy-config.alloy`,
+`grafana/provisioning/*`, `grafana/dashboards/*`) are the ONE place to edit
+observability config. They reach the two compose paths differently:
+
+- **Source compose** (`docker-compose.yml`): bind-mounted read-only into the containers.
+- **Source-free run package** (`docker-compose.prod.yml`): embedded INLINE as compose
+  `configs.<name>.content:` (so the run package needs no source tree). Those inline blocks are
+  GENERATED from the files here — **do NOT hand-edit the block in `docker-compose.prod.yml`**.
+  After changing a file here, regenerate:
+
+  ```bash
+  node deploy/observability/gen-prod-observability-configs.mjs --write   # rewrite the block
+  node deploy/observability/gen-prod-observability-configs.mjs --check   # CI gate: fail on drift
+  ```
+
+  The generator also doubles every literal `$` to `$$` so Compose's render-time interpolation
+  leaves Grafana's `${GRAFANA_PG_*}` / dashboard `$taskId` tokens intact. The `release` workflow
+  runs `--check` and fails the Release on drift.
+
 ## Retention
 
 14 days, in Loki ONLY (`loki-config.yaml` `retention_period: 336h` + compactor).

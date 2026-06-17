@@ -393,9 +393,10 @@ two files, fill `.env`, run).
      is exactly why this file is self-contained.)
    - **Reverse proxy / TLS:** `docker-compose.prod.yml` does NOT bundle nginx (its
      config is source-coupled) — front the api (`:8080`) with your own
-     Cloudflare Tunnel / Caddy / Traefik / nginx. **Observability** (loki/grafana)
-     is likewise not in the run package; run it from the full source compose if you
-     want it.
+     Cloudflare Tunnel / Caddy / Traefik / nginx.
+   - **Observability** IS in the run package as an opt-in profile (loki + alloy +
+     grafana, config shipped INLINE so it stays source-free) — enable on startup with
+     `COMPOSE_PROFILES=observability[,grafana]`. See §11.5.
 3. Confirm `GET /version` reports the pinned `vX.Y.Z`, and that newly provisioned
    `cap-aio-<taskId>` sandboxes use `ghcr.io/xeonice/cap-aio-sandbox:vX.Y.Z`
    (the api's `AIO_SANDBOX_IMAGE` is set to the matched pinned tag).
@@ -410,6 +411,83 @@ two files, fill `.env`, run).
 > keeps working; converging prod onto the pinned-release line is the owner's call.
 > `docker-compose.prod.yml` must be kept in sync with `docker-compose.yml` when
 > services change (it mirrors the stack with `build:`→`image:`).
+
+### 11.4 Cut over to a RESIDENT docker-compose stack (leave Dokploy) — reuse data in place
+
+The owner may run `docker-compose.prod.yml` as a **plain resident stack** with no deploy
+platform in the middle (RUN split fully from BUILD). This reuses the EXISTING deployment's
+data — it is behavior-neutral, proven by env/code/data parity (same `files/api.env`, same
+code as the running source-build since v0.1.0 changed no api/web source, `prisma migrate
+deploy` a no-op on the reused DB).
+
+**Three must-dos — get these wrong and you lose nothing but it LOOKS like data loss:**
+
+1. **`-p cloud-agent-platform`** — the existing compose project name. Without it, compose
+   creates fresh volumes under a new prefix and the DB/workspaces look empty (data is just
+   orphaned under the old prefix). Confirm with `docker volume ls | grep cloud-agent-platform`.
+2. **`pull` before `up`** — the ghcr images aren't on the host yet.
+3. **Reuse the existing `files/api.env` VERBATIM** — do NOT hand-rebuild from
+   `docker-compose.prod.env.example` (the template is a SUBSET; it omits
+   `CODEX_CHATGPT_AUTH_JSON_B64` and other live keys). prod.yml's `env_file` already honors
+   `../files/api.env`; or `cp /etc/dokploy/compose/cloud-agent-platform/files/api.env .env`.
+
+```bash
+# 0. (pre-flight) cut a Release so ghcr has the matched set, then on the host:
+docker compose -p cloud-agent-platform -f docker-compose.prod.yml pull
+
+# 1. backup the DB off-volume (safety net; the cutover reuses the volume in place)
+docker exec cloud-agent-platform-postgres-1 pg_dump -U cap cap > cap-$(date +%F).sql
+
+# 2. stop the builder so it won't fight the resident stack
+#    Dokploy UI → cap app → Stop / disable auto-deploy
+
+# 3. bring up the resident stack (reuses cloud-agent-platform_pgdata / _workspaces / cap-net)
+docker compose -p cloud-agent-platform -f docker-compose.prod.yml up -d
+#    keep monitoring too:  COMPOSE_PROFILES=observability,grafana docker compose -p ... up -d
+```
+
+**Verify:** `GET /health` + `GET /version` (now reports a real gitSha/buildTime), run one task
+end-to-end (a fresh `cap-aio-<taskId>` provisions from the pulled ghcr AIO image), DB rows
+intact, the Cloudflare Tunnel still serves `:8080`.
+
+**Rollback:** re-enable the Dokploy app (both paths share `cloud-agent-platform_pgdata`, and the
+source-build image is still on the host) — data is untouched throughout.
+
+> The in-app one-click self-update (§12) currently targets the source overlay
+> (`docker-compose.yml` + `docker-compose.images.yml`), NOT `docker-compose.prod.yml`. On a
+> resident prod.yml stack, **update by `pull` + `up -d`** with a bumped `CAP_VERSION` (or
+> `latest`); reconciling the in-app button with the resident run package is a separate change.
+
+### 11.5 Opt-in observability in the resident run package
+
+`docker-compose.prod.yml` carries loki + grafana-alloy (`observability` profile) and grafana
+(`grafana` profile), config shipped INLINE (generated from `deploy/observability/*` — see that
+dir's README; never hand-edit the block in prod.yml). **Default bring-up starts none of it.**
+
+```bash
+# logs only (collect + 14-day Loki store):
+COMPOSE_PROFILES=observability        docker compose -p cloud-agent-platform -f docker-compose.prod.yml up -d
+# + Grafana UI:
+COMPOSE_PROFILES=observability,grafana docker compose -p cloud-agent-platform -f docker-compose.prod.yml up -d
+```
+
+Persist `COMPOSE_PROFILES=...` in `.env` so it survives `up --remove-orphans` (which drops
+ad-hoc `--profile` flags).
+
+- **Grafana exposure:** grafana publishes to **loopback only** (`127.0.0.1:3001`). Reach it
+  ONLY through your own authenticated tunnel / reverse-proxy; never bind it on the public IP.
+  Loki/Alloy publish no host port at all. Set `GRAFANA_ADMIN_PASSWORD` before exposing.
+- **Loki log dashboards work out-of-box.** The Grafana **Postgres-Audit** panel needs a ONE-TIME
+  manual step (the read-only role can't be inlined):
+  ```bash
+  # edit CHANGE_ME to a strong password first, then run once against the cap DB:
+  docker exec -i cloud-agent-platform-postgres-1 psql -U cap -d cap < deploy/observability/grafana-ro-role.sql
+  # then set GRAFANA_PG_USER=grafana_ro and GRAFANA_PG_PASSWORD=<that password> in .env
+  ```
+- **Host assumptions (Alloy):** it tails `/var/lib/docker/containers` read-only (no docker.sock),
+  so it needs the stock json-file logging driver at the default Docker data-root. On rootless
+  Docker / a remapped data-root / Podman it ships nothing — just leave the profile off there.
+- **Compose floor:** inline `configs.content:` needs **Docker Compose ≥ v2.23.1**.
 
 ---
 

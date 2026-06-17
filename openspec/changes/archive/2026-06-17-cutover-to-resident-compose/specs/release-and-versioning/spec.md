@@ -1,47 +1,4 @@
-# release-and-versioning Specification
-
-## Purpose
-The running cap reports its build version (GET /version on the api, a baked web build id), and a GitHub-Release-triggered CI workflow publishes a matched, pinned set of versioned container images to GHCR (cap-api/cap-web/cap-aio-sandbox at one cap version), with a documented prebuilt-image self-host path — the version substrate the update-check and one-click upgrade consume. (created by archiving change versioned-release-pipeline)
-
-## Requirements
-### Requirement: The api reports its build version at an unauthenticated /version endpoint
-The api SHALL expose a `GET /version` endpoint, unauthenticated like `/health` (it returns only build metadata and carries no secrets), that reports `{ version, gitSha, buildTime }`. Each field SHALL be read from a build-time-injected environment value (`CAP_VERSION` / `GIT_SHA` / `BUILD_TIME`) and SHALL fall back to `"unknown"` when not provided, so a plain source build (no build args) reports honestly rather than failing. The api Dockerfile SHALL declare the corresponding build `ARG`s and carry them into the runtime stage as `ENV`.
-
-#### Scenario: /version reports injected build metadata
-- **WHEN** the api image is built with `CAP_VERSION`/`GIT_SHA`/`BUILD_TIME` build args and `GET /version` is requested
-- **THEN** it responds (unauthenticated) with those values as `{ version, gitSha, buildTime }`
-
-#### Scenario: /version degrades honestly without build args
-- **WHEN** the api is built from source with no version build args and `GET /version` is requested
-- **THEN** it responds with `"unknown"` for the un-injected fields rather than erroring
-
-#### Scenario: /version requires no authentication
-- **WHEN** an unauthenticated request hits `GET /version`
-- **THEN** it is served (exempt from the operator guard, like `/health`), exposing only build metadata
-
-### Requirement: The web console carries a baked build id
-The web build SHALL bake a build identifier (`VITE_BUILD_ID`, a Vite compile-time value) into the console bundle, surfaced through the existing web config module, so the running console knows its own build. It SHALL default to a sentinel (e.g. `"unknown"` / `"dev"`) when not provided at build time.
-
-#### Scenario: Web build id is baked at build time
-- **WHEN** the web app is built with a `VITE_BUILD_ID` provided
-- **THEN** the built console exposes that build id through its config module
-- **AND** when no `VITE_BUILD_ID` is provided the console reports a sentinel rather than failing
-
-### Requirement: A GitHub-Release-triggered workflow publishes a matched, versioned image set to GHCR
-The repository SHALL define a CI workflow triggered on `release: published` (and `workflow_dispatch` for manual runs) that builds and pushes a MATCHED set of container images — `ghcr.io/<owner>/cap-api`, `ghcr.io/<owner>/cap-web`, and `ghcr.io/<owner>/cap-aio-sandbox` — ALL tagged with the SINGLE release version `vX.Y.Z` (so a release is one matched, mutually-compatible set), injecting `CAP_VERSION`/`GIT_SHA`/`BUILD_TIME` build args so the published images self-report via `/version`. The workflow SHALL use the built-in token with `packages: write` and SHALL make the published packages publicly pullable. Merely committing the workflow SHALL NOT publish anything — publishing occurs only when a Release is published.
-
-#### Scenario: Publishing a Release builds and pushes the matched image set
-- **WHEN** a GitHub Release `vX.Y.Z` is published
-- **THEN** the workflow builds and pushes `cap-api`, `cap-web`, and `cap-aio-sandbox` to GHCR, all tagged `vX.Y.Z`, with the version build args injected
-- **AND** the published packages are publicly pullable
-
-#### Scenario: Committing the workflow is inert until a Release is cut
-- **WHEN** the workflow file is merged but no Release has been published
-- **THEN** no image is built or pushed and the running system is unaffected
-
-#### Scenario: A published api image self-reports its version
-- **WHEN** the `cap-api:vX.Y.Z` image published by the workflow is run and `GET /version` is requested
-- **THEN** `version` is `vX.Y.Z` and `gitSha`/`buildTime` reflect the release build
+## MODIFIED Requirements
 
 ### Requirement: A documented prebuilt-image self-host path exists without changing the default
 The project SHALL provide a way for a self-hoster to run the pinned prebuilt GHCR images instead of building from source, pinning all cap images to the SAME version, in BOTH of these shapes, while the DEFAULT compose path remains build-from-source (additive and opt-in):
@@ -81,6 +38,8 @@ The published images MAY be single-architecture (amd64); the run package SHALL d
 - **WHEN** the stack is brought up without the override or the run package
 - **THEN** it builds from source exactly as before, unaffected by their existence
 
+## ADDED Requirements
+
 ### Requirement: The source-free run package offers an opt-in inline-configured observability stack
 The source-free run package (`docker-compose.prod.yml`) SHALL include the observability stack — `loki` + `grafana-alloy` under an `observability` profile and `grafana` under a `grafana` profile, mirroring the source compose's tiers — using the pinned upstream images. Every observability config (the Loki config, the Alloy config, and the Grafana provisioning files + dashboard JSON) SHALL be supplied via top-level inline `configs.<name>.content:` blocks attached to their services in long form (a `source` plus a full-file `target:`), with NO source-tree bind-mounts, so the package stays a single source-free file. The observability services SHALL be profile-gated such that the DEFAULT no-profile invocation starts ONLY the core run unit and materializes NONE of the observability configs. Operators SHALL select the stack at startup via `COMPOSE_PROFILES` / `--profile`. The package SHALL still declare the observability data volumes (loki-data / alloy-data / grafana-data) and SHALL retain Alloy's read-only host bind `/var/lib/docker/containers` (the one inherently host-specific dependency, not a source-tree path). Grafana's runtime env tokens embedded in an inline config (`${GRAFANA_PG_USER}` / `${GRAFANA_PG_PASSWORD}`) SHALL be escaped (`$${...}`) so Compose render-time interpolation does not consume them. The Grafana Loki datasource SHALL work out-of-box once enabled; the Grafana Postgres-Audit datasource depends on an out-of-band read-only role (`grafana-ro-role.sql`) and `GRAFANA_PG_USER`/`GRAFANA_PG_PASSWORD`/`GRAFANA_ADMIN_PASSWORD` env, which the env example and self-host docs SHALL document.
 
@@ -106,4 +65,3 @@ The canonical, editable observability configuration SHALL remain the source file
 #### Scenario: Editing a dashboard or datasource updates the single canonical source
 - **WHEN** a maintainer changes an observability dashboard or datasource
 - **THEN** they edit only the file under `deploy/observability/` and the release-time generator/validator propagates or verifies the change into the run package's inline blocks, with no hand-maintained YAML-in-YAML copy
-

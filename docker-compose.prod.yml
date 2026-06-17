@@ -21,13 +21,18 @@
 # is an amd64 platform. On an arm64 host (e.g. Apple Silicon) the pull fails with
 # "no matching manifest for linux/arm64"; use an x86_64 host (or amd64 emulation).
 #
-# SCOPE: this is the CORE run unit — api + the per-task sandbox image + Postgres,
-# plus the optional in-compose web console (`web` profile). The reverse proxy and
-# the observability stack are NOT here on purpose: they bind-mount config from the
-# source tree (nginx.conf, loki/alloy/grafana configs), which would break the
-# source-free promise. Front the api with your own TLS/reverse-proxy (Cloudflare
-# Tunnel, Caddy, Traefik, nginx…); run observability from the full source compose
-# if you want it. See deploy/DEPLOY.md.
+# SCOPE: the CORE run unit — api + the per-task sandbox image + Postgres, plus the
+# optional in-compose web console (`web` profile) AND an OPT-IN observability stack
+# (loki + grafana-alloy under the `observability` profile; grafana under `grafana`).
+# Observability config ships INLINE via compose `configs:` (the GENERATED block at the
+# bottom of this file, produced from deploy/observability/* by
+# gen-prod-observability-configs.mjs), so the package stays source-free — enable it with
+# COMPOSE_PROFILES=observability[,grafana]; the default no-profile bring-up starts NONE
+# of it. Only the reverse proxy is excluded (it bind-mounts nginx.conf from the source
+# tree); front the api with your own TLS/reverse-proxy (Cloudflare Tunnel, Caddy,
+# Traefik, nginx…). See deploy/DEPLOY.md.
+#
+# REQUIRES Docker Compose >= v2.23.1 (inline `configs.content:`).
 
 x-logging: &default-logging
   driver: json-file
@@ -120,6 +125,85 @@ services:
       timeout: 5s
       retries: 10
 
+  # ── OPT-IN observability (mirrors the source compose tiers) ──────────────────
+  # Enable with COMPOSE_PROFILES=observability[,grafana]. Config ships INLINE via the
+  # GENERATED `configs:` block at the bottom of this file — NO source-tree bind-mounts.
+  # With no profile selected these never start and none of their configs are materialized.
+  # Tier 1 (collect+store): `observability` → loki + grafana-alloy
+  # Tier 2 (UI):            `grafana`       → grafana
+  loki:
+    image: grafana/loki:3.1.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["-config.file=/etc/loki/config.yaml"]
+    configs:
+      - source: loki-config
+        target: /etc/loki/config.yaml
+    volumes:
+      - loki-data:/loki
+    # Private network only — NO published port (reached by alloy/grafana by name).
+    networks:
+      - default
+    mem_limit: 256m
+
+  grafana-alloy:
+    image: grafana/alloy:v1.3.1
+    profiles: ["observability"]
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - "run"
+      - "/etc/alloy/config.alloy"
+      - "--storage.path=/var/lib/alloy/data"
+    depends_on:
+      - loki
+    configs:
+      - source: alloy-config
+        target: /etc/alloy/config.alloy
+    volumes:
+      # READ-ONLY host Docker logs (NO docker.sock). Host-specific path — cannot be
+      # inlined; assumes the stock json-file driver at the default Docker data-root.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - alloy-data:/var/lib/alloy/data
+    networks:
+      - default
+    mem_limit: 128m
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: ["grafana"]
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - loki
+    environment:
+      # Read-only Postgres datasource creds (run deploy/observability/grafana-ro-role.sql
+      # against the cap DB to create the grafana_ro role; see deploy/DEPLOY.md).
+      GRAFANA_PG_USER: ${GRAFANA_PG_USER:-grafana_ro}
+      GRAFANA_PG_PASSWORD: ${GRAFANA_PG_PASSWORD:-}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-}
+      # Image ships admin/admin — set this before exposing Grafana.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+    configs:
+      - source: grafana-datasources
+        target: /etc/grafana/provisioning/datasources/datasources.yaml
+      - source: grafana-dashprovider
+        target: /etc/grafana/provisioning/dashboards/dashboards.yaml
+      - source: grafana-dashboard
+        target: /etc/grafana/dashboards/cap-observability.json
+    # LOOPBACK only (127.0.0.1) so a host-network tunnel can reach it as localhost:3001
+    # while it stays OFF the public IP. Expose ONLY via your own authenticated tunnel.
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - default
+    mem_limit: 256m
+
 networks:
   cap-net:
     name: cap-net
@@ -127,3 +211,311 @@ networks:
 volumes:
   workspaces:
   pgdata:
+  # Observability stack state — only materialized when the observability/grafana profiles are on.
+  loki-data:
+  alloy-data:
+  grafana-data:
+
+# >>> GENERATED OBSERVABILITY CONFIGS — do not hand-edit (source: deploy/observability/*) >>>
+# regenerate: node deploy/observability/gen-prod-observability-configs.mjs --write
+configs:
+  loki-config:
+    content: |
+      # Loki single-binary config (observability-stack Tier 1).
+      #
+      # Single-node, filesystem-backed (TSDB single-store) — NO object storage. Holds
+      # the high-volume operational logs (api app/HTTP + per-task sandbox + nginx),
+      # shipped by Grafana Alloy. 14-DAY retention applies ONLY here; audit_events
+      # (Postgres) stays permanent append-only and is queried in place by Grafana.
+      auth_enabled: false
+
+      server:
+        http_listen_port: 3100
+        grpc_listen_port: 9095
+        log_level: warn
+
+      common:
+        instance_addr: 127.0.0.1
+        path_prefix: /loki
+        storage:
+          filesystem:
+            chunks_directory: /loki/chunks
+            rules_directory: /loki/rules
+        replication_factor: 1
+        ring:
+          kvstore:
+            store: inmemory
+
+      schema_config:
+        configs:
+          - from: 2024-01-01
+            store: tsdb
+            object_store: filesystem
+            schema: v13
+            index:
+              prefix: index_
+              period: 24h
+
+      # 14-day retention: the compactor deletes chunks/index older than the window.
+      limits_config:
+        retention_period: 336h          # 14 days
+        reject_old_samples: true
+        reject_old_samples_max_age: 336h
+        # Keep per-stream churn sane on a small box.
+        max_streams_per_user: 10000
+
+      compactor:
+        working_directory: /loki/compactor
+        retention_enabled: true
+        delete_request_store: filesystem
+        compaction_interval: 10m
+        retention_delete_delay: 2h
+
+      # No ruler target enabled by default — alerting is opt-in (see design D4); when
+      # enabled via the alerting track it is wired here or in Grafana.
+      analytics:
+        reporting_enabled: false
+  alloy-config:
+    content: |
+      // Grafana Alloy collector (observability-stack Tier 1).
+      //
+      // NO docker.sock (design D1): discovers + tails the Docker json-file logs
+      // READ-ONLY from the host bind mount, unwraps the docker envelope, and ships to
+      // Loki. The api's lines are pino JSON, so correlation fields (taskId/reqId) ride
+      // INSIDE the log line and are queried with `| json` at read time — they are NOT
+      // promoted to stream labels (high cardinality). Only low-cardinality labels
+      // (container, stream, level) become stream labels.
+      //
+      // Limitation (accepted, design open-q): without the socket, the only container
+      // identity available is the container ID from the file path (`container` label);
+      // per-task `cap-aio-<taskId>` sandbox stdout is NOT pino JSON, so it carries the
+      // `container` label only (no taskId field) — its id maps to a task out-of-band.
+
+      local.file_match "containers" {
+        path_targets = [{ __path__ = "/var/lib/docker/containers/*/*-json.log" }]
+        sync_period  = "5s"
+      }
+
+      loki.source.file "containers" {
+        targets    = local.file_match.containers.targets
+        forward_to = [loki.process.docker.receiver]
+      }
+
+      loki.process "docker" {
+        // 1) Unwrap the docker json-file envelope: {"log","stream","time"}.
+        stage.json {
+          expressions = {
+            log    = "log",
+            stream = "stream",
+            ts     = "time",
+          }
+        }
+        stage.timestamp {
+          source = "ts"
+          format = "RFC3339Nano"
+        }
+        stage.labels {
+          values = { stream = "stream" }
+        }
+
+        // 2) The api lines are pino JSON; pull `level` for a (low-cardinality) label.
+        //    taskId/reqId stay in the line body — query with `| json | taskId="..."`.
+        stage.json {
+          source      = "log"
+          expressions = { level = "level" }
+        }
+        stage.labels {
+          values = { level = "level" }
+        }
+
+        // 3) Container id from the file path → a `container` label (no socket needed).
+        stage.regex {
+          source     = "filename"
+          expression = "/containers/(?P<container>[^/]+)/"
+        }
+        stage.labels {
+          values = { container = "container" }
+        }
+
+        // 4) Emit the unwrapped application line (the pino JSON / raw stdout) to Loki.
+        stage.output {
+          source = "log"
+        }
+
+        forward_to = [loki.write.default.receiver]
+      }
+
+      loki.write "default" {
+        endpoint {
+          url = "http://loki:3100/loki/api/v1/push"
+        }
+      }
+  grafana-datasources:
+    content: |
+      # Grafana datasource provisioning (observability-stack Tier 2).
+      #
+      # Two sources in one pane (design D3):
+      #   - Loki      — LogQL over the operational logs (primary ops/debug entry).
+      #   - Postgres  — the existing audit_events, queried IN PLACE via a READ-ONLY
+      #                 role. Audit is NOT copied into Loki; it stays the single source
+      #                 of truth + permanent append-only.
+      apiVersion: 1
+
+      datasources:
+        - name: Loki
+          uid: loki
+          type: loki
+          access: proxy
+          url: http://loki:3100
+          isDefault: true
+          editable: false
+
+        - name: Postgres-Audit
+          uid: postgres-audit
+          type: postgres
+          access: proxy
+          url: postgres:5432
+          database: cap
+          # Read-only role created by grafana-ro-role.sql; credentials via Grafana env.
+          user: $${GRAFANA_PG_USER}
+          secureJsonData:
+            password: $${GRAFANA_PG_PASSWORD}
+          jsonData:
+            sslmode: disable
+            postgresVersion: 1600
+            # Defensive: the role is SELECT-only, but disallow non-SELECT from the UI too.
+            timescaledb: false
+          editable: false
+  grafana-dashprovider:
+    content: |
+      # Grafana dashboard provider (observability-stack Tier 2). Loads JSON dashboards
+      # baked into the image-mounted /etc/grafana/dashboards directory.
+      apiVersion: 1
+
+      providers:
+        - name: cap-observability
+          folder: CAP
+          type: file
+          disableDeletion: false
+          allowUiUpdates: true
+          options:
+            path: /etc/grafana/dashboards
+            foldersFromFilesStructure: false
+  grafana-dashboard:
+    content: |
+      {
+        "uid": "cap-observability",
+        "title": "CAP · Observability",
+        "tags": ["cap", "observability"],
+        "timezone": "browser",
+        "schemaVersion": 39,
+        "version": 2,
+        "refresh": "30s",
+        "time": { "from": "now-3h", "to": "now" },
+        "templating": {
+          "list": [
+            {
+              "name": "taskId",
+              "label": "Task ID 过滤",
+              "type": "textbox",
+              "query": "",
+              "current": { "text": "", "value": "" }
+            }
+          ]
+        },
+        "panels": [
+          {
+            "id": 1,
+            "title": "日志量 / 容器(每分钟行数)",
+            "type": "timeseries",
+            "datasource": { "type": "loki", "uid": "loki" },
+            "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+            "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } } },
+            "targets": [
+              {
+                "refId": "A",
+                "datasource": { "type": "loki", "uid": "loki" },
+                "expr": "sum by (container) (count_over_time({container=~\".+\"}[1m]))",
+                "legendFormat": "{{container}}"
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "title": "HTTP 请求 / 状态码(每分钟)",
+            "type": "timeseries",
+            "datasource": { "type": "loki", "uid": "loki" },
+            "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+            "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" } } } },
+            "targets": [
+              {
+                "refId": "A",
+                "datasource": { "type": "loki", "uid": "loki" },
+                "expr": "sum by (res_statusCode) (count_over_time({container=~\".+\"} | json | msg=`request completed` [1m]))",
+                "legendFormat": "{{res_statusCode}}"
+              }
+            ]
+          },
+          {
+            "id": 3,
+            "title": "错误日志(pino level ≥ 50 / 含 stderr)",
+            "type": "logs",
+            "datasource": { "type": "loki", "uid": "loki" },
+            "gridPos": { "h": 8, "w": 24, "x": 0, "y": 7 },
+            "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none", "enableLogDetails": true },
+            "targets": [
+              {
+                "refId": "A",
+                "datasource": { "type": "loki", "uid": "loki" },
+                "expr": "{container=~\".+\"} | json | level=~\"5[0-9]|60\""
+              }
+            ]
+          },
+          {
+            "id": 4,
+            "title": "HTTP 访问日志(method url → status, ms)",
+            "type": "logs",
+            "datasource": { "type": "loki", "uid": "loki" },
+            "gridPos": { "h": 9, "w": 24, "x": 0, "y": 15 },
+            "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none" },
+            "targets": [
+              {
+                "refId": "A",
+                "datasource": { "type": "loki", "uid": "loki" },
+                "expr": "{container=~\".+\"} | json | msg=`request completed` | line_format \"{{.req_method}} {{.req_url}} → {{.res_statusCode}} ({{.responseTime}}ms) user={{.userId}} req={{.req_id}}\""
+              }
+            ]
+          },
+          {
+            "id": 5,
+            "title": "按 Task ID 过滤日志(在上方变量输入 taskId,留空=全部)",
+            "type": "logs",
+            "datasource": { "type": "loki", "uid": "loki" },
+            "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+            "options": { "showTime": true, "wrapLogMessage": true, "dedupStrategy": "none", "enableLogDetails": true },
+            "targets": [
+              {
+                "refId": "A",
+                "datasource": { "type": "loki", "uid": "loki" },
+                "expr": "{container=~\".+\"} |= \"$$taskId\""
+              }
+            ]
+          },
+          {
+            "id": 6,
+            "title": "审计事件(Postgres · audit_events,永久保留)",
+            "type": "table",
+            "datasource": { "type": "postgres", "uid": "postgres-audit" },
+            "gridPos": { "h": 10, "w": 24, "x": 0, "y": 34 },
+            "targets": [
+              {
+                "refId": "A",
+                "datasource": { "type": "postgres", "uid": "postgres-audit" },
+                "format": "table",
+                "rawSql": "SELECT timestamp, type, level, title, description, task_id FROM audit_events ORDER BY timestamp DESC LIMIT 200"
+              }
+            ]
+          }
+        ]
+      }
+# <<< GENERATED OBSERVABILITY CONFIGS <<<
