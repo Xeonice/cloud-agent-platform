@@ -132,7 +132,7 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   // available update under the `VITE_FORCE_MOCK=1` visual harness, until the live
   // `GET /update-status` is verified against a public repo with a published
   // Release (Phase 1 activation), then this flips to `true`.
-  updateCheck: false, // GET /update-status — cached server-side GitHub-Release compare.
+  updateCheck: true, // GET /update-status — cached server-side GitHub-Release compare (activated: public repo + published Releases live).
 
   // Self-update action (self-update-action, Phase 3). Default `false`: the
   // host-root one-click upgrade is the most dangerous surface in the epic, so the
@@ -141,7 +141,7 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   // button (design D1/D5). Flips to `true` ONLY as a deliberate operator
   // activation step, paired with the api's `SELF_UPDATE_ENABLED` env gate and a
   // published GHCR release set.
-  selfUpdate: false, // POST /self-update — gated, confirmed, admin-only host-root upgrade.
+  selfUpdate: true, // POST /self-update — gated, confirmed, admin-only host-root upgrade (activated: api SELF_UPDATE_ENABLED + admin set on the resident stack).
 };
 
 /**
