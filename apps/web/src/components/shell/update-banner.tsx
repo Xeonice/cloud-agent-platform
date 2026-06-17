@@ -32,6 +32,7 @@ import type { AuthSession, UpdateStatus } from "@cap/contracts";
 import { authSessionQuery, updateStatusQuery } from "@/lib/api/queries";
 import { isCapable } from "@/lib/api/capabilities";
 import { selfUpdateMutation } from "@/lib/api/mutations";
+import { apiBaseUrl } from "@/lib/config";
 import { cn } from "@/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -162,6 +163,16 @@ export function selectUpgradeAction(
   return true;
 }
 
+/**
+ * Whether two version tags name the same release, tolerant ONLY of a leading `v`
+ * (so `/version`'s `v0.3.2` matches a `0.3.2`/`v0.3.2` target). Used to detect when
+ * the recreated api has come back on the upgrade target. Pure → unit-testable.
+ */
+export function sameTag(a: string, b: string): boolean {
+  const strip = (s: string): string => s.trim().replace(/^v/i, "");
+  return strip(a) === strip(b) && strip(a).length > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Dismissed-version external store (SSR-safe, localStorage-backed)
 // ---------------------------------------------------------------------------
@@ -255,6 +266,49 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
   const queryClient = useQueryClient();
   const upgrade = useMutation(selfUpdateMutation(queryClient));
   const [confirmOpen, setConfirmOpen] = React.useState(false);
+  const [upgradeDone, setUpgradeDone] = React.useState(false);
+
+  // After the ack the api recreates itself (going down, then back up on the new
+  // version). Poll the PUBLIC `/version` until it reports the target, then surface a
+  // "done" state and reload the page so the (possibly new) console bundle + the now-
+  // cleared banner load. The poll tolerates the api being unreachable mid-recreate
+  // (caught → keep polling) and gives up after a bound so it never spins forever.
+  // Hooks run BEFORE the `!view` early return below to satisfy rules-of-hooks.
+  const target = upgrade.data?.target ?? null;
+  React.useEffect(() => {
+    if (!upgrade.isSuccess || !target) return;
+    let cancelled = false;
+    const startedAt = Date.now();
+    const TIMEOUT_MS = 5 * 60_000;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async (): Promise<void> => {
+      if (cancelled) return;
+      try {
+        const res = await fetch(`${apiBaseUrl()}/version`, { cache: "no-store" });
+        if (res.ok) {
+          const body = (await res.json()) as { version?: string };
+          if (body.version && sameTag(body.version, target)) {
+            if (!cancelled) {
+              setUpgradeDone(true);
+              setTimeout(() => window.location.reload(), 1500);
+            }
+            return;
+          }
+        }
+      } catch {
+        // api is down mid-recreate — keep polling until it returns on the new version
+      }
+      if (!cancelled && Date.now() - startedAt < TIMEOUT_MS) {
+        timer = setTimeout(() => void tick(), 3000);
+      }
+    };
+    // small initial delay so the detached updater has begun the recreate
+    timer = setTimeout(() => void tick(), 3000);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [upgrade.isSuccess, target]);
 
   const view = selectBannerView(status, dismissedVersion);
   const showUpgrade = selectUpgradeAction(view, {
@@ -304,10 +358,19 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
         ) : null}
       </span>
 
-      {updating ? (
+      {upgradeDone ? (
+        // The new version is live (polled /version == target); briefly confirm, then
+        // window.location.reload() (scheduled in the effect) loads the new console.
+        <span
+          data-update-state="done"
+          className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-primary"
+        >
+          <ArrowUpCircle className="size-3.5" aria-hidden="true" />
+          已更新到 {target ?? view.version},正在刷新…
+        </span>
+      ) : updating ? (
         // After a successful ack the api is recreating itself; surface the
-        // "updating… reconnecting" state. The existing WS auto-reconnect resumes
-        // the session once the new api is up (design D4).
+        // "updating… reconnecting" state while we poll /version for the new build.
         <span
           data-update-state="updating"
           className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-muted-foreground"

@@ -17,10 +17,24 @@ import type { AuthSession, UpdateStatus } from "@cap/contracts";
 
 import {
   isAdminSession,
+  sameTag,
   selectBannerView,
   selectUpgradeAction,
   type UpdateBannerView,
 } from "./update-banner";
+
+describe("sameTag (post-upgrade /version match)", () => {
+  it("matches the same release, tolerant of a leading v", () => {
+    expect(sameTag("v0.3.2", "v0.3.2")).toBe(true);
+    expect(sameTag("v0.3.2", "0.3.2")).toBe(true);
+    expect(sameTag("0.3.2", "v0.3.2")).toBe(true);
+  });
+  it("rejects a different version and empty tags", () => {
+    expect(sameTag("v0.3.2", "v0.3.1")).toBe(false);
+    expect(sameTag("", "")).toBe(false);
+    expect(sameTag("v", "")).toBe(false);
+  });
+});
 
 /** An "update available for vY" status, overridable per case. */
 function status(overrides: Partial<UpdateStatus> = {}): UpdateStatus {
