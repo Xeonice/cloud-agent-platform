@@ -593,9 +593,20 @@ To turn it on, deliberately — on the RESIDENT stack
    `SELF_UPDATE_ADMINS=<comma-separated GitHub NUMERIC ids>` (the operators allowed
    to press Upgrade — `gh api user --jq .id`). This is DISTINCT from `AUTH_ALLOWLIST`
    (who can log in): admins are the narrower set trusted with the host-root button.
-2. Flip the web `selfUpdate` capability flag to `true` in
-   `apps/web/src/lib/api/capabilities.ts` and redeploy the console.
-3. Recreate the api so the new env takes effect:
+2. Flip the web `updateCheck` AND `selfUpdate` capability flags to `true` in
+   `apps/web/src/lib/api/capabilities.ts` (the first surfaces the real update banner,
+   the second the Upgrade action), then redeploy the console.
+3. **Set the FRONTEND admin allowlist** `VITE_ADMIN_LOGINS` — a SECOND, distinct admin
+   gate from the api's `SELF_UPDATE_ADMINS`: the api keys on GitHub NUMERIC ids, but the
+   console's Upgrade button keys on GitHub **logins** via the build-time env
+   `VITE_ADMIN_LOGINS` (comma-separated logins). Without it the banner shows but the
+   button stays hidden (fail-closed). It is a `VITE_*` (compile-time) var, so set it on
+   the web host's build env and REBUILD — e.g. on Vercel:
+   `vercel env add VITE_ADMIN_LOGINS production` (value = your login) then redeploy
+   (`vercel redeploy <prod-url>`); a plain `docker compose build` reads it from
+   `apps/web/.env`. Both gates must include you for the button to appear AND the POST to
+   succeed.
+4. Recreate the api so the new env takes effect:
    `docker compose -p cloud-agent-platform -f docker-compose.prod.yml up -d api`.
 
 Then verify the true end-to-end (operator-gated — it needs the GHCR image set):
