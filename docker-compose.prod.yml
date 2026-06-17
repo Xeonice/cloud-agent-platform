@@ -11,9 +11,10 @@
 #   3. docker compose -f docker-compose.prod.yml pull
 #   4. docker compose -f docker-compose.prod.yml up -d
 #
-# Updating = bump CAP_VERSION in .env to a newer Release tag and re-pull/up.
-# `${CAP_VERSION:?...}` makes an unset version fail loudly (never a stray tag); all
-# three cap images share ONE tag so the running set is always matched (decision ⑤).
+# CAP_VERSION defaults to `latest` (the newest published Release) when unset, so a
+# bare `docker compose -f docker-compose.prod.yml up -d` just runs the latest release
+# as a resident stack. PIN an explicit tag (e.g. CAP_VERSION=v0.1.0) for a reproducible
+# / rollback-able deploy. All three cap images share ONE tag so the set stays matched (⑤).
 #
 # REQUIRES AN amd64 / x86_64 HOST. The published images are amd64-only because the
 # per-task AIO sandbox base image (ghcr.io/agent-infra/sandbox) is amd64-only — cap
@@ -36,7 +37,7 @@ x-logging: &default-logging
 
 services:
   api:
-    image: ghcr.io/xeonice/cap-api:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
+    image: ghcr.io/xeonice/cap-api:${CAP_VERSION:-latest}
     restart: unless-stopped
     logging: *default-logging
     # DooD: host-root-equivalent docker.sock access (single-user self-host only).
@@ -59,9 +60,9 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql://cap:cap@postgres:5432/cap?schema=public}
       # The pulled, version-matched per-task sandbox image (decision ⑤): newly
       # provisioned cap-aio-<taskId> run the SAME release as the api. Pinned tag.
-      AIO_SANDBOX_IMAGE: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
+      AIO_SANDBOX_IMAGE: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION:-latest}
       # The single user-facing version, reported by GET /version on this image.
-      CAP_VERSION: ${CAP_VERSION}
+      CAP_VERSION: ${CAP_VERSION:-latest}
       MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-}
       TASK_REPO_URL: ${TASK_REPO_URL:-}
     ports:
@@ -81,7 +82,7 @@ services:
   # source. (A runtime-config web is future work — see docs/oss-self-update-epic.md.)
   web:
     profiles: ["web"]
-    image: ghcr.io/xeonice/cap-web:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
+    image: ghcr.io/xeonice/cap-web:${CAP_VERSION:-latest}
     restart: unless-stopped
     logging: *default-logging
     depends_on:
@@ -98,7 +99,7 @@ services:
   # cap-aio-sandbox:${CAP_VERSION} onto the host so the DooD provider (pointed at
   # it via AIO_SANDBOX_IMAGE above) finds it. Non-runtime: it never starts.
   aio-sandbox-image:
-    image: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
+    image: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION:-latest}
     entrypoint: ["true"]
     restart: "no"
     network_mode: none
