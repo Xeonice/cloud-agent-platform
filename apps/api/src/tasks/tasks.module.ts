@@ -1,5 +1,6 @@
 import { forwardRef, Module } from '@nestjs/common';
 import { TasksController } from './tasks.controller';
+import { SessionCastController } from './session-cast.controller';
 import {
   SessionHistoryController,
   TRANSCRIPT_STORE,
@@ -36,7 +37,7 @@ import { SessionTranscriptService } from './session-transcript.service';
   // SessionHistoryController is a standalone read-only REST surface; it injects
   // the global SANDBOX_PROVIDER port (no extra module import needed) + TasksService
   // + the durable TRANSCRIPT_STORE bound below.
-  controllers: [TasksController, SessionHistoryController],
+  controllers: [TasksController, SessionHistoryController, SessionCastController],
   providers: [
     TasksService,
     // Bridge the GuardrailsService under a token that TasksService injects

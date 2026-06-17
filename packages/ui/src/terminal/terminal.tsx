@@ -37,6 +37,12 @@ export interface TerminalHandle {
   write(data: string | Uint8Array, onFlushed?: () => void): void;
   /** Re-fit the terminal to its container and report the new geometry. */
   fit(): TerminalGeometry | null;
+  /**
+   * Resize the terminal to an EXPLICIT geometry (cols × rows). Used by the
+   * asciicast replay player to match the recording's geometry (header + `r`
+   * events) so cursor-addressed redraws land correctly.
+   */
+  resize(cols: number, rows: number): void;
   /** Serialize the current visible frame (SerializeAddon) for snapshotting. */
   serialize(): string | null;
   /** Current geometry, or null before the terminal has mounted. */
@@ -222,6 +228,13 @@ export function Terminal({
             return null;
           }
           return { cols: term.cols, rows: term.rows };
+        },
+        resize(cols, rows) {
+          try {
+            term.resize(cols, rows);
+          } catch {
+            // Ignore invalid geometry (xterm throws on non-positive dims).
+          }
         },
         serialize() {
           try {

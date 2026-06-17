@@ -75,10 +75,16 @@ import {
 import {
   SnapshotManager,
   SESSION_LOG_FILENAME,
+  SESSION_CAST_FILENAME,
   readSessionLogTail,
   type HeadlessTerminal,
   type WsControlFrame,
 } from './snapshot';
+import {
+  buildCastHeaderLine,
+  buildCastEventLine,
+  castResizeData,
+} from './cast-writer';
 import { AioPtyClient, type AioExitStatus } from './aio-pty-client';
 import type { SandboxConnection } from '../sandbox/sandbox-provider.port';
 import { WriteLockService } from '../write-lock/write-lock.service';
@@ -307,6 +313,17 @@ export class TerminalGateway
     { logPath: string; tail: Promise<void>; ensured: boolean }
   >();
 
+  /**
+   * Per-task `session.cast` (asciicast v2) append state — parallel to
+   * {@link sessionLogs} but on its OWN tail chain, INDEPENDENT of the session.log
+   * lockstep: a cast write failure never affects streaming. `startMs` anchors
+   * event `time`. (session-terminal-replay, Track 2)
+   */
+  private readonly sessionCasts = new Map<
+    string,
+    { castPath: string; tail: Promise<void>; startMs: number }
+  >();
+
   private nextClientId = 1;
 
   /**
@@ -363,6 +380,9 @@ export class TerminalGateway
     // Drop the session.log append state; the file itself persists on the volume
     // for post-mortem / restart reconnect (multi-target-deploy persistent volume).
     this.sessionLogs.delete(taskId);
+    // session-terminal-replay — drop the cast append state too (the session.cast
+    // file persists on the volume for replay, like session.log).
+    this.sessionCasts.delete(taskId);
     // An unregistered task will never legitimately reclaim its old lease, so drop
     // its last-writer record too (bounds the map to live tasks; harmless either
     // way since a stale id can never match a future monotonic clientId).
@@ -773,6 +793,14 @@ export class TerminalGateway
         ensured: false,
       });
     }
+    // session-terminal-replay — begin the asciicast recording alongside
+    // session.log (independent tail chain; best-effort, never blocks streaming).
+    this.initCast(
+      taskId,
+      workspaceDir,
+      session.snapshots.cols,
+      session.snapshots.rows,
+    );
     // Feed live PTY output into the SnapshotManager + fan it out to operators
     // who have not yet reconnected/attached (VR.10). Operators that have called
     // attachPty receive the same bytes through their own ptySubscription.
@@ -1268,6 +1296,19 @@ export class TerminalGateway
     // updated geometry.
     session.pty.resize(frame.cols, frame.rows);
     session.snapshots.resizeHeadless(frame.cols, frame.rows);
+    // session-terminal-replay — record the resize as an asciicast `r` event so
+    // the timing player re-sizes the replay terminal at the right moment.
+    const castEntry = this.sessionCasts.get(state.taskId);
+    if (castEntry) {
+      this.appendCastLine(
+        state.taskId,
+        buildCastEventLine(
+          (Date.now() - castEntry.startMs) / 1000,
+          'r',
+          castResizeData(frame.cols, frame.rows),
+        ),
+      );
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1301,6 +1342,10 @@ export class TerminalGateway
     // 3.1 — persist the raw PTY output to session.log BEFORE advancing the
     // snapshot offset, so the file and the offset move together (lockstep).
     this.appendSessionLog(taskId, payload);
+
+    // session-terminal-replay — ALSO record to session.cast (asciicast v2),
+    // independent of the lockstep above; best-effort, never blocks streaming.
+    this.appendCast(taskId, chunk);
 
     if (session) {
       // VR.10 — Feed the SnapshotManager so the byte-offset tracks session.log.
@@ -1353,6 +1398,70 @@ export class TerminalGateway
         );
       }
     });
+  }
+
+  /**
+   * Begin a per-task asciicast recording (session-terminal-replay, Track 2):
+   * register the cast append state and write the asciicast v2 header (initial
+   * geometry) as the first tail-chained op. BEST-EFFORT — a cast failure never
+   * affects streaming or the session.log lockstep (its OWN append chain).
+   */
+  private initCast(
+    taskId: string,
+    workspaceDir: string,
+    cols: number,
+    rows: number,
+  ): void {
+    if (this.sessionCasts.has(taskId)) return;
+    const castPath = path.join(workspaceDir, SESSION_CAST_FILENAME);
+    const entry = { castPath, tail: Promise.resolve(), startMs: Date.now() };
+    this.sessionCasts.set(taskId, entry);
+    entry.tail = entry.tail.then(async () => {
+      try {
+        await mkdir(path.dirname(castPath), { recursive: true });
+        await appendFile(
+          castPath,
+          buildCastHeaderLine(cols, rows, Math.floor(Date.now() / 1000)),
+        );
+      } catch (err) {
+        this.logger.warn(
+          `task ${taskId}: session.cast header write failed: ${(err as Error).message}`,
+        );
+      }
+    });
+  }
+
+  /**
+   * Append one finished asciicast line to the task's `session.cast`, strictly
+   * ordered on the cast tail chain and best-effort (logged + swallowed).
+   */
+  private appendCastLine(taskId: string, line: string): void {
+    const entry = this.sessionCasts.get(taskId);
+    if (!entry) return;
+    entry.tail = entry.tail.then(async () => {
+      try {
+        await appendFile(entry.castPath, line);
+      } catch (err) {
+        this.logger.warn(
+          `task ${taskId}: session.cast append failed: ${(err as Error).message}`,
+        );
+      }
+    });
+  }
+
+  /**
+   * Record a chunk of PTY output as an asciicast `o` event. `chunk` is an
+   * already-decoded UTF-8 string (the AioPtyClient decodes the PTY byte stream
+   * before emitting), so JSON-escaping yields valid UTF-8 `data` with no
+   * split-multibyte risk at this layer.
+   */
+  private appendCast(taskId: string, chunk: string): void {
+    const entry = this.sessionCasts.get(taskId);
+    if (!entry) return;
+    this.appendCastLine(
+      taskId,
+      buildCastEventLine((Date.now() - entry.startMs) / 1000, 'o', chunk),
+    );
   }
 
   // -------------------------------------------------------------------------

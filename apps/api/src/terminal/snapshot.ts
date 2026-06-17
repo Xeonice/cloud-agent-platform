@@ -28,6 +28,13 @@ import {
 /** The fixed session-log file name within each task workspace (matches Track 4). */
 export const SESSION_LOG_FILENAME = 'session.log';
 
+/**
+ * The fixed asciicast-recording file name within each task workspace
+ * (session-terminal-replay). Co-located with `session.log` on the durable
+ * volume; the terminal-replay timing player streams it back.
+ */
+export const SESSION_CAST_FILENAME = 'session.cast';
+
 /** Bytes read from the END of `session.log` when sampling a failure tail. */
 const SESSION_LOG_TAIL_BYTES = 4096;
 /** Max non-empty lines kept from the sampled tail. */
@@ -179,6 +186,16 @@ export class SnapshotManager {
   /** The most recent snapshot, or null before any capture. */
   get latestSnapshot(): CapturedSnapshot | null {
     return this.latest;
+  }
+
+  /** Columns the headless terminal is currently sized to (session-terminal-replay). */
+  get cols(): number {
+    return this.terminal.cols;
+  }
+
+  /** Rows the headless terminal is currently sized to (session-terminal-replay). */
+  get rows(): number {
+    return this.terminal.rows;
   }
 
   /**
