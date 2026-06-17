@@ -33,6 +33,9 @@ import {
   ListAvailableGithubReposResponseSchema,
   DefaultRepoResponseSchema,
   UpdateStatusSchema,
+  DiscoverModelsResponseSchema,
+  type DiscoverModelsRequest,
+  type DiscoverModelsResponse,
   type UpdateStatus,
   type ListTasksResponse,
   type TaskResponse,
@@ -57,7 +60,7 @@ import {
   type SetDefaultRepoRequest,
   type DefaultRepoResponse,
 } from "@cap/contracts";
-import { RepoResponseSchema, castEndpointPath } from "@cap/contracts";
+import { RepoResponseSchema } from "@cap/contracts";
 import { apiBaseUrl, operatorToken } from "../config";
 import { getIncomingCookieHeader } from "../server-cookie";
 
@@ -78,28 +81,6 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   // D12: attach the operator bearer token to every REST call (legacy path).
   if (token) headers["Authorization"] = `Bearer ${token}`;
   return headers;
-}
-
-/**
- * Fetch a finished task's `session.cast` (asciicast v2) as RAW TEXT
- * (session-terminal-replay). The endpoint serves `text/plain`, and an empty body
- * is the honest "nothing to replay" signal — so this returns the text verbatim
- * (empty string included). A 404 (unknown task) also degrades to "" so the
- * replay tab shows the empty face rather than throwing.
- */
-export async function getSessionCast(id: string): Promise<string> {
-  const headers = authHeaders();
-  const incomingCookie = await getIncomingCookieHeader();
-  if (incomingCookie) headers["Cookie"] = incomingCookie;
-  const res = await fetch(`${apiBaseUrl()}/${castEndpointPath(id)}`, {
-    credentials: "include",
-    headers,
-  });
-  if (!res.ok) {
-    if (res.status === 404) return "";
-    throw new ApiError(res.status, res.statusText);
-  }
-  return res.text();
 }
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
@@ -127,6 +108,35 @@ async function request(path: string, init?: RequestInit): Promise<unknown> {
   }
   if (res.status === 204) return undefined;
   return res.json();
+}
+
+/**
+ * Like {@link request} but returns the raw response BODY TEXT rather than
+ * decoding JSON — for endpoints that serve `text/plain` (e.g. the finished-task
+ * asciicast at `GET /tasks/:id/cast`, session-terminal-replay). Reuses the same
+ * operator-bearer + SSR cookie-forwarding discipline and the same `ApiError`
+ * branch on non-2xx. A 204/empty body resolves to an empty string.
+ */
+async function requestText(path: string, init?: RequestInit): Promise<string> {
+  const headers = authHeaders(init?.headers as Record<string, string> | undefined);
+  const incomingCookie = await getIncomingCookieHeader();
+  if (incomingCookie) headers["Cookie"] = incomingCookie;
+  const res = await fetch(`${apiBaseUrl()}${path}`, {
+    ...init,
+    credentials: "include",
+    headers,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.text()) || detail;
+    } catch {
+      // Ignore body read failures; fall back to the status text.
+    }
+    throw new ApiError(res.status, detail);
+  }
+  if (res.status === 204) return "";
+  return res.text();
 }
 
 /** `GET /tasks` — the fleet dashboard list. */
@@ -309,6 +319,46 @@ export async function saveCodexCredential(
       body: JSON.stringify(body),
     }),
   );
+}
+
+/**
+ * `POST /settings/codex/models` — probe a CANDIDATE compatible provider for its
+ * available model ids, validating the operator-supplied `{baseUrl, apiKey}`
+ * BEFORE anything is persisted (nothing is stored by this call). The request and
+ * response shapes are the shared `@cap/contracts` discovery schemas (the same
+ * `DiscoverModelsRequestSchema` the api controller's pipe validates), so the web
+ * app and api share one shape with nothing re-declared web-side.
+ *
+ * The response is the discriminated outcome: `{ ok: true, models }` on success, or
+ * `{ ok: false, error, message }` with a distinguishable error class
+ * (`provider_auth_failed` / `provider_unreachable` / `provider_bad_response`) so
+ * the dialog can reflect the REAL outcome — auth-failure vs unreachable vs a
+ * malformed model list — instead of a client-side non-empty-field check. The
+ * api-side SSRF guard + timeout + body bound keep the operator-supplied Base URL
+ * from being a fetch-anything channel. A non-2xx HTTP status (e.g. the request
+ * body failed the api's Zod pipe) still throws an {@link ApiError}; the
+ * `{ ok: false }` body is the provider-level outcome, not a transport error.
+ */
+export async function discoverCodexModels(
+  body: DiscoverModelsRequest,
+): Promise<DiscoverModelsResponse> {
+  return DiscoverModelsResponseSchema.parse(
+    await request("/settings/codex/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/**
+ * `GET /tasks/:id/cast` — the finished task's `session.cast` (asciicast v2 JSONL)
+ * served as raw `text/plain` (session-terminal-replay). Returns the body text
+ * for the read-only timing player to parse; a missing/absent cast surfaces as an
+ * {@link ApiError} (the player renders an empty/"no recording" state).
+ */
+export async function getSessionCast(taskId: string): Promise<string> {
+  return requestText(`/tasks/${encodeURIComponent(taskId)}/cast`);
 }
 
 /**

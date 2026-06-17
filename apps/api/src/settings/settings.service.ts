@@ -34,10 +34,12 @@ import {
   type StoredCredentialFacts,
 } from './settings-logic';
 import {
+  decryptSecret,
   encryptSecret,
   EncryptionKeyUnavailableError,
   maskApiKeySuffix,
   resolveEncryptionKey,
+  type EncryptedSecret,
 } from './settings-crypto';
 
 /** Env var carrying the AES-256-GCM server key for the compatible-provider API key. */
@@ -245,6 +247,16 @@ export class SettingsService {
           defaultModel: row.defaultModel,
           hasAuthJson:
             row.authJsonCiphertext !== null && row.authJsonCiphertext.length > 0,
+          // Surface the state PERSISTED at save time so compatible `connected`
+          // (which is written only after a successful validation probe, design
+          // D5) is not re-derived from field presence on read — a stored-but-
+          // unvalidated row must read `not_saved`, never `connected`.
+          persistedState:
+            row.state === 'not_connected' ||
+            row.state === 'not_saved' ||
+            row.state === 'connected'
+              ? row.state
+              : null,
         }
       : null;
     // Official-mode "connected" now means a ChatGPT login (auth.json) is actually
@@ -270,6 +282,19 @@ export class SettingsService {
     env: NodeJS.ProcessEnv = process.env,
   ): Promise<CodexCredential> {
     const userId = await this.requireUserId(operator);
+
+    // Task 2.3: a compatible-provider save REQUIRES a non-null base URL. Reject
+    // it here BEFORE any read/write so a compatible credential is never persisted
+    // without a reachable, SSRF-validatable provider endpoint. (The contract's
+    // `SaveCodexCredentialRequestSchema.superRefine` already rejects this at the
+    // pipe; this re-check fails closed for any caller that bypasses the pipe.)
+    if (request.mode === 'compatible' && !request.baseUrl) {
+      throw new BadRequestException({
+        code: 'compatible_base_url_required',
+        message: 'A compatible-provider save requires a base URL.',
+      });
+    }
+
     const existing = await this.prisma.codexCredential.findUnique({ where: { userId } });
     const previous: StoredCredentialFacts | null = existing
       ? {
@@ -281,6 +306,14 @@ export class SettingsService {
           defaultModel: existing.defaultModel,
           hasAuthJson:
             existing.authJsonCiphertext !== null && existing.authJsonCiphertext.length > 0,
+          // Not consumed by projectCredentialSave (which re-derives the next state
+          // from the probe), but required by the shared facts shape.
+          persistedState:
+            existing.state === 'not_connected' ||
+            existing.state === 'not_saved' ||
+            existing.state === 'connected'
+              ? existing.state
+              : null,
         }
       : null;
 
@@ -343,16 +376,35 @@ export class SettingsService {
       authJsonCiphertext = encryptToStored(request.authJson as string);
     }
 
-    const state =
-      plan.mode === 'official'
-        ? authJsonCiphertext
-          ? 'connected'
-          : 'not_connected'
-        : plan.baseUrl && apiKeyCiphertext
-          ? 'connected'
-          : plan.baseUrl || apiKeyCiphertext
-            ? 'not_saved'
-            : 'not_connected';
+    // Connection state derivation (wire-compatible-provider-execution, task 2.4
+    // / design D5): for compatible mode, `connected` means VALIDATED — the saved
+    // base URL + key must pass a live discovery probe (and the selected default
+    // model, when present, must be in the reported list) — NOT merely that a
+    // base URL and key are present. Field presence without a successful probe
+    // reads as `not_saved`, so "failed discovery does not mark connected" holds.
+    let state: 'not_connected' | 'not_saved' | 'connected';
+    if (plan.mode === 'official') {
+      state = authJsonCiphertext ? 'connected' : 'not_connected';
+    } else if (plan.baseUrl && apiKeyCiphertext) {
+      const probeKey = this.resolveCompatibleProbeKey(
+        plan.keyAction,
+        request.apiKey,
+        existing?.apiKeyCiphertext ?? null,
+        env,
+      );
+      const validated = probeKey
+        ? await this.validateCompatibleProvider(
+            plan.baseUrl,
+            probeKey,
+            plan.defaultModel,
+          )
+        : false;
+      state = validated ? 'connected' : 'not_saved';
+    } else if (plan.baseUrl || apiKeyCiphertext) {
+      state = 'not_saved';
+    } else {
+      state = 'not_connected';
+    }
 
     await this.prisma.codexCredential.upsert({
       where: { userId },
@@ -398,6 +450,77 @@ export class SettingsService {
   }
 
   // ----- internals -----------------------------------------------------------
+
+  /**
+   * Resolves the PLAINTEXT compatible API key to probe with on save (task 2.4):
+   *   - `replace` ⇒ the freshly supplied request key;
+   *   - `keep`    ⇒ decrypt the previously stored ciphertext (a same-mode re-save
+   *                 with no new key still re-validates the carried-over key);
+   *   - `clear`   ⇒ no key (returns null).
+   * A decrypt failure (missing/rotated server key, tampered row) yields null so
+   * the save degrades to `not_saved` rather than throwing — the credential is
+   * simply not validated.
+   */
+  private resolveCompatibleProbeKey(
+    keyAction: 'clear' | 'keep' | 'replace',
+    requestApiKey: string | undefined,
+    existingCiphertext: string | null,
+    env: NodeJS.ProcessEnv,
+  ): string | null {
+    if (keyAction === 'replace') {
+      return typeof requestApiKey === 'string' && requestApiKey.length > 0
+        ? requestApiKey
+        : null;
+    }
+    if (keyAction === 'keep' && existingCiphertext) {
+      const envelope = this.parseStoredSecret(existingCiphertext);
+      if (!envelope) {
+        return null;
+      }
+      try {
+        const key = resolveEncryptionKey(env[CODEX_CRED_ENC_KEY_ENV]);
+        return decryptSecret(envelope, key);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /** Splits the joined `ciphertext.iv.authTag` storage string into an envelope. */
+  private parseStoredSecret(stored: string): EncryptedSecret | null {
+    const parts = stored.split('.');
+    if (parts.length !== 3 || parts.some((p) => p.length === 0)) {
+      return null;
+    }
+    const [ciphertext, iv, authTag] = parts;
+    return { ciphertext, iv, authTag };
+  }
+
+  /**
+   * Re-probes a compatible provider on save (task 2.4 / design D5) so
+   * `connected` means VALIDATED. Returns true ONLY when the provider's
+   * `/models` discovery succeeds AND — when a default model was selected — that
+   * model appears in the reported list. An auth/unreachable/blocked/malformed
+   * outcome, or a default model not offered by the provider, returns false (the
+   * save is persisted but reads as `not_saved`). The SSRF guard inside the
+   * discovery client also rejects an unsafe base URL here, so a compatible save
+   * can never validate against an internal host.
+   */
+  private async validateCompatibleProvider(
+    baseUrl: string,
+    apiKey: string,
+    defaultModel: string | null,
+  ): Promise<boolean> {
+    const result = await this.modelDiscovery.discover(baseUrl, apiKey);
+    if (!result.ok) {
+      return false;
+    }
+    if (defaultModel && !result.models.includes(defaultModel)) {
+      return false;
+    }
+    return true;
+  }
 
   /**
    * Reads the effective SYSTEM-LEVEL slot ceiling (configurable-task-slots

@@ -231,6 +231,16 @@ export interface StoredCredentialFacts {
    * compatible apiKey) is never projected onto a read shape.
    */
   readonly hasAuthJson: boolean;
+  /**
+   * The connection state PERSISTED at save time. For compatible mode `connected`
+   * is written ONLY after a successful provider validation probe (design D5), so
+   * the read path surfaces THIS stored value rather than re-deriving `connected`
+   * from field presence — which would mark a stored-but-unvalidated row connected
+   * (spec: "field presence without a successful validation SHALL read as
+   * `not_saved`"). `null` when no state was stored (legacy/absent rows fall back
+   * to presence-based derivation).
+   */
+  readonly persistedState: CodexCredentialState | null;
 }
 
 /**
@@ -238,26 +248,36 @@ export interface StoredCredentialFacts {
  * card, the active-tab subtitle, and the provider pill:
  *
  *   - `not_connected`: nothing connected for this mode.
- *   - `connected`: official mode that is connected, OR compatible mode with both
- *     a base URL AND a stored key.
- *   - `not_saved`: compatible-mode details partially entered (a base URL but no
- *     stored key yet) — "未保存".
+ *   - `connected`: official mode that is connected, OR compatible mode that was
+ *     VALIDATED at save time (its persisted state is `connected`).
+ *   - `not_saved`: compatible-mode details present but NOT validated — partially
+ *     entered (base URL but no key), or a base URL + key that never passed a
+ *     successful probe — "未保存".
  *
  * It is a pure function of the persisted facts so the three UI surfaces cannot
- * drift on what "connected" means.
+ * drift on what "connected" means. For compatible mode it surfaces the persisted,
+ * validation-derived state (NOT field presence), so an unvalidated row never
+ * reads as connected.
  */
 export function deriveCredentialState(
-  facts: Pick<StoredCredentialFacts, 'mode' | 'baseUrl' | 'hasApiKey'>,
+  facts: Pick<
+    StoredCredentialFacts,
+    'mode' | 'baseUrl' | 'hasApiKey' | 'persistedState'
+  >,
   officialConnected: boolean,
 ): CodexCredentialState {
   if (facts.mode === 'official') {
     return officialConnected ? 'connected' : 'not_connected';
   }
-  // compatible mode
-  const hasBaseUrl = typeof facts.baseUrl === 'string' && facts.baseUrl.length > 0;
-  if (hasBaseUrl && facts.hasApiKey) {
+  // compatible mode: `connected` means VALIDATED. The save path persists
+  // `connected` ONLY after a successful provider probe (design D5); the read
+  // surfaces that persisted state and does NOT re-derive `connected` from field
+  // presence (spec: "field presence without a successful validation SHALL read
+  // as `not_saved`").
+  if (facts.persistedState === 'connected') {
     return 'connected';
   }
+  const hasBaseUrl = typeof facts.baseUrl === 'string' && facts.baseUrl.length > 0;
   if (hasBaseUrl || facts.hasApiKey) {
     return 'not_saved';
   }

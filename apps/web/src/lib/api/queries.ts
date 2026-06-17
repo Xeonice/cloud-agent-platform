@@ -61,6 +61,18 @@ export const queryKeys = {
     ["history", query ?? {}] as const,
   settings: ["settings"] as const,
   codexCredential: ["settings", "codex"] as const,
+  /**
+   * The compatible-provider model-discovery probe (`POST /settings/codex/models`,
+   * wire-compatible-provider-execution). There is no discovery READ — the probe is
+   * a one-shot action validating an operator-supplied `{baseUrl, apiKey}` whose
+   * result populates the dialog's model picker transiently and is never cached as a
+   * persistent read. This key exists only so the mutation has a stable, centralized
+   * handle alongside `codexCredential` (mirroring the no-string-drift discipline of
+   * the other keys); it is keyed by the probed Base URL so distinct candidates do
+   * not collide.
+   */
+  codexModels: (baseUrl: string) =>
+    ["settings", "codex", "models", baseUrl] as const,
   authSession: ["auth", "session"] as const,
   githubRepos: ["github", "repos"] as const,
   taskContext: (id: string) => ["tasks", id, "context"] as const,

@@ -61,8 +61,10 @@ function applySettingsUpdate(current, patch, resolvedDefaultRepoId) {
 
 function deriveCredentialState(facts, officialConnected) {
   if (facts.mode === 'official') return officialConnected ? 'connected' : 'not_connected';
+  // compatible: `connected` means VALIDATED — surface the persisted save-time
+  // state, not field presence (an unvalidated baseUrl+key row reads not_saved).
+  if (facts.persistedState === 'connected') return 'connected';
   const hasBaseUrl = typeof facts.baseUrl === 'string' && facts.baseUrl.length > 0;
-  if (hasBaseUrl && facts.hasApiKey) return 'connected';
   if (hasBaseUrl || facts.hasApiKey) return 'not_saved';
   return 'not_connected';
 }
@@ -210,7 +212,11 @@ test('compatible: switching IN from official with no key CLEARS (no key to prese
 
 // 4. state derivation + secret-free read
 test('deriveCredentialState: compatible connected/not_saved/not_connected', () => {
-  assert.equal(deriveCredentialState({ mode: 'compatible', baseUrl: 'https://p', hasApiKey: true }), 'connected');
+  // `connected` ONLY when the save-time validation persisted `connected`.
+  assert.equal(deriveCredentialState({ mode: 'compatible', baseUrl: 'https://p', hasApiKey: true, persistedState: 'connected' }), 'connected');
+  // baseUrl + key PRESENT but unvalidated => not_saved (spec: presence without validation reads not_saved).
+  assert.equal(deriveCredentialState({ mode: 'compatible', baseUrl: 'https://p', hasApiKey: true, persistedState: 'not_saved' }), 'not_saved');
+  assert.equal(deriveCredentialState({ mode: 'compatible', baseUrl: 'https://p', hasApiKey: true }), 'not_saved');
   assert.equal(deriveCredentialState({ mode: 'compatible', baseUrl: 'https://p', hasApiKey: false }), 'not_saved');
   assert.equal(deriveCredentialState({ mode: 'compatible', baseUrl: null, hasApiKey: false }), 'not_connected');
 });
@@ -374,4 +380,92 @@ test('save without maxConcurrentTasks leaves the ceiling and stored row untouche
   assert.equal(res.maxConcurrentTasks, 9);
   assert.deepEqual(h.db.row, { id: 'system', maxConcurrentTasks: 9 });
   assert.equal(h.semaphore.ceiling, 9);
+});
+
+// ---------------------------------------------------------------------------
+// 6. Compatible credential: validated-`connected` + base-URL-required
+//    (wire-compatible-provider-execution, tasks 2.4/2.5; design D5).
+//
+//    `connected` for compatible mode means VALIDATED against the provider (a
+//    successful discovery probe whose model list contains the selected default),
+//    NOT merely "a base URL + key are present". A compatible save with no base
+//    URL is rejected before any write. Logic mirrors settings.service.ts
+//    saveCredential + the SaveCodexCredentialRequest refine so it runs under
+//    plain node:test.
+// ---------------------------------------------------------------------------
+
+// Mirrors the SaveCodexCredentialRequest refine (task 2.3 invariant exercised
+// here): mode === 'compatible' REQUIRES a non-null/non-empty base URL.
+function validateSaveRequest(request) {
+  if (request.mode === 'compatible') {
+    const hasBaseUrl = typeof request.baseUrl === 'string' && request.baseUrl.length > 0;
+    if (!hasBaseUrl) return { ok: false, reason: 'compatible_base_url_required' };
+  }
+  return { ok: true };
+}
+
+// Mirrors settings.service.ts saveCredential compatible-mode state derivation:
+// `connected` ONLY when a probe validates the saved base URL + key (and the
+// selected default model is offered); otherwise present-but-unvalidated reads as
+// `not_saved`. `probe` is the injected discovery result so no network is touched.
+function deriveCompatibleSaveState(plan, hasKeyCiphertext, probe) {
+  if (!plan.baseUrl || !hasKeyCiphertext) {
+    return plan.baseUrl || hasKeyCiphertext ? 'not_saved' : 'not_connected';
+  }
+  if (!probe || !probe.ok) return 'not_saved';
+  if (plan.defaultModel && !probe.models.includes(plan.defaultModel)) return 'not_saved';
+  return 'connected';
+}
+
+test('compatible save without a base URL is rejected before any write', () => {
+  const r = validateSaveRequest({ mode: 'compatible', apiKey: 'sk-key' });
+  assert.deepEqual(r, { ok: false, reason: 'compatible_base_url_required' });
+  // empty-string base URL is equally incoherent
+  assert.equal(validateSaveRequest({ mode: 'compatible', baseUrl: '', apiKey: 'sk-key' }).ok, false);
+  // a present base URL passes the guard
+  assert.equal(validateSaveRequest({ mode: 'compatible', baseUrl: 'https://p/v1', apiKey: 'sk-key' }).ok, true);
+  // official mode never requires a base URL
+  assert.equal(validateSaveRequest({ mode: 'official' }).ok, true);
+});
+
+test('compatible: `connected` ONLY after a successful validation probe', () => {
+  const plan = { mode: 'compatible', baseUrl: 'https://p/v1', defaultModel: 'gpt-4o' };
+  // successful probe whose model list contains the selected default => connected
+  const okProbe = { ok: true, models: ['gpt-4o', 'gpt-4o-mini'] };
+  assert.equal(deriveCompatibleSaveState(plan, true, okProbe), 'connected');
+});
+
+test('compatible: a FAILED probe does NOT mark connected (reads not_saved)', () => {
+  const plan = { mode: 'compatible', baseUrl: 'https://p/v1', defaultModel: 'gpt-4o' };
+  for (const probe of [
+    { ok: false, error: 'provider_auth_failed' },
+    { ok: false, error: 'provider_unreachable' },
+    { ok: false, error: 'provider_url_blocked' },
+    { ok: false, error: 'provider_bad_response' },
+  ]) {
+    assert.equal(deriveCompatibleSaveState(plan, true, probe), 'not_saved', probe.error);
+  }
+});
+
+test('compatible: a default model NOT offered by the provider is not connected', () => {
+  const plan = { mode: 'compatible', baseUrl: 'https://p/v1', defaultModel: 'phantom-model' };
+  const okProbe = { ok: true, models: ['gpt-4o'] };
+  assert.equal(deriveCompatibleSaveState(plan, true, okProbe), 'not_saved');
+});
+
+test('compatible: base URL + key present but NO probe run reads as not_saved (validated-connected)', () => {
+  const plan = { mode: 'compatible', baseUrl: 'https://p/v1', defaultModel: null };
+  // no probe (e.g. could not decrypt the carried-over key) => unvalidated => not_saved
+  assert.equal(deriveCompatibleSaveState(plan, true, undefined), 'not_saved');
+});
+
+test('compatible: a base URL with no key still reads as not_saved (partial entry)', () => {
+  const plan = { mode: 'compatible', baseUrl: 'https://p/v1', defaultModel: null };
+  assert.equal(deriveCompatibleSaveState(plan, false, undefined), 'not_saved');
+});
+
+test('compatible: a successful probe with NO default model selected is connected', () => {
+  const plan = { mode: 'compatible', baseUrl: 'https://p/v1', defaultModel: null };
+  const okProbe = { ok: true, models: ['gpt-4o'] };
+  assert.equal(deriveCompatibleSaveState(plan, true, okProbe), 'connected');
 });

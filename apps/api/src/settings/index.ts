@@ -40,3 +40,10 @@ export {
   DecryptionFailedError,
   type EncryptedSecret,
 } from './settings-crypto';
+export {
+  assertSafeProviderUrl,
+  isUnsafeAddress,
+  UnsafeProviderUrlError,
+  type UnsafeProviderUrlCode,
+  type HostResolver,
+} from './assert-safe-provider-url';

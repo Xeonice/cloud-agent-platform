@@ -12,14 +12,16 @@ import {
   Req,
   UsePipes,
 } from '@nestjs/common';
-import { z } from 'zod';
 import {
+  DiscoverModelsRequestSchema,
   SaveCodexCredentialRequestSchema,
   UpdateSettingsRequestSchema,
   type AccountSettings,
   type CodexCredential,
   type CodexDeviceLoginStartResponse,
   type CodexDeviceLoginStatus,
+  type DiscoverModelsRequest,
+  type DiscoverModelsResponse,
   type SaveCodexCredentialRequest,
   type SessionUser,
   type UpdateSettingsRequest,
@@ -28,19 +30,6 @@ import type { AuthenticatedRequest } from '../auth/auth.guard';
 import { ZodValidationPipe } from '../repos/zod-validation.pipe';
 import { SettingsService } from './settings.service';
 import { CodexDeviceLoginService } from './codex-device-login.service';
-import type { ModelDiscoveryResult } from './model-discovery.client';
-
-/**
- * Body for the candidate model-discovery probe (task 7.6). A base URL + key are
- * supplied so a compatible provider can be validated BEFORE persisting; nothing
- * is stored. Declared locally (no read shape on the wire) and validated by the
- * shared {@link ZodValidationPipe}.
- */
-export const DiscoverModelsRequestSchema = z.object({
-  baseUrl: z.string().url(),
-  apiKey: z.string().min(1),
-});
-export type DiscoverModelsRequest = z.infer<typeof DiscoverModelsRequestSchema>;
 
 /**
  * Account-settings REST surface (account-settings, tasks 7.2–7.6), mounted under
@@ -129,7 +118,7 @@ export class SettingsController {
   async discoverModels(
     @Req() req: AuthenticatedRequest,
     @Body() body: DiscoverModelsRequest,
-  ): Promise<ModelDiscoveryResult> {
+  ): Promise<DiscoverModelsResponse> {
     return this.settings.discoverModels(
       this.requireOperator(req),
       body.baseUrl,

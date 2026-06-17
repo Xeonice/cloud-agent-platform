@@ -29,7 +29,13 @@ export class EnvCodexAuthSource implements CodexAuthSource {
   /** Env var carrying the base64 of the operator's `~/.codex/auth.json`. */
   static readonly ENV = 'CODEX_CHATGPT_AUTH_JSON_B64';
 
-  async getCodexAuth(): Promise<CodexAuthMaterial | null> {
+  /**
+   * Deployment-level source: ALWAYS the official ChatGPT login from the env var,
+   * regardless of task. The `_taskId` (owner-scope, design D3) is ignored here —
+   * this source has no per-task/per-owner notion; only a settings/DB-backed source
+   * resolves a task owner's compatible credential.
+   */
+  async getCodexAuth(_taskId?: string): Promise<CodexAuthMaterial | null> {
     const b64 = process.env[EnvCodexAuthSource.ENV]?.trim();
     if (!b64) return null;
 
@@ -69,6 +75,6 @@ export class EnvCodexAuthSource implements CodexAuthSource {
       return null;
     }
 
-    return { authJson };
+    return { kind: 'official', authJson };
   }
 }
