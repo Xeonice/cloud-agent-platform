@@ -27,6 +27,8 @@ import type {
   SaveCodexCredentialRequest,
   CodexCredential,
   AvailableGithubRepo,
+  DiscoverModelsRequest,
+  DiscoverModelsResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
@@ -228,6 +230,40 @@ export function saveCodexCredentialMutation(
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.codexCredential });
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Discover compatible-provider models (REAL — probe before persist)
+// ---------------------------------------------------------------------------
+
+/**
+ * Probe a CANDIDATE compatible provider for its available models
+ * (`POST /settings/codex/models`, wire-compatible-provider-execution). The
+ * variable is the operator-supplied `{baseUrl, apiKey}`; the api validates it
+ * (SSRF guard + timeout + body bound) and reports the available model ids WITHOUT
+ * persisting anything — so the dialog can populate its default-model picker from a
+ * REAL probe and reflect the actual outcome class (success vs auth-failure vs
+ * unreachable), rather than a hardcoded list or a client-side non-empty check.
+ *
+ * Like `createTask`/`stopTask`, this is ALWAYS real (no mock branch): discovery is
+ * an imperative probe of an operator-supplied provider — there is no meaningful
+ * mock outcome, and the dialog only invokes it while configuring a real compatible
+ * credential. The `{ ok: false }` provider-level outcome resolves NORMALLY (it is
+ * the probe's distinguishable result the dialog renders, not a thrown error); only
+ * a transport/HTTP failure rejects.
+ *
+ * No cache is invalidated: the probe has no persistent read — its result feeds the
+ * dialog's transient picker state directly. The credential read is invalidated
+ * separately by `saveCodexCredentialMutation` once a probed credential is saved.
+ */
+export function discoverCodexModelsMutation(): UseMutationOptions<
+  DiscoverModelsResponse,
+  Error,
+  DiscoverModelsRequest
+> {
+  return {
+    mutationFn: (body) => real.discoverCodexModels(body),
   };
 }
 

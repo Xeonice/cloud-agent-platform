@@ -1,31 +1,37 @@
 /**
- * `CodexApiKeyDialog` — the 兼容模型提供方 configuration dialog (Track 14, 14.5).
+ * `CodexApiKeyDialog` — the 兼容模型提供方 configuration dialog (Track 14, 14.5;
+ * wired live by wire-compatible-provider-execution tasks 4.2 + 3.7).
  *
  * A shadcn `Dialog` form. Header ("配置模型 API Key"), then:
  *   - Base URL (`type="url"`) + API Key (`type="password"`) inputs. The key
  *     field is ALWAYS empty on open — it is NEVER pre-filled from a saved
  *     credential (the read contract exposes only `hasApiKey` + a masked suffix,
  *     so there is no plaintext to restore). A small note states the key is not
- *     re-shown after saving.
- *   - 获取可用模型 → model discovery. In mock mode it returns a small LOCAL
- *     example model list (clearly example view-data) WITHOUT persisting; a
- *     failed discovery (e.g. missing Base URL) shows an error and does NOT flip
- *     the credential to connected. The discovered list populates the model
- *     picker.
- *   - 选择模型 `Select` (the picker) + a model-count line.
+ *     re-shown after saving, plus a Responses-API requirement note (task 3.7).
+ *   - 获取可用模型 → REAL model discovery (`discoverCodexModelsMutation` →
+ *     `POST /settings/codex/models`, task 4.2). The api probes the candidate
+ *     `{baseUrl, apiKey}` (SSRF-guarded, time-bounded, body-capped) WITHOUT
+ *     persisting and returns the distinguishable outcome; the discovered list
+ *     populates the model picker. A failure surfaces its REAL outcome class
+ *     (blocked / auth-failed / unreachable / malformed) and does NOT flip to a
+ *     usable/connected state.
+ *   - 选择模型 `Select` (the picker) + a model-count line; a selection is
+ *     REQUIRED before save.
  *   - `.codex-login-state` dot/text mirroring whether a credential is saved.
- *   - Footer: 保存提供方 (submit → `saveCodexCredentialMutation` `mode:'compatible'`,
- *     the key dropped to `hasApiKey` + masked suffix by the mutation), 测试凭据
- *     (reports success/failure WITHOUT exposing the key and WITHOUT flipping to
- *     connected on failure), 取消.
+ *   - Footer: 保存提供方 (submit → `onSave` `mode:'compatible'`, the key dropped to
+ *     `hasApiKey` + masked suffix by the mutation; GATED on a successful probe +
+ *     a selected model), 测试凭据 (re-runs the same real probe and reports its
+ *     actual outcome class WITHOUT exposing the key and WITHOUT connecting on
+ *     failure), 取消.
  *
- * SECURITY: the plaintext key lives only in transient form state, is sent on
- * save (where the mutation projects it to a non-secret presence flag + suffix),
- * and is wiped from the field whenever the dialog closes/reopens. It is never
- * read back or displayed.
+ * SECURITY: the plaintext key lives only in transient form state, is sent on the
+ * probe (Authorization bearer, never logged/returned by the api) and on save
+ * (where the mutation projects it to a non-secret presence flag + suffix), and
+ * is wiped from the field whenever the dialog closes/reopens. It is never read
+ * back or displayed.
  *
- * SSR-safe: Radix portals on the client; the form state is plain `useState`. The
- * mock discovery uses a fixed local list (no random/clock during render).
+ * SSR-safe: Radix portals on the client; the form state is plain `useState`; the
+ * probe runs only on an explicit click (an effect/event, never during render).
  *
  * Fidelity: dialog `min(720px,100vw-32px)`; `.model-fetch-row` = soft `#fafafa`
  * tile, radius 8, ring, wrap flex; `.codex-model-picker` = accent-tinted tile,
@@ -33,9 +39,15 @@
  * dot + 12px text; actions = top hairline, 14/22/18 pad.
  */
 import * as React from "react";
+import { useMutation } from "@tanstack/react-query";
 
-import type { SaveCodexCredentialRequest } from "@cap/contracts";
+import type {
+  DiscoverModelsResponse,
+  ModelDiscoveryErrorCode,
+  SaveCodexCredentialRequest,
+} from "@cap/contracts";
 import { cn } from "@/utils";
+import { discoverCodexModelsMutation } from "@/lib/api/mutations";
 import {
   Dialog,
   DialogBody,
@@ -53,22 +65,19 @@ import {
 } from "@/components/ui/select";
 
 /**
- * Mock model discovery: a small fixed example list, clearly view-only data (it
- * is NOT persisted and NOT a live capability). When `settings` is real this is
- * replaced by the real model-discovery endpoint via the data layer. A blank
- * Base URL is treated as a discovery failure (no connection to enumerate).
+ * Human-readable, secret-free copy for each distinguishable discovery outcome
+ * class (task 4.2): the probe reports WHICH failure occurred — an unsafe/blocked
+ * Base URL, a rejected credential, an unreachable provider, or a malformed model
+ * list — so the dialog reflects the REAL outcome instead of a client-side
+ * non-empty-field guess. Falls back to the api-supplied message for any code.
  */
-function discoverModelsMock(baseUrl: string): string[] {
-  if (!baseUrl.trim()) {
-    throw new Error("请先填写 Base URL，再获取可用模型。");
-  }
-  return [
-    "gpt-4o-mini",
-    "gpt-4o",
-    "o4-mini",
-    "claude-3-5-sonnet",
-  ];
-}
+const DISCOVERY_ERROR_COPY: Record<ModelDiscoveryErrorCode, string> = {
+  provider_url_blocked:
+    "Base URL 被安全策略拒绝（协议或主机不被允许，未发起请求）。",
+  provider_auth_failed: "测试失败：提供方拒绝了该 API Key（鉴权未通过）。",
+  provider_unreachable: "测试失败：无法连接到该提供方（网络/超时/非 2xx）。",
+  provider_bad_response: "测试失败：提供方返回的模型列表无法解析。",
+};
 
 export interface CodexApiKeyDialogProps {
   open: boolean;
@@ -107,9 +116,15 @@ export function CodexApiKeyDialog({
     ok: boolean;
     text: string;
   } | null>(null);
+  // A save is permitted ONLY after a successful probe of the CURRENT
+  // {baseUrl, apiKey} (task 4.2): the operator cannot persist a provider the api
+  // never validated. Reset on any input edit so a stale probe can't gate a save.
+  const [probePassed, setProbePassed] = React.useState<boolean>(false);
+
+  const discover = useMutation(discoverCodexModelsMutation());
 
   // Reset transient state whenever the dialog opens; the KEY is always cleared
-  // (never restored from a saved credential).
+  // (never restored from a saved credential), and the probe gate is re-armed.
   React.useEffect(() => {
     if (open) {
       setBaseUrl(savedBaseUrl ?? "");
@@ -118,40 +133,90 @@ export function CodexApiKeyDialog({
       setModel("");
       setFetchStatus("等待填写连接信息");
       setTestResult(null);
+      setProbePassed(false);
+      discover.reset();
     }
+    // Intentionally keyed only on [open, savedBaseUrl]: this is the open/reset
+    // effect. The `useMutation` handle changes identity each render, so adding it
+    // would re-run on every render and wipe in-flight probe state; `discover` is
+    // referenced only to clear it when the dialog (re)opens.
   }, [open, savedBaseUrl]);
 
-  function handleFetchModels() {
-    setTestResult(null);
-    try {
-      const found = discoverModelsMock(baseUrl);
-      setModels(found);
-      setModel(found[0] ?? "");
-      setFetchStatus(`已获取 ${found.length} 个示例模型`);
-    } catch (err) {
-      // Discovery failed: surface the error, do NOT flip to connected.
+  /**
+   * Applies a real discovery outcome to the dialog (shared by 获取可用模型 and
+   * 测试凭据): success populates the picker + arms the save gate; any failure
+   * surfaces its REAL outcome class and DISARMS the gate (no connect on failure).
+   */
+  function applyDiscovery(result: DiscoverModelsResponse) {
+    if (result.ok) {
+      setModels(result.models);
+      // Preserve the current selection if the provider still offers it, else
+      // default to the first reported model (empty when the list is empty).
+      setModel((prev) =>
+        prev && result.models.includes(prev) ? prev : (result.models[0] ?? ""),
+      );
+      setProbePassed(true);
+      setFetchStatus(`已获取 ${result.models.length} 个可用模型`);
+      setTestResult({ ok: true, text: "测试通过：连接信息与凭据可用。" });
+    } else {
       setModels([]);
       setModel("");
-      setFetchStatus(
-        err instanceof Error ? err.message : "获取模型失败，请检查连接信息。",
-      );
+      setProbePassed(false);
+      const copy = DISCOVERY_ERROR_COPY[result.error] ?? result.message;
+      setFetchStatus(copy);
+      setTestResult({ ok: false, text: copy });
     }
   }
 
-  function handleTest() {
-    // Report success/failure WITHOUT exposing the key; failure never connects.
+  /**
+   * Runs the real probe (`POST /settings/codex/models`). A `{ ok:false }` body is
+   * the provider-level outcome and resolves normally; only a transport/HTTP error
+   * rejects (rendered as an unreachable-class failure). The probe needs both a
+   * Base URL and an API key — neither is preserved by omission on discovery.
+   */
+  function runProbe() {
     if (!baseUrl.trim() || !apiKey.trim()) {
-      setTestResult({
-        ok: false,
-        text: "测试失败：请填写 Base URL 与 API Key。",
-      });
+      setProbePassed(false);
+      setModels([]);
+      setModel("");
+      const copy = "请先填写 Base URL 与 API Key，再测试 / 获取模型。";
+      setFetchStatus(copy);
+      setTestResult({ ok: false, text: copy });
       return;
     }
-    setTestResult({ ok: true, text: "测试通过：连接信息可用。" });
+    setFetchStatus("正在测试连接并获取可用模型…");
+    discover.mutate(
+      { baseUrl: baseUrl.trim(), apiKey: apiKey.trim() },
+      {
+        onSuccess: (result) => applyDiscovery(result),
+        onError: () => {
+          setModels([]);
+          setModel("");
+          setProbePassed(false);
+          const copy = "测试失败：请求未能送达提供方（网络错误）。";
+          setFetchStatus(copy);
+          setTestResult({ ok: false, text: copy });
+        },
+      },
+    );
+  }
+
+  // Editing any connection input invalidates the previous probe: a save must be
+  // gated on a probe of the CURRENT values, never a stale one.
+  function onBaseUrlChange(next: string) {
+    setBaseUrl(next);
+    setProbePassed(false);
+  }
+  function onApiKeyChange(next: string) {
+    setApiKey(next);
+    setProbePassed(false);
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    // Gate: only a provider validated by a real successful probe, with a model
+    // selected from the reported list, may be saved (task 4.2).
+    if (!probePassed || !model.trim()) return;
     const body: SaveCodexCredentialRequest = { mode: "compatible" };
     if (baseUrl.trim()) body.baseUrl = baseUrl.trim();
     // Send the key only if the operator typed one; omitting it preserves the
@@ -160,6 +225,10 @@ export function CodexApiKeyDialog({
     if (model.trim()) body.defaultModel = model.trim();
     onSave(body);
   }
+
+  const probing = discover.isPending;
+  // Save is enabled only behind a fresh successful probe + a selected model.
+  const canSave = probePassed && model.trim().length > 0 && !saving && !probing;
 
   // The login-state line reflects whether a credential is currently saved.
   const ready = hasSavedKey;
@@ -188,6 +257,8 @@ export function CodexApiKeyDialog({
               </DialogTitle>
               <DialogDescription className="text-[13px] leading-[1.55] text-muted-foreground">
                 把模型运行凭据和控制台登录身份分开管理。API Key 只作为远端 Agent 的模型调用凭据。
+                <br />
+                提供方必须兼容 OpenAI Responses API（不能仅支持 chat-completions），codex 才能正常调用。
               </DialogDescription>
             </div>
             <DialogClose
@@ -213,7 +284,7 @@ export function CodexApiKeyDialog({
                   name="codexBaseUrl"
                   type="url"
                   value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
+                  onChange={(e) => onBaseUrlChange(e.target.value)}
                   placeholder="https://api.example.com/v1"
                   autoComplete="off"
                   className="min-h-10 w-full min-w-0 rounded-md bg-card px-3 text-[13px] text-foreground shadow-[0_0_0_1px_var(--border)] focus:shadow-[0_0_0_1px_var(--ring),0_0_0_3px_rgba(10,114,239,0.16)] focus:outline-none"
@@ -231,7 +302,7 @@ export function CodexApiKeyDialog({
                   name="codexApiKey"
                   type="password"
                   value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
+                  onChange={(e) => onApiKeyChange(e.target.value)}
                   placeholder={hasSavedKey ? "已保存（重新输入以更新）" : "sk-..."}
                   autoComplete="off"
                   className="min-h-10 w-full min-w-0 rounded-md bg-card px-3 text-[13px] text-foreground shadow-[0_0_0_1px_var(--border)] focus:shadow-[0_0_0_1px_var(--ring),0_0_0_3px_rgba(10,114,239,0.16)] focus:outline-none"
@@ -245,10 +316,11 @@ export function CodexApiKeyDialog({
             <div className="flex flex-wrap items-center gap-2.5 rounded-md bg-[#fafafa] p-3 shadow-ring">
               <button
                 type="button"
-                onClick={handleFetchModels}
-                className="inline-flex min-h-[34px] flex-none items-center justify-center rounded-md bg-secondary px-[13px] text-[13px] font-medium text-foreground shadow-ring hover:bg-secondary/80"
+                onClick={runProbe}
+                disabled={probing}
+                className="inline-flex min-h-[34px] flex-none items-center justify-center rounded-md bg-secondary px-[13px] text-[13px] font-medium text-foreground shadow-ring hover:bg-secondary/80 disabled:opacity-60"
               >
-                获取可用模型
+                {probing ? "获取中…" : "获取可用模型"}
               </button>
               <span className="min-w-0 font-mono text-xs text-muted-foreground">
                 {fetchStatus}
@@ -276,7 +348,7 @@ export function CodexApiKeyDialog({
                   </SelectContent>
                 </Select>
                 <small className="text-xs text-muted-foreground">
-                  共 {models.length} 个可用模型（示例数据）；选择一个作为默认模型。
+                  共 {models.length} 个可用模型；选择一个作为默认模型后才能保存。
                 </small>
               </div>
             ) : null}
@@ -311,17 +383,25 @@ export function CodexApiKeyDialog({
           <div className="flex shrink-0 flex-wrap gap-2.5 border-t border-border p-[14px_22px_18px] max-[560px]:grid max-[560px]:grid-cols-1">
             <button
               type="submit"
-              disabled={saving}
+              disabled={!canSave}
+              title={
+                !probePassed
+                  ? "请先测试 / 获取模型，验证通过后才能保存"
+                  : !model.trim()
+                    ? "请选择一个默认模型"
+                    : undefined
+              }
               className="inline-flex min-h-9 items-center justify-center rounded-md bg-primary px-3.5 text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
             >
-              保存提供方
+              {saving ? "保存中…" : "保存提供方"}
             </button>
             <button
               type="button"
-              onClick={handleTest}
-              className="inline-flex min-h-9 items-center justify-center rounded-md bg-secondary px-3.5 text-[13px] font-medium text-foreground shadow-ring hover:bg-secondary/80"
+              onClick={runProbe}
+              disabled={probing}
+              className="inline-flex min-h-9 items-center justify-center rounded-md bg-secondary px-3.5 text-[13px] font-medium text-foreground shadow-ring hover:bg-secondary/80 disabled:opacity-60"
             >
-              测试凭据
+              {probing ? "测试中…" : "测试凭据"}
             </button>
             <DialogClose className="inline-flex min-h-9 items-center justify-center rounded-md bg-secondary px-3.5 text-[13px] font-medium text-foreground shadow-ring hover:bg-secondary/80">
               取消

@@ -186,30 +186,128 @@ export type UpdateSettingsRequest = z.infer<typeof UpdateSettingsRequestSchema>;
  * `defaultModel` is the selected default (both non-secret), and `apiKey` is the
  * write-only secret.
  */
-export const SaveCodexCredentialRequestSchema = z.object({
-  /** Provider mode being saved. */
-  mode: CodexCredentialModeSchema,
-  /** Compatible-provider base URL. */
-  baseUrl: z.string().url().optional(),
+export const SaveCodexCredentialRequestSchema = z
+  .object({
+    /** Provider mode being saved. */
+    mode: CodexCredentialModeSchema,
+    /** Compatible-provider base URL. */
+    baseUrl: z.string().url().optional(),
+    /**
+     * Write-only plaintext API key. Encrypted at rest on save and never echoed
+     * back. Omit to preserve the previously stored key on update.
+     */
+    apiKey: z.string().min(1).optional(),
+    /**
+     * Write-only OFFICIAL-mode ChatGPT login state — the full `~/.codex/auth.json`
+     * document produced by `codex login` (`{auth_mode:"chatgpt", tokens:{…}}`).
+     * Encrypted at rest on save and NEVER echoed back; the sandbox provider reads
+     * the decrypted value to authenticate codex per task (replacing the
+     * deployment-level env injection). Omit to preserve the previously stored
+     * login on an official-mode re-save.
+     */
+    authJson: z.string().min(1).optional(),
+    /** Selected default model to persist with the credential. */
+    defaultModel: z.string().min(1).optional(),
+  })
   /**
-   * Write-only plaintext API key. Encrypted at rest on save and never echoed
-   * back. Omit to preserve the previously stored key on update.
+   * A compatible-provider save REQUIRES a non-null base URL (task 2.3): the base
+   * URL is not secret and — unlike the apiKey — is never preserved-by-omission on
+   * a compatible re-save (`projectCredentialSave` nulls it when absent), so a
+   * compatible save without one would persist a provider that codex cannot reach
+   * and the discovery/execution SSRF guard cannot validate. Rejected at the wire
+   * (the api pipe + the service re-check) BEFORE any write. The official path is
+   * unconstrained (it carries no base URL).
    */
-  apiKey: z.string().min(1).optional(),
-  /**
-   * Write-only OFFICIAL-mode ChatGPT login state — the full `~/.codex/auth.json`
-   * document produced by `codex login` (`{auth_mode:"chatgpt", tokens:{…}}`).
-   * Encrypted at rest on save and NEVER echoed back; the sandbox provider reads
-   * the decrypted value to authenticate codex per task (replacing the
-   * deployment-level env injection). Omit to preserve the previously stored
-   * login on an official-mode re-save.
-   */
-  authJson: z.string().min(1).optional(),
-  /** Selected default model to persist with the credential. */
-  defaultModel: z.string().min(1).optional(),
-});
+  .superRefine((value, ctx) => {
+    if (value.mode === 'compatible' && !value.baseUrl) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['baseUrl'],
+        message: 'A compatible-provider save requires a base URL.',
+      });
+    }
+  });
 export type SaveCodexCredentialRequest = z.infer<
   typeof SaveCodexCredentialRequestSchema
+>;
+
+// ---------------------------------------------------------------------------
+// Compatible-provider model discovery (POST /settings/codex/models)
+// ---------------------------------------------------------------------------
+
+/**
+ * Body for the candidate model-discovery probe.
+ *
+ * A base URL + key are supplied so a compatible provider can be validated
+ * BEFORE persisting; nothing is stored. The `apiKey` is used only as the
+ * provider Authorization bearer and is never logged or returned. Lifted into
+ * the shared contract so the API pipe and the web `discoverCodexModels` client
+ * validate against ONE shape.
+ */
+export const DiscoverModelsRequestSchema = z.object({
+  /** Compatible-provider base URL to probe (validated for SSRF safety server-side). */
+  baseUrl: z.string().url(),
+  /** Write-only candidate API key, used only as the probe Authorization bearer. */
+  apiKey: z.string().min(1),
+});
+export type DiscoverModelsRequest = z.infer<typeof DiscoverModelsRequestSchema>;
+
+/**
+ * A distinguishable model-discovery failure code surfaced to the console so the
+ * dialog can render the actual outcome class (blocked vs auth-failure vs
+ * unreachable vs malformed) rather than a generic error:
+ *  - `provider_url_blocked`: the operator-supplied Base URL was rejected by the
+ *    server-side SSRF guard BEFORE any outbound request (bad scheme, or a host
+ *    that resolves to loopback/private/link-local/cloud-metadata). No fetch was
+ *    made — it is a configuration error, not a provider failure.
+ *  - `provider_auth_failed`: the provider rejected the credential (HTTP 401/403).
+ *  - `provider_unreachable`: the provider could not be reached (network/DNS/
+ *    timeout) or returned a non-2xx (incl. 5xx) status.
+ *  - `provider_bad_response`: reached the provider but the response was not a
+ *    parseable model list.
+ *
+ * NOTE: `provider_url_blocked` is the integration point between the contract
+ * (this lifted shape) and the discovery-hardening SSRF guard — the api's
+ * `model-discovery.client.ts` emits it, so the shared schema must accept it or
+ * the web client's `DiscoverModelsResponseSchema.parse` would reject a clean
+ * blocked outcome as a malformed transport response.
+ */
+export const ModelDiscoveryErrorCodeSchema = z.enum([
+  'provider_url_blocked',
+  'provider_auth_failed',
+  'provider_unreachable',
+  'provider_bad_response',
+]);
+export type ModelDiscoveryErrorCode = z.infer<
+  typeof ModelDiscoveryErrorCodeSchema
+>;
+
+/**
+ * Response to the model-discovery probe (no persistence). A discriminated union
+ * on `ok`:
+ *  - success ⇒ `{ ok: true, models }` — the selectable model ids the provider
+ *    reported (an empty list is a valid success, not an error).
+ *  - failure ⇒ `{ ok: false, error, message }` — a distinguishable error code
+ *    plus a human-readable, secret-free message.
+ *
+ * Shared so the controller's return type and the web client decode ONE shape.
+ */
+export const DiscoverModelsResponseSchema = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    /** The available model ids the provider reported (may be empty). */
+    models: z.array(z.string()),
+  }),
+  z.object({
+    ok: z.literal(false),
+    /** Distinguishable failure code for the dialog's outcome class. */
+    error: ModelDiscoveryErrorCodeSchema,
+    /** Human-readable, secret-free failure detail. */
+    message: z.string(),
+  }),
+]);
+export type DiscoverModelsResponse = z.infer<
+  typeof DiscoverModelsResponseSchema
 >;
 
 // ---------------------------------------------------------------------------

@@ -22,7 +22,14 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  existsSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Readable } from 'node:stream';
@@ -34,6 +41,20 @@ const apiRoot = resolve(__dirname, '..', '..'); // apps/api
 const repoRoot = resolve(apiRoot, '..', '..');
 const tscBin = join(repoRoot, 'node_modules', '.bin', 'tsc');
 const providerSrc = join(__dirname, 'aio-sandbox.provider.ts');
+// The provider now imports `assertSafeProviderUrl` from
+// `../settings/assert-safe-provider-url` (the SSRF guard shared with discovery,
+// design D4). It is owned by the discovery-hardening track. When present we
+// compile the REAL module so the isolated test exercises the genuine guard; when
+// this track is built in isolation (before that file lands) we emit a faithful
+// JS stub beside the compiled provider so its `require('../settings/...')`
+// resolves and the unsafe-URL branch is still driven end to end.
+const assertSafeProviderUrlSrc = join(
+  __dirname,
+  '..',
+  'settings',
+  'assert-safe-provider-url.ts',
+);
+const hasRealAssertSafeProviderUrl = existsSync(assertSafeProviderUrlSrc);
 
 // ---- assertion helpers ------------------------------------------------------
 
@@ -50,6 +71,21 @@ function assert(condition, label) {
   }
 }
 
+/**
+ * Decode the config.toml text the provider injects. The injection command writes
+ * config.toml via `printf %s '<base64>' | base64 -d > .../config.toml`, so we
+ * pull the single-quoted base64 payload that immediately precedes the
+ * config.toml redirect and base64-decode it back to TOML — exercising the same
+ * payload the sandbox would decode. Returns '' when no config.toml write is found.
+ */
+function decodeInjectedConfigToml(command) {
+  // Match the base64 payload feeding the config.toml redirect specifically (the
+  // command may also carry an auth.json payload for official material).
+  const m = command.match(/'([A-Za-z0-9+/=]+)'\s*\|\s*base64 -d\s*>\s*\/home\/gem\/\.codex\/config\.toml/);
+  if (!m) return '';
+  return Buffer.from(m[1], 'base64').toString('utf8');
+}
+
 // ---- compile the REAL provider to a temp module -----------------------------
 
 // Emit INSIDE apps/api so Node module resolution walks up to the repo
@@ -63,6 +99,15 @@ function compileProvider() {
   // resolves. The `./sandbox-provider.port.js` import is type-only and gets
   // elided; `dockerode` / `@nestjs/common` resolve from the repo node_modules at
   // runtime (outDir lives under apps/api so module resolution walks up to them).
+  //
+  // The provider imports the SSRF guard `../settings/assert-safe-provider-url`
+  // (owned by the discovery-hardening track). When that real module is present we
+  // compile IT; when this track is built in isolation (before that file lands) we
+  // drop a faithful temp `.ts` stub into apps/api/src/settings/ so tsc can both
+  // type-check the import AND emit a `settings/assert-safe-provider-url.js` the
+  // compiled provider's require resolves to. The temp stub is removed in the
+  // outer finally. {@link assertSafeProviderUrlCompileSrc} resolves to whichever.
+  const compileSrc = assertSafeProviderUrlCompileSrc();
   execFileSync(
     tscBin,
     [
@@ -79,6 +124,9 @@ function compileProvider() {
       // read-only rollout extraction (session-sandbox-retention 3.5). Listed so
       // its .js is emitted beside provider.js and the require resolves.
       join(__dirname, 'tar-extract.ts'),
+      // The SSRF guard (real module or temp stub) — so its .js lands under
+      // outDir/settings and the provider's `require('../settings/...')` resolves.
+      compileSrc,
       '--outDir',
       outDir,
       '--module',
@@ -95,13 +143,79 @@ function compileProvider() {
     { cwd: apiRoot, stdio: 'pipe' },
   );
   const flat = join(outDir, 'aio-sandbox.provider.js');
-  if (existsSync(flat)) return flat;
-  const nested = join(outDir, 'sandbox', 'aio-sandbox.provider.js');
-  if (existsSync(nested)) return nested;
-  const hit = findFile(outDir, 'aio-sandbox.provider.js');
-  if (hit) return hit;
-  throw new Error('compiled aio-sandbox.provider.js not found under ' + outDir);
+  const providerJs = existsSync(flat)
+    ? flat
+    : existsSync(join(outDir, 'sandbox', 'aio-sandbox.provider.js'))
+      ? join(outDir, 'sandbox', 'aio-sandbox.provider.js')
+      : findFile(outDir, 'aio-sandbox.provider.js');
+  if (!providerJs) {
+    throw new Error('compiled aio-sandbox.provider.js not found under ' + outDir);
+  }
+  return providerJs;
 }
+
+/** Path of the temp SSRF-guard stub written when the real module is absent. */
+const stubTsPath = join(apiRoot, 'src', 'settings', 'assert-safe-provider-url.ts');
+let wroteStub = false;
+
+/**
+ * Resolve the SSRF-guard source to compile: the real module when it exists,
+ * otherwise a temp `.ts` stub written into apps/api/src/settings/ (tracked for
+ * removal via {@link wroteStub}). The stub mirrors the real guard's contract —
+ * async, throws on a non-http(s) scheme or a loopback/private/link-local/metadata
+ * host — so the provider's unsafe-URL branch is driven for real in isolation.
+ */
+function assertSafeProviderUrlCompileSrc() {
+  if (hasRealAssertSafeProviderUrl) return assertSafeProviderUrlSrc;
+  mkdirSync(dirname(stubTsPath), { recursive: true });
+  writeFileSync(stubTsPath, ASSERT_SAFE_PROVIDER_URL_STUB, 'utf8');
+  wroteStub = true;
+  return stubTsPath;
+}
+
+/** Remove the temp SSRF-guard stub if this run wrote one. */
+function cleanupStub() {
+  if (wroteStub) rmSync(stubTsPath, { force: true });
+}
+
+/**
+ * A faithful TypeScript stub of `../settings/assert-safe-provider-url` for the
+ * isolated provider build (the real module is owned by the discovery-hardening
+ * track). Same contract the provider depends on: `assertSafeProviderUrl(url)` is
+ * async and THROWS for a non-http(s) scheme or a loopback/private/link-local/
+ * metadata host; resolves otherwise. Hostname DNS is not performed here — the
+ * test only feeds literal-IP / localhost / scheme cases, which is what the
+ * provider's unsafe-URL branch needs to be exercised.
+ */
+const ASSERT_SAFE_PROVIDER_URL_STUB = `export class UnsafeProviderUrlError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message);
+    this.name = 'UnsafeProviderUrlError';
+  }
+}
+function unsafeIpv4(a: string): boolean {
+  const p = a.split('.').map(Number);
+  if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  if (p[0] === 0 || p[0] === 10 || p[0] === 127) return true;
+  if (p[0] === 169 && p[1] === 254) return true;
+  if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+  if (p[0] === 192 && p[1] === 168) return true;
+  return false;
+}
+export async function assertSafeProviderUrl(baseUrl: string): Promise<URL> {
+  let url: URL;
+  try { url = new URL(baseUrl); } catch { throw new UnsafeProviderUrlError('malformed_url', 'bad url'); }
+  const scheme = url.protocol.replace(/:$/, '').toLowerCase();
+  if (scheme !== 'http' && scheme !== 'https') throw new UnsafeProviderUrlError('unsupported_scheme', scheme);
+  const host = url.hostname;
+  if (!host) throw new UnsafeProviderUrlError('missing_host', 'no host');
+  const lower = host.toLowerCase();
+  if (lower === 'localhost' || lower === '::1' || lower === '::') throw new UnsafeProviderUrlError('unsafe_host', host);
+  if (/^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$/.test(host) && unsafeIpv4(host)) throw new UnsafeProviderUrlError('unsafe_host', host);
+  if (/^f[cd]/.test(lower) || /^fe[89ab]/.test(lower)) throw new UnsafeProviderUrlError('unsafe_host', host);
+  return url;
+}
+`;
 
 function findFile(dir, name) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -225,14 +339,32 @@ function makeLookup(cloneUrl = null, taskPrompt = null, taskSkills = []) {
 /**
  * Stub {@link CodexAuthSource}: returns fixed material (or null to skip codex
  * auth injection). Returning null keeps these option/clone-focused assertions
- * from seeing an extra `/v1/shell/exec` (the auth.json write) before the clone.
+ * from seeing an extra `/v1/shell/exec` (the credential write) before the clone.
+ *
+ * Material is the discriminated union (wire-compatible-provider-execution D2):
+ * `{ kind:'official', authJson }` or `{ kind:'compatible', baseUrl, apiKey,
+ * model }`. For backward-compat with the option/clone tests that pass a bare
+ * `{ authJson }`, an untagged object is treated as `kind:'official'`.
+ *
+ * `getCodexAuth(taskId)` is now OWNER-SCOPED (design D3): it receives the task
+ * id. The stub records every received id on `receivedTaskIds` so a test can
+ * assert the provider passes the task identity through, and may map material per
+ * task id (the owner-scope resolution test) via the `byTaskId` lookup.
  */
-function makeCodexAuthSource(material = null) {
-  return {
-    async getCodexAuth() {
-      return material;
+function makeCodexAuthSource(material = null, byTaskId = null) {
+  const normalize = (m) =>
+    m && typeof m === 'object' && m.kind === undefined && 'authJson' in m
+      ? { kind: 'official', ...m }
+      : m;
+  const source = {
+    receivedTaskIds: [],
+    async getCodexAuth(taskId) {
+      source.receivedTaskIds.push(taskId);
+      if (byTaskId) return normalize(byTaskId[taskId] ?? null);
+      return normalize(material);
     },
   };
+  return source;
 }
 
 // ---- run --------------------------------------------------------------------
@@ -432,8 +564,277 @@ try {
         acmd.includes('base64 -d') && acmd.includes('chmod 600'),
         'injection base64-decodes the payload and chmod 600 the auth.json',
       );
+      // 3.5 (official path unchanged): official material writes NO compatible
+      // [model_providers.cap] provider block — that belongs to compatible mode.
+      const configCall = authMock.fetchCalls.find(
+        (c) =>
+          c.url.endsWith('/v1/shell/exec') &&
+          JSON.parse(c.init.body).command.includes('/home/gem/.codex/config.toml'),
+      );
+      const officialConfigCmd = configCall
+        ? JSON.parse(configCall.init.body).command
+        : '';
+      const officialConfigToml = officialConfigCmd
+        ? decodeInjectedConfigToml(officialConfigCmd)
+        : '';
+      assert(
+        !officialConfigToml.includes('[model_providers.cap]'),
+        'official material does NOT write a compatible [model_providers.cap] block',
+      );
     } finally {
       authMock.restore();
+    }
+
+    // ---- 3.5: compatible material → config.toml provider block, NO auth.json ----
+    // A compatible credential makes the provider APPEND a [model_providers.cap]
+    // block (base_url + wire_api="responses" + experimental_bearer_token) plus
+    // top-level model/model_provider to config.toml (per codex 0.131, task 3.1),
+    // base64-decoded in-container, and writes NO auth.json for the custom provider.
+    const compatMock = installFetchMock(0, '');
+    try {
+      // A literal PUBLIC IP host (RFC 5737 TEST-NET-3, non-private/non-loopback)
+      // so the REAL assertSafeProviderUrl classifies it directly with NO DNS —
+      // hostnames like provider.example.com would force a live lookup the
+      // hermetic test cannot rely on (and which fails closed → no block written).
+      const baseUrl = 'https://203.0.113.10/v1';
+      const apiKey = 'sk-compat-secret-key';
+      const model = 'gpt-4.1-mini';
+      const pCompat = new AioSandboxProvider(
+        makeLookup(null), // skip clone — isolate the credential-inject exec
+        makeCodexAuthSource({ kind: 'compatible', baseUrl, apiKey, model }),
+      );
+      pCompat.docker = makeFakeDocker(makeFakeContainer());
+      await pCompat.provision({ taskId: 'task-compat' });
+
+      const configCall = compatMock.fetchCalls.find(
+        (c) =>
+          c.url.endsWith('/v1/shell/exec') &&
+          JSON.parse(c.init.body).command.includes('/home/gem/.codex/config.toml'),
+      );
+      assert(configCall !== undefined, 'compatible material writes config.toml via /v1/shell/exec');
+      const ccmd = configCall ? JSON.parse(configCall.init.body).command : '';
+      const toml = decodeInjectedConfigToml(ccmd);
+      assert(
+        toml.includes('[model_providers.cap]'),
+        'config.toml carries a [model_providers.cap] provider block',
+      );
+      assert(
+        toml.includes(`base_url = "${baseUrl}"`),
+        'the provider block base_url is the saved compatible Base URL',
+      );
+      assert(
+        toml.includes('wire_api = "responses"'),
+        'the provider block sets wire_api = "responses" (the only codex 0.131 value)',
+      );
+      assert(
+        toml.includes(`experimental_bearer_token = "${apiKey}"`),
+        'the decrypted key is delivered via experimental_bearer_token in the block',
+      );
+      assert(
+        toml.includes('model_provider = "cap"') && toml.includes(`model = "${model}"`),
+        'top-level model_provider = "cap" + model = "<defaultModel>" are emitted',
+      );
+      // TOML ordering: the bare top-level keys MUST precede EVERY table header,
+      // else they would parse as keys nested under the first table ([projects.*]).
+      const firstTableIdx = toml.search(/^\[/m);
+      const modelIdx = toml.indexOf('model = ');
+      const providerIdx = toml.indexOf('model_provider = ');
+      assert(
+        firstTableIdx > 0 &&
+          modelIdx >= 0 &&
+          modelIdx < firstTableIdx &&
+          providerIdx >= 0 &&
+          providerIdx < firstTableIdx,
+        'top-level model/model_provider precede every [table] header (not nested under [projects.*])',
+      );
+      // The workspace trust block is preserved alongside the provider block.
+      assert(
+        toml.includes('trust_level = "trusted"'),
+        'the workspace trust_level block is preserved alongside the provider block',
+      );
+      // NO auth.json is written for the compatible custom provider.
+      const compatAuthCall = compatMock.fetchCalls.find(
+        (c) =>
+          c.url.endsWith('/v1/shell/exec') &&
+          JSON.parse(c.init.body).command.includes('/home/gem/.codex/auth.json'),
+      );
+      assert(
+        compatAuthCall === undefined,
+        'compatible mode writes NO ~/.codex/auth.json (key rides config.toml, not auth.json)',
+      );
+      // The raw secret never appears outside the single-quoted base64 payload.
+      assert(
+        !ccmd.includes(apiKey),
+        'the API key never appears as plaintext in the shell command (only inside the base64 payload)',
+      );
+    } finally {
+      compatMock.restore();
+    }
+
+    // ---- 3.5: owner-scoped resolution — operator B's task gets B's credential ----
+    // getCodexAuth is threaded the taskId so the source resolves the TASK OWNER's
+    // credential. With a per-task material map, operator A's task and operator B's
+    // task each receive THEIR OWN compatible provider — never the other's.
+    {
+      const orig = globalThis.fetch;
+      let configCmd = '';
+      // Literal PUBLIC IP hosts (RFC 5737 TEST-NET-3) so the real SSRF guard
+      // accepts each without DNS while staying distinct per owner.
+      const source = makeCodexAuthSource(null, {
+        'task-owner-a': {
+          kind: 'compatible',
+          baseUrl: 'https://203.0.113.20/v1',
+          apiKey: 'sk-key-a',
+          model: 'model-a',
+        },
+        'task-owner-b': {
+          kind: 'compatible',
+          baseUrl: 'https://203.0.113.21/v1',
+          apiKey: 'sk-key-b',
+          model: 'model-b',
+        },
+      });
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          const cmd = JSON.parse(init.body).command;
+          if (cmd.includes('/home/gem/.codex/config.toml')) configCmd = cmd;
+          return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      let tomlB;
+      try {
+        const p = new AioSandboxProvider(makeLookup(null), source);
+        p.docker = makeFakeDocker(makeFakeContainer());
+        await p.provision({ taskId: 'task-owner-b' });
+        tomlB = decodeInjectedConfigToml(configCmd);
+      } finally {
+        globalThis.fetch = orig;
+      }
+      assert(
+        source.receivedTaskIds.includes('task-owner-b'),
+        'the provider threads the taskId into getCodexAuth (owner-scoped resolution)',
+      );
+      assert(
+        tomlB.includes('base_url = "https://203.0.113.21/v1"') &&
+          tomlB.includes('experimental_bearer_token = "sk-key-b"') &&
+          tomlB.includes('model = "model-b"'),
+        "operator B's task is injected with operator B's credential, not A's",
+      );
+      assert(
+        !tomlB.includes('203.0.113.20') && !tomlB.includes('sk-key-a'),
+        "operator A's credential never leaks into operator B's task",
+      );
+    }
+
+    // ---- 3.6: end-to-end smoke — the injected config IS what codex 0.131 consumes
+    // The LIVE smoke (a real AIO sandbox + a real Responses-API provider, asserting
+    // codex actually issues requests against the custom base_url + model and
+    // authenticates via experimental_bearer_token) runs against a deployed sandbox
+    // and cannot execute in this hermetic unit. Here we assert the OFFLINE
+    // equivalent: provision drives the FULL injection path and the EXACT bytes the
+    // sandbox decodes into ~/.codex/config.toml form a complete, self-consistent
+    // codex 0.131 custom-provider config — top-level model/model_provider pointing
+    // at the same [model_providers.cap] id, base_url = the custom URL, wire_api =
+    // "responses", and the key inline as experimental_bearer_token — so a live
+    // codex picks up THIS provider, key, and model with no further wiring. If a
+    // live run shows experimental_bearer_token is unstable on 0.131, the design's
+    // fallback is env_key + an injected process env var (recorded in D1/Risks).
+    {
+      const orig = globalThis.fetch;
+      let configCmd = '';
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          const cmd = JSON.parse(init.body).command;
+          if (cmd.includes('/home/gem/.codex/config.toml')) configCmd = cmd;
+          return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      // Literal PUBLIC IP host (RFC 5737 TEST-NET-3) so the real SSRF guard
+      // accepts it without DNS in this hermetic offline smoke.
+      const baseUrl = 'https://203.0.113.30/v1';
+      const apiKey = 'sk-smoke-e2e-key';
+      const model = 'gpt-4.1';
+      let toml;
+      try {
+        const p = new AioSandboxProvider(
+          makeLookup(null),
+          makeCodexAuthSource({ kind: 'compatible', baseUrl, apiKey, model }),
+        );
+        p.docker = makeFakeDocker(makeFakeContainer());
+        await p.provision({ taskId: 'task-smoke-e2e' });
+        toml = decodeInjectedConfigToml(configCmd);
+      } finally {
+        globalThis.fetch = orig;
+      }
+      // The top-level model_provider names the SAME provider id the block defines —
+      // a mismatch would leave codex pointing at an undefined provider.
+      const providerId = (toml.match(/model_provider = "([^"]+)"/) || [])[1];
+      assert(
+        providerId === 'cap' && toml.includes(`[model_providers.${providerId}]`),
+        '3.6 smoke: top-level model_provider names the SAME id the provider block defines',
+      );
+      assert(
+        toml.includes(`base_url = "${baseUrl}"`) && toml.includes(`model = "${model}"`),
+        '3.6 smoke: codex is pointed at the custom base_url + the selected model (not OpenAI defaults)',
+      );
+      assert(
+        toml.includes('wire_api = "responses"') &&
+          toml.includes(`experimental_bearer_token = "${apiKey}"`),
+        '3.6 smoke: codex authenticates to the custom provider via experimental_bearer_token over the Responses API',
+      );
+    }
+
+    // ---- 3.5: an UNSAFE compatible Base URL is NOT written into the sandbox ----
+    // A Base URL resolving to a loopback/metadata host fails assertSafeProviderUrl,
+    // so the provider skips the provider block (codex launches unauthenticated) and
+    // NEVER writes that Base URL into config.toml — and never writes auth.json.
+    for (const unsafe of [
+      'http://169.254.169.254/v1', // cloud metadata
+      'http://127.0.0.1:11434/v1', // loopback
+      'http://localhost:8000/v1', // loopback name
+    ]) {
+      const unsafeMock = installFetchMock(0, '');
+      try {
+        const p = new AioSandboxProvider(
+          makeLookup(null),
+          makeCodexAuthSource({
+            kind: 'compatible',
+            baseUrl: unsafe,
+            apiKey: 'sk-unsafe',
+            model: 'm',
+          }),
+        );
+        p.docker = makeFakeDocker(makeFakeContainer());
+        // Provision still SUCCEEDS — an unsafe URL is skipped, not fatal.
+        await p.provision({ taskId: `task-unsafe-${unsafe.length}` });
+        const configCall = unsafeMock.fetchCalls.find(
+          (c) =>
+            c.url.endsWith('/v1/shell/exec') &&
+            JSON.parse(c.init.body).command.includes('/home/gem/.codex/config.toml'),
+        );
+        const toml = configCall
+          ? decodeInjectedConfigToml(JSON.parse(configCall.init.body).command)
+          : '';
+        assert(
+          !toml.includes(unsafe) && !toml.includes('[model_providers.cap]'),
+          `unsafe Base URL ${unsafe} is NOT written into config.toml (provider block skipped)`,
+        );
+        const authCall = unsafeMock.fetchCalls.find(
+          (c) =>
+            c.url.endsWith('/v1/shell/exec') &&
+            JSON.parse(c.init.body).command.includes('/home/gem/.codex/auth.json'),
+        );
+        assert(
+          authCall === undefined,
+          `unsafe Base URL ${unsafe} writes no auth.json either (credential treated as unusable)`,
+        );
+      } finally {
+        unsafeMock.restore();
+      }
     }
 
     // ---- task prompt injection (aio-codex-prompt-autostart) ------------------
@@ -1167,6 +1568,7 @@ try {
   failed++;
 } finally {
   rmSync(outDir, { recursive: true, force: true });
+  cleanupStub();
 }
 
 // ---- summary ----------------------------------------------------------------

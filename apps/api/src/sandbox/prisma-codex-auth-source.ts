@@ -11,31 +11,42 @@ import type {
 } from './codex-auth-source.port';
 import { EnvCodexAuthSource } from './env-codex-auth-source';
 
-/** Env var carrying the AES-256-GCM server key used to decrypt the stored auth.json. */
+/** Env var carrying the AES-256-GCM server key used to decrypt the stored secret. */
 const CODEX_CRED_ENC_KEY_ENV = 'CODEX_CRED_ENC_KEY';
 
 /**
- * Settings-backed {@link CodexAuthSource}: resolves the OFFICIAL-mode ChatGPT
- * login (`~/.codex/auth.json`) that the operator connected via the Settings page
- * ("official subscription" entry). The login is stored ENCRYPTED at rest in
- * `codex_credentials.auth_json_ciphertext`; this source decrypts it with the
- * server key (`CODEX_CRED_ENC_KEY`) and returns it for the provider to inject —
- * so the execution credential lives in the app (per-account, encrypted, rotatable
- * from the UI) instead of a deployment env var.
+ * Settings-backed {@link CodexAuthSource}: resolves the per-task codex execution
+ * credential the operator connected via the Settings page, in EITHER mode:
+ *   - `official` → the ChatGPT login `~/.codex/auth.json`, stored ENCRYPTED at
+ *     rest in `codex_credentials.auth_json_ciphertext`; decrypted here and
+ *     returned as {@link OfficialCodexAuthMaterial} for the provider to write
+ *     verbatim to `auth.json`.
+ *   - `compatible` → an OpenAI-Responses-API-compatible provider. The API key is
+ *     stored ENCRYPTED at rest in `codex_credentials.api_key_ciphertext`;
+ *     decrypted here (reusing the same {@link decryptSecret} primitive as
+ *     official) and returned as {@link CompatibleCodexAuthMaterial}
+ *     (`baseUrl`/`apiKey`/`model`) for the provider to write into `config.toml`
+ *     as a `[model_providers.*]` block (NO `auth.json`).
+ * Either way the execution credential lives in the app (per-account, encrypted,
+ * rotatable from the UI) instead of a deployment env var.
  *
- * Operator scoping: the credential is resolved for the CANONICAL operator — the
- * earliest allowed user — EXACTLY as {@link PrismaProvisionLookup} resolves the
- * clone token, so the codex login and the GitHub token both come from one
- * deterministic operator and a task never executes against an arbitrary other
- * allowlisted user's ChatGPT subscription. (The execution layer is single-
- * operator today: ProvisionContext carries only a taskId and the Task model has
- * no owner FK, so true per-task-owner credential scoping is a tracked follow-up.)
+ * OWNER-SCOPED resolution (design D3): the credential is resolved for the TASK's
+ * OWNING account — the operator attributed on the task's `task.created` audit
+ * event — NOT a global `findFirst({allowed:true})`. That global resolution would
+ * let one task run against an arbitrary other allowlisted user's ChatGPT login or
+ * compatible API key; scoping by the task owner means one operator's credential
+ * is never used for another operator's tasks. When the task has no attributed
+ * owner (system-created / no audit attribution) the credential cannot be
+ * owner-scoped, so resolution degrades to the env/official fallback rather than
+ * guessing an account.
  *
  * Falls back to {@link EnvCodexAuthSource} (the legacy `CODEX_CHATGPT_AUTH_JSON_B64`)
- * when no official login is stored, the server key is unavailable, or the
- * ciphertext fails to decrypt — keeping a deploy that hasn't migrated to the
- * Settings flow working. The DB access lives here so {@link AioSandboxProvider}
- * stays a pure port consumer (mirrors {@link PrismaProvisionLookup}).
+ * when no usable Settings credential is resolved for the owner, the server key is
+ * unavailable, or the ciphertext fails to decrypt — keeping a deploy that hasn't
+ * migrated to the Settings flow working, and keeping official/env-configured
+ * deployments unaffected by the compatible path. The DB access lives here so
+ * {@link AioSandboxProvider} stays a pure port consumer (mirrors
+ * {@link PrismaProvisionLookup}).
  */
 @Injectable()
 export class PrismaCodexAuthSource implements CodexAuthSource {
@@ -44,37 +55,47 @@ export class PrismaCodexAuthSource implements CodexAuthSource {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async getCodexAuth(): Promise<CodexAuthMaterial | null> {
-    const settings = await this.resolveFromSettings();
+  async getCodexAuth(taskId: string): Promise<CodexAuthMaterial | null> {
+    const settings = await this.resolveFromSettings(taskId);
     if (settings) return settings;
     // No usable Settings credential → legacy deployment env var (transition path).
-    return this.envFallback.getCodexAuth();
+    return this.envFallback.getCodexAuth(taskId);
   }
 
   /**
-   * Decrypt the operator's official ChatGPT auth.json from the settings store, or
-   * null when none is stored / the key is unavailable / decryption fails — never
-   * throws, so a settings problem degrades to the env fallback rather than failing
-   * provisioning.
+   * Resolve the task OWNER's stored codex credential (official auth.json OR a
+   * compatible provider), or null when none is stored / the owner is unknown /
+   * the key is unavailable / decryption fails — never throws, so a settings
+   * problem degrades to the env fallback rather than failing provisioning.
    */
-  private async resolveFromSettings(): Promise<CodexAuthMaterial | null> {
-    let stored: string | null;
+  private async resolveFromSettings(
+    taskId: string,
+  ): Promise<CodexAuthMaterial | null> {
+    let cred: {
+      mode: string;
+      authJsonCiphertext: string | null;
+      apiKeyCiphertext: string | null;
+      baseUrl: string | null;
+      defaultModel: string | null;
+    } | null;
     try {
-      // Resolve the CANONICAL operator deterministically (earliest allowed user),
-      // mirroring PrismaProvisionLookup.resolveGitHubToken — NOT a global
-      // findFirst over every official credential, which would let one task run
-      // against an arbitrary other allowlisted user's ChatGPT login. The codex
-      // login is then this canonical operator's stored official credential.
-      const operator = await this.prisma.user.findFirst({
-        where: { allowed: true },
-        orderBy: { createdAt: 'asc' },
-        select: { id: true },
+      // OWNER-SCOPE: resolve the account that OWNS this task — the operator
+      // attributed on its `task.created` audit event — rather than a global
+      // findFirst over every credential, which would let one task run against an
+      // arbitrary other allowlisted user's credential. No attributed owner (e.g.
+      // a system-created task) → no owner-scoped credential; degrade to env.
+      const ownerId = await this.resolveTaskOwnerId(taskId);
+      if (!ownerId) return null;
+      cred = await this.prisma.codexCredential.findUnique({
+        where: { userId: ownerId },
+        select: {
+          mode: true,
+          authJsonCiphertext: true,
+          apiKeyCiphertext: true,
+          baseUrl: true,
+          defaultModel: true,
+        },
       });
-      if (!operator) return null;
-      const cred = await this.prisma.codexCredential.findUnique({
-        where: { userId: operator.id },
-      });
-      stored = cred?.mode === 'official' ? (cred.authJsonCiphertext ?? null) : null;
     } catch (err) {
       this.logger.warn(
         `codex credential lookup failed; falling back to env: ${
@@ -83,29 +104,72 @@ export class PrismaCodexAuthSource implements CodexAuthSource {
       );
       return null;
     }
-    if (!stored) return null;
+    if (!cred) return null;
 
-    // Stored as `ciphertext.iv.authTag` (base64 parts; base64 never contains '.').
-    const parts = stored.split('.');
-    if (parts.length !== 3) {
-      this.logger.warn('stored codex auth.json ciphertext is malformed; falling back to env');
-      return null;
+    if (cred.mode === 'compatible') {
+      return this.resolveCompatible(cred);
     }
-    const [ciphertext, iv, authTag] = parts;
+    if (cred.mode === 'official') {
+      return this.resolveOfficial(cred.authJsonCiphertext);
+    }
+    // Unknown / not-connected mode → nothing to inject from settings.
+    return null;
+  }
 
-    let authJson: string;
-    try {
-      const key = resolveEncryptionKey(process.env[CODEX_CRED_ENC_KEY_ENV]);
-      authJson = decryptSecret({ ciphertext, iv, authTag }, key);
-    } catch (err) {
-      // EncryptionKeyUnavailableError / DecryptionFailedError → degrade to env.
+  /**
+   * The owning account of `taskId`: the GitHub-identity operator attributed on
+   * the task's `task.created` audit event (the only lifecycle event that records
+   * the creating operator). Returns null when the task has no created-event
+   * attribution — the task model itself has no owner FK, so this audit linkage is
+   * the per-task owner of record. Never throws into the resolver (the caller's
+   * try/catch degrades a DB error to the env fallback).
+   */
+  private async resolveTaskOwnerId(taskId: string): Promise<string | null> {
+    const created = await this.prisma.auditEvent.findFirst({
+      where: { taskId, type: 'task.created', userId: { not: null } },
+      orderBy: { timestamp: 'asc' },
+      select: { userId: true },
+    });
+    return created?.userId ?? null;
+  }
+
+  /**
+   * Decrypt a compatible-provider credential into {@link CompatibleCodexAuthMaterial}.
+   * Requires a Base URL, a stored API-key ciphertext, AND a default model — any
+   * missing field makes the credential unusable for execution, so we return null
+   * (degrade to env) rather than inject a half-configured provider that would burn
+   * a run slot failing inside the sandbox.
+   */
+  private resolveCompatible(cred: {
+    apiKeyCiphertext: string | null;
+    baseUrl: string | null;
+    defaultModel: string | null;
+  }): CodexAuthMaterial | null {
+    const { baseUrl, defaultModel } = cred;
+    if (!baseUrl || !cred.apiKeyCiphertext || !defaultModel) {
       this.logger.warn(
-        `could not decrypt stored codex auth.json (${
-          err instanceof Error ? err.name : 'error'
-        }); falling back to env`,
+        'compatible codex credential is missing baseUrl/apiKey/defaultModel; falling back to env',
       );
       return null;
     }
+    const apiKey = this.decryptCiphertext(cred.apiKeyCiphertext, 'compatible API key');
+    if (apiKey === null) return null;
+    this.logger.debug('using settings-stored compatible codex provider credential');
+    return { kind: 'compatible', baseUrl, apiKey, model: defaultModel };
+  }
+
+  /**
+   * Decrypt + validate the official ChatGPT auth.json into
+   * {@link OfficialCodexAuthMaterial}, or null when none is stored / the key is
+   * unavailable / decryption fails / the decrypted value is not a codex auth
+   * document (degrade to env, never throw).
+   */
+  private resolveOfficial(
+    authJsonCiphertext: string | null,
+  ): CodexAuthMaterial | null {
+    if (!authJsonCiphertext) return null;
+    const authJson = this.decryptCiphertext(authJsonCiphertext, 'auth.json');
+    if (authJson === null) return null;
 
     // Sanity-check the decrypted value is a codex auth document before injecting.
     try {
@@ -130,6 +194,35 @@ export class PrismaCodexAuthSource implements CodexAuthSource {
     }
 
     this.logger.debug('using settings-stored official codex auth.json');
-    return { authJson };
+    return { kind: 'official', authJson };
+  }
+
+  /**
+   * Decrypt a stored `ciphertext.iv.authTag` envelope (the at-rest format the
+   * settings layer writes for BOTH official auth.json and the compatible API key)
+   * with the server key, or null when the stored value is malformed, the key is
+   * unavailable, or authentication fails. `label` only sharpens the warning; the
+   * decrypted plaintext is NEVER logged.
+   */
+  private decryptCiphertext(stored: string, label: string): string | null {
+    // Stored as `ciphertext.iv.authTag` (base64 parts; base64 never contains '.').
+    const parts = stored.split('.');
+    if (parts.length !== 3) {
+      this.logger.warn(`stored codex ${label} ciphertext is malformed; falling back to env`);
+      return null;
+    }
+    const [ciphertext, iv, authTag] = parts;
+    try {
+      const key = resolveEncryptionKey(process.env[CODEX_CRED_ENC_KEY_ENV]);
+      return decryptSecret({ ciphertext, iv, authTag }, key);
+    } catch (err) {
+      // EncryptionKeyUnavailableError / DecryptionFailedError → degrade to env.
+      this.logger.warn(
+        `could not decrypt stored codex ${label} (${
+          err instanceof Error ? err.name : 'error'
+        }); falling back to env`,
+      );
+      return null;
+    }
   }
 }

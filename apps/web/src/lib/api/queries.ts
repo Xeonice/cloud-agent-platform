@@ -61,6 +61,18 @@ export const queryKeys = {
     ["history", query ?? {}] as const,
   settings: ["settings"] as const,
   codexCredential: ["settings", "codex"] as const,
+  /**
+   * The compatible-provider model-discovery probe (`POST /settings/codex/models`,
+   * wire-compatible-provider-execution). There is no discovery READ — the probe is
+   * a one-shot action validating an operator-supplied `{baseUrl, apiKey}` whose
+   * result populates the dialog's model picker transiently and is never cached as a
+   * persistent read. This key exists only so the mutation has a stable, centralized
+   * handle alongside `codexCredential` (mirroring the no-string-drift discipline of
+   * the other keys); it is keyed by the probed Base URL so distinct candidates do
+   * not collide.
+   */
+  codexModels: (baseUrl: string) =>
+    ["settings", "codex", "models", baseUrl] as const,
   authSession: ["auth", "session"] as const,
   githubRepos: ["github", "repos"] as const,
   taskContext: (id: string) => ["tasks", id, "context"] as const,
@@ -351,14 +363,20 @@ export function taskContextQuery(id: string) {
  * `real.getUpdateStatus` (Zod `.parse` against the `@cap/contracts`
  * `UpdateStatusSchema`) when capable and the typed `mock.mockUpdateStatus`
  * otherwise — so the banner renders on the mock until the live endpoint is
- * verified, then ONE flag flip repoints it. The api already caches the upstream
- * GitHub fetch (one per TTL across all browsers), so this is a plain read with
- * no client-side poll.
+ * verified, then ONE flag flip repoints it. The api caches the upstream GitHub
+ * fetch (one per short TTL across all browsers); the client polls it on a modest
+ * interval + on window focus so a newly-published Release surfaces in the banner
+ * without a reload (responsive-update-check D2).
  */
 export function updateStatusQuery() {
   return queryOptions<UpdateStatus>({
     queryKey: queryKeys.updateStatus,
     queryFn: () =>
       isCapable("updateCheck") ? real.getUpdateStatus() : mock.mockUpdateStatus(),
+    // responsive-update-check D2 — poll so a newly-published Release surfaces in
+    // the banner within minutes WITHOUT a reload (aligned with the api's short
+    // cache TTL), and re-check when the operator returns to the tab.
+    refetchInterval: 5 * 60 * 1000,
+    refetchOnWindowFocus: true,
   });
 }

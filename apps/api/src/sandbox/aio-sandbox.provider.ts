@@ -18,6 +18,7 @@ import { PROVISION_LOOKUP, type ProvisionLookup } from './provision-lookup.port'
 import { CODEX_PROMPT_FILE_PATH } from '../terminal/codex-launch';
 import { resolveSkillInstaller } from './skill-allowlist';
 import { extractFilesFromTar } from './tar-extract';
+import { assertSafeProviderUrl } from '../settings/assert-safe-provider-url';
 
 /**
  * AIO Sandbox `SandboxProvider` (aio-sandbox-execution, design D — connect-in).
@@ -258,9 +259,11 @@ export class AioSandboxProvider
     try {
       // Readiness: do not treat the sandbox as usable until its HTTP API answers.
       await this.waitForReadiness(baseUrl, ctx.taskId);
-      // Inject the codex auth.json into /home/gem/.codex BEFORE the gateway opens
-      // the PTY and codex auto-launches — so codex authenticates on startup. Then
-      // clone the task repo. Both AFTER readiness and BEFORE the handle returns.
+      // Inject the codex credential into /home/gem/.codex BEFORE the gateway opens
+      // the PTY and codex auto-launches — so codex authenticates / targets the
+      // configured provider on startup. Then clone the task repo. Both AFTER
+      // readiness and BEFORE the handle returns. The taskId scopes the credential
+      // to the task's OWNING account (owner-scoped resolution, design D3).
       await this.injectCodexAuth(baseUrl, ctx.taskId);
       // Inject the operator's task prompt as a file so codex starts with the goal
       // pre-filled (aio-codex-prompt-autostart). After auth (same ~/.codex dir),
@@ -807,9 +810,23 @@ export class AioSandboxProvider
    *     directory?" prompt — there is no operator in the sandbox to answer it,
    *     and `--dangerously-bypass-hook-trust` covers HOOK trust only, not the
    *     directory-trust prompt.
-   *   - the `auth.json` from {@link CodexAuthSource} when configured, so codex
-   *     authenticates on startup; when none is configured codex still launches
-   *     (unauthenticated) but the trust config is written regardless.
+   *   - the codex CREDENTIAL from {@link CodexAuthSource} when configured, in
+   *     EITHER mode (branch on `material.kind`, wire-compatible-provider-execution
+   *     D1/D2):
+   *       · `official` → write `~/.codex/auth.json` (the ChatGPT login), so codex
+   *         authenticates on startup. UNCHANGED from before.
+   *       · `compatible` → append a `[model_providers.cap]` block (`base_url`,
+   *         `wire_api = "responses"`, `experimental_bearer_token = "<key>"`) plus
+   *         top-level `model_provider = "cap"` / `model = "<defaultModel>"` to
+   *         `config.toml`, so codex 0.131 targets the operator's Responses-API
+   *         provider with the operator's key + selected model. Writes NO
+   *         `auth.json` — for a custom provider `auth.json`'s `OPENAI_API_KEY`
+   *         serves only the built-in `openai` provider. The Base URL is first
+   *         validated with {@link assertSafeProviderUrl}; an unsafe URL is NOT
+   *         written (the credential is skipped, codex launches unauthenticated),
+   *         never fetched/targeted.
+   *     When no credential is configured codex still launches (unauthenticated)
+   *     but the trust config is written regardless.
    * Each payload is base64-decoded in-container to avoid shell/JSON
    * double-escaping of multi-line content, and written `chmod 600` under the
    * `gem`-owned `~/.codex`. A non-zero exit IS a real provision failure — fail
@@ -817,28 +834,64 @@ export class AioSandboxProvider
    */
   private async injectCodexAuth(baseUrl: string, taskId: string): Promise<void> {
     const dir = '/home/gem/.codex';
-    // Pre-trust the clone dir so codex 0.131's directory-trust prompt never
-    // blocks. Project-scoped to the exact dir codex runs in (`-C <WORKSPACE_DIR>`).
-    const configToml =
+    // The always-written workspace trust TABLE (`[projects."<ws>"]`). In TOML,
+    // top-level (bare) keys MUST precede ANY table header, so the compatible
+    // branch builds its top-level `model`/`model_provider` as a PREFIX before this
+    // table — never appended after it, which would (wrongly) nest them under
+    // `[projects."<ws>"]`. The provider TABLE then follows after.
+    const trustTable =
       `[projects."${AioSandboxProvider.WORKSPACE_DIR}"]\ntrust_level = "trusted"\n`;
-    const configB64 = Buffer.from(configToml, 'utf8').toString('base64');
-    // The base64 alphabet has no single quote, so single-quoting each payload is
-    // safe and stops the shell from touching it. mkdir is idempotent. `rm -f
-    // hooks.json` removes the baked hooks so codex 0.131 does not block on its
-    // "Hooks need review" prompt (see the method doc — the hooks are vestigial).
-    let command =
-      `mkdir -p ${dir} && rm -f ${dir}/hooks.json && printf %s '${configB64}' | base64 -d > ${dir}/config.toml && chmod 600 ${dir}/config.toml`;
+    let topLevel = '';
+    let providerTable = '';
+    // The injected auth.json command, appended only for official material.
+    let authJsonCommand = '';
 
-    const material = await this.codexAuthSource.getCodexAuth();
-    if (material) {
+    const material = await this.codexAuthSource.getCodexAuth(taskId);
+    if (material?.kind === 'compatible') {
+      // SSRF guard (design D4): an operator-supplied Base URL that resolves to a
+      // loopback/private/link-local/metadata host (or a non-http(s) scheme) is
+      // NEVER written into the codex config — treat the credential as unusable for
+      // injection (codex launches unauthenticated) rather than pointing codex at
+      // an internal target. assertSafeProviderUrl performs only a DNS lookup, no
+      // outbound fetch to the provider.
+      let safe = true;
+      try {
+        await assertSafeProviderUrl(material.baseUrl);
+      } catch (err) {
+        safe = false;
+        this.logger.warn(
+          `compatible provider Base URL for task ${taskId} failed host-safety validation (${
+            err instanceof Error ? err.message : String(err)
+          }); skipping provider injection (codex will be unauthenticated)`,
+        );
+      }
+      if (safe) {
+        ({ topLevel, providerTable } =
+          AioSandboxProvider.compatibleProviderToml(material));
+      }
+    } else if (material?.kind === 'official') {
       const authB64 = Buffer.from(material.authJson, 'utf8').toString('base64');
-      command +=
+      authJsonCommand =
         ` && printf %s '${authB64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`;
     } else {
       this.logger.warn(
         `no codex auth configured (CodexAuthSource returned null); codex in task ${taskId} will be unauthenticated (workspace trust still written)`,
       );
     }
+
+    // Assemble in TOML order: top-level bare keys (compatible only) FIRST, then
+    // the workspace-trust table, then the provider table — so `model`/
+    // `model_provider` are genuinely top-level, not nested under a table.
+    const configToml = topLevel + trustTable + providerTable;
+    const configB64 = Buffer.from(configToml, 'utf8').toString('base64');
+    // The base64 alphabet has no single quote, so single-quoting each payload is
+    // safe and stops the shell from touching it. mkdir is idempotent. `rm -f
+    // hooks.json` removes the baked hooks so codex 0.131 does not block on its
+    // "Hooks need review" prompt (see the method doc — the hooks are vestigial).
+    const command =
+      `mkdir -p ${dir} && rm -f ${dir}/hooks.json && printf %s '${configB64}' | base64 -d > ${dir}/config.toml && chmod 600 ${dir}/config.toml` +
+      authJsonCommand;
+
     const res = await fetch(`${baseUrl}/v1/shell/exec`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -859,9 +912,44 @@ export class AioSandboxProvider
           (scrubbed ? ` — ${scrubbed.trim()}` : ''),
       );
     }
-    this.logger.debug(
-      `wrote codex setup (config.toml${material ? ' + auth.json' : ''}) into sandbox for task ${taskId}`,
-    );
+    const wrote =
+      material?.kind === 'official'
+        ? 'config.toml + auth.json'
+        : material?.kind === 'compatible'
+          ? 'config.toml + model_providers.cap'
+          : 'config.toml';
+    this.logger.debug(`wrote codex setup (${wrote}) into sandbox for task ${taskId}`);
+  }
+
+  /**
+   * Render the compatible-provider config in TWO parts (so the caller can place
+   * each at the right TOML position): the top-level bare keys (`model`,
+   * `model_provider`) that MUST precede every table header, and the
+   * `[model_providers.cap]` TABLE itself (wire-compatible-provider-execution D1,
+   * verified against the codex 0.131 config reference, task 3.1):
+   *   - `wire_api = "responses"` — the only value codex 0.131 supports (it does
+   *     NOT speak Chat Completions; the provider must be Responses-API compatible).
+   *   - the decrypted key is delivered INLINE via `experimental_bearer_token`
+   *     (not `auth.json`, which serves only the built-in `openai` provider).
+   * Values are emitted as basic TOML strings; provider-supplied text is escaped
+   * for the TOML string context (`\` and `"`), and the whole config is base64-
+   * decoded in-container so the shell never sees the key.
+   */
+  private static compatibleProviderToml(material: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+  }): { topLevel: string; providerTable: string } {
+    const esc = (v: string): string => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return {
+      topLevel: `model = "${esc(material.model)}"\nmodel_provider = "cap"\n`,
+      providerTable:
+        `[model_providers.cap]\n` +
+        `name = "Compatible provider"\n` +
+        `base_url = "${esc(material.baseUrl)}"\n` +
+        `wire_api = "responses"\n` +
+        `experimental_bearer_token = "${esc(material.apiKey)}"\n`,
+    };
   }
 
   /**
