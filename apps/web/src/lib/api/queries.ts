@@ -351,14 +351,20 @@ export function taskContextQuery(id: string) {
  * `real.getUpdateStatus` (Zod `.parse` against the `@cap/contracts`
  * `UpdateStatusSchema`) when capable and the typed `mock.mockUpdateStatus`
  * otherwise — so the banner renders on the mock until the live endpoint is
- * verified, then ONE flag flip repoints it. The api already caches the upstream
- * GitHub fetch (one per TTL across all browsers), so this is a plain read with
- * no client-side poll.
+ * verified, then ONE flag flip repoints it. The api caches the upstream GitHub
+ * fetch (one per short TTL across all browsers); the client polls it on a modest
+ * interval + on window focus so a newly-published Release surfaces in the banner
+ * without a reload (responsive-update-check D2).
  */
 export function updateStatusQuery() {
   return queryOptions<UpdateStatus>({
     queryKey: queryKeys.updateStatus,
     queryFn: () =>
       isCapable("updateCheck") ? real.getUpdateStatus() : mock.mockUpdateStatus(),
+    // responsive-update-check D2 — poll so a newly-published Release surfaces in
+    // the banner within minutes WITHOUT a reload (aligned with the api's short
+    // cache TTL), and re-check when the operator returns to the tab.
+    refetchInterval: 5 * 60 * 1000,
+    refetchOnWindowFocus: true,
   });
 }
