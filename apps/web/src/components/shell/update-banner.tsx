@@ -212,6 +212,34 @@ function getDismissedServerSnapshot(): string | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// In-flight upgrade target (sessionStorage) — so a page refresh MID-UPGRADE
+// resumes the version poll + "updating…" state instead of dropping it. Per-tab
+// (sessionStorage) so it auto-clears when the tab closes and never goes stale
+// across sessions; cleared on completion/timeout.
+// ---------------------------------------------------------------------------
+
+const UPGRADE_TARGET_KEY = "cap-self-update-target";
+
+function readUpgradeTarget(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage.getItem(UPGRADE_TARGET_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeUpgradeTarget(target: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (target) window.sessionStorage.setItem(UPGRADE_TARGET_KEY, target);
+    else window.sessionStorage.removeItem(UPGRADE_TARGET_KEY);
+  } catch {
+    /* storage unavailable — degrade to non-resumable polling */
+  }
+}
+
 /** Persist the dismissed version and notify subscribers (client-only write). */
 function setDismissedVersion(version: string): void {
   dismissCache = version;
@@ -267,16 +295,32 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
   const upgrade = useMutation(selfUpdateMutation(queryClient));
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [upgradeDone, setUpgradeDone] = React.useState(false);
-
-  // After the ack the api recreates itself (going down, then back up on the new
-  // version). Poll the PUBLIC `/version` until it reports the target, then surface a
-  // "done" state and reload the page so the (possibly new) console bundle + the now-
-  // cleared banner load. The poll tolerates the api being unreachable mid-recreate
-  // (caught → keep polling) and gives up after a bound so it never spins forever.
-  // Hooks run BEFORE the `!view` early return below to satisfy rules-of-hooks.
-  const target = upgrade.data?.target ?? null;
+  // The persisted in-flight upgrade target (sessionStorage), so a page refresh
+  // MID-UPGRADE resumes the poll + "updating…" state. Hydrated in an effect (not
+  // during render) to stay SSR-safe, like the dismissed-version store above.
+  const [persistedTarget, setPersistedTarget] = React.useState<string | null>(null);
   React.useEffect(() => {
-    if (!upgrade.isSuccess || !target) return;
+    setPersistedTarget(readUpgradeTarget());
+  }, []);
+  // On a successful ack, persist the target so a refresh can resume the poll.
+  React.useEffect(() => {
+    const acked = upgrade.isSuccess ? (upgrade.data?.target ?? null) : null;
+    if (acked) {
+      writeUpgradeTarget(acked);
+      setPersistedTarget(acked);
+    }
+  }, [upgrade.isSuccess, upgrade.data?.target]);
+
+  // The active upgrade target: this session's ack OR a persisted in-flight upgrade
+  // (resumed after a refresh). After the ack the api recreates itself (down, then up
+  // on the new version); poll the PUBLIC `/version` until it reports the target, then
+  // surface a "done" state and reload so the (possibly new) console bundle + cleared
+  // banner load. The poll tolerates the api being unreachable mid-recreate (caught →
+  // keep polling), CLEARS the persisted marker on completion/timeout, and is bounded
+  // so it never spins forever. Hooks run BEFORE the `!view` early return below.
+  const target = upgrade.data?.target ?? persistedTarget;
+  React.useEffect(() => {
+    if (!target) return;
     let cancelled = false;
     const startedAt = Date.now();
     const TIMEOUT_MS = 5 * 60_000;
@@ -288,6 +332,7 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
         if (res.ok) {
           const body = (await res.json()) as { version?: string };
           if (body.version && sameTag(body.version, target)) {
+            writeUpgradeTarget(null); // clear BEFORE reload so it never recurs
             if (!cancelled) {
               setUpgradeDone(true);
               setTimeout(() => window.location.reload(), 1500);
@@ -300,6 +345,9 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
       }
       if (!cancelled && Date.now() - startedAt < TIMEOUT_MS) {
         timer = setTimeout(() => void tick(), 3000);
+      } else if (!cancelled) {
+        // bounded give-up: clear the marker so a later mount doesn't poll forever.
+        writeUpgradeTarget(null);
       }
     };
     // small initial delay so the detached updater has begun the recreate
@@ -308,20 +356,26 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [upgrade.isSuccess, target]);
+  }, [target]);
 
   const view = selectBannerView(status, dismissedVersion);
-  const showUpgrade = selectUpgradeAction(view, {
-    selfUpdateEnabled: isCapable("selfUpdate"),
-    isAdmin: isAdminSession(session),
-  });
-  if (!view) return null;
+  // "updating" covers this session's mutation AND a resumed (persisted) upgrade, so a
+  // refresh mid-upgrade still shows the state and keeps polling until the new version.
+  const updating =
+    !upgradeDone &&
+    (upgrade.isPending || upgrade.isSuccess || persistedTarget !== null);
+  const showUpgrade =
+    !updating &&
+    !upgradeDone &&
+    selectUpgradeAction(view, {
+      selfUpdateEnabled: isCapable("selfUpdate"),
+      isAdmin: isAdminSession(session),
+    });
+  // Render when there's an update to show OR we're mid-upgrade (even if
+  // /update-status is briefly unavailable while the api recreates → view is null).
+  if (!view && !updating && !upgradeDone) return null;
 
-  const label = view.releaseName ?? view.version;
-  // The detached updater is launched on a successful ack; once that happens the
-  // api is going down to recreate itself, so the strip shows "updating…
-  // reconnecting" until the WS auto-reconnect brings the (new) api back.
-  const updating = upgrade.isPending || upgrade.isSuccess;
+  const label = view ? (view.releaseName ?? view.version) : null;
 
   function confirmUpgrade() {
     if (!view) return;
@@ -342,18 +396,32 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
     >
       <ArrowUpCircle className="size-4 shrink-0 text-primary" aria-hidden="true" />
       <span className="min-w-0 flex-1">
-        新版本 <strong className="font-semibold">{label}</strong> 可用
-        {view.releaseUrl ? (
+        {updating || upgradeDone ? (
           <>
-            {" — "}
-            <a
-              href={view.releaseUrl}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="font-medium text-primary underline-offset-4 hover:underline"
-            >
-              查看更新内容
-            </a>
+            正在应用更新
+            {target ? (
+              <>
+                {" 到 "}
+                <strong className="font-semibold">{target}</strong>
+              </>
+            ) : null}
+          </>
+        ) : view ? (
+          <>
+            新版本 <strong className="font-semibold">{label}</strong> 可用
+            {view.releaseUrl ? (
+              <>
+                {" — "}
+                <a
+                  href={view.releaseUrl}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="font-medium text-primary underline-offset-4 hover:underline"
+                >
+                  查看更新内容
+                </a>
+              </>
+            ) : null}
           </>
         ) : null}
       </span>
@@ -366,7 +434,7 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
           className="flex shrink-0 items-center gap-1.5 text-xs font-medium text-primary"
         >
           <ArrowUpCircle className="size-3.5" aria-hidden="true" />
-          已更新到 {target ?? view.version},正在刷新…
+          已更新到 {target ?? view?.version},正在刷新…
         </span>
       ) : updating ? (
         // After a successful ack the api is recreating itself; surface the
@@ -388,11 +456,11 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
             data-update-upgrade=""
             onClick={() => setConfirmOpen(true)}
           >
-            升级到 {view.version}
+            升级到 {view?.version}
           </Button>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>确认升级到 {view.version}？</DialogTitle>
+              <DialogTitle>确认升级到 {view?.version}？</DialogTitle>
               <DialogDescription>
                 此操作以宿主机 root 权限运行容器编排。
               </DialogDescription>
@@ -400,7 +468,7 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
             <DialogBody className="text-sm text-muted-foreground">
               <p>
                 升级将拉取目标版本的镜像并就地重建服务进程。能点击此按钮的人，等同于能在宿主机上以
-                root 身份运行命令——请确认你信任此次升级目标（{view.version}）。
+                root 身份运行命令——请确认你信任此次升级目标（{view?.version}）。
               </p>
               <p className="mt-2">
                 进行中的任务会被保留并在新进程上重新接管，操作台将通过现有连接自动重连。
@@ -429,16 +497,17 @@ export function UpdateBanner({ className }: UpdateBannerProps) {
         </Dialog>
       ) : null}
 
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        aria-label="忽略此版本提示"
-        disabled={updating}
-        onClick={() => setDismissedVersion(view.version)}
-      >
-        <X aria-hidden="true" />
-      </Button>
+      {view && !updating && !upgradeDone ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label="忽略此版本提示"
+          onClick={() => setDismissedVersion(view.version)}
+        >
+          <X aria-hidden="true" />
+        </Button>
+      ) : null}
     </div>
   );
 }
