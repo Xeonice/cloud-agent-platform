@@ -19,6 +19,17 @@ published prebuilt images you can pull them instead — see
 [Optional: run prebuilt images](#optional-run-prebuilt-images-instead-of-building-from-source).
 In-app upgrades are a later phase you do not need to self-host today.
 
+> **⚡ Fast path — run prebuilt images, NO `git clone` (amd64 host).** Once a
+> Release exists, you don't need the source at all: download
+> `docker-compose.prod.yml` + `docker-compose.prod.env.example` from the
+> [Releases page](https://github.com/Xeonice/cloud-agent-platform/releases),
+> `cp docker-compose.prod.env.example .env`, fill it (Steps 1–5 below explain the
+> values), then `docker compose -f docker-compose.prod.yml pull && docker compose
+> -f docker-compose.prod.yml up -d` (add `--profile web` for the in-compose
+> console). This SOURCE-FREE run package is the build/run split — build stays on
+> the build platform, run is this one file. Details:
+> [Run from prebuilt images (no source)](#or-source-free-run-package-no-clone).
+
 ## What the stack brings up
 
 Enable the in-compose console with the `web` profile (`COMPOSE_PROFILES=web`);
@@ -296,6 +307,37 @@ COMPOSE_PROFILES=web \
 > See [`deploy/DEPLOY.md`](../deploy/DEPLOY.md) for the operator-gated activation
 > (making the repo + packages public, cutting the first Release, and migrating an
 > existing build-on-push deploy to a pinned Release).
+
+### Or: source-free run package (no clone)
+
+The override above still needs the **source tree** (it layers on `docker-compose.yml`),
+and single-compose-file platforms (e.g. Dokploy) cannot layer `-f a -f b`. For a clean
+**build/run split** — run with NO `git clone` — use the self-contained
+**`docker-compose.prod.yml`**. It is attached to every Release alongside
+`docker-compose.prod.env.example`, has NO `build:` blocks and NO source-tree
+bind-mounts, and runs the pinned `ghcr.io/xeonice/cap-*:${CAP_VERSION}` set:
+
+```bash
+# Download the two files from the Releases page (no clone), then:
+cp docker-compose.prod.env.example .env     # set CAP_VERSION + OAuth/allowlist/secrets/domains (Steps 1–5)
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d            # add: --profile web  for the in-compose console
+```
+
+- **Requires an amd64 / x86_64 host** — the published images are amd64-only (the
+  per-task AIO sandbox base is amd64-only). On arm64 (e.g. Apple Silicon) the pull
+  errors with "no matching manifest for linux/arm64"; use an x86_64 host.
+- **Core run unit only.** It runs api + the per-task sandbox image + Postgres
+  (+ optional `web` profile). It does NOT bundle a reverse proxy or the
+  observability stack (their configs are source-coupled) — front the api (`:8080`)
+  with your own TLS/proxy (Cloudflare Tunnel / Caddy / Traefik / nginx), and run
+  observability from the full source compose if you want it.
+- **Single-file platforms (Dokploy):** point the app's compose file at
+  `docker-compose.prod.yml` and set the env (incl. `CAP_VERSION`) in its
+  Environment; updating = bump `CAP_VERSION` and redeploy.
+- **`web` caveat:** the prebuilt `cap-web` bakes `VITE_*` at build (defaults to
+  localhost), so the in-compose console is only correct for a same-host trial; for
+  a real domain serve the console elsewhere (e.g. Vercel) or rebuild `cap-web`.
 
 ## Optional: in-app one-click self-update (`SELF_UPDATE_ENABLED`, default OFF)
 
