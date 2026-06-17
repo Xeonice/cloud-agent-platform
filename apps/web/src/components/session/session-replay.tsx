@@ -9,7 +9,7 @@
  * honest faces renders: the transcript, an empty state, or an expired state.
  *
  * Layout mirrors `design-baseline/history-replay-preview.html`: a two-tab head
- * (对话记录 primary / 终端回放 secondary), a review sidebar (search + five filter
+ * (对话记录 primary / 终端记录 secondary), a review sidebar (search + five filter
  * presets + an event tree), and the conversation pane with the three turn
  * treatments (operator bubble, commentary muted-italic, final-answer green-tinted,
  * tool-call card with token count).
@@ -24,7 +24,7 @@ import type {
 } from "@cap/contracts";
 import { sessionHistoryQuery } from "@/lib/api/queries";
 import { cn } from "@/utils";
-import { SessionCastPlayer } from "./session-cast-player";
+import { SessionCastLog } from "./session-cast-log";
 
 /** The five review filter presets (borrowed from codex-transcript-viewer). */
 const FILTERS = ["默认", "无工具", "用户", "答案", "全部"] as const;
@@ -162,8 +162,8 @@ function AvailableReplay({
           </div>
         </div>
       ) : (
-        // session-terminal-replay — the read-only asciicast timing player.
-        <SessionCastPlayer taskId={taskId} />
+        // static-terminal-log — the read-only static, scrollable terminal log.
+        <SessionCastLog taskId={taskId} />
       )}
     </ReplayShell>
   );
@@ -193,7 +193,7 @@ function ReplayShell({
             </SegButton>
             {showTermTab && (
               <SegButton on={tab === "term"} onClick={() => onTab?.("term")}>
-                终端回放
+                终端记录
               </SegButton>
             )}
           </div>
