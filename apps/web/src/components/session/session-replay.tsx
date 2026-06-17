@@ -24,6 +24,7 @@ import type {
 } from "@cap/contracts";
 import { sessionHistoryQuery } from "@/lib/api/queries";
 import { cn } from "@/utils";
+import { SessionCastPlayer } from "./session-cast-player";
 
 /** The five review filter presets (borrowed from codex-transcript-viewer). */
 const FILTERS = ["默认", "无工具", "用户", "答案", "全部"] as const;
@@ -78,15 +79,21 @@ export function SessionReplay({
     );
   }
   return (
-    <AvailableReplay history={data} presentationState={presentationState} />
+    <AvailableReplay
+      taskId={taskId}
+      history={data}
+      presentationState={presentationState}
+    />
   );
 }
 
 /** The available transcript: tabs + review sidebar + conversation pane. */
 function AvailableReplay({
+  taskId,
   history,
   presentationState,
 }: {
+  taskId: string;
   history: Extract<SessionHistory, { status: "available" }>;
   presentationState: ReplayPresentationState;
 }): React.ReactElement {
@@ -155,19 +162,8 @@ function AvailableReplay({
           </div>
         </div>
       ) : (
-        // session.log cold-replay is a deferred follow-up; surface an honest
-        // placeholder rather than a fabricated terminal frame.
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-12 py-12 text-center text-muted-foreground">
-          <div className="grid h-11 w-11 place-items-center rounded-[11px] bg-secondary text-[22px] text-muted-2">
-            ▮
-          </div>
-          <div className="text-sm font-semibold text-foreground">
-            终端回放待接入
-          </div>
-          <div className="max-w-[380px] text-[12.5px] leading-[1.5]">
-            原始终端画面（session.log 冷回放）将在后续接入。当前请使用「对话记录」回看本次会话的完整上下文。
-          </div>
-        </div>
+        // session-terminal-replay — the read-only asciicast timing player.
+        <SessionCastPlayer taskId={taskId} />
       )}
     </ReplayShell>
   );

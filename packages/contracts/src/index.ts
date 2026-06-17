@@ -56,3 +56,6 @@ export * from './version.js';
 
 // Update availability: operator-guarded GET /update-status shape + version compare
 export * from './update-status.js';
+
+// asciicast v2 terminal-replay recording shapes (header + event + parse helpers)
+export * from './asciicast.js';

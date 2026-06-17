@@ -57,7 +57,7 @@ import {
   type SetDefaultRepoRequest,
   type DefaultRepoResponse,
 } from "@cap/contracts";
-import { RepoResponseSchema } from "@cap/contracts";
+import { RepoResponseSchema, castEndpointPath } from "@cap/contracts";
 import { apiBaseUrl, operatorToken } from "../config";
 import { getIncomingCookieHeader } from "../server-cookie";
 
@@ -78,6 +78,28 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
   // D12: attach the operator bearer token to every REST call (legacy path).
   if (token) headers["Authorization"] = `Bearer ${token}`;
   return headers;
+}
+
+/**
+ * Fetch a finished task's `session.cast` (asciicast v2) as RAW TEXT
+ * (session-terminal-replay). The endpoint serves `text/plain`, and an empty body
+ * is the honest "nothing to replay" signal — so this returns the text verbatim
+ * (empty string included). A 404 (unknown task) also degrades to "" so the
+ * replay tab shows the empty face rather than throwing.
+ */
+export async function getSessionCast(id: string): Promise<string> {
+  const headers = authHeaders();
+  const incomingCookie = await getIncomingCookieHeader();
+  if (incomingCookie) headers["Cookie"] = incomingCookie;
+  const res = await fetch(`${apiBaseUrl()}/${castEndpointPath(id)}`, {
+    credentials: "include",
+    headers,
+  });
+  if (!res.ok) {
+    if (res.status === 404) return "";
+    throw new ApiError(res.status, res.statusText);
+  }
+  return res.text();
 }
 
 async function request(path: string, init?: RequestInit): Promise<unknown> {
