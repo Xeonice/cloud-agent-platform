@@ -44,6 +44,10 @@ import {
   UpdateStatusService,
   RELEASES_REPO_ENV,
   DEFAULT_RELEASES_REPO,
+  resolveCacheTtlMs,
+  DEFAULT_CACHE_TTL_MS,
+  MIN_CACHE_TTL_MS,
+  CACHE_TTL_ENV_VAR,
   type LatestRelease,
   type ReleaseFetcher,
 } from './update-status.service';
@@ -272,6 +276,53 @@ test('the checked repo defaults to the cap repo and honours GITHUB_RELEASES_REPO
     },
   }).getStatus();
   assert.equal(seen, 'me/my-fork', 'honours the configured repo');
+});
+
+// ---------------------------------------------------------------------------
+// Near-live cache TTL (responsive-update-check D1)
+// ---------------------------------------------------------------------------
+
+test('cache TTL: explicit option wins and bypasses the floor (tests need sub-second TTLs)', () => {
+  assert.equal(resolveCacheTtlMs(500, {}), 500, 'explicit value used as-is, no floor');
+});
+
+test('cache TTL: UPDATE_CHECK_CACHE_TTL_MS env is honoured', () => {
+  assert.equal(
+    resolveCacheTtlMs(undefined, { [CACHE_TTL_ENV_VAR]: '120000' }),
+    120000,
+    'env ms value drives the TTL',
+  );
+});
+
+test('cache TTL: a below-floor env value is clamped to the 60s floor', () => {
+  assert.equal(
+    resolveCacheTtlMs(undefined, { [CACHE_TTL_ENV_VAR]: '1000' }),
+    MIN_CACHE_TTL_MS,
+    'a misconfigured low value cannot exceed GitHub anonymous rate limit',
+  );
+});
+
+test('cache TTL: unset/invalid env falls back to the short (minutes-scale) default', () => {
+  assert.equal(resolveCacheTtlMs(undefined, {}), DEFAULT_CACHE_TTL_MS);
+  assert.equal(resolveCacheTtlMs(undefined, { [CACHE_TTL_ENV_VAR]: 'abc' }), DEFAULT_CACHE_TTL_MS);
+  assert.ok(DEFAULT_CACHE_TTL_MS <= 10 * 60 * 1000, 'default is minutes-scale, not hours');
+});
+
+test('the env-configured TTL drives the service cache (refresh after it elapses)', async () => {
+  const clock = fixedClock();
+  const { fetcher, calls } = countingFetcher(RELEASE);
+  const svc = new UpdateStatusService({
+    fetcher,
+    now: clock.now,
+    env: { [VERSION_ENV_VARS.version]: 'v1.1.0', [CACHE_TTL_ENV_VAR]: '120000' },
+  });
+  await svc.getStatus();
+  clock.advance(119_000); // within the 120s env TTL
+  await svc.getStatus();
+  assert.equal(calls(), 1, 'served from cache within the env TTL');
+  clock.advance(2_000); // past 120s
+  await svc.getStatus();
+  assert.equal(calls(), 2, 'refreshes once the env TTL elapses');
 });
 
 // ---------------------------------------------------------------------------

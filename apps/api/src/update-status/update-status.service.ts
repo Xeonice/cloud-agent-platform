@@ -18,11 +18,42 @@ export const DEFAULT_RELEASES_REPO = 'Xeonice/cloud-agent-platform';
 export const RELEASES_REPO_ENV = 'GITHUB_RELEASES_REPO';
 
 /**
- * Default in-process cache TTL for the upstream GitHub Release lookup (~6h,
- * design D1). One fetch per TTL is shared across all browsers/requests so GitHub
- * rate limits are respected. Overridable for tests via {@link UpdateStatusOptions}.
+ * Default in-process cache TTL for the upstream GitHub Release lookup (5 min,
+ * responsive-update-check D1). One fetch per TTL is shared across all browsers/
+ * requests so GitHub's anonymous rate limit (60/hr) is respected — 5 min ⇒
+ * ≤12 fetches/hr. Overridable via {@link CACHE_TTL_ENV_VAR} (clamped to
+ * {@link MIN_CACHE_TTL_MS}), or for tests via {@link UpdateStatusOptions.cacheTtlMs}.
  */
-export const DEFAULT_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+export const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Floor for the env-configured cache TTL (60s). Keeps the shared upstream fetch
+ * at ≤60/hr — GitHub's anonymous rate limit — so a misconfigured low value can
+ * never exceed it. The test-only {@link UpdateStatusOptions.cacheTtlMs} bypasses
+ * this floor so tests can drive sub-second TTLs.
+ */
+export const MIN_CACHE_TTL_MS = 60 * 1000;
+
+/** Env var (ms) overriding {@link DEFAULT_CACHE_TTL_MS}, clamped to the floor. */
+export const CACHE_TTL_ENV_VAR = 'UPDATE_CHECK_CACHE_TTL_MS';
+
+/**
+ * Resolve the effective cache TTL: an explicit option (tests; no floor) wins;
+ * else the {@link CACHE_TTL_ENV_VAR} env value clamped to {@link MIN_CACHE_TTL_MS};
+ * else {@link DEFAULT_CACHE_TTL_MS}. An unset/invalid env falls back to the default.
+ */
+export function resolveCacheTtlMs(
+  explicit: number | undefined,
+  env: Record<string, string | undefined>,
+): number {
+  if (typeof explicit === 'number' && explicit > 0) return explicit;
+  const raw = env[CACHE_TTL_ENV_VAR];
+  const parsed = raw != null ? Number(raw) : NaN;
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return Math.max(parsed, MIN_CACHE_TTL_MS);
+  }
+  return DEFAULT_CACHE_TTL_MS;
+}
 
 /**
  * The single GitHub Release fact the comparison needs: the tag plus the
@@ -94,10 +125,12 @@ export class UpdateStatusService {
   private inFlight: Promise<CacheEntry> | null = null;
 
   constructor(options: UpdateStatusOptions = {}) {
-    this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     this.now = options.now ?? Date.now;
     this.fetcher = options.fetcher ?? fetchLatestGithubRelease;
     this.env = options.env ?? process.env;
+    // responsive-update-check D1 — explicit option (tests) wins; else the env
+    // value clamped to the floor; else the short default. Resolved after `env`.
+    this.cacheTtlMs = resolveCacheTtlMs(options.cacheTtlMs, this.env);
   }
 
   /** The configured `owner/repo`, defaulting to the cap repo (design D3). */
