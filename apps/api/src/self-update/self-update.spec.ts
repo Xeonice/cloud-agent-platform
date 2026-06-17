@@ -35,6 +35,7 @@ import {
   COMPOSE_FILES,
   DEFAULT_COMPOSE_PROJECT_DIR,
   isSemverTag,
+  updaterBindDirs,
   type UpdatePlan,
   type UpdaterLauncher,
   type UpdateTopology,
@@ -269,6 +270,22 @@ test('labels-absent FALLBACK: resolver returns null → documented literals (sou
   assert.deepEqual(plan.services, [...CAP_SERVICES], 'fallback recreates the documented cap services');
   assert.equal(plan.workingDir, DEFAULT_COMPOSE_PROJECT_DIR, 'fallback uses the documented project dir');
   assert.ok(!plan.script.includes('-p '), 'no -p flag when there is no project');
+});
+
+test('updater binds the working dir AND its parent so a sibling env_file (../files/api.env) resolves', () => {
+  // Regression: binding ONLY the working dir made the detached updater's compose run
+  // silently skip `env_file: ../files/api.env` (required:false), dropping the api's
+  // secrets (GITHUB_CLIENT_ID/SESSION_SECRET/…) on recreate → broken login.
+  const workingDir = '/etc/dokploy/compose/cloud-agent-platform/resident';
+  const dirs = updaterBindDirs(workingDir, [`${workingDir}/docker-compose.prod.yml`]);
+  assert.ok(dirs.includes(workingDir), 'binds the working dir (its .env)');
+  const parent = '/etc/dokploy/compose/cloud-agent-platform';
+  assert.ok(dirs.includes(parent), 'binds the working-dir PARENT so a sibling env_file dir is visible');
+  // The resident env_file `../files/api.env` resolves under the bound parent.
+  assert.ok(
+    `${parent}/files/api.env`.startsWith(`${parent}/`),
+    'sanity: ../files/api.env lives under the bound parent dir',
+  );
 });
 
 test('no cap service resolvable → refused (no-cap-service), no launch', async () => {

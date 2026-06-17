@@ -441,16 +441,9 @@ export class DockerUpdaterLauncher implements UpdaterLauncher {
     // .env at compose render time; the script also persists it into .env).
     const containerEnv = [`${CAP_VERSION_ENV}=${plan.target}`];
 
-    // Bind the working dir (where the .env + usually the compose files live) plus the
-    // dir of any compose file located outside it, so `-f <abs path>` resolves.
-    const bindDirs = new Set<string>([plan.workingDir]);
-    for (const f of plan.composeFiles) {
-      const dir = f.slice(0, Math.max(0, f.lastIndexOf('/'))) || '/';
-      if (f.startsWith('/')) bindDirs.add(dir);
-    }
     const binds = [
       '/var/run/docker.sock:/var/run/docker.sock',
-      ...[...bindDirs].map((d) => `${d}:${d}`),
+      ...updaterBindDirs(plan.workingDir, plan.composeFiles).map((d) => `${d}:${d}`),
     ];
 
     const container = await this.docker.createContainer({
@@ -471,6 +464,39 @@ export class DockerUpdaterLauncher implements UpdaterLauncher {
     // recreates the api container.
     await container.start();
   }
+}
+
+/** The parent directory of an absolute path (`/a/b/c` → `/a/b`; `/a` → `/`). */
+function parentDir(p: string): string {
+  const trimmed = p.replace(/\/+$/, '');
+  const i = trimmed.lastIndexOf('/');
+  return i > 0 ? trimmed.slice(0, i) : '/';
+}
+
+/**
+ * The host directories the detached updater must bind-mount so `docker compose`
+ * resolves everything it reads. CRITICAL: it includes the working dir's PARENT,
+ * because a compose `env_file:` (or other relative path) can point OUTSIDE the
+ * working dir — the resident layout uses `env_file: ../files/api.env`, i.e.
+ * `<project>/files/api.env`, a SIBLING of `<project>/resident/`. Binding only the
+ * working dir made compose silently skip that `required:false` env_file inside the
+ * updater container, dropping the api's secrets (GITHUB_CLIENT_ID/SESSION_SECRET/…)
+ * on recreate. Binding the parent covers `../<sibling>/…`. Also binds each compose
+ * file's own dir. (Deeply-relative env_files like `../../x` would need the working
+ * dir set higher / an explicit bind; the parent covers the standard project layout.)
+ */
+export function updaterBindDirs(
+  workingDir: string,
+  composeFiles: readonly string[],
+): string[] {
+  const dirs = new Set<string>();
+  const add = (p: string): void => {
+    if (p && p.startsWith('/')) dirs.add(p.replace(/\/+$/, '') || '/');
+  };
+  add(workingDir);
+  add(parentDir(workingDir)); // so `env_file: ../files/api.env` (a sibling dir) resolves
+  for (const f of composeFiles) add(parentDir(f));
+  return [...dirs];
 }
 
 /** A trimmed non-empty string, or `null` for undefined/blank. */
