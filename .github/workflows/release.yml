@@ -126,3 +126,23 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "/user/packages/container/${{ matrix.name }}/visibility" \
             -f visibility=public
+
+  # Attach the SOURCE-FREE run package to the Release so anyone can run cap from
+  # prebuilt images WITHOUT cloning: download these two files, fill .env, and
+  # `docker compose -f docker-compose.prod.yml up -d` (release-and-versioning,
+  # decision ④/⑤ — build/run split). Only on a real Release (not workflow_dispatch).
+  attach-run-assets:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Attach source-free run package to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            docker-compose.prod.yml docker-compose.prod.env.example \
+            --clobber --repo "${{ github.repository }}"

@@ -1,25 +1,27 @@
-# SELF-CONTAINED production compose — runs the PREBUILT, version-pinned GHCR
-# release images instead of building from source (OSS self-update epic,
-# decision ④/⑤: the maintainer's own prod consumes the same images it ships).
+# SELF-CONTAINED, SOURCE-FREE RUN compose — the dedicated "run" unit, split from
+# build (OSS self-update epic, decision ④/⑤).
 #
-# WHY a separate self-contained file (not the docker-compose.images.yml OVERLAY):
-# single-file deploy platforms (e.g. Dokploy) cannot layer `-f base -f images`,
-# so this file is COMPLETE on its own — point the platform's one compose path at
-# it. It carries NO `build:` blocks, so `up -d` can only ever PULL + run the
-# pinned images, never compile.
+# BUILD lives elsewhere: docker-compose.yml + .github/workflows/release.yml build
+# and push the GHCR images on the build platform. This file ONLY RUNS the prebuilt,
+# version-pinned images — it has NO `build:` blocks and NO bind-mounts to the
+# source tree, so a runner needs JUST this file + a `.env` (NO `git clone`):
 #
-# USAGE:
-#   CAP_VERSION=v0.1.0 docker compose -f docker-compose.prod.yml pull
-#   CAP_VERSION=v0.1.0 docker compose -f docker-compose.prod.yml up -d
-# Updating = bump CAP_VERSION to a newer published Release tag and re-pull/up.
-# `${CAP_VERSION}` has NO default ON PURPOSE: an unset value makes compose fail
-# loudly rather than run a stray tag. All three cap images share ONE tag so the
-# stack is always a mutually-compatible matched set (decision ⑤).
+#   1. download docker-compose.prod.yml + docker-compose.prod.env.example from a Release
+#   2. cp docker-compose.prod.env.example .env   # then fill it in
+#   3. docker compose -f docker-compose.prod.yml pull
+#   4. docker compose -f docker-compose.prod.yml up -d
 #
-# KEEP IN SYNC with docker-compose.yml: this mirrors the base stack with the
-# api/web/aio-sandbox services switched from `build:` to `image:` and is
-# otherwise identical (networks, volumes, env, ports, docker.sock, profiles).
-# When you change a service in docker-compose.yml, mirror it here.
+# Updating = bump CAP_VERSION in .env to a newer Release tag and re-pull/up.
+# `${CAP_VERSION:?...}` makes an unset version fail loudly (never a stray tag); all
+# three cap images share ONE tag so the running set is always matched (decision ⑤).
+#
+# SCOPE: this is the CORE run unit — api + the per-task sandbox image + Postgres,
+# plus the optional in-compose web console (`web` profile). The reverse proxy and
+# the observability stack are NOT here on purpose: they bind-mount config from the
+# source tree (nginx.conf, loki/alloy/grafana configs), which would break the
+# source-free promise. Front the api with your own TLS/reverse-proxy (Cloudflare
+# Tunnel, Caddy, Traefik, nginx…); run observability from the full source compose
+# if you want it. See deploy/DEPLOY.md.
 
 x-logging: &default-logging
   driver: json-file
@@ -32,14 +34,17 @@ services:
     image: ghcr.io/xeonice/cap-api:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
     restart: unless-stopped
     logging: *default-logging
-    # DooD: host-root-equivalent docker.sock access (single-user self-host only —
-    # see docker-compose.yml header). root so the root-owned socket is readable.
+    # DooD: host-root-equivalent docker.sock access (single-user self-host only).
+    # root so the root-owned socket is readable.
     user: root
     depends_on:
       postgres:
         condition: service_healthy
+    # Secrets/config come from a `.env` you create NEXT TO this file (source-free:
+    # NOT from the repo tree). `../files/api.env` is also honored for Dokploy's
+    # file-mount layout. Both optional so `docker compose config` parses without them.
     env_file:
-      - path: apps/api/.env
+      - path: .env
         required: false
       - path: ../files/api.env
         required: false
@@ -63,13 +68,12 @@ services:
       - workspaces:/data/workspaces
       - /var/run/docker.sock:/var/run/docker.sock
 
-  # In-compose web console (profile-gated, like the base). NOTE: the published
-  # cap-web image bakes VITE_API_BASE_URL/VITE_WS_URL AT BUILD time; the release
-  # workflow builds it with the defaults (localhost), so the prebuilt image is
-  # only correct for a same-host/localhost console. A maintainer serving the
-  # console on Vercel (or any custom domain) leaves the `web` profile OFF and the
-  # frontend is deployed separately; a self-hoster who wants a custom-domain
-  # in-compose console must rebuild cap-web with their own VITE_* (build-time).
+  # OPTIONAL in-compose web console (`web` profile). CAVEAT: the prebuilt cap-web
+  # image bakes VITE_API_BASE_URL/VITE_WS_URL AT BUILD time, and the release builds
+  # it with the defaults (localhost) — so this prebuilt image is only correct for a
+  # SAME-HOST / localhost console. For a custom domain, serve the console elsewhere
+  # (e.g. Vercel) pointed at your api, or rebuild cap-web with your own VITE_* from
+  # source. (A runtime-config web is future work — see docs/oss-self-update-epic.md.)
   web:
     profiles: ["web"]
     image: ghcr.io/xeonice/cap-web:${CAP_VERSION:?set CAP_VERSION to a published release tag, e.g. v0.1.0}
@@ -81,21 +85,6 @@ services:
       PORT: "3000"
     ports:
       - "${WEB_HOST_PORT:-3000}:3000"
-    networks:
-      - default
-
-  # OPT-IN reverse proxy (Cloudflare -> nginx -> api), `proxy` profile.
-  nginx:
-    image: nginx:1.27-alpine
-    profiles: ["proxy"]
-    restart: unless-stopped
-    logging: *default-logging
-    depends_on:
-      - api
-    ports:
-      - "80:80"
-    volumes:
-      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     networks:
       - default
 
@@ -114,73 +103,16 @@ services:
     restart: unless-stopped
     logging: *default-logging
     environment:
-      POSTGRES_USER: cap
-      POSTGRES_PASSWORD: cap
-      POSTGRES_DB: cap
+      POSTGRES_USER: ${POSTGRES_USER:-cap}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cap}
+      POSTGRES_DB: ${POSTGRES_DB:-cap}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cap -d cap"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cap} -d ${POSTGRES_DB:-cap}"]
       interval: 5s
       timeout: 5s
       retries: 10
-
-  # Observability — OPT-IN via `observability` / `grafana` profiles (as base).
-  loki:
-    image: grafana/loki:3.1.1
-    profiles: ["observability"]
-    restart: unless-stopped
-    logging: *default-logging
-    command: ["-config.file=/etc/loki/config.yaml"]
-    volumes:
-      - ./deploy/observability/loki-config.yaml:/etc/loki/config.yaml:ro
-      - loki-data:/loki
-    networks:
-      - default
-    mem_limit: 256m
-
-  grafana-alloy:
-    image: grafana/alloy:v1.3.1
-    profiles: ["observability"]
-    restart: unless-stopped
-    logging: *default-logging
-    command:
-      - "run"
-      - "/etc/alloy/config.alloy"
-      - "--storage.path=/var/lib/alloy/data"
-    depends_on:
-      - loki
-    volumes:
-      - ./deploy/observability/alloy-config.alloy:/etc/alloy/config.alloy:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - alloy-data:/var/lib/alloy/data
-    networks:
-      - default
-    mem_limit: 128m
-
-  grafana:
-    image: grafana/grafana:11.2.0
-    profiles: ["grafana"]
-    restart: unless-stopped
-    logging: *default-logging
-    depends_on:
-      - loki
-    environment:
-      GRAFANA_PG_USER: ${GRAFANA_PG_USER:-grafana_ro}
-      GRAFANA_PG_PASSWORD: ${GRAFANA_PG_PASSWORD:-}
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
-    volumes:
-      - ./deploy/observability/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./deploy/observability/grafana/dashboards:/etc/grafana/dashboards:ro
-      - grafana-data:/var/lib/grafana
-    ports:
-      - "127.0.0.1:3001:3000"
-    networks:
-      - default
-    mem_limit: 256m
 
 networks:
   cap-net:
@@ -189,6 +121,3 @@ networks:
 volumes:
   workspaces:
   pgdata:
-  loki-data:
-  alloy-data:
-  grafana-data:
