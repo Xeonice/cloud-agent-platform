@@ -50,6 +50,12 @@ export interface TerminalHandle {
   /** Clear the terminal screen and scrollback. */
   clear(): void;
   /**
+   * Scroll the viewport to the very top of the scrollback (the start of the
+   * session). Used by the static cast-log view, which bulk-writes the whole
+   * recording and then lands the reader at the beginning of the history.
+   */
+  scrollToTop(): void;
+  /**
    * Move keyboard focus into the terminal (xterm's public `Terminal.focus()`,
    * which targets its hidden helper textarea). Scoped to THIS instance, so
    * consumers never reach for an unscoped `document.querySelector` on xterm's
@@ -84,6 +90,12 @@ export interface TerminalProps {
   /** OPTIONAL line height (multiplier). Omitted ⇒ xterm's default. */
   lineHeight?: number;
   /**
+   * OPTIONAL scrollback line cap. Omitted ⇒ 10,000 (the live terminal's value).
+   * The static cast-log view passes a larger cap so a long session's full
+   * history is retained in scrollback rather than silently truncated.
+   */
+  scrollback?: number;
+  /**
    * OPTIONAL CSS `font-family` for the terminal canvas. Omitted ⇒ the component
    * default monospace stack (the bare styleguide usage is unchanged). The
    * session page passes the resolved `--font-mono` stack ("JetBrains Mono" …)
@@ -101,6 +113,7 @@ export function Terminal({
   fontSize,
   lineHeight,
   fontFamily,
+  scrollback,
 }: TerminalProps): React.ReactElement {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const termRef = React.useRef<XTerm | null>(null);
@@ -123,10 +136,12 @@ export function Terminal({
   const fontSizeRef = React.useRef(fontSize);
   const lineHeightRef = React.useRef(lineHeight);
   const fontFamilyRef = React.useRef(fontFamily);
+  const scrollbackRef = React.useRef(scrollback);
   themeRef.current = theme;
   fontSizeRef.current = fontSize;
   lineHeightRef.current = lineHeight;
   fontFamilyRef.current = fontFamily;
+  scrollbackRef.current = scrollback;
 
   React.useEffect(() => {
     const container = containerRef.current;
@@ -160,7 +175,7 @@ export function Terminal({
           fontFamilyRef.current ??
           'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
         fontSize: fontSizeRef.current ?? 13,
-        scrollback: 10_000,
+        scrollback: scrollbackRef.current ?? 10_000,
         allowProposedApi: true,
         // Optional appearance props — undefined falls back to xterm's defaults,
         // so the bare (theme-less) usage is unchanged.
@@ -248,6 +263,9 @@ export function Terminal({
         },
         clear() {
           term.clear();
+        },
+        scrollToTop() {
+          term.scrollToTop();
         },
         focus() {
           term.focus();
