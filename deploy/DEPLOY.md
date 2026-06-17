@@ -400,12 +400,20 @@ two files, fill `.env`, run).
 3. Confirm `GET /version` reports the pinned `vX.Y.Z`, and that newly provisioned
    `cap-aio-<taskId>` sandboxes use `ghcr.io/xeonice/cap-aio-sandbox:vX.Y.Z`
    (the api's `AIO_SANDBOX_IMAGE` is set to the matched pinned tag).
-4. **Updating thereafter (the dogfood loop):** cut a newer Release (e.g. `v0.1.1`),
-   bump `CAP_VERSION` (in Dokploy env / your shell), and re-pull + re-up. This is
-   how the maintainer's own prod "updates from the remote release images" — the
-   same release→pull→update flow shipped to downstream self-hosters. (The in-app
-   one-click self-update button, §12, is for plain-compose self-hosters NOT managed
-   by a deploy platform; on Dokploy you update via Dokploy + `CAP_VERSION`.)
+4. **Updating thereafter (the dogfood loop):** you no longer hand-cut Releases.
+   **release-please** (`.github/workflows/release-please.yml`) watches `main`, reads the
+   conventional-commit history, and keeps an open **"chore: release vX.Y.Z" PR** with the
+   machine-computed next version + `CHANGELOG.md`. To ship: **merge that release PR** → it
+   tags `vX.Y.Z` + publishes the GitHub Release → the existing `release.yml` builds/pushes the
+   GHCR set and attaches the run package. Then bump `CAP_VERSION` (Dokploy env / your shell)
+   and re-pull + re-up. (The in-app one-click self-update button, §12, is for plain-compose
+   self-hosters NOT managed by a deploy platform; on Dokploy you update via Dokploy + `CAP_VERSION`.)
+
+   > ⚠️ **release-please MUST publish the Release under a non-`GITHUB_TOKEN` identity** (a
+   > GitHub App token [recommended] or a fine-grained PAT) — a Release created by the built-in
+   > `GITHUB_TOKEN` does NOT trigger `release.yml`, so images would silently never build. The
+   > workflow header documents the one-time App/PAT setup. Releasing stays a deliberate human
+   > action (you merge the PR); ordinary merges only update the PR, never release.
 
 > **This migration is optional and reversible.** Build-from-source (Sections 3–4)
 > keeps working; converging prod onto the pinned-release line is the owner's call.

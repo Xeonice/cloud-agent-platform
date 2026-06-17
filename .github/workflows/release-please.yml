@@ -1,0 +1,58 @@
+# Automated release versioning (automated-release-versioning).
+#
+# release-please watches `main`, reads the conventional-commit history, and maintains an
+# always-open "chore: release vX.Y.Z" PR (machine-computed semver + CHANGELOG.md). Merging
+# that PR — and only that — creates the vX.Y.Z tag + GitHub Release, which the EXISTING
+# release.yml (on: release: published) consumes to build/push the matched GHCR image set.
+# This workflow does NOT build or push images.
+#
+# ⚠️ LOAD-BEARING (design D5): the Release MUST be created by a NON-GITHUB_TOKEN identity, or
+# release.yml will SILENTLY NOT fire — GitHub does not let events created by the built-in
+# GITHUB_TOKEN trigger another workflow. We use a fine-grained PAT (chosen route).
+#
+# SETUP (task 3.1 — user-provisioned; the assistant cannot create credentials):
+#   Create a fine-grained PAT (GitHub → Settings → Developer settings → Fine-grained tokens)
+#   scoped to THIS repo with Contents: Read & write + Pull requests: Read & write, then store it
+#   as the repo secret RELEASE_PLEASE_TOKEN:
+#     gh secret set RELEASE_PLEASE_TOKEN --repo Xeonice/cloud-agent-platform --body '<pat>'
+#   Rotate it before its expiry. (For a no-long-lived-secret option, see the commented GitHub
+#   App alternative at the bottom.)
+
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release Please
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+# ── Alternative: a GitHub App token (short-lived, no long-lived secret) ───────────────
+# Replace the single step above with these two, and add RELEASE_PLEASE_APP_ID +
+# RELEASE_PLEASE_APP_PRIVATE_KEY secrets (a GitHub App with Contents: RW + Pull requests: RW,
+# installed on this repo). Pin create-github-app-token to the current stable major.
+#   - name: Mint GitHub App token
+#     id: app-token
+#     uses: actions/create-github-app-token@v2
+#     with:
+#       app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+#       private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+#   - name: Release Please
+#     uses: googleapis/release-please-action@v4
+#     with:
+#       token: ${{ steps.app-token.outputs.token }}
+#       config-file: release-please-config.json
+#       manifest-file: .release-please-manifest.json
