@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import Docker from 'dockerode';
 
@@ -14,10 +15,11 @@ import { UpdateStatusService } from '../update-status/update-status.service';
 export const SELF_UPDATE_ENABLED_ENV = 'SELF_UPDATE_ENABLED';
 
 /**
- * The compose files the bounded updater LAYERS (the second `-f` wins). Fixed
- * server-side literals — never client input — so the updater can only run the
- * documented cap compose topology with the GHCR image override on top
- * (`docker-compose.images.yml` pins all three cap services to one `CAP_VERSION`).
+ * FALLBACK compose files the updater layers when the running topology CANNOT be
+ * auto-detected from the api's own container labels (a non-compose run). The
+ * PRIMARY path derives the `-f` files from `com.docker.compose.project.config_files`
+ * (self-update-resident-topology), so the updater targets whatever stack is actually
+ * running. Overridable for the fallback via `SELF_UPDATE_COMPOSE_FILES`.
  */
 export const COMPOSE_FILES: readonly string[] = [
   'docker-compose.yml',
@@ -25,14 +27,17 @@ export const COMPOSE_FILES: readonly string[] = [
 ];
 
 /**
- * The ONLY compose services the updater pulls + recreates (design D3 — bounded
- * to the cap namespace + services). These are exactly the three services
- * `docker-compose.images.yml` re-points to the matched `ghcr.io/xeonice/cap-*`
- * release set: the api, the web console, and the per-task AIO sandbox image
- * vehicle. Scoping the `pull`/`up -d` to this fixed list means the updater can
- * NEVER touch postgres / loki / grafana / nginx or any non-cap unit.
+ * FALLBACK cap services pulled + recreated when the topology cannot be auto-detected.
+ * The PRIMARY path DERIVES the services from the running project's containers whose
+ * image is in the `ghcr.io/<owner>/cap-*` namespace, so it targets exactly the cap
+ * units the deployment actually runs (e.g. api + aio-sandbox-image on the resident
+ * stack, never postgres/loki/grafana). Overridable for the fallback via
+ * `SELF_UPDATE_SERVICES` (comma-separated).
  */
 export const CAP_SERVICES: readonly string[] = ['api', 'web', 'aio-sandbox-image'];
+
+/** The `ghcr.io/<owner>/cap-*` namespace that marks a service as a cap unit to upgrade. */
+const CAP_IMAGE_RE = /(^|\/)ghcr\.io\/[^/]+\/cap-[^/:@\s]+/i;
 
 /** The compose project env var the image override interpolates as the single pin. */
 export const CAP_VERSION_ENV = 'CAP_VERSION';
@@ -41,43 +46,85 @@ export const CAP_VERSION_ENV = 'CAP_VERSION';
  * The image the detached one-shot updater runs (a compose-capable helper). It is
  * a fixed server-side literal — never derived from the request — overridable for
  * an operator whose host stages a different compose image via
- * `SELF_UPDATE_UPDATER_IMAGE`. The updater container mounts the host docker socket
- * + the compose project dir so it can `docker compose` the cap stack after the
- * api (its own caller) goes down.
+ * `SELF_UPDATE_UPDATER_IMAGE`. The official `docker:*-cli` images bundle the compose
+ * v2 plugin (verified `docker:27-cli` → compose v2.33.0); the updater script also
+ * idempotently ensures it, so compose is guaranteed regardless of tag.
  */
 export const DEFAULT_UPDATER_IMAGE = 'docker:27-cli';
 export const UPDATER_IMAGE_ENV = 'SELF_UPDATE_UPDATER_IMAGE';
 
 /**
- * The host path of the compose project (where `docker-compose.yml` lives), bind-
- * mounted into the updater so `docker compose -f ...` resolves the files. Defaults
- * to `/srv/cap` (the documented compose deploy root) and is overridable per host.
+ * The host path of the compose project (where the compose file lives), used ONLY as
+ * the FALLBACK working dir when the topology cannot be auto-detected from the api's
+ * own container `com.docker.compose.project.working_dir` label. Defaults to the
+ * documented compose deploy root and is overridable via `SELF_UPDATE_COMPOSE_DIR`.
  */
 export const DEFAULT_COMPOSE_PROJECT_DIR = '/srv/cap';
 export const COMPOSE_PROJECT_DIR_ENV = 'SELF_UPDATE_COMPOSE_DIR';
 
+/** Fallback-only env overrides (used when topology auto-detection fails). */
+export const COMPOSE_FILES_ENV = 'SELF_UPDATE_COMPOSE_FILES';
+export const COMPOSE_PROJECT_NAME_ENV = 'SELF_UPDATE_PROJECT';
+export const SERVICES_ENV = 'SELF_UPDATE_SERVICES';
+
+/**
+ * The compose topology the updater acts on — DERIVED from the running deployment
+ * (self-update-resident-topology) rather than fixed source-overlay literals, so the
+ * upgrade keys to whatever stack is actually running (the source compose, the images
+ * overlay, or the resident `docker-compose.prod.yml`).
+ */
+export interface UpdateTopology {
+  /** The compose project name (`-p`), or '' when none (compose default). */
+  readonly project: string;
+  /** The compose `-f` file(s) (absolute paths from the running deployment). */
+  readonly composeFiles: readonly string[];
+  /** The working dir the updater runs in / bind-mounts (where the `.env` lives). */
+  readonly workingDir: string;
+  /** The cap-only services (ghcr cap-* images) to pull + recreate. */
+  readonly services: readonly string[];
+}
+
+/**
+ * Resolves the {@link UpdateTopology} of the RUNNING deployment. Injected behind a
+ * port so the unit tests supply a deterministic topology WITHOUT docker. The live
+ * implementation ({@link DockerTopologyResolver}) reads the api's own container
+ * compose labels; returns `null` when the api was not run via compose (no labels),
+ * so the service can fall back to operator env / documented literals.
+ */
+export const TOPOLOGY_RESOLVER = Symbol('SELF_UPDATE_TOPOLOGY_RESOLVER');
+export interface TopologyResolver {
+  resolve(): Promise<UpdateTopology | null>;
+}
+
 /**
  * A bounded, validated upgrade PLAN — the inspectable description of exactly what
- * the detached updater will do. Pure data with no arbitrary image/tag/command: a
- * fixed compose-file layering, the fixed cap service list, and the single
- * `CAP_VERSION=<target>` pin. The verify/unit tests assert THIS rather than
- * actually recreating anything.
+ * the detached updater will do. Pure data with no arbitrary image/tag/command: the
+ * derived compose topology (project + files + working dir), the cap-only service
+ * list, and the single `CAP_VERSION=<target>` pin. The verify/unit tests assert
+ * THIS rather than actually recreating anything.
  */
 export interface UpdatePlan {
   /** The validated semver target tag (matches `/update-status`'s latest). */
   readonly target: string;
-  /** The compose `-f` files the updater layers (fixed). */
+  /** The compose project name the updater scopes to (`-p`), or '' for the default. */
+  readonly project: string;
+  /** The compose `-f` files the updater layers (derived from the running deployment). */
   readonly composeFiles: readonly string[];
-  /** The cap-only services the updater pulls + recreates (fixed). */
+  /** The dir the updater runs in + bind-mounts (where `.env` is rewritten). */
+  readonly workingDir: string;
+  /** The cap-only services the updater pulls + recreates (derived from cap-* images). */
   readonly services: readonly string[];
   /**
-   * The two ordered shell commands the detached updater runs: `pull` FIRST, then
-   * `up -d` — so a failed pull leaves the prior version running (design D4,
-   * pull-then-recreate). Each is the full `docker compose -f ... -f ... <verb>
-   * <cap services>` argv, scoped to the cap services only.
+   * The two ordered compose commands: `pull` FIRST, then `up -d` — so a failed pull
+   * leaves the prior version running (design D4). Each is the full
+   * `docker compose -p <project> -f <files…> <verb> <cap services>` argv.
    */
   readonly commands: readonly string[];
-  /** The single shell line the detached updater executes (`pull && up -d`). */
+  /**
+   * The single shell line the detached updater executes: ensure the compose plugin,
+   * persist the `CAP_VERSION` pin into `.env` (so the upgrade sticks across a later
+   * manual `up`), then `pull && up -d`.
+   */
   readonly script: string;
 }
 
@@ -100,7 +147,9 @@ export type SelfUpdateRefusal =
   /** The target is not a valid semver tag, or no target was supplied. */
   | 'invalid-target'
   /** The target does not match `/update-status`'s latest (or no update available). */
-  | 'target-mismatch';
+  | 'target-mismatch'
+  /** The running topology resolves no cap-* service to upgrade (operator misconfig). */
+  | 'no-cap-service';
 
 export class SelfUpdateRefusedError extends Error {
   constructor(readonly reason: SelfUpdateRefusal, message: string) {
@@ -110,38 +159,39 @@ export class SelfUpdateRefusedError extends Error {
 }
 
 /**
- * Self-update service (self-update-action, design D1/D3/D4). The most dangerous
- * surface in the OSS self-update epic — a host-root container op behind a button —
- * so it is dominated by CONTAINMENT:
+ * Self-update service (self-update-action, design D1/D3/D4; topology auto-detect per
+ * self-update-resident-topology). The most dangerous surface in the OSS self-update
+ * epic — a host-root container op behind a button — so it is dominated by CONTAINMENT:
  *
  *   - D1 HARD ENV GATE, default OFF: every request is REFUSED unless
  *     `SELF_UPDATE_ENABLED` is truthy. Shipping is inert.
  *   - D3 BOUNDED TARGET, no arbitrary input: the target MUST be a valid semver tag
  *     that MATCHES the latest version the cached {@link UpdateStatusService}
  *     reports (a server-side cross-check). The updater pulls ONLY the cap GHCR
- *     namespace (`docker-compose.images.yml` → `ghcr.io/xeonice/cap-*:<target>`)
- *     and recreates ONLY the {@link CAP_SERVICES}. There is NO path to an
- *     arbitrary image, tag, or command.
- *   - D4 DETACHED SELF-RECREATE: the api cannot cleanly `compose up` its own
- *     container while running, so an enabled+validated request launches a DETACHED
- *     one-shot updater (the same `new Docker()` docker.sock idiom the
- *     AioSandboxProvider uses) that runs compose `pull` THEN `up -d` and OUTLIVES
- *     the api's restart. The endpoint acks "update started" BEFORE the api goes
- *     down; `survive-api-redeploy` keeps in-flight tasks alive and the console
- *     reconnects via WS auto-reconnect. Pull-then-recreate ordering means a failed
- *     pull leaves the prior version running.
+ *     namespace and recreates ONLY the cap services — DERIVED from the running
+ *     deployment's compose labels (cap services = `ghcr.io/<owner>/cap-*` images),
+ *     never from the request. There is NO path to an arbitrary image/tag/command.
+ *   - D4 DETACHED SELF-RECREATE: an enabled+validated request launches a DETACHED
+ *     one-shot updater that runs compose `pull` THEN `up -d` (scoped to the derived
+ *     cap services) and OUTLIVES the api's restart, and PERSISTS the new
+ *     `CAP_VERSION` into the deployment `.env` so the upgrade sticks. The endpoint
+ *     acks "update started" BEFORE the api goes down; `survive-api-redeploy` keeps
+ *     in-flight tasks alive and the console reconnects via WS auto-reconnect.
  */
 @Injectable()
 export class SelfUpdateService {
   private readonly log = new Logger(SelfUpdateService.name);
   private readonly env: NodeJS.ProcessEnv;
+  private readonly topologyResolver: TopologyResolver;
 
   constructor(
     private readonly updateStatus: UpdateStatusService,
     @Optional() @Inject(UPDATER_LAUNCHER) private readonly launcher?: UpdaterLauncher,
     env: NodeJS.ProcessEnv = process.env,
+    @Optional() @Inject(TOPOLOGY_RESOLVER) topologyResolver?: TopologyResolver,
   ) {
     this.env = env;
+    this.topologyResolver = topologyResolver ?? new DockerTopologyResolver(env);
   }
 
   /**
@@ -164,9 +214,8 @@ export class SelfUpdateService {
    *   - the feature is disabled (`disabled`);
    *   - `target` is missing / not a valid semver tag (`invalid-target`);
    *   - `target` does not match the latest version `/update-status` reports, or no
-   *     update is available (`target-mismatch`).
-   * Pure with respect to env + the cached update-status lookup; the controller
-   * acks AFTER this resolves (so a refusal never acks "update started").
+   *     update is available (`target-mismatch`);
+   *   - the resolved topology has no cap-* service to upgrade (`no-cap-service`).
    */
   async planUpdate(target: string): Promise<UpdatePlan> {
     if (!this.isEnabled()) {
@@ -184,10 +233,8 @@ export class SelfUpdateService {
       );
     }
 
-    // Server-side cross-check (design D3): the target MUST equal the latest
-    // version the cached /update-status reports AND an update must be available.
-    // No arbitrary version can be forced; client input is only ever a confirmation
-    // of what the server already determined is the upgrade.
+    // Server-side cross-check (design D3): the target MUST equal the latest version
+    // the cached /update-status reports AND an update must be available.
     const status = await this.updateStatus.getStatus();
     if (
       !status.updateAvailable ||
@@ -201,50 +248,96 @@ export class SelfUpdateService {
       );
     }
 
-    return this.buildPlan(status.latestVersion);
+    // Derive the topology of the RUNNING deployment from the api's own compose
+    // labels; fall back to operator env / documented literals only when the api was
+    // not run via compose (no labels).
+    const detected = await this.topologyResolver.resolve();
+    const topology = detected ?? this.fallbackTopology();
+    if (topology.services.length === 0) {
+      throw new SelfUpdateRefusedError(
+        'no-cap-service',
+        `self-update found no cap (ghcr.io/*/cap-*) service to upgrade in compose project ` +
+          `${topology.project || '(default)'} — nothing to recreate`,
+      );
+    }
+
+    return this.buildPlan(status.latestVersion, topology);
   }
 
   /**
    * Validate + launch the detached updater for `target` (design D4). Builds the
    * bounded plan via {@link planUpdate} (which enforces the gate + validation +
-   * cross-check), then hands it to the injected {@link UpdaterLauncher} which
-   * launches a DETACHED one-shot updater that pulls THEN recreates the cap
-   * services and outlives the api's own restart. Returns the launched plan so the
-   * controller can ack what it started. Refuses (throws {@link
-   * SelfUpdateRefusedError}) BEFORE any launch on a disabled / invalid /
-   * mismatched request.
+   * cross-check + topology resolution), then hands it to the injected {@link
+   * UpdaterLauncher}. Returns the launched plan so the controller can ack what it
+   * started. Refuses BEFORE any launch on a disabled / invalid / mismatched / no-cap
+   * request.
    */
   async requestUpdate(target: string): Promise<UpdatePlan> {
     const plan = await this.planUpdate(target);
     const launcher = this.launcher ?? new DockerUpdaterLauncher(this.env);
     this.log.warn(
-      `self-update: launching DETACHED updater to ${plan.target} ` +
-        `(pull then up -d for cap services [${plan.services.join(', ')}]) — ` +
-        `the api will be recreated; running tasks survive via survive-api-redeploy`,
+      `self-update: launching DETACHED updater to ${plan.target} in ${plan.workingDir} ` +
+        `(pull then up -d for cap services [${plan.services.join(', ')}] of project ` +
+        `${plan.project || '(default)'}) — the api will be recreated; running tasks survive ` +
+        `via survive-api-redeploy`,
     );
     await launcher.launch(plan);
     return plan;
   }
 
   /**
-   * Construct the bounded {@link UpdatePlan} for a validated `target`. The compose
-   * files + service list are fixed server-side literals; the ONLY interpolated
-   * value is the validated `CAP_VERSION=<target>` pin. `pull` is ordered BEFORE
-   * `up -d` so a failed pull leaves the prior version running (design D4).
+   * The FALLBACK topology when the api's own container exposes no compose labels:
+   * operator env overrides, else the documented source-overlay literals.
    */
-  private buildPlan(target: string): UpdatePlan {
-    const fileArgs = COMPOSE_FILES.flatMap((f) => ['-f', f]);
-    const services = [...CAP_SERVICES];
-    // `docker compose -f docker-compose.yml -f docker-compose.images.yml <verb> <cap services>`.
-    const pull = ['docker', 'compose', ...fileArgs, 'pull', ...services].join(' ');
-    const up = ['docker', 'compose', ...fileArgs, 'up', '-d', ...services].join(' ');
+  private fallbackTopology(): UpdateTopology {
+    const project = nonEmptyEnv(this.env[COMPOSE_PROJECT_NAME_ENV]) ?? '';
+    const composeFiles =
+      parseList(this.env[COMPOSE_FILES_ENV]) ?? [...COMPOSE_FILES];
+    const workingDir =
+      nonEmptyEnv(this.env[COMPOSE_PROJECT_DIR_ENV]) ?? DEFAULT_COMPOSE_PROJECT_DIR;
+    const services = parseList(this.env[SERVICES_ENV]) ?? [...CAP_SERVICES];
+    return { project, composeFiles, workingDir, services };
+  }
+
+  /**
+   * Construct the bounded {@link UpdatePlan} for a validated `target` + resolved
+   * topology. The ONLY interpolated values are the derived topology (from server-side
+   * Docker labels, never the request) and the validated `CAP_VERSION=<target>` pin.
+   * The script: (1) ensure the compose plugin, (2) persist the pin into `.env`
+   * atomically, (3) `pull` THEN (4) `up -d` — pull before recreate so a failed pull
+   * leaves the prior version running (design D4).
+   */
+  private buildPlan(target: string, topo: UpdateTopology): UpdatePlan {
+    const projArgs = topo.project ? ['-p', topo.project] : [];
+    const fileArgs = topo.composeFiles.flatMap((f) => ['-f', f]);
+    const services = [...topo.services];
+    const base = ['docker', 'compose', ...projArgs, ...fileArgs];
+    const pull = [...base, 'pull', ...services].join(' ');
+    const up = [...base, 'up', '-d', ...services].join(' ');
+    // Ensure compose is present (official docker:*-cli bundles it; this is a no-op
+    // fallback that installs it from alpine repos otherwise — the updater has host net).
+    // `||`/`&&` are left-associative in POSIX sh, so `A || B && pin && pull && up`
+    // parses as `((A || B) && pin && pull && up)` — i.e. ensure compose (present OR
+    // installed) THEN proceed; a failed install aborts before pull. No parens needed,
+    // and the script stays a leading `docker compose …` op.
+    const ensure =
+      'docker compose version >/dev/null 2>&1 || apk add --no-cache docker-cli-compose';
+    // Persist CAP_VERSION=<target> into the working-dir .env atomically (temp + mv),
+    // preserving the other lines, so a later manual `up` does not revert the version.
+    // `target` is a validated semver tag (no shell metacharacters), so it is safe to
+    // embed in the single-quoted echo.
+    const pin =
+      `( grep -v '^${CAP_VERSION_ENV}=' .env 2>/dev/null || true; ` +
+      `echo '${CAP_VERSION_ENV}=${target}' ) > .env.captmp && mv .env.captmp .env`;
+    const script = `${ensure} && ${pin} && ${pull} && ${up}`;
     return {
       target,
-      composeFiles: [...COMPOSE_FILES],
+      project: topo.project,
+      composeFiles: [...topo.composeFiles],
+      workingDir: topo.workingDir,
       services,
       commands: [pull, up],
-      // Pull THEN recreate; `&&` so a failed pull never reaches `up -d`.
-      script: `${pull} && ${up}`,
+      script,
     };
   }
 }
@@ -273,14 +366,69 @@ function versionsMatch(a: string, b: string): boolean {
 }
 
 /**
+ * Live {@link TopologyResolver}: reads the api's OWN container compose labels over
+ * the existing docker.sock (same `new Docker()` idiom as the updater + the
+ * AioSandboxProvider) to reconstruct the compose invocation that created the running
+ * stack, and derives the cap services as the project's services on `ghcr cap-*`
+ * images. Returns `null` when the api was not run via compose (labels absent).
+ */
+export class DockerTopologyResolver implements TopologyResolver {
+  private readonly log = new Logger(DockerTopologyResolver.name);
+  private readonly docker = new Docker();
+
+  constructor(private readonly env: NodeJS.ProcessEnv = process.env) {}
+
+  async resolve(): Promise<UpdateTopology | null> {
+    // The container's hostname defaults to its (short) id; the prod compose sets no
+    // custom hostname for the api, so this resolves the api's own container.
+    const self = await this.docker
+      .getContainer(os.hostname())
+      .inspect()
+      .catch(() => null);
+    const labels = self?.Config?.Labels ?? {};
+    const project = labels['com.docker.compose.project'];
+    const configFiles = labels['com.docker.compose.project.config_files'];
+    const workingDir = labels['com.docker.compose.project.working_dir'];
+    if (!project || !configFiles || !workingDir) {
+      this.log.warn(
+        'self-update: api container has no com.docker.compose.* labels — ' +
+          'falling back to operator env / documented compose defaults',
+      );
+      return null;
+    }
+    const composeFiles = configFiles
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    // Cap services = the project's services whose image is in the ghcr cap-* namespace.
+    const containers = await this.docker
+      .listContainers({
+        all: true,
+        filters: { label: [`com.docker.compose.project=${project}`] },
+      })
+      .catch(() => []);
+    const services = [
+      ...new Set(
+        containers
+          .filter((c) => CAP_IMAGE_RE.test(c.Image ?? ''))
+          .map((c) => c.Labels?.['com.docker.compose.service'])
+          .filter((s): s is string => typeof s === 'string' && s.length > 0),
+      ),
+    ];
+
+    return { project, composeFiles, workingDir, services };
+  }
+}
+
+/**
  * Live {@link UpdaterLauncher}: creates + starts a DETACHED one-shot helper
  * container (same `new Docker()` docker.sock idiom as {@link AioSandboxProvider})
- * that runs the bounded compose `pull && up -d` script. The container mounts the
- * host docker socket and the compose project dir, runs on the host network (so it
- * can reach the docker daemon + registries while the api goes down), and
- * `AutoRemove`s itself when done. Because it is its OWN container, it OUTLIVES the
- * api's recreate — the api can be torn down + recreated by `up -d` while this
- * helper keeps running.
+ * that runs the bounded compose script. The container mounts the host docker socket
+ * and the deployment's working dir (+ any compose-file dir outside it), runs on the
+ * host network (so it can reach the docker daemon + registries while the api goes
+ * down), and `AutoRemove`s itself when done. Because it is its OWN container, it
+ * OUTLIVES the api's recreate.
  */
 export class DockerUpdaterLauncher implements UpdaterLauncher {
   private readonly docker = new Docker();
@@ -289,37 +437,38 @@ export class DockerUpdaterLauncher implements UpdaterLauncher {
 
   async launch(plan: UpdatePlan): Promise<void> {
     const image = nonEmptyEnv(this.env[UPDATER_IMAGE_ENV]) ?? DEFAULT_UPDATER_IMAGE;
-    const projectDir =
-      nonEmptyEnv(this.env[COMPOSE_PROJECT_DIR_ENV]) ?? DEFAULT_COMPOSE_PROJECT_DIR;
-    // The single pin every cap service resolves `${CAP_VERSION}` to.
+    // The single pin every cap service resolves `${CAP_VERSION}` to (overrides the
+    // .env at compose render time; the script also persists it into .env).
     const containerEnv = [`${CAP_VERSION_ENV}=${plan.target}`];
+
+    // Bind the working dir (where the .env + usually the compose files live) plus the
+    // dir of any compose file located outside it, so `-f <abs path>` resolves.
+    const bindDirs = new Set<string>([plan.workingDir]);
+    for (const f of plan.composeFiles) {
+      const dir = f.slice(0, Math.max(0, f.lastIndexOf('/'))) || '/';
+      if (f.startsWith('/')) bindDirs.add(dir);
+    }
+    const binds = [
+      '/var/run/docker.sock:/var/run/docker.sock',
+      ...[...bindDirs].map((d) => `${d}:${d}`),
+    ];
 
     const container = await this.docker.createContainer({
       Image: image,
-      // The bounded script: compose pull THEN up -d, cap services only. `-c`
-      // takes a single string; the script is built ENTIRELY from server-side
-      // literals + the validated target, so there is no injection surface.
+      // The bounded script: ensure compose, persist the pin, pull THEN up -d, cap
+      // services only. `-c` takes a single string built ENTIRELY from server-side
+      // values (Docker labels + the validated target), so there is no injection surface.
       Cmd: ['sh', '-c', plan.script],
       Env: containerEnv,
-      WorkingDir: projectDir,
+      WorkingDir: plan.workingDir,
       HostConfig: {
-        // One-shot: clean itself up once the recreate finishes.
         AutoRemove: true,
-        // Host network so it reaches the docker daemon + registries even as the
-        // api (and its cap-net) is recreated underneath it.
         NetworkMode: 'host',
-        Binds: [
-          // The host docker socket — the existing docker access this whole stack
-          // already relies on (the trust boundary is the host, per the product
-          // model). The updater needs it to `docker compose` the cap stack.
-          '/var/run/docker.sock:/var/run/docker.sock',
-          // The compose project dir, so `-f docker-compose*.yml` resolves.
-          `${projectDir}:${projectDir}`,
-        ],
+        Binds: binds,
       },
     });
-    // DETACHED: start and return. The helper container outlives THIS api process
-    // when `up -d` recreates the api container; we do not wait on it.
+    // DETACHED: start and return; the helper outlives THIS api process when `up -d`
+    // recreates the api container.
     await container.start();
   }
 }
@@ -329,4 +478,14 @@ function nonEmptyEnv(value: string | undefined): string | null {
   if (typeof value !== 'string') return null;
   const t = value.trim();
   return t.length === 0 ? null : t;
+}
+
+/** Parse a comma-separated env list into a trimmed non-empty array, or `null` if unset/blank. */
+function parseList(value: string | undefined): string[] | null {
+  if (typeof value !== 'string') return null;
+  const items = value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return items.length > 0 ? items : null;
 }

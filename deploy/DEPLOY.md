@@ -535,9 +535,16 @@ container operation:
   not free-form client input. A mismatched/invalid target is rejected.
 - **cap namespace only.** The updater pulls ONLY `ghcr.io/xeonice/cap-*:<target>`
   (the matched api/web/aio-sandbox triplet at one `CAP_VERSION`).
-- **cap services only.** It recreates ONLY the cap compose services via
-  `docker compose -f docker-compose.yml -f docker-compose.images.yml pull && up -d`
-  at `CAP_VERSION=<target>`.
+- **cap services only.** It recreates ONLY the cap compose services. The compose
+  TOPOLOGY (project, `-f` files, working dir, services) is AUTO-DETECTED from the
+  api's own container `com.docker.compose.*` labels, and the cap services are derived
+  as the project's services on `ghcr.io/xeonice/cap-*` images — so it targets whatever
+  stack is actually running (the resident `docker-compose.prod.yml`, or the source /
+  images overlay) and never touches postgres/loki/grafana. (It falls back to the
+  documented literals only when the api was not run via compose.) The updater runs
+  `docker compose -p <project> -f <files…> pull && up -d <cap services>` at
+  `CAP_VERSION=<target>` and PERSISTS that pin into the deployment `.env` so the
+  upgrade sticks across a later manual `up`.
 - **No arbitrary command.** There is no path to an arbitrary image, tag, or shell
   command. The bound is the load-bearing control.
 - **Pull-then-recreate.** It pulls BEFORE recreating; if a pull fails mid-way,
@@ -573,28 +580,46 @@ So on an enabled, confirmed, validated request it:
 
 ### 12.5 Activate it (owner decision) — only after Phase-1 is live
 
-> Prerequisite: Phase-1 activation (Section 11) must be done first — the repo +
-> GHCR packages public, at least one published Release, and prod running the
-> pinned-release line (`docker-compose.images.yml`). Without real GHCR images
-> there is nothing for the updater to pull, so the feature has no effect.
+> Prerequisite: a published Release exists (so there is a real GHCR image set for
+> the updater to pull) and prod runs the pinned-release line — the RESIDENT
+> `docker-compose.prod.yml` stack (§11.4). The updater AUTO-DETECTS that topology
+> from the api's compose labels, so no `/srv/cap` or manual compose-file config is
+> needed.
 
-To turn it on, deliberately:
+To turn it on, deliberately — on the RESIDENT stack
+(`/etc/dokploy/compose/cloud-agent-platform/resident/`):
 
-1. Set `SELF_UPDATE_ENABLED=true` in `apps/api/.env` and define the admin
-   allowlist (the numeric GitHub ids permitted to press Upgrade).
+1. Add to the resident `.env`: `SELF_UPDATE_ENABLED=true` and
+   `SELF_UPDATE_ADMINS=<comma-separated GitHub NUMERIC ids>` (the operators allowed
+   to press Upgrade — `gh api user --jq .id`). This is DISTINCT from `AUTH_ALLOWLIST`
+   (who can log in): admins are the narrower set trusted with the host-root button.
 2. Flip the web `selfUpdate` capability flag to `true` in
    `apps/web/src/lib/api/capabilities.ts` and redeploy the console.
-3. Re-run the prod bring-up (Section 11.3) so the new env takes effect.
+3. Recreate the api so the new env takes effect:
+   `docker compose -p cloud-agent-platform -f docker-compose.prod.yml up -d api`.
 
 Then verify the true end-to-end (operator-gated — it needs the GHCR image set):
-press **Upgrade** → the detached updater pulls the GHCR image set → the api
-recreates → the console reconnects → `GET /version` reports the new tag, and a
-task that was running survived the recreate.
+cut a newer Release → the update banner shows → an admin presses **Upgrade** → the
+detached updater AUTO-DETECTS the resident topology, pulls `ghcr.io/xeonice/cap-*`
+at the target, recreates `api` + `aio-sandbox-image` (never postgres/loki/grafana),
+rewrites `CAP_VERSION` in the resident `.env`, the console reconnects, `GET /version`
+reports the new tag, and a task that was running survived the recreate.
 
 > **Rollback:** the change is additive and default-off. To deactivate, unset
 > `SELF_UPDATE_ENABLED` (endpoint refuses again) and/or set `selfUpdate: false`
-> (button gone). The feature is supported only for the documented compose
-> topology; on other topologies leave it disabled (notify-only).
+> (button gone).
+
+> **Fallback knobs (rare — only when the api was NOT started via compose, so it has
+> no `com.docker.compose.*` labels to auto-detect):** override the topology per field
+> with `SELF_UPDATE_COMPOSE_DIR` (working dir), `SELF_UPDATE_COMPOSE_FILES`
+> (comma-separated `-f` files), `SELF_UPDATE_PROJECT` (`-p`), `SELF_UPDATE_SERVICES`
+> (comma-separated cap services), and `SELF_UPDATE_UPDATER_IMAGE` (the compose-capable
+> helper image). On the resident compose stack none of these are needed.
+
+> **Admin gate — forward note:** the admin set is the standalone `SELF_UPDATE_ADMINS`
+> env allowlist today (auth has no role concept yet). When a user-tiering / role
+> system lands (building on `multi-user-oauth`), the self-update admin gate SHOULD
+> derive from the admin role rather than this env list — a separate future change.
 
 ---
 
