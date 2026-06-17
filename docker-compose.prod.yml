@@ -15,6 +15,11 @@
 # `${CAP_VERSION:?...}` makes an unset version fail loudly (never a stray tag); all
 # three cap images share ONE tag so the running set is always matched (decision ⑤).
 #
+# REQUIRES AN amd64 / x86_64 HOST. The published images are amd64-only because the
+# per-task AIO sandbox base image (ghcr.io/agent-infra/sandbox) is amd64-only — cap
+# is an amd64 platform. On an arm64 host (e.g. Apple Silicon) the pull fails with
+# "no matching manifest for linux/arm64"; use an x86_64 host (or amd64 emulation).
+#
 # SCOPE: this is the CORE run unit — api + the per-task sandbox image + Postgres,
 # plus the optional in-compose web console (`web` profile). The reverse proxy and
 # the observability stack are NOT here on purpose: they bind-mount config from the
