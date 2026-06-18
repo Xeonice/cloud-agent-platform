@@ -66,6 +66,20 @@ export class PrismaProvisionLookup implements ProvisionLookup {
   }
 
   /**
+   * The task's persisted `runtime` (`'codex'` | `'claude-code'`), or `null` when
+   * the task is missing / has no runtime. The runtime registry reads this to
+   * dispatch provisioning to the right agent — without it EVERY task defaulted to
+   * codex. DB access lives here so the provider/registry stay pure port consumers.
+   */
+  async getTaskRuntime(taskId: string): Promise<string | null> {
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { runtime: true },
+    });
+    return task?.runtime ?? null;
+  }
+
+  /**
    * The single allowed operator's stored GitHub OAuth access token (single-user
    * self-host: the allowlist admits exactly one identity, so the earliest allowed
    * user holding a captured token IS the operator). Used only to authenticate the

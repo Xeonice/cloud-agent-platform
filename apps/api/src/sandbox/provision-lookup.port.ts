@@ -55,6 +55,18 @@ export interface ProvisionLookup {
    * consumer (mirrors {@link getTaskPrompt}).
    */
   getTaskSkills(taskId: string): Promise<string[]>;
+
+  /**
+   * Resolve `taskId`'s selected agent runtime (`task.runtime`) so the runtime
+   * registry can dispatch provisioning to the right agent. Returns the persisted
+   * value (`'codex'` | `'claude-code'`) or `null` when the task is missing / has no
+   * runtime (the registry then defaults to codex). WITHOUT this the registry can
+   * never read the task's runtime, so EVERY task — including `claude-code` — falls
+   * back to codex (the gap that silently routed claude tasks through codex before it
+   * was wired). Behind the port (not a provider DB call) so the provider/registry
+   * stay pure port consumers (mirrors {@link getTaskPrompt}).
+   */
+  getTaskRuntime(taskId: string): Promise<string | null>;
 }
 
 /**
