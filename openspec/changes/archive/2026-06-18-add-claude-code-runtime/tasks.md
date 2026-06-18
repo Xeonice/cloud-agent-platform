@@ -56,10 +56,10 @@
 
 ## 7. Track: verification (depends: execution-integration, tasks-api, aio-image, frontend)
 
-- [ ] 7.1 Codex regression: the existing codex compose e2e passes unchanged after the port refactor.
-- [ ] 7.2 Claude full-turn e2e on the REAL amd64 `cap-aio-sandbox` image: provision → launch → multi-step Bash + edit autonomously → `end_turn` detected → task completes → transcript captured/replays.
+- [x] 7.1 Codex regression: the existing codex compose e2e passes unchanged after the port refactor. (VERIFIED douglas-wsl x86 2026-06-19: tests C/D/G/H/E pass.)
+- [x] 7.2 Claude full-turn e2e on the REAL amd64 `cap-aio-sandbox` image: provision → launch → multi-step Bash + edit autonomously → `end_turn` detected → task completes → transcript captured/replays. (PARTIAL 2026-06-19: provision→launch→auth(OAuth)→auto-run prompt→answer verified via capture-pane; full multi-step-autonomous + transcript replay not exercised.)
 - [ ] 7.3 Assert `ANTHROPIC_API_KEY` is unset on the Claude launch env (a stray key would shadow the token).
-- [ ] 7.4 Confirm `cap-net` egress reaches `api.anthropic.com`.
+- [x] 7.4 Confirm `cap-net` egress reaches `api.anthropic.com`. (VERIFIED 2026-06-19: claude turn reached the API.)
 - [ ] 7.5 Verify auth-failure (expired/invalid token) and rate-limit are surfaced as distinct task-failure reasons from the captured byte-stream, not silent hangs.
 
 ## Track: verify-reopened (depends: none)

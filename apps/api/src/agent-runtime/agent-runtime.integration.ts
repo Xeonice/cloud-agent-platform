@@ -14,19 +14,16 @@
  *
  *   - it exposes a Nest-injectable {@link RuntimeRegistry} (bound under
  *     {@link RUNTIME_REGISTRY}) whose `resolveForTask(taskId)` reads the task's
- *     persisted `runtime` column and returns the matching runtime;
- *   - it adapts the leaf port surface (object {@link PortSandboxExec} returning
- *     `{stdout, code}`, `LaunchContext`, `ExitSignal`, `AuthMaterial`) to the
- *     narrow shape the consumers were written against (a `(command) => {exitCode,
- *     output}` exec closure, a `{taskId, sessionName, workspaceDir}` launch
- *     context, a `{done}` exit decision, a `{taskId, workspaceDir, prompt}` inject
- *     context), wrapping each {@link AgentRuntime} in a {@link RuntimeAdapter}.
+ *     persisted `runtime` column and returns the matching leaf port runtime;
+ *   - it provides the small shared adapters the consumers use to talk to the single
+ *     port directly: {@link toPortExec} (a `(command) => {exitCode, output}` closure
+ *     → the port's object `{stdout, code}` exec) and {@link sessionIdForTask} (the
+ *     stable `--session-id` uuid for the port `LaunchContext`).
  *
- * No behavior is added beyond what Track 2 already implements: the adapter only
- * translates shapes and wires the claude credential/prompt the provider delegates
- * (task 3.1). Codex stays byte-identical (the adapter forwards to the unchanged
- * CodexRuntime, and the consumers' own inline codex autosubmit/exit machinery is
- * preserved by `autoSubmit()===true` / `trimBeforeStop` absent for codex).
+ * refactor-agent-runtime-policy-mechanism (step 5) collapsed the two parallel
+ * `AgentRuntime` interfaces into ONE — this module re-exports the port's
+ * `AgentRuntime` and the registry hands consumers the leaf runtimes DIRECTLY; the
+ * former `RuntimeAdapter` translation layer is gone. No behavior is added here.
  */
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
@@ -35,15 +32,9 @@ import { CodexRuntime } from './codex-runtime';
 import { ClaudeCodeRuntime } from './claude-code-runtime';
 import type {
   AgentRuntime as PortAgentRuntime,
-  AuthMaterial,
-  LaunchContext as PortLaunchContext,
   RuntimeId,
   SandboxExec as PortSandboxExec,
 } from './agent-runtime.port';
-import {
-  CLAUDE_AUTH_SOURCE,
-  type ClaudeAuthSource,
-} from '../sandbox/claude-auth-source.port';
 import {
   PROVISION_LOOKUP,
   type ProvisionLookup,
@@ -79,52 +70,27 @@ export interface LaunchContext {
   readonly workspaceDir: string;
 }
 
-/** Provision-time credential/config + prompt injection context (task 3.1). */
-export interface InjectAuthContext {
-  readonly taskId: string;
-  readonly workspaceDir: string;
-  /** The operator's task prompt, or null when the task has none. */
-  readonly prompt: string | null;
-}
-
 /**
- * The turn-completion verdict the consumer poller maps. `done:false` → keep
- * polling; `done:null` → inconclusive (re-check); `done:true` → terminate (the
- * runtime has already killed the session), optionally carrying an explicit status.
+ * The runtime interface the consumers depend on IS the port's
+ * {@link PortAgentRuntime} (refactor step 5: the two parallel `AgentRuntime`
+ * interfaces collapsed into ONE). Re-exported here under the name `AgentRuntime` so
+ * existing consumer imports keep resolving — the `RuntimeAdapter` translation layer
+ * is gone; the registry hands consumers the leaf port runtimes directly, and the
+ * consumers (pty client / provider) build the port's `LaunchContext` + map its
+ * `ExitSignal` themselves via the small exported `toPortExec`/`sessionIdForTask`.
  */
-export type RuntimeExitDecision =
-  | { readonly done: false }
-  | { readonly done: null }
-  | {
-      readonly done: true;
-      readonly status?: { code: number | null; abnormal: boolean };
-    };
-
-/**
- * The consumer-facing runtime surface (what the provider/PTY client were written
- * against). Each method adapts to a leaf {@link PortAgentRuntime} method.
- */
-export interface AgentRuntime {
-  readonly id: RuntimeId;
-  buildLaunchLine(ctx: LaunchContext): string;
-  /** True when the bridge's DSR-gated CR autosubmit should arm (codex), else false. */
-  autoSubmit(): boolean;
-  injectAuth(exec: SandboxExec, ctx: InjectAuthContext): Promise<void>;
-  detectExit(exec: SandboxExec, taskId: string): Promise<RuntimeExitDecision>;
-  /** Optional pre-stop HOME trim; absent for codex (the provider keeps its inline trim). */
-  trimBeforeStop?(exec: SandboxExec, taskId: string): Promise<void>;
-}
+export type { AgentRuntime } from './agent-runtime.port';
 
 /** The registry the consumers inject under {@link RUNTIME_REGISTRY}. */
 export interface RuntimeRegistry {
   /** Resolve a runtime by id (codex by default; throws on an unknown id). */
-  resolve(id?: RuntimeId | null): AgentRuntime;
+  resolve(id?: RuntimeId | null): PortAgentRuntime;
   /** Resolve the runtime selected by the task's persisted `runtime` column. */
-  resolveForTask(taskId: string): Promise<AgentRuntime>;
+  resolveForTask(taskId: string): Promise<PortAgentRuntime>;
 }
 
 /** Adapt a consumer {@link SandboxExec} closure to the leaf {@link PortSandboxExec}. */
-function toPortExec(exec: SandboxExec): PortSandboxExec {
+export function toPortExec(exec: SandboxExec): PortSandboxExec {
   return {
     async exec(command: string): Promise<{ stdout: string; code: number | null }> {
       const { exitCode, output } = await exec(command);
@@ -140,7 +106,7 @@ function toPortExec(exec: SandboxExec): PortSandboxExec {
  * through the consumers. Shaped as a v4-style uuid string (claude only requires a
  * valid uuid). Codex ignores it.
  */
-function sessionIdForTask(taskId: string): string {
+export function sessionIdForTask(taskId: string): string {
   // FNV-1a over the taskId → 32 hex chars, formatted as a uuid. Deterministic and
   // dependency-free; collisions across distinct tasks are irrelevant (the file is
   // scoped to the task's own sandbox).
@@ -164,115 +130,12 @@ function sessionIdForTask(taskId: string): string {
 }
 
 /**
- * Wraps a leaf {@link PortAgentRuntime} in the consumer-facing {@link AgentRuntime}
- * shape. The adapter owns the leaf-port translation AND the claude-only
- * credential/prompt wiring the provider delegates (task 3.1): codex forwards
- * unchanged; claude resolves its OAuth token from {@link ClaudeAuthSource} and
- * injects the prompt file the launch line reads.
- */
-class RuntimeAdapter implements AgentRuntime {
-  private readonly logger = new Logger(`RuntimeAdapter:${this.runtime.id}`);
-
-  constructor(
-    private readonly runtime: PortAgentRuntime,
-    private readonly claudeAuth: ClaudeAuthSource | undefined,
-  ) {}
-
-  get id(): RuntimeId {
-    return this.runtime.id;
-  }
-
-  buildLaunchLine(ctx: LaunchContext): string {
-    const portCtx: PortLaunchContext = {
-      taskId: ctx.taskId,
-      workspaceDir: ctx.workspaceDir,
-      sessionId: sessionIdForTask(ctx.taskId),
-    };
-    return this.runtime.buildLaunchLine(portCtx);
-  }
-
-  autoSubmit(): boolean {
-    // The bridge's inline DSR-gated CR autosubmit is the CODEX path only. claude
-    // auto-runs its positional prompt (design D4), so it never arms the CR machinery.
-    return this.runtime.id === 'codex';
-  }
-
-  async injectAuth(exec: SandboxExec, ctx: InjectAuthContext): Promise<void> {
-    const material = await this.resolveAuthMaterial();
-    const result = await this.runtime.injectAuth(toPortExec(exec), material);
-    if (result.ok === false) {
-      // Fail-closed (claude with no token): a distinct reason the provision
-      // try/catch maps to a torn-down container + failed task (agent-runtime spec).
-      // Read `reason` off the narrowed false-branch via an index access so it does
-      // not depend on strict discriminated-union narrowing being enabled.
-      const reason = (result as { reason?: string }).reason ?? 'runtime not configured';
-      throw new Error(reason);
-    }
-    // claude delegates the WHOLE provision-time setup to the runtime path (3.1):
-    // the launch line reads the prompt via `$(cat <prompt-file>)`, so the prompt
-    // file must be written here. codex's prompt is injected by the provider's own
-    // inline `injectTaskPrompt`, so it is NOT re-injected here.
-    if (this.runtime.id !== 'codex' && ctx.prompt) {
-      await this.injectClaudePrompt(exec, ctx.prompt);
-    }
-  }
-
-  async detectExit(exec: SandboxExec, taskId: string): Promise<RuntimeExitDecision> {
-    const signal = await this.runtime.detectExit(toPortExec(exec), {
-      taskId,
-      workspaceDir: CLAUDE_WORKSPACE_DIR,
-      sessionId: sessionIdForTask(taskId),
-    });
-    return signal.status === 'done' ? { done: true } : { done: false };
-  }
-
-  /**
-   * Pre-stop HOME trim, claude only: drop `~/.claude` bulk while KEEPING
-   * `projects/` (the session transcript) — the defense-in-depth analog of codex's
-   * `~/.codex` trim. Absent on the codex adapter (see {@link buildAdapter}) so the
-   * provider keeps its unchanged inline `trimCodexHomeBeforeStop`.
-   */
-  async trimBeforeStop(exec: SandboxExec, _taskId: string): Promise<void> {
-    const dir = ClaudeCodeRuntime.CONFIG_DIR;
-    await exec(
-      `find ${dir} -mindepth 1 -maxdepth 1 ! -name projects -exec rm -rf {} + 2>/dev/null; true`,
-    );
-  }
-
-  /** Resolve the leaf {@link AuthMaterial} for this runtime (claude: the OAuth token). */
-  private async resolveAuthMaterial(): Promise<AuthMaterial | null> {
-    if (this.runtime.id === 'codex') {
-      // Codex auth is written by the provider's own inline `injectCodexAuth`; the
-      // codex adapter's injectAuth is never reached on the provision path (the
-      // provider only delegates for non-codex runtimes), but degrade safely.
-      return null;
-    }
-    if (!this.claudeAuth) return null;
-    const material = await this.claudeAuth.getClaudeAuth();
-    return material ? { oauthToken: material.oauthToken } : null;
-  }
-
-  /** Write the operator prompt into the claude prompt file the launch line reads. */
-  private async injectClaudePrompt(exec: SandboxExec, prompt: string): Promise<void> {
-    const file = ClaudeCodeRuntime.PROMPT_FILE_PATH;
-    const dir = ClaudeCodeRuntime.CONFIG_DIR;
-    const b64 = Buffer.from(prompt, 'utf8').toString('base64');
-    const { exitCode } = await exec(
-      `mkdir -p ${dir} && printf %s '${b64}' | base64 -d > ${file} && chmod 600 ${file}`,
-    );
-    if (Number.isNaN(exitCode) || exitCode !== 0) {
-      throw new Error(`claude prompt injection failed: exit_code ${exitCode}`);
-    }
-  }
-}
-
-/** The cloned-workspace dir the detached session runs in (shared by both paths). */
-const CLAUDE_WORKSPACE_DIR = '/home/gem/workspace';
-
-/**
  * Nest-injectable {@link RuntimeRegistry}: builds the leaf {@link AgentRuntimeRegistry}
- * from the two concrete runtimes, reads each task's persisted `runtime` value via
- * the {@link ProvisionLookup} port, and returns per-task {@link RuntimeAdapter}s.
+ * from the two concrete runtimes, reads each task's persisted `runtime` value via the
+ * {@link ProvisionLookup} port, and hands consumers the leaf port runtimes DIRECTLY
+ * (refactor step 5: the `RuntimeAdapter` translation layer is gone — consumers depend
+ * on the single port interface and build the port `LaunchContext` / map its
+ * `ExitSignal` themselves via {@link toPortExec} / {@link sessionIdForTask}).
  */
 @Injectable()
 export class IntegrationRuntimeRegistry implements RuntimeRegistry {
@@ -284,20 +147,16 @@ export class IntegrationRuntimeRegistry implements RuntimeRegistry {
 
   constructor(
     @Optional()
-    @Inject(CLAUDE_AUTH_SOURCE)
-    private readonly claudeAuth?: ClaudeAuthSource,
-    @Optional()
     @Inject(PROVISION_LOOKUP)
     private readonly lookup?: ProvisionLookup,
   ) {}
 
-  resolve(id?: RuntimeId | null): AgentRuntime {
-    return this.adapt(this.registry.resolve(id));
+  resolve(id?: RuntimeId | null): PortAgentRuntime {
+    return this.registry.resolve(id);
   }
 
-  async resolveForTask(taskId: string): Promise<AgentRuntime> {
-    const runtime = await this.readTaskRuntime(taskId);
-    return this.adapt(this.registry.resolve(runtime));
+  async resolveForTask(taskId: string): Promise<PortAgentRuntime> {
+    return this.registry.resolve(await this.readTaskRuntime(taskId));
   }
 
   /** Read the task's persisted `runtime` value (codex default when unavailable). */
@@ -317,9 +176,5 @@ export class IntegrationRuntimeRegistry implements RuntimeRegistry {
       );
       return null;
     }
-  }
-
-  private adapt(runtime: PortAgentRuntime): AgentRuntime {
-    return new RuntimeAdapter(runtime, this.claudeAuth);
   }
 }

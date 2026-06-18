@@ -1,39 +1,42 @@
 import {
   argvDisablesHooks,
   buildDetachedCodexLaunchLine,
-  detachedSessionName,
+  buildHasSessionCommand,
+  CODEX_PROMPT_FILE_PATH,
 } from '../terminal/codex-launch';
 import type {
   AgentRuntime,
   AuthMaterial,
-  AutoSubmitPty,
   ExitSignal,
-  InjectAuthResult,
   LaunchContext,
   RuntimeId,
   SandboxExec,
-  TranscriptCapture,
+  SandboxSetupCommand,
+  SandboxSetupContext,
+  SandboxSetupPlan,
+  TerminalStartup,
 } from './agent-runtime.port';
 
 /**
  * CodexRuntime (add-claude-code-runtime, task 2.2) — today's hard-coded codex
  * execution logic moved BEHIND the {@link AgentRuntime} port, behavior-preserving.
  *
- * Every seam reproduces the existing codex behavior byte-for-byte so the codex
- * end-to-end suite passes unchanged after the refactor:
- *   - buildLaunchLine     → the SAME detached-tmux launch the `AioPtyClient` built
- *     via {@link buildDetachedCodexLaunchLine} from the SAME `CODEX_LAUNCH_ARGV`
- *     default (env-overridable), wrapping `buildCodexLaunchLine`'s `$(cat)` shape.
- *   - injectAuth          → write `~/.codex/auth.json` verbatim (the provider's
- *     `injectCodexAuth`), degrading to unauthenticated (a warning, NOT a failure)
- *     when no material is configured — exactly today's behavior.
- *   - autoSubmit          → the DSR-gated CPR reply + output-quiescence single
- *     carriage-return zero-touch prompt auto-submit.
- *   - detectExit          → `tmux has-session` over the exec handle: a GONE
+ * After refactor-agent-runtime-policy-mechanism it is a POLICY object — declarative
+ * data + pure command-emitters + one `detectExit`, owning no I/O — and every seam
+ * reproduces the existing codex behavior byte-for-byte:
+ *   - buildLaunchLine        → the SAME detached-tmux launch (via the shared
+ *     {@link buildDetachedCodexLaunchLine} / `wrapInDetachedSession`) from the SAME
+ *     `CODEX_LAUNCH_ARGV` default, wrapping `buildCodexLaunchLine`'s `$(cat)` shape.
+ *   - terminalStartup        → declares the DSR-reply + cr-on-quiesce policy the
+ *     shared pty mechanism reads (replaces the old `autoSubmit` observer).
+ *   - sandboxSetupCommands   → the ORDERED config.toml (+ auth.json official /
+ *     model_providers.cap compatible) + prompt-file commands the provider runs
+ *     (replaces the provider's inline `injectCodexAuth`/`injectTaskPrompt`).
+ *   - preStopTrimCommands    → the `~/.codex` trim (keep `sessions/`, zero auth.json).
+ *   - detectExit             → `tmux has-session` over the exec handle: a GONE
  *     session is `done`, an existing session is `running`.
- *   - captureTranscript   → codex has no extra structured source HERE (the rollout
- *     read stays in the provider/rollout-parser path), so this returns no records;
- *     the shared byte-stream asciicast remains the primary replay.
+ * The structured-transcript capture lives in the retention path, not a per-runtime
+ * port method; the shared byte-stream asciicast remains the primary replay.
  */
 export class CodexRuntime implements AgentRuntime {
   readonly id: RuntimeId = 'codex';
@@ -53,26 +56,21 @@ export class CodexRuntime implements AgentRuntime {
   private static readonly CODEX_HOME_DIR = '/home/gem/.codex';
 
   /**
-   * The DSR (Device Status Report) cursor-position query crossterm emits at codex
-   * TUI startup, `ESC[6n` (DSR-6, NO `?`). codex BLOCKS waiting for a CPR reply;
-   * observing it confirms codex (not the shell) owns the terminal — the gate for
-   * the zero-touch prompt auto-submit. Kept byte-identical to the pty client.
+   * Declarative terminal-startup policy (refactor-agent-runtime-policy-mechanism:
+   * replaces the dead `autoSubmit`). codex's positional prompt only PRE-FILLS the
+   * composer, so the SHARED pty mechanism replies to crossterm's startup DSR
+   * (`\x1b[6n`) with a synthetic CPR (`\x1b[1;1R`) and, after output quiesces,
+   * injects a single Enter (`\r`). The quiesce window stays env-tunable
+   * (`CODEX_AUTOSUBMIT_QUIESCE_MS`, default 800) — the SAME value the pty client
+   * read inline, so behavior is byte-identical. A getter so the env is read at
+   * access time (test-tunable), exactly like the prior `autoSubmitQuiesceMs`.
    */
-  static readonly DSR_CURSOR_POSITION_QUERY = '\x1b[6n';
-
-  /** The synthetic CPR (Cursor Position Report) reply injected on seeing the DSR. */
-  static readonly SYNTHETIC_CPR_REPLY = '\x1b[1;1R';
-
-  /** The Enter key the codex composer submits on — the single zero-touch CR. */
-  static readonly CODEX_SUBMIT_KEY = '\r';
-
-  /**
-   * Output-quiescence window (ms) the prompt auto-submit waits AFTER the startup
-   * DSR before injecting the Enter. Env-tunable (`CODEX_AUTOSUBMIT_QUIESCE_MS`),
-   * matching the pty client default so behavior is identical.
-   */
-  static get autoSubmitQuiesceMs(): number {
-    return Number(process.env['CODEX_AUTOSUBMIT_QUIESCE_MS'] ?? 800);
+  get terminalStartup(): TerminalStartup {
+    return {
+      replyToStartupDSR: true,
+      promptSubmit: 'cr-on-quiesce',
+      quiesceMs: Number(process.env['CODEX_AUTOSUBMIT_QUIESCE_MS'] ?? 800),
+    };
   }
 
   /** Resolve the base codex argv (env override wins), mirroring `launchCodex`. */
@@ -107,74 +105,85 @@ export class CodexRuntime implements AgentRuntime {
     );
   }
 
-  async injectAuth(
-    exec: SandboxExec,
-    material: AuthMaterial | null,
-  ): Promise<InjectAuthResult> {
-    const dir = CodexRuntime.CODEX_HOME_DIR;
-    const authJson = material?.authJson;
-    if (!authJson) {
-      // Today's behavior: no auth configured is NOT a failure — the workspace
-      // trust (config.toml) is still written by the provider and codex runs
-      // unauthenticated. So this seam reports ok:true (degraded) and writes
-      // nothing here; the provider's warning log is unchanged.
-      return { ok: true };
-    }
-    // Mirror the provider's `injectCodexAuth`: base64 the document and decode it
-    // into `~/.codex/auth.json` (0600). The provider writes config.toml + auth
-    // together; here we only own the credential write — the config.toml trust
-    // step stays in the provider (it is workspace-policy, not credential).
-    const authB64 = Buffer.from(authJson, 'utf8').toString('base64');
-    await exec.exec(
-      `mkdir -p ${dir} && printf %s '${authB64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`,
-    );
-    return { ok: true };
+  /**
+   * The compatible-provider TOML fragments, byte-identical to the provider's prior
+   * inline `compatibleProviderToml` (wire-compatible-provider-execution). `esc`
+   * escapes backslash + double-quote so an operator value cannot break the TOML
+   * string. Top-level `model`/`model_provider` are written as a PREFIX (bare keys
+   * must precede any table header), the `[model_providers.cap]` table as a suffix.
+   */
+  private static compatibleProviderToml(material: {
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+  }): { topLevel: string; providerTable: string } {
+    const esc = (v: string): string => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return {
+      topLevel: `model = "${esc(material.model)}"\nmodel_provider = "cap"\n`,
+      providerTable:
+        `[model_providers.cap]\n` +
+        `name = "Compatible provider"\n` +
+        `base_url = "${esc(material.baseUrl)}"\n` +
+        `wire_api = "responses"\n` +
+        `experimental_bearer_token = "${esc(material.apiKey)}"\n`,
+    };
   }
 
-  autoSubmit(pty: AutoSubmitPty, _ctx: LaunchContext): () => void {
-    // The DSR-gated zero-touch prompt auto-submit, reproduced from the pty
-    // client's `onOutput`/`maybeArmPromptAutoSubmit`:
-    //   1. On the startup DSR (`ESC[6n`) reply with the synthetic CPR so codex
-    //      proceeds past startup, and arm the prompt auto-submit.
-    //   2. After the DSR, debounce on output quiescence; the FIRST stretch of no
-    //      output fires a single Enter to submit the pre-filled composer, once.
-    let dsrSeen = false;
-    let promptSubmitted = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+  sandboxSetupCommands(
+    ctx: SandboxSetupContext,
+    material: AuthMaterial | null,
+  ): SandboxSetupPlan {
+    const dir = CodexRuntime.CODEX_HOME_DIR;
+    const commands: SandboxSetupCommand[] = [];
 
-    const clearTimer = (): void => {
-      if (timer) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
-    };
-
-    const armSubmit = (): void => {
-      if (!dsrSeen || promptSubmitted) return;
-      clearTimer();
-      timer = setTimeout(() => {
-        timer = undefined;
-        if (promptSubmitted) return;
-        promptSubmitted = true;
-        pty.sendInput(CodexRuntime.CODEX_SUBMIT_KEY);
-      }, CodexRuntime.autoSubmitQuiesceMs);
-    };
-
-    const detach = pty.onOutput((chunk: string) => {
-      if (chunk.length === 0) return;
-      if (chunk.includes(CodexRuntime.DSR_CURSOR_POSITION_QUERY)) {
-        pty.sendInput(CodexRuntime.SYNTHETIC_CPR_REPLY);
-        dsrSeen = true;
-      }
-      armSubmit();
+    // config.toml (always: the workspace-trust table) + auth.json (official only),
+    // assembled as ONE combined command — byte-identical to the provider's prior
+    // inline `injectCodexAuth`. Compatible material adds the top-level model keys
+    // (PREFIX) + the provider table (SUFFIX); no auth.json. No credential → the
+    // trust table alone (codex runs unauthenticated, degraded — NOT a failure).
+    const trustTable = `[projects."${ctx.workspaceDir}"]\ntrust_level = "trusted"\n`;
+    let topLevel = '';
+    let providerTable = '';
+    let authJsonCommand = '';
+    if (material?.codexCompatible) {
+      ({ topLevel, providerTable } = CodexRuntime.compatibleProviderToml(
+        material.codexCompatible,
+      ));
+    } else if (material?.authJson) {
+      const authB64 = Buffer.from(material.authJson, 'utf8').toString('base64');
+      authJsonCommand =
+        ` && printf %s '${authB64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`;
+    }
+    const configToml = topLevel + trustTable + providerTable;
+    const configB64 = Buffer.from(configToml, 'utf8').toString('base64');
+    commands.push({
+      command:
+        `mkdir -p ${dir} && rm -f ${dir}/hooks.json && printf %s '${configB64}' | base64 -d > ${dir}/config.toml && chmod 600 ${dir}/config.toml` +
+        authJsonCommand,
+      tolerateUnresolvedExit: false,
     });
 
-    // Teardown: detach the observer and cancel any pending Enter so it can never
-    // fire after the bridge tore down (the pty client clears this on WS close).
-    return () => {
-      clearTimer();
-      detach();
-    };
+    // prompt-file write — OMITTED entirely when there is no prompt (codex opens a
+    // blank composer), matching the prior `injectTaskPrompt` early-return.
+    if (ctx.prompt) {
+      const promptB64 = Buffer.from(ctx.prompt, 'utf8').toString('base64');
+      commands.push({
+        command: `mkdir -p ${dir} && printf %s '${promptB64}' | base64 -d > ${CODEX_PROMPT_FILE_PATH} && chmod 600 ${CODEX_PROMPT_FILE_PATH}`,
+        tolerateUnresolvedExit: false,
+      });
+    }
+    return { ok: true, commands };
+  }
+
+  preStopTrimCommands(): readonly string[] {
+    const dir = CodexRuntime.CODEX_HOME_DIR;
+    // Keep `sessions/` (rollout); drop caches + sqlite logs; zero auth.json. Trailing
+    // `true` + `2>/dev/null` keep it exit-0 best-effort. Byte-identical to the prior
+    // inline `trimCodexHomeBeforeStop`.
+    return [
+      `rm -rf ${dir}/cache ${dir}/logs_*.sqlite ${dir}/logs_*.sqlite-shm ${dir}/logs_*.sqlite-wal 2>/dev/null; ` +
+        `: > ${dir}/auth.json 2>/dev/null; true`,
+    ];
   }
 
   async detectExit(exec: SandboxExec, ctx: LaunchContext): Promise<ExitSignal> {
@@ -183,23 +192,12 @@ export class CodexRuntime implements AgentRuntime {
     // The `__cap_has__$?` sentinel mirrors `probeSessionLiveness`. An inconclusive
     // probe (no sentinel) is treated as still-running so a transport blip is never
     // mistaken for completion (the poller re-checks).
-    const session = detachedSessionName(ctx.taskId);
     const { stdout } = await exec.exec(
-      `tmux has-session -t ${session}; echo __cap_has__$?`,
+      `${buildHasSessionCommand(ctx.taskId)}; echo __cap_has__$?`,
     );
     const match = /__cap_has__(\d+)/.exec(stdout);
     if (!match) return { status: 'running' };
     return match[1] === '0' ? { status: 'running' } : { status: 'done' };
   }
 
-  async captureTranscript(
-    _exec: SandboxExec,
-    _ctx: LaunchContext,
-  ): Promise<TranscriptCapture> {
-    // Codex's structured transcript (the rollout JSONL) is read by the provider's
-    // retention path through `rollout-parser`, not here — that path is unchanged.
-    // The shared byte-stream asciicast remains the primary replay source, so this
-    // seam adds no structured records for codex.
-    return { records: [] };
-  }
 }

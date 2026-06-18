@@ -52,6 +52,9 @@ function compileProvider() {
     [
       providerSrc,
       join(__dirname, 'codex-auth-source.port.ts'),
+      join(__dirname, 'claude-auth-source.port.ts'),
+      join(__dirname, '..', 'agent-runtime', 'agent-runtime.port.ts'),
+      join(__dirname, '..', 'agent-runtime', 'codex-runtime.ts'),
       join(__dirname, 'provision-lookup.port.ts'),
       join(__dirname, '..', 'terminal', 'codex-launch.ts'),
       join(__dirname, 'skill-allowlist.ts'),

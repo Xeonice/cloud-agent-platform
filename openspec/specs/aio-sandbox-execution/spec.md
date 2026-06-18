@@ -238,3 +238,97 @@ When a task's owning account has an active `compatible`-mode Codex credential, t
 - **WHEN** a compatible credential's Base URL resolves to a loopback/private/link-local/metadata host or a non-http(s) scheme
 - **THEN** the orchestrator does not write that Base URL into the codex config (the credential is treated as unusable for injection rather than fetched/targeted)
 
+### Requirement: Provisioning and teardown delegate to the selected AgentRuntime
+Per-task provisioning and pre-stop teardown SHALL delegate credential/config injection
+and the launch command to the task's selected `AgentRuntime` (see `agent-runtime`)
+instead of hard-coding codex auth.json + codex launch. For a `codex` task the behavior
+SHALL be unchanged (inject `/home/gem/.codex/auth.json` + `config.toml`, trim
+`/home/gem/.codex` and clear `auth.json` before stop). For a `claude-code` task,
+provisioning SHALL instead inject the Claude credential as the `CLAUDE_CODE_OAUTH_TOKEN`
+launch env (no auth file) and pre-seed `/home/gem/.claude/.claude.json` (global
+onboarding + per-project trust), and the pre-stop trim SHALL target `/home/gem/.claude`
+(removing cached/credential state while keeping the session transcript under
+`/home/gem/.claude/projects/`) as the defense-in-depth analog of the codex trim. A
+pre-stop trim failure SHALL NOT block the stop+retain.
+
+#### Scenario: Codex provisioning/teardown is unchanged
+- **WHEN** a `codex` task is provisioned and later torn down
+- **THEN** auth.json/config.toml are injected and the `/home/gem/.codex` trim + auth.json
+  clear run before stop, exactly as before
+
+#### Scenario: Claude provisioning injects an env token and pre-seed, not an auth file
+- **WHEN** a `claude-code` task is provisioned
+- **THEN** the launch env carries `CLAUDE_CODE_OAUTH_TOKEN`, `/home/gem/.claude/.claude.json`
+  is pre-seeded with global onboarding + per-project trust, and no `~/.codex/auth.json`
+  is written
+
+#### Scenario: Claude pre-stop trim targets the Claude HOME and keeps the transcript
+- **WHEN** a `claude-code` task reaches a terminal state and the container is stopped+retained
+- **THEN** `/home/gem/.claude` cached/credential state is trimmed while
+  `/home/gem/.claude/projects/<slug>/<session-id>.jsonl` is kept, and a trim failure does
+  not block the stop
+
+### Requirement: The derived AIO image bakes a pinned Claude Code CLI
+The derived AIO Sandbox image SHALL bake the Claude Code CLI at a PINNED version
+alongside the pinned codex CLI (never `latest`), because the Claude launch relies on
+`CLAUDE_CODE_SANDBOXED` and onboarding-suppression flags that are undocumented binary
+internals and must not drift. The image SHALL be able to launch a `claude-code` task
+without installing the CLI at provision time.
+
+#### Scenario: Claude is present at a pinned version in the image
+- **WHEN** the derived image is built and a `claude-code` task starts
+- **THEN** `claude --version` reports the pinned version and no runtime install step is needed
+
+### Requirement: Provisioning runs runtime-emitted setup commands uniformly, with no codex-inline code
+Per-task provisioning SHALL obtain the selected runtime's `sandboxSetupCommands` and run
+them via the shared `/v1/shell/exec` surface for EVERY runtime, with no codex-specific
+inline injection in the provider. The provider SHALL NOT retain `injectCodexAuth`,
+`injectTaskPrompt`, a `CODEX_HOME_DIR` constant used for inline writes, or any
+`runtime.id === 'codex'` branch on the provision path. The prompt-file write (from
+`task.prompt`) is shared mechanism applied uniformly; the credential/config bytes are
+whatever the runtime's setup commands write. Provisioning SHALL still FAIL CLOSED on a
+non-zero exit (tearing the container down) exactly as before.
+
+#### Scenario: Codex and claude both provision through the same uniform path
+- **WHEN** a `codex` task and a `claude-code` task are each provisioned
+- **THEN** the provider runs each runtime's emitted setup commands via the same exec
+  helper, the provider source contains no `injectCodexAuth`/`id === 'codex'`, and the
+  exec commands codex produces are byte-identical to the v0.6.0 inline `injectCodexAuth`
+  (golden-tested)
+
+#### Scenario: A broken runtime setup still fails closed
+- **WHEN** a runtime's setup commands exit non-zero (e.g. claude with no token)
+- **THEN** provisioning tears the container down and surfaces the failure rather than
+  starting an unusable sandbox — unchanged from before
+
+### Requirement: Pre-stop trim runs runtime-emitted trim commands uniformly
+Pre-stop teardown SHALL obtain the selected runtime's `preStopTrimCommands` and run them
+via the shared exec for EVERY runtime, with no `runtime.id === 'codex'` branch and no
+inline `trimCodexHomeBeforeStop` in the provider. Codex's trim commands SHALL keep the
+session transcript while removing cache/credential state, byte-identical to the prior
+inline trim (golden-tested); a trim failure SHALL NOT block the stop+retain.
+
+#### Scenario: Trim is uniform and codex-byte-identical
+- **WHEN** a terminal codex task is stopped+retained
+- **THEN** the provider runs codex's emitted trim commands (which match the prior
+  inline trim byte-for-byte) via the shared exec, with no codex-specific branch, and a
+  trim error does not block the stop
+
+### Requirement: The pty client's terminal mechanism is driven by declared policy
+The pty client SHALL drive its DSR/CPR/output-quiescence handshake from the runtime's
+declared `terminalStartup` policy rather than an agent-identity flag (`launchedCodex` /
+`runtime.id === 'codex'`). The detached-tmux launch wrapper and `$(cat <prompt-file>)`
+positional-prompt delivery SHALL be built once as shared mechanism from the runtime's
+`{ argv, env }`, identically for all runtimes. The completion probe SHALL call only
+`runtime.detectExit` (no inline `hasSession` duplicate of codex's probe).
+
+#### Scenario: One launch mechanism, runtime supplies only argv/env
+- **WHEN** any runtime's task launches
+- **THEN** the pty client wraps the runtime's `{ argv, env }` in the SAME detached-tmux
+  + `$(cat <prompt-file>)` shell line, and the codex launch-line string is byte-identical
+  to v0.6.0 (golden-tested)
+
+#### Scenario: Liveness uses the runtime's single exit source
+- **WHEN** the liveness poller checks whether a task is done
+- **THEN** it calls `runtime.detectExit` (codex: `tmux has-session`; claude: transcript
+  `end_turn` then `kill-session`) and contains no inline codex has-session duplicate

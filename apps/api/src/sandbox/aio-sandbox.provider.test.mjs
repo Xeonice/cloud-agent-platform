@@ -113,6 +113,14 @@ function compileProvider() {
     [
       providerSrc,
       join(__dirname, 'codex-auth-source.port.ts'),
+      // The provider now resolves claude material directly (refactor step 3: the
+      // uniform sandboxSetupCommands path) so it imports CLAUDE_AUTH_SOURCE and the
+      // agent-runtime port's AuthMaterial/RuntimeId types — listed so their .js emit.
+      join(__dirname, 'claude-auth-source.port.ts'),
+      join(__dirname, '..', 'agent-runtime', 'agent-runtime.port.ts'),
+      // The provider falls back to the codex default runtime (new CodexRuntime())
+      // when the registry can't resolve one, so its .js must be emitted + required.
+      join(__dirname, '..', 'agent-runtime', 'codex-runtime.ts'),
       join(__dirname, 'provision-lookup.port.ts'),
       // The provider now imports the shared launch contract (the prompt-file path)
       // from ../terminal/codex-launch — a dependency-free leaf. Listed so its .js
@@ -377,6 +385,26 @@ try {
   const mod = await import(pathToFileURL(providerJs).href);
   const { AioSandboxProvider } = mod;
   assert(typeof AioSandboxProvider === 'function', 'provider class is exported');
+
+  // ---- 3.5 FAIL-CLOSED MATRIX (refactor-agent-runtime-policy-mechanism) --------
+  // The per-command fail-closed predicate the uniform setup loop applies. A REAL
+  // non-zero exit ALWAYS fails closed; an UNRESOLVED (NaN) exit fails closed UNLESS
+  // the command tolerates it (claude's auth write). Pins TRAP-3 byte-for-byte.
+  assert(AioSandboxProvider.setupCommandFailed(0, false) === false, 'matrix: exit 0, strict → ok');
+  assert(AioSandboxProvider.setupCommandFailed(0, true) === false, 'matrix: exit 0, tolerant → ok');
+  assert(AioSandboxProvider.setupCommandFailed(1, false) === true, 'matrix: exit 1, strict → fail');
+  assert(
+    AioSandboxProvider.setupCommandFailed(1, true) === true,
+    'matrix: exit 1, tolerant → fail (a REAL non-zero always fails closed)',
+  );
+  assert(
+    AioSandboxProvider.setupCommandFailed(Number.NaN, false) === true,
+    'matrix: NaN, strict → fail (codex; claude prompt write)',
+  );
+  assert(
+    AioSandboxProvider.setupCommandFailed(Number.NaN, true) === false,
+    'matrix: NaN, tolerant → ok (claude auth write — preserves code!==null&&code!==0)',
+  );
 
   const fakeContainer = makeFakeContainer();
   const fakeDocker = makeFakeDocker(fakeContainer);
@@ -932,10 +960,10 @@ try {
     } finally {
       globalThis.fetch = origFetch;
     }
-    assert(promptFailThrew, 'provision rejects when prompt injection exits non-zero (fail-closed)');
+    assert(promptFailThrew, 'provision rejects when the prompt setup command exits non-zero (fail-closed)');
     assert(
-      pfMsg.includes('prompt injection') && pfMsg.includes('1'),
-      'fail-closed error identifies the prompt-injection failure and exit code',
+      pfMsg.includes('setup') && pfMsg.includes('exit_code 1'),
+      'fail-closed error identifies the runtime setup failure and exit code',
     );
     assert(
       promptFailContainer.calls.started === 1 &&
