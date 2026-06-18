@@ -117,7 +117,16 @@ async function createTask(prompt = 'aio-e2e', extra = {}) {
   const repoRes = await fetch(`${API}/repos`, {
     method: 'POST',
     headers: authHeaders,
-    body: JSON.stringify({ name: `e2e-${randomUUID().slice(0, 6)}`, gitSource: 'https://x/y.git' }),
+    body: JSON.stringify({
+      name: `e2e-${randomUUID().slice(0, 6)}`,
+      // A REAL reachable repo so the provision-time clone SUCCEEDS and the sandbox
+      // shell goes live. The prior 'https://x/y.git' placeholder failed EVERY
+      // provision ("Could not resolve host: x"); `TASK_REPO_URL` is a FALLBACK only
+      // (used when a repo has NO gitSource), so it could never override the
+      // placeholder — which is why this suite never ran green. Override the default
+      // via TASK_REPO_URL. Tests G/H still do their own in-sandbox local clone.
+      gitSource: process.env.TASK_REPO_URL || 'https://github.com/octocat/Hello-World.git',
+    }),
   });
   assert.ok(repoRes.ok, `POST /repos -> ${repoRes.status}`);
   const repo = await repoRes.json();
@@ -438,9 +447,22 @@ test('I. claude-code runtime auto-launches and answers in the AIO sandbox', { sk
 
   // The orchestrator auto-provisions + auto-launches claude; the positional prompt
   // auto-runs (no injected Enter). Wait for the marker to stream back.
+  // claude's TUI renders with INTERSPERSED cursor-positioning/erase escapes (e.g.
+  // `S\x1b[Cyntax` ...), so the MARKER is NOT a contiguous substring of the RAW
+  // stream — strip ANSI control sequences first so the comparison sees the rendered
+  // TEXT (same alt-buffer/escape reality the static-terminal-log work handles).
+  const stripAnsi = (s) =>
+    s
+      .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1B[@-Z\\-_]/g, '')
+      .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, '');
   const answered = await waitFor(
-    () => operator.getOutput().includes(MARKER),
-    { timeoutMs: 90_000 },
+    // Generous: claude's COLD START (CLI init + first-run model resolution, incl a
+    // fallback when the default model is unavailable) can take >90s before it even
+    // renders the prompt; the turn itself is fast once started. Verified manually
+    // (capture-pane) that claude authenticates + auto-runs the prompt + answers.
+    () => stripAnsi(operator.getOutput()).includes(MARKER),
+    { timeoutMs: 180_000 },
   );
   const out = operator.getOutput();
   // An auth/login gate means the token did not authenticate in the clean sandbox.
