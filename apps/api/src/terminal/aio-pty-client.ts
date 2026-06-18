@@ -40,6 +40,22 @@ import {
   buildDetachedCodexLaunchLine,
   detachedSessionName,
 } from './codex-launch';
+// add-claude-code-runtime Track 3 (3.2): the bridge resolves the task's selected
+// AgentRuntime (Track 2) and calls its `buildLaunchLine` / `autoSubmit` / `detectExit`
+// instead of the inline codex logic. CODEX is preserved byte-identical: when the
+// resolved runtime is `codex` (or unresolved), the existing detached-tmux launch +
+// DSR-gated CR autosubmit + `tmux has-session` exit detection run exactly as before.
+// CLAUDE takes the runtime path: the runtime's tmux launch line, NO autosubmit
+// (`claude "prompt"` auto-runs), and `detectExit` that tails the `--session-id`
+// JSONL for the last `assistant` `end_turn` then `tmux kill-session` so the SAME
+// session-gone liveness path resolves the task (the poller is demoted to an
+// abnormal-death watchdog for claude).
+import type {
+  AgentRuntime,
+  RuntimeExitDecision,
+  SandboxExec,
+  SandboxExecResult,
+} from '../agent-runtime/agent-runtime.integration';
 
 /**
  * The DSR (Device Status Report) cursor-position query crossterm emits on
@@ -124,6 +140,14 @@ const CODEX_PROMPT_AUTOSUBMIT_QUIESCE_MS = Number(
 const CODEX_LIVENESS_POLL_MS = Number(
   process.env['CODEX_LIVENESS_POLL_MS'] ?? 5000,
 );
+
+/**
+ * The cloned-workspace directory inside the sandbox the detached session runs in
+ * (`-c <dir>`), matching the codex `buildDetachedCodexLaunchLine` default. Passed
+ * to a non-codex runtime's `buildLaunchLine` as the session cwd so claude runs in
+ * the same cloned task repo codex does (3.2). One constant shared by both paths.
+ */
+const CLAUDE_WORKSPACE_DIR = '/home/gem/workspace';
 
 /** A sandbox AIO JSON frame received over the terminal WebSocket. */
 interface AioInboundFrame {
@@ -236,12 +260,30 @@ export class AioPtyClient implements TerminalPty {
    *                   no liveness poller) — a terminal opened purely for
    *                   snapshot/tail replay of a finished task.
    */
+  /**
+   * The task's selected {@link AgentRuntime} (3.2), resolved ONCE on `ready` via
+   * {@link resolveRuntime} before launching. `undefined` until resolved (or when no
+   * resolver/registry is wired), in which case the bridge uses the DEFAULT codex
+   * inline path — so a focused transport unit test (no runtime resolver) still
+   * launches codex exactly as before.
+   */
+  private runtime?: AgentRuntime;
+
   constructor(
     private readonly taskId: string,
     wsUrl: string,
     private readonly baseUrl: string,
     private readonly onExit?: (status: AioExitStatus) => void,
     private readonly mode: 'launch-or-attach' | 'replay-only' = 'replay-only',
+    /**
+     * Resolve the task's selected {@link AgentRuntime} (3.2). Called at MOST once,
+     * on `ready`, before the launch-or-attach decision. Optional + best-effort: a
+     * missing resolver, a rejected promise, or an `undefined` result all fall back
+     * to the DEFAULT codex inline path, so a runtime-resolution hiccup can never
+     * strand a codex task. Resolution is async (it may read the task's `runtime`
+     * column), so it is threaded as a callback rather than a constructed value.
+     */
+    private readonly resolveRuntime?: () => Promise<AgentRuntime | undefined>,
   ) {
     this.sessionName = detachedSessionName(taskId);
     // Connect WITHOUT any `?session_id=` query parameter so the sandbox creates a
@@ -275,6 +317,72 @@ export class AioPtyClient implements TerminalPty {
    */
   write(data: string): void {
     this.sendInput(data);
+  }
+
+  /**
+   * Resolve the task's selected {@link AgentRuntime} EXACTLY ONCE (3.2), caching it
+   * on {@link runtime}. Best-effort + never throws: a missing resolver, a rejected
+   * promise, or an `undefined` result leaves {@link runtime} undefined so every
+   * launch/exit branch falls back to the DEFAULT codex inline path. Idempotent — a
+   * second call is a no-op once resolved.
+   */
+  private async ensureRuntimeResolved(): Promise<void> {
+    if (this.runtime || !this.resolveRuntime) return;
+    try {
+      this.runtime = (await this.resolveRuntime()) ?? undefined;
+    } catch (err) {
+      this.logger.warn(
+        `task ${this.taskId}: could not resolve AgentRuntime (defaulting to codex): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      this.runtime = undefined;
+    }
+  }
+
+  /**
+   * Launch the task's selected agent in a fresh detached tmux session (3.2). For
+   * CODEX (or an unresolved runtime) this is exactly {@link launchCodex} — the
+   * byte-identical inline codex path with the DSR-gated CR autosubmit. For any other
+   * runtime (claude-code) it builds the launch line from `runtime.buildLaunchLine`,
+   * sends it, attaches, and arms the prompt autosubmit ONLY if `runtime.autoSubmit()`
+   * returns true (claude returns false → no Enter is ever injected, since
+   * `claude "prompt"` auto-runs the positional prompt).
+   *
+   * @param armAutoSubmit Whether a DEFINITIVE fresh launch (true) vs an inconclusive
+   *   fallback (false). Forwarded to the codex path; for a non-codex runtime it is
+   *   intersected with `runtime.autoSubmit()` so a no-op-autosubmit runtime never
+   *   arms the timer regardless.
+   */
+  private launchAgent(armAutoSubmit = true): void {
+    const runtime = this.runtime;
+    if (!runtime) {
+      // UNRESOLVED runtime only (resolver missing/failed) → the inline codex launch
+      // is the safe legacy default since there is no port to call. A RESOLVED codex
+      // now flows through the port path below (VR-5: shared scaffolding no longer
+      // branches on agent identity; codex is driven through CodexRuntime, whose
+      // buildLaunchLine is byte-identical to this inline path).
+      this.launchCodex(undefined, armAutoSubmit);
+      return;
+    }
+    // RESOLVED runtime (codex OR claude-code): build the detached-tmux launch line
+    // from the runtime itself (it owns the agent argv + env + `$(cat <prompt-file>)`
+    // shape — for codex `CodexRuntime.buildLaunchLine` wraps the SAME
+    // `CODEX_LAUNCH_ARGV` via the SAME `buildDetachedCodexLaunchLine`, including the
+    // hook-disabling guard) and run it over the same WS-shell input + attach.
+    const line = runtime.buildLaunchLine({
+      taskId: this.taskId,
+      sessionName: this.sessionName,
+      workspaceDir: CLAUDE_WORKSPACE_DIR,
+    });
+    // The runtime decides whether its prompt needs a synthetic Enter. claude's
+    // `autoSubmit()` is a no-op (false), so `launchedCodex` stays false and the
+    // DSR/CPR autosubmit machinery never arms for claude — no stray CR is injected.
+    const wantsAutoSubmit =
+      typeof runtime.autoSubmit === 'function' ? runtime.autoSubmit() : false;
+    this.launchedCodex = armAutoSubmit && wantsAutoSubmit;
+    this.sendInput(`${line}\n`);
+    this.attachSession();
   }
 
   /**
@@ -365,19 +473,25 @@ export class AioPtyClient implements TerminalPty {
    *     throws into the WS message handler.
    */
   private async launchOrAttachOnReady(): Promise<void> {
+    // 3.2 — resolve the task's runtime ONCE before deciding. Best-effort: a missing
+    // resolver / rejected promise / undefined result leaves `this.runtime` undefined
+    // → the DEFAULT codex inline path. Resolved BEFORE the launch branch so the
+    // runtime's `buildLaunchLine` / `autoSubmit` gate the fresh-launch path.
+    await this.ensureRuntimeResolved();
     try {
       const alive = await this.hasSession();
       if (alive === true) {
         this.attachToNamedSession();
       } else if (alive === false) {
-        // Definitively GONE → genuine fresh launch; arm the auto-submit.
-        this.launchCodex();
+        // Definitively GONE → genuine fresh launch; arm the auto-submit (the runtime
+        // gates whether an Enter is actually injected — claude's autoSubmit is a no-op).
+        this.launchAgent();
       } else {
         // INCONCLUSIVE → fresh launch as a recoverable fallback, but DO NOT arm
-        // the auto-submit: if a codex was actually already running, the duplicate
+        // the auto-submit: if an agent was actually already running, the duplicate
         // `tmux new-session` is a no-op and the attach rejoins it, so a stray Enter
         // must not be injected.
-        this.launchCodex(undefined, false);
+        this.launchAgent(false);
       }
     } catch (err) {
       this.logger.warn(
@@ -596,10 +710,14 @@ export class AioPtyClient implements TerminalPty {
   }
 
   /**
-   * Start the liveness poller (D4): on {@link CODEX_LIVENESS_POLL_MS} probe whether
-   * the named tmux session still exists. While it exists the task is running; the
-   * first probe that reports it GONE resolves the exit status and drives the
-   * terminal path via {@link onExit}. Idempotent — arming twice is a no-op.
+   * Start the termination poller on {@link CODEX_LIVENESS_POLL_MS} (D4 / 3.2).
+   * RUNTIME-AGNOSTIC: each tick dispatches via {@link pollLiveness} to the resolved
+   * runtime — for CODEX the `tmux has-session` GONE check IS the termination signal;
+   * for CLAUDE the runtime's transcript-`end_turn` `detectExit` is the normal signal
+   * and this poller's `has-session` check is DEMOTED to an abnormal-death watchdog.
+   * Either way the FIRST resolved tick drives the terminal path via {@link onExit}.
+   * Armed once the AIO shell is established (regardless of launch-vs-attach, so a
+   * re-adopted session is watched too) and idempotent — arming twice is a no-op.
    */
   private startLivenessPoller(): void {
     if (this.livenessTimer || this.exitResolved) return;
@@ -619,17 +737,35 @@ export class AioPtyClient implements TerminalPty {
   }
 
   /**
-   * One liveness probe (D4): if the named tmux session is still alive, return
-   * without action. When it is GONE — and the exit has not already been resolved —
-   * resolve the exit status and hand it to {@link onExit}, then stop polling. A
-   * probe error (sandbox HTTP unreachable, e.g. the api just lost the WS during a
-   * redeploy) is treated as INCONCLUSIVE, not as "gone", so a transient blip never
-   * force-fails a still-running task; the next poll re-checks.
+   * One liveness probe (D4 / 3.2). The TERMINATION SIGNAL is DISPATCHED to the
+   * task's selected runtime:
+   *   - CODEX (or unresolved): the UNCHANGED `tmux has-session` path — while the
+   *     named session exists the task is running; the first probe that reports it
+   *     GONE resolves the real exit status and terminates exactly once. A probe
+   *     error is INCONCLUSIVE (re-check next tick), so a transport blip never
+   *     force-fails a still-running task.
+   *   - CLAUDE (a runtime exposing `detectExit`): an interactive claude turn does
+   *     NOT exit the process (it idles), so `has-session` would stay alive forever.
+   *     Instead the runtime's `detectExit` tails the `--session-id` JSONL for the
+   *     last `assistant` `end_turn` and, on completion, proactively
+   *     `tmux kill-session` so the SAME session-gone path resolves the task — and
+   *     this poller is thereby DEMOTED to an abnormal-death watchdog (a claude
+   *     session that dies WITHOUT an `end_turn` is still caught as session-gone).
    */
   private async pollLiveness(): Promise<void> {
     if (this.exitResolved || this.livenessProbeInFlight) return;
     this.livenessProbeInFlight = true;
     try {
+      const runtime = this.runtime;
+      if (runtime && typeof runtime.detectExit === 'function') {
+        // VR-5: codex's `detectExit` (CodexRuntime) runs the SAME `tmux has-session`
+        // probe and resolves via the SAME shared `resolveExitStatus`, so routing it
+        // through the port is behavior-preserving and removes the identity branch.
+        // Only an UNRESOLVED runtime falls to the inline has-session path below.
+        await this.pollRuntimeExit(runtime);
+        return;
+      }
+      // Unresolved runtime only → the inline has-session termination path.
       const alive = await this.hasSession();
       if (alive === null) return; // inconclusive — re-check next tick
       if (alive) return; // still running
@@ -642,6 +778,107 @@ export class AioPtyClient implements TerminalPty {
     } finally {
       this.livenessProbeInFlight = false;
     }
+  }
+
+  /**
+   * Runtime-driven turn-completion probe (3.2, claude). Calls the runtime's
+   * `detectExit(exec, taskId)` — which tails the `--session-id` JSONL for the last
+   * `assistant` `end_turn` and, when complete, `tmux kill-session`s the named
+   * session — then maps its decision:
+   *   - `{ done: false }`  → still running (re-check next tick);
+   *   - `{ done: null }`   → inconclusive (transient read error; re-check next tick);
+   *   - `{ done: true }`   → the runtime ended the turn. The session is now gone (it
+   *     killed it), so resolve the real exit status via the SHARED
+   *     {@link resolveExitStatus} (so a clean `end_turn` maps to a zero exit →
+   *     `recordSuccess`, identical one-shot guardrails semantics to codex), unless
+   *     the runtime supplied an explicit `status`. Terminates exactly once.
+   * Never throws into the poller: a `detectExit` rejection is treated as
+   * inconclusive so a still-running claude task is never force-failed by a transient
+   * transcript-read blip (the abnormal-death watchdog still catches a truly dead one).
+   */
+  private async pollRuntimeExit(runtime: AgentRuntime): Promise<void> {
+    let decision: RuntimeExitDecision | undefined;
+    try {
+      decision = await runtime.detectExit!(this.runSandboxExec(), this.taskId);
+    } catch (err) {
+      this.logger.debug(
+        `task ${this.taskId}: runtime "${runtime.id}" detectExit probe errored (inconclusive): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      decision = undefined;
+    }
+    if (decision && decision.done === true) {
+      // The runtime ended the turn (it has already `tmux kill-session`ed). Resolve
+      // the real exit status via the SHARED path (a clean `end_turn` → zero exit →
+      // recordSuccess), unless the runtime supplied an explicit status. Once.
+      // Read the explicit status into a local BEFORE the await — accessed via an
+      // index read so it does not depend on discriminant narrowing surviving the
+      // subsequent `await` (control-flow re-analysis of the `let decision`).
+      const explicit = (decision as { status?: AioExitStatus }).status;
+      if (this.exitResolved) return;
+      this.exitResolved = true;
+      this.stopLivenessPoller();
+      const status: AioExitStatus = explicit ?? (await this.resolveExitStatus());
+      this.onExit?.(status);
+      return;
+    }
+    // detectExit says NOT-done (or was inconclusive/errored). The liveness poller is
+    // the ABNORMAL-DEATH WATCHDOG for a runtime whose normal completion is transcript-
+    // driven (3.4): if the detached session has nonetheless DISAPPEARED without an
+    // `end_turn` (the agent crashed, the tmux daemon died, or a turn killed its
+    // session in a way detectExit could not read), the task would otherwise hang
+    // forever. So probe `tmux has-session`: a definitively GONE session resolves the
+    // exit status (abnormal) exactly once. An alive/inconclusive session re-checks
+    // next tick — so a transient transcript-read blip never force-fails a live task.
+    const alive = await this.hasSession();
+    if (alive === null || alive === true) return;
+    if (this.exitResolved) return;
+    this.exitResolved = true;
+    this.stopLivenessPoller();
+    const status = await this.resolveExitStatus();
+    this.onExit?.(status);
+  }
+
+  /**
+   * The {@link SandboxExec} closure a runtime's `detectExit` uses to read the
+   * transcript / kill the session over THIS sandbox's `/v1/shell/exec`, returning
+   * the parsed `{exitCode, output}`. A non-`ok` HTTP status surfaces as
+   * `{exitCode: NaN}` so the runtime treats it as inconclusive rather than as
+   * completion.
+   */
+  private runSandboxExec(): SandboxExec {
+    const baseUrl = this.baseUrl;
+    return async (command: string): Promise<SandboxExecResult> => {
+      const res = await fetch(`${baseUrl}/v1/shell/exec`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command }),
+      });
+      if (!res.ok) {
+        return { exitCode: Number.NaN, output: `/v1/shell/exec responded ${res.status}` };
+      }
+      const body = (await res.json().catch(() => undefined)) as
+        | { exitCode?: unknown; code?: unknown; stdout?: unknown; output?: unknown; data?: unknown }
+        | undefined;
+      // Tolerate both the flat shape and the live AIO `data`-nested shape (the same
+      // unwrap the provider's parseExecResult does), so a runtime sees consistent
+      // exit-code semantics on both servers.
+      const top = (body ?? {}) as Record<string, unknown>;
+      const d = (top.data ?? top) as Record<string, unknown>;
+      const rawCode = d.exit_code ?? d.exitCode ?? d.code;
+      const exitCode =
+        typeof rawCode === 'number' && Number.isFinite(rawCode)
+          ? rawCode
+          : typeof rawCode === 'string' && rawCode.trim() !== '' && Number.isFinite(Number(rawCode.trim()))
+            ? Number(rawCode.trim())
+            : Number.NaN;
+      const output =
+        (typeof d.output === 'string' && d.output) ||
+        (typeof d.stdout === 'string' && d.stdout) ||
+        '';
+      return { exitCode, output };
+    };
   }
 
   /**

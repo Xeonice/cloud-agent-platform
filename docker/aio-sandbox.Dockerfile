@@ -62,6 +62,21 @@ ARG AIO_SANDBOX_TAG=1.0.0.125
 # ---------------------------------------------------------------------------
 ARG CODEX_VERSION=0.131
 
+# PINNED, known-good Claude Code CLI version, set from a documented build-arg and
+# OVERRIDABLE at build time (`docker build --build-arg CLAUDE_CODE_VERSION=<x.y.z>`).
+# Baked alongside the codex CLI so a `claude-code` task can launch WITHOUT a
+# runtime install step (add-claude-code-runtime, design D7).
+#
+# WHY PINNED (NEVER "latest", design D7): the Claude launch relies on
+# `CLAUDE_CODE_SANDBOXED` plus the first-run onboarding-suppression flags, which
+# are UNDOCUMENTED binary internals. An unpinned bump could flip the TUI from
+# inline back to alt-screen (breaking the asciicast capture/replay) or change the
+# trust/onboarding gate (re-introducing a blocking prompt with no interactive
+# operator to answer it). Default `2.1.181` is the release verified by the
+# hands-on spike (see research-brief.md / design.md). Bump DELIBERATELY, after
+# re-verifying inline-render + onboarding-suppression on the new version.
+ARG CLAUDE_CODE_VERSION=2.1.181
+
 # PINNED OpenSpec CLI version (task-preinstall-skills). The `openspec` skill the
 # operator can select drops `.codex/skills/*/SKILL.md` whose steps shell out to
 # the `openspec` CLI (`openspec status`/`list`/`instructions`/`new`); without the
@@ -120,6 +135,7 @@ RUN pnpm --filter=@cap/sandbox-hooks --prod deploy --legacy /opt/deploy
 # This is the image the orchestrator actually provisions per task.
 FROM ghcr.io/agent-infra/sandbox:${AIO_SANDBOX_TAG} AS sandbox
 ARG CODEX_VERSION
+ARG CLAUDE_CODE_VERSION
 ARG OPENSPEC_VERSION
 
 # Install the Codex CLI at the version pinned by the CODEX_VERSION build-arg
@@ -130,6 +146,16 @@ ARG OPENSPEC_VERSION
 # requested CODEX_VERSION.
 RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
   && codex --version
+
+# Bake the Claude Code CLI at the version pinned by the CLAUDE_CODE_VERSION
+# build-arg (default 2.1.181; overridable; NEVER an unpinned latest — design D7).
+# A `claude-code` task is launched IN-SHELL over /v1/shell/ws by the orchestrator
+# bridge (exactly like codex), so the binary MUST be present in the image; there
+# is no per-task install step (the gem user, uid 1000, cannot `npm i -g` to the
+# root-owned prefix). `claude --version` asserts the derived image actually bakes
+# the requested CLAUDE_CODE_VERSION (parity with the codex/openspec bake checks).
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+  && claude --version
 
 # Bake the OpenSpec CLI (task-preinstall-skills): the `openspec` skill's
 # SKILL.md steps shell out to this CLI, and the per-task provision channel (gem,

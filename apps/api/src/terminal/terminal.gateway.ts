@@ -87,6 +87,16 @@ import {
 } from './cast-writer';
 import { AioPtyClient, type AioExitStatus } from './aio-pty-client';
 import type { SandboxConnection } from '../sandbox/sandbox-provider.port';
+// add-claude-code-runtime Track 3 (3.2): the gateway resolves the task's selected
+// AgentRuntime (Track 2's RuntimeRegistry) and threads it into the AioPtyClient so
+// the launch / autosubmit / exit-detection seams dispatch to it. Optional injection
+// — when no registry is wired (focused transport unit context) the bridge defaults
+// to the codex inline path, so nothing about the codex flow changes.
+import {
+  RUNTIME_REGISTRY,
+  type AgentRuntime,
+  type RuntimeRegistry,
+} from '../agent-runtime/agent-runtime.integration';
 import { WriteLockService } from '../write-lock/write-lock.service';
 // be-oauth-allowlist 2.7 — connect-time operator SESSION authentication (replaces
 // the AUTH_TOKEN-only operator check). `resolveOperatorPrincipal` is the shared,
@@ -338,6 +348,10 @@ export class TerminalGateway
     @Optional() private readonly writeLock?: WriteLockService,
     @Optional() @Inject(GuardrailsService) private readonly guardrails?: GuardrailsService,
     @Optional() @Inject(AuthSessionService) private readonly authSession?: AuthSessionService,
+    // 3.2 — optional so the transport core still constructs in isolation; when the
+    // module provides it the gateway resolves each task's runtime and hands it to
+    // the AioPtyClient's launch/exit seams.
+    @Optional() @Inject(RUNTIME_REGISTRY) private readonly runtimes?: RuntimeRegistry,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -780,6 +794,11 @@ export class TerminalGateway
       // the container by the time we get here, so a fresh launch authenticates on
       // startup.
       'launch-or-attach',
+      // 3.2 — the runtime resolver: the bridge calls this ONCE on `ready` to resolve
+      // the task's selected AgentRuntime (claude-code | codex) and dispatch its
+      // launch/autosubmit/exit-detection seams. Best-effort + lazily bound so a
+      // missing registry (transport-only context) falls back to the codex path.
+      () => this.resolveRuntimeForTask(taskId),
     );
     const session: TerminalSession = { taskId, pty, snapshots };
     this.registerSession(session);
@@ -810,6 +829,31 @@ export class TerminalGateway
       `task ${taskId}: opened AioPtyClient to ${wsUrl} + started snapshot manager`,
     );
     return session;
+  }
+
+  /**
+   * Resolve a task's selected {@link AgentRuntime} via the injected
+   * {@link RuntimeRegistry} (3.2). Best-effort + never throws: a missing registry
+   * (transport-only unit context), a registry without `resolveForTask`, or a
+   * rejected promise all resolve to `undefined`, which the {@link AioPtyClient}
+   * treats as the DEFAULT codex inline path — so a runtime-resolution hiccup can
+   * never strand a codex task. Threaded as the bridge's runtime resolver so the
+   * (async) per-task `runtime`-column lookup happens off the synchronous
+   * {@link openSession} path, only when the AIO shell is `ready`.
+   */
+  private async resolveRuntimeForTask(
+    taskId: string,
+  ): Promise<AgentRuntime | undefined> {
+    try {
+      return (await this.runtimes?.resolveForTask?.(taskId)) ?? undefined;
+    } catch (err) {
+      this.logger.warn(
+        `task ${taskId}: could not resolve AgentRuntime for terminal launch (defaulting to codex): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return undefined;
+    }
   }
 
   /**

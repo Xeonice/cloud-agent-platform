@@ -6,7 +6,16 @@ import {
   TRANSCRIPT_STORE,
 } from './session-history.controller';
 import { TasksService } from './tasks.service';
-import { GUARDRAILS_SERVICE_TOKEN } from './tasks.service';
+import {
+  GUARDRAILS_SERVICE_TOKEN,
+  AGENT_RUNTIME_REGISTRY_TOKEN,
+  CLAUDE_RUNTIME_READINESS_TOKEN,
+} from './tasks.service';
+// add-claude-code-runtime VR-3: the create-time runtime resolve + claude
+// fail-closed gate inject the two tasks-layer tokens below; bind them to the
+// `@Global()` SandboxModule's already-exported runtime registry + claude auth
+// source so the gates actually fire (they were @Optional and unbound = dead).
+import { RUNTIME_REGISTRY, CLAUDE_AUTH_SOURCE } from '../sandbox/sandbox.module';
 import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 import { SessionTranscriptService } from './session-transcript.service';
@@ -53,6 +62,21 @@ import { SessionTranscriptService } from './session-transcript.service';
     {
       provide: TRANSCRIPT_STORE,
       useExisting: SessionTranscriptService,
+    },
+    // add-claude-code-runtime VR-3: wire the two tasks-layer create-gate tokens
+    // to the `@Global()` SandboxModule's runtime registry + claude auth source.
+    // Without these the @Optional() deps were always undefined, so a `claude-code`
+    // create with no token was admitted (failing only at provision) instead of
+    // being rejected up front. `IntegrationRuntimeRegistry` satisfies
+    // `IAgentRuntimeRegistry.resolve()`; `EnvClaudeAuthSource` satisfies
+    // `IRuntimeReadiness.configured()`.
+    {
+      provide: AGENT_RUNTIME_REGISTRY_TOKEN,
+      useExisting: RUNTIME_REGISTRY,
+    },
+    {
+      provide: CLAUDE_RUNTIME_READINESS_TOKEN,
+      useExisting: CLAUDE_AUTH_SOURCE,
     },
   ],
   // Export the concrete service so GuardrailsModule (I.2) can resolve it from

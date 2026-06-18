@@ -5,10 +5,13 @@ import {
   NotFoundException,
   type OnApplicationBootstrap,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
+  DEFAULT_TASK_RUNTIME,
   taskResponseSchema,
   type CreateTaskBody,
+  type Runtime,
   type TaskResponse,
   type TaskStatus,
 } from '@cap/contracts';
@@ -94,6 +97,72 @@ export interface ISandboxReadoption {
 }
 
 /**
+ * add-claude-code-runtime (tasks-api 4.1): narrow slice of the
+ * {@link AgentRuntimeRegistry} the create path consumes to DISPATCH admission to
+ * the runtime selected by the task's `runtime` value. Declared structurally (not
+ * imported from the agent-runtime leaf module) and injected OPTIONAL so the tasks
+ * service still constructs in unit contexts and in builds where the integration
+ * track has not yet bound the registry; when absent the resolve step is skipped
+ * and the persisted `runtime` column (read by the provider) remains the dispatch
+ * source of truth, so codex behavior is unchanged.
+ *
+ *  - `resolve(runtime)` returns the {@link AgentRuntime} for a (possibly
+ *    null/absent) task runtime — codex by default, claude-code when asked — and
+ *    THROWS for an unknown id. The create path treats that throw as a fail-closed
+ *    create-time rejection rather than admitting a task that resolves no runtime.
+ */
+export interface IAgentRuntimeRegistry {
+  resolve(runtime: Runtime | null | undefined): { id: Runtime };
+}
+
+/** DI token the integration track binds the concrete runtime registry to. */
+export const AGENT_RUNTIME_REGISTRY_TOKEN = 'AGENT_RUNTIME_REGISTRY';
+
+/**
+ * add-claude-code-runtime (tasks-api 4.2): narrow slice of a per-runtime auth
+ * source the create path consults to FAIL CLOSED when a `claude-code` create
+ * selects an unconfigured runtime. Exposes ONLY the boolean `configured()` fact
+ * (never the token), mirroring {@link ClaudeAuthSource}; injected OPTIONAL so the
+ * service constructs without it (no source ⇒ readiness is unknown and the gate is
+ * skipped, deferring the fail-closed to the provision-time `injectAuth`).
+ */
+export interface IRuntimeReadiness {
+  configured(): Promise<boolean>;
+}
+
+/**
+ * DI token the create path injects the Claude readiness source under. The
+ * integration track binds the `CLAUDE_AUTH_SOURCE` provider (exported by the
+ * sandbox module) to this token; the source exposes `configured()` only.
+ */
+export const CLAUDE_RUNTIME_READINESS_TOKEN = 'CLAUDE_RUNTIME_READINESS';
+
+/**
+ * The stable, machine-readable reason a `claude-code` (or any future runtime)
+ * create is rejected with when its runtime is not configured/ready. Surfaced so
+ * the console can tell this fail-closed apart from a generic failure, and so a
+ * task NEVER launches an unauthenticated agent (add-claude-code-runtime 4.2).
+ */
+export const RUNTIME_NOT_CONFIGURED_REASON = 'runtime not configured';
+
+/**
+ * Thrown by `create` when the selected runtime is not configured/ready. A
+ * `ServiceUnavailableException` (503) — the request is well-formed (a VALID
+ * runtime, so it is NOT a 400 the contract pipe would reject), but the server
+ * cannot service it because the runtime's credential is absent. Carries a
+ * distinct `reason` so the fail-closed is unambiguous on the wire.
+ */
+export class RuntimeNotConfiguredException extends ServiceUnavailableException {
+  constructor(readonly runtime: Runtime) {
+    super({
+      reason: RUNTIME_NOT_CONFIGURED_REASON,
+      runtime,
+      message: `runtime "${runtime}" is not configured`,
+    });
+  }
+}
+
+/**
  * Task persistence + lifecycle service.
  *
  * Creation is scoped to an existing repo (404 otherwise). Status changes flow
@@ -136,6 +205,26 @@ export class TasksService implements OnApplicationBootstrap {
     @Optional()
     @Inject(SANDBOX_PROVIDER)
     private readonly sandbox?: ISandboxReadoption,
+    /**
+     * add-claude-code-runtime (4.1): the runtime registry, consumed ONLY to
+     * RESOLVE the runtime a create selects so admission dispatches to the right
+     * agent (codex by default, claude-code when asked). Optional so the service
+     * constructs without it; when absent the persisted `runtime` column the
+     * provider reads is the dispatch source of truth (codex behavior unchanged).
+     */
+    @Optional()
+    @Inject(AGENT_RUNTIME_REGISTRY_TOKEN)
+    private readonly runtimes?: IAgentRuntimeRegistry,
+    /**
+     * add-claude-code-runtime (4.2): the Claude readiness source, consulted to
+     * FAIL CLOSED when a `claude-code` create selects an unconfigured runtime.
+     * Exposes a boolean only (never the token). Optional so the service
+     * constructs without it; when absent the create-time gate is skipped and the
+     * provision-time `injectAuth` remains the fail-closed backstop.
+     */
+    @Optional()
+    @Inject(CLAUDE_RUNTIME_READINESS_TOKEN)
+    private readonly claudeReadiness?: IRuntimeReadiness,
   ) {}
 
   /**
@@ -352,10 +441,50 @@ export class TasksService implements OnApplicationBootstrap {
       throw new NotFoundException(`Repo not found: ${repoId}`);
     }
 
+    // add-claude-code-runtime (4.1): the runtime this create dispatches to. The
+    // contract pipe has already rejected any value outside the allowed set with
+    // 400 before the body reaches here, so this is either a valid runtime or
+    // omitted; omitted resolves the default (`codex`) so existing clients are
+    // unchanged.
+    const runtime: Runtime = body.runtime ?? DEFAULT_TASK_RUNTIME;
+
+    // add-claude-code-runtime (4.1): RESOLVE the selected runtime so admission
+    // dispatches to the right agent. An unknown id throws (a wiring bug, not a
+    // valid create), which we fail closed rather than admitting a task that
+    // resolves no runtime. When the registry is not wired the persisted `runtime`
+    // column the provider reads is the dispatch source of truth.
+    if (this.runtimes) {
+      try {
+        this.runtimes.resolve(runtime);
+      } catch {
+        throw new RuntimeNotConfiguredException(runtime);
+      }
+    }
+
+    // add-claude-code-runtime (4.2): FAIL CLOSED before any task row is created
+    // when a `claude-code` create selects an unconfigured runtime — never launch
+    // an unauthenticated agent. Distinct reason (`runtime not configured`) so the
+    // console can tell this apart from a generic failure. Codex degrades to
+    // unauthenticated (its prior behavior) and is NOT gated here. When the
+    // readiness source is not wired the gate is skipped and the provision-time
+    // `injectAuth` remains the fail-closed backstop.
+    if (runtime === 'claude-code' && this.claudeReadiness) {
+      const ready = await this.claudeReadiness.configured();
+      if (!ready) {
+        throw new RuntimeNotConfiguredException(runtime);
+      }
+    }
+
     const task = await this.prisma.task.create({
       data: {
         repoId,
         prompt: body.prompt,
+        // add-claude-code-runtime (4.1): persist the selected runtime so it is
+        // durable and readable on every later read path AND so the provider
+        // dispatches to the right agent at provision time. Coalesce `undefined`
+        // (omitted) to `null`; a null column reads back as the default `codex`
+        // (repo-and-task-management: a prior task with no runtime reads as codex).
+        runtime: body.runtime ?? null,
         // 3.2: persist the optional run parameters from the create body so they
         // are durable and readable on every later read path. They are inert with
         // respect to clone/provision/lifecycle behavior. Coalesce `undefined`
@@ -596,6 +725,7 @@ export class TasksService implements OnApplicationBootstrap {
     skills: string[];
     idleTimeoutMs: number | null;
     deadlineMs: number | null;
+    runtime?: string | null;
   }): TaskResponse {
     return {
       id: task.id,
@@ -617,6 +747,11 @@ export class TasksService implements OnApplicationBootstrap {
       // honestly as "no idle reclaim configured" for the console.
       idleTimeoutMs: task.idleTimeoutMs,
       deadlineMs: task.deadlineMs,
+      // add-claude-code-runtime (4.1): echo the persisted runtime on every read
+      // path (create 201, list, fetch-by-id, transition/mark). A null column (a
+      // pre-runtime row or an omitted request) reads back as the default `codex`
+      // — never stale/fabricated (sent value == readable value).
+      runtime: (task.runtime ?? DEFAULT_TASK_RUNTIME) as Runtime,
     };
   }
 }

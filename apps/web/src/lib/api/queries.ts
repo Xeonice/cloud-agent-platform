@@ -39,6 +39,7 @@ import { isCapable } from "./capabilities";
 import * as real from "./real";
 import * as mock from "./mock";
 import type { TaskContextView } from "./mock";
+import type { RuntimesResponse } from "./real";
 
 // ---------------------------------------------------------------------------
 // Query keys — stable across the real/mock switch
@@ -55,6 +56,8 @@ export const queryKeys = {
   task: (id: string) => ["tasks", id] as const,
   repos: ["repos"] as const,
   defaultRepo: ["repos", "default"] as const,
+  /** Per-runtime readiness for the create-task dialog selector (`GET /runtimes`). */
+  runtimes: ["runtimes"] as const,
   metrics: ["metrics"] as const,
   capacity: ["metrics", "capacity"] as const,
   history: (query?: Partial<AuditQuery>) =>
@@ -119,6 +122,29 @@ export function reposQuery() {
   return queryOptions<ListReposResponse>({
     queryKey: queryKeys.repos,
     queryFn: () => (isCapable("repos") ? real.listRepos() : mock.mockListRepos()),
+  });
+}
+
+/**
+ * Per-runtime readiness (`GET /runtimes`, add-claude-code-runtime) backing the
+ * create-task dialog's runtime selector: it gates each runtime option on a
+ * booleans-only readiness read so an unconfigured runtime is shown disabled with a
+ * configure hint instead of being selectable and failing at launch (frontend-console
+ * spec "Create-task dialog offers a runtime selector gated on readiness").
+ *
+ * Rides the standard real/mock seam gated by `createTask` (runtime readiness is part
+ * of the task-creation domain — when the create endpoint is real this readiness read
+ * is too); otherwise the mode-aware `mockRuntimes` keeps the dialog rendering. The
+ * read is cheap and config-stable, so it polls only modestly and re-checks on focus
+ * so a freshly-configured token surfaces without a reload.
+ */
+export function runtimesQuery() {
+  return queryOptions<RuntimesResponse>({
+    queryKey: queryKeys.runtimes,
+    queryFn: () =>
+      isCapable("createTask") ? real.getRuntimes() : mock.mockRuntimes(),
+    refetchOnWindowFocus: true,
+    staleTime: 60 * 1000,
   });
 }
 
@@ -363,19 +389,15 @@ export function taskContextQuery(id: string) {
  * `real.getUpdateStatus` (Zod `.parse` against the `@cap/contracts`
  * `UpdateStatusSchema`) when capable and the typed `mock.mockUpdateStatus`
  * otherwise — so the banner renders on the mock until the live endpoint is
- * verified, then ONE flag flip repoints it. The api caches the upstream GitHub
- * fetch (one per short TTL across all browsers); the client polls it on a modest
- * interval + on window focus so a newly-published Release surfaces in the banner
- * without a reload (responsive-update-check D2).
+ * verified, then ONE flag flip repoints it. The api already caches the upstream
+ * GitHub fetch (one per TTL across all browsers), so this is a plain read with
+ * no client-side poll.
  */
 export function updateStatusQuery() {
   return queryOptions<UpdateStatus>({
     queryKey: queryKeys.updateStatus,
     queryFn: () =>
       isCapable("updateCheck") ? real.getUpdateStatus() : mock.mockUpdateStatus(),
-    // responsive-update-check D2 — poll so a newly-published Release surfaces in
-    // the banner within minutes WITHOUT a reload (aligned with the api's short
-    // cache TTL), and re-check when the operator returns to the tab.
     refetchInterval: 5 * 60 * 1000,
     refetchOnWindowFocus: true,
   });

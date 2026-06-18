@@ -36,11 +36,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import type { CreateTaskRequest, Repo } from "@cap/contracts";
-import { metricsQuery, reposQuery } from "@/lib/api/queries";
+import { metricsQuery, reposQuery, runtimesQuery } from "@/lib/api/queries";
+import type { RuntimeId } from "@/lib/api/real";
 import { createTaskMutation } from "@/lib/api/mutations";
 import { setState } from "@/lib/store";
 import {
   buildCommandPreview,
+  RUNTIME_CATALOG,
+  DEFAULT_RUNTIME,
   SKILL_CATALOG,
   IDLE_TIMEOUT_OPTIONS,
   DEADLINE_OPTIONS,
@@ -164,7 +167,23 @@ function NewTaskPage() {
   const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0]);
   const [skills, setSkills] = React.useState<string[]>([]);
   const [prompt, setPrompt] = React.useState("");
-  const [stopOnWrite, setStopOnWrite] = React.useState(true);
+  // add-claude-code-runtime VR-2: stopOnWrite is ADVISORY only, never an enforced
+  // gate — the agent runs ungated inside the sandbox (the sandbox is the trust
+  // boundary, matching codex). Forced off so the command preview never emits the
+  // misleading `--confirm-before-write` flag.
+  const stopOnWrite = false;
+  // add-claude-code-runtime: the runtime selector, mirroring the dashboard dialog
+  // (shares RUNTIME_CATALOG/DEFAULT_RUNTIME so the two create surfaces never drift).
+  // Gated on the booleans-only `/runtimes` readiness read — an unconfigured runtime
+  // is shown disabled with a configure hint, never selectable-and-failing-at-launch.
+  const [runtime, setRuntime] = React.useState<RuntimeId>(DEFAULT_RUNTIME);
+  const runtimesReadiness = useQuery(runtimesQuery());
+  const readyById = React.useMemo(() => {
+    const map = new Map<RuntimeId, boolean>();
+    for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
+    return map;
+  }, [runtimesReadiness.data]);
+  const isRuntimeReady = (id: RuntimeId): boolean => readyById.get(id) === true;
   // Guardrails are OPT-IN, default off/none (task-guardrail-controls).
   const [idleTimeoutMs, setIdleTimeoutMs] = React.useState<number | null>(null);
   const [deadlineMs, setDeadlineMs] = React.useState<number | null>(null);
@@ -195,6 +214,7 @@ function NewTaskPage() {
     repoFullName: selectedRepo ? repoFullName(selectedRepo) : null,
     branch: branch || null,
     strategy: strategy || null,
+    runtime,
     prompt,
     stopOnWrite,
     skills,
@@ -216,6 +236,8 @@ function NewTaskPage() {
     event.preventDefault();
     if (!repoId || prompt.trim().length === 0) return;
     const body: CreateTaskRequest = { prompt: prompt.trim() };
+    // Only send a non-default runtime; omitted ⇒ codex (server default).
+    if (runtime !== DEFAULT_RUNTIME) body.runtime = runtime;
     if (branch) body.branch = branch;
     if (strategy) body.strategy = strategy;
     if (skills.length > 0) body.skills = skills;
@@ -287,6 +309,33 @@ function NewTaskPage() {
           onSubmit={handleSubmit}
           className="grid content-start gap-3.5 rounded-md bg-card p-5 shadow-card"
         >
+          <div className="grid gap-2">
+            <label htmlFor="runtime" className="text-[13px] font-semibold text-ink">
+              运行时
+            </label>
+            <Select
+              value={runtime}
+              onValueChange={(v) => setRuntime(v as RuntimeId)}
+            >
+              <SelectTrigger id="runtime" className="w-full">
+                <SelectValue placeholder="选择运行时" />
+              </SelectTrigger>
+              <SelectContent>
+                {RUNTIME_CATALOG.map((rt) => {
+                  const ready = isRuntimeReady(rt.id);
+                  return (
+                    <SelectItem key={rt.id} value={rt.id} disabled={!ready}>
+                      {ready ? rt.label : `${rt.label}（未配置）`}
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+            <small className="text-xs text-muted-foreground">
+              选择派发到哪个 Agent；未配置凭据的运行时会被禁用，请先在设置中连接。
+            </small>
+          </div>
+
           <div className="grid gap-2">
             <label htmlFor="repo" className="text-[13px] font-semibold text-ink">
               仓库
@@ -442,22 +491,21 @@ function NewTaskPage() {
             </small>
           </div>
 
-          <label className="flex items-start gap-2.5 rounded-lg bg-[#fafafa] p-3 shadow-ring">
-            <Checkbox
-              checked={stopOnWrite}
-              onCheckedChange={(v) => setStopOnWrite(v === true)}
-              className="mt-[3px]"
-            />
+          {/* add-claude-code-runtime VR-2: the former interactive "破坏性写入前停止"
+              checkbox is replaced by a non-interactive advisory note. It was unwired
+              at every layer (no contract field, no backend enforcement) — the agent
+              runs ungated inside the sandbox, which is the trust boundary. */}
+          <div className="flex items-start gap-2.5 rounded-lg bg-[#fafafa] p-3 shadow-ring">
             <span>
               <strong className="text-[13px] font-semibold text-foreground">
-                破坏性写入前停止
+                安全边界
               </strong>
               <br />
               <small className="text-xs text-muted-foreground">
-                远端 Agent 在 commit、push、secrets 变更或外部提交前必须请求操作者确认。
+                Agent 在沙箱内自主执行（沙箱即信任边界，Codex 与 Claude Code 一致），不做逐操作写入门控。
               </small>
             </span>
-          </label>
+          </div>
 
           <div className="mt-2.5 flex flex-wrap gap-3">
             <button

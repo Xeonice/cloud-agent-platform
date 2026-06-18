@@ -50,20 +50,20 @@ model Repo {
   createdAt DateTime @default(now()) @map("created_at")
 
   /// GitHub repo description (import metadata). Null when not imported.
-  description String? @map("description")
+  description   String?   @map("description")
   /// GitHub default branch name (import metadata). Null when not imported.
-  defaultBranch String? @map("default_branch")
+  defaultBranch String?   @map("default_branch")
   /// GitHub branch count (import metadata). Null when not imported.
-  branchCount Int? @map("branch_count")
+  branchCount   Int?      @map("branch_count")
   /// GitHub last-updated timestamp (import metadata). Null when not imported.
-  updatedAt DateTime? @map("updated_at")
+  updatedAt     DateTime? @map("updated_at")
   /// Originating GitHub repository identity, used to de-duplicate imports.
   /// Null when not imported from GitHub.
-  githubId String? @map("github_id")
+  githubId      String?   @map("github_id")
   /// Whether this imported Repo is the operator's current DEFAULT repo for
   /// task-creation selection. At most one Repo is ever `true`; designating a new
   /// default clears the prior one. Only an imported Repo may carry `true`.
-  isDefault Boolean @default(false) @map("is_default")
+  isDefault     Boolean   @default(false) @map("is_default")
 
   tasks Task[]
 
@@ -85,7 +85,7 @@ model Task {
 
   /// Optional run parameter echoed back from the create body: the git branch the
   /// runner checks out. Inert with respect to the lifecycle; null when omitted.
-  branch String? @map("branch")
+  branch   String? @map("branch")
   /// Optional run parameter echoed back from the create body: the execution
   /// strategy. Inert with respect to the lifecycle; null when omitted.
   strategy String? @map("strategy")
@@ -106,7 +106,15 @@ model Task {
   /// milliseconds from admission. Null means no deadline. Consumed at admission to
   /// arm the deadline watcher AND persisted (previously transient) so the
   /// configured value is readable on every task read path.
-  deadlineMs Int? @map("deadline_ms")
+  deadlineMs    Int? @map("deadline_ms")
+
+  /// Optional agent-runtime selector echoed back from the create body
+  /// (`claude-code` | `codex`). Additive and NULLABLE: existing rows backfill to
+  /// NULL and an omitted-on-create value reads back as the default `codex` (the
+  /// service applies the default; the column itself stores null when unset).
+  /// Persisted as text and kept in sync with the `@cap/contracts` `RuntimeSchema`
+  /// values (add-claude-code-runtime).
+  runtime String? @map("runtime")
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -131,29 +139,29 @@ model Task {
 /// `allowed` is the load-bearing fail-closed allowlist gate: only an
 /// allowlisted identity is ever surfaced as a session user.
 model User {
-  id        String   @id @default(uuid())
+  id                String   @id @default(uuid())
   /// Stable, immutable GitHub numeric account id; the allowlist + user-record key.
-  githubId  Int      @unique @map("github_id")
+  githubId          Int      @unique @map("github_id")
   /// GitHub `login` (mutable username), refreshed on each login.
-  login     String
+  login             String
   /// GitHub display name, captured for console rendering.
-  name      String
+  name              String
   /// GitHub avatar reference, captured for console rendering.
-  avatarUrl String   @map("avatar_url")
+  avatarUrl         String   @map("avatar_url")
   /// Whether this identity is presently on the fail-closed allowlist.
-  allowed   Boolean
+  allowed           Boolean
   /// The operator's GitHub OAuth access token, stored server-side (never exposed
   /// to the browser) for later GitHub-import calls (`/user/repos`). Nullable: a
   /// record predating token capture, or a refresh that did not re-capture a
   /// token, leaves it null. Only ever written for an identity that has already
   /// passed the fail-closed allowlist gate.
-  githubAccessToken String? @map("github_access_token")
-  createdAt DateTime @default(now()) @map("created_at")
+  githubAccessToken String?  @map("github_access_token")
+  createdAt         DateTime @default(now()) @map("created_at")
 
-  sessions Session[]
+  sessions        Session[]
   /// Audit events attributed to this GitHub-identity user (nullable on the
   /// event side for system-originated events).
-  auditEvents AuditEvent[]
+  auditEvents     AuditEvent[]
   /// Per-account console preferences (zero or one).
   accountSettings AccountSettings?
   /// Per-account Codex execution credential (zero or one).
@@ -363,22 +371,22 @@ model SessionTranscript {
 
   /// Parsed session meta: the codex model id. Null when the rollout did not
   /// surface one.
-  model String? @map("model")
+  model         String?   @map("model")
   /// Parsed session meta: the working directory the session ran in. Null when
   /// absent from the rollout.
-  cwd String? @map("cwd")
+  cwd           String?   @map("cwd")
   /// Parsed session meta: when the codex session started. Null when absent.
-  startedAt DateTime? @map("started_at")
+  startedAt     DateTime? @map("started_at")
   /// Parsed session meta: number of turns in the transcript.
-  turnCount Int @default(0) @map("turn_count")
+  turnCount     Int       @default(0) @map("turn_count")
   /// Parsed session meta: whether the session ended mid-flight (interrupted).
-  isInterrupted Boolean @default(false) @map("is_interrupted")
+  isInterrupted Boolean   @default(false) @map("is_interrupted")
 
   /// Path to the RAW gzip-compressed rollout JSONL archive on the durable
   /// workspace volume (the source of truth).
-  archivePath String @map("archive_path")
+  archivePath String   @map("archive_path")
   /// When this transcript was captured/last upserted.
-  capturedAt DateTime @default(now()) @map("captured_at")
+  capturedAt  DateTime @default(now()) @map("captured_at")
 
   /// Concatenated transcript turn text, full-text-searchable across history via
   /// the Postgres GIN `tsvector` index declared in the migration.

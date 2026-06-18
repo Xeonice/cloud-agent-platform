@@ -1,0 +1,90 @@
+# AIO compose e2e — add-claude-code-runtime, Track 7 (the architecturally-correct gate).
+#
+# The live connect-in execution path can ONLY be exercised in the compose self-host
+# topology: the orchestrator runs INSIDE the api container, on cap-net, with the host
+# docker.sock mounted, so it dockerode-provisions sibling cap-aio-<taskId> sandboxes and
+# dials them by name. The per-task AIO sandbox base image (ghcr.io/agent-infra/sandbox)
+# is amd64-ONLY, so this suite needs a NATIVE amd64 host — exactly what a GitHub-hosted
+# `ubuntu-latest` runner is. That matches production (an amd64 host) and avoids the
+# qemu-emulation slowness/frame-divergence an arm64 host (e.g. Apple Silicon / a lume VM)
+# would hit. This is the gate for:
+#   - codex e2e (7.1) — the VR-5 byte-identity / no-regression guard;
+#   - claude full-turn e2e (7.2) — runs only when the CLAUDE_CODE_OAUTH_TOKEN secret is set.
+name: e2e
+
+on:
+  # Manual on-demand run from the Actions tab. DISPATCH-ONLY for now: this suite
+  # provisions sibling cap-aio sandboxes via the host docker.sock + cap-net DNS,
+  # which a GitHub-HOSTED ubuntu runner does NOT run correctly (the provisioned
+  # sandbox's shell yields no output — empirically confirmed). It needs a real
+  # amd64 compose host, so it is NOT wired to `pull_request` yet (that would fail
+  # every PR). Add a `pull_request:` trigger once a SELF-HOSTED amd64 runner is
+  # registered and `runs-on` points at it.
+  workflow_dispatch: {}
+
+# Least-privilege: read the repo + pull the amd64 AIO base image from GHCR.
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  aio-e2e:
+    # GitHub-hosted ubuntu = native amd64 (x86_64), matching production. The
+    # amd64-only AIO sandbox base runs here without emulation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # node + pnpm run the black-box suite. The api itself builds + installs
+      # in-container, but the OUT-OF-CONTAINER suite (apps/api/test/aio-e2e.mjs)
+      # imports `ws` + `dockerode`, so its workspace deps must be installed here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install workspace deps (the e2e suite imports ws + dockerode)
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+
+      # The derived AIO image is FROM ghcr.io/agent-infra/sandbox:<AIO_BASE_TAG>;
+      # authenticate to GHCR so the pull is not rate-limited/anonymous-gated.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The compose api reads secrets from the env_file apps/api/.env (required:false,
+      # so it is absent in a fresh checkout). Seed it with the operator token the suite
+      # authenticates with (must match scripts/aio-e2e.sh's AUTH_TOKEN default) and,
+      # when configured, the Claude OAuth token that lets the claude-code runtime
+      # authenticate. Absent token => the claude e2e self-skips; codex still runs.
+      - name: Seed apps/api/.env
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          mkdir -p apps/api
+          {
+            # The api defaults to GitHub OAuth; the e2e operator authenticates with
+            # the legacy shared-token bearer, which is ONLY honored when the legacy
+            # break-glass path is enabled (gen-local-env.sh sets this for local runs).
+            echo "AUTH_TOKEN_LEGACY_ENABLED=true"
+            echo "AUTH_TOKEN=dev-local-operator-token-change-me"
+            if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+              echo "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}"
+            fi
+          } > apps/api/.env
+
+      # Build the derived AIO image + bring up the compose stack + run the suite.
+      # The script always tears the stack down and reaps cap-aio-* sandboxes on exit.
+      - name: Run AIO compose e2e
+        env:
+          # Pull the pinned amd64 AIO base so the derived image builds FROM it.
+          AIO_BASE_TAG: "1.0.0.125"
+        run: bash scripts/aio-e2e.sh

@@ -39,6 +39,32 @@ export const TERMINAL_TASK_STATUSES = [
 ] as const satisfies readonly TaskStatus[];
 
 // ---------------------------------------------------------------------------
+// Agent-runtime selector (add-claude-code-runtime)
+// ---------------------------------------------------------------------------
+
+/**
+ * The agent runtime a task is dispatched to (agent-runtime spec).
+ *
+ * Per-task selectable: `claude-code` runs the Claude Code CLI, `codex` runs the
+ * codex CLI. The value is OPTIONAL on the wire and on the persisted record;
+ * absence is treated as {@link DEFAULT_TASK_RUNTIME} (`codex`) so existing tasks
+ * and omitted requests stay valid, and the create response / list / fetch-by-id
+ * read paths echo it back (the supplied value, or `codex` when omitted).
+ *
+ * Kept byte-for-byte in sync with the values the api runtime registry resolves
+ * by and the `Task.runtime` column persists.
+ */
+export const RuntimeSchema = z.enum(['claude-code', 'codex']);
+export type Runtime = z.infer<typeof RuntimeSchema>;
+
+/**
+ * The default runtime applied when a create request omits `runtime` and when an
+ * existing/persisted task carries no `runtime` value (additive-nullable column).
+ * Existing tasks and omitted requests therefore read back as `codex`.
+ */
+export const DEFAULT_TASK_RUNTIME = 'codex' as const satisfies Runtime;
+
+// ---------------------------------------------------------------------------
 // Repo domain schema
 // ---------------------------------------------------------------------------
 
@@ -136,6 +162,15 @@ export const TaskSchema = z.object({
    * task read path — never stale or fabricated.
    */
   deadlineMs: z.number().int().positive().nullable().optional(),
+  /**
+   * Optional run parameter echoed back from the create body: the agent runtime
+   * the task is dispatched to (`claude-code` | `codex`). The column is additive
+   * and nullable; a task with no `runtime` reads back as the default `codex`
+   * (see {@link DEFAULT_TASK_RUNTIME}). Read back on every task read path
+   * (create response, list, fetch-by-id) as the supplied value — never stale or
+   * fabricated (sent value == readable value).
+   */
+  runtime: RuntimeSchema.nullable().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -207,6 +242,16 @@ export const CreateTaskRequestSchema = z.object({
    * force-failed for idleness, so a legitimately long, quiet task is not killed.
    */
   idleTimeoutMs: z.number().int().positive().optional(),
+  /**
+   * Optional agent-runtime selector (`claude-code` | `codex`). Validated against
+   * the shared {@link RuntimeSchema}; a value outside the allowed set is rejected
+   * (HTTP 400). When omitted the task is created with the default `codex`
+   * ({@link DEFAULT_TASK_RUNTIME}). Persisted on the task and echoed on every read
+   * path; at admission the task is dispatched to the selected runtime, and a
+   * runtime that is not configured/ready fails closed with a distinct reason
+   * rather than launching unauthenticated (see `agent-runtime`).
+   */
+  runtime: RuntimeSchema.optional(),
 });
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
 
