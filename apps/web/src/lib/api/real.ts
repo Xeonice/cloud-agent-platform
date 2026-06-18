@@ -64,6 +64,41 @@ import { RepoResponseSchema } from "@cap/contracts";
 import { apiBaseUrl, operatorToken } from "../config";
 import { getIncomingCookieHeader } from "../server-cookie";
 
+// ---------------------------------------------------------------------------
+// Agent runtime selection (add-claude-code-runtime) — LOCAL web types
+//
+// The `runtime` selector (`claude-code` | `codex`) and the `/runtimes` readiness
+// shape are owned by the contracts track of this same change; they are mirrored
+// here as LOCAL web types DELIBERATELY (the `SelfUpdateRequest` precedent): a
+// shared `@cap/contracts` schema would be a cross-track shared file (tasks.md
+// NOTE). The api does the load-bearing validation server-side (the create body's
+// `runtime` is validated against the shared enum; `/runtimes` reports booleans
+// only, never a token). Once the contracts schema lands, these collapse onto it
+// with no call-site change.
+// ---------------------------------------------------------------------------
+
+/** The agent runtime a task runs under. Default `codex` (omitted ⇒ codex). */
+export type RuntimeId = "claude-code" | "codex";
+
+/** Readiness of a single runtime (booleans only — never a secret). */
+export interface RuntimeReadiness {
+  /** The runtime id this readiness describes. */
+  id: RuntimeId;
+  /** Whether the runtime is configured/ready to run a task right now. */
+  ready: boolean;
+}
+
+/** `GET /runtimes` response — per-runtime readiness, no secrets. */
+export type RuntimesResponse = readonly RuntimeReadiness[];
+
+/**
+ * The create-task body extended with the optional `runtime` selector. Sent on
+ * `POST /repos/:repoId/tasks`; omitted ⇒ the api defaults to `codex`. Typed as a
+ * local intersection so the web compiles ahead of the contracts-track enum
+ * landing on `CreateTaskRequest` (at which point this alias collapses onto it).
+ */
+export type CreateTaskBody = CreateTaskRequest & { runtime?: RuntimeId };
+
 /** A REST error carrying the HTTP status so callers can branch on 401/404/etc. */
 export class ApiError extends Error {
   constructor(
@@ -160,7 +195,7 @@ export async function listRepos(): Promise<ListReposResponse> {
  */
 export async function createTask(
   repoId: string,
-  body: CreateTaskRequest,
+  body: CreateTaskBody,
 ): Promise<TaskResponse> {
   const created = await request(`/repos/${encodeURIComponent(repoId)}/tasks`, {
     method: "POST",
@@ -168,6 +203,37 @@ export async function createTask(
     body: JSON.stringify(body),
   });
   return TaskResponseSchema.parse(created);
+}
+
+/**
+ * `GET /runtimes` — per-runtime readiness for the create-task dialog selector
+ * (add-claude-code-runtime, agent-runtime spec "Runtime readiness endpoint").
+ * The api reports, per runtime id, only a boolean `ready` (e.g. is a credential
+ * configured) and NEVER a secret, so the dialog can disable an unconfigured
+ * runtime up front instead of letting the task fail at launch. The response is
+ * normalized into a `Map<RuntimeId, boolean>` so an UNKNOWN/MISSING runtime id
+ * reads as not-ready (fail-safe: never offer a runtime the api did not vouch for).
+ * The wire shape is validated structurally here (local web type — see the runtime
+ * types note above); a malformed entry is dropped rather than crashing the dialog.
+ */
+export async function getRuntimes(): Promise<RuntimesResponse> {
+  const body = await request("/runtimes");
+  // The api wraps the list as `{ runtimes: [...] }` (runtimes.service.ts); tolerate
+  // a bare array too so the dialog never silently reads `[]` on a shape change.
+  const entries = Array.isArray(body)
+    ? body
+    : Array.isArray((body as { runtimes?: unknown } | null)?.runtimes)
+      ? (body as { runtimes: unknown[] }).runtimes
+      : [];
+  const out: RuntimeReadiness[] = [];
+  for (const raw of entries) {
+    if (!raw || typeof raw !== "object") continue;
+    const { id, ready } = raw as { id?: unknown; ready?: unknown };
+    if ((id === "claude-code" || id === "codex") && typeof ready === "boolean") {
+      out.push({ id, ready });
+    }
+  }
+  return out;
 }
 
 /**

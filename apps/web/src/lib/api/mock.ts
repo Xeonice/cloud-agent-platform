@@ -37,7 +37,11 @@ import type {
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
 import { forceMock } from "./capabilities";
-import type { SelfUpdateRequest, SelfUpdateAck } from "./real";
+import type {
+  SelfUpdateRequest,
+  SelfUpdateAck,
+  RuntimesResponse,
+} from "./real";
 
 // ---------------------------------------------------------------------------
 // Cadence
@@ -803,6 +807,40 @@ export async function mockUpdateStatus(): Promise<UpdateStatus> {
     releaseName: "v0.4.0",
     checkedAt: "2026-06-17T00:00:00.000Z",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Runtime readiness (add-claude-code-runtime) — create-dialog selector gate
+// ---------------------------------------------------------------------------
+
+/**
+ * The typed `/runtimes` readiness mock (agent-runtime spec "Runtime readiness
+ * endpoint"), shaped by the local `RuntimesResponse` web type so it cannot drift
+ * off the real response. Booleans only — never a token.
+ *
+ * It is MODE-AWARE, mirroring `mockUpdateStatus`:
+ *  - In the deterministic visual harness (`VITE_FORCE_MOCK=1`), BOTH runtimes
+ *    report ready so the dialog's runtime selector renders fully enabled — the
+ *    "operator selects an available runtime" presentation is exercised on the seam.
+ *  - In any other mock read, `claude-code` reports NOT ready (no token configured
+ *    off the real api) so the dialog honestly shows the Claude option disabled with
+ *    a configure hint and keeps `codex` as the selectable default — never falsely
+ *    offering an unconfigured runtime that would fail at launch.
+ */
+export async function mockRuntimes(): Promise<RuntimesResponse> {
+  await delay();
+  if (!forceMock()) {
+    // Honest default: codex ready, claude-code not configured off the real api.
+    return [
+      { id: "codex", ready: true },
+      { id: "claude-code", ready: false },
+    ];
+  }
+  // Visual harness only: both ready so the enabled-selector path is previewable.
+  return [
+    { id: "codex", ready: true },
+    { id: "claude-code", ready: true },
+  ];
 }
 
 // ---------------------------------------------------------------------------

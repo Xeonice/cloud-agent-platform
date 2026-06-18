@@ -87,6 +87,15 @@ services:
       # come from the env_file above (apps/api/.env). Declaring AUTH_TOKEN here as
       # ${AUTH_TOKEN} would override the env_file with an empty shell value, so it
       # is intentionally NOT redeclared in this environment block.
+      #
+      # CLAUDE_CODE_OAUTH_TOKEN (add-claude-code-runtime): the long-lived token a
+      # `claude-code` task's `claude` CLI uses inside the sandbox. It is a SECRET,
+      # so it flows in via the env_file above (apps/api/.env) exactly like
+      # AUTH_TOKEN — and is deliberately NOT redeclared here as
+      # ${CLAUDE_CODE_OAUTH_TOKEN}, which would clobber the env_file value with an
+      # empty shell value when the var is unset in the host shell. Unset → the
+      # Claude runtime reports not-ready and the codex path is unaffected. Mint it
+      # on a workstation with `claude setup-token` (see .env.example).
       # Pinned derived AIO sandbox image the provider provisions per task
       # (cap-aio-<taskId>). MUST be a pinned tag, NEVER :latest (design D —
       # reproducible, version-pinned execution image). Override via .env.

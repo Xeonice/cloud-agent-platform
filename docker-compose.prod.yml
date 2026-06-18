@@ -70,6 +70,13 @@ services:
       CAP_VERSION: ${CAP_VERSION:-latest}
       MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-}
       TASK_REPO_URL: ${TASK_REPO_URL:-}
+      # CLAUDE_CODE_OAUTH_TOKEN (add-claude-code-runtime): the long-lived token a
+      # `claude-code` task's `claude` CLI uses inside the sandbox. It is a SECRET,
+      # so it flows in via the env_file above (.env / ../files/api.env) — NOT
+      # redeclared here as ${CLAUDE_CODE_OAUTH_TOKEN}, which would clobber the
+      # env_file value with an empty shell value when the var is unset. Unset → the
+      # Claude runtime reports not-ready; the codex path is unaffected. Mint it on a
+      # workstation with `claude setup-token` (see docker-compose.prod.env.example).
     ports:
       - "8080:8080"
     networks:

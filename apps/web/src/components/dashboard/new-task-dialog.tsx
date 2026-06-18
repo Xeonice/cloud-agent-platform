@@ -4,15 +4,22 @@
  *
  * A two-column shadcn `Dialog` (Radix supplies Esc / backdrop close, focus trap,
  * `aria-modal`, `aria-labelledby`, focus-return — so no manual wiring). LEFT is
- * the create form (repo / branch / strategy selects, a 任务描述 textarea with a
- * live 字数 count, and a default-checked 破坏性写入前停止 gate). RIGHT is a live
- * preview: the 3-step launch review and a `CommandPreview` that re-renders an
- * `agentctl run …` line from the current form state — it ONLY reflects fields the
- * operator has actually entered (it does not present unsent fields as confirmed).
+ * the create form (repo / branch / strategy / Agent 运行时 selects, a 任务描述
+ * textarea with a live 字数 count, and a non-interactive 安全边界 advisory note).
+ * The runtime selector (`Codex | Claude Code`, default `codex`,
+ * add-claude-code-runtime) is gated on a booleans-only readiness read: an
+ * unconfigured runtime is shown DISABLED with a configure hint rather than
+ * selectable-and-failing. The former 破坏性写入前停止 CHECKBOX is REMOVED — it was
+ * unwired at every layer (the agent runs ungated inside the sandbox, the trust
+ * boundary), so it falsely implied an enforced per-write gate (design D8). RIGHT
+ * is a live preview: the 3-step launch review and a `CommandPreview` that
+ * re-renders an `agentctl run …` line — reflecting the selected runtime (claude
+ * vs codex) and ONLY the fields the operator has actually entered (it does not
+ * present unsent fields as confirmed).
  *
  * Submit calls the SHARED `createTaskMutation` (REAL `POST /repos/:repoId/tasks`)
- * with a `CreateTaskRequest` body composed strictly from the contract (prompt +
- * optional branch/strategy). On success it shows the `TaskResult` (a green
+ * with a `CreateTaskBody` composed strictly from the contract (prompt + optional
+ * branch/strategy + optional `runtime`). On success it shows the `TaskResult` (a green
  * "已创建 <runId>" pill + a 进入会话 Link) and persists `selectedRepo` /
  * `selectedBranch`-style state + `latestRunId` to the store, keeping the dialog
  * open so the operator can jump into the session — matching the prototype.
@@ -26,11 +33,13 @@
  * command-preview = dark (#080808) mono block; result = soft-green ringed strip.
  */
 import * as React from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 
-import type { CreateTaskRequest, Repo } from "@cap/contracts";
+import type { Repo } from "@cap/contracts";
 import { createTaskMutation } from "@/lib/api/mutations";
+import { runtimesQuery } from "@/lib/api/queries";
+import type { CreateTaskBody, RuntimeId } from "@/lib/api/real";
 import { setState } from "@/lib/store";
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
@@ -57,6 +66,26 @@ const STRATEGIES = [
   "只做审计，不写入文件",
   "允许修改代码，但提交前停止",
 ] as const;
+
+/**
+ * The selectable agent runtimes (add-claude-code-runtime). `id` is the value sent
+ * in the create body as `runtime`; DEFAULT is `codex` (omitted ⇒ codex server-side).
+ * Each option is gated on a booleans-only readiness read (`runtimesQuery`): an
+ * un-ready runtime is shown disabled with a configure hint rather than selectable
+ * and failing at launch (frontend-console spec "runtime selector gated on readiness").
+ * Exported so `/tasks/new` shares the same catalog (one module, no drift).
+ */
+export const RUNTIME_CATALOG: ReadonlyArray<{
+  id: RuntimeId;
+  label: string;
+  hint: string;
+}> = [
+  { id: "codex", label: "Codex", hint: "OpenAI Codex CLI（默认）" },
+  { id: "claude-code", label: "Claude Code", hint: "Anthropic Claude Code CLI" },
+];
+
+/** The default runtime when the operator makes no explicit choice. */
+export const DEFAULT_RUNTIME: RuntimeId = "codex";
 
 /**
  * Selectable preinstall skills (task-preinstall-skills). The `id`s MUST match the
@@ -142,6 +171,13 @@ function ReviewStep({
  * Build the live `agentctl run` preview lines from the current form state. Only
  * fields the operator has supplied are emitted, so the preview never implies an
  * unsent value. PURE — exported for unit-testing the command composition.
+ *
+ * The preview reflects the SELECTED runtime (add-claude-code-runtime): a
+ * `--runtime <id>` line is emitted whenever a non-default runtime is chosen, and
+ * the trailing comment names the underlying CLI the sandbox launches (`claude` for
+ * Claude Code, `codex` otherwise) so the preview shows the claude-based invocation
+ * vs the codex-based one (frontend-console spec). `runtime` defaults to `codex` to
+ * stay backward-compatible with existing callers/tests that omit it.
  */
 export function buildCommandPreview(input: {
   repoFullName: string | null;
@@ -152,10 +188,26 @@ export function buildCommandPreview(input: {
   skills?: readonly string[];
   idleTimeoutMs?: number | null;
   deadlineMs?: number | null;
+  runtime?: RuntimeId;
 }): string[] {
-  const lines = ["agentctl run \\"];
+  const runtime = input.runtime ?? DEFAULT_RUNTIME;
+  // Lead with a comment naming the underlying CLI the sandbox launches for the
+  // chosen runtime, so the preview unambiguously shows the claude-based vs
+  // codex-based invocation (frontend-console spec) without an awkward trailing
+  // continuation. The codex case keeps the same `codex`-based framing as before.
+  const lines = [
+    runtime === "claude-code"
+      ? "# 沙箱内启动 claude"
+      : "# 沙箱内启动 codex",
+    "agentctl run \\",
+  ];
   if (input.repoFullName) lines.push(`  --repo ${input.repoFullName} \\`);
   if (input.branch) lines.push(`  --branch ${input.branch} \\`);
+  // Reflect the selected runtime. Emit the flag only for the NON-default runtime
+  // so the codex path's flag list stays as it was (no implied flag the operator
+  // never chose); claude-code surfaces the `--runtime claude-code` line so the
+  // operator sees the claude invocation that will launch.
+  if (runtime !== DEFAULT_RUNTIME) lines.push(`  --runtime ${runtime} \\`);
   if (input.strategy) lines.push(`  --strategy "${input.strategy}" \\`);
   if (input.skills && input.skills.length > 0)
     lines.push(`  --skills ${input.skills.join(",")} \\`);
@@ -233,6 +285,18 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   const navigate = useNavigate();
   const mutation = useMutation(createTaskMutation(queryClient));
 
+  // Per-runtime readiness (add-claude-code-runtime). Booleans only — never a
+  // secret. While the read is in flight `data` is undefined; we treat an UNKNOWN
+  // runtime as NOT ready so the selector never offers a runtime the api has not
+  // vouched for (the default `codex` is corrected back if it ever reports un-ready).
+  const runtimesReadiness = useQuery(runtimesQuery());
+  const readyById = React.useMemo(() => {
+    const map = new Map<RuntimeId, boolean>();
+    for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
+    return map;
+  }, [runtimesReadiness.data]);
+  const isRuntimeReady = (id: RuntimeId): boolean => readyById.get(id) === true;
+
   const firstRepoId = repos[0]?.id ?? "";
   const [repoId, setRepoId] = React.useState(firstRepoId);
 
@@ -251,7 +315,14 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0]);
   const [skills, setSkills] = React.useState<string[]>([]);
   const [prompt, setPrompt] = React.useState("");
-  const [stopOnWrite, setStopOnWrite] = React.useState(true);
+  // Agent runtime selection (add-claude-code-runtime), DEFAULT codex. Gated on the
+  // readiness read below so an unconfigured runtime can't be selected.
+  const [runtime, setRuntime] = React.useState<RuntimeId>(DEFAULT_RUNTIME);
+  // stopOnWrite is RETAINED as a preview-only/advisory note, never an enforced
+  // gate: the control is unwired at every layer for both runtimes (the agent runs
+  // ungated inside the sandbox, which is the trust boundary) — see design D8. It
+  // is force-off so it never emits the misleading `--confirm-before-write` line.
+  const stopOnWrite = false;
   // Guardrails are OPT-IN, default off/none (task-guardrail-controls).
   const [idleTimeoutMs, setIdleTimeoutMs] = React.useState<number | null>(null);
   const [deadlineMs, setDeadlineMs] = React.useState<number | null>(null);
@@ -268,10 +339,24 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     setCreatedTaskId(null);
     setPrompt("");
     setSkills([]);
+    setRuntime(DEFAULT_RUNTIME);
     setIdleTimeoutMs(null);
     setDeadlineMs(null);
     resetMutation();
   }, [open, resetMutation]);
+
+  // Keep the selection on a READY runtime: if the currently-selected runtime
+  // reports un-ready once readiness resolves (e.g. the Claude token was removed),
+  // fall back to the first ready runtime so the form can never submit a runtime
+  // the api would fail-closed. Runs only after readiness data is present.
+  React.useEffect(() => {
+    if (runtimesReadiness.data === undefined) return;
+    if (isRuntimeReady(runtime)) return;
+    const fallback = RUNTIME_CATALOG.find((r) => isRuntimeReady(r.id));
+    if (fallback && fallback.id !== runtime) setRuntime(fallback.id);
+    // isRuntimeReady is derived from readyById, itself memoized on
+    // runtimesReadiness.data, so depending on the data + runtime is sufficient.
+  }, [runtimesReadiness.data, runtime]);
 
   // When the selected repo changes, reset the branch to that repo's default.
   React.useEffect(() => {
@@ -293,6 +378,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     skills,
     idleTimeoutMs,
     deadlineMs,
+    runtime,
   });
 
   const createdTask = mutation.data;
@@ -306,10 +392,17 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!repoId || prompt.trim().length === 0) return;
-    const body: CreateTaskRequest = { prompt: prompt.trim() };
+    // Don't submit a runtime the readiness read says is not configured — the api
+    // would fail-closed; the UI already disables the option, this is the guard.
+    if (!isRuntimeReady(runtime)) return;
+    const body: CreateTaskBody = { prompt: prompt.trim() };
     if (branch) body.branch = branch;
     if (strategy) body.strategy = strategy;
     if (skills.length > 0) body.skills = skills;
+    // Carry the selected runtime. Sent only when it diverges from the server
+    // default (`codex`) so the codex create body is byte-identical to before; a
+    // claude-code selection adds `runtime: "claude-code"`.
+    if (runtime !== DEFAULT_RUNTIME) body.runtime = runtime;
     // Opt-in guardrails: only send when the operator chose a value.
     if (idleTimeoutMs != null) body.idleTimeoutMs = idleTimeoutMs;
     if (deadlineMs != null) body.deadlineMs = deadlineMs;
@@ -447,6 +540,42 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
             </div>
 
             <div className="grid gap-2">
+              <label htmlFor="modalRuntime" className="text-[13px] font-medium text-foreground">
+                Agent 运行时
+              </label>
+              <Select
+                value={runtime}
+                onValueChange={(v) => setRuntime(v as RuntimeId)}
+              >
+                <SelectTrigger id="modalRuntime" className="w-full">
+                  <SelectValue placeholder="选择运行时" />
+                </SelectTrigger>
+                <SelectContent>
+                  {RUNTIME_CATALOG.map((rt) => {
+                    const ready = isRuntimeReady(rt.id);
+                    return (
+                      <SelectItem
+                        key={rt.id}
+                        value={rt.id}
+                        disabled={!ready}
+                        data-runtime-option={rt.id}
+                        data-runtime-ready={ready ? "true" : "false"}
+                      >
+                        {rt.label}
+                        <small className="ml-1.5 text-xs text-muted-foreground">
+                          {ready ? rt.hint : "未配置凭据，去设置中连接后可用"}
+                        </small>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              <small className="text-xs text-muted-foreground">
+                选择执行本任务的 Agent CLI；未配置凭据的运行时不可选。
+              </small>
+            </div>
+
+            <div className="grid gap-2">
               <span className="text-[13px] font-medium text-foreground">
                 预装技能（可选）
               </span>
@@ -538,22 +667,27 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
               </small>
             </div>
 
-            <label className="flex items-start gap-2.5 rounded-md bg-[#fafafa] p-3 shadow-ring">
-              <Checkbox
-                checked={stopOnWrite}
-                onCheckedChange={(v) => setStopOnWrite(v === true)}
-                className="mt-[3px]"
-              />
+            {/* Advisory note (add-claude-code-runtime task 6.4 / design D8). The
+                interactive "破坏性写入前停止" CHECKBOX is REMOVED: it was unwired at
+                every layer for both runtimes (the agent runs ungated inside the
+                sandbox, which is the trust boundary), so presenting it as a toggle
+                falsely implied an enforced per-write gate. This non-interactive note
+                states the real safety boundary honestly instead. */}
+            <div
+              data-safety-note
+              className="flex items-start gap-2.5 rounded-md bg-[#fafafa] p-3 shadow-ring"
+            >
               <span>
                 <strong className="text-[13px] font-semibold text-foreground">
-                  破坏性写入前停止
+                  安全边界：沙箱即信任边界
                 </strong>
                 <br />
                 <small className="text-xs text-muted-foreground">
-                  Commit、push、secret 变更和 PR 创建前必须等待操作者确认。
+                  Agent 在隔离沙箱内自主执行（含 commit / push 等写操作），平台不在单次写入前逐项拦截。
+                  如需中止，可在会话中随时手动停止任务。
                 </small>
               </span>
-            </label>
+            </div>
           </div>
 
           {/* Right: preview */}
@@ -561,7 +695,13 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
             <div className="grid gap-2">
               <ReviewStep index="01" title="仓库已导入" caption="只使用当前授权范围内的仓库。" />
               <ReviewStep index="02" title="Runner 可接入" caption="创建后进入 iad-02 队列。" />
-              <ReviewStep index="03" title="写入前确认" caption="危险动作会在会话中暂停。" warn />
+              {/* 03 no longer claims a write-confirm gate (task 6.4 / design D8):
+                  writes are not intercepted; the sandbox is the trust boundary. */}
+              <ReviewStep
+                index="03"
+                title="沙箱隔离"
+                caption="Agent 在隔离沙箱内自主执行，可随时手动停止。"
+              />
             </div>
 
             <div>

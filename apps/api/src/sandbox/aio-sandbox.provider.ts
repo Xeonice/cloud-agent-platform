@@ -19,6 +19,41 @@ import { CODEX_PROMPT_FILE_PATH } from '../terminal/codex-launch';
 import { resolveSkillInstaller } from './skill-allowlist';
 import { extractFilesFromTar } from './tar-extract';
 import { assertSafeProviderUrl } from '../settings/assert-safe-provider-url';
+// add-claude-code-runtime Track 3 (3.1): the provider delegates per-runtime
+// credential/config injection and the pre-stop trim to the task's selected
+// AgentRuntime (resolved by the RuntimeRegistry, Track 2) instead of hard-coding
+// codex auth.json + the codex `~/.codex` trim. The provider stays a pure port
+// consumer: it supplies a {@link SandboxExec} closure (its own `/v1/shell/exec`
+// surface) and the runtime decides WHAT to write (codex: auth.json + config.toml;
+// claude: pre-seeded `.claude.json` + the env token carried on the launch line)
+// and WHAT to trim before stop, so codex behavior is byte-identical (CodexRuntime
+// moves today's logic) and claude diverges only inside its own runtime impl.
+//
+// CONSUMED PORT CONTRACT (Track 2 `agent-runtime/agent-runtime.port.ts` provides;
+// Track 3 consumes the following minimal shape — the integration boundary):
+//   type RuntimeId = 'codex' | 'claude-code'
+//   type SandboxExecResult = { exitCode: number; output: string }
+//   type SandboxExec = (command: string) => Promise<SandboxExecResult>
+//   interface InjectAuthContext { taskId: string; workspaceDir: string; prompt: string | null }
+//   interface AgentRuntime {
+//     readonly id: RuntimeId
+//     buildLaunchLine(ctx: { taskId; sessionName; workspaceDir }): string
+//     autoSubmit(): boolean
+//     injectAuth(exec: SandboxExec, ctx: InjectAuthContext): Promise<void>   // fail-closed (throw) when unconfigured
+//     detectExit(exec: SandboxExec, taskId: string): Promise<RuntimeExitDecision>
+//     trimBeforeStop?(exec: SandboxExec, taskId: string): Promise<void>      // optional; codex falls back to the inline trim
+//     captureTranscript?(exec: SandboxExec, taskId: string): Promise<unknown>
+//   }
+//   type RuntimeExitDecision = { done: false } | { done: null } | { done: true; status?: { code: number | null; abnormal: boolean } }
+//   interface RuntimeRegistry { resolve(id?: RuntimeId | null): AgentRuntime; resolveForTask(taskId: string): Promise<AgentRuntime> }
+//   const RUNTIME_REGISTRY: symbol; class AgentRuntimeRegistry implements RuntimeRegistry
+import {
+  RUNTIME_REGISTRY,
+  type AgentRuntime,
+  type RuntimeRegistry,
+  type SandboxExec,
+  type SandboxExecResult,
+} from '../agent-runtime/agent-runtime.integration';
 
 /**
  * AIO Sandbox `SandboxProvider` (aio-sandbox-execution, design D — connect-in).
@@ -110,11 +145,20 @@ export class AioSandboxProvider
    *                         isolation).
    * @param codexAuthSource  Supplies the codex `auth.json` injected into each
    *                         sandbox before codex launches (deployment-level env
-   *                         source today; see {@link CodexAuthSource}).
+   *                         source today; see {@link CodexAuthSource}). Still
+   *                         injected here so the {@link CodexAuthSource} binding is
+   *                         unchanged; the runtime reads it through the registry.
+   * @param runtimes         The {@link RuntimeRegistry} (add-claude-code-runtime
+   *                         Track 2) that resolves the task's selected
+   *                         {@link AgentRuntime}. The provider delegates auth/config
+   *                         injection and the pre-stop trim to it (3.1) so codex
+   *                         stays byte-identical and claude diverges only inside its
+   *                         own runtime impl.
    */
   constructor(
     @Inject(PROVISION_LOOKUP) private readonly lookup: ProvisionLookup,
     @Inject(CODEX_AUTH_SOURCE) private readonly codexAuthSource: CodexAuthSource,
+    @Inject(RUNTIME_REGISTRY) private readonly runtimes: RuntimeRegistry,
   ) {}
 
   /** The exposed AIO HTTP/WS port inside the container (never published to the host). */
@@ -259,16 +303,20 @@ export class AioSandboxProvider
     try {
       // Readiness: do not treat the sandbox as usable until its HTTP API answers.
       await this.waitForReadiness(baseUrl, ctx.taskId);
-      // Inject the codex credential into /home/gem/.codex BEFORE the gateway opens
-      // the PTY and codex auto-launches — so codex authenticates / targets the
-      // configured provider on startup. Then clone the task repo. Both AFTER
-      // readiness and BEFORE the handle returns. The taskId scopes the credential
-      // to the task's OWNING account (owner-scoped resolution, design D3).
-      await this.injectCodexAuth(baseUrl, ctx.taskId);
-      // Inject the operator's task prompt as a file so codex starts with the goal
-      // pre-filled (aio-codex-prompt-autostart). After auth (same ~/.codex dir),
-      // before the handle returns; fails CLOSED on a write error like the others.
-      await this.injectTaskPrompt(baseUrl, ctx.taskId);
+      // 3.1 — delegate credential/config + prompt injection to the task's selected
+      // AgentRuntime. CODEX stays byte-identical: for a `codex` task the provider
+      // runs the SAME `injectCodexAuth` (config.toml/auth.json or the
+      // compatible-provider block) + `injectTaskPrompt` it ran inline before, so
+      // the existing codex e2e is unchanged. CLAUDE delegates to the runtime's
+      // `injectAuth`, which pre-seeds `~/.claude/.claude.json` (global onboarding +
+      // per-project trust) + the prompt file and FAILS CLOSED with a
+      // "runtime not configured" reason when no `CLAUDE_CODE_OAUTH_TOKEN` is set
+      // (the OAuth token itself rides the launch ENV, written by the runtime's
+      // buildLaunchLine, not an auth file). Both AFTER readiness, BEFORE the handle
+      // returns; fail CLOSED on a non-zero exit so a broken setup never silently
+      // burns a run slot. The taskId scopes the codex credential to the task's
+      // OWNING account (owner-scoped resolution, design D3).
+      await this.injectRuntimeSetup(baseUrl, ctx.taskId);
       await this.cloneTaskRepository(baseUrl, ctx.taskId);
       // task-preinstall-skills: AFTER the clone (the installers run against the
       // cloned workspace) and before the handle returns. FAIL-SOFT — a skill
@@ -314,7 +362,12 @@ export class AioSandboxProvider
     const baseUrl =
       connection?.baseUrl ??
       `http://${AioSandboxProvider.CONTAINER_PREFIX}${taskId}:${AioSandboxProvider.AIO_PORT}`;
-    await this.trimCodexHomeBeforeStop(baseUrl, taskId);
+    // 3.1 — the pre-stop trim is DISPATCHED to the task's selected runtime: codex
+    // trims `~/.codex` (the unchanged {@link trimCodexHomeBeforeStop}); claude trims
+    // `~/.claude` while KEEPING `~/.claude/projects/` (the session transcript) as the
+    // defense-in-depth analog. A trim failure NEVER blocks the stop+retain (the
+    // dispatcher swallows its own errors), so settle stays fast even if wedged.
+    await this.trimRuntimeHomeBeforeStop(baseUrl, taskId);
     // `t: 0` = stop immediately. With AutoRemove:false the container persists in
     // an `Exited` state (the rollout/workspace frozen) until the retention
     // cleaner removes it. Already stopped → safe no-op.
@@ -337,6 +390,41 @@ export class AioSandboxProvider
     await container.remove({ force: true }).catch(() => {
       // Already removed / never existed — fine.
     });
+  }
+
+  /**
+   * 3.1 — dispatch the pre-stop trim to the task's selected {@link AgentRuntime}.
+   * For `codex` (or an unresolved runtime) this runs the UNCHANGED
+   * {@link trimCodexHomeBeforeStop}, so codex teardown is byte-identical. For a
+   * runtime that exposes its own `trimBeforeStop` (claude trims `~/.claude` keeping
+   * `projects/`), the provider hands it the {@link SandboxExec} closure and lets the
+   * runtime own its HOME layout. NEVER throws and NEVER blocks the stop: a missing
+   * `trimBeforeStop`, a resolution error, or a trim error all degrade to "the kept
+   * container is just larger", exactly like the codex trim's own best-effort guard.
+   */
+  private async trimRuntimeHomeBeforeStop(
+    baseUrl: string,
+    taskId: string,
+  ): Promise<void> {
+    let runtime: AgentRuntime | undefined;
+    try {
+      runtime = await this.resolveRuntime(taskId);
+    } catch {
+      runtime = undefined;
+    }
+    if (!runtime || runtime.id === 'codex' || typeof runtime.trimBeforeStop !== 'function') {
+      await this.trimCodexHomeBeforeStop(baseUrl, taskId);
+      return;
+    }
+    try {
+      await runtime.trimBeforeStop(this.runSandboxExec(baseUrl), taskId);
+    } catch (err) {
+      this.logger.warn(
+        `pre-stop trim for task ${taskId} (runtime "${runtime.id}") failed (kept container will be larger; not fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /**
@@ -464,24 +552,29 @@ export class AioSandboxProvider
    * Boot RE-ADOPTION pass (survive-api-redeploy D3) — supersedes the old
    * "force-remove every RUNNING `cap-aio-*` orphan" reap.
    *
-   * Because codex now runs in a DETACHED named tmux session (`task<taskId>`) that
-   * outlives the orchestrator's `/v1/shell/ws` connection, a RUNNING `cap-aio-*`
-   * container left by a prior process is NOT automatically an orphan: its codex
-   * may still be executing. So on boot we list RUNNING `cap-aio-*`, parse each
-   * `taskId`, and probe the detached session via {@link hasLiveSession}
-   * (`tmux has-session -t task<taskId>` over the container's own
-   * `/v1/shell/exec` — the Track-2 has-session check, issued as the provider's
-   * OWN exec call, not a shared-file edit):
+   * RUNTIME-AGNOSTIC (add-claude-code-runtime 3.4): EVERY agent runtime (codex AND
+   * claude-code) runs in the SAME DETACHED named tmux session `task<taskId>`
+   * (`detachedSessionName`), so re-adoption makes NO codex-specific assumption — it
+   * keys solely off the session NAME, which is a pure function of `taskId`, not the
+   * agent. Because that session outlives the orchestrator's `/v1/shell/ws`
+   * connection, a RUNNING `cap-aio-*` container left by a prior process is NOT
+   * automatically an orphan: its agent may still be executing. So on boot we list
+   * RUNNING `cap-aio-*`, parse each `taskId`, and probe the detached session via
+   * {@link hasLiveSession} (`tmux has-session -t task<taskId>` over the container's
+   * own `/v1/shell/exec`):
    *   - LIVE session  → RE-ADOPT: re-register the provider/connection maps and
    *     mark the task in {@link readopted} so the guardrails recovery (Track 4)
    *     can DB-validate it (`running`/`awaiting_input`) and re-attach its
-   *     terminal (the re-attach is orchestrated by 4.2 via guardrails — the
-   *     provider holds no gateway reference). The container is SPARED.
-   *   - NO live session → FORCE-REMOVE: a RUNNING container whose codex session is
-   *     gone is a true orphan (its task/session state died with the prior process
-   *     or codex already exited without settling), so it is reaped to avoid
-   *     leaking host resources. The matching stranded task row is failed by the
-   *     tasks service Phase 1 (which excludes the re-adopted tasks).
+   *     terminal. On re-attach the gateway re-resolves the task's runtime (3.2) so
+   *     the poller dispatches turn-completion the right way — `tmux has-session`
+   *     for codex, the transcript-`end_turn` `detectExit` for claude — over the
+   *     re-adopted live session. The container is SPARED.
+   *   - NO live session → FORCE-REMOVE: a RUNNING container whose AGENT session is
+   *     gone is a true orphan (its task/session state died with the prior process,
+   *     or the agent already exited / a claude turn already `end_turn`-killed its
+   *     session without settling), so it is reaped to avoid leaking host resources.
+   *     The matching stranded task row is failed by the tasks service Phase 1
+   *     (which excludes the re-adopted tasks).
    *
    * RETENTION (D1): STOPPED `cap-aio-*` containers are NOT touched — they are
    * intentionally-kept settled sandboxes the history-replay page reads from. This
@@ -535,7 +628,8 @@ export class AioSandboxProvider
             readopted += 1;
             return;
           }
-          // FORCE-REMOVE: RUNNING but no live codex session → true orphan.
+          // FORCE-REMOVE: RUNNING but no live AGENT session → true orphan
+          // (runtime-agnostic — `task<id>` is the session name for codex AND claude).
           await this.docker
             .getContainer(info.Id)
             .remove({ force: true })
@@ -546,7 +640,7 @@ export class AioSandboxProvider
 
       this.logger.log(
         `startup re-adoption: re-adopted ${readopted} still-running ` +
-          `${AioSandboxProvider.CONTAINER_PREFIX}* sandbox(es) with a live codex session, ` +
+          `${AioSandboxProvider.CONTAINER_PREFIX}* sandbox(es) with a live agent session, ` +
           `force-removed ${reaped} orphan(s) with no live task ` +
           `(stopped containers spared as retained history)`,
       );
@@ -640,15 +734,20 @@ export class AioSandboxProvider
   }
 
   /**
-   * Whether the task's DETACHED codex session is still alive — the Track-2
-   * `has-session` liveness check, issued as the provider's OWN
-   * `POST /v1/shell/exec` running `tmux has-session -t task<taskId>` (exit 0 when
-   * the session exists). This is a CONSUMED contract, not a shared-file edit: the
-   * provider already reaches the sandbox HTTP API directly elsewhere
-   * (readiness/clone/auth), so probing liveness over the same surface keeps this
-   * track's file set disjoint from the terminal module. A non-zero exit, a
-   * non-`ok` HTTP status, or any transport error is treated as NOT alive (so a
-   * wedged/unreachable sandbox is reaped, never re-adopted). Never throws.
+   * Whether the task's DETACHED agent session is still alive — the `has-session`
+   * liveness check, issued as the provider's OWN `POST /v1/shell/exec` running
+   * `tmux has-session -t task<taskId>` (exit 0 when the session exists). RUNTIME-
+   * AGNOSTIC (add-claude-code-runtime 3.4): the session name `task<taskId>` is the
+   * SAME for codex and claude-code (the shared `detachedSessionName`), so this
+   * probe makes NO codex-specific assumption — it only asks whether SOME agent
+   * session for this task is running. For claude that session stays alive across the
+   * turn and is killed by the runtime's `detectExit` on `end_turn`; this probe then
+   * sees it gone (the abnormal-death case is likewise caught). This is a CONSUMED
+   * contract, not a shared-file edit: the provider already reaches the sandbox HTTP
+   * API directly elsewhere (readiness/clone/auth), so probing liveness over the same
+   * surface keeps this track's file set disjoint from the terminal module. A
+   * non-zero exit, a non-`ok` HTTP status, or any transport error is treated as NOT
+   * alive (so a wedged/unreachable sandbox is reaped, never re-adopted). Never throws.
    */
   private async hasLiveSession(taskId: string): Promise<boolean> {
     const containerName = `${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`;
@@ -789,6 +888,91 @@ export class AioSandboxProvider
     }
 
     this.logger.debug(`cloned task repository into AIO sandbox for task ${taskId}`);
+  }
+
+  /**
+   * 3.1 — provision-time credential/config + prompt injection, DISPATCHED to the
+   * task's selected {@link AgentRuntime}. The provider stays a pure port consumer:
+   * it resolves the runtime from the {@link RuntimeRegistry} (Track 2) and either
+   *   - `codex` → runs the EXISTING {@link injectCodexAuth} + {@link injectTaskPrompt}
+   *     unchanged, so the codex path is BYTE-IDENTICAL to before (the spec's
+   *     "Codex provisioning/teardown is unchanged" scenario); or
+   *   - any other runtime (`claude-code`) → delegates to the runtime's
+   *     `injectAuth(exec, ctx)`, handing it a {@link SandboxExec} closure bound to
+   *     this sandbox's `/v1/shell/exec`. The runtime pre-seeds `~/.claude/.claude.json`
+   *     (global onboarding + per-project trust) + the prompt file and FAILS CLOSED
+   *     (throws) with a "runtime not configured" reason when no Claude token is
+   *     configured — so an unconfigured claude task never launches unauthenticated.
+   *
+   * Resolution is best-effort defensive: an unknown/uninitialized registry falls
+   * back to the codex path (the default runtime), so a partial wiring never strands
+   * a codex task. Throws on a genuine injection failure (fail-closed), which the
+   * caller's provision try/catch maps to a torn-down container + failed task.
+   */
+  private async injectRuntimeSetup(baseUrl: string, taskId: string): Promise<void> {
+    const runtime = await this.resolveRuntime(taskId);
+    if (!runtime || runtime.id === 'codex') {
+      // Codex (or an unresolved runtime) → the unchanged inline codex path.
+      await this.injectCodexAuth(baseUrl, taskId);
+      await this.injectTaskPrompt(baseUrl, taskId);
+      return;
+    }
+    // Non-codex runtime (claude-code) → delegate the WHOLE setup (creds + config +
+    // prompt) to the runtime, which owns its agent-specific layout. The provider
+    // only supplies the exec closure + the per-task prompt; it never branches on
+    // claude internals here.
+    const prompt = await this.lookup.getTaskPrompt(taskId);
+    await runtime.injectAuth(this.runSandboxExec(baseUrl), {
+      taskId,
+      workspaceDir: AioSandboxProvider.WORKSPACE_DIR,
+      prompt: prompt ?? null,
+    });
+    this.logger.debug(
+      `delegated provision-time setup for task ${taskId} to runtime "${runtime.id}"`,
+    );
+  }
+
+  /**
+   * Resolve the task's selected {@link AgentRuntime} via the {@link RuntimeRegistry}
+   * (Track 2). Best-effort + never throws: a registry hiccup (or a not-yet-wired
+   * registry in a focused unit context) resolves to `undefined`, and every caller
+   * treats `undefined` as the DEFAULT codex path, so a resolution failure can never
+   * strand a codex task or accidentally route it through a claude-only branch.
+   */
+  private async resolveRuntime(taskId: string): Promise<AgentRuntime | undefined> {
+    try {
+      return (await this.runtimes?.resolveForTask?.(taskId)) ?? undefined;
+    } catch (err) {
+      this.logger.warn(
+        `could not resolve AgentRuntime for task ${taskId} (defaulting to codex): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Build the {@link SandboxExec} closure a runtime uses to run a command in THIS
+   * sandbox over `POST <baseUrl>/v1/shell/exec`, returning the parsed
+   * `{exitCode, output}` via the SAME {@link parseExecResult} the provider uses for
+   * its own injections — so a runtime sees identical exit-code semantics (a missing
+   * `exit_code` is a non-zero failure, the live-server `data`-nesting is unwrapped).
+   * A non-`ok` HTTP status surfaces as `{exitCode: NaN}` so the runtime fails closed
+   * exactly as the inline codex path does.
+   */
+  private runSandboxExec(baseUrl: string): SandboxExec {
+    return async (command: string): Promise<SandboxExecResult> => {
+      const res = await fetch(`${baseUrl}/v1/shell/exec`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command }),
+      });
+      if (!res.ok) {
+        return { exitCode: Number.NaN, output: `/v1/shell/exec responded ${res.status}` };
+      }
+      return AioSandboxProvider.parseExecResult(await res.json().catch(() => undefined));
+    };
   }
 
   /**

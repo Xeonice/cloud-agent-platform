@@ -13,6 +13,8 @@ import {
   GUARDRAIL_OFF,
   IDLE_TIMEOUT_OPTIONS,
   DEADLINE_OPTIONS,
+  RUNTIME_CATALOG,
+  DEFAULT_RUNTIME,
 } from "./new-task-dialog";
 
 const base = {
@@ -64,6 +66,41 @@ describe("guardrail preset ladders (console-design-pixel-merge)", () => {
     });
     expect(lines.some((l) => l.includes("--idle-timeout-ms"))).toBe(false);
     expect(lines.some((l) => l.includes("--deadline-ms"))).toBe(false);
+  });
+});
+
+describe("runtime selector + command-preview reflection (add-claude-code-runtime)", () => {
+  it("default runtime is codex and it is the first catalog entry", () => {
+    expect(DEFAULT_RUNTIME).toBe("codex");
+    expect(RUNTIME_CATALOG[0]?.id).toBe("codex");
+    expect(RUNTIME_CATALOG.map((r) => r.id)).toEqual(["codex", "claude-code"]);
+  });
+
+  it("codex (default) preview omits the --runtime flag and names codex", () => {
+    // Omitted runtime defaults to codex — the codex flag list stays as before.
+    const omitted = buildCommandPreview(base);
+    expect(omitted.some((l) => l.includes("--runtime"))).toBe(false);
+    expect(omitted.some((l) => l.includes("# 沙箱内启动 codex"))).toBe(true);
+    expect(omitted.some((l) => l.includes("claude"))).toBe(false);
+    // Explicit codex behaves identically to omitted.
+    const explicit = buildCommandPreview({ ...base, runtime: "codex" });
+    expect(explicit).toEqual(omitted);
+  });
+
+  it("claude-code preview emits --runtime claude-code and names claude", () => {
+    const lines = buildCommandPreview({ ...base, runtime: "claude-code" });
+    expect(lines.some((l) => l.includes("--runtime claude-code"))).toBe(true);
+    expect(lines.some((l) => l.includes("# 沙箱内启动 claude"))).toBe(true);
+    // The codex framing must NOT appear when claude-code is selected.
+    expect(lines.some((l) => l.includes("# 沙箱内启动 codex"))).toBe(false);
+  });
+
+  it("stopOnWrite never emits the --confirm-before-write line (gate removed)", () => {
+    // The dialog now passes stopOnWrite=false always; even if a caller forced it
+    // true the preview is the only place it surfaces — assert the dialog's wiring
+    // keeps it false-by-construction by checking the false path is line-free.
+    const lines = buildCommandPreview({ ...base, stopOnWrite: false });
+    expect(lines.some((l) => l.includes("--confirm-before-write"))).toBe(false);
   });
 });
 

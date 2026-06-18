@@ -12,6 +12,7 @@ import { GuardrailsModule } from './guardrails/guardrails.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { UpdateStatusModule } from './update-status/update-status.module';
 import { SelfUpdateModule } from './self-update/self-update.module';
+import { RuntimesModule } from './runtimes/runtimes.module';
 import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { AuditModule } from './audit/audit.module';
@@ -39,7 +40,11 @@ import { SettingsModule } from './settings/settings.module';
  *    env-gated `POST /self-update` — the one-click host-root upgrade trigger.
  *    Default-OFF (`SELF_UPDATE_ENABLED` unset → the endpoint refuses) so merely
  *    composing it is INERT: no live upgrade capability exists until an operator
- *    deliberately enables it;
+ *    deliberately enables it. `RuntimesModule` (add-claude-code-runtime Track 3)
+ *    exposes the operator-guarded `GET /runtimes` — per-runtime readiness booleans
+ *    (codex always ready; `claude-code` ready iff a Claude OAuth token is
+ *    configured), backed by the deployment auth sources and leaking no secret, so
+ *    the create dialog can disable an un-configured runtime before task creation;
  *  - auth: `AuthModule` registers the operator-auth guard GLOBALLY on all REST
  *    endpoints (exempting `/health`), 11.2b. The refuse-to-boot check on an unset
  *    `AUTH_TOKEN` (11.3b) and CORS/WS-origin allow-listing (10.1b) live in the
@@ -73,6 +78,7 @@ import { SettingsModule } from './settings/settings.module';
     MetricsModule,
     UpdateStatusModule,
     SelfUpdateModule,
+    RuntimesModule,
     AuthModule,
     AuditModule,
     SettingsModule,

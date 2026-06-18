@@ -113,7 +113,7 @@ function openWs(url) {
 }
 
 /** Create a repo + task via REST. Creating the task triggers admit -> provision. */
-async function createTask(prompt = 'aio-e2e') {
+async function createTask(prompt = 'aio-e2e', extra = {}) {
   const repoRes = await fetch(`${API}/repos`, {
     method: 'POST',
     headers: authHeaders,
@@ -121,14 +121,34 @@ async function createTask(prompt = 'aio-e2e') {
   });
   assert.ok(repoRes.ok, `POST /repos -> ${repoRes.status}`);
   const repo = await repoRes.json();
+  // `extra` carries the OPTIONAL create-task fields (e.g. `runtime` for
+  // add-claude-code-runtime) so a caller can select the agent runtime; omitting
+  // it preserves the prior body shape (codex default).
   const taskRes = await fetch(`${API}/repos/${repo.id}/tasks`, {
     method: 'POST',
     headers: authHeaders,
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, ...extra }),
   });
   assert.ok(taskRes.ok, `POST /repos/:id/tasks -> ${taskRes.status}`);
   const task = await taskRes.json();
   return task.id;
+}
+
+/**
+ * Is a given runtime READY (its credential configured) per `GET /runtimes`? The
+ * claude-code e2e self-skips when the deployment has no `CLAUDE_CODE_OAUTH_TOKEN`
+ * (the endpoint reports `ready:false`), so the suite passes on a codex-only stack.
+ */
+async function runtimeReady(id) {
+  try {
+    const res = await fetch(`${API}/runtimes`, { headers: authHeaders });
+    if (!res.ok) return false;
+    const body = await res.json();
+    const list = Array.isArray(body) ? body : Array.isArray(body?.runtimes) ? body.runtimes : [];
+    return list.some((r) => r?.id === id && r?.ready === true);
+  } catch {
+    return false;
+  }
 }
 
 /** An operator: authenticated at connect time (token on URL), collects raw output. */
@@ -388,5 +408,47 @@ test('E. codex starts in the AIO sandbox (AioPtyClient CPR injection unblocks cr
   assert.ok(
     rendered,
     `codex should render its TUI in the AIO sandbox; last output tail: ${JSON.stringify(codexOut.slice(-200))}`,
+  );
+});
+
+// ── (I) claude-code runtime full turn (add-claude-code-runtime, Track 7.2) ─────
+// Unlike codex (test E, operator-launched), claude can ONLY run through the
+// orchestrator's runtime auto-launch: the provider injects CLAUDE_CODE_OAUTH_TOKEN
+// + CLAUDE_CODE_SANDBOXED + the pre-seeded ~/.claude.json, then buildLaunchLine
+// runs `claude --permission-mode acceptEdits "<prompt>"`. So this test does NOT
+// type a launch command — it creates a `claude-code` task with a deterministic
+// prompt and waits for the AUTO-RUN answer to stream back, proving the clean-env
+// OAuth-token auth + the auto-submitted positional prompt + the inline-buffer
+// capture all work end-to-end on the real amd64 sandbox image. It SELF-SKIPS when
+// the deployment has no Claude token (`/runtimes` reports claude-code not ready),
+// so a codex-only stack still passes. The marker is chosen to be unmistakable.
+test('I. claude-code runtime auto-launches and answers in the AIO sandbox', { skip: SKIP }, async (t) => {
+  if (!(await runtimeReady('claude-code'))) {
+    t.skip('claude-code runtime not configured (no CLAUDE_CODE_OAUTH_TOKEN) — skipping the claude e2e');
+    return;
+  }
+  await reapSandboxContainers();
+  const MARKER = `AIOCLAUDE_${randomUUID().slice(0, 6)}`;
+  const taskId = await createTask(
+    `Reply with exactly the token ${MARKER} and then stop. Do nothing else.`,
+    { runtime: 'claude-code' },
+  );
+  const operator = await startOperator(taskId);
+  t.after(() => operator.close());
+
+  // The orchestrator auto-provisions + auto-launches claude; the positional prompt
+  // auto-runs (no injected Enter). Wait for the marker to stream back.
+  const answered = await waitFor(
+    () => operator.getOutput().includes(MARKER),
+    { timeoutMs: 90_000 },
+  );
+  const out = operator.getOutput();
+  // An auth/login gate means the token did not authenticate in the clean sandbox.
+  const authGate = /not logged in|\/login|invalid api key|authentication_failed|please run .*login/i.test(out);
+
+  assert.ok(!authGate, `claude must authenticate via CLAUDE_CODE_OAUTH_TOKEN in the sandbox; output tail: ${JSON.stringify(out.slice(-300))}`);
+  assert.ok(
+    answered,
+    `claude-code should auto-run the prompt and emit ${MARKER}; output tail: ${JSON.stringify(out.slice(-300))}`,
   );
 });

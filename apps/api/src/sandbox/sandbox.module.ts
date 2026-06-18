@@ -5,6 +5,25 @@ import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
 import { PrismaCodexAuthSource } from './prisma-codex-auth-source';
 import { PROVISION_LOOKUP } from './provision-lookup.port';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
+// add-claude-code-runtime — the cross-track shared wiring file (per the tasks
+// partition note): Track 2 binds the ClaudeAuthSource + the AgentRuntime registry
+// here; Track 3 (this edit) EXPORTS those tokens so the `/runtimes` readiness
+// endpoint (RuntimesModule) and the terminal gateway can inject them from this
+// `@Global()` module without re-importing it. The registry classes
+// (`AgentRuntimeRegistry`, `EnvClaudeAuthSource`) live in Track 2's module; binding
+// them here keeps a single DI surface so the provider's `@Inject(RUNTIME_REGISTRY)`
+// (3.1) and the gateway's optional registry (3.2) resolve the SAME instance. The
+// integration registry wraps Track 2's leaf `AgentRuntimeRegistry` + the two
+// concrete runtimes and adapts the leaf port to the consumer-facing shape.
+import {
+  RUNTIME_REGISTRY,
+  IntegrationRuntimeRegistry,
+} from '../agent-runtime/agent-runtime.integration';
+import {
+  CLAUDE_AUTH_SOURCE,
+  type ClaudeAuthSource,
+} from './claude-auth-source.port';
+import { EnvClaudeAuthSource } from './env-claude-auth-source';
 
 /**
  * Sandbox-provider DI wiring (sandbox-provider-port 9.1, integration 9.1b).
@@ -50,11 +69,45 @@ import { PrismaProvisionLookup } from './prisma-provision-lookup';
       provide: SANDBOX_PROVIDER,
       useClass: AioSandboxProvider,
     },
+    // add-claude-code-runtime Track 2/3 — the Claude OAuth-token source
+    // (env-backed: reads `CLAUDE_CODE_OAUTH_TOKEN`, exposes only a `configured`
+    // boolean — NEVER the token). Mirrors the CODEX_AUTH_SOURCE binding. Consumed by
+    // the `/runtimes` readiness endpoint (3.3) and, via the runtime registry, by the
+    // ClaudeCodeRuntime's launch-env injection. Bound by token so consumers stay
+    // pure port consumers.
+    {
+      provide: CLAUDE_AUTH_SOURCE,
+      useClass: EnvClaudeAuthSource,
+    },
+    // add-claude-code-runtime Track 2/3 — the AgentRuntime registry that resolves a
+    // task's selected runtime (`codex` | `claude-code`) to its CodexRuntime /
+    // ClaudeCodeRuntime implementation. Bound here (the shared sandbox DI surface) so
+    // BOTH the provider (`@Inject(RUNTIME_REGISTRY)`, 3.1) and the terminal gateway
+    // (optional, 3.2) resolve the SAME instance. The registry reads each task's
+    // `runtime` column (via the same Prisma surface the provision lookup uses) to
+    // dispatch by task.
+    {
+      provide: RUNTIME_REGISTRY,
+      useClass: IntegrationRuntimeRegistry,
+    },
   ],
-  exports: [SANDBOX_PROVIDER],
+  // Track 3 — export the runtime registry + the auth-source tokens so out-of-module
+  // consumers resolve them from this `@Global()` module: the gateway (TerminalModule)
+  // injects RUNTIME_REGISTRY, and the `/runtimes` endpoint (RuntimesModule) injects
+  // CLAUDE_AUTH_SOURCE. SANDBOX_PROVIDER stays exported as before.
+  exports: [
+    SANDBOX_PROVIDER,
+    RUNTIME_REGISTRY,
+    CLAUDE_AUTH_SOURCE,
+    CODEX_AUTH_SOURCE,
+  ],
 })
 export class SandboxModule {}
 
 /** Re-export the port token + type for consumers that inject the provider. */
 export { SANDBOX_PROVIDER };
 export type { SandboxProvider };
+/** Re-export the runtime/claude tokens + the claude source type for consumers. */
+export { RUNTIME_REGISTRY };
+export { CLAUDE_AUTH_SOURCE };
+export type { ClaudeAuthSource };

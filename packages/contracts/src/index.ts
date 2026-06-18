@@ -6,8 +6,11 @@
  * `workspace:*` and never re-declare them locally (D11).
  */
 
-// Repo / Task domain + REST bodies + task-status enum
+// Repo / Task domain + REST bodies + task-status enum + agent-runtime selector
 export * from './task.js';
+
+// Agent-runtime readiness: per-runtime { id, ready } booleans (no secrets)
+export * from './runtime.js';
 
 // Dual-channel WebSocket frame protocol (raw + flow-control frames)
 export * from './ws-frames.js';
