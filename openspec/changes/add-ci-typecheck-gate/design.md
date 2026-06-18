@@ -64,6 +64,30 @@ every codegen output) completes before any typecheck runs — avoiding the
 - `concurrency` group cancels superseded runs on the same ref; `permissions: contents:
   read` (least privilege — the gate needs no write).
 
+### D3 — Fix the silently-broken edit-time hook (enforcement point 1)
+
+`.claude/hooks/typecheck-lint-edited.sh` selected the owning package with
+`pnpm --filter "{$PKG_DIR}"` where `PKG_DIR` is derived from the edited file's dirname.
+On the **absolute** paths the editor passes, `PKG_DIR` is absolute and
+`pnpm --filter "{/abs/path}"` matches **zero** projects ("No projects matched the
+filters") — so it ran neither ESLint nor typecheck and always exited 0. It had never
+actually enforced anything for the real (absolute-path) case.
+
+Fix: keep the file path **absolute** for ESLint (so it resolves regardless of the
+package-dir cwd `pnpm exec` uses), and filter by a **repo-root-relative** package path
+(`REL_PKG="${PKG_DIR#"$ROOT"/}"`), which the `{path}` selector actually matches.
+
+- **Verified** (minimal hook env, simulating the non-interactive shell): clean `.ts`
+  (absolute & relative) → exit 0; a type-error probe → exit 2 + `TS2322` surfaced; a
+  `debugger` probe → exit 2 + `no-debugger` surfaced.
+- **Alternatives considered:** filter by package **name** (read from
+  `$PKG_DIR/package.json`) — also correct, but adds a node call; the relative-path strip
+  is pure bash and sufficient. Rewriting the hook to invoke `eslint`/`tsc` directly
+  (bypassing `pnpm --filter`) — larger change, loses workspace script parity.
+- This is folded in here because the hook is **enforcement point 1** of the same
+  `monorepo-foundation` "three places" requirement the CI gate (point added) reinforces —
+  both make strict checks real instead of nominal.
+
 ## Risks / Trade-offs
 
 - **[`turbo build` runs a full web vite build → slower CI]** → acceptable (local ~6s with

@@ -31,6 +31,17 @@ esac
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+# Normalize FILE to an absolute path. Payloads are normally absolute, but a
+# relative path would otherwise (a) misresolve in the package-owner walk below
+# (it compares dirnames against the absolute ROOT) and (b) be wrong for `eslint`,
+# since `pnpm --filter` runs it from the package dir — so a repo-root-relative
+# path would resolve against the wrong base ("no files matching the pattern").
+# Resolve relatives against the repo root (the hook's working dir).
+case "$FILE" in
+  /*) ;;
+  *) FILE="$ROOT/$FILE" ;;
+esac
+
 # Find the nearest workspace member that owns this file (has a package.json).
 DIR="$(dirname "$FILE")"
 PKG_DIR=""
@@ -46,21 +57,27 @@ if [ -z "$PKG_DIR" ]; then
   exit 0
 fi
 
+# pnpm's {path} filter matches a path RELATIVE to the cwd (the repo root here).
+# An ABSOLUTE path matches NO projects ("No projects matched the filters"), which
+# would silently skip both checks and always pass. Express the owning package
+# relative to the repo root so the filter actually selects it.
+REL_PKG="${PKG_DIR#"$ROOT"/}"
+
 # ESLint check on the edited file (if eslint is resolvable in the workspace).
-if pnpm --filter "{$PKG_DIR}" exec eslint "$FILE" >/dev/null 2>&1; then
+if pnpm --filter "{$REL_PKG}" exec eslint "$FILE" >/dev/null 2>&1; then
   :
 else
   echo "ESLint check failed for $FILE" >&2
-  pnpm --filter "{$PKG_DIR}" exec eslint "$FILE" >&2 || true
+  pnpm --filter "{$REL_PKG}" exec eslint "$FILE" >&2 || true
   exit 2
 fi
 
 # TypeScript typecheck for the owning member (project-wide, strict).
-if pnpm --filter "{$PKG_DIR}" run typecheck >/dev/null 2>&1; then
+if pnpm --filter "{$REL_PKG}" run typecheck >/dev/null 2>&1; then
   :
 else
   echo "TypeScript typecheck failed for member $PKG_DIR (edited $FILE)" >&2
-  pnpm --filter "{$PKG_DIR}" run typecheck >&2 || true
+  pnpm --filter "{$REL_PKG}" run typecheck >&2 || true
   exit 2
 fi
 

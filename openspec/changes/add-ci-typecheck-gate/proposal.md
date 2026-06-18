@@ -26,6 +26,14 @@ preventive.)
   3. `pnpm turbo typecheck lint` — strict `tsc --noEmit` + ESLint across the workspace.
 - This makes the existing `monorepo-foundation` typecheck-lint-build contract
   **enforced by CI**, closing the gap that let resolution-fragile errors slip in.
+- **Fix the (silently broken) edit-time hook** `.claude/hooks/typecheck-lint-edited.sh`
+  — enforcement point 1 of the same `monorepo-foundation` requirement. It selected the
+  owning package with `pnpm --filter "{<absolute path>}"`, which matches **zero** projects
+  ("No projects matched the filters"), so on the absolute paths the editor passes it ran
+  neither ESLint nor typecheck and always exited 0 — a silent no-op that never caught
+  anything. Fix: filter by a **repo-root-relative** package path and pass the file to
+  ESLint as an **absolute** path. Verified to now exit non-zero and surface the error on a
+  type error and on a lint error (incl. `debugger`).
 - No application/runtime code changes; no change to the `drawer.tsx` source (the live
   error it exhibited on `756f4ee` is not present on current `main`).
 
@@ -36,13 +44,18 @@ preventive.)
 
 ### Modified Capabilities
 - `monorepo-foundation`: add a requirement that **CI enforces** the strict
-  typecheck-lint-build gate on changes (the runnable command requirement already exists;
-  what is new is automated enforcement on PRs/pushes).
+  typecheck-lint-build gate on changes; and strengthen the existing "Strict-TypeScript
+  enforced in three places" requirement so enforcement point 1 (the edit-time hook)
+  **actually runs** the checks rather than silently selecting zero packages.
 
 ## Impact
 
 - **New file**: `.github/workflows/ci.yml` (CI only; no app code).
+- **Modified file**: `.claude/hooks/typecheck-lint-edited.sh` (the edit-time hook fix —
+  relative `pnpm --filter` path + absolute file path for ESLint).
 - **Verified locally** on current `main`: `pnpm turbo build` then
-  `pnpm turbo typecheck lint` → all tasks green.
+  `pnpm turbo typecheck lint` → all tasks green; the fixed hook → exit 0 on clean files
+  (absolute & relative), exit 2 + surfaced error on a type error and on a `debugger`/lint
+  error.
 - **Follow-up (out of scope)**: marking the new check **required** in branch protection
   is a repository setting the maintainer flips; this change only adds the workflow.
