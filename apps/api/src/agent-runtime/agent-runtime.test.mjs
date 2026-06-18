@@ -253,49 +253,31 @@ async function main() {
     'codex injectAuth with NO material degrades ok (no write, no failure) — codex parity',
   );
 
-  // autoSubmit: DSR-gated single CR (no CR before the DSR; exactly one after quiesce).
+  // terminalStartup (refactor-agent-runtime-policy-mechanism): codex DECLARES the
+  // DSR-reply + cr-on-quiesce policy the SHARED pty mechanism (AioPtyClient) reads;
+  // claude declares neither (its prompt auto-runs). The DSR/CPR/quiesce MECHANISM is
+  // unchanged and lives in the pty client — only its gate now reads this declared
+  // policy (no agent-identity branch; the dead `CodexRuntime.autoSubmit` is deleted).
   process.env['CODEX_AUTOSUBMIT_QUIESCE_MS'] = '20';
-  const sent = [];
-  let observer = null;
-  const pty = {
-    sendInput: (d) => sent.push(d),
-    onOutput: (l) => {
-      observer = l;
-      return () => {
-        observer = null;
-      };
-    },
-  };
-  const teardown = codex.autoSubmit(pty, {
-    taskId: 't',
-    workspaceDir: '/home/gem/workspace',
-  });
-  // Output BEFORE the DSR must not arm a CR.
-  observer('hello world');
-  await new Promise((r) => setTimeout(r, 40));
   assert(
-    sent.length === 0,
-    'codex autoSubmit sends NOTHING before the startup DSR is seen',
+    codex.terminalStartup.replyToStartupDSR === true &&
+      codex.terminalStartup.promptSubmit === 'cr-on-quiesce',
+    'codex declares { replyToStartupDSR: true, promptSubmit: cr-on-quiesce }',
   );
-  // The DSR triggers the synthetic CPR reply immediately.
-  observer('\x1b[6n');
   assert(
-    sent.includes('\x1b[1;1R'),
-    'codex autoSubmit replies to the DSR with the synthetic CPR',
+    codex.terminalStartup.quiesceMs === 20,
+    'codex terminalStartup.quiesceMs reads CODEX_AUTOSUBMIT_QUIESCE_MS at access (test-tunable)',
   );
-  // After quiescence a SINGLE carriage return submits the pre-filled composer.
-  await new Promise((r) => setTimeout(r, 40));
-  const crCount = sent.filter((s) => s === '\r').length;
-  assert(crCount === 1, 'codex autoSubmit injects exactly one carriage return after quiesce');
-  // More output after submit does not inject a second CR.
-  observer('more');
-  await new Promise((r) => setTimeout(r, 40));
-  assert(
-    sent.filter((s) => s === '\r').length === 1,
-    'codex autoSubmit submits the prompt only once',
-  );
-  if (typeof teardown === 'function') teardown();
   delete process.env['CODEX_AUTOSUBMIT_QUIESCE_MS'];
+  assert(
+    codex.terminalStartup.quiesceMs === 800,
+    'codex terminalStartup.quiesceMs defaults to 800 (the prior pty-client default)',
+  );
+  assert(
+    claude.terminalStartup.replyToStartupDSR === false &&
+      claude.terminalStartup.promptSubmit === 'none',
+    'claude declares { replyToStartupDSR: false, promptSubmit: none }',
+  );
 
   // detectExit: gone session => done; existing session => running.
   const goneExec = makeExec((cmd) =>
@@ -424,32 +406,8 @@ async function main() {
     'claude injectAuth fails closed on a blank/whitespace token',
   );
 
-  // ---- 2.6 autosubmit is a no-op ----------------------------------------
-  const claudeSent = [];
-  let claudeObserverAttached = false;
-  const claudePty = {
-    sendInput: (d) => claudeSent.push(d),
-    onOutput: () => {
-      claudeObserverAttached = true;
-      return () => {};
-    },
-  };
-  const claudeTeardown = claude.autoSubmit(claudePty, {
-    taskId: 't',
-    workspaceDir: '/home/gem/workspace',
-  });
-  assert(
-    claudeSent.length === 0,
-    'claude autoSubmit injects NO carriage return (no-op)',
-  );
-  assert(
-    claudeObserverAttached === false,
-    'claude autoSubmit uses NONE of codex’s DSR/CPR/observer machinery',
-  );
-  assert(
-    claudeTeardown === undefined,
-    'claude autoSubmit returns nothing to tear down',
-  );
+  // (claude's terminal-startup no-op is asserted via `claude.terminalStartup`
+  // above — the dead `autoSubmit` method is removed in this refactor.)
 
   // ---- 2.7 detectExit: end_turn detection -------------------------------
   const slug = transcript.claudeProjectSlug('/home/gem/workspace');

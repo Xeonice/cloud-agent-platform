@@ -2,12 +2,12 @@ import { detachedSessionName } from '../terminal/codex-launch';
 import type {
   AgentRuntime,
   AuthMaterial,
-  AutoSubmitPty,
   ExitSignal,
   InjectAuthResult,
   LaunchContext,
   RuntimeId,
   SandboxExec,
+  TerminalStartup,
   TranscriptCapture,
 } from './agent-runtime.port';
 import {
@@ -183,17 +183,19 @@ export class ClaudeCodeRuntime implements AgentRuntime {
   }
 
   // ------------------------------------------------------------------------
-  // 2.6 — autosubmit is a no-op
+  // terminal startup — declarative, no DSR reply, no submit key
   // ------------------------------------------------------------------------
 
   /**
-   * No-op (task 2.6). `claude "prompt"` auto-runs the positional prompt, so the
-   * runtime injects NO carriage return and uses NONE of codex's DSR/CPR/quiesce
-   * machinery. Returns nothing — there is no observer or timer to tear down.
+   * Claude declares NO terminal-startup handshake: `claude "prompt"` auto-runs the
+   * positional prompt, so the shared pty mechanism injects no synthetic CPR and no
+   * carriage return (refactor-agent-runtime-policy-mechanism: replaces the no-op
+   * `autoSubmit` — the policy is data, the mechanism is shared).
    */
-  autoSubmit(_pty: AutoSubmitPty, _ctx: LaunchContext): void {
-    // intentionally empty
-  }
+  readonly terminalStartup: TerminalStartup = {
+    replyToStartupDSR: false,
+    promptSubmit: 'none',
+  };
 
   // ------------------------------------------------------------------------
   // 2.7 — turn-completion exit detection

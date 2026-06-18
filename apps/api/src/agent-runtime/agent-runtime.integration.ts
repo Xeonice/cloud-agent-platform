@@ -39,6 +39,7 @@ import type {
   LaunchContext as PortLaunchContext,
   RuntimeId,
   SandboxExec as PortSandboxExec,
+  TerminalStartup,
 } from './agent-runtime.port';
 import {
   CLAUDE_AUTH_SOURCE,
@@ -107,8 +108,8 @@ export type RuntimeExitDecision =
 export interface AgentRuntime {
   readonly id: RuntimeId;
   buildLaunchLine(ctx: LaunchContext): string;
-  /** True when the bridge's DSR-gated CR autosubmit should arm (codex), else false. */
-  autoSubmit(): boolean;
+  /** Declarative terminal-startup policy the pty mechanism reads (delegates to the port). */
+  readonly terminalStartup: TerminalStartup;
   injectAuth(exec: SandboxExec, ctx: InjectAuthContext): Promise<void>;
   detectExit(exec: SandboxExec, taskId: string): Promise<RuntimeExitDecision>;
   /** Optional pre-stop HOME trim; absent for codex (the provider keeps its inline trim). */
@@ -191,10 +192,9 @@ class RuntimeAdapter implements AgentRuntime {
     return this.runtime.buildLaunchLine(portCtx);
   }
 
-  autoSubmit(): boolean {
-    // The bridge's inline DSR-gated CR autosubmit is the CODEX path only. claude
-    // auto-runs its positional prompt (design D4), so it never arms the CR machinery.
-    return this.runtime.id === 'codex';
+  get terminalStartup(): TerminalStartup {
+    // Delegate to the port runtime's DECLARED policy — no agent-identity branch.
+    return this.runtime.terminalStartup;
   }
 
   async injectAuth(exec: SandboxExec, ctx: InjectAuthContext): Promise<void> {

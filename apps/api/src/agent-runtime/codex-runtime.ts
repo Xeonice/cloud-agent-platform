@@ -6,12 +6,12 @@ import {
 import type {
   AgentRuntime,
   AuthMaterial,
-  AutoSubmitPty,
   ExitSignal,
   InjectAuthResult,
   LaunchContext,
   RuntimeId,
   SandboxExec,
+  TerminalStartup,
   TranscriptCapture,
 } from './agent-runtime.port';
 
@@ -53,26 +53,21 @@ export class CodexRuntime implements AgentRuntime {
   private static readonly CODEX_HOME_DIR = '/home/gem/.codex';
 
   /**
-   * The DSR (Device Status Report) cursor-position query crossterm emits at codex
-   * TUI startup, `ESC[6n` (DSR-6, NO `?`). codex BLOCKS waiting for a CPR reply;
-   * observing it confirms codex (not the shell) owns the terminal — the gate for
-   * the zero-touch prompt auto-submit. Kept byte-identical to the pty client.
+   * Declarative terminal-startup policy (refactor-agent-runtime-policy-mechanism:
+   * replaces the dead `autoSubmit`). codex's positional prompt only PRE-FILLS the
+   * composer, so the SHARED pty mechanism replies to crossterm's startup DSR
+   * (`\x1b[6n`) with a synthetic CPR (`\x1b[1;1R`) and, after output quiesces,
+   * injects a single Enter (`\r`). The quiesce window stays env-tunable
+   * (`CODEX_AUTOSUBMIT_QUIESCE_MS`, default 800) — the SAME value the pty client
+   * read inline, so behavior is byte-identical. A getter so the env is read at
+   * access time (test-tunable), exactly like the prior `autoSubmitQuiesceMs`.
    */
-  static readonly DSR_CURSOR_POSITION_QUERY = '\x1b[6n';
-
-  /** The synthetic CPR (Cursor Position Report) reply injected on seeing the DSR. */
-  static readonly SYNTHETIC_CPR_REPLY = '\x1b[1;1R';
-
-  /** The Enter key the codex composer submits on — the single zero-touch CR. */
-  static readonly CODEX_SUBMIT_KEY = '\r';
-
-  /**
-   * Output-quiescence window (ms) the prompt auto-submit waits AFTER the startup
-   * DSR before injecting the Enter. Env-tunable (`CODEX_AUTOSUBMIT_QUIESCE_MS`),
-   * matching the pty client default so behavior is identical.
-   */
-  static get autoSubmitQuiesceMs(): number {
-    return Number(process.env['CODEX_AUTOSUBMIT_QUIESCE_MS'] ?? 800);
+  get terminalStartup(): TerminalStartup {
+    return {
+      replyToStartupDSR: true,
+      promptSubmit: 'cr-on-quiesce',
+      quiesceMs: Number(process.env['CODEX_AUTOSUBMIT_QUIESCE_MS'] ?? 800),
+    };
   }
 
   /** Resolve the base codex argv (env override wins), mirroring `launchCodex`. */
@@ -129,52 +124,6 @@ export class CodexRuntime implements AgentRuntime {
       `mkdir -p ${dir} && printf %s '${authB64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`,
     );
     return { ok: true };
-  }
-
-  autoSubmit(pty: AutoSubmitPty, _ctx: LaunchContext): () => void {
-    // The DSR-gated zero-touch prompt auto-submit, reproduced from the pty
-    // client's `onOutput`/`maybeArmPromptAutoSubmit`:
-    //   1. On the startup DSR (`ESC[6n`) reply with the synthetic CPR so codex
-    //      proceeds past startup, and arm the prompt auto-submit.
-    //   2. After the DSR, debounce on output quiescence; the FIRST stretch of no
-    //      output fires a single Enter to submit the pre-filled composer, once.
-    let dsrSeen = false;
-    let promptSubmitted = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const clearTimer = (): void => {
-      if (timer) {
-        clearTimeout(timer);
-        timer = undefined;
-      }
-    };
-
-    const armSubmit = (): void => {
-      if (!dsrSeen || promptSubmitted) return;
-      clearTimer();
-      timer = setTimeout(() => {
-        timer = undefined;
-        if (promptSubmitted) return;
-        promptSubmitted = true;
-        pty.sendInput(CodexRuntime.CODEX_SUBMIT_KEY);
-      }, CodexRuntime.autoSubmitQuiesceMs);
-    };
-
-    const detach = pty.onOutput((chunk: string) => {
-      if (chunk.length === 0) return;
-      if (chunk.includes(CodexRuntime.DSR_CURSOR_POSITION_QUERY)) {
-        pty.sendInput(CodexRuntime.SYNTHETIC_CPR_REPLY);
-        dsrSeen = true;
-      }
-      armSubmit();
-    });
-
-    // Teardown: detach the observer and cancel any pending Enter so it can never
-    // fire after the bridge tore down (the pty client clears this on WS close).
-    return () => {
-      clearTimer();
-      detach();
-    };
   }
 
   async detectExit(exec: SandboxExec, ctx: LaunchContext): Promise<ExitSignal> {

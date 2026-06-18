@@ -98,21 +98,24 @@ export type InjectAuthResult =
   | { readonly ok: false; readonly reason: string };
 
 /**
- * The autosubmit surface a runtime drives on the PTY after launch. Codex needs a
- * DSR-gated single carriage-return to submit its pre-filled composer; Claude
- * auto-runs its positional prompt and needs NOTHING — so `autoSubmit` is a no-op
- * for Claude. The runtime receives this thin handle (NOT the whole `AioPtyClient`)
- * so it can arm its own behavior without depending on the PTY client internals.
+ * Declarative terminal-startup POLICY (refactor-agent-runtime-policy-mechanism).
+ * The SHARED pty mechanism (`AioPtyClient`) reads this to decide whether to reply to
+ * the crossterm startup DSR with a synthetic CPR and whether to inject a single
+ * zero-touch Enter once output quiesces. The MECHANISM is identical for every
+ * runtime; only these PARAMETERS are agent-specific, so the shared scaffolding never
+ * branches on agent identity — it reads the declared policy.
+ *   - codex:       `{ replyToStartupDSR: true,  promptSubmit: 'cr-on-quiesce' }`
+ *     (its positional prompt only PRE-FILLS the composer; the CR submits it)
+ *   - claude-code: `{ replyToStartupDSR: false, promptSubmit: 'none' }`
+ *     (it auto-runs its positional prompt — no DSR handshake, no submit key)
  */
-export interface AutoSubmitPty {
-  /** Send raw input bytes to the sandbox terminal (e.g. a carriage return). */
-  sendInput(data: string): void;
-  /**
-   * Register an output observer the runtime can use to gate submission on a
-   * startup handshake (codex watches for the DSR cursor-position query). The
-   * returned function detaches the observer.
-   */
-  onOutput(listener: (chunk: string) => void): () => void;
+export interface TerminalStartup {
+  /** Reply to the crossterm startup DSR (`\x1b[6n`) with a synthetic CPR. */
+  readonly replyToStartupDSR: boolean;
+  /** Whether/how the pre-filled prompt is submitted after startup. */
+  readonly promptSubmit: 'none' | 'cr-on-quiesce';
+  /** Output-quiescence window (ms) before the CR, for `promptSubmit: 'cr-on-quiesce'`. */
+  readonly quiesceMs?: number;
 }
 
 /**
@@ -157,9 +160,10 @@ export interface TranscriptCapture {
 
 /**
  * The AgentRuntime port: the agent-specific execution seams behind one interface.
- * Every method is pure-ish (no Nest, no Prisma) and depends only on the narrow
- * {@link SandboxExec}/{@link AutoSubmitPty} handles, so a runtime is fully
- * unit-testable and the shared scaffolding never branches on agent identity.
+ * Every member is pure-ish (no Nest, no Prisma): declarative policy data
+ * ({@link TerminalStartup}) plus functions over the narrow {@link SandboxExec}
+ * handle, so a runtime is fully unit-testable and the shared scaffolding never
+ * branches on agent identity — it reads the declared policy.
  */
 export interface AgentRuntime {
   /** The runtime identity; matches the task's `runtime` value. */
@@ -185,12 +189,12 @@ export interface AgentRuntime {
   ): Promise<InjectAuthResult>;
 
   /**
-   * Arm post-launch autosubmit on the PTY. Codex injects a DSR-gated carriage
-   * return; Claude returns without doing anything (its positional prompt
-   * auto-runs). Returns an optional teardown function the caller invokes on
-   * detach to clear any armed timers/observers.
+   * Declarative terminal-startup policy the SHARED pty mechanism reads (replaces the
+   * old `autoSubmit(pty,ctx)` observer, which handed the runtime a PTY event loop the
+   * mechanism actually owns — the source of the v0.6.0 leak). codex declares the
+   * DSR-reply + cr-on-quiesce; claude declares neither.
    */
-  autoSubmit(pty: AutoSubmitPty, ctx: LaunchContext): (() => void) | void;
+  readonly terminalStartup: TerminalStartup;
 
   /**
    * Decide whether the agent's turn is complete. Codex checks the detached tmux

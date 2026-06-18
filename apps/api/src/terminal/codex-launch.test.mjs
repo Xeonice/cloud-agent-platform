@@ -130,6 +130,22 @@ async function main() {
     detached.includes('-c /home/gem/workspace'),
     'detached session cwd is the cloned task repo (/home/gem/workspace)',
   );
+
+  // ---- 1.1 GOLDEN (refactor-agent-runtime-policy-mechanism, Track 1) ----------
+  // Byte-exact characterization of the FULL detached launch line. The refactor
+  // lifts the `tmux new-session … '<inner>'` wrapper + the `$(cat <prompt-file>)`
+  // positional-prompt delivery into shared MECHANISM (the runtime will contribute
+  // only `{argv, env}`); this golden pins the exact wrapper/prompt shape so codex's
+  // launch line MUST be reproduced byte-for-byte. BASE / CODEX_PROMPT_FILE_PATH are
+  // the runtime's variable parts (tested above); this pins the mechanism's wrapping.
+  const GOLDEN_DETACHED =
+    `tmux new-session -d -s taskb3ee3f63 -c /home/gem/workspace ` +
+    `'P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
+    `if [ -n "$P" ]; then ${BASE} "$P"; else ${BASE}; fi'`;
+  assert(
+    detached === GOLDEN_DETACHED,
+    '1.1 GOLDEN: detached codex launch line is byte-exact (mechanism wrapper + $(cat) delivery)',
+  );
   // The inner codex launch line is wrapped VERBATIM (prompt-injection contract
   // unchanged WITHIN the detached session) as a single-quoted tmux argument.
   assert(

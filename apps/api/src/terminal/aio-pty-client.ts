@@ -56,6 +56,7 @@ import type {
   SandboxExec,
   SandboxExecResult,
 } from '../agent-runtime/agent-runtime.integration';
+import type { TerminalStartup } from '../agent-runtime/agent-runtime.port';
 
 /**
  * The DSR (Device Status Report) cursor-position query crossterm emits on
@@ -210,6 +211,16 @@ export class AioPtyClient implements TerminalPty {
    * pre-filled, so the bridge must NEVER inject a stray Enter into it.
    */
   private launchedCodex = false;
+
+  /**
+   * The resolved runtime's declared terminal-startup policy (the SHARED DSR/CPR
+   * mechanism below reads this — no agent-identity branch). Defaults to codex's
+   * policy for the unresolved-runtime fallback (`launchCodex`) and before launch.
+   */
+  private terminalStartup: TerminalStartup = {
+    replyToStartupDSR: true,
+    promptSubmit: 'cr-on-quiesce',
+  };
 
   /** Debounce timer backing the output-quiescence prompt auto-submit. */
   private autoSubmitTimer?: ReturnType<typeof setTimeout>;
@@ -375,12 +386,14 @@ export class AioPtyClient implements TerminalPty {
       sessionName: this.sessionName,
       workspaceDir: CLAUDE_WORKSPACE_DIR,
     });
-    // The runtime decides whether its prompt needs a synthetic Enter. claude's
-    // `autoSubmit()` is a no-op (false), so `launchedCodex` stays false and the
-    // DSR/CPR autosubmit machinery never arms for claude — no stray CR is injected.
-    const wantsAutoSubmit =
-      typeof runtime.autoSubmit === 'function' ? runtime.autoSubmit() : false;
-    this.launchedCodex = armAutoSubmit && wantsAutoSubmit;
+    // The shared DSR/CPR/quiesce mechanism is driven by the runtime's DECLARED
+    // `terminalStartup` policy — NO agent-identity branch. claude declares
+    // `promptSubmit:'none'` so the CR machinery never arms (no stray Enter); codex
+    // declares `'cr-on-quiesce'`. Stored so `onOutput` reads `replyToStartupDSR`
+    // and the quiesce window for the (unchanged) mechanism.
+    this.terminalStartup = runtime.terminalStartup;
+    this.launchedCodex =
+      armAutoSubmit && runtime.terminalStartup.promptSubmit === 'cr-on-quiesce';
     this.sendInput(`${line}\n`);
     this.attachSession();
   }
@@ -620,7 +633,7 @@ export class AioPtyClient implements TerminalPty {
 
     // CPR injection — watch the output stream for the crossterm DSR query and
     // reply immediately so codex proceeds past startup (design D ★).
-    if (data.includes(DSR_CURSOR_POSITION_QUERY)) {
+    if (data.includes(DSR_CURSOR_POSITION_QUERY) && this.terminalStartup.replyToStartupDSR) {
       this.sendInput(SYNTHETIC_CPR_REPLY);
       // The DSR is emitted only by codex's crossterm at TUI startup, never by the
       // shell — observing it confirms codex (not the shell) now owns the terminal,
@@ -655,7 +668,7 @@ export class AioPtyClient implements TerminalPty {
       if (this.promptSubmitted) return;
       this.promptSubmitted = true;
       this.sendInput(CODEX_SUBMIT_KEY);
-    }, CODEX_PROMPT_AUTOSUBMIT_QUIESCE_MS);
+    }, this.terminalStartup.quiesceMs ?? CODEX_PROMPT_AUTOSUBMIT_QUIESCE_MS);
   }
 
   /** Fan a translated raw output chunk out to every `onData` subscriber. */
