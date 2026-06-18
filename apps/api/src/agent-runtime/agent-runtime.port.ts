@@ -79,23 +79,58 @@ export interface LaunchContext {
  * behavior).
  */
 export interface AuthMaterial {
-  /** Codex `~/.codex/auth.json` document, written verbatim into the sandbox. */
+  /** Codex `~/.codex/auth.json` document (official ChatGPT login), written verbatim. */
   readonly authJson?: string;
   /** Claude OAuth subscription token, exported as `CLAUDE_CODE_OAUTH_TOKEN`. */
   readonly oauthToken?: string;
+  /**
+   * Codex compatible-provider config, ALREADY SSRF-validated by the provider (the
+   * async host-safety check is mechanism, not policy — it stays in the provider's
+   * material resolution, never in the pure emitter). Written into
+   * `~/.codex/config.toml` as a `[model_providers.cap]` block + top-level
+   * `model`/`model_provider` (NO auth.json). Mutually exclusive with `authJson`;
+   * absent for the unauthenticated/degraded case (unsafe URL or no credential).
+   */
+  readonly codexCompatible?: {
+    readonly baseUrl: string;
+    readonly apiKey: string;
+    readonly model: string;
+  };
+}
+
+
+/**
+ * One provision-time setup command + its fail-closed policy
+ * (refactor-agent-runtime-policy-mechanism). A REAL non-zero exit ALWAYS fails the
+ * task closed; `tolerateUnresolvedExit` governs ONLY the unresolved (NaN/absent)
+ * exit case — `false` fails closed (codex; claude's prompt write), `true` tolerates
+ * it as success (claude's auth write, preserving its `code !== null && code !== 0`).
+ */
+export interface SandboxSetupCommand {
+  readonly command: string;
+  readonly tolerateUnresolvedExit: boolean;
 }
 
 /**
- * The auth-injection outcome reported back to the provisioning caller. `ok=false`
- * with a `reason` is the FAIL-CLOSED signal (e.g. a `claude-code` task with no
- * token configured) so the orchestrator can mark the task failed with a distinct
- * reason BEFORE any unauthenticated agent process is started; `ok=true` covers
- * both "injected" and "degraded to unauthenticated" (codex), matching today's
- * codex behavior where a missing auth.json only logs a warning.
+ * The runtime's declarative provision-time setup plan. `ok:false` fails the task
+ * closed BEFORE any command runs (claude with no token); `ok:true` carries the
+ * ORDERED commands the provider runs over the shared exec. The runtime owns NO I/O —
+ * it returns commands as data; the provider (mechanism) runs them.
  */
-export type InjectAuthResult =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly reason: string };
+export type SandboxSetupPlan =
+  | { readonly ok: false; readonly reason: string }
+  | { readonly ok: true; readonly commands: readonly SandboxSetupCommand[] };
+
+/**
+ * Inputs a runtime needs to emit its setup commands. `prompt` is the operator task
+ * prompt or `null`/empty (the runtime then OMITS the prompt-write command, matching
+ * codex's blank-composer / claude's no-prompt behavior — never a no-op write).
+ */
+export interface SandboxSetupContext {
+  readonly taskId: string;
+  readonly workspaceDir: string;
+  readonly prompt: string | null;
+}
 
 /**
  * Declarative terminal-startup POLICY (refactor-agent-runtime-policy-mechanism).
@@ -145,18 +180,6 @@ export interface TranscriptRecord {
   readonly raw: Record<string, unknown>;
 }
 
-/**
- * The transcript-capture result. The shared byte-stream asciicast (captured by
- * the unchanged terminal pipeline) is ALWAYS the primary replay source; the
- * `records` array is the OPTIONAL structured archival read of the per-runtime
- * JSONL (empty when the runtime has no structured source or the read failed —
- * never a hard error, a best-effort read of a frozen sandbox yields "what was
- * parseable").
- */
-export interface TranscriptCapture {
-  /** Parsed structured records from the per-runtime JSONL (possibly empty). */
-  readonly records: readonly TranscriptRecord[];
-}
 
 /**
  * The AgentRuntime port: the agent-specific execution seams behind one interface.
@@ -178,17 +201,6 @@ export interface AgentRuntime {
   buildLaunchLine(ctx: LaunchContext): string;
 
   /**
-   * Inject the agent's credential + config into the provisioned sandbox via the
-   * `exec` handle BEFORE launch. Returns {@link InjectAuthResult}: `ok:false`
-   * fails the task closed with a distinct reason (claude with no token); `ok:true`
-   * covers injected OR degraded-to-unauthenticated (codex, preserving behavior).
-   */
-  injectAuth(
-    exec: SandboxExec,
-    material: AuthMaterial | null,
-  ): Promise<InjectAuthResult>;
-
-  /**
    * Declarative terminal-startup policy the SHARED pty mechanism reads (replaces the
    * old `autoSubmit(pty,ctx)` observer, which handed the runtime a PTY event loop the
    * mechanism actually owns — the source of the v0.6.0 leak). codex declares the
@@ -205,12 +217,26 @@ export interface AgentRuntime {
   detectExit(exec: SandboxExec, ctx: LaunchContext): Promise<ExitSignal>;
 
   /**
-   * Read the per-runtime structured transcript as an OPTIONAL archival source.
-   * The shared byte-stream asciicast is the primary replay; this returns the
-   * parsed JSONL records (empty on absence/failure, never throws).
+   * Emit the ORDERED provision-time setup commands (creds + config + prompt) as a
+   * PURE function of the context + the resolved (SSRF-validated) material — the
+   * runtime owns NO I/O; the provider runs the returned commands over the shared
+   * exec. `ok:false` fails the task closed before any command (claude with no
+   * token); codex degrades to config-only when no credential is configured. The
+   * prompt-write command is OMITTED when `ctx.prompt` is null/empty.
+   * (refactor-agent-runtime-policy-mechanism — replaces the provider's inline
+   * `injectCodexAuth`/`injectTaskPrompt` and the runtime's `injectAuth`.)
    */
-  captureTranscript(
-    exec: SandboxExec,
-    ctx: LaunchContext,
-  ): Promise<TranscriptCapture>;
+  sandboxSetupCommands(
+    ctx: SandboxSetupContext,
+    material: AuthMaterial | null,
+  ): SandboxSetupPlan;
+
+  /**
+   * Emit the pre-stop HOME-trim commands (drop caches/credentials, KEEP the
+   * transcript) the provider runs best-effort (FAIL-OPEN — a trim failure never
+   * blocks stop+retain). codex trims `~/.codex` keeping `sessions/`; claude trims
+   * `~/.claude` keeping `projects/`. Pure data; the provider owns the exec + the
+   * fail-open dispatch (timeout, warn-only). (replaces inline `trimCodexHomeBeforeStop`.)
+   */
+  preStopTrimCommands(): readonly string[];
 }

@@ -38,6 +38,7 @@ import type { TerminalPty } from './terminal.gateway';
 import {
   argvDisablesHooks,
   buildDetachedCodexLaunchLine,
+  buildHasSessionCommand,
   detachedSessionName,
 } from './codex-launch';
 // add-claude-code-runtime Track 3 (3.2): the bridge resolves the task's selected
@@ -52,11 +53,18 @@ import {
 // abnormal-death watchdog for claude).
 import type {
   AgentRuntime,
-  RuntimeExitDecision,
   SandboxExec,
   SandboxExecResult,
 } from '../agent-runtime/agent-runtime.integration';
-import type { TerminalStartup } from '../agent-runtime/agent-runtime.port';
+import {
+  sessionIdForTask,
+  toPortExec,
+} from '../agent-runtime/agent-runtime.integration';
+import type {
+  ExitSignal,
+  LaunchContext,
+  TerminalStartup,
+} from '../agent-runtime/agent-runtime.port';
 
 /**
  * The DSR (Device Status Report) cursor-position query crossterm emits on
@@ -352,18 +360,17 @@ export class AioPtyClient implements TerminalPty {
   }
 
   /**
-   * Launch the task's selected agent in a fresh detached tmux session (3.2). For
-   * CODEX (or an unresolved runtime) this is exactly {@link launchCodex} — the
-   * byte-identical inline codex path with the DSR-gated CR autosubmit. For any other
-   * runtime (claude-code) it builds the launch line from `runtime.buildLaunchLine`,
-   * sends it, attaches, and arms the prompt autosubmit ONLY if `runtime.autoSubmit()`
-   * returns true (claude returns false → no Enter is ever injected, since
-   * `claude "prompt"` auto-runs the positional prompt).
+   * Launch the task's selected agent in a fresh detached tmux session. For an
+   * UNRESOLVED runtime this is {@link launchCodex} (the byte-identical inline codex
+   * path). For a RESOLVED runtime it builds the launch line from the port's
+   * `runtime.buildLaunchLine`, sends it, attaches, and arms the prompt auto-submit
+   * ONLY when the runtime's declared `terminalStartup.promptSubmit` is
+   * `'cr-on-quiesce'` (codex) — claude declares `'none'` so no Enter is ever
+   * injected (`claude "prompt"` auto-runs the positional prompt).
    *
    * @param armAutoSubmit Whether a DEFINITIVE fresh launch (true) vs an inconclusive
-   *   fallback (false). Forwarded to the codex path; for a non-codex runtime it is
-   *   intersected with `runtime.autoSubmit()` so a no-op-autosubmit runtime never
-   *   arms the timer regardless.
+   *   fallback (false). For a resolved runtime it is intersected with the declared
+   *   `terminalStartup` policy so a no-submit runtime never arms the timer.
    */
   private launchAgent(armAutoSubmit = true): void {
     const runtime = this.runtime;
@@ -381,11 +388,15 @@ export class AioPtyClient implements TerminalPty {
     // shape — for codex `CodexRuntime.buildLaunchLine` wraps the SAME
     // `CODEX_LAUNCH_ARGV` via the SAME `buildDetachedCodexLaunchLine`, including the
     // hook-disabling guard) and run it over the same WS-shell input + attach.
-    const line = runtime.buildLaunchLine({
+    const launchCtx: LaunchContext = {
       taskId: this.taskId,
-      sessionName: this.sessionName,
       workspaceDir: CLAUDE_WORKSPACE_DIR,
-    });
+      // The stable per-task `--session-id` uuid claude threads into its transcript
+      // (codex ignores it). Computed here now that the consumer talks to the port
+      // runtime directly (refactor step 5: the RuntimeAdapter that did this is gone).
+      sessionId: sessionIdForTask(this.taskId),
+    };
+    const line = runtime.buildLaunchLine(launchCtx);
     // The shared DSR/CPR/quiesce mechanism is driven by the runtime's DECLARED
     // `terminalStartup` policy — NO agent-identity branch. claude declares
     // `promptSubmit:'none'` so the CR machinery never arms (no stray Enter); codex
@@ -810,29 +821,33 @@ export class AioPtyClient implements TerminalPty {
    * transcript-read blip (the abnormal-death watchdog still catches a truly dead one).
    */
   private async pollRuntimeExit(runtime: AgentRuntime): Promise<void> {
-    let decision: RuntimeExitDecision | undefined;
+    // Call the port runtime's `detectExit` directly (refactor step 5: no adapter) —
+    // a port `SandboxExec` (via {@link toPortExec}) + the port `LaunchContext` with
+    // the stable `--session-id` the transcript read needs. codex's `detectExit` is
+    // the `tmux has-session` GONE check; claude's tails the `end_turn` transcript.
+    let signal: ExitSignal | undefined;
     try {
-      decision = await runtime.detectExit!(this.runSandboxExec(), this.taskId);
+      signal = await runtime.detectExit(toPortExec(this.runSandboxExec()), {
+        taskId: this.taskId,
+        workspaceDir: CLAUDE_WORKSPACE_DIR,
+        sessionId: sessionIdForTask(this.taskId),
+      });
     } catch (err) {
       this.logger.debug(
         `task ${this.taskId}: runtime "${runtime.id}" detectExit probe errored (inconclusive): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      decision = undefined;
+      signal = undefined;
     }
-    if (decision && decision.done === true) {
+    if (signal && signal.status === 'done') {
       // The runtime ended the turn (it has already `tmux kill-session`ed). Resolve
       // the real exit status via the SHARED path (a clean `end_turn` → zero exit →
-      // recordSuccess), unless the runtime supplied an explicit status. Once.
-      // Read the explicit status into a local BEFORE the await — accessed via an
-      // index read so it does not depend on discriminant narrowing surviving the
-      // subsequent `await` (control-flow re-analysis of the `let decision`).
-      const explicit = (decision as { status?: AioExitStatus }).status;
+      // recordSuccess). Terminates exactly once.
       if (this.exitResolved) return;
       this.exitResolved = true;
       this.stopLivenessPoller();
-      const status: AioExitStatus = explicit ?? (await this.resolveExitStatus());
+      const status: AioExitStatus = await this.resolveExitStatus();
       this.onExit?.(status);
       return;
     }
@@ -1008,13 +1023,12 @@ export async function probeSessionLiveness(
   baseUrl: string,
   taskId: string,
 ): Promise<boolean | null> {
-  const sessionName = detachedSessionName(taskId);
   try {
     const res = await fetch(`${baseUrl}/v1/shell/exec`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        command: `tmux has-session -t ${sessionName}; echo __cap_has__$?`,
+        command: `${buildHasSessionCommand(taskId)}; echo __cap_has__$?`,
       }),
     });
     if (!res.ok) return null;

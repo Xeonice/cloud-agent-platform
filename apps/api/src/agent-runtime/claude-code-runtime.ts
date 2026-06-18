@@ -1,14 +1,18 @@
-import { detachedSessionName } from '../terminal/codex-launch';
+import {
+  detachedSessionName,
+  wrapInDetachedSession,
+} from '../terminal/codex-launch';
 import type {
   AgentRuntime,
   AuthMaterial,
   ExitSignal,
-  InjectAuthResult,
   LaunchContext,
   RuntimeId,
   SandboxExec,
+  SandboxSetupCommand,
+  SandboxSetupContext,
+  SandboxSetupPlan,
   TerminalStartup,
-  TranscriptCapture,
 } from './agent-runtime.port';
 import {
   claudeTranscriptPath,
@@ -112,38 +116,28 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       `. ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} 2>/dev/null; ` +
       `P="$(cat ${ClaudeCodeRuntime.PROMPT_FILE_PATH} 2>/dev/null)"; ` +
       `claude --session-id ${sessionId} --permission-mode acceptEdits "$P"`;
-    const session = detachedSessionName(ctx.taskId);
-    return `tmux new-session -d -s ${session} -c ${ctx.workspaceDir} '${inner}'`;
+    // SHARED launch mechanism: claude supplies only the inner agent line; the
+    // detached-tmux wrapper is identical for every runtime (refactor step 4).
+    return wrapInDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
   }
 
-  // ------------------------------------------------------------------------
-  // 2.5 — credential injection via env token + ANTHROPIC_* unset
-  // ------------------------------------------------------------------------
-
-  /**
-   * Write the launch-env snippet that sets `CLAUDE_CODE_OAUTH_TOKEN` and UNSETS
-   * `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`/`apiKeyHelper` (task 2.5), then the
-   * launch line sources it. Fails CLOSED with a distinct "runtime not configured"
-   * reason when no token is configured — a `claude-code` task must NOT launch
-   * unauthenticated (the deliberate divergence from codex, which degrades).
-   *
-   * The ANTHROPIC_* unsets are unconditional: a non-empty `ANTHROPIC_API_KEY`
-   * silently shadows the OAuth subscription token (spike-confirmed), so the launch
-   * env must neutralize it whether or not it is currently set. `apiKeyHelper` is
-   * cleared from Claude's settings the same way (an env var here is the seam;
-   * the settings-file form is handled at provision time by the provider).
-   */
-  async injectAuth(
-    exec: SandboxExec,
+  sandboxSetupCommands(
+    ctx: SandboxSetupContext,
     material: AuthMaterial | null,
-  ): Promise<InjectAuthResult> {
+  ): SandboxSetupPlan {
     const token = material?.oauthToken?.trim();
     if (!token) {
+      // FAIL CLOSED before any command — a claude-code task must NOT launch
+      // unauthenticated (the deliberate divergence from codex, which degrades).
       return { ok: false, reason: 'runtime not configured' };
     }
-    // Base64 the token so it survives the shell round-trip with no quoting pain
-    // and never appears as readable text in the exec command. The sourced snippet
-    // exports the token and unsets the shadowing vars on the launch env.
+    const dir = ClaudeCodeRuntime.CONFIG_DIR;
+    const commands: SandboxSetupCommand[] = [];
+
+    // launch-env.sh (OAuth token + ANTHROPIC_* unsets) + `.claude.json` pre-seed as
+    // ONE command, byte-identical to the prior `injectAuth`. tolerateUnresolvedExit
+    // is TRUE to preserve `injectAuth`'s `code !== null && code !== 0` (an unresolved
+    // exit code was treated as success).
     const tokenB64 = Buffer.from(token, 'utf8').toString('base64');
     const snippet =
       `export CLAUDE_CODE_OAUTH_TOKEN="$(printf %s '${tokenB64}' | base64 -d)"\n` +
@@ -152,10 +146,6 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       'unset apiKeyHelper\n';
     const snippetB64 = Buffer.from(snippet, 'utf8').toString('base64');
     const file = ClaudeCodeRuntime.AUTH_ENV_FILE_PATH;
-    const dir = ClaudeCodeRuntime.CONFIG_DIR;
-    // Pre-seed `.claude.json` at provision time so the first interactive launch
-    // hits NO trust dialog AND no global theme/onboarding screen (VR-4): global
-    // onboarding keys + the per-project trust entry for the canonical workspace.
     const preseed = JSON.stringify({
       theme: 'dark',
       hasCompletedOnboarding: true,
@@ -171,15 +161,35 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     });
     const preseedB64 = Buffer.from(preseed, 'utf8').toString('base64');
     const claudeJson = ClaudeCodeRuntime.CLAUDE_JSON_PATH;
-    const { code } = await exec.exec(
-      `mkdir -p ${dir} && ` +
+    commands.push({
+      command:
+        `mkdir -p ${dir} && ` +
         `printf %s '${snippetB64}' | base64 -d > ${file} && chmod 600 ${file} && ` +
         `printf %s '${preseedB64}' | base64 -d > ${claudeJson} && chmod 600 ${claudeJson}`,
-    );
-    if (code !== null && code !== 0) {
-      return { ok: false, reason: 'runtime not configured' };
+      tolerateUnresolvedExit: true,
+    });
+
+    // prompt-file write — OMITTED when there is no prompt; STRICT (an unresolved exit
+    // fails closed), byte-identical to the prior adapter `injectClaudePrompt`.
+    if (ctx.prompt) {
+      const b64 = Buffer.from(ctx.prompt, 'utf8').toString('base64');
+      const promptFile = ClaudeCodeRuntime.PROMPT_FILE_PATH;
+      commands.push({
+        command: `mkdir -p ${dir} && printf %s '${b64}' | base64 -d > ${promptFile} && chmod 600 ${promptFile}`,
+        tolerateUnresolvedExit: false,
+      });
     }
-    return { ok: true };
+    return { ok: true, commands };
+  }
+
+  preStopTrimCommands(): readonly string[] {
+    const dir = ClaudeCodeRuntime.CONFIG_DIR;
+    // Drop `~/.claude` bulk but KEEP `projects/` (the session transcript) — the
+    // defense-in-depth analog of codex's `~/.codex` trim. Byte-identical to the
+    // prior adapter `trimBeforeStop`.
+    return [
+      `find ${dir} -mindepth 1 -maxdepth 1 ! -name projects -exec rm -rf {} + 2>/dev/null; true`,
+    ];
   }
 
   // ------------------------------------------------------------------------
@@ -248,34 +258,4 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     return { status: 'done' };
   }
 
-  // ------------------------------------------------------------------------
-  // 2.8 — transcript capture
-  // ------------------------------------------------------------------------
-
-  /**
-   * Reuse the shared byte-stream asciicast capture (unchanged, the primary replay
-   * source) and additionally read the `--session-id` JSONL off the sandbox as a
-   * structured archival record, parsing ALL record types (task 2.8). The slug is
-   * derived from the CANONICALIZED workspace path. Best-effort: a missing or
-   * unreadable transcript yields no records, never an error.
-   */
-  async captureTranscript(
-    exec: SandboxExec,
-    ctx: LaunchContext,
-  ): Promise<TranscriptCapture> {
-    const sessionId = ctx.sessionId;
-    if (!sessionId) return { records: [] };
-    const path = claudeTranscriptPath(
-      ClaudeCodeRuntime.CONFIG_DIR,
-      ctx.workspaceDir,
-      sessionId,
-    );
-    try {
-      const { stdout } = await exec.exec(`cat ${path} 2>/dev/null`);
-      if (stdout.trim().length === 0) return { records: [] };
-      return { records: parseClaudeTranscript(stdout) };
-    } catch {
-      return { records: [] };
-    }
-  }
 }

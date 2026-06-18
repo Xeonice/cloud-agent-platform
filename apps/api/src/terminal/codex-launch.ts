@@ -106,7 +106,36 @@ export function buildDetachedCodexLaunchLine(
   promptFilePath: string = CODEX_PROMPT_FILE_PATH,
   workspaceDir = '/home/gem/workspace',
 ): string {
-  const inner = buildCodexLaunchLine(baseArgv, promptFilePath);
-  const session = detachedSessionName(taskId);
-  return `tmux new-session -d -s ${session} -c ${workspaceDir} '${inner}'`;
+  return wrapInDetachedSession(
+    taskId,
+    buildCodexLaunchLine(baseArgv, promptFilePath),
+    workspaceDir,
+  );
+}
+
+/**
+ * Wrap an agent's in-shell launch `innerLine` in the DETACHED, NAMED tmux session
+ * `task<taskId>` (refactor-agent-runtime-policy-mechanism: the SHARED launch
+ * MECHANISM). Every runtime's launch line uses this identical wrapper — the
+ * agent-specific part is the `innerLine` the runtime supplies (its argv/env +
+ * `$(cat <prompt-file>)` prompt delivery). The single-quoted inner is fixed launch
+ * text (the operator prompt rides the injected file, never the argv), so it carries
+ * no single quote and `'<line>'` stays a clean single-quoted shell word.
+ */
+export function wrapInDetachedSession(
+  taskId: string,
+  innerLine: string,
+  workspaceDir = '/home/gem/workspace',
+): string {
+  return `tmux new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}'`;
+}
+
+/**
+ * The `tmux has-session` liveness/exit probe command for a task's detached session
+ * (refactor: the SINGLE has-session command builder). codex's `detectExit` and the
+ * pty client's abnormal-death watchdog / attach-existence check all build the probe
+ * here, so the `tmux has-session -t task<taskId>` form lives in ONE place.
+ */
+export function buildHasSessionCommand(taskId: string): string {
+  return `tmux has-session -t ${detachedSessionName(taskId)}`;
 }

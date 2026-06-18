@@ -2,6 +2,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   type OnApplicationBootstrap,
   type OnModuleDestroy,
 } from '@nestjs/common';
@@ -14,8 +15,21 @@ import type {
   SandboxProvider,
 } from './sandbox-provider.port.js';
 import { CODEX_AUTH_SOURCE, type CodexAuthSource } from './codex-auth-source.port';
+import {
+  CLAUDE_AUTH_SOURCE,
+  type ClaudeAuthSource,
+} from './claude-auth-source.port';
+import type {
+  AuthMaterial,
+  RuntimeId,
+  SandboxSetupCommand,
+} from '../agent-runtime/agent-runtime.port';
+// The codex DEFAULT runtime, used when the registry cannot resolve one (an
+// unresolved/errored task or a partial wiring) — the same "fall back to codex"
+// behavior the inline path had before this refactor, now via the runtime's own
+// sandboxSetupCommands emitter rather than provider-inline injection.
+import { CodexRuntime } from '../agent-runtime/codex-runtime';
 import { PROVISION_LOOKUP, type ProvisionLookup } from './provision-lookup.port';
-import { CODEX_PROMPT_FILE_PATH } from '../terminal/codex-launch';
 import { resolveSkillInstaller } from './skill-allowlist';
 import { extractFilesFromTar } from './tar-extract';
 import { assertSafeProviderUrl } from '../settings/assert-safe-provider-url';
@@ -29,24 +43,13 @@ import { assertSafeProviderUrl } from '../settings/assert-safe-provider-url';
 // and WHAT to trim before stop, so codex behavior is byte-identical (CodexRuntime
 // moves today's logic) and claude diverges only inside its own runtime impl.
 //
-// CONSUMED PORT CONTRACT (Track 2 `agent-runtime/agent-runtime.port.ts` provides;
-// Track 3 consumes the following minimal shape — the integration boundary):
-//   type RuntimeId = 'codex' | 'claude-code'
-//   type SandboxExecResult = { exitCode: number; output: string }
-//   type SandboxExec = (command: string) => Promise<SandboxExecResult>
-//   interface InjectAuthContext { taskId: string; workspaceDir: string; prompt: string | null }
-//   interface AgentRuntime {
-//     readonly id: RuntimeId
-//     buildLaunchLine(ctx: { taskId; sessionName; workspaceDir }): string
-//     autoSubmit(): boolean
-//     injectAuth(exec: SandboxExec, ctx: InjectAuthContext): Promise<void>   // fail-closed (throw) when unconfigured
-//     detectExit(exec: SandboxExec, taskId: string): Promise<RuntimeExitDecision>
-//     trimBeforeStop?(exec: SandboxExec, taskId: string): Promise<void>      // optional; codex falls back to the inline trim
-//     captureTranscript?(exec: SandboxExec, taskId: string): Promise<unknown>
-//   }
-//   type RuntimeExitDecision = { done: false } | { done: null } | { done: true; status?: { code: number | null; abnormal: boolean } }
-//   interface RuntimeRegistry { resolve(id?: RuntimeId | null): AgentRuntime; resolveForTask(taskId: string): Promise<AgentRuntime> }
-//   const RUNTIME_REGISTRY: symbol; class AgentRuntimeRegistry implements RuntimeRegistry
+// CONSUMED PORT CONTRACT (refactor-agent-runtime-policy-mechanism): the provider
+// depends on the SINGLE `AgentRuntime` port (agent-runtime.port.ts, re-exported via
+// the integration) through the {@link RuntimeRegistry}. It uses only the pure
+// PROVISION-TIME policy — `id`, `sandboxSetupCommands(ctx, material)` (the ordered
+// setup commands), and `preStopTrimCommands()` — and resolves the per-runtime auth
+// material itself (CODEX_AUTH_SOURCE + SSRF / CLAUDE_AUTH_SOURCE). The pty client owns
+// the launch/terminal/detectExit seams; the RuntimeAdapter translation layer is gone.
 import {
   RUNTIME_REGISTRY,
   type AgentRuntime,
@@ -159,6 +162,11 @@ export class AioSandboxProvider
     @Inject(PROVISION_LOOKUP) private readonly lookup: ProvisionLookup,
     @Inject(CODEX_AUTH_SOURCE) private readonly codexAuthSource: CodexAuthSource,
     @Inject(RUNTIME_REGISTRY) private readonly runtimes: RuntimeRegistry,
+    // Optional so a partial/legacy wiring (no claude source) still constructs; a
+    // claude task with no source then fails closed at sandboxSetupCommands.
+    @Optional()
+    @Inject(CLAUDE_AUTH_SOURCE)
+    private readonly claudeAuth?: ClaudeAuthSource,
   ) {}
 
   /** The exposed AIO HTTP/WS port inside the container (never published to the host). */
@@ -393,57 +401,41 @@ export class AioSandboxProvider
   }
 
   /**
-   * 3.1 — dispatch the pre-stop trim to the task's selected {@link AgentRuntime}.
-   * For `codex` (or an unresolved runtime) this runs the UNCHANGED
-   * {@link trimCodexHomeBeforeStop}, so codex teardown is byte-identical. For a
-   * runtime that exposes its own `trimBeforeStop` (claude trims `~/.claude` keeping
-   * `projects/`), the provider hands it the {@link SandboxExec} closure and lets the
-   * runtime own its HOME layout. NEVER throws and NEVER blocks the stop: a missing
-   * `trimBeforeStop`, a resolution error, or a trim error all degrade to "the kept
-   * container is just larger", exactly like the codex trim's own best-effort guard.
+   * Pre-stop HOME trim, dispatched to the task's selected {@link AgentRuntime} via its
+   * `preStopTrimCommands` emitter (no agent-identity branch). codex trims `~/.codex`
+   * keeping `sessions/`; claude trims `~/.claude` keeping `projects/`. FAIL-OPEN: a
+   * resolution error, an unresolved runtime (→ codex default), or any trim-command
+   * failure all degrade to "the kept container is just larger" — NEVER throws, NEVER
+   * blocks the stop. Each command is time-boxed so settling stays fast even if the
+   * sandbox is wedged.
    */
   private async trimRuntimeHomeBeforeStop(
     baseUrl: string,
     taskId: string,
   ): Promise<void> {
-    let runtime: AgentRuntime | undefined;
+    let runtime: { preStopTrimCommands(): readonly string[] } | undefined;
     try {
       runtime = await this.resolveRuntime(taskId);
     } catch {
       runtime = undefined;
     }
-    if (!runtime || runtime.id === 'codex' || typeof runtime.trimBeforeStop !== 'function') {
-      await this.trimCodexHomeBeforeStop(baseUrl, taskId);
-      return;
-    }
-    try {
-      await runtime.trimBeforeStop(this.runSandboxExec(baseUrl), taskId);
-    } catch (err) {
-      this.logger.warn(
-        `pre-stop trim for task ${taskId} (runtime "${runtime.id}") failed (kept container will be larger; not fatal): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+    const commands = (runtime ?? new CodexRuntime()).preStopTrimCommands();
+    for (const command of commands) {
+      await this.runTrimCommandBestEffort(baseUrl, taskId, command);
     }
   }
 
   /**
-   * D4 — trim a settling container's `~/.codex` BEFORE stop, while its
-   * `/v1/shell/exec` is still live: drop the model `cache` + `logs_*.sqlite`
-   * (the ~92MB bulk, NOT the conversation) and ZERO `auth.json` (a kept,
-   * read-only container must not hold a refreshable ChatGPT credential), keeping
-   * `sessions/` (the rollout). Best-effort + time-boxed: a failure is logged and
-   * never blocks the stop, so settling stays fast even if the sandbox is wedged.
+   * Run ONE pre-stop trim command best-effort: time-boxed, warn-only on a non-`ok`
+   * HTTP status or any error — it must NEVER throw or block the stop+retain. The
+   * trim command itself keeps the transcript (codex `sessions/`, claude `projects/`),
+   * drops caches, and zeroes credentials; see the runtimes' `preStopTrimCommands`.
    */
-  private async trimCodexHomeBeforeStop(
+  private async runTrimCommandBestEffort(
     baseUrl: string,
     taskId: string,
+    command: string,
   ): Promise<void> {
-    const dir = AioSandboxProvider.CODEX_HOME_DIR;
-    // Keep `sessions/` (rollout); drop caches + sqlite logs; zero auth.json.
-    const command =
-      `rm -rf ${dir}/cache ${dir}/logs_*.sqlite ${dir}/logs_*.sqlite-shm ${dir}/logs_*.sqlite-wal 2>/dev/null; ` +
-      `: > ${dir}/auth.json 2>/dev/null; true`;
     try {
       const res = await fetch(`${baseUrl}/v1/shell/exec`, {
         method: 'POST',
@@ -453,12 +445,12 @@ export class AioSandboxProvider
       });
       if (!res.ok) {
         this.logger.warn(
-          `pre-stop ~/.codex trim for task ${taskId} returned HTTP ${res.status} (kept container will be larger; not fatal)`,
+          `pre-stop HOME trim for task ${taskId} returned HTTP ${res.status} (kept container will be larger; not fatal)`,
         );
       }
     } catch (err) {
       this.logger.warn(
-        `pre-stop ~/.codex trim for task ${taskId} failed (kept container will be larger; not fatal): ${
+        `pre-stop HOME trim for task ${taskId} failed (kept container will be larger; not fatal): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
@@ -891,45 +883,140 @@ export class AioSandboxProvider
   }
 
   /**
-   * 3.1 — provision-time credential/config + prompt injection, DISPATCHED to the
-   * task's selected {@link AgentRuntime}. The provider stays a pure port consumer:
-   * it resolves the runtime from the {@link RuntimeRegistry} (Track 2) and either
-   *   - `codex` → runs the EXISTING {@link injectCodexAuth} + {@link injectTaskPrompt}
-   *     unchanged, so the codex path is BYTE-IDENTICAL to before (the spec's
-   *     "Codex provisioning/teardown is unchanged" scenario); or
-   *   - any other runtime (`claude-code`) → delegates to the runtime's
-   *     `injectAuth(exec, ctx)`, handing it a {@link SandboxExec} closure bound to
-   *     this sandbox's `/v1/shell/exec`. The runtime pre-seeds `~/.claude/.claude.json`
-   *     (global onboarding + per-project trust) + the prompt file and FAILS CLOSED
-   *     (throws) with a "runtime not configured" reason when no Claude token is
-   *     configured — so an unconfigured claude task never launches unauthenticated.
-   *
-   * Resolution is best-effort defensive: an unknown/uninitialized registry falls
-   * back to the codex path (the default runtime), so a partial wiring never strands
-   * a codex task. Throws on a genuine injection failure (fail-closed), which the
-   * caller's provision try/catch maps to a torn-down container + failed task.
+   * Provision-time credential/config + prompt injection, UNIFORM across runtimes
+   * (refactor-agent-runtime-policy-mechanism). The provider is pure MECHANISM: it
+   * resolves the task's {@link AgentRuntime} (defaulting to codex), resolves that
+   * runtime's auth material (the async source read + SSRF guard are mechanism, here)
+   * and the task prompt, then asks the runtime for its ORDERED
+   * `sandboxSetupCommands` (pure POLICY: config/creds + the conditional prompt write,
+   * byte-identical to the prior inline codex path for codex) and runs them over the
+   * shared exec — NO agent-identity branch. The plan FAILS CLOSED before any command
+   * when the runtime requires a missing credential (claude with no token), and each
+   * command fails closed per its `tolerateUnresolvedExit` policy. A genuine failure
+   * throws, which the caller's provision try/catch maps to a torn-down container +
+   * failed task. An unresolved/errored runtime degrades to the codex default.
    */
   private async injectRuntimeSetup(baseUrl: string, taskId: string): Promise<void> {
-    const runtime = await this.resolveRuntime(taskId);
-    if (!runtime || runtime.id === 'codex') {
-      // Codex (or an unresolved runtime) → the unchanged inline codex path.
-      await this.injectCodexAuth(baseUrl, taskId);
-      await this.injectTaskPrompt(baseUrl, taskId);
-      return;
-    }
-    // Non-codex runtime (claude-code) → delegate the WHOLE setup (creds + config +
-    // prompt) to the runtime, which owns its agent-specific layout. The provider
-    // only supplies the exec closure + the per-task prompt; it never branches on
-    // claude internals here.
-    const prompt = await this.lookup.getTaskPrompt(taskId);
-    await runtime.injectAuth(this.runSandboxExec(baseUrl), {
-      taskId,
-      workspaceDir: AioSandboxProvider.WORKSPACE_DIR,
-      prompt: prompt ?? null,
-    });
-    this.logger.debug(
-      `delegated provision-time setup for task ${taskId} to runtime "${runtime.id}"`,
+    // UNIFORM provision-time setup for EVERY runtime — NO agent-identity branch. The
+    // runtime emits its ordered setup commands as DATA; the provider (mechanism)
+    // resolves the per-runtime material + the task prompt, then runs the commands
+    // fail-closed. An unresolved/errored runtime degrades to the codex default.
+    const runtime =
+      (await this.resolveRuntime(taskId)) ??
+      this.runtimes?.resolve?.(null) ??
+      new CodexRuntime();
+    const [material, prompt] = await Promise.all([
+      this.resolveProvisionMaterial(runtime, taskId),
+      this.lookup.getTaskPrompt(taskId),
+    ]);
+    const plan = runtime.sandboxSetupCommands(
+      {
+        taskId,
+        workspaceDir: AioSandboxProvider.WORKSPACE_DIR,
+        prompt: prompt ?? null,
+      },
+      material,
     );
+    if (!plan.ok) {
+      // FAIL CLOSED before any command (e.g. claude with no token) — the caller's
+      // provision try/catch maps this to a torn-down container + failed task. Read
+      // `reason` via an index access so it does not depend on strict
+      // discriminated-union narrowing (same pattern as the integration layer).
+      const reason =
+        (plan as { reason?: string }).reason ?? 'runtime not configured';
+      throw new Error(
+        `runtime "${runtime.id}" setup for task ${taskId} failed: ${reason}`,
+      );
+    }
+    const commands: readonly SandboxSetupCommand[] = (
+      plan as { commands?: readonly SandboxSetupCommand[] }
+    ).commands ?? [];
+    const exec = this.runSandboxExec(baseUrl);
+    for (const { command, tolerateUnresolvedExit } of commands) {
+      const { exitCode, output } = await exec(command);
+      if (AioSandboxProvider.setupCommandFailed(exitCode, tolerateUnresolvedExit)) {
+        const scrubbed = AioSandboxProvider.scrubSecrets(output);
+        throw new Error(
+          `runtime "${runtime.id}" setup for task ${taskId} failed: exit_code ${exitCode}` +
+            (scrubbed ? ` — ${scrubbed}` : ''),
+        );
+      }
+    }
+    this.logger.debug(
+      `provisioned runtime "${runtime.id}" setup for task ${taskId} (${plan.commands.length} command(s))`,
+    );
+  }
+
+  /**
+   * The per-command fail-closed predicate (refactor step 3 — extracted so the
+   * fail-closed matrix is unit-testable WITHOUT constructing the provider). A REAL
+   * non-zero exit ALWAYS fails closed; an UNRESOLVED (NaN) exit fails closed UNLESS
+   * the command tolerates it (claude's auth write, preserving `code !== null &&
+   * code !== 0`).
+   */
+  static setupCommandFailed(
+    exitCode: number,
+    tolerateUnresolvedExit: boolean,
+  ): boolean {
+    return Number.isNaN(exitCode) ? !tolerateUnresolvedExit : exitCode !== 0;
+  }
+
+  /**
+   * Resolve the per-runtime auth material the runtime's setup emitter consumes. The
+   * async I/O (credential source read) + the SSRF guard are MECHANISM and live here,
+   * never in the pure runtime. Dispatched by runtime id via a DATA-DRIVEN table — NOT
+   * a hardcoded agent-identity control-flow branch. (Follow-up: a credential-source
+   * registry would let a third runtime register its source without touching the provider.)
+   */
+  private async resolveProvisionMaterial(
+    runtime: { id: RuntimeId },
+    taskId: string,
+  ): Promise<AuthMaterial | null> {
+    const resolvers: Partial<
+      Record<RuntimeId, () => Promise<AuthMaterial | null>>
+    > = {
+      codex: () => this.resolveCodexMaterial(taskId),
+      'claude-code': () => this.resolveClaudeMaterial(),
+    };
+    return (await resolvers[runtime.id]?.()) ?? null;
+  }
+
+  /**
+   * Codex: resolve the {@link CodexAuthSource} material + SSRF-validate a compatible
+   * provider, mapping the result into the port's thin {@link AuthMaterial}. An unsafe
+   * compatible Base URL is treated as NO credential (codex runs unauthenticated) —
+   * byte-identical to the prior inline `injectCodexAuth` behavior.
+   */
+  private async resolveCodexMaterial(taskId: string): Promise<AuthMaterial | null> {
+    const material = await this.codexAuthSource.getCodexAuth(taskId);
+    if (!material) return null;
+    if (material.kind === 'compatible') {
+      try {
+        await assertSafeProviderUrl(material.baseUrl);
+      } catch (err) {
+        this.logger.warn(
+          `compatible provider Base URL for task ${taskId} failed host-safety validation (${
+            err instanceof Error ? err.message : String(err)
+          }); skipping provider injection (codex will be unauthenticated)`,
+        );
+        return null;
+      }
+      return {
+        codexCompatible: {
+          baseUrl: material.baseUrl,
+          apiKey: material.apiKey,
+          model: material.model,
+        },
+      };
+    }
+    return { authJson: material.authJson };
+  }
+
+  /** Claude: the resolved OAuth token (or null) mapped into the port AuthMaterial. */
+  private async resolveClaudeMaterial(): Promise<AuthMaterial | null> {
+    if (!this.claudeAuth) return null;
+    const material = await this.claudeAuth.getClaudeAuth();
+    return material ? { oauthToken: material.oauthToken } : null;
   }
 
   /**
@@ -973,219 +1060,6 @@ export class AioSandboxProvider
       }
       return AioSandboxProvider.parseExecResult(await res.json().catch(() => undefined));
     };
-  }
-
-  /**
-   * Write codex's `~/.codex` setup into the sandbox via `/v1/shell/exec` BEFORE
-   * codex launches:
-   *   - REMOVE the baked `~/.codex/hooks.json`. codex 0.131 detects the baked
-   *     hooks as "new or changed" and blocks startup on an interactive "Hooks
-   *     need review" prompt that `--dangerously-bypass-hook-trust` does NOT skip —
-   *     and there is no operator in the sandbox to answer it, so codex never
-   *     starts. The hooks are vestigial anyway (codex#16732: codex 0.131's
-   *     PreToolUse hook was verified NOT to fire, so they enforce nothing; the
-   *     container is the trust boundary per the codex-execution-not-gated product
-   *     decision). Removing the file is the unblock — codex then launches into a
-   *     clean TUI. `rm -f` is idempotent (a future image that stops baking the
-   *     file makes this a no-op).
-   *   - ALWAYS a `config.toml` pre-trusting the clone dir
-   *     (`[projects."<workspace>"] trust_level="trusted"`), so codex 0.131 does
-   *     NOT block on the interactive "Do you trust the contents of this
-   *     directory?" prompt — there is no operator in the sandbox to answer it,
-   *     and `--dangerously-bypass-hook-trust` covers HOOK trust only, not the
-   *     directory-trust prompt.
-   *   - the codex CREDENTIAL from {@link CodexAuthSource} when configured, in
-   *     EITHER mode (branch on `material.kind`, wire-compatible-provider-execution
-   *     D1/D2):
-   *       · `official` → write `~/.codex/auth.json` (the ChatGPT login), so codex
-   *         authenticates on startup. UNCHANGED from before.
-   *       · `compatible` → append a `[model_providers.cap]` block (`base_url`,
-   *         `wire_api = "responses"`, `experimental_bearer_token = "<key>"`) plus
-   *         top-level `model_provider = "cap"` / `model = "<defaultModel>"` to
-   *         `config.toml`, so codex 0.131 targets the operator's Responses-API
-   *         provider with the operator's key + selected model. Writes NO
-   *         `auth.json` — for a custom provider `auth.json`'s `OPENAI_API_KEY`
-   *         serves only the built-in `openai` provider. The Base URL is first
-   *         validated with {@link assertSafeProviderUrl}; an unsafe URL is NOT
-   *         written (the credential is skipped, codex launches unauthenticated),
-   *         never fetched/targeted.
-   *     When no credential is configured codex still launches (unauthenticated)
-   *     but the trust config is written regardless.
-   * Each payload is base64-decoded in-container to avoid shell/JSON
-   * double-escaping of multi-line content, and written `chmod 600` under the
-   * `gem`-owned `~/.codex`. A non-zero exit IS a real provision failure — fail
-   * closed, since a broken setup would burn a run slot doing nothing.
-   */
-  private async injectCodexAuth(baseUrl: string, taskId: string): Promise<void> {
-    const dir = '/home/gem/.codex';
-    // The always-written workspace trust TABLE (`[projects."<ws>"]`). In TOML,
-    // top-level (bare) keys MUST precede ANY table header, so the compatible
-    // branch builds its top-level `model`/`model_provider` as a PREFIX before this
-    // table — never appended after it, which would (wrongly) nest them under
-    // `[projects."<ws>"]`. The provider TABLE then follows after.
-    const trustTable =
-      `[projects."${AioSandboxProvider.WORKSPACE_DIR}"]\ntrust_level = "trusted"\n`;
-    let topLevel = '';
-    let providerTable = '';
-    // The injected auth.json command, appended only for official material.
-    let authJsonCommand = '';
-
-    const material = await this.codexAuthSource.getCodexAuth(taskId);
-    if (material?.kind === 'compatible') {
-      // SSRF guard (design D4): an operator-supplied Base URL that resolves to a
-      // loopback/private/link-local/metadata host (or a non-http(s) scheme) is
-      // NEVER written into the codex config — treat the credential as unusable for
-      // injection (codex launches unauthenticated) rather than pointing codex at
-      // an internal target. assertSafeProviderUrl performs only a DNS lookup, no
-      // outbound fetch to the provider.
-      let safe = true;
-      try {
-        await assertSafeProviderUrl(material.baseUrl);
-      } catch (err) {
-        safe = false;
-        this.logger.warn(
-          `compatible provider Base URL for task ${taskId} failed host-safety validation (${
-            err instanceof Error ? err.message : String(err)
-          }); skipping provider injection (codex will be unauthenticated)`,
-        );
-      }
-      if (safe) {
-        ({ topLevel, providerTable } =
-          AioSandboxProvider.compatibleProviderToml(material));
-      }
-    } else if (material?.kind === 'official') {
-      const authB64 = Buffer.from(material.authJson, 'utf8').toString('base64');
-      authJsonCommand =
-        ` && printf %s '${authB64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`;
-    } else {
-      this.logger.warn(
-        `no codex auth configured (CodexAuthSource returned null); codex in task ${taskId} will be unauthenticated (workspace trust still written)`,
-      );
-    }
-
-    // Assemble in TOML order: top-level bare keys (compatible only) FIRST, then
-    // the workspace-trust table, then the provider table — so `model`/
-    // `model_provider` are genuinely top-level, not nested under a table.
-    const configToml = topLevel + trustTable + providerTable;
-    const configB64 = Buffer.from(configToml, 'utf8').toString('base64');
-    // The base64 alphabet has no single quote, so single-quoting each payload is
-    // safe and stops the shell from touching it. mkdir is idempotent. `rm -f
-    // hooks.json` removes the baked hooks so codex 0.131 does not block on its
-    // "Hooks need review" prompt (see the method doc — the hooks are vestigial).
-    const command =
-      `mkdir -p ${dir} && rm -f ${dir}/hooks.json && printf %s '${configB64}' | base64 -d > ${dir}/config.toml && chmod 600 ${dir}/config.toml` +
-      authJsonCommand;
-
-    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command }),
-    });
-    if (!res.ok) {
-      throw new Error(
-        `codex auth injection for task ${taskId} failed: /v1/shell/exec responded ${res.status}`,
-      );
-    }
-    const { exitCode, output } = AioSandboxProvider.parseExecResult(
-      await res.json().catch(() => undefined),
-    );
-    if (exitCode !== 0) {
-      const scrubbed = AioSandboxProvider.scrubSecrets(output);
-      throw new Error(
-        `codex auth injection for task ${taskId} failed: exit_code ${exitCode}` +
-          (scrubbed ? ` — ${scrubbed.trim()}` : ''),
-      );
-    }
-    const wrote =
-      material?.kind === 'official'
-        ? 'config.toml + auth.json'
-        : material?.kind === 'compatible'
-          ? 'config.toml + model_providers.cap'
-          : 'config.toml';
-    this.logger.debug(`wrote codex setup (${wrote}) into sandbox for task ${taskId}`);
-  }
-
-  /**
-   * Render the compatible-provider config in TWO parts (so the caller can place
-   * each at the right TOML position): the top-level bare keys (`model`,
-   * `model_provider`) that MUST precede every table header, and the
-   * `[model_providers.cap]` TABLE itself (wire-compatible-provider-execution D1,
-   * verified against the codex 0.131 config reference, task 3.1):
-   *   - `wire_api = "responses"` — the only value codex 0.131 supports (it does
-   *     NOT speak Chat Completions; the provider must be Responses-API compatible).
-   *   - the decrypted key is delivered INLINE via `experimental_bearer_token`
-   *     (not `auth.json`, which serves only the built-in `openai` provider).
-   * Values are emitted as basic TOML strings; provider-supplied text is escaped
-   * for the TOML string context (`\` and `"`), and the whole config is base64-
-   * decoded in-container so the shell never sees the key.
-   */
-  private static compatibleProviderToml(material: {
-    baseUrl: string;
-    apiKey: string;
-    model: string;
-  }): { topLevel: string; providerTable: string } {
-    const esc = (v: string): string => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    return {
-      topLevel: `model = "${esc(material.model)}"\nmodel_provider = "cap"\n`,
-      providerTable:
-        `[model_providers.cap]\n` +
-        `name = "Compatible provider"\n` +
-        `base_url = "${esc(material.baseUrl)}"\n` +
-        `wire_api = "responses"\n` +
-        `experimental_bearer_token = "${esc(material.apiKey)}"\n`,
-    };
-  }
-
-  /**
-   * Write the operator's task prompt into the sandbox at
-   * {@link CODEX_PROMPT_FILE_PATH} so the bridge pre-fills codex's composer with
-   * the goal via `"$(cat <file>)"` (aio-codex-prompt-autostart). The prompt is
-   * base64-decoded in-container — the SAME shell-injection-safe idiom as the
-   * auth/config injection — so arbitrary free-text (quotes, backticks, `$`,
-   * newlines) is never touched by the shell and never reaches the launch argv (so
-   * it cannot trip the hook-disabling launch guard).
-   *
-   * When the task has no prompt this is a no-op (no file written); the launch line
-   * then opens codex with a blank composer. A non-zero exit IS a real provision
-   * failure — fail closed, mirroring {@link injectCodexAuth}, since a task that
-   * silently launches goal-less would burn a run slot doing nothing.
-   */
-  private async injectTaskPrompt(baseUrl: string, taskId: string): Promise<void> {
-    const prompt = await this.lookup.getTaskPrompt(taskId);
-    if (!prompt) {
-      this.logger.debug(
-        `no task prompt for task ${taskId}; codex opens a blank composer`,
-      );
-      return;
-    }
-    const promptB64 = Buffer.from(prompt, 'utf8').toString('base64');
-    // base64 has no single quote, so single-quoting the payload is safe and stops
-    // the shell from touching it. mkdir is idempotent (the auth injection already
-    // made the dir; kept so this method is order-independent).
-    const dir = '/home/gem/.codex';
-    const command =
-      `mkdir -p ${dir} && printf %s '${promptB64}' | base64 -d > ${CODEX_PROMPT_FILE_PATH} && chmod 600 ${CODEX_PROMPT_FILE_PATH}`;
-    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command }),
-    });
-    if (!res.ok) {
-      throw new Error(
-        `task prompt injection for task ${taskId} failed: /v1/shell/exec responded ${res.status}`,
-      );
-    }
-    const { exitCode, output } = AioSandboxProvider.parseExecResult(
-      await res.json().catch(() => undefined),
-    );
-    if (exitCode !== 0) {
-      const scrubbed = AioSandboxProvider.scrubSecrets(output);
-      throw new Error(
-        `task prompt injection for task ${taskId} failed: exit_code ${exitCode}` +
-          (scrubbed ? ` — ${scrubbed.trim()}` : ''),
-      );
-    }
-    this.logger.debug(`wrote task prompt into sandbox for task ${taskId}`);
   }
 
   /**

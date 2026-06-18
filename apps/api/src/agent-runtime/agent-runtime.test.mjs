@@ -233,25 +233,9 @@ async function main() {
     'codex launch line carries the unchanged default argv',
   );
 
-  // injectAuth: official material writes auth.json (0600); no material degrades ok.
-  const codexExec = makeExec();
-  const okWrite = await codex.injectAuth(codexExec, {
-    authJson: '{"auth_mode":"chatgpt"}',
-  });
-  assert(okWrite.ok === true, 'codex injectAuth(ok) with material');
-  const wroteAuth = codexExec.calls.join('\n');
-  assert(
-    wroteAuth.includes('/home/gem/.codex/auth.json') &&
-      wroteAuth.includes('base64 -d') &&
-      wroteAuth.includes('chmod 600'),
-    'codex injectAuth writes ~/.codex/auth.json (base64-decoded, chmod 600)',
-  );
-  const codexExec2 = makeExec();
-  const degraded = await codex.injectAuth(codexExec2, null);
-  assert(
-    degraded.ok === true && codexExec2.calls.length === 0,
-    'codex injectAuth with NO material degrades ok (no write, no failure) — codex parity',
-  );
+  // (codex's provision-time auth/config + prompt writes are now the pure
+  // `sandboxSetupCommands` emitter — golden-tested byte-exact in the 3.2 block
+  // below; the dead `injectAuth` port method is removed in this refactor.)
 
   // terminalStartup (refactor-agent-runtime-policy-mechanism): codex DECLARES the
   // DSR-reply + cr-on-quiesce policy the SHARED pty mechanism (AioPtyClient) reads;
@@ -363,51 +347,10 @@ async function main() {
     'claude buildLaunchLine REQUIRES a sessionId (the transcript JSONL name)',
   );
 
-  // ---- 2.5 credential injection (set token, UNSET ANTHROPIC_*) -----------
-  const claudeExec = makeExec();
-  const authOk = await claude.injectAuth(claudeExec, { oauthToken: 'sk-ant-oat-XYZ' });
-  assert(authOk.ok === true, 'claude injectAuth(ok) with a token');
-  const authCmd = claudeExec.calls.join('\n');
-  assert(
-    authCmd.includes('base64 -d') && authCmd.includes('chmod 600'),
-    'claude injectAuth writes the launch-env snippet (base64-decoded, chmod 600)',
-  );
-  // Decode the embedded base64 snippet to prove the exports/unsets it will source.
-  const b64 = /printf %s '([A-Za-z0-9+/=]+)'/.exec(authCmd);
-  assert(b64 !== null, 'claude injectAuth embeds the snippet as base64');
-  const snippet = Buffer.from(b64[1], 'base64').toString('utf8');
-  assert(
-    /export CLAUDE_CODE_OAUTH_TOKEN=/.test(snippet),
-    'claude launch env EXPORTS CLAUDE_CODE_OAUTH_TOKEN',
-  );
-  assert(
-    /unset ANTHROPIC_API_KEY/.test(snippet) &&
-      /unset ANTHROPIC_AUTH_TOKEN/.test(snippet) &&
-      /unset apiKeyHelper/.test(snippet),
-    'claude launch env UNSETS ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN / apiKeyHelper',
-  );
-  assert(
-    !authCmd.includes('sk-ant-oat-XYZ'),
-    'claude injectAuth never puts the raw token in the exec command (base64 only)',
-  );
-  const claudeExecNoTok = makeExec();
-  const failClosed = await claude.injectAuth(claudeExecNoTok, null);
-  assert(
-    failClosed.ok === false && failClosed.reason === 'runtime not configured',
-    'claude injectAuth fails CLOSED with "runtime not configured" when no token',
-  );
-  assert(
-    claudeExecNoTok.calls.length === 0,
-    'claude injectAuth writes nothing when failing closed',
-  );
-  const blankFail = await claude.injectAuth(claudeExec, { oauthToken: '   ' });
-  assert(
-    blankFail.ok === false,
-    'claude injectAuth fails closed on a blank/whitespace token',
-  );
-
-  // (claude's terminal-startup no-op is asserted via `claude.terminalStartup`
-  // above — the dead `autoSubmit` method is removed in this refactor.)
+  // (claude's launch-env.sh + `.claude.json` writes + fail-closed-without-token are
+  // now the pure `sandboxSetupCommands` emitter — golden-tested byte-exact in the 3.2
+  // block below; the dead `injectAuth` port method is removed in this refactor. The
+  // terminal-startup no-op is asserted via `claude.terminalStartup` above.)
 
   // ---- 2.7 detectExit: end_turn detection -------------------------------
   const slug = transcript.claudeProjectSlug('/home/gem/workspace');
@@ -527,66 +470,126 @@ async function main() {
     'claude detectExit: a missing/empty transcript reads as still-running',
   );
 
-  // ---- 2.8 captureTranscript: parses ALL record types -------------------
-  const archival = jsonl(
-    { type: 'user', message: { role: 'user' } },
-    { type: 'attachment', parentUuid: 'p1' },
-    { type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn' } },
-    { type: 'system', subtype: 'ai-title' },
-  );
-  const capExec = makeExec((cmd) =>
-    cmd.startsWith('cat ') ? { stdout: archival, code: 0 } : undefined,
-  );
-  const cap = await claude.captureTranscript(capExec, {
-    taskId: 'abc',
-    workspaceDir: '/home/gem/workspace',
-    sessionId: 'SID',
-  });
+  // (the runtime `captureTranscript` port method is REMOVED in this refactor — the
+  // structured transcript capture lives in the retention path's SessionTranscriptService
+  // + the provider's rollout read, never a dead per-runtime port method. The JSONL
+  // parsing the claude `detectExit` relies on is still covered by the transcript-module
+  // cases above: `parseClaudeTranscript` / `isTurnComplete`.)
+
+  // ---- 3.2 GOLDEN: sandboxSetupCommands / preStopTrimCommands emitters --------
+  // Byte-exact characterization of the pure setup/trim emitters (refactor step 3a/3b).
+  // Expected payloads are computed from LITERAL config/auth/prompt content, so a drift
+  // in the emitter's TOML/escaping/order fails here. Pins TRAP-1 (config+auth = ONE
+  // command), TRAP-2 (conditional prompt = dropped element), TRAP-3 (per-command
+  // tolerateUnresolvedExit), TRAP-5 (idempotency tokens).
+  const toB64 = (s) => Buffer.from(s, 'utf8').toString('base64');
+  const CXDIR = '/home/gem/.codex';
+  const WS = '/home/gem/workspace';
+  const TRUST = `[projects."${WS}"]\ntrust_level = "trusted"\n`;
+
+  // codex: null material, no prompt → 1 command (trust-only config.toml, strict)
+  const cxNull = codex.sandboxSetupCommands({ taskId: 't', workspaceDir: WS, prompt: null }, null);
   assert(
-    cap.records.length === 4,
-    'claude captureTranscript parses ALL record types from the JSONL',
-  );
-  assert(
-    cap.records.map((r) => r.type).join(',') ===
-      'user,attachment,assistant,system',
-    'claude captureTranscript threads through attachment/system records (parent chain intact)',
-  );
-  const capEmpty = await claude.captureTranscript(
-    makeExec(() => ({ stdout: '', code: 0 })),
-    { taskId: 'abc', workspaceDir: '/home/gem/workspace', sessionId: 'SID' },
+    cxNull.ok === true && cxNull.commands.length === 1,
+    'codex setup (no auth, no prompt) → 1 command',
   );
   assert(
-    Array.isArray(capEmpty.records) && capEmpty.records.length === 0,
-    'claude captureTranscript yields no records (never throws) on an absent transcript',
-  );
-  // Malformed lines are skipped, not fatal.
-  const malformed = await claude.captureTranscript(
-    makeExec((cmd) =>
-      cmd.startsWith('cat ')
-        ? {
-            stdout:
-              '{not json}\n' +
-              JSON.stringify({ type: 'assistant', message: { stop_reason: 'end_turn' } }) +
-              '\n',
-            code: 0,
-          }
-        : undefined,
-    ),
-    { taskId: 'abc', workspaceDir: '/home/gem/workspace', sessionId: 'SID' },
+    cxNull.commands[0].command ===
+      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(TRUST)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml`,
+    'codex GOLDEN: trust-only config.toml command byte-exact',
   );
   assert(
-    malformed.records.length === 1 && malformed.records[0].type === 'assistant',
-    'claude captureTranscript skips a malformed JSONL line (best-effort parse)',
+    cxNull.commands[0].tolerateUnresolvedExit === false,
+    'codex config command is strict (fail-closed on unresolved exit)',
   );
 
-  // codex captureTranscript yields no structured records (rollout read is elsewhere).
-  const codexCap = await codex.captureTranscript(makeExec(), {
-    taskId: 't',
-    workspaceDir: '/home/gem/workspace',
+  // codex: official + prompt → 2 commands; auth.json appended to config command (TRAP-1)
+  const cxAuthJson = '{"auth_mode":"chatgpt","tokens":{}}';
+  const cxPrompt = 'read the code 阅读代码';
+  const cxOff = codex.sandboxSetupCommands(
+    { taskId: 't', workspaceDir: WS, prompt: cxPrompt },
+    { authJson: cxAuthJson },
+  );
+  assert(cxOff.ok === true && cxOff.commands.length === 2, 'codex setup (official + prompt) → 2 commands');
+  assert(
+    cxOff.commands[0].command ===
+      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(TRUST)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml && printf %s '${toB64(cxAuthJson)}' | base64 -d > ${CXDIR}/auth.json && chmod 600 ${CXDIR}/auth.json`,
+    'codex GOLDEN: official config+auth.json as ONE command byte-exact (TRAP-1)',
+  );
+  assert(
+    cxOff.commands[1].command ===
+      `mkdir -p ${CXDIR} && printf %s '${toB64(cxPrompt)}' | base64 -d > ${CXDIR}/task-prompt.txt && chmod 600 ${CXDIR}/task-prompt.txt`,
+    'codex GOLDEN: prompt-file write byte-exact',
+  );
+
+  // codex: compatible, no prompt → 1 command, NO auth.json, model_providers.cap TOML
+  const COMPAT = { baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test', model: 'gpt-4o' };
+  const COMPAT_TOML =
+    `model = "gpt-4o"\nmodel_provider = "cap"\n` +
+    TRUST +
+    `[model_providers.cap]\nname = "Compatible provider"\nbase_url = "https://api.example.com/v1"\nwire_api = "responses"\nexperimental_bearer_token = "sk-test"\n`;
+  const cxComp = codex.sandboxSetupCommands(
+    { taskId: 't', workspaceDir: WS, prompt: null },
+    { codexCompatible: COMPAT },
+  );
+  assert(cxComp.ok === true && cxComp.commands.length === 1, 'codex setup (compatible, no prompt) → 1 command (no auth.json)');
+  assert(
+    cxComp.commands[0].command ===
+      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(COMPAT_TOML)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml`,
+    'codex GOLDEN: compatible config.toml (model_providers.cap, no auth.json) byte-exact',
+  );
+
+  // codex trim — byte-exact (keeps sessions/, truncates auth.json with `: >`)
+  const cxTrim = codex.preStopTrimCommands();
+  assert(
+    cxTrim.length === 1 &&
+      cxTrim[0] ===
+        `rm -rf ${CXDIR}/cache ${CXDIR}/logs_*.sqlite ${CXDIR}/logs_*.sqlite-shm ${CXDIR}/logs_*.sqlite-wal 2>/dev/null; : > ${CXDIR}/auth.json 2>/dev/null; true`,
+    'codex GOLDEN: pre-stop trim byte-exact (: > truncate, keeps sessions/)',
+  );
+
+  // claude: no/blank token → fail closed BEFORE any command (TRAP-3)
+  assert(
+    claude.sandboxSetupCommands({ taskId: 't', workspaceDir: WS, prompt: 'x' }, null).ok === false,
+    'claude setup fails closed without a token',
+  );
+  assert(
+    claude.sandboxSetupCommands({ taskId: 't', workspaceDir: WS, prompt: 'x' }, { oauthToken: '   ' }).ok === false,
+    'claude setup fails closed on a blank token',
+  );
+
+  // claude: token + prompt → 2 commands; auth-env tolerant, prompt strict (TRAP-3)
+  const CLTOK = 'sk-ant-oat-XYZ';
+  const clTok = claude.sandboxSetupCommands({ taskId: 't', workspaceDir: WS, prompt: 'goal' }, { oauthToken: CLTOK });
+  assert(clTok.ok === true && clTok.commands.length === 2, 'claude setup (token + prompt) → 2 commands');
+  assert(clTok.commands[0].tolerateUnresolvedExit === true, 'claude auth-env command tolerates unresolved exit');
+  assert(clTok.commands[1].tolerateUnresolvedExit === false, 'claude prompt command is strict');
+
+  // claude: token, no prompt → 1 command; launch-env.sh + .claude.json byte-exact
+  const clNoP = claude.sandboxSetupCommands({ taskId: 't', workspaceDir: WS, prompt: null }, { oauthToken: CLTOK });
+  assert(clNoP.ok === true && clNoP.commands.length === 1, 'claude setup (token, no prompt) → 1 command');
+  const clSnippet =
+    `export CLAUDE_CODE_OAUTH_TOKEN="$(printf %s '${toB64(CLTOK)}' | base64 -d)"\n` +
+    'unset ANTHROPIC_API_KEY\nunset ANTHROPIC_AUTH_TOKEN\nunset apiKeyHelper\n';
+  const clPreseed = JSON.stringify({
+    theme: 'dark',
+    hasCompletedOnboarding: true,
+    numStartups: 5,
+    hasAcknowledgedCostThreshold: true,
+    bypassPermissionsModeAccepted: true,
+    projects: { [WS]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } },
   });
   assert(
-    codexCap.records.length === 0,
-    'codex captureTranscript returns no records here (rollout read stays in the provider)',
+    clNoP.commands[0].command ===
+      `mkdir -p /home/gem/.claude && printf %s '${toB64(clSnippet)}' | base64 -d > /home/gem/.claude/launch-env.sh && chmod 600 /home/gem/.claude/launch-env.sh && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude/.claude.json && chmod 600 /home/gem/.claude/.claude.json`,
+    'claude GOLDEN: launch-env.sh + .claude.json command byte-exact',
+  );
+
+  // claude trim — keeps projects/
+  assert(
+    claude.preStopTrimCommands()[0] ===
+      `find /home/gem/.claude -mindepth 1 -maxdepth 1 ! -name projects -exec rm -rf {} + 2>/dev/null; true`,
+    'claude GOLDEN: pre-stop trim keeps projects/',
   );
 
   console.log(`\n${passed} passed, ${failed} failed`);
