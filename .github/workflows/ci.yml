@@ -1,8 +1,12 @@
 name: CI
 
-# Strict typecheck + lint gate (add-ci-typecheck-gate). The release/build workflows
-# only transpile (Docker/vite), so strict `tsc` errors could land on main undetected;
-# this enforces the monorepo-foundation `turbo typecheck lint build` contract on changes.
+# Strict typecheck + lint + unit-test gate (add-ci-typecheck-gate +
+# guard-runtime-selection-regression). The release/build workflows only transpile
+# (Docker/vite), so strict `tsc` errors could land on main undetected; this enforces
+# the monorepo-foundation `turbo typecheck lint build` contract on changes, AND now
+# runs the @cap/api unit suite so a behavioral regression (e.g. the v0.6.0 runtime-
+# selection DOA, where claude-code tasks silently ran codex) fails CI instead of
+# shipping silently.
 on:
   pull_request:
   push:
@@ -19,7 +23,7 @@ permissions:
 
 jobs:
   typecheck-lint:
-    name: typecheck + lint
+    name: typecheck + lint + test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,3 +52,12 @@ jobs:
 
       - name: Typecheck + lint (strict)
         run: pnpm turbo typecheck lint
+
+      # Run the @cap/api unit suite (node:test over the compiled dist spec files).
+      # Invoked directly via pnpm (NOT `turbo test`): the package's `pretest` already
+      # runs `turbo run build --filter=@cap/api`, so a `turbo test` task would nest
+      # turbo inside turbo and trip turbo 2.x's recursive-invocation guard. The build
+      # above makes the pretest build a cache hit. This is the lane the runtime-
+      # selection regression spec (and the rest of the api specs) gate in.
+      - name: Test (api unit suite)
+        run: pnpm --filter @cap/api test

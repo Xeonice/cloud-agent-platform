@@ -159,15 +159,33 @@ export class IntegrationRuntimeRegistry implements RuntimeRegistry {
     return this.registry.resolve(await this.readTaskRuntime(taskId));
   }
 
-  /** Read the task's persisted `runtime` value (codex default when unavailable). */
+  /**
+   * Read the task's persisted `runtime` value, returning `null` (→ codex default)
+   * when it cannot be resolved.
+   *
+   * guard-runtime-selection-regression D1: depend on the REQUIRED
+   * `ProvisionLookup.getTaskRuntime` port member DIRECTLY — no widening cast, no
+   * `typeof`-presence escape hatch. The port declares `getTaskRuntime` as required
+   * (`provision-lookup.port.ts`), so an implementation that omits it is now a
+   * build-time type error caught by the strict typecheck CI gate, rather than the
+   * v0.6.0 regression where the missing read path silently routed EVERY task —
+   * including `claude-code` — through codex.
+   *
+   * D3: every fallback to the codex default is logged at `warn`, never silent — the
+   * lookup genuinely unwired, `getTaskRuntime` throwing, or an out-of-set stored
+   * value. A `null` value (task missing / no runtime persisted) is the LEGITIMATE
+   * "absent → codex default" case and is NOT warned (a codex task stores null).
+   */
   private async readTaskRuntime(taskId: string): Promise<RuntimeId | null> {
-    const reader = this.lookup as
-      | (ProvisionLookup & { getTaskRuntime?: (id: string) => Promise<string | null> })
-      | undefined;
-    if (typeof reader?.getTaskRuntime !== 'function') return null;
+    if (!this.lookup) {
+      this.logger.warn(
+        `no ProvisionLookup wired; defaulting task ${taskId} to codex`,
+      );
+      return null;
+    }
+    let value: string | null;
     try {
-      const value = await reader.getTaskRuntime(taskId);
-      return value === 'claude-code' || value === 'codex' ? value : null;
+      value = await this.lookup.getTaskRuntime(taskId);
     } catch (err) {
       this.logger.warn(
         `could not read runtime for task ${taskId} (defaulting to codex): ${
@@ -176,5 +194,12 @@ export class IntegrationRuntimeRegistry implements RuntimeRegistry {
       );
       return null;
     }
+    if (value === 'claude-code' || value === 'codex') return value;
+    if (value !== null) {
+      this.logger.warn(
+        `task ${taskId} has an unknown runtime "${value}" (defaulting to codex)`,
+      );
+    }
+    return null;
   }
 }
