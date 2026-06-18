@@ -437,6 +437,10 @@ export class DockerUpdaterLauncher implements UpdaterLauncher {
 
   async launch(plan: UpdatePlan): Promise<void> {
     const image = nonEmptyEnv(this.env[UPDATER_IMAGE_ENV]) ?? DEFAULT_UPDATER_IMAGE;
+    // createContainer does NOT auto-pull — a host that never staged the updater image
+    // (e.g. a fresh resident deploy with no `docker` images) otherwise fails the whole
+    // request with `(HTTP code 404) … No such image`. Ensure it is present first.
+    await this.ensureImage(image);
     // The single pin every cap service resolves `${CAP_VERSION}` to (overrides the
     // .env at compose render time; the script also persists it into .env).
     const containerEnv = [`${CAP_VERSION_ENV}=${plan.target}`];
@@ -463,6 +467,27 @@ export class DockerUpdaterLauncher implements UpdaterLauncher {
     // DETACHED: start and return; the helper outlives THIS api process when `up -d`
     // recreates the api container.
     await container.start();
+  }
+
+  /**
+   * Guarantee the updater image is present locally before {@link launch} creates a
+   * container from it (dockerode's createContainer never auto-pulls). Inspect first
+   * and pull ONLY on a miss, so the steady-state path stays offline-friendly and a
+   * fresh host self-heals instead of 404-ing the request.
+   */
+  private async ensureImage(image: string): Promise<void> {
+    try {
+      await this.docker.getImage(image).inspect();
+      return; // already staged — nothing to pull
+    } catch {
+      // not present locally — fall through to pull
+    }
+    const stream = await this.docker.pull(image);
+    await new Promise<void>((resolve, reject) => {
+      this.docker.modem.followProgress(stream, (err) =>
+        err ? reject(err) : resolve(),
+      );
+    });
   }
 }
 
