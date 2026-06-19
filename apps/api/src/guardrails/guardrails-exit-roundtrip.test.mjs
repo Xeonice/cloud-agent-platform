@@ -159,11 +159,14 @@ class GuardrailsHarness {
     }
   }
 
-  // mirrors forceFail: records cause, transitions failed, then captures the
-  // transcript (3.3) BEFORE the stop-only teardown, then releases the slot.
+  // mirrors forceFail: records cause, transitions to the cause's terminal status,
+  // then captures the transcript (3.3) BEFORE the stop-only teardown, then releases.
+  // align-claude-runtime-resident-session: an `idle` ceiling on a resident session is
+  // a graceful end of life → `completed`; every other cause is a force-`failed`.
   async _forceFail(taskId, cause) {
     this.forceFails.push({ taskId, cause });
-    this.transitions.push({ taskId, status: 'failed' });
+    const terminal = cause === 'idle' ? 'completed' : 'failed';
+    this.transitions.push({ taskId, status: terminal });
     // persist-session-transcripts 3.3 — capture BEFORE the stop-only teardown.
     await this._captureTranscript(taskId);
     this.events.push(`teardown:${taskId}`);
@@ -352,6 +355,24 @@ const lastTransition = (g, taskId) =>
   assert(provider.tornDown.includes('t8b'), 'T8g: capture throw does NOT block the stop-only teardown (forceFail)');
   assert(g.released.includes('t8b'), 'T8h: capture throw does NOT block the slot release (forceFail)');
   assert(provider.removed.length === 0, 'T8i: capture throw never causes a force-remove (retention preserved)');
+}
+
+// T9 (align-claude-runtime-resident-session): an `idle` ceiling on a RESIDENT session
+// is a graceful end of life -> `completed` (NOT a force-`failed`), while every other
+// force-fail cause stays `failed`. Both still stop-only teardown + release the slot.
+{
+  const provider = new MockProvider();
+  const g = new GuardrailsHarness(new SpyBreaker(), provider);
+  await g.startRunning('t9idle');
+  await g._forceFail('t9idle', 'idle');
+  assert(lastTransition(g, 't9idle') === 'completed', 'T9a: an idle reclamation transitions a resident task to COMPLETED (graceful), not failed');
+  assert(g.released.includes('t9idle'), 'T9b: idle reclamation RELEASES the slot');
+  assert(provider.tornDown.includes('t9idle'), 'T9c: idle reclamation STOPS the sandbox (settle)');
+  assert(!provider.removed.includes('t9idle'), 'T9d: idle reclamation RETAINS the container (stop-only)');
+
+  await g.startRunning('t9dl');
+  await g._forceFail('t9dl', 'deadline');
+  assert(lastTransition(g, 't9dl') === 'failed', 'T9e: a non-idle cause (deadline) still force-fails to failed');
 }
 
 // ---- summary ----------------------------------------------------------------

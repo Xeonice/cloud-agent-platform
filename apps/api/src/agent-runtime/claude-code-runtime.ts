@@ -1,5 +1,5 @@
 import {
-  detachedSessionName,
+  buildHasSessionCommand,
   wrapInDetachedSession,
 } from '../terminal/codex-launch';
 import type {
@@ -14,11 +14,6 @@ import type {
   SandboxSetupPlan,
   TerminalStartup,
 } from './agent-runtime.port';
-import {
-  claudeTranscriptPath,
-  isTurnComplete,
-  parseClaudeTranscript,
-} from './claude-transcript';
 
 /**
  * ClaudeCodeRuntime (add-claude-code-runtime, tasks 2.4–2.8) — the second
@@ -104,9 +99,9 @@ export class ClaudeCodeRuntime implements AgentRuntime {
   buildLaunchLine(ctx: LaunchContext): string {
     const sessionId = ctx.sessionId;
     if (!sessionId) {
-      // The --session-id uuid is load-bearing: it names the transcript JSONL
-      // detectExit tails. A launch without it could never resolve completion, so
-      // refuse rather than launch a task that can never finish.
+      // The --session-id uuid is load-bearing: it names the transcript JSONL the
+      // shared retention path archives/replays. A launch without it would lose the
+      // session's durable transcript, so refuse rather than launch one that can't.
       throw new Error(
         'ClaudeCodeRuntime.buildLaunchLine requires ctx.sessionId (the --session-id uuid)',
       );
@@ -215,54 +210,32 @@ export class ClaudeCodeRuntime implements AgentRuntime {
   };
 
   // ------------------------------------------------------------------------
-  // 2.7 — turn-completion exit detection
+  // exit detection — RESIDENT continuous-conversation session (codex parity)
   // ------------------------------------------------------------------------
 
   /**
-   * Determine turn completion from the transcript, not process exit (task 2.7).
-   * An interactive Claude turn does NOT exit the process — it idles for the next
-   * input — so `tmux has-session` would stay alive forever. Instead this tails the
-   * `--session-id` JSONL and treats the turn complete when the LAST `assistant`
-   * record carries `stop_reason == "end_turn"` (NOT the last line — `system`/
-   * title/last-prompt records trail it; see {@link isTurnComplete}). On `done` it
-   * proactively `tmux kill-session` so the SHARED session-gone exit path resolves
-   * the task; the liveness poller is thereby demoted to an abnormal-death watchdog.
+   * Resolve completion from session liveness, IDENTICAL to {@link CodexRuntime.detectExit}:
+   * `tmux has-session` over the exec handle — a session that EXISTS (exit 0) is still
+   * `running`; a GONE session (non-zero) is `done`. The `__cap_has__$?` sentinel mirrors
+   * `probeSessionLiveness`; an inconclusive probe (no sentinel) reads as still-running so
+   * a transport blip is never mistaken for completion.
    *
-   * A `tool_use` mid-turn event is NOT complete (detection keeps running); a
-   * clarifying-question ending is still `end_turn`, so it completes the run
-   * (one-shot semantics). A missing/unreadable transcript reads as still-running.
+   * Claude is a RESIDENT continuous-conversation session (align-claude-runtime-resident-session):
+   * a finished turn does NOT exit the process and is NOT treated as completion — Claude idles
+   * for the next input the operator types into the live terminal, driving multi-turn
+   * conversation in the same `--session-id` session. The task is `done` ONLY when the session
+   * is gone (operator stop, or a configured idle/deadline reclamation), exactly like codex;
+   * the shared liveness poller's abnormal-death watchdog still catches a session that dies
+   * unexpectedly. This replaces the prior `end_turn`-transcript one-shot detection (which also
+   * misclassified a cleanly-completed turn as `abnormal_exit` after its proactive kill-session).
    */
   async detectExit(exec: SandboxExec, ctx: LaunchContext): Promise<ExitSignal> {
-    const sessionId = ctx.sessionId;
-    if (!sessionId) return { status: 'running' };
-    const path = claudeTranscriptPath(
-      ClaudeCodeRuntime.CONFIG_DIR,
-      ctx.workspaceDir,
-      sessionId,
+    const { stdout } = await exec.exec(
+      `${buildHasSessionCommand(ctx.taskId)}; echo __cap_has__$?`,
     );
-    let jsonl: string;
-    try {
-      const { stdout } = await exec.exec(`cat ${path} 2>/dev/null`);
-      jsonl = stdout;
-    } catch {
-      // Transport blip — inconclusive, keep polling rather than mistaking it for
-      // completion (mirrors the codex liveness poller's null handling).
-      return { status: 'running' };
-    }
-    if (jsonl.trim().length === 0) return { status: 'running' };
-    const records = parseClaudeTranscript(jsonl);
-    if (!isTurnComplete(records)) return { status: 'running' };
-
-    // Turn complete — proactively kill the tmux session so the shared session-gone
-    // path resolves the task. Best-effort: a kill failure still lets the watchdog
-    // catch it; we never throw out of detection.
-    const session = detachedSessionName(ctx.taskId);
-    try {
-      await exec.exec(`tmux kill-session -t ${session} 2>/dev/null; true`);
-    } catch {
-      // ignore — the abnormal-death watchdog is the backstop
-    }
-    return { status: 'done' };
+    const match = /__cap_has__(\d+)/.exec(stdout);
+    if (!match) return { status: 'running' };
+    return match[1] === '0' ? { status: 'running' } : { status: 'done' };
   }
 
 }

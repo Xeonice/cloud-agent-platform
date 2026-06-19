@@ -139,6 +139,15 @@ export const en: SiteContent = {
     endpoint: "https://{apiDomain}/mcp",
     copyLabel: "Copy MCP endpoint",
     copiedLabel: "Copied",
+    installLabel: "Install commands",
+    directLabel: "A · Direct (recommended)",
+    directCommand:
+      'claude mcp add --transport http cap https://{apiDomain}/mcp --header "Authorization: Bearer mcp_<token>"',
+    fallbackLabel: "B · mcp-remote (stdio-only clients)",
+    fallbackCommand:
+      'npx mcp-remote https://{apiDomain}/mcp --header "Authorization: Bearer mcp_<token>"',
+    transportNote:
+      "Most clients (Claude Code, Cursor, VS Code) speak Streamable HTTP — use A. Stdio-only clients run a local process; npx mcp-remote (B) bridges that local stdio to this remote endpoint. Either way, mint the token in the console first.",
     steps: [
       {
         index: "01",

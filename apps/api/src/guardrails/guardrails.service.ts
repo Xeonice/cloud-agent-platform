@@ -717,10 +717,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   /**
-   * Force-fail a task (deadline overrun / idle ceiling / circuit trip): transition
-   * to `failed`, stop/kill its running sandbox (VR.2), tear down its session
-   * credentials + revoke its token, and release its slot (admitting the next
-   * queued task). The cause is logged for audit.
+   * Reclaim a task from a guardrail trip: stop/kill its running sandbox (VR.2), tear
+   * down its session credentials, and release its slot (admitting the next queued
+   * task). The terminal status depends on the cause: a deadline overrun / circuit
+   * trip / provision or abnormal exit is a force-`failed`, but an `idle` ceiling on a
+   * RESIDENT continuous-conversation session is a graceful end of life and resolves
+   * `completed` (align-claude-runtime-resident-session). The cause is logged for audit.
    */
   private async forceFail(
     taskId: string,
@@ -729,7 +731,13 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // structured-logging: bind taskId for all force-fail logs (incl. timer-driven
     // deadline/idle/circuit_breaker entrypoints that run outside any request).
     return runWithTaskLog(taskId, async () => {
-    this.logger.warn(`force-failing task ${taskId} (${cause})`);
+    // An idle ceiling on a RESIDENT session is a graceful end of life — reclaim it as
+    // `completed`, not a force-`failed`. Every other cause stays a failure. The
+    // capture / stop-only teardown / slot-release below is identical for both.
+    const terminal: 'completed' | 'failed' = cause === 'idle' ? 'completed' : 'failed';
+    this.logger.warn(
+      `${terminal === 'completed' ? 'reclaiming idle task' : 'force-failing task'} ${taskId} (${cause})`,
+    );
     this.clearTimers(taskId);
     // Close the runner-minutes interval on the forced-failure terminal too (5.4).
     this.runnerMinutes.recordEnd(taskId);
@@ -738,8 +746,13 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // generic `task.failed` transition is also recorded centrally by the tasks
     // service when the `failed` write below is accepted; the two are distinct
     // events (the terminal transition + its cause).
-    await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
-    await this.safeTransition(taskId, 'failed');
+    // The cause-specific `recordForceFailed` event is only for actual failures; an
+    // idle reclamation to `completed` relies on the central `task.completed` audit
+    // emitted by the status-write chokepoint.
+    if (terminal === 'failed') {
+      await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
+    }
+    await this.safeTransition(taskId, terminal);
     // persist-session-transcripts 3.3 — capture the rollout to durable storage
     // for ALL abnormal causes (deadline / idle / circuit_breaker /
     // provision_failed / abnormal_exit) WHILE the container is still present,
@@ -762,7 +775,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         );
       });
     }
-    this.teardownSession(taskId, 'failed');
+    this.teardownSession(taskId, terminal);
     this.semaphore.release(taskId);
     });
   }

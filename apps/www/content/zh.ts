@@ -135,6 +135,15 @@ export const zh: SiteContent = {
     endpoint: "https://{apiDomain}/mcp",
     copyLabel: "复制 MCP 端点",
     copiedLabel: "已复制",
+    installLabel: "安装命令",
+    directLabel: "A · 直连（推荐）",
+    directCommand:
+      'claude mcp add --transport http cap https://{apiDomain}/mcp --header "Authorization: Bearer mcp_<token>"',
+    fallbackLabel: "B · mcp-remote（仅 stdio 客户端）",
+    fallbackCommand:
+      'npx mcp-remote https://{apiDomain}/mcp --header "Authorization: Bearer mcp_<token>"',
+    transportNote:
+      "大多数客户端（Claude Code、Cursor、VS Code）支持 Streamable HTTP —— 用 A。只支持 stdio 的客户端会在本地起一个进程；npx mcp-remote（B）把本地 stdio 桥接到这个远端端点。两种方式都需先在控制台铸造令牌。",
     steps: [
       {
         index: "01",

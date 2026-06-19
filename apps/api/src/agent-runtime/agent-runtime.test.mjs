@@ -352,7 +352,11 @@ async function main() {
   // block below; the dead `injectAuth` port method is removed in this refactor. The
   // terminal-startup no-op is asserted via `claude.terminalStartup` above.)
 
-  // ---- 2.7 detectExit: end_turn detection -------------------------------
+  // ---- transcript helpers (retention primitives) -----------------------
+  // align-claude-runtime-resident-session: detectExit no longer uses these (it is
+  // now `tmux has-session`, asserted below). They remain pure, tested helpers the
+  // retention/UX layers MAY consume — `isTurnComplete` is a turn-complete signal,
+  // NOT a task-termination trigger.
   const slug = transcript.claudeProjectSlug('/home/gem/workspace');
   assert(
     slug === '-home-gem-workspace',
@@ -418,63 +422,60 @@ async function main() {
     'no assistant record yet => not complete',
   );
 
-  // detectExit integration: reads the JSONL, kills the session on done.
-  const doneJsonl = jsonl(
-    { type: 'assistant', message: { role: 'assistant', stop_reason: 'end_turn' } },
-    { type: 'system', subtype: 'ai-title' },
+  // detectExit (align-claude-runtime-resident-session): claude is RESIDENT — it now
+  // resolves from `tmux has-session` like codex (gone => done, alive => running) and
+  // NEVER tails the transcript or kills the session on a finished turn.
+  const claudeGoneExec = makeExec((cmd) =>
+    cmd.includes('has-session') ? { stdout: '__cap_has__1\n', code: 0 } : undefined,
   );
-  const claudeDoneExec = makeExec((cmd) =>
-    cmd.startsWith('cat ') ? { stdout: doneJsonl, code: 0 } : undefined,
-  );
-  const claudeExit = await claude.detectExit(claudeDoneExec, {
-    taskId: 'abc',
-    workspaceDir: '/home/gem/workspace',
-    sessionId: 'SID',
-  });
-  assert(claudeExit.status === 'done', 'claude detectExit: end_turn => done');
-  assert(
-    claudeDoneExec.calls.some((c) => c.includes('tmux kill-session -t taskabc')),
-    'claude detectExit proactively kills the tmux session on done (shared session-gone path)',
-  );
-  const claudeRunExec = makeExec((cmd) =>
-    cmd.startsWith('cat ')
-      ? {
-          stdout: jsonl({
-            type: 'assistant',
-            message: { role: 'assistant', stop_reason: 'tool_use' },
-          }),
-          code: 0,
-        }
-      : undefined,
-  );
-  const claudeRun = await claude.detectExit(claudeRunExec, {
+  const claudeGone = await claude.detectExit(claudeGoneExec, {
     taskId: 'abc',
     workspaceDir: '/home/gem/workspace',
     sessionId: 'SID',
   });
   assert(
-    claudeRun.status === 'running' &&
-      !claudeRunExec.calls.some((c) => c.includes('kill-session')),
-    'claude detectExit: a mid-turn tool_use stays running and does NOT kill the session',
+    claudeGone.status === 'done',
+    'claude detectExit: a GONE tmux session is done (codex parity)',
   );
-  const claudeEmptyExec = makeExec((cmd) =>
-    cmd.startsWith('cat ') ? { stdout: '', code: 0 } : undefined,
+  assert(
+    claudeGoneExec.calls.some((c) => c.includes('tmux has-session -t taskabc')),
+    'claude detectExit probes `tmux has-session` (codex parity), not the transcript',
   );
-  const claudeEmpty = await claude.detectExit(claudeEmptyExec, {
+  assert(
+    !claudeGoneExec.calls.some((c) => c.includes('kill-session')) &&
+      !claudeGoneExec.calls.some((c) => c.startsWith('cat ')),
+    'claude detectExit NEVER kills the session or tails the transcript (resident)',
+  );
+  const claudeAliveExec = makeExec((cmd) =>
+    cmd.includes('has-session') ? { stdout: '__cap_has__0\n', code: 0 } : undefined,
+  );
+  const claudeAlive = await claude.detectExit(claudeAliveExec, {
     taskId: 'abc',
     workspaceDir: '/home/gem/workspace',
     sessionId: 'SID',
   });
   assert(
-    claudeEmpty.status === 'running',
-    'claude detectExit: a missing/empty transcript reads as still-running',
+    claudeAlive.status === 'running' &&
+      !claudeAliveExec.calls.some((c) => c.includes('kill-session')),
+    'claude detectExit: an EXISTING session is still running (a finished turn does NOT terminate it)',
+  );
+  const claudeBlipExec = makeExec(() => ({ stdout: 'no sentinel here', code: 0 }));
+  const claudeBlip = await claude.detectExit(claudeBlipExec, {
+    taskId: 'abc',
+    workspaceDir: '/home/gem/workspace',
+    sessionId: 'SID',
+  });
+  assert(
+    claudeBlip.status === 'running',
+    'claude detectExit: an inconclusive probe (no sentinel) reads as running',
   );
 
   // (the runtime `captureTranscript` port method is REMOVED in this refactor — the
   // structured transcript capture lives in the retention path's SessionTranscriptService
   // + the provider's rollout read, never a dead per-runtime port method. The JSONL
-  // parsing the claude `detectExit` relies on is still covered by the transcript-module
-  // cases above: `parseClaudeTranscript` / `isTurnComplete`.)
+  // parsing helpers are covered by the transcript-module cases above:
+  // `parseClaudeTranscript` / `isTurnComplete` — now retention/UX primitives, no longer
+  // wired into the resident-session `detectExit`.)
 
   // ---- 3.2 GOLDEN: sandboxSetupCommands / preStopTrimCommands emitters --------
   // Byte-exact characterization of the pure setup/trim emitters (refactor step 3a/3b).

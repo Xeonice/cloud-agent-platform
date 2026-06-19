@@ -163,6 +163,18 @@ export interface McpConnectContent {
   readonly copyLabel: string;
   /** Confirmation shown after a successful copy. */
   readonly copiedLabel: string;
+  /** Label above the concrete install-command block. */
+  readonly installLabel: string;
+  /** Label for command A (direct streamable-HTTP). */
+  readonly directLabel: string;
+  /** The direct `claude mcp add --transport http` command (carries `{apiDomain}`). */
+  readonly directCommand: string;
+  /** Label for command B (the `npx mcp-remote` stdio bridge). */
+  readonly fallbackLabel: string;
+  /** The `npx mcp-remote` fallback command (carries `{apiDomain}`). */
+  readonly fallbackCommand: string;
+  /** One-line note distinguishing stdio (local) from streamable HTTP (remote). */
+  readonly transportNote: string;
   /** Ordered client-setup steps. */
   readonly steps: readonly McpConnectStep[];
   /** The "mint your token in the console" pointer (no mint control here). */

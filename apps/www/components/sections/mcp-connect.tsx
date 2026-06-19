@@ -53,6 +53,37 @@ export function McpConnect({ mcpConnect }: { mcpConnect: McpConnectContent }) {
           />
         </FadeUp>
 
+        <FadeUp delayMs={240} className="mt-8 grid max-w-2xl gap-4">
+          <p className="font-mono text-xs uppercase tracking-widest text-muted">
+            {mcpConnect.installLabel}
+          </p>
+          <div className="grid gap-2">
+            <p className="text-sm font-semibold text-fg">
+              {mcpConnect.directLabel}
+            </p>
+            <CommandBox
+              command={resolveTokens(mcpConnect.directCommand)}
+              copyLabel={mcpConnect.copyLabel}
+              copiedLabel={mcpConnect.copiedLabel}
+              prompt={null}
+            />
+          </div>
+          <div className="grid gap-2">
+            <p className="text-sm font-semibold text-fg">
+              {mcpConnect.fallbackLabel}
+            </p>
+            <CommandBox
+              command={resolveTokens(mcpConnect.fallbackCommand)}
+              copyLabel={mcpConnect.copyLabel}
+              copiedLabel={mcpConnect.copiedLabel}
+              prompt={null}
+            />
+          </div>
+          <p className="text-xs leading-relaxed text-muted text-pretty">
+            {mcpConnect.transportNote}
+          </p>
+        </FadeUp>
+
         <ol className="mt-12 grid grid-cols-1 gap-8 sm:grid-cols-3">
           {mcpConnect.steps.map((step, index) => (
             <FadeUp

@@ -64,6 +64,12 @@ export function parseClaudeTranscript(jsonl: string): TranscriptRecord[] {
  * Whether a parsed transcript marks the turn complete: the LAST record of
  * `type === 'assistant'` carries `message.stop_reason === 'end_turn'` (task 2.7).
  *
+ * DEMOTED (align-claude-runtime-resident-session): no longer wired into
+ * `ClaudeCodeRuntime.detectExit` — claude is now a RESIDENT session resolved by
+ * `tmux has-session` (codex parity), so a finished turn does NOT complete the task.
+ * Retained as a tested pure helper (a turn-complete signal the retention/UX layers
+ * MAY consume), NOT a task-termination trigger.
+ *
  * It scans for the last ASSISTANT record, NOT the last line — `system`/`ai-title`/
  * `last-prompt` records trail the final assistant event, so reading the last line
  * would miss completion. A mid-turn assistant event (`stop_reason === 'tool_use'`)

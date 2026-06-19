@@ -132,31 +132,25 @@ declared `terminalStartup` policy, not an agent-identity check.
   and the captured stream contains no DSR (`ESC[6n`) handshake
 
 ### Requirement: ClaudeCodeRuntime turn-completion exit detection
-`ClaudeCodeRuntime.detectExit()` SHALL determine turn completion from the session
-transcript rather than process exit, because an interactive Claude turn does NOT exit the
-process (it idles for the next input). It SHALL read the transcript at
-`~/.claude/projects/<canonicalized-workspace-slug>/<session-id>.jsonl` and SHALL treat the
-turn as complete when the LAST `assistant` event carries `stop_reason == "end_turn"` (it
-SHALL find the last assistant event, NOT the last line, because `system`/`ai-title`/
-`last-prompt` records follow it). On detecting completion the runtime SHALL proactively
-terminate the tmux session so the shared session-gone exit path resolves the task. The
-liveness poller SHALL be retained only as an abnormal-death watchdog, not as the
-normal-completion signal. A finished turn whose final assistant text is a clarifying
-question SHALL still be treated as run-complete (one-shot semantics), with that text
-surfaced as the task's final output.
+`ClaudeCodeRuntime` SHALL be a RESIDENT continuous-conversation session, behaviorally identical to codex: a finished turn does NOT terminate the task. After answering, Claude idles at its interactive TUI for the next input, which the operator supplies by typing into the live xterm (the same write-lease-gated keystroke path codex uses), driving multi-turn conversation in the SAME session.
 
-#### Scenario: Completion is detected from the transcript, not process exit
-- **WHEN** a Claude turn finishes and the process remains alive idling
-- **THEN** `detectExit` observes the last assistant event `stop_reason == "end_turn"`,
-  kills the tmux session, and the task transitions to a terminal state
+`ClaudeCodeRuntime.detectExit()` SHALL resolve completion from session liveness — `tmux has-session` over the exec handle (present → `running`, GONE → `done`) — exactly like `CodexRuntime.detectExit()`. It SHALL NOT tail the transcript for `end_turn`, SHALL NOT proactively `tmux kill-session` on a finished turn, and SHALL NOT trigger the codex-style exit-status resolution (`/v1/shell/wait` / `echo $?`) on a still-alive session. A task is `done` ONLY when the session is gone — via an explicit operator stop, or (when configured) idle/deadline reclamation. The liveness watchdog SHALL still classify a session that disappears WITHOUT a stop/idle in flight as an abnormal death (`failed`), so a genuinely crashed agent is not left hanging; a clean, idling turn is NEVER probed for an exit code.
 
-#### Scenario: Mid-turn tool calls are not treated as completion
-- **WHEN** the transcript's latest assistant event carries `stop_reason == "tool_use"`
-- **THEN** the task is NOT marked complete and detection continues
+#### Scenario: A finished turn keeps the session resident
+- **WHEN** a Claude turn finishes (the latest `assistant` event is `end_turn`) and the process idles for the next input
+- **THEN** the task remains `running`, the tmux session is NOT killed, and no exit-status resolution runs
 
-#### Scenario: A clarifying-question ending still completes the run
-- **WHEN** the final assistant event is `end_turn` whose text asks the operator a question
-- **THEN** the run is marked complete and the question is surfaced as the final output
+#### Scenario: Follow-up input continues the same conversation
+- **WHEN** the operator types a follow-up into the live xterm while the task is resident
+- **THEN** Claude processes it as the next turn in the same `--session-id` session, with no new task created
+
+#### Scenario: Completion is resolved by session-gone, like codex
+- **WHEN** the session is stopped (operator stop, or a configured idle/deadline reclamation) and `tmux has-session` reports GONE
+- **THEN** `detectExit` returns `done` and the task transitions to a terminal state via the shared session-gone path — the SAME mechanism codex uses
+
+#### Scenario: An unexpectedly dead session is failed, not silently completed
+- **WHEN** the tmux session disappears with no operator stop and no idle/deadline reclamation in flight (the agent or tmux daemon crashed)
+- **THEN** the abnormal-death watchdog resolves the task as `failed`
 
 ### Requirement: ClaudeCodeRuntime transcript capture
 Claude transcript capture SHALL reuse the shared byte-stream asciicast capture unchanged

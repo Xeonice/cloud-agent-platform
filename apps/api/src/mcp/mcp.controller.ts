@@ -4,7 +4,9 @@
  *
  * Mounts the official `@modelcontextprotocol/sdk` (v1.x)
  * {@link StreamableHTTPServerTransport} in STATELESS mode on a Nest/Express route
- * (POST/GET/DELETE), per design D3 (NOT `@rekog/mcp-nest`, NOT the v2-alpha
+ * (POST only — GET/DELETE return 405 via `methodNotAllowed`; stateless +
+ * `enableJsonResponse` serves no SSE stream, so a GET routed to the transport
+ * would hang an empty stream), per design D3 (NOT `@rekog/mcp-nest`, NOT the v2-alpha
  * `@modelcontextprotocol/express` — the v1.x single-package subpaths are pinned,
  * verified in Track 7 / G2). It coexists with the existing `ws` `/terminal`
  * adapter and the global JSON body parser.
@@ -69,22 +71,23 @@ export class McpController {
     await this.handle(req, res);
   }
 
-  /** `GET /mcp` — the SDK's server→client stream channel. */
+  /**
+   * `GET /mcp` — 405 Method Not Allowed. Stateless + `enableJsonResponse` serves
+   * NO server→client SSE stream, so there is nothing to open here. Routing GET to
+   * `transport.handleRequest` opens an empty SSE stream that hangs until timeout
+   * and breaks a real MCP client's handshake, so GET is rejected at the METHOD
+   * layer — synchronously, independent of the enable toggle (a 405, never a
+   * 503/401). A conformant streamable-HTTP client then falls back to POST-only.
+   */
   @Get()
-  async handleGet(
-    @Req() req: Request,
-    @Res({ passthrough: false }) res: Response,
-  ): Promise<void> {
-    await this.handle(req, res);
+  handleGet(@Res({ passthrough: false }) res: Response): void {
+    this.methodNotAllowed(res);
   }
 
-  /** `DELETE /mcp` — the SDK's session-termination channel. */
+  /** `DELETE /mcp` — 405 (same rationale as GET; no stateful session to delete). */
   @Delete()
-  async handleDelete(
-    @Req() req: Request,
-    @Res({ passthrough: false }) res: Response,
-  ): Promise<void> {
-    await this.handle(req, res);
+  handleDelete(@Res({ passthrough: false }) res: Response): void {
+    this.methodNotAllowed(res);
   }
 
   /**
@@ -144,5 +147,24 @@ export class McpController {
       select: { mcpServerEnabled: true },
     });
     return row?.mcpServerEnabled === true;
+  }
+
+  /**
+   * Reject a non-POST `/mcp` request with 405. The stateless endpoint serves POST
+   * only — GET/DELETE would open an empty SSE stream that hangs. A JSON-RPC error
+   * body + `Allow: POST`, written SYNCHRONOUSLY: no transport connected, no hang.
+   * Independent of the enable toggle (method-layer verdict, not auth/availability),
+   * so it is NOT gated on `isEnabled`.
+   */
+  private methodNotAllowed(res: Response): void {
+    res.status(405).set('Allow', 'POST').json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32000,
+        message:
+          'Method Not Allowed: the stateless MCP endpoint serves POST only',
+      },
+      id: null,
+    });
   }
 }
