@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · Agent 控制台</title>
+  <link rel="stylesheet" href="css/platform.css">
+  <link rel="stylesheet" href="css/responsive.css">
+</head>
+<body class="auth-body">
+  <section class="auth-shell" aria-label="GitHub 授权登录">
+    <div class="auth-main">
+      <a class="brand" href="index.html" aria-label="Agent 控制台">
+        <span class="brand-mark">AC</span>
+        <span>Agent 控制台</span>
+      </a>
+
+      <div>
+        <div class="eyebrow">Private access</div>
+        <h1 class="auth-title">用 GitHub 身份打开你的私有 Agent 运行池。</h1>
+        <p class="auth-copy">登录不是注册流程，而是访问边界：只有白名单账号能进入控制台，后续仓库范围、模型凭据和终端会话都绑定到这个身份。</p>
+      </div>
+
+      <div class="auth-state" data-login-empty>
+        <button class="auth-login-button" type="button" data-login-action>
+          <span class="auth-gh" aria-hidden="true">GH</span>
+          <span>使用 GitHub 授权登录</span>
+        </button>
+        <p class="small-muted" style="margin:0;line-height:1.6">登录成功后进入控制台；如果是从某个任务会话被拦截登录，会回到原页面。</p>
+      </div>
+
+      <div class="auth-state" data-login-success hidden>
+        <span class="status-pill green">已完成授权</span>
+        <h2 style="margin:0;font-size:24px;letter-spacing:-.8px">GitHub 账号已绑定。</h2>
+        <p class="small-muted" style="margin:0">当前身份：<span class="mono">github.com/tanghehui</span></p>
+        <a class="btn primary" href="screens/dashboard.html">进入控制台</a>
+      </div>
+    </div>
+
+    <aside class="auth-assurance">
+      <div class="split-line">
+        <h2 style="margin:0;font-size:17px">进入控制台前会确认</h2>
+        <span class="status-pill blue">3 steps</span>
+      </div>
+
+      <div class="auth-steps" aria-label="首次进入流程">
+        <article class="auth-step">
+          <span class="auth-step-number">01</span>
+          <div>
+            <h3>验证 GitHub OAuth</h3>
+            <p>确认账号为 <span class="mono">github.com/tanghehui</span>，没有公开注册入口。</p>
+          </div>
+        </article>
+        <article class="auth-step">
+          <span class="auth-step-number">02</span>
+          <div>
+            <h3>绑定可审计身份</h3>
+            <p>所有任务、仓库导入和终端输入都归属到当前操作者。</p>
+          </div>
+        </article>
+        <article class="auth-step">
+          <span class="auth-step-number">03</span>
+          <div>
+            <h3>进入仓库范围选择</h3>
+            <p>只把明确导入的仓库交给远端 Agent 工作区，不默认暴露账号下全部项目。</p>
+          </div>
+        </article>
+      </div>
+
+      <div class="config-list">
+        <div class="config-row"><span>访问范围</span><strong>单用户白名单</strong></div>
+        <div class="config-row"><span>执行边界</span><strong>沙箱内自治</strong></div>
+        <div class="config-row"><span>下一步</span><strong>任务控制台</strong></div>
+      </div>
+    </aside>
+  </section>
+
+  <script src="js/platform.js"></script>
+</body>
+</html>

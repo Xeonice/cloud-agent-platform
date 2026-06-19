@@ -458,12 +458,12 @@ The `/tasks/$taskId` page SHALL adopt the COCKPIT layout as a MARKUP/LAYOUT/STYL
 
 The THREE-SEGMENT header SHALL render, in this order:
 - a TASK-STATUS H1 rendered as a dot+text Badge where the state is conveyed by BOTH the dot color AND the text label (never color-alone). The route drives the task LIFECYCLE states 运行中 / 已停止 / 失败 (all static dots) this phase; the Badge primitive also supports an in-flight 等待审批 state (animated pulse), reserved for the follow-up approval change that lifts the pending request;
-- a TAG RAIL folding the deleted context strip into NON-INTERACTIVE chips for 分支 / Codex / AIO Sandbox / linux-amd64 / 守护栏, each rendered with a white background and a 1px ring (the amber 写入前确认 chip is DEFERRED to the follow-up approval change);
+- a TAG RAIL folding the deleted context strip into NON-INTERACTIVE chips for 分支 / {agent-runtime} / AIO Sandbox / 守护栏, each rendered with a white background and a 1px ring. The agent chip SHALL render the task's PERSISTED `runtime` as a human-readable label (`codex` → `Codex`, `claude-code` → `Claude Code`, absent/null → `Codex`) via a SINGLE shared runtime-label helper that is also used by the history page, so the agent label cannot drift between the two surfaces; it SHALL NOT be a hardcoded `Codex` literal. The tag rail SHALL NOT render a platform-arch (`linux-amd64`) chip, because no task field backs it (D5.5 — never render an unsent field); the `AIO Sandbox` chip (the truthful sole sandbox provider) and the 守护栏 chip (computed from the task's `idleTimeoutMs`/`deadlineMs`) are unchanged. (the amber 写入前确认 chip is DEFERRED to the follow-up approval change);
 - a SINGLE 停止 action as the only header action, retaining the existing two-step (explicit confirm) stop semantics that POST to `POST /tasks/:taskId/stop`; the former 返回任务 / 复制会话记录 / 暂停输出 buttons SHALL NOT appear in the header (they fold into the terminal ⋯ menu or are dropped).
 
 The permission-request APPROVAL surface SHALL remain INSIDE the terminal `<article>` exactly as it shipped previously (an in-terminal panel offering 允许 / 拒绝, resolved lock-independently). The page-level amber banner restyle + the lift of `pending`/`decide` to the route so deciding flips the page-level H1/statusline are DEFERRED to a follow-up approval change (which also wires the real `permission_request` flow + the diffstat/commits payload).
 
-The self-contained dark TERMINAL WINDOW SHALL render inside a single `<article>` with: a three-segment dark terminal header keeping the `{agent} · {repo}#{branch}` label, a ⋯ overflow menu offering 复制 and 暂停滚动, and a 全屏 button that requests fullscreen via the element's `requestFullscreen` API; a full-width PTY scrollback region (the scrollback is intentionally NOT prose-width-constrained because it is log-scanning content); and a STATUSLINE footer appended inside the same `<article>` showing CPU·内存 plus a degraded phase. The terminal-head SHALL NOT display the hardcoded `pty: /dev/pts/4` line (or any pty path): no backend field backs it. The statusline phase SHALL degrade honestly to the task lifecycle label (a generic 运行中 for a live task) because the raw PTY exposes no semantic phase to parse (the 等待审批 phase lands with the follow-up approval change); CPU·内存 SHALL reuse the established 未运行/未采样 honest-render pattern rather than fabricating zeros.
+The self-contained dark TERMINAL WINDOW SHALL render inside a single `<article>` with: a three-segment dark terminal header keeping the `{agent} · {repo}#{branch}` label (the `{agent}` segment SHALL use the SAME shared runtime-derived label as the tag rail agent chip, not a hardcoded `Codex`), a ⋯ overflow menu offering 复制 and 暂停滚动, and a 全屏 button that requests fullscreen via the element's `requestFullscreen` API; a full-width PTY scrollback region (the scrollback is intentionally NOT prose-width-constrained because it is log-scanning content); and a STATUSLINE footer appended inside the same `<article>` showing CPU·内存 plus a degraded phase. The terminal-head SHALL NOT display the hardcoded `pty: /dev/pts/4` line (or any pty path): no backend field backs it. The statusline phase SHALL degrade honestly to the task lifecycle label (a generic 运行中 for a live task) because the raw PTY exposes no semantic phase to parse (the 等待审批 phase lands with the follow-up approval change); CPU·内存 SHALL reuse the established 未运行/未采样 honest-render pattern rather than fabricating zeros.
 
 When the open task is in a TERMINAL lifecycle state (`completed`, `cancelled`, or `failed`), the terminal-state branch of this layout SHALL replace the live terminal window with a READ-ONLY structured session-history REPLAY region driven by `GET /tasks/:id/session-history` (`session-history-replay`), preserving the same three-segment header (the H1 Badge shows the terminal label 已停止/失败/完成 with a static dot, the tag rail and the inert 停止 action remain). The replay region SHALL offer exactly two tabs — 对话记录 (conversation, PRIMARY, the parsed rollout transcript) and 终端回放 (terminal, SECONDARY, `session.log` cold-replay) — and a review sidebar carrying a search input and exactly the FIVE sticky filter presets 默认 / 无工具 / 用户 / 答案 / 全部. The conversation rendering SHALL visually distinguish three item kinds: a FINAL-ANSWER assistant turn SHALL render green-tinted with a "最终回答" label; a COMMENTARY assistant turn SHALL render muted italic, visually distinct from the final answer; a TOOL-CALL SHALL render as a bordered card showing the tool badge, the command summary, and an inline token count. The replay region SHALL present NO operation controls (no resume-run, no stop on the replay surface). When the session-history response discriminates to an honest EMPTY/degraded state, the replay region SHALL render an honest empty card (e.g. "会话未能启动" with the reason, or "会话记录已过期" for an aged-out record) in place of the transcript, never a fabricated transcript.
 
@@ -484,7 +484,20 @@ The route SHALL preserve its established invariants — it remains the ONLY `ssr
 
 #### Scenario: Tag rail folds the context strip into non-interactive ring chips
 - **WHEN** the header tag rail renders for a task
-- **THEN** it shows the 分支 / Codex / AIO Sandbox / linux-amd64 / 守护栏 chips each with a white background and a 1px ring, and clicking any chip performs no navigation or action (the chips are non-interactive)
+- **THEN** it shows the 分支 / agent-runtime / AIO Sandbox / 守护栏 chips each with a white background and a 1px ring, and clicking any chip performs no navigation or action (the chips are non-interactive)
+- **AND** NO platform-arch (linux-amd64) chip is rendered
+
+#### Scenario: Agent chip reflects the task's persisted runtime
+- **WHEN** the tag rail and the terminal-head `{agent}` label render for a task persisted with `runtime = claude-code`
+- **THEN** the agent chip and the terminal-head agent segment both read `Claude Code`, derived from the task's runtime via the shared runtime-label helper rather than a hardcoded literal
+
+#### Scenario: Agent chip defaults to Codex for codex or absent runtime
+- **WHEN** the tag rail renders for a task persisted with `runtime = codex` or with no runtime value
+- **THEN** the agent chip reads `Codex`, derived from the runtime via the shared helper (the default), never a hardcoded literal that ignores the task's runtime
+
+#### Scenario: Agent label helper is shared with the history page
+- **WHEN** the session detail page and the history page both render an agent label for the same task
+- **THEN** both derive the label from the SAME shared runtime-label helper, so a `claude-code` task reads `Claude Code` on both surfaces and the two cannot drift
 
 #### Scenario: Single stop action keeps two-step confirm semantics
 - **WHEN** the operator activates the single header 停止 action for an active task and confirms the second step
@@ -719,11 +732,15 @@ The console design tokens SHALL adopt the prototype's Geist Sans / Geist Mono ty
 - **THEN** sans text resolves to Geist Sans and mono text to Geist Mono, falling back gracefully if a face fails to load
 
 ### Requirement: Console restored to the finalized design baseline
-The console screens SHALL match the finalized Open Design baseline frozen at `openspec/changes/pixel-restore-console-to-od/design-baseline/` (10 screens + `platform.css`). Per-page pixel comparison SHALL use this frozen snapshot — including the two added screens (transcript, api) — as the oracle, superseding the earlier 2026-06-11 baseline. A screen is considered restored only when it visually matches its frozen baseline at a fixed viewport.
+The console screens SHALL match the finalized Open Design baseline (the 2026-06-19 frozen snapshot: 10 screens + `platform.css`), and that baseline's HTML/CSS source SHALL live at the STABLE location `apps/web/e2e/design-baseline/` — it SHALL NOT live inside an `openspec/changes/<name>/` directory, because a change directory is moved on archive and breaks the visual gate (this recurred across the 2026-06-11 and 2026-06-19 snapshots, each re-pointing the server at a soon-to-be-archived change path). Per-page pixel comparison SHALL use this snapshot — including the two added screens (transcript, api) — as the oracle, superseding the earlier 2026-06-11 baseline. The visual harness (`serve-design-baseline.mjs`, `baseline.capture.ts`, `manifest.ts`, and the one-off `verify-replay.mjs`) SHALL resolve the baseline from this stable location and SHALL NOT reference a change-scoped path. A screen is considered restored only when it visually matches its baseline at a fixed viewport.
 
 #### Scenario: Screens are verified against the frozen baseline
-- **WHEN** a restored console screen is compared to its `design-baseline/` reference at a matched viewport
-- **THEN** it visually matches, and the comparison target is the frozen 2026-06-19 snapshot rather than the prior baseline
+- **WHEN** a restored console screen is compared to its `apps/web/e2e/design-baseline/` reference at a matched viewport
+- **THEN** it visually matches, and the comparison target is the 2026-06-19 frozen snapshot served from the stable location
+
+#### Scenario: Baseline source survives change archival
+- **WHEN** any OpenSpec change is archived (its `openspec/changes/<name>/` directory is moved under `archive/`)
+- **THEN** the visual gate's baseline source remains resolvable because it lives at `apps/web/e2e/design-baseline/`, outside any change directory, and `serve-design-baseline.mjs` / `verify-replay.mjs` still resolve their roots without edit
 
 ### Requirement: Settings page has an MCP Server section
 
@@ -756,4 +773,37 @@ The `/api` page SHALL carry a per-page pixel comparison against its `screens/api
 
 - **WHEN** the visual suite runs
 - **THEN** the `/api` page is captured at both breakpoints and compared against its `screens/api.html` baseline under a recorded threshold, with dynamic regions masked
+
+### Requirement: MCP Server settings operate against the live backend
+
+The console's `mcpServer` capability flag SHALL be enabled (`true`) so the
+settings "MCP Server" section mints, lists, revokes, and toggles against the
+live backend endpoints (`/mcp-tokens` CRUD and `/settings/mcp-server`) rather
+than the in-memory mock seam. A minted token's raw value SHALL be the SERVER's
+one-time mint response — a real, persisted `mcp_` credential that resolves at the
+`/mcp` endpoint — never a client-fabricated stand-in. Consistent with the
+ship-inert posture, enabling this flag SHALL NOT by itself serve MCP traffic: the
+`/mcp` endpoint SHALL remain gated by the backend `mcpServerEnabled` toggle, so
+an admin MUST enable it for a minted token to drive a live session.
+
+#### Scenario: MCP token mint hits the real backend
+
+- **WHEN** an operator mints an MCP token in the settings "MCP Server" section
+- **THEN** the request goes to the real `/mcp-tokens` endpoint and the show-once
+  raw token is the server's one-time response, not a mock-fabricated value
+
+#### Scenario: A minted token connects once the server is enabled
+
+- **WHEN** an admin has enabled the backend `mcpServerEnabled` toggle and an
+  operator presents a real minted token to the `/mcp` endpoint
+- **THEN** the bearer is resolved and the MCP session is served — no `401
+  invalid_token`, no `503` disabled
+
+#### Scenario: Flag enabled but backend server still disabled
+
+- **WHEN** the `mcpServer` flag is `true` but the backend `mcpServerEnabled`
+  toggle is off
+- **THEN** the settings section still mints / lists / revokes real tokens, while
+  the `/mcp` endpoint reports the server is disabled (no live session) until an
+  admin enables it
 

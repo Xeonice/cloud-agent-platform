@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>账户与模型凭据 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+          <a href="api.html"><span>API 调试</span><span class="shortcut">⌘4</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="dashboard.html" data-menu-close>返回控制台</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="screen-header with-action">
+        <div>
+          <div class="eyebrow">设置</div>
+          <h1 class="screen-title">账户与模型凭据</h1>
+          <p class="screen-lead">把访问身份、仓库默认值、会话保留和 Agent 模型凭据放在同一个安全面板里管理。</p>
+        </div>
+        <span class="status-pill green">单用户模式</span>
+      </section>
+
+      <div class="settings-stack">
+        <section id="account" class="panel pad identity-card">
+          <div class="split-line" style="margin-bottom:14px">
+            <h2 style="margin:0;font-size:16px">当前身份</h2>
+            <span class="status-pill green">已验证</span>
+          </div>
+          <div class="identity-avatar-row">
+            <span class="identity-avatar">TA</span>
+            <div>
+              <strong>tanghehui</strong>
+              <p class="small-muted" style="margin:4px 0 0">github.com/tanghehui</p>
+            </div>
+          </div>
+          <div class="config-list">
+            <div class="config-row"><span>登录方式</span><strong>GitHub OAuth</strong></div>
+            <div class="config-row"><span>控制台范围</span><strong>私有访问</strong></div>
+            <div class="config-row"><span>仓库来源</span><strong>已导入仓库</strong></div>
+          </div>
+        </section>
+
+        <section id="github" class="panel">
+          <div class="panel-body">
+            <div class="settings-card-head">
+              <h2>允许进入的 GitHub 账号</h2>
+              <p>只有这个 GitHub OAuth 账号可以进入控制台；没有公开注册入口。账号由 OAuth 身份决定，此处只读。</p>
+            </div>
+            <div class="field">
+              <input id="allowed-account" value="tanghehui" readonly aria-label="允许进入的 GitHub 账号">
+            </div>
+          </div>
+          <div class="panel-foot">
+            <span class="foot-hint">谁能进控制台由 OAuth allowlist 决定。</span>
+            <button class="btn primary" type="button">保存</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-body">
+            <div class="settings-card-head">
+              <h2>默认仓库</h2>
+              <p>新建任务时优先选中这个仓库；仓库列表由“仓库导入”页面维护。</p>
+            </div>
+            <div class="field">
+              <select id="default-repo" aria-label="默认仓库">
+                <option>tanghehui/cloud-agent-platform</option>
+                <option>tanghehui/agent-api</option>
+                <option>不设置默认仓库</option>
+              </select>
+            </div>
+          </div>
+          <div class="panel-foot">
+            <span class="foot-hint">仅可选择已导入的仓库。</span>
+            <button class="btn primary" type="button">保存</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-body">
+            <div class="settings-card-head">
+              <h2>会话记录保留</h2>
+              <p>影响历史日志和 CLI 会话记录的默认保留周期。</p>
+            </div>
+            <div class="field">
+              <select id="retention" aria-label="会话记录保留">
+                <option>30 天</option>
+                <option>7 天</option>
+                <option>90 天</option>
+              </select>
+            </div>
+          </div>
+          <div class="panel-foot">
+            <span class="foot-hint">到期记录会从历史日志中清除。</span>
+            <button class="btn primary" type="button">保存</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-body">
+            <div class="settings-card-head">
+              <h2>任务并发上限</h2>
+              <p>所有操作者共享的系统级并发槽位上限；整数 1–20，默认 5。</p>
+            </div>
+            <div class="field" style="max-width:140px">
+              <input id="slot-ceiling" type="number" min="1" max="20" step="1" value="5" aria-label="任务并发上限">
+            </div>
+          </div>
+          <div class="panel-foot">
+            <span class="foot-hint">系统级设置，改动会刷新控制台容量显示。</span>
+            <button class="btn primary" type="button">保存</button>
+          </div>
+        </section>
+
+        <section id="codex" class="panel">
+          <div class="panel-body">
+            <div class="split-line">
+              <div class="settings-card-head">
+                <h2>Agent 模型凭据</h2>
+                <p>GitHub OAuth 决定谁能进入控制台；这里选择远端 Agent 运行任务时使用的模型凭据。</p>
+              </div>
+              <span class="status-pill">未连接</span>
+            </div>
+            <div data-tabs>
+              <div class="tabs" role="tablist" aria-label="按运行时选择凭据">
+                <button id="cred-tab-codex" type="button" role="tab" aria-controls="cred-panel-codex" aria-selected="true">
+                  <strong>Codex</strong>
+                  <span>未连接</span>
+                </button>
+                <button id="cred-tab-claude" type="button" role="tab" aria-controls="cred-panel-claude" aria-selected="false">
+                  <strong>Claude Code</strong>
+                  <span>未连接</span>
+                </button>
+              </div>
+
+              <section id="cred-panel-codex" class="tab-panel" role="tabpanel" aria-labelledby="cred-tab-codex" style="margin-top:14px">
+                <div class="provider-meta split-line">
+                  <div>
+                    <strong>官方 Codex 账号</strong>
+                    <p class="small-muted" style="margin:4px 0 0">通过 ChatGPT 订阅认证建立短期运行会话，不在设置页保存 API Key。</p>
+                  </div>
+                  <button class="btn" type="button" data-open-dialog="#official-dialog">连接订阅</button>
+                </div>
+                <div class="provider-meta split-line" style="margin-top:12px">
+                  <div>
+                    <strong>兼容模型提供方</strong>
+                    <p class="small-muted" style="margin:4px 0 0">OpenAI-compatible Base URL 与 API Key，适合自建网关或代理服务。</p>
+                  </div>
+                  <button class="btn" type="button" data-open-dialog="#api-key-dialog">配置提供方</button>
+                </div>
+              </section>
+
+              <section id="cred-panel-claude" class="tab-panel" role="tabpanel" aria-labelledby="cred-tab-claude" style="margin-top:14px" hidden>
+                <div class="provider-meta split-line">
+                  <div>
+                    <strong>Claude 订阅（setup-token）</strong>
+                    <p class="small-muted" style="margin:4px 0 0">在本机运行 <span class="mono">claude setup-token</span> 生成长期令牌并粘贴；远端 Claude Code 以订阅额度运行 <span class="mono">claude -p</span>。</p>
+                  </div>
+                  <button class="btn" type="button" data-open-dialog="#claude-token-dialog">连接订阅</button>
+                </div>
+                <div class="provider-meta split-line" style="margin-top:12px">
+                  <div>
+                    <strong>Anthropic API Key</strong>
+                    <p class="small-muted" style="margin:4px 0 0">使用 <span class="mono">sk-ant-</span> API Key 按量计费运行；保存后仅展示后缀，明文不再显示。</p>
+                  </div>
+                  <button class="btn" type="button" data-open-dialog="#claude-key-dialog">配置 API Key</button>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-current="page" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="dashboard.html" data-menu-close>返回控制台</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="dialog-backdrop" id="official-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="official-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="official-title">连接官方 Codex 账号</h2>
+          <p>通过官方认证建立短期运行会话，设置页不保存模型 API Key。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="provider-meta split-line">
+          <div>
+            <strong>运行身份</strong>
+            <p class="small-muted" style="margin:4px 0 0">官方认证已连接，远端 Agent 将使用短期运行会话。</p>
+          </div>
+          <span class="status-pill green">已连接</span>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog>完成</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="api-key-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="api-key-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="api-key-title">配置兼容模型提供方</h2>
+          <p>保存后只展示连接状态、Base URL 和 Key 后缀，明文不会再次显示。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="base-url">Base URL</label>
+          <input id="base-url" value="https://api.openai.com/v1">
+        </div>
+        <div class="field">
+          <label for="api-key">API Key</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="api-key" type="password" value="sk-proj-••••••••••••••••2a9f">
+            <button class="btn" type="button" data-reveal="#api-key">显示</button>
+          </div>
+        </div>
+        <div class="provider-meta split-line" data-conn-test>
+          <div>
+            <strong>连接验证</strong>
+            <p class="small-muted" style="margin:4px 0 0" data-conn-status>保存前先测试 Base URL 与 API Key。</p>
+          </div>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <span class="status-pill" data-conn-pill>未验证</span>
+            <button class="btn" type="button" data-test-connection>测试连接</button>
+          </div>
+        </div>
+        <div class="field" data-conn-model hidden>
+          <label for="default-model">默认模型</label>
+          <select id="default-model">
+            <option>gpt-4o</option>
+            <option>gpt-4o-mini</option>
+            <option>o3-mini</option>
+          </select>
+          <small class="small-muted">从验证通过后拉取到的可用模型中选择任务默认模型。</small>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog data-conn-save disabled>保存凭据</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="claude-token-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="claude-token-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="claude-token-title">连接 Claude 订阅</h2>
+          <p>在本机执行 <span class="mono">claude setup-token</span>，把输出的长期令牌粘贴到此处；远端 Claude Code 将以你的订阅额度运行。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="claude-token">setup-token</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="claude-token" type="password" placeholder="粘贴 claude setup-token 输出的令牌">
+            <button class="btn" type="button" data-reveal="#claude-token">显示</button>
+          </div>
+          <small class="small-muted">保存后仅展示令牌后缀；若设置了 <span class="mono">ANTHROPIC_API_KEY</span> 会覆盖订阅令牌。</small>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog>保存令牌</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="claude-key-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="claude-key-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="claude-key-title">配置 Anthropic API Key</h2>
+          <p>使用 <span class="mono">sk-ant-</span> API Key 按量计费运行 Claude Code；保存后仅展示后缀，明文不会再次显示。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="anthropic-key">API Key</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="anthropic-key" type="password" value="sk-ant-••••••••••••••••7b3c">
+            <button class="btn" type="button" data-reveal="#anthropic-key">显示</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="claude-model">默认模型</label>
+          <select id="claude-model">
+            <option>claude-opus-4-8</option>
+            <option>claude-sonnet-4-6</option>
+            <option>claude-haiku-4-5</option>
+          </select>
+          <small class="small-muted">任务默认使用的 Claude 模型，可在创建任务时覆盖。</small>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog>保存凭据</button>
+      </div>
+    </section>
+  </div>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>

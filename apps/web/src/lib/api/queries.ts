@@ -38,6 +38,7 @@ import type {
   ApiKeyListResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
+import { agentLabel } from "../runtime-label";
 import * as real from "./real";
 import * as mock from "./mock";
 import type { TaskContextView } from "./mock";
@@ -393,11 +394,15 @@ export function taskContextQuery(id: string) {
     queryFn: async () => {
       const ctx = await mock.mockTaskContext(id);
       if (!isCapable("tasks")) return ctx;
-      // Bind to REAL data: the repo name from the task's repoId, branch/strategy
-      // from the task. agent/runtime/resources have NO backend field yet, so
-      // downgrade them to honest placeholders instead of the mock's fabricated
-      // "gpt-5-codex / 2 vCPU·4 GiB" (D5.5 — never render an unsent field). The
-      // sandbox IS AIO Sandbox (the provider), so that one is a truthful label.
+      // Bind to REAL data: repo name from the task's repoId, branch/strategy and
+      // the agent label from the task. The agent label is DERIVED from the
+      // persisted `task.runtime` via the shared `agentLabel` helper (the SAME
+      // source the history page uses) — codex/absent → Codex, claude-code →
+      // Claude Code — so a claude-code task no longer mislabels as Codex. The
+      // sandbox IS AIO Sandbox (the sole provider), a truthful constant.
+      // `resources` still has NO backend field, so it stays an honest placeholder
+      // (D5.5 — never render an unsent field); the former linux/amd64 arch chip is
+      // dropped entirely (no field backs it).
       const task = await real.getTask(id);
       const repos = await real.listRepos();
       const repo = repos.find((r) => r.id === task.repoId);
@@ -409,7 +414,7 @@ export function taskContextQuery(id: string) {
         repo: repoName,
         branch: task.branch ?? ctx.branch,
         strategy: task.strategy ?? ctx.strategy,
-        agent: "Codex",
+        agent: agentLabel(task.runtime),
         runtime: "AIO Sandbox",
         resources: "—",
       };

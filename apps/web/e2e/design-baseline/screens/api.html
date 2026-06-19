@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API 调试 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+          <a href="api.html" aria-current="page"><span>API 调试</span><span class="shortcut">⌘4</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="screen-header">
+        <div>
+          <div class="eyebrow">开发者</div>
+          <h1 class="screen-title">API 调试</h1>
+          <p class="screen-lead">用当前操作者会话直接调用平台 API，验证请求与响应；凭据由会话自动签名，无需手动填 Token。</p>
+        </div>
+      </section>
+
+      <section class="api-console">
+        <aside class="api-rail" aria-label="接口集合">
+          <label class="search-field">
+            <span aria-hidden="true">⌕</span>
+            <input type="search" aria-label="筛选接口" placeholder="筛选接口">
+          </label>
+          <div class="api-group">
+            <div class="api-group-label">任务</div>
+            <a class="api-ep is-active" href="#"><span class="api-method post">POST</span><span class="mono">/v1/tasks</span></a>
+            <a class="api-ep" href="#"><span class="api-method get">GET</span><span class="mono">/v1/tasks</span></a>
+            <a class="api-ep" href="#"><span class="api-method get">GET</span><span class="mono">/v1/tasks/:id</span></a>
+            <a class="api-ep" href="#"><span class="api-method post">POST</span><span class="mono">/v1/tasks/:id/stop</span></a>
+          </div>
+          <div class="api-group">
+            <div class="api-group-label">仓库</div>
+            <a class="api-ep" href="#"><span class="api-method get">GET</span><span class="mono">/v1/repos</span></a>
+            <a class="api-ep" href="#"><span class="api-method post">POST</span><span class="mono">/v1/repos</span></a>
+          </div>
+          <div class="api-group">
+            <div class="api-group-label">会话</div>
+            <a class="api-ep" href="#"><span class="api-method get">GET</span><span class="mono">/v1/sessions/:id/transcript</span></a>
+            <a class="api-ep" href="#"><span class="api-method get">GET</span><span class="mono">/v1/sessions/:id/terminal</span></a>
+          </div>
+          <div class="api-group">
+            <div class="api-group-label">系统</div>
+            <a class="api-ep" href="#"><span class="api-method get">GET</span><span class="mono">/v1/version</span></a>
+            <a class="api-ep" href="#"><span class="api-method get">GET</span><span class="mono">/metrics</span></a>
+          </div>
+        </aside>
+
+        <div class="api-main">
+          <div class="api-section-head">
+            <span class="api-section-title">请求</span>
+            <span class="api-section-kicker">REQUEST</span>
+          </div>
+          <div class="api-reqbar">
+            <div class="api-req-group">
+              <span class="api-method-tag post">POST</span>
+              <span class="api-url mono" title="cap-api.douglasdong.com/v1/tasks"><span class="api-url-host">cap-api.douglasdong.com</span>/v1/tasks</span>
+            </div>
+            <button class="btn primary api-send" type="button" data-api-send>发送</button>
+          </div>
+          <div class="api-base">
+            <span class="status-pill green">会话已签名 · OAuth 自动注入</span>
+            <span class="small-muted">凭据来自当前操作者会话，请求以 Bearer 形式签名</span>
+          </div>
+
+          <section class="panel pad api-card" data-tabs>
+            <div class="api-tabbar" role="tablist" aria-label="请求配置">
+              <button id="rt-body" role="tab" aria-controls="rp-body" aria-selected="true">Body</button>
+              <button id="rt-params" role="tab" aria-controls="rp-params" aria-selected="false">参数</button>
+              <button id="rt-headers" role="tab" aria-controls="rp-headers" aria-selected="false">Headers</button>
+            </div>
+            <section id="rp-body" class="tab-panel" role="tabpanel" aria-labelledby="rt-body">
+              <div class="api-editor-head">
+                <span class="small-muted">application/json</span>
+                <button class="btn ghost api-mini" type="button">格式化</button>
+              </div>
+              <textarea class="api-body mono" spellcheck="false" aria-label="请求体">{
+  "repo": "tanghehui/cloud-agent-platform",
+  "branch": "main",
+  "runtime": "codex",
+  "prompt": "为 /metrics 增加 docker-stats 采样"
+}</textarea>
+            </section>
+            <section id="rp-params" class="tab-panel" role="tabpanel" aria-labelledby="rt-params" hidden>
+              <p class="small-muted" style="margin:0">该请求无查询参数。GET 列表类接口可在此追加 <span class="mono">status</span>、<span class="mono">limit</span> 等。</p>
+            </section>
+            <section id="rp-headers" class="tab-panel" role="tabpanel" aria-labelledby="rt-headers" hidden>
+              <div class="api-kv">
+                <span class="mono">Content-Type</span><span class="mono small-muted">application/json</span>
+                <span class="mono">Authorization</span><span class="mono small-muted">Bearer ••••（会话自动注入）</span>
+                <span class="mono">X-Operator</span><span class="mono small-muted">tanghehui</span>
+              </div>
+            </section>
+          </section>
+
+          <div class="api-section-head api-res-section">
+            <span class="api-section-title">响应</span>
+            <span class="status-pill green">201 Created</span>
+            <span class="api-res-meta small-muted mono">142 ms · 312 B</span>
+          </div>
+
+          <section class="panel pad api-card api-res" data-tabs>
+            <div class="api-tabbar" role="tablist" aria-label="响应">
+              <button id="rs-body" role="tab" aria-controls="rsp-body" aria-selected="true">Body</button>
+              <button id="rs-headers" role="tab" aria-controls="rsp-headers" aria-selected="false">Headers</button>
+            </div>
+            <section id="rsp-body" class="tab-panel" role="tabpanel" aria-labelledby="rs-body">
+              <pre class="api-res-body mono">{
+  "id": "task_f8a2",
+  "status": "pending",
+  "repo": "tanghehui/cloud-agent-platform",
+  "branch": "main",
+  "runtime": "codex",
+  "createdAt": "2026-06-19T17:24:08Z"
+}</pre>
+            </section>
+            <section id="rsp-headers" class="tab-panel" role="tabpanel" aria-labelledby="rs-headers" hidden>
+              <div class="api-kv">
+                <span class="mono">content-type</span><span class="mono small-muted">application/json</span>
+                <span class="mono">x-request-id</span><span class="mono small-muted">req_9f2a1c</span>
+                <span class="mono">x-ratelimit-remaining</span><span class="mono small-muted">119</span>
+              </div>
+            </section>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html">历史</a>
+    <a href="api.html" aria-current="page">API</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>

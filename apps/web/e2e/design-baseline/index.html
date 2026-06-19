@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Control Plane</title>
+  <link rel="stylesheet" href="css/platform.css">
+  <link rel="stylesheet" href="css/responsive.css">
+  <style>
+    body {
+      background: var(--background);
+    }
+
+    .landing-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      min-height: 64px;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 0 clamp(16px, 4vw, 40px);
+      background: rgba(255,255,255,0.88);
+      box-shadow: var(--shadow-ring);
+      backdrop-filter: blur(18px);
+    }
+
+    .landing-links {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .landing-section {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: clamp(42px, 6vw, 72px) clamp(16px, 4vw, 40px);
+    }
+
+    .landing-hero {
+      display: grid;
+      grid-template-columns: minmax(430px, 0.92fr) minmax(520px, 1.08fr);
+      align-items: center;
+      column-gap: clamp(56px, 7vw, 96px);
+      row-gap: 36px;
+      padding-top: clamp(54px, 7vw, 92px);
+    }
+
+    .landing-hero > .hero-copy {
+      max-width: 540px;
+      min-width: 0;
+    }
+
+    runner-capsule-demo {
+      width: min(100%, 600px);
+      justify-self: end;
+      align-self: center;
+      margin-top: 0;
+    }
+
+    .landing-title {
+      max-width: 540px;
+      margin: 14px 0 18px;
+      color: var(--foreground);
+      font-size: clamp(42px, 4.4vw, 62px);
+      font-weight: 600;
+      line-height: 1;
+      letter-spacing: clamp(-2.88px, -0.03em, -1.8px);
+      word-break: keep-all;
+    }
+
+    .landing-title .subline {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: clamp(27px, 3vw, 40px);
+      line-height: 1.08;
+      letter-spacing: clamp(-1.8px, -0.03em, -1px);
+    }
+
+    .landing-copy {
+      max-width: 520px;
+      margin: 0;
+      color: var(--muted);
+      font-size: clamp(18px, 2.1vw, 22px);
+      line-height: 1.68;
+    }
+
+    .trust-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 30px;
+    }
+
+    .proof-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 24px;
+    }
+
+    .landing-hero > .proof-grid {
+      grid-column: 1 / -1;
+      margin-top: 0;
+    }
+
+    .proof-tile {
+      min-width: 0;
+      border-radius: 6px;
+      background: var(--card);
+      box-shadow: var(--shadow-card);
+    }
+
+    .proof-tile {
+      min-height: 108px;
+      padding: 14px;
+    }
+
+    .proof-tile strong {
+      display: block;
+      margin-top: 8px;
+      font-size: clamp(19px, 2vw, 26px);
+      font-weight: 600;
+      line-height: 1.15;
+      letter-spacing: -0.6px;
+    }
+
+    .proof-tile p {
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .operator-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+      align-items: start;
+      gap: 12px;
+    }
+
+    .operator-main,
+    .boundary-ledger {
+      min-width: 0;
+      border-radius: 6px;
+      background: var(--card);
+      box-shadow: var(--shadow-ring);
+    }
+
+    .operator-main {
+      padding: clamp(24px, 3vw, 36px);
+    }
+
+    .operator-intro {
+      max-width: 680px;
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+
+    .process-rail {
+      position: relative;
+      display: grid;
+      margin-top: 30px;
+    }
+
+    .process-rail::before {
+      content: "";
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      bottom: 18px;
+      width: 1px;
+      background: var(--border);
+    }
+
+    .workflow-step {
+      position: relative;
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr);
+      gap: 14px;
+      min-width: 0;
+      padding: 0 0 24px;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .workflow-step:last-child {
+      padding-bottom: 0;
+    }
+
+    .step-index {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      width: 36px;
+      height: 36px;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--card);
+      box-shadow: var(--shadow-ring);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .workflow-step.is-current .step-index {
+      background: var(--foreground);
+      color: var(--card);
+    }
+
+    .step-body {
+      min-width: 0;
+      padding-top: 2px;
+    }
+
+    .step-body h3 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.32px;
+    }
+
+    .step-body p {
+      max-width: 560px;
+      margin: 7px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .step-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+    }
+
+    .step-meta span {
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: var(--subtle);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .boundary-ledger {
+      padding: 0;
+    }
+
+    .ledger-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      padding: clamp(22px, 3vw, 32px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .ledger-header h3 {
+      margin: 8px 0 0;
+      font-size: clamp(24px, 2.6vw, 32px);
+      font-weight: 600;
+      line-height: 1.15;
+      letter-spacing: -1.28px;
+    }
+
+    .ledger-list {
+      display: grid;
+    }
+
+    .ledger-row {
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: start;
+      min-height: 78px;
+      padding: 17px clamp(22px, 3vw, 32px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .ledger-row:last-child {
+      border-bottom: 0;
+    }
+
+    .ledger-key {
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+      line-height: 1.4;
+      text-transform: uppercase;
+    }
+
+    .ledger-value strong {
+      display: block;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.2px;
+    }
+
+    .ledger-value span {
+      display: block;
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .ledger-state {
+      justify-self: end;
+      white-space: nowrap;
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: var(--subtle);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+
+    .ledger-row.is-critical .ledger-state {
+      background: color-mix(in oklch, var(--danger) 10%, white);
+      color: var(--danger);
+    }
+
+    .ledger-row.is-active .ledger-state {
+      background: var(--info-soft);
+      color: var(--info);
+    }
+
+    .operator-footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-top: 28px;
+      border-top: 1px solid var(--border);
+      padding-top: 18px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .operator-footer code {
+      border-radius: 4px;
+      padding: 3px 6px;
+      background: var(--subtle);
+      color: var(--foreground);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    .landing-footer {
+      max-width: 1200px;
+      margin: 0 auto;
+      border-top: 1px solid var(--border);
+      padding: 32px clamp(16px, 4vw, 40px);
+    }
+
+    @media (max-width: 1180px) {
+      .landing-hero {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .landing-hero > .hero-copy {
+        max-width: 760px;
+      }
+
+      runner-capsule-demo {
+        width: min(100%, 720px);
+        justify-self: start;
+        align-self: start;
+      }
+
+      .proof-grid,
+      .operator-layout {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .ledger-row {
+        grid-template-columns: 96px minmax(0, 1fr);
+      }
+
+      .ledger-state {
+        grid-column: 2;
+        justify-self: start;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .landing-links a:not(.btn) {
+        display: none;
+      }
+
+      .ledger-header,
+      .ledger-row {
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+
+      .ledger-row {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .ledger-state {
+        grid-column: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav class="landing-nav">
+    <a class="brand" href="index.html" aria-label="Agent 控制台">
+      <span class="brand-mark">AC</span>
+      <span>Agent 控制台</span>
+    </a>
+  </nav>
+
+  <main>
+    <section class="landing-section landing-hero">
+      <div class="hero-copy">
+        <div class="eyebrow">Private remote agent control</div>
+        <h1 class="landing-title">一个面向<br>操作者的远端<br>Agent 运行池。<span class="subline">把每一次 CLI 会话变成可接管的工作流。</span></h1>
+        <p class="landing-copy">GitHub OAuth 只负责确认身份；仓库导入决定 Agent 能碰什么；任务队列负责调度；实时终端把最后的控制权留给你。</p>
+        <div class="actions" style="margin-top:28px;justify-content:flex-start">
+          <a class="btn primary" href="login.html">使用 GitHub 登录</a>
+          <a class="btn" href="#preview">查看演示</a>
+        </div>
+        <div class="trust-strip" aria-label="访问模式">
+          <span class="status-pill blue">GitHub OAuth 白名单</span>
+          <span class="status-pill blue">GitHub 账号仓库导入</span>
+          <span class="status-pill blue">远端 Agent CLI</span>
+        </div>
+      </div>
+
+      <runner-capsule-demo id="preview" aria-label="控制台预览"></runner-capsule-demo>
+    </section>
+  </main>
+
+  <footer class="landing-footer">
+    <div class="split-line">
+      <div class="brand">
+        <span class="brand-mark">AC</span>
+        <span>Agent 控制台</span>
+      </div>
+      <nav class="landing-links" aria-label="页脚导航">
+        <a href="https://github.com/Xeonice/cloud-agent-platform" target="_blank" rel="noreferrer noopener">GitHub 仓库</a>
+        <a href="login.html">登录</a>
+      </nav>
+    </div>
+    <p class="mono small-muted" style="margin-top:20px">© Agent 控制台 · 单用户私有后台 · 控制台访问即 host-root 权限</p>
+  </footer>
+  <script src="components/runner-capsule.js?v=assign-runner-2" defer></script>
+  <script src="js/platform.js?v=task-context" defer></script>
+</body>
+</html>

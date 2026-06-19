@@ -24,6 +24,7 @@ export const en: SiteContent = {
     links: [
       { label: "Features", href: "#features" },
       { label: "How it works", href: "#how-it-works" },
+      { label: "MCP", href: "#mcp" },
       { label: "Security", href: "#security" },
     ],
     console: { label: "Console", href: "#self-host" },
@@ -129,6 +130,36 @@ export const en: SiteContent = {
       },
     ],
   },
+  mcpConnect: {
+    eyebrow: "Remote MCP",
+    title: "Connect your MCP client to the run pool.",
+    description:
+      "Drive platform tasks straight from an MCP client. Point it at the remote MCP server over Streamable HTTP and authenticate with a token you mint in the console.",
+    endpointLabel: "Streamable HTTP endpoint",
+    endpoint: "https://{apiDomain}/mcp",
+    copyLabel: "Copy MCP endpoint",
+    copiedLabel: "Copied",
+    steps: [
+      {
+        index: "01",
+        title: "Add the server",
+        body: "In Cursor, Claude Desktop, or VS Code, add an MCP server and set its URL to the Streamable HTTP endpoint above.",
+      },
+      {
+        index: "02",
+        title: "Paste your token",
+        body: "Send the minted mcp_ token as an Authorization: Bearer <token> header on the connection.",
+      },
+      {
+        index: "03",
+        title: "Drive tasks",
+        body: "Your client lists the platform's tools and can read repos and create or stop tasks within the token's scopes.",
+      },
+    ],
+    tokenNote:
+      "Tokens are minted in the console settings page — the MCP Server section issues an mcp_ token once, scoped to what you allow. This page documents the connection; it never mints a token.",
+    tokenCta: { label: "Mint a token in your console", href: "#self-host" },
+  },
   security: {
     eyebrow: "Security",
     title: "Honest about the boundary: console access is host-root.",
@@ -166,6 +197,7 @@ export const en: SiteContent = {
     links: [
       { label: "Features", href: "#features" },
       { label: "How it works", href: "#how-it-works" },
+      { label: "MCP", href: "#mcp" },
       { label: "Security", href: "#security" },
       { label: "GitHub", href: "https://github.com/{repo}" },
     ],

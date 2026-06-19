@@ -16,13 +16,12 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** Repo-relative root of the design prototype — the baseline SOURCE OF TRUTH.
- *  Re-pointed at the FROZEN finalized baseline for pixel-restore-console-to-od
- *  (the 2026-06-19 snapshot: 10 screens + platform.css/js). */
-const ROOT = path.resolve(
-  here,
-  "../../../openspec/changes/pixel-restore-console-to-od/design-baseline",
-);
+/** Root of the design prototype — the baseline SOURCE OF TRUTH. Lives at the
+ *  STABLE location `apps/web/e2e/design-baseline/` (the 2026-06-19 frozen
+ *  snapshot: 10 screens + platform.css/js), NOT in an `openspec/changes/<name>/`
+ *  directory — a change dir is moved on archive and would break this server
+ *  (stabilize-visual-baseline-path). */
+const ROOT = path.resolve(here, "design-baseline");
 
 const PORT = Number(process.argv[2] ?? 4317);
 

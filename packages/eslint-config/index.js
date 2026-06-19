@@ -26,6 +26,11 @@ export default [
       "**/.nitro/**",
       "**/.tanstack/**",
       "**/routeTree.gen.ts",
+      // Frozen design-baseline prototype (the visual gate's HTML/CSS/vanilla-JS
+      // oracle, served as-is to a browser). Not app source — its `document`/
+      // `window`/`customElements` usage is correct for the browser and must not
+      // be linted as Node module code (stabilize-visual-baseline-path).
+      "**/e2e/design-baseline/**",
     ],
   },
   js.configs.recommended,

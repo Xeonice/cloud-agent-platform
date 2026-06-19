@@ -46,6 +46,33 @@ export function siteDomain(): string {
   return url.replace(/^https?:\/\//i, "");
 }
 
+/**
+ * The full API origin (scheme + host, no trailing slash), e.g.
+ * `https://cap-api.example.com` — the host where the BACKEND serves the `/mcp`
+ * endpoint. This is the API host, DISTINCT from {@link siteUrl} (the marketing
+ * site host): an MCP client connects to the api, not the site. Empty string
+ * when unset so callers can fall back gracefully.
+ */
+export function apiOrigin(): string {
+  const raw = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (!raw) return "";
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  return withScheme.replace(/\/+$/, "");
+}
+
+/**
+ * The bare API host (no scheme, no trailing slash), e.g. `cap-api.example.com`.
+ * Fills the `{apiDomain}` token in the MCP-connect copy (the `https://<api>/mcp`
+ * endpoint URL). Falls back to a readable placeholder when unset so the build
+ * never crashes — mirroring {@link siteDomain}. The value is build-time-inlined
+ * as a static string; it introduces NO runtime backend call (design D6).
+ */
+export function apiDomain(): string {
+  const url = apiOrigin();
+  if (!url) return "your-api-domain.example";
+  return url.replace(/^https?:\/\//i, "");
+}
+
 /** The full public repository URL (no trailing `.git`), e.g. for footer links. */
 export function repoUrl(): string {
   const raw = process.env.NEXT_PUBLIC_REPO_URL?.trim();
@@ -62,13 +89,15 @@ export function repoSlug(): string {
 }
 
 /**
- * Resolve the `{domain}` / `{repo}` tokens the content modules embed (the
- * one-line install command and the `git clone` URL / GitHub links) against the
- * build-time config, so the rendered HTML carries real values — never the raw
- * tokens.
+ * Resolve the `{domain}` / `{repo}` / `{apiDomain}` tokens the content modules
+ * embed (the one-line install command, the `git clone` URL / GitHub links, and
+ * the MCP `/mcp` endpoint URL) against the build-time config, so the rendered
+ * HTML carries real values — never the raw tokens. `{apiDomain}` resolves to the
+ * API host (NOT the site host), so the MCP-connect copy points at the backend.
  */
 export function resolveTokens(text: string): string {
   return text
     .replaceAll("{domain}", siteDomain())
-    .replaceAll("{repo}", repoSlug());
+    .replaceAll("{repo}", repoSlug())
+    .replaceAll("{apiDomain}", apiDomain());
 }

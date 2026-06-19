@@ -177,14 +177,16 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   // published GHCR release set.
   selfUpdate: true, // POST /self-update — gated, confirmed, admin-only host-root upgrade (activated: api SELF_UPDATE_ENABLED + admin set on the resident stack).
 
-  // Remote MCP server (remote-mcp-server). Default `false`: the settings "MCP
-  // Server" section reads the typed `mockMcpTokens` / `mockMcpServerEnabled`
-  // through the standard seam (mint show-once / list prefix+last4 / revoke +
-  // toggle all exercise on the mock), so the card renders today with no live
-  // backend and deploying the change adds NO live MCP traffic. Flips to `true`
-  // once the `McpTokensModule` + `/settings/mcp-server` endpoints are verified
-  // against the running api + an OAuth session.
-  mcpServer: false, // /mcp-tokens CRUD + /settings/mcp-server — settings-minted machine credential surface (mock until verified e2e).
+  // Remote MCP server (remote-mcp-server). ENABLED: the `/mcp-tokens` CRUD +
+  // `/settings/mcp-server` endpoints shipped with PR #27 and are verified live
+  // against the running api, so the settings "MCP Server" section mints / lists
+  // / revokes / toggles REAL credentials — the show-once raw token is the
+  // server's one-time response (a persisted `mcp_` credential that resolves at
+  // the `/mcp` endpoint), never a client-fabricated stand-in. Ship-inert is
+  // still honored end to end: the `/mcp` endpoint stays gated by the backend
+  // `mcpServerEnabled` toggle, so an admin must enable it for a minted token to
+  // drive a live session.
+  mcpServer: true, // /mcp-tokens CRUD + /settings/mcp-server — settings-minted machine credential surface, live against the running api (activated 2026-06-20).
 
   // API Playground runner (add-api-playground). REAL-ONLY — there is no mock
   // branch: the playground tests the RUNNING api. `true` is the running-api
