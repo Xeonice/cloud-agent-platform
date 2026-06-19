@@ -261,14 +261,26 @@ test('create_task returns a handle WITHOUT blocking on the run', async () => {
 
 function fakeRes(): {
   res: import('express').Response;
-  state: { status?: number; body?: unknown; ended: boolean };
-} {
-  const state: { status?: number; body?: unknown; ended: boolean } = {
-    ended: false,
+  state: {
+    status?: number;
+    body?: unknown;
+    headers: Record<string, string>;
+    ended: boolean;
   };
+} {
+  const state: {
+    status?: number;
+    body?: unknown;
+    headers: Record<string, string>;
+    ended: boolean;
+  } = { headers: {}, ended: false };
   const res = {
     status(code: number) {
       state.status = code;
+      return this;
+    },
+    set(field: string, value: string) {
+      state.headers[field] = value;
       return this;
     },
     json(body: unknown) {
@@ -316,7 +328,7 @@ test('with mcpServerEnabled=false the /mcp endpoint is INERT (no transport)', as
   );
 });
 
-test('with no SystemSettings row the /mcp endpoint defaults to INERT (off)', async () => {
+test('with no SystemSettings row the POST /mcp endpoint defaults to INERT (off)', async () => {
   const factory = {
     getServer() {
       throw new Error('must not connect when the row is absent (default off)');
@@ -334,10 +346,80 @@ test('with no SystemSettings row the /mcp endpoint defaults to INERT (off)', asy
   const controller = new McpController(factory, prisma);
   const { res, state } = fakeRes();
 
-  await controller.handleGet(
-    { body: undefined } as never,
+  await controller.handlePost(
+    { body: { jsonrpc: '2.0', method: 'tools/list', id: 1 } } as never,
     res,
   );
 
   assert.equal(state.status, 503, 'default-off: a missing row reads as disabled');
+});
+
+// ---------------------------------------------------------------------------
+// 5. Stateless method handling (fix-mcp-stateless-get-405): GET/DELETE → 405,
+//    independent of the enable toggle. The stateless endpoint serves POST only;
+//    routing GET to the transport opens an empty SSE stream that hangs and breaks
+//    a real MCP client's handshake. 405 is a method-layer verdict — it connects
+//    NO transport, does NOT read the toggle, and returns synchronously.
+// ---------------------------------------------------------------------------
+
+test('GET /mcp returns 405 without opening a transport or reading the toggle', () => {
+  let serverTouched = false;
+  const factory = {
+    getServer() {
+      serverTouched = true;
+      throw new Error('GET must not connect a transport');
+    },
+  } as unknown as McpServerFactory;
+  const prisma = {
+    systemSettings: {
+      async findUnique() {
+        throw new Error('GET 405 must not consult the enable toggle');
+      },
+    },
+  } as unknown as PrismaService;
+
+  const controller = new McpController(factory, prisma);
+  const { res, state } = fakeRes();
+
+  controller.handleGet(res);
+
+  assert.equal(serverTouched, false, 'GET opens no transport');
+  assert.equal(state.status, 405, 'GET is 405 Method Not Allowed');
+  assert.equal(state.headers['Allow'], 'POST', 'advertises Allow: POST');
+  assert.equal(state.ended, true, 'responds synchronously (no hang)');
+  const body = state.body as {
+    jsonrpc?: string;
+    error?: { message?: string };
+    id?: unknown;
+  };
+  assert.equal(body.jsonrpc, '2.0', 'JSON-RPC error envelope');
+  assert.equal(body.id, null);
+  assert.match(String(body.error?.message), /POST only/);
+});
+
+test('DELETE /mcp returns 405 (same method-layer verdict as GET)', () => {
+  let serverTouched = false;
+  const factory = {
+    getServer() {
+      serverTouched = true;
+      throw new Error('DELETE must not connect a transport');
+    },
+  } as unknown as McpServerFactory;
+  const prisma = {
+    systemSettings: {
+      async findUnique() {
+        throw new Error('DELETE 405 must not consult the enable toggle');
+      },
+    },
+  } as unknown as PrismaService;
+
+  const controller = new McpController(factory, prisma);
+  const { res, state } = fakeRes();
+
+  controller.handleDelete(res);
+
+  assert.equal(serverTouched, false, 'DELETE opens no transport');
+  assert.equal(state.status, 405, 'DELETE is 405 Method Not Allowed');
+  assert.equal(state.headers['Allow'], 'POST', 'advertises Allow: POST');
+  assert.equal(state.ended, true, 'responds synchronously (no hang)');
 });
