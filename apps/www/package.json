@@ -1,0 +1,34 @@
+{
+  "name": "@cap/www",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Public marketing site (Next.js App Router, static export). Fully decoupled from the console (apps/web) and backend (apps/api): no @cap/api or session imports, renders identically with the backend unreachable. Deployed as its own Vercel project on its own domain.",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --turbopack",
+    "build": "next build && node scripts/inject-install-sh.mjs",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "geist": "^1.7.2",
+    "next": "^15.5.19",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@cap/eslint-config": "workspace:*",
+    "@cap/tsconfig": "workspace:*",
+    "@tailwindcss/postcss": "4.3.0",
+    "@types/node": "^22.15.21",
+    "@types/react": "19.2.16",
+    "@types/react-dom": "19.2.3",
+    "eslint": "^9.27.0",
+    "tailwindcss": "4.3.0",
+    "typescript": "^5.8.3"
+  }
+}

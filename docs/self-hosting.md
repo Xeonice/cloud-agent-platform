@@ -19,6 +19,21 @@ published prebuilt images you can pull them instead — see
 [Optional: run prebuilt images](#optional-run-prebuilt-images-instead-of-building-from-source).
 In-app upgrades are a later phase you do not need to self-host today.
 
+> **🚀 Trying it on a fresh local host?** The public marketing site hosts a
+> one-line installer that wraps the local `make up` bring-up — it preflights
+> Docker, clones this repo, runs `make up` (or `make up-cp` on Apple Silicon),
+> and surfaces the printed Bearer token:
+>
+> ```bash
+> curl -fsSL https://<site-domain>/install.sh | sh
+> ```
+>
+> It is a convenience wrapper for a **local** trial, not a production path: the
+> manual `make up` (local) and the `docker compose` flow below **remain the
+> source of truth**. The script is served as plain text — read it first, or use
+> the equivalent manual `git clone … && make up` the site also shows. For a real
+> OAuth-first production deploy, follow the steps in this guide.
+
 > **⚡ Fast path — run prebuilt images, NO `git clone` (amd64 host).** Once a
 > Release exists, you don't need the source at all: download
 > `docker-compose.prod.yml` + `docker-compose.prod.env.example` from the
