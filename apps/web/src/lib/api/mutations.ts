@@ -26,14 +26,23 @@ import type {
   AccountSettings,
   SaveCodexCredentialRequest,
   CodexCredential,
+  SaveClaudeCredentialRequest,
+  ClaudeCredential,
   AvailableGithubRepo,
   DiscoverModelsRequest,
   DiscoverModelsResponse,
+  ApiKeyMintRequest,
+  ApiKeyMintResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
 import * as mock from "./mock";
-import type { SelfUpdateRequest, SelfUpdateAck } from "./real";
+import type {
+  SelfUpdateRequest,
+  SelfUpdateAck,
+  MintMcpTokenRequest,
+  MintMcpTokenResponse,
+} from "./real";
 import { queryKeys } from "./queries";
 import { setState, upsertImportedRepo } from "../store";
 
@@ -79,6 +88,47 @@ export function stopTaskMutation(
     onSuccess: (task) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.task(task.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// API keys (api-key-machine-identity) — mint show-once / revoke
+// ---------------------------------------------------------------------------
+
+/**
+ * Mint an API key (`POST /api-keys`). Resolves with the show-once raw key +
+ * metadata — the SERVER's one-time response on the real seam (a fabricated mock
+ * key only on the mock seam). On success invalidates `queryKeys.apiKeys` so the
+ * settings card's list re-derives. Gated by `apiKeys`.
+ */
+export function mintApiKeyMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<ApiKeyMintResponse, Error, ApiKeyMintRequest> {
+  return {
+    mutationFn: (body) =>
+      isCapable("apiKeys") ? real.mintApiKey(body) : mock.mockMintApiKey(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys });
+    },
+  };
+}
+
+/**
+ * Revoke an API key by id (`DELETE /api-keys/:id`, idempotent). Discards the
+ * revoked view and invalidates `queryKeys.apiKeys` so the list reflects the
+ * `revokedAt` timestamp. Gated by `apiKeys`.
+ */
+export function revokeApiKeyMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<void, Error, string> {
+  return {
+    mutationFn: async (id) => {
+      if (isCapable("apiKeys")) await real.revokeApiKey(id);
+      else await mock.mockRevokeApiKey(id);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys });
     },
   };
 }
@@ -233,6 +283,65 @@ export function saveCodexCredentialMutation(
   };
 }
 
+/**
+ * Save the Claude Code execution credential. Real `PUT /settings/claude` when
+ * capable; else writes a NON-SECRET projection into the store (the plaintext
+ * setup-token / API key are dropped, recorded only as presence + masked suffix).
+ */
+export function saveClaudeCredentialMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<
+  ClaudeCredential | void,
+  Error,
+  SaveClaudeCredentialRequest
+> {
+  return {
+    mutationFn: async (body) => {
+      if (isCapable("settings")) {
+        return real.saveClaudeCredential(body);
+      }
+      setState({ claudeCredential: projectClaudeCredential(body) });
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.claudeCredential,
+      });
+    },
+  };
+}
+
+/**
+ * Project a write-only Claude save request into the NON-SECRET read shape (the
+ * mock-store fallback): the active mode's secret presence + masked suffix, with
+ * the OTHER mode's secret cleared (the modes are mutually exclusive).
+ */
+export function projectClaudeCredential(
+  body: SaveClaudeCredentialRequest,
+): ClaudeCredential {
+  if (body.mode === "subscription") {
+    const has = typeof body.setupToken === "string" && body.setupToken.length > 0;
+    return {
+      mode: "subscription",
+      state: has ? "connected" : "not_connected",
+      hasSetupToken: has,
+      setupTokenSuffix: has && body.setupToken ? body.setupToken.slice(-4) : undefined,
+      hasApiKey: false,
+      apiKeySuffix: undefined,
+      defaultModel: body.defaultModel ?? undefined,
+    };
+  }
+  const has = typeof body.apiKey === "string" && body.apiKey.length > 0;
+  return {
+    mode: "api_key",
+    state: has ? "connected" : "not_connected",
+    hasSetupToken: false,
+    setupTokenSuffix: undefined,
+    hasApiKey: has,
+    apiKeySuffix: has && body.apiKey ? body.apiKey.slice(-4) : undefined,
+    defaultModel: body.defaultModel ?? undefined,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Discover compatible-provider models (REAL — probe before persist)
 // ---------------------------------------------------------------------------
@@ -295,6 +404,70 @@ export function selfUpdateMutation(
         : mock.mockPostSelfUpdate(body),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.updateStatus });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// MCP server (remote-mcp-server) — mint / revoke token + enable toggle
+// ---------------------------------------------------------------------------
+
+/**
+ * Mint an MCP token (`POST /mcp-tokens` real, or the mock server stand-in). The
+ * returned {@link MintMcpTokenResponse} carries the raw `mcp_…` token EXACTLY
+ * ONCE — the SERVER's one-time response, never client-fabricated — which the card
+ * surfaces transiently in its show-once dialog. On success invalidates the token
+ * list so the new (non-secret) row appears. Rides the `mcpServer` seam.
+ */
+export function mintMcpTokenMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<MintMcpTokenResponse, Error, MintMcpTokenRequest> {
+  return {
+    mutationFn: (body) =>
+      isCapable("mcpServer") ? real.mintMcpToken(body) : mock.mockMintMcpToken(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.mcpTokens });
+    },
+  };
+}
+
+/**
+ * Revoke an MCP token (`DELETE /mcp-tokens/:id` real, or mock). Idempotent. The
+ * variable is the target token id. On success invalidates the token list so the
+ * row re-derives into its revoked lifecycle state. Rides the `mcpServer` seam.
+ */
+export function revokeMcpTokenMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<void, Error, string> {
+  return {
+    mutationFn: (id) =>
+      isCapable("mcpServer") ? real.revokeMcpToken(id) : mock.mockRevokeMcpToken(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.mcpTokens });
+    },
+  };
+}
+
+/**
+ * Flip the system-wide `mcpServerEnabled` flag (`PUT /settings/mcp-server` real,
+ * or mock). The write is ADMIN-gated server-side — the card only renders the
+ * toggle as operable for an admin session, and the api re-enforces a 403 for a
+ * non-admin even if the affordance is forced (defense in depth). On success
+ * invalidates the flag read so the toggle reflects the persisted state. Rides the
+ * `mcpServer` seam.
+ */
+export function setMcpServerEnabledMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<boolean, Error, boolean> {
+  return {
+    mutationFn: (enabled) =>
+      isCapable("mcpServer")
+        ? real.setMcpServerEnabled(enabled)
+        : mock.mockSetMcpServerEnabled(enabled),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.mcpServerEnabled,
+      });
     },
   };
 }

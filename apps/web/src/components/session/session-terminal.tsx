@@ -46,13 +46,12 @@ import "@xterm/xterm/css/xterm.css";
 
 import type { ITheme } from "@xterm/xterm";
 import { Terminal, type TerminalHandle, type TerminalGeometry } from "@cap/ui";
-import type { ControlFrame, DecisionBehavior } from "@cap/contracts";
+import type { ControlFrame } from "@cap/contracts";
 
 import { TerminalSocket, decodeTailReplay } from "@/lib/ws-client";
 import { getClientId } from "@/lib/client-id";
 import { TerminalFallback, type FallbackLine } from "./terminal-fallback";
 import { TerminalCommandInput } from "./terminal-command-input";
-import { ApprovalSurface, type PendingApprovalView } from "./approval-surface";
 
 /** Live socket lifecycle as the terminal-head connection readout reflects it. */
 export type ConnectionState = "connecting" | "open" | "closed" | "error";
@@ -188,7 +187,6 @@ export const SessionTerminal = React.forwardRef<
   );
   const [xtermReady, setXtermReady] = React.useState(false);
   const [xtermFailed, setXtermFailed] = React.useState(false);
-  const [pending, setPending] = React.useState<PendingApprovalView | null>(null);
   const [sessionId, setSessionId] = React.useState<string | null>(null);
   const [input, setInput] = React.useState("");
   // `paused` mirrors `pausedRef` for the ⋯ menu label (暂停滚动/恢复滚动); the ref
@@ -273,11 +271,8 @@ export const SessionTerminal = React.forwardRef<
           break;
         }
         case "permission_request": {
-          // Surface the approval; resolves lock-INDEPENDENTLY (D7).
-          setPending({
-            requestId: frame.requestId,
-            toolName: frame.toolName,
-          });
+          // Track 8: the agent runs ungated inside the sandbox, so a
+          // permission_request is never expected. Ignore it (no approval surface).
           break;
         }
         case "pause": {
@@ -439,16 +434,8 @@ export const SessionTerminal = React.forwardRef<
   // blip self-heals without a reload. The tab also eagerly reconnects on focus /
   // network-return via ensureConnected (see the visibility/online effect above).
 
-  // ── Decision (lock-independent approval resolution, D7) ───────────────────
-  const decide = React.useCallback(
-    (requestId: string, behavior: DecisionBehavior) => {
-      socketRef.current?.sendDecision(requestId, { behavior });
-      setPending((current) =>
-        current?.requestId === requestId ? null : current,
-      );
-    },
-    [],
-  );
+  // (Approval-decision handler removed — Track 8: the agent runs ungated; no
+  // permission_request is ever surfaced, so there is nothing to decide.)
 
   // ── Pause + copy (driven by the terminal's OWN ⋯ menu and the handle) ─────
   const togglePause = React.useCallback(() => {
@@ -533,13 +520,12 @@ export const SessionTerminal = React.forwardRef<
   // With the command input removed from the live path, focus the terminal so
   // keystrokes are captured without requiring a click first. Uses the scoped
   // TerminalHandle.focus() (xterm's public Terminal.focus()) — NOT an unscoped
-  // document.querySelector on xterm's internal class. Defers when an approval is
-  // pending so it never yanks focus from the allow/deny surface (which has no
-  // focus-restore of its own); re-runs when `pending` clears to return focus.
+  // document.querySelector on xterm's internal class. (Track 8: the approval
+  // surface is gone, so focus no longer needs to defer to it.)
   React.useEffect(() => {
-    if (!xtermReady || pending !== null) return;
+    if (!xtermReady) return;
     handleRef.current?.focus();
-  }, [xtermReady, pending]);
+  }, [xtermReady]);
 
   // ── Imperative API for the terminal ⋯ menu / page ─────────────────────────
   React.useImperativeHandle(
@@ -667,10 +653,9 @@ export const SessionTerminal = React.forwardRef<
         </div>
       </div>
 
-      {/* permission_request approval (lock-independent, D7) — rendered INSIDE the
-          terminal. (The page-level banner + state-lift to the route are deferred
-          to a follow-up approval change.) */}
-      {pending ? <ApprovalSurface request={pending} onDecide={decide} /> : null}
+      {/* The write-gate / permission_request approval surface is REMOVED
+          (pixel-restore-console-to-od Track 8): both runtimes run ungated inside
+          the sandbox (the trust boundary), so no approval is ever surfaced. */}
 
       {/* xterm-host — live terminal (direct 1:1 input via onData), OR the
           fallback line-view (which keeps the command input) when xterm fails. */}

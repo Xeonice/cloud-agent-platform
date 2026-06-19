@@ -297,8 +297,8 @@ function NewTaskPage() {
         />
         <PreflightTile
           label="GUARDRAIL"
-          headline="危险写入会暂停"
-          caption="commit、push 和 secret 更新前请求确认。"
+          headline="沙箱即信任边界"
+          caption="Agent 在隔离容器内自主执行，凭据用后即焚。"
         />
       </section>
 
@@ -569,7 +569,8 @@ function NewTaskPage() {
             <div className="grid overflow-hidden rounded-md shadow-ring">
               <ConfigRow label="身份来源" value="GitHub OAuth" />
               <ConfigRow label="仓库范围" value="已导入仓库" />
-              <ConfigRow label="写入动作" value="需要确认" />
+              <ConfigRow label="运行时" value="Codex / Claude Code" />
+              <ConfigRow label="写入动作" value="沙箱内自主" />
             </div>
           </Panel>
         </aside>

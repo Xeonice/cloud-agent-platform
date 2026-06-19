@@ -19,6 +19,21 @@ published prebuilt images you can pull them instead — see
 [Optional: run prebuilt images](#optional-run-prebuilt-images-instead-of-building-from-source).
 In-app upgrades are a later phase you do not need to self-host today.
 
+> **🚀 Trying it on a fresh local host?** The public marketing site hosts a
+> one-line installer that wraps the local `make up` bring-up — it preflights
+> Docker, clones this repo, runs `make up` (or `make up-cp` on Apple Silicon),
+> and surfaces the printed Bearer token:
+>
+> ```bash
+> curl -fsSL https://<site-domain>/install.sh | sh
+> ```
+>
+> It is a convenience wrapper for a **local** trial, not a production path: the
+> manual `make up` (local) and the `docker compose` flow below **remain the
+> source of truth**. The script is served as plain text — read it first, or use
+> the equivalent manual `git clone … && make up` the site also shows. For a real
+> OAuth-first production deploy, follow the steps in this guide.
+
 > **⚡ Fast path — run prebuilt images, NO `git clone` (amd64 host).** Once a
 > Release exists, you don't need the source at all: download
 > `docker-compose.prod.yml` + `docker-compose.prod.env.example` from the
@@ -387,6 +402,32 @@ To activate it (after a Release exists and prod runs the pinned-release line):
 See [`deploy/DEPLOY.md`](../deploy/DEPLOY.md) (the self-update section) for the full
 activation steps, the detached self-recreate mechanism, and the threat model.
 
+## Optional: update-check mirror (`GITHUB_API_BASE`)
+
+cap's update check (`GET /update-status` — it drives the notify banner and the
+self-update cross-check above) compares your running `CAP_VERSION` against the
+latest GitHub Release. By **default** that lookup does not hit GitHub directly: it
+goes through cap's public, **cache-only** mirror
+(`https://releases.cap.douglasdong.com`), a small Cloudflare Worker that proxies
+GitHub's `releases/latest` and serves it from Cloudflare's edge cache. This
+converges the fleet onto one cached upstream and keeps the check working through a
+brief GitHub API blip (within the cache window). The mirror is a **pure cache** —
+no authentication, no GitHub token, no telemetry, and it never rewrites the
+release payload.
+
+If you would rather not depend on that mirror, point the upstream back at GitHub.
+The lookup then talks to GitHub directly with **zero third-party dependency** —
+this escape hatch is fully supported:
+
+```bash
+# apps/api/.env
+GITHUB_API_BASE=https://api.github.com
+```
+
+This is orthogonal to `GITHUB_RELEASES_REPO` (which repo's Releases are checked):
+the mirror transparently proxies whatever `owner/repo` you configure, so pointing
+at your own fork works either through the mirror or direct.
+
 ## Optional: legacy token (dev only)
 
 The legacy single shared-`AUTH_TOKEN` operator path is **OFF by default** and
@@ -400,6 +441,86 @@ AUTH_TOKEN=<a-long-random-token>
 
 Leave both at their defaults (`false` / empty) for a production OAuth-first
 deploy — the api boots without a legacy token.
+
+## Optional: remote MCP server (`mcpServerEnabled`, default OFF)
+
+The remote MCP server lets an MCP client (Claude Desktop, Cursor, VS Code,
+`mcp-remote`) drive the platform's sandboxes — create/get/list/stop tasks, read a
+finished task's transcript, list repos — through MCP tools. It ships **inert**:
+the most dangerous outward-facing execution surface is OFF until an admin turns it
+on, and even then every request is gated by a settings-minted credential.
+
+### Endpoint and resource identity
+
+- **Endpoint**: `https://<your-api-domain>/mcp` (e.g.
+  `https://cap-api.douglasdong.com/mcp`). It is a single streamable-HTTP route
+  (POST/GET/DELETE), served in-process by the api (no separate MCP process).
+- **Canonical resource URI**: `cap:mcp` — the fixed RFC 8707 resource identifier
+  every minted `mcp_` token is valid for. There is **no** OAuth audience
+  negotiation and **no** `.well-known` discovery surface in the settings-minted
+  model: the token IS the credential.
+- **Auth**: a settings-minted `mcp_` token pasted into the client's
+  `Authorization: Bearer mcp_…` header. The api validates it on every request
+  (hash → lookup → reject revoked/expired → re-confirm the owner's allowlist), so
+  revoking a token or de-allowlisting its owner denies it on the next call. The
+  `/mcp` CORS is bearer-only and **non-credentialed** (no cookie is ever accepted
+  there); the console's credentialed CORS is a separate domain and never includes
+  an MCP-client origin.
+
+### Turning it on
+
+1. Set `mcpServerEnabled = true` — the system-level toggle in the console
+   **Settings → MCP Server** card (admin-only; an admin is a login in
+   `SELF_UPDATE_ADMINS`). While `false`, `/mcp` returns a JSON-RPC "disabled"
+   response and connects no transport, so no token works there.
+2. In the same card, **mint an MCP token**: pick a name + scopes
+   (`tasks:read`, `tasks:write`, `repos:read`), optionally an expiry. The raw
+   `mcp_…` token is shown **once** — copy it then; only its `mcp_` prefix + last 4
+   chars are ever shown again. Revoke is idempotent and own-scoped.
+
+### Per-client connect config
+
+Cursor (`~/.cursor/mcp.json` or a project `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "cap": {
+      "url": "https://<your-api-domain>/mcp",
+      "headers": { "Authorization": "Bearer mcp_REPLACE_WITH_YOUR_TOKEN" }
+    }
+  }
+}
+```
+
+VS Code (`.vscode/mcp.json`) uses the same `url` + `headers` shape. For a client
+that speaks only stdio, bridge with `mcp-remote`:
+
+```jsonc
+{
+  "mcpServers": {
+    "cap": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://<your-api-domain>/mcp",
+        "--header",
+        "Authorization: Bearer mcp_REPLACE_WITH_YOUR_TOKEN"
+      ]
+    }
+  }
+}
+```
+
+### Deploy-time acceptance
+
+With the live tunnel up and `mcpServerEnabled` on, mint a token, paste it into a
+client as the `Authorization` bearer, and confirm an end-to-end `tools/list` +
+`create_task` round-trip through `https://<your-api-domain>/mcp`. A client that
+**cannot** pass a static bearer header (some web clients only support an OAuth
+connector) cannot connect with a settings-minted token — that is a documented
+limitation of this model, and OAuth auto-connect is a possible future add-on, not
+part of this surface.
 
 ## Reference
 

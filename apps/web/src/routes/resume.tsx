@@ -185,8 +185,8 @@ function ResumePage() {
             新任务默认从已导入仓库创建。
           </StatTile>
 
-          <StatTile label="SAFETY" value="写入前确认">
-            危险动作不会自动越过会话边界。
+          <StatTile label="SAFETY" value="沙箱即信任边界">
+            Agent 在隔离容器内自主执行，凭据用后即焚。
           </StatTile>
         </section>
       </main>

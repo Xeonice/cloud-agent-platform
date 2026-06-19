@@ -65,8 +65,13 @@ export interface LandingNavAccount {
 export interface LandingNavProps {
   /** Plain text links shown before the CTA. Defaults to the workspace set. */
   links?: readonly LandingNavLink[];
-  /** The trailing primary button. Defaults to 进入工作台 → /dashboard. */
-  cta?: LandingNavCta;
+  /**
+   * The trailing primary button. Defaults to 进入工作台 → /dashboard. Pass `null`
+   * to render NO nav CTA — the brand-only landing (simplify-landing-homepage)
+   * uses this so the only login affordance is the hero CTA (the OD revision's
+   * nav is brand-only).
+   */
+  cta?: LandingNavCta | null;
   /** Authenticated operator identity chip; omitted = anonymous nav. */
   account?: LandingNavAccount;
 }
@@ -153,9 +158,11 @@ export function LandingNav({
             </span>
           </span>
         ) : null}
-        <Button asChild size="sm" className="min-h-[30px] px-2.5 text-xs">
-          <Link to={cta.to}>{cta.label}</Link>
-        </Button>
+        {cta ? (
+          <Button asChild size="sm" className="min-h-[30px] px-2.5 text-xs">
+            <Link to={cta.to}>{cta.label}</Link>
+          </Button>
+        ) : null}
       </div>
     </nav>
   );

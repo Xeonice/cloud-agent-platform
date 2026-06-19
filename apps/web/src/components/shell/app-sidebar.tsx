@@ -34,7 +34,7 @@ import {
 import { AccountMenu } from "@/components/shell/account-menu";
 
 /** The product-nav keys; one of these is highlighted per route (task 11.5). */
-export type NavKey = "dashboard" | "repositories" | "history";
+export type NavKey = "dashboard" | "repositories" | "history" | "api";
 
 /**
  * Map the current pathname to the nav key that should be highlighted.
@@ -58,13 +58,16 @@ export function activeNavKey(pathname: string): NavKey | null {
   if (pathname === "/history" || pathname.startsWith("/history/")) {
     return "history";
   }
+  if (pathname === "/api" || pathname.startsWith("/api/")) {
+    return "api";
+  }
   return null;
 }
 
 /** A single product-nav entry. */
 interface NavEntry {
   key: NavKey;
-  to: "/dashboard" | "/repositories" | "/history";
+  to: "/dashboard" | "/repositories" | "/history" | "/api";
   label: string;
   shortcut: string;
 }
@@ -73,6 +76,7 @@ const NAV_ENTRIES: readonly NavEntry[] = [
   { key: "dashboard", to: "/dashboard", label: "任务控制台", shortcut: "⌘1" },
   { key: "repositories", to: "/repositories", label: "仓库导入", shortcut: "⌘2" },
   { key: "history", to: "/history", label: "历史日志", shortcut: "⌘3" },
+  { key: "api", to: "/api", label: "API 调试", shortcut: "⌘4" },
 ];
 
 export interface AppSidebarProps {

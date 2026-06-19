@@ -1,9 +1,10 @@
 /**
  * `LandingFooter` — minimal footer for the marketing landing
  * (auth-redirects-and-landing; pixel pass in console-design-pixel-merge
- * Track 5). A quiet closing band with the repo link, a security-model jump
- * (`#security` — resolving to the boundary-ledger aside), and a copyright
- * line. SSR-safe: static copy, no window/clock/random.
+ * Track 5; trimmed in simplify-landing-homepage). A quiet closing band with the
+ * repo link, a login link, and a copyright line. The former `#security`
+ * "安全模型" jump is removed with the boundary-ledger section (no dead anchor).
+ * SSR-safe: static copy, no window/clock/random.
  *
  * Fidelity (design index.html `.landing-footer` / `.landing-links`):
  *   max-w 1200, hairline top, py 32; links = gap 24, 13px/500 muted.
@@ -33,9 +34,6 @@ export function LandingFooter() {
             className="transition-colors hover:text-ink"
           >
             GitHub 仓库
-          </a>
-          <a href="#security" className="transition-colors hover:text-ink">
-            安全模型
           </a>
           <Link to="/login" className="transition-colors hover:text-ink">
             登录

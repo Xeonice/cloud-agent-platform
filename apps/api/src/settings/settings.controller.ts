@@ -15,16 +15,19 @@ import {
 } from '@nestjs/common';
 import {
   DiscoverModelsRequestSchema,
+  SaveClaudeCredentialRequestSchema,
   SaveCodexCredentialRequestSchema,
   UpdateMcpServerSettingsRequestSchema,
   UpdateSettingsRequestSchema,
   type AccountSettings,
+  type ClaudeCredential,
   type CodexCredential,
   type CodexDeviceLoginStartResponse,
   type CodexDeviceLoginStatus,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
   type McpServerSettings,
+  type SaveClaudeCredentialRequest,
   type SaveCodexCredentialRequest,
   type SessionUser,
   type UpdateMcpServerSettingsRequest,
@@ -115,6 +118,23 @@ export class SettingsController {
     @Body() body: SaveCodexCredentialRequest,
   ): Promise<CodexCredential> {
     return this.settings.saveCredential(this.requireOperator(req), body);
+  }
+
+  @Get('claude')
+  async readClaude(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<ClaudeCredential> {
+    return this.settings.readClaudeCredential(this.requireOperator(req));
+  }
+
+  @Put('claude')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(SaveClaudeCredentialRequestSchema))
+  async saveClaude(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: SaveClaudeCredentialRequest,
+  ): Promise<ClaudeCredential> {
+    return this.settings.saveClaudeCredential(this.requireOperator(req), body);
   }
 
   @Post('codex/models')

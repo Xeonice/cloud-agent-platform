@@ -23,7 +23,7 @@ import {
   CLAUDE_AUTH_SOURCE,
   type ClaudeAuthSource,
 } from './claude-auth-source.port';
-import { EnvClaudeAuthSource } from './env-claude-auth-source';
+import { PrismaClaudeAuthSource } from './prisma-claude-auth-source';
 
 /**
  * Sandbox-provider DI wiring (sandbox-provider-port 9.1, integration 9.1b).
@@ -69,15 +69,17 @@ import { EnvClaudeAuthSource } from './env-claude-auth-source';
       provide: SANDBOX_PROVIDER,
       useClass: AioSandboxProvider,
     },
-    // add-claude-code-runtime Track 2/3 — the Claude OAuth-token source
-    // (env-backed: reads `CLAUDE_CODE_OAUTH_TOKEN`, exposes only a `configured`
-    // boolean — NEVER the token). Mirrors the CODEX_AUTH_SOURCE binding. Consumed by
-    // the `/runtimes` readiness endpoint (3.3) and, via the runtime registry, by the
-    // ClaudeCodeRuntime's launch-env injection. Bound by token so consumers stay
-    // pure port consumers.
+    // add-claude-code-runtime Track 2/3 + pixel-restore-console-to-od Track 3 —
+    // the Claude OAuth-token source. Now SETTINGS-BACKED (`PrismaClaudeAuthSource`,
+    // mirroring the CODEX_AUTH_SOURCE binding): resolves the operator's stored
+    // `claude setup-token` (encrypted at rest), falling back to the
+    // `CLAUDE_CODE_OAUTH_TOKEN` env (`EnvClaudeAuthSource`) when none is stored.
+    // Exposes only a `configured` boolean on the readiness path — NEVER the token.
+    // Consumed by the `/runtimes` readiness endpoint (3.3) and, via the runtime
+    // registry, by ClaudeCodeRuntime's launch-env injection.
     {
       provide: CLAUDE_AUTH_SOURCE,
-      useClass: EnvClaudeAuthSource,
+      useClass: PrismaClaudeAuthSource,
     },
     // add-claude-code-runtime Track 2/3 — the AgentRuntime registry that resolves a
     // task's selected runtime (`codex` | `claude-code`) to its CodexRuntime /

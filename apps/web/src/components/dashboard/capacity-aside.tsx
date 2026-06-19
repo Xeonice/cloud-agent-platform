@@ -160,7 +160,7 @@ export function CapacityAside({ tasks, repoLookup }: CapacityAsideProps) {
       <div className="grid grid-cols-3 gap-px bg-border max-[821px]:hidden">
         <PolicyCell label="调度区域" value="iad-02" />
         <PolicyCell label="接管策略" value="任务级终端" />
-        <PolicyCell label="写入边界" value="确认后执行" />
+        <PolicyCell label="执行边界" value="沙箱内自治" />
       </div>
     </aside>
   );

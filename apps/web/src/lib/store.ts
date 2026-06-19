@@ -22,7 +22,11 @@
  * trusted verbatim.
  */
 import { useSyncExternalStore } from "react";
-import type { CodexCredential, RetentionDays } from "@cap/contracts";
+import type {
+  ClaudeCredential,
+  CodexCredential,
+  RetentionDays,
+} from "@cap/contracts";
 
 /** The `localStorage` key, reused from the prototype (research-brief risk #12). */
 export const STORE_KEY = "agent-control-plane-state";
@@ -72,6 +76,8 @@ export interface PersistedState {
   settings: SettingsDraft;
   /** The Codex execution-credential draft (never holds a plaintext key). */
   codexCredential: CodexCredential;
+  /** The Claude Code execution-credential draft (never holds a plaintext secret). */
+  claudeCredential: ClaudeCredential;
 }
 
 /** The default snapshot used on the server and as the first-load baseline. */
@@ -88,6 +94,12 @@ export const DEFAULT_STATE: PersistedState = {
   codexCredential: {
     mode: "official",
     state: "not_connected",
+    hasApiKey: false,
+  },
+  claudeCredential: {
+    mode: "subscription",
+    state: "not_connected",
+    hasSetupToken: false,
     hasApiKey: false,
   },
 };
@@ -181,6 +193,17 @@ export function normalizeState(raw: unknown): PersistedState {
     ? (credRaw.state as CodexCredential["state"])
     : "not_connected";
 
+  const claudeRaw =
+    typeof r.claudeCredential === "object" && r.claudeCredential !== null
+      ? (r.claudeCredential as Record<string, unknown>)
+      : {};
+  const claudeMode = claudeRaw.mode === "api_key" ? "api_key" : "subscription";
+  const claudeState = validStates.includes(
+    claudeRaw.state as (typeof validStates)[number],
+  )
+    ? (claudeRaw.state as ClaudeCredential["state"])
+    : "not_connected";
+
   return {
     githubConnected: r.githubConnected === true,
     importedRepos,
@@ -203,6 +226,24 @@ export function normalizeState(raw: unknown): PersistedState {
       defaultModel:
         typeof credRaw.defaultModel === "string"
           ? credRaw.defaultModel
+          : undefined,
+    },
+    claudeCredential: {
+      mode: claudeMode,
+      state: claudeState,
+      hasSetupToken: claudeRaw.hasSetupToken === true,
+      setupTokenSuffix:
+        typeof claudeRaw.setupTokenSuffix === "string"
+          ? claudeRaw.setupTokenSuffix
+          : undefined,
+      hasApiKey: claudeRaw.hasApiKey === true,
+      apiKeySuffix:
+        typeof claudeRaw.apiKeySuffix === "string"
+          ? claudeRaw.apiKeySuffix
+          : undefined,
+      defaultModel:
+        typeof claudeRaw.defaultModel === "string"
+          ? claudeRaw.defaultModel
           : undefined,
     },
   };

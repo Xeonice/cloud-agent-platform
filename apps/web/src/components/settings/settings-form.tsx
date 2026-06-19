@@ -49,7 +49,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
 
 /** Sentinel value for the "no default repo selected" Select option. */
 const NO_DEFAULT = "__none__";
@@ -304,27 +303,10 @@ export function SettingsForm({
         </small>
       </div>
 
-      {/* 写入前必须确认 — the #safety destructive-write gate. */}
-      <label
-        id="safety"
-        className="flex scroll-mt-24 items-start gap-2.5 rounded-md bg-[#fafafa] p-3 shadow-ring"
-      >
-        <Checkbox
-          checked={writeConfirm}
-          onCheckedChange={(c) => setWriteConfirm(c === true)}
-          name="writeConfirm"
-          className="mt-0.5"
-        />
-        <span>
-          <strong className="text-[13px] font-semibold text-foreground">
-            写入前必须确认
-          </strong>
-          <br />
-          <small className="text-xs text-muted-foreground">
-            Commit、push、secret 变更和 GitHub PR 创建前暂停，等待操作者确认。
-          </small>
-        </span>
-      </label>
+      {/* The #safety 写入前必须确认 write-gate section is REMOVED
+          (pixel-restore-console-to-od Track 10.1): the agent runs ungated inside
+          the sandbox (the trust boundary), so there is no write-confirm toggle.
+          `writeConfirm` stays in the persisted shape as a dormant default. */}
 
       {error ? (
         <p role="alert" className="mt-3 text-[13px] text-danger">

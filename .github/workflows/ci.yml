@@ -7,6 +7,15 @@ name: CI
 # runs the @cap/api unit suite so a behavioral regression (e.g. the v0.6.0 runtime-
 # selection DOA, where claude-code tasks silently ran codex) fails CI instead of
 # shipping silently.
+#
+# boot-smoke gate (api-key-machine-identity, design D6 / monorepo-foundation spec
+# "CI boots the built application and probes liveness", gap G5): a SEPARATE job
+# boots the BUILT app against a throwaway Postgres and probes `/health`, so a
+# cross-provider DI / onApplicationBootstrap ordering break — the failure class
+# that build + unit tests provably MISS (it manifests only at DI-graph
+# instantiation) and that caused a multi-hour production outage — fails CI here
+# instead of in production. It runs independently of typecheck+lint (its own job)
+# and MUST be made a required status check BEFORE the epic introduces a new module.
 on:
   pull_request:
   push:
@@ -61,3 +70,73 @@ jobs:
       # selection regression spec (and the rest of the api specs) gate in.
       - name: Test (api unit suite)
         run: pnpm --filter @cap/api test
+
+  # Boots the BUILT @cap/api orchestrator against a throwaway Postgres and probes
+  # the unauthenticated `/health` liveness endpoint, failing the pipeline on any
+  # bootstrap / DI error. A SEPARATE job (runs independently of typecheck+lint) so
+  # this guard is unaffected by — and not blocked behind — the lint gate.
+  #
+  # REQUIRED STATUS CHECK (task 1.2): this job's `name:` ("boot-smoke") is the
+  # status-check CONTEXT to add to the `main` branch-protection rule alongside the
+  # existing "typecheck + lint" context, so a red boot-smoke BLOCKS merge. GitHub
+  # only lets a context be marked required AFTER it has reported once, so this must
+  # be done after the workflow first runs on a PR. Add it with (run once landed):
+  #   gh api -X PATCH repos/<owner>/<repo>/branches/main/protection/required_status_checks \
+  #     -f 'contexts[]=typecheck + lint' -f 'contexts[]=boot-smoke'
+  # This MUST be in place before the epic introduces a new application module
+  # (api-key-machine-identity Track 5), the failure class this gate guards.
+  boot-smoke:
+    name: boot-smoke
+    runs-on: ubuntu-latest
+
+    # Throwaway Postgres the orchestrator's Prisma layer connects to at boot. A
+    # service container is the disposable DB the spec calls for; it is wiped with
+    # the runner, never persisted.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cap
+          POSTGRES_PASSWORD: cap
+          POSTGRES_DB: cap
+        ports:
+          - 5432:5432
+        # Gate the steps below until Postgres is accepting connections, so
+        # `prisma migrate deploy` never races the DB coming up.
+        options: >-
+          --health-cmd "pg_isready -U cap -d cap"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Point Prisma at the service container (mapped to localhost on the runner).
+      DATABASE_URL: postgresql://cap:cap@localhost:5432/cap?schema=public
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Build the api (and its workspace deps): produces apps/api/dist/main.js and
+      # generates the Prisma client the boot needs. This is the SAME built artifact
+      # the container CMD runs, so a DI break surfaces here exactly as in prod.
+      - name: Build (@cap/api + deps)
+        run: pnpm turbo build --filter=@cap/api
+
+      # Migrate the throwaway DB, boot the built app, probe /health. The helper
+      # exits non-zero (and dumps the app log) on any migration / bootstrap / DI /
+      # liveness failure — the signal this job gates on.
+      - name: Boot smoke (/health)
+        run: bash scripts/boot-smoke.sh

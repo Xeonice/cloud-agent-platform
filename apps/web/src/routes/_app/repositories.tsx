@@ -116,7 +116,7 @@ function RepositoriesPage() {
         />
         <RepoStatTile
           label="POLICY"
-          value="写入前确认"
+          value="沙箱内自治"
           caption="危险动作在会话内暂停。"
         />
       </RepoStatStrip>

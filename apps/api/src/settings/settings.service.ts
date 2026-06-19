@@ -6,13 +6,16 @@ import {
 } from '@nestjs/common';
 import {
   AccountSettingsSchema,
+  ClaudeCredentialSchema,
   CodexCredentialSchema,
   DEFAULT_MCP_SERVER_ENABLED,
   McpServerSettingsSchema,
   type AccountSettings,
+  type ClaudeCredential,
   type CodexCredential,
   type McpServerSettings,
   type RetentionDays,
+  type SaveClaudeCredentialRequest,
   type SaveCodexCredentialRequest,
   type SessionUser,
   type UpdateSettingsRequest,
@@ -433,6 +436,152 @@ export class SettingsService {
     });
 
     return this.readCredential(operator);
+  }
+
+  /**
+   * pixel-restore-console-to-od Track 3 — reads the account's Claude Code
+   * runtime credential as the secret-free READ shape (mode + state + presence
+   * booleans + masked suffixes). Neither the setup-token nor the API key is ever
+   * returned; only their `*Last4` suffix is surfaced for display.
+   */
+  async readClaudeCredential(operator: SessionUser): Promise<ClaudeCredential> {
+    const userId = await this.requireUserId(operator);
+    const row = await this.prisma.claudeCredential.findUnique({
+      where: { userId },
+    });
+    if (!row) {
+      return ClaudeCredentialSchema.parse({
+        mode: 'subscription',
+        state: 'not_connected',
+        hasSetupToken: false,
+        hasApiKey: false,
+      });
+    }
+    const persistedState =
+      row.state === 'not_connected' ||
+      row.state === 'not_saved' ||
+      row.state === 'connected'
+        ? row.state
+        : 'not_connected';
+    return ClaudeCredentialSchema.parse({
+      mode: row.mode === 'api_key' ? 'api_key' : 'subscription',
+      state: persistedState,
+      hasSetupToken:
+        row.setupTokenCiphertext !== null && row.setupTokenCiphertext.length > 0,
+      setupTokenSuffix: row.setupTokenLast4,
+      hasApiKey: row.apiKeyCiphertext !== null && row.apiKeyCiphertext.length > 0,
+      apiKeySuffix: row.apiKeyLast4,
+      defaultModel: row.defaultModel,
+    });
+  }
+
+  /**
+   * pixel-restore-console-to-od Track 3 — saves the Claude Code credential. The
+   * two modes are MUTUALLY EXCLUSIVE: saving one clears the other mode's secret.
+   * The active mode's secret is encrypted at rest (AES-256-GCM, reusing the
+   * codex credential server key); with no server key configured this FAILS CLOSED
+   * (no row written). Unlike the codex compatible path there is no live discovery
+   * probe — `connected` means the active mode's secret is stored (a `setup-token`
+   * has no cheap validation endpoint). Secrets are preserved-by-omission on a
+   * re-save of the same mode. Returns the secret-free read shape.
+   */
+  async saveClaudeCredential(
+    operator: SessionUser,
+    request: SaveClaudeCredentialRequest,
+    env: NodeJS.ProcessEnv = process.env,
+  ): Promise<ClaudeCredential> {
+    const userId = await this.requireUserId(operator);
+    const existing = await this.prisma.claudeCredential.findUnique({
+      where: { userId },
+    });
+
+    // Encrypt a plaintext secret into the joined `ciphertext.iv.authTag` storage
+    // string. FAIL CLOSED when no server key is configured — a secret is never
+    // stored unencrypted.
+    const encryptToStored = (plaintext: string): string => {
+      let envelope: { ciphertext: string; iv: string; authTag: string };
+      try {
+        const key = resolveEncryptionKey(env[CODEX_CRED_ENC_KEY_ENV]);
+        envelope = encryptSecret(plaintext, key);
+      } catch (error) {
+        if (error instanceof EncryptionKeyUnavailableError) {
+          throw new InternalServerErrorException({
+            error: 'encryption_key_unavailable',
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+      return `${envelope.ciphertext}.${envelope.iv}.${envelope.authTag}`;
+    };
+
+    // Subscription secret (setup-token): set/keep in subscription mode, cleared
+    // when the saved mode is api_key.
+    let setupTokenCiphertext: string | null;
+    let setupTokenLast4: string | null;
+    if (request.mode === 'subscription') {
+      if (typeof request.setupToken === 'string' && request.setupToken.length > 0) {
+        setupTokenCiphertext = encryptToStored(request.setupToken);
+        setupTokenLast4 = maskApiKeySuffix(request.setupToken);
+      } else {
+        setupTokenCiphertext = existing?.setupTokenCiphertext ?? null;
+        setupTokenLast4 = existing?.setupTokenLast4 ?? null;
+      }
+    } else {
+      setupTokenCiphertext = null;
+      setupTokenLast4 = null;
+    }
+
+    // API-key secret (Anthropic key): set/keep in api_key mode, cleared when the
+    // saved mode is subscription.
+    let apiKeyCiphertext: string | null;
+    let apiKeyLast4: string | null;
+    if (request.mode === 'api_key') {
+      if (typeof request.apiKey === 'string' && request.apiKey.length > 0) {
+        apiKeyCiphertext = encryptToStored(request.apiKey);
+        apiKeyLast4 = maskApiKeySuffix(request.apiKey);
+      } else {
+        apiKeyCiphertext = existing?.apiKeyCiphertext ?? null;
+        apiKeyLast4 = existing?.apiKeyLast4 ?? null;
+      }
+    } else {
+      apiKeyCiphertext = null;
+      apiKeyLast4 = null;
+    }
+
+    const activeSecretStored =
+      request.mode === 'subscription'
+        ? Boolean(setupTokenCiphertext)
+        : Boolean(apiKeyCiphertext);
+    const state: 'not_connected' | 'connected' = activeSecretStored
+      ? 'connected'
+      : 'not_connected';
+    const defaultModel = request.defaultModel ?? existing?.defaultModel ?? null;
+
+    await this.prisma.claudeCredential.upsert({
+      where: { userId },
+      create: {
+        userId,
+        mode: request.mode,
+        state,
+        setupTokenCiphertext,
+        setupTokenLast4,
+        apiKeyCiphertext,
+        apiKeyLast4,
+        defaultModel,
+      },
+      update: {
+        mode: request.mode,
+        state,
+        setupTokenCiphertext,
+        setupTokenLast4,
+        apiKeyCiphertext,
+        apiKeyLast4,
+        defaultModel,
+      },
+    });
+
+    return this.readClaudeCredential(operator);
   }
 
   /**

@@ -32,14 +32,21 @@ import type {
   ListAuditEventsResponse,
   AccountSettings,
   CodexCredential,
+  ClaudeCredential,
   ListAvailableGithubReposResponse,
   UpdateStatus,
+  ApiKeyListResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
 import * as mock from "./mock";
 import type { TaskContextView } from "./mock";
-import type { RuntimesResponse } from "./real";
+import type {
+  RuntimesResponse,
+  ListMcpTokensResponse,
+  SendApiRequestInput,
+  SendApiResult,
+} from "./real";
 
 // ---------------------------------------------------------------------------
 // Query keys — stable across the real/mock switch
@@ -63,7 +70,10 @@ export const queryKeys = {
   history: (query?: Partial<AuditQuery>) =>
     ["history", query ?? {}] as const,
   settings: ["settings"] as const,
+  /** The operator's API keys (`GET /api-keys`, api-key-machine-identity). */
+  apiKeys: ["api-keys"] as const,
   codexCredential: ["settings", "codex"] as const,
+  claudeCredential: ["settings", "claude"] as const,
   /**
    * The compatible-provider model-discovery probe (`POST /settings/codex/models`,
    * wire-compatible-provider-execution). There is no discovery READ — the probe is
@@ -82,6 +92,10 @@ export const queryKeys = {
   taskResource: (id: string) => ["tasks", id, "resource"] as const,
   sessionHistory: (id: string) => ["tasks", id, "session-history"] as const,
   updateStatus: ["update-status"] as const,
+  /** The operator's MCP tokens (`GET /mcp-tokens`, remote-mcp-server). */
+  mcpTokens: ["mcp-tokens"] as const,
+  /** The system-wide `mcpServerEnabled` flag (`GET /settings/mcp-server`). */
+  mcpServerEnabled: ["settings", "mcp-server"] as const,
   /**
    * The self-update action (self-update-action). There is no self-update READ —
    * the upgrade is a one-shot `POST /self-update` whose target comes from
@@ -311,6 +325,31 @@ export function codexCredentialQuery() {
   });
 }
 
+export function claudeCredentialQuery() {
+  return queryOptions<ClaudeCredential>({
+    queryKey: queryKeys.claudeCredential,
+    queryFn: () =>
+      isCapable("settings")
+        ? real.getClaudeCredential()
+        : mock.mockClaudeCredential(),
+  });
+}
+
+/**
+ * The operator's API keys (`GET /api-keys`, api-key-machine-identity). Rides the
+ * standard real/mock seam gated by `apiKeys`: the real session-gated endpoint
+ * when capable, the typed in-memory mock otherwise. The settings "API Keys" card
+ * reads this; the mint/revoke mutations invalidate `queryKeys.apiKeys` so the
+ * list re-derives.
+ */
+export function apiKeysQuery() {
+  return queryOptions<ApiKeyListResponse>({
+    queryKey: queryKeys.apiKeys,
+    queryFn: () =>
+      isCapable("apiKeys") ? real.listApiKeys() : mock.mockListApiKeys(),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Auth session
 // ---------------------------------------------------------------------------
@@ -401,4 +440,70 @@ export function updateStatusQuery() {
     refetchInterval: 5 * 60 * 1000,
     refetchOnWindowFocus: true,
   });
+}
+
+// ---------------------------------------------------------------------------
+// MCP server (remote-mcp-server) — tokens + enable flag
+// ---------------------------------------------------------------------------
+
+/**
+ * The operator's MCP tokens (`GET /mcp-tokens`) backing the settings MCP-server
+ * card's list. Rides the standard real/mock seam gated by `mcpServer`: the mock
+ * `mockMcpTokens` exercises the mint/list/revoke loop today; flipping the flag
+ * repoints it at the real endpoint with no card change. The list is non-secret
+ * (prefix + last4 only) — the raw token is never part of any read.
+ */
+export function mcpTokensQuery() {
+  return queryOptions<ListMcpTokensResponse>({
+    queryKey: queryKeys.mcpTokens,
+    queryFn: () =>
+      isCapable("mcpServer") ? real.listMcpTokens() : mock.mockListMcpTokens(),
+  });
+}
+
+/**
+ * The system-wide `mcpServerEnabled` flag (`GET /settings/mcp-server`) the card's
+ * toggle reflects. READ is open to any authenticated operator (so the card
+ * renders the honest state); the WRITE is admin-gated server-side. Rides the same
+ * `mcpServer` seam as {@link mcpTokensQuery}.
+ */
+export function mcpServerEnabledQuery() {
+  return queryOptions<boolean>({
+    queryKey: queryKeys.mcpServerEnabled,
+    queryFn: () =>
+      isCapable("mcpServer")
+        ? real.getMcpServerEnabled()
+        : mock.mockMcpServerEnabled(),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// API Playground runner (add-api-playground D3) — REAL-only, no cached read
+// ---------------------------------------------------------------------------
+
+/**
+ * The capability-gated API Playground runner (the seam for `real.sendApiRequest`).
+ * Unlike the read factories above this is an IMPERATIVE ACTION — a one-shot send,
+ * not a cached `queryOptions` read — so it is a plain async function the page
+ * calls on 发送 (via a mutation/handler in the page-and-stream track), NOT a
+ * query key.
+ *
+ * It is the ONLY domain that is REAL-ONLY: there is NO mock branch. When the
+ * `apiPlayground` capability is on the send executes for real against the running
+ * api (signed by the operator's console session). When it is off — mock /
+ * backend-less / the `VITE_FORCE_MOCK` visual harness — a send is NOT fabricated
+ * (a playground that "sent" against a mock would be misleading, D3); instead it
+ * resolves to a clear "needs the running api" `kind: "error"` result so the
+ * response panel renders an honest needs-the-api state rather than a fake 200.
+ */
+export function runApiRequest(input: SendApiRequestInput): Promise<SendApiResult> {
+  if (!isCapable("apiPlayground")) {
+    return Promise.resolve({
+      kind: "error",
+      message:
+        "API 调试需要连接到正在运行的后端：当前为本地 mock 模式（VITE_FORCE_MOCK 或后端不可用），发送已被禁用。",
+      durationMs: 0,
+    });
+  }
+  return real.sendApiRequest(input);
 }

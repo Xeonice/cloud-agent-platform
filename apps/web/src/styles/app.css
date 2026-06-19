@@ -23,6 +23,26 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Geist variable fonts — self-hosted under public/fonts (OFL). The prototype
+ * switched the console to Geist; bundle locally (NOT a render-blocking external
+ * import) with the system-ui / monospace stacks kept as graceful fallback.
+ */
+@font-face {
+  font-family: "Geist";
+  src: url("/fonts/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("/fonts/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   /* ── radius ───────────────────────────────────────────────────────────── */
   --radius: 0.5rem;
@@ -272,13 +292,13 @@
   --color-terminal-warn: var(--terminal-warn);
   --color-terminal-err: var(--terminal-err);
 
-  /* fonts — mono is JetBrains Mono with tabular-nums for numerics/eyebrows */
+  /* fonts — Geist (self-hosted) leads; mono is Geist Mono with tabular-nums */
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
-    Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+    "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
   --font-mono:
-    "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+    "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono",
+    Menlo, Consolas, "Liberation Mono", monospace;
 
   /* radius ladder: sm 6 / DEFAULT 8 / lg 10 / xl 12 / full */
   --radius-sm: 6px;
@@ -289,10 +309,9 @@
 
   /* box-shadow ring tokens — the prototype's "borders" are 1px shadow rings */
   --shadow-ring: 0 0 0 1px var(--border);
-  /* shadow-card retuned to the design-revision values (console-design-pixel-merge D5) */
-  --shadow-card:
-    0 0 0 1px rgba(0, 0, 0, 0.08), 0 2px 2px rgba(0, 0, 0, 0.04),
-    0 8px 8px -8px rgba(0, 0, 0, 0.04);
+  /* shadow-card flattened to the finalized baseline: crisp 1px ring + a hair of
+     lift (pixel-restore-console-to-od Track 1) — no multi-layer drop shadow */
+  --shadow-card: 0 0 0 1px var(--border), 0 1px 2px rgba(0, 0, 0, 0.03);
   --shadow-modal:
     0 0 0 1px var(--border), 0 8px 24px -4px rgba(16, 24, 40, 0.12),
     0 4px 8px -4px rgba(16, 24, 40, 0.08);
@@ -367,4 +386,21 @@
   width: 0;
   height: 0;
   display: none;
+}
+
+/*
+ * Reduced-motion (pixel-restore-console-to-od Track 13.2): honor the OS setting
+ * by collapsing animations/transitions to near-instant for visitors who request
+ * reduced motion (the runner-capsule demo already has a dedicated reduced branch;
+ * this is the global belt-and-braces for every other transition).
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

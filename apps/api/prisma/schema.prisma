@@ -178,6 +178,7 @@ model User {
   accountSettings AccountSettings?
   /// Per-account Codex execution credential (zero or one).
   codexCredential CodexCredential?
+  claudeCredential ClaudeCredential?
 
   @@map("users")
 }
@@ -458,6 +459,52 @@ model CodexCredential {
   authJsonCiphertext String? @map("auth_json_ciphertext")
 
   @@map("codex_credentials")
+}
+
+/// The per-account Claude Code execution credential ("Claude Code 任务用什么登录"),
+/// the runtime sibling of {@link CodexCredential} (pixel-restore-console-to-od
+/// Track 3 / account-settings "Claude Code runtime credential"). Distinct from the
+/// console login identity and from the Codex credential. Two mutually-exclusive
+/// modes:
+///   - `subscription`: a Claude OAuth token minted on a workstation via
+///     `claude setup-token`, stored ENCRYPTED at rest in `setup_token_ciphertext`
+///     (ciphertext.iv.authTag), exported as `CLAUDE_CODE_OAUTH_TOKEN` to the
+///     sandbox launch env by the runtime — the path the runtime consumes today.
+///   - `api_key`: an Anthropic `sk-ant-` API key, stored ENCRYPTED in
+///     `api_key_ciphertext` (usage-based billing). [follow-up: the runtime
+///     currently injects only the OAuth token and unsets ANTHROPIC_API_KEY, so
+///     api_key-mode INJECTION is a later runtime change; storage/masking ship now.]
+/// Secret discipline mirrors Codex: only ciphertext + a masked `*Last4` suffix are
+/// persisted; plaintext is never stored or returned.
+model ClaudeCredential {
+  id     String @id @default(uuid())
+  /// FK to the owning user; UNIQUE so there is at most one credential per account.
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Active mode: `subscription` | `api_key`.
+  mode String
+
+  /// Connection state: `not_connected` | `not_saved` | `connected`.
+  state String
+
+  /// `claude setup-token` OAuth token ENCRYPTED at rest — ciphertext only, never
+  /// plaintext. Null when no subscription token is stored.
+  setupTokenCiphertext String? @map("setup_token_ciphertext")
+
+  /// Masked suffix of the stored setup-token for display only. Null when unset.
+  setupTokenLast4 String? @map("setup_token_last4")
+
+  /// Anthropic API key ENCRYPTED at rest — ciphertext only. Null when unset.
+  apiKeyCiphertext String? @map("api_key_ciphertext")
+
+  /// Masked suffix of the stored API key for display only. Null when unset.
+  apiKeyLast4 String? @map("api_key_last4")
+
+  /// Selected default Claude model persisted with the credential (non-secret).
+  defaultModel String? @map("default_model")
+
+  @@map("claude_credentials")
 }
 
 /// Durable, container-independent index of a task's captured codex transcript

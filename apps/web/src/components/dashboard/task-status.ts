@@ -83,7 +83,7 @@ export const TASK_STATUS_PRESENTATION: Record<TaskStatus, TaskStatusPresentation
     state: "needs-input",
     label: "等待输入",
     variant: "warn",
-    phase: "等待确认",
+    phase: "等待输入",
     action: { label: "处理输入", emphasis: "primary" },
   },
   queued: {

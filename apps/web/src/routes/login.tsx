@@ -229,7 +229,7 @@ function LoginPage() {
           <ConfigList
             rows={[
               { label: "访问范围", value: "单用户白名单" },
-              { label: "默认策略", value: "写入前确认" },
+              { label: "执行边界", value: "沙箱内自治" },
               { label: "下一步", value: "任务控制台" },
             ]}
           />
