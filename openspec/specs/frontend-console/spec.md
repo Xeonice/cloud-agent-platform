@@ -305,51 +305,63 @@ Locally writable client state — `githubConnected`, `importedRepos`, `selectedR
 - **THEN** the imported set deduplicates and exactly one repo remains marked as default
 
 ### Requirement: Landing-family standalone pages
-The four standalone pages SHALL faithfully reproduce the design revision's design language. `/` (Landing) SHALL render the landing-nav, hero (eyebrow/title/CTA/trust pills/3 proof tiles), a live `runner-capsule` demo — a native React port of the design's vanilla `runner-capsule.js` Web Component preserving the same loop state machine, replacing the former static `HeroPreview` — a `#workflow` `process-rail` section (replacing the 3-step WorkflowRow), a `#security` `boundary-ledger` section (replacing the 3-card FeatureGrid; the existing `#security` anchor, including the footer link, SHALL resolve to the boundary-ledger), and a minimal footer, with smooth anchor scrolling (scroll-margin offsetting the fixed nav). The runner-capsule demo SHALL be SSR-SAFE under the established mounted-flag pattern: the server render and the first client paint SHALL use the reduced-motion branch (no `window`/`matchMedia` access during render), and the full animation loop SHALL be enabled only after mount when `matchMedia('(prefers-reduced-motion: no-preference)')` matches; a visitor with `prefers-reduced-motion: reduce` SHALL keep the reduced branch. The landing SHALL be SESSION-AWARE: when the operator is authenticated it SHALL present a primary "进入控制台" CTA routing to `/dashboard` (and an account affordance) in place of the login CTA; when unauthenticated it SHALL present the "GitHub 登录" CTA. The anonymous console entries (the nav "控制台" link and the hero "查看控制台" action) SHALL NOT silently dead-bounce through the auth gate — for an unauthenticated visitor they SHALL route to `/login` (or scroll to the in-page preview) rather than appearing to open the console and being gated. The landing's visual presentation SHALL be polished within the existing design language (not a new visual system): the trust pills SHALL render as discrete chips rather than bare link-colored text; the large CJK display headings SHALL control line-breaking so words are not split mid-token; the hero CTA hierarchy SHALL present a single clear primary action; and inter-section spacing/card density SHALL avoid large dead bands. `/login` SHALL render the dual-column auth card (brand + GitHub 授权 button with mutually-exclusive empty/success states + a 3-step install-step sidebar + config-list); the authorize action SHALL trigger the auth/login flow and, on success, route into the CONSOLE — `/dashboard` by default, or the `redirect` deep-link destination when one was carried (per `multi-user-oauth`) — with copy that reflects the console destination; an already-authenticated visitor MAY be redirected away from `/login`. `/workspace` (Launcher) SHALL render the landing-nav, hero, a 3 stat-tile ops-strip (REPOSITORIES from the repos query; RUNNERS/QUEUE from metrics), and 6 screen-cards (each a full-card link, with a footer "open tasks" count and latest run id derived from the tasks query). `/resume` (Handoff) SHALL render the landing-nav, a main panel (eyebrow/title/lead/dual CTA), and 3 stat-tiles (NEXT ACTION derived from the highest-priority waiting-input task and used to parameterize the second CTA's task deep link; DEFAULT SCOPE from `selectedRepo`; SAFETY static). All four pages SHALL be SSR-safe (no `Date.now()`/`Math.random()` rendered directly to avoid hydration warnings); the landing's session-aware swap in particular SHALL render the unauthenticated state on the server/first paint and reconcile to the authenticated affordance after client hydration so no hydration mismatch occurs.
+The four standalone pages SHALL faithfully reproduce the design revision's design language. `/` (Landing) SHALL render the landing-nav (the brand, plus an account affordance when the operator is authenticated), a hero (eyebrow, the CJK display title + subline, the lead copy, a dual CTA, trust pills rendered as discrete chips, and a live `runner-capsule` demo — a native React port of the design's vanilla `runner-capsule.js` Web Component preserving the same loop state machine), and a minimal footer (brand + a minimal link set + the copyright line), with smooth anchor scrolling for any in-page anchor (scroll-margin offsetting the fixed nav). The Landing SHALL NOT render a proof-tile grid, a `#workflow` `process-rail` section, or a `#security` `boundary-ledger` section (these are dropped in the simplified design revision), and SHALL carry NO nav or footer anchor links targeting those removed sections (no dead anchors). The runner-capsule demo SHALL be SSR-SAFE under the established mounted-flag pattern: the server render and the first client paint SHALL use the reduced-motion branch (no `window`/`matchMedia` access during render), and the full animation loop SHALL be enabled only after mount when `matchMedia('(prefers-reduced-motion: no-preference)')` matches; a visitor with `prefers-reduced-motion: reduce` SHALL keep the reduced branch. The landing SHALL be SESSION-AWARE: when the operator is authenticated it SHALL present a primary "进入控制台" CTA routing to `/dashboard` (and an account affordance) in place of the login CTA; when unauthenticated it SHALL present the "GitHub 登录" CTA as the single clear primary action and a secondary "查看演示" action that scrolls to the in-page `runner-capsule` preview. No anonymous landing entry SHALL silently dead-bounce through the auth gate — an unauthenticated visitor's primary action SHALL go to `/login` (or scroll to the in-page preview) rather than appearing to open the console and being gated. The landing's visual presentation SHALL stay within the existing design language (not a new visual system): the trust pills SHALL render as discrete chips rather than bare link-colored text; the large CJK display headings SHALL control line-breaking so words are not split mid-token; the hero CTA hierarchy SHALL present a single clear primary action; and inter-section spacing/card density SHALL avoid large dead bands. `/login` SHALL render the dual-column auth card (brand + GitHub 授权 button with mutually-exclusive empty/success states + a 3-step install-step sidebar + config-list); the authorize action SHALL trigger the auth/login flow and, on success, route into the CONSOLE — `/dashboard` by default, or the `redirect` deep-link destination when one was carried (per `multi-user-oauth`) — with copy that reflects the console destination; an already-authenticated visitor MAY be redirected away from `/login`. `/workspace` (Launcher) SHALL render the landing-nav, hero, a 3 stat-tile ops-strip (REPOSITORIES from the repos query; RUNNERS/QUEUE from metrics), and 6 screen-cards (each a full-card link, with a footer "open tasks" count and latest run id derived from the tasks query). `/resume` (Handoff) SHALL render the landing-nav, a main panel (eyebrow/title/lead/dual CTA), and 3 stat-tiles (NEXT ACTION derived from the highest-priority waiting-input task and used to parameterize the second CTA's task deep link; DEFAULT SCOPE from `selectedRepo`; SAFETY static). All four pages SHALL be SSR-safe (no `Date.now()`/`Math.random()` rendered directly to avoid hydration warnings); the landing's session-aware swap in particular SHALL render the unauthenticated state on the server/first paint and reconcile to the authenticated affordance after client hydration so no hydration mismatch occurs.
 
-#### Scenario: Landing renders with working anchors and a footer
-- **WHEN** the operator opens `/` and clicks the `#workflow` or `#security` anchor
-- **THEN** the page renders the hero, proof tiles, the runner-capsule demo, the process-rail, the boundary-ledger, and a footer, and the anchor smooth-scrolls to the process-rail (`#workflow`) or boundary-ledger (`#security`) with the fixed-nav offset applied
+#### Scenario: Landing renders the simplified hero and footer
 
-#### Scenario: Runner-capsule demo replaces the static HeroPreview
+- **WHEN** the operator opens `/`
+- **THEN** the page renders the landing-nav, the hero (eyebrow, title + subline, lead copy, dual CTA, trust-pill chips, and the runner-capsule demo), and a minimal footer
+- **AND** it renders NO proof-tile grid, NO `#workflow` process-rail section, and NO `#security` boundary-ledger section
+
+#### Scenario: No dead anchors remain after the section removal
+
+- **WHEN** `/` is rendered
+- **THEN** neither the nav nor the footer contains a link targeting `#workflow` or `#security`, and the only in-page anchor target is the `runner-capsule` preview reached by the "查看演示" action
+
+#### Scenario: Runner-capsule demo is the hero preview
+
 - **WHEN** `/` renders on a client with no reduced-motion preference
-- **THEN** the hero demo region is the React runner-capsule advancing through the same ordered loop phases as the design's `runner-capsule.js` state machine (and looping), and the former static HeroPreview markup is no longer rendered
+- **THEN** the hero demo region is the React runner-capsule advancing through the same ordered loop phases as the design's `runner-capsule.js` state machine (and looping), with no static HeroPreview markup rendered
 
 #### Scenario: Demo animation is SSR-safe and honors reduced motion
+
 - **WHEN** `/` is server-rendered and hydrated
 - **THEN** the server render and first client paint show the reduced-motion branch without accessing `window`/`matchMedia` during render, and the animation upgrades only after mount via `matchMedia`
 - **AND** when the visitor has `prefers-reduced-motion: reduce`, the demo stays in the reduced branch instead of animating
 
-#### Scenario: Footer #security anchor resolves to the boundary-ledger
-- **WHEN** the visitor activates the footer's `#security` link
-- **THEN** the page smooth-scrolls to the boundary-ledger section — the anchor target exists and is not dead after the section replacement
-
 #### Scenario: Landing is session-aware
+
 - **WHEN** an authenticated operator opens `/`
 - **THEN** the landing presents a primary "进入控制台" CTA to `/dashboard` (and an account affordance) instead of a "GitHub 登录" CTA
-- **AND** an unauthenticated visitor instead sees the "GitHub 登录" CTA
+- **AND** an unauthenticated visitor instead sees the "GitHub 登录" primary CTA and a "查看演示" secondary action
 
-#### Scenario: Anonymous console entries do not dead-bounce
-- **WHEN** an unauthenticated visitor activates the nav "控制台" link or the hero "查看控制台" action
-- **THEN** they are taken to `/login` (or scrolled to the in-page preview) rather than appearing to open the console and being silently redirected by the gate
+#### Scenario: Anonymous primary action does not dead-bounce
+
+- **WHEN** an unauthenticated visitor activates the landing's primary action
+- **THEN** they are taken to `/login` (or, for "查看演示", scrolled to the in-page preview) rather than appearing to open the console and being silently redirected by the gate
 
 #### Scenario: Login routes to the console on success
+
 - **WHEN** the operator completes authorization on `/login` with no deep-link carried
 - **THEN** the operator is routed to `/dashboard` (the console), and the page copy reflects the console destination rather than the repository-import page
 
 #### Scenario: Login honors a carried deep-link destination
+
 - **WHEN** the login flow was reached with a `redirect` destination and authorization succeeds
 - **THEN** the operator is returned to that destination (subject to the `multi-user-oauth` open-redirect guard) rather than the default dashboard
 
 #### Scenario: Standalone pages hydrate without warnings
+
 - **WHEN** any of `/`, `/login`, `/workspace`, `/resume` is server-rendered and hydrated
 - **THEN** no hydration mismatch occurs because no nondeterministic value is rendered directly, and the landing renders its unauthenticated state on first paint before reconciling to the authenticated affordance after hydration
 
 #### Scenario: Workspace counts reflect live queries
+
 - **WHEN** `/workspace` renders
 - **THEN** the REPOSITORIES tile reflects the repos query and each screen-card footer shows an open-tasks count derived from the tasks query
 
 #### Scenario: Resume next-action drives the CTA deep link
+
 - **WHEN** `/resume` renders with a waiting-input task present
 - **THEN** the NEXT ACTION tile reflects the highest-priority waiting-input task and the second CTA links into that task's `/tasks/$taskId` session
 
@@ -397,15 +409,19 @@ The `/settings` page SHALL render a left secondary anchor navigation grouping ac
 - **THEN** the mutation invalidates both the settings query and the metrics query, so the dashboard capacity aside and slot meter reflect the new ceiling without waiting for the next 5-second metrics poll
 
 ### Requirement: History audit page
-The `/history` page SHALL render a screen-header, a history-summary of 3 stat-tiles (ACTIVE WINDOW / ATTENTION derived from tasks; RETENTION from settings/metrics), and an audit-toolbar (search Input + level SegmentedControl 全部/信息/警告/错误 + a visible CountChip). It SHALL render a two-column grid: a left 最近任务 Table (任务/仓库/结果/耗时/会话记录 with result StatusPills and a session link to `/tasks/$taskId`) sourced from the tasks query, and a right `AuditTimeline` (audit-events: time + warn/danger dot + title/description + right-side HTTP status code 200/201/409/422) sourced from the history events query. A single client-side filter (search + level) SHALL drive BOTH the left table rows and the right events simultaneously, with the visible count updating live. The page SHALL be read-only (no terminal/WS) and SSR-friendly.
+The `/history` page SHALL render a screen-header and a single "运行记录" panel containing an audit-toolbar (search Input + a status SegmentedControl 全部/运行中/等待输入/排队/已完成/失败 + a CountChip "N 条记录") and a Vercel-style task-row list sourced from the tasks query. Each row SHALL render the task's result as a status pill in a kicker line with the task id, the task title, the repo·branch (mono), the Agent runtime, the elapsed time, and a single dark "查看会话" action linking to that task's 会话记录 (queued tasks show a disabled "等待接入" instead). The client-side filter (search + status) SHALL drive the list and update the CountChip live, with an empty state when nothing matches. The page SHALL NOT render the former ACTIVE WINDOW/ATTENTION/RETENTION summary tiles or the right-hand audit event-stream. It SHALL be read-only (no terminal/WebSocket) and SSR-friendly.
 
-#### Scenario: One filter drives both columns
-- **WHEN** the operator types a search term or selects a level in the toolbar
-- **THEN** both the left task table and the right audit timeline filter together and the CountChip updates to the visible count
+#### Scenario: History renders as a single task-row list
+- **WHEN** the operator opens `/history`
+- **THEN** it shows the 运行记录 panel with task rows (status pill + title + repo·branch + Agent + 耗时 + 查看会话), and no summary tiles or audit event-stream
 
-#### Scenario: Session link navigates from history
-- **WHEN** the operator clicks a 会话记录 link in the task table
-- **THEN** the console navigates to that task's `/tasks/$taskId` session
+#### Scenario: Status filter and search narrow the list
+- **WHEN** the operator types a search term or selects a status segment
+- **THEN** the task-row list filters and the CountChip updates to the visible count, with an empty state when nothing matches
+
+#### Scenario: View-session navigates from history
+- **WHEN** the operator activates a row's 查看会话 action
+- **THEN** the console navigates to that task's 会话记录 (transcript) view
 
 #### Scenario: History is read-only and SSR-rendered
 - **WHEN** `/history` is server-rendered
@@ -662,15 +678,82 @@ chosen, the `codex`-based invocation otherwise).
 - **THEN** the `Claude Code` option is shown disabled with a configure hint, and `Codex`
   remains the default selectable runtime
 
-### Requirement: The dormant stopOnWrite checkbox no longer over-promises
-The create-task dialog SHALL NOT present stopOnWrite as an active per-operation gate,
-because the "破坏性写入前停止" (stopOnWrite) control is unwired at every layer for both
-runtimes (the agent runs ungated inside the sandbox, which is the trust boundary). It SHALL
-either be removed from the dialog or relabeled to reflect that it is preview-only / advisory,
-so operators are not misled into believing destructive writes are gated.
+### Requirement: Session transcript (会话记录) view
+The console SHALL provide a read-only session-transcript view for a task, reached from the history list's 「查看会话」 entry, rendering the persisted session transcript (from `session-transcript-persistence`) as a vertical timeline of typed events: operator input, reasoning summary, tool call (command/patch with a collapsible output and diff stat), final agent answer, and system events (created/ready/completed). The view SHALL provide a type filter (全部/我的输入/工具/回答) and a text search that filter the timeline together, an empty state when nothing matches, and a link to the task's terminal record. It SHALL be SSR-safe and read-only (no terminal/WebSocket).
 
-#### Scenario: stopOnWrite does not imply an active gate
-- **WHEN** the operator opens the create-task dialog
-- **THEN** there is no control that claims to stop the agent before a destructive write as
-  an enforced gate; any remaining affordance is clearly labeled preview-only/advisory
+#### Scenario: Transcript renders typed events
+- **WHEN** the operator opens a task's 会话记录
+- **THEN** the timeline renders operator input, reasoning, tool calls with collapsible output, the final answer, and system events in chronological order
+
+#### Scenario: Type filter and search narrow the timeline
+- **WHEN** the operator selects 工具 or types a search term
+- **THEN** only matching events remain and an empty state shows when nothing matches
+
+### Requirement: API debug (API 调试) console view
+The console SHALL provide an authenticated API debug view at `/api`, with a sidebar and mobile-nav entry "API 调试", visible only to a logged-in operator, for exercising the platform v1 API (`public-v1-api`). It SHALL render a resource-grouped endpoint collection (tasks/repos/sessions/system, each item a method badge + path), a request region with a read-only method+host+path bar (the endpoint is selected from the collection, not free-typed) and Request tabs (Body/参数/Headers), and a Response region with status/time/size plus Body/Headers tabs. Credentials SHALL be presented as auto-injected from the current operator session (no manual token field). The Request and Response regions SHALL be explicitly labeled and visually distinct.
+
+#### Scenario: API debug view is gated and reachable
+- **WHEN** an authenticated operator activates the "API 调试" nav entry
+- **THEN** the `/api` view opens within the app shell, and an unauthenticated visitor is gated like other `_app` routes
+
+#### Scenario: Endpoint selection drives a read-only request line
+- **WHEN** the operator selects an endpoint from the collection
+- **THEN** the method + host + path bar reflects it as read-only text (not an editable URL field), and the Request and Response regions are separately labeled
+
+### Requirement: Settings model credentials organized by Agent runtime
+The settings model-credential section SHALL be organized by Agent runtime and expose both runtimes the platform supports: a Codex group (官方 Codex 账号 / 兼容模型提供方) and a Claude Code group (Claude 订阅 setup-token / Anthropic API Key). Each runtime SHALL show its own connection status, and the Claude Code group SHALL provide an entry to configure a `claude setup-token` subscription token and an Anthropic API Key. Saved secrets SHALL be masked (suffix only) and never re-displayed in plaintext.
+
+#### Scenario: Claude Code credential entry is present
+- **WHEN** the operator opens the Agent model-credential section
+- **THEN** a Claude Code runtime group is shown with a setup-token entry and an Anthropic API Key entry, alongside the Codex group
+
+#### Scenario: Saved Claude credential is masked
+- **WHEN** a Claude setup-token or Anthropic API Key has been saved
+- **THEN** it is not shown again in plaintext
+
+### Requirement: Geist typeface and flattened card surfaces
+The console design tokens SHALL adopt the prototype's Geist Sans / Geist Mono typefaces for `--font-sans` / `--font-mono` (bundled as app assets with a `system-ui` / monospace fallback, not a render-blocking external import), and card surfaces SHALL use the flattened single-ring shadow the finalized baseline uses rather than a multi-layer drop shadow.
+
+#### Scenario: Console renders in Geist
+- **WHEN** any console page renders
+- **THEN** sans text resolves to Geist Sans and mono text to Geist Mono, falling back gracefully if a face fails to load
+
+### Requirement: Console restored to the finalized design baseline
+The console screens SHALL match the finalized Open Design baseline frozen at `openspec/changes/pixel-restore-console-to-od/design-baseline/` (10 screens + `platform.css`). Per-page pixel comparison SHALL use this frozen snapshot — including the two added screens (transcript, api) — as the oracle, superseding the earlier 2026-06-11 baseline. A screen is considered restored only when it visually matches its frozen baseline at a fixed viewport.
+
+#### Scenario: Screens are verified against the frozen baseline
+- **WHEN** a restored console screen is compared to its `design-baseline/` reference at a matched viewport
+- **THEN** it visually matches, and the comparison target is the frozen 2026-06-19 snapshot rather than the prior baseline
+
+### Requirement: Settings page has an MCP Server section
+
+The console settings page SHALL add an "MCP Server" section that surfaces: (1) the `mcpServerEnabled` toggle (admin-gated — only an admin operator may flip it; off by default), (2) the `/mcp` endpoint URL plus connect instructions (paste the minted `mcp_` token into the MCP client's `Authorization: Bearer` header), and (3) the operator's MCP tokens — mint (a show-once dialog displaying the raw `mcp_` token once, with the same never-shown-again discipline as the API-keys card), list (prefix + last4, scopes, lifecycle state), and revoke. The raw token SHALL live only transiently in the show-once dialog and SHALL never be written to a list row. When the MCP server is disabled, the section SHALL present it as disabled (no live connect affordance) while still allowing an admin to enable it.
+
+#### Scenario: Operator mints and sees an MCP token once
+
+- **WHEN** an operator mints an MCP token in the settings MCP Server section
+- **THEN** a show-once dialog displays the raw `mcp_…` token exactly once, the list shows only its prefix + last4 thereafter, and the operator can copy the endpoint URL + connect instructions
+
+#### Scenario: The enable toggle is admin-gated
+
+- **WHEN** a non-admin operator opens the MCP Server section
+- **THEN** the `mcpServerEnabled` toggle is not operable by them (only an admin may flip it), while they may still mint/list/revoke their own MCP tokens
+
+### Requirement: The API Playground page is in the route tree and navigation
+
+The console SHALL add an `/api` route under the authed `_app` shell (a new page beside dashboard/repositories/history/settings), so it is behind the client auth gate and renders inside the existing shell (sidebar / topbar / mobile-nav). An "API 调试" entry SHALL be added to the app sidebar AND the mobile nav, routing to `/api`. The page SHALL NOT rebuild the shell — it composes inside the `<Outlet/>` like the other `_app` pages.
+
+#### Scenario: /api is gated and reachable from the nav
+
+- **WHEN** an authenticated operator activates the "API 调试" sidebar (or mobile-nav) entry
+- **THEN** they navigate to `/api`, which renders inside the existing app shell behind the auth gate; an unauthenticated visitor to `/api` is gated like every other `_app` route
+
+### Requirement: The /api page has a per-page pixel baseline
+
+The `/api` page SHALL carry a per-page pixel comparison against its `screens/api.html` design baseline under the visual harness (desktop + the ≤820px mobile breakpoint), registered in the visual manifest, rendered deterministically in mock mode (a fixed selected endpoint + a sample request body + a placeholder/empty response, with any dynamic/timing region masked) so the comparison is stable.
+
+#### Scenario: The /api page is pixel-compared against its design baseline
+
+- **WHEN** the visual suite runs
+- **THEN** the `/api` page is captured at both breakpoints and compared against its `screens/api.html` baseline under a recorded threshold, with dynamic regions masked
 
