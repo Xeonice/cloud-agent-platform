@@ -58,11 +58,18 @@ export class ClaudeCodeRuntime implements AgentRuntime {
    * time (the analog of codex's `config.toml` trust step). `CLAUDE_CODE_SANDBOXED=1`
    * short-circuits the workspace TRUST dialog, but the GLOBAL theme/onboarding
    * screen still blocks the first interactive launch unless the top-level `theme` +
-   * `hasCompletedOnboarding` keys are present (spike-confirmed: a per-project trust
-   * entry ALONE leaves the theme screen blocking). So this seeds both the global
-   * onboarding keys AND the per-project trust entry for the canonical workspace.
+   * `hasCompletedOnboarding` keys are present (a per-project trust entry ALONE leaves
+   * the theme screen blocking). So this seeds both the global onboarding keys AND the
+   * per-project trust entry for the canonical workspace.
+   *
+   * CRITICAL — this MUST be the HOME-root `.claude.json` (`$HOME/.claude.json`), NOT
+   * `$CLAUDE_CONFIG_DIR/.claude.json`. `CLAUDE_CONFIG_DIR` relocates only the `.claude`
+   * DIRECTORY (settings.json, cache, `projects/` transcripts); Claude (verified on
+   * 2.1.181 in a live sandbox) reads/writes its MAIN config at `$HOME/.claude.json`
+   * regardless. Seeding it inside the config dir is silently ignored — Claude creates a
+   * fresh un-onboarded `$HOME/.claude.json` and runs the full theme/auth onboarding.
    */
-  static readonly CLAUDE_JSON_PATH = '/home/gem/.claude/.claude.json';
+  static readonly CLAUDE_JSON_PATH = '/home/gem/.claude.json';
 
   /** The canonical workspace path the per-project trust entry is keyed on. */
   static readonly WORKSPACE_DIR = '/home/gem/workspace';

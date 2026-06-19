@@ -581,8 +581,17 @@ async function main() {
   });
   assert(
     clNoP.commands[0].command ===
-      `mkdir -p /home/gem/.claude && printf %s '${toB64(clSnippet)}' | base64 -d > /home/gem/.claude/launch-env.sh && chmod 600 /home/gem/.claude/launch-env.sh && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude/.claude.json && chmod 600 /home/gem/.claude/.claude.json`,
+      `mkdir -p /home/gem/.claude && printf %s '${toB64(clSnippet)}' | base64 -d > /home/gem/.claude/launch-env.sh && chmod 600 /home/gem/.claude/launch-env.sh && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude.json && chmod 600 /home/gem/.claude.json`,
     'claude GOLDEN: launch-env.sh + .claude.json command byte-exact',
+  );
+  // REGRESSION GUARD (fix-claude-onboarding-seed-path): the onboarding pre-seed MUST
+  // land in the HOME-root `.claude.json` (the file Claude actually reads), NOT inside
+  // `$CLAUDE_CONFIG_DIR`. Claude 2.1.x reads `$HOME/.claude.json` regardless of
+  // CLAUDE_CONFIG_DIR, so a config-dir seed is silently ignored and onboarding blocks.
+  assert(
+    clNoP.commands[0].command.includes('> /home/gem/.claude.json &&') &&
+      !clNoP.commands[0].command.includes('> /home/gem/.claude/.claude.json'),
+    'claude GUARD: pre-seed .claude.json targets HOME root, not $CLAUDE_CONFIG_DIR',
   );
 
   // claude trim — keeps projects/
