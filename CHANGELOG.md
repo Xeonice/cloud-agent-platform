@@ -1,6 +1,11 @@
 # Changelog
 
-## [0.10.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.10.0...v0.10.1) (2026-06-20)
+## [0.11.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.10.0...v0.11.0) (2026-06-20)
+
+
+### Features
+
+* **agent-runtime:** run claude-code as a resident continuous-conversation session ([#31](https://github.com/Xeonice/cloud-agent-platform/issues/31)) ([634b7e8](https://github.com/Xeonice/cloud-agent-platform/commit/634b7e847982bac362e8e238b99fc50f73acbecc))
 
 
 ### Bug Fixes
