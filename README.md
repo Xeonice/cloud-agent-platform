@@ -63,6 +63,20 @@ Node/pnpm are workspace-managed (pnpm 10, Node ≥ 22). Run from the repo root.
 A freshly-cloned repo goes from zero to a running, **login-able** backend with a
 single command (requires Docker + a host `docker.sock`):
 
+> **One-line install (wraps `make up`).** The public marketing site hosts an
+> `install.sh` you can pipe to a shell — it preflights Docker, clones this repo,
+> and runs `make up` for you, then surfaces the printed Bearer token:
+>
+> ```bash
+> curl -fsSL https://<site-domain>/install.sh | sh
+> ```
+>
+> It is a thin wrapper, not a replacement: **`make up` below stays the source of
+> truth**, and the script is served as plain text so you can read it first (the
+> site also shows the equivalent manual `git clone … && make up` path). On Apple
+> Silicon it defaults to the faster `make up-cp`. See the public site and the
+> [Self-hosting guide](docs/self-hosting.md) for details.
+
 ```bash
 make up        # bootstrap apps/api/.env (if absent) + build & start the full stack,
                # then wait for /health and print a local auth token

@@ -1,0 +1,174 @@
+/*
+ * globals.css — Tailwind v4 entry + the SINGLE design-token contract for the
+ * marketing site (`@cap/www`).
+ *
+ * Tailwind v4 is CSS-first: there is NO tailwind.config.js. This file is the
+ * Tailwind entry imported once from app/layout.tsx, and the one source of truth
+ * for the Vercel-authentic design system (design.md D5 / task 2.1):
+ *   - Geist Sans + Geist Mono, wired to the CSS vars `next/font` (geist) sets
+ *     on <html> in the root layout, exposed as the `font-sans` / `font-mono`
+ *     Tailwind utilities.
+ *   - A monochrome black/white token set (bg / fg / muted), a hairline border
+ *     color, and a raised surface — exposed as `bg-*`, `text-*`, `border-*`,
+ *     `ring-*` utilities the shared primitives (button/card/command-box/…) and
+ *     the page sections consume.
+ *   - Grid + radial-gradient background utilities for section backdrops.
+ *
+ * The site is dark-only and monochrome (Vercel landing language), so there is
+ * one token scope (no light/dark switch).
+ */
+@import "tailwindcss";
+
+@theme {
+  /* ── type: Geist Sans + Geist Mono ──────────────────────────────────────
+   * The `geist/font` package sets --font-geist-sans / --font-geist-mono on the
+   * element the font className is applied to (the root <html> in layout.tsx).
+   * We map Tailwind's font utilities onto those, with system fallbacks so text
+   * is legible before the webfont resolves and in environments without it. */
+  --font-sans:
+    var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI",
+    system-ui, sans-serif;
+  --font-mono:
+    var(--font-geist-mono), ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, monospace;
+
+  /* ── monochrome token set (Vercel black/white) ──────────────────────────
+   * Exposed as Tailwind color utilities: bg-bg, text-fg, text-muted,
+   * border-hairline, bg-surface, ring-fg, ring-bg, etc. `fg` at #ededed on a
+   * near-black `bg` clears 4.5:1 body-text contrast (a11y bar, task 4.6). */
+  --color-bg: #000000;
+  --color-fg: #ededed;
+  /* Muted/secondary text — #a1a1a1 on #000 ≈ 9.0:1, comfortably ≥ 4.5:1. */
+  --color-muted: #a1a1a1;
+  /* 1px hairline border — translucent white so it reads on any backdrop. */
+  --color-hairline: rgba(255, 255, 255, 0.12);
+  /* Raised surface for cards / the command box / the terminal frame. */
+  --color-surface: #0a0a0a;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Honor the platform reduced-motion preference globally (belt-and-suspenders
+ * alongside the JS gate in components/motion): kill transitions/animations so
+ * nothing moves for visitors who asked it not to. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── background utilities (grid + radial glow) ────────────────────────────
+ * `bg-grid` lays a faint 1px grid; `bg-radial-fade` paints a soft top-center
+ * radial glow. Both are decorative (behind content) and monochrome. */
+@utility bg-grid {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+
+@utility bg-radial-fade {
+  background-image: radial-gradient(
+    60% 50% at 50% 0%,
+    rgba(255, 255, 255, 0.08) 0%,
+    transparent 70%
+  );
+}
+
+/* A soft top→bottom mask so the grid fades out rather than hard-stopping. */
+@utility mask-fade-b {
+  -webkit-mask-image: linear-gradient(to bottom, black 0%, transparent 100%);
+  mask-image: linear-gradient(to bottom, black 0%, transparent 100%);
+}
+
+/* ── motion primitives ────────────────────────────────────────────────────
+ * Registered as Tailwind `animate-*` utilities. These are the only continuous
+ * loops on the site and both are status/loading indicators (a terminal caret
+ * and a "running" pulse) rather than decorative motion — and the global
+ * prefers-reduced-motion rule above flattens them for visitors who opt out. */
+@theme {
+  --animate-caret: caret-blink 1.1s steps(1, end) infinite;
+  --animate-status: status-pulse 1.6s ease-in-out infinite;
+
+  /* ── terminal syntax palette (One Dark, for the Hero terminal demo only) ──
+   * The site is monochrome, but the terminal demo is a depiction of a real
+   * colored terminal, so it carries a small, restrained syntax palette tuned
+   * for the near-black surface (all ≥ 4.5:1). Exposed as text-term-* utilities.
+   * Colour is decorative only — the same text ships in the sr-only transcript,
+   * so meaning never depends on it. */
+  --color-term-cmd: #56b6c2; /* command name (cyan) */
+  --color-term-kw: #61afef; /* sub-command / keyword (blue) */
+  --color-term-str: #e5c07b; /* quoted string (amber) */
+  --color-term-num: #d19a66; /* number (orange) */
+  --color-term-flag: #c678dd; /* flag (purple) */
+  --color-term-path: #98c379; /* file path (green) */
+  --color-term-ok: #61c555; /* success ✓ (macOS green) */
+}
+
+@keyframes caret-blink {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  50.01%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ── cursor-follow spotlight (Vercel-style card hover) ─────────────────────
+ * A `<Spotlight>` sets `--mx`/`--my` to the pointer position; this paints a
+ * soft monochrome radial that tracks the cursor and fades in on hover/focus.
+ * The layer sits ABOVE the card surface but BELOW its content (the component
+ * renders it as a `-z-10` child inside an `isolate` stacking context), so text
+ * stays crisp. The fade respects reduced motion via the global rule; the
+ * pointer tracking itself is not an animation. */
+.spotlight-bg {
+  background: radial-gradient(
+    240px circle at var(--mx, 50%) var(--my, 50%),
+    rgba(255, 255, 255, 0.08),
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 200ms ease-out;
+}
+
+.spotlight-card:hover .spotlight-bg,
+.spotlight-card:focus-within .spotlight-bg {
+  opacity: 1;
+}

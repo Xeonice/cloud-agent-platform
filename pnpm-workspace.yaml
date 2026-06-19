@@ -1,6 +1,7 @@
 packages:
   - "apps/api"
   - "apps/web"
+  - "apps/www"
   - "apps/sandbox-hooks"
   - "packages/contracts"
   - "packages/ui"
