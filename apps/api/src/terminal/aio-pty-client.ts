@@ -47,10 +47,11 @@ import {
 // resolved runtime is `codex` (or unresolved), the existing detached-tmux launch +
 // DSR-gated CR autosubmit + `tmux has-session` exit detection run exactly as before.
 // CLAUDE takes the runtime path: the runtime's tmux launch line, NO autosubmit
-// (`claude "prompt"` auto-runs), and `detectExit` that tails the `--session-id`
-// JSONL for the last `assistant` `end_turn` then `tmux kill-session` so the SAME
-// session-gone liveness path resolves the task (the poller is demoted to an
-// abnormal-death watchdog for claude).
+// (`claude "prompt"` auto-runs), and — since align-claude-runtime-resident-session —
+// the SAME `tmux has-session` `detectExit` codex uses. Claude is a RESIDENT
+// continuous-conversation session: a finished turn idles for the operator's next input
+// (typed into the live terminal) and does NOT terminate the task; the session-gone
+// path resolves it only on operator stop or a configured idle/deadline reclamation.
 import type {
   AgentRuntime,
   SandboxExec,
@@ -736,9 +737,10 @@ export class AioPtyClient implements TerminalPty {
   /**
    * Start the termination poller on {@link CODEX_LIVENESS_POLL_MS} (D4 / 3.2).
    * RUNTIME-AGNOSTIC: each tick dispatches via {@link pollLiveness} to the resolved
-   * runtime — for CODEX the `tmux has-session` GONE check IS the termination signal;
-   * for CLAUDE the runtime's transcript-`end_turn` `detectExit` is the normal signal
-   * and this poller's `has-session` check is DEMOTED to an abnormal-death watchdog.
+   * runtime. BOTH codex and claude resolve from the SAME `tmux has-session` GONE check
+   * (align-claude-runtime-resident-session): claude is a resident continuous-conversation
+   * session, so a finished turn does NOT terminate it — the session-gone check is the
+   * termination signal for both, and a session that dies unexpectedly is the abnormal death.
    * Either way the FIRST resolved tick drives the terminal path via {@link onExit}.
    * Armed once the AIO shell is established (regardless of launch-vs-attach, so a
    * re-adopted session is watched too) and idempotent — arming twice is a no-op.
@@ -762,19 +764,16 @@ export class AioPtyClient implements TerminalPty {
 
   /**
    * One liveness probe (D4 / 3.2). The TERMINATION SIGNAL is DISPATCHED to the
-   * task's selected runtime:
-   *   - CODEX (or unresolved): the UNCHANGED `tmux has-session` path — while the
-   *     named session exists the task is running; the first probe that reports it
-   *     GONE resolves the real exit status and terminates exactly once. A probe
-   *     error is INCONCLUSIVE (re-check next tick), so a transport blip never
-   *     force-fails a still-running task.
-   *   - CLAUDE (a runtime exposing `detectExit`): an interactive claude turn does
-   *     NOT exit the process (it idles), so `has-session` would stay alive forever.
-   *     Instead the runtime's `detectExit` tails the `--session-id` JSONL for the
-   *     last `assistant` `end_turn` and, on completion, proactively
-   *     `tmux kill-session` so the SAME session-gone path resolves the task — and
-   *     this poller is thereby DEMOTED to an abnormal-death watchdog (a claude
-   *     session that dies WITHOUT an `end_turn` is still caught as session-gone).
+   * task's selected runtime's `detectExit`, which for BOTH codex and claude is the
+   * SAME `tmux has-session` check (align-claude-runtime-resident-session): while the
+   * named session exists the task is running; the first probe that reports it GONE
+   * resolves the real exit status and terminates exactly once. A probe error is
+   * INCONCLUSIVE (re-check next tick), so a transport blip never force-fails a
+   * still-running task. Claude is a resident continuous-conversation session — a
+   * finished turn idles for the next input and does NOT terminate the task; the
+   * session goes gone only on operator stop or a configured idle/deadline
+   * reclamation, and a session that dies unexpectedly is the abnormal death. An
+   * UNRESOLVED runtime falls to the inline has-session path below.
    */
   private async pollLiveness(): Promise<void> {
     if (this.exitResolved || this.livenessProbeInFlight) return;
@@ -805,26 +804,24 @@ export class AioPtyClient implements TerminalPty {
   }
 
   /**
-   * Runtime-driven turn-completion probe (3.2, claude). Calls the runtime's
-   * `detectExit(exec, taskId)` — which tails the `--session-id` JSONL for the last
-   * `assistant` `end_turn` and, when complete, `tmux kill-session`s the named
-   * session — then maps its decision:
+   * Runtime-driven termination probe. Calls the runtime's `detectExit(exec, taskId)`
+   * — for BOTH codex and claude the SAME `tmux has-session` GONE check
+   * (align-claude-runtime-resident-session) — then maps its decision:
    *   - `{ done: false }`  → still running (re-check next tick);
    *   - `{ done: null }`   → inconclusive (transient read error; re-check next tick);
-   *   - `{ done: true }`   → the runtime ended the turn. The session is now gone (it
-   *     killed it), so resolve the real exit status via the SHARED
-   *     {@link resolveExitStatus} (so a clean `end_turn` maps to a zero exit →
-   *     `recordSuccess`, identical one-shot guardrails semantics to codex), unless
-   *     the runtime supplied an explicit `status`. Terminates exactly once.
-   * Never throws into the poller: a `detectExit` rejection is treated as
-   * inconclusive so a still-running claude task is never force-failed by a transient
-   * transcript-read blip (the abnormal-death watchdog still catches a truly dead one).
+   *   - `{ done: true }`   → the session is GONE (operator stop, or a configured
+   *     idle/deadline reclamation), so resolve the real exit status via the SHARED
+   *     {@link resolveExitStatus} (a clean shutdown → zero exit → `recordSuccess`),
+   *     unless the runtime supplied an explicit `status`. Terminates exactly once.
+   * Never throws into the poller: a `detectExit` rejection is treated as inconclusive
+   * so a still-running task is never force-failed by a transient probe blip (the
+   * abnormal-death watchdog still catches a truly dead session).
    */
   private async pollRuntimeExit(runtime: AgentRuntime): Promise<void> {
     // Call the port runtime's `detectExit` directly (refactor step 5: no adapter) —
-    // a port `SandboxExec` (via {@link toPortExec}) + the port `LaunchContext` with
-    // the stable `--session-id` the transcript read needs. codex's `detectExit` is
-    // the `tmux has-session` GONE check; claude's tails the `end_turn` transcript.
+    // a port `SandboxExec` (via {@link toPortExec}) + the port `LaunchContext`. BOTH
+    // codex and claude resolve from the `tmux has-session` GONE check; claude is a
+    // resident session, so a finished turn keeps it running (not killed on end_turn).
     let signal: ExitSignal | undefined;
     try {
       signal = await runtime.detectExit(toPortExec(this.runSandboxExec()), {
@@ -841,9 +838,9 @@ export class AioPtyClient implements TerminalPty {
       signal = undefined;
     }
     if (signal && signal.status === 'done') {
-      // The runtime ended the turn (it has already `tmux kill-session`ed). Resolve
-      // the real exit status via the SHARED path (a clean `end_turn` → zero exit →
-      // recordSuccess). Terminates exactly once.
+      // The session is GONE (operator stop, or a configured idle/deadline reclamation).
+      // Resolve the real exit status via the SHARED path (a clean shutdown → zero exit →
+      // recordSuccess), unless the runtime supplied an explicit status. Terminates once.
       if (this.exitResolved) return;
       this.exitResolved = true;
       this.stopLivenessPoller();
@@ -851,14 +848,12 @@ export class AioPtyClient implements TerminalPty {
       this.onExit?.(status);
       return;
     }
-    // detectExit says NOT-done (or was inconclusive/errored). The liveness poller is
-    // the ABNORMAL-DEATH WATCHDOG for a runtime whose normal completion is transcript-
-    // driven (3.4): if the detached session has nonetheless DISAPPEARED without an
-    // `end_turn` (the agent crashed, the tmux daemon died, or a turn killed its
-    // session in a way detectExit could not read), the task would otherwise hang
-    // forever. So probe `tmux has-session`: a definitively GONE session resolves the
-    // exit status (abnormal) exactly once. An alive/inconclusive session re-checks
-    // next tick — so a transient transcript-read blip never force-fails a live task.
+    // detectExit says NOT-done (or was inconclusive/errored). As an ABNORMAL-DEATH
+    // backstop the poller independently probes `tmux has-session`: a definitively GONE
+    // session (the agent crashed or the tmux daemon died) resolves the exit status
+    // exactly once, so a resident task whose session vanished is never left hanging. An
+    // alive/inconclusive session re-checks next tick — so a transient probe blip never
+    // force-fails a live, resident task idling for the operator's next input.
     const alive = await this.hasSession();
     if (alive === null || alive === true) return;
     if (this.exitResolved) return;

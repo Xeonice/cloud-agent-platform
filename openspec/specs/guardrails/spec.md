@@ -50,18 +50,20 @@ A task MAY carry a wall-clock deadline, supplied via the task create request (`d
 - **THEN** no deadline-based force-fail is applied
 
 ### Requirement: Idle ceiling reclaims wedged tasks
-Idle reclamation SHALL be OPT-IN PER TASK and OFF BY DEFAULT. The orchestrator SHALL track a running task's idle time (no terminal output and no agent-hook activity) and force-fail it on exceeding an idle ceiling ONLY when an idle ceiling is in effect for that task. An idle ceiling is in effect when the task carries an explicit per-task `idleTimeoutMs` (supplied via the task create request and passed through concurrency admission), OR when an operator-level global default is configured (`MAX_IDLE_MS`). When NEITHER is present — the default for a task created without an idle timeout in a deployment that has not set `MAX_IDLE_MS` — the task SHALL NOT be idle-tracked and SHALL NEVER be force-failed for idleness, so a legitimately long, quiet task is not reclaimed. The per-task `idleTimeoutMs` SHALL take precedence over the operator-level default. The idle ceiling is per task (not a single process-wide constant): when armed, the timer is sized to that task's effective ceiling and activity resets it against that same ceiling. (This remains distinct from the shorter "awaiting input" notification driven by the `Stop` hook, which does not fail the task.) When an idle force-fail tears down the sandbox, `SandboxProvider.teardownSandbox()` is STOP-ONLY for the AIO provider (the container is retained for read-only replay), and the slot is still freed.
+Idle reclamation SHALL be OPT-IN PER TASK and OFF BY DEFAULT. The orchestrator SHALL track a running task's idle time (no terminal output and no agent-hook activity) and reclaim it on exceeding an idle ceiling ONLY when an idle ceiling is in effect for that task. An idle ceiling is in effect when the task carries an explicit per-task `idleTimeoutMs` (supplied via the task create request and passed through concurrency admission), OR when an operator-level global default is configured (`MAX_IDLE_MS`). When NEITHER is present — the default for a task created without an idle timeout in a deployment that has not set `MAX_IDLE_MS` — the task SHALL NOT be idle-tracked and SHALL NEVER be reclaimed for idleness, so a resident continuous-conversation session that is quietly waiting for the next input is not reclaimed. The per-task `idleTimeoutMs` SHALL take precedence over the operator-level default. The idle ceiling is per task (not a single process-wide constant): when armed, the timer is sized to that task's effective ceiling and activity resets it against that same ceiling.
+
+When a configured idle ceiling trips, the integration layer SHALL transition the task to `completed` (the graceful end of a resident session that went quiet), NOT a force-`failed` — idle reclamation of a resident conversation is a normal end of life, distinct from an abnormal death. (This remains distinct from the shorter "awaiting input" notification driven by the `Stop` hook, which does not end the task.) When an idle reclamation tears down the sandbox, `SandboxProvider.teardownSandbox()` is STOP-ONLY for the AIO provider (the container is retained for read-only replay), and the slot is still freed.
 
 #### Scenario: Task without an idle ceiling is never idle-reclaimed
 - **WHEN** a task is created without an `idleTimeoutMs` and the deployment has no `MAX_IDLE_MS` configured, then runs silently past any prior 10-minute mark
-- **THEN** the orchestrator does NOT idle-track the task and never force-fails it for idleness, holding its slot until it terminates by another path (completion, operator stop, deadline, crash)
+- **THEN** the orchestrator does NOT idle-track the task and never reclaims it for idleness, holding its slot until it terminates by another path (operator stop, deadline, crash)
 
-#### Scenario: Per-task idle ceiling reclaims an idle task
+#### Scenario: Per-task idle ceiling reclaims an idle task as completed
 - **WHEN** a task is created WITH an explicit `idleTimeoutMs` and then produces no terminal output and no hook activity for longer than that ceiling
-- **THEN** the orchestrator force-fails the task, invokes `SandboxProvider.teardownSandbox()` for the task, and frees its slot
+- **THEN** the orchestrator transitions the task to `completed`, invokes `SandboxProvider.teardownSandbox()` for the task, and frees its slot
 
 #### Scenario: Idle teardown retains the container while freeing the slot
-- **WHEN** an idle force-fail invokes `teardownSandbox()` on the AIO provider
+- **WHEN** an idle reclamation invokes `teardownSandbox()` on the AIO provider
 - **THEN** the container is stopped-and-retained (not removed) and the task's concurrency slot is still freed
 
 #### Scenario: Operator-level default applies when no per-task value is given
