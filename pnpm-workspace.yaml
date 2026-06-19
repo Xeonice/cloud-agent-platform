@@ -1,7 +1,9 @@
 packages:
   - "apps/api"
   - "apps/web"
+  - "apps/www"
   - "apps/sandbox-hooks"
+  - "apps/release-cache-worker"
   - "packages/contracts"
   - "packages/ui"
   - "packages/tsconfig"

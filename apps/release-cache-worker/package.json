@@ -1,0 +1,24 @@
+{
+  "name": "@cap/release-cache-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Public, cache-only Cloudflare Worker that transparently proxies GitHub's releases/latest for a validated owner/repo and serves it through the CF edge cache. Fronts the api's update-availability check (GITHUB_API_BASE) to converge fleet traffic and survive GitHub blips within the cache window. Pure cache: no auth, no token, no telemetry, no payload rewrite.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint .",
+    "pretest": "pnpm -w exec turbo run build --filter=@cap/release-cache-worker",
+    "test": "node --test --test-force-exit \"test/**/*.test.mjs\"",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cap/eslint-config": "workspace:*",
+    "@cap/tsconfig": "workspace:*",
+    "@cloudflare/workers-types": "^4.20241127.0",
+    "@types/node": "^22.15.21",
+    "eslint": "^9.27.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^3.95.0"
+  }
+}
