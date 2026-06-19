@@ -7,8 +7,11 @@ import {
 import {
   AccountSettingsSchema,
   CodexCredentialSchema,
+  DEFAULT_MCP_SERVER_ENABLED,
+  McpServerSettingsSchema,
   type AccountSettings,
   type CodexCredential,
+  type McpServerSettings,
   type RetentionDays,
   type SaveCodexCredentialRequest,
   type SessionUser,
@@ -447,6 +450,48 @@ export class SettingsService {
   ): Promise<ModelDiscoveryResult> {
     await this.requireUserId(operator);
     return this.modelDiscovery.discover(baseUrl, apiKey);
+  }
+
+  /**
+   * remote-mcp-server 5.2 — Reads the SYSTEM-LEVEL `mcpServerEnabled` flag from
+   * the single shared `SystemSettings` row (the same row that carries
+   * `maxConcurrentTasks`). When no row has been persisted the flag resolves to
+   * {@link DEFAULT_MCP_SERVER_ENABLED} (false) so the `/mcp` surface ships inert
+   * until an operator deliberately enables it. This is an instance-wide flag, NOT
+   * a per-account preference, so no operator scoping is applied here; the
+   * controller admin-gates the read.
+   */
+  async readMcpServerSettings(): Promise<McpServerSettings> {
+    const row = await this.prisma.systemSettings.findUnique({
+      where: { id: SYSTEM_SETTINGS_ROW_ID },
+    });
+    return McpServerSettingsSchema.parse({
+      mcpServerEnabled: row?.mcpServerEnabled ?? DEFAULT_MCP_SERVER_ENABLED,
+    });
+  }
+
+  /**
+   * remote-mcp-server 5.2 — Persists the SYSTEM-LEVEL `mcpServerEnabled` flag via
+   * the fixed-id upsert on the single `SystemSettings` row, beside
+   * `maxConcurrentTasks`. The `update` branch touches ONLY the flag, leaving any
+   * persisted concurrency ceiling intact; the `create` branch (first write to the
+   * row) seeds `maxConcurrentTasks` from the effective env/default ceiling so a
+   * fresh row carries the correct concurrency value rather than an arbitrary one.
+   * Turning the flag off never deletes any minted token — it only stops new
+   * `/mcp` use. The controller admin-gates the write; the value is read straight
+   * from the request (no operator scoping — it is instance-wide).
+   */
+  async setMcpServerEnabled(enabled: boolean): Promise<McpServerSettings> {
+    await this.prisma.systemSettings.upsert({
+      where: { id: SYSTEM_SETTINGS_ROW_ID },
+      create: {
+        id: SYSTEM_SETTINGS_ROW_ID,
+        maxConcurrentTasks: await this.readSystemCeiling(),
+        mcpServerEnabled: enabled,
+      },
+      update: { mcpServerEnabled: enabled },
+    });
+    return McpServerSettingsSchema.parse({ mcpServerEnabled: enabled });
   }
 
   // ----- internals -----------------------------------------------------------

@@ -126,6 +126,11 @@ model Task {
   /// container reaping (persist-session-transcripts).
   sessionTranscript SessionTranscript?
 
+  /// Idempotency-key dedup records that admitted this task (zero or one per key).
+  /// Recorded in the SAME transaction as the task create so a raced retry cannot
+  /// double-admit a sandbox (public-v1-api).
+  idempotencyKeys IdempotencyKey[]
+
   @@index([repoId])
   @@map("tasks")
 }
@@ -159,6 +164,13 @@ model User {
   createdAt         DateTime @default(now()) @map("created_at")
 
   sessions        Session[]
+  /// Per-user machine-identity API keys (api-key-machine-identity). Hash-only,
+  /// revocable, cascade-deleted with the owning user.
+  apiKeys         ApiKey[]
+  /// Per-user remote-MCP machine tokens (remote-mcp-server). Hash-only,
+  /// revocable, cascade-deleted with the owning user. Mirrors the `apiKeys`
+  /// machine-identity relation but carries the distinct `mcp_` audience.
+  mcpTokens       McpToken[]
   /// Audit events attributed to this GitHub-identity user (nullable on the
   /// event side for system-originated events).
   auditEvents     AuditEvent[]
@@ -189,6 +201,100 @@ model Session {
   @@index([tokenHash])
   @@index([userId])
   @@map("sessions")
+}
+
+/// A per-user, revocable remote-MCP machine token (remote-mcp-server).
+///
+/// Mirrors {@link Session}'s hash-only discipline (and the api-key machine
+/// identity it is modeled on): `tokenHash` stores a HASH of the opaque token
+/// body (`randomBytes(32).base64url` → plain SHA-256) carrying the reserved
+/// `mcp_` prefix, never the raw token, so a database read can never recover a
+/// usable credential. The raw token is surfaced exactly ONCE at mint time; only
+/// the non-secret `prefix` (`mcp_`) and the masked `last4` suffix are persisted
+/// for display. `scopes` is the route-boundary authorization set (a subset of
+/// the contracts `Scope` enum). `lastUsedAt` is a best-effort, staleness-
+/// throttled bump off the hot auth path. A token past `expiresAt` or with
+/// `revokedAt` set is treated as unauthenticated; `resolveMcpToken` additionally
+/// re-checks the owner's allowlist on every request. A distinct model + `mcp_`
+/// prefix keeps the MCP audience separate from the `cap_sk_` api-key principal
+/// so MCP tokens are listed/revoked independently in their own settings card.
+/// Tokens cascade when the owning user is deleted.
+model McpToken {
+  id        String   @id @default(uuid())
+  /// FK to the owning user.
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// HASH of the opaque token body (never the raw token). UNIQUE so a presented
+  /// token resolves to at most one record.
+  tokenHash String   @unique @map("token_hash")
+  /// Non-secret reserved credential prefix (`mcp_`), persisted for display.
+  prefix    String   @map("prefix")
+  /// Masked suffix of the raw token (last 4 chars) for display only.
+  last4     String   @map("last4")
+  /// Operator-supplied human-friendly label for the token.
+  name      String   @map("name")
+  /// Route-boundary authorization scopes (a subset of the contracts `Scope`
+  /// enum). Postgres text[].
+  scopes    String[] @map("scopes")
+
+  /// Best-effort, staleness-throttled last-use timestamp. Null until first use.
+  lastUsedAt DateTime? @map("last_used_at")
+  /// Absolute expiry; a token past this is treated as unauthenticated. Null
+  /// means no expiry.
+  expiresAt  DateTime? @map("expires_at")
+  /// Revocation timestamp; a token with this set is treated as unauthenticated.
+  /// Null means active.
+  revokedAt  DateTime? @map("revoked_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("mcp_tokens")
+}
+
+/// A per-user, revocable machine-identity API key (api-key-machine-identity).
+///
+/// Mirrors {@link Session}'s hash-only discipline: `tokenHash` stores a HASH of
+/// the opaque `cap_sk_…` key body (`randomBytes(32).base64url` → plain SHA-256),
+/// never the raw key, so a database read can never recover a usable credential.
+/// The raw key is surfaced exactly ONCE at mint time; only the non-secret
+/// `prefix` (`cap_sk_`) and the masked `last4` suffix are persisted for display.
+/// `scopes` is the route-boundary authorization set (a subset of the contracts
+/// `Scope` enum). `lastUsedAt` is a best-effort, staleness-throttled bump off the
+/// hot auth path. A key past `expiresAt` or with `revokedAt` set is treated as
+/// unauthenticated; resolution additionally re-checks the owner's allowlist on
+/// every request. Keys cascade when the owning user is deleted.
+model ApiKey {
+  id        String @id @default(uuid())
+  /// FK to the owning user.
+  userId    String @map("user_id")
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// HASH of the opaque key body (never the raw key). UNIQUE so a presented key
+  /// resolves to at most one record.
+  tokenHash String @unique @map("token_hash")
+  /// Non-secret reserved credential prefix (`cap_sk_`), persisted for display.
+  prefix    String @map("prefix")
+  /// Masked suffix of the raw key (last 4 chars) for display only.
+  last4     String @map("last4")
+  /// Operator-supplied human-friendly label for the key.
+  name      String @map("name")
+  /// Route-boundary authorization scopes (a subset of the contracts `Scope`
+  /// enum). Postgres text[].
+  scopes    String[] @map("scopes")
+
+  /// Best-effort, staleness-throttled last-use timestamp. Null until first use.
+  lastUsedAt DateTime? @map("last_used_at")
+  /// Absolute expiry; a key past this is treated as unauthenticated. Null means
+  /// no expiry.
+  expiresAt  DateTime? @map("expires_at")
+  /// Revocation timestamp; a key with this set is treated as unauthenticated.
+  /// Null means active.
+  revokedAt  DateTime? @map("revoked_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("api_keys")
 }
 
 /// An immutable, append-only audit event (audit-history spec).
@@ -295,6 +401,13 @@ model SystemSettings {
   /// The system-wide task concurrency ceiling (contracts constrain to 1–20).
   maxConcurrentTasks Int @map("max_concurrent_tasks")
 
+  /// Whether the remote MCP server (`/mcp`) is served (remote-mcp-server). Off
+  /// by default — the outward-facing sandbox-execution surface ships inert and
+  /// requires a deliberate admin enable. When `false`, `/mcp` serves no MCP
+  /// traffic and no `mcp_` token resolves a usable session there; turning it
+  /// off stops new use without deleting any minted token.
+  mcpServerEnabled Boolean @default(false) @map("mcp_server_enabled")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -393,4 +506,50 @@ model SessionTranscript {
   content String @map("content")
 
   @@map("session_transcripts")
+}
+
+/// A per-principal idempotency record for `POST /v1/tasks` (public-v1-api).
+///
+/// `POST /v1/tasks` accepts an optional `Idempotency-Key` header. The dedup row
+/// is INSERTED in the SAME transaction as the `Task` create, so a raced retry can
+/// never double-admit a sandbox: the UNIQUE `([scopeUserId, key])` makes the
+/// second insert fail, and the handler then returns the already-recorded `taskId`.
+///
+/// Scope semantics: `scopeUserId` is the PER-PRINCIPAL scope string (the api-key
+/// owner / session user identity), NOT a hard FK — the principal kind is not
+/// guaranteed to be a `users.id` row, so the column stays a plain scoped
+/// identifier and the dedup is scoped to it. `key` is the caller-supplied header
+/// value; `requestHash` is a hash of the canonicalized request body, used to
+/// reject a reused key carrying a DIFFERENT body with 409. `taskId` FK-links to
+/// the task the key admitted (cascades on task delete). `expiresAt` bounds the
+/// dedup window to 24h from creation.
+model IdempotencyKey {
+  id String @id @default(uuid())
+
+  /// Caller-supplied `Idempotency-Key` header value.
+  key String @map("key")
+
+  /// Per-principal scope (the api-key owner / session user identity). A plain
+  /// scoped identifier, NOT a DB FK: the dedup is scoped per principal but the
+  /// principal kind is not guaranteed to be a `users.id` row.
+  scopeUserId String @map("scope_user_id")
+
+  /// Hash of the canonicalized request body. A reused key with a DIFFERENT body
+  /// (mismatched hash) is rejected with 409.
+  requestHash String @map("request_hash")
+
+  /// FK to the task this key admitted; cascades when the task is deleted.
+  taskId String @map("task_id")
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  /// When the dedup record was created.
+  createdAt DateTime @default(now()) @map("created_at")
+
+  /// Absolute expiry (creation + 24h); a record past this no longer dedups.
+  expiresAt DateTime @map("expires_at")
+
+  @@unique([scopeUserId, key])
+  @@index([taskId])
+  @@index([expiresAt])
+  @@map("idempotency_keys")
 }

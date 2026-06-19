@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -15,6 +16,7 @@ import {
 import {
   DiscoverModelsRequestSchema,
   SaveCodexCredentialRequestSchema,
+  UpdateMcpServerSettingsRequestSchema,
   UpdateSettingsRequestSchema,
   type AccountSettings,
   type CodexCredential,
@@ -22,11 +24,14 @@ import {
   type CodexDeviceLoginStatus,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
+  type McpServerSettings,
   type SaveCodexCredentialRequest,
   type SessionUser,
+  type UpdateMcpServerSettingsRequest,
   type UpdateSettingsRequest,
 } from '@cap/contracts';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
+import { isAdminPrincipal } from '../auth/admin';
 import { ZodValidationPipe } from '../repos/zod-validation.pipe';
 import { SettingsService } from './settings.service';
 import { CodexDeviceLoginService } from './codex-device-login.service';
@@ -127,6 +132,40 @@ export class SettingsController {
   }
 
   /**
+   * remote-mcp-server 5.2 — Reads the SYSTEM-LEVEL `mcpServerEnabled` flag.
+   * ADMIN-gated: only an explicitly-allowlisted admin operator may observe the
+   * toggle state (mirroring the self-update admin gate). A non-admin session or a
+   * machine principal (mcp / api-key) is rejected 403 BEFORE the service runs.
+   * The flag is instance-wide, so this is NOT account-scoped.
+   */
+  @Get('mcp-server')
+  async readMcpServer(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<McpServerSettings> {
+    this.requireAdmin(req);
+    return this.settings.readMcpServerSettings();
+  }
+
+  /**
+   * remote-mcp-server 5.2 — Flips the SYSTEM-LEVEL `mcpServerEnabled` flag.
+   * ADMIN-gated identically to the read: only an admin may turn the `/mcp`
+   * surface on/off; a non-admin session or a machine principal is 403 and nothing
+   * is mutated. The shared `UpdateMcpServerSettingsRequestSchema` pipe rejects a
+   * malformed body 400 before the handler. Turning it off stops new `/mcp` use
+   * without deleting any minted token.
+   */
+  @Put('mcp-server')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(UpdateMcpServerSettingsRequestSchema))
+  async updateMcpServer(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: UpdateMcpServerSettingsRequest,
+  ): Promise<McpServerSettings> {
+    this.requireAdmin(req);
+    return this.settings.setMcpServerEnabled(body.mcpServerEnabled);
+  }
+
+  /**
    * Start an OFFICIAL-account OAuth device-code login: provisions a transient
    * codex container, launches `codex login --device-auth`, and returns the OpenAI
    * verification URL + one-time code for the operator to authorize. The client
@@ -174,5 +213,41 @@ export class SettingsController {
       });
     }
     return user;
+  }
+
+  /**
+   * remote-mcp-server 5.2/5.3 — Narrows the guard-attached principal to an
+   * explicitly-allowlisted ADMIN *session*. The global `AuthGuard` has already
+   * 401'd an unauthenticated / de-allowlisted caller and attached the resolved
+   * principal; this re-narrows on TWO independent conditions so the toggle is
+   * never read or mutated by the wrong caller:
+   *
+   *   1. it MUST be a GitHub-OAuth `session` principal — a MACHINE credential
+   *      (`mcp` / `api-key`) or the identity-less `legacy-token` operator is
+   *      rejected 403 even if its owner is on the admin allowlist, so the
+   *      outward-facing execution surface can never be flipped by a machine
+   *      credential (no-escalation, mirroring the API-key CRUD gate); and
+   *   2. it MUST be an explicitly-allowlisted admin
+   *      ({@link isAdminPrincipal} / `SELF_UPDATE_ADMINS`, the same narrow admin
+   *      set the host-root self-update uses) — a merely-logged-in non-admin
+   *      operator is rejected 403.
+   *
+   * "Who may flip the MCP server" is therefore the narrow ADMIN-SESSION set, not
+   * any operator and never a machine credential.
+   */
+  private requireAdmin(req: AuthenticatedRequest): void {
+    const principal = req.operatorPrincipal;
+    if (
+      !principal ||
+      principal.kind !== 'session' ||
+      !isAdminPrincipal(principal)
+    ) {
+      throw new ForbiddenException({
+        error: 'admin_required',
+        message:
+          'Toggling the MCP server requires an admin operator session ' +
+          '(SELF_UPDATE_ADMINS); a non-admin or a machine credential cannot.',
+      });
+    }
   }
 }

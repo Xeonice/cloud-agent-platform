@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { buildLoggerOptions } from './observability/logger.options';
 import { PrismaModule } from './prisma/prisma.module';
@@ -17,6 +19,13 @@ import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { AuditModule } from './audit/audit.module';
 import { SettingsModule } from './settings/settings.module';
+import { ApiKeysModule } from './api-keys/api-keys.module';
+import { McpTokensModule } from './mcp-tokens/mcp-tokens.module';
+import { McpModule } from './mcp/mcp.module';
+import { V1Module } from './v1/v1.module';
+import { OpenApiModule } from './openapi/openapi.module';
+import { PrincipalThrottlerGuard } from './rate-limit/principal.throttler-guard';
+import { buildThrottlerOptions } from './rate-limit/throttler.options';
 
 /**
  * Root application module.
@@ -59,6 +68,29 @@ import { SettingsModule } from './settings/settings.module';
  *    gated `/settings*` surface, the per-account-scoped preferences + the
  *    AES-256-GCM-encrypted-at-rest compatible-provider Codex credential, and the
  *    candidate model-discovery boundary.
+ *  - api-keys: `ApiKeysModule` (api-key-machine-identity, tasks 5.1/5.2) exposes
+ *    the session-gated `/api-keys*` surface — mint (raw `cap_sk_…` shown once,
+ *    hash-only at rest), list (non-secret metadata), revoke (idempotent). Every
+ *    route is session-ONLY (a machine credential is 403'd), so a key cannot mint
+ *    another key. Composing it is the live target of the CI boot-smoke (Track 1).
+ *  - public API: `V1Module` (public-v1-api, Integration 3.6) assembles the
+ *    additive `/v1` REST + SSE surface (task/repo/transcript controllers + the
+ *    lifecycle-event SSE controller), delegating to the SAME services the console
+ *    uses (one task-admission path). `OpenApiModule` (Integration 4.1) serves the
+ *    unauthenticated `GET /v1/openapi.json` + `GET /v1/docs` generated from the
+ *    `@cap/contracts` `/v1` schemas, so the published spec cannot drift from the
+ *    wire. Both are imported AFTER `AuthModule` so the global auth guard already
+ *    protects the `/v1` data surface (only the exact-match docs/spec paths are
+ *    exempt in `auth.guard.ts`).
+ *  - rate limiting: `ThrottlerModule.forRoot(buildThrottlerOptions())` registers
+ *    the in-memory, env-overridable `default` (per-request) + `create` (the
+ *    stricter `POST /v1/tasks` cap the v1-tasks `@Throttle({ create })` references)
+ *    throttlers, and {@link PrincipalThrottlerGuard} is registered as a SECOND
+ *    global `APP_GUARD` (public-v1-api, Integration 6.1). It is listed in
+ *    `providers` AFTER `AuthModule` (whose own `APP_GUARD` is the auth guard)
+ *    appears in `imports`, so it runs AFTER auth and can key its bucket on the
+ *    resolved `req.operatorPrincipal` (per-api-key id / per-owner githubId) rather
+ *    than the client IP (design D7).
  */
 @Module({
   imports: [
@@ -79,9 +111,47 @@ import { SettingsModule } from './settings/settings.module';
     UpdateStatusModule,
     SelfUpdateModule,
     RuntimesModule,
+    // AuthModule registers the GLOBAL auth guard (the FIRST APP_GUARD). It is
+    // imported BEFORE the throttler guard is provided below so the two global
+    // guards run auth-then-throttle (the throttler keys on the post-auth
+    // principal). 6.1.
     AuthModule,
     AuditModule,
     SettingsModule,
+    ApiKeysModule,
+    // remote-mcp-server (integration, task 7.2): the two new feature modules,
+    // wired here in the ROOT module — the one `app.module.ts` edit both backend
+    // feature tracks would otherwise both touch, so it is isolated to the
+    // serialized integration step. `McpTokensModule` (Track 3) owns the
+    // session-minted `mcp_` credential lifecycle (`/mcp-tokens` CRUD +
+    // `resolveMcpToken` reached through `AuthSessionService`); `McpModule`
+    // (Track 4) owns the `/mcp` StreamableHTTP endpoint + the six tools, gated on
+    // `SystemSettings.mcpServerEnabled` (default false → inert) and bearer-checked
+    // by the `requireBearerAuth` middleware mounted in `main.ts`. Both are imported
+    // AFTER `AuthModule` so the global auth guard already governs the REST surface
+    // (the guard EXACT-MATCH exempts `/mcp`, which `requireBearerAuth` gates
+    // downstream). The settings `mcpServerEnabled` toggle (Track 5) lives inside
+    // the already-registered `SettingsModule`, so it needs no AppModule edit.
+    McpTokensModule,
+    McpModule,
+    // public-v1-api: the versioned `/v1` data/SSE surface + its OpenAPI docs.
+    // After AuthModule so the global auth guard already covers the data routes.
+    V1Module,
+    OpenApiModule,
+    // public-v1-api 6.1: in-memory, env-overridable named throttlers — `default`
+    // (the global per-request cap) + `create` (the stricter POST /v1/tasks cap
+    // referenced by the v1-tasks `@Throttle({ create })`).
+    ThrottlerModule.forRoot(buildThrottlerOptions()),
+  ],
+  providers: [
+    // public-v1-api 6.1: the SECOND global guard. Provided here (not inside a
+    // feature module) and AFTER AuthModule is imported, so global-guard order is
+    // auth-then-throttle — the throttler reads the principal the auth guard
+    // attached and keys the rate bucket per-principal, not per-IP (design D7).
+    {
+      provide: APP_GUARD,
+      useClass: PrincipalThrottlerGuard,
+    },
   ],
 })
 export class AppModule {}

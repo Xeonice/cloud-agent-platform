@@ -1,10 +1,34 @@
 import 'reflect-metadata';
+import { extendZodWithOpenApi } from '@asteasolutions/zod-to-openapi';
 import { NestFactory } from '@nestjs/core';
 import { WsAdapter } from '@nestjs/platform-ws';
 import { Logger } from 'nestjs-pino';
-import { authTokenConfigSchema } from '@cap/contracts';
+import type { Request, RequestHandler, Response, NextFunction } from 'express';
+import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js';
+import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
+import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import {
+  authTokenConfigSchema,
+  RESERVED_CREDENTIAL_PREFIXES,
+  contractsZod,
+} from '@cap/contracts';
 import { AppModule } from './app.module';
+import { AuthSessionService } from './auth/auth-session.service';
 import { isLegacyTokenEnabled, parseWebOrigins } from './auth/oauth-config';
+
+// public-v1-api (Integration 4.1): the ONCE-per-process `extendZodWithOpenApi`
+// init, owned here (outside `@cap/contracts`) so the `.openapi(...)` augmentation
+// is installed before ANY schema is registered into the OpenAPI document. It is
+// idempotent (the registry also calls it defensively so it can generate in
+// isolation), but this is the canonical single call at the bootstrap seam.
+//
+// CRITICAL: it must extend the EXACT zod instance the `@cap/contracts` schemas are
+// built on — re-exported as `contractsZod` — NOT the api's own `import/require('zod')`.
+// `@cap/contracts` is ESM (resolves zod's `index.js`) while the api is CJS (resolves
+// the SEPARATE `index.cjs` class realm); extending the CJS realm would leave every
+// ESM-built contract schema without `.openapi`, and OpenAPI generation would throw
+// `schema.openapi is not a function`. Extending `contractsZod` patches the right realm.
+extendZodWithOpenApi(contractsZod);
 
 /**
  * Orchestrator bootstrap.
@@ -51,6 +75,33 @@ async function bootstrap(): Promise<void> {
     }
   }
 
+  // api-key-machine-identity (task 4.6, D5/G10) — RESERVED-PREFIX boot assertion.
+  // The legacy `AUTH_TOKEN` is an OPERATOR-CHOSEN free-form value, so (unlike a
+  // random session/api-key token) it could begin with a reserved credential
+  // prefix. A prefixed `AUTH_TOKEN` would be silently routed by the FIRST-step
+  // prefix dispatch in resolveOperatorPrincipal to a MACHINE resolver (hash miss
+  // -> null) and never reach its constant-time compare, breaking legacy operator
+  // auth without warning. Refuse to boot when a configured `AUTH_TOKEN` collides,
+  // with a clear error NAMING the reserved prefixes. Checked whenever AUTH_TOKEN
+  // is set (independent of the legacy flag), since the path can be enabled later.
+  const authToken = process.env.AUTH_TOKEN;
+  if (typeof authToken === 'string' && authToken.length > 0) {
+    const colliding = RESERVED_CREDENTIAL_PREFIXES.find((prefix) =>
+      authToken.startsWith(prefix),
+    );
+    if (colliding !== undefined) {
+      console.error(
+        `FATAL: AUTH_TOKEN begins with the reserved credential prefix "${colliding}". ` +
+          `Reserved prefixes (${RESERVED_CREDENTIAL_PREFIXES.join(', ')}) route a ` +
+          'presented bearer to a machine-credential resolver BEFORE the legacy ' +
+          'operator-token comparison, so an AUTH_TOKEN carrying one would be ' +
+          'silently mis-routed and never authenticate. Choose an AUTH_TOKEN that ' +
+          'does not start with any reserved prefix and restart.',
+      );
+      process.exit(1);
+    }
+  }
+
   // structured-logging: buffer early logs until pino is ready, then promote the
   // nestjs-pino Logger to the app logger so framework bootstrap/route-mapping
   // logs AND the existing `this.logger.*` call sites all emit structured JSON.
@@ -73,15 +124,151 @@ async function bootstrap(): Promise<void> {
   // of this very list. CORS behaviour is unchanged — an empty list still maps to
   // `origin: false` (no cross-origin browser app), never `*`.
   const allowedOrigins = parseWebOrigins(process.env.WEB_ORIGIN);
-  app.enableCors({
-    origin: allowedOrigins.length > 0 ? allowedOrigins : false,
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+  // The console's CREDENTIALED CORS — but applied via a per-request DELEGATE so it
+  // is NEVER applied to `/mcp` (remote-mcp-server, task 7.2). The MCP surface is a
+  // distinct, bearer-only / non-credentialed CORS domain (configured below); a
+  // wildcard `/mcp` origin must never inherit `Allow-Credentials`, and an
+  // MCP-client origin is never folded into the console allow-list. For `/mcp` the
+  // delegate disables CORS entirely (origin:false, credentials:false) so the
+  // global handler writes NO credentialed header there — the `mcpCorsMiddleware`
+  // owns `/mcp` CORS exclusively. Every other route gets the unchanged console
+  // policy (env allow-list, credentialed).
+  app.enableCors((req: Request, callback: CorsDelegateCallback): void => {
+    if (isMcpPath(req.url)) {
+      callback(null, { origin: false, credentials: false });
+      return;
+    }
+    callback(null, {
+      origin: allowedOrigins.length > 0 ? allowedOrigins : false,
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
+    });
   });
+
+  // remote-mcp-server (integration, task 7.2): mount the `/mcp` bearer gate +
+  // a route-scoped, NON-CREDENTIALED CORS shim. Registered AFTER `enableCors` but
+  // the delegate above already opted `/mcp` OUT of the credentialed handler, so
+  // this is the SOLE writer of `/mcp` CORS headers. An absent/invalid `mcp_`
+  // bearer is 401'd here before the request ever reaches the `McpController`.
+  //
+  // CORS posture is DELIBERATELY distinct from the console's credentialed
+  // allow-list above: an MCP client authenticates with a STATIC bearer header and
+  // never a cookie, so `/mcp` advertises a bearer-only, non-credentialed CORS
+  // (`Access-Control-Allow-Origin: *`, NO `Allow-Credentials`). A wildcard origin
+  // with credentials is forbidden by browsers and would be a CSRF foothold.
+  const authSession = app.get(AuthSessionService);
+  app.use('/mcp', mcpCorsMiddleware());
+  app.use('/mcp', mcpBearerAuthMiddleware(authSession));
 
   const port = Number(process.env.PORT ?? 3000);
   await app.listen(port);
+}
+
+/**
+ * The callback Nest's `enableCors` delegate form invokes with the per-request CORS
+ * options. Typed locally (the `cors` option shape Nest forwards to the underlying
+ * `cors` package) so the delegate stays free of a direct `cors`/`@types/cors`
+ * dependency. `credentials: false` + `origin: false` disables CORS for the route.
+ */
+type CorsDelegateCallback = (
+  err: Error | null,
+  options: {
+    origin?: boolean | string | string[];
+    credentials?: boolean;
+    methods?: string[];
+    allowedHeaders?: string[];
+  },
+) => void;
+
+/**
+ * True when a request URL targets the `/mcp` endpoint (EXACT match on the path,
+ * ignoring the query string), so the global credentialed CORS delegate opts it
+ * OUT and the bearer-only `mcpCorsMiddleware` owns its CORS exclusively. Matches
+ * `/mcp` only — not a `/mcp*` prefix — mirroring the guard's exact-match exemption.
+ */
+function isMcpPath(url: string | undefined): boolean {
+  const path = (url ?? '').split('?')[0].replace(/\/+$/, '');
+  return path === '/mcp';
+}
+
+/**
+ * Route-scoped, NON-CREDENTIALED CORS for `/mcp` (remote-mcp-server, task 7.2).
+ *
+ * An MCP client presents a STATIC `Authorization: Bearer mcp_…` header and no
+ * cookie, so the endpoint advertises a bearer-only CORS: any origin (`*`) may
+ * call it, but WITHOUT `Access-Control-Allow-Credentials` — so no browser ever
+ * attaches the console's session cookie here, and the `mcp_` bearer is the sole
+ * credential. A preflight `OPTIONS` is answered 204 directly. This is mounted
+ * ONLY on `/mcp`; the console's credentialed CORS (configured above) is
+ * untouched, and an MCP-client origin is never folded into it.
+ */
+function mcpCorsMiddleware(): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Vary', 'Origin');
+    res.setHeader(
+      'Access-Control-Allow-Methods',
+      'GET, POST, DELETE, OPTIONS',
+    );
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Content-Type, Authorization, Mcp-Session-Id, Mcp-Protocol-Version',
+    );
+    res.setHeader(
+      'Access-Control-Expose-Headers',
+      'Mcp-Session-Id, Mcp-Protocol-Version',
+    );
+    // Bearer-only: deliberately NO `Access-Control-Allow-Credentials`.
+    if (req.method === 'OPTIONS') {
+      res.statusCode = 204;
+      res.end();
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * The SDK `requireBearerAuth` middleware bound to {@link AuthSessionService}'s
+ * `resolveMcpToken` (remote-mcp-server, task 7.2 / G1). The verifier hashes →
+ * looks up → re-confirms the owner's allowlist and returns a FULL `AuthInfo`
+ * (`expiresAt` populated in seconds, so the SDK never 401s a valid token); a
+ * null resolution (unknown / revoked / expired / de-allowlisted) is surfaced as
+ * an `InvalidTokenError`, which the SDK renders as a 401 that ENDS the request —
+ * no OAuth discovery header is configured because the token is settings-minted,
+ * not negotiated. The transport threads the resolved `AuthInfo` into each tool's
+ * `extra.authInfo`, where the per-tool scope gate reads it.
+ */
+function mcpBearerAuthMiddleware(
+  authSession: AuthSessionService,
+): RequestHandler {
+  return requireBearerAuth({
+    verifier: {
+      verifyAccessToken: async (token: string): Promise<AuthInfo> => {
+        const info = await authSession.resolveMcpToken(token);
+        if (info === null) {
+          // Fail-closed: the SDK catches this and replies 401, ending the request.
+          throw new InvalidTokenError('Invalid or revoked MCP token');
+        }
+        return {
+          token: info.token,
+          clientId: info.clientId,
+          scopes: info.scopes,
+          // G1: a populated seconds-since-epoch expiry — the SDK 401s a token
+          // with no `expiresAt`. `resolveMcpToken` always sets it (far-future for
+          // a never-expiring token).
+          expiresAt: info.expiresAt,
+          // Carry the owner's GitHub id under `extra.githubId` — the exact key
+          // `mcp.server.ts#githubIdFromExtra` reads for best-effort audit
+          // attribution on create/stop. `resource` is intentionally omitted (no
+          // audience negotiation in the settings-minted model, so no
+          // resource-match 401 risk).
+          extra: { githubId: info.ownerGithubId },
+        };
+      },
+    },
+  });
 }
 
 void bootstrap();

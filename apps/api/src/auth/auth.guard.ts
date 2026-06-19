@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import type { SessionUser } from '@cap/contracts';
+import type { Scope, SessionUser } from '@cap/contracts';
 import { AuthSessionService } from './auth-session.service';
 import {
   resolveOperatorPrincipal,
@@ -71,17 +71,31 @@ export class AuthGuard implements CanActivate {
 
   /**
    * Request paths (lower-cased, slash-normalized) exempt from operator auth
-   * because they expose only liveness / build-metadata and carry NO secrets:
+   * because they expose only liveness / build-metadata / public API metadata and
+   * carry NO secrets:
    *   - `/health` — the liveness probe (single-user-auth 11.2b);
    *   - `/version` — the unauthenticated build-version sibling of `/health`
    *     (versioned-release-pipeline, design D1) reporting
    *     `{ version, gitSha, buildTime }`. It is build metadata, so it needs no
    *     operator principal, exactly like `/health`.
-   * Kept in sync with the `/health` + `/version` unauthenticated endpoints.
+   *   - `/v1/openapi.json` — the OpenAPI 3.1 document for the public `/v1`
+   *     surface (public-v1-api, design D3 / task 4.3). It is read-only API
+   *     metadata generated from the `@cap/contracts` schemas; it carries no
+   *     secrets, so it needs no operator principal, exactly like `/version`.
+   *   - `/v1/docs` — the interactive Swagger UI page that renders the document
+   *     above (same rationale: read-only public API metadata, no secrets).
+   * These two `/v1` exemptions are EXACT-MATCH (like `/version`): they exempt
+   * ONLY the docs/spec endpoints. Every `/v1` DATA route (`/v1/tasks`,
+   * `/v1/repos`, …) is NOT listed here and stays behind the operator guard, so an
+   * unauthenticated caller is rejected with 401 before reaching any handler.
+   * Kept in sync with the unauthenticated `/health` + `/version` endpoints and
+   * the `OpenApiController` (`GET /v1/openapi.json` + `GET /v1/docs`).
    */
   private static readonly PUBLIC_METADATA_PATHS: readonly string[] = [
     '/health',
     '/version',
+    '/v1/openapi.json',
+    '/v1/docs',
   ];
 
   /**
@@ -114,13 +128,32 @@ export class AuthGuard implements CanActivate {
     '/auth/logout',
   ];
 
+  /**
+   * Paths exempt from the SESSION guard because the remote MCP surface
+   * (`/mcp`) is bearer-protected DOWNSTREAM by the SDK `requireBearerAuth`
+   * (remote-mcp-server, task 3.4 / D6), not by an operator session.
+   *
+   * The match is EXACT (`/mcp` only, not a `/mcp*` prefix — G8): a prefix
+   * exemption would silently expose any future `/mcp…` route. `/mcp` itself
+   * carries no operator session; an absent/invalid `mcp_` bearer is rejected
+   * with 401 by `requireBearerAuth` (registered in `main.ts`, Track 7), so
+   * removing it from the session guard does NOT open it — it merely hands the
+   * gate to the MCP-token verifier. Every other path stays under the session
+   * guard, where a presented `mcp_` bearer resolves (via the prefix-routed
+   * {@link AuthSessionService.resolveMcpToken} slot of
+   * {@link resolveOperatorPrincipal}) to an `mcp` MACHINE principal that a
+   * session-only endpoint rejects.
+   */
+  private static readonly MCP_EXEMPT_PATHS: readonly string[] = ['/mcp'];
+
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
 
     if (
       AuthGuard.isHealthCheck(request) ||
       AuthGuard.isOAuthEntryPoint(request) ||
-      AuthGuard.isSandboxCallback(request)
+      AuthGuard.isSandboxCallback(request) ||
+      AuthGuard.isMcpEndpoint(request)
     ) {
       return true;
     }
@@ -128,9 +161,26 @@ export class AuthGuard implements CanActivate {
     const principal = await resolveOperatorPrincipal(
       {
         sessionToken: AuthGuard.extractSessionToken(request),
-        legacyBearerToken: AuthGuard.extractBearerToken(request.headers.authorization),
+        bearerToken: AuthGuard.extractBearerToken(request.headers.authorization),
       },
-      (token) => this.authSession.resolveSession(token),
+      {
+        resolveSession: (token) => this.authSession.resolveSession(token),
+        resolveApiKey: (raw) => this.authSession.resolveApiKey(raw),
+        // Bind the reserved `mcp_` slot (remote-mcp-server, task 3.3): an `mcp_`
+        // bearer presented to a NON-`/mcp` route resolves (hash → allowlist
+        // re-check) to an `mcp` MACHINE principal carrying the token's scopes —
+        // never tried as a session/legacy/api-key credential. `/mcp` itself is
+        // exempt above and gated by `requireBearerAuth`; this binding makes an
+        // `mcp_` token a recognised (but session-rejected) principal everywhere
+        // else rather than a fail-closed denial.
+        resolveMcp: async (raw) => {
+          const authInfo = await this.authSession.resolveMcpToken(raw);
+          if (authInfo === null) {
+            return null;
+          }
+          return { kind: 'mcp', user: null, scopes: authInfo.scopes as Scope[] };
+        },
+      },
     );
 
     if (principal === null) {
@@ -171,6 +221,15 @@ export class AuthGuard implements CanActivate {
   }
 
   /**
+   * True when the request targets the remote MCP endpoint (`/mcp`, EXACT match),
+   * which is bearer-protected downstream by the SDK `requireBearerAuth` rather
+   * than by the operator session. See {@link MCP_EXEMPT_PATHS}.
+   */
+  private static isMcpEndpoint(request: Request): boolean {
+    return AuthGuard.MCP_EXEMPT_PATHS.includes(AuthGuard.normalizePath(request));
+  }
+
+  /**
    * Lower-cased, query-stripped, trailing-slash-normalized request path, so e.g.
    * `/health/` and `/Auth/Session?x=1` match their canonical exempt forms.
    */
@@ -190,8 +249,11 @@ export class AuthGuard implements CanActivate {
   }
 
   /**
-   * Extracts the token from an `Authorization: Bearer <token>` header — the
-   * candidate for the gated legacy `AUTH_TOKEN` operator path (task 2.8).
+   * Extracts the token from an `Authorization: Bearer <token>` header — the single
+   * bearer slot that {@link resolveOperatorPrincipal} routes by token PREFIX
+   * (api-key-machine-identity, task 4.3/4.4): a `cap_sk_` key, a reserved `mcp_`
+   * credential, or (unprefixed) the gated legacy `AUTH_TOKEN` operator candidate
+   * (task 2.8).
    *
    * Returns the token string when the header is exactly a `Bearer` scheme
    * followed by a single non-empty token, or `null` for a missing header, a

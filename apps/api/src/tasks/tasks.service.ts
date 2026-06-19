@@ -436,7 +436,33 @@ export class TasksService implements OnApplicationBootstrap {
     body: CreateTaskBody,
     githubId?: number,
   ): Promise<TaskResponse> {
-    const repo = await this.prisma.repo.findUnique({ where: { id: repoId } });
+    // Console + non-idempotent path: persist the task ROW, then admit (audit +
+    // provision) it. Split into two steps (public-v1-api V.1) so the `/v1`
+    // idempotency path can commit the row ATOMICALLY with its dedup row inside one
+    // transaction and run the admission AFTER that transaction commits — a rolled
+    // back transaction must never leave a provisioned sandbox. Behavior here is
+    // unchanged: the two steps run in the same order as before.
+    const response = await this.createTaskRow(repoId, body);
+    await this.admitCreatedTask(response.id, body, githubId);
+    return response;
+  }
+
+  /**
+   * Persist the task ROW ONLY — validation + the `task.create` INSERT — optionally
+   * on a caller-supplied transaction-bound Prisma client (`client`) so the row can
+   * commit ATOMICALLY with another write in the same transaction (the `/v1`
+   * idempotency dedup row, public-v1-api V.1 / D5). Records NO audit and does NOT
+   * offer the task to the guardrails semaphore: that is {@link admitCreatedTask},
+   * run AFTER the row (and any transaction it shares) has COMMITTED, so a rollback
+   * can never provision an orphan sandbox. Defaults to the injected `this.prisma`
+   * for the ordinary (non-transactional) console path.
+   */
+  async createTaskRow(
+    repoId: string,
+    body: CreateTaskBody,
+    client: PrismaService = this.prisma,
+  ): Promise<TaskResponse> {
+    const repo = await client.repo.findUnique({ where: { id: repoId } });
     if (!repo) {
       throw new NotFoundException(`Repo not found: ${repoId}`);
     }
@@ -475,7 +501,7 @@ export class TasksService implements OnApplicationBootstrap {
       }
     }
 
-    const task = await this.prisma.task.create({
+    const task = await client.task.create({
       data: {
         repoId,
         prompt: body.prompt,
@@ -513,36 +539,49 @@ export class TasksService implements OnApplicationBootstrap {
     // on `cap-net`, so there is no dial-back to authenticate (token issuance +
     // the dial-back verifier were removed with the runner, migrate-aio 7.4).
 
+    return taskResponseSchema.parse(this.toResponse(task));
+  }
+
+  /**
+   * Post-row admission for a freshly-created task: record the `task.created`
+   * audit event (BEFORE admit, so it precedes any running/queued event in the
+   * timeline) then offer the task to the guardrails concurrency semaphore. Run
+   * ONLY AFTER the task row (and any transaction it shared — the `/v1` idempotency
+   * dedup, public-v1-api V.1) has COMMITTED, never inside a transaction, so a
+   * rolled-back transaction can never leave a provisioned sandbox. Best-effort
+   * throughout; never blocks the response.
+   */
+  async admitCreatedTask(
+    taskId: string,
+    body: CreateTaskBody,
+    githubId?: number,
+  ): Promise<void> {
     // 6.2 — record the creation audit event (201/info), attributed to the
     // creating operator's GitHub identity when known. Emitted BEFORE `admit()` so
-    // the `task.created` event precedes any `task.running`/`task.queued` event
-    // for this task in the timeline. Best-effort: never blocks creation.
-    await this.recordAudit(() => this.audit?.recordTaskCreated(task.id, githubId));
+    // the `task.created` event precedes any `task.running`/`task.queued` event.
+    await this.recordAudit(() => this.audit?.recordTaskCreated(taskId, githubId));
 
-    // VR.1 — offer the newly created task to the guardrails concurrency semaphore
-    // so the FIFO semaphore actually bounds running tasks. When a slot is free the
-    // semaphore transitions the task to `running` and arms its deadline + idle
-    // timers; otherwise it holds the task in `queued` (no sandbox provisioned).
+    // VR.1 — offer the task to the guardrails concurrency semaphore so the FIFO
+    // semaphore actually bounds running tasks. When a slot is free it transitions
+    // the task to `running` and arms its deadline + idle timers; otherwise it
+    // holds the task in `queued` (no sandbox provisioned). VR.11 — plumb the
+    // optional guardrail params through so the deadline + idle watchers arm. Idle
+    // is OPT-IN: an omitted `idleTimeoutMs` leaves reclamation to the operator
+    // default (off when unset).
     if (this.guardrails) {
-      // VR.11 — plumb the optional guardrail params through so the deadline and
-      // idle watchers arm (`startRunning → deadlines.armAfter` / `idle.start`).
-      // Idle is OPT-IN: an omitted `idleTimeoutMs` leaves reclamation to the
-      // operator-level default (off when unset), so the task is not reclaimed.
       await this.guardrails
-        .admit(task.id, {
+        .admit(taskId, {
           deadlineMs: body.deadlineMs,
           idleTimeoutMs: body.idleTimeoutMs,
         })
         .catch((err: unknown) => {
-        this.logger.warn(
-          `guardrails admit for task ${task.id} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
+          this.logger.warn(
+            `guardrails admit for task ${taskId} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
     }
-
-    return taskResponseSchema.parse(this.toResponse(task));
   }
 
   async list(): Promise<TaskResponse[]> {
