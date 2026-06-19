@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.8.0...v0.9.0) (2026-06-19)
+
+
+### Features
+
+* **console:** design-baseline restore + Claude Code credential, public /v1 API, playground, MCP & API keys ([#27](https://github.com/Xeonice/cloud-agent-platform/issues/27)) ([de50b2f](https://github.com/Xeonice/cloud-agent-platform/commit/de50b2fb27e81839cc75f9d4a32c26229734f207))
+
 ## [0.8.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.7.0...v0.8.0) (2026-06-19)
 
 
