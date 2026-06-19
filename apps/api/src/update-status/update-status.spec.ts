@@ -48,6 +48,9 @@ import {
   DEFAULT_CACHE_TTL_MS,
   MIN_CACHE_TTL_MS,
   CACHE_TTL_ENV_VAR,
+  resolveReleasesApiBase,
+  DEFAULT_RELEASES_API_BASE,
+  RELEASES_API_BASE_ENV,
   type LatestRelease,
   type ReleaseFetcher,
 } from './update-status.service';
@@ -323,6 +326,54 @@ test('the env-configured TTL drives the service cache (refresh after it elapses)
   clock.advance(2_000); // past 120s
   await svc.getStatus();
   assert.equal(calls(), 2, 'refreshes once the env TTL elapses');
+});
+
+// ---------------------------------------------------------------------------
+// Release-lookup upstream base (mirror-release-checks-via-worker D4)
+// ---------------------------------------------------------------------------
+
+test('resolveReleasesApiBase: defaults to the mirror, honours GITHUB_API_BASE, strips trailing slash', () => {
+  assert.equal(resolveReleasesApiBase({}), DEFAULT_RELEASES_API_BASE, 'unset → mirror default');
+  assert.equal(
+    resolveReleasesApiBase({ [RELEASES_API_BASE_ENV]: 'https://api.github.com' }),
+    'https://api.github.com',
+    'escape hatch → direct GitHub',
+  );
+  assert.equal(
+    resolveReleasesApiBase({ [RELEASES_API_BASE_ENV]: 'https://api.github.com/' }),
+    'https://api.github.com',
+    'a trailing slash is stripped so the path joins cleanly',
+  );
+  assert.equal(
+    resolveReleasesApiBase({ [RELEASES_API_BASE_ENV]: '   ' }),
+    DEFAULT_RELEASES_API_BASE,
+    'blank → mirror default',
+  );
+});
+
+test('the release lookup targets the mirror by default and the escape hatch when set', async () => {
+  let seenBase: string | undefined;
+  const baseRecordingFetcher: ReleaseFetcher = async (_repo, apiBase) => {
+    seenBase = apiBase;
+    return RELEASE;
+  };
+
+  await new UpdateStatusService({
+    fetcher: baseRecordingFetcher,
+    now: fixedClock().now,
+    env: { [VERSION_ENV_VARS.version]: 'v1.1.0' },
+  }).getStatus();
+  assert.equal(seenBase, DEFAULT_RELEASES_API_BASE, 'default routes the lookup through the mirror');
+
+  await new UpdateStatusService({
+    fetcher: baseRecordingFetcher,
+    now: fixedClock().now,
+    env: {
+      [VERSION_ENV_VARS.version]: 'v1.1.0',
+      [RELEASES_API_BASE_ENV]: 'https://api.github.com',
+    },
+  }).getStatus();
+  assert.equal(seenBase, 'https://api.github.com', 'the escape hatch targets GitHub directly');
 });
 
 // ---------------------------------------------------------------------------

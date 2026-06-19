@@ -402,6 +402,32 @@ To activate it (after a Release exists and prod runs the pinned-release line):
 See [`deploy/DEPLOY.md`](../deploy/DEPLOY.md) (the self-update section) for the full
 activation steps, the detached self-recreate mechanism, and the threat model.
 
+## Optional: update-check mirror (`GITHUB_API_BASE`)
+
+cap's update check (`GET /update-status` — it drives the notify banner and the
+self-update cross-check above) compares your running `CAP_VERSION` against the
+latest GitHub Release. By **default** that lookup does not hit GitHub directly: it
+goes through cap's public, **cache-only** mirror
+(`https://releases.cap.douglasdong.com`), a small Cloudflare Worker that proxies
+GitHub's `releases/latest` and serves it from Cloudflare's edge cache. This
+converges the fleet onto one cached upstream and keeps the check working through a
+brief GitHub API blip (within the cache window). The mirror is a **pure cache** —
+no authentication, no GitHub token, no telemetry, and it never rewrites the
+release payload.
+
+If you would rather not depend on that mirror, point the upstream back at GitHub.
+The lookup then talks to GitHub directly with **zero third-party dependency** —
+this escape hatch is fully supported:
+
+```bash
+# apps/api/.env
+GITHUB_API_BASE=https://api.github.com
+```
+
+This is orthogonal to `GITHUB_RELEASES_REPO` (which repo's Releases are checked):
+the mirror transparently proxies whatever `owner/repo` you configure, so pointing
+at your own fork works either through the mirror or direct.
+
 ## Optional: legacy token (dev only)
 
 The legacy single shared-`AUTH_TOKEN` operator path is **OFF by default** and

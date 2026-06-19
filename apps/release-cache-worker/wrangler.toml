@@ -1,0 +1,19 @@
+# Cloudflare Worker: cap release-check cache mirror.
+#
+# A public, cache-only proxy of GitHub's releases/latest. The api's update check
+# (update-availability-check) points GITHUB_API_BASE here by default; the Worker
+# serves the lookup from Cloudflare's edge cache, converging fleet traffic onto one
+# upstream request per TTL and surviving GitHub blips within the cache window.
+#
+# IMPORTANT: it MUST run behind a custom domain on a Cloudflare zone. Cloudflare
+# edge caching (the `cf.cacheTtl` option in src/index.ts) is INOPERATIVE on a
+# *.workers.dev route — on workers.dev this Worker would be a pass-through with no
+# cache and the mirror would achieve nothing. `custom_domain = true` binds the
+# route to the zone so the edge cache is active.
+name = "cap-release-cache"
+main = "src/index.ts"
+compatibility_date = "2024-11-11"
+
+routes = [
+  { pattern = "releases.cap.douglasdong.com", custom_domain = true }
+]
