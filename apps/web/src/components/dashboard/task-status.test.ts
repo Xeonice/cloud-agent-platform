@@ -6,9 +6,10 @@
  *    carries the design-revision action, and the queued/pending 等待 runner
  *    affordance is plain non-primary styling data — there is NO disabled flag
  *    in the descriptor shape (rows render it as a real link);
- *  - the `cancelled` operator-stop terminal renders distinctly (neutral,
- *    settled) in BOTH the dashboard inbox and the history result column, and is
- *    treated as terminal by `isOpenTask`.
+ *  - the `cancelled` operator-stop terminal renders distinctly and is treated as
+ *    terminal by `isOpenTask`. The two surfaces deliberately DIVERGE since
+ *    pixel-restore-console-to-od Track 9: the dashboard inbox keeps 已取消/neutral,
+ *    while the history result column reads 已停止/dark (the finalized OD baseline).
  */
 import { describe, it, expect } from "vitest";
 
@@ -86,10 +87,10 @@ describe("cancelled status presentation", () => {
     expect(isOpenTask("cancelled")).toBe(false);
   });
 
-  it("history result presents cancelled as 已取消 / neutral (a stop, not a failure)", () => {
+  it("history result presents cancelled as 已停止 / dark (a stop, not a failure)", () => {
     const h = presentHistoryResult("cancelled");
-    expect(h.label).toBe("已取消");
-    expect(h.variant).toBe("neutral");
+    expect(h.label).toBe("已停止");
+    expect(h.variant).toBe("dark");
   });
 
   it("the presentation map carries a cancelled entry", () => {

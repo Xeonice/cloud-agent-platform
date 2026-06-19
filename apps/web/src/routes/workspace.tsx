@@ -249,7 +249,7 @@ function WorkspacePage() {
             footerAction="配置"
             to="/settings"
           >
-            控制白名单账号、默认仓库、写入前确认策略，以及 Codex 官方认证或第三方 API Key 接入。
+            控制白名单账号、默认仓库、会话保留策略，以及 Codex 与 Claude Code 的模型凭据接入。
           </ScreenCard>
 
           <ScreenCard

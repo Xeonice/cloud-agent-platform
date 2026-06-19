@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>仓库导入 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html" aria-current="page"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+          <a href="api.html"><span>API 调试</span><span class="shortcut">⌘4</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="screen-header with-action">
+        <div>
+          <div class="eyebrow">仓库</div>
+          <h1 class="screen-title">仓库范围</h1>
+          <p class="screen-lead">只让明确导入的仓库进入调度池；默认仓库决定新建任务的初始上下文。</p>
+        </div>
+        <button class="btn primary" type="button" data-open-dialog="#repo-import-dialog">添加仓库</button>
+      </section>
+
+      <section class="panel pad" style="margin-top:12px" data-filter-root="repos">
+        <div class="panel-head" style="margin:-18px -18px 14px">
+          <div>
+            <h2>已导入仓库</h2>
+            <p>这些仓库会出现在任务创建、默认仓库和会话上下文里。</p>
+          </div>
+          <span class="status-pill green" data-imported-count>2 个</span>
+        </div>
+
+        <div class="repo-list-head">
+          <span>仓库</span>
+          <span>权限</span>
+          <span>同步</span>
+          <span>操作</span>
+        </div>
+
+        <div data-imported-repo-list>
+          <article class="repo-row" data-filter-row data-search="cloud-agent-platform tanghehui/cloud-agent-platform GitHub App scoped main 默认">
+            <div>
+              <div class="split-line" style="justify-content:flex-start">
+                <h3>cloud-agent-platform</h3>
+                <span class="status-pill green">默认</span>
+              </div>
+              <p class="mono">tanghehui/cloud-agent-platform</p>
+            </div>
+            <div>
+              <p>GitHub App scoped</p>
+              <small>仓库 token 按任务短期签发。</small>
+            </div>
+            <div>
+              <p class="mono" style="color:var(--foreground)">main</p>
+              <small>默认分支</small>
+            </div>
+            <div><span class="btn is-disabled">默认仓库</span></div>
+          </article>
+
+          <article class="repo-row" data-filter-row data-search="agent-api tanghehui/agent-api GitHub App scoped main">
+            <div>
+              <h3>agent-api</h3>
+              <p class="mono">tanghehui/agent-api</p>
+            </div>
+            <div>
+              <p>GitHub App scoped</p>
+              <small>仓库 token 按任务短期签发。</small>
+            </div>
+            <div>
+              <p class="mono" style="color:var(--foreground)">main</p>
+              <small>默认分支</small>
+            </div>
+            <div><button class="btn" type="button">设为默认</button></div>
+          </article>
+        </div>
+
+        <div class="empty-state" data-empty-state hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          <strong>没有匹配的仓库</strong>
+          <p>还没有导入这个仓库，或换个关键词；也可以从 GitHub 添加新的仓库。</p>
+          <button class="btn primary" type="button" data-open-dialog="#repo-import-dialog">添加仓库</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html">控制台</a>
+    <a href="agents.html" aria-current="page">仓库</a>
+    <a href="history.html">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="dialog-backdrop" id="repo-import-dialog" hidden>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="repo-import-title">
+      <header class="dialog-head">
+        <div>
+          <div class="eyebrow">仓库导入</div>
+          <h2 id="repo-import-title">添加仓库</h2>
+          <p>拉取当前 GitHub 授权账号下的仓库，只把明确选择的项目加入远端调度池。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body" data-filter-root="repo-candidates">
+        <div class="split-line">
+          <span class="status-pill green">已连接 GitHub</span>
+          <p class="small-muted" style="margin:0">来自 tanghehui 名下仓库 · 3 小时前同步</p>
+        </div>
+
+        <div class="filterbar" style="border:0;padding:0">
+          <label class="search-field">
+            <span aria-hidden="true">⌕</span>
+            <input type="search" aria-label="筛选可导入仓库" placeholder="输入仓库名" data-filter-search>
+          </label>
+          <span class="count-chip" data-filter-count data-suffix=" 个可导入">4 个可导入</span>
+        </div>
+
+        <div class="repo-list-head">
+          <span>仓库</span>
+          <span>可见性</span>
+          <span>分支</span>
+          <span>操作</span>
+        </div>
+
+        <article class="repo-row" data-filter-row data-search="cloud-agent-platform tanghehui/cloud-agent-platform private main Backend-first cloud agent control plane">
+          <div>
+            <h3>cloud-agent-platform</h3>
+            <p class="mono">tanghehui/cloud-agent-platform</p>
+          </div>
+          <div>
+            <p>私有仓库</p>
+            <small>Backend-first cloud agent control plane</small>
+          </div>
+          <div>
+            <p class="mono" style="color:var(--foreground)">main</p>
+            <small>默认分支</small>
+          </div>
+          <div><span class="btn is-disabled">已导入</span></div>
+        </article>
+
+        <article class="repo-row" data-filter-row data-search="agent-api tanghehui/agent-api private main NestJS orchestrator guardrails">
+          <div>
+            <h3>agent-api</h3>
+            <p class="mono">tanghehui/agent-api</p>
+          </div>
+          <div>
+            <p>私有仓库</p>
+            <small>NestJS orchestrator + guardrails</small>
+          </div>
+          <div>
+            <p class="mono" style="color:var(--foreground)">main</p>
+            <small>默认分支</small>
+          </div>
+          <div><span class="btn is-disabled">已导入</span></div>
+        </article>
+
+        <article class="repo-row" data-filter-row data-search="agent-runner tanghehui/agent-runner public main Sandbox runner dial-back handshake">
+          <div>
+            <h3>agent-runner</h3>
+            <p class="mono">tanghehui/agent-runner</p>
+          </div>
+          <div>
+            <p>公开仓库</p>
+            <small>Sandbox runner + dial-back handshake</small>
+          </div>
+          <div>
+            <p class="mono" style="color:var(--foreground)">main</p>
+            <small>默认分支</small>
+          </div>
+          <div><button class="btn primary" type="button" data-import-repo>导入</button></div>
+        </article>
+
+        <article class="repo-row" data-filter-row data-search="design-prototype tanghehui/design-prototype private main">
+          <div>
+            <h3>design-prototype</h3>
+            <p class="mono">tanghehui/design-prototype</p>
+          </div>
+          <div>
+            <p>私有仓库</p>
+            <small>无描述</small>
+          </div>
+          <div>
+            <p class="mono" style="color:var(--foreground)">main</p>
+            <small>默认分支</small>
+          </div>
+          <div><button class="btn primary" type="button" data-import-repo>导入</button></div>
+        </article>
+      </div>
+    </section>
+  </div>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>

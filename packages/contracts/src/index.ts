@@ -33,6 +33,20 @@ export * from './sandbox.js';
 // Operator-auth shapes: WS connect-auth frame + shared AUTH_TOKEN config contract
 export * from './auth.js';
 
+// Authorization scope vocabulary shared by API-key + machine principals
+export * from './scope.js';
+
+// Reserved credential prefixes (single source for dispatch/minting/boot assertion)
+export * from './credential-prefix.js';
+
+// API-key management DTOs: mint request, show-once mint response, list item, revoke
+export * from './api-key.js';
+
+// MCP-token management DTOs: mint request, show-once mint response, list item, revoke
+// (settings-minted `mcp_` credential; mirrors the api-key CRUD shapes, reusing the
+// shared ScopeSchema + the reserved `mcp_` credential prefix)
+export * from './mcp-token.js';
+
 // Multi-user GitHub OAuth session identity + GET /auth/session response shape
 export * from './session.js';
 
@@ -62,3 +76,12 @@ export * from './update-status.js';
 
 // asciicast v2 terminal-replay recording shapes (header + event + parse helpers)
 export * from './asciicast.js';
+
+// Public /v1 API DTOs: create-with-repoId body + keyset-paginated list envelopes
+// + list query + SSE lifecycle-event shape (additive; never mutate console schemas)
+export * from './v1.js';
+
+// The exact zod instance every contracts schema is built on. Re-exported so a
+// CJS consumer (the api) can run `extendZodWithOpenApi` on the SAME class realm
+// the schemas inherit from — see ./zod-instance.ts for the ESM/CJS realm split.
+export * from './zod-instance.js';

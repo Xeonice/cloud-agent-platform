@@ -12,20 +12,24 @@
  *       · `#account`: the read-only `AccountPanel` + the editable `SettingsForm`
  *         (`#github` + `#safety`),
  *       · `#codex`: the `CodexStatusPanel` + the `CodexCredentialWorkspace`;
+ *       · `#api-keys`: the `ApiKeysCard` (mint show-once / list / revoke);
  *   - the two Codex configuration dialogs (official + compatible).
  *
- * Data wiring (read EXCLUSIVELY through the query factories; settings + codex are
- * MOCK today, non-blocking): the loader ensures `settingsQuery` + `reposQuery` +
- * `codexCredentialQuery` in PARALLEL so the form / picker / status are hydrated
- * before render. `saveSettingsMutation` persists writable prefs (allowedAccount
- * stays read-only — the allowlist governs login); `saveCodexCredentialMutation`
- * persists the execution credential (the plaintext key is dropped to a
- * `hasApiKey` + masked-suffix projection — never re-displayed). Both invalidate
- * their read keys so the UI re-derives.
+ * Data wiring (read EXCLUSIVELY through the query factories): the loader ensures
+ * `settingsQuery` + `reposQuery` + `codexCredentialQuery` + `apiKeysQuery` in
+ * PARALLEL so the form / picker / status / key list are hydrated before render.
+ * `saveSettingsMutation` persists writable prefs (allowedAccount stays read-only —
+ * the allowlist governs login); `saveCodexCredentialMutation` persists the
+ * execution credential (the plaintext key is dropped to a `hasApiKey` +
+ * masked-suffix projection — never re-displayed). `mintApiKeyMutation` /
+ * `revokeApiKeyMutation` go through the real/mock seam (api-key-machine-identity):
+ * the show-once raw key is the SERVER's one-time response, and both invalidate
+ * `apiKeys` so the card's list re-derives.
  *
  * CONCEPT split (never conflated): GitHub OAuth = who may enter the console
  * (read-only identity); the Codex credential = which model the remote Agent runs
- * with. They are managed in distinct sections and never cross-write.
+ * with; an API key = a machine credential to drive the platform's own API. They
+ * are managed in distinct sections and never cross-write.
  *
  * SSR-safe: deterministic render off query data; dialog-open + active-tab flags
  * are plain `useState`. No window/clock/random during render or at module scope.
@@ -34,35 +38,50 @@ import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type { CodexCredentialMode } from "@cap/contracts";
+import type {
+  ClaudeCredentialMode,
+  CodexCredentialMode,
+} from "@cap/contracts";
 import {
+  apiKeysQuery,
+  claudeCredentialQuery,
   codexCredentialQuery,
+  mcpServerEnabledQuery,
+  mcpTokensQuery,
   queryKeys,
   reposQuery,
   settingsQuery,
 } from "@/lib/api/queries";
 import { isCapable } from "@/lib/api/capabilities";
 import {
+  mintApiKeyMutation,
+  revokeApiKeyMutation,
+  saveClaudeCredentialMutation,
   saveCodexCredentialMutation,
   saveSettingsMutation,
 } from "@/lib/api/mutations";
+import { ClaudeCredentialDialog } from "@/components/settings/claude-credential";
+import { RuntimeCredentialTabs } from "@/components/settings/runtime-credentials";
 import { StatusPill } from "@/components/status-pill";
-import { SettingsSideNav } from "@/components/settings/settings-side-nav";
-import { SystemStrip, SystemTile } from "@/components/settings/system-strip";
 import { AccountPanel } from "@/components/settings/account-panel";
 import { SettingsForm } from "@/components/settings/settings-form";
-import { CodexStatusPanel } from "@/components/settings/codex-status-panel";
-import { CodexCredentialWorkspace } from "@/components/settings/codex-tabs";
 import { CodexDirectDialog } from "@/components/settings/codex-direct-dialog";
 import { CodexApiKeyDialog } from "@/components/settings/codex-api-key-dialog";
+import { ApiKeysCard } from "@/components/settings/api-keys-card";
+import { McpServerCard } from "@/components/settings/mcp-server-card";
 
 export const Route = createFileRoute("/_app/settings")({
   loader: async ({ context }) => {
-    // Parallel ensure — no waterfall between settings / repos / credential.
+    // Parallel ensure — no waterfall between settings / repos / credential / keys /
+    // MCP-server flag + tokens (remote-mcp-server, web-settings track).
     await Promise.all([
       context.queryClient.ensureQueryData(settingsQuery()),
       context.queryClient.ensureQueryData(reposQuery()),
       context.queryClient.ensureQueryData(codexCredentialQuery()),
+      context.queryClient.ensureQueryData(claudeCredentialQuery()),
+      context.queryClient.ensureQueryData(apiKeysQuery()),
+      context.queryClient.ensureQueryData(mcpServerEnabledQuery()),
+      context.queryClient.ensureQueryData(mcpTokensQuery()),
     ]);
   },
   component: SettingsPage,
@@ -73,13 +92,24 @@ function SettingsPage() {
   const { data: settings } = useQuery(settingsQuery());
   const { data: repos } = useQuery(reposQuery());
   const { data: cred } = useQuery(codexCredentialQuery());
+  const { data: claudeCred } = useQuery(claudeCredentialQuery());
+  const { data: apiKeys } = useQuery(apiKeysQuery());
 
   const saveSettings = useMutation(saveSettingsMutation(queryClient));
   const saveCredential = useMutation(saveCodexCredentialMutation(queryClient));
+  const saveClaude = useMutation(saveClaudeCredentialMutation(queryClient));
+  // API-key mint/revoke through the real/mock seam (api-key-machine-identity).
+  // The show-once raw key is the SERVER's one-time mint response — never a
+  // client-fabricated value — and both invalidate `apiKeys` so the list refreshes.
+  const mintApiKey = useMutation(mintApiKeyMutation(queryClient));
+  const revokeApiKey = useMutation(revokeApiKeyMutation(queryClient));
 
   // Which Codex configuration dialog is open (client-only view state).
   const [dialogMode, setDialogMode] =
     React.useState<CodexCredentialMode | null>(null);
+  // Which Claude Code configuration dialog is open (client-only view state).
+  const [claudeDialogMode, setClaudeDialogMode] =
+    React.useState<ClaudeCredentialMode | null>(null);
 
   // Data is loader-ensured; guard for the brief hydration window / mock null.
   if (!settings || !cred) return null;
@@ -109,54 +139,71 @@ function SettingsPage() {
         <StatusPill variant="green">单用户模式</StatusPill>
       </section>
 
-      {/* settings-page-layout (LEFT side-nav · RIGHT content) */}
-      <section className="grid items-start gap-3 min-[1101px]:grid-cols-[230px_minmax(0,1fr)]">
-        <SettingsSideNav />
+      {/* settings-stack — single-column layout, max 640px (pixel-restore Track
+          10.1; matches design-baseline `.settings-stack`: no side-nav, no
+          system-strip, panels stacked at 24px gap). */}
+      <div className="grid max-w-[640px] gap-6">
+        {/* #account: identity + access/defaults form, stacked */}
+        <section id="account" className="grid scroll-mt-24 gap-6">
+          <AccountPanel login={login} />
+          <SettingsForm
+            settings={settings}
+            repos={repoList}
+            saving={saveSettings.isPending}
+            onSave={(body) => saveSettings.mutate(body)}
+          />
+        </section>
 
-        <div className="grid min-w-0 gap-3">
-          {/* settings-system-strip */}
-          <SystemStrip>
-            <SystemTile
-              label="ACCOUNT"
-              value={login}
-              copy="唯一允许进入控制台的 GitHub 身份。"
-            />
-            <SystemTile
-              label="CREDENTIAL"
-              value="Agent 模型凭据"
-              copy="任务运行时使用的模型访问方式。"
-            />
-            <SystemTile
-              label="SAFETY"
-              value="写入前确认"
-              copy="危险动作必须在会话里确认。"
-            />
-          </SystemStrip>
+        {/* Agent 模型凭据 — ONE section with runtime tabs (Codex | Claude Code),
+            each runtime's provider entries below (Track 10.2, baseline #codex). */}
+        <RuntimeCredentialTabs
+          codexCred={cred}
+          claudeCred={
+            claudeCred ?? {
+              mode: "subscription",
+              state: "not_connected",
+              hasSetupToken: false,
+              hasApiKey: false,
+            }
+          }
+          onConfigureCodex={handleConfigure}
+          onConfigureClaude={setClaudeDialogMode}
+        />
 
-          {/* #account: identity + access/defaults form */}
-          <section
-            id="account"
-            className="grid scroll-mt-24 items-start gap-3 min-[981px]:grid-cols-2"
-          >
-            <AccountPanel login={login} />
-            <SettingsForm
-              settings={settings}
-              repos={repoList}
-              saving={saveSettings.isPending}
-              onSave={(body) => saveSettings.mutate(body)}
+        {/* #api-keys: machine-identity credentials (mint show-once / list / revoke) */}
+        <section id="api-keys" className="grid scroll-mt-24 gap-3">
+            <ApiKeysCard
+              keys={apiKeys?.keys ?? []}
+              onMint={async (body) => {
+                const minted = await mintApiKey.mutateAsync(body);
+                // The card's show-once dialog reads `rawKey`; the server returns
+                // it as `key` (the only time it is ever transmitted).
+                return {
+                  rawKey: minted.key,
+                  id: minted.id,
+                  name: minted.name,
+                  scopes: minted.scopes,
+                  prefix: minted.prefix,
+                  last4: minted.last4,
+                };
+              }}
+              onRevoke={(id) => revokeApiKey.mutateAsync(id)}
+              minting={mintApiKey.isPending}
+              revokingId={
+                revokeApiKey.isPending ? (revokeApiKey.variables ?? null) : null
+              }
             />
           </section>
 
-          {/* #codex: status + activation workspace */}
-          <section
-            id="codex"
-            className="grid scroll-mt-24 items-start gap-3 min-[961px]:grid-cols-[minmax(260px,0.45fr)_minmax(0,1fr)]"
-          >
-            <CodexStatusPanel cred={cred} />
-            <CodexCredentialWorkspace cred={cred} onConfigure={handleConfigure} />
-          </section>
-        </div>
-      </section>
+          {/* #mcp: the remote MCP server surface — admin-gated enable toggle,
+              /mcp endpoint + connect instructions, and the MCP-token card (mint
+              show-once / list prefix+last4 / revoke). Self-contained: it reads
+              the real/mock api seam internally (gated by the `mcpServer`
+              capability flag). */}
+        <section id="mcp" className="grid scroll-mt-24 gap-3">
+          <McpServerCard />
+        </section>
+      </div>
 
       {/* Codex configuration dialogs */}
       <CodexDirectDialog
@@ -184,6 +231,21 @@ function SettingsPage() {
         onSave={(body) =>
           saveCredential.mutate(body, {
             onSuccess: () => setDialogMode(null),
+          })
+        }
+      />
+
+      {/* Claude Code configuration dialog (mode-aware: setup-token / API key) */}
+      <ClaudeCredentialDialog
+        open={claudeDialogMode !== null}
+        mode={claudeDialogMode ?? "subscription"}
+        saving={saveClaude.isPending}
+        onOpenChange={(open) => {
+          if (!open) setClaudeDialogMode(null);
+        }}
+        onSave={(body) =>
+          saveClaude.mutate(body, {
+            onSuccess: () => setClaudeDialogMode(null),
           })
         }
       />

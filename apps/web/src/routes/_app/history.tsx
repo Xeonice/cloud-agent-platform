@@ -1,172 +1,90 @@
 /**
- * `/history` — 历史与日志 · 审计时间线 (app-shell, SSR; Track 15
- * fe-page-history, tasks 15.1–15.4).
+ * `/history` — 任务历史 (app-shell, SSR; pixel-restore-console-to-od Track 9).
  *
- * The page BODY rendered inside the `_app` shell `<Outlet/>` (sidebar / topbar /
- * mobile-nav already exist — this route does NOT rebuild the shell). Composes,
- * faithfully to the `history.html` prototype:
- *   - the screen-header (eyebrow 历史 / h1 审计时间线 / lead);
- *   - `HistorySummary` — the 3-up ACTIVE WINDOW / ATTENTION / RETENTION strip,
- *     bound honestly (ATTENTION = live `awaiting_input` count; RETENTION =
- *     `settingsQuery().retention`);
- *   - the audit-toolbar — a search input + a level `SegmentedControl`
- *     (全部/信息/警告/错误) + a live `CountChip` event count;
- *   - the `grid-2`: LEFT `RecentTasksTable` (from `tasksQuery`) · RIGHT
- *     `AuditTimeline` (from `historyEventsQuery`).
+ * The page BODY inside the `_app` shell `<Outlet/>`. Rewritten from the former
+ * summary-tiles + recent-tasks-table + audit event-stream into a single
+ * Vercel-style TASK-ROW LIST faithful to `design-baseline/screens/history.html`:
+ *   - the screen-header (eyebrow 历史 / h1 任务历史 / lead);
+ *   - a 运行记录 panel with a head (subtitle + a live "N 条记录" count pill);
+ *   - an audit-toolbar — search + a status SegmentedControl
+ *     (全部/运行中/等待输入/排队/已完成/失败);
+ *   - the task-row list (status pill + id + title + repo·branch + Agent + 耗时 +
+ *     a dark 「查看会话」 linking to the task's 会话记录; queued/pending show a
+ *     disabled 等待接入) + an empty state.
  *
- * THE ONE FILTER DRIVES BOTH COLUMNS (task 15.3): a SINGLE `useClientFilter`
- * instance (instantiated over the EVENTS) owns the shared search + level state.
- *   - Its `visible` is the search- AND level-filtered event list → feeds the
- *     timeline, and `visibleCount` is the number shown in the toolbar CountChip.
- *   - The SAME `state` is fed into a SECOND pure `filterItems` call over the
- *     TASKS, using TEXT-ONLY accessors (no `level` accessor) so the search
- *     narrows the table too while the level segment leaves the table intact
- *     (tasks carry no audit level, so a level filter must not empty the table).
- * The filter is a pure `useMemo` view derivation — it never mutates the Query
- * cache and never triggers a refetch.
+ * The single client filter (search + status bucket via `presentHistoryResult`)
+ * drives the list and the count, as a pure `useMemo` view derivation — it never
+ * mutates the query cache. The page is READ-ONLY (no WS / terminal). The former
+ * ACTIVE WINDOW/ATTENTION/RETENTION tiles and the right-hand audit timeline are
+ * removed.
  *
- * Data wiring: the loader ensures `tasksQuery` + `reposQuery` +
- * `historyEventsQuery` in PARALLEL (no waterfall). History is MOCK today but is
- * read through `historyEventsQuery` so flipping `capabilities.history` repoints
- * it at the real audit endpoint with no page change (task 15.4). The page is
- * READ-ONLY (no WS / terminal).
- *
- * SSR-safe: the timeline clock + the table 耗时 are formatted deterministically
- * from stored timestamps. The 耗时 elapsed span depends on the current time, so
- * `now` is sampled in a `useEffect`-set state (never during render / at module
- * top level) — SSR and the first client render both show "—" until mount, then
- * the client fills in the elapsed value, so there is no hydration mismatch.
+ * SSR-safe: deterministic render off query data; 耗时 depends on the wall clock,
+ * so `now` is sampled in a `useEffect` (never during render) — SSR + first client
+ * paint show "—" until mount, then the client fills it in (no hydration mismatch).
  */
 import * as React from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import type { AuditEvent, Repo, Task } from "@cap/contracts";
-import {
-  historyEventsQuery,
-  reposQuery,
-  settingsQuery,
-  tasksQuery,
-} from "@/lib/api/queries";
-import {
-  ALL,
-  filterItems,
-  useClientFilter,
-  type FilterAccessors,
-  type LevelFilter,
-} from "@/hooks/use-client-filter";
+import type { Repo, Runtime, Task } from "@cap/contracts";
+import { reposQuery, tasksQuery } from "@/lib/api/queries";
+import { StatusPill } from "@/components/status-pill";
 import { SegmentedControl } from "@/components/segmented-control";
-import { CountChip } from "@/components/count-chip";
+import { EmptyState } from "@/components/empty-state";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
-import { HistorySummary } from "@/components/history/history-summary";
-import { RecentTasksTable } from "@/components/history/recent-tasks-table";
-import { AuditTimeline } from "@/components/history/audit-timeline";
+import {
+  presentHistoryResult,
+  type HistoryFilter,
+} from "@/components/history/history-result";
+import { formatClock, formatElapsed } from "@/components/history/format";
 
 export const Route = createFileRoute("/_app/history")({
   loader: async ({ context }) => {
-    // Parallel ensure — no waterfall between tasks / repos / audit events.
     await Promise.all([
       context.queryClient.ensureQueryData(tasksQuery()),
       context.queryClient.ensureQueryData(reposQuery()),
-      context.queryClient.ensureQueryData(historyEventsQuery()),
     ]);
   },
   component: HistoryPage,
 });
 
-/** The level segment values: 全部 / 信息 / 警告 / 错误 (maps to the contract levels). */
-const LEVEL_OPTIONS: readonly { value: LevelFilter; label: string }[] = [
-  { value: ALL, label: "全部" },
-  { value: "info", label: "信息" },
-  { value: "warning", label: "警告" },
-  { value: "error", label: "错误" },
+/** The status segment: 全部 + the five baseline buckets. */
+type StatusSegment = "all" | HistoryFilter;
+
+const STATUS_OPTIONS: readonly { value: StatusSegment; label: string }[] = [
+  { value: "all", label: "全部" },
+  { value: "running", label: "运行中" },
+  { value: "awaiting", label: "等待输入" },
+  { value: "queued", label: "排队" },
+  { value: "completed", label: "已完成" },
+  { value: "failed", label: "失败" },
 ];
 
-/** Resolve a repo's display name (`name` is the stable, prototype-shown label). */
+/** Agent display name from the persisted runtime (null defaults to Codex). */
+function agentLabel(runtime: Runtime | null | undefined): string {
+  return runtime === "claude-code" ? "Claude Code" : "Codex";
+}
+
 function repoName(repo: Repo): string {
   return repo.name;
 }
 
-/**
- * Timeline accessors: search matches title/description/type/short-task-id, and
- * the `level` accessor lets the level segment narrow the timeline.
- */
-const EVENT_ACCESSORS: FilterAccessors<AuditEvent> = {
-  text: (event) => [
-    event.title,
-    event.description,
-    event.type,
-    shortTaskId(event.taskId),
-  ],
-  level: (event) => event.level,
-};
-
 function HistoryPage() {
   const { data: tasks } = useQuery(tasksQuery());
   const { data: repos } = useQuery(reposQuery());
-  const { data: events } = useQuery(historyEventsQuery());
-
   const taskList = tasks ?? [];
   const repoList = repos ?? [];
-  const eventList = events ?? [];
 
-  // repoId → repo display name (for the table rows + the shared text search).
+  const [search, setSearch] = React.useState("");
+  const [status, setStatus] = React.useState<StatusSegment>("all");
+
   const repoLookup = React.useMemo(() => {
     const map = new Map<string, string>();
     for (const repo of repoList) map.set(repo.id, repoName(repo));
     return map;
   }, [repoList]);
 
-  // Tasks most-recent-first (the prototype's "最新在前").
-  const sortedTasks = React.useMemo(
-    () =>
-      [...taskList].sort(
-        (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-      ),
-    [taskList],
-  );
-
-  // Events most-recent-first (the query already orders this; re-sort defensively
-  // so the timeline is independent of the source's ordering guarantees).
-  const sortedEvents = React.useMemo(
-    () =>
-      [...eventList].sort(
-        (a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
-      ),
-    [eventList],
-  );
-
-  // THE ONE FILTER. Instantiated over the EVENTS so `visible` is the search- AND
-  // level-filtered timeline and `visibleCount` is the toolbar's event count.
-  const filter = useClientFilter(sortedEvents, EVENT_ACCESSORS);
-
-  // The SAME state drives a SECOND pure filter over the TASKS — TEXT-ONLY
-  // accessors (no `level`) so the search narrows the table while the level
-  // segment leaves it intact (tasks carry no audit level).
-  const taskAccessors = React.useMemo<FilterAccessors<Task>>(
-    () => ({
-      text: (task) => [
-        shortTaskId(task.id),
-        repoLookup.get(task.repoId),
-        task.prompt,
-        task.branch,
-      ],
-    }),
-    [repoLookup],
-  );
-  const visibleTasks = React.useMemo(
-    () => filterItems(sortedTasks, filter.state, taskAccessors),
-    [sortedTasks, filter.state, taskAccessors],
-  );
-
-  // ATTENTION tile: live count of tasks awaiting operator confirmation.
-  const attentionCount = React.useMemo(
-    () => taskList.filter((t) => t.status === "awaiting_input").length,
-    [taskList],
-  );
-
-  // 耗时 depends on the current wall clock — sample it AFTER mount (never during
-  // render) so SSR + first client render match, then tick it forward gently.
+  // 耗时 needs the wall clock — sampled after mount (SSR-safe).
   const [now, setNow] = React.useState<number | undefined>(undefined);
   React.useEffect(() => {
     setNow(Date.now());
@@ -174,10 +92,32 @@ function HistoryPage() {
     return () => window.clearInterval(id);
   }, []);
 
-  // RETENTION tile binds to the real settings window. Read via `useQuery` (not
-  // loader-blocking) — MOCK today; may be absent during the hydration window, in
-  // which case the tile shows "—" rather than a fabricated number.
-  const { data: settings } = useQuery(settingsQuery());
+  // Most-recent-first (the baseline's "最新在前").
+  const sortedTasks = React.useMemo(
+    () =>
+      [...taskList].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
+    [taskList],
+  );
+
+  const visible = React.useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return sortedTasks.filter((task) => {
+      const result = presentHistoryResult(task.status);
+      if (status !== "all" && result.filter !== status) return false;
+      if (!needle) return true;
+      const haystack = [
+        shortTaskId(task.id),
+        repoLookup.get(task.repoId) ?? "",
+        task.branch ?? "",
+        task.prompt,
+        agentLabel(task.runtime),
+        result.label,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(needle);
+    });
+  }, [sortedTasks, repoLookup, search, status]);
 
   return (
     <>
@@ -186,66 +126,151 @@ function HistoryPage() {
         <div className="font-mono text-xs font-semibold text-muted-foreground">
           历史
         </div>
-        <h1 className="max-w-[880px] text-[clamp(24px,3vw,32px)] font-semibold leading-[1.18] tracking-[-0.8px] text-ink">
-          审计时间线
+        <h1 className="max-w-[880px] text-[clamp(24px,3vw,32px)] font-semibold leading-[1.18] tracking-[-0.8px] text-foreground">
+          任务历史
         </h1>
         <p className="mt-[7px] max-w-[820px] text-sm leading-[1.58] text-muted-foreground">
-          按任务查看结果、耗时和会话记录；事件流用于快速定位 runner、GitHub token、测试和 PR 事件。
+          按任务回看运行结果、耗时与运行 Agent；每条记录都保留可回放的会话记录与终端记录，保留周期可在设置中调整。
         </p>
       </section>
 
-      {/* history-summary */}
-      <HistorySummary
-        attentionCount={attentionCount}
-        retentionDays={settings?.retention}
-      />
+      {/* 运行记录 panel */}
+      <section className="mt-3 rounded-[8px] bg-card p-[18px] shadow-card">
+        {/* Panel head */}
+        <div className="-mx-[18px] -mt-[18px] mb-3.5 flex items-center justify-between gap-3 border-b border-border px-[18px] pb-3.5 pt-[18px]">
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">运行记录</h2>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              最新在前 · 超过保留周期的记录会自动清除。
+            </p>
+          </div>
+          <StatusPill variant="green" className="whitespace-nowrap">
+            {visible.length} 条记录
+          </StatusPill>
+        </div>
 
-      {/* audit-toolbar */}
-      <section
-        className="mb-3 grid items-center gap-3 rounded-lg bg-card px-[18px] py-3 shadow-card min-[821px]:grid-cols-[minmax(280px,380px)_auto_auto]"
-        aria-label="审计筛选"
-      >
-        <label className="grid min-h-9 min-w-0 grid-cols-[32px_minmax(0,1fr)] items-center rounded-md bg-card shadow-[inset_0_0_0_1px_var(--border)] focus-within:shadow-[inset_0_0_0_1px_var(--foreground),0_0_0_3px_rgba(10,114,239,0.12)]">
-          <span
-            aria-hidden="true"
-            className="grid place-items-center font-mono text-[15px] leading-none text-muted-foreground"
-          >
-            ⌕
-          </span>
-          <input
-            type="search"
-            data-history-search
-            aria-label="搜索历史日志"
-            placeholder="搜索任务、仓库、事件类型"
-            value={filter.state.search}
-            onChange={(e) => filter.setSearch(e.target.value)}
-            className="min-h-9 w-full border-0 bg-transparent pr-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground"
+        {/* Toolbar */}
+        <div className="mb-3.5 grid items-center gap-3 min-[821px]:grid-cols-[minmax(280px,1fr)_auto]">
+          <label className="grid min-h-9 min-w-0 grid-cols-[32px_minmax(0,1fr)] items-center rounded-md bg-card shadow-[inset_0_0_0_1px_var(--border)] focus-within:shadow-[inset_0_0_0_1px_var(--foreground),0_0_0_3px_rgba(10,114,239,0.12)]">
+            <span aria-hidden="true" className="grid place-items-center font-mono text-[15px] leading-none text-muted-foreground">
+              ⌕
+            </span>
+            <input
+              type="search"
+              aria-label="搜索任务历史"
+              placeholder="搜索任务、仓库、分支或 Agent"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="min-h-9 w-full border-0 bg-transparent pr-2.5 text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+            />
+          </label>
+          <SegmentedControl
+            compact
+            ariaLabel="按状态筛选"
+            options={STATUS_OPTIONS}
+            value={status}
+            onValueChange={setStatus}
+            className="max-[821px]:w-full"
           />
-        </label>
-        <SegmentedControl
-          compact
-          ariaLabel="事件级别"
-          options={LEVEL_OPTIONS}
-          value={filter.state.level}
-          onValueChange={filter.setLevel}
-        />
-        <CountChip className="justify-self-end" data-history-visible-count>
-          {filter.visibleCount} 条事件
-        </CountChip>
-      </section>
+        </div>
 
-      {/* grid-2: 最近任务 · 事件流 — prototype `.grid-2` is an ASYMMETRIC split
-          (table 1.05fr wider · timeline 0.95fr with a 320px floor) that only
-          engages at >=1181px and collapses to a single stacked column below
-          (styles.css:820 + the @media max-width:1180px override at :2551). */}
-      <section className="grid items-start gap-3 min-[1181px]:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
-        <RecentTasksTable
-          tasks={visibleTasks}
-          repoLookup={repoLookup}
-          now={now}
-        />
-        <AuditTimeline events={filter.visible} />
+        {/* Task-row list */}
+        {visible.length > 0 ? (
+          <div>
+            {visible.map((task) => (
+              <HistoryRow
+                key={task.id}
+                task={task}
+                repoName={repoLookup.get(task.repoId) ?? task.repoId}
+                now={now}
+              />
+            ))}
+          </div>
+        ) : (
+          <EmptyState
+            icon={<SearchIcon />}
+            title="没有匹配的任务记录"
+            description="换个关键词，或切换到其它状态筛选。"
+          />
+        )}
       </section>
     </>
+  );
+}
+
+/** One history row (one task). Action is 查看会话 → transcript, queued → disabled. */
+function HistoryRow({
+  task,
+  repoName: repo,
+  now,
+}: {
+  task: Task;
+  repoName: string;
+  now: number | undefined;
+}) {
+  const result = presentHistoryResult(task.status);
+  const id = shortTaskId(task.id);
+  const queued = result.filter === "queued";
+  const elapsed = formatElapsed(task.createdAt, now);
+  const clock = formatClock(task.createdAt);
+  const timeText = queued ? clock : `${elapsed} · ${clock}`;
+
+  return (
+    <article className="border-b border-border last:border-b-0 min-[821px]:hover:bg-[#fbfbfb]">
+      <div className="grid items-start gap-x-3 gap-y-2 px-2 py-3 [grid-template-areas:'main_action''context_action'] grid-cols-[minmax(0,1fr)_auto] min-[821px]:grid-cols-[minmax(300px,1fr)_minmax(150px,200px)_108px] min-[821px]:items-center min-[821px]:gap-3 min-[821px]:px-2 min-[821px]:py-[11px] min-[821px]:[grid-template-areas:'main_context_action']">
+        {/* Task / repo */}
+        <div className="min-w-0 [grid-area:main]">
+          <div className="mb-[3px] flex flex-wrap items-center gap-[7px]">
+            <span className="font-mono text-[13px] font-semibold text-foreground">{id}</span>
+            <StatusPill variant={result.variant}>{result.label}</StatusPill>
+          </div>
+          <h3 className="text-[13px] font-semibold leading-[1.3] text-foreground [text-wrap:pretty]">
+            {task.prompt}
+          </h3>
+          <p className="mt-1 min-w-0 text-[11px] leading-[1.25] text-muted-foreground">
+            <strong className="block truncate font-mono font-medium">
+              {repo} · {task.branch ?? "—"}
+            </strong>
+          </p>
+        </div>
+
+        {/* Agent / 耗时 */}
+        <div className="[grid-area:context] grid min-w-0 gap-1 text-muted-foreground">
+          <strong className="truncate text-xs leading-[1.22] font-semibold text-foreground">
+            {agentLabel(task.runtime)}
+          </strong>
+          <span className="truncate font-mono text-[11px] leading-[1.22]">{timeText}</span>
+        </div>
+
+        {/* Action */}
+        <div className="[grid-area:action] grid justify-items-end self-start min-[821px]:self-center">
+          {queued ? (
+            <span
+              aria-disabled="true"
+              className="inline-flex min-h-7 cursor-default items-center justify-center whitespace-nowrap rounded-md px-2.5 text-xs font-medium text-muted-2 shadow-ring min-[821px]:w-full"
+            >
+              等待接入
+            </span>
+          ) : (
+            <Link
+              to="/tasks/$taskId/transcript"
+              params={{ taskId: task.id }}
+              className="inline-flex min-h-7 items-center justify-center whitespace-nowrap rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-[#2a2a2a] min-[821px]:w-full"
+            >
+              查看会话
+            </Link>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
   );
 }

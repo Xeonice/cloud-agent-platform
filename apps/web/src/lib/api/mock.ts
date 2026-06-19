@@ -28,11 +28,17 @@ import type {
   AuditEvent,
   AuditQuery,
   AccountSettings,
+  ClaudeCredential,
   CodexCredential,
   ListAvailableGithubReposResponse,
   DefaultRepoResponse,
   Repo,
   UpdateStatus,
+  ApiKeyListItem,
+  ApiKeyMintRequest,
+  ApiKeyMintResponse,
+  ApiKeyListResponse,
+  ApiKeyRevokeResponse,
 } from "@cap/contracts";
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
@@ -41,6 +47,10 @@ import type {
   SelfUpdateRequest,
   SelfUpdateAck,
   RuntimesResponse,
+  ListMcpTokensResponse,
+  McpTokenSummary,
+  MintMcpTokenRequest,
+  MintMcpTokenResponse,
 } from "./real";
 
 // ---------------------------------------------------------------------------
@@ -662,6 +672,13 @@ export async function mockCodexCredential(): Promise<CodexCredential> {
   return { ...codexCredential };
 }
 
+/** The Claude Code execution credential state (never a plaintext secret). */
+export async function mockClaudeCredential(): Promise<ClaudeCredential> {
+  await delay();
+  const { claudeCredential } = getState();
+  return { ...claudeCredential };
+}
+
 // ---------------------------------------------------------------------------
 // GitHub import — USER_REPOSITORIES (4 repos + metadata)
 // ---------------------------------------------------------------------------
@@ -861,4 +878,184 @@ export async function mockPostSelfUpdate(
 ): Promise<SelfUpdateAck> {
   await delay();
   return { started: true, target: body.target };
+}
+
+// ---------------------------------------------------------------------------
+// MCP server (remote-mcp-server) — tokens + enable flag
+//
+// The mock layer is the SERVER stand-in, so it is the legitimate place the raw
+// `mcp_…` token is fabricated (mirroring how the real api mints one): the card
+// reads it back ONLY from the mint reply (`mockMintMcpToken`), never client-side.
+// State is module-scoped here (the mock layer already owns its fixtures, and the
+// persisted UI store is out of this seam's scope) so a mint/revoke reflects on
+// the next `mockListMcpTokens` read — reproducing the read-state/render loop.
+// `revokedAt` is set (idempotently) rather than the row being dropped, so the
+// list keeps surfacing the revoked credential's lifecycle state like the real one.
+// ---------------------------------------------------------------------------
+
+/** The in-memory mock MCP-token set (non-secret rows only — never a raw token). */
+let mockMcpTokenStore: McpTokenSummary[] = [];
+/** The system-wide `mcpServerEnabled` flag, mocked default false (spec D5). */
+let mockMcpServerEnabledFlag = false;
+/** Monotonic counter so distinct mints get distinct ids/suffixes deterministically. */
+let mockMcpTokenSeq = 0;
+
+/**
+ * Fabricate a raw `mcp_…` token + its non-secret projection, the way the real
+ * api mint would. The raw body is random per call; the `last4`/`prefix` are
+ * derived from it so the show-once dialog and the subsequent list row agree.
+ */
+function fabricateMcpToken(
+  body: MintMcpTokenRequest,
+): MintMcpTokenResponse {
+  mockMcpTokenSeq += 1;
+  // A random url-safe body (the `mcp_` prefix is the credential family marker).
+  const randomBody = Array.from({ length: 36 }, () =>
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".charAt(
+      Math.floor(Math.random() * 64),
+    ),
+  ).join("");
+  const raw = `mcp_${randomBody}`;
+  const id = `mcp-${mockMcpTokenSeq.toString(16).padStart(8, "0")}`;
+  return {
+    token: raw,
+    id,
+    name: body.name,
+    scopes: [...body.scopes],
+    prefix: "mcp_",
+    last4: raw.slice(-4),
+    lastUsedAt: null,
+    expiresAt: body.expiresAt ?? null,
+    revokedAt: null,
+  };
+}
+
+/** `GET /mcp-tokens` (mock) — the non-secret list, newest first. */
+export async function mockListMcpTokens(): Promise<ListMcpTokensResponse> {
+  await delay();
+  return [...mockMcpTokenStore].reverse();
+}
+
+/**
+ * `POST /mcp-tokens` (mock) — mint a token. Returns the show-once reply (raw
+ * `mcp_…` token present once); stores only the non-secret projection so the raw
+ * value is never re-fetchable, exactly like the real api.
+ */
+export async function mockMintMcpToken(
+  body: MintMcpTokenRequest,
+): Promise<MintMcpTokenResponse> {
+  await delay();
+  const minted = fabricateMcpToken(body);
+  // Persist only the non-secret projection (drop the raw `token`).
+  const { token: _raw, ...summary } = minted;
+  void _raw;
+  mockMcpTokenStore = [...mockMcpTokenStore, summary];
+  return minted;
+}
+
+/** `DELETE /mcp-tokens/:id` (mock) — idempotent revoke (sets `revokedAt`). */
+export async function mockRevokeMcpToken(id: string): Promise<void> {
+  await delay();
+  mockMcpTokenStore = mockMcpTokenStore.map((t) =>
+    t.id === id && !t.revokedAt
+      ? { ...t, revokedAt: new Date().toISOString() }
+      : t,
+  );
+}
+
+/** `GET /settings/mcp-server` (mock) — the current enable flag. */
+export async function mockMcpServerEnabled(): Promise<boolean> {
+  await delay();
+  return mockMcpServerEnabledFlag;
+}
+
+/** `PUT /settings/mcp-server` (mock) — flip the enable flag. */
+export async function mockSetMcpServerEnabled(
+  enabled: boolean,
+): Promise<boolean> {
+  await delay();
+  mockMcpServerEnabledFlag = enabled;
+  return mockMcpServerEnabledFlag;
+}
+
+/** Test-only reset of the mock MCP state (no production caller). */
+export function __resetMockMcpState(): void {
+  mockMcpTokenStore = [];
+  mockMcpServerEnabledFlag = false;
+  mockMcpTokenSeq = 0;
+}
+
+// ---------------------------------------------------------------------------
+// API keys (api-key-machine-identity) — typed in-memory mock seam
+// ---------------------------------------------------------------------------
+
+/**
+ * In-memory mock store of the operator's API keys, mutated by the mock
+ * mint/revoke so the settings card's list re-derives across a mint→list→revoke
+ * cycle on the mock seam (mirroring the prototype's read-state/render loop).
+ * Seeded empty; the mock mint FABRICATES a `cap_sk_` key (MOCK-ONLY — the real
+ * seam's show-once key is the server's one-time response, never fabricated).
+ */
+const MOCK_API_KEYS: ApiKeyListItem[] = [];
+
+/** Fabricate a `cap_sk_` raw key for the MOCK path only (deterministic-ish). */
+function mockRawApiKey(): string {
+  const alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const seed = MOCK_API_KEYS.length + 1;
+  let body = "";
+  for (let i = 0; i < 43; i += 1) body += alphabet[(i * 7 + seed * 13) % 64];
+  return `cap_sk_${body}`;
+}
+
+/** `GET /api-keys` (mock) — the in-memory key list, most-recent-first. */
+export async function mockListApiKeys(): Promise<ApiKeyListResponse> {
+  await delay();
+  return { keys: MOCK_API_KEYS.map((k) => ({ ...k })) };
+}
+
+/**
+ * `POST /api-keys` (mock) — fabricate + store a key, returning the show-once raw
+ * value. MOCK-ONLY fabrication; the real seam returns the server's one-time key.
+ */
+export async function mockMintApiKey(
+  body: ApiKeyMintRequest,
+): Promise<ApiKeyMintResponse> {
+  await delay();
+  const rawKey = mockRawApiKey();
+  const last4 = rawKey.slice(-4);
+  const id = `mock-key-${MOCK_API_KEYS.length + 1}`;
+  MOCK_API_KEYS.unshift({
+    id,
+    name: body.name,
+    scopes: body.scopes,
+    prefix: "cap_sk_",
+    last4,
+    lastUsedAt: null,
+    expiresAt: body.expiresAt ?? null,
+    revokedAt: null,
+  });
+  return {
+    key: rawKey,
+    id,
+    name: body.name,
+    scopes: body.scopes,
+    prefix: "cap_sk_",
+    last4,
+    expiresAt: body.expiresAt ?? null,
+  };
+}
+
+/**
+ * `DELETE /api-keys/:id` (mock) — idempotent revoke; a revoked key stays listed
+ * with its `revokedAt` timestamp. Returns the revoked key's list view.
+ */
+export async function mockRevokeApiKey(
+  id: string,
+): Promise<ApiKeyRevokeResponse> {
+  await delay();
+  const item = MOCK_API_KEYS.find((k) => k.id === id);
+  if (!item) throw new Error(`mock api-key not found: ${id}`);
+  if (item.revokedAt == null) item.revokedAt = new Date().toISOString();
+  return { key: { ...item } };
 }

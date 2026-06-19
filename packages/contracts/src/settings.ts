@@ -232,6 +232,80 @@ export type SaveCodexCredentialRequest = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// Claude Code runtime credential (pixel-restore-console-to-od Track 3 /
+// account-settings "Claude Code runtime credential") — the runtime sibling of
+// the Codex credential, distinct from it and from console login. Same secret
+// discipline: ciphertext + masked suffix only; plaintext is never returned.
+// ---------------------------------------------------------------------------
+
+/**
+ * The two mutually-exclusive Claude Code credential modes:
+ *  - `subscription`: a Claude OAuth token minted via `claude setup-token`
+ *    (exported as `CLAUDE_CODE_OAUTH_TOKEN` to the sandbox) — the path the
+ *    runtime consumes today.
+ *  - `api_key`: an Anthropic `sk-ant-` API key (usage-based billing).
+ */
+export const ClaudeCredentialModeSchema = z.enum(['subscription', 'api_key']);
+export type ClaudeCredentialMode = z.infer<typeof ClaudeCredentialModeSchema>;
+
+/** Connection state, same vocabulary as the Codex credential. */
+export const ClaudeCredentialStateSchema = z.enum([
+  'not_connected',
+  'not_saved',
+  'connected',
+]);
+export type ClaudeCredentialState = z.infer<typeof ClaudeCredentialStateSchema>;
+
+/**
+ * Claude Code credential READ shape. Neither secret is ever returned: each is
+ * represented only by a non-reversible presence boolean and an optional masked
+ * suffix for display.
+ */
+export const ClaudeCredentialSchema = z.object({
+  /** Active mode. */
+  mode: ClaudeCredentialModeSchema,
+  /** Connection state shared across the status card / tab subtitle. */
+  state: ClaudeCredentialStateSchema,
+  /** Non-reversible presence indicator for the stored `setup-token`. */
+  hasSetupToken: z.boolean(),
+  /** Optional masked suffix of the stored setup-token (display only). */
+  setupTokenSuffix: z.string().min(1).nullable().optional(),
+  /** Non-reversible presence indicator for the stored Anthropic API key. */
+  hasApiKey: z.boolean(),
+  /** Optional masked suffix of the stored API key (display only). */
+  apiKeySuffix: z.string().min(1).nullable().optional(),
+  /** Selected default Claude model persisted with the credential (non-secret). */
+  defaultModel: z.string().min(1).nullable().optional(),
+});
+export type ClaudeCredential = z.infer<typeof ClaudeCredentialSchema>;
+
+/**
+ * Body accepted when saving a Claude Code credential. The secrets (`setupToken`,
+ * `apiKey`) are WRITE-ONLY: encrypted at rest on save, never echoed back, and
+ * preserved-by-omission on an update of the same mode. Saving one mode clears the
+ * other mode's secret (the modes are mutually exclusive).
+ */
+export const SaveClaudeCredentialRequestSchema = z.object({
+  /** Mode being saved. */
+  mode: ClaudeCredentialModeSchema,
+  /**
+   * Write-only `claude setup-token` token (subscription mode). Encrypted at rest;
+   * omit to preserve the previously stored token on a subscription re-save.
+   */
+  setupToken: z.string().min(1).optional(),
+  /**
+   * Write-only Anthropic API key (api_key mode). Encrypted at rest; omit to
+   * preserve the previously stored key on an api_key re-save.
+   */
+  apiKey: z.string().min(1).optional(),
+  /** Selected default model to persist with the credential. */
+  defaultModel: z.string().min(1).optional(),
+});
+export type SaveClaudeCredentialRequest = z.infer<
+  typeof SaveClaudeCredentialRequestSchema
+>;
+
+// ---------------------------------------------------------------------------
 // Compatible-provider model discovery (POST /settings/codex/models)
 // ---------------------------------------------------------------------------
 
@@ -351,3 +425,53 @@ export const CodexDeviceLoginStatusSchema = z.object({
   message: z.string().nullable().optional(),
 });
 export type CodexDeviceLoginStatus = z.infer<typeof CodexDeviceLoginStatusSchema>;
+
+// ---------------------------------------------------------------------------
+// MCP server enable toggle (system-level, admin-gated)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default for the SYSTEM-LEVEL MCP-server enable flag. `false` so the platform
+ * ships INERT — the outward-facing sandbox-execution surface stays off until a
+ * deliberate admin enable (remote-mcp-server spec, D5).
+ */
+export const DEFAULT_MCP_SERVER_ENABLED = false;
+
+/**
+ * The SYSTEM-LEVEL (instance-wide, shared across all accounts) flag gating
+ * whether the `/mcp` endpoint serves MCP traffic. Persisted on the existing
+ * `SystemSettings` (like {@link MaxConcurrentTasksSchema}) and toggled only by an
+ * admin operator. When `false`, `/mcp` is inert (no `mcp_` token resolves a
+ * usable session there) and the console hides the connect affordance; turning it
+ * off stops new use WITHOUT deleting any minted token.
+ */
+export const McpServerEnabledSchema = z.boolean();
+export type McpServerEnabled = z.infer<typeof McpServerEnabledSchema>;
+
+/**
+ * READ shape for the admin-gated MCP-server settings surface: the current
+ * system-level `mcpServerEnabled` flag. Defaults to
+ * {@link DEFAULT_MCP_SERVER_ENABLED} when no value has been persisted, so the
+ * console renders the off-by-default state without a separate probe.
+ */
+export const McpServerSettingsSchema = z.object({
+  /** Whether the `/mcp` endpoint currently serves MCP traffic. */
+  mcpServerEnabled: McpServerEnabledSchema.default(DEFAULT_MCP_SERVER_ENABLED),
+});
+export type McpServerSettings = z.infer<typeof McpServerSettingsSchema>;
+
+/**
+ * Body accepted by the admin-gated MCP-server settings update endpoint.
+ *
+ * Carries only the writable system-level `mcpServerEnabled` flag. The write is
+ * admin-gated server-side (mirroring the existing admin-gated settings pattern);
+ * a non-admin session or a machine principal is rejected (403) without mutating
+ * the stored flag.
+ */
+export const UpdateMcpServerSettingsRequestSchema = z.object({
+  /** New system-level MCP-server enable flag. */
+  mcpServerEnabled: McpServerEnabledSchema,
+});
+export type UpdateMcpServerSettingsRequest = z.infer<
+  typeof UpdateMcpServerSettingsRequestSchema
+>;

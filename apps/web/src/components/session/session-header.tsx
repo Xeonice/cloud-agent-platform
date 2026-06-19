@@ -113,12 +113,18 @@ export function SessionHeader({
           aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)}
           title={expanded ? "收起任务目标" : "展开任务目标"}
-          className="flex max-w-[880px] items-baseline gap-2 text-left text-[13px] leading-relaxed text-muted-foreground/80 transition-colors hover:text-foreground"
+          className="block w-full max-w-[680px] text-left text-[13px] leading-[1.6] text-[color-mix(in_oklch,var(--muted)_52%,var(--foreground))]"
         >
-          <span className={expanded ? "whitespace-pre-wrap" : "truncate"}>
+          <span
+            className={
+              expanded
+                ? "block whitespace-pre-wrap"
+                : "line-clamp-2 [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2]"
+            }
+          >
             {prompt}
           </span>
-          <span className="flex-none text-xs text-muted-foreground">
+          <span className="mt-[5px] inline-block text-xs font-medium text-info">
             {expanded ? "收起" : "展开"}
           </span>
         </button>

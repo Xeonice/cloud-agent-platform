@@ -29,6 +29,13 @@ import { BREAKPOINTS, PAGES, snapshotName } from "./manifest";
  */
 const SEED_MOCK_SESSION = `
   window.sessionStorage.setItem("agent-control-plane-session", "1");
+  // The finalized design baseline captures the steady (up-to-date) console — it
+  // does NOT include the dismissible update banner. The visual mock surfaces an
+  // available v0.4.0 (to exercise the banner elsewhere), so pre-dismiss that exact
+  // version here via the banner's own per-version dismissal key. This hides the
+  // banner in the harness without touching the mock or product behavior; the
+  // banner's presentation stays covered by update-banner.test.ts.
+  window.localStorage.setItem("cap.updateBanner.dismissedVersion", "v0.4.0");
   window.localStorage.setItem(
     "agent-control-plane-state",
     JSON.stringify({

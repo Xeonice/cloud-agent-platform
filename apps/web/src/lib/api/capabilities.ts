@@ -36,6 +36,15 @@ export interface BackendCapabilities {
   history: boolean;
   /** Account settings CRUD + Codex credential read/write. */
   settings: boolean;
+  /**
+   * `POST/GET/DELETE /api-keys` — session-minted machine credentials
+   * (api-key-machine-identity). When `false` the settings "API Keys" card reads
+   * the typed in-memory mock seam (mint fabricates a `cap_sk_` key locally for the
+   * show-once visual harness); when `true` the card mints/lists/revokes through the
+   * real session-gated endpoints and the show-once raw key is the SERVER's one-time
+   * response.
+   */
+  apiKeys: boolean;
   /** GitHub repository import (`GET /user/repos`, import, set-default). */
   githubImport: boolean;
   /**
@@ -85,6 +94,30 @@ export interface BackendCapabilities {
    * never surfaces an unconfirmed upgrade trigger.
    */
   selfUpdate: boolean;
+  /**
+   * The remote MCP server surface (`/mcp-tokens` CRUD + `/settings/mcp-server`
+   * toggle, remote-mcp-server). When `false` (the DEFAULT, shipped posture) the
+   * settings "MCP Server" section reads the typed `mockMcpTokens` /
+   * `mockMcpServerEnabled` through the standard seam — so the card renders today
+   * with no live backend. It flips to `true` once the `McpTokensModule` +
+   * `/settings/mcp-server` endpoints are verified against the running api + an
+   * OAuth session (and, for the live connect affordance, `mcpServerEnabled` on).
+   * The raw `mcp_` token is the SERVER's one-time mint response in BOTH modes
+   * (the mock seam fabricates a stand-in; the real path returns the api's) — the
+   * card never client-fabricates it.
+   */
+  mcpServer: boolean;
+  /**
+   * The in-console API Playground runner (`sendApiRequest`, add-api-playground
+   * D3). Gates the generic `/v1` send: this is the ONE domain that is REAL-ONLY
+   * — there is NO mock branch. When `true` (the running-api posture) a 发送
+   * executes against the running api signed by the operator's console session;
+   * when `false` (mock / backend-less / `VITE_FORCE_MOCK`) a send is NOT
+   * fabricated — `runApiRequest` returns a clear "needs the running api" error
+   * result so the catalog + editor still render (for the pixel baseline +
+   * offline exploration) but a send honestly reports it cannot reach the api.
+   */
+  apiPlayground: boolean;
 }
 
 /**
@@ -116,6 +149,7 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   metrics: true, // GET /metrics — semaphore capacity + docker-stats sampling.
   history: true, // GET /audit/events — audit timeline.
   settings: true, // /settings + /settings/codex — per-account, GitHub-identity session.
+  apiKeys: true, // POST/GET/DELETE /api-keys — session-minted machine credentials; show-once raw key is the server response.
   githubImport: true, // /repos/github/* — import via the operator's OAuth token.
   branches: true, // Task.branch/strategy read-back on the real task read.
 
@@ -142,6 +176,24 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   // activation step, paired with the api's `SELF_UPDATE_ENABLED` env gate and a
   // published GHCR release set.
   selfUpdate: true, // POST /self-update — gated, confirmed, admin-only host-root upgrade (activated: api SELF_UPDATE_ENABLED + admin set on the resident stack).
+
+  // Remote MCP server (remote-mcp-server). Default `false`: the settings "MCP
+  // Server" section reads the typed `mockMcpTokens` / `mockMcpServerEnabled`
+  // through the standard seam (mint show-once / list prefix+last4 / revoke +
+  // toggle all exercise on the mock), so the card renders today with no live
+  // backend and deploying the change adds NO live MCP traffic. Flips to `true`
+  // once the `McpTokensModule` + `/settings/mcp-server` endpoints are verified
+  // against the running api + an OAuth session.
+  mcpServer: false, // /mcp-tokens CRUD + /settings/mcp-server — settings-minted machine credential surface (mock until verified e2e).
+
+  // API Playground runner (add-api-playground). REAL-ONLY — there is no mock
+  // branch: the playground tests the RUNNING api. `true` is the running-api
+  // posture (sends ride the operator's session against the applied `/v1`
+  // surface). Under `VITE_FORCE_MOCK=1` (the visual harness / backend-less mode)
+  // `forceMock()` forces this `false` so the catalog + editor still render but a
+  // send returns a clear "needs the running api" result rather than a fabricated
+  // response (design D3).
+  apiPlayground: true, // sendApiRequest — generic session-authed /v1 runner (real-only; mock mode reports needs-the-api).
 };
 
 /**

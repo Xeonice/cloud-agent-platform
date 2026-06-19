@@ -6,3 +6,4 @@ next-env.d.ts
 
 # Next.js dev/build cache (also covered by the root .gitignore, kept here for clarity)
 /.next/
+.vercel

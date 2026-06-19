@@ -6,10 +6,16 @@ import {
 } from '@nestjs/common';
 import {
   AccountSettingsSchema,
+  ClaudeCredentialSchema,
   CodexCredentialSchema,
+  DEFAULT_MCP_SERVER_ENABLED,
+  McpServerSettingsSchema,
   type AccountSettings,
+  type ClaudeCredential,
   type CodexCredential,
+  type McpServerSettings,
   type RetentionDays,
+  type SaveClaudeCredentialRequest,
   type SaveCodexCredentialRequest,
   type SessionUser,
   type UpdateSettingsRequest,
@@ -433,6 +439,152 @@ export class SettingsService {
   }
 
   /**
+   * pixel-restore-console-to-od Track 3 — reads the account's Claude Code
+   * runtime credential as the secret-free READ shape (mode + state + presence
+   * booleans + masked suffixes). Neither the setup-token nor the API key is ever
+   * returned; only their `*Last4` suffix is surfaced for display.
+   */
+  async readClaudeCredential(operator: SessionUser): Promise<ClaudeCredential> {
+    const userId = await this.requireUserId(operator);
+    const row = await this.prisma.claudeCredential.findUnique({
+      where: { userId },
+    });
+    if (!row) {
+      return ClaudeCredentialSchema.parse({
+        mode: 'subscription',
+        state: 'not_connected',
+        hasSetupToken: false,
+        hasApiKey: false,
+      });
+    }
+    const persistedState =
+      row.state === 'not_connected' ||
+      row.state === 'not_saved' ||
+      row.state === 'connected'
+        ? row.state
+        : 'not_connected';
+    return ClaudeCredentialSchema.parse({
+      mode: row.mode === 'api_key' ? 'api_key' : 'subscription',
+      state: persistedState,
+      hasSetupToken:
+        row.setupTokenCiphertext !== null && row.setupTokenCiphertext.length > 0,
+      setupTokenSuffix: row.setupTokenLast4,
+      hasApiKey: row.apiKeyCiphertext !== null && row.apiKeyCiphertext.length > 0,
+      apiKeySuffix: row.apiKeyLast4,
+      defaultModel: row.defaultModel,
+    });
+  }
+
+  /**
+   * pixel-restore-console-to-od Track 3 — saves the Claude Code credential. The
+   * two modes are MUTUALLY EXCLUSIVE: saving one clears the other mode's secret.
+   * The active mode's secret is encrypted at rest (AES-256-GCM, reusing the
+   * codex credential server key); with no server key configured this FAILS CLOSED
+   * (no row written). Unlike the codex compatible path there is no live discovery
+   * probe — `connected` means the active mode's secret is stored (a `setup-token`
+   * has no cheap validation endpoint). Secrets are preserved-by-omission on a
+   * re-save of the same mode. Returns the secret-free read shape.
+   */
+  async saveClaudeCredential(
+    operator: SessionUser,
+    request: SaveClaudeCredentialRequest,
+    env: NodeJS.ProcessEnv = process.env,
+  ): Promise<ClaudeCredential> {
+    const userId = await this.requireUserId(operator);
+    const existing = await this.prisma.claudeCredential.findUnique({
+      where: { userId },
+    });
+
+    // Encrypt a plaintext secret into the joined `ciphertext.iv.authTag` storage
+    // string. FAIL CLOSED when no server key is configured — a secret is never
+    // stored unencrypted.
+    const encryptToStored = (plaintext: string): string => {
+      let envelope: { ciphertext: string; iv: string; authTag: string };
+      try {
+        const key = resolveEncryptionKey(env[CODEX_CRED_ENC_KEY_ENV]);
+        envelope = encryptSecret(plaintext, key);
+      } catch (error) {
+        if (error instanceof EncryptionKeyUnavailableError) {
+          throw new InternalServerErrorException({
+            error: 'encryption_key_unavailable',
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+      return `${envelope.ciphertext}.${envelope.iv}.${envelope.authTag}`;
+    };
+
+    // Subscription secret (setup-token): set/keep in subscription mode, cleared
+    // when the saved mode is api_key.
+    let setupTokenCiphertext: string | null;
+    let setupTokenLast4: string | null;
+    if (request.mode === 'subscription') {
+      if (typeof request.setupToken === 'string' && request.setupToken.length > 0) {
+        setupTokenCiphertext = encryptToStored(request.setupToken);
+        setupTokenLast4 = maskApiKeySuffix(request.setupToken);
+      } else {
+        setupTokenCiphertext = existing?.setupTokenCiphertext ?? null;
+        setupTokenLast4 = existing?.setupTokenLast4 ?? null;
+      }
+    } else {
+      setupTokenCiphertext = null;
+      setupTokenLast4 = null;
+    }
+
+    // API-key secret (Anthropic key): set/keep in api_key mode, cleared when the
+    // saved mode is subscription.
+    let apiKeyCiphertext: string | null;
+    let apiKeyLast4: string | null;
+    if (request.mode === 'api_key') {
+      if (typeof request.apiKey === 'string' && request.apiKey.length > 0) {
+        apiKeyCiphertext = encryptToStored(request.apiKey);
+        apiKeyLast4 = maskApiKeySuffix(request.apiKey);
+      } else {
+        apiKeyCiphertext = existing?.apiKeyCiphertext ?? null;
+        apiKeyLast4 = existing?.apiKeyLast4 ?? null;
+      }
+    } else {
+      apiKeyCiphertext = null;
+      apiKeyLast4 = null;
+    }
+
+    const activeSecretStored =
+      request.mode === 'subscription'
+        ? Boolean(setupTokenCiphertext)
+        : Boolean(apiKeyCiphertext);
+    const state: 'not_connected' | 'connected' = activeSecretStored
+      ? 'connected'
+      : 'not_connected';
+    const defaultModel = request.defaultModel ?? existing?.defaultModel ?? null;
+
+    await this.prisma.claudeCredential.upsert({
+      where: { userId },
+      create: {
+        userId,
+        mode: request.mode,
+        state,
+        setupTokenCiphertext,
+        setupTokenLast4,
+        apiKeyCiphertext,
+        apiKeyLast4,
+        defaultModel,
+      },
+      update: {
+        mode: request.mode,
+        state,
+        setupTokenCiphertext,
+        setupTokenLast4,
+        apiKeyCiphertext,
+        apiKeyLast4,
+        defaultModel,
+      },
+    });
+
+    return this.readClaudeCredential(operator);
+  }
+
+  /**
    * 7.6 — Discovers the models a CANDIDATE compatible provider exposes, using a
    * base URL + key WITHOUT persisting anything first, so a candidate can be
    * validated before save. Surfaces provider errors distinguishably (auth vs
@@ -447,6 +599,48 @@ export class SettingsService {
   ): Promise<ModelDiscoveryResult> {
     await this.requireUserId(operator);
     return this.modelDiscovery.discover(baseUrl, apiKey);
+  }
+
+  /**
+   * remote-mcp-server 5.2 — Reads the SYSTEM-LEVEL `mcpServerEnabled` flag from
+   * the single shared `SystemSettings` row (the same row that carries
+   * `maxConcurrentTasks`). When no row has been persisted the flag resolves to
+   * {@link DEFAULT_MCP_SERVER_ENABLED} (false) so the `/mcp` surface ships inert
+   * until an operator deliberately enables it. This is an instance-wide flag, NOT
+   * a per-account preference, so no operator scoping is applied here; the
+   * controller admin-gates the read.
+   */
+  async readMcpServerSettings(): Promise<McpServerSettings> {
+    const row = await this.prisma.systemSettings.findUnique({
+      where: { id: SYSTEM_SETTINGS_ROW_ID },
+    });
+    return McpServerSettingsSchema.parse({
+      mcpServerEnabled: row?.mcpServerEnabled ?? DEFAULT_MCP_SERVER_ENABLED,
+    });
+  }
+
+  /**
+   * remote-mcp-server 5.2 — Persists the SYSTEM-LEVEL `mcpServerEnabled` flag via
+   * the fixed-id upsert on the single `SystemSettings` row, beside
+   * `maxConcurrentTasks`. The `update` branch touches ONLY the flag, leaving any
+   * persisted concurrency ceiling intact; the `create` branch (first write to the
+   * row) seeds `maxConcurrentTasks` from the effective env/default ceiling so a
+   * fresh row carries the correct concurrency value rather than an arbitrary one.
+   * Turning the flag off never deletes any minted token — it only stops new
+   * `/mcp` use. The controller admin-gates the write; the value is read straight
+   * from the request (no operator scoping — it is instance-wide).
+   */
+  async setMcpServerEnabled(enabled: boolean): Promise<McpServerSettings> {
+    await this.prisma.systemSettings.upsert({
+      where: { id: SYSTEM_SETTINGS_ROW_ID },
+      create: {
+        id: SYSTEM_SETTINGS_ROW_ID,
+        maxConcurrentTasks: await this.readSystemCeiling(),
+        mcpServerEnabled: enabled,
+      },
+      update: { mcpServerEnabled: enabled },
+    });
+    return McpServerSettingsSchema.parse({ mcpServerEnabled: enabled });
   }
 
   // ----- internals -----------------------------------------------------------

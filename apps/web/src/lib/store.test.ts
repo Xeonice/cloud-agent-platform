@@ -40,6 +40,7 @@ describe("normalizeState", () => {
         "selectedRepo",
         "settings",
         "codexCredential",
+        "claudeCredential",
       ].sort(),
     );
   });

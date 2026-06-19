@@ -25,7 +25,7 @@ import { activeNavKey, type NavKey } from "@/components/shell/app-sidebar";
 
 interface MobileNavEntry {
   key: NavKey;
-  to: "/dashboard" | "/repositories" | "/history";
+  to: "/dashboard" | "/repositories" | "/history" | "/api";
   label: string;
 }
 
@@ -33,6 +33,7 @@ const MOBILE_ENTRIES: readonly MobileNavEntry[] = [
   { key: "dashboard", to: "/dashboard", label: "控制台" },
   { key: "repositories", to: "/repositories", label: "仓库" },
   { key: "history", to: "/history", label: "历史" },
+  { key: "api", to: "/api", label: "API" },
 ];
 
 export interface MobileNavProps {

@@ -36,3 +36,9 @@ apps/web/playwright-report/
 # Claude Code runtime lock + worktrees
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+
+# local tooling / debug artifacts (not part of any change)
+.claude/skills/
+.playwright-mcp/
+__pycache__/
+*.pyc

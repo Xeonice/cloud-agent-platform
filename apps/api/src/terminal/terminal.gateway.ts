@@ -694,12 +694,21 @@ export class TerminalGateway
     // {@link resolveOperatorPrincipal} so the WS surface cannot drift from REST
     // on the session re-check or the constant-time legacy `AUTH_TOKEN` compare.
     const sessionToken = cookieToken ?? presentedToken;
-    const legacyBearerToken = presentedToken;
-    if (sessionToken === null && legacyBearerToken === null) return false;
-    const credentials = { sessionToken, legacyBearerToken };
-    const principal = await resolveOperatorPrincipal(credentials, (token) =>
-      this.authSession ? this.authSession.resolveSession(token) : Promise.resolve(null),
-    );
+    const bearerToken = presentedToken;
+    if (sessionToken === null && bearerToken === null) return false;
+    const credentials = { sessionToken, bearerToken };
+    // Route through the shared resolver so the WS surface cannot drift from REST
+    // on prefix dispatch (cap_sk_ api-key / reserved mcp_), the session re-check,
+    // or the constant-time legacy AUTH_TOKEN compare. The same single presented
+    // token fills both candidate slots; prefix dispatch (the FIRST step) ensures a
+    // cap_sk_/mcp_ token here never falls into a Session lookup.
+    const principal = await resolveOperatorPrincipal(credentials, {
+      resolveSession: (token) =>
+        this.authSession ? this.authSession.resolveSession(token) : Promise.resolve(null),
+      resolveApiKey: (raw) =>
+        this.authSession ? this.authSession.resolveApiKey(raw) : Promise.resolve(null),
+      // No MCP resolver bound: the `mcp_` slot fails closed (denyMcpResolver).
+    });
     return principal !== null;
   }
 

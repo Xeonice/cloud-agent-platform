@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>高级派发 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html" aria-current="page"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+          <a href="api.html"><span>API 调试</span><span class="shortcut">⌘4</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="screen-header">
+        <div>
+          <div class="eyebrow">新建任务</div>
+          <h1 class="screen-title">高级派发</h1>
+          <p class="screen-lead">当任务需要更明确的边界时，从这里预检仓库、分支和执行模式；轻量任务仍可直接在控制台弹窗创建。</p>
+        </div>
+      </section>
+
+      <section class="grid-3" aria-label="任务预检">
+        <article class="stat-tile">
+          <span class="metric-label">REPOSITORY</span>
+          <strong class="metric-value">已导入仓库</strong>
+          <p>只允许从仓库范围里选择任务上下文。</p>
+        </article>
+        <article class="stat-tile">
+          <span class="metric-label">RUNNER</span>
+          <strong class="metric-value">iad-02 可接入</strong>
+          <p>当前还有 3 个空闲远端槽位。</p>
+        </article>
+        <article class="stat-tile">
+          <span class="metric-label">GUARDRAIL</span>
+          <strong class="metric-value">沙箱即信任边界</strong>
+          <p>Agent 在隔离容器内自主执行，凭据用后即焚。</p>
+        </article>
+      </section>
+
+      <section class="grid-2 equal" style="grid-template-columns:minmax(0,.9fr) minmax(320px,1.1fr);margin-top:12px">
+        <form class="panel pad form-grid" data-task-form>
+          <div class="field">
+            <label for="task-runtime">运行时</label>
+            <select id="task-runtime" data-command-source>
+              <option value="codex">Codex · ChatGPT 订阅</option>
+              <option value="claude-code">Claude Code · Anthropic 订阅</option>
+            </select>
+            <small class="small-muted">选择派发到哪个 Agent；未配置凭据的运行时会被禁用并提示前往设置连接。</small>
+          </div>
+
+          <div class="field">
+            <label for="task-repo">仓库</label>
+            <select id="task-repo" data-command-source>
+              <option>tanghehui/cloud-agent-platform</option>
+              <option>tanghehui/agent-api</option>
+            </select>
+            <small class="small-muted">仓库列表来自已导入仓库。</small>
+          </div>
+
+          <div class="field">
+            <label for="task-branch">分支</label>
+            <select id="task-branch" data-command-source>
+              <option>main</option>
+            </select>
+            <small class="small-muted">Agent 会为这个分支获得一个干净的远端工作区。</small>
+          </div>
+
+          <div class="field">
+            <label for="task-strategy">执行策略</label>
+            <select id="task-strategy" data-command-source>
+              <option>先读仓库与 AGENTS.md，再给出计划</option>
+              <option>允许直接修改并提交（自动 PR）</option>
+              <option>只读审查，不写入文件</option>
+            </select>
+            <small class="small-muted">执行策略会进入命令预览，帮助操作者在派发前看清任务边界。</small>
+          </div>
+
+          <div class="field">
+            <span class="field-label">预装技能（可选）</span>
+            <label class="check-row">
+              <input type="checkbox" value="openspec" data-skill data-command-source>
+              <span><strong>OpenSpec</strong><br><small class="small-muted">spec-driven 变更工作流 (/opsx:)</small></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" value="bmad" data-skill data-command-source>
+              <span><strong>BMAD</strong><br><small class="small-muted">Agile AI 开发方法 (agent 人设)</small></span>
+            </label>
+          </div>
+
+          <div class="grid-2 equal">
+            <div class="field">
+              <label for="idle-timeout">空闲自动回收</label>
+              <select id="idle-timeout">
+                <option>关闭（默认，不自动回收）</option>
+                <option>15 分钟</option>
+                <option>30 分钟</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="deadline">运行时限</label>
+              <select id="deadline">
+                <option>无（默认，不限运行时长）</option>
+                <option>1 小时</option>
+                <option>4 小时</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="task-prompt">任务描述</label>
+            <textarea id="task-prompt" data-command-source placeholder="清楚描述远端 Agent 需要完成什么。"></textarea>
+            <small class="small-muted" data-task-count>0 字</small>
+          </div>
+
+          <div class="check-row" style="cursor:default;align-items:flex-start">
+            <span aria-hidden="true" style="margin-top:1px">🛡️</span>
+            <span>
+              <strong>安全边界</strong><br>
+              <small class="small-muted">Agent 在沙箱内自主执行 —— 沙箱即信任边界（Codex 与 Claude Code 一致），不做逐操作写入门控。</small>
+            </span>
+          </div>
+
+          <div class="actions" style="margin-top:10px">
+            <button class="btn primary" type="submit" data-task-submit disabled>创建任务</button>
+            <a class="btn" href="dashboard.html">返回任务控制台</a>
+          </div>
+          <p class="small-muted" role="alert" data-task-error hidden></p>
+          <div class="split-line" data-task-result hidden style="border-radius:8px;background:#f7fbf8;padding:10px;box-shadow:var(--shadow-ring)">
+            <span class="status-pill green">已创建 <span class="mono">task_f8a2</span> · 正在 iad-02 排队</span>
+            <a class="btn primary" href="session.html">进入该任务会话</a>
+          </div>
+        </form>
+
+        <aside class="grid">
+          <article class="panel pad">
+            <div class="split-line" style="margin-bottom:12px">
+              <h2 style="margin:0;font-size:15px">命令预览</h2>
+              <span class="status-pill dark">agentctl</span>
+            </div>
+            <pre class="command-preview" data-command-preview></pre>
+          </article>
+
+          <article class="panel pad">
+            <div class="split-line" style="margin-bottom:12px">
+              <h2 style="margin:0;font-size:15px">执行边界</h2>
+              <span class="status-pill green">私有</span>
+            </div>
+            <div class="config-list">
+              <div class="config-row"><span>身份来源</span><strong>GitHub OAuth</strong></div>
+              <div class="config-row"><span>仓库范围</span><strong>已导入仓库</strong></div>
+              <div class="config-row"><span>运行时</span><strong>Codex / Claude Code</strong></div>
+              <div class="config-row"><span>写入动作</span><strong>沙箱内自主</strong></div>
+            </div>
+          </article>
+        </aside>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html" aria-current="page">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>

@@ -442,6 +442,86 @@ AUTH_TOKEN=<a-long-random-token>
 Leave both at their defaults (`false` / empty) for a production OAuth-first
 deploy — the api boots without a legacy token.
 
+## Optional: remote MCP server (`mcpServerEnabled`, default OFF)
+
+The remote MCP server lets an MCP client (Claude Desktop, Cursor, VS Code,
+`mcp-remote`) drive the platform's sandboxes — create/get/list/stop tasks, read a
+finished task's transcript, list repos — through MCP tools. It ships **inert**:
+the most dangerous outward-facing execution surface is OFF until an admin turns it
+on, and even then every request is gated by a settings-minted credential.
+
+### Endpoint and resource identity
+
+- **Endpoint**: `https://<your-api-domain>/mcp` (e.g.
+  `https://cap-api.douglasdong.com/mcp`). It is a single streamable-HTTP route
+  (POST/GET/DELETE), served in-process by the api (no separate MCP process).
+- **Canonical resource URI**: `cap:mcp` — the fixed RFC 8707 resource identifier
+  every minted `mcp_` token is valid for. There is **no** OAuth audience
+  negotiation and **no** `.well-known` discovery surface in the settings-minted
+  model: the token IS the credential.
+- **Auth**: a settings-minted `mcp_` token pasted into the client's
+  `Authorization: Bearer mcp_…` header. The api validates it on every request
+  (hash → lookup → reject revoked/expired → re-confirm the owner's allowlist), so
+  revoking a token or de-allowlisting its owner denies it on the next call. The
+  `/mcp` CORS is bearer-only and **non-credentialed** (no cookie is ever accepted
+  there); the console's credentialed CORS is a separate domain and never includes
+  an MCP-client origin.
+
+### Turning it on
+
+1. Set `mcpServerEnabled = true` — the system-level toggle in the console
+   **Settings → MCP Server** card (admin-only; an admin is a login in
+   `SELF_UPDATE_ADMINS`). While `false`, `/mcp` returns a JSON-RPC "disabled"
+   response and connects no transport, so no token works there.
+2. In the same card, **mint an MCP token**: pick a name + scopes
+   (`tasks:read`, `tasks:write`, `repos:read`), optionally an expiry. The raw
+   `mcp_…` token is shown **once** — copy it then; only its `mcp_` prefix + last 4
+   chars are ever shown again. Revoke is idempotent and own-scoped.
+
+### Per-client connect config
+
+Cursor (`~/.cursor/mcp.json` or a project `.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "cap": {
+      "url": "https://<your-api-domain>/mcp",
+      "headers": { "Authorization": "Bearer mcp_REPLACE_WITH_YOUR_TOKEN" }
+    }
+  }
+}
+```
+
+VS Code (`.vscode/mcp.json`) uses the same `url` + `headers` shape. For a client
+that speaks only stdio, bridge with `mcp-remote`:
+
+```jsonc
+{
+  "mcpServers": {
+    "cap": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://<your-api-domain>/mcp",
+        "--header",
+        "Authorization: Bearer mcp_REPLACE_WITH_YOUR_TOKEN"
+      ]
+    }
+  }
+}
+```
+
+### Deploy-time acceptance
+
+With the live tunnel up and `mcpServerEnabled` on, mint a token, paste it into a
+client as the `Authorization` bearer, and confirm an end-to-end `tools/list` +
+`create_task` round-trip through `https://<your-api-domain>/mcp`. A client that
+**cannot** pass a static bearer header (some web clients only support an OAuth
+connector) cannot connect with a settings-minted token — that is a documented
+limitation of this model, and OAuth auto-connect is a possible future add-on, not
+part of this surface.
+
 ## Reference
 
 - The reverse-proxy (Cloudflare → nginx → api) is gated behind the `proxy`

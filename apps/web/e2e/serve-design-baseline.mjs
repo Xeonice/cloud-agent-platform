@@ -16,10 +16,12 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** Repo-relative root of the design prototype — the baseline SOURCE OF TRUTH. */
+/** Repo-relative root of the design prototype — the baseline SOURCE OF TRUTH.
+ *  Re-pointed at the FROZEN finalized baseline for pixel-restore-console-to-od
+ *  (the 2026-06-19 snapshot: 10 screens + platform.css/js). */
 const ROOT = path.resolve(
   here,
-  "../../../openspec/changes/archive/2026-06-14-session-cockpit-redesign/design-baseline",
+  "../../../openspec/changes/pixel-restore-console-to-od/design-baseline",
 );
 
 const PORT = Number(process.argv[2] ?? 4317);

@@ -207,12 +207,14 @@
   --color-terminal-warn: var(--terminal-warn);
   --color-terminal-err: var(--terminal-err);
 
+  /* lock-step with apps/web/src/styles/app.css — Geist leads (app provides the
+     @font-face; standalone consumers fall back to system-ui / monospace) */
   --font-sans:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica,
-    Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
+    "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji", sans-serif;
   --font-mono:
-    "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    "Liberation Mono", monospace;
+    "Geist Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono",
+    Menlo, Consolas, "Liberation Mono", monospace;
 
   --radius-sm: 6px;
   --radius-md: 8px;
@@ -221,9 +223,8 @@
   --radius-full: 9999px;
 
   --shadow-ring: 0 0 0 1px var(--border);
-  --shadow-card:
-    0 0 0 1px var(--border), 0 1px 2px 0 rgba(16, 24, 40, 0.04),
-    0 1px 3px 0 rgba(16, 24, 40, 0.06);
+  /* flattened to the finalized baseline (lock-step with app.css) */
+  --shadow-card: 0 0 0 1px var(--border), 0 1px 2px rgba(0, 0, 0, 0.03);
   --shadow-modal:
     0 0 0 1px var(--border), 0 8px 24px -4px rgba(16, 24, 40, 0.12),
     0 4px 8px -4px rgba(16, 24, 40, 0.08);

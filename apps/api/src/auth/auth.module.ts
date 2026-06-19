@@ -29,9 +29,20 @@ import { AuthSessionService } from './auth-session.service';
  *   - {@link GitHubOAuthService} — the GitHub HTTP boundary (authorize URL, code
  *     exchange, user fetch);
  *   - {@link AuthSessionService} — the SINGLE session-mint point: fail-closed
- *     allowlist gate, gated user upsert, and opaque revocable sessions. It injects
- *     the global `PrismaService` and is EXPORTED so the WS handshake guard
- *     (`TerminalModule`, task 2.7) can resolve sessions at connect time.
+ *     allowlist gate, gated user upsert, and opaque revocable sessions. It also
+ *     hosts `resolveMcpToken` (remote-mcp-server, task 3.2) — the security-critical
+ *     `mcp_`-token resolve/allowlist-recheck decision, kept next to `resolveSession`.
+ *     It injects the global `PrismaService` and is EXPORTED so the WS handshake
+ *     guard (`TerminalModule`, task 2.7) can resolve sessions at connect time AND
+ *     the integration track can mount `requireBearerAuth({ verifyAccessToken:
+ *     resolveMcpToken })` on `/mcp`.
+ *
+ * MCP surface (remote-mcp-server, tasks 3.3 / 3.4): the guard prefix-routes an
+ * `mcp_` bearer through the `resolveMcp` slot of `resolveOperatorPrincipal` to an
+ * `mcp` machine principal (scopes), and EXACT-MATCH exempts `/mcp` from the
+ * session guard (it stays bearer-protected downstream by `requireBearerAuth`).
+ * Both reuse the already-injected {@link AuthSessionService}, so no new provider
+ * or export is required.
  */
 @Module({
   controllers: [GitHubOAuthController],
