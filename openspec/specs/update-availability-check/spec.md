@@ -2,7 +2,6 @@
 
 ## Purpose
 The console learns when a newer version is available: a cached, server-side GET /update-status compares the running CAP_VERSION against the latest GitHub Release for the configured repo and returns an honest discriminated status (degrading for source-build / no-releases / fetch-failure), and the app shell surfaces a dismissible update banner with the changelog link. Notify-only. (created by archiving change update-availability-check)
-
 ## Requirements
 ### Requirement: A cached server-side endpoint reports update availability
 The api SHALL expose `GET /update-status` (behind the operator-auth guard) that compares the running version against the latest GitHub Release for the configured repo and returns a discriminated `UpdateStatus` `{ currentVersion, latestVersion, updateAvailable, releaseUrl, releaseName, checkedAt }`. The GitHub Release lookup SHALL be CACHED in-process with a TTL (so concurrent browsers share one upstream fetch and GitHub rate limits are respected), and SHALL be BEST-EFFORT — a fetch failure SHALL return a degraded status (`updateAvailable: false`, `latestVersion: null`) rather than throwing. The checked repo SHALL come from configuration (`GITHUB_RELEASES_REPO`, defaulting to the cap repo) and the current version from the same source `/version` uses (`CAP_VERSION`). An `UpdateStatus` schema SHALL be added to `@cap/contracts` and used to validate the response on the client.
@@ -53,7 +52,6 @@ When `update-status` reports an available update, the console app shell SHALL re
 - **WHEN** the console requests update status
 - **THEN** it uses `queryKeys.updateStatus` + `updateStatusQuery` with `real.getUpdateStatus` validating via the `@cap/contracts` `UpdateStatus` schema and a mock fallback selected by the `updateCheck` capability flag, mirroring the existing domains
 
-
 ### Requirement: Update detection is near-live (short, configurable cache TTL)
 The `GET /update-status` GitHub-Release lookup cache SHALL use a SHORT default TTL (on the order of minutes, not hours) so a newly-published Release surfaces promptly, and the TTL SHALL be configurable via an environment variable, clamped to a floor that respects GitHub's anonymous rate limit. The single shared in-process fetch-per-TTL + coalescing behavior SHALL be preserved.
 
@@ -80,3 +78,31 @@ The console SHALL periodically re-read `GET /update-status` (a modest poll plus 
 #### Scenario: Refocusing the tab re-checks
 - **WHEN** the operator returns focus to a console tab that was backgrounded across a release
 - **THEN** the update-status query refetches and the banner reflects the latest availability
+
+### Requirement: The release-lookup upstream is configurable and defaults to the cache mirror
+
+The GitHub-Release lookup SHALL build its request against a configurable base URL via a
+`GITHUB_API_BASE` environment variable, replacing the previously hard-coded
+`https://api.github.com`. The default SHALL be the official cache-only mirror, so update
+checks route through the mirror out of the box. Setting `GITHUB_API_BASE=https://api.github.com`
+SHALL restore a fully-direct, zero-dependency lookup — this escape hatch is REQUIRED and
+documented for self-hosters. Changing the base SHALL change ONLY the host the lookup
+targets: the request path (`/repos/{repo}/releases/latest`), headers, the in-process TTL
+cache + coalescing, the honest-degrade behavior, and the `GITHUB_RELEASES_REPO` semantics
+SHALL all be unchanged. A trailing slash on the configured base SHALL be tolerated.
+
+#### Scenario: Default routes update checks through the mirror
+
+- **WHEN** `GITHUB_API_BASE` is unset
+- **THEN** the lookup targets the official mirror base, requesting `{mirror}/repos/{repo}/releases/latest`, and `GET /update-status` behaves exactly as before apart from the upstream host
+
+#### Scenario: Escape hatch restores direct GitHub
+
+- **WHEN** an operator sets `GITHUB_API_BASE=https://api.github.com`
+- **THEN** the lookup targets GitHub directly with identical path, headers, caching, coalescing, and degrade behavior
+
+#### Scenario: A failing upstream still degrades honestly regardless of base
+
+- **WHEN** the configured base (mirror or direct) is unreachable or returns a non-OK status
+- **THEN** `GET /update-status` degrades honestly (`updateAvailable: false`, `latestVersion: null`) without throwing, exactly as a direct-GitHub failure does today
+
