@@ -11,6 +11,7 @@
 ### Bug Fixes
 
 * **mcp:** return 405 for stateless GET/DELETE so real MCP clients connect ([#31](https://github.com/Xeonice/cloud-agent-platform/issues/31)) ([82b24c1](https://github.com/Xeonice/cloud-agent-platform/commit/82b24c19bbe75c2bec09b661be0cc8ab966e208a))
+* **www:** annotate LocaleLayout return type so the static build typechecks ([#31](https://github.com/Xeonice/cloud-agent-platform/issues/31)) ([3a25fe7](https://github.com/Xeonice/cloud-agent-platform/commit/3a25fe71e822ee9f410fe6fe5d6984f0be1fabc2))
 
 
 ## [0.10.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.9.0...v0.10.0) (2026-06-19)
