@@ -137,6 +137,40 @@ export interface HowItWorksContent {
   readonly steps: readonly HowItWorksStep[];
 }
 
+/** A single MCP-client connect step (a numbered how-to row). */
+export interface McpConnectStep {
+  readonly index: string;
+  readonly title: string;
+  readonly body: string;
+}
+
+/**
+ * The MCP-connect section: how to point an MCP client (Cursor / Claude Desktop
+ * / VS Code) at the platform's remote MCP server over Streamable HTTP. The
+ * `endpoint` carries the `{apiDomain}` build-time token (the API host, NOT the
+ * site host); the section documents the connection but mints no token (tokens
+ * are minted in the console settings page).
+ */
+export interface McpConnectContent {
+  readonly eyebrow: string;
+  readonly title: string;
+  readonly description: string;
+  /** Label above the endpoint command block. */
+  readonly endpointLabel: string;
+  /** The `/mcp` endpoint URL, carrying the `{apiDomain}` build-time token. */
+  readonly endpoint: string;
+  /** Accessible label for the endpoint copy control. */
+  readonly copyLabel: string;
+  /** Confirmation shown after a successful copy. */
+  readonly copiedLabel: string;
+  /** Ordered client-setup steps. */
+  readonly steps: readonly McpConnectStep[];
+  /** The "mint your token in the console" pointer (no mint control here). */
+  readonly tokenNote: string;
+  /** Link to where the token is minted (the console / self-host section). */
+  readonly tokenCta: CtaLink;
+}
+
 /** A single honest security disclosure row. */
 export interface SecurityPoint {
   readonly title: string;
@@ -182,6 +216,7 @@ export interface SiteContent {
   readonly terminal: TerminalDemoContent;
   readonly features: FeaturesContent;
   readonly howItWorks: HowItWorksContent;
+  readonly mcpConnect: McpConnectContent;
   readonly security: SecurityContent;
   readonly selfHost: SelfHostContent;
   readonly footer: FooterContent;

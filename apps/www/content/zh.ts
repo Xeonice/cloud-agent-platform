@@ -22,6 +22,7 @@ export const zh: SiteContent = {
     links: [
       { label: "能力", href: "#features" },
       { label: "流程", href: "#how-it-works" },
+      { label: "MCP", href: "#mcp" },
       { label: "权限", href: "#security" },
     ],
     console: { label: "控制台", href: "#self-host" },
@@ -125,6 +126,36 @@ export const zh: SiteContent = {
       },
     ],
   },
+  mcpConnect: {
+    eyebrow: "远端 MCP",
+    title: "把你的 MCP 客户端接入运行池。",
+    description:
+      "直接从 MCP 客户端驱动平台任务。通过 Streamable HTTP 指向远端 MCP 服务，并用你在控制台铸造的令牌完成认证。",
+    endpointLabel: "Streamable HTTP 端点",
+    endpoint: "https://{apiDomain}/mcp",
+    copyLabel: "复制 MCP 端点",
+    copiedLabel: "已复制",
+    steps: [
+      {
+        index: "01",
+        title: "添加服务",
+        body: "在 Cursor、Claude Desktop 或 VS Code 中添加一个 MCP 服务，把它的 URL 设为上面的 Streamable HTTP 端点。",
+      },
+      {
+        index: "02",
+        title: "粘入令牌",
+        body: "把铸造出的 mcp_ 令牌作为 Authorization: Bearer <token> 请求头发送到该连接。",
+      },
+      {
+        index: "03",
+        title: "驱动任务",
+        body: "客户端会列出平台的工具，并可在令牌权限范围内读取仓库、创建或停止任务。",
+      },
+    ],
+    tokenNote:
+      "令牌在控制台设置页铸造 —— MCP Server 区会一次性签发一个 mcp_ 令牌，权限由你界定。本页只说明连接方式，绝不铸造令牌。",
+    tokenCta: { label: "在你的控制台中铸造令牌", href: "#self-host" },
+  },
   security: {
     eyebrow: "权限",
     title: "对边界保持诚实：控制台访问即等于主机 root。",
@@ -160,6 +191,7 @@ export const zh: SiteContent = {
     links: [
       { label: "能力", href: "#features" },
       { label: "流程", href: "#how-it-works" },
+      { label: "MCP", href: "#mcp" },
       { label: "权限", href: "#security" },
       { label: "GitHub", href: "https://github.com/{repo}" },
     ],

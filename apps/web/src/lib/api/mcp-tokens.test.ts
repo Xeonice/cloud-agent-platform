@@ -10,9 +10,10 @@
  *   - the `mcpServerEnabled` flag defaults false and round-trips through the
  *     toggle.
  *
- * These run against the MOCK layer (the shipped posture — `mcpServer` capability
- * is false), which is the legitimate place the raw token is fabricated; the card
- * never client-fabricates it.
+ * These exercise the MOCK layer directly (independent of the `mcpServer`
+ * capability flag, now activated to `true`): the mock seam is the
+ * `VITE_FORCE_MOCK` visual-harness posture and the legitimate place the raw
+ * token is fabricated; the card never client-fabricates it.
  */
 import { describe, it, expect, beforeEach } from "vitest";
 import {

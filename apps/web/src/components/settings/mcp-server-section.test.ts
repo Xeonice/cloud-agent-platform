@@ -3,25 +3,32 @@
  * (remote-mcp-server, frontend-console spec task 6.1).
  *
  * Exercises the data seam that backs the MCP Server section:
- *   - the `mcpServerEnabledQuery` and `mcpTokensQuery` factories exist and are
- *     wired to the mock layer (`mcpServer` capability is `false` by default);
- *   - the mock layer returns the correct shapes the `McpServerCard` reads;
- *   - the `McpServerCard` module exists and exports `McpServerCard`.
+ *   - the `mcpServerEnabledQuery` and `mcpTokensQuery` factories exist and carry
+ *     the stable query keys the settings loader prefetches;
+ *   - the `mcpServer` capability is now `true` (activated), so each `queryFn`
+ *     routes to the REAL api seam — verified here against a stubbed `fetch` so
+ *     the routing is proven without a live backend;
+ *   - the MOCK layer still returns the correct shapes the `McpServerCard` reads
+ *     (the `VITE_FORCE_MOCK` visual-harness posture still exercises it).
  *
  * Runs in the node environment (no DOM, no React render) — consistent with the
  * project's vitest.config.ts test environment.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   mockMcpServerEnabled,
   mockListMcpTokens,
-  mockMintMcpToken,
   __resetMockMcpState,
 } from "@/lib/api/mock";
 import { mcpServerEnabledQuery, mcpTokensQuery } from "@/lib/api/queries";
 
 beforeEach(() => {
   __resetMockMcpState();
+});
+
+afterEach(() => {
+  // Restore any `fetch` stub a real-seam test installed.
+  vi.unstubAllGlobals();
 });
 
 describe("Settings page MCP Server section — data seam", () => {
@@ -52,24 +59,55 @@ describe("Settings page MCP Server section — data seam", () => {
     expect(tokens).toHaveLength(0);
   });
 
-  it("mcpServerEnabledQuery.queryFn resolves via the mock seam (mcpServer capability is false)", async () => {
+  it("mcpServerEnabledQuery.queryFn routes to the real seam (mcpServer capability is true)", async () => {
+    // `mcpServer` is `true` in BACKEND_CAPABILITIES (activated), so the queryFn
+    // routes to the REAL api. Stub `fetch` with the `/settings/mcp-server` shape
+    // so the seam resolves without a live backend, and assert it hit the real
+    // endpoint (not the mock).
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ mcpServerEnabled: false }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     const opts = mcpServerEnabledQuery();
-    // In test (node env) VITE_FORCE_MOCK is not set, and mcpServer capability
-    // is `false` in BACKEND_CAPABILITIES — so queryFn routes to mockMcpServerEnabled.
     if (!opts.queryFn) throw new Error("queryFn must be defined");
     const result = await opts.queryFn({} as never);
     expect(result).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("/settings/mcp-server");
   });
 
-  it("mcpTokensQuery.queryFn resolves via the mock seam and returns a list", async () => {
-    await mockMintMcpToken({ name: "Test Client", scopes: ["tasks:read"] });
+  it("mcpTokensQuery.queryFn routes to the real seam and returns the parsed list", async () => {
+    // Stub the `/mcp-tokens` response with a single non-secret row (the shape
+    // the real api returns — never a raw token).
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => [
+        {
+          id: "mcp-1",
+          name: "Cursor",
+          scopes: ["tasks:read"],
+          prefix: "mcp_",
+          last4: "ab12",
+          lastUsedAt: null,
+          expiresAt: null,
+          revokedAt: null,
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
     const opts = mcpTokensQuery();
     if (!opts.queryFn) throw new Error("queryFn must be defined");
     const result = await opts.queryFn({} as never);
     expect(Array.isArray(result)).toBe(true);
-    // The mint above writes to the shared mock store; the query reads back 1 row.
     expect(result).toHaveLength(1);
-    // List rows must NOT carry the raw token — only the non-secret projection.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]![0])).toContain("/mcp-tokens");
+    // List rows carry only the non-secret projection — never the raw token.
     const row = (result as unknown as Record<string, unknown>[])[0]!;
     expect(row).not.toHaveProperty("token");
     expect(row).toHaveProperty("prefix");

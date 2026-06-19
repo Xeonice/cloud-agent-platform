@@ -5,6 +5,7 @@ import { SiteFooter } from "@/components/site-footer";
 import { Hero } from "@/components/sections/hero";
 import { Features } from "@/components/sections/features";
 import { HowItWorks } from "@/components/sections/how-it-works";
+import { McpConnect } from "@/components/sections/mcp-connect";
 import { Security } from "@/components/sections/security";
 import { SelfHostCta } from "@/components/sections/self-host-cta";
 import { CONTENT, LOCALES, isLocale, type Locale } from "../../content";
@@ -12,7 +13,8 @@ import { CONTENT, LOCALES, isLocale, type Locale } from "../../content";
 /**
  * The single long-form landing page (task 4.5) — assembled from the bilingual
  * content module in the spec-required order: Hero → Features → How-it-works →
- * Security → Self-host CTA, wrapped by the site nav + footer. The locale is the
+ * MCP-connect → Security → Self-host CTA, wrapped by the site nav + footer. The
+ * locale is the
  * route segment (i18n 3.1): `generateStaticParams` enumerates `en` + `zh` so
  * one static HTML page is exported per locale (D3), and the matching content
  * object is rendered server-side with no runtime translation fetch.
@@ -43,6 +45,7 @@ export default async function LandingPage({
         <Hero hero={content.hero} terminal={content.terminal} />
         <Features features={content.features} />
         <HowItWorks howItWorks={content.howItWorks} />
+        <McpConnect mcpConnect={content.mcpConnect} />
         <Security security={content.security} />
         <SelfHostCta selfHost={content.selfHost} />
       </main>
