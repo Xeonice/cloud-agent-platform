@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>历史日志 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html" aria-current="page"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+          <a href="api.html"><span>API 调试</span><span class="shortcut">⌘4</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>OAuth 已验证</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="screen-header">
+        <div>
+          <div class="eyebrow">历史</div>
+          <h1 class="screen-title">任务历史</h1>
+          <p class="screen-lead">按任务回看运行结果、耗时与运行 Agent；每条记录都保留可回放的会话记录与终端记录，保留周期可在设置中调整。</p>
+        </div>
+      </section>
+
+      <section class="panel pad" style="margin-top:12px" data-filter-root="history">
+        <div class="panel-head" style="margin:-18px -18px 14px">
+          <div>
+            <h2>运行记录</h2>
+            <p>最新在前 · 超过保留周期的记录会自动清除。</p>
+          </div>
+          <span class="status-pill green" data-filter-count data-count-selector="[data-filter-row]" data-suffix=" 条记录">7 条记录</span>
+        </div>
+
+        <div class="audit-toolbar" aria-label="历史筛选" style="border:0;box-shadow:none;background:transparent;border-radius:0;padding:0 0 14px;margin:0;grid-template-columns:minmax(280px,1fr) auto">
+          <label class="search-field">
+            <span aria-hidden="true">⌕</span>
+            <input type="search" aria-label="搜索任务历史" placeholder="搜索任务、仓库、分支或 Agent" data-filter-search>
+          </label>
+          <div class="segmented" data-filter-target="history" aria-label="按状态筛选">
+            <button type="button" aria-pressed="true" data-value="all">全部</button>
+            <button type="button" aria-pressed="false" data-value="running">运行中</button>
+            <button type="button" aria-pressed="false" data-value="awaiting">等待输入</button>
+            <button type="button" aria-pressed="false" data-value="queued">排队</button>
+            <button type="button" aria-pressed="false" data-value="completed">已完成</button>
+            <button type="button" aria-pressed="false" data-value="failed">失败</button>
+          </div>
+        </div>
+
+        <div class="task-table-head table-wrap" aria-hidden="true">
+          <div class="repo-list-head task-list-head">
+            <span>任务 / 仓库</span>
+            <span>Agent / 耗时</span>
+            <span>记录</span>
+          </div>
+        </div>
+
+        <div>
+          <article class="task-row" data-filter-row data-state="running" data-search="task_aaaa cloud-agent-platform aio-execution-hardening Codex 运行中 迁移 console TanStack Start">
+            <div class="task-row-grid">
+              <div class="task-main">
+                <div class="task-kicker">
+                  <span class="task-id">task_aaaa</span>
+                  <span class="status-pill green">运行中</span>
+                </div>
+                <h3 class="task-title">迁移 console 至 TanStack Start</h3>
+                <p class="task-repo"><strong class="mono">cloud-agent-platform · aio-execution-hardening</strong></p>
+              </div>
+              <div class="task-context">
+                <strong>Codex</strong>
+                <span class="mono">8m · 今天 17:09</span>
+              </div>
+              <div class="task-actions">
+                <a class="btn primary" href="transcript.html">查看会话</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="task-row" data-filter-row data-state="awaiting" data-search="task_dddd cloud-agent-platform feat/history-filter Claude Code 等待输入 历史页筛选">
+            <div class="task-row-grid">
+              <div class="task-main">
+                <div class="task-kicker">
+                  <span class="task-id">task_dddd</span>
+                  <span class="status-pill warn">等待输入</span>
+                </div>
+                <h3 class="task-title">实现历史页筛选</h3>
+                <p class="task-repo"><strong class="mono">cloud-agent-platform · feat/history-filter</strong></p>
+              </div>
+              <div class="task-context">
+                <strong>Claude Code</strong>
+                <span class="mono">36m · 今天 16:30</span>
+              </div>
+              <div class="task-actions">
+                <a class="btn primary" href="transcript.html">查看会话</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="task-row" data-filter-row data-state="queued" data-search="task_bbbb agent-api main Codex 排队中 metrics docker-stats">
+            <div class="task-row-grid">
+              <div class="task-main">
+                <div class="task-kicker">
+                  <span class="task-id">task_bbbb</span>
+                  <span class="status-pill blue">排队中</span>
+                </div>
+                <h3 class="task-title">为 /metrics 增加 docker-stats 采样</h3>
+                <p class="task-repo"><strong class="mono">agent-api · main</strong></p>
+              </div>
+              <div class="task-context">
+                <strong>Codex</strong>
+                <span class="mono">今天 16:48</span>
+              </div>
+              <div class="task-actions">
+                <span class="btn is-disabled">等待接入</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="task-row" data-filter-row data-state="completed" data-search="task_cccc agent-runner fix/dialback-reconnect Codex 已完成 runner 拨回重连">
+            <div class="task-row-grid">
+              <div class="task-main">
+                <div class="task-kicker">
+                  <span class="task-id">task_cccc</span>
+                  <span class="status-pill">已完成</span>
+                </div>
+                <h3 class="task-title">修复 runner 拨回握手重连</h3>
+                <p class="task-repo"><strong class="mono">agent-runner · fix/dialback-reconnect</strong></p>
+              </div>
+              <div class="task-context">
+                <strong>Codex</strong>
+                <span class="mono">4m12s · 昨天 15:31</span>
+              </div>
+              <div class="task-actions">
+                <a class="btn primary" href="transcript.html">查看会话</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="task-row" data-filter-row data-state="failed" data-search="task_eeee infra main Codex 失败 AIO 镜像 e2e deadline">
+            <div class="task-row-grid">
+              <div class="task-main">
+                <div class="task-kicker">
+                  <span class="task-id">task_eeee</span>
+                  <span class="status-pill danger">失败</span>
+                </div>
+                <h3 class="task-title">收紧 AIO 镜像并补 e2e 守卫</h3>
+                <p class="task-repo"><strong class="mono">infra · main</strong></p>
+              </div>
+              <div class="task-context">
+                <strong>Codex</strong>
+                <span class="mono">30m00s · 昨天 09:24</span>
+              </div>
+              <div class="task-actions">
+                <a class="btn primary" href="transcript.html">查看会话</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="task-row" data-filter-row data-state="cancelled" data-search="task_ffff cloud-agent-platform chore/bump-deps Claude Code 已停止 operator stop">
+            <div class="task-row-grid">
+              <div class="task-main">
+                <div class="task-kicker">
+                  <span class="task-id">task_ffff</span>
+                  <span class="status-pill dark">已停止</span>
+                </div>
+                <h3 class="task-title">升级依赖并重跑构建</h3>
+                <p class="task-repo"><strong class="mono">cloud-agent-platform · chore/bump-deps</strong></p>
+              </div>
+              <div class="task-context">
+                <strong>Claude Code</strong>
+                <span class="mono">2m08s · 前天 22:14</span>
+              </div>
+              <div class="task-actions">
+                <a class="btn primary" href="transcript.html">查看会话</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="task-row" data-filter-row data-state="failed" data-search="task_gggg agent-api feat/metrics Codex 启动失败 agent failed to start">
+            <div class="task-row-grid">
+              <div class="task-main">
+                <div class="task-kicker">
+                  <span class="task-id">task_gggg</span>
+                  <span class="status-pill danger">启动失败</span>
+                </div>
+                <h3 class="task-title">Agent 未能启动，仅有引导日志</h3>
+                <p class="task-repo"><strong class="mono">agent-api · feat/metrics</strong></p>
+              </div>
+              <div class="task-context">
+                <strong>Codex</strong>
+                <span class="mono">0s · 前天 11:02</span>
+              </div>
+              <div class="task-actions">
+                <a class="btn primary" href="transcript.html">查看会话</a>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="empty-state" data-empty-state hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <strong>没有匹配的任务记录</strong>
+          <p>换个关键词，或切换到其它状态筛选。</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html" aria-current="page">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>

@@ -18,7 +18,7 @@ const BASELINE =
   "file://" +
   path.resolve(
     here,
-    "../../../../openspec/changes/session-sandbox-retention/design-baseline/history-replay-preview.html",
+    "../design-baseline/history-replay-preview.html",
   );
 const COMPLETED = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"; // mock task c (completed)
 const RUNNING = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; // mock task a (running)

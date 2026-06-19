@@ -8,10 +8,12 @@
  *
  * ── Baseline source path ───────────────────────────────────────────────────
  * Baselines are NOT checked-in PNGs. They are re-captured on every suite run
- * from the FROZEN finalized baseline (pixel-restore-console-to-od; the design
- * prototype's 2026-06-19 snapshot — a static in-repo oracle, design.md D2):
+ * from the FROZEN finalized baseline (the 2026-06-19 snapshot — a static in-repo
+ * oracle, design.md D2), kept at the STABLE location below — NOT in an
+ * `openspec/changes/<name>/` directory, which is moved on archive and would
+ * break the gate (stabilize-visual-baseline-path):
  *
- *   openspec/changes/pixel-restore-console-to-od/design-baseline/
+ *   apps/web/e2e/design-baseline/
  *
  * served locally by `e2e/serve-design-baseline.mjs` and screenshotted by the
  * `design-baseline` Playwright project (baseline.capture.ts) into
