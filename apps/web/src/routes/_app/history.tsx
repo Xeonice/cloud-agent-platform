@@ -26,8 +26,9 @@ import * as React from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
-import type { Repo, Runtime, Task } from "@cap/contracts";
+import type { Repo, Task } from "@cap/contracts";
 import { reposQuery, tasksQuery } from "@/lib/api/queries";
+import { agentLabel } from "@/lib/runtime-label";
 import { StatusPill } from "@/components/status-pill";
 import { SegmentedControl } from "@/components/segmented-control";
 import { EmptyState } from "@/components/empty-state";
@@ -59,11 +60,6 @@ const STATUS_OPTIONS: readonly { value: StatusSegment; label: string }[] = [
   { value: "completed", label: "已完成" },
   { value: "failed", label: "失败" },
 ];
-
-/** Agent display name from the persisted runtime (null defaults to Codex). */
-function agentLabel(runtime: Runtime | null | undefined): string {
-  return runtime === "claude-code" ? "Claude Code" : "Codex";
-}
 
 function repoName(repo: Repo): string {
   return repo.name;

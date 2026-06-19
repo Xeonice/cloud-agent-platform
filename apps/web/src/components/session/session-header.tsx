@@ -9,8 +9,9 @@
  *      (dot+text, never color-alone);
  *   3. the task PROMPT as a single-line truncated, click-to-expand line
  *      (its "commit-message" slot);
- *   4. a non-interactive TAG RAIL (分支 / Codex / AIO Sandbox / linux-amd64 /
- *      守护栏) of white-bg ring chips.
+ *   4. a non-interactive TAG RAIL (分支 / agent runtime / AIO Sandbox / 守护栏)
+ *      of white-bg ring chips. The agent chip reflects the task's persisted
+ *      runtime (Codex / Claude Code); there is no platform-arch chip.
  *
  * The SINGLE header action is 停止 (two-step confirm). The old 返回任务 /
  * 复制会话记录 / 暂停输出 buttons are gone — copy/pause fold into the terminal ⋯
@@ -37,8 +38,6 @@ export interface SessionHeaderProps {
   agent: string;
   /** Runtime tag (e.g. `AIO Sandbox`). */
   runtime: string;
-  /** Platform-arch tag (truthful sandbox constant, e.g. `linux/amd64`). */
-  arch?: string;
   /** Guardrail readout, computed honestly from the task (e.g. `默认守护栏`). */
   guardrail: string;
   /**
@@ -59,7 +58,6 @@ export function SessionHeader({
   branch,
   agent,
   runtime,
-  arch = "linux/amd64",
   guardrail,
   canStop = false,
   stopPending = false,
@@ -150,7 +148,6 @@ export function SessionHeader({
           </SessionTag>
           <SessionTag>{agent}</SessionTag>
           <SessionTag>{runtime}</SessionTag>
-          <SessionTag mono>{arch}</SessionTag>
           <SessionTag>{guardrail}</SessionTag>
         </div>
       </div>
