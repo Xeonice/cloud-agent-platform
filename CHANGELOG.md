@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.9.0...v0.10.0) (2026-06-19)
+
+
+### Features
+
+* **mcp:** activate remote MCP server + add www MCP-connect section ([b274256](https://github.com/Xeonice/cloud-agent-platform/commit/b274256e4df40643b1244ed7682325a7ae29cac9))
+
+
+### Bug Fixes
+
+* **agent-runtime:** seed Claude onboarding config at $HOME/.claude.json ([651d3bc](https://github.com/Xeonice/cloud-agent-platform/commit/651d3bc4f7d523fc6ed118299b375a657a1a6091))
+* **agent-runtime:** seed Claude onboarding config at $HOME/.claude.json ([a224caa](https://github.com/Xeonice/cloud-agent-platform/commit/a224caaa7fbc329128edee1ffb3bad97973cb53d))
+* **console:** reflect real agent runtime in session tag rail, drop unbacked arch chip ([5eae8b0](https://github.com/Xeonice/cloud-agent-platform/commit/5eae8b0dff669122eccddc80bb5ca85ba8c450db))
+
 ## [0.9.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.8.0...v0.9.0) (2026-06-19)
 
 
