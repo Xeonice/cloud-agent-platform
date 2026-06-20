@@ -5,7 +5,7 @@
 
 ### Features
 
-* **agent-runtime:** add headless execution track for programmatic consumers ([b524042865e6bcd44923487cd760bfff3c650142](https://github.com/Xeonice/cloud-agent-platform/commit/b524042865e6bcd44923487cd760bfff3c650142))
+* **agent-runtime:** add headless execution track for programmatic consumers ([#33](https://github.com/Xeonice/cloud-agent-platform/issues/33)) ([b524042](https://github.com/Xeonice/cloud-agent-platform/commit/b524042865e6bcd44923487cd760bfff3c650142))
 
 
 ## [0.11.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.10.0...v0.11.0) (2026-06-20)
