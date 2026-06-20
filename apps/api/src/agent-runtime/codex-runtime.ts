@@ -3,7 +3,7 @@ import {
   buildDetachedCodexLaunchLine,
   buildHasSessionCommand,
   CODEX_PROMPT_FILE_PATH,
-  wrapInDetachedSession,
+  wrapHeadlessDetachedSession,
 } from '../terminal/codex-launch';
 import type {
   AgentRuntime,
@@ -224,20 +224,23 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   /**
-   * Headless one-shot: `codex exec --json` with the SAME sandbox/approval flags as the
-   * interactive argv, plus `--skip-git-repo-check` (the cloned workspace is not a git
-   * repo) and `< /dev/null` — MANDATORY: codex 0.131 `exec` blocks reading additional
-   * stdin otherwise (spike). The prompt rides `"$(cat …)"`, never inlined. Wrapped in the
-   * SAME detached named session as the interactive line, so the liveness poller + boot
-   * re-adoption resolve it on natural exit.
+   * Headless one-shot: `codex exec --json`. fix-headless-execution-container-gaps — the
+   * `exec` SUBCOMMAND flag surface differs from the interactive top-level one: it accepts the
+   * single bypass `--dangerously-bypass-approvals-and-sandbox` and REJECTS the interactive
+   * `--ask-for-approval` / `--sandbox` / `--dangerously-bypass-hook-trust` (passing those
+   * aborts exec before any rollout is written → the production `no-rollout` defect). `-C` is
+   * dropped — the detached wrapper's `tmux -c <ws>` already sets cwd. `--skip-git-repo-check`
+   * (the clone is not a git repo) and `< /dev/null` (codex 0.131 `exec` blocks on extra stdin
+   * otherwise) are MANDATORY (spike). The prompt rides `"$(cat …)"`, never inlined. Wrapped in
+   * the HEADLESS detached session so the agent's real exit code is captured for resolution.
    */
   buildHeadlessLine(ctx: LaunchContext): string {
     const ws = ctx.workspaceDir;
     const inner =
       `P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
-      `codex exec --json -C ${ws} --ask-for-approval never --sandbox danger-full-access ` +
-      `--dangerously-bypass-hook-trust --skip-git-repo-check "$P" < /dev/null`;
-    return wrapInDetachedSession(ctx.taskId, inner, ws);
+      `codex exec --json --dangerously-bypass-approvals-and-sandbox ` +
+      `--skip-git-repo-check "$P" < /dev/null`;
+    return wrapHeadlessDetachedSession(ctx.taskId, inner, ws);
   }
 
   /**
@@ -250,6 +253,6 @@ export class CodexRuntime implements AgentRuntime {
     const inner =
       `P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
       `codex exec resume ${prevSessionId} "$P" --json --skip-git-repo-check < /dev/null`;
-    return wrapInDetachedSession(ctx.taskId, inner, ws);
+    return wrapHeadlessDetachedSession(ctx.taskId, inner, ws);
   }
 }

@@ -131,6 +131,34 @@ export function wrapInDetachedSession(
 }
 
 /**
+ * Absolute path of the per-task sentinel the detached HEADLESS wrapper writes the agent's
+ * exit code into (fix-headless-execution-container-gaps). A headless agent runs AS the
+ * detached tmux session's command, so once it exits the session ends and its exit code is
+ * unrecoverable from the AIO main shell (`/v1/shell/wait` waits on a different shell; a fresh
+ * `echo $?` sees nothing). The wrapper captures `$?` here and the pty client reads it to
+ * resolve `succeeded`/`failed`. One constant, both sides.
+ */
+export function headlessExitFile(taskId: string): string {
+  return `/home/gem/.cap-headless-${taskId}.exit`;
+}
+
+/**
+ * Like {@link wrapInDetachedSession}, but for a HEADLESS one-shot: it appends
+ * `; echo $? > <headlessExitFile>` INSIDE the single-quoted inner so the agent's REAL exit
+ * code survives the session ending. The appended segment carries no single quote, so the
+ * "inner is a clean single-quoted shell word" invariant still holds. `$?` is the agent's exit
+ * because the echo is the next command after it; the write completes before the shell exits
+ * and the session is gone, so the sentinel exists by the time `tmux has-session` reports gone.
+ */
+export function wrapHeadlessDetachedSession(
+  taskId: string,
+  innerLine: string,
+  workspaceDir = '/home/gem/workspace',
+): string {
+  return `tmux new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}; echo $? > ${headlessExitFile(taskId)}'`;
+}
+
+/**
  * The `tmux has-session` liveness/exit probe command for a task's detached session
  * (refactor: the SINGLE has-session command builder). codex's `detectExit` and the
  * pty client's abnormal-death watchdog / attach-existence check all build the probe

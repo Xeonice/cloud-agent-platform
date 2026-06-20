@@ -1,5 +1,6 @@
 import {
   buildHasSessionCommand,
+  wrapHeadlessDetachedSession,
   wrapInDetachedSession,
 } from '../terminal/codex-launch';
 import { claudeProjectSlug } from './claude-transcript';
@@ -283,7 +284,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     const inner = this.headlessInner(
       `claude -p "$P" --session-id ${sessionId} --output-format stream-json --verbose --permission-mode acceptEdits < /dev/null`,
     );
-    return wrapInDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
+    return wrapHeadlessDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
   }
 
   /** Headless resume: `claude -p --resume <id>` continues a prior session non-interactively. */
@@ -291,7 +292,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     const inner = this.headlessInner(
       `claude -p "$P" --resume ${prevSessionId} --output-format stream-json --verbose --permission-mode acceptEdits < /dev/null`,
     );
-    return wrapInDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
+    return wrapHeadlessDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
   }
 
   /** Shared env-prefix + auth-source + prompt-read preamble for the headless `claude` invocations. */

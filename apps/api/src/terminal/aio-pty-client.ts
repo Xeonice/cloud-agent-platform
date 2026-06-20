@@ -40,6 +40,7 @@ import {
   buildDetachedCodexLaunchLine,
   buildHasSessionCommand,
   detachedSessionName,
+  headlessExitFile,
 } from './codex-launch';
 // add-claude-code-runtime Track 3 (3.2): the bridge resolves the task's selected
 // AgentRuntime (Track 2) and calls its `buildLaunchLine` / `autoSubmit` / `detectExit`
@@ -963,6 +964,17 @@ export class AioPtyClient implements TerminalPty {
    * resolves, the termination is abnormal.
    */
   private async resolveExitStatus(): Promise<AioExitStatus> {
+    // fix-headless-execution-container-gaps: a headless agent runs AS the detached tmux
+    // session's command, so once it exits the session ends and its real exit code is
+    // unrecoverable from the AIO main shell (wait/echo below both miss it → abnormal →
+    // failed, even for a clean success). Read the sentinel the headless wrapper captured
+    // `$?` into FIRST. Interactive tasks skip this and keep the wait/echo path unchanged.
+    if (this.executionMode === 'headless-exec') {
+      const fromFile = await this.resolveViaExitFile();
+      if (fromFile !== null) {
+        return { code: fromFile, abnormal: false };
+      }
+    }
     const waited = await this.resolveViaWait();
     if (waited !== null) {
       return { code: waited, abnormal: false };
@@ -982,6 +994,26 @@ export class AioPtyClient implements TerminalPty {
       if (!res.ok) return null;
       const body = (await res.json()) as { exitCode?: unknown; code?: unknown };
       return coerceExitCode(body.exitCode ?? body.code);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolve the exit code via the per-task sentinel the HEADLESS wrapper captured `$?` into
+   * (`cat <headlessExitFile>` over `/v1/shell/exec`), or null if missing/unreadable. Only the
+   * headless path reads this (see {@link resolveExitStatus}).
+   */
+  private async resolveViaExitFile(): Promise<number | null> {
+    try {
+      const res = await fetch(`${this.baseUrl}/v1/shell/exec`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ command: `cat ${headlessExitFile(this.taskId)}` }),
+      });
+      if (!res.ok) return null;
+      // Unwrap the live AIO `data`-nested exec shape (see {@link exitCodeFromExecBody}).
+      return exitCodeFromExecBody(await res.json());
     } catch {
       return null;
     }
@@ -1092,4 +1124,26 @@ function coerceExitCode(value: unknown): number | null {
     if (/^-?\d+$/.test(trimmed)) return Number.parseInt(trimmed, 10);
   }
   return null;
+}
+
+/**
+ * Parse a headless exit code from a `/v1/shell/exec` `cat <sentinel>` response.
+ * fix-headless-execution-container-gaps: the live AIO server NESTS the result under `data`
+ * (`{data:{output, stdout, ...}}`) — reading the TOP level yields `undefined` even on success
+ * (the same trap `parseExecResult`/`runSandboxExec` already unwrap). The `cat`'d sentinel
+ * content (the AGENT's exit code) is in `output`/`stdout`, NOT `exit_code` (that is `cat`'s own
+ * exit). Pure + exported so the data-nested shape — the exact case the unit suite missed — is
+ * regression-tested without standing up a WebSocket/container.
+ */
+export function exitCodeFromExecBody(top: unknown): number | null {
+  if (top === null || typeof top !== 'object') return null;
+  const t = top as Record<string, unknown>;
+  const d = (t.data ?? t) as { stdout?: unknown; output?: unknown };
+  const out =
+    typeof d.output === 'string'
+      ? d.output
+      : typeof d.stdout === 'string'
+        ? d.stdout
+        : '';
+  return coerceExitCode(out.trim());
 }
