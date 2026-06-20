@@ -21,9 +21,11 @@ import {
 } from './claude-auth-source.port';
 import type {
   AuthMaterial,
+  LaunchContext,
   RuntimeId,
   SandboxSetupCommand,
 } from '../agent-runtime/agent-runtime.port';
+import { sessionIdForTask } from '../agent-runtime/agent-runtime.integration';
 // The codex DEFAULT runtime, used when the registry cannot resolve one (an
 // unresolved/errored task or a partial wiring) — the same "fall back to codex"
 // behavior the inline path had before this refactor, now via the runtime's own
@@ -480,19 +482,30 @@ export class AioSandboxProvider
    * (provision_failed / agent_failed_to_start). The endpoint maps `null` to the
    * honest `empty`/`expired` states; this method never throws into the caller.
    */
-  async readRolloutFromContainer(taskId: string): Promise<string | null> {
+  async readRolloutFromContainer(
+    taskId: string,
+    runtimeId?: RuntimeId | null,
+  ): Promise<string | null> {
+    // Resolve WHERE this task's transcript lands from its runtime (add-headless-execution-track):
+    // codex → `~/.codex/sessions/rollout-*.jsonl`, claude → `~/.claude/projects/<slug>/<sid>.jsonl`.
+    // An omitted runtime resolves the codex default (the prior behavior). Pulls ONLY the declared
+    // transcript dir out of the container — never a credential file.
+    const ctx: LaunchContext = {
+      taskId,
+      workspaceDir: '/home/gem/workspace',
+      sessionId: sessionIdForTask(taskId),
+    };
+    const { dir, filenameGlob } = this.runtimes
+      .resolve(runtimeId)
+      .transcriptArtifact(ctx);
     const container =
       this.containers.get(taskId) ??
       this.docker.getContainer(`${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`);
     let stream: NodeJS.ReadableStream;
     try {
-      // `~/.codex/sessions` holds the rollout (one file per session). Globbing
-      // `history.jsonl` would be WRONG — that is only the global user-input log.
-      stream = await container.getArchive({
-        path: `${AioSandboxProvider.CODEX_HOME_DIR}/sessions`,
-      });
+      stream = await container.getArchive({ path: dir });
     } catch {
-      // 404 (container removed / path absent) → no rollout to replay.
+      // 404 (container removed / path absent) → no transcript to replay.
       return null;
     }
     let tar: Buffer;
@@ -501,14 +514,13 @@ export class AioSandboxProvider
     } catch {
       return null;
     }
-    const rollouts = extractFilesFromTar(tar, (name) =>
-      /(^|\/)rollout-.*\.jsonl$/.test(name),
-    );
-    if (rollouts.length === 0) return null;
-    // One rollout per session; if several, the ISO-timestamp in the filename
-    // sorts chronologically — take the newest.
-    rollouts.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    return rollouts[rollouts.length - 1]!.content.toString('utf8');
+    const files = extractFilesFromTar(tar, (name) => filenameGlob.test(name));
+    if (files.length === 0) return null;
+    // The newest transcript file: codex rollouts carry an ISO timestamp in the
+    // filename, claude has one file per `--session-id` — lexicographic max picks the
+    // right one in both cases.
+    files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return files[files.length - 1]!.content.toString('utf8');
   }
 
   /** Collect a (dockerode getArchive) readable stream fully into a Buffer. */

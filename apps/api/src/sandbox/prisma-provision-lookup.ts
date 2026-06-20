@@ -79,6 +79,14 @@ export class PrismaProvisionLookup implements ProvisionLookup {
     return task?.runtime ?? null;
   }
 
+  async getTaskExecutionMode(taskId: string): Promise<string | null> {
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: { executionMode: true },
+    });
+    return task?.executionMode ?? null;
+  }
+
   /**
    * The single allowed operator's stored GitHub OAuth access token (single-user
    * self-host: the allowlist admits exactly one identity, so the earliest allowed

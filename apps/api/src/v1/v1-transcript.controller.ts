@@ -11,7 +11,12 @@ import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
-import { parseRollout } from '../sandbox/rollout-parser';
+import { parseTranscript } from '../sandbox/parse-transcript';
+import {
+  transcriptFormatForRuntime,
+  type RuntimeId,
+  type TranscriptFormat,
+} from '../agent-runtime/agent-runtime.port';
 import { TasksService } from '../tasks/tasks.service';
 import {
   TRANSCRIPT_STORE,
@@ -68,18 +73,23 @@ export class V1TranscriptController {
       });
     }
 
+    // The task's runtime decides where its transcript lands + how it parses
+    // (add-headless-execution-track).
+    const runtime = task.runtime as RuntimeId | null;
+    const format = transcriptFormatForRuntime(runtime);
+
     // (1) DURABLE-FIRST: the persisted archive outlives the container.
     const durable = await this.transcripts.readDurable(id);
     if (durable !== null) {
-      return this.toAvailable(id, durable, task.status);
+      return this.toAvailable(id, durable, task.status, format);
     }
 
     // (2) FALLBACK: read the rollout out of the retained sandbox (null = none).
-    const jsonl = await this.sandbox.readRolloutFromContainer(id);
+    const jsonl = await this.sandbox.readRolloutFromContainer(id, runtime);
     if (jsonl !== null) {
       // Read-through backfill so the NEXT read is a durable hit. Best-effort.
       await this.transcripts.backfill(id, jsonl);
-      return this.toAvailable(id, jsonl, task.status);
+      return this.toAvailable(id, jsonl, task.status, format);
     }
 
     // (3) Neither source yields a rollout: distinguish a truly aged-out/reaped
@@ -95,8 +105,9 @@ export class V1TranscriptController {
     id: string,
     jsonl: string,
     status: string,
+    format: TranscriptFormat,
   ): SessionHistory {
-    const { turns, meta } = parseRollout(jsonl);
+    const { turns, meta } = parseTranscript(jsonl, format);
     return SessionHistorySchema.parse({
       status: 'available',
       turns,

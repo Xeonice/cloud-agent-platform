@@ -1,4 +1,5 @@
 import type { SandboxMode } from '@cap/contracts';
+import type { RuntimeId } from '../agent-runtime/agent-runtime.port';
 
 /**
  * SandboxProvider port (sandbox-provider-port, design D).
@@ -135,7 +136,10 @@ export interface SandboxProvider {
    *
    * @param taskId - The task whose retained sandbox transcript to read.
    */
-  readRolloutFromContainer(taskId: string): Promise<string | null>;
+  readRolloutFromContainer(
+    taskId: string,
+    runtimeId?: RuntimeId | null,
+  ): Promise<string | null>;
 
   /**
    * Whether the per-task retained sandbox still EXISTS (running or settled). Lets

@@ -97,6 +97,7 @@ import {
   type AgentRuntime,
   type RuntimeRegistry,
 } from '../agent-runtime/agent-runtime.integration';
+import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
 import { WriteLockService } from '../write-lock/write-lock.service';
 // be-oauth-allowlist 2.7 — connect-time operator SESSION authentication (replaces
 // the AUTH_TOKEN-only operator check). `resolveOperatorPrincipal` is the shared,
@@ -808,6 +809,11 @@ export class TerminalGateway
       // launch/autosubmit/exit-detection seams. Best-effort + lazily bound so a
       // missing registry (transport-only context) falls back to the codex path.
       () => this.resolveRuntimeForTask(taskId),
+      // add-headless-execution-track — resolve the task's execution mode so a
+      // programmatic (headless) task launches the runtime's non-interactive one-shot
+      // instead of the interactive TUI. Best-effort + lazily bound like the runtime
+      // resolver; a console task (or unresolved mode) stays interactive-pty.
+      () => this.resolveExecutionModeForTask(taskId),
     );
     const session: TerminalSession = { taskId, pty, snapshots };
     this.registerSession(session);
@@ -862,6 +868,30 @@ export class TerminalGateway
         }`,
       );
       return undefined;
+    }
+  }
+
+  /**
+   * Resolve a task's execution mode via the injected {@link RuntimeRegistry}
+   * (add-headless-execution-track). Best-effort + never throws: a missing registry, a
+   * registry without the method, or a rejected promise all resolve to `interactive-pty`,
+   * so a console task is never accidentally launched headless and a resolution hiccup
+   * never strands a programmatic task in the wrong launch mode.
+   */
+  private async resolveExecutionModeForTask(
+    taskId: string,
+  ): Promise<ExecutionMode> {
+    try {
+      return (
+        (await this.runtimes?.getTaskExecutionMode?.(taskId)) ?? 'interactive-pty'
+      );
+    } catch (err) {
+      this.logger.warn(
+        `task ${taskId}: could not resolve execution mode for terminal launch (defaulting to interactive-pty): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return 'interactive-pty';
     }
   }
 

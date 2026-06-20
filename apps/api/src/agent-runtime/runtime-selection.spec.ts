@@ -40,6 +40,7 @@ function lookupReturning(runtime: string | null): ProvisionLookup {
     getTaskPrompt: async (): Promise<string | null> => null,
     getTaskSkills: async (): Promise<string[]> => [],
     getTaskRuntime: async (): Promise<string | null> => runtime,
+    getTaskExecutionMode: async (): Promise<string | null> => null,
   };
 }
 
@@ -148,6 +149,7 @@ test('a throwing lookup resolves codex AND logs a warning', async () => {
     getTaskRuntime: async () => {
       throw new Error('db down');
     },
+    getTaskExecutionMode: async () => null,
   };
   let resolvedId = '';
   const warnings = await captureWarnings(async () => {
@@ -190,4 +192,58 @@ test('an absent runtime (null) defaults to codex WITHOUT a warning', async () =>
     0,
     'the legitimate absent-runtime case must stay quiet (a codex task persists null)',
   );
+});
+
+// ---------------------------------------------------------------------------
+// add-headless-execution-track — getTaskExecutionMode normalization
+// ---------------------------------------------------------------------------
+
+function lookupWithExecutionMode(mode: string | null): ProvisionLookup {
+  return {
+    getCloneSpec: async () => null,
+    getTaskPrompt: async () => null,
+    getTaskSkills: async () => [],
+    getTaskRuntime: async () => null,
+    getTaskExecutionMode: async () => mode,
+  };
+}
+
+test('getTaskExecutionMode: headless-exec passes through', async () => {
+  const reg = new IntegrationRuntimeRegistry(
+    lookupWithExecutionMode('headless-exec'),
+  );
+  assert.equal(await reg.getTaskExecutionMode('t'), 'headless-exec');
+});
+
+test('getTaskExecutionMode: null/unknown normalizes to interactive-pty', async () => {
+  const regNull = new IntegrationRuntimeRegistry(lookupWithExecutionMode(null));
+  assert.equal(await regNull.getTaskExecutionMode('t'), 'interactive-pty');
+  const regJunk = new IntegrationRuntimeRegistry(
+    lookupWithExecutionMode('bogus-mode'),
+  );
+  assert.equal(await regJunk.getTaskExecutionMode('t'), 'interactive-pty');
+});
+
+test('getTaskExecutionMode: no lookup wired defaults to interactive-pty', async () => {
+  const reg = new IntegrationRuntimeRegistry(undefined);
+  assert.equal(await reg.getTaskExecutionMode('t'), 'interactive-pty');
+});
+
+test('getTaskExecutionMode: a throwing lookup defaults to interactive-pty (logged)', async () => {
+  const throwing: ProvisionLookup = {
+    getCloneSpec: async () => null,
+    getTaskPrompt: async () => null,
+    getTaskSkills: async () => [],
+    getTaskRuntime: async () => null,
+    getTaskExecutionMode: async () => {
+      throw new Error('db down');
+    },
+  };
+  const reg = new IntegrationRuntimeRegistry(throwing);
+  let mode = '';
+  const warnings = await captureWarnings(async () => {
+    mode = await reg.getTaskExecutionMode('t');
+  });
+  assert.equal(mode, 'interactive-pty');
+  assert.equal(warnings.length, 1, 'a lookup failure must be logged, never silent');
 });

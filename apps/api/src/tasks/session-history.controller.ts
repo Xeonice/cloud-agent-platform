@@ -4,7 +4,12 @@ import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
-import { parseRollout } from '../sandbox/rollout-parser';
+import { parseTranscript } from '../sandbox/parse-transcript';
+import {
+  transcriptFormatForRuntime,
+  type RuntimeId,
+  type TranscriptFormat,
+} from '../agent-runtime/agent-runtime.port';
 import { TasksService } from './tasks.service';
 
 /**
@@ -85,21 +90,26 @@ export class SessionHistoryController {
 
     // (1) DURABLE-FIRST: the persisted archive outlives the container, so prefer
     // it. A hit is returned WITHOUT reading (or depending on) the container.
+    // The task's runtime decides where its transcript lands + how it parses
+    // (add-headless-execution-track).
+    const runtime = task.runtime as RuntimeId | null;
+    const format = transcriptFormatForRuntime(runtime);
+
     const durable = await this.transcripts.readDurable(id);
     if (durable !== null) {
-      return this.toAvailable(id, durable, task.status);
+      return this.toAvailable(id, durable, task.status, format);
     }
 
     // (2) FALLBACK: no durable archive → read the rollout out of the retained
     // sandbox (null = none present). The provider never throws here and never
     // exports a credential file.
-    const jsonl = await this.sandbox.readRolloutFromContainer(id);
+    const jsonl = await this.sandbox.readRolloutFromContainer(id, runtime);
     if (jsonl !== null) {
       // Read-through backfill so the NEXT read is a durable hit. Best-effort:
       // the persisted store logs + swallows its own failures; awaiting only
       // sequences the write before we respond and never blocks the read on it.
       await this.transcripts.backfill(id, jsonl);
-      return this.toAvailable(id, jsonl, task.status);
+      return this.toAvailable(id, jsonl, task.status, format);
     }
 
     // (3) Neither source yields a rollout. Distinguish a truly aged-out/reaped
@@ -117,8 +127,9 @@ export class SessionHistoryController {
     id: string,
     jsonl: string,
     status: string,
+    format: TranscriptFormat,
   ): SessionHistory {
-    const { turns, meta } = parseRollout(jsonl);
+    const { turns, meta } = parseTranscript(jsonl, format);
     return SessionHistorySchema.parse({
       status: 'available',
       turns,

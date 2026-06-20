@@ -41,7 +41,12 @@ import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
-import { parseRollout } from '../sandbox/rollout-parser';
+import { parseTranscript } from '../sandbox/parse-transcript';
+import {
+  transcriptFormatForRuntime,
+  type RuntimeId,
+  type TranscriptFormat,
+} from '../agent-runtime/agent-runtime.port';
 import {
   registerMcpTools,
   type McpToolDeps,
@@ -96,7 +101,9 @@ export class McpServerFactory implements McpToolDeps {
    * await the run — so `create_task` returns immediately (spec / D4).
    */
   createTask(repoId: string, body: Parameters<TasksService['create']>[1], githubId?: number) {
-    return this.tasks.create(repoId, body, githubId);
+    // add-headless-execution-track: MCP is a programmatic consumer → fire-and-forget
+    // headless-exec (the task runs `codex exec`/`claude -p`, exits to terminal).
+    return this.tasks.create(repoId, body, githubId, 'headless-exec');
   }
 
   getTask(id: string) {
@@ -133,18 +140,23 @@ export class McpServerFactory implements McpToolDeps {
       });
     }
 
+    // The task's runtime decides where its transcript lands + how it parses
+    // (add-headless-execution-track).
+    const runtime = task.runtime as RuntimeId | null;
+    const format = transcriptFormatForRuntime(runtime);
+
     // (1) DURABLE-FIRST: the persisted archive outlives the container.
     const durable = await this.transcripts.readDurable(id);
     if (durable !== null) {
-      return toAvailable(id, durable, task.status);
+      return toAvailable(id, durable, task.status, format);
     }
 
     // (2) FALLBACK: read the rollout out of the retained sandbox (null = none).
-    const jsonl = await this.sandbox.readRolloutFromContainer(id);
+    const jsonl = await this.sandbox.readRolloutFromContainer(id, runtime);
     if (jsonl !== null) {
       // Read-through backfill so the NEXT read is a durable hit. Best-effort.
       await this.transcripts.backfill(id, jsonl);
-      return toAvailable(id, jsonl, task.status);
+      return toAvailable(id, jsonl, task.status, format);
     }
 
     // (3) Neither source yields a rollout: distinguish a reaped session
@@ -161,8 +173,9 @@ function toAvailable(
   id: string,
   jsonl: string,
   status: string,
+  format: TranscriptFormat,
 ): SessionHistory {
-  const { turns, meta } = parseRollout(jsonl);
+  const { turns, meta } = parseTranscript(jsonl, format);
   return SessionHistorySchema.parse({
     status: 'available',
     turns,

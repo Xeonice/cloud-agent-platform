@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Inject,
   Injectable,
   Logger,
@@ -7,6 +8,7 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
   taskResponseSchema,
@@ -112,7 +114,11 @@ export interface ISandboxReadoption {
  *    create-time rejection rather than admitting a task that resolves no runtime.
  */
 export interface IAgentRuntimeRegistry {
-  resolve(runtime: Runtime | null | undefined): { id: Runtime };
+  resolve(runtime: Runtime | null | undefined): {
+    id: Runtime;
+    /** Execution modes the resolved runtime supports (add-headless-execution-track). */
+    executionModes: ReadonlySet<ExecutionMode>;
+  };
 }
 
 /** DI token the integration track binds the concrete runtime registry to. */
@@ -435,6 +441,7 @@ export class TasksService implements OnApplicationBootstrap {
     repoId: string,
     body: CreateTaskBody,
     githubId?: number,
+    executionMode: ExecutionMode = 'interactive-pty',
   ): Promise<TaskResponse> {
     // Console + non-idempotent path: persist the task ROW, then admit (audit +
     // provision) it. Split into two steps (public-v1-api V.1) so the `/v1`
@@ -442,7 +449,12 @@ export class TasksService implements OnApplicationBootstrap {
     // transaction and run the admission AFTER that transaction commits — a rolled
     // back transaction must never leave a provisioned sandbox. Behavior here is
     // unchanged: the two steps run in the same order as before.
-    const response = await this.createTaskRow(repoId, body);
+    const response = await this.createTaskRow(
+      repoId,
+      body,
+      this.prisma,
+      executionMode,
+    );
     await this.admitCreatedTask(response.id, body, githubId);
     return response;
   }
@@ -461,6 +473,7 @@ export class TasksService implements OnApplicationBootstrap {
     repoId: string,
     body: CreateTaskBody,
     client: PrismaService = this.prisma,
+    executionMode: ExecutionMode = 'interactive-pty',
   ): Promise<TaskResponse> {
     const repo = await client.repo.findUnique({ where: { id: repoId } });
     if (!repo) {
@@ -487,6 +500,20 @@ export class TasksService implements OnApplicationBootstrap {
       }
     }
 
+    // add-headless-execution-track (5.4): a programmatic (headless-exec) task whose
+    // resolved runtime does not support headless-exec is rejected with a distinct reason
+    // — never silently fall back to the interactive launch for a fire-and-forget
+    // consumer. (Both shipped runtimes support headless; this guards a future one.)
+    if (
+      executionMode === 'headless-exec' &&
+      this.runtimes &&
+      !this.runtimes.resolve(runtime).executionModes.has('headless-exec')
+    ) {
+      throw new BadRequestException(
+        `runtime "${runtime}" does not support headless execution`,
+      );
+    }
+
     // add-claude-code-runtime (4.2): FAIL CLOSED before any task row is created
     // when a `claude-code` create selects an unconfigured runtime — never launch
     // an unauthenticated agent. Distinct reason (`runtime not configured`) so the
@@ -511,6 +538,10 @@ export class TasksService implements OnApplicationBootstrap {
         // (omitted) to `null`; a null column reads back as the default `codex`
         // (repo-and-task-management: a prior task with no runtime reads as codex).
         runtime: body.runtime ?? null,
+        // add-headless-execution-track (5.1/5.2): persist the consumer-derived execution
+        // mode. Store null for the interactive default (console — reads back as
+        // interactive-pty), and `headless-exec` for programmatic (MCP / `/v1`) tasks.
+        executionMode: executionMode === 'headless-exec' ? 'headless-exec' : null,
         // 3.2: persist the optional run parameters from the create body so they
         // are durable and readable on every later read path. They are inert with
         // respect to clone/provision/lifecycle behavior. Coalesce `undefined`

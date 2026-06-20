@@ -62,10 +62,12 @@ import {
   toPortExec,
 } from '../agent-runtime/agent-runtime.integration';
 import type {
+  ExecutionMode,
   ExitSignal,
   LaunchContext,
   TerminalStartup,
 } from '../agent-runtime/agent-runtime.port';
+import { selectLaunch } from './select-launch';
 
 /**
  * The DSR (Device Status Report) cursor-position query crossterm emits on
@@ -289,6 +291,15 @@ export class AioPtyClient implements TerminalPty {
    */
   private runtime?: AgentRuntime;
 
+  /**
+   * The task's execution mode (add-headless-execution-track), resolved alongside
+   * {@link runtime}. Defaults to `interactive-pty` so a task without a resolved mode
+   * (legacy rows, no resolver wired, transport-only unit context) launches the
+   * interactive TUI exactly as before. `headless-exec` switches the launch to the
+   * runtime's non-interactive `buildHeadlessLine`.
+   */
+  private executionMode: ExecutionMode = 'interactive-pty';
+
   constructor(
     private readonly taskId: string,
     wsUrl: string,
@@ -304,6 +315,15 @@ export class AioPtyClient implements TerminalPty {
      * column), so it is threaded as a callback rather than a constructed value.
      */
     private readonly resolveRuntime?: () => Promise<AgentRuntime | undefined>,
+    /**
+     * Resolve the task's execution mode (add-headless-execution-track), resolved at the
+     * SAME point as {@link resolveRuntime}. Optional + best-effort: a missing resolver or
+     * a rejected/`null` result leaves {@link executionMode} at `interactive-pty`, so a
+     * console task (or any unresolved mode) launches the interactive TUI as before.
+     */
+    private readonly resolveExecutionMode?: () => Promise<
+      ExecutionMode | null | undefined
+    >,
   ) {
     this.sessionName = detachedSessionName(taskId);
     // Connect WITHOUT any `?session_id=` query parameter so the sandbox creates a
@@ -358,6 +378,22 @@ export class AioPtyClient implements TerminalPty {
       );
       this.runtime = undefined;
     }
+    // Resolve the execution mode at the same point (add-headless-execution-track).
+    // Best-effort: any failure leaves `interactive-pty`, so a hiccup never strands a
+    // task in the wrong launch mode.
+    if (this.resolveExecutionMode) {
+      try {
+        this.executionMode =
+          (await this.resolveExecutionMode()) ?? 'interactive-pty';
+      } catch (err) {
+        this.logger.warn(
+          `task ${this.taskId}: could not resolve execution mode (defaulting to interactive-pty): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        this.executionMode = 'interactive-pty';
+      }
+    }
   }
 
   /**
@@ -397,16 +433,19 @@ export class AioPtyClient implements TerminalPty {
       // runtime directly (refactor step 5: the RuntimeAdapter that did this is gone).
       sessionId: sessionIdForTask(this.taskId),
     };
-    const line = runtime.buildLaunchLine(launchCtx);
-    // The shared DSR/CPR/quiesce mechanism is driven by the runtime's DECLARED
-    // `terminalStartup` policy — NO agent-identity branch. claude declares
-    // `promptSubmit:'none'` so the CR machinery never arms (no stray Enter); codex
-    // declares `'cr-on-quiesce'`. Stored so `onOutput` reads `replyToStartupDSR`
-    // and the quiesce window for the (unchanged) mechanism.
-    this.terminalStartup = runtime.terminalStartup;
-    this.launchedCodex =
-      armAutoSubmit && runtime.terminalStartup.promptSubmit === 'cr-on-quiesce';
-    this.sendInput(`${line}\n`);
+    // add-headless-execution-track — the interactive-vs-headless launch decision is a
+    // PURE function (select-launch.ts) so it is unit-testable without a WS/container.
+    // headless-exec yields the runtime's non-interactive one-shot with no DSR/CR
+    // handshake + no autosubmit; interactive-pty keeps the declared policy unchanged.
+    const plan = selectLaunch(
+      runtime,
+      this.executionMode,
+      launchCtx,
+      armAutoSubmit,
+    );
+    this.terminalStartup = plan.terminalStartup;
+    this.launchedCodex = plan.armAutoSubmit;
+    this.sendInput(`${plan.line}\n`);
     this.attachSession();
   }
 

@@ -33,6 +33,42 @@ export type RuntimeId = 'codex' | 'claude-code';
 export const DEFAULT_RUNTIME_ID: RuntimeId = 'codex';
 
 /**
+ * The execution mode a task runs under (add-headless-execution-track).
+ * `interactive-pty` = the console's live terminal + operator takeover (resident TUI);
+ * `headless-exec` = a programmatic one-shot that runs non-interactively and EXITS on
+ * turn completion, so the task reaches a terminal status autonomously. Selected by
+ * CONSUMER at task creation (console → interactive-pty; MCP / `/v1` → headless-exec).
+ */
+export type ExecutionMode = 'interactive-pty' | 'headless-exec';
+
+/**
+ * The transcript format a runtime declares. The sandbox transcript-read layer (which
+ * owns the parsers) dispatches by this tag — the port stays a dependency-light LEAF and
+ * never imports the parsers or `@cap/contracts`.
+ */
+export type TranscriptFormat = 'codex-rollout' | 'claude-jsonl';
+
+/** Where a runtime's transcript JSONL lands inside the container. */
+export interface TranscriptArtifact {
+  /** Absolute directory holding the transcript JSONL (e.g. `~/.codex/sessions`). */
+  readonly dir: string;
+  /** Matches the transcript filename(s) within `dir`; the newest match is read. */
+  readonly filenameGlob: RegExp;
+}
+
+/**
+ * The canonical runtime → transcript-format mapping: a registry-free accessor for the
+ * value each runtime declares as its `transcriptFormat`. Lets the durable-read path resolve
+ * the parser without holding a runtime instance. A unit test asserts it agrees with the
+ * runtimes' declared `transcriptFormat` so the two never drift.
+ */
+export function transcriptFormatForRuntime(
+  runtime: RuntimeId | null | undefined,
+): TranscriptFormat {
+  return runtime === 'claude-code' ? 'claude-jsonl' : 'codex-rollout';
+}
+
+/**
  * A minimal shell-exec handle into a provisioned sandbox: runs ONE command over
  * the sandbox's `/v1/shell/exec` surface and returns its captured output + exit
  * code. The runtime depends on this narrow abstraction (NOT on the concrete
@@ -239,4 +275,39 @@ export interface AgentRuntime {
    * fail-open dispatch (timeout, warn-only). (replaces inline `trimCodexHomeBeforeStop`.)
    */
   preStopTrimCommands(): readonly string[];
+
+  /**
+   * The execution modes this runtime supports (add-headless-execution-track). Every
+   * runtime supports `interactive-pty`; a runtime that also lists `headless-exec`
+   * MUST provide {@link buildHeadlessLine}. The shared task path reads the declared
+   * set to decide whether a programmatic (headless) task can be admitted.
+   */
+  readonly executionModes: ReadonlySet<ExecutionMode>;
+
+  /**
+   * Build the in-shell HEADLESS launch line — a non-interactive, exit-on-completion
+   * agent invocation (codex `exec --json`, claude `-p --output-format stream-json`),
+   * still wrapped in the SAME detached, named session as the interactive line so the
+   * liveness poller + boot re-adoption apply unchanged. The process EXITS when the turn
+   * finishes → the session-gone path resolves the task to terminal. Present iff
+   * `executionModes` includes `headless-exec`.
+   */
+  buildHeadlessLine?(ctx: LaunchContext): string;
+
+  /**
+   * Build the HEADLESS resume launch line that continues a prior session non-interactively
+   * (codex `exec resume <id>`, claude `-p --resume <id>`). Declared for completeness/symmetry;
+   * the task lifecycle does not wire programmatic multi-turn in this change. Present iff
+   * `executionModes` includes `headless-exec`.
+   */
+  buildResumeLine?(ctx: LaunchContext, prevSessionId: string): string;
+
+  /**
+   * Declare WHERE this runtime's transcript JSONL lands inside the container and in WHAT
+   * format. The sandbox transcript-read + durable-capture mechanism resolves the dir/glob
+   * from here and dispatches the parser by {@link transcriptFormat} — replacing the
+   * hardcoded codex `~/.codex/sessions` + `rollout-*.jsonl`. The port owns NO parser.
+   */
+  transcriptArtifact(ctx: LaunchContext): TranscriptArtifact;
+  readonly transcriptFormat: TranscriptFormat;
 }

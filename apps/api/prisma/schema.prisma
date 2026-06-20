@@ -116,6 +116,14 @@ model Task {
   /// values (add-claude-code-runtime).
   runtime String? @map("runtime")
 
+  /// The execution mode this task runs under (add-headless-execution-track):
+  /// `interactive-pty` (console live terminal + operator takeover) or `headless-exec`
+  /// (a programmatic one-shot that exits on turn completion). Additive + NULLABLE:
+  /// existing rows backfill to NULL and an omitted value reads back as the default
+  /// `interactive-pty` (the service applies the default; the column stores null when
+  /// unset), mirroring `runtime`.
+  executionMode String? @map("execution_mode")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   /// Append-only audit events recorded for this task's lifecycle transitions.

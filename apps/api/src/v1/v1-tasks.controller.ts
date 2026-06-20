@@ -117,7 +117,9 @@ export class V1TasksController {
       // V.1 — persist the task ROW on the transaction-bound `tx` client so it
       // commits ATOMICALLY with the dedup row; a raced/retried create can never
       // leave a committed task without its dedup row (and so never double-admits).
-      admit: (tx) => this.tasksService.createTaskRow(repoId, createBody, tx),
+      // add-headless-execution-track: `/v1` is a programmatic consumer → headless-exec.
+      admit: (tx) =>
+        this.tasksService.createTaskRow(repoId, createBody, tx, 'headless-exec'),
       loadTask: (taskId) => this.tasksService.findById(taskId),
     });
     // Provision ONLY a newly-created task — a dedup hit was already admitted by the
