@@ -138,7 +138,7 @@ function makeLookup() {
   };
 }
 function makeCodexAuthSource() {
-  return { async getCodexAuth() { return null; } };
+  return { async getCodexAuth() { return null; }, async persistRefreshedAuth() {} };
 }
 
 /** Mock fetch: readiness ok; all shell/exec succeed with exit_code 0. */

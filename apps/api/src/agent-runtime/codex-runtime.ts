@@ -158,7 +158,12 @@ export class CodexRuntime implements AgentRuntime {
       authJsonCommand =
         ` && printf %s '${authB64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`;
     }
-    const configToml = topLevel + trustTable + providerTable;
+    // fix-codex-headless-subscription-auth: codex defaults to `cli_auth_credentials_store="auto"`
+    // (OS keyring first); the keyring-less Linux sandbox then loads NO credential and every
+    // request fails `401 "Missing bearer"`. Force the FILE store so codex reads the injected
+    // `auth.json`. A top-level key — MUST precede any `[table]` (the trust/provider tables).
+    const credStore = 'cli_auth_credentials_store = "file"\n';
+    const configToml = credStore + topLevel + trustTable + providerTable;
     const configB64 = Buffer.from(configToml, 'utf8').toString('base64');
     commands.push({
       command:

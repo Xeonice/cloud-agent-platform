@@ -81,6 +81,21 @@ export type CodexAuthMaterial =
  */
 export interface CodexAuthSource {
   getCodexAuth(taskId: string): Promise<CodexAuthMaterial | null>;
+
+  /**
+   * Persist codex's REFRESHED `auth.json` back to the owner's stored OFFICIAL
+   * credential (fix-codex-headless-subscription-auth). ChatGPT `refresh_token`s are
+   * single-use/rotating: codex refreshes in-container and rewrites `auth.json`, so a
+   * static re-injected seed is revoked after first use unless the rotation is persisted.
+   * The provider calls this on teardown — BEFORE the `~/.codex` trim zeroes `auth.json` —
+   * with the captured document.
+   *
+   * Owner-scoped (a task writes only its own owner's credential) and a no-op when the
+   * credential is COMPATIBLE (no `auth.json` to refresh) or was the deployment ENV
+   * fallback (not writable — the env seed cannot self-heal). MUST never throw into the
+   * caller's teardown.
+   */
+  persistRefreshedAuth(taskId: string, authJson: string): Promise<void>;
 }
 
 /**
