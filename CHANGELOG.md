@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.12.1...v0.12.2) (2026-06-21)
+
+
+### Bug Fixes
+
+* **agent-runtime:** authenticate codex headless with the ChatGPT subscription ([#35](https://github.com/Xeonice/cloud-agent-platform/issues/35)) ([da45d88](https://github.com/Xeonice/cloud-agent-platform/commit/da45d88775e1b870fe492c6b59c289a6812bf218))
+
+
 ## [0.12.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.12.0...v0.12.1) (2026-06-21)
 
 

@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   decryptSecret,
+  encryptSecret,
   resolveEncryptionKey,
 } from '../settings/settings-crypto';
 import type {
@@ -60,6 +61,65 @@ export class PrismaCodexAuthSource implements CodexAuthSource {
     if (settings) return settings;
     // No usable Settings credential → legacy deployment env var (transition path).
     return this.envFallback.getCodexAuth(taskId);
+  }
+
+  /**
+   * Persist codex's refreshed `auth.json` back to the task OWNER's stored OFFICIAL credential
+   * (fix-codex-headless-subscription-auth). Owner-scoped (SAME resolution as `getCodexAuth`), so a
+   * task can write only its own owner's row. No-op when: the owner is unattributed (the env
+   * fallback supplied the credential — env is not writable), the stored credential is COMPATIBLE
+   * (no `auth.json` to refresh), or the captured document is not a valid auth.json with a
+   * `refresh_token` (so a capture-vs-trim race never overwrites a good credential with garbage).
+   * NEVER throws — a failed persist just means the next task may re-refresh.
+   */
+  async persistRefreshedAuth(taskId: string, authJson: string): Promise<void> {
+    if (!PrismaCodexAuthSource.isValidAuthJson(authJson)) return;
+    const ownerId = await this.resolveTaskOwnerId(taskId);
+    if (!ownerId) return;
+    try {
+      const cred = await this.prisma.codexCredential.findUnique({
+        where: { userId: ownerId },
+        select: { mode: true },
+      });
+      // Only an OFFICIAL stored credential carries an auth.json to refresh; a missing row means
+      // the env fallback was used (not writable), and 'compatible' has no auth.json.
+      if (!cred || cred.mode !== 'official') return;
+      const ciphertext = this.encryptToStored(authJson);
+      if (!ciphertext) return; // key unavailable → keep the prior stored value
+      await this.prisma.codexCredential.update({
+        where: { userId: ownerId },
+        data: { authJsonCiphertext: ciphertext },
+      });
+      this.logger.debug(`persisted refreshed codex auth.json for owner ${ownerId}`);
+    } catch (err) {
+      this.logger.warn(
+        `failed to persist refreshed codex auth.json: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /** True only for a parseable auth.json carrying a non-empty `tokens.refresh_token`. */
+  private static isValidAuthJson(authJson: string): boolean {
+    try {
+      const p = JSON.parse(authJson) as { tokens?: { refresh_token?: unknown } };
+      const rt = p?.tokens?.refresh_token;
+      return typeof rt === 'string' && rt.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Encrypt + serialize to the stored `ciphertext.iv.authTag` form, or null if the key is unavailable. */
+  private encryptToStored(plaintext: string): string | null {
+    try {
+      const key = resolveEncryptionKey(process.env[CODEX_CRED_ENC_KEY_ENV]);
+      const { ciphertext, iv, authTag } = encryptSecret(plaintext, key);
+      return `${ciphertext}.${iv}.${authTag}`;
+    } catch {
+      return null;
+    }
   }
 
   /**

@@ -377,6 +377,11 @@ export class AioSandboxProvider
     // `~/.claude` while KEEPING `~/.claude/projects/` (the session transcript) as the
     // defense-in-depth analog. A trim failure NEVER blocks the stop+retain (the
     // dispatcher swallows its own errors), so settle stays fast even if wedged.
+    // fix-codex-headless-subscription-auth: BEFORE the trim zeroes auth.json, capture codex's
+    // (possibly refreshed) auth.json and persist the rotated single-use refresh_token back to the
+    // owner's stored credential, so the next task does not reuse a revoked seed. Best-effort; the
+    // trim below STILL zeroes the file (the retained container holds no live credential).
+    await this.captureAndPersistCodexAuth(baseUrl, taskId);
     await this.trimRuntimeHomeBeforeStop(baseUrl, taskId);
     // `t: 0` = stop immediately. With AutoRemove:false the container persists in
     // an `Exited` state (the rollout/workspace frozen) until the retention
@@ -424,6 +429,44 @@ export class AioSandboxProvider
     const commands = (runtime ?? new CodexRuntime()).preStopTrimCommands();
     for (const command of commands) {
       await this.runTrimCommandBestEffort(baseUrl, taskId, command);
+    }
+  }
+
+  /**
+   * Capture codex's (possibly refreshed) `auth.json` out of the container and persist it back to
+   * the owner's stored credential BEFORE the pre-stop trim zeroes it
+   * (fix-codex-headless-subscription-auth). codex's ChatGPT `refresh_token` is single-use/rotating;
+   * persisting the post-run document keeps a stored OFFICIAL credential alive across tasks instead
+   * of reusing a revoked seed. Only codex writes `~/.codex/auth.json`, so a non-codex runtime is
+   * skipped; `persistRefreshedAuth` is itself owner-scoped + official-only + validated, so a
+   * compatible/env-fallback task is a safe no-op. NEVER throws or blocks the stop.
+   */
+  private async captureAndPersistCodexAuth(
+    baseUrl: string,
+    taskId: string,
+  ): Promise<void> {
+    try {
+      let runtime: AgentRuntime | undefined;
+      try {
+        runtime = await this.resolveRuntime(taskId);
+      } catch {
+        runtime = undefined;
+      }
+      // claude has no ~/.codex/auth.json; an unresolved runtime defaults to codex, so it proceeds.
+      if (runtime && runtime.id !== 'codex') return;
+      const exec = this.runSandboxExec(baseUrl);
+      const res = await exec('cat /home/gem/.codex/auth.json 2>/dev/null');
+      if (res.exitCode !== 0) return; // missing/unreadable (e.g. compatible writes no auth.json)
+      const authJson = typeof res.output === 'string' ? res.output.trim() : '';
+      if (!authJson) return;
+      await this.codexAuthSource.persistRefreshedAuth(taskId, authJson);
+    } catch (err) {
+      // Best-effort: a failed capture just means the next task may re-refresh — never block stop.
+      this.logger.warn(
+        `codex auth refresh-persist skipped for ${taskId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 

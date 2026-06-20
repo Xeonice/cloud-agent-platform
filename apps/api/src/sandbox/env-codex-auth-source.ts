@@ -77,4 +77,19 @@ export class EnvCodexAuthSource implements CodexAuthSource {
 
     return { kind: 'official', authJson };
   }
+
+  /**
+   * No-op for the deployment env source (fix-codex-headless-subscription-auth): the credential
+   * lives in a gitignored env var that cannot be rewritten at runtime, so codex's rotated
+   * refresh_token cannot be persisted. Warns so the operator knows the env seed will be revoked
+   * after refresh (~8 days) and must be re-seeded, or migrated to a settings-stored official
+   * credential (which DOES self-heal via the prisma source).
+   */
+  async persistRefreshedAuth(_taskId: string, _authJson: string): Promise<void> {
+    this.logger.warn(
+      `${EnvCodexAuthSource.ENV} is the active codex credential — codex's refreshed token cannot ` +
+        `be persisted to an env var; the seed will be revoked after refresh (~8 days). Re-seed the ` +
+        `env var or store an official credential in Settings (which self-heals across tasks).`,
+    );
+  }
 }

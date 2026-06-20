@@ -371,6 +371,10 @@ function makeCodexAuthSource(material = null, byTaskId = null) {
       if (byTaskId) return normalize(byTaskId[taskId] ?? null);
       return normalize(material);
     },
+    persistedAuth: [],
+    async persistRefreshedAuth(taskId, authJson) {
+      source.persistedAuth.push({ taskId, authJson });
+    },
   };
   return source;
 }
