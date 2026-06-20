@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.11.0...v0.12.0) (2026-06-20)
+
+
+### Features
+
+* **agent-runtime:** add headless execution track for programmatic consumers ([b524042865e6bcd44923487cd760bfff3c650142](https://github.com/Xeonice/cloud-agent-platform/commit/b524042865e6bcd44923487cd760bfff3c650142))
+
+
 ## [0.11.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.10.0...v0.11.0) (2026-06-20)
 
 
