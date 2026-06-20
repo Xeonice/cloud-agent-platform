@@ -5,7 +5,7 @@
 
 ### Bug Fixes
 
-* **agent-runtime:** correct codex headless argv and capture the detached exit code ([41f4551](https://github.com/Xeonice/cloud-agent-platform/commit/41f4551cc3cb3b50c2014aab2928592a235abff0))
+* **agent-runtime:** correct codex headless argv and capture the detached exit code ([#34](https://github.com/Xeonice/cloud-agent-platform/issues/34)) ([41f4551](https://github.com/Xeonice/cloud-agent-platform/commit/41f4551cc3cb3b50c2014aab2928592a235abff0))
 
 
 ## [0.12.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.11.0...v0.12.0) (2026-06-20)
