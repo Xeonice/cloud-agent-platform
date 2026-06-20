@@ -14,6 +14,11 @@ import {
 } from './agent-runtime.port';
 import { parseClaudeTranscript } from '../sandbox/claude-transcript-parser';
 import { parseTranscript } from '../sandbox/parse-transcript';
+import {
+  headlessExitFile,
+  wrapHeadlessDetachedSession,
+} from '../terminal/codex-launch';
+import { exitCodeFromExecBody } from '../terminal/aio-pty-client';
 
 const CTX: LaunchContext = {
   taskId: 'task-abc',
@@ -25,13 +30,17 @@ const CTX: LaunchContext = {
 // 7.1 — codex headless / resume argv (golden)
 // ---------------------------------------------------------------------------
 
-test('CodexRuntime.buildHeadlessLine is exec --json, stdin-closed, skip-git, danger-full-access', () => {
+test('CodexRuntime.buildHeadlessLine uses the codex exec bypass flag, stdin-closed, skip-git', () => {
   const line = new CodexRuntime().buildHeadlessLine(CTX);
   assert.match(line, /codex exec --json/);
   assert.match(line, /< \/dev\/null/); // MANDATORY: codex 0.131 hangs on stdin otherwise
   assert.match(line, /--skip-git-repo-check/);
-  assert.match(line, /--sandbox danger-full-access/);
-  assert.match(line, /--ask-for-approval never/);
+  // fix-headless-execution-container-gaps: `codex exec` accepts the SINGLE bypass flag...
+  assert.match(line, /--dangerously-bypass-approvals-and-sandbox/);
+  // ...and REJECTS the interactive top-level flags (passing them aborted exec → no-rollout).
+  assert.doesNotMatch(line, /--ask-for-approval/);
+  assert.doesNotMatch(line, /--sandbox /);
+  assert.doesNotMatch(line, /--dangerously-bypass-hook-trust/);
 });
 
 test('CodexRuntime.buildResumeLine is exec resume with --skip-git and NO -s', () => {
@@ -173,4 +182,43 @@ test('parseTranscript dispatches codex-rollout to the codex parser', () => {
     turns.map((t) => t.kind),
     ['user', 'assistant'],
   );
+});
+
+// ---------------------------------------------------------------------------
+// fix-headless-execution-container-gaps — headless exit-code sentinel wrap
+// ---------------------------------------------------------------------------
+
+test('wrapHeadlessDetachedSession appends the exit sentinel inside the single-quoted inner', () => {
+  assert.equal(headlessExitFile('task-abc'), '/home/gem/.cap-headless-task-abc.exit');
+  const line = wrapHeadlessDetachedSession('task-abc', 'AGENT_CMD', '/home/gem/workspace');
+  // `; echo $? > <sentinel>` is appended AFTER the agent command, inside the tmux word
+  assert.match(
+    line,
+    /'AGENT_CMD; echo \$\? > \/home\/gem\/\.cap-headless-task-abc\.exit'$/,
+  );
+  // exactly one single-quote PAIR — the appended segment adds no quote (invariant holds)
+  assert.equal((line.match(/'/g) || []).length, 2);
+});
+
+test('headless lines write the exit sentinel; interactive lines do NOT (both runtimes)', () => {
+  // headless → captures $? for resolveExitStatus to read
+  assert.match(new CodexRuntime().buildHeadlessLine(CTX), /echo \$\? > .*cap-headless/);
+  assert.match(new ClaudeCodeRuntime().buildHeadlessLine(CTX), /echo \$\? > .*cap-headless/);
+  // interactive (console) path is unchanged — no sentinel, no behavioural drift
+  assert.doesNotMatch(new CodexRuntime().buildLaunchLine(CTX), /cap-headless/);
+  assert.doesNotMatch(new ClaudeCodeRuntime().buildLaunchLine(CTX), /cap-headless/);
+});
+
+test('exitCodeFromExecBody reads the live AIO data-nested exec shape (the deploy defect)', () => {
+  // The live AIO server NESTS the exec result under `data`; the cat'd sentinel content
+  // (the AGENT's exit code) is in output/stdout. This is the shape the first fix missed.
+  assert.equal(exitCodeFromExecBody({ success: true, data: { output: '0\n' } }), 0);
+  assert.equal(exitCodeFromExecBody({ data: { stdout: '1\n' } }), 1);
+  // flat shape (other servers) still works via the `data ?? top` unwrap
+  assert.equal(exitCodeFromExecBody({ output: '0\n' }), 0);
+  // `exit_code` is `cat`'s OWN exit, NOT the agent's — it MUST NOT be read in its place
+  assert.equal(exitCodeFromExecBody({ data: { exit_code: 0, output: '137\n' } }), 137);
+  // missing / unparseable → null → resolveExitStatus falls back to wait/echo
+  assert.equal(exitCodeFromExecBody({ data: {} }), null);
+  assert.equal(exitCodeFromExecBody(null), null);
 });
