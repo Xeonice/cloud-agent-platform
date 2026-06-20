@@ -14,6 +14,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { BadRequestException } from '@nestjs/common';
 
 import {
   TasksService,
@@ -90,7 +91,10 @@ function makeFakeRegistry(): { registry: IAgentRuntimeRegistry; calls: Runtime[]
     resolve(runtime) {
       const id: Runtime = runtime ?? 'codex';
       calls.push(id);
-      return { id };
+      return {
+        id,
+        executionModes: new Set(['interactive-pty', 'headless-exec'] as const),
+      };
     },
   };
   return { registry, calls };
@@ -205,5 +209,74 @@ test('create with claude-code and unconfigured readiness throws RuntimeNotConfig
       );
       return true;
     },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// add-headless-execution-track — execution-mode routing + fail-closed guard
+// ---------------------------------------------------------------------------
+
+/** A fake Prisma whose `task.create` CAPTURES the persisted `data` for assertion. */
+function makeCapturingPrisma(): {
+  prisma: PrismaService;
+  box: { value: Record<string, unknown> | null };
+} {
+  const box: { value: Record<string, unknown> | null } = { value: null };
+  const prisma = {
+    repo: { findUnique: async () => ({ id: REPO_ID }) },
+    task: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        box.value = data;
+        return {
+          id: TASK_ID,
+          repoId: REPO_ID,
+          prompt: data.prompt,
+          status: 'pending',
+          createdAt: new Date(),
+          branch: null,
+          strategy: null,
+          skills: [],
+          idleTimeoutMs: null,
+          deadlineMs: null,
+          runtime: data.runtime ?? null,
+        };
+      },
+    },
+  } as unknown as PrismaService;
+  return { prisma, box };
+}
+
+/** A registry whose runtimes do NOT support headless-exec. */
+function makeNoHeadlessRegistry(): IAgentRuntimeRegistry {
+  return {
+    resolve(runtime) {
+      return {
+        id: runtime ?? 'codex',
+        executionModes: new Set(['interactive-pty'] as const),
+      };
+    },
+  };
+}
+
+test('programmatic create persists executionMode=headless-exec', async () => {
+  const { prisma, box } = makeCapturingPrisma();
+  const svc = buildService({ prisma, registry: makeFakeRegistry().registry });
+  await svc.createTaskRow(REPO_ID, { prompt: 'go' }, prisma, 'headless-exec');
+  assert.equal(box.value?.executionMode, 'headless-exec');
+});
+
+test('console (default) create persists executionMode=null → reads back interactive-pty', async () => {
+  const { prisma, box } = makeCapturingPrisma();
+  const svc = buildService({ prisma, registry: makeFakeRegistry().registry });
+  await svc.createTaskRow(REPO_ID, { prompt: 'go' }, prisma);
+  assert.equal(box.value?.executionMode, null);
+});
+
+test('headless create on a runtime without headless-exec fails closed (BadRequest)', async () => {
+  const { prisma } = makeCapturingPrisma();
+  const svc = buildService({ prisma, registry: makeNoHeadlessRegistry() });
+  await assert.rejects(
+    () => svc.createTaskRow(REPO_ID, { prompt: 'go' }, prisma, 'headless-exec'),
+    (err: unknown) => err instanceof BadRequestException,
   );
 });

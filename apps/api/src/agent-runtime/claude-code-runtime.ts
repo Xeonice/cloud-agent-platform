@@ -2,9 +2,11 @@ import {
   buildHasSessionCommand,
   wrapInDetachedSession,
 } from '../terminal/codex-launch';
+import { claudeProjectSlug } from './claude-transcript';
 import type {
   AgentRuntime,
   AuthMaterial,
+  ExecutionMode,
   ExitSignal,
   LaunchContext,
   RuntimeId,
@@ -13,6 +15,8 @@ import type {
   SandboxSetupContext,
   SandboxSetupPlan,
   TerminalStartup,
+  TranscriptArtifact,
+  TranscriptFormat,
 } from './agent-runtime.port';
 
 /**
@@ -238,4 +242,69 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     return match[1] === '0' ? { status: 'running' } : { status: 'done' };
   }
 
+  // ------------------------------------------------------------------------
+  // headless-exec mode (add-headless-execution-track)
+  // ------------------------------------------------------------------------
+
+  /** Claude supports both the interactive TUI and the non-interactive `-p` print mode. */
+  readonly executionModes: ReadonlySet<ExecutionMode> = new Set([
+    'interactive-pty',
+    'headless-exec',
+  ]);
+
+  /** Claude transcript = the per-session JSONL under `~/.claude/projects/<slug>`. */
+  readonly transcriptFormat: TranscriptFormat = 'claude-jsonl';
+  transcriptArtifact(ctx: LaunchContext): TranscriptArtifact {
+    // The projects subdir is keyed on the canonicalized workspace slug; the file is named
+    // by the launch `--session-id`. Fall back to the newest `*.jsonl` when the session id
+    // is absent (defensive — the launch path requires it).
+    const dir = `${ClaudeCodeRuntime.CONFIG_DIR}/projects/${claudeProjectSlug(ctx.workspaceDir)}`;
+    const sid = ctx.sessionId;
+    const filenameGlob = sid
+      ? new RegExp(`(^|/)${sid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.jsonl$`)
+      : /(^|\/).*\.jsonl$/;
+    return { dir, filenameGlob };
+  }
+
+  /**
+   * Headless one-shot: `claude -p` runs the prompt non-interactively and EXITS on turn
+   * completion. Same env prefix + auth sourcing as the interactive launch; `--session-id`
+   * names the transcript JSONL the shared retention path reads; `< /dev/null` skips claude's
+   * 3s stdin wait. Wrapped in the SAME detached named session so the liveness poller resolves
+   * it on natural exit.
+   */
+  buildHeadlessLine(ctx: LaunchContext): string {
+    const sessionId = ctx.sessionId;
+    if (!sessionId) {
+      throw new Error(
+        'ClaudeCodeRuntime.buildHeadlessLine requires ctx.sessionId (the --session-id uuid)',
+      );
+    }
+    const inner = this.headlessInner(
+      `claude -p "$P" --session-id ${sessionId} --output-format stream-json --verbose --permission-mode acceptEdits < /dev/null`,
+    );
+    return wrapInDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
+  }
+
+  /** Headless resume: `claude -p --resume <id>` continues a prior session non-interactively. */
+  buildResumeLine(ctx: LaunchContext, prevSessionId: string): string {
+    const inner = this.headlessInner(
+      `claude -p "$P" --resume ${prevSessionId} --output-format stream-json --verbose --permission-mode acceptEdits < /dev/null`,
+    );
+    return wrapInDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
+  }
+
+  /** Shared env-prefix + auth-source + prompt-read preamble for the headless `claude` invocations. */
+  private headlessInner(claudeCmd: string): string {
+    const envPrefix =
+      'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 ' +
+      'CLAUDE_CODE_SANDBOXED=1 ' +
+      `CLAUDE_CONFIG_DIR=${ClaudeCodeRuntime.CONFIG_DIR}`;
+    return (
+      `${envPrefix} ` +
+      `. ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} 2>/dev/null; ` +
+      `P="$(cat ${ClaudeCodeRuntime.PROMPT_FILE_PATH} 2>/dev/null)"; ` +
+      claudeCmd
+    );
+  }
 }

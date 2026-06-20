@@ -32,6 +32,7 @@ import { CodexRuntime } from './codex-runtime';
 import { ClaudeCodeRuntime } from './claude-code-runtime';
 import type {
   AgentRuntime as PortAgentRuntime,
+  ExecutionMode,
   RuntimeId,
   SandboxExec as PortSandboxExec,
 } from './agent-runtime.port';
@@ -87,6 +88,11 @@ export interface RuntimeRegistry {
   resolve(id?: RuntimeId | null): PortAgentRuntime;
   /** Resolve the runtime selected by the task's persisted `runtime` column. */
   resolveForTask(taskId: string): Promise<PortAgentRuntime>;
+  /**
+   * Resolve the task's persisted execution mode (add-headless-execution-track),
+   * defaulting to `interactive-pty` when absent/unresolvable.
+   */
+  getTaskExecutionMode(taskId: string): Promise<ExecutionMode>;
 }
 
 /** Adapt a consumer {@link SandboxExec} closure to the leaf {@link PortSandboxExec}. */
@@ -157,6 +163,22 @@ export class IntegrationRuntimeRegistry implements RuntimeRegistry {
 
   async resolveForTask(taskId: string): Promise<PortAgentRuntime> {
     return this.registry.resolve(await this.readTaskRuntime(taskId));
+  }
+
+  async getTaskExecutionMode(taskId: string): Promise<ExecutionMode> {
+    if (!this.lookup) return 'interactive-pty';
+    let value: string | null;
+    try {
+      value = await this.lookup.getTaskExecutionMode(taskId);
+    } catch (err) {
+      this.logger.warn(
+        `could not read execution mode for task ${taskId} (defaulting to interactive-pty): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return 'interactive-pty';
+    }
+    return value === 'headless-exec' ? 'headless-exec' : 'interactive-pty';
   }
 
   /**

@@ -193,6 +193,8 @@ PRM+401+AS metadata(0.5d) → DCR `/register`(0.5d) → `/authorize`+consent(1d)
 - **GitHub OAuth App 回调**：在同一个 App 上加第二个回调 `…/mcp-oauth/github/callback`（GitHub 允许多回调；App 仍是单一静态 client_id——与 confused-deputy 分析相关）。
 - **MCP SDK 版本/包路径**：T4 **不引入 @rekog/mcp-nest**（D5 已否决其唯一差异化价值=内建 AS，剩 @Tool 装饰器引入二级框架净零收益），直接用官方 `@modelcontextprotocol/sdk` v1.x 的 `StreamableHTTPServerTransport`。v1.x 是**单包**：RS 助手在 `@modelcontextprotocol/sdk/server/auth/*`、传输类是 `StreamableHTTPServerTransport`——**别照搬 GitHub main 的 v2-alpha**（`@modelcontextprotocol/express` / `NodeStreamableHTTPServerTransport`）。装包后先 `node -e "require(...)"` 钉死真实子路径再写代码（G2）。
 
+- **程序化任务执行模型（已落地 `add-headless-execution-track`，2026-06-20）**：MCP / `/v1` 创建的任务现走 **headless-exec** 执行模式（`codex exec --json` / `claude -p`），跑完即退出 → 自主到 terminal status（不再像 console 的常驻交互式 TUI 那样无限卡 `running`），并按 runtime 读结构化 transcript（同步修复了 claude 的 `no-rollout`）。程序化路径是**纯 fire-and-forget**：不引入门禁/审批/持续交互（那些是 console `interactive-pty` 专属）。runtime port 声明了 resume 能力但本期**不接** MCP `continue_task` / `/v1` resume 端点（程序化多轮留待后续）。沙箱仍是纯容器单层（codex `--sandbox danger-full-access`，容器 `seccomp=unconfined`）。⚠️ 部署期需补一个容器内 smoke：`codex exec`/`claude -p` 在真实 aio-sandbox 里启动 + 退出码解析。
+
 ## 11. 关键来源
 
 - MCP Authorization 2025-06-18：https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization

@@ -7,7 +7,11 @@ import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
-import { parseRollout } from '../sandbox/rollout-parser';
+import { parseTranscript } from '../sandbox/parse-transcript';
+import {
+  transcriptFormatForRuntime,
+  type RuntimeId,
+} from '../agent-runtime/agent-runtime.port';
 import { PrismaService } from '../prisma/prisma.service';
 
 const gzipAsync = promisify(gzip);
@@ -92,9 +96,10 @@ export class SessionTranscriptService {
    * NEVER throws.
    */
   async capture(taskId: string): Promise<CaptureStatus> {
+    const runtime = await this.resolveRuntime(taskId);
     let jsonl: string | null;
     try {
-      jsonl = await this.sandbox.readRolloutFromContainer(taskId);
+      jsonl = await this.sandbox.readRolloutFromContainer(taskId, runtime);
     } catch (err) {
       this.logger.warn(
         `task ${taskId}: transcript capture skipped — rollout read failed: ${(err as Error).message}`,
@@ -106,7 +111,7 @@ export class SessionTranscriptService {
       // archive; the read path will fall back to the container / backfill later.
       return 'no-rollout';
     }
-    return this.persist(taskId, jsonl);
+    return this.persist(taskId, jsonl, runtime);
   }
 
   /**
@@ -119,7 +124,24 @@ export class SessionTranscriptService {
    * status flag, never throws.
    */
   async backfill(taskId: string, rawJsonl: string): Promise<CaptureStatus> {
-    return this.persist(taskId, rawJsonl);
+    return this.persist(taskId, rawJsonl, await this.resolveRuntime(taskId));
+  }
+
+  /**
+   * Look up a task's selected runtime so the transcript read + parse are runtime-aware
+   * (add-headless-execution-track). Best-effort: any lookup failure degrades to `null`
+   * (codex default), never throwing into the best-effort capture/backfill path.
+   */
+  private async resolveRuntime(taskId: string): Promise<RuntimeId | null> {
+    try {
+      const row = await this.prisma.task.findUnique({
+        where: { id: taskId },
+        select: { runtime: true },
+      });
+      return (row?.runtime ?? null) as RuntimeId | null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -160,7 +182,11 @@ export class SessionTranscriptService {
    * {@link backfill}. Idempotent: the archive write overwrites in place and the
    * index row is upserted keyed by `taskId`, so re-capture never duplicates.
    */
-  private async persist(taskId: string, rawJsonl: string): Promise<CaptureStatus> {
+  private async persist(
+    taskId: string,
+    rawJsonl: string,
+    runtime: RuntimeId | null,
+  ): Promise<CaptureStatus> {
     const archivePath = this.archivePathFor(taskId);
     try {
       const gz = await gzipAsync(Buffer.from(rawJsonl, 'utf8'));
@@ -174,7 +200,10 @@ export class SessionTranscriptService {
     }
 
     try {
-      const { turns, meta } = parseRollout(rawJsonl);
+      const { turns, meta } = parseTranscript(
+        rawJsonl,
+        transcriptFormatForRuntime(runtime),
+      );
       // Concatenated search text over the parsed turn text (design D3 FTS source);
       // persisted into the `content` column the schema/migration declare (the
       // Postgres GIN `tsvector` FTS index is built over `content`).

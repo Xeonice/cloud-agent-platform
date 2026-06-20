@@ -3,10 +3,12 @@ import {
   buildDetachedCodexLaunchLine,
   buildHasSessionCommand,
   CODEX_PROMPT_FILE_PATH,
+  wrapInDetachedSession,
 } from '../terminal/codex-launch';
 import type {
   AgentRuntime,
   AuthMaterial,
+  ExecutionMode,
   ExitSignal,
   LaunchContext,
   RuntimeId,
@@ -15,6 +17,8 @@ import type {
   SandboxSetupContext,
   SandboxSetupPlan,
   TerminalStartup,
+  TranscriptArtifact,
+  TranscriptFormat,
 } from './agent-runtime.port';
 
 /**
@@ -200,4 +204,52 @@ export class CodexRuntime implements AgentRuntime {
     return match[1] === '0' ? { status: 'running' } : { status: 'done' };
   }
 
+  // ------------------------------------------------------------------------
+  // headless-exec mode (add-headless-execution-track)
+  // ------------------------------------------------------------------------
+
+  /** codex supports both the interactive TUI and the non-interactive `exec`. */
+  readonly executionModes: ReadonlySet<ExecutionMode> = new Set([
+    'interactive-pty',
+    'headless-exec',
+  ]);
+
+  /** codex transcript = the rollout JSONL under `~/.codex/sessions`. */
+  readonly transcriptFormat: TranscriptFormat = 'codex-rollout';
+  transcriptArtifact(_ctx: LaunchContext): TranscriptArtifact {
+    return {
+      dir: `${CodexRuntime.CODEX_HOME_DIR}/sessions`,
+      filenameGlob: /(^|\/)rollout-.*\.jsonl$/,
+    };
+  }
+
+  /**
+   * Headless one-shot: `codex exec --json` with the SAME sandbox/approval flags as the
+   * interactive argv, plus `--skip-git-repo-check` (the cloned workspace is not a git
+   * repo) and `< /dev/null` — MANDATORY: codex 0.131 `exec` blocks reading additional
+   * stdin otherwise (spike). The prompt rides `"$(cat …)"`, never inlined. Wrapped in the
+   * SAME detached named session as the interactive line, so the liveness poller + boot
+   * re-adoption resolve it on natural exit.
+   */
+  buildHeadlessLine(ctx: LaunchContext): string {
+    const ws = ctx.workspaceDir;
+    const inner =
+      `P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
+      `codex exec --json -C ${ws} --ask-for-approval never --sandbox danger-full-access ` +
+      `--dangerously-bypass-hook-trust --skip-git-repo-check "$P" < /dev/null`;
+    return wrapInDetachedSession(ctx.taskId, inner, ws);
+  }
+
+  /**
+   * Headless resume: `codex exec resume <id>` continues a prior session. Note the flag
+   * surface is NARROWER than `exec` — it rejects `-s/--sandbox` (sandbox is inherited from
+   * the original session) but still needs `--skip-git-repo-check` and `< /dev/null` (spike).
+   */
+  buildResumeLine(ctx: LaunchContext, prevSessionId: string): string {
+    const ws = ctx.workspaceDir;
+    const inner =
+      `P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
+      `codex exec resume ${prevSessionId} "$P" --json --skip-git-repo-check < /dev/null`;
+    return wrapInDetachedSession(ctx.taskId, inner, ws);
+  }
 }

@@ -67,6 +67,16 @@ export interface ProvisionLookup {
    * stay pure port consumers (mirrors {@link getTaskPrompt}).
    */
   getTaskRuntime(taskId: string): Promise<string | null>;
+
+  /**
+   * Resolve `taskId`'s selected execution mode (`task.execution_mode`) so the launch
+   * mechanism knows whether to start the interactive TUI or the headless one-shot
+   * (add-headless-execution-track). Returns the persisted value
+   * (`'interactive-pty'` | `'headless-exec'`) or `null` when the task is missing / has
+   * no mode (the launch path then defaults to `interactive-pty`, preserving today's
+   * console behavior). Behind the port like {@link getTaskRuntime}.
+   */
+  getTaskExecutionMode(taskId: string): Promise<string | null>;
 }
 
 /**
