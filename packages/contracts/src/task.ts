@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ForgeKindSchema } from './settings.js';
 
 /**
  * Task lifecycle status (repo-and-task-management spec).
@@ -106,8 +107,32 @@ export const RepoSchema = z.object({
    * and therefore cannot carry this flag.
    */
   isDefault: z.boolean().optional(),
+  /**
+   * The source forge this repo lives on (`github` | `gitlab` | `gitee`) —
+   * add-multi-forge-task-delivery. Null/absent for repos predating multi-forge
+   * (inferred from `gitSource` host at use). Drives change-request push-back.
+   */
+  forge: ForgeKindSchema.nullable().optional(),
 });
 export type Repo = z.infer<typeof RepoSchema>;
+
+// ---------------------------------------------------------------------------
+// Task result delivery (add-multi-forge-task-delivery)
+// ---------------------------------------------------------------------------
+
+/** Opt-in delivery selector: where a completed task's edits land. Default `none`. */
+export const DeliverSchema = z.enum(['none', 'branch', 'pr']);
+export type Deliver = z.infer<typeof DeliverSchema>;
+
+/** Outcome of a push-back attempt, surfaced on the task read paths. */
+export const DeliverStatusSchema = z.enum([
+  'skipped',
+  'no_changes',
+  'pushed',
+  'pr_opened',
+  'failed',
+]);
+export type DeliverStatus = z.infer<typeof DeliverStatusSchema>;
 
 // ---------------------------------------------------------------------------
 // Task domain schema
@@ -171,6 +196,22 @@ export const TaskSchema = z.object({
    * fabricated (sent value == readable value).
    */
   runtime: RuntimeSchema.nullable().optional(),
+  /**
+   * Opt-in delivery selector echoed from the create body (`none|branch|pr`,
+   * default `none`) — add-multi-forge-task-delivery. Read back as the supplied
+   * value (or `none`) on every task read path.
+   */
+  deliver: DeliverSchema.nullable().optional(),
+  /** Outcome of the push-back attempt. Null until a delivery runs. */
+  deliverStatus: DeliverStatusSchema.nullable().optional(),
+  /** The branch the platform pushed (`cap/task-<id>`). Null when none. */
+  branchPushed: z.string().min(1).nullable().optional(),
+  /** The pushed commit sha. Null when none. */
+  commitSha: z.string().min(1).nullable().optional(),
+  /** The opened/reused change-request URL. Null when none. */
+  changeRequestUrl: z.string().url().nullable().optional(),
+  /** The change-request number/iid. Null when none. */
+  changeRequestNumber: z.number().int().positive().nullable().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
@@ -182,6 +223,12 @@ export type Task = z.infer<typeof TaskSchema>;
 export const CreateRepoRequestSchema = z.object({
   name: z.string().min(1),
   gitSource: z.string().min(1),
+  /**
+   * Optional source forge (add-multi-forge-task-delivery). When omitted the
+   * server infers it from the `gitSource` host (github.com / gitlab.com /
+   * gitee.com); a self-hosted host must supply it explicitly.
+   */
+  forge: ForgeKindSchema.optional(),
 });
 export type CreateRepoRequest = z.infer<typeof CreateRepoRequestSchema>;
 
@@ -252,6 +299,13 @@ export const CreateTaskRequestSchema = z.object({
    * rather than launching unauthenticated (see `agent-runtime`).
    */
   runtime: RuntimeSchema.optional(),
+  /**
+   * Optional opt-in delivery selector (`none|branch|pr`) — where a completed
+   * task's edits land (add-multi-forge-task-delivery). Default `none` (no
+   * commit/branch/push/CR); `branch` pushes `cap/task-<id>`; `pr` also opens a
+   * PR/MR on the repo's forge. Persisted + echoed on every read path.
+   */
+  deliver: DeliverSchema.optional(),
 });
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
 

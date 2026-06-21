@@ -38,9 +38,14 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import type { AvailableGithubRepo, Repo } from "@cap/contracts";
-import { githubReposQuery } from "@/lib/api/queries";
-import { importRepoMutation } from "@/lib/api/mutations";
+import type {
+  AvailableGithubRepo,
+  AvailableForgeRepo,
+  ForgeKind,
+  Repo,
+} from "@cap/contracts";
+import { availableForgeReposQuery, githubReposQuery } from "@/lib/api/queries";
+import { createRepoMutation, importRepoMutation } from "@/lib/api/mutations";
 import { ApiError } from "@/lib/api/real";
 import { StatusPill } from "@/components/status-pill";
 import { CountChip } from "@/components/count-chip";
@@ -107,9 +112,18 @@ export function ImportDialog({
   const [armed, setArmed] = React.useState(false);
   const [search, setSearch] = React.useState("");
   const [importingId, setImportingId] = React.useState<number | null>(null);
+  // add-multi-forge-task-delivery: the selected import source (the picker switch).
+  const [source, setSource] = React.useState<ForgeKind>("github");
+  const [importingPath, setImportingPath] = React.useState<string | null>(null);
 
   const githubRepos = useQuery({ ...githubReposQuery(), enabled: armed });
   const importMutation = useMutation(importRepoMutation(queryClient));
+  // The connected non-github forge's repos (lists via GET /settings/forges/repos).
+  const forgeRepos = useQuery({
+    ...availableForgeReposQuery(source),
+    enabled: armed && source !== "github",
+  });
+  const createMutation = useMutation(createRepoMutation(queryClient));
 
   // Reset the dialog's fetch + search state whenever it (re)opens so a reopened
   // dialog always starts from the 待拉取 state rather than a stale list.
@@ -118,6 +132,8 @@ export function ImportDialog({
     setArmed(false);
     setSearch("");
     setImportingId(null);
+    setSource("github");
+    setImportingPath(null);
   }, [open]);
 
   const candidates = githubRepos.data ?? [];
@@ -158,6 +174,41 @@ export function ImportDialog({
     });
   }
 
+  // --- forge (gitlab/gitee) picker source ---------------------------------
+  const forgeCandidates = forgeRepos.data ?? [];
+  const importedGitSources = React.useMemo(
+    () => new Set(importedRepos.map((r) => r.gitSource)),
+    [importedRepos],
+  );
+  const visibleForge = React.useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return forgeCandidates;
+    return forgeCandidates.filter((c) =>
+      c.fullPath.toLowerCase().includes(needle),
+    );
+  }, [forgeCandidates, search]);
+
+  function handleImportForge(candidate: AvailableForgeRepo) {
+    setImportingPath(candidate.gitSource);
+    createMutation.mutate(
+      {
+        name: candidate.fullPath,
+        gitSource: candidate.gitSource,
+        forge: candidate.forge,
+      },
+      {
+        onSuccess: () => {
+          toast.success(`已导入 ${candidate.fullPath}`);
+          setImportingPath(null);
+        },
+        onError: (error) => {
+          setImportingPath(null);
+          toast.error(`导入失败：${error.message}`);
+        },
+      },
+    );
+  }
+
   // Distinguish the failure modes honestly (task 14.2). A re-auth signal
   // (401/403) prompts re-authorization; everything else is a transient/unknown
   // listing error. An empty-but-successful list is NOT an error.
@@ -166,13 +217,29 @@ export function ImportDialog({
     fetchError instanceof ApiError &&
     (fetchError.status === 401 || fetchError.status === 403);
 
+  const isGithub = source === "github";
   const showEmptyState = !armed;
-  const showLoadingState = armed && githubRepos.isLoading;
-  const showError = armed && !githubRepos.isLoading && fetchError != null;
+  const showLoadingState = armed && isGithub && githubRepos.isLoading;
+  const showError = armed && isGithub && !githubRepos.isLoading && fetchError != null;
   const showList =
-    armed && !githubRepos.isLoading && fetchError == null && candidates.length > 0;
+    armed && isGithub && !githubRepos.isLoading && fetchError == null && candidates.length > 0;
   const showNoRepos =
-    armed && !githubRepos.isLoading && fetchError == null && candidates.length === 0;
+    armed && isGithub && !githubRepos.isLoading && fetchError == null && candidates.length === 0;
+
+  // forge (gitlab/gitee) source states.
+  const forgeError = forgeRepos.error;
+  const showForgeLoading = armed && !isGithub && forgeRepos.isLoading;
+  const showForgeError = armed && !isGithub && !forgeRepos.isLoading && forgeError != null;
+  const showForgeList =
+    armed && !isGithub && !forgeRepos.isLoading && forgeError == null && forgeCandidates.length > 0;
+  const showForgeNone =
+    armed && !isGithub && !forgeRepos.isLoading && forgeError == null && forgeCandidates.length === 0;
+
+  const SOURCES: ReadonlyArray<{ kind: ForgeKind; label: string }> = [
+    { kind: "github", label: "GitHub" },
+    { kind: "gitlab", label: "GitLab" },
+    { kind: "gitee", label: "Gitee" },
+  ];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -209,6 +276,33 @@ export function ImportDialog({
 
         <DialogBody>
         <div className="grid gap-3.5 px-5 pt-0.5 pb-[22px]">
+          {/* Source switcher (add-multi-forge-task-delivery) */}
+          <div
+            className="flex gap-1.5 pt-1"
+            role="tablist"
+            aria-label="选择导入来源"
+          >
+            {SOURCES.map((s) => (
+              <button
+                key={s.kind}
+                type="button"
+                role="tab"
+                aria-selected={source === s.kind}
+                onClick={() => {
+                  setSource(s.kind);
+                  setSearch("");
+                }}
+                className={`inline-flex h-8 items-center rounded-md px-3 text-[13px] font-medium ${
+                  source === s.kind
+                    ? "bg-foreground text-background"
+                    : "bg-secondary text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+
           {/* State 1: 待拉取 (empty) */}
           {showEmptyState ? (
             <div className="grid gap-3 pt-1">
@@ -350,6 +444,119 @@ export function ImportDialog({
                               type="button"
                               disabled={importMutation.isPending}
                               onClick={() => handleImport(candidate)}
+                              className="inline-flex h-[30px] items-center justify-center whitespace-nowrap rounded-md bg-primary px-[7px] text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-60"
+                            >
+                              {importing ? "导入中…" : "导入"}
+                            </button>
+                          )
+                        }
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : null}
+          {/* Forge (gitlab/gitee) source: loading / not-connected / none / list */}
+          {showForgeLoading ? (
+            <div className="grid gap-3 pt-1">
+              <StatusPill variant="neutral" className="justify-self-start">
+                正在拉取
+              </StatusPill>
+              <p className="m-0 font-mono text-xs leading-[1.55] text-muted-foreground">
+                GET /settings/forges/repos?kind={source}
+              </p>
+            </div>
+          ) : null}
+
+          {showForgeError ? (
+            <div
+              role="alert"
+              className="grid gap-3 rounded-lg bg-[#fff1f0] p-[18px] shadow-ring"
+            >
+              <StatusPill variant="danger" className="justify-self-start">
+                未连接
+              </StatusPill>
+              <p className="m-0 text-[13px] leading-[1.55] text-foreground">
+                请先在「设置 · 代码托管连接」中连接{" "}
+                {source === "gitlab" ? "GitLab" : "Gitee"}，再拉取仓库列表。
+              </p>
+            </div>
+          ) : null}
+
+          {showForgeNone ? (
+            <div className="grid gap-3 rounded-lg bg-[#fafafa] p-[18px] shadow-ring">
+              <StatusPill variant="neutral" className="justify-self-start">
+                没有可导入仓库
+              </StatusPill>
+              <p className="m-0 text-[13px] leading-[1.55] text-muted-foreground">
+                当前账号下没有可导入的仓库。
+              </p>
+            </div>
+          ) : null}
+
+          {showForgeList ? (
+            <div className="grid gap-2.5">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
+                <label className="m-0 grid gap-2">
+                  <span className="text-[13px] font-semibold text-ink">
+                    筛选仓库
+                  </span>
+                  <input
+                    type="search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="输入仓库名"
+                    className="min-h-10 w-full min-w-0 rounded-md bg-card px-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none placeholder:text-muted-foreground focus-visible:shadow-[inset_0_0_0_1px_var(--foreground),0_0_0_3px_rgba(10,114,239,0.12)]"
+                  />
+                </label>
+                <CountChip className="self-end">
+                  {visibleForge.length} 个可导入
+                </CountChip>
+              </div>
+
+              <RepoListHead />
+
+              {visibleForge.length === 0 ? (
+                <p className="px-4 py-8 text-center text-[13px] text-muted-foreground">
+                  没有匹配的仓库。
+                </p>
+              ) : (
+                <div data-available-repo-list>
+                  {visibleForge.map((candidate) => {
+                    const imported = importedGitSources.has(candidate.gitSource);
+                    const importing = importingPath === candidate.gitSource;
+                    return (
+                      <RepoRow
+                        key={candidate.gitSource}
+                        name={
+                          candidate.fullPath.split("/").pop() ?? candidate.fullPath
+                        }
+                        fullName={candidate.fullPath}
+                        policy={
+                          <p className="m-0 truncate">{candidate.visibility}</p>
+                        }
+                        sync={
+                          <>
+                            <span className="font-mono text-xs text-foreground">
+                              {candidate.defaultBranch}
+                            </span>
+                            <small className="text-xs">默认分支</small>
+                          </>
+                        }
+                        action={
+                          imported ? (
+                            <span
+                              aria-disabled="true"
+                              className="inline-flex h-[30px] cursor-default items-center justify-center rounded-md bg-[#fafafa] px-[7px] text-[13px] font-medium text-muted-foreground"
+                            >
+                              已导入
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={createMutation.isPending}
+                              onClick={() => handleImportForge(candidate)}
                               className="inline-flex h-[30px] items-center justify-center whitespace-nowrap rounded-md bg-primary px-[7px] text-[13px] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-60"
                             >
                               {importing ? "导入中…" : "导入"}

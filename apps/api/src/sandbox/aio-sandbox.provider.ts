@@ -9,6 +9,8 @@ import {
 import Docker from 'dockerode';
 
 import type {
+  DeliverWorkspaceArgs,
+  DeliverWorkspaceResult,
   ProvisionContext,
   SandboxConnection,
   SandboxMode,
@@ -389,6 +391,95 @@ export class AioSandboxProvider
     await container.stop({ t: 0 }).catch(() => {
       // Already stopped — fine.
     });
+  }
+
+  /**
+   * IN-SANDBOX result delivery (add-multi-forge-task-delivery): over the SAME
+   * `/v1/shell/exec` channel as clone, commit the working-tree diff to `branch`
+   * and push it to `origin`. The auth header rides `git -c http.extraHeader` only
+   * (the clone discipline); the commit message is base64-decoded to a file so it
+   * never touches the shell command line (injection-safe). A clean tree returns
+   * `{hadChanges:false}`; any git failure returns a scrubbed `error`.
+   */
+  async deliverWorkspaceChanges(
+    taskId: string,
+    args: DeliverWorkspaceArgs,
+  ): Promise<DeliverWorkspaceResult> {
+    const baseUrl =
+      this.connections.get(taskId)?.baseUrl ??
+      `http://${AioSandboxProvider.CONTAINER_PREFIX}${taskId}:${AioSandboxProvider.AIO_PORT}`;
+    const ws = AioSandboxProvider.WORKSPACE_DIR;
+    const ident =
+      "-c user.name='cap-bot' -c user.email='cap-bot@users.noreply.github.com'";
+    const msgPath = '/tmp/cap-commit-msg';
+    const run = (command: string) => this.runDeliverExec(baseUrl, command);
+    try {
+      // 1. dirty? (empty porcelain ⇒ no_changes — no branch/commit/push)
+      const status = await run(`git -C ${ws} status --porcelain`);
+      if (status.exitCode !== 0) {
+        return { hadChanges: false, commitSha: null, error: `git status exit ${status.exitCode}` };
+      }
+      if (status.output.trim().length === 0) {
+        return { hadChanges: false, commitSha: null, error: null };
+      }
+      // 2. commit message → file (base64 is [A-Za-z0-9+/=], safe single-quoted).
+      const b64 = Buffer.from(args.commitMessage, 'utf8').toString('base64');
+      const wrote = await run(`printf %s '${b64}' | base64 -d > ${msgPath}`);
+      if (wrote.exitCode !== 0) {
+        return { hadChanges: true, commitSha: null, error: 'failed to stage commit message' };
+      }
+      // 3. branch + add + commit (cap-bot identity; message file-injected).
+      const committed = await run(
+        `git -C ${ws} checkout -B ${args.branch} && git -C ${ws} add -A && ` +
+          `git -C ${ws} ${ident} commit -F ${msgPath}`,
+      );
+      if (committed.exitCode !== 0) {
+        return {
+          hadChanges: true,
+          commitSha: null,
+          error: AioSandboxProvider.scrubSecrets(committed.output).trim() || 'commit failed',
+        };
+      }
+      // 4. resolve the commit sha (best-effort).
+      const sha = await run(`git -C ${ws} rev-parse HEAD`);
+      const commitSha = sha.exitCode === 0 ? sha.output.trim().split(/\s+/)[0] || null : null;
+      // 5. push (auth via http.extraHeader only; force-with-lease for re-runs).
+      const pushed = await run(
+        `git -C ${ws} -c http.extraHeader='${args.authHeader}' ` +
+          `push --force-with-lease origin ${args.branch}`,
+      );
+      if (pushed.exitCode !== 0) {
+        return {
+          hadChanges: true,
+          commitSha,
+          error: AioSandboxProvider.scrubSecrets(pushed.output).trim() || 'push failed',
+        };
+      }
+      return { hadChanges: true, commitSha, error: null };
+    } catch (err) {
+      return {
+        hadChanges: false,
+        commitSha: null,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  /** One `/v1/shell/exec` round-trip for delivery, time-boxed. */
+  private async runDeliverExec(
+    baseUrl: string,
+    command: string,
+  ): Promise<{ exitCode: number; output: string }> {
+    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command }),
+      signal: AbortSignal.timeout(AioSandboxProvider.TRIM_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      throw new Error(`/v1/shell/exec responded ${res.status}`);
+    }
+    return AioSandboxProvider.parseExecResult(await res.json().catch(() => undefined));
   }
 
   /**

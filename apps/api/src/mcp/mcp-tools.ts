@@ -177,6 +177,12 @@ export function registerMcpTools(
         branch: z.string().min(1).optional(),
         strategy: z.string().min(1).optional(),
         runtime: z.enum(['claude-code', 'codex']).optional(),
+        deliver: z
+          .enum(['none', 'branch', 'pr'])
+          .optional()
+          .describe(
+            'Where the completed task delivers its edits: none (default), branch (push cap/task-<id>), or pr (push + open a PR/MR on the repo forge).',
+          ),
       },
     },
     async (

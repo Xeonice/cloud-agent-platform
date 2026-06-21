@@ -19,6 +19,7 @@ import { AuthModule } from './auth/auth.module';
 import { HealthModule } from './health/health.module';
 import { AuditModule } from './audit/audit.module';
 import { SettingsModule } from './settings/settings.module';
+import { ForgeModule } from './forge/forge.module';
 import { ApiKeysModule } from './api-keys/api-keys.module';
 import { McpTokensModule } from './mcp-tokens/mcp-tokens.module';
 import { McpModule } from './mcp/mcp.module';
@@ -118,6 +119,7 @@ import { buildThrottlerOptions } from './rate-limit/throttler.options';
     AuthModule,
     AuditModule,
     SettingsModule,
+    ForgeModule,
     ApiKeysModule,
     // remote-mcp-server (integration, task 7.2): the two new feature modules,
     // wired here in the ROOT module — the one `app.module.ts` edit both backend

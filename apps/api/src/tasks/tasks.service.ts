@@ -13,6 +13,8 @@ import {
   DEFAULT_TASK_RUNTIME,
   taskResponseSchema,
   type CreateTaskBody,
+  type Deliver,
+  type DeliverStatus,
   type Runtime,
   type TaskResponse,
   type TaskStatus,
@@ -549,6 +551,10 @@ export class TasksService implements OnApplicationBootstrap {
         // an explicit null — never stale/fabricated on read-back (3.3).
         branch: body.branch ?? null,
         strategy: body.strategy ?? null,
+        // add-multi-forge-task-delivery: persist the opt-in delivery selector.
+        // Omitted ⇒ null (reads back as `none`); the result columns are populated
+        // by the push-back attempt at terminal.
+        deliver: body.deliver ?? null,
         // task-preinstall-skills: persist the selected skill ids (inert, like
         // branch/strategy). Omitted ⇒ empty array (the column default), echoed
         // back on every read path. Validation against the server allowlist
@@ -796,6 +802,12 @@ export class TasksService implements OnApplicationBootstrap {
     idleTimeoutMs: number | null;
     deadlineMs: number | null;
     runtime?: string | null;
+    deliver?: string | null;
+    deliverStatus?: string | null;
+    branchPushed?: string | null;
+    commitSha?: string | null;
+    changeRequestUrl?: string | null;
+    changeRequestNumber?: number | null;
   }): TaskResponse {
     return {
       id: task.id,
@@ -822,6 +834,15 @@ export class TasksService implements OnApplicationBootstrap {
       // pre-runtime row or an omitted request) reads back as the default `codex`
       // — never stale/fabricated (sent value == readable value).
       runtime: (task.runtime ?? DEFAULT_TASK_RUNTIME) as Runtime,
+      // add-multi-forge-task-delivery: echo the opt-in delivery selector (null
+      // reads back as `none`) + the push-back result columns (null until a
+      // delivery runs) on every read path — never stale/fabricated.
+      deliver: (task.deliver ?? 'none') as Deliver,
+      deliverStatus: (task.deliverStatus ?? null) as DeliverStatus | null,
+      branchPushed: task.branchPushed ?? null,
+      commitSha: task.commitSha ?? null,
+      changeRequestUrl: task.changeRequestUrl ?? null,
+      changeRequestNumber: task.changeRequestNumber ?? null,
     };
   }
 }

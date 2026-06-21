@@ -17,6 +17,7 @@
 import type { QueryClient, UseMutationOptions } from "@tanstack/react-query";
 import type {
   CreateTaskRequest,
+  CreateRepoRequest,
   TaskResponse,
   ImportRepoRequest,
   RepoResponse,
@@ -69,6 +70,22 @@ export function createTaskMutation(
     mutationFn: ({ repoId, body }) => real.createTask(repoId, body),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+    },
+  };
+}
+
+/**
+ * Register a repo by gitSource + forge (the GitLab/Gitee picker + by-URL import
+ * path, add-multi-forge-task-delivery). REAL today (`POST /repos`). Invalidates
+ * the repo list so the new repo appears in the new-task form + the repo list.
+ */
+export function createRepoMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<RepoResponse, Error, CreateRepoRequest> {
+  return {
+    mutationFn: (body) => real.createRepo(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.repos });
     },
   };
 }

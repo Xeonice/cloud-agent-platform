@@ -1,6 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { readMaybeEncrypted } from '../settings/secret-storage';
+import { ForgeTargetResolver } from '../forge/forge-target-resolver';
+import { DefaultForgeRegistry } from '../forge/forge-registry';
 import type { CloneSpec, ProvisionLookup } from './provision-lookup.port';
 
 /**
@@ -12,7 +15,11 @@ import type { CloneSpec, ProvisionLookup } from './provision-lookup.port';
  */
 @Injectable()
 export class PrismaProvisionLookup implements ProvisionLookup {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly forgeResolver?: ForgeTargetResolver,
+    @Optional() private readonly forgeRegistry?: DefaultForgeRegistry,
+  ) {}
 
   async getCloneSpec(taskId: string): Promise<CloneSpec | null> {
     const task = await this.prisma.task.findUnique({
@@ -26,8 +33,20 @@ export class PrismaProvisionLookup implements ProvisionLookup {
       const fallback = process.env.TASK_REPO_URL;
       return fallback ? { url: fallback } : null;
     }
-    // Only github https repos get the operator token (as an auth header, kept out
-    // of the URL); ssh/other hosts and public repos clone with the bare URL.
+    // add-multi-forge-task-delivery (4.2): clone auth is now multi-forge +
+    // OWNER-SCOPED. When the task owner has a forge credential for the repo's
+    // forge, clone with `forge.cloneAuthHeader` (github/gitee `x-access-token`,
+    // gitlab `oauth2`); the token rides the http.extraHeader, never the URL.
+    if (this.forgeResolver && this.forgeRegistry) {
+      const target = await this.forgeResolver.getForgeTarget(taskId);
+      if (target) {
+        const authHeader = this.forgeRegistry.forKind(target.kind).cloneAuthHeader(target);
+        return { url: target.cloneUrl, authHeader };
+      }
+    }
+    // Fallback (unattributed/system task, or no connected credential): the legacy
+    // github-only global operator token for a github https repo; ssh/other hosts
+    // and public repos clone with the bare URL.
     const m = gitSource.match(/^https:\/\/github\.com\/.+$/);
     if (!m) return { url: gitSource };
     const token = await this.resolveGitHubToken();
@@ -98,6 +117,9 @@ export class PrismaProvisionLookup implements ProvisionLookup {
       where: { allowed: true, githubAccessToken: { not: null } },
       orderBy: { createdAt: 'asc' },
     });
-    return user?.githubAccessToken ?? null;
+    // Decrypt at point of use (add-forge-credentials): the column stores the
+    // encrypted envelope when a server key is configured, or a legacy plaintext
+    // token otherwise — readMaybeEncrypted recovers the plaintext for both.
+    return readMaybeEncrypted(user?.githubAccessToken);
   }
 }

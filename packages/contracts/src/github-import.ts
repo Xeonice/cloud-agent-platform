@@ -81,6 +81,13 @@ export const ImportRepoRequestSchema = z.object({
   defaultBranch: z.string().min(1),
   /** GitHub repo description, captured as import metadata when present. */
   description: z.string().nullable().optional(),
+  /**
+   * Source forge (add-multi-forge-task-delivery). Forge-neutral: the GitHub
+   * import write records `github`; a GitLab/Gitee picker or by-URL import records
+   * its own forge via `POST /repos` (`CreateRepoRequest.forge`). Optional here for
+   * backward compatibility with the existing GitHub import body.
+   */
+  forge: z.enum(['github', 'gitlab', 'gitee']).optional(),
 });
 export type ImportRepoRequest = z.infer<typeof ImportRepoRequestSchema>;
 
