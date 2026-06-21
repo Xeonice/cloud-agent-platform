@@ -8,6 +8,11 @@
 * **console:** render the session transcript page from real data ([#43](https://github.com/Xeonice/cloud-agent-platform/issues/43)) ([171a66e](https://github.com/Xeonice/cloud-agent-platform/commit/171a66e296889fd02e393fa04f60adad85e25e55))
 
 
+### Bug Fixes
+
+* **self-update:** pull pull-only cap images (sandbox stager) on upgrade ([#43](https://github.com/Xeonice/cloud-agent-platform/issues/43)) ([1e6ea96](https://github.com/Xeonice/cloud-agent-platform/commit/1e6ea961b70cd39b63442080c276f6086580afc5))
+
+
 ## [0.14.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.14.0...v0.14.1) (2026-06-22)
 
 
