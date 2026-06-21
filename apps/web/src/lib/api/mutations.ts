@@ -18,6 +18,9 @@ import type { QueryClient, UseMutationOptions } from "@tanstack/react-query";
 import type {
   CreateTaskRequest,
   CreateRepoRequest,
+  ConnectForgeCredentialRequest,
+  ForgeCredential,
+  ForgeKind,
   TaskResponse,
   ImportRepoRequest,
   RepoResponse,
@@ -86,6 +89,34 @@ export function createRepoMutation(
     mutationFn: (body) => real.createRepo(body),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.repos });
+    },
+  };
+}
+
+/**
+ * Connect a forge by pasting a PAT (the settings "code-hosting connection" card,
+ * add-forge-credentials). REAL today (`PUT /settings/forges`). Invalidates the
+ * connected-forges list so the card reflects the new connection.
+ */
+export function connectForgeMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<ForgeCredential, Error, ConnectForgeCredentialRequest> {
+  return {
+    mutationFn: (body) => real.connectForge(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.forgeCredentials });
+    },
+  };
+}
+
+/** Disconnect a connected forge (`DELETE /settings/forges`). */
+export function disconnectForgeMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<void, Error, { kind: ForgeKind; host: string }> {
+  return {
+    mutationFn: ({ kind, host }) => real.disconnectForge(kind, host),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.forgeCredentials });
     },
   };
 }

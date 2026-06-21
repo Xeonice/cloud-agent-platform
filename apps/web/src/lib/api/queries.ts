@@ -35,6 +35,7 @@ import type {
   ClaudeCredential,
   ListAvailableGithubReposResponse,
   ListAvailableForgeReposResponse,
+  ListForgeCredentialsResponse,
   ForgeKind,
   UpdateStatus,
   ApiKeyListResponse,
@@ -94,6 +95,8 @@ export const queryKeys = {
   /** Import picker listing for a connected forge (`GET /settings/forges/repos`). */
   availableForgeRepos: (kind: ForgeKind) =>
     ["forges", "repos", kind] as const,
+  /** The operator's connected forges (`GET /settings/forges`). */
+  forgeCredentials: ["settings", "forges"] as const,
   taskContext: (id: string) => ["tasks", id, "context"] as const,
   taskResource: (id: string) => ["tasks", id, "resource"] as const,
   sessionHistory: (id: string) => ["tasks", id, "session-history"] as const,
@@ -400,6 +403,15 @@ export function availableForgeReposQuery(kind: ForgeKind) {
       isCapable("settings")
         ? real.listAvailableForgeRepos(kind)
         : Promise.resolve([]),
+  });
+}
+
+/** The operator's connected forge credentials (the settings connection card). */
+export function forgeCredentialsQuery() {
+  return queryOptions<ListForgeCredentialsResponse>({
+    queryKey: queryKeys.forgeCredentials,
+    queryFn: () =>
+      isCapable("settings") ? real.listForgeCredentials() : Promise.resolve([]),
   });
 }
 
