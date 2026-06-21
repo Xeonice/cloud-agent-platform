@@ -26,11 +26,22 @@ import { z } from "zod";
 
 import { TERMINAL_TASK_STATUSES, type TaskStatus } from "./task.js";
 
+/**
+ * ISO timestamp of the rollout line that produced a turn (wire-transcript-real-data
+ * D2). Carried from the existing `{timestamp,type,payload}` line `timestamp`;
+ * OPTIONAL — omitted (never fabricated) when the producing line has none. The
+ * dedicated transcript timeline renders it in the per-row time gutter, and it is
+ * the merge key for the audit-sourced system turns (D3).
+ */
+const turnTimestamp = z.string().optional();
+
 /** A single user instruction turn. */
 export const UserTurnSchema = z.object({
   kind: z.literal("user"),
   /** The operator's instruction text (developer/system wrapper stripped). */
   text: z.string(),
+  /** ISO timestamp of the producing rollout line, when present. */
+  at: turnTimestamp,
 });
 
 /**
@@ -42,6 +53,8 @@ export const AssistantTurnSchema = z.object({
   kind: z.literal("assistant"),
   text: z.string(),
   isFinalAnswer: z.boolean(),
+  /** ISO timestamp of the producing rollout line, when present. */
+  at: turnTimestamp,
 });
 
 /**
@@ -59,6 +72,39 @@ export const ToolTurnSchema = z.object({
   output: z.string().nullable(),
   /** Inline token usage attributed to the turn, when the rollout carried it. */
   tokenCount: z.number().int().nonnegative().optional(),
+  /**
+   * Added/removed line counts for an `apply_patch` turn (wire-transcript-real-data
+   * D4), derived from the patch text in `args`. OPTIONAL — absent for non-patch
+   * tools and for a patch body that cannot be parsed into hunks (honest omission,
+   * never a fabricated count).
+   */
+  diffstat: z
+    .object({
+      add: z.number().int().nonnegative(),
+      del: z.number().int().nonnegative(),
+    })
+    .optional(),
+  /** ISO timestamp of the producing rollout line, when present. */
+  at: turnTimestamp,
+});
+
+/**
+ * A system milestone turn (wire-transcript-real-data D3), derived NOT from the
+ * rollout but from the task's `AuditEvent` rows and MERGED into the stream by
+ * timestamp in the controller/service layer (the rollout parser stays
+ * rollout-only). Carries only fields the audit row provides — no fabricated
+ * values (e.g. a sandbox node id the audit source does not record).
+ */
+export const SystemTurnSchema = z.object({
+  kind: z.literal("system"),
+  /** Human-readable milestone title (e.g. 任务创建 / 任务完成). */
+  title: z.string(),
+  /** Optional longer description carried from the audit row. */
+  detail: z.string().optional(),
+  /** Severity carried from the audit row, when present. */
+  level: z.enum(["info", "warning", "error"]).optional(),
+  /** ISO timestamp of the audit event (the merge key). */
+  at: turnTimestamp,
 });
 
 /** A single transcript event (discriminated on `kind`). */
@@ -66,11 +112,13 @@ export const SessionTurnSchema = z.discriminatedUnion("kind", [
   UserTurnSchema,
   AssistantTurnSchema,
   ToolTurnSchema,
+  SystemTurnSchema,
 ]);
 
 export type UserTurn = z.infer<typeof UserTurnSchema>;
 export type AssistantTurn = z.infer<typeof AssistantTurnSchema>;
 export type ToolTurn = z.infer<typeof ToolTurnSchema>;
+export type SystemTurn = z.infer<typeof SystemTurnSchema>;
 export type SessionTurn = z.infer<typeof SessionTurnSchema>;
 
 /** Session-level metadata surfaced in the replay header (all optional/honest). */
@@ -82,6 +130,14 @@ export const SessionHistoryMetaSchema = z.object({
   cwd: z.string().optional(),
   /** ISO timestamp of the first rollout line, when present. */
   startedAt: z.string().optional(),
+  /**
+   * Session totals for the transcript header (wire-transcript-real-data D5),
+   * computed from the rollout. Both OPTIONAL — omitted (never zeroed) when the
+   * rollout carries no token data / no resolvable start-end timestamps.
+   */
+  totalTokens: z.number().int().nonnegative().optional(),
+  /** Session duration in ms (last rollout line ts − `startedAt`), when resolvable. */
+  durationMs: z.number().int().nonnegative().optional(),
 });
 export type SessionHistoryMeta = z.infer<typeof SessionHistoryMetaSchema>;
 

@@ -212,6 +212,11 @@ export class SessionTranscriptService {
           if (t.kind === 'tool') {
             return [t.name, t.args, t.output ?? ''].join(' ');
           }
+          // System milestone turns (merged at read time, not here) carry no
+          // `text`; index their title/detail so the union stays exhaustive.
+          if (t.kind === 'system') {
+            return [t.title, t.detail ?? ''].join(' ');
+          }
           return t.text;
         })
         .join('\n');

@@ -139,6 +139,21 @@ function makeTranscripts({ durable = null, backfillPersists = true } = {}) {
   };
 }
 
+/**
+ * Stub AuditTimelineReader.queryTask: returns the given lifecycle events
+ * (oldest→newest), or `[]` by default so the rollout-only behavior is preserved.
+ * Pass `throws: true` to assert the merge is best-effort (read failure must NOT
+ * fail the transcript read).
+ */
+function makeAudit(events = [], { throws = false } = {}) {
+  return {
+    async queryTask() {
+      if (throws) throw new Error('audit read failed');
+      return events;
+    },
+  };
+}
+
 // A minimal synthetic rollout (real codex line shapes, synthetic content).
 const ROLLOUT = [
   JSON.stringify({ type: 'session_meta', payload: { cwd: '/home/gem/workspace', timestamp: '2026-06-01T10:00:00Z' } }),
@@ -155,7 +170,7 @@ async function main() {
   for (const status of ['completed', 'cancelled', 'failed']) {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
     const { transcripts } = makeTranscripts();
-    const ctrl = new SessionHistoryController(makeTasks(status), provider, transcripts);
+    const ctrl = new SessionHistoryController(makeTasks(status), provider, transcripts, makeAudit());
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'available', `${status} + rollout → status 'available'`);
     assert(res.meta?.taskId === TASK_ID, `${status}: meta.taskId is the requested id`);
@@ -173,7 +188,7 @@ async function main() {
   {
     const { provider, calls } = makeProvider({ rollout: null /* container empty on purpose */ });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts);
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'available', 'durable hit → status available (parsed from the archive)');
     assert(Array.isArray(res.turns) && res.turns.length >= 1, 'durable hit: the archive parses into turns');
@@ -186,7 +201,7 @@ async function main() {
   {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: null });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts);
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
 
     const first = await ctrl.get(TASK_ID);
     assert(first.status === 'available', 'fallback: durable miss → container read → available');
@@ -204,7 +219,7 @@ async function main() {
   {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('agent_failed_to_start'), provider, transcripts);
+    const ctrl = new SessionHistoryController(makeTasks('agent_failed_to_start'), provider, transcripts, makeAudit());
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'empty' && res.reason === 'agent-failed-to-start', 'agent_failed_to_start → empty/agent-failed-to-start');
     assert(calls.readRollout === 0 && calls.sandboxExists === 0, 'agent_failed_to_start: NO container is read (nothing ever existed)');
@@ -215,7 +230,7 @@ async function main() {
   {
     const { provider } = makeProvider({ rollout: null, exists: false });
     const { transcripts } = makeTranscripts({ durable: null });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts);
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'expired', 'no durable AND no rollout AND sandbox reaped → expired (aged-out record)');
   }
@@ -224,7 +239,7 @@ async function main() {
   {
     const { provider } = makeProvider({ rollout: null, exists: true });
     const { transcripts } = makeTranscripts({ durable: null });
-    const ctrl = new SessionHistoryController(makeTasks('failed'), provider, transcripts);
+    const ctrl = new SessionHistoryController(makeTasks('failed'), provider, transcripts, makeAudit());
     const res = await ctrl.get(TASK_ID);
     assert(res.status === 'empty' && res.reason === 'no-rollout', 'no durable + no rollout + sandbox still present → empty/no-rollout');
   }
@@ -234,7 +249,7 @@ async function main() {
     const err = Object.assign(new Error('Task not found'), { status: 404 });
     const { provider } = makeProvider({ rollout: ROLLOUT });
     const { transcripts } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks(err), provider, transcripts);
+    const ctrl = new SessionHistoryController(makeTasks(err), provider, transcripts, makeAudit());
     let threw = false;
     try { await ctrl.get('nope'); } catch (e) { threw = e === err; }
     assert(threw, 'an unknown task propagates the 404 (no fabricated transcript)');
@@ -244,13 +259,66 @@ async function main() {
   {
     const { provider } = makeProvider({ rollout: ROLLOUT });
     const { transcripts } = makeTranscripts({ durable: ROLLOUT });
-    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts);
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
     const res = await ctrl.get(TASK_ID);
     const serialized = JSON.stringify(res).toLowerCase();
     assert(
       !serialized.includes('auth.json') && !serialized.includes('access_token') && !serialized.includes('refresh_token'),
       'the served SessionHistory never contains a credential field',
     );
+  }
+
+  // ---- audit milestones merge into the stream as ordered system turns ---------
+  {
+    // A rollout WITH per-line timestamps so the merge interleaves by time.
+    const TS_ROLLOUT = [
+      JSON.stringify({ timestamp: '2026-06-01T10:00:01Z', type: 'session_meta', payload: { cwd: '/w', timestamp: '2026-06-01T10:00:01Z' } }),
+      JSON.stringify({ timestamp: '2026-06-01T10:00:02Z', type: 'event_msg', payload: { type: 'user_message', message: '改个标题' } }),
+      JSON.stringify({ timestamp: '2026-06-01T10:00:09Z', type: 'event_msg', payload: { type: 'agent_message', message: '已完成。', phase: 'final_answer' } }),
+    ].join('\n');
+    // Audit rows oldest→newest: one BEFORE the user turn, one AFTER the answer.
+    const events = [
+      { type: 'task.created', title: '任务创建', description: 'cloud-agent-platform', level: 'info', timestamp: new Date('2026-06-01T10:00:00Z') },
+      { type: 'task.completed', title: '任务完成', description: '', level: 'info', timestamp: new Date('2026-06-01T10:00:10Z') },
+    ];
+    const { provider } = makeProvider({ rollout: null });
+    const { transcripts } = makeTranscripts({ durable: TS_ROLLOUT });
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit(events));
+    const res = await ctrl.get(TASK_ID);
+
+    const kinds = res.turns.map((t) => t.kind);
+    assert(
+      JSON.stringify(kinds) === JSON.stringify(['system', 'user', 'assistant', 'system']),
+      'audit rows merge as system turns ordered by timestamp (created → user → answer → completed)',
+    );
+    const created = res.turns[0];
+    assert(created.kind === 'system' && created.title === '任务创建' && created.detail === 'cloud-agent-platform' && created.level === 'info', 'a system turn carries the audit title/detail/level');
+    assert(created.at === '2026-06-01T10:00:00.000Z', 'a system turn carries the audit timestamp as the merge key');
+    const completed = res.turns[3];
+    assert(completed.kind === 'system' && completed.detail === undefined, 'an empty audit description yields no fabricated detail');
+    // The pure rollout (no audit) emits NO system turns.
+    assert(res.turns.filter((t) => t.kind === 'system').length === 2, 'system turns come ONLY from the audit merge, not the rollout parser');
+  }
+
+  // ---- audit read failure is best-effort: transcript still served ------------
+  {
+    const { provider } = makeProvider({ rollout: null });
+    const { transcripts } = makeTranscripts({ durable: ROLLOUT });
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit([], { throws: true }));
+    const res = await ctrl.get(TASK_ID);
+    assert(res.status === 'available' && res.turns.every((t) => t.kind !== 'system'), 'an audit read failure degrades to the rollout-only turns (no throw)');
+  }
+
+  // ---- an OLD durable archive (no new fields) reads back without error --------
+  {
+    // A pre-change archive: turns have no `at`, meta has no totals. Still valid.
+    const { provider } = makeProvider({ rollout: null });
+    const { transcripts } = makeTranscripts({ durable: ROLLOUT });
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
+    const res = await ctrl.get(TASK_ID);
+    assert(res.status === 'available', 'an old archive (no per-turn at / no totals) still parses to available');
+    assert(res.turns.every((t) => t.at === undefined), 'old-archive turns simply carry no `at` (additive-optional, no error)');
+    assert(res.meta.totalTokens === undefined && res.meta.durationMs === undefined, 'old-archive meta omits the new totals without error');
   }
 }
 

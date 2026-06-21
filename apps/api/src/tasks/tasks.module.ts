@@ -4,7 +4,9 @@ import { SessionCastController } from './session-cast.controller';
 import {
   SessionHistoryController,
   TRANSCRIPT_STORE,
+  AUDIT_TIMELINE_READER,
 } from './session-history.controller';
+import { AuditService } from '../audit/audit.service';
 import { TasksService } from './tasks.service';
 import {
   GUARDRAILS_SERVICE_TOKEN,
@@ -62,6 +64,14 @@ import { SessionTranscriptService } from './session-transcript.service';
     {
       provide: TRANSCRIPT_STORE,
       useExisting: SessionTranscriptService,
+    },
+    // wire-transcript-real-data D3 — the read-path controller merges
+    // audit-sourced system milestone turns; bind its narrow AUDIT_TIMELINE_READER
+    // to the `@Global()` AuditService (its `queryTask` returns a task's full
+    // ordered event sequence).
+    {
+      provide: AUDIT_TIMELINE_READER,
+      useExisting: AuditService,
     },
     // add-claude-code-runtime VR-3: wire the two tasks-layer create-gate tokens
     // to the `@Global()` SandboxModule's runtime registry + claude auth source.

@@ -6,7 +6,11 @@ import {
   Param,
   Req,
 } from '@nestjs/common';
-import { SessionHistorySchema, type SessionHistory } from '@cap/contracts';
+import {
+  SessionHistorySchema,
+  type SessionHistory,
+  type SessionTurn,
+} from '@cap/contracts';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
@@ -21,6 +25,10 @@ import { TasksService } from '../tasks/tasks.service';
 import {
   TRANSCRIPT_STORE,
   type TranscriptStore,
+  AUDIT_TIMELINE_READER,
+  type AuditTimelineReader,
+  auditToSystemTurn,
+  mergeSystemTurns,
 } from '../tasks/session-history.controller';
 import { hasScope } from '../auth/operator-principal';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
@@ -52,6 +60,7 @@ export class V1TranscriptController {
     private readonly tasksService: TasksService,
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
     @Inject(TRANSCRIPT_STORE) private readonly transcripts: TranscriptStore,
+    @Inject(AUDIT_TIMELINE_READER) private readonly audit: AuditTimelineReader,
   ) {}
 
   @Get(':id/transcript')
@@ -101,16 +110,30 @@ export class V1TranscriptController {
   }
 
   /** Parse a raw rollout (durable or container source) into the available state. */
-  private toAvailable(
+  private async toAvailable(
     id: string,
     jsonl: string,
     status: string,
     format: TranscriptFormat,
-  ): SessionHistory {
+  ): Promise<SessionHistory> {
     const { turns, meta } = parseTranscript(jsonl, format);
+    // Merge audit-sourced system milestone turns by timestamp, mirroring the
+    // console's SessionHistoryController (wire-transcript-real-data D3). Same
+    // shared schema → the /v1 response carries the system turns + per-turn `at` +
+    // diffstat + totals. Best-effort: an audit read failure falls back to the
+    // rollout-only turns rather than failing the read.
+    let merged: SessionTurn[] = [...turns];
+    try {
+      const events = await this.audit.queryTask(id);
+      if (events.length > 0) {
+        merged = mergeSystemTurns(turns, events.map(auditToSystemTurn));
+      }
+    } catch {
+      // keep the rollout-only turns
+    }
     return SessionHistorySchema.parse({
       status: 'available',
-      turns,
+      turns: merged,
       meta: { taskId: id, ...meta },
       isInterrupted: status === 'cancelled',
     });
