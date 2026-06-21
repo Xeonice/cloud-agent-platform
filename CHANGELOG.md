@@ -5,7 +5,7 @@
 
 ### Bug Fixes
 
-* **settings:** make the forge-token help links visibly clickable ([c79ee43](https://github.com/Xeonice/cloud-agent-platform/commit/c79ee4330f77c13ecdfbe534f41a9d2bf39d79be))
+* **settings:** make the forge-token help links visibly clickable ([#41](https://github.com/Xeonice/cloud-agent-platform/issues/41)) ([c79ee43](https://github.com/Xeonice/cloud-agent-platform/commit/c79ee4330f77c13ecdfbe534f41a9d2bf39d79be))
 
 
 ## [0.14.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.13.1...v0.14.0) (2026-06-21)
