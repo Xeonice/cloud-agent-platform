@@ -36,6 +36,8 @@ import {
   DEFAULT_COMPOSE_PROJECT_DIR,
   isSemverTag,
   updaterBindDirs,
+  resolveServiceSets,
+  PULL_ONLY_SERVICES_ENV,
   type UpdatePlan,
   type UpdaterLauncher,
   type UpdateTopology,
@@ -47,12 +49,17 @@ import type { OperatorPrincipal } from '../auth/operator-principal';
 
 const LATEST = 'v1.4.0';
 
-/** The derived topology a real resident deployment would expose (no `web`). */
+/**
+ * The derived topology a real resident deployment would expose (no `web`):
+ * `services` is the RECREATE set (running cap services — just `api`), `pullServices`
+ * is the PULL set (api + the never-starts pull-only `aio-sandbox-image` stager).
+ */
 const FAKE_TOPO: UpdateTopology = {
   project: 'cloud-agent-platform',
   composeFiles: ['/etc/cap/resident/docker-compose.prod.yml'],
   workingDir: '/etc/cap/resident',
-  services: ['api', 'aio-sandbox-image'],
+  services: ['api'],
+  pullServices: ['api', 'aio-sandbox-image'],
 };
 
 /** A resolver that returns a fixed topology (or null to exercise the fallback). */
@@ -203,15 +210,18 @@ test('enabled + valid: BOUNDED plan is DERIVED from the running topology (cap-* 
   assert.equal(plan.project, FAKE_TOPO.project, 'project from the running deployment');
   assert.deepEqual(plan.composeFiles, FAKE_TOPO.composeFiles, 'compose -f files derived');
   assert.equal(plan.workingDir, FAKE_TOPO.workingDir, 'working dir derived');
-  assert.deepEqual(plan.services, FAKE_TOPO.services, 'cap-* services derived (no web on the resident stack)');
+  assert.deepEqual(plan.services, FAKE_TOPO.services, 'recreate set = running cap services (no web, no never-starts stager)');
+  assert.deepEqual(plan.pullServices, FAKE_TOPO.pullServices, 'pull set = running cap + the pull-only sandbox stager');
 
   // The command layers the derived project + files and scopes to the derived services.
   assert.ok(plan.script.includes(`-p ${FAKE_TOPO.project}`), 'the command scopes to the derived project');
   for (const f of FAKE_TOPO.composeFiles) {
     assert.ok(plan.script.includes(`-f ${f}`), `the command layers ${f}`);
   }
-  assert.ok(plan.script.includes('pull api aio-sandbox-image'), 'pull is scoped to the cap services');
-  assert.ok(plan.script.includes('up -d api aio-sandbox-image'), 'up -d is scoped to the cap services');
+  const [pullCmd, upCmd] = plan.commands;
+  assert.ok(pullCmd.endsWith('pull api aio-sandbox-image'), 'pull stages the full cap pull set (incl the sandbox image)');
+  assert.ok(upCmd.endsWith('up -d api'), 'up -d recreates ONLY the running cap services');
+  assert.ok(!upCmd.includes('aio-sandbox-image'), 'up -d does NOT recreate the never-starts pull-only sandbox stager');
 
   // BOUNDED: never a non-cap unit, never an inline image ref.
   for (const forbidden of ['postgres', 'loki', 'grafana', 'nginx', 'ghcr.io']) {
@@ -267,9 +277,49 @@ test('labels-absent FALLBACK: resolver returns null → documented literals (sou
   // No compose labels → fall back to the documented literals (no project, source overlay).
   assert.equal(plan.project, '', 'no -p in the fallback (compose default project)');
   assert.deepEqual(plan.composeFiles, [...COMPOSE_FILES], 'fallback layers the source-overlay files');
-  assert.deepEqual(plan.services, [...CAP_SERVICES], 'fallback recreates the documented cap services');
+  assert.deepEqual(plan.services, ['api', 'web'], 'fallback recreate set = documented cap services minus the pull-only stager');
+  assert.ok(plan.pullServices.includes('aio-sandbox-image'), 'fallback pull set still stages the never-starts sandbox image');
   assert.equal(plan.workingDir, DEFAULT_COMPOSE_PROJECT_DIR, 'fallback uses the documented project dir');
   assert.ok(!plan.script.includes('-p '), 'no -p flag when there is no project');
+});
+
+test('resolveServiceSets: pull set = recreate ∪ pull-only (deduped); recreate excludes the pull-only stager', () => {
+  // Running cap services never include the never-starts stager (it has no container),
+  // so the pull set adds it back — only to the PULL set.
+  const running = resolveServiceSets(['api'], {});
+  assert.deepEqual(running.services, ['api'], 'recreate = running cap services, no pull-only');
+  assert.deepEqual(running.pullServices, ['api', 'aio-sandbox-image'], 'pull = running cap + the default pull-only stager');
+
+  // The documented fallback set (which DOES list the stager) splits the same way:
+  const split = resolveServiceSets([...CAP_SERVICES], {});
+  assert.deepEqual(split.services, ['api', 'web'], 'recreate strips the never-starts pull-only stager');
+  assert.deepEqual(split.pullServices, ['api', 'web', 'aio-sandbox-image'], 'pull keeps it, deduped + order-stable');
+
+  // Both sets stay strictly cap-scoped — never a non-cap unit.
+  for (const forbidden of ['postgres', 'loki', 'grafana']) {
+    assert.ok(
+      !split.pullServices.includes(forbidden) && !split.services.includes(forbidden),
+      `neither set ever names ${forbidden}`,
+    );
+  }
+});
+
+test('resolveServiceSets: SELF_UPDATE_PULL_ONLY_SERVICES overrides the default; an empty value disables it', () => {
+  // Override the pull-only declaration with operator env:
+  const overridden = resolveServiceSets(['api'], {
+    [PULL_ONLY_SERVICES_ENV]: 'aio-sandbox-image, extra-stager',
+  });
+  assert.deepEqual(
+    overridden.pullServices,
+    ['api', 'aio-sandbox-image', 'extra-stager'],
+    'the pull set uses the operator override',
+  );
+  assert.deepEqual(overridden.services, ['api'], 'the recreate set still excludes every pull-only entry');
+
+  // An explicitly-empty value disables the pull-only addition (pull set == recreate set):
+  const disabled = resolveServiceSets(['api'], { [PULL_ONLY_SERVICES_ENV]: '' });
+  assert.deepEqual(disabled.pullServices, ['api'], 'an explicitly-empty env disables the pull-only addition');
+  assert.deepEqual(disabled.services, ['api'], 'recreate set unaffected');
 });
 
 test('updater binds the working dir AND its parent so a sibling env_file (../files/api.env) resolves', () => {
@@ -294,7 +344,7 @@ test('no cap service resolvable → refused (no-cap-service), no launch', async 
     enabled: true,
     latestVersion: LATEST,
     launcher,
-    topology: { project: 'cloud-agent-platform', composeFiles: ['/x/c.yml'], workingDir: '/x', services: [] },
+    topology: { project: 'cloud-agent-platform', composeFiles: ['/x/c.yml'], workingDir: '/x', services: [], pullServices: [] },
   });
 
   await assert.rejects(
