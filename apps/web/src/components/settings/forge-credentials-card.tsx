@@ -105,9 +105,12 @@ export function ForgeCredentialsCard() {
                 <Link
                   to="/help/forge-tokens"
                   hash={row.kind}
-                  className="text-xs font-medium text-primary hover:text-primary/80"
+                  className="mt-0.5 inline-flex w-fit items-center gap-1 text-xs font-medium text-foreground underline decoration-muted-foreground/50 decoration-1 underline-offset-2 hover:decoration-foreground"
                 >
                   如何申请令牌？
+                  <span aria-hidden className="text-muted-foreground">
+                    ↗
+                  </span>
                 </Link>
               </div>
               {cred ? (
@@ -163,9 +166,12 @@ export function ForgeCredentialsCard() {
               <Link
                 to="/help/forge-tokens"
                 hash={dialogKind ?? undefined}
-                className="text-[13px] font-medium text-primary hover:text-primary/80"
+                className="inline-flex w-fit items-center gap-1 text-[13px] font-medium text-foreground underline decoration-muted-foreground/50 decoration-1 underline-offset-2 hover:decoration-foreground"
               >
                 如何申请{dialogKind ? ROWS.find((r) => r.kind === dialogKind)?.label : ""}令牌？
+                <span aria-hidden className="text-muted-foreground">
+                  ↗
+                </span>
               </Link>
             </div>
             <DialogBody className="grid gap-3.5">
