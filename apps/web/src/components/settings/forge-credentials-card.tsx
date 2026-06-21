@@ -8,6 +8,7 @@
  */
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 
 import type { ForgeKind } from "@cap/contracts";
@@ -101,6 +102,13 @@ export function ForgeCredentialsCard() {
               <div className="grid gap-1">
                 <strong className="text-[14px] text-ink">{row.label}</strong>
                 <p className="m-0 text-xs text-muted-foreground">{row.hint}</p>
+                <Link
+                  to="/help/forge-tokens"
+                  hash={row.kind}
+                  className="text-xs font-medium text-primary hover:text-primary/80"
+                >
+                  如何申请令牌？
+                </Link>
               </div>
               {cred ? (
                 <div className="flex shrink-0 items-center gap-2">
@@ -152,6 +160,13 @@ export function ForgeCredentialsCard() {
               <DialogDescription className="text-[13px] leading-[1.55] text-muted-foreground">
                 在对应平台创建一个访问令牌并粘贴；自托管请填写实例地址。保存后仅展示后缀。
               </DialogDescription>
+              <Link
+                to="/help/forge-tokens"
+                hash={dialogKind ?? undefined}
+                className="text-[13px] font-medium text-primary hover:text-primary/80"
+              >
+                如何申请{dialogKind ? ROWS.find((r) => r.kind === dialogKind)?.label : ""}令牌？
+              </Link>
             </div>
             <DialogBody className="grid gap-3.5">
               <label className="grid gap-2">
