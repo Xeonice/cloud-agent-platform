@@ -5,8 +5,8 @@
 
 ### Features
 
-* **settings:** forge credential connect for github/gitlab/gitee ([d628412](https://github.com/Xeonice/cloud-agent-platform/commit/d62841204df6411cc9c30d6d77f2890198e04a32))
-* **api:** land completed-task edits back to the forge as a PR/MR ([1d92c13](https://github.com/Xeonice/cloud-agent-platform/commit/1d92c13e0d6148ded7381a8a323121f33f1eb84c))
+* **settings:** forge credential connect for github/gitlab/gitee ([#36](https://github.com/Xeonice/cloud-agent-platform/issues/36)) ([d628412](https://github.com/Xeonice/cloud-agent-platform/commit/d62841204df6411cc9c30d6d77f2890198e04a32))
+* **api:** land completed-task edits back to the forge as a PR/MR ([#36](https://github.com/Xeonice/cloud-agent-platform/issues/36)) ([1d92c13](https://github.com/Xeonice/cloud-agent-platform/commit/1d92c13e0d6148ded7381a8a323121f33f1eb84c))
 
 
 ## [0.12.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.12.1...v0.12.2) (2026-06-21)
