@@ -5,7 +5,7 @@
 
 ### Bug Fixes
 
-* **settings:** add the code-hosting connection card to the console ([55b8b0d](https://github.com/Xeonice/cloud-agent-platform/commit/55b8b0d541f7eece5da7131da702215461fb1849))
+* **settings:** add the code-hosting connection card to the console ([#37](https://github.com/Xeonice/cloud-agent-platform/issues/37)) ([55b8b0d](https://github.com/Xeonice/cloud-agent-platform/commit/55b8b0d541f7eece5da7131da702215461fb1849))
 
 
 ## [0.13.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.12.2...v0.13.0) (2026-06-21)
