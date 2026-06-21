@@ -475,3 +475,113 @@ export const UpdateMcpServerSettingsRequestSchema = z.object({
 export type UpdateMcpServerSettingsRequest = z.infer<
   typeof UpdateMcpServerSettingsRequestSchema
 >;
+
+// ---------------------------------------------------------------------------
+// Forge (code-hosting) connection credentials (add-forge-credentials)
+// ---------------------------------------------------------------------------
+
+/**
+ * The forge a credential targets. A forge credential is the write-scoped token
+ * used to clone/push + open a PR/MR on the operator's OWN connected forge — a
+ * concept entirely distinct from the GitHub *login* identity ("谁能进控制台").
+ */
+export const ForgeKindSchema = z.enum(['github', 'gitlab', 'gitee']);
+export type ForgeKind = z.infer<typeof ForgeKindSchema>;
+
+/** Connection state of a forge credential. */
+export const ForgeCredentialStateSchema = z.enum(['not_connected', 'connected']);
+export type ForgeCredentialState = z.infer<typeof ForgeCredentialStateSchema>;
+
+/**
+ * Forge credential READ shape (secret-free). The token is NEVER returned: only
+ * `kind`, the forge `host`, the connection `state`, and an optional masked
+ * `last4` suffix for display. There is intentionally NO plaintext token field.
+ */
+export const ForgeCredentialSchema = z.object({
+  /** Forge kind. */
+  kind: ForgeKindSchema,
+  /** Forge host (public well-known host, or a self-hosted host). */
+  host: z.string().min(1),
+  /** Connection state. */
+  state: ForgeCredentialStateSchema,
+  /** Optional masked suffix of the stored token for display only. */
+  last4: z.string().min(1).nullable().optional(),
+});
+export type ForgeCredential = z.infer<typeof ForgeCredentialSchema>;
+
+/**
+ * Connect-a-forge write body: the operator pastes a Personal Access Token for a
+ * forge. `host` is optional — omitted for a public forge (defaults to the
+ * well-known public host for `kind`); supplied for a self-hosted instance (which
+ * must already be registered as a `ForgeConnection`). The plaintext `token` is
+ * accepted only here and is never stored or returned in plaintext.
+ */
+export const ConnectForgeCredentialRequestSchema = z.object({
+  /** Forge kind. */
+  kind: ForgeKindSchema,
+  /** Self-hosted host; omitted for a public forge. */
+  host: z.string().min(1).optional(),
+  /** The Personal Access Token (plaintext, write-only). */
+  token: z.string().min(1),
+});
+export type ConnectForgeCredentialRequest = z.infer<
+  typeof ConnectForgeCredentialRequestSchema
+>;
+
+/**
+ * A registered self-hosted forge connection (deployment-level infra config):
+ * maps a `host` to its forge `kind` + API base. Public hosts need no row.
+ */
+export const ForgeConnectionSchema = z.object({
+  /** Self-hosted forge host, e.g. git.corp.com. */
+  host: z.string().min(1),
+  /** Forge kind. */
+  kind: ForgeKindSchema,
+  /** API base, e.g. https://git.corp.com/api/v4. */
+  apiBaseUrl: z.string().url(),
+  /** Cached GitLab numeric project id; optional. */
+  projectId: z.string().min(1).nullable().optional(),
+});
+export type ForgeConnection = z.infer<typeof ForgeConnectionSchema>;
+
+/**
+ * A repository the connected forge credential can access (the import picker shape,
+ * add-multi-forge-task-delivery). Returned by the per-forge listing.
+ */
+export const AvailableForgeRepoSchema = z.object({
+  /** Source forge. */
+  forge: ForgeKindSchema,
+  /** `owner/name` (github/gitee) or `namespace/project` (gitlab). */
+  fullPath: z.string().min(1),
+  /** The https clone URL. */
+  gitSource: z.string().min(1),
+  /** Repository visibility. */
+  visibility: z.string().min(1),
+  /** Default branch. */
+  defaultBranch: z.string().min(1),
+  /** GitLab numeric project id (cache), when known. */
+  gitlabProjectId: z.string().min(1).optional(),
+});
+export type AvailableForgeRepo = z.infer<typeof AvailableForgeRepoSchema>;
+
+/** Response body for the per-forge import picker listing. */
+export const ListAvailableForgeReposResponseSchema = z.array(AvailableForgeRepoSchema);
+export type ListAvailableForgeReposResponse = z.infer<
+  typeof ListAvailableForgeReposResponseSchema
+>;
+
+/** Register-a-self-hosted-forge write body. */
+export const RegisterForgeConnectionRequestSchema = z.object({
+  /** Self-hosted forge host. */
+  host: z.string().min(1),
+  /** Forge kind. */
+  kind: ForgeKindSchema,
+  /**
+   * API base. Optional — when omitted the server derives `https://{host}/api/v{N}`
+   * from the kind (`/api/v3` GHE, `/api/v4` GitLab, `/api/v5` Gitee).
+   */
+  apiBaseUrl: z.string().url().optional(),
+});
+export type RegisterForgeConnectionRequest = z.infer<
+  typeof RegisterForgeConnectionRequestSchema
+>;

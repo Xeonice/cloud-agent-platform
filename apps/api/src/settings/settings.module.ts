@@ -4,6 +4,8 @@ import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { ModelDiscoveryClient } from './model-discovery.client';
 import { CodexDeviceLoginService } from './codex-device-login.service';
+import { ForgeCredentialService } from './forge-credential.service';
+import { ForgeModule } from '../forge/forge.module';
 
 /**
  * Account-settings feature module (account-settings, tasks 7.2–7.6).
@@ -25,9 +27,14 @@ import { CodexDeviceLoginService } from './codex-device-login.service';
  * `app.module.ts` alongside the other feature modules.
  */
 @Module({
-  imports: [GuardrailsModule],
+  imports: [GuardrailsModule, ForgeModule],
   controllers: [SettingsController],
-  providers: [SettingsService, ModelDiscoveryClient, CodexDeviceLoginService],
-  exports: [SettingsService],
+  providers: [
+    SettingsService,
+    ModelDiscoveryClient,
+    CodexDeviceLoginService,
+    ForgeCredentialService,
+  ],
+  exports: [SettingsService, ForgeCredentialService],
 })
 export class SettingsModule {}

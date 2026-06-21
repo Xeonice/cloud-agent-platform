@@ -65,6 +65,14 @@ model Repo {
   /// default clears the prior one. Only an imported Repo may carry `true`.
   isDefault     Boolean   @default(false) @map("is_default")
 
+  /// Source forge (add-multi-forge-task-delivery): `github` | `gitlab` | `gitee`.
+  /// Null for repos predating multi-forge (inferred from the `gitSource` host at
+  /// use). Drives change-request push-back forge selection.
+  forge           String? @map("forge")
+  /// Cached GitLab numeric project id (avoids the `%2F` url-encoded path). Null
+  /// for non-gitlab / uncached.
+  gitlabProjectId String? @map("gitlab_project_id")
+
   tasks Task[]
 
   @@map("repos")
@@ -124,6 +132,16 @@ model Task {
   /// unset), mirroring `runtime`.
   executionMode String? @map("execution_mode")
 
+  /// add-multi-forge-task-delivery — opt-in result delivery. All additive +
+  /// NULLABLE. `deliver` echoes the create body (null reads back as `none`); the
+  /// rest are populated by the push-back attempt at terminal (null until then).
+  deliver             String? @map("deliver")
+  deliverStatus       String? @map("deliver_status")
+  branchPushed        String? @map("branch_pushed")
+  commitSha           String? @map("commit_sha")
+  changeRequestUrl    String? @map("change_request_url")
+  changeRequestNumber Int?    @map("change_request_number")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   /// Append-only audit events recorded for this task's lifecycle transitions.
@@ -164,10 +182,13 @@ model User {
   /// Whether this identity is presently on the fail-closed allowlist.
   allowed           Boolean
   /// The operator's GitHub OAuth access token, stored server-side (never exposed
-  /// to the browser) for later GitHub-import calls (`/user/repos`). Nullable: a
-  /// record predating token capture, or a refresh that did not re-capture a
-  /// token, leaves it null. Only ever written for an identity that has already
-  /// passed the fail-closed allowlist gate.
+  /// to the browser) for later GitHub-import calls (`/user/repos`) and for the
+  /// github push-back fallback. ENCRYPTED at rest (add-forge-credentials) as the
+  /// joined `ciphertext.iv.authTag` envelope — decrypted only at point of use via
+  /// the shared github-token-crypto helper (login write, clone read, import read).
+  /// Nullable: a record predating token capture, or a refresh that did not
+  /// re-capture a token, leaves it null. Only ever written for an identity that
+  /// has already passed the fail-closed allowlist gate.
   githubAccessToken String?  @map("github_access_token")
   createdAt         DateTime @default(now()) @map("created_at")
 
@@ -187,6 +208,9 @@ model User {
   /// Per-account Codex execution credential (zero or one).
   codexCredential CodexCredential?
   claudeCredential ClaudeCredential?
+  /// Per-account forge push-back credentials (add-forge-credentials) — one per
+  /// (kind, host), encrypted, cascade-deleted with the owning user.
+  forgeCredentials ForgeCredential[]
 
   @@map("users")
 }
@@ -513,6 +537,71 @@ model ClaudeCredential {
   defaultModel String? @map("default_model")
 
   @@map("claude_credentials")
+}
+
+/// A per-account code-hosting (forge) push-back credential (add-forge-credentials).
+/// The write-scoped token used to clone/push and open a PR/MR on the operator's
+/// own connected forge. Sibling of {@link CodexCredential}: only the ENCRYPTED
+/// `tokenCiphertext` (the joined `ciphertext.iv.authTag` envelope, never plaintext)
+/// plus a masked `tokenLast4` are persisted; the plaintext PAT is never stored or
+/// returned. Keyed on (userId, kind, host) so one operator may connect several
+/// forges / self-hosted hosts. `host` is always the forge host (github.com /
+/// gitlab.com / gitee.com for public, or a self-hosted host) so the unique key is
+/// exact (a NULL host would defeat the unique constraint in Postgres).
+model ForgeCredential {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Forge kind: `github` | `gitlab` | `gitee`.
+  kind String
+
+  /// The forge host (public well-known host or a self-hosted host). Always set.
+  host String
+
+  /// The forge PAT ENCRYPTED at rest as the joined `ciphertext.iv.authTag` string
+  /// — ciphertext only, never plaintext.
+  tokenCiphertext String @map("token_ciphertext")
+
+  /// Masked suffix of the stored token for display only. Null when unset.
+  tokenLast4 String? @map("token_last4")
+
+  /// Connection state: `connected` | `not_connected`.
+  state String
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, kind, host])
+  @@index([userId])
+  @@map("forge_credentials")
+}
+
+/// Operator-configured self-hosted forge registry (add-forge-credentials): maps a
+/// self-hosted `host` to its forge `kind` + API base so change C can resolve a repo
+/// on that host to a forge. Deployment-level infra config (NOT per-user), hence
+/// `host` is the primary key. Public hosts (github.com / gitlab.com / gitee.com)
+/// need no row — they are inferred. A forge call is a trusted call to the operator's
+/// own forge, so it is NOT routed through `assertSafeProviderUrl`; a private/LAN
+/// host is allowed.
+model ForgeConnection {
+  /// Self-hosted forge host, e.g. git.corp.com.
+  host String @id
+
+  /// Forge kind: `github` | `gitlab` | `gitee`.
+  kind String
+
+  /// API base, e.g. https://git.corp.com/api/v4 (/api/v3 GHE, /api/v4 GitLab,
+  /// /api/v5 Gitee).
+  apiBaseUrl String @map("api_base_url")
+
+  /// Cached GitLab numeric project id (avoids the `%2F` url-encoded path). Null for
+  /// non-gitlab / uncached.
+  projectId String? @map("project_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("forge_connections")
 }
 
 /// Durable, container-independent index of a task's captured codex transcript
