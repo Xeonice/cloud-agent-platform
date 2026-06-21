@@ -1,5 +1,10 @@
 import { Controller, Get, Inject, Param } from '@nestjs/common';
-import { SessionHistorySchema, type SessionHistory } from '@cap/contracts';
+import {
+  SessionHistorySchema,
+  type SessionHistory,
+  type SessionTurn,
+  type SystemTurn,
+} from '@cap/contracts';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
@@ -41,6 +46,86 @@ export interface TranscriptStore {
 export const TRANSCRIPT_STORE = Symbol('TRANSCRIPT_STORE');
 
 /**
+ * Narrow read port over a task's lifecycle audit timeline
+ * (wire-transcript-real-data D3). The controller depends on this shape — NOT the
+ * concrete `AuditService` — so it unit-tests standalone against a stub; the
+ * module binds it `useExisting: AuditService`, whose `queryTask` returns a task's
+ * full ordered (oldest→newest) event sequence. The rollout parser stays
+ * rollout-only; system milestone turns are derived HERE and merged by timestamp.
+ */
+export interface AuditTimelineReader {
+  queryTask(taskId: string): Promise<
+    readonly {
+      type: string;
+      title: string;
+      description: string;
+      level: 'info' | 'warning' | 'error';
+      timestamp: Date;
+    }[]
+  >;
+}
+
+/** DI token for the {@link AuditTimelineReader}, bound `useExisting: AuditService`. */
+export const AUDIT_TIMELINE_READER = Symbol('AUDIT_TIMELINE_READER');
+
+/** Map one lifecycle audit event to a `system` milestone turn (no fabrication). */
+export function auditToSystemTurn(e: {
+  title: string;
+  description: string;
+  level: 'info' | 'warning' | 'error';
+  timestamp: Date;
+}): SystemTurn {
+  const detail = e.description?.trim();
+  return {
+    kind: 'system',
+    title: e.title,
+    ...(detail ? { detail: e.description } : {}),
+    level: e.level,
+    at: e.timestamp.toISOString(),
+  };
+}
+
+/**
+ * Merge audit-sourced system turns into the rollout turn stream by timestamp
+ * (D3). Stable: equal timestamps order rollout-before-system; untimed rollout
+ * turns inherit the preceding rollout turn's timestamp so they stay adjacent to
+ * their neighbors. Node's `Array.sort` is stable, preserving same-origin order.
+ */
+export function mergeSystemTurns(
+  rollout: readonly SessionTurn[],
+  system: readonly SystemTurn[],
+): SessionTurn[] {
+  type Keyed = { turn: SessionTurn; ms: number; origin: 0 | 1; seq: number };
+  const keyed: Keyed[] = [];
+  let lastMs = Number.NEGATIVE_INFINITY;
+  rollout.forEach((turn, seq) => {
+    const parsed = turn.at ? Date.parse(turn.at) : NaN;
+    const ms = Number.isNaN(parsed) ? lastMs : parsed;
+    if (!Number.isNaN(parsed)) lastMs = parsed;
+    keyed.push({ turn, ms, origin: 0, seq });
+  });
+  system.forEach((turn, seq) => {
+    const parsed = turn.at ? Date.parse(turn.at) : NaN;
+    keyed.push({
+      turn,
+      ms: Number.isNaN(parsed) ? Number.POSITIVE_INFINITY : parsed,
+      origin: 1,
+      seq,
+    });
+  });
+  return keyed
+    .map((k, i) => ({ ...k, stable: i }))
+    .sort((a, b) =>
+      a.ms !== b.ms
+        ? a.ms - b.ms
+        : a.origin !== b.origin
+          ? a.origin - b.origin
+          : a.stable - b.stable,
+    )
+    .map((k) => k.turn);
+}
+
+/**
  * Read-only session-history replay endpoint (persist-session-transcripts,
  * Track 4 read-path). `GET /tasks/:id/session-history` returns the discriminated
  * {@link SessionHistory}: the parsed codex transcript of a FINISHED task, or an
@@ -72,6 +157,7 @@ export class SessionHistoryController {
     private readonly tasksService: TasksService,
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
     @Inject(TRANSCRIPT_STORE) private readonly transcripts: TranscriptStore,
+    @Inject(AUDIT_TIMELINE_READER) private readonly audit: AuditTimelineReader,
   ) {}
 
   @Get('tasks/:id/session-history')
@@ -100,6 +186,7 @@ export class SessionHistoryController {
       return this.toAvailable(id, durable, task.status, format);
     }
 
+
     // (2) FALLBACK: no durable archive → read the rollout out of the retained
     // sandbox (null = none present). The provider never throws here and never
     // exports a credential file.
@@ -123,16 +210,29 @@ export class SessionHistoryController {
   }
 
   /** Parse a raw rollout (durable or container source) into the available state. */
-  private toAvailable(
+  private async toAvailable(
     id: string,
     jsonl: string,
     status: string,
     format: TranscriptFormat,
-  ): SessionHistory {
+  ): Promise<SessionHistory> {
     const { turns, meta } = parseTranscript(jsonl, format);
+    // Merge audit-sourced system milestone turns by timestamp (D3). Best-effort:
+    // an audit read failure must NOT fail the transcript read — fall back to the
+    // rollout-only turns. The audit timeline is live DB data (independent of the
+    // durable archive), so even old archives gain their lifecycle milestones.
+    let merged: SessionTurn[] = [...turns];
+    try {
+      const events = await this.audit.queryTask(id);
+      if (events.length > 0) {
+        merged = mergeSystemTurns(turns, events.map(auditToSystemTurn));
+      }
+    } catch {
+      // keep the rollout-only turns
+    }
     return SessionHistorySchema.parse({
       status: 'available',
-      turns,
+      turns: merged,
       meta: { taskId: id, ...meta },
       // V.1 — carry the interrupted-terminal indication ON THE WIRE: an
       // operator-`cancelled` task ended mid-run (its terminal frame is a

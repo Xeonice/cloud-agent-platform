@@ -4,7 +4,11 @@ import { ReposModule } from '../repos/repos.module';
 import {
   SessionTranscriptService,
 } from '../tasks/session-transcript.service';
-import { TRANSCRIPT_STORE } from '../tasks/session-history.controller';
+import {
+  TRANSCRIPT_STORE,
+  AUDIT_TIMELINE_READER,
+} from '../tasks/session-history.controller';
+import { AuditService } from '../audit/audit.service';
 import { V1TasksController } from './v1-tasks.controller';
 import { V1ReposController } from './v1-repos.controller';
 import { V1TranscriptController } from './v1-transcript.controller';
@@ -66,6 +70,13 @@ import { IdempotencyService } from './idempotency.service';
     {
       provide: TRANSCRIPT_STORE,
       useExisting: SessionTranscriptService,
+    },
+    // wire-transcript-real-data D3 — the v1 transcript controller merges
+    // audit-sourced system milestone turns; bind its AUDIT_TIMELINE_READER to the
+    // `@Global()` AuditService (same as the console controller in TasksModule).
+    {
+      provide: AUDIT_TIMELINE_READER,
+      useExisting: AuditService,
     },
   ],
 })

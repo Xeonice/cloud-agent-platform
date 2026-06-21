@@ -1,214 +1,46 @@
 /**
- * `/tasks/$taskId/transcript` — 会话记录 (app-shell, SSR;
- * pixel-restore-console-to-od Track 11).
+ * `/tasks/$taskId/transcript` — 会话记录 (app-shell; wire-transcript-real-data).
  *
  * The READ-ONLY session-transcript timeline reached from the history list's
  * 「查看会话」 entry. A standalone route (`$taskId_` opts OUT of nesting under the
  * live session page) rendered in the `_app` shell `<Outlet/>`. It renders the
- * persisted transcript (`session-transcript-persistence`) as a vertical timeline
- * of typed events — operator input / reasoning / tool call (cmd + collapsible
- * output + diffstat) / final answer / system — with a type filter
- * (全部/我的输入/工具/回答) + search that narrow the timeline together, an empty
- * state, and a link to the terminal record.
+ * REAL persisted transcript (`GET /tasks/:id/session-history` via
+ * `sessionHistoryQuery`, keyed by the route's `taskId`) as a vertical timeline of
+ * typed events — system milestone / operator input / reasoning (commentary) /
+ * tool call (cmd + collapsible output + diffstat) / final answer — with a type
+ * filter (全部/我的输入/工具/回答) + search that narrow the timeline together, the
+ * honest empty/expired states, and a link to the terminal record.
  *
- * Faithful to `design-baseline/screens/transcript.html` (the `.tx-*` rows + the
- * session-style header ported to Tailwind). SSR-safe: pure render off a constant
- * sample transcript (the live read lands with the persisted-transcript wiring,
- * design D7) + `useState` filter/search; no window/clock/random at render.
+ * Header identity comes from the REAL task (`taskQuery` + `taskContextQuery`);
+ * the per-row time gutter and the header totals (tokens / duration) come from the
+ * session-history payload. NO hardcoded sample. SSR is off (`ssr: false`) so the
+ * query-driven render and the UTC time-slice are client-deterministic.
  */
 import * as React from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 
-import { cn } from "@/utils";
+import type { SessionTurn } from "@cap/contracts";
+import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { SessionTag } from "@/components/status-pill";
 import { SegmentedControl } from "@/components/segmented-control";
 import { EmptyState } from "@/components/empty-state";
+import {
+  sessionHistoryQuery,
+  taskQuery,
+  taskContextQuery,
+} from "@/lib/api/queries";
+import {
+  clock,
+  formatDuration,
+  filterTurns,
+  type TranscriptFilter,
+} from "@/lib/transcript-timeline";
 
 export const Route = createFileRoute("/_app/tasks/$taskId_/transcript")({
+  ssr: false,
   component: TranscriptPage,
 });
-
-type EventType = "system" | "user" | "reasoning" | "tool" | "answer";
-type FilterValue = "all" | "user" | "tool" | "answer";
-
-interface ToolDetail {
-  /** Collapsible <details> summary (e.g. 输出 / 查看 diff). */
-  summary: string;
-  /** Pre body lines; `diff` renders +/- coloring. */
-  body: React.ReactNode;
-  /** Render as a dark terminal pre (default) or a diff pre. */
-  diff?: boolean;
-}
-
-interface TxEvent {
-  id: string;
-  type: EventType;
-  time: string;
-  search: string;
-  // user / reasoning / answer
-  role?: string;
-  avatar?: string;
-  agentAvatar?: boolean;
-  text?: React.ReactNode;
-  tokens?: string;
-  answer?: React.ReactNode;
-  // tool
-  toolRole?: string;
-  cmd?: string;
-  result?: React.ReactNode;
-  diffstat?: { add: string; del: string };
-  detail?: ToolDetail;
-  // system
-  content?: React.ReactNode;
-}
-
-const SAMPLE: readonly TxEvent[] = [
-  {
-    id: "s1",
-    type: "system",
-    time: "17:08:23",
-    search: "任务创建 cloud-agent-platform aio-execution-hardening",
-    content: (
-      <>
-        任务创建于{" "}
-        <span className="font-mono">cloud-agent-platform · aio-execution-hardening</span>
-      </>
-    ),
-  },
-  {
-    id: "s2",
-    type: "system",
-    time: "17:08:31",
-    search: "沙箱就绪 iad-02 已分配",
-    content: (
-      <>
-        沙箱就绪 · 已分配 <span className="font-mono">iad-02-01</span>
-      </>
-    ),
-  },
-  {
-    id: "u1",
-    type: "user",
-    time: "17:08",
-    search: "操作者 迁移 console TanStack Start loader query 缓存",
-    role: "操作者",
-    avatar: "TH",
-    text: "迁移 console 至 TanStack Start 并补齐数据层：建立 file-based 路由、迁移现有 loader 到 route loader，并接入 query 缓存层；保持既有页面行为不变。",
-  },
-  {
-    id: "r1",
-    type: "reasoning",
-    time: "17:08",
-    search: "推理 规划 路由 loader query createBrowserRouter",
-    role: "推理",
-    text: "先读现有 console 的路由与数据获取方式，确认 createBrowserRouter 的使用点，再规划迁移：1) 建立 file-based 路由树 2) 把页面级 loader 迁到 route loader 3) 用 query 客户端缓存收口数据层。",
-  },
-  {
-    id: "t1",
-    type: "tool",
-    time: "17:09",
-    search: "shell rg createBrowserRouter apps/web/src 工具调用",
-    toolRole: "Shell",
-    cmd: 'rg -l "createBrowserRouter" apps/web/src',
-    result: "2 个文件",
-    detail: {
-      summary: "输出",
-      body: "apps/web/src/router.tsx\napps/web/src/main.tsx",
-    },
-  },
-  {
-    id: "t2",
-    type: "tool",
-    time: "17:09",
-    search: "读取文件 router.tsx 工具调用",
-    toolRole: "读取文件",
-    cmd: "apps/web/src/router.tsx · 1–86",
-  },
-  {
-    id: "t3",
-    type: "tool",
-    time: "17:10",
-    search: "应用补丁 patch __root.tsx routes diff 工具调用",
-    toolRole: "应用补丁",
-    cmd: "apps/web/src/routes/__root.tsx",
-    diffstat: { add: "+120", del: "−0" },
-    detail: {
-      summary: "查看 diff",
-      diff: true,
-      body: (
-        <>
-          <span className="text-[#4ade80]">
-            + import {"{"} createRootRoute, Outlet {"}"} from '@tanstack/react-router'
-          </span>
-          {"\n"}
-          <span className="text-[#4ade80]">
-            + export const Route = createRootRoute({"{"} component: () =&gt; &lt;Outlet /&gt; {"}"})
-          </span>
-        </>
-      ),
-    },
-  },
-  {
-    id: "t4",
-    type: "tool",
-    time: "17:12",
-    search: "shell pnpm typecheck 0 errors 工具调用",
-    toolRole: "Shell",
-    cmd: "pnpm -w typecheck",
-    result: (
-      <>
-        <span className="text-success">✓</span> 0 errors
-      </>
-    ),
-  },
-  {
-    id: "t5",
-    type: "tool",
-    time: "17:12",
-    search: "shell pnpm vitest 12 passed 测试 工具调用",
-    toolRole: "Shell",
-    cmd: "pnpm vitest run",
-    result: (
-      <>
-        <span className="text-success">✓</span> 12 passed
-      </>
-    ),
-  },
-  {
-    id: "a1",
-    type: "answer",
-    time: "17:13",
-    search: "Codex 最终回答 完成 迁移 路由 loader query typecheck",
-    role: "Codex",
-    avatar: "CX",
-    agentAvatar: true,
-    tokens: "3,420 tokens",
-    answer: (
-      <>
-        <p className="m-0 mb-2">已完成 console 到 TanStack Start 的迁移：</p>
-        <ul className="my-1.5 grid list-disc gap-1 pl-[18px]">
-          <li>
-            新增 <span className="font-mono">routes/</span> file-based 路由树，
-            <span className="font-mono">__root.tsx</span> 承载布局与 Outlet。
-          </li>
-          <li>页面级 loader 迁移到 route loader，数据在进入路由前预取。</li>
-          <li>接入 query 缓存层统一收口请求；typecheck 与 12 个测试全部通过。</li>
-        </ul>
-        <p className="m-0">
-          既有页面行为保持不变，可直接合并到{" "}
-          <span className="font-mono">aio-execution-hardening</span>。
-        </p>
-      </>
-    ),
-  },
-  {
-    id: "s3",
-    type: "system",
-    time: "17:13:09",
-    search: "任务完成 耗时 8m",
-    content: <>任务完成 · 耗时 8m 04s</>,
-  },
-] as const;
 
 const FILTER_OPTIONS = [
   { value: "all" as const, label: "全部" },
@@ -218,15 +50,28 @@ const FILTER_OPTIONS = [
 ];
 
 function TranscriptPage() {
-  const [filter, setFilter] = React.useState<FilterValue>("all");
+  const { taskId } = Route.useParams();
+  const [filter, setFilter] = React.useState<TranscriptFilter>("all");
   const [search, setSearch] = React.useState("");
 
-  const query = search.trim().toLowerCase();
-  const visible = SAMPLE.filter((ev) => {
-    const typeOk = filter === "all" ? true : ev.type === filter;
-    const searchOk = query === "" ? true : ev.search.toLowerCase().includes(query);
-    return typeOk && searchOk;
-  });
+  const { data: task } = useQuery(taskQuery(taskId));
+  const { data: context } = useQuery(taskContextQuery(taskId));
+  const { data: history, isLoading } = useQuery(sessionHistoryQuery(taskId));
+
+  const shortId = shortTaskId(taskId);
+  const repo = context?.repo ?? "—";
+  const branch = task?.branch ?? context?.branch ?? "main";
+  const agent = context?.agent ?? "—";
+  const statusLabel = STATUS_LABEL[task?.status ?? ""] ?? "—";
+
+  const turns = history?.status === "available" ? history.turns : [];
+  const meta = history?.status === "available" ? history.meta : undefined;
+  const toolCount = turns.filter((t) => t.kind === "tool").length;
+  const answerCount = turns.filter(
+    (t) => t.kind === "assistant" && t.isFinalAnswer,
+  ).length;
+
+  const visible = filterTurns(turns, filter, search);
 
   return (
     <>
@@ -242,28 +87,32 @@ function TranscriptPage() {
         </Link>
         <div className="flex min-w-0 items-center gap-2.5">
           <h1 className="min-w-0 text-2xl font-semibold leading-tight tracking-[-0.9px] text-foreground">
-            task_aaaa
+            {shortId}
           </h1>
           <span
             aria-label="任务状态"
             className="inline-flex flex-none items-center gap-2 text-xs font-medium text-muted-foreground/80"
           >
             <span aria-hidden="true" className="size-2 flex-none rounded-full bg-muted-foreground" />
-            已完成
+            {statusLabel}
           </span>
         </div>
         <p className="max-w-[880px] truncate text-[13px] leading-relaxed text-muted-foreground/80">
-          迁移 console 至 TanStack Start 并补齐数据层：建立 file-based 路由、迁移现有 loader 到 route loader，并接入 query 缓存层；保持既有页面行为不变。
+          {task?.prompt ?? "正在加载任务目标…"}
         </p>
         <div aria-label="会话元数据" className="flex flex-wrap gap-1.5">
           <SessionTag mono>
             <BranchIcon />
-            aio-execution-hardening
+            {branch}
           </SessionTag>
-          <SessionTag>cloud-agent-platform</SessionTag>
-          <SessionTag>Codex</SessionTag>
-          <SessionTag>8m 04s</SessionTag>
-          <SessionTag>3,420 tokens</SessionTag>
+          <SessionTag>{repo}</SessionTag>
+          <SessionTag>{agent}</SessionTag>
+          {meta?.durationMs != null ? (
+            <SessionTag>{formatDuration(meta.durationMs)}</SessionTag>
+          ) : null}
+          {meta?.totalTokens != null ? (
+            <SessionTag>{meta.totalTokens.toLocaleString()} tokens</SessionTag>
+          ) : null}
         </div>
       </section>
 
@@ -274,12 +123,12 @@ function TranscriptPage() {
           <div>
             <h2 className="text-sm font-semibold text-foreground">会话记录</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              10 个事件 · 5 次工具调用 · 1 个最终回答
+              {turns.length} 个事件 · {toolCount} 次工具调用 · {answerCount} 个最终回答
             </p>
           </div>
           <Link
             to="/tasks/$taskId"
-            params={{ taskId: Route.useParams().taskId }}
+            params={{ taskId }}
             className="inline-flex h-8 items-center gap-1.5 rounded-md bg-card px-3 text-xs font-medium text-foreground shadow-ring transition-colors hover:bg-secondary"
           >
             <TerminalIcon />
@@ -310,11 +159,33 @@ function TranscriptPage() {
           />
         </div>
 
-        {/* Timeline */}
-        {visible.length > 0 ? (
+        {/* Timeline / honest states */}
+        {history?.status === "expired" ? (
+          <EmptyState
+            icon={<SearchIcon />}
+            title="会话记录已过期"
+            description="该任务的沙箱与会话记录已超过保留期被清理，无法回看。"
+          />
+        ) : history?.status === "empty" ? (
+          <EmptyState
+            icon={<SearchIcon />}
+            title="没有可回看的记录"
+            description={
+              history.reason === "agent-failed-to-start"
+                ? "Codex 沙箱已创建，但 agent 未能启动，没有产生对话内容。"
+                : "该任务没有产生可回看的对话记录（agent 未运行或未写出记录）。"
+            }
+          />
+        ) : isLoading ? (
+          <EmptyState
+            icon={<SearchIcon />}
+            title="读取会话记录…"
+            description="正在加载该任务的会话记录。"
+          />
+        ) : visible.length > 0 ? (
           <div className="grid">
-            {visible.map((ev) => (
-              <TxRow key={ev.id} ev={ev} />
+            {visible.map((ev, i) => (
+              <TxRow key={i} ev={ev} />
             ))}
           </div>
         ) : (
@@ -330,97 +201,91 @@ function TranscriptPage() {
 }
 
 /** One timeline row — 56px time gutter + content, top hairline (first has none). */
-function TxRow({ ev }: { ev: TxEvent }) {
+function TxRow({ ev }: { ev: SessionTurn }) {
   return (
     <div className="grid grid-cols-[56px_minmax(0,1fr)] gap-3.5 border-t border-border py-[7px] first:border-t-0">
       <span className="pt-0.5 font-mono text-[11px] leading-normal text-muted-foreground/70">
-        {ev.time}
+        {clock(ev.at)}
       </span>
       <div className="grid min-w-0 gap-1.5">
-        {ev.type === "system" ? (
-          <div className="self-center text-xs text-muted-foreground">{ev.content}</div>
+        {ev.kind === "system" ? (
+          <div className="self-center text-xs text-muted-foreground">
+            {ev.title}
+            {ev.detail ? (
+              <span className="ml-1.5 font-mono text-muted-foreground/70">· {ev.detail}</span>
+            ) : null}
+          </div>
         ) : null}
 
-        {ev.type === "user" ? (
+        {ev.kind === "user" ? (
           <>
             <div className="flex min-w-0 items-center gap-2">
               <span className="grid size-[18px] flex-none place-items-center rounded-[5px] bg-foreground font-mono text-[9px] font-semibold text-background">
-                {ev.avatar}
+                我
               </span>
-              <span className="flex-none text-xs font-semibold text-foreground">{ev.role}</span>
+              <span className="flex-none text-xs font-semibold text-foreground">操作者</span>
             </div>
             <div className="text-[13px] leading-relaxed text-foreground">{ev.text}</div>
           </>
         ) : null}
 
-        {ev.type === "reasoning" ? (
+        {ev.kind === "assistant" && !ev.isFinalAnswer ? (
           <>
             <div className="flex min-w-0 items-center gap-2">
-              <span className="flex-none text-xs font-semibold text-muted-foreground">{ev.role}</span>
+              <span className="flex-none text-xs font-semibold text-muted-foreground">推理</span>
             </div>
-            <div className="text-[13px] italic leading-relaxed text-muted-foreground">{ev.text}</div>
+            <div className="text-[13px] italic leading-relaxed text-muted-foreground">
+              {ev.text}
+            </div>
           </>
         ) : null}
 
-        {ev.type === "tool" ? (
+        {ev.kind === "tool" ? (
           <>
             <div className="flex min-w-0 items-center gap-2">
               <WrenchIcon />
               <span className="flex-none text-xs font-semibold text-muted-foreground">
-                {ev.toolRole}
+                {ev.name}
               </span>
-              {ev.cmd ? (
-                <code className="min-w-0 truncate rounded-[5px] bg-secondary px-[7px] py-0.5 text-xs text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
-                  {ev.cmd}
-                </code>
-              ) : null}
-              {ev.result ? (
-                <span className="ml-auto flex-none text-[11px] text-muted-foreground">
-                  {ev.result}
-                </span>
-              ) : null}
+              <code className="min-w-0 truncate rounded-[5px] bg-secondary px-[7px] py-0.5 text-xs text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
+                {ev.args}
+              </code>
               {ev.diffstat ? (
                 <span className="ml-auto flex-none font-mono text-[11px]">
-                  <span className="text-success">{ev.diffstat.add}</span>{" "}
-                  <span className="text-danger">{ev.diffstat.del}</span>
+                  <span className="text-success">+{ev.diffstat.add}</span>{" "}
+                  <span className="text-danger">−{ev.diffstat.del}</span>
+                </span>
+              ) : ev.tokenCount != null ? (
+                <span className="ml-auto flex-none text-[11px] text-muted-foreground">
+                  {ev.tokenCount.toLocaleString()} tokens
                 </span>
               ) : null}
             </div>
-            {ev.detail ? (
+            {ev.output ? (
               <details className="group">
                 <summary className="cursor-pointer list-none text-[11px] text-muted-foreground marker:hidden">
                   <span className="text-muted-foreground/70 group-open:hidden">▸ </span>
                   <span className="hidden text-muted-foreground/70 group-open:inline">▾ </span>
-                  {ev.detail.summary}
+                  输出
                 </summary>
                 <pre className="mt-1.5 overflow-x-auto rounded-md bg-terminal-bg px-3 py-2.5 font-mono text-xs leading-normal text-terminal-fg">
-                  {ev.detail.body}
+                  {ev.output}
                 </pre>
               </details>
             ) : null}
           </>
         ) : null}
 
-        {ev.type === "answer" ? (
+        {ev.kind === "assistant" && ev.isFinalAnswer ? (
           <>
             <div className="flex min-w-0 items-center gap-2">
-              <span
-                className={cn(
-                  "grid size-[18px] flex-none place-items-center rounded-[5px] font-mono text-[9px] font-semibold text-background",
-                  ev.agentAvatar ? "bg-success" : "bg-foreground",
-                )}
-              >
-                {ev.avatar}
+              <span className="grid size-[18px] flex-none place-items-center rounded-[5px] bg-success font-mono text-[9px] font-semibold text-background">
+                {agentInitials(ev)}
               </span>
-              <span className="flex-none text-xs font-semibold text-foreground">{ev.role}</span>
-              {ev.tokens ? (
-                <span className="ml-auto flex-none font-mono text-[11px] text-muted-foreground">
-                  {ev.tokens}
-                </span>
-              ) : null}
+              <span className="flex-none text-xs font-semibold text-foreground">最终回答</span>
             </div>
             <div className="rounded-[8px] bg-success-soft px-3 py-2.5 text-[13px] leading-relaxed text-foreground shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--success)_18%,transparent)]">
-              {ev.answer}
+              {ev.text}
             </div>
           </>
         ) : null}
@@ -428,6 +293,22 @@ function TxRow({ ev }: { ev: TxEvent }) {
     </div>
   );
 }
+
+/** Two-letter avatar for the final-answer agent bubble (static). */
+function agentInitials(_turn: SessionTurn): string {
+  return "AI";
+}
+
+/** Lifecycle status → Chinese label for the header pill (honest "—" fallback). */
+const STATUS_LABEL: Record<string, string> = {
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已停止",
+  agent_failed_to_start: "未能启动",
+  running: "运行中",
+  pending: "等待中",
+  queued: "排队中",
+};
 
 function BackIcon() {
   return (

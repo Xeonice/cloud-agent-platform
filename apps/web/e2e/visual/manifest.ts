@@ -106,6 +106,15 @@ export interface VisualPage {
  */
 export const SESSION_TASK_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
+/**
+ * The transcript timeline fixture (wire-transcript-real-data): the COMPLETED mock
+ * task whose `mockSessionHistory` resolves to the `available` transcript (system
+ * milestones + commentary + tool diffstat + final answer). `SESSION_TASK_ID`
+ * (task `a`, running) buckets to an EMPTY history, so the dedicated transcript
+ * route must point at this completed id to render the timeline under test.
+ */
+export const TRANSCRIPT_TASK_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
 /** Measure mode: pin thresholds to 0 so every test reports its actual ratio. */
 const MEASURE = process.env.VV_MEASURE === "1";
 
@@ -215,18 +224,22 @@ export const PAGES: readonly VisualPage[] = [
     // 10.2 lands, re-measure.
     maxDiffPixelRatio: ratio(0.055, 0.055),
   },
-  // ── New views added by pixel-restore-console-to-od (no app route until
-  // Tracks 11/12 land — these comparisons stay RED until those routes exist,
-  // then are re-calibrated via VV_MEASURE like the rest). ──
+  // ── Transcript timeline (wire-transcript-real-data): the dedicated
+  // `/tasks/:id/transcript` route now renders REAL `mockSessionHistory` data
+  // (was a hardcoded sample). Pointed at the COMPLETED fixture so the `available`
+  // timeline renders; FIXED mock timestamps keep the time gutter deterministic. ──
   {
     id: "transcript",
-    appPath: `/tasks/${SESSION_TASK_ID}/transcript`,
+    appPath: `/tasks/${TRANSCRIPT_TASK_ID}/transcript`,
     designPath: "/screens/transcript.html",
     authed: true,
-    // Re-calibrated vs the finalized baseline (VV_MEASURE 0.04/0.06 + headroom):
-    // timeline is faithful (typed event rows + green answer card); residual is
-    // the sample-transcript text delta.
+    // MEASURED (VV_MEASURE, wire-transcript-real-data) desktop 0.03 / mobile 0.06
+    // + headroom: the timeline is faithful (typed event rows + green answer card);
+    // residual is the mock-transcript text/content delta vs the hand-written
+    // transcript.html. A structural regression still trips these thresholds.
     maxDiffPixelRatio: ratio(0.06, 0.08),
+    // Wait for the final-answer card so capture fires after the timeline renders.
+    readySelector: ".bg-success-soft",
   },
   // ── /api Playground (add-api-playground, Track 5 pixel-baseline). The app
   // DEFAULT-selects `POST /v1/tasks` with its sample body and an EMPTY response

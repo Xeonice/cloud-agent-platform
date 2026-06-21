@@ -27,14 +27,30 @@ export const COMPOSE_FILES: readonly string[] = [
 ];
 
 /**
- * FALLBACK cap services pulled + recreated when the topology cannot be auto-detected.
- * The PRIMARY path DERIVES the services from the running project's containers whose
- * image is in the `ghcr.io/<owner>/cap-*` namespace, so it targets exactly the cap
- * units the deployment actually runs (e.g. api + aio-sandbox-image on the resident
- * stack, never postgres/loki/grafana). Overridable for the fallback via
- * `SELF_UPDATE_SERVICES` (comma-separated).
+ * FALLBACK declared cap services when the topology cannot be auto-detected — split
+ * by {@link resolveServiceSets} into the recreate set (running-equivalent: api/web)
+ * and the pull set (those PLUS the never-starts pull-only stager `aio-sandbox-image`).
+ * The PRIMARY path derives the RUNNING cap services from the project's containers
+ * (`ghcr.io/<owner>/cap-*` images), then likewise adds the declared pull-only cap
+ * services to the pull set — so it targets exactly the cap units the deployment runs
+ * plus the sandbox image to stage, never postgres/loki/grafana. Overridable for the
+ * fallback via `SELF_UPDATE_SERVICES` (comma-separated).
  */
 export const CAP_SERVICES: readonly string[] = ['api', 'web', 'aio-sandbox-image'];
+
+/**
+ * Never-starts, PULL-ONLY cap services: declared by the compose project (so their
+ * image must be pulled at the target version) but having NO running container, so
+ * they are unobservable from running state and CANNOT be derived from the container
+ * listing. `aio-sandbox-image` is the architecture's fixed sandbox-image stager
+ * (`entrypoint: ["true"]`, `restart: "no"`) — its only purpose is to make
+ * `docker compose pull` stage `cap-aio-sandbox:<target>` onto the host for the DooD
+ * sandbox provider. Members are added to the PULL set but NEVER the recreate set.
+ * Operator-overridable via `SELF_UPDATE_PULL_ONLY_SERVICES` (comma-separated; empty
+ * to disable). Every entry is a cap service, so the pull set stays cap-scoped.
+ */
+export const PULL_ONLY_CAP_SERVICES: readonly string[] = ['aio-sandbox-image'];
+export const PULL_ONLY_SERVICES_ENV = 'SELF_UPDATE_PULL_ONLY_SERVICES';
 
 /** The `ghcr.io/<owner>/cap-*` namespace that marks a service as a cap unit to upgrade. */
 const CAP_IMAGE_RE = /(^|\/)ghcr\.io\/[^/]+\/cap-[^/:@\s]+/i;
@@ -80,8 +96,18 @@ export interface UpdateTopology {
   readonly composeFiles: readonly string[];
   /** The working dir the updater runs in / bind-mounts (where the `.env` lives). */
   readonly workingDir: string;
-  /** The cap-only services (ghcr cap-* images) to pull + recreate. */
+  /**
+   * The RECREATE set: the RUNNING cap services (ghcr cap-* images) to `up -d`. A
+   * never-starts pull-only service is NOT here (it is staged, not recreated).
+   */
   readonly services: readonly string[];
+  /**
+   * The PULL set: every cap service whose image must be staged at the target —
+   * `services` PLUS the declared never-starts pull-only cap services (e.g.
+   * `aio-sandbox-image`), which have no container and so cannot be derived from
+   * running state. Strictly cap-scoped. Used for `compose pull`.
+   */
+  readonly pullServices: readonly string[];
 }
 
 /**
@@ -112,8 +138,10 @@ export interface UpdatePlan {
   readonly composeFiles: readonly string[];
   /** The dir the updater runs in + bind-mounts (where `.env` is rewritten). */
   readonly workingDir: string;
-  /** The cap-only services the updater pulls + recreates (derived from cap-* images). */
+  /** The RECREATE set: running cap services the updater `up -d`s (derived from cap-* images). */
   readonly services: readonly string[];
+  /** The PULL set: `services` plus declared never-starts pull-only cap services; `compose pull`ed. */
+  readonly pullServices: readonly string[];
   /**
    * The two ordered compose commands: `pull` FIRST, then `up -d` — so a failed pull
    * leaves the prior version running (design D4). Each is the full
@@ -277,8 +305,8 @@ export class SelfUpdateService {
     const launcher = this.launcher ?? new DockerUpdaterLauncher(this.env);
     this.log.warn(
       `self-update: launching DETACHED updater to ${plan.target} in ${plan.workingDir} ` +
-        `(pull then up -d for cap services [${plan.services.join(', ')}] of project ` +
-        `${plan.project || '(default)'}) — the api will be recreated; running tasks survive ` +
+        `(pull cap services [${plan.pullServices.join(', ')}] then up -d [${plan.services.join(', ')}] ` +
+        `of project ${plan.project || '(default)'}) — the api will be recreated; running tasks survive ` +
         `via survive-api-redeploy`,
     );
     await launcher.launch(plan);
@@ -295,8 +323,13 @@ export class SelfUpdateService {
       parseList(this.env[COMPOSE_FILES_ENV]) ?? [...COMPOSE_FILES];
     const workingDir =
       nonEmptyEnv(this.env[COMPOSE_PROJECT_DIR_ENV]) ?? DEFAULT_COMPOSE_PROJECT_DIR;
-    const services = parseList(this.env[SERVICES_ENV]) ?? [...CAP_SERVICES];
-    return { project, composeFiles, workingDir, services };
+    // The declared cap services (operator override else the documented set, which
+    // already lists `aio-sandbox-image`); split into recreate (api/web) + pull
+    // (those plus the pull-only sandbox stager) so the fallback stages the sandbox
+    // image just like the primary path.
+    const declared = parseList(this.env[SERVICES_ENV]) ?? [...CAP_SERVICES];
+    const { services, pullServices } = resolveServiceSets(declared, this.env);
+    return { project, composeFiles, workingDir, services, pullServices };
   }
 
   /**
@@ -311,8 +344,12 @@ export class SelfUpdateService {
     const projArgs = topo.project ? ['-p', topo.project] : [];
     const fileArgs = topo.composeFiles.flatMap((f) => ['-f', f]);
     const services = [...topo.services];
+    const pullServices = [...topo.pullServices];
     const base = ['docker', 'compose', ...projArgs, ...fileArgs];
-    const pull = [...base, 'pull', ...services].join(' ');
+    // PULL the full cap pull set (running cap services PLUS the never-starts
+    // pull-only sandbox stager, so its image is staged) but `up -d` ONLY the
+    // running cap services (a never-starts service is staged, not recreated).
+    const pull = [...base, 'pull', ...pullServices].join(' ');
     const up = [...base, 'up', '-d', ...services].join(' ');
     // Ensure compose is present (official docker:*-cli bundles it; this is a no-op
     // fallback that installs it from alpine repos otherwise — the updater has host net).
@@ -336,6 +373,7 @@ export class SelfUpdateService {
       composeFiles: [...topo.composeFiles],
       workingDir: topo.workingDir,
       services,
+      pullServices,
       commands: [pull, up],
       script,
     };
@@ -401,14 +439,17 @@ export class DockerTopologyResolver implements TopologyResolver {
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
 
-    // Cap services = the project's services whose image is in the ghcr cap-* namespace.
+    // RUNNING cap services = the project's CONTAINERS whose image is in the ghcr
+    // cap-* namespace. These are the recreate set. A never-starts pull-only cap
+    // service (e.g. `aio-sandbox-image`) has NO container and so is absent here by
+    // definition — `resolveServiceSets` adds it back to the PULL set (only).
     const containers = await this.docker
       .listContainers({
         all: true,
         filters: { label: [`com.docker.compose.project=${project}`] },
       })
       .catch(() => []);
-    const services = [
+    const runningCapServices = [
       ...new Set(
         containers
           .filter((c) => CAP_IMAGE_RE.test(c.Image ?? ''))
@@ -416,8 +457,9 @@ export class DockerTopologyResolver implements TopologyResolver {
           .filter((s): s is string => typeof s === 'string' && s.length > 0),
       ),
     ];
+    const { services, pullServices } = resolveServiceSets(runningCapServices, this.env);
 
-    return { project, composeFiles, workingDir, services };
+    return { project, composeFiles, workingDir, services, pullServices };
   }
 }
 
@@ -539,4 +581,27 @@ function parseList(value: string | undefined): string[] | null {
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   return items.length > 0 ? items : null;
+}
+
+/**
+ * Split a project's declared cap services into the RECREATE set (running cap units
+ * to `up -d`) and the PULL set (every cap image to stage at the target). The pull
+ * set is `(declared minus pull-only) ∪ pull-only` — it ALWAYS includes the declared
+ * never-starts pull-only cap services (so the sandbox image is staged), while the
+ * recreate set EXCLUDES them (they never run). Pull-only services come from
+ * `SELF_UPDATE_PULL_ONLY_SERVICES` (else {@link PULL_ONLY_CAP_SERVICES}; an
+ * explicitly-empty env disables the addition). Deduped, order-stable (recreate
+ * first). Every member is a cap service, so BOTH sets stay cap-namespace-scoped.
+ */
+export function resolveServiceSets(
+  declaredCapServices: readonly string[],
+  env: NodeJS.ProcessEnv,
+): { services: string[]; pullServices: string[] } {
+  const raw = env[PULL_ONLY_SERVICES_ENV];
+  const pullOnly =
+    typeof raw === 'string' ? (parseList(raw) ?? []) : [...PULL_ONLY_CAP_SERVICES];
+  const pullOnlySet = new Set(pullOnly);
+  const services = declaredCapServices.filter((s) => !pullOnlySet.has(s));
+  const pullServices = [...new Set([...services, ...pullOnly])];
+  return { services, pullServices };
 }

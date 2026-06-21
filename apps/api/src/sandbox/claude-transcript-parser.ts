@@ -60,6 +60,11 @@ function claudeContentText(content: unknown): string {
 export function parseClaudeTranscript(jsonl: string): ParsedRollout {
   const meta: Omit<SessionHistoryMeta, 'taskId'> = {};
   const turns: SessionTurn[] = [];
+  // Track the last seen line timestamp for the session-duration total — mirrors
+  // rollout-parser. NO token total: the claude session JSONL carries no clean
+  // per-turn token delta (the `usage` block double-counts context), so
+  // `totalTokens` is honestly OMITTED for this runtime rather than fabricated.
+  let lastTimestamp: string | undefined;
 
   for (const raw of jsonl.split('\n')) {
     const trimmed = raw.trim();
@@ -77,12 +82,17 @@ export function parseClaudeTranscript(jsonl: string): ParsedRollout {
     if (!meta.startedAt && typeof line.timestamp === 'string') {
       meta.startedAt = line.timestamp;
     }
+    if (typeof line.timestamp === 'string') lastTimestamp = line.timestamp;
+    // The producing line's timestamp as a spreadable `{ at }` fragment (D2), or
+    // an empty object when the line has none — so the turn omits `at`.
+    const at: { at?: string } =
+      typeof line.timestamp === 'string' ? { at: line.timestamp } : {};
 
     const msg = line.message;
     if (line.type === 'user' && msg && msg.role === 'user') {
       const text = claudeContentText(msg.content).trim();
       // Skip a user record whose content is purely tool_result blocks (no text).
-      if (text.length > 0) turns.push({ kind: 'user', text });
+      if (text.length > 0) turns.push({ kind: 'user', text, ...at });
       continue;
     }
     if (line.type === 'assistant' && msg && msg.role === 'assistant') {
@@ -93,11 +103,18 @@ export function parseClaudeTranscript(jsonl: string): ParsedRollout {
           kind: 'assistant',
           text,
           isFinalAnswer: msg.stop_reason === 'end_turn',
+          ...at,
         });
       }
       continue;
     }
     // All other record types are lifecycle/sidecar, not transcript turns — skipped.
+  }
+
+  // Session duration (D5): last line ts − startedAt, omitted when unresolvable.
+  if (meta.startedAt && lastTimestamp) {
+    const ms = Date.parse(lastTimestamp) - Date.parse(meta.startedAt);
+    if (Number.isFinite(ms) && ms >= 0) meta.durationMs = ms;
   }
 
   return { turns, meta };

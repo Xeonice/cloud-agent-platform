@@ -25,6 +25,7 @@ import {
   SessionUserSchema,
   MetricsResponseSchema,
   SessionHistorySchema,
+  type SessionHistory,
   ListAuditEventsResponseSchema,
   AccountSettingsSchema,
   CodexCredentialSchema,
@@ -121,6 +122,18 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
       expect(out.noRollout).toMatchObject({ status: "empty", reason: "no-rollout" });
       expect(out.agentFailed).toMatchObject({ status: "empty", reason: "agent-failed-to-start" });
       expect(out.expired).toEqual({ status: "expired" });
+
+      // wire-transcript-real-data — the available mock carries the enriched
+      // fields the transcript timeline renders, with FIXED timestamps (visual-gate
+      // determinism): a `system` milestone turn, a tool `diffstat`, per-turn `at`,
+      // and meta totals — all still valid against the contract (asserted above).
+      const available = out.available as Extract<SessionHistory, { status: "available" }>;
+      expect(available.turns.some((t) => t.kind === "system")).toBe(true);
+      expect(available.turns.every((t) => typeof t.at === "string")).toBe(true);
+      const patch = available.turns.find((t) => t.kind === "tool" && t.diffstat);
+      expect(patch).toBeDefined();
+      expect(available.meta.totalTokens).toBeGreaterThan(0);
+      expect(available.meta.durationMs).toBeGreaterThan(0);
     },
     4000,
   );

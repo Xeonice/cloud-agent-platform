@@ -115,6 +115,9 @@ async function main() {
     assert(meta.cwd === '/home/gem/workspace', 'meta.cwd comes from session_meta');
     assert(meta.model === 'gpt-5-codex', 'meta.model comes from turn_context');
     assert(meta.startedAt === '2026-06-01T10:00:00Z', 'meta.startedAt comes from session_meta timestamp');
+    // session totals (D5): one token delta (128) summed; duration = 10:00:08 − 10:00:00.
+    assert(meta.totalTokens === 128, 'meta.totalTokens sums the rollout token deltas');
+    assert(meta.durationMs === 8000, 'meta.durationMs is last line ts − startedAt');
 
     const kinds = turns.map((t) => t.kind);
     assert(
@@ -124,6 +127,7 @@ async function main() {
 
     const user = turns[0];
     assert(user.kind === 'user' && user.text === '修复登录页的样式问题', 'user turn is the CLEAN operator prompt (from user_message)');
+    assert(user.at === '2026-06-01T10:00:02Z', 'a turn carries the producing line timestamp (at)');
 
     const commentary = turns[1];
     assert(commentary.kind === 'assistant' && commentary.isFinalAnswer === false, 'phase=commentary → isFinalAnswer false');
@@ -138,6 +142,8 @@ async function main() {
     assert(patch.kind === 'tool' && patch.name === 'apply_patch' && patch.args === '*** Begin Patch', 'custom_tool_call maps name + input → tool turn');
     assert(patch.output === 'Success', 'custom_tool_call_output links by call_id');
     assert(patch.tokenCount === undefined, 'a tool turn with no following token_count carries no count');
+    assert(patch.diffstat === undefined, 'an apply_patch with no +/- lines carries no diffstat (honest omission)');
+    assert(exec.diffstat === undefined, 'a non-apply_patch tool carries no diffstat');
 
     const final = turns[4];
     assert(final.kind === 'assistant' && final.isFinalAnswer === true && final.text === '已修复登录页样式。', 'phase=final_answer → isFinalAnswer true');
@@ -171,6 +177,40 @@ async function main() {
     assert(!threw, 'a malformed line never aborts the parse');
     assert(result && result.turns.length === 1 && result.turns[0].text === 'ok', 'the parseable lines still yield their turns');
     assert(parseRollout('').turns.length === 0, 'empty input yields zero turns (no fabrication)');
+  }
+
+  // ---- 5) diffstat from an apply_patch body; honest omission of at/totals ----
+  {
+    // An apply_patch whose patch body adds 2 and removes 1 line (context/headers
+    // are not counted).
+    const DIFFSTAT_ROLLOUT = [
+      jsonl({ timestamp: '2026-06-03T10:00:00Z', type: 'session_meta', payload: { cwd: '/w' } }),
+      jsonl({
+        timestamp: '2026-06-03T10:00:01Z',
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'apply_patch',
+          input: '*** Begin Patch\n*** Update File: a.ts\n keep this\n+added one\n+added two\n-removed one\n*** End Patch',
+          call_id: 'p1',
+        },
+      }),
+    ].join('\n');
+    const { turns: dturns } = parseRollout(DIFFSTAT_ROLLOUT);
+    const patched = dturns.find((t) => t.kind === 'tool');
+    assert(
+      patched && patched.diffstat && patched.diffstat.add === 2 && patched.diffstat.del === 1,
+      'apply_patch diffstat counts +2/−1 from the patch body (headers/context excluded)',
+    );
+
+    // A rollout with NO line timestamps and NO token data: at + totals omitted.
+    const NO_META_ROLLOUT = [
+      jsonl({ type: 'event_msg', payload: { type: 'user_message', message: 'hi' } }),
+    ].join('\n');
+    const { turns: nturns, meta: nmeta } = parseRollout(NO_META_ROLLOUT);
+    assert(nturns[0] && nturns[0].at === undefined, 'a turn with no source timestamp omits at (no fabrication)');
+    assert(nmeta.totalTokens === undefined, 'no token data → totalTokens omitted (not zeroed)');
+    assert(nmeta.durationMs === undefined, 'no resolvable start/end → durationMs omitted');
   }
 }
 

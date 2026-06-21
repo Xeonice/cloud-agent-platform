@@ -19,6 +19,11 @@ import {
   contractsZod,
   RepoSchema,
   TaskSchema,
+  // wire-transcript-real-data — the durable session-history read model (turns +
+  // per-turn `at`, tool diffstat, audit-sourced system turns, session totals).
+  // The /v1 transcript response is documented from THIS exact schema so the doc
+  // cannot drift from the enriched wire shape.
+  SessionHistorySchema,
   // The `/v1` DTOs are owned by `@cap/contracts` (Track `contracts`) — the SAME
   // schemas the `/v1` controllers validate requests/responses against. The
   // document is generated from THESE exact schemas, so it cannot drift from the
@@ -241,9 +246,12 @@ export const V1_ROUTES: readonly V1RouteDefinition[] = [
     response: {
       status: 200,
       description: 'The recorded transcript.',
-      // Built on `contractsZod` (shared ESM realm) so it carries `.openapi(...)`.
-      schema: contractsZod.string(),
-      contentType: 'text/plain',
+      // The durable session-history read model (wire-transcript-real-data) —
+      // documented from the SAME `SessionHistorySchema` the controller validates
+      // against, so the doc reflects the enriched JSON wire shape (turns with
+      // per-turn `at` + tool diffstat + audit-sourced system turns + meta totals),
+      // not a stale plaintext string.
+      schema: SessionHistorySchema,
     },
   },
   {

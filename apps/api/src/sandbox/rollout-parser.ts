@@ -93,6 +93,34 @@ function lastTurnTokens(info: unknown): number | undefined {
 }
 
 /**
+ * Best-effort added/removed line count for an `apply_patch` turn (D4), counted
+ * off the patch text already captured in the tool args. Lines added start with
+ * `+` and removed with `-`, EXCLUDING the `+++`/`---` file headers. Returns
+ * `undefined` when the text does not look like a patch or carries no +/- lines —
+ * an honest omission, never a fabricated count.
+ */
+function patchDiffstat(args: string): { add: number; del: number } | undefined {
+  if (!args.includes('*** Begin Patch') && !/^[+-]/m.test(args)) return undefined;
+  let add = 0;
+  let del = 0;
+  for (const ln of args.split('\n')) {
+    if (ln.startsWith('+++') || ln.startsWith('---')) continue;
+    if (ln.startsWith('+')) add++;
+    else if (ln.startsWith('-')) del++;
+  }
+  return add === 0 && del === 0 ? undefined : { add, del };
+}
+
+/**
+ * The producing line's timestamp as a spreadable `{ at }` fragment (D2), or an
+ * empty object when the line has none — so the turn omits `at` rather than
+ * carrying `undefined`/a fabricated value.
+ */
+function atOf(line: RolloutLine): { at?: string } {
+  return typeof line.timestamp === 'string' ? { at: line.timestamp } : {};
+}
+
+/**
  * Parse a full rollout JSONL document into the ordered render-contract.
  *
  * @param jsonl the raw `rollout-*.jsonl` text (one JSON object per line).
@@ -116,10 +144,17 @@ export function parseRollout(jsonl: string): ParsedRollout {
   // The most recently appended tool turn, to carry an interleaved token_count.
   let lastToolTurn: ToolTurn | null = null;
   let sawUserMessageEvent = false;
+  // Session totals (D5): accumulate token deltas; track the last seen line ts so
+  // duration can be derived against `startedAt`. Both stay omitted when no data.
+  let sessionTokens = 0;
+  let sawTokens = false;
+  let lastTimestamp: string | undefined;
 
   for (const line of lines) {
     const p = line.payload ?? {};
     const pType = p.type;
+    // Track the most recent line timestamp for the session-duration total.
+    if (typeof line.timestamp === 'string') lastTimestamp = line.timestamp;
 
     if (line.type === 'session_meta') {
       if (typeof p.cwd === 'string') meta.cwd = p.cwd;
@@ -141,7 +176,7 @@ export function parseRollout(jsonl: string): ParsedRollout {
         sawUserMessageEvent = true;
         const message = (p as { message?: unknown }).message;
         if (typeof message === 'string' && message.length > 0) {
-          turns.push({ kind: 'user', text: message });
+          turns.push({ kind: 'user', text: message, ...atOf(line) });
           lastToolTurn = null;
         }
         continue;
@@ -154,6 +189,7 @@ export function parseRollout(jsonl: string): ParsedRollout {
             kind: 'assistant',
             text: message,
             isFinalAnswer: phase === 'final_answer',
+            ...atOf(line),
           });
           lastToolTurn = null;
         }
@@ -161,8 +197,12 @@ export function parseRollout(jsonl: string): ParsedRollout {
       }
       if (pType === 'token_count') {
         const tokens = lastTurnTokens((p as { info?: unknown }).info);
-        if (tokens !== undefined && lastToolTurn && lastToolTurn.tokenCount === undefined) {
-          lastToolTurn.tokenCount = tokens;
+        if (tokens !== undefined) {
+          sessionTokens += tokens;
+          sawTokens = true;
+          if (lastToolTurn && lastToolTurn.tokenCount === undefined) {
+            lastToolTurn.tokenCount = tokens;
+          }
         }
         continue;
       }
@@ -179,11 +219,21 @@ export function parseRollout(jsonl: string): ParsedRollout {
         // carries `input`. Either way render the raw command monospace.
         const argsRaw =
           (p as { arguments?: unknown }).arguments ?? (p as { input?: unknown }).input;
+        const toolName = typeof name === 'string' ? name : 'tool';
+        const toolArgs = typeof argsRaw === 'string' ? argsRaw : safeStringify(argsRaw);
         const turn: ToolTurn = {
           kind: 'tool',
-          name: typeof name === 'string' ? name : 'tool',
-          args: typeof argsRaw === 'string' ? argsRaw : safeStringify(argsRaw),
+          name: toolName,
+          args: toolArgs,
           output: null,
+          // diffstat only for apply_patch turns; absent otherwise / on unparseable patch.
+          ...(toolName === 'apply_patch'
+            ? (() => {
+                const diffstat = patchDiffstat(toolArgs);
+                return diffstat ? { diffstat } : {};
+              })()
+            : {}),
+          ...atOf(line),
         };
         turns.push(turn);
         lastToolTurn = turn;
@@ -206,7 +256,7 @@ export function parseRollout(jsonl: string): ParsedRollout {
         if (!sawUserMessageEvent) {
           const text = stripPromptWrapper(contentText((p as { content?: unknown }).content));
           if (text.length > 0) {
-            turns.push({ kind: 'user', text });
+            turns.push({ kind: 'user', text, ...atOf(line) });
             lastToolTurn = null;
           }
         }
@@ -214,6 +264,14 @@ export function parseRollout(jsonl: string): ParsedRollout {
       }
       continue;
     }
+  }
+
+  // Session totals (D5): omit each unless its source data is present — never
+  // report zero or a fabricated value.
+  if (sawTokens && sessionTokens > 0) meta.totalTokens = sessionTokens;
+  if (meta.startedAt && lastTimestamp) {
+    const ms = Date.parse(lastTimestamp) - Date.parse(meta.startedAt);
+    if (Number.isFinite(ms) && ms >= 0) meta.durationMs = ms;
   }
 
   return { turns, meta };

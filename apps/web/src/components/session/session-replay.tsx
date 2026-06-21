@@ -26,6 +26,13 @@ import { sessionHistoryQuery } from "@/lib/api/queries";
 import { cn } from "@/utils";
 import { SessionCastLog } from "./session-cast-log";
 
+/**
+ * A conversation turn (user / assistant / tool) — the kinds the cockpit's 对话记录
+ * pane renders. The audit-sourced `system` milestone kind (wire-transcript-real-data)
+ * is excluded here; it is shown only on the dedicated transcript timeline.
+ */
+type ConvTurn = Exclude<SessionTurn, { kind: "system" }>;
+
 /** The five review filter presets (borrowed from codex-transcript-viewer). */
 const FILTERS = ["默认", "无工具", "用户", "答案", "全部"] as const;
 type Filter = (typeof FILTERS)[number];
@@ -102,7 +109,13 @@ function AvailableReplay({
   const [search, setSearch] = React.useState("");
   const turnRefs = React.useRef<(HTMLDivElement | null)[]>([]);
 
-  const turns = history.turns;
+  // The cockpit's 对话记录 pane is conversation-only: audit-sourced `system`
+  // milestone turns (wire-transcript-real-data, merged server-side for ALL
+  // session-history consumers) belong on the dedicated transcript timeline, not
+  // here — drop them so this surface stays unchanged.
+  const turns = history.turns.filter(
+    (t): t is ConvTurn => t.kind !== "system",
+  );
   const query = search.trim().toLowerCase();
 
   // Filter + search applied together; indices are kept so the event tree and
@@ -243,7 +256,7 @@ function ReviewSidebar({
   onSearch,
   onJump,
 }: {
-  turns: SessionTurn[];
+  turns: ConvTurn[];
   filter: Filter;
   onFilter: (f: Filter) => void;
   search: string;
@@ -303,7 +316,7 @@ function ReviewSidebar({
 }
 
 /** One conversation turn rendered in its kind-specific treatment. */
-const TurnItem = React.forwardRef<HTMLDivElement, { turn: SessionTurn }>(
+const TurnItem = React.forwardRef<HTMLDivElement, { turn: ConvTurn }>(
   function TurnItem({ turn }, ref) {
     if (turn.kind === "user") {
       return (
@@ -402,7 +415,7 @@ function EmptyReplay({
 // ---- pure helpers -----------------------------------------------------------
 
 /** Filter-preset semantics (task 8.3). */
-function passesFilter(turn: SessionTurn, filter: Filter): boolean {
+function passesFilter(turn: ConvTurn, filter: Filter): boolean {
   switch (filter) {
     case "无工具":
       return turn.kind !== "tool";
@@ -419,7 +432,7 @@ function passesFilter(turn: SessionTurn, filter: Filter): boolean {
 }
 
 /** Case-insensitive search over a turn's visible text. */
-function turnMatches(turn: SessionTurn, query: string): boolean {
+function turnMatches(turn: ConvTurn, query: string): boolean {
   if (turn.kind === "user" || turn.kind === "assistant") {
     return turn.text.toLowerCase().includes(query);
   }
@@ -431,7 +444,7 @@ function turnMatches(turn: SessionTurn, query: string): boolean {
 }
 
 /** Event-tree entry: icon glyph + color class + truncated label per kind. */
-function treeEntry(turn: SessionTurn): {
+function treeEntry(turn: ConvTurn): {
   icon: string;
   klass: string;
   label: string;

@@ -472,17 +472,31 @@ export async function mockTaskResource(id: string): Promise<TaskResourceResponse
 // Session history — read-only codex transcript replay (session-sandbox-retention)
 // ---------------------------------------------------------------------------
 
-/** Build a representative parsed-transcript `available` history. */
+/**
+ * Build a representative parsed-transcript `available` history. Carries the
+ * wire-transcript-real-data fields the dedicated transcript timeline renders —
+ * per-turn `at`, an audit-sourced `system` milestone turn, an `apply_patch`
+ * diffstat, and meta totals — all with FIXED timestamps so the visual gate stays
+ * deterministic (mirrors what the api's audit-merge would produce).
+ */
 function availableSessionHistory(
   id: string,
   variant: "completed" | "failed",
 ): SessionHistory {
   const turns: SessionTurn[] = [
-    { kind: "user", text: "修复登录页在移动端的样式错位问题" },
+    {
+      kind: "system",
+      title: "任务创建",
+      detail: "cloud-agent-platform · aio-execution-hardening",
+      level: "info",
+      at: "2026-06-12T09:30:00Z",
+    },
+    { kind: "user", text: "修复登录页在移动端的样式错位问题", at: "2026-06-12T09:30:05Z" },
     {
       kind: "assistant",
       text: "我先查看登录页的样式与结构，定位错位的根因，再做最小修改。",
       isFinalAnswer: false,
+      at: "2026-06-12T09:30:10Z",
     },
     {
       kind: "tool",
@@ -491,6 +505,7 @@ function availableSessionHistory(
       output:
         "export function Login() {\n  return (\n    <div className=\"login\">…</div>\n  );\n}",
       tokenCount: 1280,
+      at: "2026-06-12T09:30:20Z",
     },
     {
       kind: "tool",
@@ -498,14 +513,26 @@ function availableSessionHistory(
       args: "*** Update File: src/routes/login.css\n@@\n-  display: block;\n+  display: flex;",
       output: "Success. Updated src/routes/login.css (1 hunk).",
       tokenCount: 642,
+      diffstat: { add: 1, del: 1 },
+      at: "2026-06-12T09:30:35Z",
     },
   ];
   if (variant === "completed") {
-    turns.push({
-      kind: "assistant",
-      text: "已修复：登录容器改为 flex 居中并约束最大宽度，移动端不再错位。",
-      isFinalAnswer: true,
-    });
+    turns.push(
+      {
+        kind: "assistant",
+        text: "已修复：登录容器改为 flex 居中并约束最大宽度，移动端不再错位。",
+        isFinalAnswer: true,
+        at: "2026-06-12T09:31:00Z",
+      },
+      {
+        kind: "system",
+        title: "任务完成",
+        detail: "耗时 1m 05s",
+        level: "info",
+        at: "2026-06-12T09:31:05Z",
+      },
+    );
   }
   // variant "failed": the transcript ends at the interruption (no final answer).
   return {
@@ -516,6 +543,8 @@ function availableSessionHistory(
       model: "gpt-5-codex",
       cwd: "/home/gem/workspace",
       startedAt: "2026-06-12T09:30:00Z",
+      totalTokens: 1922,
+      durationMs: variant === "completed" ? 65000 : 35000,
     },
     // Neither mock terminal task (completed / failed) is an operator-cancelled
     // mid-run interruption, so the wire indication is false here.
