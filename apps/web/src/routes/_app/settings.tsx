@@ -46,6 +46,7 @@ import {
   apiKeysQuery,
   claudeCredentialQuery,
   codexCredentialQuery,
+  forgeCredentialsQuery,
   mcpServerEnabledQuery,
   mcpTokensQuery,
   queryKeys,
@@ -69,6 +70,7 @@ import { CodexDirectDialog } from "@/components/settings/codex-direct-dialog";
 import { CodexApiKeyDialog } from "@/components/settings/codex-api-key-dialog";
 import { ApiKeysCard } from "@/components/settings/api-keys-card";
 import { McpServerCard } from "@/components/settings/mcp-server-card";
+import { ForgeCredentialsCard } from "@/components/settings/forge-credentials-card";
 
 export const Route = createFileRoute("/_app/settings")({
   loader: async ({ context }) => {
@@ -81,6 +83,7 @@ export const Route = createFileRoute("/_app/settings")({
       context.queryClient.ensureQueryData(claudeCredentialQuery()),
       context.queryClient.ensureQueryData(apiKeysQuery()),
       context.queryClient.ensureQueryData(mcpServerEnabledQuery()),
+      context.queryClient.ensureQueryData(forgeCredentialsQuery()),
       context.queryClient.ensureQueryData(mcpTokensQuery()),
     ]);
   },
@@ -169,6 +172,12 @@ function SettingsPage() {
           onConfigureCodex={handleConfigure}
           onConfigureClaude={setClaudeDialogMode}
         />
+
+        {/* #forges: code-hosting (forge) connection — connect a GitHub/GitLab/Gitee
+            PAT so a completed task can push back + open a PR/MR (add-forge-credentials). */}
+        <section id="forges" className="grid scroll-mt-24 gap-3">
+          <ForgeCredentialsCard />
+        </section>
 
         {/* #api-keys: machine-identity credentials (mint show-once / list / revoke) */}
         <section id="api-keys" className="grid scroll-mt-24 gap-3">

@@ -509,6 +509,12 @@ export const ForgeCredentialSchema = z.object({
 });
 export type ForgeCredential = z.infer<typeof ForgeCredentialSchema>;
 
+/** Response body for `GET /settings/forges` — the operator's connected forges. */
+export const ListForgeCredentialsResponseSchema = z.array(ForgeCredentialSchema);
+export type ListForgeCredentialsResponse = z.infer<
+  typeof ListForgeCredentialsResponseSchema
+>;
+
 /**
  * Connect-a-forge write body: the operator pastes a Personal Access Token for a
  * forge. `host` is optional — omitted for a public forge (defaults to the

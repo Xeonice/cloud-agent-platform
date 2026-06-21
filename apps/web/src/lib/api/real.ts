@@ -66,7 +66,12 @@ import {
 import { RepoResponseSchema } from "@cap/contracts";
 import {
   ListAvailableForgeReposResponseSchema,
+  ListForgeCredentialsResponseSchema,
+  ForgeCredentialSchema,
   type ListAvailableForgeReposResponse,
+  type ListForgeCredentialsResponse,
+  type ForgeCredential,
+  type ConnectForgeCredentialRequest,
   type CreateRepoRequest,
   type ForgeKind,
 } from "@cap/contracts";
@@ -715,6 +720,35 @@ export async function createRepo(body: CreateRepoRequest): Promise<RepoResponse>
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  );
+}
+
+/** `GET /settings/forges` — the operator's connected forges (secret-free). */
+export async function listForgeCredentials(): Promise<ListForgeCredentialsResponse> {
+  return ListForgeCredentialsResponseSchema.parse(await request("/settings/forges"));
+}
+
+/** `PUT /settings/forges` — connect a forge by pasting a PAT (validated server-side). */
+export async function connectForge(
+  body: ConnectForgeCredentialRequest,
+): Promise<ForgeCredential> {
+  return ForgeCredentialSchema.parse(
+    await request("/settings/forges", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** `DELETE /settings/forges?kind=&host=` — disconnect a forge credential. */
+export async function disconnectForge(
+  kind: ForgeKind,
+  host: string,
+): Promise<void> {
+  await request(
+    `/settings/forges?kind=${encodeURIComponent(kind)}&host=${encodeURIComponent(host)}`,
+    { method: "DELETE" },
   );
 }
 
