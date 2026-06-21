@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.14.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.13.1...v0.14.0) (2026-06-21)
+
+
+### Features
+
+* **console:** add the forge-token help page ([#39](https://github.com/Xeonice/cloud-agent-platform/issues/39)) ([868fb6c](https://github.com/Xeonice/cloud-agent-platform/commit/868fb6ce495279db8436bdc6f441353071db8d9f))
+
+
 ## [0.13.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.13.0...v0.13.1) (2026-06-21)
 
 
