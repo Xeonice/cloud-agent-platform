@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.14.1...v0.15.0) (2026-06-22)
+
+
+### Features
+
+* **console:** render the session transcript page from real data ([171a66e](https://github.com/Xeonice/cloud-agent-platform/commit/171a66e296889fd02e393fa04f60adad85e25e55))
+
+
 ## [0.14.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.14.0...v0.14.1) (2026-06-22)
 
 
