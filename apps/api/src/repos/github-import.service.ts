@@ -14,6 +14,7 @@ import {
   type RepoResponse,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
+import { readMaybeEncrypted } from '../settings/secret-storage';
 import {
   findExistingImport,
   githubDedupKey,
@@ -146,6 +147,10 @@ export class GithubImportService {
         githubId: githubDedupKey(body.id),
         defaultBranch: body.defaultBranch,
         description: body.description ?? null,
+        // add-multi-forge-task-delivery: record the source forge so every imported
+        // repo carries it (detection step (1) is populated, not null) — a GitHub
+        // import is github by construction.
+        forge: 'github',
       },
     });
     return repoResponseSchema.parse(this.toResponse(repo));
@@ -215,7 +220,9 @@ export class GithubImportService {
       where: { githubId: operatorGithubId },
       select: { githubAccessToken: true },
     });
-    return user?.githubAccessToken ?? null;
+    // Decrypt at point of use (add-forge-credentials): handles both the encrypted
+    // envelope and a legacy plaintext token.
+    return readMaybeEncrypted(user?.githubAccessToken);
   }
 
   /** Loads the de-dup view of every imported Repo (a non-null githubId). */
@@ -258,6 +265,7 @@ export class GithubImportService {
     updatedAt: Date | null;
     githubId: string | null;
     isDefault: boolean;
+    forge?: string | null;
   }): RepoResponse {
     return {
       id: repo.id,
@@ -270,6 +278,8 @@ export class GithubImportService {
       updatedAt: repo.updatedAt,
       githubId: repo.githubId,
       isDefault: repo.isDefault,
+      // add-multi-forge-task-delivery: echo the source forge on import responses.
+      forge: (repo.forge ?? null) as RepoResponse['forge'],
     };
   }
 }

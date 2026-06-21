@@ -13,13 +13,30 @@ export class ReposService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(body: CreateRepoBody): Promise<RepoResponse> {
+    // add-multi-forge-task-delivery: record the source forge (explicit, or
+    // inferred from the gitSource public host). Self-hosted hosts must supply it.
+    const forge = body.forge ?? ReposService.inferForge(body.gitSource);
     const repo = await this.prisma.repo.create({
       data: {
         name: body.name,
         gitSource: body.gitSource,
+        forge,
       },
     });
     return repoResponseSchema.parse(this.toResponse(repo));
+  }
+
+  /** Infer the forge from a gitSource public host, or null (self-hosted/unknown). */
+  private static inferForge(gitSource: string): string | null {
+    try {
+      const host = new URL(gitSource).host.toLowerCase();
+      if (host === 'github.com') return 'github';
+      if (host === 'gitlab.com') return 'gitlab';
+      if (host === 'gitee.com') return 'gitee';
+    } catch {
+      // non-url gitSource → unknown
+    }
+    return null;
   }
 
   async list(): Promise<RepoResponse[]> {
@@ -61,6 +78,7 @@ export class ReposService {
     updatedAt: Date | null;
     githubId: string | null;
     isDefault: boolean;
+    forge?: string | null;
   }): RepoResponse {
     return {
       id: repo.id,
@@ -75,6 +93,9 @@ export class ReposService {
       // The single-default flag (be-github-import 4.5), surfaced on every read
       // path so the console can render which imported Repo is the default.
       isDefault: repo.isDefault,
+      // add-multi-forge-task-delivery: the source forge (null for repos predating
+      // multi-forge / unknown host), echoed so the console renders the source.
+      forge: (repo.forge ?? null) as RepoResponse['forge'],
     };
   }
 }

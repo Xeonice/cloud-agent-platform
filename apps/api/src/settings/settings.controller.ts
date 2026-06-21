@@ -10,23 +10,32 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Req,
   UsePipes,
 } from '@nestjs/common';
 import {
+  ConnectForgeCredentialRequestSchema,
   DiscoverModelsRequestSchema,
+  ForgeKindSchema,
+  RegisterForgeConnectionRequestSchema,
   SaveClaudeCredentialRequestSchema,
   SaveCodexCredentialRequestSchema,
   UpdateMcpServerSettingsRequestSchema,
   UpdateSettingsRequestSchema,
   type AccountSettings,
+  type AvailableForgeRepo,
   type ClaudeCredential,
   type CodexCredential,
   type CodexDeviceLoginStartResponse,
   type CodexDeviceLoginStatus,
+  type ConnectForgeCredentialRequest,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
+  type ForgeConnection,
+  type ForgeCredential,
   type McpServerSettings,
+  type RegisterForgeConnectionRequest,
   type SaveClaudeCredentialRequest,
   type SaveCodexCredentialRequest,
   type SessionUser,
@@ -38,6 +47,7 @@ import { isAdminPrincipal } from '../auth/admin';
 import { ZodValidationPipe } from '../repos/zod-validation.pipe';
 import { SettingsService } from './settings.service';
 import { CodexDeviceLoginService } from './codex-device-login.service';
+import { ForgeCredentialService } from './forge-credential.service';
 
 /**
  * Account-settings REST surface (account-settings, tasks 7.2–7.6), mounted under
@@ -78,7 +88,85 @@ export class SettingsController {
   constructor(
     private readonly settings: SettingsService,
     private readonly deviceLogin: CodexDeviceLoginService,
+    private readonly forge: ForgeCredentialService,
   ) {}
+
+  // ---------------------------------------------------------------------------
+  // Forge (code-hosting) connection credentials (add-forge-credentials)
+  // ---------------------------------------------------------------------------
+
+  /** Secret-free list of the operator's connected forges. */
+  @Get('forges')
+  async listForges(@Req() req: AuthenticatedRequest): Promise<ForgeCredential[]> {
+    return this.forge.list(this.requireOperator(req));
+  }
+
+  /** Import picker: list repos the connected forge credential can access. */
+  @Get('forges/repos')
+  async listForgeRepos(
+    @Req() req: AuthenticatedRequest,
+    @Query('kind') kindRaw: string,
+    @Query('host') host?: string,
+  ): Promise<AvailableForgeRepo[]> {
+    const kind = ForgeKindSchema.safeParse(kindRaw);
+    if (!kind.success) {
+      throw new BadRequestException({
+        error: 'forge_kind_invalid',
+        message: 'A valid `kind` query parameter (github|gitlab|gitee) is required.',
+      });
+    }
+    return this.forge.listAvailableRepos(this.requireOperator(req), kind.data, host);
+  }
+
+  /** Connect a forge by validating + storing an encrypted PAT. */
+  @Put('forges')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(ConnectForgeCredentialRequestSchema))
+  async connectForge(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: ConnectForgeCredentialRequest,
+  ): Promise<ForgeCredential> {
+    return this.forge.connect(this.requireOperator(req), body);
+  }
+
+  /** Disconnect a forge credential (exact kind + host from the list). */
+  @Delete('forges')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async disconnectForge(
+    @Req() req: AuthenticatedRequest,
+    @Query('kind') kindRaw: string,
+    @Query('host') host: string,
+  ): Promise<void> {
+    const kind = ForgeKindSchema.safeParse(kindRaw);
+    if (!kind.success || typeof host !== 'string' || host.length === 0) {
+      throw new BadRequestException({
+        error: 'forge_disconnect_invalid',
+        message: 'A valid `kind` and `host` query parameter are required.',
+      });
+    }
+    await this.forge.disconnect(this.requireOperator(req), kind.data, host);
+  }
+
+  /** List registered self-hosted forge connections (deployment infra config). */
+  @Get('forge-connections')
+  async listForgeConnections(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<ForgeConnection[]> {
+    this.requireOperator(req);
+    return this.forge.listConnections();
+  }
+
+  /** Register (or update) a self-hosted forge connection. */
+  @Post('forge-connections')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(RegisterForgeConnectionRequestSchema))
+  async registerForgeConnection(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: RegisterForgeConnectionRequest,
+  ): Promise<ForgeConnection> {
+    this.requireOperator(req);
+    return this.forge.registerConnection(body);
+  }
 
   @Get()
   async read(@Req() req: AuthenticatedRequest): Promise<AccountSettings> {

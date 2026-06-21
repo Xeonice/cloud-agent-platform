@@ -36,6 +36,7 @@ import type { McpServerSettings } from '@cap/contracts';
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { CodexDeviceLoginService } from './codex-device-login.service';
+import { ForgeCredentialService } from './forge-credential.service';
 import { SELF_UPDATE_ADMINS_ENV } from '../auth/admin';
 import type { OperatorPrincipal } from '../auth/operator-principal';
 
@@ -121,8 +122,9 @@ before(async () => {
     controllers: [SettingsController],
     providers: [
       { provide: SettingsService, useValue: fakeSettings },
-      // The controller's other dependency; unused on the /mcp-server routes.
+      // The controller's other dependencies; unused on the /mcp-server routes.
       { provide: CodexDeviceLoginService, useValue: {} },
+      { provide: ForgeCredentialService, useValue: {} },
       { provide: APP_GUARD, useClass: StubAuthGuard },
     ],
   }).compile();

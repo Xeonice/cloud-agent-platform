@@ -5,6 +5,7 @@ import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
 import { PrismaCodexAuthSource } from './prisma-codex-auth-source';
 import { PROVISION_LOOKUP } from './provision-lookup.port';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
+import { ForgeModule } from '../forge/forge.module';
 // add-claude-code-runtime — the cross-track shared wiring file (per the tasks
 // partition note): Track 2 binds the ClaudeAuthSource + the AgentRuntime registry
 // here; Track 3 (this edit) EXPORTS those tokens so the `/runtimes` readiness
@@ -49,6 +50,7 @@ import { PrismaClaudeAuthSource } from './prisma-claude-auth-source';
  */
 @Global()
 @Module({
+  imports: [ForgeModule],
   providers: [
     // Settings-backed codex auth source the provider injects into each sandbox:
     // resolves the OFFICIAL ChatGPT login the operator connected via the Settings

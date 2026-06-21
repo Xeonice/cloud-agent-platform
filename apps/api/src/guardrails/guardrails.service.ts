@@ -20,6 +20,8 @@ import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
 } from '../audit/audit-recorder.port';
+import { ForgeTargetResolver } from '../forge/forge-target-resolver';
+import { DefaultForgeRegistry } from '../forge/forge-registry';
 import { ConcurrencySemaphore } from './semaphore';
 import { DeadlineWatcher } from './deadline-watcher';
 import { IdleTracker } from './idle-tracker';
@@ -203,6 +205,16 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    */
   private gateway?: ITerminalGateway;
 
+  /**
+   * Forge result-delivery dependencies (add-multi-forge-task-delivery), resolved
+   * lazily in {@link onModuleInit} via {@link ModuleRef} (like {@link tasks}).
+   * Optional: absent in a guardrails-only unit context, in which case push-back
+   * is skipped. The Forge module has no dependency back on guardrails, so this is
+   * a one-way lazy lookup with no cycle.
+   */
+  private forgeResolver?: ForgeTargetResolver;
+  private forgeRegistry?: DefaultForgeRegistry;
+
   private readonly semaphore: ConcurrencySemaphore;
   private readonly deadlines: DeadlineWatcher;
   private readonly idle: IdleTracker;
@@ -328,6 +340,14 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       // Terminal module not wired in this context — provisioning still captures
       // the connection handle; no terminal session is opened.
       this.gateway = undefined;
+    }
+    try {
+      this.forgeResolver = this.moduleRef.get(ForgeTargetResolver, { strict: false });
+      this.forgeRegistry = this.moduleRef.get(DefaultForgeRegistry, { strict: false });
+    } catch {
+      // Forge module not wired in this context — result delivery is skipped.
+      this.forgeResolver = undefined;
+      this.forgeRegistry = undefined;
     }
   }
 
@@ -620,6 +640,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // stop-only teardown below. Best-effort + awaited-and-swallowed: a capture
     // error never blocks the stop-only teardown or the slot release that follow.
     await this.captureTranscript(taskId);
+    // add-multi-forge-task-delivery — opt-in result delivery, in the SAME window:
+    // the working tree is intact + the container is still live (before the
+    // stop-only teardown below). Best-effort + never throws, so a delivery error
+    // can never block the teardown or the slot release that follow.
+    await this.deliverResult(taskId);
     // Settle the AIO sandbox: STOP it but KEEP it (session-sandbox-retention
     // 6.1). `teardownSandbox` is now stop-only — the stopped container's codex
     // rollout stays readable for history replay (the retention cleaner removes
@@ -638,6 +663,111 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     this.teardownSession(taskId, 'completed');
     // release() admits the next queued task via the onAdmit callback.
     this.semaphore.release(taskId);
+  }
+
+  /**
+   * Opt-in result delivery (add-multi-forge-task-delivery): on a COMPLETED task
+   * with `deliver != 'none'`, commit + push the working-tree diff IN the sandbox
+   * and (for `pr`) open/reuse a change request platform-side. Gated on a re-read
+   * `completed` status (onTerminal fires for ALL terminals). Best-effort + each
+   * step time-boxed; NEVER throws, so it can never block teardown/slot release.
+   */
+  private async deliverResult(taskId: string): Promise<void> {
+    const resolver = this.forgeResolver;
+    const registry = this.forgeRegistry;
+    if (!resolver || !registry || !this.sandbox || !this.prisma) return;
+    try {
+      const task = await this.prisma.task.findUnique({
+        where: { id: taskId },
+        select: { status: true, deliver: true, branch: true },
+      });
+      // onTerminal fires for ALL terminal states — only a clean completion delivers.
+      if (!task || task.status !== 'completed') return;
+      const deliver = (task.deliver as 'none' | 'branch' | 'pr' | null) ?? 'none';
+      if (deliver === 'none') return;
+
+      const target = await resolver.getForgeTarget(taskId);
+      if (!target) {
+        await this.persistDeliver(taskId, { deliverStatus: 'skipped' });
+        return;
+      }
+      const forge = registry.forKind(target.kind);
+      const branch = `cap/task-${taskId}`;
+      const commitMessage =
+        `cap: deliver task ${taskId}\n\n` +
+        `Automated delivery of the agent's workspace changes.`;
+
+      const pushResult = await this.sandbox.deliverWorkspaceChanges(taskId, {
+        authHeader: forge.cloneAuthHeader(target),
+        branch,
+        commitMessage,
+      });
+      if (!pushResult.hadChanges) {
+        await this.persistDeliver(taskId, { deliverStatus: 'no_changes' });
+        return;
+      }
+      if (pushResult.error) {
+        await this.persistDeliver(taskId, { deliverStatus: 'failed', branchPushed: branch });
+        return;
+      }
+      if (deliver === 'branch') {
+        await this.persistDeliver(taskId, {
+          deliverStatus: 'pushed',
+          branchPushed: branch,
+          commitSha: pushResult.commitSha,
+        });
+        return;
+      }
+
+      // deliver === 'pr' — open or reuse a change request (platform-side fetch).
+      const baseBranch = task.branch ?? (await forge.resolveBaseBranch(target));
+      const existing = await forge.findExistingChangeRequest(target, branch);
+      const reused = existing !== null;
+      const ref =
+        existing ??
+        (await forge.openChangeRequest(target, {
+          headBranch: branch,
+          baseBranch,
+          title: `cap: task ${taskId}`,
+          body: commitMessage,
+        }));
+      await this.persistDeliver(taskId, {
+        deliverStatus: 'pr_opened',
+        branchPushed: branch,
+        commitSha: pushResult.commitSha,
+        changeRequestUrl: ref.url,
+        changeRequestNumber: ref.number,
+      });
+      await this.recordAudit(() =>
+        this.audit?.recordChangeRequest(taskId, {
+          url: ref.url,
+          number: ref.number,
+          reused,
+        }),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `result delivery for task ${taskId} failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      await this.persistDeliver(taskId, { deliverStatus: 'failed' }).catch(() => undefined);
+    }
+  }
+
+  /** Persist the delivery result columns (best-effort; never throws). */
+  private async persistDeliver(
+    taskId: string,
+    data: {
+      deliverStatus: string;
+      branchPushed?: string | null;
+      commitSha?: string | null;
+      changeRequestUrl?: string | null;
+      changeRequestNumber?: number | null;
+    },
+  ): Promise<void> {
+    if (!this.prisma) return;
+    await this.prisma.task.update({ where: { id: taskId }, data }).catch(() => undefined);
   }
 
   // -------------------------------------------------------------------------

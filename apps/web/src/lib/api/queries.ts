@@ -34,6 +34,8 @@ import type {
   CodexCredential,
   ClaudeCredential,
   ListAvailableGithubReposResponse,
+  ListAvailableForgeReposResponse,
+  ForgeKind,
   UpdateStatus,
   ApiKeyListResponse,
 } from "@cap/contracts";
@@ -89,6 +91,9 @@ export const queryKeys = {
     ["settings", "codex", "models", baseUrl] as const,
   authSession: ["auth", "session"] as const,
   githubRepos: ["github", "repos"] as const,
+  /** Import picker listing for a connected forge (`GET /settings/forges/repos`). */
+  availableForgeRepos: (kind: ForgeKind) =>
+    ["forges", "repos", kind] as const,
   taskContext: (id: string) => ["tasks", id, "context"] as const,
   taskResource: (id: string) => ["tasks", id, "resource"] as const,
   sessionHistory: (id: string) => ["tasks", id, "session-history"] as const,
@@ -379,6 +384,22 @@ export function githubReposQuery() {
     queryKey: queryKeys.githubRepos,
     queryFn: () =>
       isCapable("githubImport") ? real.listGithubRepos() : mock.mockGithubRepos(),
+  });
+}
+
+/**
+ * Import picker listing for a connected forge (add-multi-forge-task-delivery).
+ * Real when the `settings` surface is live; the mock seam returns an empty list
+ * (the picker is a real-backend-only feature). `enabled` is set by the caller so
+ * the fetch only fires for the selected non-github source.
+ */
+export function availableForgeReposQuery(kind: ForgeKind) {
+  return queryOptions<ListAvailableForgeReposResponse>({
+    queryKey: queryKeys.availableForgeRepos(kind),
+    queryFn: () =>
+      isCapable("settings")
+        ? real.listAvailableForgeRepos(kind)
+        : Promise.resolve([]),
   });
 }
 

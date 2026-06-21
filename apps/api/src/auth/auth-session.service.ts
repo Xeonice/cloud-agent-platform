@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { Scope, SessionUser } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
+import { storeMaybeEncrypted } from '../settings/secret-storage';
 import { isAllowlistedRaw } from './allowlist';
 import { ENV } from './oauth-config';
 import {
@@ -120,7 +121,9 @@ export class AuthSessionService {
 
     // 2. Upsert the user record (create on first login, refresh mutable profile
     //    fields after) keyed on the numeric id. Reached ONLY after admit, so
-    //    record persistence cannot bypass the gate.
+    //    record persistence cannot bypass the gate. The GitHub token is encrypted
+    //    at rest (add-forge-credentials) when a server key is configured.
+    const storedGithubToken = storeMaybeEncrypted(accessToken);
     const user = await this.prisma.user.upsert({
       where: { githubId: githubUser.id },
       create: {
@@ -129,14 +132,14 @@ export class AuthSessionService {
         name: githubUser.name,
         avatarUrl: githubUser.avatarUrl,
         allowed: true,
-        githubAccessToken: accessToken,
+        githubAccessToken: storedGithubToken,
       },
       update: {
         login: githubUser.login,
         name: githubUser.name,
         avatarUrl: githubUser.avatarUrl,
         allowed: true,
-        githubAccessToken: accessToken,
+        githubAccessToken: storedGithubToken,
       },
     });
 

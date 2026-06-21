@@ -149,6 +149,41 @@ export interface SandboxProvider {
    * @param taskId - The task whose sandbox existence to check.
    */
   sandboxExists(taskId: string): Promise<boolean>;
+
+  /**
+   * IN-SANDBOX result delivery (add-multi-forge-task-delivery): commit the
+   * working-tree diff, create `branch`, and push it to `origin` over the sandbox
+   * exec channel. The `authHeader` (from `forge.cloneAuthHeader`) rides
+   * `git -c http.extraHeader` only (the clone discipline — never persisted). A
+   * clean working tree yields `{hadChanges:false}`; any git failure is returned
+   * as `error` (the caller fails-open). This is git only — the change-request
+   * HTTP call runs platform-side via the Forge port, so the token never enters
+   * the sandbox for that.
+   */
+  deliverWorkspaceChanges(
+    taskId: string,
+    args: DeliverWorkspaceArgs,
+  ): Promise<DeliverWorkspaceResult>;
+}
+
+/** Inputs for {@link SandboxProvider.deliverWorkspaceChanges}. */
+export interface DeliverWorkspaceArgs {
+  /** The `git -c http.extraHeader` value (from `forge.cloneAuthHeader`). */
+  readonly authHeader: string;
+  /** The branch to create + push (`cap/task-<taskId>`). */
+  readonly branch: string;
+  /** The commit message (file-injected in-sandbox — never on the shell line). */
+  readonly commitMessage: string;
+}
+
+/** Result of {@link SandboxProvider.deliverWorkspaceChanges}. */
+export interface DeliverWorkspaceResult {
+  /** False when the working tree had no diff (→ `no_changes`, no branch/push). */
+  readonly hadChanges: boolean;
+  /** The pushed commit sha, or null when no commit / unresolved. */
+  readonly commitSha: string | null;
+  /** A scrubbed failure reason, or null on success. */
+  readonly error: string | null;
 }
 
 /**

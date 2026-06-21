@@ -255,6 +255,23 @@ test('create_task returns a handle WITHOUT blocking on the run', async () => {
   assert.equal(runResolved, false, 'did NOT wait for the run to complete');
 });
 
+test('create_task accepts + forwards the deliver selector (opt-in)', async () => {
+  let capturedBody: { deliver?: string } | undefined;
+  const deps: McpToolDeps = {
+    async createTask(_repoId: string, body: { deliver?: string }) {
+      capturedBody = body;
+      return TASK;
+    },
+  } as unknown as McpToolDeps;
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+  await tools.get('create_task')!(
+    { repoId: 'r1', prompt: 'go', deliver: 'pr' },
+    extraWith(['tasks:write']),
+  );
+  assert.equal(capturedBody?.deliver, 'pr', 'forwards deliver to createTask');
+});
+
 // ---------------------------------------------------------------------------
 // 4. Inert when the toggle is off (task 4.3 / 4.4).
 // ---------------------------------------------------------------------------

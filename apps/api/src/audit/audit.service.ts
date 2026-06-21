@@ -94,6 +94,21 @@ export class AuditService {
     });
   }
 
+  async recordChangeRequest(
+    taskId: string,
+    opts: { url: string; number: number; reused: boolean },
+  ): Promise<void> {
+    await this.record(
+      opts.reused ? 'task.change_request_reused' : 'task.change_request_opened',
+      taskId,
+      {
+        description:
+          `${opts.reused ? '复用已有变更请求' : '已开启变更请求'} ` +
+          `#${opts.number} · ${opts.url}`,
+      },
+    );
+  }
+
   /**
    * Record a `task.exited` failure-detail event (record-task-failure-reason):
    * the resolved exit code + the mapped human reason + the sampled transcript

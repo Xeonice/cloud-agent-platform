@@ -46,6 +46,17 @@ export interface AuditRecorderPort {
     abnormal: boolean,
     tail: string,
   ): Promise<void>;
+
+  /**
+   * Record a result-delivery push-back (add-multi-forge-task-delivery): a change
+   * request was opened (`task.change_request_opened`, 201) or an existing open one
+   * was reused (`task.change_request_reused`, 200). Carries the CR url + number in
+   * the description. Best-effort; never throws.
+   */
+  recordChangeRequest(
+    taskId: string,
+    opts: { url: string; number: number; reused: boolean },
+  ): Promise<void>;
 }
 
 /** DI token used when injecting the audit recorder into the lifecycle services. */

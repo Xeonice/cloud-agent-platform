@@ -65,6 +65,12 @@ import {
 } from "@cap/contracts";
 import { RepoResponseSchema } from "@cap/contracts";
 import {
+  ListAvailableForgeReposResponseSchema,
+  type ListAvailableForgeReposResponse,
+  type CreateRepoRequest,
+  type ForgeKind,
+} from "@cap/contracts";
+import {
   ApiKeyMintResponseSchema,
   ApiKeyListResponseSchema,
   ApiKeyRevokeResponseSchema,
@@ -678,6 +684,33 @@ export async function importRepo(
 ): Promise<RepoResponse> {
   return RepoResponseSchema.parse(
     await request("/repos/github/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/**
+ * `GET /settings/forges/repos?kind=…` — the import picker listing for a connected
+ * forge (add-multi-forge-task-delivery). A trusted server-side call to the
+ * operator's own forge; the token never reaches the browser.
+ */
+export async function listAvailableForgeRepos(
+  kind: ForgeKind,
+): Promise<ListAvailableForgeReposResponse> {
+  return ListAvailableForgeReposResponseSchema.parse(
+    await request(`/settings/forges/repos?kind=${encodeURIComponent(kind)}`),
+  );
+}
+
+/**
+ * `POST /repos` — register a repo by gitSource + forge (the GitLab/Gitee picker
+ * and by-URL import path; GitHub keeps its dedicated `/repos/github/import`).
+ */
+export async function createRepo(body: CreateRepoRequest): Promise<RepoResponse> {
+  return RepoResponseSchema.parse(
+    await request("/repos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

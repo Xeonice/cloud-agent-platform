@@ -33,6 +33,8 @@ export type AuditEventKind =
   | 'task.failed'
   | 'task.exited'
   | 'task.cancelled'
+  | 'task.change_request_opened'
+  | 'task.change_request_reused'
   | 'agent_failed_to_start'
   | 'force_failed:deadline'
   | 'force_failed:idle'
@@ -186,6 +188,16 @@ export const AUDIT_KIND_DESCRIPTORS: Readonly<Record<AuditEventKind, AuditKindDe
   'task.failed': { level: 'error', resultCode: 422, title: '任务失败' },
   'task.exited': { level: 'error', resultCode: 422, title: '进程退出码' },
   'task.cancelled': { level: 'info', resultCode: 200, title: '任务已取消' },
+  'task.change_request_opened': {
+    level: 'info',
+    resultCode: 201,
+    title: '已开启变更请求（PR / MR）',
+  },
+  'task.change_request_reused': {
+    level: 'info',
+    resultCode: 200,
+    title: '复用已有变更请求',
+  },
   'agent_failed_to_start': {
     level: 'error',
     resultCode: 422,
