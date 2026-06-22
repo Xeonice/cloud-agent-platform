@@ -428,6 +428,59 @@ This is orthogonal to `GITHUB_RELEASES_REPO` (which repo's Releases are checked)
 the mirror transparently proxies whatever `owner/repo` you configure, so pointing
 at your own fork works either through the mirror or direct.
 
+## Optional: email-OTP login (SMTP via Resend)
+
+The email verification-code (OTP) login method is **off until SMTP is configured**. Set
+the five `SMTP_*` vars (all required — a partial config fails closed, hiding the OTP
+method and refusing OTP requests) and the console shows the 邮箱验证码 method; password
++ GitHub login work regardless. cap sends over any standard SMTP provider; the
+recommended default is **Resend** (standard SMTP, no approval/real-name/ICP, a free tier
+ample for OTP, and Cloudflare can write its DNS in one click).
+
+> **Mainland-China note:** Resend — like every international sender — delivers
+> unreliably to `@qq.com` / `@163.com` / `@126.com`. Mainland operators should use
+> password or GitHub login. A dedicated mainland channel (e.g. Aliyun DirectMail) is a
+> future add-on; the mail module already carries the recipient-routing seam for it.
+
+### 1 — Resend account + sender domain
+
+Create a Resend account, **Add Domain** (a subdomain such as `auth.yourdomain.com` keeps
+your root-domain reputation clean), and create an **API key**. Resend then lists the DNS
+records to add.
+
+### 2 — Backend env (`apps/api/.env`, or `files/api.env` on a resident stack)
+
+```ini
+SMTP_HOST=smtp.resend.com
+SMTP_PORT=465                          # implicit TLS (or 587 for STARTTLS)
+SMTP_USER=resend                       # literal value, NOT your email
+SMTP_PASS=re_xxxxxxxxxxxx              # a Resend API key
+SMTP_FROM=no-reply@auth.yourdomain.com # the verified (sub)domain
+```
+
+Restart the api; `isOtpAuthEnabled` flips true and the 邮箱验证码 method appears in the
+login modal.
+
+### 3 — Cloudflare DNS (for `auth.yourdomain.com`)
+
+Add the records Resend lists — **use the exact values from your Resend dashboard** (they
+vary by region); typically:
+
+| Type | Name | Value |
+|------|------|-------|
+| MX | `send` | `feedback-smtp.<region>.amazonses.com` (priority 10) |
+| TXT (SPF) | `send` | `v=spf1 include:amazonses.com ~all` |
+| TXT (DKIM) | `resend._domainkey` | the long `p=…` key Resend shows |
+| TXT (DMARC, optional) | `_dmarc` | `v=DMARC1; p=none;` |
+
+> **Gotcha:** the DKIM TXT record MUST be **DNS-Only (grey cloud)** in Cloudflare — if it
+> is proxied (orange cloud) verification fails.
+
+There is **no sandbox/approval** step — domain verification is usually minutes (up to
+~72h). To write the records use Resend's "Sign in to Cloudflare" one-click, the
+Cloudflare dashboard, or a token with `Zone:DNS:Edit` (cap's bundled wrangler/MCP tooling
+is read-only for DNS). Click **Verify** in Resend; once green, OTP delivery works.
+
 ## Optional: legacy token (dev only)
 
 The legacy single shared-`AUTH_TOKEN` operator path is **OFF by default** and
