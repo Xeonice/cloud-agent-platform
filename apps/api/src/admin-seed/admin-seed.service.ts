@@ -102,6 +102,7 @@ export class AdminRevealHolder {
 interface SeedUserRow {
   id: string;
   email: string | null;
+  role: string;
 }
 
 @Injectable()
@@ -174,7 +175,7 @@ export class AdminSeedService implements OnApplicationBootstrap {
 
     const existing = (await this.prisma.user.findUnique({
       where: { email },
-      select: { id: true, email: true },
+      select: { id: true, email: true, role: true },
     })) as SeedUserRow | null;
 
     if (!existing) {
@@ -188,6 +189,19 @@ export class AdminSeedService implements OnApplicationBootstrap {
         this.holder.set({ email, password });
       }
       return;
+    }
+
+    // The ADMIN_EMAIL account already exists. Ensure it is an admin (idempotent
+    // promotion) however it was created — e.g. GitHub OAuth defaults new accounts to
+    // `role=member`, which would otherwise leave the owner unable to administer. Touch
+    // ONLY the role; never reset the password / allowed / mustChangePassword (that is
+    // the "never reset a customized admin" discipline).
+    if (existing.role !== 'admin') {
+      await this.prisma.user.update({
+        where: { id: existing.id },
+        data: { role: 'admin' },
+      });
+      this.logger.log(`promoted existing ${email} to role=admin`);
     }
 
     // The admin already exists — never duplicate or reset a customized account.
