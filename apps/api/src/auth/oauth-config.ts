@@ -14,6 +14,8 @@
  * closed on an unset secret.
  */
 
+import { isSmtpConfigured } from '../mail/mail.service';
+
 /** Env var names, centralised so the controller/service/tests agree on spelling. */
 export const ENV = {
   GITHUB_CLIENT_ID: 'GITHUB_CLIENT_ID',
@@ -25,22 +27,40 @@ export const ENV = {
   AUTH_TOKEN: 'AUTH_TOKEN',
   WEB_ORIGIN: 'WEB_ORIGIN',
   SESSION_COOKIE_DOMAIN: 'SESSION_COOKIE_DOMAIN',
+  /**
+   * Disables the email+password login METHOD when set to an explicit falsy value
+   * (add-private-account-identity, task 2.8 / D11). Password auth is ON by default
+   * (the default admin is always seeded with a password identity), so the flag is
+   * `true` unless the operator explicitly turns it off.
+   */
+  PASSWORD_AUTH_ENABLED: 'PASSWORD_AUTH_ENABLED',
+  /**
+   * SMTP host (task 5.1: `SMTP_HOST/PORT/USER/PASS/FROM`). Its presence is the
+   * proxy for "SMTP configured" — the email-OTP login method is only advertised
+   * (and only works) when a host is configured (task 2.8 / D11 `otpAuthEnabled =
+   * SMTP configured`).
+   */
+  SMTP_HOST: 'SMTP_HOST',
 } as const;
 
-/** GitHub OAuth 2.0 endpoints (authorize / token / user). */
+/** GitHub OAuth 2.0 endpoints (authorize / token / user / emails). */
 export const GITHUB_ENDPOINTS = {
   AUTHORIZE: 'https://github.com/login/oauth/authorize',
   TOKEN: 'https://github.com/login/oauth/access_token',
   USER: 'https://api.github.com/user',
+  /** Lists the operator's emails (verified/primary flags) under `user:email`. */
+  EMAILS: 'https://api.github.com/user/emails',
 } as const;
 
 /**
- * Scopes requested at authorize time: `read:user` for the operator identity and
- * `repo` so a later `/user/repos` import (be-github-import) can enumerate the
- * operator's repositories. The space-joined value is what GitHub expects in the
- * `scope` query parameter.
+ * Scopes requested at authorize time: `read:user` for the operator identity,
+ * `user:email` so the callback can read the operator's PRIMARY VERIFIED email
+ * (add-private-account-identity, task 2.3 — canonical handle for local accounts +
+ * the verified-email auto-link, D4/D8), and `repo` so a later `/user/repos` import
+ * (be-github-import) can enumerate the operator's repositories. The space-joined
+ * value is what GitHub expects in the `scope` query parameter.
  */
-export const GITHUB_OAUTH_SCOPES = ['read:user', 'repo'] as const;
+export const GITHUB_OAUTH_SCOPES = ['read:user', 'user:email', 'repo'] as const;
 export const GITHUB_OAUTH_SCOPE_PARAM = GITHUB_OAUTH_SCOPES.join(' ');
 
 /** The fully-resolved OAuth app credentials needed to run the authorization-code flow. */
@@ -99,6 +119,43 @@ export function isLegacyTokenEnabled(env: NodeJS.ProcessEnv = process.env): bool
   }
   const v = raw.trim().toLowerCase();
   return v === 'true' || v === '1' || v === 'yes';
+}
+
+/**
+ * Whether the email+password login method is enabled (add-private-account-identity,
+ * task 2.8 / D11). DEFAULTS to `true` — the default admin is always seeded with a
+ * password identity, so password login is the baseline self-host method. Only an
+ * explicit falsy `PASSWORD_AUTH_ENABLED` (`"false"`/`"0"`/`"no"`,
+ * case-insensitive) turns it off; any other value (including unset) leaves it on.
+ *
+ * This is the capability flag the frontend reads to decide whether to RENDER the
+ * password method in the login modal — it is NOT itself a security gate (the
+ * password login endpoint enforces its own fail-closed checks).
+ */
+export function isPasswordAuthEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[ENV.PASSWORD_AUTH_ENABLED];
+  if (typeof raw !== 'string') {
+    return true; // default ON
+  }
+  const v = raw.trim().toLowerCase();
+  return !(v === 'false' || v === '0' || v === 'no');
+}
+
+/**
+ * Whether the email-OTP login method is available — i.e. SMTP is configured
+ * (add-private-account-identity, task 2.8 / D11 `otpAuthEnabled = SMTP configured`).
+ * Proxied on the presence of a non-empty `SMTP_HOST`: without a mail transport
+ * the OTP method cannot send a code, so it is neither advertised to the frontend
+ * nor served. The OTP endpoints additionally fail closed at request time when
+ * SMTP is unset (task 5.3), so this flag is the display/advertise gate, not the
+ * sole security gate.
+ */
+export function isOtpAuthEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  // Derive from the SAME full-config check the mailer uses (all five SMTP vars +
+  // a valid port), so the advertised availability can never over-advertise
+  // relative to what the OTP send path will actually accept (a HOST-only check
+  // would advertise OTP while `MailService.sendMail` still fails closed).
+  return isSmtpConfigured(env);
 }
 
 /**

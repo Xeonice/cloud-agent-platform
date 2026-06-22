@@ -144,6 +144,8 @@ const USER: SessionUser = {
   name: 'Operator',
   avatarUrl: '',
   allowed: true,
+  role: 'member',
+  mustChangePassword: false,
 };
 
 /** A request carrying the given guard-attached principal (or none). */

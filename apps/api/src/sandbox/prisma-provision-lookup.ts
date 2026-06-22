@@ -2,6 +2,7 @@ import { Injectable, Optional } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { readMaybeEncrypted } from '../settings/secret-storage';
+import { GITHUB_IDENTITY_PROVIDER } from '../auth/github-identity';
 import { ForgeTargetResolver } from '../forge/forge-target-resolver';
 import { DefaultForgeRegistry } from '../forge/forge-registry';
 import type { CloneSpec, ProvisionLookup } from './provision-lookup.port';
@@ -111,15 +112,26 @@ export class PrismaProvisionLookup implements ProvisionLookup {
    * self-host: the allowlist admits exactly one identity, so the earliest allowed
    * user holding a captured token IS the operator). Used only to authenticate the
    * in-sandbox private-repo clone; never logged.
+   *
+   * add-private-account-identity (3.2): the token now lives as the `secret` of a
+   * `github` `IdentityLink` rather than a `User.githubAccessToken` column, so the
+   * global fallback queries the earliest `github` identity whose owning `User` is
+   * `allowed` and that carries a non-null secret — preserving the prior
+   * "an allowed user with a github token" semantics over the normalized schema.
    */
   private async resolveGitHubToken(): Promise<string | null> {
-    const user = await this.prisma.user.findFirst({
-      where: { allowed: true, githubAccessToken: { not: null } },
+    const identity = await this.prisma.identityLink.findFirst({
+      where: {
+        provider: GITHUB_IDENTITY_PROVIDER,
+        secret: { not: null },
+        user: { allowed: true },
+      },
       orderBy: { createdAt: 'asc' },
+      select: { secret: true },
     });
-    // Decrypt at point of use (add-forge-credentials): the column stores the
+    // Decrypt at point of use (add-forge-credentials): the secret stores the
     // encrypted envelope when a server key is configured, or a legacy plaintext
     // token otherwise — readMaybeEncrypted recovers the plaintext for both.
-    return readMaybeEncrypted(user?.githubAccessToken);
+    return readMaybeEncrypted(identity?.secret);
   }
 }

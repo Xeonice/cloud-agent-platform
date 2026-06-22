@@ -1,6 +1,7 @@
 import {
   CanActivate,
   ExecutionContext,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -110,22 +111,46 @@ export class AuthGuard implements CanActivate {
   private static readonly SANDBOX_EXEMPT_PATHS: readonly string[] = ['/v1/approvals'];
 
   /**
-   * Paths exempt from the session guard because they ESTABLISH or resolve the
-   * GitHub-OAuth operator session rather than presenting an operator principal
-   * (be-oauth-allowlist, tasks 2.2–2.6):
+   * The change-password endpoint path (add-private-account-identity, task 2.7 /
+   * D9). It is BOTH a public pre-auth entry point (an operator forced to change
+   * their password reaches it without a fully-authenticated principal) AND the
+   * sole protected route allowed through the `mustChangePassword` block below, so
+   * it is named once here and reused by both checks to keep them in lock-step.
+   */
+  public static readonly CHANGE_PASSWORD_PATH = '/auth/change-password';
+
+  /**
+   * Paths exempt from the session guard because they ESTABLISH or resolve an
+   * operator session rather than presenting an operator principal
+   * (be-oauth-allowlist tasks 2.2–2.6; add-private-account-identity tasks 2.6 / D10):
    *   - `/auth/github/login` / `/auth/github/callback` — the OAuth round trip an
    *     unauthenticated operator must reach to obtain a session;
    *   - `/auth/session` / `/auth/logout` — read/clear the session cookie and
-   *     enforce their own 401 when no session resolves.
-   * Requiring an operator principal here would make login impossible. The
-   * fail-closed allowlist gate inside the callback (not this guard) governs
-   * admission; this guard protects the rest of the REST surface.
+   *     enforce their own 401 when no session resolves;
+   *   - `/auth/password` — email+password login (mints a session on verify);
+   *   - `/auth/otp/request` / `/auth/otp/verify` — email-OTP login (request a
+   *     code, then verify it to mint a session);
+   *   - `/auth/change-password` — the forced/first-login password change an
+   *     operator must reach BEFORE holding a fully-usable session (also the lone
+   *     route allowed through the must-change block, task 2.7);
+   *   - `/auth/admin/reveal` — the one-time default-admin credential reveal
+   *     (unauthenticated but single-use, gated by `SystemSettings`; task 6.3).
+   * Requiring an operator principal here would make login (or the forced
+   * password change / first reveal) impossible. The fail-closed gates inside each
+   * endpoint govern admission; this guard protects the rest of the REST surface.
+   * The match is EXACT (see {@link normalizePath}) — only these exact paths are
+   * exempt, never a `/auth*` prefix.
    */
   private static readonly OAUTH_EXEMPT_PATHS: readonly string[] = [
     '/auth/github/login',
     '/auth/github/callback',
     '/auth/session',
     '/auth/logout',
+    '/auth/password',
+    '/auth/otp/request',
+    '/auth/otp/verify',
+    AuthGuard.CHANGE_PASSWORD_PATH,
+    '/auth/admin/reveal',
   ];
 
   /**
@@ -184,9 +209,28 @@ export class AuthGuard implements CanActivate {
     );
 
     if (principal === null) {
-      // Fail-closed: missing/malformed/expired/revoked/non-allowlisted, or the
-      // legacy bearer while the legacy path is disabled. No state change.
+      // Fail-closed: missing/malformed/expired/revoked/disallowed, or the legacy
+      // bearer while the legacy path is disabled. No state change.
       throw new UnauthorizedException('Operator authentication required');
+    }
+
+    // mustChangePassword chokepoint (task 2.7 / D9): once a principal resolves, a
+    // user with a PENDING password change is blocked from EVERY protected route.
+    // The change-password endpoint and logout are already in OAUTH_EXEMPT_PATHS
+    // (they returned `true` above and never reach here), so this single check
+    // denies all other protected actions with a distinct "password change
+    // required" signal the frontend turns into the forced-change dialog. A 403
+    // (not 401) so the client distinguishes "authenticated but must change
+    // password" from "unauthenticated". Only a HUMAN session can be in this
+    // state; a machine credential (api-key/mcp) never is.
+    if (principal.kind === 'session') {
+      const sessionToken = AuthGuard.extractSessionToken(request);
+      if (await this.authSession.requiresPasswordChange(sessionToken)) {
+        throw new ForbiddenException({
+          error: 'password_change_required',
+          message: 'A password change is required before continuing.',
+        });
+      }
     }
 
     // Attach the resolved principal for downstream handlers (e.g. per-user

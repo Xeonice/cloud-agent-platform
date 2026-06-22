@@ -2,8 +2,9 @@ import { Injectable, Logger } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { Scope, SessionUser } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
-import { storeMaybeEncrypted } from '../settings/secret-storage';
+import { AuditService } from '../audit/audit.service';
 import { isAllowlistedRaw } from './allowlist';
+import { setGithubTokenForUser } from './github-identity';
 import { ENV } from './oauth-config';
 import {
   hashSessionToken,
@@ -53,8 +54,15 @@ export interface McpAuthInfo {
   readonly expiresAt: number;
   /** The canonical `/mcp` resource URI this token is valid for. */
   readonly resource: string;
-  /** The owning operator's immutable GitHub numeric id (for the `mcp` principal). */
-  readonly ownerGithubId: number;
+  /**
+   * The owning operator's immutable GitHub numeric id (for the `mcp` principal).
+   * NULLABLE (add-private-account-identity): a token owned by a LOCAL account
+   * (password/OTP, no github identity) carries `null`. It is best-effort AUDIT
+   * ATTRIBUTION only — `githubIdFromExtra` already degrades a non-number to
+   * `undefined`, so a missing github id never blocks a token's MCP authority
+   * (that authority is the `allowed` re-check + scopes, not this id).
+   */
+  readonly ownerGithubId: number | null;
 }
 
 /**
@@ -90,19 +98,39 @@ const LAST_USED_STALENESS_MS = 60_000;
 export class AuthSessionService {
   private readonly logger = new Logger(AuthSessionService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   /**
-   * The single session-mint point with the load-bearing allowlist gate.
+   * The single session-mint point with the load-bearing allowlist gate
+   * (reworked for the normalized identity model — add-private-account-identity,
+   * tasks 2.3 / 2.4).
    *
    * Returns the raw session token (to be set on the cookie) and the resolved
    * {@link SessionUser} on admit, or `null` when the identity is NOT allowlisted
    * — a fail-closed security denial, NOT a recoverable error. On `null` the
    * caller establishes no session and returns the operator to the login gate.
    *
-   * `accessToken` (the operator's GitHub OAuth token) is stored server-side on
-   * the user record for later import calls; it is only ever persisted for an
-   * already-admitted identity.
+   * Login-time provisioning ONLY: the allowlist (`AUTH_ALLOWLIST`, numeric ids)
+   * is consulted here and ONLY here to decide whether to grant/keep `allowed`;
+   * the runtime request gate (`resolveSession`/`resolveApiKey`/`resolveMcpToken`)
+   * reads `User.allowed` instead (task 2.5), so editing the env no longer revokes
+   * a live user at runtime (revocation = `allowed = false`).
+   *
+   * Resolution order (2.3 + the 2.4 verified-email auto-link):
+   *   1. allowlist gate FIRST — a denied identity gets no user, no identity row,
+   *      no session;
+   *   2. resolve the User via the `github` {@link IdentityLink}
+   *      (`providerAccountId = <numeric github id>`) if it already exists;
+   *   3. else, when GitHub returned a PRIMARY VERIFIED email matching an existing
+   *      `User.email`, AUTO-LINK the github identity to that account + audit (D8);
+   *   4. else provision a fresh `User`;
+   *   5. refresh mutable profile fields + the (verified) email, set `allowed`,
+   *      and store the encrypted github token on the `github` identity secret via
+   *      the shared helper;
+   *   6. mint an opaque, revocable session storing only the token HASH.
    */
   async establishSessionForGitHubUser(
     githubUser: GitHubUser,
@@ -119,48 +147,121 @@ export class AuthSessionService {
       return null;
     }
 
-    // 2. Upsert the user record (create on first login, refresh mutable profile
-    //    fields after) keyed on the numeric id. Reached ONLY after admit, so
-    //    record persistence cannot bypass the gate. The GitHub token is encrypted
-    //    at rest (add-forge-credentials) when a server key is configured.
-    const storedGithubToken = storeMaybeEncrypted(accessToken);
-    const user = await this.prisma.user.upsert({
-      where: { githubId: githubUser.id },
-      create: {
-        githubId: githubUser.id,
-        login: githubUser.login,
-        name: githubUser.name,
-        avatarUrl: githubUser.avatarUrl,
-        allowed: true,
-        githubAccessToken: storedGithubToken,
+    // `githubUser.email` is, by the GitHub service contract, the PRIMARY VERIFIED
+    // email or null — an unverified/non-primary address is never surfaced, so a
+    // present email here is safe to treat as the operator's verified handle (D4/D8).
+    const verifiedEmail = githubUser.email;
+
+    // 2. Resolve the account this github identity belongs to.
+    const providerAccountId = String(githubUser.id);
+    const existingLink = await this.prisma.identityLink.findUnique({
+      where: {
+        provider_providerAccountId: { provider: 'github', providerAccountId },
       },
-      update: {
-        login: githubUser.login,
-        name: githubUser.name,
-        avatarUrl: githubUser.avatarUrl,
-        allowed: true,
-        githubAccessToken: storedGithubToken,
-      },
+      select: { userId: true },
     });
 
-    // 3. Mint an opaque, revocable session storing only the token HASH.
+    let userId: string;
+    if (existingLink) {
+      // 2a. Known github identity — re-login. Refresh profile + (re)assert allowed.
+      const user = await this.prisma.user.update({
+        where: { id: existingLink.userId },
+        data: {
+          login: githubUser.login,
+          name: githubUser.name,
+          avatarUrl: githubUser.avatarUrl,
+          allowed: true,
+          ...(verifiedEmail ? { email: verifiedEmail } : {}),
+        },
+        select: { id: true },
+      });
+      userId = user.id;
+    } else {
+      // 2b. First time this github identity is seen. Try the verified-email
+      //     auto-link (2.4 / D8) before provisioning a fresh account. Bind the
+      //     email into a non-null const inside the truthy branch so the audit
+      //     emit below (which requires a `string` email) narrows cleanly — the
+      //     auto-link path only exists WHEN a verified email matched.
+      const linkTarget = verifiedEmail
+        ? await this.prisma.user.findUnique({
+            where: { email: verifiedEmail },
+            select: { id: true },
+          })
+        : null;
+
+      if (linkTarget && verifiedEmail) {
+        // Auto-link: attach the github identity to the existing account whose
+        // email equals this primary+verified email, and audit the link (D8).
+        userId = linkTarget.id;
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: {
+            login: githubUser.login,
+            name: githubUser.name,
+            avatarUrl: githubUser.avatarUrl,
+            allowed: true,
+            email: verifiedEmail,
+          },
+        });
+        this.audit.recordIdentityLinked({
+          userId,
+          provider: 'github',
+          providerAccountId,
+          email: verifiedEmail,
+        });
+      } else {
+        // Provision a brand-new account for this github identity.
+        const user = await this.prisma.user.create({
+          data: {
+            login: githubUser.login,
+            name: githubUser.name,
+            avatarUrl: githubUser.avatarUrl,
+            allowed: true,
+            email: verifiedEmail ?? null,
+          },
+          select: { id: true },
+        });
+        userId = user.id;
+      }
+    }
+
+    // 5. Store the encrypted github token on the `github` identity secret (creates
+    //    the identity row on first login, refreshes the secret after). Reached
+    //    ONLY after admit, so identity persistence cannot bypass the gate.
+    await setGithubTokenForUser(
+      this.prisma,
+      { userId, githubId: githubUser.id, token: accessToken },
+      env,
+    );
+
+    // 6. Mint an opaque, revocable session storing only the token HASH.
     const minted: MintedSessionToken = mintSessionToken();
     await this.prisma.session.create({
       data: {
-        userId: user.id,
+        userId,
         tokenHash: minted.tokenHash,
         expiresAt: sessionExpiryFrom(),
       },
     });
 
+    // Read back the account's authorization facts (role for the admin-panel gate;
+    // mustChangePassword — never set for a github identity, which has no password
+    // identity to change) for the session payload.
+    const account = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { role: true, mustChangePassword: true },
+    });
+
     return {
       token: minted.token,
       user: {
-        githubId: user.githubId,
-        login: user.login,
-        name: user.name,
-        avatarUrl: user.avatarUrl,
+        githubId: githubUser.id,
+        login: githubUser.login,
+        name: githubUser.name,
+        avatarUrl: githubUser.avatarUrl,
         allowed: true,
+        role: account.role,
+        mustChangePassword: account.mustChangePassword,
       },
     };
   }
@@ -168,13 +269,20 @@ export class AuthSessionService {
   /**
    * Resolves a presented opaque session token to its {@link SessionUser}, or
    * `null` when the token is absent/unknown/expired/revoked, OR when the owning
-   * user is no longer allowlisted (membership is RE-CONFIRMED here so a
-   * de-allowlisted user is denied on their next request). Pure-ish: no mutation
-   * except none; the guard (task 2.6) and `GET /auth/session` consume this.
+   * user is no longer `allowed` (the gate is RE-CONFIRMED here so a disabled user
+   * is denied on their next request). Pure-ish: no mutation except none; the
+   * guard (task 2.6) and `GET /auth/session` consume this.
+   *
+   * Runtime gate flip (task 2.5, D2): the per-request boundary is now the pure-DB
+   * `User.allowed` flag rather than `isAllowlistedRaw(githubId, env)`. The env
+   * allowlist is login-time provisioning only; once a user is provisioned,
+   * revocation is `allowed = false` (an admin/DB action) — so this gate covers
+   * local accounts (no github id) uniformly and fails closed for any user that is
+   * disabled or cannot be resolved.
    */
   async resolveSession(
     token: string | undefined | null,
-    env: NodeJS.ProcessEnv = process.env,
+    _env: NodeJS.ProcessEnv = process.env,
   ): Promise<SessionUser | null> {
     if (typeof token !== 'string' || token.length === 0) {
       return null;
@@ -191,9 +299,9 @@ export class AuthSessionService {
       return null;
     }
 
-    // Re-confirm allowlist membership at resolution time (fail-closed on removal).
-    const stillAllowed = isAllowlistedRaw(session.user.githubId, env[ENV.AUTH_ALLOWLIST]);
-    if (!stillAllowed) {
+    // Re-confirm the pure-DB allowed gate at resolution time (fail-closed on
+    // disable). Replaces the prior env-allowlist re-check (task 2.5 / D2).
+    if (!session.user.allowed) {
       return null;
     }
 
@@ -203,6 +311,8 @@ export class AuthSessionService {
       name: session.user.name,
       avatarUrl: session.user.avatarUrl,
       allowed: true,
+      role: session.user.role,
+      mustChangePassword: session.user.mustChangePassword,
     };
   }
 
@@ -232,7 +342,7 @@ export class AuthSessionService {
    */
   async resolveApiKey(
     raw: string | undefined | null,
-    env: NodeJS.ProcessEnv = process.env,
+    _env: NodeJS.ProcessEnv = process.env,
   ): Promise<ResolvedApiKey | null> {
     if (typeof raw !== 'string' || raw.length === 0) {
       return null;
@@ -254,10 +364,9 @@ export class AuthSessionService {
       return null;
     }
 
-    // Re-confirm allowlist membership at resolution time (fail-closed on removal),
-    // exactly as resolveSession does for sessions.
-    const stillAllowed = isAllowlistedRaw(key.user.githubId, env[ENV.AUTH_ALLOWLIST]);
-    if (!stillAllowed) {
+    // Re-confirm the pure-DB allowed gate at resolution time (fail-closed on
+    // disable), exactly as resolveSession does for sessions (task 2.5 / D2).
+    if (!key.user.allowed) {
       return null;
     }
 
@@ -272,6 +381,8 @@ export class AuthSessionService {
         name: key.user.name,
         avatarUrl: key.user.avatarUrl,
         allowed: true,
+        role: key.user.role,
+        mustChangePassword: key.user.mustChangePassword,
       },
       // `scopes` is persisted as `String[]`; the shared ScopeSchema vocabulary is
       // enforced at mint time, so the stored values are the granted Scope set.
@@ -304,6 +415,46 @@ export class AuthSessionService {
   }
 
   /**
+   * Whether the session identified by a presented opaque token resolves to a user
+   * with a PENDING password change (`User.mustChangePassword`)
+   * (add-private-account-identity, task 2.7 / D9). The guard calls this AFTER it
+   * has resolved a valid principal, to block every protected route except the
+   * change-password endpoint (and logout) until the user changes their password.
+   *
+   * Returns `true` ONLY when the token resolves to a live, non-expired session for
+   * an `allowed` user whose `mustChangePassword` is set; `false` for any
+   * non-session credential (an absent/unknown token, an api-key/mcp machine
+   * bearer, or a user with no pending change). Fail-OPEN to `false` on the absence
+   * of a session token is safe: the forced-change flow is a human-session concern,
+   * and a request that resolved its principal by a non-session machine credential
+   * is never in a forced-change state.
+   */
+  async requiresPasswordChange(
+    token: string | undefined | null,
+  ): Promise<boolean> {
+    if (typeof token !== 'string' || token.length === 0) {
+      return false;
+    }
+    const tokenHash = hashSessionToken(token);
+    const session = await this.prisma.session.findFirst({
+      where: { tokenHash },
+      include: { user: { select: { allowed: true, mustChangePassword: true } } },
+    });
+    if (!session) {
+      return false;
+    }
+    if (isSessionExpired(session.expiresAt)) {
+      return false;
+    }
+    // Re-confirm the pure-DB allowed gate (mirrors resolveSession): a disabled
+    // user is denied outright by the guard anyway, so do not force-change them.
+    if (!session.user.allowed) {
+      return false;
+    }
+    return session.user.mustChangePassword === true;
+  }
+
+  /**
    * Revokes the session identified by a presented opaque token (logout).
    * Deletes the server-side row so a stolen-but-logged-out token can never be
    * replayed. Idempotent: revoking an unknown/already-revoked token is a no-op.
@@ -319,16 +470,16 @@ export class AuthSessionService {
   /**
    * Resolves a presented raw `mcp_` token into a FULL {@link McpAuthInfo}
    * (remote-mcp-server, task 3.2), or `null` when the token is
-   * absent/unknown/revoked/expired OR the owning user is no longer allowlisted.
+   * absent/unknown/revoked/expired OR the owning user is no longer `allowed`.
    *
    * The pipeline mirrors `resolveApiKey` and re-uses the same fail-closed
    * primitives as {@link resolveSession}:
    *   1. hash the raw token (SHA-256) and `findUnique` on the unique `tokenHash`;
    *   2. reject a revoked token (`revokedAt` set) or an expired one
    *      (`expiresAt <= now`);
-   *   3. RE-CONFIRM the owner's allowlist membership on the immutable GitHub id
-   *      (`isAllowlistedRaw`) on EVERY call — never cached — so de-allowlisting
-   *      denies the token on its very next request;
+   *   3. RE-CONFIRM the owner's pure-DB `allowed` gate on EVERY call — never
+   *      cached — so disabling the owner denies the token on its very next request
+   *      (task 2.5 / D2; replaces the prior env-allowlist re-check);
    *   4. return a FULL `AuthInfo`: `{ token, clientId, scopes, expiresAt,
    *      resource }` plus the owner's GitHub id for the `mcp` principal.
    *
@@ -336,7 +487,7 @@ export class AuthSessionService {
    * `requireBearerAuth` rejects an `AuthInfo` with an unset `expiresAt`, which
    * would 401 EVERY valid token. A token with no stored expiry is given a far
    * future bound so a valid, non-revoked token still resolves (its real
-   * lifecycle is governed by revocation + the allowlist re-check, not the
+   * lifecycle is governed by revocation + the allowed re-check, not the
    * synthetic bound).
    *
    * `lastUsedAt` is bumped BEST-EFFORT / asynchronously: a failed or slow update
@@ -345,7 +496,7 @@ export class AuthSessionService {
    */
   async resolveMcpToken(
     rawToken: string | undefined | null,
-    env: NodeJS.ProcessEnv = process.env,
+    _env: NodeJS.ProcessEnv = process.env,
     now: Date = new Date(),
   ): Promise<McpAuthInfo | null> {
     if (typeof rawToken !== 'string' || rawToken.length === 0) {
@@ -369,13 +520,9 @@ export class AuthSessionService {
       return null;
     }
 
-    // RE-CONFIRM allowlist membership at resolution time (fail-closed on removal),
-    // keyed on the immutable numeric GitHub id — identical to resolveSession.
-    const stillAllowed = isAllowlistedRaw(
-      record.user.githubId,
-      env[ENV.AUTH_ALLOWLIST],
-    );
-    if (!stillAllowed) {
+    // RE-CONFIRM the pure-DB allowed gate at resolution time (fail-closed on
+    // disable) — identical to resolveSession/resolveApiKey (task 2.5 / D2).
+    if (!record.user.allowed) {
       return null;
     }
 

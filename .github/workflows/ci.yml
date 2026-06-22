@@ -76,6 +76,14 @@ jobs:
   # bootstrap / DI error. A SEPARATE job (runs independently of typecheck+lint) so
   # this guard is unaffected by — and not blocked behind — the lint gate.
   #
+  # add-private-account-identity (task 10.3): the smoke ALSO exercises the
+  # default-admin SEED + ARGON2 path. `scripts/boot-smoke.sh` boots with
+  # `ADMIN_EMAIL` set (so the `AdminSeedService` boot hook actually runs and
+  # argon2-hashes a generated password) and then probes the one-time
+  # `POST /auth/admin/reveal`; a missing/incompatible `@node-rs/argon2` native
+  # binary or a broken seed fails CI here, not in production. No extra step is
+  # needed — the script self-provides a throwaway `ADMIN_EMAIL` default.
+  #
   # REQUIRED STATUS CHECK (task 1.2): this job's `name:` ("boot-smoke") is the
   # status-check CONTEXT to add to the `main` branch-protection rule alongside the
   # existing "typecheck + lint" context, so a red boot-smoke BLOCKS merge. GitHub

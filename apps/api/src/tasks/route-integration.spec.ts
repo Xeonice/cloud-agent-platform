@@ -56,6 +56,8 @@ function makeSessionUser(githubId: number): SessionUser {
     name: `User ${githubId}`,
     avatarUrl: 'https://example.invalid/a.png',
     allowed: true,
+    role: 'member',
+    mustChangePassword: false,
   };
 }
 

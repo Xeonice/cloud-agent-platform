@@ -58,6 +58,17 @@ export const Route = createFileRoute("/_app")({
       const session = await context.queryClient.ensureQueryData(
         authSessionQuery(),
       );
+      // A pending forced password change (D9) blocks the app shell: bounce the
+      // operator to the login route's forced-change dialog (carrying the attempted
+      // path) instead of rendering the console. The backend independently 403s
+      // every protected route for such an account; this turns that into the
+      // prescribed forced-change UX on a direct load / refresh / deep-link.
+      if (session?.mustChangePassword) {
+        throw redirect({
+          to: "/login",
+          search: { redirect: location.href, change: true },
+        });
+      }
       authed = session != null;
     } else {
       // Mock gate: the signal lives in `sessionStorage`, unreadable on the

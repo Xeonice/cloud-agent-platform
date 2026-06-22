@@ -104,7 +104,10 @@ export class V1TasksController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ): Promise<TaskResponse> {
     const principal = this.requireScope(req, 'tasks:write');
-    const githubId = principal.user?.githubId;
+    // Best-effort attribution: a LOCAL account (password/OTP) carries
+    // `githubId === null` (add-private-account-identity); collapse to `undefined`
+    // so the optional attribution goes unset rather than threading a `null`.
+    const githubId = principal.user?.githubId ?? undefined;
     const { repoId, ...createBody } = body;
 
     const { task, created } = await this.idempotency.run({
@@ -185,7 +188,9 @@ export class V1TasksController {
     @Req() req: AuthenticatedRequest,
   ): Promise<TaskResponse> {
     const principal = this.requireScope(req, 'tasks:write');
-    return this.tasksService.stop(id, principal.user?.githubId);
+    // Best-effort attribution; a local account's `null` githubId collapses to
+    // `undefined` (add-private-account-identity).
+    return this.tasksService.stop(id, principal.user?.githubId ?? undefined);
   }
 
   /**

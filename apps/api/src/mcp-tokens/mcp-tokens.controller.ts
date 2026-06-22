@@ -95,13 +95,25 @@ export class McpTokensController {
    * The single `kind !== 'session'` check covers every non-session principal, so
    * a machine credential never reaches the service: the check runs BEFORE any
    * service call, so a rejected request performs no state change.
+   *
+   * The MCP-token surface is scoped by the immutable numeric `githubId` (the
+   * service resolves it to the internal user id). A LOCAL account (password/OTP)
+   * has no github identity (add-private-account-identity), so it holds no MCP
+   * tokens here yet and is rejected fail-closed rather than keyed on a `null` id.
+   * The return type narrows `githubId` to a non-null `number`.
    */
-  private requireSessionOperator(req: AuthenticatedRequest): SessionUser {
+  private requireSessionOperator(
+    req: AuthenticatedRequest,
+  ): SessionUser & { githubId: number } {
     const principal = req.operatorPrincipal;
     if (!principal || principal.kind !== 'session' || principal.user === null) {
       throw McpTokensController.sessionOperatorRequired();
     }
-    return principal.user;
+    const user = principal.user;
+    if (user.githubId === null) {
+      throw McpTokensController.githubIdentityRequired();
+    }
+    return { ...user, githubId: user.githubId };
   }
 
   /** The shared 403 for a non-session principal on the MCP-token CRUD. */
@@ -111,6 +123,16 @@ export class McpTokensController {
       message:
         'MCP tokens may only be managed by a GitHub-OAuth operator session; ' +
         'a machine credential cannot mint, list, or revoke another.',
+    });
+  }
+
+  /** The shared 403 for a local (non-GitHub) session on the MCP-token CRUD. */
+  private static githubIdentityRequired(): ForbiddenException {
+    return new ForbiddenException({
+      error: 'github_identity_required',
+      message:
+        'MCP-token management is currently scoped to GitHub-linked accounts; ' +
+        'a local (password/OTP) account has no MCP tokens.',
     });
   }
 }

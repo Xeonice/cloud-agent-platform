@@ -14,7 +14,10 @@ import {
   type RepoResponse,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
-import { readMaybeEncrypted } from '../settings/secret-storage';
+import {
+  GITHUB_IDENTITY_PROVIDER,
+  getGithubTokenForUser,
+} from '../auth/github-identity';
 import {
   findExistingImport,
   githubDedupKey,
@@ -32,9 +35,10 @@ import { GithubReposClient } from './github-repos.client';
  * Composes the PURE decision logic ({@link github-import.logic}) with the GitHub
  * HTTP boundary ({@link GithubReposClient}) and Prisma persistence. The
  * security-critical token handling lives here: the requesting operator's OWN
- * stored OAuth token is read from their User row by immutable numeric
- * `githubId`, used ONLY as the server-side bearer, and NEVER returned to the
- * browser (it is not on any response shape).
+ * stored OAuth token is read from their `github` `IdentityLink` (resolved by the
+ * immutable numeric `githubId`) via the shared github-identity helper, used ONLY
+ * as the server-side bearer, and NEVER returned to the browser (it is not on any
+ * response shape).
  */
 
 /** Distinct signal: the operator must (re)authorize GitHub (4.2). */
@@ -214,15 +218,30 @@ export class GithubImportService {
    * the client maps that to the same `github_auth_required` signal as an
    * expired/revoked token. The token is NEVER returned beyond the server-side
    * GitHub call.
+   *
+   * add-private-account-identity (3.1): the token is no longer a `User` column —
+   * it is the `secret` of the operator's `github` `IdentityLink`. We resolve the
+   * `github` identity by its immutable `(provider, providerAccountId)` pair
+   * (providerAccountId = the numeric github id stringified) to recover the owning
+   * `userId`, then read+decrypt the token through the single shared
+   * github-identity helper.
    */
   private async readOperatorToken(operatorGithubId: number): Promise<string | null> {
-    const user = await this.prisma.user.findUnique({
-      where: { githubId: operatorGithubId },
-      select: { githubAccessToken: true },
+    const identity = await this.prisma.identityLink.findUnique({
+      where: {
+        provider_providerAccountId: {
+          provider: GITHUB_IDENTITY_PROVIDER,
+          providerAccountId: String(operatorGithubId),
+        },
+      },
+      select: { userId: true },
     });
-    // Decrypt at point of use (add-forge-credentials): handles both the encrypted
-    // envelope and a legacy plaintext token.
-    return readMaybeEncrypted(user?.githubAccessToken);
+    if (!identity) {
+      return null;
+    }
+    // Decrypt at point of use through the shared helper (handles both the
+    // encrypted envelope and a legacy plaintext token).
+    return getGithubTokenForUser(this.prisma, identity.userId);
   }
 
   /** Loads the de-dup view of every imported Repo (a non-null githubId). */

@@ -119,6 +119,8 @@ function sessionRequest(): AuthenticatedRequest {
       name: 'Octo Cat',
       avatarUrl: 'https://example.test/a.png',
       allowed: true,
+      role: 'member',
+      mustChangePassword: false,
     },
   };
   return { operatorPrincipal: principal } as unknown as AuthenticatedRequest;
@@ -237,6 +239,8 @@ test('an api-key principal cannot mint/list/revoke (no escalation chain)', async
       name: 'Octo Cat',
       avatarUrl: 'https://example.test/a.png',
       allowed: true,
+      role: 'member',
+      mustChangePassword: false,
     },
     scopes: ['tasks:read'],
     keyId: 'some-key-id',

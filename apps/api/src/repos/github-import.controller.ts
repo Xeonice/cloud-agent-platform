@@ -77,7 +77,11 @@ export class GithubImportController {
    */
   private requireGithubId(req: AuthenticatedRequest): number {
     const user = req.operatorPrincipal?.user;
-    if (!user) {
+    if (!user || user.githubId === null) {
+      // No GitHub identity at all (the legacy shared-token operator) OR a LOCAL
+      // account (password/OTP, `githubId === null` — add-private-account-identity):
+      // either way there is no per-operator GitHub OAuth token to import with, so
+      // both get the distinct `github_auth_required` signal rather than a 401.
       throw new GithubAuthorizationRequiredException();
     }
     return user.githubId;

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import type { OperatorPrincipal } from '../auth/operator-principal';
+import { AUTH_THROTTLE_NAME } from './throttler.options';
 
 /**
  * Per-principal request throttler guard (public-v1-api, Track `rate-limiting`,
@@ -37,6 +38,27 @@ import type { OperatorPrincipal } from '../auth/operator-principal';
  */
 @Injectable()
 export class PrincipalThrottlerGuard extends ThrottlerGuard {
+  /**
+   * Drop the pre-auth {@link AUTH_THROTTLE_NAME} tier from this guard so it
+   * enforces ONLY the principal-keyed tiers (`default`, `create`).
+   *
+   * `ThrottlerModule.forRoot` registers three named tiers (`default`, `create`,
+   * `auth`) and a vanilla {@link ThrottlerGuard} iterates ALL of them on every
+   * request. Two global throttler guards are registered (this one and the
+   * {@link AuthThrottleGuard}); without this filter THIS guard would also enforce
+   * the tiny anonymous `auth` cap — keyed on the post-auth principal — on EVERY
+   * authenticated route, throttling legitimate authenticated traffic far below
+   * `default`. The {@link AuthThrottleGuard} keeps `auth` only (and applies it
+   * solely to the pre-auth endpoints); this guard keeps everything BUT `auth`, so
+   * the two are disjoint and never double-count a request.
+   */
+  override async onModuleInit(): Promise<void> {
+    await super.onModuleInit();
+    this.throttlers = this.throttlers.filter(
+      (tier) => tier.name !== AUTH_THROTTLE_NAME,
+    );
+  }
+
   /**
    * Key the rate bucket on the resolved principal the auth guard attached, so the
    * limit is per-CREDENTIAL, not per-IP. Falls back to the default IP tracker

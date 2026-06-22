@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>账号管理 · Agent 控制台</title>
+  <link rel="stylesheet" href="../css/platform.css">
+  <link rel="stylesheet" href="../css/responsive.css">
+  <style>
+    .accounts-table { min-width: 760px; }
+    .accounts-table td { vertical-align: middle; padding-top: 13px; padding-bottom: 13px; }
+    .accounts-table .acct-email { font-size: 14px; font-weight: 600; }
+    .accounts-table .acct-sub { margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .accounts-table .acct-actions { display: flex; flex-wrap: nowrap; justify-content: flex-end; gap: 8px; }
+    .accounts-table .acct-actions .btn { min-height: 30px; padding: 0 10px; font-size: 12px; }
+    .accounts-table th.col-right, .accounts-table td.col-right { text-align: right; padding-right: 0; }
+    .role-pill { margin-left: 0; }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div>
+        <a class="brand" href="../index.html" aria-label="Agent 控制台">
+          <span class="brand-mark">AC</span>
+          <span>Agent 控制台</span>
+        </a>
+        <nav class="nav" aria-label="产品导航">
+          <a href="dashboard.html"><span>任务控制台</span><span class="shortcut">⌘1</span></a>
+          <a href="agents.html"><span>仓库导入</span><span class="shortcut">⌘2</span></a>
+          <a href="history.html"><span>历史日志</span><span class="shortcut">⌘3</span></a>
+          <a href="api.html"><span>API 调试</span><span class="shortcut">⌘4</span></a>
+        </nav>
+      </div>
+      <section class="account-menu" data-account-menu aria-label="当前账户">
+        <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>
+          <span class="account-avatar" aria-hidden="true">TH</span>
+          <span class="account-copy"><strong>tanghehui</strong><span>管理员</span></span>
+          <span class="account-arrow" aria-hidden="true">⌄</span>
+        </button>
+        <div class="account-popover" role="menu" hidden data-account-popover>
+          <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="accounts.html" aria-current="page" data-menu-close>账号管理</a>
+          <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+        </div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <section class="screen-header with-action">
+        <div>
+          <div class="eyebrow">账户</div>
+          <h1 class="screen-title">账号管理</h1>
+          <p class="screen-lead">在此统一启用 / 禁用所有账号：本地账号（邮箱 + 密码 / 邮箱验证码）由管理员开通，经 GitHub 白名单进入的账号也一并列出（角色只读、可禁用）。平台不开放公开注册。角色只控制后台权限，不隔离执行——所有启用账号都是 host-root。</p>
+        </div>
+        <button class="btn primary" type="button" data-open-dialog="#new-account-dialog">新建账号</button>
+      </section>
+
+      <section class="panel pad" style="margin-top:12px" data-filter-root="accounts">
+        <div class="panel-head" style="margin:-18px -18px 14px">
+          <div>
+            <h2>私有账号</h2>
+            <p>仅管理员可见 · 禁用立即生效，对应会话与令牌在下次请求时被拒。</p>
+          </div>
+          <span class="status-pill green" data-filter-count data-count-selector="[data-filter-row]" data-suffix=" 个账号">5 个账号</span>
+        </div>
+
+        <div class="audit-toolbar" aria-label="账号筛选" style="border:0;box-shadow:none;background:transparent;border-radius:0;padding:0 0 14px;margin:0;grid-template-columns:minmax(280px,1fr) auto">
+          <label class="search-field">
+            <span aria-hidden="true">⌕</span>
+            <input type="search" aria-label="搜索账号" placeholder="搜索邮箱、名称或角色" data-filter-search>
+          </label>
+          <div class="segmented" data-filter-target="accounts" aria-label="按类型筛选">
+            <button type="button" aria-pressed="true" data-value="all">全部</button>
+            <button type="button" aria-pressed="false" data-value="admin">管理员</button>
+            <button type="button" aria-pressed="false" data-value="member">成员</button>
+            <button type="button" aria-pressed="false" data-value="disabled">已禁用</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="table accounts-table">
+            <thead>
+              <tr>
+                <th>账号</th>
+                <th>角色</th>
+                <th>登录方式</th>
+                <th>状态</th>
+                <th class="col-right">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr data-filter-row data-state="admin" data-search="tanghehui github 管理员 GitHub OAuth 白名单">
+                <td>
+                  <div class="acct-email">tanghehui</div>
+                  <div class="acct-sub">github.com/tanghehui · 经 GitHub 白名单</div>
+                </td>
+                <td><span class="status-pill blue role-pill">管理员</span></td>
+                <td><span class="small-muted">GitHub OAuth</span></td>
+                <td><span class="status-pill green">启用</span></td>
+                <td class="col-right">
+                  <div class="acct-actions">
+                    <button class="btn danger" type="button">禁用</button>
+                  </div>
+                </td>
+              </tr>
+              <tr data-filter-row data-state="admin" data-search="admin@local 平台管理员 管理员 密码 邮箱验证码">
+                <td>
+                  <div class="acct-email">admin@local</div>
+                  <div class="acct-sub">平台管理员 · 由部署初始化</div>
+                </td>
+                <td><span class="status-pill blue role-pill">管理员</span></td>
+                <td><span class="small-muted">密码 · 邮箱验证码</span></td>
+                <td><span class="status-pill green">启用</span></td>
+                <td class="col-right">
+                  <div class="acct-actions">
+                    <button class="btn" type="button" data-open-dialog="#reset-pw-dialog">重置密码</button>
+                  </div>
+                </td>
+              </tr>
+              <tr data-filter-row data-state="member" data-search="ops@team.io 运维组 成员 密码 邮箱验证码">
+                <td>
+                  <div class="acct-email">ops@team.io</div>
+                  <div class="acct-sub">运维组</div>
+                </td>
+                <td><span class="status-pill role-pill">成员</span></td>
+                <td><span class="small-muted">密码 · 邮箱验证码</span></td>
+                <td><span class="status-pill green">启用</span></td>
+                <td class="col-right">
+                  <div class="acct-actions">
+                    <button class="btn" type="button" data-open-dialog="#reset-pw-dialog">重置密码</button>
+                    <button class="btn danger" type="button">禁用</button>
+                  </div>
+                </td>
+              </tr>
+              <tr data-filter-row data-state="member" data-search="dev@team.io 前端 成员 密码">
+                <td>
+                  <div class="acct-email">dev@team.io</div>
+                  <div class="acct-sub">前端</div>
+                </td>
+                <td><span class="status-pill role-pill">成员</span></td>
+                <td><span class="small-muted">密码</span></td>
+                <td><span class="status-pill green">启用</span></td>
+                <td class="col-right">
+                  <div class="acct-actions">
+                    <button class="btn" type="button" data-open-dialog="#reset-pw-dialog">重置密码</button>
+                    <button class="btn danger" type="button">禁用</button>
+                  </div>
+                </td>
+              </tr>
+              <tr data-filter-row data-state="disabled" data-search="contractor@ext.dev 外包 成员 邮箱验证码 已禁用">
+                <td>
+                  <div class="acct-email">contractor@ext.dev</div>
+                  <div class="acct-sub">外包 · 未设置密码</div>
+                </td>
+                <td><span class="status-pill role-pill">成员</span></td>
+                <td><span class="small-muted">邮箱验证码</span></td>
+                <td><span class="status-pill dark">已禁用</span></td>
+                <td class="col-right">
+                  <div class="acct-actions">
+                    <button class="btn" type="button">启用</button>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div data-empty-state hidden class="small-muted" style="padding:24px 0;text-align:center">没有匹配的账号。</div>
+      </section>
+    </main>
+  </div>
+
+  <nav class="mobile-nav" aria-label="移动端导航">
+    <a href="dashboard.html">控制台</a>
+    <a href="agents.html">仓库</a>
+    <a href="history.html">历史</a>
+    <div class="mobile-account account-menu" data-account-menu>
+      <button type="button" aria-current="page" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
+      <div class="account-popover" role="menu" hidden data-account-popover>
+        <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="accounts.html" aria-current="page" data-menu-close>账号管理</a>
+        <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- 新建账号 -->
+  <div class="dialog-backdrop" id="new-account-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="new-account-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="new-account-title">新建私有账号</h2>
+          <p>仅管理员可创建。新账号默认启用，可用密码或邮箱验证码登录；平台不开放公开注册。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="na-email">邮箱</label>
+          <input id="na-email" type="email" placeholder="name@example.com">
+        </div>
+        <div class="field">
+          <label for="na-name">显示名称</label>
+          <input id="na-name" placeholder="用于审计与界面展示">
+        </div>
+        <div class="field">
+          <label for="na-role">角色</label>
+          <select id="na-role">
+            <option>成员</option>
+            <option>管理员</option>
+          </select>
+          <small class="small-muted">管理员可进入「账号管理」；角色不改变执行权限，启用账号均为 host-root。</small>
+        </div>
+        <div class="field">
+          <span class="field-label">初始登录方式</span>
+          <label class="check-row"><input type="radio" name="na-init" checked><span><strong>设置初始密码</strong><br><span class="small-muted">管理员设定临时密码，用户首次登录强制改密。</span></span></label>
+          <label class="check-row"><input type="radio" name="na-init"><span><strong>仅邮箱验证码</strong><br><span class="small-muted">不设密码，用户用邮件验证码登录（需已配置 SMTP），可日后自行设置密码。</span></span></label>
+        </div>
+        <div class="field">
+          <label for="na-pw">临时密码</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="na-pw" type="password" placeholder="至少 12 位，含大小写与数字">
+            <button class="btn" type="button" data-reveal="#na-pw">显示</button>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog>创建账号</button>
+      </div>
+    </section>
+  </div>
+
+  <!-- 重置密码 -->
+  <div class="dialog-backdrop" id="reset-pw-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="reset-pw-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="reset-pw-title">重置密码</h2>
+          <p>为该账号设置新的临时密码，用户下次登录需改密。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="rp-pw">新临时密码</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="rp-pw" type="password" placeholder="至少 12 位，含大小写与数字">
+            <button class="btn" type="button" data-reveal="#rp-pw">显示</button>
+          </div>
+        </div>
+        <p class="small-muted" style="margin:0;line-height:1.6">重置后旧密码立即失效；该账号现有会话将在下次请求时被要求重新登录。</p>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog>重置密码</button>
+      </div>
+    </section>
+  </div>
+
+  <script src="../js/platform.js"></script>
+</body>
+</html>

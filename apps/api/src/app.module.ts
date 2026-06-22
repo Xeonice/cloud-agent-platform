@@ -26,7 +26,13 @@ import { McpModule } from './mcp/mcp.module';
 import { V1Module } from './v1/v1.module';
 import { OpenApiModule } from './openapi/openapi.module';
 import { PrincipalThrottlerGuard } from './rate-limit/principal.throttler-guard';
+import { AuthThrottleGuard } from './rate-limit/auth-throttle.guard';
 import { buildThrottlerOptions } from './rate-limit/throttler.options';
+import { MailModule } from './mail/mail.module';
+import { OtpModule } from './auth-otp/otp.module';
+import { AccountsModule } from './accounts/accounts.module';
+import { AdminSeedModule } from './admin-seed/admin-seed.module';
+import { PasswordModule } from './auth-password/password.module';
 
 /**
  * Root application module.
@@ -121,6 +127,35 @@ import { buildThrottlerOptions } from './rate-limit/throttler.options';
     SettingsModule,
     ForgeModule,
     ApiKeysModule,
+    // add-private-account-identity (integration task 10.1): the new private-
+    // identity feature modules, wired here in the ROOT module — the single
+    // `app.module.ts` edit every parallel auth track deferred to integration, so
+    // the module graph is assembled (and proven cycle-free) in ONE place. All are
+    // imported AFTER `AuthModule` so the global auth guard already governs their
+    // REST surface; the new PUBLIC pre-auth routes they expose
+    // (`/auth/otp/*`, `/auth/admin/reveal`, …) are EXACT-MATCH exempted in
+    // `auth.guard.ts` (task 2.6) and brute-force throttled by the `auth` tier
+    // (the third global guard below):
+    //   - `MailModule`     — the single `nodemailer`/SMTP send path; EXPORTS
+    //     `MailService` so `OtpModule` both sends codes and reads the
+    //     `isConfigured()` capability that fail-closes OTP when SMTP is unset.
+    //   - `OtpModule`      — `/auth/otp/request` + `/auth/otp/verify`
+    //     (email-verification-code login; imports `MailModule`).
+    //   - `AccountsModule` — admin-only `/accounts*` CRUD/list (session-gated by
+    //     the global guard, then admin-role re-confirmed in the controller).
+    //   - `AdminSeedModule`— the self-contained, order-independent default-admin
+    //     seed (its OWN single `onApplicationBootstrap` hook + in-memory reveal
+    //     holder, NOT spread across providers, per the prior cross-bootstrap
+    //     outage) + `POST /auth/admin/reveal` one-time reveal.
+    //   - `PasswordModule` — `/auth/password` (email+password login) +
+    //     `/auth/change-password` (forced first-login + self-service change). Both
+    //     paths are exact-match members of the guard's `OAUTH_EXEMPT_PATHS` and the
+    //     `auth` IP+email throttle tier, so they are governed pre-auth.
+    MailModule,
+    OtpModule,
+    AccountsModule,
+    AdminSeedModule,
+    PasswordModule,
     // remote-mcp-server (integration, task 7.2): the two new feature modules,
     // wired here in the ROOT module — the one `app.module.ts` edit both backend
     // feature tracks would otherwise both touch, so it is isolated to the
@@ -150,9 +185,26 @@ import { buildThrottlerOptions } from './rate-limit/throttler.options';
     // feature module) and AFTER AuthModule is imported, so global-guard order is
     // auth-then-throttle — the throttler reads the principal the auth guard
     // attached and keys the rate bucket per-principal, not per-IP (design D7).
+    // It filters the `auth` tier OUT (in its `onModuleInit`) so it enforces ONLY
+    // the principal-keyed `default`/`create` tiers — leaving the anonymous `auth`
+    // tier exclusively to the guard below.
     {
       provide: APP_GUARD,
       useClass: PrincipalThrottlerGuard,
+    },
+    // add-private-account-identity (integration task 10.1 / track rate-limit-auth):
+    // the THIRD global guard — the anonymous pre-auth brute-force throttler. It
+    // enforces ONLY the `auth` tier (filtered IN in its `onModuleInit`) and ONLY
+    // on the public pre-auth endpoints (`/auth/password`, `/auth/otp/request`,
+    // `/auth/otp/verify`, `/auth/change-password` — every other route is skipped),
+    // keying the bucket on client IP + submitted email because no principal exists
+    // pre-auth (design D10). It is DISJOINT from the principal guard above (that
+    // one keeps everything-but-`auth`; this one keeps `auth`-only), so the two
+    // never double-count a request and the tiny anonymous cap never lands on
+    // authenticated traffic.
+    {
+      provide: APP_GUARD,
+      useClass: AuthThrottleGuard,
     },
   ],
 })

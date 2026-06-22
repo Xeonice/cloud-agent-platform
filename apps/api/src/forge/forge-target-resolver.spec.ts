@@ -33,8 +33,12 @@ function resolver(opts: {
     task: { findUnique: async () => ({ repo: { gitSource: 'https://gitlab.com/g/p.git' } }) },
     auditEvent: { findFirst: async () => (opts.ownerId ? { userId: opts.ownerId } : null) },
     forgeCredential: { findUnique: async () => opts.forgeCredential ?? null },
-    user: {
-      findUnique: async () => ({ githubAccessToken: opts.githubAccessToken ?? null }),
+    // add-private-account-identity (3.3): the github fallback token now lives as
+    // the `secret` of the owner's `github` IdentityLink, read via the shared
+    // github-identity helper (`identityLink.findFirst`), not a User column.
+    identityLink: {
+      findFirst: async () =>
+        opts.githubAccessToken != null ? { secret: opts.githubAccessToken } : null,
     },
   } as unknown as PrismaService;
   const registry = {

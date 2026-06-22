@@ -64,8 +64,12 @@ function buildResolver(opts: {
         return opts.credentialsByUserId[uid] ?? null;
       },
     },
-    user: {
-      findUnique: async () => ({ githubAccessToken: null }),
+    // add-private-account-identity (3.3): the github public-host fallback reads
+    // the owner's `github` IdentityLink secret via the shared github-identity
+    // helper (`identityLink.findFirst`); these owner-scope cases never reach it
+    // (gitlab forge), so it resolves to no identity.
+    identityLink: {
+      findFirst: async () => null,
     },
   } as unknown as PrismaService;
 

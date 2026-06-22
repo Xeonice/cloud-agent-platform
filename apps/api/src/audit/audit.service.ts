@@ -131,6 +131,36 @@ export class AuditService {
   }
 
   /**
+   * Record a github-identity auto-link security audit event
+   * (add-private-account-identity, task 2.4 / D8). Emitted when a GitHub login's
+   * PRIMARY VERIFIED email matched an existing account and its `github`
+   * IdentityLink was attached to that account — a login==host-root identity
+   * change that MUST leave an audit trail.
+   *
+   * Unlike the task-lifecycle events above, an identity link is NOT scoped to a
+   * task, so it cannot use the task-FK-constrained `audit_events` table; it is
+   * recorded as a structured, attributable security audit LOG line. Best-effort
+   * and synchronous-cheap: it never throws, so an audit failure can never block
+   * or roll back the login it accompanies.
+   */
+  recordIdentityLinked(opts: {
+    userId: string;
+    provider: string;
+    providerAccountId: string;
+    email: string;
+  }): void {
+    try {
+      this.logger.log(
+        `security.audit identity.linked provider=${opts.provider} ` +
+          `providerAccountId=${opts.providerAccountId} userId=${opts.userId} ` +
+          `email=${opts.email} reason=verified-primary-email-match`,
+      );
+    } catch {
+      // Never let an audit emission affect the login that triggered it.
+    }
+  }
+
+  /**
    * The single best-effort persistence primitive. Resolves the descriptor for
    * the kind, validates the (level, resultCode) invariant (6.3), maps the
    * attributed `githubId` to the `users.id` FK, and inserts the row. ANY failure
@@ -318,5 +348,8 @@ interface AuditEventRow {
   timestamp: Date;
   resultCode: number | null;
   runId: string | null;
-  user?: { githubId: number } | null;
+  // `githubId` is nullable (add-private-account-identity): a local account has no
+  // GitHub id, so `toEvent` maps an absent user OR a null githubId to the `0`
+  // system/unattributed sentinel.
+  user?: { githubId: number | null } | null;
 }

@@ -6,74 +6,180 @@
   <title>登录 · Agent 控制台</title>
   <link rel="stylesheet" href="css/platform.css">
   <link rel="stylesheet" href="css/responsive.css">
+  <style>
+    /* 登录从整页两列改为居中弹窗卡片；沿用 .dialog/.dialog-sm 视觉语言 */
+    .login-card {
+      width: min(440px, 100%);
+      max-height: none;
+    }
+
+    .login-head {
+      display: grid;
+      gap: 0;
+    }
+
+    .login-head .brand {
+      margin-bottom: 14px;
+      font-size: 14px;
+    }
+
+    .login-head h2 {
+      margin: 0 0 6px;
+    }
+
+    /* 登录方式分段切换：撑满一行，三等分 */
+    .login-methods {
+      width: 100%;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .login-methods button {
+      justify-self: stretch;
+      text-align: center;
+    }
+
+    .login-panel {
+      display: grid;
+      gap: 14px;
+      margin-top: 2px;
+    }
+
+    .login-panel[hidden] {
+      display: none;
+    }
+
+    .btn.block {
+      width: 100%;
+      justify-content: center;
+    }
+
+    .auth-login-button.block {
+      width: 100%;
+    }
+
+    /* 验证码：邮箱与发送码并排 */
+    .otp-send-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .login-hint {
+      margin: 0;
+      line-height: 1.6;
+    }
+
+    .login-foot {
+      margin: 4px 0 0;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+      line-height: 1.6;
+    }
+
+    .login-foot a {
+      color: var(--info);
+    }
+  </style>
 </head>
 <body class="auth-body">
-  <section class="auth-shell" aria-label="GitHub 授权登录">
-    <div class="auth-main">
-      <a class="brand" href="index.html" aria-label="Agent 控制台">
-        <span class="brand-mark">AC</span>
-        <span>Agent 控制台</span>
-      </a>
+  <main class="login-wrap" aria-label="登录 Agent 控制台">
+    <section class="dialog dialog-sm login-card" role="dialog" aria-modal="true" aria-labelledby="login-title">
+      <header class="dialog-head login-head">
+        <div>
+          <a class="brand" href="index.html" aria-label="Agent 控制台">
+            <span class="brand-mark">AC</span>
+            <span>Agent 控制台</span>
+          </a>
+          <h2 id="login-title">登录控制台</h2>
+          <p>私有访问边界，登录即获得 host-root 执行权限。平台不开放注册，账号由管理员开通。</p>
+        </div>
+      </header>
 
-      <div>
-        <div class="eyebrow">Private access</div>
-        <h1 class="auth-title">用 GitHub 身份打开你的私有 Agent 运行池。</h1>
-        <p class="auth-copy">登录不是注册流程，而是访问边界：只有白名单账号能进入控制台，后续仓库范围、模型凭据和终端会话都绑定到这个身份。</p>
-      </div>
+      <div class="dialog-body">
+        <div class="segmented login-methods" role="tablist" data-tabs aria-label="登录方式">
+          <button role="tab" type="button" aria-controls="login-password" aria-pressed="true" aria-selected="true">密码</button>
+          <button role="tab" type="button" aria-controls="login-otp" aria-pressed="false" aria-selected="false">邮箱验证码</button>
+          <button role="tab" type="button" aria-controls="login-github" aria-pressed="false" aria-selected="false">GitHub</button>
+        </div>
 
-      <div class="auth-state" data-login-empty>
-        <button class="auth-login-button" type="button" data-login-action>
-          <span class="auth-gh" aria-hidden="true">GH</span>
-          <span>使用 GitHub 授权登录</span>
-        </button>
-        <p class="small-muted" style="margin:0;line-height:1.6">登录成功后进入控制台；如果是从某个任务会话被拦截登录，会回到原页面。</p>
-      </div>
-
-      <div class="auth-state" data-login-success hidden>
-        <span class="status-pill green">已完成授权</span>
-        <h2 style="margin:0;font-size:24px;letter-spacing:-.8px">GitHub 账号已绑定。</h2>
-        <p class="small-muted" style="margin:0">当前身份：<span class="mono">github.com/tanghehui</span></p>
-        <a class="btn primary" href="screens/dashboard.html">进入控制台</a>
-      </div>
-    </div>
-
-    <aside class="auth-assurance">
-      <div class="split-line">
-        <h2 style="margin:0;font-size:17px">进入控制台前会确认</h2>
-        <span class="status-pill blue">3 steps</span>
-      </div>
-
-      <div class="auth-steps" aria-label="首次进入流程">
-        <article class="auth-step">
-          <span class="auth-step-number">01</span>
-          <div>
-            <h3>验证 GitHub OAuth</h3>
-            <p>确认账号为 <span class="mono">github.com/tanghehui</span>，没有公开注册入口。</p>
+        <!-- 方式一：邮箱 + 密码 -->
+        <form id="login-password" class="tab-panel login-panel" autocomplete="on">
+          <div class="field">
+            <label for="pw-email">邮箱</label>
+            <input id="pw-email" type="email" placeholder="you@example.com" autocomplete="username">
           </div>
-        </article>
-        <article class="auth-step">
-          <span class="auth-step-number">02</span>
-          <div>
-            <h3>绑定可审计身份</h3>
-            <p>所有任务、仓库导入和终端输入都归属到当前操作者。</p>
+          <div class="field">
+            <label for="pw-pass">密码</label>
+            <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+              <input id="pw-pass" type="password" placeholder="输入账号密码" autocomplete="current-password">
+              <button class="btn" type="button" data-reveal="#pw-pass">显示</button>
+            </div>
           </div>
-        </article>
-        <article class="auth-step">
-          <span class="auth-step-number">03</span>
-          <div>
-            <h3>进入仓库范围选择</h3>
-            <p>只把明确导入的仓库交给远端 Agent 工作区，不默认暴露账号下全部项目。</p>
-          </div>
-        </article>
-      </div>
+          <button class="btn primary block" type="button">登录</button>
+          <p class="small-muted login-hint">忘记密码？切换到「邮箱验证码」登录，或联系管理员重置。</p>
+        </form>
 
-      <div class="config-list">
-        <div class="config-row"><span>访问范围</span><strong>单用户白名单</strong></div>
-        <div class="config-row"><span>执行边界</span><strong>沙箱内自治</strong></div>
-        <div class="config-row"><span>下一步</span><strong>任务控制台</strong></div>
+        <!-- 方式二：邮箱 + 邮件验证码（仅 SMTP 已配置时显示） -->
+        <form id="login-otp" class="tab-panel login-panel" hidden autocomplete="off">
+          <div class="field">
+            <label for="otp-email">邮箱</label>
+            <div class="otp-send-row">
+              <input id="otp-email" type="email" placeholder="you@example.com" autocomplete="username">
+              <button class="btn" type="button" data-otp-send>发送验证码</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="otp-code">验证码</label>
+            <input id="otp-code" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocomplete="one-time-code">
+          </div>
+          <button class="btn primary block" type="button">登录</button>
+          <p class="small-muted login-hint">验证码 10 分钟内有效，60 秒内可重发一次；仅向已开通的邮箱发送。</p>
+        </form>
+
+        <!-- 方式三：GitHub 授权（白名单 gate 不变） -->
+        <div id="login-github" class="tab-panel login-panel" hidden>
+          <button class="auth-login-button block" type="button" data-login-action>
+            <span class="auth-gh" aria-hidden="true">GH</span>
+            <span>使用 GitHub 授权登录</span>
+          </button>
+          <p class="small-muted login-hint">仅 <span class="mono">AUTH_ALLOWLIST</span> 白名单内的 GitHub 账号可进入；从任务会话被拦截登录会回到原页面。</p>
+        </div>
+
+        <p class="login-foot small-muted">没有账号？平台不开放公开注册——请联系管理员在「设置 · 账号」中为你开通私有账号。</p>
       </div>
-    </aside>
-  </section>
+    </section>
+  </main>
+
+  <!-- 默认管理员首次登录：强制改密（无取消项，必须设置后才进入控制台） -->
+  <div class="dialog-backdrop" id="first-login-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="fl-title">
+      <header class="dialog-head">
+        <div>
+          <span class="status-pill blue">首次登录</span>
+          <h2 id="fl-title" style="margin-top:8px">设置你的新密码</h2>
+          <p>检测到这是部署时注入的默认管理员账号。出于「登录即 host-root」的安全要求，请先设置专属密码后再进入控制台。</p>
+        </div>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="fl-new">新密码</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="fl-new" type="password" placeholder="至少 12 位，含大小写与数字" autocomplete="new-password">
+            <button class="btn" type="button" data-reveal="#fl-new">显示</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="fl-confirm">确认新密码</label>
+          <input id="fl-confirm" type="password" placeholder="再次输入新密码" autocomplete="new-password">
+        </div>
+        <p class="small-muted login-hint">保存后默认密码立即失效，下次登录请使用新密码或邮箱验证码。</p>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn primary" type="button" data-close-dialog>保存并进入控制台</button>
+      </div>
+    </section>
+  </div>
 
   <script src="js/platform.js"></script>
 </body>

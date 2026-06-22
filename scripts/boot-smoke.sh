@@ -24,21 +24,37 @@
 #   - Boots OAuth-FIRST (legacy operator-token path OFF), so NO AUTH_TOKEN is
 #     needed — the app boots on its DB alone, which is all `/health` exercises.
 #
+# ALSO exercises the default-admin SEED + ARGON2 path (add-private-account-identity
+# task 10.3): it boots with `ADMIN_EMAIL` set so the `AdminSeedService` boot hook
+# actually runs (it argon2-HASHES a generated password and writes the admin +
+# password IdentityLink), then probes the one-time `POST /auth/admin/reveal`. A
+# non-empty reveal proves the seed completed AND argon2 produced a hash — so a
+# MISSING/incompatible `@node-rs/argon2` native binary, or a broken seed, fails CI
+# HERE rather than silently in production (the seed itself swallows its own errors
+# to never crash boot, so /health alone would NOT catch a broken seed — this probe
+# does).
+#
 # Usage:
 #   scripts/boot-smoke.sh
 # Env overrides:
 #   DATABASE_URL        Postgres connection string (REQUIRED).
 #   BOOT_SMOKE_PORT     port the app listens on (default 8080).
 #   BOOT_SMOKE_TIMEOUT  seconds to wait for `/health` to go healthy (default 60).
+#   BOOT_SMOKE_ADMIN_EMAIL  email the seed keys the default admin on
+#                           (default boot-smoke-admin@example.com). The throwaway
+#                           DB is wiped with the runner, so this is inert.
 #
-# Exit status: 0 only when `/health` returns a 2xx within the timeout; non-zero
-# (and the captured app log dumped to stderr) on any migration, bootstrap, DI, or
-# liveness failure — the signal CI gates on.
+# Exit status: 0 only when `/health` returns a 2xx AND the seed/argon2 reveal
+# succeeds within the timeout; non-zero (and the captured app log dumped to
+# stderr) on any migration, bootstrap, DI, liveness, or seed/argon2 failure — the
+# signal CI gates on.
 
 set -euo pipefail
 
 PORT="${BOOT_SMOKE_PORT:-8080}"
 TIMEOUT="${BOOT_SMOKE_TIMEOUT:-60}"
+# Keying email for the default-admin seed exercised below. Throwaway-DB only.
+ADMIN_EMAIL_FOR_SMOKE="${BOOT_SMOKE_ADMIN_EMAIL:-boot-smoke-admin@example.com}"
 
 if [[ -z "${DATABASE_URL:-}" ]]; then
   echo "boot-smoke: FATAL — DATABASE_URL is unset; a throwaway Postgres is required." >&2
@@ -86,26 +102,48 @@ if ! node node_modules/prisma/build/index.js migrate deploy >>"${LOG_FILE}" 2>&1
 fi
 
 # 2) Boot the BUILT app. OAuth-first: legacy token path OFF so no AUTH_TOKEN is
-#    required; PORT pins the listen port we probe below.
+#    required; PORT pins the listen port we probe below. ADMIN_EMAIL is set so the
+#    default-admin seed (argon2 hash + admin/IdentityLink write) actually RUNS —
+#    it is skipped when ADMIN_EMAIL is unset.
 echo "boot-smoke: starting node dist/main.js on :${PORT}..."
-PORT="${PORT}" AUTH_TOKEN_LEGACY_ENABLED="" node dist/main.js >>"${LOG_FILE}" 2>&1 &
+PORT="${PORT}" AUTH_TOKEN_LEGACY_ENABLED="" ADMIN_EMAIL="${ADMIN_EMAIL_FOR_SMOKE}" \
+  node dist/main.js >>"${LOG_FILE}" 2>&1 &
 APP_PID=$!
 
 # 3) Probe `/health` until healthy or the timeout elapses. The process dying early
 #    (a DI / bootstrap error → non-zero exit) is detected immediately, not waited
 #    out, so the smoke fails fast on the failure class it exists to catch.
 HEALTH_URL="http://127.0.0.1:${PORT}/health"
+REVEAL_URL="http://127.0.0.1:${PORT}/auth/admin/reveal"
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
 while true; do
   if ! kill -0 "${APP_PID}" 2>/dev/null; then
     fail "app process exited before serving /health (bootstrap/DI error)"
   fi
   if curl -fsS --max-time 2 "${HEALTH_URL}" >/dev/null 2>&1; then
-    echo "boot-smoke: PASSED — ${HEALTH_URL} is healthy."
-    exit 0
+    echo "boot-smoke: /health healthy — verifying default-admin seed + argon2..."
+    break
   fi
   if (( $(date +%s) >= DEADLINE )); then
     fail "timed out after ${TIMEOUT}s waiting for ${HEALTH_URL}"
   fi
   sleep 1
 done
+
+# 4) Seed + argon2 probe: the one-time admin reveal returns the GENERATED
+#    credential exactly once. A non-empty `email` in the response proves the seed
+#    wrote the admin AND argon2 hashed its password (the plaintext is only held
+#    when the hash succeeded). The seed swallows its own errors so it never crashes
+#    boot — so this probe, not /health, is what catches a broken seed or a
+#    missing/incompatible @node-rs/argon2 native binary.
+REVEAL_BODY="$(curl -fsS --max-time 5 -X POST -H 'content-type: application/json' \
+  "${REVEAL_URL}" 2>>"${LOG_FILE}" || true)"
+case "${REVEAL_BODY}" in
+  *'"email"'*)
+    echo "boot-smoke: PASSED — /health healthy and the default-admin seed + argon2 reveal succeeded."
+    exit 0
+    ;;
+  *)
+    fail "default-admin seed/argon2 reveal did not return a credential (got: ${REVEAL_BODY:-<empty>}); a broken seed or missing @node-rs/argon2 native binary"
+    ;;
+esac

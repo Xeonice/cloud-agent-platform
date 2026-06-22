@@ -30,6 +30,7 @@
         </button>
         <div class="account-popover" role="menu" hidden data-account-popover>
           <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="accounts.html" data-menu-close>账号管理</a>
           <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
         </div>
       </section>
@@ -94,7 +95,7 @@
 
           <div class="task-table-head table-wrap" aria-hidden="true">
             <div class="repo-list-head task-list-head">
-              <span>任务 / GitHub 仓库</span>
+              <span>任务 / 仓库</span>
               <span>阶段 / 分支</span>
               <span>操作</span>
             </div>
@@ -172,10 +173,11 @@
                   <p class="task-repo"><strong class="mono">33333333-3333-4333-8333-333333333333</strong></p>
                 </div>
                 <div class="task-context">
-                  <strong>完成</strong>
-                  <span class="mono">fix/dialback-reconnect</span>
+                  <strong>完成 · 已开 PR</strong>
+                  <span class="mono">cap/task-cccc → main</span>
                 </div>
                 <div class="task-actions">
+                  <a class="btn ghost" href="#">PR #128 ↗</a>
                   <a class="btn ghost" href="transcript.html">查看记录</a>
                 </div>
               </div>
@@ -308,6 +310,7 @@
       <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
       <div class="account-popover" role="menu" hidden data-account-popover>
         <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="accounts.html" data-menu-close>账号管理</a>
         <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
       </div>
     </div>
@@ -360,6 +363,15 @@
         <div class="field">
           <label for="quick-prompt">任务描述</label>
           <textarea id="quick-prompt" placeholder="清楚描述远端 Agent 需要完成什么。"></textarea>
+        </div>
+        <div class="field">
+          <label for="quick-deliver">完成后改动落地</label>
+          <select id="quick-deliver">
+            <option value="none" selected>不落地 · 仅留在沙箱（可回看记录）</option>
+            <option value="branch">推送分支 cap/task-&lt;id&gt;</option>
+            <option value="pr">推送分支并开 PR / MR</option>
+          </select>
+          <small class="small-muted">默认不落地。选择落地后，任务完成且有改动时，平台用已连接的对应 forge 凭证推回 <strong class="mono">tanghehui/cloud-agent-platform</strong>（<span class="forge-tag gh">GitHub</span> · 登录 OAuth）。</small>
         </div>
         <div class="actions">
           <button class="btn primary" type="button" data-close-dialog>创建任务</button>

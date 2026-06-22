@@ -30,6 +30,7 @@
         </button>
         <div class="account-popover" role="menu" hidden data-account-popover>
           <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="accounts.html" data-menu-close>账号管理</a>
           <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
         </div>
       </section>
@@ -51,28 +52,29 @@
             <h2>已导入仓库</h2>
             <p>这些仓库会出现在任务创建、默认仓库和会话上下文里。</p>
           </div>
-          <span class="status-pill green" data-imported-count>2 个</span>
+          <span class="status-pill green" data-imported-count>3 个</span>
         </div>
 
         <div class="repo-list-head">
           <span>仓库</span>
-          <span>权限</span>
+          <span>源与凭证</span>
           <span>同步</span>
           <span>操作</span>
         </div>
 
         <div data-imported-repo-list>
-          <article class="repo-row" data-filter-row data-search="cloud-agent-platform tanghehui/cloud-agent-platform GitHub App scoped main 默认">
+          <article class="repo-row" data-filter-row data-search="cloud-agent-platform tanghehui/cloud-agent-platform GitHub 登录 OAuth main 默认">
             <div>
               <div class="split-line" style="justify-content:flex-start">
                 <h3>cloud-agent-platform</h3>
+                <span class="forge-tag gh">GitHub</span>
                 <span class="status-pill green">默认</span>
               </div>
               <p class="mono">tanghehui/cloud-agent-platform</p>
             </div>
             <div>
-              <p>GitHub App scoped</p>
-              <small>仓库 token 按任务短期签发。</small>
+              <p>github.com · 登录 OAuth</p>
+              <small>推送 / 开 PR 复用登录令牌。</small>
             </div>
             <div>
               <p class="mono" style="color:var(--foreground)">main</p>
@@ -81,17 +83,39 @@
             <div><span class="btn is-disabled">默认仓库</span></div>
           </article>
 
-          <article class="repo-row" data-filter-row data-search="agent-api tanghehui/agent-api GitHub App scoped main">
+          <article class="repo-row" data-filter-row data-search="agent-api team/agent-api GitLab 自托管 你的 PAT main">
             <div>
-              <h3>agent-api</h3>
-              <p class="mono">tanghehui/agent-api</p>
+              <div class="split-line" style="justify-content:flex-start">
+                <h3>agent-api</h3>
+                <span class="forge-tag gl">GitLab</span>
+              </div>
+              <p class="mono">team/agent-api</p>
             </div>
             <div>
-              <p>GitHub App scoped</p>
-              <small>仓库 token 按任务短期签发。</small>
+              <p>git.corp.com · 你的 PAT</p>
+              <small>自托管 GitLab · <span class="mono">api</span> 范围。</small>
             </div>
             <div>
               <p class="mono" style="color:var(--foreground)">main</p>
+              <small>默认分支</small>
+            </div>
+            <div><button class="btn" type="button">设为默认</button></div>
+          </article>
+
+          <article class="repo-row" data-filter-row data-search="docs-portal myorg/docs-portal Gitee 你的令牌 master">
+            <div>
+              <div class="split-line" style="justify-content:flex-start">
+                <h3>docs-portal</h3>
+                <span class="forge-tag ge">Gitee</span>
+              </div>
+              <p class="mono">myorg/docs-portal</p>
+            </div>
+            <div>
+              <p>gitee.com · 你的令牌</p>
+              <small><span class="mono">projects</span> + <span class="mono">pull_requests</span>。</small>
+            </div>
+            <div>
+              <p class="mono" style="color:var(--foreground)">master</p>
               <small>默认分支</small>
             </div>
             <div><button class="btn" type="button">设为默认</button></div>
@@ -116,6 +140,7 @@
       <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
       <div class="account-popover" role="menu" hidden data-account-popover>
         <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="accounts.html" data-menu-close>账号管理</a>
         <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
       </div>
     </div>
@@ -127,14 +152,27 @@
         <div>
           <div class="eyebrow">仓库导入</div>
           <h2 id="repo-import-title">添加仓库</h2>
-          <p>拉取当前 GitHub 授权账号下的仓库，只把明确选择的项目加入远端调度池。</p>
+          <p>粘贴任意仓库地址导入（自动识别 GitHub / GitLab / Gitee，含自托管），或从已连接账号下选择。</p>
         </div>
         <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
       </header>
       <div class="dialog-body" data-filter-root="repo-candidates">
-        <div class="split-line">
-          <span class="status-pill green">已连接 GitHub</span>
-          <p class="small-muted" style="margin:0">来自 tanghehui 名下仓库 · 3 小时前同步</p>
+        <div class="field">
+          <label for="repo-url">仓库地址</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="repo-url" placeholder="https://gitlab.com/team/agent-api.git 或 https://git.corp.com/…">
+            <button class="btn primary" type="button">导入</button>
+          </div>
+          <small class="small-muted">任意 forge / 自托管均可。已连接的 forge 可在下方直接选仓库（含内网自托管）；仅当平台路由不到该 forge 时才必须用粘贴地址。</small>
+        </div>
+        <div class="split-line" style="margin-top:14px">
+          <strong style="font-size:13px">或从已连接账号选择</strong>
+          <p class="small-muted" style="margin:0">列出你在该 forge 有权限的仓库 · 3 小时前同步</p>
+        </div>
+        <div class="segmented" aria-label="选择来源" style="margin-top:8px">
+          <button type="button" aria-pressed="true"><span class="forge-tag gh">GitHub</span> 已连接</button>
+          <button type="button" aria-pressed="false"><span class="forge-tag gl">GitLab</span> 已连接</button>
+          <button type="button" aria-pressed="false" disabled><span class="forge-tag ge">Gitee</span> 未连接</button>
         </div>
 
         <div class="filterbar" style="border:0;padding:0">

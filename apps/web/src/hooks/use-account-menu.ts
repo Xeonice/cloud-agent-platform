@@ -7,6 +7,10 @@
  * effect is client-only and guards `typeof document` so it is SSR-safe.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+
+import { authSessionQuery } from "@/lib/api/queries";
+import { isAuthCapable } from "@/lib/mock-session";
 
 /** What {@link useAccountMenu} returns: open state + trigger/menu prop spreads. */
 export interface UseAccountMenuResult<
@@ -88,4 +92,29 @@ export function useAccountMenu<
       onClick: toggle,
     },
   };
+}
+
+/**
+ * Whether the current operator is an admin (add-private-account-identity, task
+ * 9.4). Gates the account menu's 账号管理 entry, which is admin-only (the
+ * account-administration page is restricted to `role = admin` principals; a
+ * non-admin is 403'd server-side regardless, so this is a UX gate, not the
+ * security boundary).
+ *
+ * Reads the resolved auth session (the same source the AccountMenu identity
+ * derives from). `role` is added to the session shape by the contracts/auth-core
+ * tracks; under REAL auth this reads it STRUCTURALLY and treats the operator as
+ * admin ONLY when the session explicitly reports `role === "admin"`. Under the
+ * MOCK gate (and the `VITE_FORCE_MOCK` visual harness) the single allowlisted
+ * operator IS the admin, so this returns `true` — keeping the 账号管理 entry
+ * present in the mock/visual posture (matching the design).
+ *
+ * SSR-safe: a pure read of the query data (no window/clock access).
+ */
+export function useIsAdmin(): boolean {
+  const { data: session } = useQuery(authSessionQuery());
+  // Mock gate: the lone allowlisted operator is the admin (design posture).
+  if (!isAuthCapable()) return true;
+  const role = (session as { role?: unknown } | null | undefined)?.role;
+  return role === "admin";
 }

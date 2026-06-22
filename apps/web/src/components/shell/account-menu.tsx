@@ -23,6 +23,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 
 import { authSessionQuery } from "@/lib/api/queries";
 import { ALLOWED_ACCOUNT, logout } from "@/lib/mock-session";
+import { useIsAdmin } from "@/hooks/use-account-menu";
 import { cn } from "@/utils";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -62,6 +63,9 @@ function deriveInitials(name: string | null | undefined, login: string): string 
 export function AccountMenu({ variant = "sidebar" }: AccountMenuProps) {
   const navigate = useNavigate();
   const { data: session } = useQuery(authSessionQuery());
+  // The 账号管理 entry is admin-only (the administration page is restricted to
+  // admins; a non-admin is 403'd server-side regardless). UX-gate it here.
+  const isAdmin = useIsAdmin();
 
   // Never render empty: fall back to the allowlisted account identity until the
   // session query resolves (and on the server, where the client gate is unread).
@@ -120,6 +124,11 @@ export function AccountMenu({ variant = "sidebar" }: AccountMenuProps) {
         <DropdownMenuItem asChild>
           <Link to="/settings">打开设置</Link>
         </DropdownMenuItem>
+        {isAdmin ? (
+          <DropdownMenuItem asChild>
+            <Link to="/accounts">账号管理</Link>
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem onSelect={() => void handleLogout()}>
           退出登录
         </DropdownMenuItem>
