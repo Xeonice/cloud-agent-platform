@@ -19,6 +19,7 @@ import type {
   TerminalStartup,
   TranscriptArtifact,
   TranscriptFormat,
+  TranscriptReadStrategy,
 } from './agent-runtime.port';
 
 /**
@@ -227,6 +228,16 @@ export class CodexRuntime implements AgentRuntime {
       filenameGlob: /(^|\/)rollout-.*\.jsonl$/,
     };
   }
+
+  /**
+   * codex persists a single newest rollout JSONL file (unify-transcript-parsers D3),
+   * so the read mechanism reads the lexicographically-newest `transcriptArtifact` match
+   * and hands the codex-rollout parser a `{ format, jsonl }` source — the prior verbatim
+   * read. A future multi-record runtime declares a different strategy without touching this.
+   */
+  readonly readTranscriptSource: TranscriptReadStrategy = {
+    kind: 'single-newest-jsonl',
+  };
 
   /**
    * Headless one-shot: `codex exec --json`. fix-headless-execution-container-gaps — the

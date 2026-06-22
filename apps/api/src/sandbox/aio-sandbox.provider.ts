@@ -34,6 +34,7 @@ import { sessionIdForTask } from '../agent-runtime/agent-runtime.integration';
 // sandboxSetupCommands emitter rather than provider-inline injection.
 import { CodexRuntime } from '../agent-runtime/codex-runtime';
 import { PROVISION_LOOKUP, type ProvisionLookup } from './provision-lookup.port';
+import type { TranscriptSource } from './transcript-source';
 import { resolveSkillInstaller } from './skill-allowlist';
 import { extractFilesFromTar } from './tar-extract';
 import { assertSafeProviderUrl } from '../settings/assert-safe-provider-url';
@@ -605,33 +606,72 @@ export class AioSandboxProvider
   // resumeRun(taskId): commit + runFromResumeImage — see spike-findings.md §D.
 
   /**
-   * Read the codex rollout JSONL out of a STOPPED, retained `cap-aio-<taskId>`
-   * container for read-only history replay (D3). Uses dockerode `getArchive`,
-   * which streams a tar of the container's FROZEN layer WITHOUT restarting it —
-   * so an `Exited` sandbox is read in place. Scoped to `~/.codex/sessions` only:
-   * it never pulls `auth.json` or any credential file out of the container.
+   * Read the runtime's transcript source out of a STOPPED, retained `cap-aio-<taskId>`
+   * container for read-only history replay (D3; generalized by unify-transcript-parsers
+   * D3). Uses dockerode `getArchive`, which streams a tar of the container's FROZEN layer
+   * WITHOUT restarting it — so an `Exited` sandbox is read in place. Scoped to the
+   * runtime-declared transcript dir only: it never pulls `auth.json` or any credential
+   * file out of the container.
    *
-   * Returns the newest `rollout-*.jsonl`'s raw text, or `null` when the rollout
-   * is absent — container reaped/expired, path missing, or codex never ran
-   * (provision_failed / agent_failed_to_start). The endpoint maps `null` to the
-   * honest `empty`/`expired` states; this method never throws into the caller.
+   * Resolves WHERE from the runtime's {@link AgentRuntime.transcriptArtifact} (codex →
+   * `~/.codex/sessions/rollout-*.jsonl`, claude → `~/.claude/projects/<slug>/<sid>.jsonl`)
+   * and HOW from its {@link AgentRuntime.readTranscriptSource} strategy. For the
+   * single-newest-JSONL strategy (codex/claude) it returns the discriminated
+   * {@link TranscriptSource} `{ format, jsonl }` whose `jsonl` is the BYTE-IDENTICAL
+   * lexicographically-newest matching file — the prior raw text, now tagged with the
+   * runtime's `transcriptFormat` so the parser registry dispatches without a re-derivation.
+   *
+   * Returns `null` when no source is present — container reaped/expired, path missing, or
+   * the agent never ran (provision_failed / agent_failed_to_start). The endpoint maps
+   * `null` to the honest `empty`/`expired` states; this method NEVER throws into the caller
+   * (no container / no match / unreadable → absent source). An omitted/unresolvable runtime
+   * degrades to the codex default, exactly like the provision-time setup path.
    */
   async readRolloutFromContainer(
     taskId: string,
     runtimeId?: RuntimeId | null,
-  ): Promise<string | null> {
-    // Resolve WHERE this task's transcript lands from its runtime (add-headless-execution-track):
-    // codex → `~/.codex/sessions/rollout-*.jsonl`, claude → `~/.claude/projects/<slug>/<sid>.jsonl`.
-    // An omitted runtime resolves the codex default (the prior behavior). Pulls ONLY the declared
-    // transcript dir out of the container — never a credential file.
+  ): Promise<TranscriptSource | null> {
+    // Resolve the task's runtime defensively: a registry hiccup (or a focused unit context
+    // with no wired registry) degrades to the codex default — the SAME fall-back the
+    // provision-time setup path uses — so a resolution failure can never throw into this
+    // non-throwing read contract.
+    let runtime: AgentRuntime;
+    try {
+      runtime = this.runtimes?.resolve?.(runtimeId) ?? new CodexRuntime();
+    } catch {
+      runtime = new CodexRuntime();
+    }
+    // WHERE: the runtime declares its transcript dir/glob. Pulls ONLY that dir out of the
+    // container — never a credential file. WHAT: the runtime's `transcriptFormat` tags the
+    // returned source so the parser registry dispatches with no re-derivation.
     const ctx: LaunchContext = {
       taskId,
       workspaceDir: '/home/gem/workspace',
       sessionId: sessionIdForTask(taskId),
     };
-    const { dir, filenameGlob } = this.runtimes
-      .resolve(runtimeId)
-      .transcriptArtifact(ctx);
+    const { dir, filenameGlob } = runtime.transcriptArtifact(ctx);
+    const format = runtime.transcriptFormat;
+    // HOW: read the source per the runtime-declared strategy. Today every runtime declares
+    // the single-newest-JSONL read; a future multi-record runtime declares a different
+    // strategy without editing this dispatch.
+    if (runtime.readTranscriptSource.kind === 'single-newest-jsonl') {
+      const jsonl = await this.readSingleNewestJsonl(taskId, dir, filenameGlob);
+      return jsonl === null ? null : { format, jsonl };
+    }
+    return null;
+  }
+
+  /**
+   * The single-newest-JSONL read mechanism (unify-transcript-parsers D3): tar the declared
+   * `dir` out of the FROZEN container layer, pick the lexicographically-newest file matching
+   * `filenameGlob`, and return its raw UTF-8 text — BYTE-IDENTICAL to the prior inline read.
+   * Returns `null` on any miss (no container / no match / unreadable); NEVER throws.
+   */
+  private async readSingleNewestJsonl(
+    taskId: string,
+    dir: string,
+    filenameGlob: RegExp,
+  ): Promise<string | null> {
     const container =
       this.containers.get(taskId) ??
       this.docker.getContainer(`${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`);

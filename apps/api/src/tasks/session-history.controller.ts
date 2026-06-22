@@ -189,14 +189,17 @@ export class SessionHistoryController {
 
     // (2) FALLBACK: no durable archive → read the rollout out of the retained
     // sandbox (null = none present). The provider never throws here and never
-    // exports a credential file.
-    const jsonl = await this.sandbox.readRolloutFromContainer(id, runtime);
-    if (jsonl !== null) {
+    // exports a credential file. It returns the runtime-tagged TranscriptSource
+    // (unify-transcript-parsers D3); we consume its RAW `jsonl` so the durable
+    // archive stays byte-for-byte the same raw text and the parse facade keeps its
+    // stable `(jsonl, format)` signature.
+    const source = await this.sandbox.readRolloutFromContainer(id, runtime);
+    if (source !== null) {
       // Read-through backfill so the NEXT read is a durable hit. Best-effort:
       // the persisted store logs + swallows its own failures; awaiting only
       // sequences the write before we respond and never blocks the read on it.
-      await this.transcripts.backfill(id, jsonl);
-      return this.toAvailable(id, jsonl, task.status, format);
+      await this.transcripts.backfill(id, source.jsonl);
+      return this.toAvailable(id, source.jsonl, task.status, format);
     }
 
     // (3) Neither source yields a rollout. Distinguish a truly aged-out/reaped

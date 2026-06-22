@@ -147,15 +147,26 @@ const CLAUDE_JSONL = [
   '{ torn final line', // defensive: a torn line never aborts the parse
 ].join('\n');
 
-test('parseClaudeTranscript extracts user/assistant turns and skips non-conversational types', () => {
+test('parseClaudeTranscript extracts user/thinking/assistant turns and skips non-conversational types', () => {
   const { turns, meta } = parseClaudeTranscript(CLAUDE_JSONL);
+  // unify-transcript-parsers (D6): the assistant `thinking` block now surfaces as
+  // a reasoning turn (assistant{isFinalAnswer:false}) ahead of the final answer;
+  // the lifecycle/sidecar + tool_result-only records are still skipped.
   assert.deepEqual(
     turns.map((t) => t.kind),
-    ['user', 'assistant'],
+    ['user', 'assistant', 'assistant'],
   );
   assert.equal(turns[0]!.kind === 'user' && turns[0]!.text, 'summarize this repo');
-  assert.ok(turns[1]!.kind === 'assistant' && turns[1]!.text === 'It is a demo repo.');
-  assert.ok(turns[1]!.kind === 'assistant' && turns[1]!.isFinalAnswer === true);
+  assert.ok(
+    turns[1]!.kind === 'assistant' && turns[1]!.text === 'hmm' && turns[1]!.isFinalAnswer === false,
+    'the thinking block becomes a reasoning turn (isFinalAnswer false)',
+  );
+  assert.ok(
+    turns[2]!.kind === 'assistant' &&
+      turns[2]!.text === 'It is a demo repo.' &&
+      turns[2]!.isFinalAnswer === true,
+    'the text block becomes the final answer (stop_reason end_turn)',
+  );
   assert.equal(meta.model, 'claude-opus');
   assert.equal(meta.cwd, '/home/gem/workspace');
 });

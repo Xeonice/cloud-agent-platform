@@ -1208,7 +1208,11 @@ try {
           retainContainer.calls.removed === 0,
           'settle teardown does NOT remove the container (kept as read-only history)',
         );
-        const trimCmd = execCmds.slice(execsBefore).find((c) => c.includes('/home/gem/.codex'));
+        // Match the TRIM exec specifically (it `rm -rf`s the ~/.codex/cache) — NOT the
+        // codex rotated-refresh-token capture exec that fix-codex-headless-subscription-auth
+        // runs BEFORE the trim: that one also touches ~/.codex (it reads auth.json) but is
+        // not the trim, and a bare `/home/gem/.codex` match would grab it first.
+        const trimCmd = execCmds.slice(execsBefore).find((c) => c.includes('/home/gem/.codex/cache'));
         assert(trimCmd !== undefined, 'teardown issues a pre-stop ~/.codex trim exec while the sandbox is live');
         assert(
           trimCmd.includes('auth.json'),
@@ -1336,8 +1340,19 @@ try {
       const p = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
       p.docker = makeFakeDocker(c);
       await p.provision({ taskId: 'task-rollout' });
-      const text = await p.readRolloutFromContainer('task-rollout');
-      assert(text === rolloutBody, 'readRolloutFromContainer returns the rollout JSONL text (not history.jsonl)');
+      // unify-transcript-parsers D3: readRolloutFromContainer now returns the runtime-tagged
+      // TranscriptSource. For the codex single-newest-JSONL strategy the source is
+      // `{ format: 'codex-rollout', jsonl }` whose `jsonl` is BYTE-IDENTICAL to the prior
+      // lexicographically-newest-file read (the history.jsonl sibling is still ignored).
+      const source = await p.readRolloutFromContainer('task-rollout');
+      assert(
+        source !== null && source.jsonl === rolloutBody,
+        'readRolloutFromContainer returns the rollout JSONL text byte-identical (not history.jsonl)',
+      );
+      assert(
+        source !== null && source.format === 'codex-rollout',
+        'the returned TranscriptSource is tagged with the runtime transcriptFormat (codex-rollout)',
+      );
       assert(
         archivePath === '/home/gem/.codex/sessions',
         'getArchive is scoped to ~/.codex/sessions only (never auth.json or any credential)',
@@ -1358,14 +1373,17 @@ try {
       p.docker = makeFakeDocker(c);
       await p.provision({ taskId: 'task-no-rollout' });
       let threw = false;
-      let text;
+      let source;
       try {
-        text = await p.readRolloutFromContainer('task-no-rollout');
+        source = await p.readRolloutFromContainer('task-no-rollout');
       } catch {
         threw = true;
       }
       assert(!threw, 'readRolloutFromContainer never throws when the rollout is absent');
-      assert(text === null, 'readRolloutFromContainer returns null when the container/rollout is gone');
+      assert(
+        source === null,
+        'readRolloutFromContainer resolves to an ABSENT source (null) when the container/rollout is gone',
+      );
     }
 
     // ---- 3.x: boot RE-ADOPTION — keep live-session sandboxes, reap only no-live ----

@@ -134,7 +134,8 @@ async function main() {
 
     const exec = turns[2];
     assert(exec.kind === 'tool' && exec.name === 'exec_command', 'tool turn carries the function name');
-    assert(exec.args === '{"cmd":"ls src"}', 'tool turn carries the raw arguments string');
+    // CHANGED (D4): args is now the HUMAN-READABLE command (`arguments.cmd`), not the raw JSON envelope.
+    assert(exec.args === 'ls src', 'exec_command tool turn carries the human-readable cmd (not raw JSON args)');
     assert(exec.output === 'app.tsx\nlogin.tsx', 'function_call_output is linked to its call by call_id');
     assert(exec.tokenCount === 128, 'token_count last_token_usage attaches to the preceding tool turn');
 
@@ -211,6 +212,175 @@ async function main() {
     assert(nturns[0] && nturns[0].at === undefined, 'a turn with no source timestamp omits at (no fabrication)');
     assert(nmeta.totalTokens === undefined, 'no token data → totalTokens omitted (not zeroed)');
     assert(nmeta.durationMs === undefined, 'no resolvable start/end → durationMs omitted');
+  }
+
+  // ---- 6) command extraction dispatches on TOOL NAME (D4) ------------------
+  // For each branch: a POSITIVE case (the expected field present → readable command)
+  // and an HONEST-OMISSION case (field absent/wrong-type → fall back to raw args).
+  {
+    const toolCall = (name, payload) =>
+      jsonl({
+        timestamp: '2026-06-04T10:00:01Z',
+        type: 'response_item',
+        payload: { type: 'function_call', name, call_id: 'c-' + name, ...payload },
+      });
+    const oneTool = (line) => {
+      const { turns } = parseRollout(line);
+      return turns.find((t) => t.kind === 'tool');
+    };
+
+    // exec_command → arguments.cmd (string)
+    const exec1 = oneTool(toolCall('exec_command', { arguments: '{"cmd":"pnpm test"}' }));
+    assert(exec1 && exec1.args === 'pnpm test', 'exec_command extracts arguments.cmd as the command');
+    // exec_command honest omission: no `cmd` field → fall back to raw args string
+    const exec2 = oneTool(toolCall('exec_command', { arguments: '{"workdir":"/w"}' }));
+    assert(exec2 && exec2.args === '{"workdir":"/w"}', 'exec_command with no cmd falls back to the raw arguments string');
+
+    // shell → arguments.command (array) joined by single spaces; workdir/timeout_ms dropped
+    const shell1 = oneTool(toolCall('shell', { arguments: '{"command":["bash","-lc","ls -la"],"workdir":"/w","timeout_ms":5000}' }));
+    assert(shell1 && shell1.args === 'bash -lc ls -la', 'shell joins arguments.command with single spaces (workdir/timeout_ms dropped)');
+    // local_shell / container.exec share the same branch
+    const localShell = oneTool(toolCall('local_shell', { arguments: '{"command":["echo","hi"]}' }));
+    assert(localShell && localShell.args === 'echo hi', 'local_shell joins arguments.command');
+    const containerExec = oneTool(toolCall('container.exec', { arguments: '{"command":["pwd"]}' }));
+    assert(containerExec && containerExec.args === 'pwd', 'container.exec joins arguments.command');
+    // shell honest omission: command is not an array → fall back to raw args
+    const shell2 = oneTool(toolCall('shell', { arguments: '{"command":"not-an-array"}' }));
+    assert(shell2 && shell2.args === '{"command":"not-an-array"}', 'shell with non-array command falls back to the raw arguments string');
+
+    // apply_patch keeps its RAW input patch text verbatim (positive)
+    const patchLine = jsonl({
+      timestamp: '2026-06-04T10:00:02Z',
+      type: 'response_item',
+      payload: { type: 'custom_tool_call', name: 'apply_patch', input: '*** Begin Patch\n+x\n*** End Patch', call_id: 'cp' },
+    });
+    const patchT = oneTool(patchLine);
+    assert(patchT && patchT.args === '*** Begin Patch\n+x\n*** End Patch', 'apply_patch keeps its raw input patch text verbatim');
+
+    // unknown tool / unparseable args → honest fallback to the raw arguments string
+    const unknown = oneTool(toolCall('some_new_tool', { arguments: '{"foo":"bar"}' }));
+    assert(unknown && unknown.args === '{"foo":"bar"}', 'an unmapped tool falls back to the raw arguments string');
+    const garbled = oneTool(toolCall('exec_command', { arguments: 'not-json-at-all' }));
+    assert(garbled && garbled.args === 'not-json-at-all', 'a non-JSON arguments envelope passes through unchanged');
+  }
+
+  // ---- 7) exec OUTPUT wrapper stripping is conservative (D4) ----------------
+  // NEW wrapped-output fixture: the documented Exit code/Wall time/Total output
+  // lines/Output:/(N lines omitted) grammar → keep only the body. Plus a format
+  // mismatch that must PASS THROUGH unchanged.
+  {
+    const wrapped = [
+      'Exit code: 0',
+      'Wall time: 1.20s',
+      'Total output lines: 2',
+      'Output:',
+      'app.tsx',
+      'login.tsx',
+      '(3 lines omitted)',
+    ].join('\n');
+    const WRAPPED_OUTPUT_ROLLOUT = [
+      jsonl({ timestamp: '2026-06-05T10:00:00Z', type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: '{"cmd":"ls"}', call_id: 'w1' } }),
+      jsonl({ timestamp: '2026-06-05T10:00:01Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'w1', output: wrapped } }),
+    ].join('\n');
+    const { turns: wturns } = parseRollout(WRAPPED_OUTPUT_ROLLOUT);
+    const wtool = wturns.find((t) => t.kind === 'tool');
+    assert(wtool && wtool.output === 'app.tsx\nlogin.tsx', 'exec output wrapper stripped to just the body (header + (N lines omitted) removed)');
+
+    // A drifted/unrecognized wrapper (no header prefix) PASSES THROUGH unchanged.
+    const PLAIN_OUTPUT_ROLLOUT = [
+      jsonl({ timestamp: '2026-06-05T10:01:00Z', type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: '{"cmd":"ls"}', call_id: 'w2' } }),
+      jsonl({ timestamp: '2026-06-05T10:01:01Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'w2', output: 'just plain output\nno wrapper here' } }),
+    ].join('\n');
+    const { turns: pturns } = parseRollout(PLAIN_OUTPUT_ROLLOUT);
+    const ptool = pturns.find((t) => t.kind === 'tool');
+    assert(ptool && ptool.output === 'just plain output\nno wrapper here', 'output with no recognized wrapper passes through unchanged');
+
+    // A header-only wrapper that would empty a body-carrying output passes through.
+    const HEADER_ONLY_ROLLOUT = [
+      jsonl({ timestamp: '2026-06-05T10:02:00Z', type: 'response_item', payload: { type: 'function_call', name: 'exec_command', arguments: '{"cmd":"ls"}', call_id: 'w3' } }),
+      jsonl({ timestamp: '2026-06-05T10:02:01Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'w3', output: 'Exit code: 0\nWall time: 0.1s' } }),
+    ].join('\n');
+    const { turns: hturns } = parseRollout(HEADER_ONLY_ROLLOUT);
+    const htool = hturns.find((t) => t.kind === 'tool');
+    assert(htool && htool.output === 'Exit code: 0\nWall time: 0.1s', 'a header-only wrapper (no Output: body) passes through, never emptied');
+  }
+
+  // ---- 8) dedup ADJACENT identical user turns; preserve non-adjacent (D4) ---
+  {
+    // event_msg user_message + response_item role=user double-write of the SAME
+    // prompt. With a user_message event present the response_item fallback is
+    // suppressed anyway, so simulate the adjacency directly via two user_message
+    // events (the double-write codex emits) and a non-adjacent repeat.
+    const DEDUP_ROLLOUT = [
+      jsonl({ timestamp: '2026-06-06T10:00:00Z', type: 'event_msg', payload: { type: 'user_message', message: '同一个问题' } }),
+      jsonl({ timestamp: '2026-06-06T10:00:01Z', type: 'event_msg', payload: { type: 'user_message', message: '同一个问题' } }),
+      jsonl({ timestamp: '2026-06-06T10:00:02Z', type: 'event_msg', payload: { type: 'agent_message', message: '好的', phase: 'commentary' } }),
+      // non-adjacent identical user turn (separated by the assistant turn) → KEPT
+      jsonl({ timestamp: '2026-06-06T10:00:03Z', type: 'event_msg', payload: { type: 'user_message', message: '同一个问题' } }),
+    ].join('\n');
+    const { turns: dturns } = parseRollout(DEDUP_ROLLOUT);
+    const userTurns = dturns.filter((t) => t.kind === 'user');
+    assert(userTurns.length === 2, 'an ADJACENT identical user turn is deduped (2 of 3 survive: one collapsed, one non-adjacent kept)');
+    assert(
+      JSON.stringify(dturns.map((t) => t.kind)) === JSON.stringify(['user', 'assistant', 'user']),
+      'dedup collapses the adjacent pair but preserves the non-adjacent repeat',
+    );
+  }
+
+  // ---- 9) filter <environment_context> / <system-reminder> wrappers (D4) ----
+  {
+    // pure-wrapper payload → NO user turn
+    const PURE_WRAPPER = [
+      jsonl({ timestamp: '2026-06-07T10:00:00Z', type: 'event_msg', payload: { type: 'user_message', message: '<environment_context>cwd=/w</environment_context>' } }),
+      jsonl({ timestamp: '2026-06-07T10:00:01Z', type: 'event_msg', payload: { type: 'agent_message', message: '收到', phase: 'final_answer' } }),
+    ].join('\n');
+    const { turns: pw } = parseRollout(PURE_WRAPPER);
+    assert(pw.filter((t) => t.kind === 'user').length === 0, 'a pure <environment_context> wrapper payload emits NO user turn');
+
+    const PURE_REMINDER = [
+      jsonl({ timestamp: '2026-06-07T10:01:00Z', type: 'event_msg', payload: { type: 'user_message', message: '<system-reminder>be careful</system-reminder>' } }),
+    ].join('\n');
+    assert(parseRollout(PURE_REMINDER).turns.filter((t) => t.kind === 'user').length === 0, 'a pure <system-reminder> wrapper payload emits NO user turn');
+
+    // wrapped operator message → degrade to ONLY the operator text
+    const WRAPPED_OPERATOR = [
+      jsonl({ timestamp: '2026-06-07T10:02:00Z', type: 'event_msg', payload: { type: 'user_message', message: '<environment_context>cwd=/w</environment_context>真正的需求' } }),
+    ].join('\n');
+    const { turns: wo } = parseRollout(WRAPPED_OPERATOR);
+    const woUser = wo.find((t) => t.kind === 'user');
+    assert(woUser && woUser.text === '真正的需求', 'a wrapped operator message degrades to only the operator text');
+
+    // plain operator text with no wrapper passes through unchanged
+    const PLAIN_USER = [
+      jsonl({ timestamp: '2026-06-07T10:03:00Z', type: 'event_msg', payload: { type: 'user_message', message: '普通需求' } }),
+    ].join('\n');
+    assert(parseRollout(PLAIN_USER).turns.find((t) => t.kind === 'user').text === '普通需求', 'a user_message with no wrapper passes through unchanged');
+  }
+
+  // ---- 10) UNCHANGED guarantees: diffstat, totals, phase-keyed final, no system ----
+  // Re-parse the full interactive rollout and assert the behaviors Part 2 did NOT
+  // touch remain exactly as before.
+  {
+    const { turns, meta } = parseRollout(INTERACTIVE_ROLLOUT);
+    // diffstat path unchanged: apply_patch with no +/- body still omits diffstat.
+    const patch = turns.find((t) => t.kind === 'tool' && t.name === 'apply_patch');
+    assert(patch && patch.diffstat === undefined, 'UNCHANGED: apply_patch with no +/- body still omits diffstat');
+    // session totals unchanged.
+    assert(meta.totalTokens === 128 && meta.durationMs === 8000, 'UNCHANGED: session totals (totalTokens/durationMs)');
+    // phase-keyed final answer unchanged.
+    const finals = turns.filter((t) => t.kind === 'assistant' && t.isFinalAnswer === true);
+    assert(finals.length === 1 && finals[0].text === '已修复登录页样式。', 'UNCHANGED: phase=final_answer remains the single isFinalAnswer:true turn');
+    const commentaries = turns.filter((t) => t.kind === 'assistant' && t.isFinalAnswer === false);
+    assert(commentaries.length === 1, 'UNCHANGED: reasoning/commentary stays assistant{isFinalAnswer:false} (the 「推理」 channel)');
+    // the parser NEVER emits system turns (that merge stays in the controller/service).
+    assert(turns.every((t) => t.kind !== 'system'), 'UNCHANGED: the parser emits NO system turns (audit merge stays outside the parser)');
+
+    // diffstat still computed from a real apply_patch body (the +2/−1 fixture path).
+    const DIFFSTAT_ROLLOUT = [
+      jsonl({ timestamp: '2026-06-08T10:00:00Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', input: '*** Begin Patch\n keep\n+a\n+b\n-c\n*** End Patch', call_id: 'dp' } }),
+    ].join('\n');
+    const dpatch = parseRollout(DIFFSTAT_ROLLOUT).turns.find((t) => t.kind === 'tool');
+    assert(dpatch && dpatch.diffstat && dpatch.diffstat.add === 2 && dpatch.diffstat.del === 1, 'UNCHANGED: apply_patch diffstat counts +2/−1 from the raw patch body');
   }
 }
 
