@@ -107,6 +107,8 @@ function sessionPrincipal(githubId: number): OperatorPrincipal {
       name: 'U',
       avatarUrl: '',
       allowed: true,
+      role: 'member',
+      mustChangePassword: false,
     },
   };
 }

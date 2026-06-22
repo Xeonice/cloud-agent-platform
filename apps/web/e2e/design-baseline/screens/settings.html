@@ -30,6 +30,7 @@
         </button>
         <div class="account-popover" role="menu" hidden data-account-popover>
           <a role="menuitem" href="dashboard.html" data-menu-close>返回控制台</a>
+          <a role="menuitem" href="accounts.html" data-menu-close>账号管理</a>
           <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
         </div>
       </section>
@@ -42,7 +43,7 @@
           <h1 class="screen-title">账户与模型凭据</h1>
           <p class="screen-lead">把访问身份、仓库默认值、会话保留和 Agent 模型凭据放在同一个安全面板里管理。</p>
         </div>
-        <span class="status-pill green">单用户模式</span>
+        <span class="status-pill green">私有多用户</span>
       </section>
 
       <div class="settings-stack">
@@ -59,25 +60,28 @@
             </div>
           </div>
           <div class="config-list">
+            <div class="config-row"><span>角色</span><strong>管理员</strong></div>
             <div class="config-row"><span>登录方式</span><strong>GitHub OAuth</strong></div>
             <div class="config-row"><span>控制台范围</span><strong>私有访问</strong></div>
-            <div class="config-row"><span>仓库来源</span><strong>已导入仓库</strong></div>
           </div>
         </section>
 
         <section id="github" class="panel">
           <div class="panel-body">
             <div class="settings-card-head">
-              <h2>允许进入的 GitHub 账号</h2>
-              <p>只有这个 GitHub OAuth 账号可以进入控制台；没有公开注册入口。账号由 OAuth 身份决定，此处只读。</p>
+              <h2>GitHub 授权白名单</h2>
+              <p>GitHub 登录是进入控制台的方式之一，仅白名单内的账号可通过。名单由部署环境变量 <span class="mono">AUTH_ALLOWLIST</span>（GitHub 数字 ID）管理，此处只读展示当前生效项。</p>
             </div>
-            <div class="field">
-              <input id="allowed-account" value="tanghehui" readonly aria-label="允许进入的 GitHub 账号">
+            <div class="provider-meta split-line">
+              <div>
+                <strong>tanghehui</strong>
+                <p class="small-muted" style="margin:4px 0 0">github.com/tanghehui · ID 583231</p>
+              </div>
+              <span class="status-pill green">已允许</span>
             </div>
           </div>
           <div class="panel-foot">
-            <span class="foot-hint">谁能进控制台由 OAuth allowlist 决定。</span>
-            <button class="btn primary" type="button">保存</button>
+            <span class="foot-hint">修改白名单需更新部署环境变量并重启；本地账号请在左下角账户菜单的「账号管理」页开通。</span>
           </div>
         </section>
 
@@ -194,6 +198,42 @@
             </div>
           </div>
         </section>
+
+        <section id="forges" class="panel">
+          <div class="panel-body">
+            <div class="settings-card-head">
+              <h2>代码托管连接</h2>
+              <p>连接 GitHub / GitLab / Gitee 后，任务完成可把沙箱里的改动推回对应仓库并自动开 PR / MR。粘贴对应平台的访问令牌（自托管填写实例地址）；保存后仅展示令牌后缀。</p>
+            </div>
+            <div class="provider-meta split-line">
+              <div>
+                <strong>GitHub</strong>
+                <p class="small-muted" style="margin:4px 0 0">github.com · 复用登录 OAuth 令牌，或粘贴 <span class="mono">repo</span> 范围的 PAT。</p>
+              </div>
+              <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+                <span class="status-pill green">已连接 ••••a91f</span>
+                <button class="btn" type="button" data-open-dialog="#forge-github-dialog">管理</button>
+              </div>
+            </div>
+            <div class="provider-meta split-line" style="margin-top:12px">
+              <div>
+                <strong>GitLab</strong>
+                <p class="small-muted" style="margin:4px 0 0">gitlab.com 或自托管实例 · 需 <span class="mono">api</span> 范围的 Personal Access Token。</p>
+              </div>
+              <button class="btn" type="button" data-open-dialog="#forge-gitlab-dialog">连接</button>
+            </div>
+            <div class="provider-meta split-line" style="margin-top:12px">
+              <div>
+                <strong>Gitee</strong>
+                <p class="small-muted" style="margin:4px 0 0">gitee.com 或企业版 · 需 <span class="mono">projects</span> + <span class="mono">pull_requests</span> 范围的私人令牌。</p>
+              </div>
+              <button class="btn" type="button" data-open-dialog="#forge-gitee-dialog">连接</button>
+            </div>
+          </div>
+          <div class="panel-foot">
+            <span class="foot-hint">令牌按所属账户加密存储，仅在任务推送 / 开 PR 时解密使用。</span>
+          </div>
+        </section>
       </div>
     </main>
   </div>
@@ -206,6 +246,7 @@
       <button type="button" aria-current="page" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
       <div class="account-popover" role="menu" hidden data-account-popover>
         <a role="menuitem" href="dashboard.html" data-menu-close>返回控制台</a>
+        <a role="menuitem" href="accounts.html" data-menu-close>账号管理</a>
         <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
       </div>
     </div>
@@ -340,6 +381,119 @@
       <div class="dialog-foot">
         <button class="btn" type="button" data-close-dialog>取消</button>
         <button class="btn primary" type="button" data-close-dialog>保存凭据</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="forge-github-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="forge-github-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="forge-github-title">管理 GitHub 连接</h2>
+          <p>默认复用你的登录 OAuth 令牌；如需独立的写权限令牌，粘贴一个含 <span class="mono">repo</span> 范围的 PAT。保存后仅展示后缀。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="provider-meta split-line">
+          <div>
+            <strong>当前令牌</strong>
+            <p class="small-muted" style="margin:4px 0 0">登录 OAuth 令牌 ••••a91f · 含 <span class="mono">repo</span> 写权限。</p>
+          </div>
+          <span class="status-pill green">已连接</span>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <label for="github-pat">替换为 PAT（可选）</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="github-pat" type="password" placeholder="粘贴 ghp_ / github_pat_ 开头的令牌">
+            <button class="btn" type="button" data-reveal="#github-pat">显示</button>
+          </div>
+          <small class="small-muted">留空则继续使用登录令牌。</small>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog>保存连接</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="forge-gitlab-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="forge-gitlab-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="forge-gitlab-title">连接 GitLab</h2>
+          <p>在 GitLab → Settings → Access Tokens 创建含 <span class="mono">api</span> 范围的令牌并粘贴。自托管请填写实例地址。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="gitlab-host">实例地址</label>
+          <input id="gitlab-host" value="https://gitlab.com">
+          <small class="small-muted">公网填 https://gitlab.com；自托管填实例域名（如 https://git.corp.com）。</small>
+        </div>
+        <div class="field">
+          <label for="gitlab-token">Personal Access Token</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="gitlab-token" type="password" placeholder="粘贴 glpat- 开头的令牌">
+            <button class="btn" type="button" data-reveal="#gitlab-token">显示</button>
+          </div>
+        </div>
+        <div class="provider-meta split-line" data-conn-test>
+          <div>
+            <strong>连接验证</strong>
+            <p class="small-muted" style="margin:4px 0 0" data-conn-status>保存前验证令牌可用且具备写权限。</p>
+          </div>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <span class="status-pill" data-conn-pill>未验证</span>
+            <button class="btn" type="button" data-test-connection>验证连接</button>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog data-conn-save disabled>保存连接</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="forge-gitee-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="forge-gitee-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="forge-gitee-title">连接 Gitee</h2>
+          <p>在 Gitee → 设置 → 私人令牌 创建含 <span class="mono">projects</span> + <span class="mono">pull_requests</span> 范围的令牌并粘贴。企业版请填写实例地址。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="gitee-host">实例地址</label>
+          <input id="gitee-host" value="https://gitee.com">
+          <small class="small-muted">公网填 https://gitee.com；企业版填你的实例域名。</small>
+        </div>
+        <div class="field">
+          <label for="gitee-token">私人令牌</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="gitee-token" type="password" placeholder="粘贴 Gitee 私人令牌">
+            <button class="btn" type="button" data-reveal="#gitee-token">显示</button>
+          </div>
+        </div>
+        <div class="provider-meta split-line" data-conn-test>
+          <div>
+            <strong>连接验证</strong>
+            <p class="small-muted" style="margin:4px 0 0" data-conn-status>保存前验证令牌可用且具备写权限。</p>
+          </div>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <span class="status-pill" data-conn-pill>未验证</span>
+            <button class="btn" type="button" data-test-connection>验证连接</button>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog data-conn-save disabled>保存连接</button>
       </div>
     </section>
   </div>

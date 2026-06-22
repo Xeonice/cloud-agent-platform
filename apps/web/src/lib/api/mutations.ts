@@ -37,6 +37,9 @@ import type {
   DiscoverModelsResponse,
   ApiKeyMintRequest,
   ApiKeyMintResponse,
+  AdminAccountListItem,
+  AdminCreateAccountRequest,
+  Role,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
@@ -516,6 +519,81 @@ export function setMcpServerEnabledMutation(
       void queryClient.invalidateQueries({
         queryKey: queryKeys.mcpServerEnabled,
       });
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Account administration (account-administration) — admin-only.
+// Each writes through the real (admin-gated) endpoint or the mock store, then
+// invalidates the account list so the table re-reads the source of truth. The api
+// 403s a non-admin regardless of the UI affordance (defense in depth).
+// ---------------------------------------------------------------------------
+
+/** Create a local account (`POST /accounts`). */
+export function createAdminAccountMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<AdminAccountListItem, Error, AdminCreateAccountRequest> {
+  return {
+    mutationFn: (body) =>
+      isCapable("accounts")
+        ? real.createAdminAccount(body)
+        : mock.mockCreateAdminAccount(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.adminAccounts });
+    },
+  };
+}
+
+/** Enable/disable any account (`PATCH /accounts/:id/enabled`). */
+export function setAdminAccountEnabledMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<
+  AdminAccountListItem,
+  Error,
+  { id: string; allowed: boolean }
+> {
+  return {
+    mutationFn: ({ id, allowed }) =>
+      isCapable("accounts")
+        ? real.setAdminAccountEnabled(id, allowed)
+        : mock.mockSetAdminAccountEnabled(id, allowed),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.adminAccounts });
+    },
+  };
+}
+
+/** Reset a local account's password (`PATCH /accounts/:id/password`). */
+export function resetAdminAccountPasswordMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<
+  AdminAccountListItem,
+  Error,
+  { id: string; password: string }
+> {
+  return {
+    mutationFn: ({ id, password }) =>
+      isCapable("accounts")
+        ? real.resetAdminAccountPassword(id, password)
+        : mock.mockResetAdminAccountPassword(id, password),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.adminAccounts });
+    },
+  };
+}
+
+/** Assign an account's role (`PATCH /accounts/:id/role`). */
+export function setAdminAccountRoleMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<AdminAccountListItem, Error, { id: string; role: Role }> {
+  return {
+    mutationFn: ({ id, role }) =>
+      isCapable("accounts")
+        ? real.setAdminAccountRole(id, role)
+        : mock.mockSetAdminAccountRole(id, role),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.adminAccounts });
     },
   };
 }

@@ -31,6 +31,8 @@ const VALID_USER = {
   name: "Tang Hehui",
   avatarUrl: "https://avatars.example/u/12345",
   allowed: true,
+  role: "admin",
+  mustChangePassword: false,
 };
 
 function stubFetch(response: Response): void {

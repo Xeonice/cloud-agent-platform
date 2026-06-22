@@ -3,10 +3,14 @@
  *
  * The prototype `.panel.settings-form`: a panel-head ("访问与默认值" + a mono
  * "保存到本地状态" note), then five controls and an action row:
- *   1. 允许进入的 GitHub 账号 — a READ-ONLY display of `allowedAccount`. This is
- *      governed by the multi-user-oauth allowlist ("谁能进控制台"), NOT an editable
- *      preference, so the input is rendered `readOnly`/`disabled` and is never
- *      submitted (the update contract has no `allowedAccount` field).
+ *   1. GitHub 授权白名单 — a READ-ONLY display of the env-managed allowlist
+ *      (`AUTH_ALLOWLIST`, GitHub numeric IDs). add-private-account-identity
+ *      (task 9.6): GitHub login is ONE of three console login methods; the
+ *      allowlist that gates it is governed by the deployment environment
+ *      (`AUTH_ALLOWLIST`), NOT editable in the UI — shown read-only with a note
+ *      that local accounts are opened on the 账号管理 page (no inline account
+ *      management here). It is never submitted (the update contract has no
+ *      `allowedAccount` field).
  *   2. 默认仓库 — a `Select` whose options are the imported repos
  *      (`reposQuery`); saving validates the choice references an imported repo.
  *   3. 会话记录保留 — a `Select` over the allowed retention windows (30/7/90 天,
@@ -21,9 +25,10 @@
  * (default repo cleared, retention 30, slot ceiling 5, write-confirm on)
  * WITHOUT auto-saving — matching the prototype's local reset.
  *
- * SECURITY/CONCEPT split: the editable preferences here NEVER touch the OAuth
- * login identity (read-only above) or the Codex execution credential (the
- * `#codex` section). They are three distinct concerns.
+ * SECURITY/CONCEPT split: the editable preferences here NEVER touch the console
+ * login identity (the GitHub allowlist is read-only/env-managed above; local
+ * accounts live on 账号管理) or the Codex execution credential (the `#codex`
+ * section). They are distinct concerns and are never conflated.
  *
  * SSR-safe: the draft is plain `useState` seeded from the (server-hydrated)
  * `settings` prop; no window/clock/random during render.
@@ -41,7 +46,7 @@ import type {
   RetentionDays,
   UpdateSettingsRequest,
 } from "@cap/contracts";
-import { cn } from "@/utils";
+import { StatusPill } from "@/components/status-pill";
 import {
   Select,
   SelectContent,
@@ -208,22 +213,35 @@ export function SettingsForm({
         </span>
       </div>
 
-      {/* 允许进入的 GitHub 账号 — READ-ONLY (governed by the allowlist). */}
+      {/* GitHub 授权白名单 — READ-ONLY, env-managed (AUTH_ALLOWLIST). GitHub login
+          is one of three methods; the allowlist that gates it is governed by the
+          deployment environment and is NOT editable here. Local accounts are
+          opened on the 账号管理 page (no inline account management). */}
       <div className="mb-3.5 grid gap-2">
-        <label htmlFor="allowedAccount" className={fieldLabel}>
-          允许进入的 GitHub 账号
-        </label>
-        <input
-          id="allowedAccount"
-          name="allowedAccount"
-          value={settings.allowedAccount}
-          readOnly
-          aria-readonly="true"
-          autoComplete="off"
-          className={cn(fieldControl, "cursor-not-allowed text-muted-foreground")}
-        />
+        <span className={fieldLabel}>GitHub 授权白名单</span>
         <small className={fieldHint}>
-          只有这个 GitHub OAuth 账号可以进入控制台；没有公开注册入口。
+          GitHub 登录是进入控制台的方式之一，仅白名单内的账号可通过。名单由部署环境变量{" "}
+          <span className="font-mono">AUTH_ALLOWLIST</span>（GitHub 数字
+          ID）管理，此处只读展示当前生效项。
+        </small>
+        <div
+          className="flex items-center justify-between gap-3 rounded-md bg-[#fafafa] px-3.5 py-3 shadow-ring"
+          aria-readonly="true"
+        >
+          <div className="min-w-0">
+            <strong className="block text-[13px] font-semibold text-foreground">
+              {settings.allowedAccount}
+            </strong>
+            <span className="block font-mono text-xs text-muted-foreground">
+              github.com/{settings.allowedAccount}
+            </span>
+          </div>
+          <StatusPill variant="green" className="shrink-0">
+            已允许
+          </StatusPill>
+        </div>
+        <small className={fieldHint}>
+          修改白名单需更新部署环境变量并重启；本地账号请在左下角账户菜单的「账号管理」页开通。
         </small>
       </div>
 

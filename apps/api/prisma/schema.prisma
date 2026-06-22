@@ -33,6 +33,17 @@ enum TaskStatus {
   agent_failed_to_start
 }
 
+/// Console authorization role (add-private-account-identity).
+///
+/// `role` gates ONLY the admin panel (account-administration); it carries NO
+/// execution privilege — every `allowed` account is host-root regardless of
+/// role (the UI must never imply per-role sandboxing). MUST stay in sync with
+/// the `@cap/contracts` `RoleSchema` values. Defaults to `member`.
+enum Role {
+  admin
+  member
+}
+
 /// A registered repository the operator can launch tasks against.
 ///
 /// The GitHub-import metadata columns (`description`, `defaultBranch`,
@@ -170,49 +181,167 @@ model Task {
 /// `allowed` is the load-bearing fail-closed allowlist gate: only an
 /// allowlisted identity is ever surfaced as a session user.
 model User {
-  id                String   @id @default(uuid())
+  id                 String   @id @default(uuid())
   /// Stable, immutable GitHub numeric account id; the allowlist + user-record key.
-  githubId          Int      @unique @map("github_id")
-  /// GitHub `login` (mutable username), refreshed on each login.
-  login             String
-  /// GitHub display name, captured for console rendering.
-  name              String
-  /// GitHub avatar reference, captured for console rendering.
-  avatarUrl         String   @map("avatar_url")
-  /// Whether this identity is presently on the fail-closed allowlist.
-  allowed           Boolean
-  /// The operator's GitHub OAuth access token, stored server-side (never exposed
-  /// to the browser) for later GitHub-import calls (`/user/repos`) and for the
-  /// github push-back fallback. ENCRYPTED at rest (add-forge-credentials) as the
-  /// joined `ciphertext.iv.authTag` envelope — decrypted only at point of use via
-  /// the shared github-token-crypto helper (login write, clone read, import read).
-  /// Nullable: a record predating token capture, or a refresh that did not
-  /// re-capture a token, leaves it null. Only ever written for an identity that
-  /// has already passed the fail-closed allowlist gate.
-  githubAccessToken String?  @map("github_access_token")
-  createdAt         DateTime @default(now()) @map("created_at")
+  ///
+  /// EXPAND-CONTRACT (add-private-account-identity): the github identity now also
+  /// lives on an {@link IdentityLink} row (`provider="github"`,
+  /// `providerAccountId=<this id>`). This column is KEPT for now so the backfill
+  /// migration and the rollback window can read it; it is dropped in a later
+  /// contract-step migration once all reads route through the github-identity
+  /// helper. Now NULLABLE (integration step 10.1): local, non-GitHub accounts
+  /// (the admin seed + admin-created accounts) have no GitHub id, and new GitHub
+  /// logins persist the id on the `github` IdentityLink rather than on this
+  /// column. Still `@unique` so existing GitHub rows keep their one-to-one mapping
+  /// (Postgres does not unique-constrain NULLs, so many local accounts coexist).
+  githubId           Int?     @unique @map("github_id")
+  /// GitHub `login` (mutable username), refreshed on each login. NULLABLE
+  /// (integration step 10.1): a local, non-GitHub account has no GitHub handle —
+  /// only GitHub-provisioned accounts populate it.
+  login              String?
+  /// Display name, captured for console rendering (GitHub display name, or the
+  /// email for a local account).
+  name               String
+  /// GitHub avatar reference, captured for console rendering. NULLABLE
+  /// (integration step 10.1): a local account has no GitHub avatar.
+  avatarUrl          String?  @map("avatar_url")
+  /// Canonical account email (add-private-account-identity). UNIQUE but NULLABLE:
+  /// a GitHub user without a verified primary email simply has none and can only
+  /// use GitHub; every local account has one. The handle password/OTP login
+  /// resolve against, and the auto-link key for a GitHub verified primary email.
+  email              String?  @unique @map("email")
+  /// Console authorization role (add-private-account-identity). Gates ONLY the
+  /// admin panel — NO execution privilege (every `allowed` account is host-root).
+  /// Defaults to `member`; the default-admin seed sets `admin`.
+  role               Role     @default(member)
+  /// Forced first-login password change (add-private-account-identity). When true
+  /// the AuthGuard denies every protected action except change-password (and
+  /// logout) until a new password is set. Defaults to false; the seeded admin and
+  /// admin-created local accounts set it true.
+  mustChangePassword Boolean  @default(false) @map("must_change_password")
+  /// Whether this identity is presently on the fail-closed allowlist. This is the
+  /// load-bearing runtime gate (add-private-account-identity): every authenticated
+  /// request re-confirms `allowed`, uniformly for local and GitHub accounts.
+  allowed            Boolean
+  /// CONTRACT step done (add-private-account-identity, task 10.4): the operator's
+  /// GitHub OAuth access token column (`github_access_token`) has been DROPPED. The
+  /// token now lives ONLY as the (encrypted-at-rest) `secret` of the user's
+  /// `github` {@link IdentityLink}, read through the shared github-identity helper
+  /// (import/clone/forge all route through it — zero column reads remained, which
+  /// is what made the drop safe). The `github_id` column is retained for now (it is
+  /// still the owner-resolution key for the settings/forge/api-key/mcp surfaces and
+  /// the session payload); dropping it is deferred to a later migration once those
+  /// reads move to the stable `User.id` / the github IdentityLink.
+  createdAt          DateTime @default(now()) @map("created_at")
 
-  sessions        Session[]
+  /// Each login identity for this account (add-private-account-identity): a
+  /// `github` link (secret = encrypted access token), a `password` link
+  /// (secret = argon2 hash), and room for future providers. Cascade-deleted with
+  /// the owning user. Named `identities` (the relation the account-admin + seed
+  /// tracks read/create through); the model is `IdentityLink`.
+  identities       IdentityLink[]
+  sessions         Session[]
   /// Per-user machine-identity API keys (api-key-machine-identity). Hash-only,
   /// revocable, cascade-deleted with the owning user.
-  apiKeys         ApiKey[]
+  apiKeys          ApiKey[]
   /// Per-user remote-MCP machine tokens (remote-mcp-server). Hash-only,
   /// revocable, cascade-deleted with the owning user. Mirrors the `apiKeys`
   /// machine-identity relation but carries the distinct `mcp_` audience.
-  mcpTokens       McpToken[]
+  mcpTokens        McpToken[]
   /// Audit events attributed to this GitHub-identity user (nullable on the
   /// event side for system-originated events).
-  auditEvents     AuditEvent[]
+  auditEvents      AuditEvent[]
   /// Per-account console preferences (zero or one).
-  accountSettings AccountSettings?
+  accountSettings  AccountSettings?
   /// Per-account Codex execution credential (zero or one).
-  codexCredential CodexCredential?
+  codexCredential  CodexCredential?
   claudeCredential ClaudeCredential?
   /// Per-account forge push-back credentials (add-forge-credentials) — one per
   /// (kind, host), encrypted, cascade-deleted with the owning user.
   forgeCredentials ForgeCredential[]
 
   @@map("users")
+}
+
+/// A single login identity attached to a {@link User} (add-private-account-identity).
+///
+/// The normalized identity model (D1): "who you are" (`User`) is separated from
+/// "how you prove it" (this row). Each row is a distinct login method for one
+/// account; a single `User` MAY hold several (e.g. both a `github` and a
+/// `password` link). `provider` is the identity kind (`github` | `password`,
+/// with room for future providers); `providerAccountId` is that provider's
+/// stable account handle — the numeric GitHub id for `github`, the email for
+/// `password`. The UNIQUE `(provider, providerAccountId)` makes a presented
+/// identity resolve to at most one account and rejects a duplicate.
+///
+/// `secret` carries the identity's at-rest credential and is NEVER plaintext:
+/// for `github` it is the encrypted GitHub access token (the same
+/// `ciphertext.iv.authTag` envelope previously on `User.githubAccessToken`, read
+/// through the shared github-identity helper via `readMaybeEncrypted`); for
+/// `password` it is the argon2 hash. It is NULLABLE: a future provider whose
+/// secret lives elsewhere (or an identity with no stored secret) leaves it null.
+/// OTP is intentionally NOT an identity row — it is a login method keyed on
+/// `User.email` whose codes live in {@link EmailOtp}. Rows cascade with the user.
+model IdentityLink {
+  id     String @id @default(uuid())
+  /// FK to the owning account; cascades on user delete.
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Identity kind: `github` | `password` (room for future providers).
+  provider          String @map("provider")
+  /// The provider's stable account handle: the numeric GitHub id (as text) for
+  /// `github`, the email for `password`.
+  providerAccountId String @map("provider_account_id")
+
+  /// The identity's at-rest credential, NEVER plaintext: the encrypted GitHub
+  /// access token for `github`, the argon2 hash for `password`. Null when the
+  /// identity stores no secret here.
+  secret String? @map("secret")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("identity_links")
+}
+
+/// A single-use emailed verification code (add-private-account-identity, OTP login).
+///
+/// OTP is a login METHOD keyed on `User.email`, not an {@link IdentityLink}; this
+/// table holds the issued codes. The code is stored HASHED at rest (SHA-256, same
+/// discipline as session tokens) in `codeHash` — never plaintext. `email` is the
+/// requested address (an unknown email is accepted with a uniform response and
+/// simply never matches an allowed account). A code is valid only while
+/// `now < expiresAt`, `consumedAt IS NULL`, and `attempts` is under the cap;
+/// `consumedAt` is stamped on successful verify so a code cannot be replayed.
+/// `attempts` bounds wrong-code guesses; the issuing flow enforces a resend
+/// cooldown on top of this. Rows are short-lived (default ~10-minute TTL) and may
+/// be reaped after expiry.
+model EmailOtp {
+  id String @id @default(uuid())
+
+  /// The email the code was requested for (not necessarily an existing account).
+  email String @map("email")
+
+  /// HASH of the 6-digit code (never the raw code). SHA-256, like session tokens.
+  codeHash String @map("code_hash")
+
+  /// Absolute expiry; a code past this no longer verifies.
+  expiresAt DateTime @map("expires_at")
+
+  /// When the code was consumed by a successful verify; null while unused. A
+  /// consumed code cannot be replayed.
+  consumedAt DateTime? @map("consumed_at")
+
+  /// Wrong-code attempt counter, bounded by the attempt cap.
+  attempts Int @default(0) @map("attempts")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([email])
+  @@index([expiresAt])
+  @@map("email_otps")
 }
 
 /// An opaque server-side session for an authenticated {@link User}.
@@ -298,19 +427,19 @@ model McpToken {
 /// unauthenticated; resolution additionally re-checks the owner's allowlist on
 /// every request. Keys cascade when the owning user is deleted.
 model ApiKey {
-  id        String @id @default(uuid())
+  id        String   @id @default(uuid())
   /// FK to the owning user.
-  userId    String @map("user_id")
-  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   /// HASH of the opaque key body (never the raw key). UNIQUE so a presented key
   /// resolves to at most one record.
-  tokenHash String @unique @map("token_hash")
+  tokenHash String   @unique @map("token_hash")
   /// Non-secret reserved credential prefix (`cap_sk_`), persisted for display.
-  prefix    String @map("prefix")
+  prefix    String   @map("prefix")
   /// Masked suffix of the raw key (last 4 chars) for display only.
-  last4     String @map("last4")
+  last4     String   @map("last4")
   /// Operator-supplied human-friendly label for the key.
-  name      String @map("name")
+  name      String   @map("name")
   /// Route-boundary authorization scopes (a subset of the contracts `Scope`
   /// enum). Postgres text[].
   scopes    String[] @map("scopes")
@@ -440,6 +569,14 @@ model SystemSettings {
   /// traffic and no `mcp_` token resolves a usable session there; turning it
   /// off stops new use without deleting any minted token.
   mcpServerEnabled Boolean @default(false) @map("mcp_server_enabled")
+
+  /// One-time default-admin credential reveal gate (add-private-account-identity).
+  /// Null means the generated admin password has NOT yet been revealed; the
+  /// reveal endpoint serves `{email, password}` exactly once and stamps this
+  /// timestamp, after which any further reveal returns nothing. The plaintext
+  /// itself is never persisted — it lives only in process memory until consumed
+  /// or the process restarts (which regenerates it while this stays null).
+  adminRevealConsumedAt DateTime? @map("admin_reveal_consumed_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

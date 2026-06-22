@@ -28,7 +28,23 @@ export interface BackendCapabilities {
   repos: boolean;
   /** `POST /repos/:repoId/tasks` — create a task under a repo. */
   createTask: boolean;
-  /** `GET /auth/session` — the GitHub-OAuth session identity + allowlist gate. */
+  /**
+   * `GET /auth/session` — the operator session identity + the fail-closed
+   * runtime gate. This flag is the real/mock switch for the WHOLE auth domain:
+   * the session query, the `_app` gate, and the login flow all read it through
+   * `isCapable('auth')` (re-exported by `mock-session.ts` as `isAuthCapable`).
+   *
+   * add-private-account-identity: the auth domain now fronts THREE login methods
+   * (email+password, email OTP, GitHub) plus a forced first-login change. The
+   * per-METHOD availability is a sub-axis OWNED by `mock-session.ts`
+   * (`loginCapabilities()` — mirroring the backend `passwordAuthEnabled` /
+   * `otpAuthEnabled` flags) rather than a separate `BackendCapabilities` entry,
+   * because it is not an independent real/mock data domain: it is which methods
+   * the (real or mock) auth surface offers. Flipping THIS flag still switches
+   * the entire auth domain between the mock gate and the real backend in one
+   * place; `loginCapabilities()` then reports the methods for whichever side is
+   * active.
+   */
   auth: boolean;
   /** `GET /metrics` — semaphore-derived capacity + sampled CPU/memory. */
   metrics: boolean;
@@ -36,6 +52,13 @@ export interface BackendCapabilities {
   history: boolean;
   /** Account settings CRUD + Codex credential read/write. */
   settings: boolean;
+  /**
+   * `GET/POST/PATCH /accounts` — admin-only account administration (list local +
+   * github-linked accounts, create local accounts, enable/disable any account,
+   * reset a local password, assign role). The real/mock switch for the `/accounts`
+   * admin page; non-admins are 403'd server-side regardless of this flag.
+   */
+  accounts: boolean;
   /**
    * `POST/GET/DELETE /api-keys` — session-minted machine credentials
    * (api-key-machine-identity). When `false` the settings "API Keys" card reads
@@ -150,6 +173,7 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   history: true, // GET /audit/events — audit timeline.
   settings: true, // /settings + /settings/codex — per-account, GitHub-identity session.
   apiKeys: true, // POST/GET/DELETE /api-keys — session-minted machine credentials; show-once raw key is the server response.
+  accounts: true, // /accounts CRUD — admin-only account administration (list/create/enable/disable/reset/role).
   githubImport: true, // /repos/github/* — import via the operator's OAuth token.
   branches: true, // Task.branch/strategy read-back on the real task read.
 

@@ -39,6 +39,10 @@ import type {
   ApiKeyMintResponse,
   ApiKeyListResponse,
   ApiKeyRevokeResponse,
+  AdminAccountListItem,
+  AdminAccountListResponse,
+  AdminCreateAccountRequest,
+  Role,
 } from "@cap/contracts";
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
@@ -287,6 +291,10 @@ export async function mockAuthSession(): Promise<AuthSession> {
     name: "Tang Hehui",
     avatarUrl: `https://avatars.githubusercontent.com/u/${USER.githubId}?v=4`,
     allowed: true,
+    // The lone mock operator is the admin (design posture; matches useIsAdmin's
+    // mock branch) and never has a pending forced change.
+    role: "admin",
+    mustChangePassword: false,
   };
 }
 
@@ -1087,4 +1095,137 @@ export async function mockRevokeApiKey(
   if (!item) throw new Error(`mock api-key not found: ${id}`);
   if (item.revokedAt == null) item.revokedAt = new Date().toISOString();
   return { key: { ...item } };
+}
+
+// ---------------------------------------------------------------------------
+// Account administration (account-administration) — admin-only.
+//
+// An in-memory account set matching the api's list projection EXACTLY (the
+// corrected `@cap/contracts` wire shape: `identity`/`isGithubLinked`, no secret),
+// seeded with the design's rows (incl. a github-linked admin) so the page is
+// interactive under the mock gate. create/enable/disable/role mutate the store so
+// a subsequent list read reflects them (the read-state/render loop); reset is a
+// no-op on the non-secret projection (it rotates a password the list never shows).
+// ---------------------------------------------------------------------------
+
+let mockAccountStore: AdminAccountListItem[] = [
+  {
+    id: "gh-tanghehui",
+    email: null,
+    name: "tanghehui",
+    identity: "tanghehui",
+    role: "admin",
+    allowed: true,
+    loginMethods: ["github"],
+    isGithubLinked: true,
+  },
+  {
+    id: "local-admin",
+    email: "admin@local",
+    name: "平台管理员",
+    identity: "admin@local",
+    role: "admin",
+    allowed: true,
+    loginMethods: ["password", "otp"],
+    isGithubLinked: false,
+  },
+  {
+    id: "local-ops",
+    email: "ops@team.io",
+    name: "运维组",
+    identity: "ops@team.io",
+    role: "member",
+    allowed: true,
+    loginMethods: ["password", "otp"],
+    isGithubLinked: false,
+  },
+  {
+    id: "local-dev",
+    email: "dev@team.io",
+    name: "前端",
+    identity: "dev@team.io",
+    role: "member",
+    allowed: true,
+    loginMethods: ["password"],
+    isGithubLinked: false,
+  },
+  {
+    id: "local-contractor",
+    email: "contractor@ext.dev",
+    name: "外包",
+    identity: "contractor@ext.dev",
+    role: "member",
+    allowed: false,
+    loginMethods: ["otp"],
+    isGithubLinked: false,
+  },
+];
+let mockAccountSeq = 0;
+
+/** `GET /accounts` (mock) — every account (local + github-linked). */
+export async function mockListAdminAccounts(): Promise<AdminAccountListResponse> {
+  await delay();
+  return { accounts: mockAccountStore.map((a) => ({ ...a })) };
+}
+
+/** `POST /accounts` (mock) — create a local account; reflected on the next list. */
+export async function mockCreateAdminAccount(
+  body: AdminCreateAccountRequest,
+): Promise<AdminAccountListItem> {
+  await delay();
+  mockAccountSeq += 1;
+  const loginMethods: AdminAccountListItem["loginMethods"] =
+    body.initialCredential === "password" ? ["password", "otp"] : ["otp"];
+  const item: AdminAccountListItem = {
+    id: `local-new-${mockAccountSeq}`,
+    email: body.email,
+    name: body.name,
+    identity: body.email,
+    role: body.role,
+    allowed: true,
+    loginMethods,
+    isGithubLinked: false,
+  };
+  mockAccountStore = [...mockAccountStore, item];
+  return { ...item };
+}
+
+/** `PATCH /accounts/:id/enabled` (mock) — flip `allowed`. */
+export async function mockSetAdminAccountEnabled(
+  id: string,
+  allowed: boolean,
+): Promise<AdminAccountListItem> {
+  await delay();
+  mockAccountStore = mockAccountStore.map((a) =>
+    a.id === id ? { ...a, allowed } : a,
+  );
+  const found = mockAccountStore.find((a) => a.id === id);
+  if (!found) throw new Error(`mock account not found: ${id}`);
+  return { ...found };
+}
+
+/** `PATCH /accounts/:id/password` (mock) — reset is a no-op on the non-secret row. */
+export async function mockResetAdminAccountPassword(
+  id: string,
+  _password: string,
+): Promise<AdminAccountListItem> {
+  await delay();
+  void _password;
+  const found = mockAccountStore.find((a) => a.id === id);
+  if (!found) throw new Error(`mock account not found: ${id}`);
+  return { ...found };
+}
+
+/** `PATCH /accounts/:id/role` (mock) — assign role. */
+export async function mockSetAdminAccountRole(
+  id: string,
+  role: Role,
+): Promise<AdminAccountListItem> {
+  await delay();
+  mockAccountStore = mockAccountStore.map((a) =>
+    a.id === id ? { ...a, role } : a,
+  );
+  const found = mockAccountStore.find((a) => a.id === id);
+  if (!found) throw new Error(`mock account not found: ${id}`);
+  return { ...found };
 }

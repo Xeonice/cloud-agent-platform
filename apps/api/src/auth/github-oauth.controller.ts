@@ -8,7 +8,11 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import type { AuthSessionResponse, SessionUser } from '@cap/contracts';
+import type {
+  AuthCapabilities,
+  AuthSessionResponse,
+  SessionUser,
+} from '@cap/contracts';
 import { GitHubOAuthService } from './github-oauth.service';
 import { AuthSessionService } from './auth-session.service';
 import {
@@ -16,6 +20,8 @@ import {
   readSessionSecret,
   readWebOrigin,
   readSessionCookieDomain,
+  isPasswordAuthEnabled,
+  isOtpAuthEnabled,
 } from './oauth-config';
 import {
   OAUTH_REDIRECT_COOKIE_NAME,
@@ -274,21 +280,51 @@ export class GitHubOAuthController {
   }
 
   /**
-   * 2.5 — Current session. 200 `{ user }` for a valid, non-expired session that
-   * resolves to a still-allowlisted user; 401 otherwise (no `user: null` body —
-   * an unauthenticated caller is rejected outright per the task's "current
-   * SessionUser or 401").
+   * 2.5 — Current session. 200 `{ user, capabilities }` for a valid, non-expired
+   * session that resolves to a still-`allowed` user; 401 otherwise (no
+   * `user: null` body — an unauthenticated caller is rejected outright per the
+   * task's "current SessionUser or 401").
+   *
+   * 2.8 / D11 — the response ALSO carries the auth `capabilities`
+   * (`passwordAuthEnabled`, `otpAuthEnabled`) the frontend reads to decide which
+   * login methods to render. The flags are surfaced on BOTH the 200 and the 401
+   * body so the UNAUTHENTICATED login modal (which gets a 401) can still discover
+   * the enabled methods without a separate round-trip.
    */
   @Get('session')
   async session(@Req() req: Request, @Res() res: Response): Promise<void> {
+    const capabilities = GitHubOAuthController.authCapabilities();
     const token = readCookie(req.headers.cookie, SESSION_COOKIE_NAME);
     const user = await this.authSession.resolveSession(token);
     if (user === null) {
-      res.status(HttpStatus.UNAUTHORIZED).json({ error: 'Not authenticated.' });
+      res
+        .status(HttpStatus.UNAUTHORIZED)
+        .json({ error: 'Not authenticated.', capabilities });
       return;
     }
-    const body: AuthSessionResponse = { user };
+    // `capabilities` rides on AuthSessionResponse (contract: optional) so the
+    // login modal can read the enabled methods from the same payload.
+    const body: AuthSessionResponse = { user, capabilities };
     res.status(HttpStatus.OK).json(body);
+  }
+
+  /**
+   * The auth capability flags (2.8 / D11) the login modal reads:
+   *   - `passwordAuthEnabled` — render the email+password method;
+   *   - `otpAuthEnabled` — render the email-verification-code method (true only
+   *     when SMTP is configured).
+   * GitHub OAuth availability is reported separately by the existing
+   * OAuth-config readiness; these two flags cover the NEW local methods.
+   */
+  private static authCapabilities(): AuthCapabilities {
+    return {
+      passwordAuthEnabled: isPasswordAuthEnabled(),
+      otpAuthEnabled: isOtpAuthEnabled(),
+      // GitHub OAuth is offerable only when the OAuth app credentials are
+      // configured (otherwise the authorize endpoint fails closed); the login
+      // modal hides the GitHub method when this is false.
+      githubAuthEnabled: readOAuthAppConfig() !== null,
+    };
   }
 
   /**

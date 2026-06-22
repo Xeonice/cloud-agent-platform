@@ -760,9 +760,14 @@ export class SettingsService {
     return user.id;
   }
 
-  /** The read-only display identity for `allowedAccount`, sourced from OAuth. */
+  /**
+   * The read-only display identity for `allowedAccount`. For a GitHub account
+   * this is the OAuth `login`; a LOCAL account (password/OTP) has no github
+   * handle (`login === null` — add-private-account-identity), so it falls back to
+   * the always-present display name (which for a local account is its email).
+   */
   private displayAccount(operator: SessionUser): string {
-    return operator.login;
+    return operator.login ?? operator.name;
   }
 
   /** Loads the set of imported repo ids (a non-null githubId) for default validation. */

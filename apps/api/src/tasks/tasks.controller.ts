@@ -102,7 +102,11 @@ export class TasksController {
    * client; it comes only from the principal the guard attached.
    */
   private static githubId(req: AuthenticatedRequest): number | undefined {
-    return req.operatorPrincipal?.user?.githubId;
+    // Best-effort attribution: a LOCAL account (password/OTP) carries
+    // `githubId === null` (add-private-account-identity); collapse it to
+    // `undefined` so the optional attribution simply goes unset rather than
+    // threading a `null` through the service.
+    return req.operatorPrincipal?.user?.githubId ?? undefined;
   }
 
   /**

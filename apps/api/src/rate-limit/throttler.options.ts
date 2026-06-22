@@ -1,12 +1,20 @@
 import { seconds, type ThrottlerModuleOptions } from '@nestjs/throttler';
 
 /**
+ * The named tier the pre-auth {@link AuthThrottleGuard} keys on (IP + submitted
+ * email). Exported so the guard's `@Throttle({ [AUTH_THROTTLE_NAME]: … })`
+ * decorator and this registration cannot drift apart — an unknown throttler name
+ * is silently inert, so the decorator and the option MUST agree on the literal.
+ */
+export const AUTH_THROTTLE_NAME = 'auth';
+
+/**
  * Throttler configuration for the public API (public-v1-api, Integration 6.1).
  *
  * Builds the in-memory (default store) named throttlers the global
  * {@link PrincipalThrottlerGuard} and the per-route `@Throttle` decorators key
- * off. Two named throttlers are registered so the same guard can enforce both a
- * broad per-request cap and a stricter task-creation cap:
+ * off. Three named throttlers are registered so the guards can enforce a broad
+ * per-request cap, a stricter task-creation cap, and a dedicated pre-auth tier:
  *
  *   - `default` — the GLOBAL per-request rate cap applied to every guarded route.
  *     The {@link PrincipalThrottlerGuard} keys it on the resolved principal, so it
@@ -18,12 +26,21 @@ import { seconds, type ThrottlerModuleOptions } from '@nestjs/throttler';
  *     RUNNING tasks, not CREATED ones, so an unbounded queued backlog is the real
  *     abuse surface this caps. The per-route `@Throttle` already sets the create
  *     limit/ttl; this registration only has to make the `create` name exist.
+ *   - `auth`    — the pre-authentication brute-force tier for the public auth
+ *     endpoints (password login, OTP request/verify, change-password). These run
+ *     BEFORE a principal exists, so the principal throttler has nothing to key on;
+ *     the {@link AuthThrottleGuard} keys this tier on client IP + submitted email
+ *     instead, so one attacker can neither brute-force a password nor mass-issue
+ *     OTP codes from a single source (this caps issuance ON TOP OF the per-email
+ *     resend cooldown the OTP service enforces). The limit is intentionally much
+ *     tighter than `default` because a pre-auth caller is anonymous.
  *
  * All limits/TTLs are env-overridable for ops (a deploy can tighten or loosen the
  * caps without a code change) and floored so a misconfiguration can never disable
  * the limiter:
  *   - `V1_RATE_DEFAULT_LIMIT` / `V1_RATE_DEFAULT_TTL_SEC`  (default 120 / 60s)
  *   - `V1_RATE_CREATE_LIMIT`  / `V1_RATE_CREATE_TTL_SEC`   (default  10 / 60s)
+ *   - `AUTH_RATE_LIMIT`       / `AUTH_RATE_TTL_SEC`         (default  10 / 60s)
  *
  * The in-memory store is intentional: a single API instance with a per-principal
  * tracker key needs no shared store, and the polling floor + idempotency dedup
@@ -40,6 +57,11 @@ export function buildThrottlerOptions(): ThrottlerModuleOptions {
       name: 'create',
       limit: positiveIntEnv(process.env.V1_RATE_CREATE_LIMIT, 10),
       ttl: seconds(positiveIntEnv(process.env.V1_RATE_CREATE_TTL_SEC, 60)),
+    },
+    {
+      name: AUTH_THROTTLE_NAME,
+      limit: positiveIntEnv(process.env.AUTH_RATE_LIMIT, 10),
+      ttl: seconds(positiveIntEnv(process.env.AUTH_RATE_TTL_SEC, 60)),
     },
   ];
 }

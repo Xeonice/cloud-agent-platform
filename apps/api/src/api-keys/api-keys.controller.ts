@@ -87,8 +87,16 @@ export class ApiKeysController {
    * rejected with 403, so an API key cannot mint/list/revoke API keys (the
    * no-escalation-chain guarantee). The session user is taken from the
    * guard-attached principal, never from the client.
+   *
+   * The api-key surface is scoped by the immutable numeric `githubId` (the
+   * service resolves it to the internal user id). A LOCAL account (password/OTP)
+   * has no github identity (add-private-account-identity), so it has no key here
+   * yet and is rejected fail-closed rather than keyed on a `null` id. The return
+   * type narrows `githubId` to a non-null `number` so the call sites stay typed.
    */
-  private requireSessionUser(req: AuthenticatedRequest): SessionUser {
+  private requireSessionUser(
+    req: AuthenticatedRequest,
+  ): SessionUser & { githubId: number } {
     const principal = req.operatorPrincipal;
     if (!principal || principal.kind !== 'session' || !principal.user) {
       throw new ForbiddenException({
@@ -98,6 +106,15 @@ export class ApiKeysController {
           'a machine credential cannot mint, list, or revoke API keys.',
       });
     }
-    return principal.user;
+    const user = principal.user;
+    if (user.githubId === null) {
+      throw new ForbiddenException({
+        error: 'github_identity_required',
+        message:
+          'API-key management is currently scoped to GitHub-linked accounts; ' +
+          'a local (password/OTP) account has no API keys.',
+      });
+    }
+    return { ...user, githubId: user.githubId };
   }
 }

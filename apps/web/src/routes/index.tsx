@@ -80,7 +80,12 @@ function LandingPage() {
   const navLinks: readonly LandingNavLink[] = [];
   const navAccount: LandingNavAccount | undefined =
     authed && session
-      ? { login: session.login, avatarUrl: session.avatarUrl || undefined }
+      ? {
+          // `login` is nullable on the session (a local password/OTP account has
+          // no GitHub handle); fall back to the always-present display name.
+          login: session.login ?? session.name,
+          avatarUrl: session.avatarUrl || undefined,
+        }
       : undefined;
 
   return (

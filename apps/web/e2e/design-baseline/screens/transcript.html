@@ -30,6 +30,7 @@
         </button>
         <div class="account-popover" role="menu" hidden data-account-popover>
           <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+          <a role="menuitem" href="accounts.html" data-menu-close>账号管理</a>
           <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
         </div>
       </section>
@@ -59,6 +60,25 @@
             <span class="session-tag" title="Agent">Codex</span>
             <span class="session-tag" title="耗时">8m 04s</span>
             <span class="session-tag" title="Token">3,420 tokens</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel pad" style="margin-top:12px">
+        <div class="split-line" style="margin-bottom:12px">
+          <h2 style="margin:0;font-size:15px">交付结果</h2>
+          <span class="status-pill green">已开 PR</span>
+        </div>
+        <div class="config-list">
+          <div class="config-row">
+            <span>目标仓库</span>
+            <strong>tanghehui/cloud-agent-platform <span class="forge-tag gh">GitHub</span></strong>
+          </div>
+          <div class="config-row"><span>推送分支</span><strong class="mono">cap/task-aaaa → aio-execution-hardening</strong></div>
+          <div class="config-row"><span>提交</span><strong class="mono">3f9a1c2 · cap-bot</strong></div>
+          <div class="config-row">
+            <span>Pull Request</span>
+            <strong><a href="#">#128 迁移 console 至 TanStack Start ↗</a></strong>
           </div>
         </div>
       </section>
@@ -203,6 +223,10 @@ apps/web/src/main.tsx</pre>
             <span class="tx-time mono">17:13:09</span>
             <div class="tx-content">任务完成 · 耗时 8m 04s</div>
           </div>
+          <div class="tx-row tx-system" data-filter-row data-state="system" data-search="已推送 cap/task-aaaa 已开 PR 128 交付">
+            <span class="tx-time mono">17:13:12</span>
+            <div class="tx-content">已推送 <span class="mono">cap/task-aaaa</span> · 已开 <a href="#">PR #128</a> ↗</div>
+          </div>
         </div>
 
         <div class="empty-state" data-empty-state hidden>
@@ -222,6 +246,7 @@ apps/web/src/main.tsx</pre>
       <button type="button" aria-haspopup="menu" aria-expanded="false" data-account-trigger>账户</button>
       <div class="account-popover" role="menu" hidden data-account-popover>
         <a role="menuitem" href="settings.html" data-menu-close>打开设置</a>
+        <a role="menuitem" href="accounts.html" data-menu-close>账号管理</a>
         <a role="menuitem" href="../login.html" class="danger" data-menu-close>退出登录</a>
       </div>
     </div>

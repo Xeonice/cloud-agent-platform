@@ -39,6 +39,7 @@ import type {
   ForgeKind,
   UpdateStatus,
   ApiKeyListResponse,
+  AdminAccountListResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import { agentLabel } from "../runtime-label";
@@ -105,6 +106,8 @@ export const queryKeys = {
   mcpTokens: ["mcp-tokens"] as const,
   /** The system-wide `mcpServerEnabled` flag (`GET /settings/mcp-server`). */
   mcpServerEnabled: ["settings", "mcp-server"] as const,
+  /** The admin account-administration list (`GET /accounts`, account-administration). */
+  adminAccounts: ["accounts"] as const,
   /**
    * The self-update action (self-update-action). There is no self-update READ —
    * the upgrade is a one-shot `POST /self-update` whose target comes from
@@ -320,6 +323,21 @@ export function settingsQuery() {
   return queryOptions<AccountSettings>({
     queryKey: queryKeys.settings,
     queryFn: () => (isCapable("settings") ? real.getSettings() : mock.mockSettings()),
+  });
+}
+
+/**
+ * The admin account-administration list (local + github-linked accounts).
+ * Real/mock switch on `isCapable('accounts')`; the page is admin-guarded and the
+ * api 403s a non-admin regardless.
+ */
+export function adminAccountsQuery() {
+  return queryOptions<AdminAccountListResponse>({
+    queryKey: queryKeys.adminAccounts,
+    queryFn: () =>
+      isCapable("accounts")
+        ? real.listAdminAccounts()
+        : mock.mockListAdminAccounts(),
   });
 }
 

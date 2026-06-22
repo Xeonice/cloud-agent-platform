@@ -122,6 +122,8 @@ function session(overrides: Partial<NonNullable<AuthSession>> = {}): AuthSession
     name: "Tang Hehui",
     avatarUrl: "https://avatars.githubusercontent.com/u/4829173?v=4",
     allowed: true,
+    role: "admin",
+    mustChangePassword: false,
     ...overrides,
   };
 }

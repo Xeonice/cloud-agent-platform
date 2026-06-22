@@ -32,6 +32,14 @@ export interface GitHubUser {
   readonly name: string;
   /** Avatar URL; normalised to empty string when absent. */
   readonly avatarUrl: string;
+  /**
+   * The operator's PRIMARY VERIFIED email (lower-cased), or `null` when the
+   * operator has no primary+verified email (add-private-account-identity, task
+   * 2.3, D4/D8). This is the ONLY email surfaced — an unverified or non-primary
+   * address is never returned, so a downstream auto-link (D8) can trust that a
+   * present email is both primary and verified.
+   */
+  readonly email: string | null;
 }
 
 @Injectable()
@@ -105,7 +113,15 @@ export class GitHubOAuthService {
   /**
    * Fetches the authenticated GitHub user with the access token. Returns the
    * numeric `id`, `login`, display `name` (falling back to `login` when GitHub
-   * returns null), and avatar URL (empty string when absent).
+   * returns null), avatar URL (empty string when absent), and the operator's
+   * PRIMARY VERIFIED `email` (or `null`).
+   *
+   * The email is read from `/user/emails` (under the `user:email` scope, task
+   * 2.3) — the authoritative source for the primary/verified flags, which the
+   * profile `/user` payload does not reliably carry. A failure to list emails
+   * (e.g. the scope was not granted) degrades to `email: null` rather than
+   * failing the login: a GitHub user without a resolvable verified email simply
+   * keeps GitHub-only access (D4) and is never auto-linked (D8).
    */
   async fetchUser(accessToken: string): Promise<GitHubUser> {
     const response = await fetch(GITHUB_ENDPOINTS.USER, {
@@ -138,6 +154,55 @@ export class GitHubOAuthService {
       login: user.login,
       name: typeof user.name === 'string' && user.name.length > 0 ? user.name : user.login,
       avatarUrl: typeof user.avatar_url === 'string' ? user.avatar_url : '',
+      email: await this.fetchPrimaryVerifiedEmail(accessToken),
     };
+  }
+
+  /**
+   * Reads the operator's PRIMARY VERIFIED email from `/user/emails`, lower-cased,
+   * or `null` when none is both primary and verified (or the listing is
+   * unavailable). Best-effort: any failure (HTTP error, missing scope, malformed
+   * payload) returns `null` rather than throwing, so login proceeds with
+   * GitHub-only access for a user whose verified email cannot be read.
+   *
+   * Only an entry that is BOTH `primary === true` AND `verified === true` is
+   * accepted — never an unverified or secondary address (D8): the auto-link that
+   * consumes this email keys on a primary+verified match, so this is the only
+   * trustworthy form to surface.
+   */
+  private async fetchPrimaryVerifiedEmail(accessToken: string): Promise<string | null> {
+    try {
+      const response = await fetch(GITHUB_ENDPOINTS.EMAILS, {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${accessToken}`,
+          'User-Agent': 'cap-orchestrator',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      });
+      if (!response.ok) {
+        this.logger.warn(`GitHub /user/emails fetch failed: HTTP ${response.status}`);
+        return null;
+      }
+      const emails = (await response.json()) as Array<{
+        email?: string;
+        primary?: boolean;
+        verified?: boolean;
+      }>;
+      if (!Array.isArray(emails)) {
+        return null;
+      }
+      const primaryVerified = emails.find(
+        (e) =>
+          e.primary === true &&
+          e.verified === true &&
+          typeof e.email === 'string' &&
+          e.email.length > 0,
+      );
+      return primaryVerified?.email?.toLowerCase() ?? null;
+    } catch (error) {
+      this.logger.warn(`GitHub /user/emails fetch errored (non-fatal): ${String(error)}`);
+      return null;
+    }
   }
 }

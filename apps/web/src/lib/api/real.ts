@@ -22,6 +22,14 @@ import {
   TaskResponseSchema,
   ListReposResponseSchema,
   AuthSessionResponseSchema,
+  AuthCapabilitiesSchema,
+  type AuthCapabilities,
+  AdminAccountListResponseSchema,
+  AdminAccountListItemSchema,
+  type AdminAccountListResponse,
+  type AdminAccountListItem,
+  type AdminCreateAccountRequest,
+  type Role,
   MetricsResponseSchema,
   TaskResourceResponseSchema,
   SessionHistorySchema,
@@ -490,6 +498,31 @@ export async function getAuthSession(): Promise<AuthSession> {
 }
 
 /**
+ * Reads the unauthenticated auth-method capability flags
+ * (add-private-account-identity, D11) the login modal renders from. The backend
+ * surfaces `capabilities` on `GET /auth/session` for BOTH the authenticated (200)
+ * and logged-out (401) bodies, so this hits that endpoint with a RAW fetch (not
+ * {@link request}, which throws away the 401 body) and extracts the block from
+ * whichever status comes back. Returns `null` when the flags are absent or
+ * unparseable so the caller can fall back to a safe default. Client-only use (the
+ * login page); never throws.
+ */
+export async function getAuthCapabilities(): Promise<AuthCapabilities | null> {
+  try {
+    const res = await fetch(`${apiBaseUrl()}/auth/session`, {
+      credentials: "include",
+      headers: authHeaders(),
+    });
+    const body: unknown = await res.json().catch(() => null);
+    const caps = (body as { capabilities?: unknown } | null)?.capabilities;
+    const parsed = AuthCapabilitiesSchema.safeParse(caps);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * `GET /metrics` — semaphore-derived capacity + sampled CPU/memory in one
  * round trip. The sampled block ALSO carries the per-task process-scope
  * section (`resources.taskSamples`, console-design-pixel-merge): each running
@@ -948,6 +981,73 @@ export async function setMcpServerEnabled(enabled: boolean): Promise<boolean> {
     body: JSON.stringify({ mcpServerEnabled: enabled }),
   })) as { mcpServerEnabled?: unknown } | null;
   return body?.mcpServerEnabled === true;
+}
+
+// ---------------------------------------------------------------------------
+// Account administration (account-administration) — admin-only account lifecycle.
+// All routes are admin-gated server-side (a non-admin gets 403 regardless of the
+// UI); the page is also admin-guarded in its `beforeLoad`. Mutations return the
+// updated row, but the page re-reads the list (invalidate) as the source of truth.
+// ---------------------------------------------------------------------------
+
+/** `GET /accounts` — every account (local + github-linked) as non-secret rows. */
+export async function listAdminAccounts(): Promise<AdminAccountListResponse> {
+  return AdminAccountListResponseSchema.parse(await request("/accounts"));
+}
+
+/** `POST /accounts` — create a local account (admin-only). */
+export async function createAdminAccount(
+  body: AdminCreateAccountRequest,
+): Promise<AdminAccountListItem> {
+  return AdminAccountListItemSchema.parse(
+    await request("/accounts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** `PATCH /accounts/:id/enabled` — enable/disable any account (sets `allowed`). */
+export async function setAdminAccountEnabled(
+  id: string,
+  allowed: boolean,
+): Promise<AdminAccountListItem> {
+  return AdminAccountListItemSchema.parse(
+    await request(`/accounts/${encodeURIComponent(id)}/enabled`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ allowed }),
+    }),
+  );
+}
+
+/** `PATCH /accounts/:id/password` — reset a LOCAL account's password. */
+export async function resetAdminAccountPassword(
+  id: string,
+  password: string,
+): Promise<AdminAccountListItem> {
+  return AdminAccountListItemSchema.parse(
+    await request(`/accounts/${encodeURIComponent(id)}/password`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    }),
+  );
+}
+
+/** `PATCH /accounts/:id/role` — assign an account's role. */
+export async function setAdminAccountRole(
+  id: string,
+  role: Role,
+): Promise<AdminAccountListItem> {
+  return AdminAccountListItemSchema.parse(
+    await request(`/accounts/${encodeURIComponent(id)}/role`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role }),
+    }),
+  );
 }
 
 // ---------------------------------------------------------------------------

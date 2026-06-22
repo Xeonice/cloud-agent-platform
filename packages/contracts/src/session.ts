@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { RoleSchema, AuthCapabilitiesSchema } from './auth-account.js';
 
 /**
  * Session identity shapes (multi-user-oauth spec).
@@ -35,20 +36,47 @@ import { z } from 'zod';
  * allowlist gate.
  */
 export const SessionUserSchema = z.object({
-  /** Stable, immutable GitHub numeric account id; the allowlist + user-record key. */
-  githubId: z.number().int(),
-  /** GitHub `login` (mutable username), refreshed on each login. */
-  login: z.string().min(1),
-  /** GitHub display name, captured for console rendering. */
+  /**
+   * Stable GitHub numeric account id; the allowlist + GitHub-identity key.
+   * NULLABLE (add-private-account-identity): a LOCAL account (password/OTP) has no
+   * GitHub identity, so it carries `null` here. A GitHub-provisioned account still
+   * sets it.
+   */
+  githubId: z.number().int().nullable(),
+  /**
+   * GitHub `login` (mutable username), refreshed on each login. NULLABLE
+   * (add-private-account-identity): a local account has no GitHub handle. Consumers
+   * fall back to the email / name for display.
+   */
+  login: z.string().min(1).nullable(),
+  /** Display name, captured for console rendering (GitHub name or the local email). */
   name: z.string(),
-  /** GitHub avatar reference, captured for console rendering. */
-  avatarUrl: z.string(),
+  /**
+   * GitHub avatar reference, captured for console rendering. NULLABLE
+   * (add-private-account-identity): a local account has no GitHub avatar.
+   */
+  avatarUrl: z.string().nullable(),
   /**
    * Whether this identity is presently on the fail-closed allowlist. A session
    * user is only ever surfaced for an allowlisted identity; this field is the
    * re-confirmed membership flag, never a bypassable client-supplied value.
    */
   allowed: z.boolean(),
+  /**
+   * Console authorization role (add-private-account-identity). Gates ONLY the
+   * admin panel — it carries NO execution privilege (every `allowed` account is
+   * host-root regardless of role). The console reads it to decide whether to show
+   * the account-administration entry.
+   */
+  role: RoleSchema,
+  /**
+   * Whether a forced first-login password change is pending
+   * (add-private-account-identity, D9). When true the console MUST route the
+   * operator into the forced-change flow before granting app-shell access; the
+   * backend independently blocks every protected route (except change-password)
+   * for such an account, so this is the UX signal, not the security gate.
+   */
+  mustChangePassword: z.boolean(),
 });
 export type SessionUser = z.infer<typeof SessionUserSchema>;
 
@@ -81,5 +109,14 @@ export type AuthSession = z.infer<typeof AuthSessionSchema>;
  */
 export const AuthSessionResponseSchema = z.object({
   user: AuthSessionSchema,
+  /**
+   * The unauthenticated auth-method capability flags (add-private-account-identity,
+   * D11) the login modal reads to decide which methods to render. Surfaced on this
+   * response — including the 401 logged-out body — so the login modal can discover
+   * the enabled methods (e.g. whether OTP is available per SMTP config) without a
+   * separate round trip. Optional for backward compatibility with callers/tests
+   * that predate the flags.
+   */
+  capabilities: AuthCapabilitiesSchema.optional(),
 });
 export type AuthSessionResponse = z.infer<typeof AuthSessionResponseSchema>;

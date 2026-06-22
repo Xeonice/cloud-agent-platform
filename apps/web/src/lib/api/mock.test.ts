@@ -31,6 +31,8 @@ import {
   CodexCredentialSchema,
   ListAvailableGithubReposResponseSchema,
   UpdateStatusSchema,
+  AdminAccountListResponseSchema,
+  AdminAccountListItemSchema,
 } from "@cap/contracts";
 import {
   mockListTasks,
@@ -46,6 +48,9 @@ import {
   mockTaskContext,
   mockSessionHistory,
   mockUpdateStatus,
+  mockListAdminAccounts,
+  mockCreateAdminAccount,
+  mockSetAdminAccountEnabled,
 } from "./mock";
 import { setState, resetState } from "../store";
 
@@ -172,6 +177,32 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
     async () => {
       const out = await mockMetrics();
       expect(() => MetricsResponseSchema.parse(out)).not.toThrow();
+    },
+    TIMEOUT,
+  );
+
+  it(
+    "mockListAdminAccounts -> AdminAccountListResponse, and create/disable reflect on the next read",
+    async () => {
+      const initial = await mockListAdminAccounts();
+      expect(() => AdminAccountListResponseSchema.parse(initial)).not.toThrow();
+      const count = initial.accounts.length;
+
+      // Create reflects on the next list read and the row validates.
+      const created = await mockCreateAdminAccount({
+        email: "new@team.io",
+        name: "New Member",
+        role: "member",
+        initialCredential: "password",
+        password: "temp-passw0rd",
+      });
+      expect(() => AdminAccountListItemSchema.parse(created)).not.toThrow();
+      const afterCreate = await mockListAdminAccounts();
+      expect(afterCreate.accounts).toHaveLength(count + 1);
+
+      // Disable flips `allowed` on the next read.
+      const toggled = await mockSetAdminAccountEnabled(created.id, false);
+      expect(toggled.allowed).toBe(false);
     },
     TIMEOUT,
   );

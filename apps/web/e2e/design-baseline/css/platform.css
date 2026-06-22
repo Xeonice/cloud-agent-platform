@@ -500,6 +500,49 @@ p {
   white-space: nowrap;
 }
 
+.forge-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  min-height: 20px;
+  padding: 0 8px;
+  border-radius: 9999px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  background: var(--subtle);
+  color: var(--muted);
+  box-shadow: var(--shadow-ring);
+  white-space: nowrap;
+}
+
+.forge-tag::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+}
+
+.forge-tag.gh {
+  color: #24292f;
+  background: color-mix(in oklch, #24292f 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, #24292f 22%, transparent);
+}
+
+.forge-tag.gl {
+  color: #e24329;
+  background: color-mix(in oklch, #fc6d26 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, #fc6d26 30%, transparent);
+}
+
+.forge-tag.ge {
+  color: #c71d23;
+  background: color-mix(in oklch, #c71d23 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, #c71d23 26%, transparent);
+}
+
 .status-pill.dark {
   background: var(--foreground);
   color: var(--background);

@@ -67,5 +67,13 @@ export function isAdminPrincipal(
   if (!principal || principal.user === null) {
     return false;
   }
+  // A LOCAL account (password/OTP) has no GitHub identity
+  // (add-private-account-identity), so it can never appear on the NUMERIC
+  // `SELF_UPDATE_ADMINS` github-id set this break-glass gate matches on → never
+  // an admin here. (Console role-based admin is a separate gate; this one stays
+  // strictly the numeric-github-id self-update allowlist.)
+  if (principal.user.githubId === null) {
+    return false;
+  }
   return isAdminGithubId(principal.user.githubId, env[SELF_UPDATE_ADMINS_ENV]);
 }

@@ -132,6 +132,10 @@ export function isAdminSession(
   if (!session) return false;
   if (!session.allowed) return false;
   if (admins.length === 0) return false;
+  // `login` is nullable (a local password/OTP account has no GitHub handle). The
+  // admin allowlist is keyed on the GitHub login, so an account without one can
+  // never match it — fail closed.
+  if (!session.login) return false;
   return admins.includes(session.login.toLowerCase());
 }
 

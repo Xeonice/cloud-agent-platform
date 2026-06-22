@@ -1,0 +1,29 @@
+-- add-private-account-identity (integration track, task 10.4 — the CONTRACT step):
+--   DROP the legacy `users.github_access_token` column now that every token read
+--   routes through the shared github-identity helper, which resolves the token from
+--   the `secret` of the user's `github` IdentityLink (the backfill migration
+--   20260622000000 copied each existing token verbatim into that secret). A
+--   codebase scan confirmed ZERO remaining reads/writes of this column (only doc
+--   comments + a test-fixture field of the same name referenced it), so dropping it
+--   is safe — that verification is exactly the precondition the expand-contract plan
+--   requires before the contract step.
+--
+-- SCOPE: this drops ONLY `github_access_token`. The sibling `github_id` column is
+-- INTENTIONALLY RETAINED here — it is still the owner-resolution key for the
+-- settings / forge-credential / api-key / mcp-token surfaces (`where: { githubId }`)
+-- and is carried on the session payload, so dropping it would break live reads.
+-- Its removal is deferred to a later migration once those reads move to the stable
+-- `User.id` (or the github IdentityLink), preserving a clean rollback window.
+--
+-- ROLLBACK: until this lands, reverting the API image restored the prior shape. To
+-- roll BACK past this migration, re-add the column and re-backfill it from the
+-- github IdentityLink secrets:
+--   ALTER TABLE "users" ADD COLUMN "github_access_token" TEXT;
+--   UPDATE "users" u SET "github_access_token" = il."secret"
+--     FROM "identity_links" il
+--     WHERE il."user_id" = u."id" AND il."provider" = 'github';
+--
+-- IDEMPOTENT / RE-RUNNABLE: `DROP COLUMN IF EXISTS` is a no-op when the column is
+-- already gone, so re-applying this migration makes no further change.
+
+ALTER TABLE "users" DROP COLUMN IF EXISTS "github_access_token";

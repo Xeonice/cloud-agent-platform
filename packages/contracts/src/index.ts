@@ -33,6 +33,11 @@ export * from './sandbox.js';
 // Operator-auth shapes: WS connect-auth frame + shared AUTH_TOKEN config contract
 export * from './auth.js';
 
+// Private-account identity DTOs (add-private-account-identity): password login,
+// email-OTP request/verify, change-password, admin account lifecycle (create/
+// enable/disable/reset/role + list), one-time admin reveal, auth capability flags
+export * from './auth-account.js';
+
 // Authorization scope vocabulary shared by API-key + machine principals
 export * from './scope.js';
 

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { decryptStored, readMaybeEncrypted } from '../settings/secret-storage';
+import { decryptStored } from '../settings/secret-storage';
+import { getGithubTokenForUser } from '../auth/github-identity';
 import { DefaultForgeRegistry } from './forge-registry';
 import type { ForgeKind, ForgeTarget } from './forge.port';
 
@@ -10,7 +11,8 @@ import type { ForgeKind, ForgeTarget } from './forge.port';
  * the token is the task owner's `ForgeCredential` for the resolved (kind, host)
  * — the owner is the `task.created` audit-event userId, exactly the
  * `PrismaCodexAuthSource` discipline. The github public-host case falls back to
- * the owner's encrypted `User.githubAccessToken`. An unattributed task, or one
+ * the owner's encrypted `github` `IdentityLink` token (via the shared
+ * github-identity helper). An unattributed task, or one
  * with no usable credential, resolves to null → push-back is skipped (fail-open).
  *
  * Reads `forgeCredential` directly + decrypts via the shared pure helpers (no
@@ -75,16 +77,18 @@ export class ForgeTargetResolver {
     return decryptStored(row?.tokenCiphertext, env);
   }
 
-  /** The owner's decrypted GitHub login token (the github public-host fallback). */
+  /**
+   * The owner's decrypted GitHub login token (the github public-host fallback).
+   *
+   * add-private-account-identity (3.3): the token is now the `secret` of the
+   * owner's `github` `IdentityLink` rather than a `User.githubAccessToken` column,
+   * read through the single shared github-identity helper.
+   */
   private async ownerGithubToken(
     ownerId: string,
     env: NodeJS.ProcessEnv,
   ): Promise<string | null> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: ownerId },
-      select: { githubAccessToken: true },
-    });
-    return readMaybeEncrypted(user?.githubAccessToken, env);
+    return getGithubTokenForUser(this.prisma, ownerId, env);
   }
 
   /** The task owner's userId (the `task.created` audit event), or null. */

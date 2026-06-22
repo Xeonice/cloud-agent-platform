@@ -6,11 +6,15 @@
  * initials + the login + the mono `github.com/<login>` handle), and a
  * `.config-list` of three read-only rows (登录方式 / 控制台范围 / 仓库来源).
  *
- * This card surfaces the READ-ONLY console login identity — the GitHub OAuth
- * account that is allowed into the console (governed by the allowlist, NOT
- * editable here). The login is passed in from `settingsQuery().allowedAccount`
- * (never hardcoded). This is DISTINCT from the Codex execution credential
- * managed in the `#codex` section.
+ * This card surfaces the READ-ONLY console login identity — the operator
+ * account that is allowed into the console (governed by the allowlist / admin
+ * provisioning, NOT editable here). The login is passed in from
+ * `settingsQuery().allowedAccount` (never hardcoded). This is DISTINCT from the
+ * Codex execution credential managed in the `#codex` section.
+ *
+ * add-private-account-identity (task 9.6): the card now surfaces the current
+ * operator's ROLE (管理员 / 成员). Role gates only the admin panel — it does NOT
+ * isolate execution; every enabled account is host-root.
  *
  * SSR-safe: pure render.
  *
@@ -49,8 +53,24 @@ function ConfigRow({
   );
 }
 
+/** A console role — gates the admin panel only (NOT execution isolation). */
+export type AccountRole = "admin" | "member";
+
+/** Verbatim role labels (design `screens/settings.html` 角色 row). */
+const ROLE_LABEL: Record<AccountRole, string> = {
+  admin: "管理员",
+  member: "成员",
+};
+
 /** The read-only current-identity card. */
-export function AccountPanel({ login }: { login: string }) {
+export function AccountPanel({
+  login,
+  role = "admin",
+}: {
+  login: string;
+  /** The current operator's role (defaults to admin — the mock single-operator). */
+  role?: AccountRole;
+}) {
   const initials = initialsFromLogin(login);
   return (
     <Panel className="grid gap-4">
@@ -69,6 +89,7 @@ export function AccountPanel({ login }: { login: string }) {
         </div>
       </div>
       <div className="grid overflow-hidden rounded-md shadow-ring">
+        <ConfigRow label="角色" value={ROLE_LABEL[role]} />
         <ConfigRow label="登录方式" value="GitHub OAuth" />
         <ConfigRow label="控制台范围" value="私有访问" />
         <ConfigRow label="仓库来源" value="已导入仓库" />
