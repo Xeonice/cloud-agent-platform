@@ -1,6 +1,11 @@
 # Changelog
 
-## [0.15.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.15.1...v0.15.2) (2026-06-22)
+## [0.16.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.15.1...v0.16.0) (2026-06-22)
+
+
+### Features
+
+* **auth:** private-account identity layer — email+password, OTP, GitHub login ([#47](https://github.com/Xeonice/cloud-agent-platform/issues/47)) ([0bc4dbf](https://github.com/Xeonice/cloud-agent-platform/commit/0bc4dbf501b6b3720efa8d64509437e0b0c2d48e))
 
 
 ### Bug Fixes
