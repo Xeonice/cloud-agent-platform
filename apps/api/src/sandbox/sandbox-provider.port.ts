@@ -1,5 +1,6 @@
 import type { SandboxMode } from '@cap/contracts';
 import type { RuntimeId } from '../agent-runtime/agent-runtime.port';
+import type { TranscriptSource } from './transcript-source';
 
 /**
  * SandboxProvider port (sandbox-provider-port, design D).
@@ -127,19 +128,24 @@ export interface SandboxProvider {
   teardownSandbox(taskId: string): Promise<void>;
 
   /**
-   * Read the codex rollout transcript out of a settled, RETAINED sandbox for
-   * read-only history replay (session-sandbox-retention, design D3). Returns the
-   * newest rollout's raw text, or `null` when none is present — the container was
-   * reaped/expired, or the agent never produced a transcript. Implementations
-   * MUST NOT restart the sandbox, MUST scope the read to the transcript only
-   * (never exporting any credential file), and MUST NOT throw into the caller.
+   * Read the runtime's transcript source out of a settled, RETAINED sandbox for
+   * read-only history replay (session-sandbox-retention D3; generalized by
+   * unify-transcript-parsers D3). Returns a {@link TranscriptSource} — the discriminated
+   * union the parser registry consumes — produced via the runtime-declared
+   * `readTranscriptSource` strategy: codex/claude declare the single-newest-JSONL read,
+   * so the returned source is `{ format, jsonl }` whose `jsonl` is byte-identical to the
+   * prior lexicographically-newest-file read. Returns `null` when no source is present —
+   * the container was reaped/expired, the path is missing, or the agent never produced a
+   * transcript. Implementations MUST NOT restart the sandbox, MUST scope the read to the
+   * transcript only (never exporting any credential file), and MUST NOT throw into the
+   * caller (a no-container / no-match / unreadable read resolves to an ABSENT source).
    *
    * @param taskId - The task whose retained sandbox transcript to read.
    */
   readRolloutFromContainer(
     taskId: string,
     runtimeId?: RuntimeId | null,
-  ): Promise<string | null>;
+  ): Promise<TranscriptSource | null>;
 
   /**
    * Whether the per-task retained sandbox still EXISTS (running or settled). Lets

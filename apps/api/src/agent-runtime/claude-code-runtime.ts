@@ -18,6 +18,7 @@ import type {
   TerminalStartup,
   TranscriptArtifact,
   TranscriptFormat,
+  TranscriptReadStrategy,
 } from './agent-runtime.port';
 
 /**
@@ -266,6 +267,16 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       : /(^|\/).*\.jsonl$/;
     return { dir, filenameGlob };
   }
+
+  /**
+   * Claude persists one newest per-session JSONL file (unify-transcript-parsers D3), so the
+   * read mechanism reads the lexicographically-newest `transcriptArtifact` match and hands
+   * the claude-jsonl parser a `{ format, jsonl }` source — the prior verbatim read. A future
+   * multi-record runtime declares a different strategy without touching this.
+   */
+  readonly readTranscriptSource: TranscriptReadStrategy = {
+    kind: 'single-newest-jsonl',
+  };
 
   /**
    * Headless one-shot: `claude -p` runs the prompt non-interactively and EXITS on turn

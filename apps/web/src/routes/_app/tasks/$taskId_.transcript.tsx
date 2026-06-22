@@ -119,21 +119,11 @@ function TranscriptPage() {
       {/* Transcript panel */}
       <section className="mt-3 rounded-[8px] bg-card p-[18px] shadow-ring">
         {/* Panel head */}
-        <div className="-mx-[18px] -mt-[18px] mb-3.5 flex items-center justify-between border-b border-border px-[18px] pb-3.5 pt-[18px]">
-          <div>
-            <h2 className="text-sm font-semibold text-foreground">会话记录</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {turns.length} 个事件 · {toolCount} 次工具调用 · {answerCount} 个最终回答
-            </p>
-          </div>
-          <Link
-            to="/tasks/$taskId"
-            params={{ taskId }}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-card px-3 text-xs font-medium text-foreground shadow-ring transition-colors hover:bg-secondary"
-          >
-            <TerminalIcon />
-            终端记录
-          </Link>
+        <div className="-mx-[18px] -mt-[18px] mb-3.5 border-b border-border px-[18px] pb-3.5 pt-[18px]">
+          <h2 className="text-sm font-semibold text-foreground">会话记录</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {turns.length} 个事件 · {toolCount} 次工具调用 · {answerCount} 个最终回答
+          </p>
         </div>
 
         {/* Toolbar */}
@@ -200,8 +190,13 @@ function TranscriptPage() {
   );
 }
 
-/** One timeline row — 56px time gutter + content, top hairline (first has none). */
-function TxRow({ ev }: { ev: SessionTurn }) {
+/**
+ * One timeline row — 56px time gutter + content, top hairline (first has none).
+ * Exported so the per-kind render (tool card / 推理 / final answer) is unit-testable
+ * off a `SessionTurn` fixture via `react-dom/server` in the node-env vitest suite
+ * (the route's data wiring stays covered by the Playwright visual gate).
+ */
+export function TxRow({ ev }: { ev: SessionTurn }) {
   return (
     <div className="grid grid-cols-[56px_minmax(0,1fr)] gap-3.5 border-t border-border py-[7px] first:border-t-0">
       <span className="pt-0.5 font-mono text-[11px] leading-normal text-muted-foreground/70">
@@ -242,12 +237,12 @@ function TxRow({ ev }: { ev: SessionTurn }) {
 
         {ev.kind === "tool" ? (
           <>
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 items-start gap-2">
               <WrenchIcon />
-              <span className="flex-none text-xs font-semibold text-muted-foreground">
+              <span className="flex-none pt-0.5 text-xs font-semibold text-muted-foreground">
                 {ev.name}
               </span>
-              <code className="min-w-0 truncate rounded-[5px] bg-secondary px-[7px] py-0.5 text-xs text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
+              <code className="min-w-0 flex-1 whitespace-pre-wrap break-all rounded-[5px] bg-secondary px-[7px] py-0.5 text-xs leading-relaxed text-foreground shadow-[inset_0_0_0_1px_var(--border)]">
                 {ev.args}
               </code>
               {ev.diffstat ? (
@@ -268,7 +263,7 @@ function TxRow({ ev }: { ev: SessionTurn }) {
                   <span className="hidden text-muted-foreground/70 group-open:inline">▾ </span>
                   输出
                 </summary>
-                <pre className="mt-1.5 overflow-x-auto rounded-md bg-terminal-bg px-3 py-2.5 font-mono text-xs leading-normal text-terminal-fg">
+                <pre className="mt-1.5 whitespace-pre-wrap break-all rounded-md bg-terminal-bg px-3 py-2.5 font-mono text-xs leading-normal text-terminal-fg">
                   {ev.output}
                 </pre>
               </details>
@@ -325,14 +320,6 @@ function BranchIcon() {
       <circle cx="18" cy="6" r="3" />
       <circle cx="6" cy="18" r="3" />
       <path d="M18 9a9 9 0 0 1-9 9" />
-    </svg>
-  );
-}
-function TerminalIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-3.5">
-      <polyline points="4 17 10 11 4 5" />
-      <line x1="12" x2="20" y1="19" y2="19" />
     </svg>
   );
 }

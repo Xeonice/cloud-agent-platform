@@ -12,6 +12,11 @@
  * environment — no DOM, no React render, no `window`. SSR-safety of the modules
  * under test is therefore also implicitly exercised (they must import without a
  * `window`).
+ *
+ * `.test.tsx` is also collected so a component's STATIC render can be asserted
+ * via `react-dom/server` `renderToStaticMarkup` — which needs no DOM/`window`,
+ * so it stays in the same node environment (e.g. the transcript `TxRow` render
+ * off a `SessionTurn` fixture).
  */
 import { defineConfig } from "vitest/config";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -20,6 +25,6 @@ export default defineConfig({
   plugins: [tsconfigPaths()],
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
   },
 });

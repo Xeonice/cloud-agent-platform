@@ -8,6 +8,7 @@ import {
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
 import { parseTranscript } from '../sandbox/parse-transcript';
+import type { TranscriptSource } from '../sandbox/transcript-source';
 import {
   transcriptFormatForRuntime,
   type RuntimeId,
@@ -97,21 +98,24 @@ export class SessionTranscriptService {
    */
   async capture(taskId: string): Promise<CaptureStatus> {
     const runtime = await this.resolveRuntime(taskId);
-    let jsonl: string | null;
+    // The provider returns the runtime-tagged TranscriptSource (unify-transcript-parsers
+    // D3); the durable archive stores the RAW `jsonl` (the source of truth a future parser
+    // re-runs over), so we persist `source.jsonl` verbatim — byte-identical to before.
+    let source: TranscriptSource | null;
     try {
-      jsonl = await this.sandbox.readRolloutFromContainer(taskId, runtime);
+      source = await this.sandbox.readRolloutFromContainer(taskId, runtime);
     } catch (err) {
       this.logger.warn(
         `task ${taskId}: transcript capture skipped — rollout read failed: ${(err as Error).message}`,
       );
       return 'error';
     }
-    if (jsonl === null) {
+    if (source === null) {
       // No rollout present (codex never ran, or already reaped). Nothing to
       // archive; the read path will fall back to the container / backfill later.
       return 'no-rollout';
     }
-    return this.persist(taskId, jsonl, runtime);
+    return this.persist(taskId, source.jsonl, runtime);
   }
 
   /**

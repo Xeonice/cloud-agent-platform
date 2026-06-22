@@ -57,6 +57,24 @@ export interface TranscriptArtifact {
 }
 
 /**
+ * HOW a runtime's transcript source is materialized out of the retained container
+ * (unify-transcript-parsers, design D3). This generalizes the read layer's former
+ * baked-in "read the single newest JSONL file" assumption into a runtime-declared
+ * STRATEGY: the runtime declares the strategy as DATA (alongside WHERE via
+ * {@link TranscriptArtifact} and WHAT via {@link TranscriptFormat}); the sandbox read
+ * mechanism interprets it. The leaf port owns no read I/O — it only declares the shape.
+ *
+ * - `single-newest-jsonl` — codex and claude: read the lexicographically-newest file
+ *   matching {@link TranscriptArtifact.filenameGlob} under {@link TranscriptArtifact.dir}
+ *   and hand the parser a `{ format, jsonl }` source (the prior verbatim behavior).
+ *
+ * The union is shaped so a FUTURE multi-record runtime (e.g. opencode, which persists
+ * session/message/part records rather than one JSONL file) declares a NON-single-JSONL
+ * variant — e.g. `{ kind: 'multi-record'; … }` — additively, WITHOUT editing codex/claude.
+ */
+export type TranscriptReadStrategy = { readonly kind: 'single-newest-jsonl' };
+
+/**
  * The canonical runtime → transcript-format mapping: a registry-free accessor for the
  * value each runtime declares as its `transcriptFormat`. Lets the durable-read path resolve
  * the parser without holding a runtime instance. A unit test asserts it agrees with the
@@ -310,4 +328,15 @@ export interface AgentRuntime {
    */
   transcriptArtifact(ctx: LaunchContext): TranscriptArtifact;
   readonly transcriptFormat: TranscriptFormat;
+
+  /**
+   * Declare HOW this runtime's transcript source is read out of the retained container
+   * (unify-transcript-parsers, design D3). The sandbox read mechanism reads this STRATEGY
+   * (alongside {@link transcriptArtifact}'s WHERE and {@link transcriptFormat}'s WHAT) to
+   * materialize the source it hands the parser — generalizing the former baked-in
+   * single-newest-file read. codex/claude declare `{ kind: 'single-newest-jsonl' }`
+   * verbatim; a future multi-record runtime declares a non-single-JSONL strategy WITHOUT
+   * editing them. The leaf port still owns NO read I/O and never imports the parsers.
+   */
+  readonly readTranscriptSource: TranscriptReadStrategy;
 }
