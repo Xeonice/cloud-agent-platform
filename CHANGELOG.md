@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.18.0...v0.18.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* **auth:** promote an existing ADMIN_EMAIL account to admin ([#51](https://github.com/Xeonice/cloud-agent-platform/issues/51)) ([c342cdf](https://github.com/Xeonice/cloud-agent-platform/commit/c342cdf6136d1551b8d32b53bb9c4436611b8a26))
+
+
 ## [0.18.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.17.0...v0.18.0) (2026-06-23)
 
 

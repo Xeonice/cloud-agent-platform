@@ -1,8 +1,5 @@
-# default-admin-bootstrap Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-private-account-identity. Update Purpose after archive.
-## Requirements
 ### Requirement: Idempotent default-admin seed on boot
 
 On startup the orchestrator SHALL ensure a default administrator account exists, identified by
@@ -37,35 +34,3 @@ SHALL make no change.
 
 - **WHEN** the `ADMIN_EMAIL` account already exists with `role = admin` and the orchestrator boots
 - **THEN** the seed issues no role change
-
-### Requirement: Random admin password with one-time reveal
-
-When `ADMIN_PASSWORD` is not provided, the seed SHALL generate a strong random
-password, store only its argon2 hash, and hold the plaintext ONLY in process memory
-(never persisted to the database or logs as plaintext beyond the reveal channel).
-The orchestrator SHALL expose a one-time reveal that returns the admin email and
-generated password exactly once; after it is consumed, a persisted flag (e.g.
-`SystemSettings.adminRevealConsumedAt`) SHALL prevent any further reveal and the
-in-memory plaintext SHALL be cleared. If the process restarts before the reveal is
-consumed, a new random password SHALL be generated (the database never holds the
-plaintext to re-serve).
-
-#### Scenario: Generated password is revealed exactly once
-
-- **WHEN** the admin was seeded with a generated password and the reveal has not been
-  consumed
-- **THEN** the first reveal returns the admin email and password, and the reveal is
-  marked consumed so a second attempt returns nothing
-
-#### Scenario: Plaintext is never persisted
-
-- **WHEN** the admin password is generated
-- **THEN** only its argon2 hash is stored in the database, and the plaintext exists
-  only in process memory until the reveal is consumed or the process restarts
-
-#### Scenario: Restart before reveal regenerates the password
-
-- **WHEN** the process restarts before the reveal was consumed
-- **THEN** a new random password is generated and hashed, because no plaintext was
-  persisted to re-serve the previous one
-

@@ -267,6 +267,81 @@ test('fresh deploy seeds an admin (role=admin, allowed, mustChangePassword) with
 });
 
 // ---------------------------------------------------------------------------
+// Role promotion — an existing ADMIN_EMAIL account is ensured to be admin
+// ---------------------------------------------------------------------------
+
+test('an existing non-admin ADMIN_EMAIL account is promoted to admin (role only, no reset)', async () => {
+  const db = freshDb();
+  // Pre-existing account keyed by ADMIN_EMAIL (e.g. created via GitHub OAuth → member),
+  // with its own customized password identity, enabled, and NOT must-change.
+  db.users.push({
+    id: 'u-existing',
+    email: ADMIN_EMAIL,
+    name: 'Existing Owner',
+    role: 'member',
+    allowed: true,
+    mustChangePassword: false,
+  });
+  db.identities.push({
+    id: 'i-existing',
+    userId: 'u-existing',
+    provider: 'password',
+    providerAccountId: ADMIN_EMAIL,
+    secret: 'argon2id$preexisting-secret',
+  });
+  // Reveal already consumed → the generated-password regen branch is skipped, proving
+  // the promotion is independent of the password lifecycle.
+  db.settings.push({ id: 'system', maxConcurrentTasks: 5, adminRevealConsumedAt: new Date() });
+
+  const holder = new AdminRevealHolder();
+  const service = new AdminSeedService(holder, fakeHasher, makeFakePrisma(db));
+  await withAdminEnv({ email: ADMIN_EMAIL }, () => service.seedAdmin());
+
+  assert.equal(db.users.length, 1, 'no duplicate account created');
+  const acct = db.users[0];
+  assert.equal(acct.role, 'admin', 'the member ADMIN_EMAIL account is promoted to admin');
+  // Promotion touches ONLY role.
+  assert.equal(acct.allowed, true, 'allowed left unchanged');
+  assert.equal(acct.mustChangePassword, false, 'mustChangePassword NOT reset');
+  assert.equal(
+    db.identities[0].secret,
+    'argon2id$preexisting-secret',
+    'password identity NOT reset',
+  );
+  assert.equal(holder.peek(), null, 'no new password generated or held');
+});
+
+test('an already-admin ADMIN_EMAIL account triggers no role write (idempotent)', async () => {
+  const db = freshDb();
+  db.users.push({
+    id: 'u-admin',
+    email: ADMIN_EMAIL,
+    name: 'Admin',
+    role: 'admin',
+    allowed: true,
+    mustChangePassword: false,
+  });
+  db.settings.push({ id: 'system', maxConcurrentTasks: 5, adminRevealConsumedAt: new Date() });
+
+  const prisma = makeFakePrisma(db);
+  // Spy on user.update to prove the already-admin path issues no write.
+  let userUpdates = 0;
+  const u = prisma.user as unknown as { update: (a: unknown) => Promise<unknown> };
+  const realUpdate = u.update.bind(u);
+  u.update = async (a: unknown) => {
+    userUpdates += 1;
+    return realUpdate(a);
+  };
+
+  const holder = new AdminRevealHolder();
+  const service = new AdminSeedService(holder, fakeHasher, prisma);
+  await withAdminEnv({ email: ADMIN_EMAIL }, () => service.seedAdmin());
+
+  assert.equal(db.users[0].role, 'admin', 'role stays admin');
+  assert.equal(userUpdates, 0, 'no user.update issued for an already-admin account');
+});
+
+// ---------------------------------------------------------------------------
 // 6.4 — idempotent reseed (after the reveal is consumed)
 // ---------------------------------------------------------------------------
 
