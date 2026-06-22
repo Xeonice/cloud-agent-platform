@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.17.0...v0.18.0) (2026-06-23)
+
+
+### Features
+
+* **mail:** branded HTML OTP email template ([e03596a](https://github.com/Xeonice/cloud-agent-platform/commit/e03596a2dac1d01537b18511eaf890aff88c6537))
+
+
 ## [0.17.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.16.0...v0.17.0) (2026-06-22)
 
 
