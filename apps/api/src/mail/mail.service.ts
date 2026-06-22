@@ -15,11 +15,17 @@ export const SMTP_ENV = {
   FROM: 'SMTP_FROM',
 } as const;
 
-/** A single outbound message: recipient, subject, and plaintext body. */
+/** A single outbound message: recipient, subject, plaintext body, optional HTML. */
 export interface MailMessage {
   readonly to: string;
   readonly subject: string;
   readonly text: string;
+  /**
+   * Optional HTML body. When present the message is sent as `multipart/alternative`
+   * (HTML + the `text` plaintext fallback) so clients that can't render HTML still
+   * show the plaintext part.
+   */
+  readonly html?: string;
 }
 
 /** The fully-resolved SMTP transport config — only ever non-null when configured. */
@@ -179,6 +185,8 @@ export class MailService {
         to: message.to,
         subject: message.subject,
         text: message.text,
+        // HTML present → multipart/alternative with the plaintext `text` as fallback.
+        ...(message.html ? { html: message.html } : {}),
       });
     } catch (error) {
       // Surface the failure: log loudly AND re-throw (never silently swallow).
