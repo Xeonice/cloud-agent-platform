@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.15.0...v0.15.1) (2026-06-22)
+
+
+### Bug Fixes
+
+* **transcript:** unify parsers behind a registry + fix codex/claude extraction ([3967ff4](https://github.com/Xeonice/cloud-agent-platform/commit/3967ff4ee99f20027604ba0f9c275c07ee52b789))
+
+
 ## [0.15.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.14.1...v0.15.0) (2026-06-22)
 
 
