@@ -73,18 +73,22 @@ export class PasswordController {
     @Res() res: Response,
   ): Promise<void> {
     const token = readCookie(req.headers.cookie, SESSION_COOKIE_NAME);
-    const user = await this.passwordAuth.changePassword(
+    const result = await this.passwordAuth.changePassword(
       token,
       body.currentPassword,
       body.newPassword,
     );
-    if (user === null) {
+    if (result === null) {
       res
         .status(HttpStatus.UNAUTHORIZED)
         .json({ error: 'Could not change the password.' });
       return;
     }
-    const responseBody: AuthSessionResponse = { user };
+    // Rotate the cookie: the service invalidated the pre-change sessions and minted a
+    // fresh one; hand it to the current client so it continues seamlessly (mirrors the
+    // login route's Set-Cookie).
+    res.setHeader('Set-Cookie', buildSessionCookies(req, result.token));
+    const responseBody: AuthSessionResponse = { user: result.user };
     res.status(HttpStatus.OK).json(responseBody);
   }
 }

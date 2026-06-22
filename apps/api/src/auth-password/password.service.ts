@@ -99,16 +99,18 @@ export class PasswordAuthService {
 
   /**
    * Changes the current account's password (authenticated by the active session),
-   * rotates the `password` identity secret, and clears `mustChangePassword`.
-   * Returns the refreshed {@link SessionUser} on success, or `null` when the
-   * session is invalid/expired/disallowed, the account has no email to key the
-   * identity on, or an optional `currentPassword` is supplied but does not verify.
+   * rotates the `password` identity secret, clears `mustChangePassword`, and ROTATES
+   * the session: pre-change sessions are invalidated and a fresh session credential is
+   * minted for the current client. Returns `{ token, user }` (the new session token +
+   * the refreshed {@link SessionUser}) on success, or `null` when the session is
+   * invalid/expired/disallowed, the account has no email to key the identity on, or an
+   * optional `currentPassword` is supplied but does not verify.
    */
   async changePassword(
     sessionToken: string | undefined | null,
     currentPassword: string | undefined,
     newPassword: string,
-  ): Promise<SessionUser | null> {
+  ): Promise<{ token: string; user: SessionUser } | null> {
     if (typeof sessionToken !== 'string' || sessionToken.length === 0) {
       return null;
     }
@@ -158,7 +160,19 @@ export class PasswordAuthService {
       where: { id: user.id },
       data: { mustChangePassword: false },
     });
-    return toSessionUser(updated);
+    // Rotate the session: invalidate the account's pre-change sessions (including the
+    // one that issued this request — potentially the very credential being changed
+    // away from) and mint a fresh session for the current client.
+    await this.prisma.session.deleteMany({ where: { userId: user.id } });
+    const minted = mintSessionToken();
+    await this.prisma.session.create({
+      data: {
+        userId: user.id,
+        tokenHash: minted.tokenHash,
+        expiresAt: sessionExpiryFrom(),
+      },
+    });
+    return { token: minted.token, user: toSessionUser(updated) };
   }
 }
 
