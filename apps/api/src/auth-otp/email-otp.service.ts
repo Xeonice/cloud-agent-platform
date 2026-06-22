@@ -3,6 +3,7 @@ import { createHash, randomInt } from 'node:crypto';
 import type { SessionUser } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
+import { renderOtpEmail } from './otp-email-template';
 import {
   mintSessionToken,
   sessionExpiryFrom,
@@ -113,14 +114,11 @@ export class EmailOtpService {
     });
 
     try {
-      await this.mail.sendMail(
-        {
-          to: email,
-          subject: 'Your sign-in code',
-          text: `Your verification code is ${code}. It expires in 10 minutes.`,
-        },
-        env,
-      );
+      const { subject, html, text } = renderOtpEmail({
+        code,
+        ttlMinutes: OTP_TTL_MS / 60_000,
+      });
+      await this.mail.sendMail({ to: email, subject, html, text }, env);
     } catch (error) {
       // Surface the delivery failure to the operator (logs) but do NOT leak it to
       // the unauthenticated requester — the controller's response is uniform.
