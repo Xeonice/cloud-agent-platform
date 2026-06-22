@@ -59,12 +59,63 @@ export function resolveSmtpConfig(
 }
 
 /**
- * True when SMTP is fully configured (all five vars present + a valid port). The
- * OTP capability flag (`oauth-config.isOtpAuthEnabled`) consumes THIS so the
- * advertised availability matches {@link MailService.isConfigured} exactly.
+ * A named outbound mail transport channel: how to resolve its SMTP config from the
+ * environment, and which recipients it handles. The recipient-routing seam (add a
+ * China channel later without touching the OTP send path) lives here.
+ */
+interface TransportChannel {
+  readonly name: string;
+  /** Resolve this channel's SMTP config from env (null = not configured). */
+  readonly resolve: (env: NodeJS.ProcessEnv) => ResolvedSmtpConfig | null;
+  /** True when this channel should handle `recipient`. The default channel matches all. */
+  readonly matches: (recipient: string) => boolean;
+}
+
+/**
+ * The ordered transport channels. TODAY only the DEFAULT channel (the unprefixed
+ * `SMTP_*` tuple), which matches every recipient — so behavior is identical to a single
+ * transport. A future China channel (e.g. Aliyun DirectMail) would PREPEND a channel
+ * whose `matches` tests the recipient suffix (e.g. `@qq.com`/`@163.com`/`@126.com`) and
+ * whose `resolve` reads a prefixed env tuple — without touching {@link MailService.sendMail}.
+ */
+const TRANSPORT_CHANNELS: readonly TransportChannel[] = [
+  {
+    name: 'default',
+    resolve: (env) => resolveSmtpConfig(env),
+    matches: () => true,
+  },
+];
+
+/**
+ * Select the SMTP config for a recipient (the recipient-routing seam): the first
+ * channel whose rule matches AND is configured. The default channel matches every
+ * recipient, so an unmatched address falls back to it; returns `null` only when NO
+ * channel is configured (fail-closed). `recipient` is unused while a single default
+ * channel is registered, but is the seam a future per-suffix channel reads.
+ */
+export function resolveTransportFor(
+  recipient: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedSmtpConfig | null {
+  for (const channel of TRANSPORT_CHANNELS) {
+    if (channel.matches(recipient)) {
+      const config = channel.resolve(env);
+      if (config) {
+        return config;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * True when at least one mail transport is configured. The OTP capability flag
+ * (`oauth-config.isOtpAuthEnabled`) consumes THIS so the advertised availability
+ * matches what {@link MailService.sendMail} can actually do. With only the default
+ * channel registered this is exactly "the unprefixed `SMTP_*` tuple is configured".
  */
 export function isSmtpConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return resolveSmtpConfig(env) !== null;
+  return TRANSPORT_CHANNELS.some((channel) => channel.resolve(env) !== null);
 }
 
 /**
@@ -114,7 +165,8 @@ export class MailService {
    * error level and re-thrown so the operator sees a real delivery failure.
    */
   async sendMail(message: MailMessage, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-    const config = resolveSmtpConfig(env);
+    // Recipient-routing seam: pick the transport for this recipient (default today).
+    const config = resolveTransportFor(message.to, env);
     if (!config) {
       // Fail closed: do not pretend a message was sent when no transport exists.
       throw new Error('SMTP is not configured (set SMTP_HOST/PORT/USER/PASS/FROM)');

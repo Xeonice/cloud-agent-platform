@@ -44,8 +44,6 @@ import {
 } from "@tanstack/react-router";
 import { toast } from "sonner";
 
-import { useQueryClient } from "@tanstack/react-query";
-
 import {
   changePassword,
   fetchLoginCapabilities,
@@ -59,7 +57,6 @@ import {
   type LoginMethod,
   type LoginResult,
 } from "@/lib/mock-session";
-import { authSessionQuery } from "@/lib/api/queries";
 import { safeRelativePath } from "@/lib/safe-redirect";
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
@@ -98,6 +95,18 @@ function safeClientRedirect(redirect: string | undefined): string {
   return safeRelativePath(redirect) ?? "/dashboard";
 }
 
+/**
+ * Enter the authenticated console with a FULL DOCUMENT LOAD (NOT a soft navigate).
+ * A fresh page discards the react-query cache so the `_app` gate re-resolves the
+ * session from the existing cookie instead of bouncing on a landing-prewarmed stale
+ * `authSession` (or a cached `mustChangePassword`). Mirrors the GitHub OAuth full-page
+ * path. Exported as the single seam the post-auth test spies. Destination is the
+ * open-redirect-guarded relative `redirect`, else `/dashboard`.
+ */
+export function enterConsole(redirect: string | undefined): void {
+  window.location.assign(safeClientRedirect(redirect));
+}
+
 /** Verbatim method labels (design `login.html` `.login-methods`). */
 const METHOD_LABEL: Record<LoginMethod, string> = {
   password: "密码",
@@ -117,7 +126,6 @@ const fieldHint = "m-0 text-xs leading-[1.6] text-muted-foreground";
 
 function LoginPage() {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const { error, denied, redirect, change } = useSearch({ from: "/login" });
 
   // Which methods to render. The SSR render + first client paint use the safe
@@ -178,21 +186,22 @@ function LoginPage() {
       return;
     }
     toast.success("已登录");
-    void navigate({ to: safeClientRedirect(redirect) });
+    // Full document load (see `enterConsole`): re-resolves a clean session from the
+    // existing cookie instead of a soft navigate the stale-cache gate could bounce.
+    enterConsole(redirect);
   }
 
   /**
-   * Forced-change completion: the password is now changed server-side, so the
-   * cached auth session (which the `_app` gate read as must-change) is stale —
-   * invalidate it before navigating so the gate re-resolves a clean session
-   * instead of bouncing back here in a loop.
+   * Forced-change completion: the password is now changed server-side. Enter the
+   * console with a FULL DOCUMENT LOAD so the fresh page re-resolves a clean session
+   * from the existing cookie — the prior soft navigate read the stale cached
+   * must-change session and bounced back here in a loop. The full load discards the
+   * cache, so no `invalidateQueries` is needed (it was a no-op on `/login` anyway,
+   * where `authSession` has no active observer to refetch).
    */
-  async function afterForcedChange() {
-    await queryClient.invalidateQueries({
-      queryKey: authSessionQuery().queryKey,
-    });
+  function afterForcedChange() {
     toast.success("密码已更新");
-    void navigate({ to: safeClientRedirect(redirect) });
+    enterConsole(redirect);
   }
 
   return (
@@ -283,7 +292,7 @@ function LoginPage() {
         <ForcedChangeDialog
           onChanged={() => {
             setForceChangeOpen(false);
-            void afterForcedChange();
+            afterForcedChange();
           }}
         />
       ) : null}

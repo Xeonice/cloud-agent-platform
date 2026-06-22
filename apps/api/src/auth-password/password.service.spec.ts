@@ -10,7 +10,8 @@
  *   2. WRONG password → null (uniform failure, no session).
  *   3. DISALLOWED owner → null even with the right password.
  *   4. UNKNOWN email / no password identity → null (no account auto-created).
- *   5. CHANGE PASSWORD — sets a new hash, clears mustChangePassword, and the OLD
+ *   5. CHANGE PASSWORD — sets a new hash, clears mustChangePassword, ROTATES the
+ *      session (pre-change token invalidated, a fresh one minted), and the OLD
  *      temporary password no longer verifies while the NEW one does.
  */
 import test from 'node:test';
@@ -75,6 +76,13 @@ function makeFakePrisma(opts: {
         const s = sessions.find((x) => x.tokenHash === args.where.tokenHash);
         return s ? { ...s, user: user() } : null;
       },
+      deleteMany: async (args: { where: { userId: string } }) => {
+        const before = sessions.length;
+        for (let i = sessions.length - 1; i >= 0; i--) {
+          if (sessions[i].userId === args.where.userId) sessions.splice(i, 1);
+        }
+        return { count: before - sessions.length };
+      },
     },
   };
   return { prisma, state, sessions };
@@ -123,9 +131,9 @@ test('verifyAndMint: unknown email / no password identity returns null', async (
   assert.equal(await serviceOver(noPw.prisma).verifyAndMint(EMAIL, 's3cret-passw0rd'), null);
 });
 
-test('changePassword: rotates the hash, clears mustChangePassword, and the old password stops working', async () => {
+test('changePassword: rotates the hash + session, clears mustChangePassword, and the old password stops working', async () => {
   const oldHash = await hashPassword('temp-passw0rd');
-  const { prisma, state } = makeFakePrisma({ allowed: true, mustChangePassword: true, passwordHash: oldHash });
+  const { prisma, state, sessions } = makeFakePrisma({ allowed: true, mustChangePassword: true, passwordHash: oldHash });
   const svc = serviceOver(prisma);
 
   // Log in with the temporary password to mint a session (the change is session-authed).
@@ -135,8 +143,24 @@ test('changePassword: rotates the hash, clears mustChangePassword, and the old p
 
   const changed = await svc.changePassword(login.token, undefined, 'brand-new-passw0rd');
   assert.ok(changed !== null, 'change should succeed for a valid session');
-  assert.equal(changed.mustChangePassword, false, 'the flag is cleared');
+  assert.equal(changed.user.mustChangePassword, false, 'the flag is cleared');
   assert.equal(state.mustChangePassword, false);
+
+  // Session rotation: the pre-change token is invalidated and a fresh one is minted &
+  // stored. Assert BEFORE the verifyAndMint calls below (each would mint more sessions).
+  assert.notEqual(changed.token, login.token, 'the session token is rotated');
+  assert.equal(sessions.length, 1, 'exactly the freshly rotated session remains');
+  assert.equal(sessions[0].tokenHash, hashSessionToken(changed.token), 'the stored session is the new token');
+  assert.ok(
+    !sessions.some((s) => s.tokenHash === hashSessionToken(login.token)),
+    'the pre-change session token is gone',
+  );
+  // The pre-change session no longer authorizes a change (its row was deleted).
+  assert.equal(
+    await svc.changePassword(login.token, undefined, 'another-passw0rd'),
+    null,
+    'the pre-change session token no longer authenticates',
+  );
 
   // The NEW password now verifies; the OLD temp password no longer does.
   assert.ok(await svc.verifyAndMint(EMAIL, 'brand-new-passw0rd'), 'new password works');

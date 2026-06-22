@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.17.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.16.0...v0.17.0) (2026-06-22)
+
+
+### Features
+
+* **mail:** recipient-routed transport seam + Resend OTP delivery docs ([#48](https://github.com/Xeonice/cloud-agent-platform/issues/48)) ([a245cc4](https://github.com/Xeonice/cloud-agent-platform/commit/a245cc48bbad5c2e213a8dd15386bbbf80011764))
+
+
+### Bug Fixes
+
+* **auth:** full-page post-login navigation + rotate session on password change ([#48](https://github.com/Xeonice/cloud-agent-platform/issues/48)) ([0981782](https://github.com/Xeonice/cloud-agent-platform/commit/09817820d99775f381eef2b71670fa2bc41d84c1))
+
+
 ## [0.16.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.15.1...v0.16.0) (2026-06-22)
 
 
