@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.15.1...v0.15.2) (2026-06-22)
+
+
+### Bug Fixes
+
+* **console:** render transcript turn text as hardened GFM markdown ([07e2ab8](https://github.com/Xeonice/cloud-agent-platform/commit/07e2ab8603ef211e9031076a10069b42d80806da))
+
+
 ## [0.15.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.15.0...v0.15.1) (2026-06-22)
 
 
