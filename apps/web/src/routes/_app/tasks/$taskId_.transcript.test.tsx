@@ -98,3 +98,104 @@ describe("transcript TxRow renders the SessionTurn[] turn list", () => {
     expect(html).not.toContain("<details");
   });
 });
+
+// ---------------------------------------------------------------------------
+// render-transcript-markdown: turn text renders as HARDENED GFM markdown
+// ---------------------------------------------------------------------------
+
+/** A final-answer assistant turn carrying `text` markdown (the markdown-bearing kind). */
+const mdTurn = (text: string): SessionTurn => ({
+  kind: "assistant",
+  text,
+  isFinalAnswer: true,
+  at: "2026-06-12T09:31:00Z",
+});
+
+describe("transcript turn text renders as hardened GFM markdown", () => {
+  it("renders bold, lists, and inline code as formatted markup (raw ** / backticks gone)", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(TxRow, { ev: mdTurn("**重点** 和 `code`\n\n- 一\n- 二") }),
+    );
+    expect(html).toContain("<strong");
+    expect(html).toContain("重点");
+    expect(html).toContain("<code");
+    expect(html).toContain("<ul");
+    expect(html).toContain("<li");
+    expect(html).not.toContain("**重点**");
+    expect(html).not.toContain("`code`");
+  });
+
+  it("renders a fenced code block as <pre><code> and a GFM table inside an overflow-x:auto wrapper", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(TxRow, {
+        ev: mdTurn("```\nx=1\n```\n\n| 项 | 值 |\n|----|----|\n| a | 1 |"),
+      }),
+    );
+    expect(html).toContain("<pre");
+    expect(html).toContain("<code");
+    expect(html).toContain("x=1");
+    expect(html).toContain("<table");
+    expect(html).toContain("<th");
+    expect(html).toContain("<td");
+    expect(html).toContain("overflow-x-auto");
+  });
+
+  it("preserves the reasoning italic wrapper and the final-answer bubble around rendered markdown", () => {
+    const reasoning = renderToStaticMarkup(
+      React.createElement(TxRow, { ev: { kind: "assistant", text: "**步骤 1**", isFinalAnswer: false } }),
+    );
+    expect(reasoning).toContain("italic");
+    expect(reasoning).toContain("<strong");
+    const final = renderToStaticMarkup(
+      React.createElement(TxRow, { ev: { kind: "assistant", text: "**完成**", isFinalAnswer: true } }),
+    );
+    expect(final).toContain("bg-success-soft");
+    expect(final).toContain("<strong");
+  });
+
+  // --- untrusted hardening (agent output is untrusted) ---
+  it("escapes embedded raw HTML to inert text (no live <script>)", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(TxRow, { ev: mdTurn("<script>alert(1)</script> 之后") }),
+    );
+    expect(html).not.toContain("<script>alert");
+    expect(html).toContain("&lt;script&gt;");
+  });
+
+  it("blocks an agent-supplied remote image (no <img>)", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(TxRow, { ev: mdTurn("![x](http://evil.example/track.png)") }),
+    );
+    expect(html).not.toContain("<img");
+  });
+
+  it("strips a javascript: link href via the default urlTransform", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(TxRow, { ev: mdTurn("[点我](javascript:alert(1))") }),
+    );
+    expect(html).not.toContain('href="javascript:');
+  });
+
+  it("emits no heading slug/anchor id for an untrusted heading", () => {
+    const html = renderToStaticMarkup(React.createElement(TxRow, { ev: mdTurn("# 我的标题") }));
+    expect(html).toContain("我的标题");
+    expect(html).not.toContain('id="');
+  });
+
+  it("leaves tool args + output verbatim (NOT markdown-rendered)", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(TxRow, {
+        ev: {
+          kind: "tool",
+          name: "Bash",
+          args: "echo **not bold**",
+          output: "| not | table |",
+          at: "2026-06-12T09:30:35Z",
+        },
+      }),
+    );
+    expect(html).toContain("echo **not bold**"); // literal, not <strong>
+    expect(html).not.toContain("<strong");
+    expect(html).not.toContain("<table");
+  });
+});

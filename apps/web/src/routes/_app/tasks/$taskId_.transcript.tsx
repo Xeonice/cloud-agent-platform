@@ -21,6 +21,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
 import type { SessionTurn } from "@cap/contracts";
+import { TranscriptMarkdown } from "@/components/markdown/transcript-markdown";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { SessionTag } from "@/components/status-pill";
 import { SegmentedControl } from "@/components/segmented-control";
@@ -220,7 +221,9 @@ export function TxRow({ ev }: { ev: SessionTurn }) {
               </span>
               <span className="flex-none text-xs font-semibold text-foreground">操作者</span>
             </div>
-            <div className="text-[13px] leading-relaxed text-foreground">{ev.text}</div>
+            <div className="text-[13px] leading-relaxed text-foreground">
+              <TranscriptMarkdown source={ev.text} />
+            </div>
           </>
         ) : null}
 
@@ -230,7 +233,7 @@ export function TxRow({ ev }: { ev: SessionTurn }) {
               <span className="flex-none text-xs font-semibold text-muted-foreground">推理</span>
             </div>
             <div className="text-[13px] italic leading-relaxed text-muted-foreground">
-              {ev.text}
+              <TranscriptMarkdown source={ev.text} />
             </div>
           </>
         ) : null}
@@ -280,7 +283,7 @@ export function TxRow({ ev }: { ev: SessionTurn }) {
               <span className="flex-none text-xs font-semibold text-foreground">最终回答</span>
             </div>
             <div className="rounded-[8px] bg-success-soft px-3 py-2.5 text-[13px] leading-relaxed text-foreground shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--success)_18%,transparent)]">
-              {ev.text}
+              <TranscriptMarkdown source={ev.text} />
             </div>
           </>
         ) : null}
