@@ -51,6 +51,7 @@ const KEY_OWNER_GITHUB_ID = 67890;
 
 function makeSessionUser(githubId: number): SessionUser {
   return {
+    id: `user-${githubId}`,
     githubId,
     login: `u${githubId}`,
     name: `User ${githubId}`,

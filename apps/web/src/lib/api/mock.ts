@@ -290,6 +290,7 @@ export async function mockAuthSession(): Promise<AuthSession> {
   const { githubConnected } = getState();
   if (!githubConnected) return null;
   return {
+    id: "u_mock_operator",
     githubId: USER.githubId,
     login: USER.login,
     name: "Tang Hehui",

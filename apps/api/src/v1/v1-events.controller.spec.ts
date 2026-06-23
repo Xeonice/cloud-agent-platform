@@ -139,6 +139,7 @@ function makeController(audit: FakeAuditService): V1EventsController {
 // ---------------------------------------------------------------------------
 
 const USER: SessionUser = {
+  id: 'user-7',
   githubId: 7,
   login: 'op',
   name: 'Operator',

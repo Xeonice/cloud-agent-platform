@@ -26,6 +26,7 @@ vi.mock("../server-cookie", () => ({
 import { getAuthSession, ApiError } from "./real";
 
 const VALID_USER = {
+  id: "u_12345",
   githubId: 12345,
   login: "tanghehui",
   name: "Tang Hehui",

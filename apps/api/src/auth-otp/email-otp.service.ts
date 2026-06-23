@@ -193,6 +193,7 @@ export class EmailOtpService {
     return {
       token: minted.token,
       user: {
+        id: user.id,
         githubId: user.githubId,
         login: user.login,
         name: user.name,

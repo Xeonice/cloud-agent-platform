@@ -114,6 +114,7 @@ function sessionRequest(): AuthenticatedRequest {
   const principal: OperatorPrincipal = {
     kind: 'session',
     user: {
+      id: `user-${GITHUB_ID}`,
       githubId: GITHUB_ID,
       login: 'octocat',
       name: 'Octo Cat',
@@ -234,6 +235,7 @@ test('an api-key principal cannot mint/list/revoke (no escalation chain)', async
   const apiKeyPrincipal: OperatorPrincipal = {
     kind: 'api-key',
     user: {
+      id: `user-${GITHUB_ID}`,
       githubId: GITHUB_ID,
       login: 'octocat',
       name: 'Octo Cat',

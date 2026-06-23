@@ -25,6 +25,7 @@ import type { AuthSession } from "@cap/contracts";
 /** Build a minimal AuthSession fixture. */
 function session(login: string | null, allowed = true): AuthSession {
   return {
+    id: "u_test",
     name: login ?? "test",
     githubId: null,
     role: "member",

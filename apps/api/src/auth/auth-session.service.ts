@@ -255,6 +255,7 @@ export class AuthSessionService {
     return {
       token: minted.token,
       user: {
+        id: userId,
         githubId: githubUser.id,
         login: githubUser.login,
         name: githubUser.name,
@@ -306,6 +307,7 @@ export class AuthSessionService {
     }
 
     return {
+      id: session.user.id,
       githubId: session.user.githubId,
       login: session.user.login,
       name: session.user.name,
@@ -376,6 +378,7 @@ export class AuthSessionService {
 
     return {
       user: {
+        id: key.user.id,
         githubId: key.user.githubId,
         login: key.user.login,
         name: key.user.name,
