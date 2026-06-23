@@ -95,6 +95,15 @@
  * All 44 (22 capture + 22 compare) pass. The recurring-drift root cause is now
  * addressed by `sync-design-baseline.mjs` (one-command re-sync; see the
  * Regeneration procedure above).
+ *
+ * Login re-sync (improve-otp-login-ux, VV_MEASURE=1, 2026-06-23, chromium 1.60).
+ * OD `login.html` grew the OTP-panel resend UX (the `.otp-sent-note` block + the
+ * countdown send button) so the baseline drifted on `login.html` only; re-synced
+ * it. The new OTP affordances live on the OTP panel, which is HIDDEN by default in
+ * both the app and the baseline (the default panel is password), so the captured
+ * `/login` screenshot is unchanged: login re-measured at EXACTLY 0.0180 / 0.0241 —
+ * identical to the recorded thresholds (0.030 / 0.040), unchanged. All login
+ * comparisons stay green.
  */
 
 export interface Breakpoint {

@@ -124,6 +124,60 @@ const secondaryButton =
 const fieldLabel = "text-[13px] font-semibold text-foreground";
 const fieldHint = "m-0 text-xs leading-[1.6] text-muted-foreground";
 
+/**
+ * Client resend countdown, in seconds — a DOCUMENTED MIRROR of the backend
+ * `OTP_RESEND_COOLDOWN_MS` (60_000ms) in `apps/api/src/auth-otp/email-otp.service.ts`,
+ * which silently declines a fresh code inside this window. The countdown is UX
+ * only (the server cooldown remains the real guard); it disables the send button
+ * for the same 60s so a tap during the window can't even fire a request the
+ * backend would silently drop. If the backend constant changes, update this to
+ * match (low-churn, documented drift — design.md D1).
+ */
+export const OTP_RESEND_COOLDOWN_SECONDS = 60;
+
+/**
+ * Non-disclosing post-send notice copy (design.md D2; OD `login.html`
+ * `.otp-sent-note`). It NEVER states whether the email maps to a real account —
+ * preserving the backend's anti-enumeration guarantee — while still hinting
+ * "check spam / maybe not provisioned". `bin` is rendered emphasized (the OD
+ * `<strong>` on 垃圾箱).
+ */
+export const OTP_SENT_NOTICE = {
+  before: "验证码已发送（若该邮箱已开通）。请检查收件箱与",
+  bin: "垃圾箱",
+  after: "；未收到请联系管理员确认账号已开通。",
+} as const;
+
+/**
+ * The send-button label for a given resend-countdown state (pure — node-testable).
+ *   - `remaining > 0` → the disabled countdown label 「X 秒后可重发」 (OD design);
+ *   - `remaining === 0` after a prior send → 「重新发送」;
+ *   - never sent → 「发送验证码」;
+ *   - in-flight overrides everything → 「发送中…」.
+ */
+export function otpSendButtonLabel(opts: {
+  sending: boolean;
+  sent: boolean;
+  remaining: number;
+}): string {
+  if (opts.sending) return "发送中…";
+  if (opts.remaining > 0) return `${opts.remaining} 秒后可重发`;
+  if (opts.sent) return "重新发送";
+  return "发送验证码";
+}
+
+/**
+ * Whether the send button is disabled for a given state (pure — node-testable).
+ * Disabled while a request is in flight OR while the resend countdown is running;
+ * re-enabled at zero so the user can resend.
+ */
+export function isOtpSendDisabled(opts: {
+  sending: boolean;
+  remaining: number;
+}): boolean {
+  return opts.sending || opts.remaining > 0;
+}
+
 function LoginPage() {
   const navigate = useNavigate();
   const { error, denied, redirect, change } = useSearch({ from: "/login" });
@@ -389,6 +443,36 @@ function OtpPanel({
   const [sending, setSending] = React.useState(false);
   const [sent, setSent] = React.useState(false);
   const [verifying, setVerifying] = React.useState(false);
+  // Resend-countdown remaining seconds (0 = no countdown running). Mirrors the
+  // backend cooldown (`OTP_RESEND_COOLDOWN_SECONDS`); a 1s tick decrements it.
+  const [remaining, setRemaining] = React.useState(0);
+
+  // The live tick interval — a ref so we can clear it before starting a new
+  // countdown (no double-tick) and on unmount (no leak / no stranded timer when
+  // the user switches away from the OTP tab) — D5.
+  const tickRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const clearTick = React.useCallback(() => {
+    if (tickRef.current !== null) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+  }, []);
+  React.useEffect(() => clearTick, [clearTick]);
+
+  /** Start (or restart) the 60s resend countdown — clears any prior tick first. */
+  const startCountdown = React.useCallback(() => {
+    clearTick();
+    setRemaining(OTP_RESEND_COOLDOWN_SECONDS);
+    tickRef.current = setInterval(() => {
+      setRemaining((s) => {
+        if (s <= 1) {
+          clearTick();
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+  }, [clearTick]);
 
   async function handleSend() {
     setError(null);
@@ -396,10 +480,14 @@ function OtpPanel({
     const result = await requestOtp(email);
     setSending(false);
     if (!result.ok) {
+      // Failure path (D4): show the error, start NO countdown, show NO notice —
+      // the user can retry immediately.
       setError(result.error ?? "发送失败。");
       return;
     }
+    // Success path: show the non-disclosing notice and start the resend countdown.
     setSent(true);
+    startCountdown();
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -414,6 +502,9 @@ function OtpPanel({
     }
     onSuccess(result);
   }
+
+  const sendDisabled = isOtpSendDisabled({ sending, remaining });
+  const sendLabel = otpSendButtonLabel({ sending, sent, remaining });
 
   return (
     <form className="grid gap-3.5" onSubmit={handleSubmit} autoComplete="off">
@@ -433,13 +524,28 @@ function OtpPanel({
           <button
             type="button"
             onClick={() => void handleSend()}
-            disabled={sending}
+            disabled={sendDisabled}
             className={cn(secondaryButton, "shrink-0")}
           >
-            {sending ? "发送中…" : sent ? "重新发送" : "发送验证码"}
+            {sendLabel}
           </button>
         </div>
       </div>
+      {/* Non-disclosing post-send notice (D2; OD `.otp-sent-note`). Shown only
+          AFTER a successful send — never reveals whether the email is a real
+          account. Achromatic: 1px border + #fafafa fill, emphasized 垃圾箱. */}
+      {sent ? (
+        <p
+          data-otp-sent-note
+          className="m-0 rounded-lg border border-border bg-[#fafafa] px-3 py-2.5 text-xs leading-[1.6] text-muted-foreground"
+        >
+          {OTP_SENT_NOTICE.before}
+          <strong className="font-semibold text-foreground">
+            {OTP_SENT_NOTICE.bin}
+          </strong>
+          {OTP_SENT_NOTICE.after}
+        </p>
+      ) : null}
       <div className="grid gap-2">
         <label htmlFor="otp-code" className={fieldLabel}>
           验证码
