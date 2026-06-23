@@ -26,6 +26,7 @@ import { McpModule } from './mcp/mcp.module';
 import { V1Module } from './v1/v1.module';
 import { OpenApiModule } from './openapi/openapi.module';
 import { PrincipalThrottlerGuard } from './rate-limit/principal.throttler-guard';
+import { CreateThrottleGuard } from './rate-limit/create-throttle.guard';
 import { AuthThrottleGuard } from './rate-limit/auth-throttle.guard';
 import { buildThrottlerOptions } from './rate-limit/throttler.options';
 import { MailModule } from './mail/mail.module';
@@ -91,14 +92,18 @@ import { SmtpEnvMigrationModule } from './mail/smtp-env-migration.module';
  *    protects the `/v1` data surface (only the exact-match docs/spec paths are
  *    exempt in `auth.guard.ts`).
  *  - rate limiting: `ThrottlerModule.forRoot(buildThrottlerOptions())` registers
- *    the in-memory, env-overridable `default` (per-request) + `create` (the
- *    stricter `POST /v1/tasks` cap the v1-tasks `@Throttle({ create })` references)
- *    throttlers, and {@link PrincipalThrottlerGuard} is registered as a SECOND
- *    global `APP_GUARD` (public-v1-api, Integration 6.1). It is listed in
- *    `providers` AFTER `AuthModule` (whose own `APP_GUARD` is the auth guard)
- *    appears in `imports`, so it runs AFTER auth and can key its bucket on the
- *    resolved `req.operatorPrincipal` (per-api-key id / per-owner githubId) rather
- *    than the client IP (design D7).
+ *    the in-memory, env-overridable `default` (per-request), `create` (the stricter
+ *    `POST /v1/tasks` cap the v1-tasks `@Throttle({ create })` references), and
+ *    `auth` (anonymous pre-auth) throttlers. Each tier is enforced by ITS OWN global
+ *    `APP_GUARD`, narrowed to that single tier in `onModuleInit`, so no request is
+ *    double-counted: {@link PrincipalThrottlerGuard} enforces `default` only,
+ *    {@link CreateThrottleGuard} enforces `create` only (and ONLY on `POST /v1/tasks`
+ *    — so the small create cap never lands on general authenticated polling), and
+ *    {@link AuthThrottleGuard} enforces `auth` only (and ONLY on the pre-auth
+ *    routes). The two principal-keyed guards are listed in `providers` AFTER
+ *    `AuthModule` (whose own `APP_GUARD` is the auth guard) appears in `imports`, so
+ *    they run AFTER auth and key their bucket on the resolved `req.operatorPrincipal`
+ *    (per-api-key id / per-user id) rather than the client IP (design D7).
  */
 @Module({
   imports: [
@@ -196,12 +201,25 @@ import { SmtpEnvMigrationModule } from './mail/smtp-env-migration.module';
     // feature module) and AFTER AuthModule is imported, so global-guard order is
     // auth-then-throttle — the throttler reads the principal the auth guard
     // attached and keys the rate bucket per-principal, not per-IP (design D7).
-    // It filters the `auth` tier OUT (in its `onModuleInit`) so it enforces ONLY
-    // the principal-keyed `default`/`create` tiers — leaving the anonymous `auth`
-    // tier exclusively to the guard below.
+    // It narrows `this.throttlers` to the `default` tier ALONE (in its
+    // `onModuleInit`) so it enforces ONLY the per-principal per-request cap —
+    // leaving the stricter `create` tier to `CreateThrottleGuard` and the anonymous
+    // `auth` tier to `AuthThrottleGuard` below.
     {
       provide: APP_GUARD,
       useClass: PrincipalThrottlerGuard,
+    },
+    // fix: the dedicated `create`-tier guard. Provided alongside the principal
+    // guard, it narrows `this.throttlers` to the `create` tier ALONE and applies it
+    // ONLY to `POST /v1/tasks` (every other request is skipped). This is the
+    // root-cause fix for the production 429s: the `create` cap (10/60s) used to be
+    // retained by the principal guard and charged against EVERY authenticated
+    // request (dashboard polling of `/auth/session`, `/metrics`, `/tasks`, …),
+    // tripping spurious 429s. It is per-principal (shares `principalTrackerKey`) and
+    // DISJOINT from the other two throttler guards, so no request is double-counted.
+    {
+      provide: APP_GUARD,
+      useClass: CreateThrottleGuard,
     },
     // add-private-account-identity (integration task 10.1 / track rate-limit-auth):
     // the THIRD global guard — the anonymous pre-auth brute-force throttler. It

@@ -11,7 +11,10 @@
  *
  * The test boots a real NestJS HTTP app wiring:
  *   - a stub auth guard (attached before the throttler, as in production)
- *   - PrincipalThrottlerGuard as APP_GUARD (the SECOND global guard)
+ *   - PrincipalThrottlerGuard as APP_GUARD (the SECOND global guard; `default` tier)
+ *   - CreateThrottleGuard as APP_GUARD (the THIRD global guard; the `create` tier
+ *     moved here in fix-rate-limit-create-tier-scope, so it now enforces the
+ *     `@Throttle({ create })` cap on POST /v1/tasks — matching production)
  *   - ThrottlerModule with BOTH the `default` and `create` named throttlers,
  *     the `create` throttler capped at LIMIT=3 (tiny window so we can exhaust
  *     it quickly without sleeping)
@@ -44,6 +47,7 @@ import { IdempotencyService } from './idempotency.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
 import { PrincipalThrottlerGuard } from '../rate-limit/principal.throttler-guard';
+import { CreateThrottleGuard } from '../rate-limit/create-throttle.guard';
 import type { OperatorPrincipal } from '../auth/operator-principal';
 import type { TaskResponse } from '@cap/contracts';
 
@@ -87,6 +91,9 @@ function sessionPrincipal(githubId: number): OperatorPrincipal {
   return {
     kind: 'session',
     user: {
+      // The per-principal tracker key is now the user PRIMARY KEY (`user.id`), so
+      // distinct principals MUST carry distinct ids to land in distinct buckets.
+      id: `user-${githubId}`,
       githubId,
       login: `u${githubId}`,
       name: 'U',
@@ -172,7 +179,13 @@ before(async () => {
       // FIRST global guard: stub auth guard attaches the principal.
       { provide: APP_GUARD, useClass: StubAuthGuard },
       // SECOND global guard: principal-keyed throttler reads the attached principal.
+      // It enforces ONLY the `default` tier.
       { provide: APP_GUARD, useClass: PrincipalThrottlerGuard },
+      // THIRD global guard: the dedicated create-tier throttler. The `create` cap
+      // moved here (fix-rate-limit-create-tier-scope), so it — not the principal
+      // guard — now enforces the `@Throttle({ create })` override on POST /v1/tasks.
+      // Registered here so this behavioral cap test matches the production topology.
+      { provide: APP_GUARD, useClass: CreateThrottleGuard },
       // Inject fakes for the controller's dependencies.
       { provide: TasksService, useValue: fakeTasksService },
       { provide: PrismaService, useValue: fakePrisma },

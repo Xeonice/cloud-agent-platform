@@ -1,7 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { ThrottlerGuard } from '@nestjs/throttler';
 import type { OperatorPrincipal } from '../auth/operator-principal';
-import { AUTH_THROTTLE_NAME } from './throttler.options';
+
+/**
+ * The single tier this guard enforces — the global per-request cap. The `create`
+ * tier now belongs to `CreateThrottleGuard` and the `auth` tier to
+ * `AuthThrottleGuard`, so this guard filters `this.throttlers` down to `default`
+ * ALONE (see {@link PrincipalThrottlerGuard.onModuleInit}).
+ */
+const DEFAULT_THROTTLE_NAME = 'default';
 
 /**
  * Per-principal request throttler guard (public-v1-api, Track `rate-limiting`,
@@ -20,12 +27,21 @@ import { AUTH_THROTTLE_NAME } from './throttler.options';
  *   - an `api-key` principal → its immutable per-key id (`key:<keyId>`), so each
  *     api-key from one owner has its OWN bucket (a key, not the owner, is the
  *     rate axis for machine traffic);
- *   - any principal carrying a GitHub identity (a `session`, or an api-key whose
- *     owner id is known but with no keyId) → the owner's immutable GitHub id
- *     (`github:<githubId>`);
- *   - the legacy shared-`AUTH_TOKEN` operator (no GitHub identity, no key) → a
- *     stable per-kind sentinel (`kind:legacy-token`), so the single shared
- *     operator is one bucket rather than aliasing onto another principal.
+ *   - any principal carrying a resolved user (a `session`, an OTP/password LOCAL
+ *     account, or an api-key whose owner is known but with no keyId) → the user's
+ *     immutable PRIMARY KEY (`user:<user.id>`). Keying on `user.id` rather than the
+ *     GitHub id is what lets a LOCAL account (which has `githubId === null`) get its
+ *     OWN bucket instead of collapsing every local account onto the shared
+ *     `kind:session` sentinel;
+ *   - the legacy shared-`AUTH_TOKEN` operator (no user, no key) → a stable per-kind
+ *     sentinel (`kind:legacy-token`), so the single shared operator is one bucket
+ *     rather than aliasing onto another principal.
+ *
+ * This guard enforces ONLY the per-request `default` tier. The stricter `create`
+ * (task-admission) tier has been MOVED to the dedicated `CreateThrottleGuard`, which
+ * applies it solely to `POST /v1/tasks` — so the small `create` cap no longer lands
+ * on every authenticated request (dashboard polling of `/auth/session`, `/metrics`,
+ * `/tasks`, …), which was tripping spurious 429s. See {@link onModuleInit}.
  *
  * Fail-safe: if no principal is attached (the auth guard would normally have
  * 401'd first, so this only happens for a guard-exempt route that still passes
@@ -39,23 +55,30 @@ import { AUTH_THROTTLE_NAME } from './throttler.options';
 @Injectable()
 export class PrincipalThrottlerGuard extends ThrottlerGuard {
   /**
-   * Drop the pre-auth {@link AUTH_THROTTLE_NAME} tier from this guard so it
-   * enforces ONLY the principal-keyed tiers (`default`, `create`).
+   * Narrow this guard to enforce ONLY the per-request `default` tier.
    *
    * `ThrottlerModule.forRoot` registers three named tiers (`default`, `create`,
    * `auth`) and a vanilla {@link ThrottlerGuard} iterates ALL of them on every
-   * request. Two global throttler guards are registered (this one and the
-   * {@link AuthThrottleGuard}); without this filter THIS guard would also enforce
-   * the tiny anonymous `auth` cap — keyed on the post-auth principal — on EVERY
-   * authenticated route, throttling legitimate authenticated traffic far below
-   * `default`. The {@link AuthThrottleGuard} keeps `auth` only (and applies it
-   * solely to the pre-auth endpoints); this guard keeps everything BUT `auth`, so
-   * the two are disjoint and never double-count a request.
+   * request. THREE global throttler guards are registered (this one, the
+   * `CreateThrottleGuard`, and the {@link AuthThrottleGuard}); each narrows to a
+   * single tier so they are disjoint and never double-count a request:
+   *   - this guard keeps `default` only;
+   *   - `CreateThrottleGuard` keeps `create` only (and applies it solely to
+   *     `POST /v1/tasks`);
+   *   - {@link AuthThrottleGuard} keeps `auth` only (and applies it solely to the
+   *     pre-auth endpoints).
+   *
+   * Crucially, this guard no longer retains `create`. When it did, the small
+   * `create` cap (10/60s) — keyed on the post-auth principal — was charged against
+   * EVERY authenticated request (dashboard polling of `/auth/session`, `/metrics`,
+   * `/tasks`, …), tripping spurious 429s long before the intended `default` cap.
+   * The `create` tier now belongs exclusively to `CreateThrottleGuard`, which only
+   * lets it fire on the task-creation route.
    */
   override async onModuleInit(): Promise<void> {
     await super.onModuleInit();
     this.throttlers = this.throttlers.filter(
-      (tier) => tier.name !== AUTH_THROTTLE_NAME,
+      (tier) => tier.name === DEFAULT_THROTTLE_NAME,
     );
   }
 
@@ -82,9 +105,14 @@ export function principalTrackerKey(principal: OperatorPrincipal): string {
   if (principal.keyId) {
     return `key:${principal.keyId}`;
   }
-  const githubId = principal.user?.githubId;
-  if (githubId !== undefined && githubId !== null) {
-    return `github:${githubId}`;
+  // Prefer the resolved user's PRIMARY KEY (`users.id`), which is present for BOTH
+  // GitHub `session` principals AND local password/OTP accounts. A local account
+  // carries `githubId === null`, so keying on the GitHub id would collapse every
+  // local account onto the shared `kind:session` sentinel — one rate bucket for
+  // all of them. Keying on `user.id` gives each account its OWN bucket.
+  const userId = principal.user?.id;
+  if (userId !== undefined && userId !== null) {
+    return `user:${userId}`;
   }
   return `kind:${principal.kind}`;
 }
