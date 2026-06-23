@@ -3,10 +3,16 @@
  *
  * Shows a finished task's `session.cast` as ONE static, scrollable terminal log —
  * NOT a timing player. It feeds the whole recording into a read-only xterm with
- * the alternate-screen switch suppressed (see {@link feedCastLog}/{@link stripAltScreen}),
+ * the alternate-screen switch suppressed (see {@link buildCastOps}/{@link stripAltScreen}),
  * so codex's full-screen TUI plays into the NORMAL buffer and xterm's own
  * scrollback reconstructs the entire session top-to-bottom. After the bulk write
  * the reader is parked at the start of the history.
+ *
+ * Flow control (fix-terminal-record-replay-flow-control): the cast is written in
+ * bounded chunks paced by xterm's write-flush callback (a high/low watermark), so
+ * xterm's 50MB write buffer is never overrun (no "write data discarded"). The view
+ * shows a loading state until the WHOLE cast has been flushed, then reveals the
+ * complete scrollable log — no "one screen now, fills in later" race.
  *
  * SSR-safe: the xterm mount, the theme resolve (getComputedStyle), and the cast
  * fetch all live in effects (client-only); nothing non-deterministic at render.
@@ -20,7 +26,7 @@ import {
   type AsciicastHeader,
 } from "@cap/contracts";
 import { getSessionCast } from "@/lib/api/real";
-import { feedCastLog, type CastLogSink } from "./cast-log";
+import { buildCastOps } from "./cast-log";
 
 type Status = "loading" | "empty" | "error" | "ready";
 
@@ -28,6 +34,14 @@ type Status = "loading" | "empty" | "error" | "ready";
 const LOG_SCROLLBACK = 100_000;
 const FONT_MONO =
   '"JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+
+/**
+ * Watermark thresholds (chars) for the replay backpressure — kept well under
+ * xterm's hard 50MB write-buffer cap to leave headroom for its parse buffer. Pump
+ * output while in-flight < HIGH; the flush callback resumes pumping below LOW.
+ */
+const WRITE_HIGH_WATERMARK = 2 * 1024 * 1024;
+const WRITE_LOW_WATERMARK = 512 * 1024;
 
 function resolveVar(styles: CSSStyleDeclaration, name: string): string {
   return styles.getPropertyValue(name).trim();
@@ -44,6 +58,7 @@ export function SessionCastLog({
   const renderedRef = React.useRef(false); // guard: fill the log exactly once
 
   const [status, setStatus] = React.useState<Status>("loading");
+  const [feedingDone, setFeedingDone] = React.useState(false);
   const [theme, setTheme] = React.useState<ITheme | null>(null);
   const [fontFamily, setFontFamily] = React.useState(FONT_MONO);
   const [fontSize, setFontSize] = React.useState(13);
@@ -74,6 +89,7 @@ export function SessionCastLog({
   React.useEffect(() => {
     let cancelled = false;
     setStatus("loading");
+    setFeedingDone(false);
     renderedRef.current = false;
     // Reset xtermReady too: on a same-route taskId change the old <Terminal>
     // unmounts (status→loading) and its handle is disposed. Without this reset
@@ -105,7 +121,7 @@ export function SessionCastLog({
     };
   }, [taskId]);
 
-  // ── Fill the log once, when the cast is parsed AND xterm has mounted ───────
+  // ── Fill the log once, with FLOW CONTROL, when parsed AND xterm has mounted ─
   React.useEffect(() => {
     if (status !== "ready" || !xtermReady || renderedRef.current) return;
     const handle = handleRef.current;
@@ -117,19 +133,47 @@ export function SessionCastLog({
     handle.clear();
     if (header) handle.resize(header.width, header.height);
 
-    const sink: CastLogSink = {
-      output: (data) => handle.write(data),
-      resize: (cols, rows) => handle.resize(cols, rows),
-    };
-    feedCastLog(eventsRef.current, sink);
+    // Build the bounded-chunk op list, then drive it with a high/low watermark:
+    // never let xterm's write buffer approach its 50MB discard cap. The flush
+    // callback decrements the in-flight count and resumes pumping below LOW; when
+    // the op list is exhausted AND nothing is in flight, the replay is complete.
+    const ops = buildCastOps(eventsRef.current);
+    let i = 0;
+    let inFlight = 0;
+    let completed = false;
 
-    // Park the reader at the start of the history once xterm has flushed the
-    // whole bulk write (the empty write's callback fires after the queue drains).
-    // The `alive` guard skips the deferred scroll if the component unmounted
-    // first (the callback fires async, after term.dispose() on unmount).
-    handle.write("", () => {
-      if (alive) handle.scrollToTop();
-    });
+    const complete = (): void => {
+      if (completed || !alive) return;
+      completed = true;
+      handle.scrollToTop();
+      setFeedingDone(true);
+    };
+
+    const pump = (): void => {
+      if (!alive) return;
+      while (i < ops.length && inFlight < WRITE_HIGH_WATERMARK) {
+        const op = ops[i++]!;
+        if (op.type === "resize") {
+          handle.resize(op.cols, op.rows);
+          continue;
+        }
+        const bytes = op.data.length;
+        inFlight += bytes;
+        handle.write(op.data, () => {
+          inFlight -= bytes;
+          if (!alive) return;
+          if (i < ops.length) {
+            if (inFlight < WRITE_LOW_WATERMARK) pump();
+          } else if (inFlight === 0) {
+            complete();
+          }
+        });
+      }
+      // No output ops in flight (e.g. resize-only or empty op list): finish now.
+      if (i >= ops.length && inFlight === 0) complete();
+    };
+    pump();
+
     return () => {
       alive = false;
     };
@@ -173,6 +217,15 @@ export function SessionCastLog({
               setXtermReady(true);
             }}
           />
+        ) : null}
+        {/* Loading overlay while the cast is being paced into xterm. <Terminal>
+            stays mounted UNDER it (so onReady fires and the watermark loop runs);
+            the overlay drops only on the final flush, revealing the COMPLETE,
+            scrolled-to-top log — never a partially-filled intermediate frame. */}
+        {!feedingDone ? (
+          <div className="absolute inset-0 z-10 bg-[#050505]">
+            <CenteredFace title="读取终端记录…" />
+          </div>
         ) : null}
       </div>
     </div>

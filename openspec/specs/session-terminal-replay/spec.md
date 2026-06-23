@@ -72,11 +72,15 @@ cannot be read, never a fabricated terminal frame.
 
 ### Requirement: Static all-at-once terminal log
 
-The system SHALL present a finished task's recorded terminal session as a single,
-read-only, scrollable log shown in full on open — NOT a timed player — by feeding the
-cast into the project's own xterm with the alternate-screen switch suppressed so the
-session content lands in the normal-buffer scrollback. This replaces timing-driven
-playback.
+The system SHALL present a finished task's recorded terminal session as a single, read-only, scrollable
+log shown in full on open — NOT a timed player — by feeding the cast into the project's own xterm with
+the alternate-screen switch suppressed so the session content lands in the normal-buffer scrollback.
+The replay SHALL use FLOW CONTROL (write backpressure) so that NO data is silently discarded regardless
+of cast size: the cast SHALL be written to xterm in bounded chunks paced by xterm's write-flush
+callback (a high/low watermark), never letting xterm's write buffer approach its hard discard limit.
+The tab SHALL show a loading state until the replay is fully fed, revealing the complete scrollable log
+only on the final flush. An excessively large cast MAY be capped to its most-recent portion with a
+clear truncation notice. This replaces timing-driven playback.
 
 #### Scenario: The full history is shown at once
 
@@ -90,6 +94,24 @@ playback.
   per-event timing delay
 - **AND** the operator sees the entire recorded terminal history laid out top-to-bottom,
   scrollable via the native scrollbar, with ANSI colors intact
+
+#### Scenario: Large cast replays losslessly via flow control
+
+- **WHEN** the cast is large (a long session whose post-strip output is multiple MB, up to the legacy hundred-MB alt-screen recordings)
+- **THEN** the front-end writes it to xterm in bounded chunks paced by the write-flush callback (high/low watermark backpressure), so xterm never reaches its write-buffer discard limit (no "write data discarded, use flow control" error)
+- **AND** the rendered log contains the full recorded output (or the capped most-recent portion, see below) with no silently dropped data
+
+#### Scenario: Loading state until the replay is complete
+
+- **WHEN** the 终端记录 tab is opening and the cast is still being fed to xterm
+- **THEN** a loading affordance is shown rather than a partially-filled terminal
+- **AND** only once the entire cast has been flushed does the complete log appear, scrolled to the top — never an intermediate "one screen now, more fills in later" state
+
+#### Scenario: Oversized cast is capped with a notice
+
+- **WHEN** a cast exceeds the replay size cap (a pathologically large recording, typically a legacy alt-screen dump)
+- **THEN** replay shows only the most-recent portion within the cap
+- **AND** a clear notice indicates earlier output was omitted because the record is too large
 
 #### Scenario: All-at-once recovers more than the final frame
 
