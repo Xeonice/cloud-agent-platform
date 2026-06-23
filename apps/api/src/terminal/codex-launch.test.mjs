@@ -77,7 +77,7 @@ async function main() {
   } = mod;
 
   const BASE =
-    'codex -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
+    'codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
 
   // ---- argvDisablesHooks: flags the hook-disabling forms, passes the base -----
   assert(argvDisablesHooks('codex -s') === true, '-s is flagged');

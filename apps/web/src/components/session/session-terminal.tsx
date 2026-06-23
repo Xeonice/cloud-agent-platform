@@ -84,8 +84,19 @@ export interface SessionTerminalProps {
   onPausedChange?: (paused: boolean) => void;
 }
 
-/** How long to wait for xterm `onReady` before falling back to the DOM view. */
-const XTERM_READY_TIMEOUT_MS = 4000;
+/**
+ * How long to wait for xterm `onReady` before falling back to the DOM view.
+ *
+ * Tolerant of a SLOW init: on a wide viewport the terminal surface is large and
+ * xterm's async build (dynamic import + `open` + `fit`) legitimately takes several
+ * seconds, so a tight budget wrongly declared a merely-slow xterm "failed" and
+ * stranded the terminal on the read-only fallback (an over-aggressive 4s did this
+ * intermittently on wide screens). The watchdog is for a GENUINE failure (import
+ * threw / canvas never mounts), not slowness — paired with the `onReady` recovery
+ * (which clears `xtermFailed` if xterm becomes ready late), an over-budget-but-
+ * eventually-ready terminal self-heals instead of staying degraded.
+ */
+const XTERM_READY_TIMEOUT_MS = 15_000;
 
 /** The honest fallback notice lines per connection state (no fake output). */
 function fallbackLines(state: ConnectionState): FallbackLine[] {
@@ -659,77 +670,89 @@ export const SessionTerminal = React.forwardRef<
 
       {/* xterm-host — live terminal (direct 1:1 input via onData), OR the
           fallback line-view (which keeps the command input) when xterm fails. */}
-      {showFallback ? (
-        <div className="flex flex-1 flex-col">
-          <TerminalFallback lines={fallbackLines(connection)} />
-          {/* The fallback DOM line-view has NO live terminal to type into, so it
-              retains the command input as its only input path. The LIVE xterm
-              path below does NOT render this — direct keystrokes flow through
-              onData (the 1:1 surface), with no separate box and no submit hack. */}
-          <TerminalCommandInput
-            value={input}
-            onValueChange={setInput}
-            onSubmit={sendCommand}
-            disabled={commandDisabled}
+      {/* xterm-host — the live terminal is ALWAYS mounted (when theme is ready) so
+          a slow/wide init can finish and fire onReady EVEN AFTER the readiness
+          watchdog fired; the read-only fallback renders as an OVERLAY on top while
+          `xtermFailed`, NOT as a sibling that unmounts <Terminal>. Unmounting
+          <Terminal> would set disposed=true so the late onReady never lands and the
+          watchdog flip would be permanent (the V.1 defect) — with the overlay a
+          late onReady calls setXtermFailed(false) and the real xterm self-heals. */}
+      <div className="relative min-h-0 flex-1 bg-[#050505] px-4 py-3.5">
+        {theme ? (
+          <Terminal
+            theme={theme}
+            fontSize={fontSize}
+            lineHeight={1.45}
+            fontFamily={fontFamily}
+            className="h-full"
+            onReady={(handle) => {
+              handleRef.current = handle;
+              setXtermReady(true);
+              // Recover from a LATE onReady: if the readiness watchdog already
+              // flipped `xtermFailed` (a slow/wide init that overran the budget),
+              // clear it so the live xterm replaces the fallback overlay. Because
+              // <Terminal> stays MOUNTED under the overlay, this onReady DOES fire
+              // even after the flip (unlike the prior sibling-unmount structure).
+              setXtermFailed(false);
+            }}
+            onResize={(geometry: TerminalGeometry) => {
+              socketRef.current?.sendResize(geometry.cols, geometry.rows);
+            }}
+            onData={(data) => {
+              // THE sole live input path (the command box is gone from this
+              // path). Each xterm keystroke flows verbatim through the
+              // lease-gated channel. Seize the write lease ONCE per connection
+              // on first input (the act of typing claims control) so the active
+              // operator is the writer even if a stale connection still held the
+              // lease. xterm already encodes Enter as `\r`, so NO newline
+              // translation here — a real Enter submits codex's composer.
+              const sock = socketRef.current;
+              if (!sock) return;
+              if (!claimedRef.current) {
+                sock.sendTakeover(taskId, clientIdRef.current);
+                claimedRef.current = true;
+              }
+              sock.sendKeystroke(taskId, data);
+            }}
           />
-        </div>
-      ) : (
-        <div className="relative min-h-0 flex-1 bg-[#050505] px-4 py-3.5">
-          {theme ? (
-            <Terminal
-              theme={theme}
-              fontSize={fontSize}
-              lineHeight={1.45}
-              fontFamily={fontFamily}
-              className="h-full"
-              onReady={(handle) => {
-                handleRef.current = handle;
-                setXtermReady(true);
-              }}
-              onResize={(geometry: TerminalGeometry) => {
-                socketRef.current?.sendResize(geometry.cols, geometry.rows);
-              }}
-              onData={(data) => {
-                // THE sole live input path (the command box is gone from this
-                // path). Each xterm keystroke flows verbatim through the
-                // lease-gated channel. Seize the write lease ONCE per connection
-                // on first input (the act of typing claims control) so the active
-                // operator is the writer even if a stale connection still held the
-                // lease. xterm already encodes Enter as `\r`, so NO newline
-                // translation here — a real Enter submits codex's composer.
-                const sock = socketRef.current;
-                if (!sock) return;
-                if (!claimedRef.current) {
-                  sock.sendTakeover(taskId, clientIdRef.current);
-                  claimedRef.current = true;
-                }
-                sock.sendKeystroke(taskId, data);
-              }}
+        ) : null}
+        {/* Connection-state affordance: with the command box gone from the live
+            path, keystrokes typed while the socket is not OPEN are silently
+            dropped by sendFrame. Surface that as a small NON-blocking corner
+            badge — NOT a full overlay — so an auto-reconnect window never hides
+            the last codex frame the operator was watching. pointer-events-none
+            keeps the terminal interactive; role=status/aria-live announces the
+            state to assistive tech. */}
+        {connection !== "open" ? (
+          <div
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            className="pointer-events-none absolute right-3 top-3 rounded border border-terminal-line bg-black/70 px-2 py-1 font-mono text-xs text-terminal-muted"
+          >
+            {connection === "connecting"
+              ? "○ 正在连接…键入暂不发送"
+              : connection === "error"
+                ? "× 连接失败…键入暂不发送"
+                : "○ 连接已断开…键入暂不发送"}
+          </div>
+        ) : null}
+        {/* Read-only fallback OVERLAY — shown while xtermFailed, layered ON TOP of
+            the still-mounted <Terminal> so a late onReady can recover. Retains the
+            command input (the fallback's only input path); the live xterm path
+            uses direct onData with no command box. */}
+        {showFallback ? (
+          <div className="absolute inset-0 z-20 flex flex-col bg-[#050505]">
+            <TerminalFallback lines={fallbackLines(connection)} />
+            <TerminalCommandInput
+              value={input}
+              onValueChange={setInput}
+              onSubmit={sendCommand}
+              disabled={commandDisabled}
             />
-          ) : null}
-          {/* Connection-state affordance: with the command box gone from the live
-              path, keystrokes typed while the socket is not OPEN are silently
-              dropped by sendFrame. Surface that as a small NON-blocking corner
-              badge — NOT a full overlay — so an auto-reconnect window never hides
-              the last codex frame the operator was watching. pointer-events-none
-              keeps the terminal interactive; role=status/aria-live announces the
-              state to assistive tech. */}
-          {connection !== "open" ? (
-            <div
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-              className="pointer-events-none absolute right-3 top-3 rounded border border-terminal-line bg-black/70 px-2 py-1 font-mono text-xs text-terminal-muted"
-            >
-              {connection === "connecting"
-                ? "○ 正在连接…键入暂不发送"
-                : connection === "error"
-                  ? "× 连接失败…键入暂不发送"
-                  : "○ 连接已断开…键入暂不发送"}
-            </div>
-          ) : null}
-        </div>
-      )}
+          </div>
+        ) : null}
+      </div>
 
       {/* statusline footer (tmux-style) — the per-task resource readout + a
           degraded phase, INSIDE the terminal window (D3). CPU·内存 is already

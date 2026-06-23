@@ -228,9 +228,9 @@ async function main() {
   assert(
     codexLine.includes(CodexRuntime.DEFAULT_CODEX_LAUNCH_ARGV) ||
       codexLine.includes(
-        'codex -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust',
+        'codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust',
       ),
-    'codex launch line carries the unchanged default argv',
+    'codex launch line carries the default argv (now with --no-alt-screen)',
   );
 
   // (codex's provision-time auth/config + prompt writes are now the pure

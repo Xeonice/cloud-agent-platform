@@ -105,6 +105,11 @@ const SYNTHETIC_CPR_REPLY = '\x1b[1;1R';
  *     is handled out-of-band by writing `~/.codex/config.toml`
  *     `[projects."/home/gem/workspace"] trust_level="trusted"` at provision time
  *     (AioSandboxProvider), NOT via a launch flag.
+ *   - `--no-alt-screen` runs codex's TUI in INLINE mode (no alternate screen), so
+ *     its output stays in the NORMAL buffer and the live xterm keeps a scrollable
+ *     history. codex defaults to the alternate screen, which by spec has NO
+ *     scrollback — operators could not scroll up in the live terminal. codex 0.131
+ *     supports this flag ("inline mode, preserving terminal scrollback history").
  * The derived image bakes the SAME string as `CODEX_LAUNCH_ARGV`
  * (docker/aio-sandbox.Dockerfile) as the single source of truth; this default
  * mirrors it so the bridge stays correct when the env is not threaded through.
@@ -119,7 +124,7 @@ const SYNTHETIC_CPR_REPLY = '\x1b[1;1R';
  * auto-submit (aio-codex-prompt-autostart), preserved WITHIN the detached session.
  */
 const DEFAULT_CODEX_LAUNCH_ARGV =
-  'codex -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
+  'codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
 
 /**
  * The Enter key (carriage return) codex's TUI composer submits on. Injected ONCE
