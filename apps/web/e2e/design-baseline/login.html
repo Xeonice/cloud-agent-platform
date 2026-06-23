@@ -70,6 +70,21 @@
       line-height: 1.6;
     }
 
+    /* 发送验证码后的提醒（non-disclosing：检查垃圾箱 / 未收到联系管理员） */
+    .otp-sent-note {
+      margin: 0;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fafafa;
+      line-height: 1.6;
+    }
+
+    .otp-sent-note strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
     .login-foot {
       margin: 4px 0 0;
       padding-top: 14px;
@@ -125,10 +140,13 @@
           <div class="field">
             <label for="otp-email">邮箱</label>
             <div class="otp-send-row">
-              <input id="otp-email" type="email" placeholder="you@example.com" autocomplete="username">
-              <button class="btn" type="button" data-otp-send>发送验证码</button>
+              <input id="otp-email" type="email" value="you@example.com" autocomplete="username">
+              <button class="btn" type="button" data-otp-send disabled>59 秒后可重发</button>
             </div>
           </div>
+          <p class="otp-sent-note small-muted" data-otp-sent-note>
+            验证码已发送（若该邮箱已开通）。请检查收件箱与<strong>垃圾箱</strong>；未收到请联系管理员确认账号已开通。
+          </p>
           <div class="field">
             <label for="otp-code">验证码</label>
             <input id="otp-code" inputmode="numeric" maxlength="6" placeholder="6 位数字" autocomplete="one-time-code">

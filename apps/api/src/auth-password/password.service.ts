@@ -16,6 +16,7 @@ const PASSWORD_IDENTITY_PROVIDER = 'password' as const;
 
 /** The User columns this service projects into a {@link SessionUser}. */
 interface AccountRow {
+  id: string;
   githubId: number | null;
   login: string | null;
   name: string;
@@ -179,6 +180,7 @@ export class PasswordAuthService {
 /** Projects an account row into the session-user shape the console renders. */
 function toSessionUser(u: AccountRow): SessionUser {
   return {
+    id: u.id,
     githubId: u.githubId,
     login: u.login,
     name: u.name,

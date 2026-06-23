@@ -61,7 +61,7 @@ class StubAuthGuard implements CanActivate {
 function sessionPrincipal(githubId: number): OperatorPrincipal {
   return {
     kind: 'session',
-    user: { githubId, login: 'op', name: 'Op', avatarUrl: '', allowed: true, role: 'member', mustChangePassword: false },
+    user: { id: `user-${githubId}`, githubId, login: 'op', name: 'Op', avatarUrl: '', allowed: true, role: 'member', mustChangePassword: false },
   };
 }
 

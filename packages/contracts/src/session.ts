@@ -37,7 +37,18 @@ import { RoleSchema, AuthCapabilitiesSchema } from './auth-account.js';
  */
 export const SessionUserSchema = z.object({
   /**
-   * Stable GitHub numeric account id; the allowlist + GitHub-identity key.
+   * The DB account primary key (a string UUID) — the SINGLE per-account scope key
+   * (fix-local-account-settings-scope). Present for BOTH local and GitHub accounts,
+   * so per-account settings (Codex credential, forge credential, account
+   * preferences, Codex device login) scope on this id directly rather than on the
+   * GitHub identity. REQUIRED so TypeScript forces every SessionUser construction
+   * site to supply it — no path can mint an id-less principal.
+   */
+  id: z.string(),
+  /**
+   * Stable GitHub numeric account id; the GitHub LOGIN-PROVISIONING / ALLOWLIST key
+   * only (e.g. `AUTH_ALLOWLIST`, self-update admin list) — it is NOT the per-account
+   * settings scope key (that is `id`, above).
    * NULLABLE (add-private-account-identity): a LOCAL account (password/OTP) has no
    * GitHub identity, so it carries `null` here. A GitHub-provisioned account still
    * sets it.

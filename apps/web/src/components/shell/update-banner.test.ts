@@ -117,6 +117,7 @@ describe("selectBannerView — the banner's show/hide decision", () => {
 /** An allowlisted session user, overridable per case. */
 function session(overrides: Partial<NonNullable<AuthSession>> = {}): AuthSession {
   return {
+    id: "u_test_operator",
     githubId: 4_829_173,
     login: "tanghehui",
     name: "Tang Hehui",
@@ -125,7 +126,7 @@ function session(overrides: Partial<NonNullable<AuthSession>> = {}): AuthSession
     role: "admin",
     mustChangePassword: false,
     ...overrides,
-  };
+  } as NonNullable<AuthSession>;
 }
 
 /** A non-null banner view (an update IS available for vY). */

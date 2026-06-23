@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Injectable,
   InternalServerErrorException,
-  NotFoundException,
 } from '@nestjs/common';
 import {
   AccountSettingsSchema,
@@ -734,30 +733,26 @@ export class SettingsService {
   }
 
   /**
-   * Resolves the OWNING user row id from the operator principal's immutable
-   * numeric `githubId` — the single per-account scoping key. A principal with no
-   * GitHub identity (the legacy shared-token operator) has no per-account
-   * settings, so it is rejected here rather than silently reading/writing a
-   * shared row.
+   * Resolves the OWNING user row id from the operator principal — the single
+   * per-account scoping key is the account primary key `operator.id`
+   * (fix-local-account-settings-scope), which is present for BOTH local and GitHub
+   * accounts. No GitHub identity is required and no reverse lookup is performed
+   * (the credential/settings rows are already FK `User.id`).
+   *
+   * `account_scope_required` is retained ONLY as the defensive "no authenticated
+   * account at all" case — an identity-less machine/legacy principal that has no
+   * per-account settings. The controller's `requireOperator` already rejects a
+   * null user, so this is belt-and-braces.
    */
-  private async requireUserId(operator: SessionUser): Promise<string> {
-    const githubId = operator?.githubId;
-    if (typeof githubId !== 'number') {
+  private requireUserId(operator: SessionUser): string {
+    const userId = operator?.id;
+    if (typeof userId !== 'string' || userId.length === 0) {
       throw new BadRequestException({
         error: 'account_scope_required',
-        message:
-          'Account settings are per-account and require a GitHub-identity ' +
-          'operator session.',
+        message: 'Account settings are per-account and require an authenticated account.',
       });
     }
-    const user = await this.prisma.user.findUnique({
-      where: { githubId },
-      select: { id: true },
-    });
-    if (!user) {
-      throw new NotFoundException(`No account record for githubId ${githubId}`);
-    }
-    return user.id;
+    return userId;
   }
 
   /**

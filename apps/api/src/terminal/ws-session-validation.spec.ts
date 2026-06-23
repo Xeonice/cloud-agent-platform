@@ -35,6 +35,7 @@ import type { SessionUser } from '@cap/contracts';
 const VALID_TOKEN = 'valid-session-token-abc';
 
 const LIVE_USER: SessionUser = {
+  id: 'user-99',
   githubId: 99,
   login: 'operator',
   name: 'Operator Name',

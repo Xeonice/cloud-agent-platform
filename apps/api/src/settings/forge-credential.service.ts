@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Injectable,
   Logger,
-  NotFoundException,
   type OnModuleInit,
 } from '@nestjs/common';
 import type {
@@ -264,24 +263,24 @@ export class ForgeCredentialService implements OnModuleInit {
     }
   }
 
-  /** Resolves the operator's account row id from the session githubId. */
-  private async requireUserId(operator: SessionUser): Promise<string> {
-    const githubId = operator?.githubId;
-    if (typeof githubId !== 'number') {
+  /**
+   * Resolves the operator's account row id — the single per-account scope key is
+   * the account primary key `operator.id` (fix-local-account-settings-scope),
+   * present for BOTH local and GitHub accounts. No GitHub identity is required and
+   * no reverse lookup is performed (forge credential rows are already FK
+   * `User.id`).
+   *
+   * `account_scope_required` is retained ONLY as the defensive "no authenticated
+   * account at all" case (an identity-less machine/legacy principal).
+   */
+  private requireUserId(operator: SessionUser): string {
+    const userId = operator?.id;
+    if (typeof userId !== 'string' || userId.length === 0) {
       throw new BadRequestException({
         error: 'account_scope_required',
-        message:
-          'Forge credentials are per-account and require a GitHub-identity ' +
-          'operator session.',
+        message: 'Forge credentials are per-account and require an authenticated account.',
       });
     }
-    const user = await this.prisma.user.findUnique({
-      where: { githubId },
-      select: { id: true },
-    });
-    if (!user) {
-      throw new NotFoundException(`No account record for githubId ${githubId}`);
-    }
-    return user.id;
+    return userId;
   }
 }

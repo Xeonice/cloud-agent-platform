@@ -117,6 +117,7 @@ function guardWith(prisma: unknown): AuthGuard {
       if (token !== RAW_TOKEN) return null;
       // We only care that the session resolves to a user — the flag is checked separately
       return {
+        id: 'user-test',
         githubId: null,
         login: 'testuser',
         name: 'Test User',

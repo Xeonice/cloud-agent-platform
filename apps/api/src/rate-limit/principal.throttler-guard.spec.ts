@@ -102,6 +102,7 @@ function sessionPrincipal(githubId: number): OperatorPrincipal {
   return {
     kind: 'session',
     user: {
+      id: `user-${githubId}`,
       githubId,
       login: `u${githubId}`,
       name: 'U',

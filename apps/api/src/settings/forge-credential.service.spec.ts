@@ -23,9 +23,11 @@ const REGISTRY = {} as unknown as DefaultForgeRegistry;
 
 const KEY = '0'.repeat(64);
 const ENV: NodeJS.ProcessEnv = { CODEX_CRED_ENC_KEY: KEY };
-const OPERATOR = { githubId: 4242, login: 'op' } as unknown as SessionUser;
+// The per-account scope key is now `user.id` directly (no githubId reverse lookup)
+// — fix-local-account-settings-scope. `id: 'u1'` matches the owner-scoped rows.
+const OPERATOR = { id: 'u1', githubId: 4242, login: 'op' } as unknown as SessionUser;
 
-/** Build a fake PrismaService capturing forge writes; user resolves to id 'u1'. */
+/** Build a fake PrismaService capturing forge writes; the scope is OPERATOR.id ('u1'). */
 function makePrisma(overrides: Record<string, unknown> = {}) {
   const calls: { upserts: unknown[]; deletes: unknown[] } = { upserts: [], deletes: [] };
   const prisma = {

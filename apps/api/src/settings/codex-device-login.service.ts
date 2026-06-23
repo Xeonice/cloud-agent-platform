@@ -45,11 +45,13 @@ interface LoginSession {
 export class CodexDeviceLoginService implements OnModuleDestroy {
   private readonly logger = new Logger(CodexDeviceLoginService.name);
   private readonly docker = new Docker();
-  /** Active sessions keyed by the operator's stable numeric githubId. */
-  private readonly sessions = new Map<number, LoginSession>();
+  /** Active sessions keyed by the operator's account primary key `user.id`
+   *  (fix-local-account-settings-scope) — present for both local and GitHub
+   *  accounts, so device login is per-account and works for local accounts. */
+  private readonly sessions = new Map<string, LoginSession>();
   /** Per-operator in-flight guard: serializes start() so a double-click / retry
    *  can never create two login containers for the same account. */
-  private readonly starting = new Set<number>();
+  private readonly starting = new Set<string>();
   /** EVERY created login container by name, so an orphan (start failed, app
    *  shutdown) is reclaimable even before/without a session-map entry. */
   private readonly allContainers = new Map<string, Docker.Container>();
@@ -233,12 +235,17 @@ export class CodexDeviceLoginService implements OnModuleDestroy {
 
   // ----- internals -----------------------------------------------------------
 
-  private requireKey(operator: SessionUser): number {
-    const githubId = operator?.githubId;
-    if (typeof githubId !== 'number') {
-      throw new Error('codex device login requires a GitHub-identity operator session');
+  /**
+   * The per-account session key — the account primary key `operator.id`
+   * (fix-local-account-settings-scope), present for both local and GitHub
+   * accounts. Rejects ONLY an identity-less principal (no account at all).
+   */
+  private requireKey(operator: SessionUser): string {
+    const userId = operator?.id;
+    if (typeof userId !== 'string' || userId.length === 0) {
+      throw new Error('codex device login requires an authenticated account session');
     }
-    return githubId;
+    return userId;
   }
 
   /** Parse the verification URL + one-time code from codex's device-auth output. */
@@ -359,7 +366,7 @@ export class CodexDeviceLoginService implements OnModuleDestroy {
     return { exitCode, output };
   }
 
-  private async teardown(key: number): Promise<void> {
+  private async teardown(key: string): Promise<void> {
     const session = this.sessions.get(key);
     if (!session) return;
     this.sessions.delete(key);

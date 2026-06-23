@@ -303,21 +303,21 @@ export class SettingsController {
   }
 
   /**
-   * Extracts the GitHub-identity operator the guard attached. The legacy
-   * shared-token operator has no GitHub identity (`user === null`) and therefore
-   * no per-account settings; the service rejects it, but we surface the missing
-   * identity here too so the per-account contract is explicit at the boundary.
+   * Extracts the authenticated account the guard attached. Any authenticated
+   * account — LOCAL (password/OTP) or GitHub — has per-account settings, scoped on
+   * its account primary key `user.id` (fix-local-account-settings-scope), so the
+   * GitHub identity is no longer required. Only an IDENTITY-LESS principal (a
+   * machine/legacy token with `user === null`) has no per-account settings and is
+   * rejected here, mirroring the service's defensive account-scope guard.
    */
   private requireOperator(req: AuthenticatedRequest): SessionUser {
     const user = req.operatorPrincipal?.user;
     if (!user) {
-      // Per-account settings require a GitHub-identity session; mirror the
-      // service's account-scope guard rather than leak a shared row.
+      // Per-account settings require an authenticated account; reject the
+      // identity-less machine/legacy principal rather than leak a shared row.
       throw new BadRequestException({
         error: 'account_scope_required',
-        message:
-          'Account settings are per-account and require a GitHub-identity ' +
-          'operator session.',
+        message: 'Account settings are per-account and require an authenticated account.',
       });
     }
     return user;
