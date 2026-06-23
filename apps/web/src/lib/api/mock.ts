@@ -55,6 +55,10 @@ import type {
   McpTokenSummary,
   MintMcpTokenRequest,
   MintMcpTokenResponse,
+  SmtpConfigRead,
+  SaveSmtpConfigRequest,
+  TestSmtpConfigRequest,
+  TestSmtpConfigResponse,
 } from "./real";
 
 // ---------------------------------------------------------------------------
@@ -1228,4 +1232,84 @@ export async function mockSetAdminAccountRole(
   const found = mockAccountStore.find((a) => a.id === id);
   if (!found) throw new Error(`mock account not found: ${id}`);
   return { ...found };
+}
+
+// ---------------------------------------------------------------------------
+// SMTP configuration (add-smtp-config-ui) — masked read + save + test
+//
+// The mock is the SERVER stand-in for the admin-only SMTP config surface. State
+// is module-scoped (this seam's scope; the persisted UI store is out of scope),
+// seeded EMPTY so the card's "未配置" path is the default. A save stores ONLY the
+// non-secret masked projection — the plaintext API Key is DROPPED, recorded only
+// as `passLast4` + `hasPassword` (exactly the masked read contract). The
+// host/port/user are the fixed Resend tuple; an empty `pass` keeps the stored
+// suffix (the "留空沿用" rule). The test send echoes a success outcome WITHOUT
+// persisting — mirroring the real probe — and never returns the password.
+// ---------------------------------------------------------------------------
+
+/** The fixed Resend SMTP tuple — host/port/username are copy, not inputs. */
+const RESEND_SMTP = { host: "smtp.resend.com", port: 465, user: "resend" } as const;
+
+/** The in-memory mock SMTP config (masked projection only — never a plaintext key). */
+let mockSmtpConfig: SmtpConfigRead = {
+  host: RESEND_SMTP.host,
+  port: RESEND_SMTP.port,
+  user: RESEND_SMTP.user,
+  from: "",
+  passLast4: null,
+  hasPassword: false,
+};
+
+/** `GET /settings/smtp` (mock) — the current MASKED config (never a plaintext key). */
+export async function mockSmtpConfigRead(): Promise<SmtpConfigRead> {
+  await delay();
+  return { ...mockSmtpConfig };
+}
+
+/**
+ * `PUT /settings/smtp` (mock) — save the config, storing ONLY the non-secret
+ * masked projection. An empty/omitted `pass` keeps the existing suffix ("留空沿
+ * 用"); a supplied key is recorded as `passLast4` + `hasPassword` (the plaintext
+ * is dropped, never persisted client-side — the masked read contract).
+ */
+export async function mockSaveSmtpConfig(
+  body: SaveSmtpConfigRequest,
+): Promise<SmtpConfigRead> {
+  await delay();
+  const hasNewPass = typeof body.pass === "string" && body.pass.length > 0;
+  mockSmtpConfig = {
+    host: body.host || RESEND_SMTP.host,
+    port: typeof body.port === "number" ? body.port : RESEND_SMTP.port,
+    user: body.user || RESEND_SMTP.user,
+    from: body.from,
+    // Keep the existing suffix when no new key is supplied (留空沿用现有).
+    passLast4: hasNewPass ? body.pass!.slice(-4) : mockSmtpConfig.passLast4,
+    hasPassword: hasNewPass ? true : mockSmtpConfig.hasPassword,
+  };
+  return { ...mockSmtpConfig };
+}
+
+/**
+ * `POST /settings/smtp/test` (mock) — echo a successful test-send outcome WITHOUT
+ * persisting (the probe never writes). Mirrors the real `{ ok, message }` shape;
+ * never returns the password.
+ */
+export async function mockTestSmtpConfig(
+  _body: TestSmtpConfigRequest,
+): Promise<TestSmtpConfigResponse> {
+  await delay();
+  void _body;
+  return { ok: true, message: "测试邮件已发送到你的账号邮箱（mock）。" };
+}
+
+/** Test-only reset of the mock SMTP state (no production caller). */
+export function __resetMockSmtpState(): void {
+  mockSmtpConfig = {
+    host: RESEND_SMTP.host,
+    port: RESEND_SMTP.port,
+    user: RESEND_SMTP.user,
+    from: "",
+    passLast4: null,
+    hasPassword: false,
+  };
 }

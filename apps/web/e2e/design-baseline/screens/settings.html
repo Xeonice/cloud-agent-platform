@@ -85,6 +85,29 @@
           </div>
         </section>
 
+        <section id="smtp" class="panel">
+          <div class="panel-body">
+            <div class="settings-card-head">
+              <h2>邮件发送（Resend）<span class="status-pill" style="margin-left:8px;vertical-align:middle">仅管理员</span></h2>
+              <p>用 Resend 发送登录邮箱验证码（OTP），仅管理员可配置。只需填 API Key 与发件人地址（固定走 <span class="mono">smtp.resend.com:465</span>）。密钥加密存储、保存后仅展示后缀；改动即时生效，无需重启。未配置时回退到环境变量 <span class="mono">SMTP_*</span>。</p>
+            </div>
+            <div class="provider-meta split-line">
+              <div>
+                <strong>Resend SMTP</strong>
+                <p class="small-muted" style="margin:4px 0 0">发件人 no-reply@auth.douglasdong.com · API Key ••••wZK</p>
+              </div>
+              <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+                <span class="status-pill green">已配置</span>
+                <button class="btn" type="button" data-open-dialog="#smtp-dialog">配置</button>
+              </div>
+            </div>
+            <a href="resend-smtp.html" style="display:inline-flex;align-items:center;gap:4px;margin-top:10px;font-size:12px;font-weight:500;color:var(--foreground);text-decoration:underline">如何配置 Resend（获取 API Key、验证域名）？<span aria-hidden style="color:var(--muted)">↗</span></a>
+          </div>
+          <div class="panel-foot">
+            <span class="foot-hint">API Key 即 SMTP 密码，按部署密钥加密存储，仅发信时解密；未配置则使用环境变量 SMTP_*。</span>
+          </div>
+        </section>
+
         <section class="panel">
           <div class="panel-body">
             <div class="settings-card-head">
@@ -494,6 +517,48 @@
       <div class="dialog-foot">
         <button class="btn" type="button" data-close-dialog>取消</button>
         <button class="btn primary" type="button" data-close-dialog data-conn-save disabled>保存连接</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="smtp-dialog" hidden>
+    <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="smtp-title">
+      <header class="dialog-head">
+        <div>
+          <h2 id="smtp-title">配置 Resend 发信</h2>
+          <p>用 Resend 发送登录验证码邮件，固定走 <span class="mono">smtp.resend.com:465</span>、用户名固定 <span class="mono">resend</span>。只需填 API Key 与发件人地址。</p>
+        </div>
+        <button class="btn icon" type="button" data-close-dialog aria-label="关闭">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="smtp-key">API Key</label>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <input id="smtp-key" type="password" placeholder="re_… （留空沿用现有）">
+            <button class="btn" type="button" data-reveal="#smtp-key">显示</button>
+          </div>
+          <small class="small-muted">Resend 控制台创建的 API Key，即 SMTP 密码。加密存储，保存后仅展示后缀；留空则保留现有。</small>
+        </div>
+        <div class="field">
+          <label for="smtp-from">发件人地址</label>
+          <input id="smtp-from" value="no-reply@auth.douglasdong.com" placeholder="no-reply@yourdomain.com">
+          <small class="small-muted">@ 后域名需在 Resend 验证过；@ 前可自定（no-reply 等），无需真实邮箱。</small>
+        </div>
+        <a href="resend-smtp.html" style="display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:500;color:var(--foreground);text-decoration:underline">如何获取 API Key 与验证域名？<span aria-hidden style="color:var(--muted)">↗</span></a>
+        <div class="provider-meta split-line" data-conn-test>
+          <div>
+            <strong>发送测试</strong>
+            <p class="small-muted" style="margin:4px 0 0" data-conn-status>向你的账号邮箱发送一封测试邮件验证配置。</p>
+          </div>
+          <div class="split-line" style="flex-wrap:nowrap;gap:8px">
+            <span class="status-pill" data-conn-pill>未测试</span>
+            <button class="btn" type="button" data-test-connection>发送测试</button>
+          </div>
+        </div>
+      </div>
+      <div class="dialog-foot">
+        <button class="btn" type="button" data-close-dialog>取消</button>
+        <button class="btn primary" type="button" data-close-dialog>保存配置</button>
       </div>
     </section>
   </div>

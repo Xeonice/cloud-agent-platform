@@ -49,6 +49,10 @@ import type {
   SelfUpdateAck,
   MintMcpTokenRequest,
   MintMcpTokenResponse,
+  SmtpConfigRead,
+  SaveSmtpConfigRequest,
+  TestSmtpConfigRequest,
+  TestSmtpConfigResponse,
 } from "./real";
 import { queryKeys } from "./queries";
 import { setState, upsertImportedRepo } from "../store";
@@ -520,6 +524,63 @@ export function setMcpServerEnabledMutation(
         queryKey: queryKeys.mcpServerEnabled,
       });
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SMTP configuration (add-smtp-config-ui) — admin-only save + test
+// ---------------------------------------------------------------------------
+
+/**
+ * Save the SMTP config (`PUT /settings/smtp` real, or the mock store stand-in).
+ * The write is ADMIN-gated server-side — the card only renders the management
+ * controls for an admin session, and the api re-enforces a 403 for a non-admin
+ * even if the affordance is forced (defense in depth). The plaintext API Key is
+ * write-only (an empty `pass` keeps the stored key); the mock seam stores ONLY
+ * the masked projection (the key is never persisted client-side).
+ *
+ * On success invalidates `queryKeys.smtpConfig` (so the card re-derives the
+ * masked status) AND `queryKeys.authSession` — enabling SMTP via the UI flips
+ * `otpAuthEnabled` true once the session capabilities re-resolve (design D7), so
+ * the login modal offers email-OTP without an env change or reload. Rides the
+ * `settings` seam.
+ */
+export function saveSmtpConfigMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<SmtpConfigRead, Error, SaveSmtpConfigRequest> {
+  return {
+    mutationFn: (body) =>
+      isCapable("settings")
+        ? real.saveSmtpConfig(body)
+        : mock.mockSaveSmtpConfig(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.smtpConfig });
+      // Enabling SMTP advertises email-OTP availability (D7) — refresh the
+      // session capabilities so the login methods re-resolve.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.authSession });
+    },
+  };
+}
+
+/**
+ * Send a test email through the SUBMITTED (or saved) config to verify
+ * connectivity BEFORE/independent of saving (`POST /settings/smtp/test` real, or
+ * the mock stand-in). Admin-gated server-side; nothing is persisted on failure.
+ * Resolves the discriminated `{ ok, message }` outcome the dialog's 发送测试 row
+ * reflects — NEVER the password. No cache is invalidated: the test has no
+ * persistent read (it feeds the dialog's transient status directly). Rides the
+ * `settings` seam.
+ */
+export function testSmtpConfigMutation(): UseMutationOptions<
+  TestSmtpConfigResponse,
+  Error,
+  TestSmtpConfigRequest
+> {
+  return {
+    mutationFn: (body) =>
+      isCapable("settings")
+        ? real.testSmtpConfig(body)
+        : mock.mockTestSmtpConfig(body),
   };
 }
 

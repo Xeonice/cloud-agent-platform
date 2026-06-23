@@ -66,7 +66,7 @@ export class OtpController {
   @HttpCode(HttpStatus.ACCEPTED)
   @UsePipes(new ZodValidationPipe(OtpRequestSchema))
   async request(@Body() body: OtpRequestBody, @Res() res: Response): Promise<void> {
-    if (!this.mail.isConfigured()) {
+    if (!(await this.mail.isConfigured())) {
       res.status(HttpStatus.NOT_FOUND).json({ error: 'OTP login is not available.' });
       return;
     }
@@ -90,7 +90,7 @@ export class OtpController {
     @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
-    if (!this.mail.isConfigured()) {
+    if (!(await this.mail.isConfigured())) {
       res.status(HttpStatus.NOT_FOUND).json({ error: 'OTP login is not available.' });
       return;
     }

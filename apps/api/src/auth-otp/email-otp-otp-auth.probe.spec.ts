@@ -123,7 +123,7 @@ function makeFakes(smtpOn: boolean = true): {
   } as unknown as PrismaService;
 
   const mail = {
-    isConfigured: () => smtpOn,
+    isConfigured: async () => smtpOn,
     sendMail: async (msg: { to: string; subject: string; text: string }) => {
       if (!smtpOn) throw new Error('SMTP not configured');
       sent.push({ to: msg.to, text: msg.text });

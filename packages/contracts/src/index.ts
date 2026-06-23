@@ -62,6 +62,8 @@ export * from './control-frame.js';
 export * from './github-import.js';
 
 // Account settings preferences + Codex execution credential (read/write shapes)
+// + admin-managed SMTP config DTOs (add-smtp-config-ui): masked read, save
+// (write-only password), and the test-send request/{ ok, message } response
 export * from './settings.js';
 
 // Audit/history: append-only audit event record + history-timeline query

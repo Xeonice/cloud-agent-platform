@@ -1146,3 +1146,147 @@ export async function postSelfUpdate(
     target: ack?.target ?? body.target,
   };
 }
+
+// ---------------------------------------------------------------------------
+// SMTP configuration (add-smtp-config-ui) — LOCAL request/response shapes
+//
+// DELIBERATELY LOCAL web types, NOT `@cap/contracts` schemas (the
+// `SelfUpdateRequest` / `RuntimeId` / `McpTokenSummary` precedent above): the
+// SMTP DTOs are owned by the CONTRACTS track of this same change, and a shared
+// schema imported by both api + web would be a cross-track shared file (tasks.md
+// NOTE). The api does the load-bearing validation server-side (the save body is
+// validated against the shared schema; the read projection is masked + the
+// password is encrypted at rest, never echoed); these mirror the non-secret read
+// shape so the settings card compiles ahead of the contracts schema landing, at
+// which point they collapse onto it with no call-site change.
+//
+// SECURITY: the masked read NEVER carries the plaintext password — only a
+// `passLast4` suffix + a `hasPassword` flag. The plaintext API Key is present
+// ONLY on the write ({@link SaveSmtpConfigRequest}) and the test send, never on a
+// read. The host/port/username are the fixed Resend tuple (`smtp.resend.com` /
+// `465` / `resend`), stored alongside the non-secret fields.
+// ---------------------------------------------------------------------------
+
+/**
+ * `GET /settings/smtp` response — the MASKED SMTP config projection. Carries the
+ * non-secret host/port/user/from plus a `passLast4` suffix + a `hasPassword`
+ * flag; NEVER the plaintext password (`pass` is write-only).
+ */
+export interface SmtpConfigRead {
+  /** SMTP host (the fixed `smtp.resend.com` for Resend). */
+  host: string;
+  /** SMTP port (the fixed `465` for Resend implicit-TLS). */
+  port: number;
+  /** SMTP username (the fixed literal `resend` for Resend). */
+  user: string;
+  /** Sender (from) address, e.g. `no-reply@auth.example.com`. */
+  from: string;
+  /** The masked last-4 of the stored password, or null when none is stored. */
+  passLast4: string | null;
+  /** Whether a password (API Key) is stored — drives the "已配置" status. */
+  hasPassword: boolean;
+}
+
+/**
+ * `PUT /settings/smtp` body — save the SMTP config. The `pass` (= the Resend API
+ * Key) is WRITE-ONLY and present ONLY here: omitted/empty means "keep the
+ * existing key" (the server preserves the stored ciphertext). The host/port/user
+ * are the fixed Resend tuple; the card always submits them so the stored row
+ * carries the full tuple.
+ */
+export interface SaveSmtpConfigRequest {
+  host: string;
+  port: number;
+  user: string;
+  from: string;
+  /** The plaintext API Key (SMTP password). Omit/empty to keep the existing one. */
+  pass?: string;
+}
+
+/**
+ * `POST /settings/smtp/test` body — the candidate config to verify. Like the
+ * save, `pass` is omitted/empty to test the already-saved key; otherwise the
+ * submitted key is used WITHOUT persisting (the probe never writes on failure).
+ */
+export type TestSmtpConfigRequest = SaveSmtpConfigRequest;
+
+/**
+ * `POST /settings/smtp/test` response — the discriminated test-send outcome.
+ * `ok` is whether the test email reached the requesting admin's own session
+ * email; `message` is a human-readable success/failure detail. NEVER carries the
+ * password.
+ */
+export interface TestSmtpConfigResponse {
+  /** Whether the test email was sent successfully. */
+  ok: boolean;
+  /** A human-readable success/failure message (never the password). */
+  message: string;
+}
+
+/**
+ * Structurally validate a `GET /settings/smtp` body into {@link SmtpConfigRead}
+ * (local web type — no `@cap/contracts` schema; see the SMTP types note above).
+ * Coerces missing/odd fields into safe defaults so a shape drift never crashes
+ * the card, and DROPS any plaintext `pass` the server must never send.
+ */
+function parseSmtpConfigRead(body: unknown): SmtpConfigRead {
+  const e = (body ?? {}) as Record<string, unknown>;
+  const last4 = typeof e.passLast4 === "string" ? e.passLast4 : null;
+  return {
+    host: typeof e.host === "string" ? e.host : "",
+    port: typeof e.port === "number" ? e.port : Number(e.port) || 0,
+    user: typeof e.user === "string" ? e.user : "",
+    from: typeof e.from === "string" ? e.from : "",
+    passLast4: last4,
+    hasPassword:
+      typeof e.hasPassword === "boolean" ? e.hasPassword : last4 != null,
+  };
+}
+
+/**
+ * `GET /settings/smtp` — the admin-only MASKED SMTP config (never the plaintext
+ * password). Admin-gated server-side (a non-admin is 403'd regardless of the UI).
+ * Gated by `BACKEND_CAPABILITIES.settings` (the SMTP config rides the settings
+ * surface). The wire shape is validated structurally here (local web type).
+ */
+export async function getSmtpConfig(): Promise<SmtpConfigRead> {
+  return parseSmtpConfigRead(await request("/settings/smtp"));
+}
+
+/**
+ * `PUT /settings/smtp` — save the SMTP config (admin-gated server-side). The
+ * `pass` is write-only; the server encrypts it at rest and returns the MASKED
+ * projection (never the plaintext). An empty/omitted `pass` keeps the stored key.
+ */
+export async function saveSmtpConfig(
+  body: SaveSmtpConfigRequest,
+): Promise<SmtpConfigRead> {
+  return parseSmtpConfigRead(
+    await request("/settings/smtp", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/**
+ * `POST /settings/smtp/test` — send a test email to the requesting admin's own
+ * session email using the submitted (or saved) config, to verify connectivity
+ * BEFORE/independent of saving (admin-gated server-side; nothing is persisted on
+ * failure). Returns the discriminated `{ ok, message }` outcome — never the
+ * password. The wire shape is validated structurally here (local web type).
+ */
+export async function testSmtpConfig(
+  body: TestSmtpConfigRequest,
+): Promise<TestSmtpConfigResponse> {
+  const res = (await request("/settings/smtp/test", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })) as Record<string, unknown> | null;
+  return {
+    ok: res?.ok === true,
+    message: typeof res?.message === "string" ? res.message : "",
+  };
+}

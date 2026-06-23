@@ -14,7 +14,7 @@
  * closed on an unset secret.
  */
 
-import { isSmtpConfigured } from '../mail/mail.service';
+import { isSmtpConfigured, type DbSmtpConfigResolver } from '../mail/mail.service';
 
 /** Env var names, centralised so the controller/service/tests agree on spelling. */
 export const ENV = {
@@ -142,20 +142,26 @@ export function isPasswordAuthEnabled(env: NodeJS.ProcessEnv = process.env): boo
 }
 
 /**
- * Whether the email-OTP login method is available — i.e. SMTP is configured
- * (add-private-account-identity, task 2.8 / D11 `otpAuthEnabled = SMTP configured`).
- * Proxied on the presence of a non-empty `SMTP_HOST`: without a mail transport
- * the OTP method cannot send a code, so it is neither advertised to the frontend
- * nor served. The OTP endpoints additionally fail closed at request time when
- * SMTP is unset (task 5.3), so this flag is the display/advertise gate, not the
- * sole security gate.
+ * Whether the email-OTP login method is available — i.e. SMTP is configured via
+ * EITHER source (add-smtp-config-ui, D7 `otpAuthEnabled = DB config OR env`).
+ * Without a mail transport the OTP method cannot send a code, so it is neither
+ * advertised to the frontend nor served. The OTP endpoints additionally fail
+ * closed at request time when SMTP is unset, so this flag is the display/advertise
+ * gate, not the sole security gate.
+ *
+ * ASYNC + either-source (D4/D7): it delegates to the SAME full-config check the
+ * mailer uses (a console-saved DB config first, falling back to all five `SMTP_*`
+ * env vars + a valid port), so the advertised availability can never over-advertise
+ * relative to what the OTP send path will actually accept. Saving SMTP in the
+ * console flips this true (after the session re-resolves) without an env change.
+ * `resolveDb` is injected (defaults to env-only) so the gate stays unit-testable
+ * without a DB.
  */
-export function isOtpAuthEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  // Derive from the SAME full-config check the mailer uses (all five SMTP vars +
-  // a valid port), so the advertised availability can never over-advertise
-  // relative to what the OTP send path will actually accept (a HOST-only check
-  // would advertise OTP while `MailService.sendMail` still fails closed).
-  return isSmtpConfigured(env);
+export async function isOtpAuthEnabled(
+  resolveDb?: DbSmtpConfigResolver,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  return isSmtpConfigured(resolveDb, env);
 }
 
 /**

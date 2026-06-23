@@ -1,25 +1,31 @@
 /**
  * Minimal test for requirement: SMTP delivery and capability gating
- * (add-private-account-identity, email-otp-login spec)
+ * (add-smtp-config-ui, email-otp-login spec — DB-first/env-fallback either-source)
  *
- * Spec: "When SMTP is not configured, the OTP login method SHALL be reported as
- * unavailable through the backend capability flags so the console hides it, and
- * the OTP request endpoint SHALL fail closed."
- * Spec: "When SMTP is configured and a valid OTP request arrives, the code is sent
- * via the configured SMTP transport and the capability flag for OTP is true."
+ * Spec: "The OTP login method SHALL be reported AVAILABLE ... when at least one
+ * usable transport is configured — i.e. when EITHER the DB configuration OR the
+ * `SMTP_*` env is present — and UNAVAILABLE ... when neither is."
+ *
+ * `isOtpAuthEnabled` is now ASYNC and takes an injected DB resolver
+ * (`() => Promise<ResolvedSmtpConfig | null>`), so the either-source ordering is
+ * exercised without a real Prisma client.
  *
  * Exercises end-to-end without a DB or NestJS container:
- *   S1 — SMTP unconfigured → isOtpAuthEnabled()=false + OtpController returns 404
- *   S2 — SMTP configured   → isOtpAuthEnabled()=true  + OtpController calls sendMail
+ *   S1 — neither DB nor env → isOtpAuthEnabled()=false + OtpController returns 404
+ *   S2 — env configured     → isOtpAuthEnabled()=true  + OtpController calls sendMail
+ *   S3 — DB config configured (env empty) → isOtpAuthEnabled()=true (either-source)
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { isOtpAuthEnabled } from '../auth/oauth-config';
-import { MailService } from '../mail/mail.service';
+import { MailService, type DbSmtpConfigResolver } from '../mail/mail.service';
 import { EmailOtpService } from '../auth-otp/email-otp.service';
 import { OtpController } from '../auth-otp/otp.controller';
 import { PrismaService } from '../prisma/prisma.service';
+
+/** A DB resolver that always resolves `null` — no stored config (env-only path). */
+const NO_DB_SMTP: DbSmtpConfigResolver = async () => null;
 
 // ---------------------------------------------------------------------------
 // Fake MailService — tracks sendMail calls, toggleable configured state
@@ -31,7 +37,7 @@ function makeFakeMail(configured: boolean): {
 } {
   const sent: { to: string; subject: string; text: string }[] = [];
   const mail = {
-    isConfigured: () => configured,
+    isConfigured: async () => configured,
     sendMail: async (message: { to: string; subject: string; text: string }) => {
       if (!configured) throw new Error('SMTP not configured');
       sent.push(message);
@@ -128,10 +134,14 @@ function makeFakeRes(): {
 // S1: SMTP unconfigured → capability flag false + endpoint fails closed (404)
 // ---------------------------------------------------------------------------
 
-test('S1: isOtpAuthEnabled returns false when SMTP vars are absent', () => {
-  // Use an empty env (no SMTP vars set at all).
+test('S1: isOtpAuthEnabled returns false when neither DB nor env SMTP is configured', async () => {
+  // Empty env (no SMTP vars) AND a DB resolver that reports no stored config.
   const emptyEnv: NodeJS.ProcessEnv = {};
-  assert.equal(isOtpAuthEnabled(emptyEnv), false, 'capability flag must be false with no SMTP vars');
+  assert.equal(
+    await isOtpAuthEnabled(NO_DB_SMTP, emptyEnv),
+    false,
+    'capability flag must be false with neither a DB config nor env SMTP vars',
+  );
 });
 
 test('S1: OtpController.request returns 404 when SMTP is unconfigured', async () => {
@@ -159,7 +169,7 @@ test('S1: OtpController.request returns 404 when SMTP is unconfigured', async ()
 // S2: SMTP configured → capability flag true + sendMail is called
 // ---------------------------------------------------------------------------
 
-test('S2: isOtpAuthEnabled returns true when all five SMTP vars are present and port is valid', () => {
+test('S2: isOtpAuthEnabled returns true when all five env SMTP vars are present and port is valid', async () => {
   const fullSmtpEnv: NodeJS.ProcessEnv = {
     SMTP_HOST: 'smtp.example.com',
     SMTP_PORT: '587',
@@ -167,7 +177,32 @@ test('S2: isOtpAuthEnabled returns true when all five SMTP vars are present and 
     SMTP_PASS: 'secret',
     SMTP_FROM: 'noreply@example.com',
   };
-  assert.equal(isOtpAuthEnabled(fullSmtpEnv), true, 'capability flag must be true with all five SMTP vars');
+  assert.equal(
+    await isOtpAuthEnabled(NO_DB_SMTP, fullSmtpEnv),
+    true,
+    'capability flag must be true with all five env SMTP vars (env fallback)',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// S3: DB SMTP config configured (env empty) → capability flag true (either-source)
+// ---------------------------------------------------------------------------
+
+test('S3: isOtpAuthEnabled returns true from a DB config even when env SMTP is absent', async () => {
+  // A console-saved DB config alone enables OTP (D7) — no env vars set.
+  const dbConfigured: DbSmtpConfigResolver = async () => ({
+    host: 'smtp.db.example.com',
+    port: 465,
+    user: 'db-user',
+    pass: 'db-secret',
+    from: 'noreply@db.example.com',
+    source: 'db',
+  });
+  assert.equal(
+    await isOtpAuthEnabled(dbConfigured, {}),
+    true,
+    'a stored DB SMTP config must flip the capability flag true without any env var',
+  );
 });
 
 test('S2: EmailOtpService.requestCode delivers via sendMail when SMTP is configured', async () => {

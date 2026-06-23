@@ -51,6 +51,7 @@ import type {
   ListMcpTokensResponse,
   SendApiRequestInput,
   SendApiResult,
+  SmtpConfigRead,
 } from "./real";
 
 // ---------------------------------------------------------------------------
@@ -106,6 +107,8 @@ export const queryKeys = {
   mcpTokens: ["mcp-tokens"] as const,
   /** The system-wide `mcpServerEnabled` flag (`GET /settings/mcp-server`). */
   mcpServerEnabled: ["settings", "mcp-server"] as const,
+  /** The admin-only masked SMTP config (`GET /settings/smtp`, add-smtp-config-ui). */
+  smtpConfig: ["settings", "smtp"] as const,
   /** The admin account-administration list (`GET /accounts`, account-administration). */
   adminAccounts: ["accounts"] as const,
   /**
@@ -530,6 +533,29 @@ export function mcpServerEnabledQuery() {
       isCapable("mcpServer")
         ? real.getMcpServerEnabled()
         : mock.mockMcpServerEnabled(),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// SMTP configuration (add-smtp-config-ui) — admin-only masked read
+// ---------------------------------------------------------------------------
+
+/**
+ * The admin-only MASKED SMTP config (`GET /settings/smtp`) the settings Resend
+ * SMTP card reads. Rides the standard real/mock seam gated by `settings` (the
+ * SMTP config rides the settings surface): the real admin-gated endpoint when
+ * capable, the typed in-memory mock otherwise. The read is masked — it carries
+ * the non-secret host/port/user/from + a `passLast4` suffix + a `hasPassword`
+ * flag, NEVER the plaintext password. The save mutation invalidates
+ * `queryKeys.smtpConfig` (so the card re-derives) AND the auth-session/
+ * capabilities query (so enabling SMTP flips `otpAuthEnabled` once the session
+ * re-resolves).
+ */
+export function smtpConfigQuery() {
+  return queryOptions<SmtpConfigRead>({
+    queryKey: queryKeys.smtpConfig,
+    queryFn: () =>
+      isCapable("settings") ? real.getSmtpConfig() : mock.mockSmtpConfigRead(),
   });
 }
 

@@ -591,3 +591,104 @@ export const RegisterForgeConnectionRequestSchema = z.object({
 export type RegisterForgeConnectionRequest = z.infer<
   typeof RegisterForgeConnectionRequestSchema
 >;
+
+// ---------------------------------------------------------------------------
+// Admin-managed SMTP configuration (add-smtp-config-ui)
+//
+// A single deployment-level (NOT per-user) outbound SMTP configuration an admin
+// manages from the console. Same secret discipline as the credentials above: the
+// SMTP password is WRITE-ONLY — accepted on save for encryption at rest, NEVER
+// returned by any read shape. Reads expose only the non-secret tuple plus a
+// non-reversible `hasPassword` presence flag and an optional masked `passLast4`
+// suffix. There is intentionally NO plaintext password field on any READ schema.
+// ---------------------------------------------------------------------------
+
+/**
+ * SMTP configuration READ shape (secret-free, masked).
+ *
+ * Returns the non-secret tuple (`host`/`port`/`user`/`from`) plus a masked
+ * password indicator: `hasPassword` is a non-reversible presence flag and
+ * `passLast4` is an optional masked suffix for display only. The plaintext
+ * password is NEVER on this schema.
+ */
+export const SmtpConfigReadSchema = z.object({
+  /** SMTP server host (non-secret), e.g. `smtp.resend.com`. */
+  host: z.string().min(1),
+  /** SMTP server port (non-secret), e.g. `465`. */
+  port: z.number().int().min(1).max(65535),
+  /** SMTP auth username (non-secret), e.g. `resend`. */
+  user: z.string().min(1),
+  /** Sender (From) address used for outbound mail (non-secret). */
+  from: z.string().min(1),
+  /** Non-reversible presence indicator for the stored password. Never the password. */
+  hasPassword: z.boolean(),
+  /** Optional masked suffix of the stored password for display (e.g. last 4 chars). */
+  passLast4: z.string().min(1).nullable().optional(),
+});
+export type SmtpConfigRead = z.infer<typeof SmtpConfigReadSchema>;
+
+/**
+ * Body accepted when an admin saves the SMTP configuration.
+ *
+ * The `pass` (SMTP password / Resend API Key) is WRITE-ONLY: it is accepted here
+ * for encryption-at-rest on save and is NEVER returned by any read shape. Omit
+ * `pass` on an update to preserve the previously stored encrypted password rather
+ * than clearing it (the dialog's "留空沿用" affordance). The non-secret
+ * `host`/`port`/`user`/`from` tuple is always persisted as supplied.
+ */
+export const SaveSmtpConfigRequestSchema = z.object({
+  /** SMTP server host (non-secret), e.g. `smtp.resend.com`. */
+  host: z.string().min(1),
+  /** SMTP server port (non-secret), e.g. `465`. */
+  port: z.number().int().min(1).max(65535),
+  /** SMTP auth username (non-secret), e.g. `resend`. */
+  user: z.string().min(1),
+  /** Sender (From) address used for outbound mail (non-secret). */
+  from: z.string().min(1),
+  /**
+   * Write-only plaintext SMTP password (the Resend API Key). Encrypted at rest on
+   * save and never echoed back. Omit to preserve the previously stored password.
+   */
+  pass: z.string().min(1).optional(),
+});
+export type SaveSmtpConfigRequest = z.infer<typeof SaveSmtpConfigRequestSchema>;
+
+/**
+ * Body accepted by the SMTP test-send endpoint (`POST /settings/smtp/test`).
+ *
+ * Mirrors the Codex "discover models" probe (D5): the test sends a real email to
+ * the requesting admin's OWN session email to verify connectivity WITHOUT trusting
+ * persisted state. All fields are optional — when supplied they exercise the
+ * SUBMITTED candidate configuration (nothing persisted on failure); when omitted
+ * the server falls back to the currently SAVED configuration. The `pass` here is
+ * write-only and is never logged or returned.
+ */
+export const TestSmtpConfigRequestSchema = z.object({
+  /** Candidate SMTP server host; omit to use the saved config. */
+  host: z.string().min(1).optional(),
+  /** Candidate SMTP server port; omit to use the saved config. */
+  port: z.number().int().min(1).max(65535).optional(),
+  /** Candidate SMTP auth username; omit to use the saved config. */
+  user: z.string().min(1).optional(),
+  /** Candidate sender (From) address; omit to use the saved config. */
+  from: z.string().min(1).optional(),
+  /** Write-only candidate password; omit to use the saved (encrypted) password. */
+  pass: z.string().min(1).optional(),
+});
+export type TestSmtpConfigRequest = z.infer<typeof TestSmtpConfigRequestSchema>;
+
+/**
+ * Response to the SMTP test-send (no persistence side effect). A simple
+ * `{ ok, message }` outcome: `ok` reports whether the test email was sent and
+ * `message` is a human-readable, secret-free detail (success confirmation or the
+ * failure reason). The password is NEVER included.
+ */
+export const TestSmtpConfigResponseSchema = z.object({
+  /** Whether the test email was sent successfully. */
+  ok: z.boolean(),
+  /** Human-readable, secret-free outcome detail (success or failure reason). */
+  message: z.string(),
+});
+export type TestSmtpConfigResponse = z.infer<
+  typeof TestSmtpConfigResponseSchema
+>;
