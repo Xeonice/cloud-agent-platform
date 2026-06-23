@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.20.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.2...v0.20.3) (2026-06-24)
+
+
+### Bug Fixes
+
+* **terminal:** backpressure terminal-record replay so large casts don't discard data ([#56](https://github.com/Xeonice/cloud-agent-platform/issues/56)) ([3e31954](https://github.com/Xeonice/cloud-agent-platform/commit/3e31954fb5277a22e2d72abe80b78e9c73a4ae11))
+
+
 ## [0.20.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.1...v0.20.2) (2026-06-23)
 
 

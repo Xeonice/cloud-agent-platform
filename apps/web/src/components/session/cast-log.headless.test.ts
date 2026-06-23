@@ -12,7 +12,7 @@
 import { describe, it, expect } from "vitest";
 import { Terminal } from "@xterm/headless";
 import { parseCast, type AsciicastEvent } from "@cap/contracts";
-import { feedCastLog } from "./cast-log";
+import { buildCastOps } from "./cast-log";
 
 const ESC = "\x1b";
 const ROWS = 5;
@@ -55,12 +55,13 @@ describe("cast-log flatten (headless xterm)", () => {
   it("alt stripped recovers far more lines than alt kept", async () => {
     const { events } = parseCast(buildFixtureCast());
 
-    // OUR path: feedCastLog strips the alt-screen switch → normal buffer.
+    // OUR path: buildCastOps strips the alt-screen switch → normal buffer, as a
+    // bounded-chunk op list the consumer paces into xterm.
     const stripped = makeTerm();
-    feedCastLog(events, {
-      output: (d) => stripped.write(d),
-      resize: (c, r) => stripped.resize(c, r),
-    });
+    for (const op of buildCastOps(events)) {
+      if (op.type === "output") stripped.write(op.data);
+      else stripped.resize(op.cols, op.rows);
+    }
     await drain(stripped);
 
     // Control: feed the raw output unchanged → stays in the alt buffer.
