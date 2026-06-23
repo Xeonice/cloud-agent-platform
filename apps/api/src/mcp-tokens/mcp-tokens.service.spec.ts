@@ -1,13 +1,14 @@
 /**
  * MCP-token SERVICE spec (remote-mcp-server, task 3.1; supports 3.7's no-leak
- * guarantee at the source).
+ * guarantee at the source; fix-local-account-mcp-token-scope).
  *
  * Drives the REAL `McpTokensService` against a fake Prisma to pin the credential
  * lifecycle that is the security contract of the settings-minted `mcp_` token:
  *
  *   - mint: returns the raw `mcp_…` value EXACTLY ONCE; persists ONLY the SHA-256
  *     hash (never the raw token) + the display prefix/last4 + scopes; binds to
- *     the caller's OWN user row resolved from the immutable githubId.
+ *     the caller's OWN user row via the account primary key `userId` (a string,
+ *     present for BOTH local and GitHub accounts — no GitHub identity required).
  *   - list: projects ONLY non-secret metadata (prefix + last4, scopes,
  *     lifecycle timestamps) — never the raw token or its stored hash.
  *   - revoke: idempotent (`revokedAt` stamped once, preserved on a repeat call),
@@ -22,8 +23,11 @@ import { createHash } from 'node:crypto';
 
 import { McpTokensService } from './mcp-tokens.service';
 
-const GITHUB_ID = 12345;
-const USER_ROW_ID = 'user-row-1';
+// The account primary key is the per-account scope key for BOTH a GitHub account
+// (githubId present) and a LOCAL account (githubId null) — the service only ever
+// sees the resolved string `userId`, never the GitHub identity.
+const USER_A = 'user-row-a';
+const USER_B = 'user-row-b';
 
 interface StoredToken {
   id: string;
@@ -41,19 +45,17 @@ interface StoredToken {
 
 /**
  * An in-memory Prisma double covering exactly the surface the service touches:
- * `user.findUnique` (resolve the owning row id), and `mcpToken` create / findMany
- * / findFirst / update. It records persisted rows so the test can assert the
- * stored shape (hash-only) and the idempotent revoke.
+ * `mcpToken` create / findMany / findFirst / update. The service is now keyed on
+ * the account primary key `userId` (the FK) directly, so there is NO
+ * `user.findUnique` reverse lookup to fake (McpToken is FK on user_id). It
+ * records persisted rows so the test can assert the stored shape (hash-only),
+ * the per-account scoping, and the idempotent revoke.
  */
-function makePrisma(opts: { userExists?: boolean } = {}) {
+function makePrisma() {
   const rows: StoredToken[] = [];
   let seq = 0;
   return {
     rows,
-    user: {
-      findUnique: async (_args: unknown) =>
-        opts.userExists === false ? null : { id: USER_ROW_ID },
-    },
     mcpToken: {
       create: async ({
         data,
@@ -90,7 +92,7 @@ function service(prisma: unknown): McpTokensService {
 
 test('mint: returns the raw mcp_ token ONCE and persists only its SHA-256 hash', async () => {
   const prisma = makePrisma();
-  const res = await service(prisma).mint(GITHUB_ID, {
+  const res = await service(prisma).mint(USER_A, {
     name: 'CI token',
     scopes: ['tasks:read', 'tasks:write'],
   });
@@ -105,7 +107,7 @@ test('mint: returns the raw mcp_ token ONCE and persists only its SHA-256 hash',
   // The PERSISTED row stores only the hash — never the raw token.
   assert.equal(prisma.rows.length, 1);
   const stored = prisma.rows[0];
-  assert.equal(stored.userId, USER_ROW_ID, 'bound to the caller own user row');
+  assert.equal(stored.userId, USER_A, 'bound to the caller own user row');
   assert.equal(
     stored.tokenHash,
     createHash('sha256').update(res.token, 'utf8').digest('hex'),
@@ -115,10 +117,24 @@ test('mint: returns the raw mcp_ token ONCE and persists only its SHA-256 hash',
   assert.ok(!('token' in stored), 'no raw-token column on the persisted row');
 });
 
+test('mint: a LOCAL account (no GitHub identity) mints bound to its own user row', async () => {
+  // The service is keyed on the account primary key `userId`, never on a GitHub
+  // identity — a local (password/OTP) account whose githubId is null reaches here
+  // with its resolved string id and mints normally.
+  const prisma = makePrisma();
+  const res = await service(prisma).mint(USER_A, {
+    name: 'local-account token',
+    scopes: ['tasks:read'],
+  });
+  assert.ok(res.token.startsWith('mcp_'));
+  assert.equal(prisma.rows.length, 1);
+  assert.equal(prisma.rows[0].userId, USER_A, 'bound to the local account own row');
+});
+
 test('mint: an absolute expiry is persisted and echoed back as ISO-8601', async () => {
   const prisma = makePrisma();
   const expiry = '2099-01-01T00:00:00.000Z';
-  const res = await service(prisma).mint(GITHUB_ID, {
+  const res = await service(prisma).mint(USER_A, {
     name: 'expiring',
     scopes: ['repos:read'],
     expiresAt: expiry,
@@ -127,21 +143,12 @@ test('mint: an absolute expiry is persisted and echoed back as ISO-8601', async 
   assert.equal(prisma.rows[0].expiresAt?.toISOString(), expiry);
 });
 
-test('mint: a missing operator account is a 404 (no orphaned token)', async () => {
-  const prisma = makePrisma({ userExists: false });
-  const status = await service(prisma)
-    .mint(GITHUB_ID, { name: 'x', scopes: ['tasks:read'] })
-    .then(() => 0, (e: { getStatus?: () => number }) => e.getStatus?.() ?? -1);
-  assert.equal(status, 404);
-  assert.equal(prisma.rows.length, 0, 'nothing persisted on a missing account');
-});
-
 test('list: projects only non-secret metadata (prefix + last4, scopes, timestamps) — never raw/hash', async () => {
   const prisma = makePrisma();
   const svc = service(prisma);
-  const minted = await svc.mint(GITHUB_ID, { name: 'A', scopes: ['tasks:read'] });
+  const minted = await svc.mint(USER_A, { name: 'A', scopes: ['tasks:read'] });
 
-  const items = await svc.list(GITHUB_ID);
+  const items = await svc.list(USER_A);
   assert.equal(items.length, 1);
   const item = items[0];
   assert.equal(item.id, minted.id);
@@ -157,25 +164,56 @@ test('list: projects only non-secret metadata (prefix + last4, scopes, timestamp
   assert.ok(!/hash/i.test(serialized), 'list item has no hash field');
 });
 
+test('list: per-account isolation — A never sees B tokens (and vice versa)', async () => {
+  const prisma = makePrisma();
+  const svc = service(prisma);
+  const a = await svc.mint(USER_A, { name: 'a-token', scopes: ['tasks:read'] });
+  const b = await svc.mint(USER_B, { name: 'b-token', scopes: ['tasks:read'] });
+
+  const aList = await svc.list(USER_A);
+  assert.deepEqual(
+    aList.map((t) => t.id),
+    [a.id],
+    'A sees only its own token',
+  );
+
+  const bList = await svc.list(USER_B);
+  assert.deepEqual(
+    bList.map((t) => t.id),
+    [b.id],
+    'B sees only its own token',
+  );
+});
+
 test('revoke: idempotent — stamps revokedAt once, preserves it on a repeat call', async () => {
   const prisma = makePrisma();
   const svc = service(prisma);
-  const minted = await svc.mint(GITHUB_ID, { name: 'B', scopes: ['tasks:read'] });
+  const minted = await svc.mint(USER_A, { name: 'B', scopes: ['tasks:read'] });
 
-  const first = await svc.revoke(GITHUB_ID, minted.id);
+  const first = await svc.revoke(USER_A, minted.id);
   assert.ok(first, 'revoke returns the post-revocation view');
   assert.ok(first!.revokedAt, 'revokedAt is now set');
   const firstRevokedAt = first!.revokedAt;
 
-  const second = await svc.revoke(GITHUB_ID, minted.id);
+  const second = await svc.revoke(USER_A, minted.id);
   assert.equal(second!.revokedAt, firstRevokedAt, 'a repeat revoke preserves the original instant');
 });
 
 test('revoke: an unknown / foreign id returns null (own-scoped, no mutation)', async () => {
   const prisma = makePrisma();
   const svc = service(prisma);
-  await svc.mint(GITHUB_ID, { name: 'C', scopes: ['tasks:read'] });
+  await svc.mint(USER_A, { name: 'C', scopes: ['tasks:read'] });
 
-  assert.equal(await svc.revoke(GITHUB_ID, 'does-not-exist'), null);
+  assert.equal(await svc.revoke(USER_A, 'does-not-exist'), null);
   assert.equal(prisma.rows[0].revokedAt, null, 'the existing token is untouched');
+});
+
+test("revoke: another account cannot revoke A's token (own-scoped)", async () => {
+  const prisma = makePrisma();
+  const svc = service(prisma);
+  const a = await svc.mint(USER_A, { name: 'a-token', scopes: ['tasks:read'] });
+
+  // B presents A's token id — own-scoped, so it is a no-op returning null.
+  assert.equal(await svc.revoke(USER_B, a.id), null, 'B cannot revoke A token');
+  assert.equal(prisma.rows[0].revokedAt, null, "A's token is untouched");
 });

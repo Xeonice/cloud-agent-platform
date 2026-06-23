@@ -70,7 +70,7 @@ export interface ToolRegistrar {
  * The narrow service surface the tools delegate to — every method is already
  * implemented by an EXISTING console service (no second admission path):
  *
- *   - `createTask` → `TasksService.create(repoId, body, githubId?)` (the console
+ *   - `createTask` → `TasksService.create(repoId, body, userId?)` (the console
  *     path: persist the row then offer to the guardrails semaphore — it returns a
  *     handle WITHOUT waiting for the run to finish);
  *   - `getTask` / `listTasks` / `stopTask` → `TasksService.findById|list|stop`;
@@ -86,11 +86,11 @@ export interface McpToolDeps {
   createTask(
     repoId: string,
     body: CreateTaskBody,
-    githubId?: number,
+    userId?: string,
   ): Promise<TaskResponse>;
   getTask(id: string): Promise<TaskResponse>;
   listTasks(): Promise<TaskResponse[]>;
-  stopTask(id: string, githubId?: number): Promise<TaskResponse>;
+  stopTask(id: string, userId?: string): Promise<TaskResponse>;
   getTranscript(id: string): Promise<SessionHistory>;
   listRepos(): Promise<RepoResponse[]>;
 }
@@ -151,15 +151,18 @@ function jsonResult(value: unknown) {
  * gates. Called ONCE per `McpServer` (the server is built once and reused across
  * stateless transports, task 4.1).
  *
- * `githubIdOf(extra)` resolves the acting operator's GitHub id from the resolved
- * token (for audit attribution on create/stop); it is best-effort — a token whose
- * `AuthInfo` carries no numeric owner id simply attributes the action to no
- * github id, exactly as a scopeless legacy principal does on the REST path.
+ * `userIdOf(extra)` resolves the acting operator's ACCOUNT primary key (`users.id`)
+ * from the resolved token (for audit attribution on create/stop, and so the
+ * owner-scoped Codex credential resolves — fix-local-account-task-attribution); it
+ * is best-effort — a token whose `AuthInfo` carries no owner account id simply
+ * attributes the action to no id, exactly as a scopeless legacy principal does on
+ * the REST path. The account id (not the GitHub numeric id) is threaded so a LOCAL
+ * account's MCP task is owner-attributed too.
  */
 export function registerMcpTools(
   server: ToolRegistrar,
   deps: McpToolDeps,
-  githubIdOf: (extra: ToolExtra) => number | undefined = () => undefined,
+  userIdOf: (extra: ToolExtra) => string | undefined = () => undefined,
 ): void {
   // --- create_task (tasks:write) — IMMEDIATE handle, never blocks (D4) ---------
   server.registerTool(
@@ -198,7 +201,7 @@ export function registerMcpTools(
       const task = await deps.createTask(
         repoId,
         body as CreateTaskBody,
-        githubIdOf(extra),
+        userIdOf(extra),
       );
       return jsonResult({ id: task.id, status: task.status, task });
     },
@@ -253,7 +256,7 @@ export function registerMcpTools(
     },
     async ({ id }: { id: string }, extra: ToolExtra) => {
       requireScope(extra, 'tasks:write');
-      return jsonResult(await deps.stopTask(id, githubIdOf(extra)));
+      return jsonResult(await deps.stopTask(id, userIdOf(extra)));
     },
   );
 

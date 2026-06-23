@@ -21,11 +21,15 @@ import { ZodValidationPipe } from './zod-validation.pipe';
  *
  * Every route here is session-gated by the GLOBAL `AuthGuard` (an unauthenticated
  * caller gets 401 before reaching these handlers). The handlers additionally
- * require the operator principal to carry a GitHub identity (the numeric
- * `githubId`) so the per-operator stored OAuth token can be resolved server-side:
- * the legacy shared-`AUTH_TOKEN` principal has no GitHub identity and therefore
- * cannot list/import (it gets the distinct `github_auth_required` signal, NOT a
- * session 401). The operator's OAuth token is NEVER part of any response.
+ * require an authenticated ACCOUNT principal — scoped on its primary key
+ * `user.id` (present for BOTH local and GitHub accounts,
+ * fix-local-account-settings-scope) — so the account's OWN stored GitHub OAuth
+ * token can be resolved server-side by `userId`. A GitHub identity is NOT required
+ * at the boundary: a LOCAL account (password/OTP) that has separately connected a
+ * `github` IdentityLink can list/import too. Only the IDENTITY-LESS legacy
+ * shared-`AUTH_TOKEN` / machine principal (no account at all) — or any account
+ * lacking a usable GitHub token — gets the distinct `github_auth_required` signal,
+ * NOT a session 401. The account's OAuth token is NEVER part of any response.
  *
  * - `GET  /repos/github/available`     -> 200 available GitHub repos (reconciled
  *                                         with imported), or the distinct
@@ -45,8 +49,8 @@ export class GithubImportController {
   async listAvailable(
     @Req() req: AuthenticatedRequest,
   ): Promise<Array<AvailableGithubRepo & { imported: boolean; importedRepoId: string | null }>> {
-    const operatorGithubId = this.requireGithubId(req);
-    return this.importService.listAvailableReconciled(operatorGithubId);
+    const operatorId = this.requireAccountId(req);
+    return this.importService.listAvailableReconciled(operatorId);
   }
 
   @Post('import')
@@ -69,21 +73,29 @@ export class GithubImportController {
   }
 
   /**
-   * Extracts the requesting operator's immutable numeric GitHub id from the
-   * principal the guard attached. A principal without a GitHub identity (the
-   * legacy shared-token operator) cannot have a per-operator OAuth token, so it
-   * gets the distinct `github_auth_required` signal — NOT a session 401 (the
-   * caller IS authenticated to the platform) and NOT a silent empty list.
+   * Extracts the requesting account's primary key `user.id` — the SINGLE
+   * per-account scope key (present for BOTH local and GitHub accounts,
+   * fix-local-account-settings-scope), used downstream to resolve the account's
+   * OWN stored GitHub OAuth token by `userId`.
+   *
+   * The GitHub identity is no longer required HERE: a LOCAL account (password/OTP,
+   * `githubId === null`) that has separately connected a `github` IdentityLink can
+   * import too. Whether a usable GitHub token actually exists for the account is
+   * decided downstream — a missing/expired token still yields the distinct
+   * `github_auth_required` signal (NOT a session 401, NOT a silent empty list).
+   *
+   * This boundary gate is retained ONLY for the IDENTITY-LESS principal (a
+   * machine/legacy token with `user === null`), which has no account at all and
+   * therefore no per-account GitHub token to import with.
    */
-  private requireGithubId(req: AuthenticatedRequest): number {
+  private requireAccountId(req: AuthenticatedRequest): string {
     const user = req.operatorPrincipal?.user;
-    if (!user || user.githubId === null) {
-      // No GitHub identity at all (the legacy shared-token operator) OR a LOCAL
-      // account (password/OTP, `githubId === null` — add-private-account-identity):
-      // either way there is no per-operator GitHub OAuth token to import with, so
-      // both get the distinct `github_auth_required` signal rather than a 401.
+    if (!user) {
+      // No authenticated account at all (the legacy shared-token / machine
+      // principal): there is no per-account GitHub OAuth token to import with, so
+      // it gets the distinct `github_auth_required` signal rather than a 401.
       throw new GithubAuthorizationRequiredException();
     }
-    return user.githubId;
+    return user.id;
   }
 }

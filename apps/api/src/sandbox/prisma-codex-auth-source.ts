@@ -36,10 +36,16 @@ const CODEX_CRED_ENC_KEY_ENV = 'CODEX_CRED_ENC_KEY';
  * event — NOT a global `findFirst({allowed:true})`. That global resolution would
  * let one task run against an arbitrary other allowlisted user's ChatGPT login or
  * compatible API key; scoping by the task owner means one operator's credential
- * is never used for another operator's tasks. When the task has no attributed
- * owner (system-created / no audit attribution) the credential cannot be
- * owner-scoped, so resolution degrades to the env/official fallback rather than
- * guessing an account.
+ * is never used for another operator's tasks. The owner is the
+ * `AuditEvent.userId` account FK — populated for BOTH GitHub and LOCAL
+ * (password/OTP) accounts (fix-local-account-task-attribution: the create chain
+ * now threads the acting account's `users.id`, not its numeric `githubId` which a
+ * local account lacks), so a local operator's stored credential is resolved at run
+ * time instead of silently degrading to env/official. When the task has no
+ * attributed owner (system-created / no audit attribution, or a truly
+ * identity-less machine/legacy principal) the credential cannot be owner-scoped,
+ * so resolution degrades to the env/official fallback rather than guessing an
+ * account.
  *
  * Falls back to {@link EnvCodexAuthSource} (the legacy `CODEX_CHATGPT_AUTH_JSON_B64`)
  * when no usable Settings credential is resolved for the owner, the server key is
@@ -177,12 +183,15 @@ export class PrismaCodexAuthSource implements CodexAuthSource {
   }
 
   /**
-   * The owning account of `taskId`: the GitHub-identity operator attributed on
-   * the task's `task.created` audit event (the only lifecycle event that records
-   * the creating operator). Returns null when the task has no created-event
-   * attribution — the task model itself has no owner FK, so this audit linkage is
-   * the per-task owner of record. Never throws into the resolver (the caller's
-   * try/catch degrades a DB error to the env fallback).
+   * The owning account of `taskId`: the operator attributed on the task's
+   * `task.created` audit event (the only lifecycle event that records the creating
+   * operator), read as the `AuditEvent.userId` account FK. That FK is populated for
+   * BOTH GitHub and LOCAL accounts (fix-local-account-task-attribution: the create
+   * chain threads the acting account's `users.id`), so a local operator's task is
+   * resolvable here. Returns null when the task has no created-event attribution —
+   * the task model itself has no owner FK, so this audit linkage is the per-task
+   * owner of record. Never throws into the resolver (the caller's try/catch
+   * degrades a DB error to the env fallback).
    */
   private async resolveTaskOwnerId(taskId: string): Promise<string | null> {
     const created = await this.prisma.auditEvent.findFirst({

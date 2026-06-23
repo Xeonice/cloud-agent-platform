@@ -442,7 +442,7 @@ export class TasksService implements OnApplicationBootstrap {
   async create(
     repoId: string,
     body: CreateTaskBody,
-    githubId?: number,
+    userId?: string,
     executionMode: ExecutionMode = 'interactive-pty',
   ): Promise<TaskResponse> {
     // Console + non-idempotent path: persist the task ROW, then admit (audit +
@@ -451,13 +451,16 @@ export class TasksService implements OnApplicationBootstrap {
     // transaction and run the admission AFTER that transaction commits — a rolled
     // back transaction must never leave a provisioned sandbox. Behavior here is
     // unchanged: the two steps run in the same order as before.
+    // `userId` is the acting account PRIMARY KEY (present for local + GitHub
+    // accounts, fix-local-account-task-attribution) so the `task.created` audit
+    // event is owner-attributed and the owner-scoped Codex credential resolves.
     const response = await this.createTaskRow(
       repoId,
       body,
       this.prisma,
       executionMode,
     );
-    await this.admitCreatedTask(response.id, body, githubId);
+    await this.admitCreatedTask(response.id, body, userId);
     return response;
   }
 
@@ -591,12 +594,15 @@ export class TasksService implements OnApplicationBootstrap {
   async admitCreatedTask(
     taskId: string,
     body: CreateTaskBody,
-    githubId?: number,
+    userId?: string,
   ): Promise<void> {
     // 6.2 — record the creation audit event (201/info), attributed to the
-    // creating operator's GitHub identity when known. Emitted BEFORE `admit()` so
-    // the `task.created` event precedes any `task.running`/`task.queued` event.
-    await this.recordAudit(() => this.audit?.recordTaskCreated(taskId, githubId));
+    // creating operator's ACCOUNT id when known (the `users.id` primary key,
+    // present for local + GitHub accounts — fix-local-account-task-attribution).
+    // Emitted BEFORE `admit()` so the `task.created` event precedes any
+    // `task.running`/`task.queued` event, AND so the owner-scoped Codex credential
+    // resolver (which reads this event's `userId`) can later attribute the task.
+    await this.recordAudit(() => this.audit?.recordTaskCreated(taskId, userId));
 
     // VR.1 — offer the task to the guardrails concurrency semaphore so the FIFO
     // semaphore actually bounds running tasks. When a slot is free it transitions
@@ -647,7 +653,7 @@ export class TasksService implements OnApplicationBootstrap {
   async transition(
     id: string,
     next: TaskStatus,
-    githubId?: number,
+    userId?: string,
   ): Promise<TaskResponse> {
     const task = await this.prisma.task.findUnique({ where: { id } });
     if (!task) {
@@ -664,10 +670,11 @@ export class TasksService implements OnApplicationBootstrap {
 
     // 6.2 — the status write was ACCEPTED (an illegal edge would have thrown
     // above, before any write): record one audit event for this transition,
-    // attributed to the operator's GitHub identity when known. This is the single
-    // central per-transition seam every status-changing caller funnels through.
+    // attributed to the operator's ACCOUNT id when known (the `users.id` primary
+    // key, present for local + GitHub accounts). This is the single central
+    // per-transition seam every status-changing caller funnels through.
     // Best-effort: never rolls back or blocks the transition.
-    await this.recordAudit(() => this.audit?.recordTransition(id, next, githubId));
+    await this.recordAudit(() => this.audit?.recordTransition(id, next, userId));
 
     // VR.5 — on any natural terminal transition (completed / failed /
     // agent_failed_to_start), notify the guardrails service so it clears timers,
@@ -742,7 +749,7 @@ export class TasksService implements OnApplicationBootstrap {
    * transition is likewise surfaced as a no-op (the illegal `-> cancelled` edge
    * is swallowed and the current task returned).
    */
-  async stop(id: string, githubId?: number): Promise<TaskResponse> {
+  async stop(id: string, userId?: string): Promise<TaskResponse> {
     const task = await this.prisma.task.findUnique({ where: { id } });
     if (!task) {
       throw new NotFoundException(`Task not found: ${id}`);
@@ -754,7 +761,7 @@ export class TasksService implements OnApplicationBootstrap {
     try {
       // `cancelled` is terminal, so transition() fires onTerminal (teardown +
       // slot release) and records the `task.cancelled` audit event centrally.
-      return await this.transition(id, 'cancelled', githubId);
+      return await this.transition(id, 'cancelled', userId);
     } catch (err) {
       if (err instanceof IllegalTaskTransitionError) {
         // Raced to a terminal state between the read and the transition — treat

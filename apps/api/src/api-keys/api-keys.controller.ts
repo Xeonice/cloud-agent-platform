@@ -36,9 +36,11 @@ import { ApiKeysService } from './api-keys.service';
  *      privilege-escalation chain, spec "API key CRUD is session-authenticated
  *      only").
  *
- * The handlers read the SESSION user the guard attached and pass its immutable
- * numeric `githubId` to the service, which scopes every operation to THAT account
- * — the body/path can never name a different account.
+ * The handlers read the SESSION user the guard attached and pass its account
+ * primary key `id` to the service, which scopes every operation to THAT account
+ * — the body/path can never name a different account. The `id` is present for
+ * BOTH local (password/OTP) and GitHub accounts (fix-local-account-api-keys-scope),
+ * so a github identity is no longer required to manage keys.
  *
  * - `POST   /api-keys`      -> 201 the raw `cap_sk_…` key ONCE + metadata (400 on
  *                             an invalid body; nothing minted).
@@ -59,13 +61,13 @@ export class ApiKeysController {
     @Body() body: ApiKeyMintRequest,
   ): Promise<ApiKeyMintResponse> {
     const user = this.requireSessionUser(req);
-    return this.apiKeys.mint(user.githubId, body);
+    return this.apiKeys.mint(user.id, body);
   }
 
   @Get()
   async list(@Req() req: AuthenticatedRequest): Promise<ApiKeyListResponse> {
     const user = this.requireSessionUser(req);
-    const keys = await this.apiKeys.list(user.githubId);
+    const keys = await this.apiKeys.list(user.id);
     return { keys };
   }
 
@@ -76,7 +78,7 @@ export class ApiKeysController {
     @Param('id') id: string,
   ): Promise<ApiKeyRevokeResponse> {
     const user = this.requireSessionUser(req);
-    const key = await this.apiKeys.revoke(user.githubId, id);
+    const key = await this.apiKeys.revoke(user.id, id);
     return { key };
   }
 
@@ -88,15 +90,13 @@ export class ApiKeysController {
    * no-escalation-chain guarantee). The session user is taken from the
    * guard-attached principal, never from the client.
    *
-   * The api-key surface is scoped by the immutable numeric `githubId` (the
-   * service resolves it to the internal user id). A LOCAL account (password/OTP)
-   * has no github identity (add-private-account-identity), so it has no key here
-   * yet and is rejected fail-closed rather than keyed on a `null` id. The return
-   * type narrows `githubId` to a non-null `number` so the call sites stay typed.
+   * The api-key surface is scoped by the account primary key `user.id`, which is
+   * present for BOTH local (password/OTP) and GitHub accounts
+   * (fix-local-account-api-keys-scope), so a github identity is no longer
+   * required and no `null`-id keying can occur. Only the `session` requirement
+   * remains — an identity-less machine/legacy principal cannot reach this surface.
    */
-  private requireSessionUser(
-    req: AuthenticatedRequest,
-  ): SessionUser & { githubId: number } {
+  private requireSessionUser(req: AuthenticatedRequest): SessionUser {
     const principal = req.operatorPrincipal;
     if (!principal || principal.kind !== 'session' || !principal.user) {
       throw new ForbiddenException({
@@ -106,15 +106,6 @@ export class ApiKeysController {
           'a machine credential cannot mint, list, or revoke API keys.',
       });
     }
-    const user = principal.user;
-    if (user.githubId === null) {
-      throw new ForbiddenException({
-        error: 'github_identity_required',
-        message:
-          'API-key management is currently scoped to GitHub-linked accounts; ' +
-          'a local (password/OTP) account has no API keys.',
-      });
-    }
-    return { ...user, githubId: user.githubId };
+    return principal.user;
   }
 }

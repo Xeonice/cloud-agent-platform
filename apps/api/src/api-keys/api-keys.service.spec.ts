@@ -33,6 +33,9 @@ import type { OperatorPrincipal } from '../auth/operator-principal';
 
 const GITHUB_ID = 4242;
 const USER_ID = '00000000-0000-4000-a000-000000000001';
+// A LOCAL (password/OTP) account: authenticated + allowed but githubId === null.
+// fix-local-account-api-keys-scope must let it mint/list/revoke keyed on user.id.
+const LOCAL_USER_ID = '00000000-0000-4000-a000-000000000002';
 
 interface ApiKeyRow {
   id: string;
@@ -57,10 +60,6 @@ function makeFakePrisma(): {
   let seq = 0;
 
   const prisma = {
-    user: {
-      findUnique: async ({ where }: { where: { githubId: number } }) =>
-        where.githubId === GITHUB_ID ? { id: USER_ID } : null,
-    },
     apiKey: {
       create: async ({
         data,
@@ -114,11 +113,34 @@ function sessionRequest(): AuthenticatedRequest {
   const principal: OperatorPrincipal = {
     kind: 'session',
     user: {
-      id: `user-${GITHUB_ID}`,
+      id: USER_ID,
       githubId: GITHUB_ID,
       login: 'octocat',
       name: 'Octo Cat',
       avatarUrl: 'https://example.test/a.png',
+      allowed: true,
+      role: 'member',
+      mustChangePassword: false,
+    },
+  };
+  return { operatorPrincipal: principal } as unknown as AuthenticatedRequest;
+}
+
+/**
+ * A LOCAL (password/OTP) account session: authenticated + allowed but with NO
+ * github identity (`githubId === null`, `login === null`). fix-local-account-
+ * api-keys-scope: it must reach the api-key surface and be scoped on its own
+ * `user.id`, exactly like a GitHub account.
+ */
+function localSessionRequest(userId = LOCAL_USER_ID): AuthenticatedRequest {
+  const principal: OperatorPrincipal = {
+    kind: 'session',
+    user: {
+      id: userId,
+      githubId: null,
+      login: null,
+      name: 'local@example.test',
+      avatarUrl: null,
       allowed: true,
       role: 'member',
       mustChangePassword: false,
@@ -141,7 +163,7 @@ test('mint returns the raw cap_sk_ key once and persists only its hash', async (
   const { prisma, rows } = makeFakePrisma();
   const service = new ApiKeysService(prisma);
 
-  const res = await service.mint(GITHUB_ID, { name: 'ci', scopes: ['tasks:read'] });
+  const res = await service.mint(USER_ID, { name: 'ci', scopes: ['tasks:read'] });
 
   // The raw key is returned, carries the reserved prefix, and is high-entropy.
   assert.ok(res.key.startsWith(API_KEY_PREFIX), 'raw key carries the reserved prefix');
@@ -160,7 +182,7 @@ test('mint returns the raw cap_sk_ key once and persists only its hash', async (
   );
 
   // Two mints yield two distinct keys (fresh entropy each time).
-  const res2 = await service.mint(GITHUB_ID, { name: 'ci2', scopes: ['tasks:read'] });
+  const res2 = await service.mint(USER_ID, { name: 'ci2', scopes: ['tasks:read'] });
   assert.notEqual(res2.key, res.key, 'each mint generates a fresh raw key');
 });
 
@@ -172,12 +194,12 @@ test('list exposes only non-secret metadata — never the raw key or hash', asyn
   const { prisma } = makeFakePrisma();
   const service = new ApiKeysService(prisma);
 
-  const minted = await service.mint(GITHUB_ID, {
+  const minted = await service.mint(USER_ID, {
     name: 'reader',
     scopes: ['tasks:read', 'repos:read'],
   });
 
-  const items = await service.list(GITHUB_ID);
+  const items = await service.list(USER_ID);
   assert.equal(items.length, 1);
   const item = items[0];
 
@@ -207,13 +229,13 @@ test('revoke is idempotent and the revoked view leaks neither key nor hash', asy
   const { prisma } = makeFakePrisma();
   const service = new ApiKeysService(prisma);
 
-  const minted = await service.mint(GITHUB_ID, { name: 'doomed', scopes: ['tasks:write'] });
+  const minted = await service.mint(USER_ID, { name: 'doomed', scopes: ['tasks:write'] });
   const id = minted.id;
 
-  const first = await service.revoke(GITHUB_ID, id);
+  const first = await service.revoke(USER_ID, id);
   assert.ok(first.revokedAt !== null, 'first revoke stamps revokedAt');
 
-  const second = await service.revoke(GITHUB_ID, id);
+  const second = await service.revoke(USER_ID, id);
   assert.equal(second.revokedAt, first.revokedAt, 'idempotent: timestamp is stable on re-revoke');
 
   const serialized = JSON.stringify(second);
@@ -300,4 +322,105 @@ test('a session principal can mint, list, and revoke its own keys', async () => 
 
   const revokeRes = await controller.revoke(req, mintRes.id);
   assert.ok(revokeRes.key.revokedAt !== null, 'session revoke stamps revokedAt');
+});
+
+// ---------------------------------------------------------------------------
+// fix-local-account-api-keys-scope — a LOCAL account (githubId === null) can
+// mint, list, and revoke its own keys, scoped on user.id (no github required)
+// ---------------------------------------------------------------------------
+
+test('a local account (githubId null) can mint, list, and revoke its own keys', async () => {
+  const { prisma, rows } = makeFakePrisma();
+  const controller = new ApiKeysController(new ApiKeysService(prisma));
+  const req = localSessionRequest();
+
+  const mintRes = await controller.mint(req, { name: 'local-key', scopes: ['tasks:read'] });
+  assert.ok(mintRes.key.startsWith(API_KEY_PREFIX), 'local account mints a real key');
+
+  // The persisted row is owned by the local account's own user.id — no reverse
+  // lookup, no github identity involved.
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].userId, LOCAL_USER_ID, 'key is FK-owned by the local user.id');
+
+  const listRes = await controller.list(req);
+  assert.equal(listRes.keys.length, 1);
+  assert.equal(listRes.keys[0].id, mintRes.id);
+
+  const revokeRes = await controller.revoke(req, mintRes.id);
+  assert.ok(revokeRes.key.revokedAt !== null, 'local account revoke stamps revokedAt');
+});
+
+// ---------------------------------------------------------------------------
+// per-account isolation — account A never sees / can never revoke account B's
+// keys (works identically for local and github accounts; scoped on user.id)
+// ---------------------------------------------------------------------------
+
+test('per-account isolation: A cannot see or revoke B keys (and vice-versa)', async () => {
+  const { prisma } = makeFakePrisma();
+  const controller = new ApiKeysController(new ApiKeysService(prisma));
+
+  // A = a GitHub account; B = a local account. Each mints one key.
+  const reqA = sessionRequest();
+  const reqB = localSessionRequest();
+
+  const aKey = await controller.mint(reqA, { name: 'a-key', scopes: ['tasks:read'] });
+  const bKey = await controller.mint(reqB, { name: 'b-key', scopes: ['tasks:read'] });
+
+  // Each account's list shows ONLY its own key.
+  const aList = await controller.list(reqA);
+  assert.deepEqual(
+    aList.keys.map((k) => k.id),
+    [aKey.id],
+    'A sees only its own key',
+  );
+  const bList = await controller.list(reqB);
+  assert.deepEqual(
+    bList.keys.map((k) => k.id),
+    [bKey.id],
+    'B sees only its own key',
+  );
+
+  // A cannot revoke B's key (404, never reveals existence) and vice-versa.
+  await assert.rejects(
+    () => controller.revoke(reqA, bKey.id),
+    /No API key/,
+    "A cannot revoke B's key",
+  );
+  await assert.rejects(
+    () => controller.revoke(reqB, aKey.id),
+    /No API key/,
+    "B cannot revoke A's key",
+  );
+
+  // Both keys remain live after the cross-account revoke attempts.
+  assert.equal((await controller.list(reqA)).keys[0].revokedAt, null);
+  assert.equal((await controller.list(reqB)).keys[0].revokedAt, null);
+});
+
+// ---------------------------------------------------------------------------
+// the gate now hinges ONLY on an authenticated session — an identity-less
+// principal (machine/legacy with user === null) is still rejected fail-closed
+// ---------------------------------------------------------------------------
+
+test('an identity-less session-less principal is still rejected on CRUD', async () => {
+  const { prisma, rows } = makeFakePrisma();
+  const controller = new ApiKeysController(new ApiKeysService(prisma));
+
+  // A `session` kind whose user is somehow null is identity-less and rejected.
+  const identityless = principalRequest({
+    kind: 'session',
+    user: null,
+  } as unknown as OperatorPrincipal);
+
+  await assert.rejects(
+    () => controller.mint(identityless, { name: 'x', scopes: ['tasks:read'] }),
+    ForbiddenException,
+    'identity-less principal is 403 on mint',
+  );
+  await assert.rejects(
+    () => controller.list(identityless),
+    ForbiddenException,
+    'identity-less principal is 403 on list',
+  );
+  assert.equal(rows.length, 0, 'no key minted by an identity-less principal');
 });

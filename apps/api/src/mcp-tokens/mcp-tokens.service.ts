@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
 import type {
   McpTokenListItem,
@@ -52,8 +52,8 @@ export class McpTokensService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Mints a new MCP token bound to the owning operator (resolved from the
-   * immutable `githubId`), returning the raw `mcp_…` value EXACTLY ONCE (the
+   * Mints a new MCP token bound to the owning operator (the account primary key
+   * `userId`), returning the raw `mcp_…` value EXACTLY ONCE (the
    * {@link McpTokenMintResponse} the operator pastes into their client). The body
    * is `randomBytes(32).base64url`; only the SHA-256 hash is persisted, alongside
    * the display `prefix` + `last4` and the granted scopes.
@@ -61,13 +61,14 @@ export class McpTokensService {
    * Ordering mirrors the session-mint point: compute the secret, then persist
    * ONLY its hash — the raw token is never written to the database. The token is
    * bound to the caller's OWN user row (the FK `userId`), so an operator can only
-   * ever mint tokens for themselves.
+   * ever mint tokens for themselves. The `userId` is the account primary key
+   * supplied by the controller from the guard-attached session principal (present
+   * for BOTH local and GitHub accounts), never a client-named value.
    */
   async mint(
-    githubId: number,
+    userId: string,
     input: { name: string; scopes: string[]; expiresAt?: string | null },
   ): Promise<McpTokenMintResponse> {
-    const userId = await this.requireUserId(githubId);
     const body = randomBytes(McpTokensService.TOKEN_BYTES).toString('base64url');
     const raw = `${McpTokensService.TOKEN_PREFIX}${body}`;
     const tokenHash = hashMcpToken(raw);
@@ -107,8 +108,7 @@ export class McpTokensService {
    * hash is ever projected, so a list response can never leak a usable
    * credential. A revoked token stays listed with its `revokedAt` timestamp.
    */
-  async list(githubId: number): Promise<McpTokenListItem[]> {
-    const userId = await this.requireUserId(githubId);
+  async list(userId: string): Promise<McpTokenListItem[]> {
     const rows = await this.prisma.mcpToken.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -123,8 +123,7 @@ export class McpTokensService {
    * `revokedAt` untouched. Returns the post-revocation list view, or `null` when
    * no such token belongs to the caller.
    */
-  async revoke(githubId: number, id: string): Promise<McpTokenListItem | null> {
-    const userId = await this.requireUserId(githubId);
+  async revoke(userId: string, id: string): Promise<McpTokenListItem | null> {
     const existing = await this.prisma.mcpToken.findFirst({
       where: { id, userId },
     });
@@ -140,23 +139,6 @@ export class McpTokensService {
           data: { revokedAt: new Date() },
         });
     return toListItem(revoked);
-  }
-
-  /**
-   * Resolves the caller's user-row id (the `McpToken.userId` FK) from their
-   * immutable GitHub id. The session principal is already allowlist-gated by the
-   * guard, so a missing user row would be a server inconsistency, surfaced as a
-   * 404 rather than silently minting an orphaned token.
-   */
-  private async requireUserId(githubId: number): Promise<string> {
-    const user = await this.prisma.user.findUnique({
-      where: { githubId },
-      select: { id: true },
-    });
-    if (!user) {
-      throw new NotFoundException('Operator account not found');
-    }
-    return user.id;
   }
 }
 
