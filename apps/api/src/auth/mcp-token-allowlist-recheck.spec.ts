@@ -44,6 +44,7 @@ interface FakeMcpTokenRow {
   revokedAt: Date | null;
   expiresAt: Date | null;
   user: {
+    id: string;
     githubId: number | null;
     login: string;
     name: string;
@@ -91,6 +92,7 @@ function tokenRow(
     revokedAt: opts.revokedAt ?? null,
     expiresAt: opts.expiresAt ?? null, // no expiry → lifecycle is the allowed flag
     user: {
+      id: 'acct-owner-001',
       githubId: opts.githubId !== undefined ? opts.githubId : 99999,
       login: 'octocat',
       name: 'Octo Cat',
@@ -120,6 +122,11 @@ test('resolveMcpToken: an allowed owner resolves to a FULL AuthInfo (all fields 
   assert.ok(info.expiresAt > Math.floor(Date.now() / 1000), 'expiresAt is in the future (far-future fallback for no-expiry token)');
   assert.equal(info.resource, MCP_RESOURCE_URI, 'AuthInfo.resource is the canonical MCP resource URI');
   assert.equal(info.ownerGithubId, 99999, 'AuthInfo.ownerGithubId carries the owner github id');
+  assert.equal(
+    info.ownerId,
+    'acct-owner-001',
+    'AuthInfo.ownerId carries the owner ACCOUNT id (fix-local-account-task-attribution)',
+  );
 });
 
 test('resolveMcpToken: a de-allowlisted owner resolves to null (DB allowed flag re-confirmed per call)', async () => {
@@ -166,6 +173,10 @@ test('resolveMcpToken: local-account owner (githubId null, allowed true) still r
 
   assert.ok(info !== null, 'local-account token resolves when owner.allowed is true');
   assert.equal(info.ownerGithubId, null, 'ownerGithubId is null for a local-account owner (nullable, best-effort attribution only)');
+  // fix-local-account-task-attribution: even with NO github id, the account id is
+  // present — this is what the task-attribution chain threads so a local account's
+  // MCP task is owner-attributed and its stored Codex credential resolves.
+  assert.equal(info.ownerId, 'acct-owner-001', 'ownerId (account primary key) is present for a local-account owner');
   // The full AuthInfo is still returned.
   assert.equal(info.clientId, 'settings');
   assert.equal(typeof info.expiresAt, 'number');

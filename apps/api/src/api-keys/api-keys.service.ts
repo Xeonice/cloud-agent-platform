@@ -20,9 +20,11 @@ import { hashSessionToken } from '../auth/session-token';
  * controller rejects any `api-key`/legacy/mcp principal, so a key can never mint
  * another key — no escalation chain, task 5.3).
  *
- * Every method is scoped to a single account by the caller's immutable numeric
- * `githubId` (resolved to the internal user `id` here): the body/path can never
- * name a different account, and list/revoke only ever touch the caller's own keys.
+ * Every method is scoped to a single account by the caller's account primary key
+ * `userId` (the `ApiKey.userId` FK directly — no reverse lookup), which is present
+ * for BOTH local (password/OTP) and GitHub accounts (fix-local-account-api-keys-scope):
+ * the body/path can never name a different account, and list/revoke only ever
+ * touch the caller's own keys.
  *
  * Storage discipline (hash-only) — the load-bearing secret-handling property:
  *   - the raw `cap_sk_<random>` key is generated from `randomBytes(32).base64url`
@@ -47,9 +49,7 @@ export class ApiKeysService {
    * never the raw value. The response is the only time the full `cap_sk_…` value
    * is ever transmitted — a later list/read shape can never recover it.
    */
-  async mint(githubId: number, body: ApiKeyMintRequest): Promise<ApiKeyMintResponse> {
-    const userId = await this.resolveUserId(githubId);
-
+  async mint(userId: string, body: ApiKeyMintRequest): Promise<ApiKeyMintResponse> {
     // High-entropy random body so the plain SHA-256 storage hash is sound (no slow
     // KDF needed), identical to the session-token justification. The reserved
     // prefix makes the issued key dispatch-routable to the api-key resolver.
@@ -87,8 +87,7 @@ export class ApiKeysService {
    * Lists the caller's own API keys as non-secret metadata. NEITHER the raw key
    * value NOR the stored hash appears in any entry. Newest first.
    */
-  async list(githubId: number): Promise<ApiKeyListItem[]> {
-    const userId = await this.resolveUserId(githubId);
+  async list(userId: string): Promise<ApiKeyListItem[]> {
     const records = await this.prisma.apiKey.findMany({
       where: { userId },
       orderBy: { createdAt: 'desc' },
@@ -104,8 +103,7 @@ export class ApiKeysService {
    * the id is unknown OR owned by a different account (never reveals another
    * account's key existence).
    */
-  async revoke(githubId: number, keyId: string): Promise<ApiKeyListItem> {
-    const userId = await this.resolveUserId(githubId);
+  async revoke(userId: string, keyId: string): Promise<ApiKeyListItem> {
     const existing = await this.prisma.apiKey.findFirst({
       where: { id: keyId, userId },
     });
@@ -151,22 +149,5 @@ export class ApiKeysService {
       expiresAt: record.expiresAt ? record.expiresAt.toISOString() : null,
       revokedAt: record.revokedAt ? record.revokedAt.toISOString() : null,
     };
-  }
-
-  /**
-   * Resolves the caller's immutable numeric `githubId` (from the session
-   * principal) to the internal user `id` used as the `ApiKey.userId` FK. Mirrors
-   * the per-account scoping in `SettingsService`: the account is taken from the
-   * guard-attached principal, never from the request body.
-   */
-  private async resolveUserId(githubId: number): Promise<string> {
-    const user = await this.prisma.user.findUnique({
-      where: { githubId },
-      select: { id: true },
-    });
-    if (!user) {
-      throw new NotFoundException(`No account record for githubId ${githubId}`);
-    }
-    return user.id;
   }
 }

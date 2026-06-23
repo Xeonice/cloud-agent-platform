@@ -14,10 +14,7 @@ import {
   type RepoResponse,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  GITHUB_IDENTITY_PROVIDER,
-  getGithubTokenForUser,
-} from '../auth/github-identity';
+import { getGithubTokenForUser } from '../auth/github-identity';
 import {
   findExistingImport,
   githubDedupKey,
@@ -82,14 +79,14 @@ export class GithubImportService {
   ) {}
 
   /**
-   * 4.1 / 4.2 — Lists the available GitHub repos for the requesting operator
+   * 4.1 / 4.2 — Lists the available GitHub repos for the requesting account
    * using THEIR OWN stored token, then reconciles against imported platform
    * Repos so the console can mark already-imported entries. Throws the distinct
    * auth-required / retry-able exceptions on the respective failure modes; an
    * empty-but-successful listing returns `[]`.
    */
-  async listAvailable(operatorGithubId: number): Promise<AvailableGithubRepo[]> {
-    const accessToken = await this.readOperatorToken(operatorGithubId);
+  async listAvailable(operatorId: string): Promise<AvailableGithubRepo[]> {
+    const accessToken = await this.readOperatorToken(operatorId);
     const result = await this.githubRepos.listForOperator(accessToken);
     if (!result.ok) {
       throw result.error.retryable
@@ -105,10 +102,10 @@ export class GithubImportService {
    * "already imported". The reconciliation is the pure
    * {@link reconcileAvailableRepos}.
    */
-  async listAvailableReconciled(operatorGithubId: number): Promise<
+  async listAvailableReconciled(operatorId: string): Promise<
     Array<AvailableGithubRepo & { imported: boolean; importedRepoId: string | null }>
   > {
-    const available = await this.listAvailable(operatorGithubId);
+    const available = await this.listAvailable(operatorId);
     const imported = await this.loadImportedRefs();
     const annotations = reconcileAvailableRepos(available, imported);
     // Zip the contract shape with the reconciliation annotation by index (both
@@ -213,35 +210,24 @@ export class GithubImportService {
   // ----- internals -----------------------------------------------------------
 
   /**
-   * Reads the requesting operator's OWN stored GitHub OAuth token by immutable
-   * numeric `githubId`. Returns `null` when the operator has no token stored —
-   * the client maps that to the same `github_auth_required` signal as an
-   * expired/revoked token. The token is NEVER returned beyond the server-side
-   * GitHub call.
+   * Reads the requesting account's OWN stored GitHub OAuth token by the account
+   * primary key `userId` — the SINGLE per-account scope key, present for BOTH
+   * local and GitHub accounts (fix-local-account-settings-scope). Returns `null`
+   * when the account has no `github` IdentityLink / no token stored — the client
+   * maps that to the same `github_auth_required` signal as an expired/revoked
+   * token. The token is NEVER returned beyond the server-side GitHub call.
    *
-   * add-private-account-identity (3.1): the token is no longer a `User` column —
-   * it is the `secret` of the operator's `github` `IdentityLink`. We resolve the
-   * `github` identity by its immutable `(provider, providerAccountId)` pair
-   * (providerAccountId = the numeric github id stringified) to recover the owning
-   * `userId`, then read+decrypt the token through the single shared
-   * github-identity helper.
+   * add-private-account-identity (3.1): the token is the `secret` of the account's
+   * `github` `IdentityLink`. We read+decrypt it directly by `userId` through the
+   * single shared github-identity helper (the IdentityLink table is already FK
+   * `User.id`, so no reverse lookup by the numeric github id is required — a LOCAL
+   * account that has connected a `github` identity resolves the same way).
    */
-  private async readOperatorToken(operatorGithubId: number): Promise<string | null> {
-    const identity = await this.prisma.identityLink.findUnique({
-      where: {
-        provider_providerAccountId: {
-          provider: GITHUB_IDENTITY_PROVIDER,
-          providerAccountId: String(operatorGithubId),
-        },
-      },
-      select: { userId: true },
-    });
-    if (!identity) {
-      return null;
-    }
+  private async readOperatorToken(operatorId: string): Promise<string | null> {
     // Decrypt at point of use through the shared helper (handles both the
-    // encrypted envelope and a legacy plaintext token).
-    return getGithubTokenForUser(this.prisma, identity.userId);
+    // encrypted envelope and a legacy plaintext token); `null` when the account
+    // has no github identity at all (e.g. a LOCAL account that never connected one).
+    return getGithubTokenForUser(this.prisma, operatorId);
   }
 
   /** Loads the de-dup view of every imported Repo (a non-null githubId). */

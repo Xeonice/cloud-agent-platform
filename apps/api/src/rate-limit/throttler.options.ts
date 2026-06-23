@@ -9,6 +9,15 @@ import { seconds, type ThrottlerModuleOptions } from '@nestjs/throttler';
 export const AUTH_THROTTLE_NAME = 'auth';
 
 /**
+ * The named tier the dedicated {@link CreateThrottleGuard} keys on (per-principal)
+ * and that the v1-tasks controller's `@Throttle({ [CREATE_THROTTLE_NAME]: … })`
+ * route override references for `POST /v1/tasks`. Exported as a single literal so
+ * the registration here, the per-route override, and the guard's `onModuleInit`
+ * filter cannot drift — an unknown throttler name is silently inert.
+ */
+export const CREATE_THROTTLE_NAME = 'create';
+
+/**
  * Throttler configuration for the public API (public-v1-api, Integration 6.1).
  *
  * Builds the in-memory (default store) named throttlers the global
@@ -54,7 +63,7 @@ export function buildThrottlerOptions(): ThrottlerModuleOptions {
       ttl: seconds(positiveIntEnv(process.env.V1_RATE_DEFAULT_TTL_SEC, 60)),
     },
     {
-      name: 'create',
+      name: CREATE_THROTTLE_NAME,
       limit: positiveIntEnv(process.env.V1_RATE_CREATE_LIMIT, 10),
       ttl: seconds(positiveIntEnv(process.env.V1_RATE_CREATE_TTL_SEC, 60)),
     },

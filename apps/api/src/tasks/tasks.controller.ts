@@ -48,10 +48,13 @@ import { TasksService } from './tasks.service';
  * or the legacy operator token) has `scopes === undefined`, which {@link hasScope}
  * treats as allow-all, so existing console behavior is unchanged.
  *
- * Attribution (route-integration 6.1): the controller reads the principal's
- * GitHub identity (`operatorPrincipal?.user?.githubId`) and threads it into
- * `TasksService.create/stop`, so a task action attributes to the acting operator
- * (the session user, or the api-key's owner) instead of being system-attributed.
+ * Attribution (route-integration 6.1; fix-local-account-task-attribution): the
+ * controller reads the principal's ACCOUNT primary key (`operatorPrincipal?.user?.id`)
+ * and threads it into `TasksService.create/stop`, so a task action attributes to
+ * the acting operator (the session user — local OR GitHub — or the api-key's owner)
+ * instead of being system-attributed. The account id (not the GitHub numeric id)
+ * is used so a LOCAL account (password/OTP, which has no `githubId`) is also
+ * owner-attributed and its stored Codex credential resolves at run time.
  */
 @Controller()
 export class TasksController {
@@ -66,7 +69,7 @@ export class TasksController {
     @Req() req: AuthenticatedRequest,
   ): Promise<TaskResponse> {
     TasksController.requireScope(req, 'tasks:write');
-    return this.tasksService.create(repoId, body, TasksController.githubId(req));
+    return this.tasksService.create(repoId, body, TasksController.accountId(req));
   }
 
   @Get('tasks')
@@ -92,21 +95,24 @@ export class TasksController {
     @Req() req: AuthenticatedRequest,
   ): Promise<TaskResponse> {
     TasksController.requireScope(req, 'tasks:write');
-    return this.tasksService.stop(taskId, TasksController.githubId(req));
+    return this.tasksService.stop(taskId, TasksController.accountId(req));
   }
 
   /**
-   * The acting operator's immutable numeric GitHub id, or `undefined` when the
-   * principal carries no GitHub identity (the legacy shared-token operator). This
-   * is the attribution threaded into the service (6.1) — never trusted from the
-   * client; it comes only from the principal the guard attached.
+   * The acting operator's ACCOUNT primary key (`users.id`), or `undefined` when the
+   * principal carries NO account identity at all (the legacy shared-token
+   * operator). This is the attribution threaded into the service (6.1;
+   * fix-local-account-task-attribution) — never trusted from the client; it comes
+   * only from the principal the guard attached.
+   *
+   * The account id is present for BOTH a LOCAL account (password/OTP) and a GitHub
+   * account, so it — unlike the GitHub numeric `githubId`, which a local account
+   * lacks — owner-attributes a local account's task too, letting the owner-scoped
+   * Codex credential resolve at run time. `undefined` remains the "identity-less
+   * machine/legacy principal" defensive case (system attribution).
    */
-  private static githubId(req: AuthenticatedRequest): number | undefined {
-    // Best-effort attribution: a LOCAL account (password/OTP) carries
-    // `githubId === null` (add-private-account-identity); collapse it to
-    // `undefined` so the optional attribution simply goes unset rather than
-    // threading a `null` through the service.
-    return req.operatorPrincipal?.user?.githubId ?? undefined;
+  private static accountId(req: AuthenticatedRequest): string | undefined {
+    return req.operatorPrincipal?.user?.id ?? undefined;
   }
 
   /**

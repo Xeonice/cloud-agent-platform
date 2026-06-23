@@ -33,6 +33,7 @@ import type { TaskResponse } from '@cap/contracts';
 const SESSION_PRINCIPAL: OperatorPrincipal = {
   kind: 'session',
   user: {
+    id: 'acct-4242',
     githubId: 4242,
     login: 'octocat',
     name: 'Octo Cat',
@@ -41,16 +42,32 @@ const SESSION_PRINCIPAL: OperatorPrincipal = {
   },
 } as OperatorPrincipal;
 
+/**
+ * A LOCAL account (password/OTP) session principal — `githubId === null` but a
+ * real account `id` (fix-local-account-task-attribution).
+ */
+const LOCAL_SESSION_PRINCIPAL: OperatorPrincipal = {
+  kind: 'session',
+  user: {
+    id: 'acct-local-1',
+    githubId: null,
+    login: null,
+    name: 'Local Operator',
+    avatarUrl: null,
+    allowed: true,
+  },
+} as OperatorPrincipal;
+
 const READ_ONLY_KEY: OperatorPrincipal = {
   kind: 'api-key',
-  user: { githubId: 7, login: 'bot', name: 'Bot', avatarUrl: '', allowed: true },
+  user: { id: 'acct-7', githubId: 7, login: 'bot', name: 'Bot', avatarUrl: '', allowed: true },
   scopes: ['tasks:read'],
   keyId: 'key-read',
 } as OperatorPrincipal;
 
 const WRITE_KEY: OperatorPrincipal = {
   kind: 'api-key',
-  user: { githubId: 8, login: 'bot2', name: 'Bot2', avatarUrl: '', allowed: true },
+  user: { id: 'acct-8', githubId: 8, login: 'bot2', name: 'Bot2', avatarUrl: '', allowed: true },
   scopes: ['tasks:read', 'tasks:write'],
   keyId: 'key-write',
 } as OperatorPrincipal;
@@ -109,7 +126,7 @@ function passthroughIdempotency(): IdempotencyService {
 
 test('POST /v1/tasks delegates to TasksService.createTaskRow + admitCreatedTask (one admission path)', async () => {
   const rowCalls: Array<{ repoId: string; body: unknown }> = [];
-  const admitCalls: Array<{ taskId: string; githubId?: number }> = [];
+  const admitCalls: Array<{ taskId: string; userId?: string }> = [];
   const tasksService = {
     // V.1 — the admit callback creates the ROW (on the idempotency tx); the
     // provision is the separate post-commit step.
@@ -117,8 +134,8 @@ test('POST /v1/tasks delegates to TasksService.createTaskRow + admitCreatedTask 
       rowCalls.push({ repoId, body });
       return makeTaskRow(1, new Date());
     },
-    async admitCreatedTask(taskId: string, _body: unknown, githubId?: number) {
-      admitCalls.push({ taskId, githubId });
+    async admitCreatedTask(taskId: string, _body: unknown, userId?: string) {
+      admitCalls.push({ taskId, userId });
     },
   } as unknown as TasksService;
 
@@ -141,7 +158,45 @@ test('POST /v1/tasks delegates to TasksService.createTaskRow + admitCreatedTask 
     'repoId is stripped from the create body (it is a route/service arg)',
   );
   assert.equal(admitCalls.length, 1, 'the newly-created task is admitted exactly once');
-  assert.equal(admitCalls[0].githubId, 4242, 'admission attributes to the session githubId');
+  assert.equal(
+    admitCalls[0].userId,
+    'acct-4242',
+    'admission attributes to the session account id (users.id)',
+  );
+});
+
+test('POST /v1/tasks by a LOCAL account attributes to its account id (not undefined)', async () => {
+  // fix-local-account-task-attribution: a local-account (githubId=null) /v1 create
+  // must thread its `user.id` so the task is owner-attributed and its stored Codex
+  // credential resolves — previously the null githubId collapsed to undefined.
+  const admitCalls: Array<{ taskId: string; userId?: string }> = [];
+  const tasksService = {
+    async createTaskRow() {
+      return makeTaskRow(1, new Date());
+    },
+    async admitCreatedTask(taskId: string, _body: unknown, userId?: string) {
+      admitCalls.push({ taskId, userId });
+    },
+  } as unknown as TasksService;
+
+  const controller = new V1TasksController(
+    tasksService,
+    {} as PrismaService,
+    passthroughIdempotency(),
+  );
+
+  await controller.create(
+    { repoId: 'repo-1', prompt: 'hello' } as never,
+    reqWith(LOCAL_SESSION_PRINCIPAL),
+    undefined,
+  );
+
+  assert.equal(admitCalls.length, 1, 'the local-account task is admitted once');
+  assert.equal(
+    admitCalls[0].userId,
+    'acct-local-1',
+    'a local account create attributes to its account id (not collapsed to undefined)',
+  );
 });
 
 test('a tasks:read-only api-key is 403 on POST /v1/tasks and admits nothing', async () => {

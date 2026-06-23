@@ -20,8 +20,8 @@
  *     text;
  *   - {@link ReposService} for the repo read surface.
  *
- * The acting operator's GitHub id (for audit attribution on create/stop) is read
- * from the resolved token's `AuthInfo.extra.githubId` when `resolveMcpToken`
+ * The acting operator's account id (for audit attribution on create/stop) is read
+ * from the resolved token's `AuthInfo.extra.userId` when `resolveMcpToken`
  * (Track 3) attaches it; absent ⇒ no attribution (best-effort, like a scopeless
  * legacy principal on REST).
  */
@@ -84,7 +84,7 @@ export class McpServerFactory implements McpToolDeps {
     registerMcpTools(
       this.server as unknown as ToolRegistrar,
       this,
-      githubIdFromExtra,
+      userIdFromExtra,
     );
   }
 
@@ -100,10 +100,12 @@ export class McpServerFactory implements McpToolDeps {
    * offers it to the guardrails semaphore and RETURNS the handle — it does NOT
    * await the run — so `create_task` returns immediately (spec / D4).
    */
-  createTask(repoId: string, body: Parameters<TasksService['create']>[1], githubId?: number) {
+  createTask(repoId: string, body: Parameters<TasksService['create']>[1], userId?: string) {
     // add-headless-execution-track: MCP is a programmatic consumer → fire-and-forget
     // headless-exec (the task runs `codex exec`/`claude -p`, exits to terminal).
-    return this.tasks.create(repoId, body, githubId, 'headless-exec');
+    // `userId` is the token owner's ACCOUNT primary key (local + GitHub accounts —
+    // fix-local-account-task-attribution) so the task is owner-attributed.
+    return this.tasks.create(repoId, body, userId, 'headless-exec');
   }
 
   getTask(id: string) {
@@ -114,8 +116,8 @@ export class McpServerFactory implements McpToolDeps {
     return this.tasks.list();
   }
 
-  stopTask(id: string, githubId?: number) {
-    return this.tasks.stop(id, githubId);
+  stopTask(id: string, userId?: string) {
+    return this.tasks.stop(id, userId);
   }
 
   listRepos() {
@@ -188,13 +190,16 @@ function toAvailable(
 }
 
 /**
- * Best-effort GitHub-id attribution from the resolved token. `resolveMcpToken`
- * (Track 3) may attach the owner's numeric github id under `AuthInfo.extra`; a
- * non-numeric/absent value attributes the action to no id (like a scopeless
- * legacy principal on the REST path).
+ * Best-effort ACCOUNT-id attribution from the resolved token
+ * (fix-local-account-task-attribution). `resolveMcpToken` attaches the token
+ * owner's account primary key (`users.id`) under `AuthInfo.extra.userId` — present
+ * for BOTH local and GitHub accounts, so a local-account token's MCP task is
+ * owner-attributed and its stored Codex credential resolves at run time. A
+ * non-string/absent value attributes the action to no id (like a scopeless legacy
+ * principal on the REST path).
  */
-function githubIdFromExtra(extra: ToolExtra): number | undefined {
-  const raw = (extra.authInfo?.extra as { githubId?: unknown } | undefined)
-    ?.githubId;
-  return typeof raw === 'number' ? raw : undefined;
+function userIdFromExtra(extra: ToolExtra): string | undefined {
+  const raw = (extra.authInfo?.extra as { userId?: unknown } | undefined)
+    ?.userId;
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
 }

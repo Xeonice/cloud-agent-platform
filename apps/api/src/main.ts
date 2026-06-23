@@ -259,12 +259,14 @@ function mcpBearerAuthMiddleware(
           // with no `expiresAt`. `resolveMcpToken` always sets it (far-future for
           // a never-expiring token).
           expiresAt: info.expiresAt,
-          // Carry the owner's GitHub id under `extra.githubId` — the exact key
-          // `mcp.server.ts#githubIdFromExtra` reads for best-effort audit
-          // attribution on create/stop. `resource` is intentionally omitted (no
-          // audience negotiation in the settings-minted model, so no
-          // resource-match 401 risk).
-          extra: { githubId: info.ownerGithubId },
+          // Carry the owner's ACCOUNT primary key under `extra.userId` — the exact
+          // key `mcp.server.ts#userIdFromExtra` reads for best-effort audit
+          // attribution on create/stop, and so the owner-scoped Codex credential
+          // resolves for a LOCAL account too (fix-local-account-task-attribution).
+          // The numeric `githubId` is kept alongside for any GitHub-keyed consumer.
+          // `resource` is intentionally omitted (no audience negotiation in the
+          // settings-minted model, so no resource-match 401 risk).
+          extra: { userId: info.ownerId, githubId: info.ownerGithubId },
         };
       },
     },

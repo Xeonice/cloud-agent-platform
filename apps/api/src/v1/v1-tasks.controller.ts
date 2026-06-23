@@ -104,10 +104,12 @@ export class V1TasksController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ): Promise<TaskResponse> {
     const principal = this.requireScope(req, 'tasks:write');
-    // Best-effort attribution: a LOCAL account (password/OTP) carries
-    // `githubId === null` (add-private-account-identity); collapse to `undefined`
-    // so the optional attribution goes unset rather than threading a `null`.
-    const githubId = principal.user?.githubId ?? undefined;
+    // Best-effort attribution by the acting account PRIMARY KEY (`users.id`),
+    // present for BOTH local (password/OTP) and GitHub accounts
+    // (fix-local-account-task-attribution) so a local account's task is
+    // owner-attributed and its stored Codex credential resolves at run time;
+    // `undefined` only for a truly identity-less machine/legacy principal.
+    const userId = principal.user?.id ?? undefined;
     const { repoId, ...createBody } = body;
 
     const { task, created } = await this.idempotency.run({
@@ -129,7 +131,7 @@ export class V1TasksController {
     // first call. Run AFTER the dedup transaction has COMMITTED so a rolled-back
     // transaction never leaves a provisioned sandbox (V.1 / TasksService split).
     if (created) {
-      await this.tasksService.admitCreatedTask(task.id, createBody, githubId);
+      await this.tasksService.admitCreatedTask(task.id, createBody, userId);
     }
     return task;
   }
@@ -188,9 +190,9 @@ export class V1TasksController {
     @Req() req: AuthenticatedRequest,
   ): Promise<TaskResponse> {
     const principal = this.requireScope(req, 'tasks:write');
-    // Best-effort attribution; a local account's `null` githubId collapses to
-    // `undefined` (add-private-account-identity).
-    return this.tasksService.stop(id, principal.user?.githubId ?? undefined);
+    // Best-effort attribution by the acting account PRIMARY KEY (`users.id`),
+    // present for local + GitHub accounts (fix-local-account-task-attribution).
+    return this.tasksService.stop(id, principal.user?.id ?? undefined);
   }
 
   /**

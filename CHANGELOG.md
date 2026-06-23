@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.20.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.0...v0.20.1) (2026-06-23)
+
+
+### Bug Fixes
+
+* **rate-limit:** scope the create tier to POST /v1/tasks only ([#54](https://github.com/Xeonice/cloud-agent-platform/issues/54)) ([64a544c](https://github.com/Xeonice/cloud-agent-platform/commit/64a544caf7a47f5c4a03c879aa511282351e4562))
+* **settings:** scope api-key/mcp-token/codex/import by account id for local accounts ([#54](https://github.com/Xeonice/cloud-agent-platform/issues/54)) ([11f2e13](https://github.com/Xeonice/cloud-agent-platform/commit/11f2e13b8554872959d234903d3fda22fa3ab82c))
+
+
+### Chores
+
+* **deploy:** scriptize release + upgrade (force both images together) ([#54](https://github.com/Xeonice/cloud-agent-platform/issues/54)) ([9605016](https://github.com/Xeonice/cloud-agent-platform/commit/960501688befdb6020ee6b2752f033e5dfc3827e))
+
+
 ## [0.20.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.19.0...v0.20.0) (2026-06-23)
 
 

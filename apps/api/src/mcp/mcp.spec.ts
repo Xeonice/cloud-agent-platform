@@ -92,8 +92,8 @@ const TRANSCRIPT: SessionHistory = { status: 'expired' } as SessionHistory;
 function recordingDeps(): { deps: McpToolDeps; calls: string[] } {
   const calls: string[] = [];
   const deps: McpToolDeps = {
-    async createTask(repoId, body, githubId) {
-      calls.push(`createTask:${repoId}:${body.prompt}:${githubId ?? '-'}`);
+    async createTask(repoId, body, userId) {
+      calls.push(`createTask:${repoId}:${body.prompt}:${userId ?? '-'}`);
       return TASK;
     },
     async getTask(id) {
@@ -104,8 +104,8 @@ function recordingDeps(): { deps: McpToolDeps; calls: string[] } {
       calls.push('listTasks');
       return [TASK];
     },
-    async stopTask(id, githubId) {
-      calls.push(`stopTask:${id}:${githubId ?? '-'}`);
+    async stopTask(id, userId) {
+      calls.push(`stopTask:${id}:${userId ?? '-'}`);
       return TASK;
     },
     async getTranscript(id) {
@@ -171,6 +171,41 @@ test('a tasks:write token passes create_task and stop_task', async () => {
   await tools.get('stop_task')!({ id: 't1' }, writer);
 
   assert.deepEqual(calls, ['createTask:r1:go:-', 'stopTask:t1:-']);
+});
+
+test('create_task/stop_task thread the token owner ACCOUNT id (local account attribution)', async () => {
+  // fix-local-account-task-attribution: the MCP attribution extractor resolves the
+  // token owner's account primary key (`extra.authInfo.extra.userId`, set for BOTH
+  // local and GitHub accounts) and threads it into the service, so a local-account
+  // token's task is owner-attributed and its stored Codex credential resolves.
+  const { deps, calls } = recordingDeps();
+  const { server, tools } = captureServer();
+  // Mirror mcp.server.ts#userIdFromExtra: read the account id from authInfo.extra.
+  const userIdOf = (extra: ToolExtra): string | undefined => {
+    const raw = (extra.authInfo?.extra as { userId?: unknown } | undefined)?.userId;
+    return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+  };
+  registerMcpTools(server as never, deps, userIdOf);
+
+  const localOwner: ToolExtra = {
+    authInfo: {
+      token: 'mcp_local',
+      clientId: 'settings',
+      scopes: ['tasks:read', 'tasks:write'],
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      // A LOCAL account's MCP token: numeric githubId is null, account id is set.
+      extra: { userId: 'local-acct-1', githubId: null },
+    },
+  } as unknown as ToolExtra;
+
+  await tools.get('create_task')!({ repoId: 'r1', prompt: 'go' }, localOwner);
+  await tools.get('stop_task')!({ id: 't1' }, localOwner);
+
+  assert.deepEqual(
+    calls,
+    ['createTask:r1:go:local-acct-1', 'stopTask:t1:local-acct-1'],
+    'the local account id is threaded into create/stop (not collapsed to undefined)',
+  );
 });
 
 test('the read tools gate on their read scopes', async () => {

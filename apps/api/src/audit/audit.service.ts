@@ -35,10 +35,19 @@ import {
  * {@link assertResultCodeLevelConsistent} before persistence, so a 2xx is never
  * stored against `error` and a 4xx/5xx never against `info`.
  *
+ * ATTRIBUTION (fix-local-account-task-attribution): the write path takes the
+ * acting account's `users.id` PRIMARY KEY directly and stores it on
+ * `AuditEvent.userId` — present for BOTH GitHub and LOCAL (password/OTP)
+ * accounts, so a local account's `task.created` event is owner-attributed and the
+ * owner-scoped Codex credential resolver finds it. (Previously the chain threaded
+ * a numeric `githubId`, which a local account lacks → its task ran unattributed
+ * and silently degraded to the env/official credential fallback.)
+ *
  * READ PATH (6.4): the query/sequence reads compose the pure
  * {@link applyAuditQuery} / {@link orderTaskSequence} filters over a fetched
  * candidate window, mapping rows to the contracts wire shape (DB `userId` FK ->
- * contracts `githubId`).
+ * contracts `githubId`, a local account's null githubId surfaced as the `0`
+ * system sentinel — the wire field is intentionally unchanged).
  */
 @Injectable()
 export class AuditService {
@@ -59,12 +68,15 @@ export class AuditService {
   // -------------------------------------------------------------------------
 
   /**
-   * Record the `task.created` event (6.2). The `githubId` of the operator that
-   * created the task is attributed when known. Best-effort: a persistence failure
-   * is logged and swallowed.
+   * Record the `task.created` event (6.2). The account `userId` (the `users.id`
+   * primary key) of the operator that created the task is attributed when known —
+   * present for BOTH GitHub and LOCAL accounts (fix-local-account-task-attribution),
+   * so a local account's `task.created` event carries its owner FK and the codex
+   * credential resolver can scope to it. Best-effort: a persistence failure is
+   * logged and swallowed.
    */
-  async recordTaskCreated(taskId: string, githubId?: number): Promise<void> {
-    await this.record('task.created', taskId, { githubId });
+  async recordTaskCreated(taskId: string, userId?: string): Promise<void> {
+    await this.record('task.created', taskId, { userId });
   }
 
   /**
@@ -77,11 +89,11 @@ export class AuditService {
   async recordTransition(
     taskId: string,
     status: TaskStatus,
-    githubId?: number,
+    userId?: string,
   ): Promise<void> {
     const kind = kindForStatus(status);
     if (kind === null) return;
-    await this.record(kind, taskId, { githubId });
+    await this.record(kind, taskId, { userId });
   }
 
   /**
@@ -162,16 +174,16 @@ export class AuditService {
 
   /**
    * The single best-effort persistence primitive. Resolves the descriptor for
-   * the kind, validates the (level, resultCode) invariant (6.3), maps the
-   * attributed `githubId` to the `users.id` FK, and inserts the row. ANY failure
-   * (descriptor lookup, invariant, FK resolution, DB write) is caught, logged,
-   * and swallowed — this method never throws, so the caller's transition path is
-   * never affected by an audit failure (6.2).
+   * the kind, validates the (level, resultCode) invariant (6.3), resolves the
+   * attributed account `users.id` FK, and inserts the row. ANY failure (descriptor
+   * lookup, invariant, FK resolution, DB write) is caught, logged, and swallowed —
+   * this method never throws, so the caller's transition path is never affected by
+   * an audit failure (6.2).
    */
   private async record(
     kind: AuditEventKind,
     taskId: string,
-    opts: { githubId?: number; description?: string } = {},
+    opts: { userId?: string; description?: string } = {},
   ): Promise<void> {
     try {
       const descriptor = AUDIT_KIND_DESCRIPTORS[kind];
@@ -183,8 +195,8 @@ export class AuditService {
       );
 
       const userId =
-        opts.githubId !== undefined
-          ? await this.resolveUserId(opts.githubId)
+        opts.userId !== undefined
+          ? await this.resolveUserId(opts.userId)
           : null;
 
       await this.prisma.auditEvent.create({
@@ -210,14 +222,17 @@ export class AuditService {
   }
 
   /**
-   * Map a contracts `githubId` (the immutable GitHub numeric account id) to the
-   * `users.id` FK the `AuditEvent.userId` column references. Returns `null` when
+   * Resolve the attributed account `users.id` PRIMARY KEY for the
+   * `AuditEvent.userId` FK (fix-local-account-task-attribution). The caller already
+   * supplies the account id — present for BOTH GitHub and LOCAL accounts — so this
+   * is a DIRECT existence check (no `githubId` reverse lookup), keeping the write
+   * zero-migration (the column already references `users.id`). Returns `null` when
    * no user record exists for the id (the event is then system-attributed rather
    * than failing the insert on a dangling FK).
    */
-  private async resolveUserId(githubId: number): Promise<string | null> {
+  private async resolveUserId(userId: string): Promise<string | null> {
     const user = await this.prisma.user.findUnique({
-      where: { githubId },
+      where: { id: userId },
       select: { id: true },
     });
     return user?.id ?? null;

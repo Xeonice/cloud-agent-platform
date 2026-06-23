@@ -122,6 +122,29 @@ assert(
   '4.2: workspaces mount source is a named volume, not a host bind path',
 );
 
+// ── add-release-upgrade-scripts: force-both + three-image guards ──────────────
+// The manual upgrade path MUST stage BOTH images together (api + the aio-sandbox
+// stager); a single-service upgrade is the v0.20.0 footgun. Guard the invariant so
+// it can't silently regress. (Mirrors self-update's CAP_SERVICES/PULL_ONLY split.)
+const upgradeSh = readFileSync(join(here, 'upgrade.sh'), 'utf8');
+const upgradeServices = (upgradeSh.match(/^SERVICES=\(([^)]*)\)/m) || [, ''])[1];
+assert(
+  /\bapi\b/.test(upgradeServices) && /\baio-sandbox-image\b/.test(upgradeServices),
+  'upgrade.sh: SERVICES forces BOTH api and aio-sandbox-image (no single-service door)',
+);
+assert(
+  /pull "\$\{SERVICES\[@\]\}"/.test(upgradeSh) && /up -d "\$\{SERVICES\[@\]\}"/.test(upgradeSh),
+  'upgrade.sh: pull AND up -d both operate on the full SERVICES set',
+);
+
+// The release tail MUST verify all three images — the sandbox image is the one a
+// manual flow forgets (the same one upgrade.sh forces onto the host).
+const releaseSh = readFileSync(join(here, 'release.sh'), 'utf8');
+assert(
+  /cap-api/.test(releaseSh) && /cap-web/.test(releaseSh) && /cap-aio-sandbox/.test(releaseSh),
+  'release.sh: verifies all three images (cap-api, cap-web, cap-aio-sandbox)',
+);
+
 console.log(`\n${'─'.repeat(48)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failed === 0) {

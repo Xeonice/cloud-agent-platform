@@ -51,7 +51,10 @@ import {
 } from '@nestjs/common';
 import { ThrottlerModule, seconds } from '@nestjs/throttler';
 
-import { PrincipalThrottlerGuard } from './principal.throttler-guard';
+import {
+  PrincipalThrottlerGuard,
+  principalTrackerKey,
+} from './principal.throttler-guard';
 import type { OperatorPrincipal } from '../auth/operator-principal';
 
 /**
@@ -217,5 +220,81 @@ test('the throttler runs AFTER the auth guard: it keys on the attached principal
     other,
     Array(LIMIT).fill(200),
     'a different principal gets its own bucket — the limiter keyed on the post-auth principal',
+  );
+});
+
+// ---------------------------------------------------------------------------
+// principalTrackerKey — pure-unit assertions of the keying axis
+// ---------------------------------------------------------------------------
+
+/** A LOCAL (password/OTP) account: a resolved user with `githubId === null`. */
+function localPrincipal(id: string): OperatorPrincipal {
+  return {
+    kind: 'session',
+    user: {
+      id,
+      githubId: null,
+      login: null,
+      name: 'L',
+      avatarUrl: null,
+      allowed: true,
+      role: 'member',
+      mustChangePassword: false,
+    },
+  };
+}
+
+test('principalTrackerKey keys a LOCAL account (githubId=null) on user.id — its OWN bucket, not the shared kind sentinel', () => {
+  // The bug this fixes: keying on the GitHub id collapsed every local account onto
+  // `kind:session` (one shared bucket). Keying on the user PRIMARY KEY gives each
+  // local account an independent bucket.
+  assert.equal(
+    principalTrackerKey(localPrincipal('user-local-1')),
+    'user:user-local-1',
+    'a local account is keyed on its user.id',
+  );
+  assert.notEqual(
+    principalTrackerKey(localPrincipal('user-local-1')),
+    principalTrackerKey(localPrincipal('user-local-2')),
+    'two distinct local accounts get DISTINCT buckets (no longer collapsed to kind:session)',
+  );
+});
+
+test('principalTrackerKey keys a GitHub session on user.id too', () => {
+  // sessionPrincipal(githubId) sets id = `user-<githubId>`; the key is the user.id.
+  assert.equal(
+    principalTrackerKey(sessionPrincipal(4242)),
+    'user:user-4242',
+    'a GitHub session is keyed on its user.id (not the githubId)',
+  );
+});
+
+test('principalTrackerKey keys an api-key on its keyId (most-specific) and the legacy operator on its kind', () => {
+  const apiKey: OperatorPrincipal = {
+    kind: 'api-key',
+    user: {
+      id: 'owner-1',
+      githubId: 7,
+      login: 'o',
+      name: 'O',
+      avatarUrl: null,
+      allowed: true,
+      role: 'member',
+      mustChangePassword: false,
+    },
+    keyId: 'key-abc',
+    scopes: [],
+  };
+  assert.equal(
+    principalTrackerKey(apiKey),
+    'key:key-abc',
+    'an api-key is keyed on its keyId, which is more specific than its owner user.id',
+  );
+
+  const legacy: OperatorPrincipal = { kind: 'legacy-token', user: null };
+  assert.equal(
+    principalTrackerKey(legacy),
+    'kind:legacy-token',
+    'the legacy shared-token operator (no user, no key) falls back to its kind sentinel',
   );
 });

@@ -39,6 +39,7 @@ import { McpTokensController } from '../mcp-tokens/mcp-tokens.controller';
 // ---------------------------------------------------------------------------
 
 const OWNER_GITHUB_ID = 12345;
+const OWNER_ID = 'acct-owner-12345';
 const ALLOWLIST = String(OWNER_GITHUB_ID);
 
 /** A stored MCP-token row shape, as `resolveMcpToken` reads it (with owner). */
@@ -51,8 +52,9 @@ interface FakeMcpTokenRow {
   // (add-private-account-identity task 2.5 / D2 — replacing the old
   // `isAllowlistedRaw(githubId, AUTH_ALLOWLIST)` gate). `githubId` is carried only
   // for `ownerGithubId` attribution; it is NULLABLE (a local-account owner has no
-  // github identity).
-  user: { githubId: number | null; allowed: boolean };
+  // github identity). `id` is the account primary key carried for `ownerId`
+  // task-owner attribution (fix-local-account-task-attribution).
+  user: { id: string; githubId: number | null; allowed: boolean };
 }
 
 /**
@@ -142,7 +144,7 @@ test('resolveMcpToken: a valid non-expired token -> a full AuthInfo (G1: expires
     scopes: ['tasks:read', 'tasks:write'],
     expiresAt,
     revokedAt: null,
-    user: { githubId: OWNER_GITHUB_ID, allowed: true },
+    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
   });
   const svc = serviceOver(prisma);
 
@@ -163,7 +165,7 @@ test('resolveMcpToken: a never-expiring token still gets a populated (far-future
     scopes: ['repos:read'],
     expiresAt: null,
     revokedAt: null,
-    user: { githubId: OWNER_GITHUB_ID, allowed: true },
+    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
   });
   const info = await serviceOver(prisma).resolveMcpToken('mcp_noexp', {
     AUTH_ALLOWLIST: ALLOWLIST,
@@ -180,7 +182,7 @@ test('resolveMcpToken: a revoked token resolves to null', async () => {
     scopes: ['tasks:read'],
     expiresAt: null,
     revokedAt: new Date(Date.now() - 1000),
-    user: { githubId: OWNER_GITHUB_ID, allowed: true },
+    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
   });
   assert.equal(
     await serviceOver(prisma).resolveMcpToken('mcp_revoked', { AUTH_ALLOWLIST: ALLOWLIST }),
@@ -194,7 +196,7 @@ test('resolveMcpToken: an expired token resolves to null', async () => {
     scopes: ['tasks:read'],
     expiresAt: new Date(Date.now() - 1000),
     revokedAt: null,
-    user: { githubId: OWNER_GITHUB_ID, allowed: true },
+    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
   });
   assert.equal(
     await serviceOver(prisma).resolveMcpToken('mcp_expired', { AUTH_ALLOWLIST: ALLOWLIST }),
@@ -213,14 +215,14 @@ test('resolveMcpToken: a de-allowlisted OWNER is rejected on the next call (allo
     scopes: ['tasks:read'],
     expiresAt: null,
     revokedAt: null,
-    user: { githubId: OWNER_GITHUB_ID, allowed: true },
+    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
   });
   const revoked = makePrisma({
     id: 'tok-5',
     scopes: ['tasks:read'],
     expiresAt: null,
     revokedAt: null,
-    user: { githubId: OWNER_GITHUB_ID, allowed: false },
+    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: false },
   });
   assert.ok(await serviceOver(allowed).resolveMcpToken('mcp_x'));
   assert.equal(await serviceOver(revoked).resolveMcpToken('mcp_x'), null);
@@ -245,6 +247,7 @@ const VALID_AUTHINFO: McpAuthInfo = {
   expiresAt: Math.floor(Date.now() / 1000) + 3600,
   resource: MCP_RESOURCE_URI,
   ownerGithubId: OWNER_GITHUB_ID,
+  ownerId: OWNER_ID,
 };
 
 test('guard: an mcp_ bearer presented to a non-/mcp route resolves to an `mcp` machine principal carrying scopes (prefix-routed, never session)', async () => {

@@ -20,15 +20,23 @@ import type { ForceFailCause } from './audit-mapping';
  * rejected promise can never surface in the transition path.
  */
 export interface AuditRecorderPort {
-  /** Record `task.created`, attributed to the GitHub-identity user when known. */
-  recordTaskCreated(taskId: string, githubId?: number): Promise<void>;
+  /**
+   * Record `task.created`, attributed to the acting account when known. `userId`
+   * is the account PRIMARY KEY (`users.id`) — present for BOTH GitHub and LOCAL
+   * (password/OTP) accounts (fix-local-account-task-attribution), so a local
+   * account's task is owner-attributed and its stored Codex credential resolves
+   * at run time. Omitted only for a truly identity-less principal
+   * (machine/legacy), which is then system-attributed.
+   */
+  recordTaskCreated(taskId: string, userId?: string): Promise<void>;
   /**
    * Record a lifecycle transition event for `status` (no-op for `pending`). The
    * operator-driven `task.cancelled` terminal flows through here too —
    * `recordTransition(id, 'cancelled')` emits the `task.cancelled` event — so no
-   * dedicated cancel method is needed.
+   * dedicated cancel method is needed. `userId` is the account PRIMARY KEY
+   * (present for local + GitHub accounts), attributed when known.
    */
-  recordTransition(taskId: string, status: TaskStatus, githubId?: number): Promise<void>;
+  recordTransition(taskId: string, status: TaskStatus, userId?: string): Promise<void>;
   /** Record a force-fail naming its cause (deadline / idle / circuit_breaker). */
   recordForceFailed(taskId: string, cause: ForceFailCause): Promise<void>;
   /**

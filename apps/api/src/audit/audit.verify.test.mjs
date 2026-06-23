@@ -236,17 +236,18 @@ function throwingPrisma() {
 
 test('6.2 recordTaskCreated swallows a persistence failure (never throws)', async () => {
   const svc = new AuditService(throwingPrisma());
-  // would reject if the failure propagated; resolves because it is best-effort
-  await assert.doesNotReject(() => svc.recordTaskCreated(randomUUID(), 123));
+  // would reject if the failure propagated; resolves because it is best-effort.
+  // The attribution arg is the account primary key (fix-local-account-task-attribution).
+  await assert.doesNotReject(() => svc.recordTaskCreated(randomUUID(), 'acct-1'));
 });
 
 test('6.2 recordTransition (incl. cancelled) / recordForceFailed are all best-effort', async () => {
   const svc = new AuditService(throwingPrisma());
-  await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'running', 1));
+  await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'running', 'acct-1'));
   await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'completed'));
   // The operator-stop terminal flows through recordTransition('cancelled') — the
   // same path stop() uses — so this covers the cancelled audit's best-effort rule.
-  await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'cancelled', 7));
+  await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'cancelled', 'acct-7'));
   for (const cause of ['deadline', 'idle', 'circuit_breaker', 'abnormal_exit']) {
     await assert.doesNotReject(() => svc.recordForceFailed(randomUUID(), cause));
   }
@@ -262,5 +263,30 @@ test('6.2 a `pending` transition is a no-op and still never throws', async () =>
     },
     user: { findUnique: async () => null },
   });
-  await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'pending', 1));
+  await assert.doesNotReject(() => svc.recordTransition(randomUUID(), 'pending', 'acct-1'));
+});
+
+test('6.2 attribution resolves the account id DIRECTLY (no githubId reverse lookup)', async () => {
+  // fix-local-account-task-attribution: the recorder writes AuditEvent.userId from
+  // the supplied account primary key via a `where:{id}` existence check — NOT a
+  // `where:{githubId}` reverse lookup (which a local account could never satisfy).
+  let whereSeen;
+  let storedUserId;
+  const svc = new AuditService({
+    user: {
+      findUnique: async ({ where }) => {
+        whereSeen = where;
+        return where.id === 'local-acct-9' ? { id: 'local-acct-9' } : null;
+      },
+    },
+    auditEvent: {
+      create: async ({ data }) => {
+        storedUserId = data.userId;
+        return data;
+      },
+    },
+  });
+  await svc.recordTaskCreated(randomUUID(), 'local-acct-9');
+  assert.deepEqual(whereSeen, { id: 'local-acct-9' }, 'resolves by account id, not githubId');
+  assert.equal(storedUserId, 'local-acct-9', 'AuditEvent.userId is the account FK for a local account');
 });

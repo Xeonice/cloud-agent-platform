@@ -5,11 +5,15 @@
  * stub services and fabricated principals attached the way the AuthGuard attaches
  * them (`req.operatorPrincipal`). Covers the two route-integration behaviors:
  *
- *   1. ATTRIBUTION (6.1): the controller threads the acting operator's GitHub id
- *      into the service —
+ *   1. ATTRIBUTION (6.1; fix-local-account-task-attribution): the controller
+ *      threads the acting operator's ACCOUNT primary key (`user.id`) into the
+ *      service —
  *        - an api-key principal's task create/stop attributes to the KEY OWNER;
  *        - a session principal's task create/stop attributes to the SESSION user;
- *        - the legacy shared-token principal (no GitHub identity) threads
+ *        - a LOCAL account (no GitHub identity, `githubId === null`) STILL
+ *          attributes to its `user.id` — NOT collapsed to undefined — so its stored
+ *          Codex credential resolves at run time;
+ *        - the legacy shared-token principal (NO account identity at all) threads
  *          `undefined` (system attribution), unchanged.
  *
  *   2. SCOPE GATING (6.2): a principal that carries scopes is admitted to a
@@ -67,7 +71,27 @@ function sessionPrincipal(githubId: number): OperatorPrincipal {
   return { kind: 'session', user: makeSessionUser(githubId) };
 }
 
-/** The legacy shared-token operator — no GitHub identity, no scopes. */
+/**
+ * A LOCAL account (password/OTP) session principal — `githubId === null` but a
+ * real account `id`. Carries NO scopes (allow-all), like any session principal.
+ */
+function localSessionPrincipal(userId: string): OperatorPrincipal {
+  return {
+    kind: 'session',
+    user: {
+      id: userId,
+      githubId: null,
+      login: null,
+      name: 'Local Operator',
+      avatarUrl: null,
+      allowed: true,
+      role: 'member',
+      mustChangePassword: false,
+    },
+  };
+}
+
+/** The legacy shared-token operator — no account identity, no scopes. */
 function legacyPrincipal(): OperatorPrincipal {
   return { kind: 'legacy-token', user: null };
 }
@@ -88,22 +112,24 @@ function reqWith(principal: OperatorPrincipal | undefined): AuthenticatedRequest
 }
 
 /**
- * Stub TasksService recording the `githubId` create/stop were called with, so the
- * attribution threaded by the controller (6.1) is asserted at the service seam.
+ * Stub TasksService recording the account `userId` create/stop were called with,
+ * so the attribution threaded by the controller (6.1) is asserted at the service
+ * seam (fix-local-account-task-attribution: the threaded value is the account
+ * primary key, NOT the numeric githubId).
  */
 function makeTasksService(): {
   service: TasksService;
-  calls: { create: Array<number | undefined>; stop: Array<number | undefined>; list: number };
+  calls: { create: Array<string | undefined>; stop: Array<string | undefined>; list: number };
 } {
-  const calls = { create: [] as Array<number | undefined>, stop: [] as Array<number | undefined>, list: 0 };
+  const calls = { create: [] as Array<string | undefined>, stop: [] as Array<string | undefined>, list: 0 };
   const taskRow = { id: TASK_ID, repoId: REPO_ID } as unknown as TaskResponse;
   const service = {
-    async create(_repoId: string, _body: unknown, githubId?: number) {
-      calls.create.push(githubId);
+    async create(_repoId: string, _body: unknown, userId?: string) {
+      calls.create.push(userId);
       return taskRow;
     },
-    async stop(_id: string, githubId?: number) {
-      calls.stop.push(githubId);
+    async stop(_id: string, userId?: string) {
+      calls.stop.push(userId);
       return taskRow;
     },
     async list() {
@@ -151,7 +177,11 @@ test('an api-key-created task attributes to the key owner', async () => {
     reqWith(apiKeyPrincipal(KEY_OWNER_GITHUB_ID, ['tasks:write'])),
   );
 
-  assert.deepEqual(calls.create, [KEY_OWNER_GITHUB_ID], 'create attributes to the api-key owner');
+  assert.deepEqual(
+    calls.create,
+    [`user-${KEY_OWNER_GITHUB_ID}`],
+    'create attributes to the api-key owner account id',
+  );
 });
 
 test('a session-created task attributes to the session user', async () => {
@@ -160,7 +190,26 @@ test('a session-created task attributes to the session user', async () => {
 
   await ctrl.create(REPO_ID, CREATE_BODY, reqWith(sessionPrincipal(SESSION_GITHUB_ID)));
 
-  assert.deepEqual(calls.create, [SESSION_GITHUB_ID], 'create attributes to the session user');
+  assert.deepEqual(
+    calls.create,
+    [`user-${SESSION_GITHUB_ID}`],
+    'create attributes to the session user account id',
+  );
+});
+
+test('a LOCAL account (githubId=null) attributes to its account id (NOT undefined)', async () => {
+  const { service, calls } = makeTasksService();
+  const ctrl = new TasksController(service);
+
+  // The regression this fix closes: a local account (no GitHub identity) must
+  // still be owner-attributed by its `user.id`, so its `task.created` audit event
+  // carries the owner FK and the owner-scoped Codex credential resolves at run
+  // time — instead of collapsing to undefined and silently degrading to env.
+  await ctrl.create(REPO_ID, CREATE_BODY, reqWith(localSessionPrincipal('local-acct-1')));
+  await ctrl.stop(TASK_ID, reqWith(localSessionPrincipal('local-acct-1')));
+
+  assert.deepEqual(calls.create, ['local-acct-1'], 'a local account create attributes to its account id');
+  assert.deepEqual(calls.stop, ['local-acct-1'], 'a local account stop attributes to its account id');
 });
 
 test('an api-key stop attributes to the key owner', async () => {
@@ -169,7 +218,11 @@ test('an api-key stop attributes to the key owner', async () => {
 
   await ctrl.stop(TASK_ID, reqWith(apiKeyPrincipal(KEY_OWNER_GITHUB_ID, ['tasks:write'])));
 
-  assert.deepEqual(calls.stop, [KEY_OWNER_GITHUB_ID], 'stop attributes to the api-key owner');
+  assert.deepEqual(
+    calls.stop,
+    [`user-${KEY_OWNER_GITHUB_ID}`],
+    'stop attributes to the api-key owner account id',
+  );
 });
 
 test('a session stop attributes to the session user', async () => {
@@ -178,16 +231,24 @@ test('a session stop attributes to the session user', async () => {
 
   await ctrl.stop(TASK_ID, reqWith(sessionPrincipal(SESSION_GITHUB_ID)));
 
-  assert.deepEqual(calls.stop, [SESSION_GITHUB_ID], 'stop attributes to the session user');
+  assert.deepEqual(
+    calls.stop,
+    [`user-${SESSION_GITHUB_ID}`],
+    'stop attributes to the session user account id',
+  );
 });
 
-test('the legacy shared-token principal threads no GitHub id (system attribution)', async () => {
+test('the legacy shared-token principal threads no account id (system attribution)', async () => {
   const { service, calls } = makeTasksService();
   const ctrl = new TasksController(service);
 
   await ctrl.create(REPO_ID, CREATE_BODY, reqWith(legacyPrincipal()));
 
-  assert.deepEqual(calls.create, [undefined], 'a principal with no GitHub identity threads undefined');
+  assert.deepEqual(
+    calls.create,
+    [undefined],
+    'a principal with NO account identity (machine/legacy) threads undefined',
+  );
 });
 
 // ---------------------------------------------------------------------------

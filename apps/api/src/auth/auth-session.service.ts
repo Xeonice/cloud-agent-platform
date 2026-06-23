@@ -57,12 +57,22 @@ export interface McpAuthInfo {
   /**
    * The owning operator's immutable GitHub numeric id (for the `mcp` principal).
    * NULLABLE (add-private-account-identity): a token owned by a LOCAL account
-   * (password/OTP, no github identity) carries `null`. It is best-effort AUDIT
-   * ATTRIBUTION only — `githubIdFromExtra` already degrades a non-number to
-   * `undefined`, so a missing github id never blocks a token's MCP authority
-   * (that authority is the `allowed` re-check + scopes, not this id).
+   * (password/OTP, no github identity) carries `null`. Best-effort GitHub-keyed
+   * attribution only — never blocks a token's MCP authority (that authority is the
+   * `allowed` re-check + scopes, not this id). Task ownership now flows through
+   * {@link ownerId} (the account primary key) instead, so a local account is
+   * attributed too (fix-local-account-task-attribution).
    */
   readonly ownerGithubId: number | null;
+  /**
+   * The owning operator's ACCOUNT primary key (`users.id`)
+   * (fix-local-account-task-attribution). Present for BOTH local (password/OTP)
+   * and GitHub accounts, so the MCP attribution chain threads it (under
+   * `AuthInfo.extra.userId`) into `TasksService.create/stop` — letting a LOCAL
+   * account's MCP task be owner-attributed and its stored Codex credential resolve
+   * at run time (the GitHub numeric id alone cannot, a local account lacking one).
+   */
+  readonly ownerId: string;
 }
 
 /**
@@ -550,6 +560,9 @@ export class AuthSessionService {
         : MCP_NON_EXPIRING_AUTHINFO_EXPIRES_AT,
       resource: MCP_RESOURCE_URI,
       ownerGithubId: record.user.githubId,
+      // The account primary key — present for local + GitHub accounts — threaded
+      // for owner-attribution (fix-local-account-task-attribution).
+      ownerId: record.user.id,
     };
   }
 }
