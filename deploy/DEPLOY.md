@@ -405,9 +405,16 @@ two files, fill `.env`, run).
    conventional-commit history, and keeps an open **"chore: release vX.Y.Z" PR** with the
    machine-computed next version + `CHANGELOG.md`. To ship: **merge that release PR** → it
    tags `vX.Y.Z` + publishes the GitHub Release → the existing `release.yml` builds/pushes the
-   GHCR set and attaches the run package. Then bump `CAP_VERSION` (Dokploy env / your shell)
-   and re-pull + re-up. (The in-app one-click self-update button, §12, is for plain-compose
-   self-hosters NOT managed by a deploy platform; on Dokploy you update via Dokploy + `CAP_VERSION`.)
+   GHCR set and attaches the run package. Then bump `CAP_VERSION` and re-pull + re-up.
+
+   > ⚠️ **On a resident stack, upgrade with `scripts/upgrade.sh vX.Y.Z` — NOT a bare
+   > `docker compose pull api`.** An upgrade MUST stage BOTH `cap-api` AND `cap-aio-sandbox`
+   > at the new tag; pulling only `api` leaves the sandbox image missing and 404s every new
+   > task's provision (the v0.20.0 incident). `scripts/upgrade.sh` forces both services +
+   > pins `.env` + runs a provision smoke; `scripts/release.sh vX.Y.Z` is the matching tag +
+   > three-image-verify tail. The in-app one-click self-update button (§12) already stages
+   > both images and is for plain-compose self-hosters; on Dokploy you update via Dokploy +
+   > `CAP_VERSION` — but make sure the sandbox image is pulled too.
 
    > ⚠️ **release-please MUST publish the Release under a non-`GITHUB_TOKEN` identity** (a
    > GitHub App token [recommended] or a fine-grained PAT) — a Release created by the built-in
