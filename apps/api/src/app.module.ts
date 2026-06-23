@@ -33,6 +33,7 @@ import { OtpModule } from './auth-otp/otp.module';
 import { AccountsModule } from './accounts/accounts.module';
 import { AdminSeedModule } from './admin-seed/admin-seed.module';
 import { PasswordModule } from './auth-password/password.module';
+import { SmtpEnvMigrationModule } from './mail/smtp-env-migration.module';
 
 /**
  * Root application module.
@@ -156,6 +157,16 @@ import { PasswordModule } from './auth-password/password.module';
     AccountsModule,
     AdminSeedModule,
     PasswordModule,
+    // add-smtp-config-ui (backend-storage task 2.3): the self-contained,
+    // order-independent one-time env→DB SMTP migration boot seed (its OWN single
+    // `onApplicationBootstrap` hook in its OWN module, NOT spread across other
+    // providers, per the prior cross-bootstrap outage — exactly mirroring
+    // `AdminSeedModule`). On first boot with the env `SMTP_*` configured, no DB
+    // config present, and an encryption key available, it copies the env SMTP
+    // into the singleton DB config (encrypting the password) and stamps the
+    // marker so it never re-seeds; no key ⇒ skip (env fallback continues). It
+    // never throws into boot.
+    SmtpEnvMigrationModule,
     // remote-mcp-server (integration, task 7.2): the two new feature modules,
     // wired here in the ROOT module — the one `app.module.ts` edit both backend
     // feature tracks would otherwise both touch, so it is isolated to the

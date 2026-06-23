@@ -578,10 +578,62 @@ model SystemSettings {
   /// or the process restarts (which regenerates it while this stays null).
   adminRevealConsumedAt DateTime? @map("admin_reveal_consumed_at")
 
+  /// One-time env→DB SMTP migration marker (add-smtp-config-ui). Null means the
+  /// boot seed has NOT yet copied the `SMTP_*` env into the singleton
+  /// {@link SmtpConfig} row; once stamped the migration NEVER re-seeds — so an
+  /// admin who later edits or deletes the DB config is not overwritten on a
+  /// subsequent boot. Mirrors the single-boot discipline of
+  /// `adminRevealConsumedAt`.
+  smtpEnvMigratedAt DateTime? @map("smtp_env_migrated_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("system_settings")
+}
+
+/// Singleton deployment-level SMTP configuration (add-smtp-config-ui).
+///
+/// SMTP is ONE outbound server for the whole deployment, so this is a GLOBAL
+/// singleton (a fixed-id upsert, like {@link SystemSettings}) — explicitly NOT
+/// keyed by `userId` (unlike {@link CodexCredential}). Outbound mail resolves
+/// this DB row FIRST and falls back to the `SMTP_*` env when it is absent, so
+/// existing env deployments are unaffected until an admin saves a config.
+///
+/// Secret discipline (mirrors {@link CodexCredential}): the password is persisted
+/// ONLY as `passCiphertext` (ENCRYPTED at rest via the shared `secret-storage`
+/// envelope — ciphertext only, NEVER plaintext) alongside `passLast4`, a masked
+/// suffix kept solely for display. The non-secret host/port/user/from are stored
+/// in the clear. A read NEVER returns the plaintext password.
+model SmtpConfig {
+  /// Fixed singleton id (the service upserts on a constant; no default — the row
+  /// is only ever created by the fixed-id upsert).
+  id String @id
+
+  /// SMTP host (non-secret), e.g. `smtp.resend.com`.
+  host String
+
+  /// SMTP port (non-secret), e.g. `465`.
+  port Int
+
+  /// SMTP username (non-secret), e.g. `resend`.
+  user String
+
+  /// Sender address used as the `From:` header (non-secret).
+  from String
+
+  /// The SMTP password ENCRYPTED at rest — ciphertext only, never plaintext. Null
+  /// when no password is stored.
+  passCiphertext String? @map("pass_ciphertext")
+
+  /// Masked suffix of the stored password (last 4 chars) for display only. Null
+  /// when no password is stored.
+  passLast4 String? @map("pass_last4")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("smtp_config")
 }
 
 /// Per-account Codex execution credential (account-settings spec).

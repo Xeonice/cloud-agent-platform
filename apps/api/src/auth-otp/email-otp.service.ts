@@ -82,7 +82,7 @@ export class EmailOtpService {
     }
 
     // Fail closed when SMTP is unconfigured: never pretend a code went out.
-    if (!this.mail.isConfigured(env)) {
+    if (!(await this.mail.isConfigured(env))) {
       return;
     }
 

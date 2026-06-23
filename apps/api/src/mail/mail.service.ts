@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { createTransport, type Transporter } from 'nodemailer';
+import { PrismaService } from '../prisma/prisma.service';
+import { resolveDbSmtpConfig } from './smtp-config.service';
 
 /**
  * SMTP env var names, centralised so the service, the OTP capability gate, and
@@ -28,13 +30,22 @@ export interface MailMessage {
   readonly html?: string;
 }
 
-/** The fully-resolved SMTP transport config — only ever non-null when configured. */
-interface ResolvedSmtpConfig {
+/**
+ * The fully-resolved SMTP transport config — only ever non-null when configured.
+ *
+ * `source` records WHICH config won the DB-first/env-fallback resolution (D3): a
+ * stored DB row (`'db'`) takes precedence; the unprefixed `SMTP_*` env (`'env'`)
+ * is the fallback that keeps existing env-only deployments working unchanged. It
+ * is diagnostic only — the transport itself is the same `nodemailer` path either
+ * way — so the active source is observable without leaking the password.
+ */
+export interface ResolvedSmtpConfig {
   readonly host: string;
   readonly port: number;
   readonly user: string;
   readonly pass: string;
   readonly from: string;
+  readonly source: 'db' | 'env';
 }
 
 /**
@@ -61,33 +72,54 @@ export function resolveSmtpConfig(
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     return null;
   }
-  return { host, port, user, pass, from };
+  return { host, port, user, pass, from, source: 'env' };
 }
 
 /**
- * A named outbound mail transport channel: how to resolve its SMTP config from the
- * environment, and which recipients it handles. The recipient-routing seam (add a
- * China channel later without touching the OTP send path) lives here.
+ * Resolves the STORED DB SMTP config (decrypting the password), or `null` when no
+ * row exists / no key is available. Bound to a Prisma instance + env by the caller
+ * (the `smtp-config.service` free function `resolveDbSmtpConfig`), this is the seam
+ * the default channel reads FIRST so a console-saved config takes precedence over
+ * the env fallback (D3). Injected (rather than imported at the channel) so the
+ * routing/gating functions stay unit-testable with a fake DB resolver and no DB.
+ */
+export type DbSmtpConfigResolver = () => Promise<ResolvedSmtpConfig | null>;
+
+/** A DB resolver that always resolves `null` — the env-only path (no DB row). */
+const NO_DB_CONFIG: DbSmtpConfigResolver = async () => null;
+
+/**
+ * A named outbound mail transport channel: how to resolve its SMTP config (DB
+ * first, then env), and which recipients it handles. The recipient-routing seam
+ * (add a China channel later without touching the OTP send path) lives here.
  */
 interface TransportChannel {
   readonly name: string;
-  /** Resolve this channel's SMTP config from env (null = not configured). */
-  readonly resolve: (env: NodeJS.ProcessEnv) => ResolvedSmtpConfig | null;
+  /**
+   * Resolve this channel's SMTP config: the DB-stored config first (via the
+   * injected `resolveDb`), falling back to the env tuple. `null` = not configured.
+   */
+  readonly resolve: (
+    resolveDb: DbSmtpConfigResolver,
+    env: NodeJS.ProcessEnv,
+  ) => Promise<ResolvedSmtpConfig | null>;
   /** True when this channel should handle `recipient`. The default channel matches all. */
   readonly matches: (recipient: string) => boolean;
 }
 
 /**
- * The ordered transport channels. TODAY only the DEFAULT channel (the unprefixed
- * `SMTP_*` tuple), which matches every recipient — so behavior is identical to a single
- * transport. A future China channel (e.g. Aliyun DirectMail) would PREPEND a channel
- * whose `matches` tests the recipient suffix (e.g. `@qq.com`/`@163.com`/`@126.com`) and
- * whose `resolve` reads a prefixed env tuple — without touching {@link MailService.sendMail}.
+ * The ordered transport channels. TODAY only the DEFAULT channel, which matches
+ * every recipient — so behavior is identical to a single transport. Its config is
+ * resolved DB-FIRST (a console-saved row) then falls back to the unprefixed
+ * `SMTP_*` env tuple (D3), so existing env-only deployments are unchanged until an
+ * admin saves a DB config. A future China channel (e.g. Aliyun DirectMail) would
+ * PREPEND a channel whose `matches` tests the recipient suffix
+ * (e.g. `@qq.com`/`@163.com`/`@126.com`) — without touching {@link MailService.sendMail}.
  */
 const TRANSPORT_CHANNELS: readonly TransportChannel[] = [
   {
     name: 'default',
-    resolve: (env) => resolveSmtpConfig(env),
+    resolve: async (resolveDb, env) => (await resolveDb()) ?? resolveSmtpConfig(env),
     matches: () => true,
   },
 ];
@@ -98,14 +130,19 @@ const TRANSPORT_CHANNELS: readonly TransportChannel[] = [
  * recipient, so an unmatched address falls back to it; returns `null` only when NO
  * channel is configured (fail-closed). `recipient` is unused while a single default
  * channel is registered, but is the seam a future per-suffix channel reads.
+ *
+ * DB-FIRST/ENV-FALLBACK (D3): the default channel resolves the stored DB config via
+ * `resolveDb` first, then the env tuple. `resolveDb` is injected (defaults to the
+ * no-DB resolver) so the routing stays unit-testable without a DB.
  */
-export function resolveTransportFor(
+export async function resolveTransportFor(
   recipient: string,
+  resolveDb: DbSmtpConfigResolver = NO_DB_CONFIG,
   env: NodeJS.ProcessEnv = process.env,
-): ResolvedSmtpConfig | null {
+): Promise<ResolvedSmtpConfig | null> {
   for (const channel of TRANSPORT_CHANNELS) {
     if (channel.matches(recipient)) {
-      const config = channel.resolve(env);
+      const config = await channel.resolve(resolveDb, env);
       if (config) {
         return config;
       }
@@ -115,23 +152,33 @@ export function resolveTransportFor(
 }
 
 /**
- * True when at least one mail transport is configured. The OTP capability flag
- * (`oauth-config.isOtpAuthEnabled`) consumes THIS so the advertised availability
- * matches what {@link MailService.sendMail} can actually do. With only the default
- * channel registered this is exactly "the unprefixed `SMTP_*` tuple is configured".
+ * True when at least one mail transport is configured (DB config OR env). The OTP
+ * capability flag (`oauth-config.isOtpAuthEnabled`) consumes THIS so the advertised
+ * availability matches what {@link MailService.sendMail} can actually do — and is
+ * now true when EITHER a console-saved DB config OR the `SMTP_*` env is present
+ * (D7). `resolveDb` is injected (defaults to the no-DB resolver) for testability.
  */
-export function isSmtpConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return TRANSPORT_CHANNELS.some((channel) => channel.resolve(env) !== null);
+export async function isSmtpConfigured(
+  resolveDb: DbSmtpConfigResolver = NO_DB_CONFIG,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<boolean> {
+  for (const channel of TRANSPORT_CHANNELS) {
+    if ((await channel.resolve(resolveDb, env)) !== null) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
  * Thin SMTP mailer wrapping `nodemailer` (add-private-account-identity, task 5.1).
  *
- * This is the SINGLE outbound-email path. It is configured ENTIRELY by the
- * `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` environment
- * and exposes its configured-ness as a capability ({@link isConfigured}) so the
- * OTP login method can be reported unavailable — and fail closed — when SMTP is
- * unset (spec "OTP is unavailable when SMTP is unconfigured").
+ * This is the SINGLE outbound-email path. Its transport is resolved DB-FIRST (a
+ * console-saved `SmtpConfig` row) and falls back to the `SMTP_HOST` / `SMTP_PORT`
+ * / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` environment (D3), and it exposes its
+ * configured-ness as a capability ({@link isConfigured}) so the OTP login method
+ * can be reported unavailable — and fail closed — when NEITHER source is
+ * configured (spec "OTP is unavailable when neither DB nor env SMTP is configured").
  *
  * Two load-bearing disciplines:
  *  - FAIL CLOSED: {@link sendMail} throws when SMTP is not fully configured. A
@@ -153,13 +200,31 @@ export class MailService {
   private cached: { fingerprint: string; transporter: Transporter } | null = null;
 
   /**
-   * True when SMTP is fully configured. Delegates to the shared
-   * {@link isSmtpConfigured} so the OTP capability flag (task 2.8) and this gate
-   * never diverge. Reading the live env keeps it consistent with the runtime
-   * fail-closed posture of the rest of the auth surface.
+   * `PrismaService` is injected so the mailer can resolve the DB-stored SMTP
+   * config DB-first (D4). `PrismaModule` is `@Global`, so this dependency needs NO
+   * `mail.module.ts` edit. Bound into the {@link DbSmtpConfigResolver} the routing
+   * functions read first, falling back to the env tuple.
    */
-  isConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-    return isSmtpConfigured(env);
+  constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Binds {@link resolveDbSmtpConfig} (the `smtp-config.service` free function) to
+   * this instance's Prisma client + the given env, producing the DB-first resolver
+   * the routing/gating functions read before the env fallback.
+   */
+  private dbResolver(env: NodeJS.ProcessEnv): DbSmtpConfigResolver {
+    return () => resolveDbSmtpConfig(this.prisma, env);
+  }
+
+  /**
+   * True when SMTP is fully configured (DB config OR env). Delegates to the shared
+   * {@link isSmtpConfigured} so the OTP capability flag (task 2.8) and this gate
+   * never diverge. Now ASYNC because the DB config is resolved first (D4); reading
+   * the live env keeps the env fallback consistent with the runtime fail-closed
+   * posture of the rest of the auth surface.
+   */
+  async isConfigured(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+    return isSmtpConfigured(this.dbResolver(env), env);
   }
 
   /**
@@ -171,8 +236,9 @@ export class MailService {
    * error level and re-thrown so the operator sees a real delivery failure.
    */
   async sendMail(message: MailMessage, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-    // Recipient-routing seam: pick the transport for this recipient (default today).
-    const config = resolveTransportFor(message.to, env);
+    // Recipient-routing seam: pick the transport for this recipient (DB-first,
+    // env-fallback; default channel today).
+    const config = await resolveTransportFor(message.to, this.dbResolver(env), env);
     if (!config) {
       // Fail closed: do not pretend a message was sent when no transport exists.
       throw new Error('SMTP is not configured (set SMTP_HOST/PORT/USER/PASS/FROM)');

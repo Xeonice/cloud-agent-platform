@@ -144,7 +144,7 @@ function makeFakePrisma(users: UserRecord[]): {
 function makeFakeMail(configured: boolean): { mail: MailService; sent: { to: string; text: string }[] } {
   const sent: { to: string; text: string }[] = [];
   const mail = {
-    isConfigured: () => configured,
+    isConfigured: async () => configured,
     sendMail: async (message: { to: string; subject: string; text: string }) => {
       if (!configured) throw new Error('SMTP not configured');
       sent.push({ to: message.to, text: message.text });

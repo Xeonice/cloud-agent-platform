@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.18.1...v0.19.0) (2026-06-23)
+
+
+### Features
+
+* **settings:** admin-configurable Resend SMTP in the console ([#52](https://github.com/Xeonice/cloud-agent-platform/issues/52)) ([302b3b9](https://github.com/Xeonice/cloud-agent-platform/commit/302b3b96c58688ab23eecb14e7ad4685dedf0db8))
+
+
 ## [0.18.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.18.0...v0.18.1) (2026-06-23)
 
 

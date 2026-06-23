@@ -15,6 +15,8 @@ import type {
 } from '@cap/contracts';
 import { GitHubOAuthService } from './github-oauth.service';
 import { AuthSessionService } from './auth-session.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { resolveDbSmtpConfig } from '../mail/smtp-config.service';
 import {
   readOAuthAppConfig,
   readSessionSecret,
@@ -65,6 +67,9 @@ export class GitHubOAuthController {
   constructor(
     private readonly githubOAuth: GitHubOAuthService,
     private readonly authSession: AuthSessionService,
+    // `PrismaService` (PrismaModule is @Global) lets the capability computation
+    // resolve the DB-stored SMTP config DB-first when reporting `otpAuthEnabled`.
+    private readonly prisma: PrismaService,
   ) {}
 
   /**
@@ -293,7 +298,7 @@ export class GitHubOAuthController {
    */
   @Get('session')
   async session(@Req() req: Request, @Res() res: Response): Promise<void> {
-    const capabilities = GitHubOAuthController.authCapabilities();
+    const capabilities = await this.authCapabilities();
     const token = readCookie(req.headers.cookie, SESSION_COOKIE_NAME);
     const user = await this.authSession.resolveSession(token);
     if (user === null) {
@@ -311,15 +316,20 @@ export class GitHubOAuthController {
   /**
    * The auth capability flags (2.8 / D11) the login modal reads:
    *   - `passwordAuthEnabled` — render the email+password method;
-   *   - `otpAuthEnabled` — render the email-verification-code method (true only
-   *     when SMTP is configured).
+   *   - `otpAuthEnabled` — render the email-verification-code method (true when
+   *     SMTP is configured via EITHER the console-saved DB config OR the env, D7).
    * GitHub OAuth availability is reported separately by the existing
    * OAuth-config readiness; these two flags cover the NEW local methods.
+   *
+   * ASYNC (D4): `otpAuthEnabled` resolves the DB-stored SMTP config DB-first
+   * (binding {@link resolveDbSmtpConfig} to this controller's Prisma client) before
+   * falling back to the env, so enabling SMTP in the console flips the advertised
+   * availability without an env change.
    */
-  private static authCapabilities(): AuthCapabilities {
+  private async authCapabilities(): Promise<AuthCapabilities> {
     return {
       passwordAuthEnabled: isPasswordAuthEnabled(),
-      otpAuthEnabled: isOtpAuthEnabled(),
+      otpAuthEnabled: await isOtpAuthEnabled(() => resolveDbSmtpConfig(this.prisma)),
       // GitHub OAuth is offerable only when the OAuth app credentials are
       // configured (otherwise the authorize endpoint fails closed); the login
       // modal hides the GitHub method when this is false.

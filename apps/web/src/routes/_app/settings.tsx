@@ -44,6 +44,7 @@ import type {
 } from "@cap/contracts";
 import {
   apiKeysQuery,
+  authSessionQuery,
   claudeCredentialQuery,
   codexCredentialQuery,
   forgeCredentialsQuery,
@@ -52,6 +53,7 @@ import {
   queryKeys,
   reposQuery,
   settingsQuery,
+  smtpConfigQuery,
 } from "@/lib/api/queries";
 import { isCapable } from "@/lib/api/capabilities";
 import {
@@ -71,6 +73,8 @@ import { CodexApiKeyDialog } from "@/components/settings/codex-api-key-dialog";
 import { ApiKeysCard } from "@/components/settings/api-keys-card";
 import { McpServerCard } from "@/components/settings/mcp-server-card";
 import { ForgeCredentialsCard } from "@/components/settings/forge-credentials-card";
+import { SmtpConfigCard } from "@/components/settings/smtp-config-card";
+import { isAdminSession } from "@/components/shell/update-banner";
 
 export const Route = createFileRoute("/_app/settings")({
   loader: async ({ context }) => {
@@ -85,6 +89,10 @@ export const Route = createFileRoute("/_app/settings")({
       context.queryClient.ensureQueryData(mcpServerEnabledQuery()),
       context.queryClient.ensureQueryData(forgeCredentialsQuery()),
       context.queryClient.ensureQueryData(mcpTokensQuery()),
+      // SMTP config (add-smtp-config-ui) — the admin-only Resend section reads
+      // the masked config + the session (for the admin gate) through the seam.
+      context.queryClient.ensureQueryData(smtpConfigQuery()),
+      context.queryClient.ensureQueryData(authSessionQuery()),
     ]);
   },
   component: SettingsPage,
@@ -97,6 +105,10 @@ function SettingsPage() {
   const { data: cred } = useQuery(codexCredentialQuery());
   const { data: claudeCred } = useQuery(claudeCredentialQuery());
   const { data: apiKeys } = useQuery(apiKeysQuery());
+  // The SMTP section is admin-only (UX gate; the api re-enforces admin on every
+  // SMTP endpoint regardless). Read the session for `isAdminSession`.
+  const { data: session } = useQuery(authSessionQuery());
+  const isAdmin = isAdminSession(session ?? undefined);
 
   const saveSettings = useMutation(saveSettingsMutation(queryClient));
   const saveCredential = useMutation(saveCodexCredentialMutation(queryClient));
@@ -212,6 +224,16 @@ function SettingsPage() {
         <section id="mcp" className="grid scroll-mt-24 gap-3">
           <McpServerCard />
         </section>
+
+        {/* #smtp: the admin-only 邮件发送（Resend）section — masked status +
+            a Resend-shaped config dialog (API Key + sender) + 发送测试 + a
+            Resend help link (add-smtp-config-ui). Mounted admin-only; the api
+            independently enforces admin on every SMTP endpoint. */}
+        {isAdmin ? (
+          <section id="smtp" className="grid scroll-mt-24 gap-3">
+            <SmtpConfigCard />
+          </section>
+        ) : null}
       </div>
 
       {/* Codex configuration dialogs */}
