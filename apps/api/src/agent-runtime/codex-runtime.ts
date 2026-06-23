@@ -52,10 +52,13 @@ export class CodexRuntime implements AgentRuntime {
    * `CODEX_LAUNCH_ARGV`. 0.131 non-interactive auto-run:
    * `--ask-for-approval never --sandbox danger-full-access` +
    * `--dangerously-bypass-hook-trust`, run in the cloned workspace via `-C`.
-   * Kept verbatim so the launch line is byte-identical to before the refactor.
+   * `--no-alt-screen` runs the TUI INLINE (normal buffer) so the live xterm keeps a
+   * scrollable history — codex's default alternate screen has NO scrollback by spec,
+   * so operators could not scroll up in the live terminal (codex 0.131 flag:
+   * "inline mode, preserving terminal scrollback history").
    */
   static readonly DEFAULT_CODEX_LAUNCH_ARGV =
-    'codex -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
+    'codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
 
   /** The codex `~/.codex` directory the auth.json is written into. */
   private static readonly CODEX_HOME_DIR = '/home/gem/.codex';

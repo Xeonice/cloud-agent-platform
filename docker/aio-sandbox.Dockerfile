@@ -250,7 +250,7 @@ COPY apps/sandbox-hooks/hooks.json /home/gem/.codex/hooks.json
 # goal PRE-FILLED. The prompt text is NEVER inlined here or into the launch argv
 # (it rides the injected file), keeping it shell-injection-safe and clear of the
 # hook-disabling guard. Do NOT add a positional prompt to this ENV.
-ENV CODEX_LAUNCH_ARGV="codex -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust"
+ENV CODEX_LAUNCH_ARGV="codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust"
 
 RUN chown -R 1000:1000 /home/gem
 
