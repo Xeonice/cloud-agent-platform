@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.20.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.3...v0.20.4) (2026-06-24)
+
+
+### Bug Fixes
+
+* **terminal:** sync terminal-record viewport scroll-area after paced fill ([#57](https://github.com/Xeonice/cloud-agent-platform/issues/57)) ([d2b8850](https://github.com/Xeonice/cloud-agent-platform/commit/d2b88504af90bf244c7b3b0a37b03dca4da5130b))
+
+
 ## [0.20.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.2...v0.20.3) (2026-06-24)
 
 
