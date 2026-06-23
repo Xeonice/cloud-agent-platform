@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.20.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.19.0...v0.20.0) (2026-06-23)
+
+
+### Features
+
+* **console:** OTP login send feedback + 60s resend countdown ([f1ace76](https://github.com/Xeonice/cloud-agent-platform/commit/f1ace76a8e1fbfb743e39d68700390918d8679be))
+
+
+### Bug Fixes
+
+* **settings:** scope per-account settings by account id, not GitHub identity ([c701b4f](https://github.com/Xeonice/cloud-agent-platform/commit/c701b4f204d8ca13813c6ec8e088ec2b6c51a856))
+
+
 ## [0.19.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.18.1...v0.19.0) (2026-06-23)
 
 
