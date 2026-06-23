@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.20.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.1...v0.20.2) (2026-06-23)
+
+
+### Bug Fixes
+
+* **terminal:** recover wide-screen xterm fallback + codex inline scrollback ([ccc85a8](https://github.com/Xeonice/cloud-agent-platform/commit/ccc85a86f8d14e0903f006ea8942d69087150ffc))
+
+
 ## [0.20.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.0...v0.20.1) (2026-06-23)
 
 
