@@ -205,9 +205,12 @@ test('wrapHeadlessDetachedSession appends the exit sentinel inside the single-qu
   // `; echo $? > <sentinel>` is appended AFTER the agent command, inside the tmux word
   assert.match(
     line,
-    /'AGENT_CMD; echo \$\? > \/home\/gem\/\.cap-headless-task-abc\.exit'$/,
+    /'AGENT_CMD; echo \$\? > \/home\/gem\/\.cap-headless-task-abc\.exit'/,
   );
-  // exactly one single-quote PAIR — the appended segment adds no quote (invariant holds)
+  // alternate-screen disabled for the session window so the live view scrolls
+  // (fix-live-terminal-scrollback), appended AFTER the new-session word
+  assert.match(line, /; tmux set-window-option -t tasktask-abc alternate-screen off$/);
+  // exactly one single-quote PAIR — the appended segments add no quote (invariant holds)
   assert.equal((line.match(/'/g) || []).length, 2);
 });
 

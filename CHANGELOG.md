@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.20.5](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.4...v0.20.5) (2026-06-24)
+
+
+### Bug Fixes
+
+* **terminal:** scroll back the running live terminal (tmux alt-screen off + viewport sync) ([#58](https://github.com/Xeonice/cloud-agent-platform/issues/58)) ([ebcfb03](https://github.com/Xeonice/cloud-agent-platform/commit/ebcfb03e5981c394e95010042b84fd770e27f1c4))
+
+
 ## [0.20.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.3...v0.20.4) (2026-06-24)
 
 
