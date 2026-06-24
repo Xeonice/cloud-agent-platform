@@ -42,8 +42,16 @@ API_PORT="${API_PORT:-8080}"
 WEB_PORT="${WEB_PORT:-3000}"
 WITH_WEB="${WITH_WEB:-1}"               # 1 = bring up the in-compose console (localhost-only)
 RUN_SMOKE="${RUN_SMOKE:-0}"            # 1 = create+stop a throwaway task as a provision smoke
-# Where to fetch docker-compose.prod.yml when it is not already on disk.
-RAW_BASE="${CAP_RAW_BASE:-https://raw.githubusercontent.com/Xeonice/cloud-agent-platform/main}"
+# Where to fetch docker-compose.prod.yml when it is not already on disk. The
+# compose-base marker below is replaced at build time by the www injector with the
+# publishing site (so the SITE-SERVED copy fetches the site's own compose asset). The
+# `case` arm restores the raw-GitHub default when the marker was NOT substituted
+# (i.e. the committed repo copy run directly), mirroring install.sh's fallback. A
+# caller-set CAP_RAW_BASE always wins.
+RAW_BASE="${CAP_RAW_BASE:-__CAP_COMPOSE_BASE__}"
+case "$RAW_BASE" in
+  __CAP_COMPOSE_BASE__) RAW_BASE="https://raw.githubusercontent.com/Xeonice/cloud-agent-platform/main" ;;
+esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -172,6 +180,14 @@ until curl -fsS "http://localhost:${API_PORT}/health" >/dev/null 2>&1; do
   sleep 3
 done
 ver="$(curl -fsS "http://localhost:${API_PORT}/version" 2>/dev/null || echo '{}')"
+# Teardown hint must match the profiles that were brought up: a bare `docker compose
+# down` does NOT remove the profile-gated `cap-web`, so include COMPOSE_PROFILES=web
+# when the web console was started.
+if [ "$WITH_WEB" = "1" ]; then
+  DOWN_HINT="COMPOSE_PROFILES=web docker compose -f $COMPOSE down"
+else
+  DOWN_HINT="docker compose -f $COMPOSE down"
+fi
 cat <<EOF
 
 ✅ cap is up (source-free, PREBUILT images, NO OAuth).
@@ -180,7 +196,7 @@ cat <<EOF
    web:   $( [ "$WITH_WEB" = 1 ] && echo "http://localhost:${WEB_PORT}  (localhost-only — prebuilt cap-web VITE_* baked to localhost)" || echo "(web profile off)" )
    auth:  Authorization: Bearer ${TOKEN}
    try:   curl -H "Authorization: Bearer ${TOKEN}" http://localhost:${API_PORT}/tasks
-   down:  docker compose -f $COMPOSE down            (add -v to also drop the volumes)
+   down:  ${DOWN_HINT}            (add -v to also drop the volumes)
 EOF
 
 # ── GATE 8 (optional) — provision smoke: create -> running -> stop ─────────────

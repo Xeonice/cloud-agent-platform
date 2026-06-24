@@ -50,6 +50,22 @@ export const en: SiteContent = {
       ],
       note: "make up stays the source of truth — the one-liner only wraps it. It prints an Authorization: Bearer token you log in with.",
     },
+    prebuilt: {
+      label: "Or: prebuilt images, no OAuth (amd64 / WSL2)",
+      command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
+      inspectLabel: "Inspect the script",
+      caveat:
+        "Pulls prebuilt images and synthesizes a local token — fastest, no GitHub OAuth app, ideal on amd64 / WSL2. This is the legacy-token trial path (host-root via docker.sock; the bundled console is localhost-only), not the OAuth-first production deploy.",
+      manual: {
+        summary: "Prefer to read it first? Run the prebuilt compose by hand:",
+        commands: [
+          "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
+          "# write a .env: AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d",
+        ],
+        note: "The script does the .env synthesis for you (see the inspectable source). Both files are served by this site — no clone needed. amd64 only.",
+      },
+    },
     primaryCta: { label: "Copy install command", href: "#install" },
     secondaryCta: { label: "See how it works", href: "#how-it-works" },
   },
