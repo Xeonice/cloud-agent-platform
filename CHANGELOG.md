@@ -5,7 +5,7 @@
 
 ### Bug Fixes
 
-* **terminal:** strip alt-screen from the live stream for scrollback (tmux-off A reverted) ([42d2958](https://github.com/Xeonice/cloud-agent-platform/commit/42d295897544f79e70529d2d9884cd7312fe0155))
+* **terminal:** strip alt-screen from the live stream for scrollback (tmux-off A reverted) ([#59](https://github.com/Xeonice/cloud-agent-platform/issues/59)) ([42d2958](https://github.com/Xeonice/cloud-agent-platform/commit/42d295897544f79e70529d2d9884cd7312fe0155))
 
 
 ## [0.20.5](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.4...v0.20.5) (2026-06-24)
