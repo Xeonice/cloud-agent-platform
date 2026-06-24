@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.22.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.21.0...v0.22.0) (2026-06-24)
+
+
+### Features
+
+* **deploy:** agent one-click prebuilt-image self-host (no OAuth) ([26bf7ac](https://github.com/Xeonice/cloud-agent-platform/commit/26bf7acde14c232e4ced4fcc2bc203027062e441))
+* **deploy:** agent one-click prebuilt-image self-host (no OAuth) + installer/dev-up fixes ([ecad5a3](https://github.com/Xeonice/cloud-agent-platform/commit/ecad5a39e8ab8f3c9c66291cace2aeb52294b078))
+* **www:** surface quick-deploy.sh as a site-hosted one-liner ([4e815d4](https://github.com/Xeonice/cloud-agent-platform/commit/4e815d4e804f0c997c87e2c58910b3100c90229b))
+
 ## [0.21.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.7...v0.21.0) (2026-06-24)
 
 
