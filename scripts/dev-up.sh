@@ -74,7 +74,8 @@ cat <<EOF
    Notes:
    • cap-aio-sandbox:pinned is BUILD-ONLY here — a cap-aio-<taskId> sandbox is
      provisioned per task when you create one (not a standing container).
-   • The web console is NOT in compose; run it separately (apps/web: pnpm dev),
-     pointed at this API via NEXT_PUBLIC_API_BASE_URL / NEXT_PUBLIC_WS_URL.
+   • The web console ships in compose behind the \`web\` profile (off by default
+     here); enable it with COMPOSE_PROFILES=web, or run it standalone
+     (apps/web: pnpm dev) pointed at this API via VITE_API_BASE_URL / VITE_WS_URL.
    • Tear down: scripts/dev-down.sh   (add -v to also drop the db/workspaces volumes)
 EOF

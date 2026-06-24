@@ -367,6 +367,38 @@ docker compose -f docker-compose.prod.yml up -d            # add: --profile web 
   localhost), so the in-compose console is only correct for a same-host trial; for
   a real domain serve the console elsewhere (e.g. Vercel) or rebuild `cap-web`.
 
+### Or: agent one-click (`scripts/quick-deploy.sh`) — prebuilt images, no OAuth
+
+For an **agent-drivable** bring-up that needs **no GitHub OAuth app** and **no source
+build**, the repo ships `scripts/quick-deploy.sh`. It runs the prebuilt
+`ghcr.io/xeonice/cap-*:${CAP_VERSION}` images via `docker-compose.prod.yml` and
+**synthesizes a legacy-token `.env`** so the published api boots without an OAuth app —
+relying on the fact that the prod compose reads `env_file: .env` and does not redeclare
+the auth secrets:
+
+```bash
+# from a clone (uses the repo's docker-compose.prod.yml), or anywhere (it fetches it):
+CAP_VERSION=v0.21.0 scripts/quick-deploy.sh        # localhost trial, web on :3000
+WITH_WEB=0 scripts/quick-deploy.sh                 # api + postgres only
+CAP_SMOKE_REPO_ID=<id> RUN_SMOKE=1 scripts/quick-deploy.sh   # + provision smoke
+```
+
+It runs as fail-closed **gates**: ① architecture (the prebuilt images are **amd64-only**;
+on arm64 it stops and points you at the from-source `make up`), ② base tooling,
+③ **Docker engine reachable** — with bounded self-heal on WSL (select a live context;
+start Docker Desktop via interop) and, if that fails, the exact human step
+(enable Docker Desktop **WSL Integration** for the distro, or `sudo systemctl restart
+docker`), ④ fetch `docker-compose.prod.yml`, ⑤ idempotently write the legacy-token `.env`
+(an existing `.env` is reused, never overwritten; it stays gitignored), ⑥ `pull` + `up`,
+⑦ wait for `/health` and print the `Authorization: Bearer` token.
+
+> **This is the legacy-token path, NOT OAuth-first production.** It is
+> **host-root-equivalent** (it mounts the host `docker.sock`), so whoever holds the
+> printed token can run as root on the host — keep it to a single-user / trial host. The
+> prebuilt `cap-web` is **localhost-only** (its `VITE_*` are baked to localhost); for a
+> real domain, follow the OAuth-first steps above instead. WSL2 on a normal PC is amd64,
+> which makes it a good target for this path.
+
 ## Optional: in-app one-click self-update (`SELF_UPDATE_ENABLED`, default OFF)
 
 Once you run the pinned-release line above, cap can apply an available update
