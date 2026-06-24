@@ -52,7 +52,7 @@ import { TerminalSocket, decodeTailReplay } from "@/lib/ws-client";
 import { getClientId } from "@/lib/client-id";
 import { TerminalFallback, type FallbackLine } from "./terminal-fallback";
 import { TerminalCommandInput } from "./terminal-command-input";
-import { stripAltScreenBytes } from "./cast-log";
+import { stripAltScreen, stripAltScreenBytes } from "./cast-log";
 
 /** Live socket lifecycle as the terminal-head connection readout reflects it. */
 export type ConnectionState = "connecting" | "open" | "closed" | "error";
@@ -297,12 +297,19 @@ export const SessionTerminal = React.forwardRef<
         case "snapshot": {
           // Restore the serialized frame; align the ACK cursor to its offset.
           // (A snapshot carries no sessionId; lease_state supplies that.)
-          handleRef.current?.write(frame.data);
+          // Strip the alt-screen switch (the tmux client's) so the restored frame
+          // lands in the normal buffer — otherwise the snapshot puts xterm into the
+          // alternate buffer and every later onRaw write (even stripped) accrues no
+          // scrollback (fix-live-terminal-scrollback-strip). snapshot.data is a string.
+          handleRef.current?.write(stripAltScreen(frame.data));
           lastSeqRef.current = frame.seq;
           break;
         }
         case "tail_replay": {
-          handleRef.current?.write(decodeTailReplay(frame.data));
+          // Same alt-screen strip on the reconnect tail (Uint8Array bytes).
+          handleRef.current?.write(
+            stripAltScreenBytes(decodeTailReplay(frame.data)),
+          );
           lastSeqRef.current = Math.max(lastSeqRef.current, frame.seq);
           break;
         }
