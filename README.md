@@ -77,6 +77,17 @@ single command (requires Docker + a host `docker.sock`):
 > Silicon it defaults to the faster `make up-cp`. See the public site and the
 > [Self-hosting guide](docs/self-hosting.md) for details.
 
+> **Let Claude Code deploy it (recommended).** If you have Claude Code, paste the
+> prompt below — it reads the installer, preflights Docker, clones this repo and
+> runs `make up`, and walks you through the GitHub OAuth setup:
+>
+> ```text
+> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` to build and start the full stack. Help me create a GitHub OAuth app and fill the .env for production login against my allowlist, then report the console URL and the Authorization: Bearer token it prints.
+> ```
+>
+> Like the one-liner, it wraps `make up` rather than replacing it — Claude Code
+> follows the same readable `install.sh`, and you can take over at any point.
+
 ```bash
 make up        # bootstrap apps/api/.env (if absent) + build & start the full stack,
                # then wait for /health and print a local auth token

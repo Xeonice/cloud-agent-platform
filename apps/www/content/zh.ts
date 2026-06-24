@@ -34,26 +34,40 @@ export const zh: SiteContent = {
     subtitle: "把每一次 CLI 会话变成可接管的工作流。",
     description:
       "GitHub OAuth 只负责确认身份；仓库导入决定 Agent 能碰什么；任务队列负责调度；实时终端把最后的控制权留给你。",
-    installLabel: "在你自己的主机上安装",
-    installCommand: "curl -fsSL https://{domain}/install.sh | sh",
-    copyLabel: "复制安装命令",
+    methodsHeading: "把它跑起来",
+    copyLabel: "复制命令",
     copiedLabel: "已复制",
-    inspectLabel: "查看脚本",
-    manual: {
-      summary: "想先读一遍？用同样的流程手动执行：",
-      commands: [
-        "git clone https://github.com/{repo}.git",
-        "cd cloud-agent-platform",
-        "make up",
-      ],
-      note: "make up 始终是事实源 —— 一键命令只是对它的封装。它会打印用于登录的 Authorization: Bearer 令牌。",
+    claudeCode: {
+      title: "让 Claude Code 帮你装",
+      badge: "推荐",
+      blurb:
+        "把这段话贴给 Claude Code。它会读安装脚本、检查你的主机、引导你完成 GitHub OAuth，帮你把整套栈跑起来。",
+      prompt:
+        "在这台机器上部署 cloud-agent-platform。先读取 https://{domain}/install.sh 安装脚本，确认 Docker 与可用的 docker.sock 已就绪。然后克隆 https://github.com/{repo}，进入目录运行 `make up` 构建并启动整套栈。帮我创建 GitHub OAuth 应用并填好 .env，以便用白名单做生产登录；最后告诉我控制台地址和它打印的 Authorization: Bearer 令牌。",
+      copyLabel: "复制 Claude Code 提示词",
+    },
+    install: {
+      title: "自己用命令行装",
+      blurb: "源码构建 + GitHub OAuth —— 面向真正的多用户生产部署。",
+      command: "curl -fsSL https://{domain}/install.sh | sh",
+      inspectLabel: "查看脚本",
+      manual: {
+        summary: "想先读一遍？用同样的流程手动执行：",
+        commands: [
+          "git clone https://github.com/{repo}.git",
+          "cd cloud-agent-platform",
+          "make up",
+        ],
+        note: "make up 始终是事实源 —— 一键命令只是对它的封装。它会打印用于登录的 Authorization: Bearer 令牌。",
+      },
     },
     prebuilt: {
-      label: "或：预构建镜像，免 OAuth（amd64 / WSL2）",
+      title: "只想最快试一下",
+      blurb: "预构建镜像，免 GitHub OAuth —— 在 amd64 / WSL2 上最快，适合本地试用。",
       command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
       inspectLabel: "查看脚本",
       caveat:
-        "拉取预构建镜像并自动生成本地令牌 —— 最快，无需 GitHub OAuth 应用，在 amd64 / WSL2 上最合适。这是 legacy-token 试用路径（通过 docker.sock 等同 host-root；自带控制台仅限 localhost），并非 OAuth-first 的生产部署。",
+        "仅限本地试用：自动生成 legacy 令牌，自带控制台仅限 localhost —— 不是生产路径。amd64 / WSL2。",
       manual: {
         summary: "想先读一遍？用预构建 compose 手动执行：",
         commands: [
@@ -64,7 +78,6 @@ export const zh: SiteContent = {
         note: "脚本会替你完成 .env 合成（见可读源码）。两个文件都由本站托管 —— 无需 clone。仅限 amd64。",
       },
     },
-    primaryCta: { label: "复制安装命令", href: "#install" },
     secondaryCta: { label: "了解工作流程", href: "#how-it-works" },
   },
   terminal: {

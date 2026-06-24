@@ -45,6 +45,18 @@ In-app upgrades are a later phase you do not need to self-host today.
 > the build platform, run is this one file. Details:
 > [Run from prebuilt images (no source)](#or-source-free-run-package-no-clone).
 
+> **Let Claude Code deploy it.** With Claude Code installed, paste the prompt
+> below — it reads `install.sh`, preflights Docker, clones the repo and runs
+> `make up`, and walks you step by step through the GitHub OAuth app and `.env`
+> setup in Step 2 below — the same source-build, OAuth-first production path:
+>
+> ```text
+> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` to build and start the full stack. Help me create a GitHub OAuth app and fill the .env for production login against my allowlist, then report the console URL and the Authorization: Bearer token it prints.
+> ```
+>
+> It wraps `make up` rather than replacing it; the script is served as plain text
+> so you can read it before running, and you can take over at any point.
+
 ## What the stack brings up
 
 Enable the in-compose console with the `web` profile (`COMPOSE_PROFILES=web`);
