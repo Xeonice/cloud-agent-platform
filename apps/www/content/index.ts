@@ -73,45 +73,74 @@ export interface ManualInstallContent {
 }
 
 /**
- * The second, prebuilt-image one-liner (`quick-deploy.sh`): pulls published images
- * with no GitHub OAuth. Presented alongside the source-build installer with its
- * caveats (amd64-only, legacy-token not production, host-root, localhost-only web).
+ * The "let Claude Code deploy it" card — the recommended, lowest-friction path.
+ * Instead of a shell command, it offers a natural-language `prompt` the visitor
+ * pastes into Claude Code, which then reads the installer, checks the host,
+ * walks them through GitHub OAuth, and brings the source-build stack up. The
+ * `prompt` carries the `{domain}` / `{repo}` build-time tokens.
  */
-export interface PrebuiltInstallContent {
-  /** Label above the prebuilt command block. */
-  readonly label: string;
-  /** The prebuilt one-line command (the `{domain}` token is filled at build). */
-  readonly command: string;
-  /** Label for the inspectable quick-deploy.sh URL link. */
-  readonly inspectLabel: string;
-  /** One-line caveat: amd64-only, legacy-token (not OAuth-first prod), host-root, localhost web. */
-  readonly caveat: string;
-  /** The disclosed manual alternative (download compose, run the prebuilt compose) so a
-   *  visitor is not required to pipe the prebuilt script to a shell. */
-  readonly manual: ManualInstallContent;
+export interface ClaudeCodeInstallContent {
+  /** Card title (e.g. "Let Claude Code deploy it"). */
+  readonly title: string;
+  /** Short badge marking this as the recommended path (e.g. "Recommended"). */
+  readonly badge: string;
+  /** One-line, plain-language blurb of what Claude Code will do. */
+  readonly blurb: string;
+  /** The multi-line prompt to paste into Claude Code (carries `{domain}`/`{repo}`). */
+  readonly prompt: string;
+  /** Accessible label for the copy-the-prompt control. */
+  readonly copyLabel: string;
 }
 
-/** Hero: headline, the one-liner install command, and the manual alternative. */
+/**
+ * A script-based install card (`curl | sh`): the source-build `install.sh`
+ * (OAuth-first production path) or the prebuilt `quick-deploy.sh` (no-OAuth
+ * local trial). Each leads with a plain-language `title`/`blurb` so a visitor
+ * can tell which one is for them, keeps the inspectable script link, and
+ * discloses the equivalent manual path. `caveat` is the prebuilt-only trial
+ * warning (omitted for the source-build card). Commands carry the `{domain}` /
+ * `{repo}` build-time tokens.
+ */
+export interface ScriptInstallContent {
+  /** Plain-language card title (e.g. "Install it yourself"). */
+  readonly title: string;
+  /** One-line blurb of who this path is for. */
+  readonly blurb: string;
+  /** The one-line command (the `{domain}` token is filled at build). */
+  readonly command: string;
+  /** Label for the inspectable script URL link. */
+  readonly inspectLabel: string;
+  /** The disclosed manual alternative so piping to a shell is never required. */
+  readonly manual: ManualInstallContent;
+  /** Optional short trial-only caveat (prebuilt card); omit for the source build. */
+  readonly caveat?: string;
+}
+
+/**
+ * Hero: headline plus the "Get it running" install area, reorganized into three
+ * scenario cards — let Claude Code deploy it (recommended), install it yourself
+ * (source build + OAuth), or just try it fast (prebuilt, no OAuth) — so a first
+ * visitor can tell at a glance which path is theirs.
+ */
 export interface HeroContent {
   readonly eyebrow: string;
   readonly title: string;
   /** Emphasized sub-line under the title. */
   readonly subtitle: string;
   readonly description: string;
-  /** Label above the `curl | sh` command block. */
-  readonly installLabel: string;
-  /** The one-line install command (the `{domain}` token is filled at build). */
-  readonly installCommand: string;
-  /** Accessible label for the copy-to-clipboard control. */
+  /** Heading above the three install-method cards (e.g. "Get it running"). */
+  readonly methodsHeading: string;
+  /** Accessible label for the copy-to-clipboard control on the command cards. */
   readonly copyLabel: string;
-  /** Confirmation shown after a successful copy. */
+  /** Confirmation shown after a successful copy (shared by all cards). */
   readonly copiedLabel: string;
-  /** Label for the inspectable script URL link. */
-  readonly inspectLabel: string;
-  readonly manual: ManualInstallContent;
-  /** The prebuilt-image, no-OAuth second one-liner (quick-deploy.sh). */
-  readonly prebuilt: PrebuiltInstallContent;
-  readonly primaryCta: CtaLink;
+  /** Card 1: the recommended "let Claude Code deploy it" prompt. */
+  readonly claudeCode: ClaudeCodeInstallContent;
+  /** Card 2: the source-build `install.sh` (OAuth-first production) path. */
+  readonly install: ScriptInstallContent;
+  /** Card 3: the prebuilt `quick-deploy.sh` (no-OAuth local trial) path. */
+  readonly prebuilt: ScriptInstallContent;
+  /** Quiet secondary link under the cards (e.g. "See how it works"). */
   readonly secondaryCta: CtaLink;
 }
 

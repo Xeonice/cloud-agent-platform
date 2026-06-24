@@ -36,26 +36,42 @@ export const en: SiteContent = {
     subtitle: "Turn every CLI session into a workflow you can take over.",
     description:
       "GitHub OAuth only confirms who you are; the repositories you import decide what the agent can touch; the task queue handles scheduling; and the live terminal leaves the final control with you.",
-    installLabel: "Install on your own host",
-    installCommand: "curl -fsSL https://{domain}/install.sh | sh",
-    copyLabel: "Copy install command",
+    methodsHeading: "Get it running",
+    copyLabel: "Copy command",
     copiedLabel: "Copied",
-    inspectLabel: "Inspect the script",
-    manual: {
-      summary: "Prefer to read it first? Run the same flow by hand:",
-      commands: [
-        "git clone https://github.com/{repo}.git",
-        "cd cloud-agent-platform",
-        "make up",
-      ],
-      note: "make up stays the source of truth — the one-liner only wraps it. It prints an Authorization: Bearer token you log in with.",
+    claudeCode: {
+      title: "Let Claude Code deploy it",
+      badge: "Recommended",
+      blurb:
+        "Paste this into Claude Code. It reads the installer, checks your host, walks you through GitHub OAuth, and brings the stack up for you.",
+      prompt:
+        "Deploy cloud-agent-platform on this machine. First read the installer at https://{domain}/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/{repo}, cd into it, and run `make up` to build and start the full stack. Help me create a GitHub OAuth app and fill the .env for production login against my allowlist, then report the console URL and the Authorization: Bearer token it prints.",
+      copyLabel: "Copy the Claude Code prompt",
+    },
+    install: {
+      title: "Install it yourself",
+      blurb:
+        "Source build with GitHub OAuth — the path for a real, multi-user deployment.",
+      command: "curl -fsSL https://{domain}/install.sh | sh",
+      inspectLabel: "Inspect the script",
+      manual: {
+        summary: "Prefer to read it first? Run the same flow by hand:",
+        commands: [
+          "git clone https://github.com/{repo}.git",
+          "cd cloud-agent-platform",
+          "make up",
+        ],
+        note: "make up stays the source of truth — the one-liner only wraps it. It prints an Authorization: Bearer token you log in with.",
+      },
     },
     prebuilt: {
-      label: "Or: prebuilt images, no OAuth (amd64 / WSL2)",
+      title: "Just try it fast",
+      blurb:
+        "Prebuilt images, no GitHub OAuth — fastest on amd64 / WSL2, for a local trial.",
       command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
       inspectLabel: "Inspect the script",
       caveat:
-        "Pulls prebuilt images and synthesizes a local token — fastest, no GitHub OAuth app, ideal on amd64 / WSL2. This is the legacy-token trial path (host-root via docker.sock; the bundled console is localhost-only), not the OAuth-first production deploy.",
+        "Local trial only: it synthesizes a legacy token and the bundled console stays localhost-only — not the production path. amd64 / WSL2.",
       manual: {
         summary: "Prefer to read it first? Run the prebuilt compose by hand:",
         commands: [
@@ -66,7 +82,6 @@ export const en: SiteContent = {
         note: "The script does the .env synthesis for you (see the inspectable source). Both files are served by this site — no clone needed. amd64 only.",
       },
     },
-    primaryCta: { label: "Copy install command", href: "#install" },
     secondaryCta: { label: "See how it works", href: "#how-it-works" },
   },
   terminal: {

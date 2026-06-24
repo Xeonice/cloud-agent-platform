@@ -28,6 +28,12 @@ export interface CommandBoxProps {
   copiedLabel?: string;
   /** Optional leading prompt glyph; pass `null` to hide it. */
   prompt?: React.ReactNode;
+  /**
+   * Render for a multi-line block (e.g. a Claude Code prompt) instead of a
+   * single shell command: the text wraps and scrolls vertically, the prompt
+   * glyph is dropped, and the copy button floats in the top-right corner.
+   */
+  multiline?: boolean;
   className?: string;
 }
 
@@ -66,6 +72,7 @@ export function CommandBox({
   copyLabel = "Copy command",
   copiedLabel = "Copied",
   prompt = "$",
+  multiline = false,
   className,
 }: CommandBoxProps) {
   const [copied, setCopied] = React.useState(false);
@@ -86,36 +93,48 @@ export function CommandBox({
     timeoutRef.current = setTimeout(() => setCopied(false), 2000);
   }, [command]);
 
+  const copyButton = (
+    <button
+      type="button"
+      onClick={onCopy}
+      aria-label={copied ? copiedLabel : copyLabel}
+      className={cn(
+        "inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-surface px-2.5 text-xs font-medium text-fg transition-colors hover:bg-fg/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg focus-visible:ring-offset-2 focus-visible:ring-offset-bg",
+        multiline && "absolute right-3 top-3",
+      )}
+    >
+      {copied ? (
+        <CheckIcon className="h-3.5 w-3.5" />
+      ) : (
+        <CopyIcon className="h-3.5 w-3.5" />
+      )}
+      <span>{copied ? copiedLabel : "Copy"}</span>
+    </button>
+  );
+
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-lg border border-hairline bg-surface px-4 py-3 transition-colors duration-200 hover:border-fg/25 focus-within:border-fg/30",
+        "rounded-lg border border-hairline bg-surface px-4 py-3 transition-colors duration-200 hover:border-fg/25 focus-within:border-fg/30",
+        multiline ? "relative" : "flex items-center gap-3",
         className,
       )}
     >
-      <code className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto font-mono text-sm text-fg">
-        {prompt != null && (
-          <span aria-hidden="true" className="select-none text-muted">
-            {prompt}
-          </span>
-        )}
-        <span className="whitespace-pre">{command}</span>
-      </code>
-      <button
-        type="button"
-        onClick={onCopy}
-        aria-label={copied ? copiedLabel : copyLabel}
-        className={cn(
-          "inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-md border border-hairline px-2.5 text-xs font-medium text-fg transition-colors hover:bg-fg/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg focus-visible:ring-offset-2 focus-visible:ring-offset-bg",
-        )}
-      >
-        {copied ? (
-          <CheckIcon className="h-3.5 w-3.5" />
-        ) : (
-          <CopyIcon className="h-3.5 w-3.5" />
-        )}
-        <span>{copied ? copiedLabel : "Copy"}</span>
-      </button>
+      {multiline ? (
+        <code className="block max-h-60 overflow-y-auto whitespace-pre-wrap break-words pr-20 font-mono text-[13px] leading-relaxed text-fg">
+          {command}
+        </code>
+      ) : (
+        <code className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto font-mono text-sm text-fg">
+          {prompt != null && (
+            <span aria-hidden="true" className="select-none text-muted">
+              {prompt}
+            </span>
+          )}
+          <span className="whitespace-pre">{command}</span>
+        </code>
+      )}
+      {copyButton}
       <span aria-live="polite" className="sr-only">
         {copied ? copiedLabel : ""}
       </span>
