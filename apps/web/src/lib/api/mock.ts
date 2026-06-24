@@ -137,6 +137,7 @@ const MOCK_TASKS: ListTasksResponse = [
     createdAt: minsAgo(8),
     branch: "aio-execution-hardening",
     strategy: "single-pass",
+    executionMode: "interactive-pty",
   },
   {
     id: TASK_IDS.b,
@@ -164,6 +165,9 @@ const MOCK_TASKS: ListTasksResponse = [
     createdAt: minsAgo(36),
     branch: "feat/history-filter",
     strategy: "single-pass",
+    // headless-task-conversation-view: a running headless task exercises the
+    // conversation-not-terminal branch in the console.
+    executionMode: "headless-exec",
   },
   {
     id: TASK_IDS.e,

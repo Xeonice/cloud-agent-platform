@@ -280,3 +280,46 @@ test('headless create on a runtime without headless-exec fails closed (BadReques
     (err: unknown) => err instanceof BadRequestException,
   );
 });
+
+// ---------------------------------------------------------------------------
+// headless-task-conversation-view — executionMode is echoed on the read path so
+// the console can branch the session view by mode (toResponse round-trip).
+// ---------------------------------------------------------------------------
+
+/** A fake Prisma whose `findUnique` returns a row with the given executionMode. */
+function makeReadbackPrisma(executionMode: string | null): PrismaService {
+  return {
+    task: {
+      findUnique: async () => ({
+        id: TASK_ID,
+        repoId: REPO_ID,
+        prompt: 'x',
+        status: 'completed',
+        createdAt: new Date(),
+        branch: null,
+        strategy: null,
+        skills: [],
+        idleTimeoutMs: null,
+        deadlineMs: null,
+        runtime: null,
+        executionMode,
+      }),
+    },
+  } as unknown as PrismaService;
+}
+
+test('findById echoes executionMode=headless-exec on the read path', async () => {
+  const svc = buildService({ prisma: makeReadbackPrisma('headless-exec') });
+  const res = await svc.findById(TASK_ID);
+  assert.equal(res.executionMode, 'headless-exec', 'a headless task reads back headless-exec');
+});
+
+test('findById on a null executionMode column reads back interactive-pty (default)', async () => {
+  const svc = buildService({ prisma: makeReadbackPrisma(null) });
+  const res = await svc.findById(TASK_ID);
+  assert.equal(
+    res.executionMode,
+    'interactive-pty',
+    'a null column reads back as the interactive-pty default (never stale/fabricated)',
+  );
+});

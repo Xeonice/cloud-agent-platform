@@ -181,6 +181,26 @@ export class SessionHistoryController {
     const runtime = task.runtime as RuntimeId | null;
     const format = transcriptFormatForRuntime(runtime);
 
+    // headless-task-conversation-view: a RUNNING headless task serves its LIVE
+    // transcript by reading the sandbox rollout directly each poll — full re-parse,
+    // STATELESS (`readRolloutFromContainer` reads a running container's frozen layer
+    // without stopping it). Deliberately NOT durable-first and NOT backfilled here:
+    // backfilling an in-flight rollout would freeze an INCOMPLETE transcript as the
+    // durable copy and make every later read stale. The finished path below
+    // (durable-first + backfill) takes over once the task settles. No live read for
+    // interactive tasks — their live view is the xterm, and their history stays the
+    // finished path.
+    const isRunning =
+      task.status === 'running' || task.status === 'awaiting_input';
+    if (isRunning && task.executionMode === 'headless-exec') {
+      const live = await this.sandbox.readRolloutFromContainer(id, runtime);
+      if (live !== null) {
+        return this.toAvailable(id, live.jsonl, task.status, format);
+      }
+      // Rollout not written yet (codex just starting) — honest empty, not expired.
+      return SessionHistorySchema.parse({ status: 'empty', reason: 'no-rollout' });
+    }
+
     const durable = await this.transcripts.readDurable(id);
     if (durable !== null) {
       return this.toAvailable(id, durable, task.status, format);

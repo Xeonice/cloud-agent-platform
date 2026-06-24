@@ -21,6 +21,7 @@ import type {
   SessionHistory,
   SessionTurn,
   ReplayPresentationState,
+  ExecutionMode,
 } from "@cap/contracts";
 import { sessionHistoryQuery } from "@/lib/api/queries";
 import { cn } from "@/utils";
@@ -48,20 +49,49 @@ const META_BY_STATE: Record<ReplayPresentationState, (n: number) => string> = {
 
 export interface SessionReplayProps {
   taskId: string;
-  /** The terminal task's replay presentation state (drives the meta line). */
-  presentationState: ReplayPresentationState;
+  /**
+   * The terminal task's replay presentation state (drives the meta line). Absent
+   * for a LIVE running view (headless-task-conversation-view), which has no
+   * terminal status yet.
+   */
+  presentationState?: ReplayPresentationState;
+  /**
+   * headless-task-conversation-view: a RUNNING headless task — poll the transcript
+   * on a cadence and show a running indicator (the conversation grows live).
+   */
+  live?: boolean;
+  /**
+   * headless-task-conversation-view: a headless task has NO terminal record — hide
+   * the 终端记录 tab and never fetch the cast. Absent/`interactive-pty` keeps it.
+   */
+  executionMode?: ExecutionMode;
 }
 
 export function SessionReplay({
   taskId,
   presentationState,
+  live = false,
+  executionMode,
 }: SessionReplayProps): React.ReactElement {
-  const { data, isLoading } = useQuery(sessionHistoryQuery(taskId));
+  // Live (running headless) view polls the transcript so the conversation grows as
+  // codex runs; a finished view reads once. Full re-parse server-side keeps this a
+  // plain refetch (no offset/state) — React diffs only the changed turns.
+  const { data, isLoading } = useQuery(
+    live
+      ? { ...sessionHistoryQuery(taskId), refetchInterval: 1500 }
+      : sessionHistoryQuery(taskId),
+  );
 
   if (isLoading || !data) {
     return <ReplayShell meta="读取会话记录…">{null}</ReplayShell>;
   }
   if (data.status === "empty") {
+    // A live task whose rollout has no turns yet is STARTING, not failed.
+    if (live) {
+      return (
+        <ReplayShell meta="运行中 · 实时 · 等待首个输出…">{null}</ReplayShell>
+      );
+    }
     return (
       <EmptyReplay
         icon="⚠"
@@ -90,6 +120,8 @@ export function SessionReplay({
       taskId={taskId}
       history={data}
       presentationState={presentationState}
+      live={live}
+      executionMode={executionMode}
     />
   );
 }
@@ -99,10 +131,14 @@ function AvailableReplay({
   taskId,
   history,
   presentationState,
+  live,
+  executionMode,
 }: {
   taskId: string;
   history: Extract<SessionHistory, { status: "available" }>;
-  presentationState: ReplayPresentationState;
+  presentationState?: ReplayPresentationState;
+  live?: boolean;
+  executionMode?: ExecutionMode;
 }): React.ReactElement {
   const [tab, setTab] = React.useState<"conv" | "term">("conv");
   const [filter, setFilter] = React.useState<Filter>("默认");
@@ -128,16 +164,20 @@ function AvailableReplay({
   // The interrupted framing is driven by the WIRE field `history.isInterrupted`
   // (V.1) — authoritative over the client-derived presentationState; the latter
   // still distinguishes completed vs failed for a clean end.
-  const meta = history.isInterrupted
-    ? META_BY_STATE.cancelled(turns.length)
-    : META_BY_STATE[presentationState](turns.length);
+  const meta = live
+    ? `运行中 · 实时 · ${turns.length} 条记录`
+    : history.isInterrupted
+      ? META_BY_STATE.cancelled(turns.length)
+      : META_BY_STATE[presentationState ?? "completed"](turns.length);
 
   return (
     <ReplayShell
       meta={meta}
       tab={tab}
       onTab={setTab}
-      showTermTab
+      // headless-task-conversation-view: a headless task has no terminal record,
+      // so the 终端记录 tab is hidden for it (conversation is the only surface).
+      showTermTab={executionMode !== "headless-exec"}
     >
       {tab === "conv" ? (
         <div className="grid min-h-0 flex-1 grid-cols-[212px_minmax(0,1fr)]">

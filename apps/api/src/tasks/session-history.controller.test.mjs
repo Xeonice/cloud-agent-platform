@@ -85,12 +85,17 @@ function findFile(dir, name) {
 
 const TASK_ID = 'task-abc';
 
-/** Stub TasksService.findById: returns a task with `status`, or throws (404). */
-function makeTasks(statusOrError) {
+/**
+ * Stub TasksService.findById: returns a task with `status` (+ optional
+ * `executionMode` for the headless-task-conversation-view live branch), or throws
+ * (404). An omitted executionMode reads back undefined — the interactive default,
+ * so existing cases keep the finished durable-first path.
+ */
+function makeTasks(statusOrError, executionMode) {
   return {
     async findById() {
       if (statusOrError instanceof Error) throw statusOrError;
-      return { id: TASK_ID, status: statusOrError };
+      return { id: TASK_ID, status: statusOrError, executionMode };
     },
   };
 }
@@ -103,7 +108,12 @@ function makeTasks(statusOrError) {
 function makeProvider({ rollout = null, exists = false } = {}) {
   const calls = { readRollout: 0, sandboxExists: 0, other: [] };
   const base = {
-    async readRolloutFromContainer() { calls.readRollout++; return rollout; },
+    // readRolloutFromContainer returns a TranscriptSource `{ format, jsonl }` (or
+    // null) — unify-transcript-parsers D3. The controller consumes `.jsonl`.
+    async readRolloutFromContainer() {
+      calls.readRollout++;
+      return rollout == null ? null : { format: 'codex-rollout', jsonl: rollout };
+    },
     async sandboxExists() { calls.sandboxExists++; return exists; },
   };
   const provider = new Proxy(base, {
@@ -213,6 +223,45 @@ async function main() {
     assert(second.status === 'available', 'fallback: the NEXT read is still available');
     assert(tCalls.readDurable === 2, 'fallback: the next read consults the durable store again');
     assert(calls.readRollout === 1, 'fallback: the next read is a durable hit — the container is NOT read a second time');
+  }
+
+  // ---- running headless → LIVE read from the sandbox (headless-task-conversation-view) -
+  // No durable-first (would serve a stale/older snapshot) and NO backfill (would
+  // freeze the in-flight rollout as the durable copy, making later reads stale).
+  {
+    const { provider, calls } = makeProvider({ rollout: ROLLOUT });
+    // durable is SET on purpose — if the live branch wrongly consulted it, the test
+    // would catch the read (readDurable === 0 below).
+    const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
+    const ctrl = new SessionHistoryController(makeTasks('running', 'headless-exec'), provider, transcripts, makeAudit());
+    const res = await ctrl.get(TASK_ID);
+    assert(res.status === 'available', 'running headless → available parsed from the LIVE sandbox rollout');
+    assert(Array.isArray(res.turns) && res.turns.length >= 1, 'running headless: the live rollout parses into turns');
+    assert(calls.readRollout === 1, 'running headless: the live sandbox rollout IS read');
+    assert(tCalls.readDurable === 0, 'running headless: durable-first is SKIPPED (live read wins — no stale archive)');
+    assert(tCalls.backfill === 0, 'running headless: the in-flight rollout is NOT backfilled (no freezing incomplete as durable)');
+  }
+
+  // ---- running headless + no rollout yet → empty/no-rollout (starting, not failed) -----
+  {
+    const { provider, calls } = makeProvider({ rollout: null });
+    const { transcripts, calls: tCalls } = makeTranscripts({ durable: null });
+    const ctrl = new SessionHistoryController(makeTasks('awaiting_input', 'headless-exec'), provider, transcripts, makeAudit());
+    const res = await ctrl.get(TASK_ID);
+    assert(res.status === 'empty' && res.reason === 'no-rollout', 'running headless + no rollout yet → empty/no-rollout (starting, not failed)');
+    assert(calls.readRollout === 1, 'running headless (no rollout): the live read was attempted');
+    assert(tCalls.readDurable === 0 && tCalls.backfill === 0, 'running headless (no rollout): never reads/backfills durable');
+  }
+
+  // ---- running INTERACTIVE → the headless live branch is NOT taken (unchanged path) ----
+  {
+    const { provider, calls } = makeProvider({ rollout: ROLLOUT });
+    const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
+    const ctrl = new SessionHistoryController(makeTasks('running', 'interactive-pty'), provider, transcripts, makeAudit());
+    const res = await ctrl.get(TASK_ID);
+    assert(res.status === 'available', 'running interactive → available (existing durable-first path, unchanged)');
+    assert(tCalls.readDurable === 1, 'running interactive: durable-first IS consulted (the headless live branch is not taken)');
+    assert(calls.readRollout === 0, 'running interactive: no live container read (durable hit wins)');
   }
 
   // ---- agent_failed_to_start → 'empty' (no archive/container read at all) -----

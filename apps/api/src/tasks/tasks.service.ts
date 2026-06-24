@@ -809,6 +809,7 @@ export class TasksService implements OnApplicationBootstrap {
     idleTimeoutMs: number | null;
     deadlineMs: number | null;
     runtime?: string | null;
+    executionMode?: string | null;
     deliver?: string | null;
     deliverStatus?: string | null;
     branchPushed?: string | null;
@@ -841,6 +842,11 @@ export class TasksService implements OnApplicationBootstrap {
       // pre-runtime row or an omitted request) reads back as the default `codex`
       // — never stale/fabricated (sent value == readable value).
       runtime: (task.runtime ?? DEFAULT_TASK_RUNTIME) as Runtime,
+      // headless-task-conversation-view: echo the persisted execution mode on
+      // every read path so the console can branch the session view (terminal vs
+      // polled conversation). A null column reads back as `interactive-pty` (the
+      // console default) — never stale/fabricated (sent value == readable value).
+      executionMode: (task.executionMode ?? 'interactive-pty') as ExecutionMode,
       // add-multi-forge-task-delivery: echo the opt-in delivery selector (null
       // reads back as `none`) + the push-back result columns (null until a
       // delivery runs) on every read path — never stale/fabricated.

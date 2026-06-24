@@ -54,6 +54,7 @@ import {
 } from "@/components/session/session-terminal";
 import { TerminalSkeleton } from "@/components/session/terminal-skeleton";
 import { SessionReplay } from "@/components/session/session-replay";
+import { sessionViewMode } from "@/components/session/session-view-mode";
 import { formatTaskResource } from "@/components/session/format-resource";
 
 /** Statusline / H1 phase label per cockpit state vocabulary (never fabricated). */
@@ -70,9 +71,6 @@ export const Route = createFileRoute("/_app/tasks/$taskId")({
   component: SessionPage,
 });
 
-/** Pre-running statuses where no sandbox/terminal exists yet (friendly wait). */
-const PRE_RUNNING_STATUSES = new Set(["pending", "queued"]);
-
 /** Compact human duration for the configured-guardrail readout (whole-unit ms). */
 function formatDuration(ms: number): string {
   if (ms % 3_600_000 === 0) return `${ms / 3_600_000} 小时`;
@@ -86,7 +84,18 @@ function SessionPage(): React.ReactElement {
   const queryClient = useQueryClient();
 
   // REAL task read + MOCK context view (both via useQuery; ssr:false ⇒ no loader).
-  const { data: task } = useQuery(taskQuery(taskId));
+  // headless-task-conversation-view: a headless task opens NO socket (its view is
+  // the polled conversation), so there is no socket-reconcile to flip it to its
+  // terminal state. Poll the task while it is non-terminal so the view switches
+  // from the live conversation to the finished replay once it settles; stop polling
+  // at a terminal status. (Interactive tasks are also reconciled via their socket.)
+  const { data: task } = useQuery({
+    ...taskQuery(taskId),
+    refetchInterval: (query) =>
+      query.state.data && isReplayableStatus(query.state.data.status)
+        ? false
+        : 4000,
+  });
   const { data: context } = useQuery(taskContextQuery(taskId));
   // This task's own live CPU/memory (real-time per-task sampler read). Polls
   // only while this page is mounted; `not-running` → honest "未运行/未采样".
@@ -186,32 +195,48 @@ function SessionPage(): React.ReactElement {
           `minmax(0,1fr)` row+col lets the child stretch to fill while still
           clamping width so long output can't blow out the column. */}
       <section className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] grid-cols-[minmax(0,1fr)]">
-        {task && isReplayableStatus(task.status) ? (
-          // A FINISHED task (completed / cancelled / failed / agent_failed_to_start):
-          // render the read-only replay of its settled-sandbox transcript in
-          // place of the live terminal — NO WebSocket, NO input, NO resume/stop.
-          // The live path below is untouched for non-terminal tasks.
-          <SessionReplay
-            taskId={taskId}
-            presentationState={replayPresentationState(task.status)}
-          />
-        ) : task && PRE_RUNNING_STATUSES.has(task.status) ? (
-          // A freshly-created task has no provisioned sandbox/terminal yet
-          // (pending/queued). Show a friendly wait instead of mounting the
-          // terminal into a "connecting" void; once the task reaches `running`
-          // (the tasksQuery polls every 5s) this swaps to the live terminal.
-          <PreRunningPlaceholder status={task.status} />
-        ) : (
-          <SessionTerminal
-            ref={terminalRef}
-            taskId={taskId}
-            headLabel={headLabel}
-            phaseLabel={STATE_LABELS[taskState]}
-            phasePending={false}
-            resourceLabel={resourceBody}
-            onConnectionChange={handleConnectionChange}
-          />
-        )}
+        {(() => {
+          // headless-task-conversation-view: branch the session view by
+          // status + executionMode (pure `sessionViewMode`, unit-tested):
+          //   finished-replay → read-only transcript (NO WS); executionMode flows
+          //     through so a finished HEADLESS task also hides its 终端记录 tab.
+          //   pre-running     → friendly wait (no sandbox/terminal yet).
+          //   headless-live   → a RUNNING headless task: LIVE polled conversation
+          //     (NO WebSocket, NO xterm — its output is structured events).
+          //   live-terminal   → a RUNNING interactive task: the live xterm,
+          //     UNCHANGED (also the loading fallback before `task` resolves).
+          const mode = task
+            ? sessionViewMode(task.status, task.executionMode)
+            : null;
+          if (task && mode === "finished-replay") {
+            return (
+              <SessionReplay
+                taskId={taskId}
+                presentationState={replayPresentationState(task.status)}
+                executionMode={task.executionMode ?? undefined}
+              />
+            );
+          }
+          if (task && mode === "pre-running") {
+            return <PreRunningPlaceholder status={task.status} />;
+          }
+          if (task && mode === "headless-live") {
+            return (
+              <SessionReplay taskId={taskId} live executionMode="headless-exec" />
+            );
+          }
+          return (
+            <SessionTerminal
+              ref={terminalRef}
+              taskId={taskId}
+              headLabel={headLabel}
+              phaseLabel={STATE_LABELS[taskState]}
+              phasePending={false}
+              resourceLabel={resourceBody}
+              onConnectionChange={handleConnectionChange}
+            />
+          );
+        })()}
       </section>
     </>
   );
