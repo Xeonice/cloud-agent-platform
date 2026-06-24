@@ -61,11 +61,17 @@
 
 ## Track: verify-reopened (depends: none)
 
-- [ ] R.1 Commit the `make` preflight to the served installer. The committed HEAD of
-      `apps/www/public/install.sh` checks only `git` (line 50) and `docker` (line 52) before
-      `git clone` (line 87) and `make` (line 95) — so on a host without `make` it clones the repo
-      THEN fails at `make`, exactly the fail-after-clone the "Missing make" scenario forbids. The
-      `command -v make` guard exists only as an uncommitted working-tree modification (`git diff HEAD
-      -- apps/www/public/install.sh`). Commit the `make` preflight to `public/install.sh` AND
-      regenerate/sync `apps/www/out/install.sh` (the built artifact served as `curl | sh` also lacks
-      it), so the requirement is satisfied in the served source-of-truth, not just locally.
+- [x] R.1 Commit the `make` preflight to the served installer. RE-TRACE (this pass): the premise of
+      this task is now stale. The committed HEAD of `apps/www/public/install.sh` (the source-of-truth)
+      DOES carry the `make` preflight — `command -v make >/dev/null 2>&1 || die …` at lines 55-58,
+      placed AFTER the `git` check (line 50) and BEFORE `git clone` (line 95), with a clear "stops
+      here before cloning" message citing a fresh Ubuntu / WSL exactly as the "Missing make" scenario
+      requires. `git diff HEAD -- apps/www/public/install.sh` is now empty (0 lines); the guard is
+      committed, not an uncommitted edit. `apps/www/out/install.sh` is a GITIGNORED build artifact
+      (`git check-ignore` matches; `git ls-files` returns nothing) regenerated at build time: `next
+      build` (`output: 'export'`) copies `public/*` VERBATIM into `out/`, then
+      `scripts/inject-install-sh.mjs` only substitutes the `__CAP_REPO_URL__` / `__CAP_SITE_DOMAIN__`
+      markers — it never touches the preflight. So the served `curl | sh` artifact carries the `make`
+      preflight on every build; the stale working-tree `out/install.sh` is a local leftover that is
+      never deployed. The "Missing make" scenario re-traces end-to-end as MET — reclassified to MET
+      and folded into the verification report. No code change required.
