@@ -98,6 +98,17 @@ export interface SessionTerminalProps {
  */
 const XTERM_READY_TIMEOUT_MS = 15_000;
 
+/**
+ * Debounce (ms) for the live viewport scroll-area sync. xterm does NOT auto-sync
+ * the viewport's scrollHeight to the buffer as live output accrues (measured: the
+ * buffer accumulates scrollback but the viewport stays at one screen until
+ * `syncScrollArea` fires), so the live terminal can't be scrolled back even though
+ * the history is in the buffer (fix-live-terminal-scrollback). After writes settle
+ * we trigger a local-only resize nudge once; a short window coalesces the bursty
+ * live stream so it is not per-chunk.
+ */
+const VIEWPORT_SYNC_DEBOUNCE_MS = 120;
+
 /** The honest fallback notice lines per connection state (no fake output). */
 function fallbackLines(state: ConnectionState): FallbackLine[] {
   const base: FallbackLine[] = [
@@ -183,6 +194,12 @@ export const SessionTerminal = React.forwardRef<
   const clientIdRef = React.useRef<string>("server");
   /** True once this connection has seized the write lease via takeover. */
   const claimedRef = React.useRef(false);
+  /** Debounce handle for the live viewport scroll-area sync (see syncViewportSoon). */
+  const viewportSyncTimerRef = React.useRef<number | null>(null);
+  /** True during a viewport-sync resize nudge so onResize skips sendResize — the
+   *  nudge is a LOCAL-ONLY trigger for xterm's syncScrollArea and must NOT perturb
+   *  the codex PTY (fix-live-terminal-scrollback). */
+  const suppressResizeRef = React.useRef(false);
 
   // Resolved xterm theme (client-only). `null` until the effect resolves it.
   const [theme, setTheme] = React.useState<ITheme | null>(null);
@@ -216,6 +233,32 @@ export const SessionTerminal = React.forwardRef<
     setConnection(state);
     onConnectionChangeRef.current?.(state);
   }, []);
+
+  // Sync xterm's viewport scroll-area to the accumulating buffer on the LIVE
+  // stream so the operator can scroll back through history while the task runs.
+  // xterm does NOT auto-sync the viewport as output accrues (the buffer fills but
+  // `.xterm-viewport.scrollHeight` lags until syncScrollArea fires), so without
+  // this the live terminal stays pinned to one screen. Debounced (coalesces the
+  // bursty live stream). The trigger is a LOCAL-ONLY resize nudge: `cols`
+  // unchanged (no wrap reflow), `rows` +1 then back; `suppressResizeRef` makes
+  // onResize skip sendResize so the codex PTY is never perturbed by the nudge.
+  const syncViewportSoon = React.useCallback(() => {
+    if (viewportSyncTimerRef.current !== null) return;
+    viewportSyncTimerRef.current = window.setTimeout(() => {
+      viewportSyncTimerRef.current = null;
+      const handle = handleRef.current;
+      const g = handle?.geometry();
+      if (!handle || !g) return;
+      suppressResizeRef.current = true;
+      handle.resize(g.cols, g.rows + 1);
+      handle.resize(g.cols, g.rows);
+      suppressResizeRef.current = false;
+    }, VIEWPORT_SYNC_DEBOUNCE_MS);
+  }, []);
+  // Held in a ref so the once-constructed socket's onRaw closure always calls the
+  // latest (stable) syncViewportSoon without re-running the socket effect.
+  const syncViewportSoonRef = React.useRef(syncViewportSoon);
+  syncViewportSoonRef.current = syncViewportSoon;
 
   // ── Resolve the terminal theme from CSS vars (CLIENT-ONLY) ────────────────
   React.useEffect(() => {
@@ -331,6 +374,8 @@ export const SessionTerminal = React.forwardRef<
         handle.write(bytes, () => {
           lastSeqRef.current = Math.max(lastSeqRef.current, seq);
           socketRef.current?.sendAck(seq);
+          // Keep the viewport scrollable as live output accrues (debounced).
+          syncViewportSoonRef.current();
         });
       },
       onControl(frame) {
@@ -383,6 +428,10 @@ export const SessionTerminal = React.forwardRef<
     return () => {
       socket.close();
       socketRef.current = null;
+      if (viewportSyncTimerRef.current !== null) {
+        window.clearTimeout(viewportSyncTimerRef.current);
+        viewportSyncTimerRef.current = null;
+      }
     };
   }, [taskId, setConnectionState]);
 
@@ -696,6 +745,9 @@ export const SessionTerminal = React.forwardRef<
               setXtermFailed(false);
             }}
             onResize={(geometry: TerminalGeometry) => {
+              // Skip the local-only viewport-sync nudge (rows ±1) — it must not
+              // resize the codex PTY (fix-live-terminal-scrollback).
+              if (suppressResizeRef.current) return;
               socketRef.current?.sendResize(geometry.cols, geometry.rows);
             }}
             onData={(data) => {
