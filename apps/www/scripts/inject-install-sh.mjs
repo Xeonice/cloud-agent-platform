@@ -16,14 +16,24 @@
  * we additionally warn so a real deploy does not silently ship the source
  * defaults.
  */
-import { readFile, writeFile, access } from "node:fs/promises";
+import { readFile, writeFile, access, copyFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const appRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.join(appRoot, "..", "..");
 const outDir = path.join(appRoot, "out");
 const outFile = path.join(outDir, "install.sh");
 const rootIndex = path.join(outDir, "index.html");
+// The prebuilt one-line installer (surface-quick-deploy-installer-on-www): the repo's
+// scripts/quick-deploy.sh is the single source-of-truth — staged into the static export
+// and marker-substituted here, NOT a second hand-maintained copy.
+const quickDeploySrc = path.join(repoRoot, "scripts", "quick-deploy.sh");
+const quickDeployOut = path.join(outDir, "quick-deploy.sh");
+// docker-compose.prod.yml is served as a static asset so a site-hosted quick-deploy.sh
+// run is self-contained (no GitHub-branch runtime dependency).
+const composeSrc = path.join(repoRoot, "docker-compose.prod.yml");
+const composeOut = path.join(outDir, "docker-compose.prod.yml");
 
 // The locale-segmented root layout lives under app/[locale]/, so there is no
 // top-level app/page.tsx and the export emits no out/index.html for `/`. Write a
@@ -143,6 +153,74 @@ async function main() {
 
   console.log(
     `[inject-install-sh] wrote ${outFile} (repo=${repo || "fallback"}, domain=${domain || "fallback"}).`,
+  );
+
+  // Stage the prebuilt installer + its compose asset (surface-quick-deploy-installer-on-www).
+  await stagePrebuiltInstaller(domain);
+}
+
+/**
+ * Stage scripts/quick-deploy.sh + docker-compose.prod.yml into the static export and
+ * substitute the compose-base marker. The published quick-deploy.sh defaults its fetch
+ * base to the site so it pulls the site's own docker-compose.prod.yml; the committed
+ * source keeps its raw-GitHub fallback (the `case … __CAP_COMPOSE_BASE__)` arm), which
+ * we strip here only when the marker is actually substituted — exactly mirroring the
+ * install.sh handling above.
+ */
+async function stagePrebuiltInstaller(domain) {
+  // Copy the prod compose verbatim so a site-hosted `curl | sh` is self-contained.
+  try {
+    await copyFile(composeSrc, composeOut);
+    console.log(`[inject-install-sh] wrote ${composeOut} (static compose asset).`);
+  } catch (err) {
+    console.warn(
+      `[inject-install-sh] could not stage ${composeSrc} → ${composeOut}: ${err.message}`,
+    );
+  }
+
+  let qd;
+  try {
+    qd = await readFile(quickDeploySrc, "utf8");
+  } catch (err) {
+    console.warn(
+      `[inject-install-sh] ${quickDeploySrc} not found — skipping quick-deploy staging: ${err.message}`,
+    );
+    return;
+  }
+
+  // The compose fetch base for the SITE-served copy is the site origin itself.
+  const composeBase = domain ? `https://${domain}` : "";
+  if (composeBase) {
+    // Substitute ONLY the assignment default `${CAP_RAW_BASE:-__CAP_COMPOSE_BASE__}`,
+    // never the marker inside the fallback `case` arm (stripped below).
+    qd = qd.replace(
+      /(\$\{CAP_RAW_BASE:-)__CAP_COMPOSE_BASE__(\})/,
+      `$1${composeBase}$2`,
+    );
+    // The fallback guard is now dead code and the only remaining marker — strip it so
+    // the published file carries zero placeholders.
+    qd = qd.replace(
+      /\ncase "\$RAW_BASE" in\n\s*__CAP_COMPOSE_BASE__\)[^\n]*\nesac\n/,
+      "\n",
+    );
+  } else {
+    console.warn(
+      "[inject-install-sh] NEXT_PUBLIC_SITE_URL is unset — published quick-deploy.sh keeps its in-file compose-base fallback.",
+    );
+  }
+
+  // Assertion: when the site domain is provided, the published script must carry no
+  // remaining placeholder (spec: "not placeholders").
+  if (composeBase && qd.includes("__CAP_COMPOSE_BASE__")) {
+    throw new Error(
+      "quick-deploy.sh still contains __CAP_COMPOSE_BASE__ after substitution — marker injection failed",
+    );
+  }
+
+  await writeFile(quickDeployOut, qd, "utf8");
+  // Keep the executable bit so the served file is runnable when downloaded.
+  console.log(
+    `[inject-install-sh] wrote ${quickDeployOut} (compose-base=${composeBase || "fallback"}).`,
   );
 }
 

@@ -49,6 +49,14 @@ info "Checking prerequisites…"
 
 command -v git >/dev/null 2>&1 || die "git is required but was not found on PATH."
 
+# `make` is the bring-up entrypoint this script invokes below — verify it BEFORE
+# cloning so a host without it (e.g. a fresh Ubuntu / WSL) stops here with a clear
+# message instead of cloning the repo and then failing when it runs `make`.
+command -v make >/dev/null 2>&1 || die \
+  "make is required but was not found on PATH (this installer runs \`make up\`).
+       Install it (e.g. \`sudo apt-get install -y make\`, or the build-essential
+       package), then re-run this installer."
+
 command -v docker >/dev/null 2>&1 || die \
   "Docker is required but was not found on PATH. Install Docker, then re-run this installer."
 

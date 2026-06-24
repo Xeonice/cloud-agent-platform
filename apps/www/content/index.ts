@@ -72,6 +72,25 @@ export interface ManualInstallContent {
   readonly note: string;
 }
 
+/**
+ * The second, prebuilt-image one-liner (`quick-deploy.sh`): pulls published images
+ * with no GitHub OAuth. Presented alongside the source-build installer with its
+ * caveats (amd64-only, legacy-token not production, host-root, localhost-only web).
+ */
+export interface PrebuiltInstallContent {
+  /** Label above the prebuilt command block. */
+  readonly label: string;
+  /** The prebuilt one-line command (the `{domain}` token is filled at build). */
+  readonly command: string;
+  /** Label for the inspectable quick-deploy.sh URL link. */
+  readonly inspectLabel: string;
+  /** One-line caveat: amd64-only, legacy-token (not OAuth-first prod), host-root, localhost web. */
+  readonly caveat: string;
+  /** The disclosed manual alternative (download compose, run the prebuilt compose) so a
+   *  visitor is not required to pipe the prebuilt script to a shell. */
+  readonly manual: ManualInstallContent;
+}
+
 /** Hero: headline, the one-liner install command, and the manual alternative. */
 export interface HeroContent {
   readonly eyebrow: string;
@@ -90,6 +109,8 @@ export interface HeroContent {
   /** Label for the inspectable script URL link. */
   readonly inspectLabel: string;
   readonly manual: ManualInstallContent;
+  /** The prebuilt-image, no-OAuth second one-liner (quick-deploy.sh). */
+  readonly prebuilt: PrebuiltInstallContent;
   readonly primaryCta: CtaLink;
   readonly secondaryCta: CtaLink;
 }

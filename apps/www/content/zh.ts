@@ -48,6 +48,22 @@ export const zh: SiteContent = {
       ],
       note: "make up 始终是事实源 —— 一键命令只是对它的封装。它会打印用于登录的 Authorization: Bearer 令牌。",
     },
+    prebuilt: {
+      label: "或：预构建镜像，免 OAuth（amd64 / WSL2）",
+      command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
+      inspectLabel: "查看脚本",
+      caveat:
+        "拉取预构建镜像并自动生成本地令牌 —— 最快，无需 GitHub OAuth 应用，在 amd64 / WSL2 上最合适。这是 legacy-token 试用路径（通过 docker.sock 等同 host-root；自带控制台仅限 localhost），并非 OAuth-first 的生产部署。",
+      manual: {
+        summary: "想先读一遍？用预构建 compose 手动执行：",
+        commands: [
+          "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
+          "# 写一个 .env：AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d",
+        ],
+        note: "脚本会替你完成 .env 合成（见可读源码）。两个文件都由本站托管 —— 无需 clone。仅限 amd64。",
+      },
+    },
     primaryCta: { label: "复制安装命令", href: "#install" },
     secondaryCta: { label: "了解工作流程", href: "#how-it-works" },
   },

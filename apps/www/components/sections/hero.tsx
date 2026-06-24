@@ -25,6 +25,8 @@ export function Hero({
 }) {
   const installCommand = resolveTokens(hero.installCommand);
   const scriptUrl = `https://${siteDomain()}/install.sh`;
+  const prebuiltCommand = resolveTokens(hero.prebuilt.command);
+  const prebuiltScriptUrl = `https://${siteDomain()}/quick-deploy.sh`;
 
   return (
     <Section
@@ -84,6 +86,63 @@ export function Hero({
               {hero.inspectLabel}
             </a>
           </div>
+        </FadeUp>
+
+        <FadeUp delayMs={270} className="mx-auto mt-6 max-w-2xl">
+          <p className="mb-2 text-center font-mono text-xs uppercase tracking-widest text-muted">
+            {hero.prebuilt.label}
+          </p>
+          <CommandBox
+            command={prebuiltCommand}
+            copyLabel={hero.copyLabel}
+            copiedLabel={hero.copiedLabel}
+          />
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-sm">
+            <a
+              href={prebuiltScriptUrl}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="cursor-pointer text-muted underline-offset-4 hover:text-fg hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg focus-visible:ring-offset-2 focus-visible:ring-offset-bg"
+            >
+              {hero.prebuilt.inspectLabel}
+            </a>
+          </div>
+          <p className="mx-auto mt-3 max-w-xl text-center text-xs leading-relaxed text-muted text-pretty">
+            {hero.prebuilt.caveat}
+          </p>
+          <details className="group mt-4 rounded-lg border border-hairline bg-surface/60">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm text-muted transition-colors hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-fg focus-visible:ring-offset-2 focus-visible:ring-offset-bg">
+              <span>{hero.prebuilt.manual.summary}</span>
+              <span
+                aria-hidden="true"
+                className="shrink-0 font-mono text-xs text-muted transition-transform group-open:rotate-180"
+              >
+                ▾
+              </span>
+            </summary>
+            <div className="border-t border-hairline px-4 py-3">
+              <pre className="overflow-x-auto font-mono text-[13px] leading-relaxed text-fg">
+                <code>
+                  {hero.prebuilt.manual.commands
+                    .map((line) => resolveTokens(line))
+                    .map((line, i) => (
+                      <span key={i} className="block">
+                        <span
+                          aria-hidden="true"
+                          className="select-none text-muted"
+                        >
+                          {"$ "}
+                        </span>
+                        {line}
+                      </span>
+                    ))}
+                </code>
+              </pre>
+              <p className="mt-3 text-xs leading-relaxed text-muted">
+                {hero.prebuilt.manual.note}
+              </p>
+            </div>
+          </details>
         </FadeUp>
 
         <FadeUp delayMs={300} className="mx-auto mt-6 max-w-2xl">
