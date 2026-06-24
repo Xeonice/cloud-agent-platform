@@ -5,7 +5,7 @@
 
 ### Bug Fixes
 
-* **terminal:** strip alt-screen on snapshot/tail_replay too (v0.20.6 only did onRaw) ([4221e6c](https://github.com/Xeonice/cloud-agent-platform/commit/4221e6c))
+* **terminal:** strip alt-screen on snapshot/tail_replay too (v0.20.6 only did onRaw) ([#60](https://github.com/Xeonice/cloud-agent-platform/issues/60)) ([4221e6c](https://github.com/Xeonice/cloud-agent-platform/commit/4221e6c))
 
 
 ## [0.20.6](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.5...v0.20.6) (2026-06-24)
