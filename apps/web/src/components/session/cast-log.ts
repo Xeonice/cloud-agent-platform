@@ -50,6 +50,30 @@ export function stripAltScreen(data: string): string {
   return data.replace(ALT_SCREEN_RE, "");
 }
 
+/**
+ * Strip the alternate-screen switch from a RAW byte chunk — the LIVE terminal's
+ * `onRaw` bytes are `Uint8Array` (unlike the cast's string), and the alt-screen
+ * there is the tmux ATTACH CLIENT's own (tmux options can't suppress it), so the
+ * front-end strips it before writing to xterm (fix-live-terminal-scrollback-strip).
+ *
+ * UTF-8-SAFE: maps each byte 1:1 to a char (0–255) via `String.fromCharCode` —
+ * deliberately NOT `TextDecoder("latin1")`, whose WHATWG label is windows-1252 and
+ * would remap 0x80–0x9F and corrupt the round-trip. A multi-byte UTF-8 codepoint
+ * (e.g. Chinese) split across chunks is preserved (its bytes survive as chars and
+ * re-encode unchanged); the ASCII switch is matched by {@link stripAltScreen} and
+ * removed. xterm does its own stateful UTF-8 decode on the result. Returns the
+ * original array unchanged when no switch is present (the common case).
+ */
+export function stripAltScreenBytes(bytes: Uint8Array): Uint8Array {
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]!);
+  const stripped = stripAltScreen(s);
+  if (stripped.length === s.length) return bytes;
+  const out = new Uint8Array(stripped.length);
+  for (let i = 0; i < stripped.length; i++) out[i] = stripped.charCodeAt(i);
+  return out;
+}
+
 /** Parse an asciicast `r` event's data (`"COLSxROWS"`) → geometry, or null. */
 export function parseResizeData(
   data: string,

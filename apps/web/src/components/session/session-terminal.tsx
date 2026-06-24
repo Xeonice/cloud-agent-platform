@@ -52,6 +52,7 @@ import { TerminalSocket, decodeTailReplay } from "@/lib/ws-client";
 import { getClientId } from "@/lib/client-id";
 import { TerminalFallback, type FallbackLine } from "./terminal-fallback";
 import { TerminalCommandInput } from "./terminal-command-input";
+import { stripAltScreenBytes } from "./cast-log";
 
 /** Live socket lifecycle as the terminal-head connection readout reflects it. */
 export type ConnectionState = "connecting" | "open" | "closed" | "error";
@@ -370,8 +371,10 @@ export const SessionTerminal = React.forwardRef<
         // the reconnect high-water mark and ACK ONLY after xterm has flushed the
         // chunk — `lastSeq` must track only bytes the client actually rendered,
         // or reconnect would skip replaying output that arrived while paused or
-        // before xterm mounted.
-        handle.write(bytes, () => {
+        // before xterm mounted. Strip the alt-screen switch first (the tmux attach
+        // client's own — tmux options can't suppress it) so the live stream lands
+        // in the NORMAL buffer and accrues scrollback (fix-live-terminal-scrollback-strip).
+        handle.write(stripAltScreenBytes(bytes), () => {
           lastSeqRef.current = Math.max(lastSeqRef.current, seq);
           socketRef.current?.sendAck(seq);
           // Keep the viewport scrollable as live output accrues (debounced).

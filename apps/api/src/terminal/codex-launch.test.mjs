@@ -141,8 +141,7 @@ async function main() {
   const GOLDEN_DETACHED =
     `tmux new-session -d -s taskb3ee3f63 -c /home/gem/workspace ` +
     `'P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
-    `if [ -n "$P" ]; then ${BASE} "$P"; else ${BASE}; fi'` +
-    `; tmux set-window-option -t taskb3ee3f63 alternate-screen off`;
+    `if [ -n "$P" ]; then ${BASE} "$P"; else ${BASE}; fi'`;
   assert(
     detached === GOLDEN_DETACHED,
     '1.1 GOLDEN: detached codex launch line is byte-exact (mechanism wrapper + $(cat) delivery)',
