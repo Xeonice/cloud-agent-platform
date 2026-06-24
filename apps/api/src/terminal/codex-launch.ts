@@ -127,15 +127,7 @@ export function wrapInDetachedSession(
   innerLine: string,
   workspaceDir = '/home/gem/workspace',
 ): string {
-  // Disable tmux's alternate-screen for this session's window so the attached
-  // client renders the pane in the NORMAL buffer (scroll-up accrues into the
-  // scrollback) instead of the alternate screen. Without this, tmux's alt-screen
-  // overrides codex's `--no-alt-screen` and the live xterm enters its
-  // non-scrollable alternate buffer — the operator can't scroll back through the
-  // running session (fix-live-terminal-scrollback). Session-scoped (`-t <name>`),
-  // NOT `-g`, so the AIO sandbox's own tmux sessions are untouched.
-  const name = detachedSessionName(taskId);
-  return `tmux new-session -d -s ${name} -c ${workspaceDir} '${innerLine}'; tmux set-window-option -t ${name} alternate-screen off`;
+  return `tmux new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}'`;
 }
 
 /**
@@ -163,10 +155,7 @@ export function wrapHeadlessDetachedSession(
   innerLine: string,
   workspaceDir = '/home/gem/workspace',
 ): string {
-  // Same alternate-screen-off rationale as wrapInDetachedSession (the live view of
-  // a headless run must scroll too); session-scoped, appended after new-session.
-  const name = detachedSessionName(taskId);
-  return `tmux new-session -d -s ${name} -c ${workspaceDir} '${innerLine}; echo $? > ${headlessExitFile(taskId)}'; tmux set-window-option -t ${name} alternate-screen off`;
+  return `tmux new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}; echo $? > ${headlessExitFile(taskId)}'`;
 }
 
 /**

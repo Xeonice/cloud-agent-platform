@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { AsciicastEvent } from "@cap/contracts";
 import {
   stripAltScreen,
+  stripAltScreenBytes,
   parseResizeData,
   buildCastOps,
   CAST_TRUNCATION_NOTICE,
@@ -128,5 +129,32 @@ describe("buildCastOps", () => {
     const ops = buildCastOps(events, { maxOutputBytes: 1024 });
     expect(ops).toEqual([{ type: "output", data: "small" }]);
     expect(ops[0]).not.toEqual({ type: "output", data: CAST_TRUNCATION_NOTICE });
+  });
+});
+
+describe("stripAltScreenBytes", () => {
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const dec = (b: Uint8Array) => new TextDecoder().decode(b);
+
+  it("strips the alt-screen switch from a byte chunk", () => {
+    expect(dec(stripAltScreenBytes(enc(`${ESC}[?1049hhello`)))).toBe("hello");
+  });
+
+  it("returns the SAME array (no copy) when no switch is present", () => {
+    const bytes = enc("plain output");
+    expect(stripAltScreenBytes(bytes)).toBe(bytes);
+  });
+
+  it("does not corrupt multi-byte UTF-8 alongside the switch", () => {
+    expect(dec(stripAltScreenBytes(enc(`${ESC}[?1049h你好世界`)))).toBe("你好世界");
+  });
+
+  it("preserves raw multi-byte codepoint bytes (no decode split)", () => {
+    // 你 = E4 BD A0; switch then the raw UTF-8 bytes — byte-level strip must keep them intact
+    const bytes = new Uint8Array([
+      0x1b, 0x5b, 0x3f, 0x31, 0x30, 0x34, 0x39, 0x68, // ESC[?1049h
+      0xe4, 0xbd, 0xa0, // 你
+    ]);
+    expect([...stripAltScreenBytes(bytes)]).toEqual([0xe4, 0xbd, 0xa0]);
   });
 });
