@@ -5,7 +5,7 @@
 
 ### Features
 
-* **console:** render headless tasks as a live conversation, not a JSON terminal ([0c48dbc](https://github.com/Xeonice/cloud-agent-platform/commit/0c48dbc74a252a4b878c44f20356cc6bed26f7a3))
+* **console:** render headless tasks as a live conversation, not a JSON terminal ([#61](https://github.com/Xeonice/cloud-agent-platform/issues/61)) ([0c48dbc](https://github.com/Xeonice/cloud-agent-platform/commit/0c48dbc74a252a4b878c44f20356cc6bed26f7a3))
 
 
 ## [0.20.7](https://github.com/Xeonice/cloud-agent-platform/compare/v0.20.6...v0.20.7) (2026-06-24)
