@@ -59,6 +59,15 @@ export const RuntimeSchema = z.enum(['claude-code', 'codex']);
 export type Runtime = z.infer<typeof RuntimeSchema>;
 
 /**
+ * The execution mode a task runs under (add-headless-execution-track): the console
+ * live-terminal `interactive-pty` vs the programmatic one-shot `headless-exec`
+ * (MCP/`/v1`). Exposed on the task response so the console can branch the session
+ * view (headless-task-conversation-view).
+ */
+export const ExecutionModeSchema = z.enum(['interactive-pty', 'headless-exec']);
+export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
+
+/**
  * The default runtime applied when a create request omits `runtime` and when an
  * existing/persisted task carries no `runtime` value (additive-nullable column).
  * Existing tasks and omitted requests therefore read back as `codex`.
@@ -196,6 +205,14 @@ export const TaskSchema = z.object({
    * fabricated (sent value == readable value).
    */
   runtime: RuntimeSchema.nullable().optional(),
+  /**
+   * The execution mode this task runs under (add-headless-execution-track),
+   * exposed so the console can branch the session view (headless-task-conversation-view):
+   * `interactive-pty` (console live terminal) or `headless-exec` (programmatic
+   * one-shot via MCP/`/v1`). Additive + nullable; a null column reads back as the
+   * default `interactive-pty` (sent value == readable value).
+   */
+  executionMode: ExecutionModeSchema.nullable().optional(),
   /**
    * Opt-in delivery selector echoed from the create body (`none|branch|pr`,
    * default `none`) — add-multi-forge-task-delivery. Read back as the supplied

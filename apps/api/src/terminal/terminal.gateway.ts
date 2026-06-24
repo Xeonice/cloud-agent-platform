@@ -1496,6 +1496,29 @@ export class TerminalGateway
     rows: number,
   ): void {
     if (this.sessionCasts.has(taskId)) return;
+    // headless-task-conversation-view: a HEADLESS task has NO terminal record —
+    // its review surface is the polled conversation, and a recorded codex-exec
+    // JSON stream would be the unreadable artifact this change removes. Resolve the
+    // execution mode async (a registry lookup that resolves well before codex emits
+    // real output — the shell/launch handshake dominates, so an interactive task
+    // loses no real frames), then arm recording ONLY for interactive. headless
+    // leaves no sessionCasts entry, so appendCast is a no-op and the cast endpoint
+    // honestly returns empty for it. `resolveExecutionModeForTask` never throws (it
+    // defaults to interactive-pty), so a resolution hiccup safely still records.
+    void this.resolveExecutionModeForTask(taskId).then((mode) => {
+      if (mode === 'headless-exec') return;
+      this.armCast(taskId, workspaceDir, cols, rows);
+    });
+  }
+
+  /** Register the cast append state + write the asciicast v2 header (interactive only). */
+  private armCast(
+    taskId: string,
+    workspaceDir: string,
+    cols: number,
+    rows: number,
+  ): void {
+    if (this.sessionCasts.has(taskId)) return;
     const castPath = path.join(workspaceDir, SESSION_CAST_FILENAME);
     const entry = { castPath, tail: Promise.resolve(), startMs: Date.now() };
     this.sessionCasts.set(taskId, entry);
