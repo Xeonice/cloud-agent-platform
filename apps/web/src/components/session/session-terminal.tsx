@@ -53,6 +53,7 @@ import { getClientId } from "@/lib/client-id";
 import { TerminalFallback, type FallbackLine } from "./terminal-fallback";
 import { TerminalCommandInput } from "./terminal-command-input";
 import { stripAltScreen, stripAltScreenBytes } from "./cast-log";
+import { isTerminalGeneratedResponse } from "./terminal-input-filter";
 
 /** Live socket lifecycle as the terminal-head connection readout reflects it. */
 export type ConnectionState = "connecting" | "open" | "closed" | "error";
@@ -109,6 +110,9 @@ const XTERM_READY_TIMEOUT_MS = 15_000;
  * live stream so it is not per-chunk.
  */
 const VIEWPORT_SYNC_DEBOUNCE_MS = 120;
+
+/** Large enough for long-running live sessions and the 20k-line reconnect case. */
+const LIVE_TERMINAL_SCROLLBACK = 100_000;
 
 /** The honest fallback notice lines per connection state (no fake output). */
 function fallbackLines(state: ConnectionState): FallbackLine[] {
@@ -197,6 +201,20 @@ export const SessionTerminal = React.forwardRef<
   const claimedRef = React.useRef(false);
   /** Debounce handle for the live viewport scroll-area sync (see syncViewportSoon). */
   const viewportSyncTimerRef = React.useRef<number | null>(null);
+  /** Watchdog that releases the replay-hidden terminal if a reconnect final frame
+   *  never arrives (defensive only; the current server always sends final=true). */
+  const replayWatchdogRef = React.useRef<number | null>(null);
+  /** Reconnect replay writes are asynchronous; keep the terminal hidden until all
+   *  snapshot/tail chunks have flushed, then reveal it already scrolled to bottom.
+   *  Writes are QUEUED and fed one-at-a-time; bulk-writing a multi-MB reconnect
+   *  tail can otherwise leave xterm's callbacks backed up, which keeps the
+   *  terminal hidden and its viewport scroll-area unsynced. */
+  const replayStateRef = React.useRef({
+    active: false,
+    queue: [] as Array<string | Uint8Array>,
+    writing: false,
+    sawFinalTail: false,
+  });
   /** True during a viewport-sync resize nudge so onResize skips sendResize — the
    *  nudge is a LOCAL-ONLY trigger for xterm's syncScrollArea and must NOT perturb
    *  the codex PTY (fix-live-terminal-scrollback). */
@@ -223,6 +241,7 @@ export const SessionTerminal = React.forwardRef<
   // article's fullscreen state for the 全屏/退出全屏 toggle icon.
   const [paused, setPaused] = React.useState(false);
   const [fullscreen, setFullscreen] = React.useState(false);
+  const [replayHidden, setReplayHidden] = React.useState(false);
 
   // Keep lifted-state callbacks fresh without re-running the mount effect.
   const onConnectionChangeRef = React.useRef(onConnectionChange);
@@ -243,23 +262,119 @@ export const SessionTerminal = React.forwardRef<
   // bursty live stream). The trigger is a LOCAL-ONLY resize nudge: `cols`
   // unchanged (no wrap reflow), `rows` +1 then back; `suppressResizeRef` makes
   // onResize skip sendResize so the codex PTY is never perturbed by the nudge.
+  const syncViewportNow = React.useCallback(() => {
+    const handle = handleRef.current;
+    if (!handle) return;
+    suppressResizeRef.current = true;
+    try {
+      handle.syncViewport({ preserveScroll: true });
+    } finally {
+      suppressResizeRef.current = false;
+    }
+  }, []);
+
   const syncViewportSoon = React.useCallback(() => {
     if (viewportSyncTimerRef.current !== null) return;
     viewportSyncTimerRef.current = window.setTimeout(() => {
       viewportSyncTimerRef.current = null;
-      const handle = handleRef.current;
-      const g = handle?.geometry();
-      if (!handle || !g) return;
-      suppressResizeRef.current = true;
-      handle.resize(g.cols, g.rows + 1);
-      handle.resize(g.cols, g.rows);
-      suppressResizeRef.current = false;
+      syncViewportNow();
     }, VIEWPORT_SYNC_DEBOUNCE_MS);
-  }, []);
+  }, [syncViewportNow]);
   // Held in a ref so the once-constructed socket's onRaw closure always calls the
   // latest (stable) syncViewportSoon without re-running the socket effect.
   const syncViewportSoonRef = React.useRef(syncViewportSoon);
   syncViewportSoonRef.current = syncViewportSoon;
+  const syncViewportNowRef = React.useRef(syncViewportNow);
+  syncViewportNowRef.current = syncViewportNow;
+
+  const releaseReplayHidden = React.useCallback(() => {
+    const state = replayStateRef.current;
+    state.active = false;
+    state.queue = [];
+    state.writing = false;
+    state.sawFinalTail = false;
+    if (replayWatchdogRef.current !== null) {
+      window.clearTimeout(replayWatchdogRef.current);
+      replayWatchdogRef.current = null;
+    }
+    syncViewportNowRef.current();
+    handleRef.current?.scrollToBottom();
+    handleRef.current?.focus();
+    setReplayHidden(false);
+  }, []);
+
+  const maybeFinishReconnectReplay = React.useCallback(() => {
+    const state = replayStateRef.current;
+    if (
+      !state.active ||
+      !state.sawFinalTail ||
+      state.writing ||
+      state.queue.length > 0
+    ) {
+      return;
+    }
+    releaseReplayHidden();
+  }, [releaseReplayHidden]);
+
+  const pumpReconnectReplayRef = React.useRef<() => void>(() => undefined);
+
+  const pumpReconnectReplay = React.useCallback(() => {
+    const state = replayStateRef.current;
+    if (!state.active || state.writing) return;
+    const next = state.queue.shift();
+    if (!next) {
+      maybeFinishReconnectReplay();
+      return;
+    }
+    const handle = handleRef.current;
+    if (!handle) {
+      state.queue.unshift(next);
+      return;
+    }
+    state.writing = true;
+    handle.write(next, () => {
+      state.writing = false;
+      syncViewportSoonRef.current();
+      pumpReconnectReplayRef.current();
+    });
+  }, [maybeFinishReconnectReplay]);
+  pumpReconnectReplayRef.current = pumpReconnectReplay;
+
+  const beginReconnectReplay = React.useCallback(() => {
+    const state = replayStateRef.current;
+    if (!state.active) {
+      state.active = true;
+      state.queue = [];
+      state.writing = false;
+      state.sawFinalTail = false;
+      setReplayHidden(true);
+    }
+    if (replayWatchdogRef.current !== null) {
+      window.clearTimeout(replayWatchdogRef.current);
+    }
+    replayWatchdogRef.current = window.setTimeout(() => {
+      // Do not reset the replay state here. A very large reconnect tail can take
+      // longer than the watchdog to parse; reveal the latest visible frame so the
+      // terminal is not stuck black, but still let the queue finish and run the
+      // final scroll/focus sync when xterm catches up.
+      setReplayHidden(false);
+      handleRef.current?.focus();
+      syncViewportSoonRef.current();
+    }, 15_000);
+  }, []);
+
+  const enqueueReconnectReplay = React.useCallback(
+    (data: string | Uint8Array): void => {
+      const byteLength = typeof data === "string" ? data.length : data.byteLength;
+      if (byteLength === 0) {
+        maybeFinishReconnectReplay();
+        return;
+      }
+      replayStateRef.current.queue.push(data);
+      pumpReconnectReplayRef.current();
+    },
+    [maybeFinishReconnectReplay],
+  );
 
   // ── Resolve the terminal theme from CSS vars (CLIENT-ONLY) ────────────────
   React.useEffect(() => {
@@ -301,16 +416,20 @@ export const SessionTerminal = React.forwardRef<
           // lands in the normal buffer — otherwise the snapshot puts xterm into the
           // alternate buffer and every later onRaw write (even stripped) accrues no
           // scrollback (fix-live-terminal-scrollback-strip). snapshot.data is a string.
-          handleRef.current?.write(stripAltScreen(frame.data));
+          beginReconnectReplay();
+          enqueueReconnectReplay(stripAltScreen(frame.data));
           lastSeqRef.current = frame.seq;
           break;
         }
         case "tail_replay": {
           // Same alt-screen strip on the reconnect tail (Uint8Array bytes).
-          handleRef.current?.write(
-            stripAltScreenBytes(decodeTailReplay(frame.data)),
-          );
+          beginReconnectReplay();
+          enqueueReconnectReplay(stripAltScreenBytes(decodeTailReplay(frame.data)));
           lastSeqRef.current = Math.max(lastSeqRef.current, frame.seq);
+          if (frame.final) {
+            replayStateRef.current.sawFinalTail = true;
+            maybeFinishReconnectReplay();
+          }
           break;
         }
         case "lease_state": {
@@ -358,13 +477,18 @@ export const SessionTerminal = React.forwardRef<
     },
     // `taskId` is read in the lease_state guard, so the closure must track it
     // (the route can swap params without remounting this component).
-    [taskId],
+    [beginReconnectReplay, enqueueReconnectReplay, maybeFinishReconnectReplay, taskId],
   );
   const handleControlRef = React.useRef(handleControl);
   handleControlRef.current = handleControl;
 
   // ── Construct the socket + wire handlers (CLIENT-ONLY) ────────────────────
   React.useEffect(() => {
+    replayStateRef.current.active = false;
+    replayStateRef.current.queue = [];
+    replayStateRef.current.writing = false;
+    replayStateRef.current.sawFinalTail = false;
+    setReplayHidden(false);
     const socket = new TerminalSocket(taskId, {
       onRaw(bytes, seq) {
         const handle = handleRef.current;
@@ -441,6 +565,10 @@ export const SessionTerminal = React.forwardRef<
       if (viewportSyncTimerRef.current !== null) {
         window.clearTimeout(viewportSyncTimerRef.current);
         viewportSyncTimerRef.current = null;
+      }
+      if (replayWatchdogRef.current !== null) {
+        window.clearTimeout(replayWatchdogRef.current);
+        replayWatchdogRef.current = null;
       }
     };
   }, [taskId, setConnectionState]);
@@ -743,7 +871,8 @@ export const SessionTerminal = React.forwardRef<
             fontSize={fontSize}
             lineHeight={1.45}
             fontFamily={fontFamily}
-            className="h-full"
+            scrollback={LIVE_TERMINAL_SCROLLBACK}
+            className={`h-full ${replayHidden ? "opacity-0" : ""}`}
             onReady={(handle) => {
               handleRef.current = handle;
               setXtermReady(true);
@@ -753,6 +882,7 @@ export const SessionTerminal = React.forwardRef<
               // <Terminal> stays MOUNTED under the overlay, this onReady DOES fire
               // even after the flip (unlike the prior sibling-unmount structure).
               setXtermFailed(false);
+              pumpReconnectReplayRef.current();
             }}
             onResize={(geometry: TerminalGeometry) => {
               // Skip the local-only viewport-sync nudge (rows ±1) — it must not
@@ -768,6 +898,9 @@ export const SessionTerminal = React.forwardRef<
               // operator is the writer even if a stale connection still held the
               // lease. xterm already encodes Enter as `\r`, so NO newline
               // translation here — a real Enter submits codex's composer.
+              if (isTerminalGeneratedResponse(data)) {
+                return;
+              }
               const sock = socketRef.current;
               if (!sock) return;
               if (!claimedRef.current) {

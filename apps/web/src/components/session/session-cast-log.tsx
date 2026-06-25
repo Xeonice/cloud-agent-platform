@@ -148,15 +148,10 @@ export function SessionCastLog({
       // The paced (watermark) fill leaves xterm's viewport scroll-area UNSYNCED:
       // the buffer holds scrollback but the viewport height is stuck at one screen,
       // so the log isn't scrollable (measured: baseY 199 yet vp.scrollHeight ==
-      // clientHeight). scrollToTop()/refresh() do NOT sync it; a resize nudge does
-      // (it triggers xterm's syncScrollArea). Keep `cols` unchanged so there is no
-      // wrap reflow (the cast's cursor-addressed redraws stay correct), and revert
-      // the transient extra row immediately.
-      const g = handle.geometry();
-      if (g) {
-        handle.resize(g.cols, g.rows + 1);
-        handle.resize(g.cols, g.rows);
-      }
+      // clientHeight). scrollToTop()/refresh() do NOT sync it; syncViewport()
+      // triggers xterm's resize path while keeping `cols` unchanged so there is
+      // no wrap reflow (the cast's cursor-addressed redraws stay correct).
+      handle.syncViewport();
       handle.scrollToTop();
       setFeedingDone(true);
     };

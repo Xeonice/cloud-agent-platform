@@ -101,6 +101,14 @@ export async function readSessionLogTail(workspaceDir: string): Promise<string> 
 
 /** Default cadence for capturing a fresh SerializeAddon snapshot, in ms. */
 export const DEFAULT_SNAPSHOT_INTERVAL_MS = 2_000;
+/**
+ * Bytes replayed from `session.log` for a fresh browser connection (`fromSeq=0`).
+ *
+ * A SerializeAddon snapshot is intentionally just the current frame, not the
+ * scrollback. For a hard refresh we prefer replaying recent log bytes so xterm
+ * rebuilds a useful scrollback buffer, while bounding worst-case reconnect cost.
+ */
+export const DEFAULT_FRESH_RECONNECT_REPLAY_BYTES = 16 * 1024 * 1024;
 
 /**
  * The minimal headless terminal surface this module snapshots. A real
@@ -134,6 +142,11 @@ export interface CapturedSnapshot {
 export interface SnapshotManagerOptions {
   /** Snapshot cadence in ms (defaults to {@link DEFAULT_SNAPSHOT_INTERVAL_MS}). */
   intervalMs?: number;
+  /**
+   * Max bytes replayed from the end of `session.log` for a fresh connection.
+   * Defaults to {@link DEFAULT_FRESH_RECONNECT_REPLAY_BYTES}.
+   */
+  freshReplayBytes?: number;
   /** Injectable clock (epoch ms) for deterministic tests. */
   now?: () => number;
 }
@@ -155,6 +168,7 @@ export class SnapshotManager {
   private readonly terminal: HeadlessTerminal;
   private readonly logPath: string;
   private readonly intervalMs: number;
+  private readonly freshReplayBytes: number;
   private readonly now: () => number;
 
   /** Cumulative count of raw bytes fed to the headless terminal == log offset. */
@@ -175,6 +189,8 @@ export class SnapshotManager {
     this.terminal = terminal;
     this.logPath = path.join(workspaceDir, SESSION_LOG_FILENAME);
     this.intervalMs = options.intervalMs ?? DEFAULT_SNAPSHOT_INTERVAL_MS;
+    this.freshReplayBytes =
+      options.freshReplayBytes ?? DEFAULT_FRESH_RECONNECT_REPLAY_BYTES;
     this.now = options.now ?? Date.now;
   }
 
@@ -258,9 +274,11 @@ export class SnapshotManager {
   }
 
   /**
-   * Build the ordered frames that restore a reconnecting client: the latest
-   * snapshot (as a contracts `SnapshotFrame`) followed by `tail_replay` frames
-   * carrying the `session.log` bytes appended after the snapshot's offset.
+   * Build the ordered frames that restore a reconnecting client.
+   *
+   * Fresh browser loads (`fromSeq=0`) replay a bounded suffix of `session.log`
+   * without a snapshot so the client xterm rebuilds scrollback. Incremental
+   * reconnects (`fromSeq>0`) keep the faster snapshot + tail path.
    *
    * Size reconciliation: the snapshot frame carries the cols/rows it was captured
    * at; the reconnecting client compares those to its own geometry (optionally
@@ -272,18 +290,25 @@ export class SnapshotManager {
    */
   async buildReconnectFrames(opts: ReconnectOptions = {}): Promise<WsControlFrame[]> {
     const frames: WsControlFrame[] = [];
+    const fromSeq = opts.fromSeq ?? 0;
+
+    if (fromSeq <= 0) {
+      const tailFrom = await this.freshReplayStart();
+      return this.readTailFrames(tailFrom, opts.chunkBytes);
+    }
+
     const snapshot = this.latest;
 
     // 1. Deliver the most recent snapshot first, if one exists. The client must
     //    have at most this snapshot's coverage already to benefit from it.
     let tailFrom: number;
-    if (snapshot && (opts.fromSeq ?? 0) <= snapshot.seq) {
+    if (snapshot && fromSeq <= snapshot.seq) {
       frames.push(toSnapshotFrame(snapshot));
       tailFrom = snapshot.seq;
     } else {
       // No usable snapshot (none captured, or the client is already past it):
       // replay raw tail from where the client left off.
-      tailFrom = opts.fromSeq ?? 0;
+      tailFrom = fromSeq;
     }
 
     // 2. Replay the session.log tail appended after `tailFrom`, reconciling the
@@ -291,6 +316,16 @@ export class SnapshotManager {
     const tailFrames = await this.readTailFrames(tailFrom, opts.chunkBytes);
     frames.push(...tailFrames);
     return frames;
+  }
+
+  /** Start offset for a fresh reconnect's bounded log replay. */
+  private async freshReplayStart(): Promise<number> {
+    try {
+      const { size } = await stat(this.logPath);
+      return Math.max(0, size - Math.max(0, this.freshReplayBytes));
+    } catch {
+      return 0;
+    }
   }
 
   /**

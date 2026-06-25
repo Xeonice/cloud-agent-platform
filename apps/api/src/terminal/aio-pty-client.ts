@@ -199,7 +199,16 @@ export class AioPtyClient implements TerminalPty {
   private readonly dataListeners = new Set<(chunk: string) => void>();
 
   /** The outbound terminal WebSocket into the sandbox. */
-  private readonly socket: WebSocket;
+  private socket: WebSocket;
+
+  /** The sandbox terminal WS URL, reused when a closed bridge must re-attach. */
+  private readonly wsUrl: string;
+
+  /** Operator input collected while the sandbox terminal WS is being re-opened. */
+  private readonly pendingInput: string[] = [];
+
+  /** True while a replacement sandbox terminal WS is in flight. */
+  private reconnectingForInput = false;
 
   /** True once the sandbox sent `session_id` then `ready` (terminal is live). */
   private established = false;
@@ -331,6 +340,7 @@ export class AioPtyClient implements TerminalPty {
       ExecutionMode | null | undefined
     >,
   ) {
+    this.wsUrl = wsUrl;
     this.sessionName = detachedSessionName(taskId);
     // Connect WITHOUT any `?session_id=` query parameter so the sandbox creates a
     // fresh tmux-backed AIO shell. Rejoining an existing AIO session by passing
@@ -338,12 +348,7 @@ export class AioPtyClient implements TerminalPty {
     // lives in a DETACHED tmux session we launch-or-attach to over a fresh WS
     // (survive-api-redeploy D1/D2), and `SnapshotManager` (above the seam) owns
     // operator reconnect/restore.
-    this.socket = new WebSocket(wsUrl);
-    this.socket.on('message', (raw) => this.onSocketMessage(raw));
-    this.socket.on('close', () => this.onSocketClose());
-    this.socket.on('error', (err) => {
-      this.logger.warn(`task ${this.taskId}: sandbox terminal WS error: ${err.message}`);
-    });
+    this.socket = this.openSocket();
   }
 
   // -------------------------------------------------------------------------
@@ -363,6 +368,43 @@ export class AioPtyClient implements TerminalPty {
    */
   write(data: string): void {
     this.sendInput(data);
+  }
+
+  /** Open a sandbox terminal WS and fence late events from superseded sockets. */
+  private openSocket(): WebSocket {
+    const socket = new WebSocket(this.wsUrl);
+    socket.on('message', (raw) => {
+      if (socket !== this.socket) return;
+      this.onSocketMessage(raw);
+    });
+    socket.on('close', () => {
+      if (socket !== this.socket) return;
+      this.onSocketClose();
+    });
+    socket.on('error', (err) => {
+      if (socket !== this.socket) return;
+      this.logger.warn(`task ${this.taskId}: sandbox terminal WS error: ${err.message}`);
+    });
+    return socket;
+  }
+
+  /**
+   * Re-open the sandbox terminal WS on demand when an operator types after the
+   * previous bridge detached. The detached tmux session remains authoritative;
+   * the new WS only re-attaches to it and then drains pending keystrokes.
+   */
+  private reconnectForInput(): void {
+    if (this.reconnectingForInput) return;
+    if (this.socket.readyState === WebSocket.CONNECTING) return;
+    this.reconnectingForInput = true;
+    this.established = false;
+    this.sawSessionId = false;
+    try {
+      this.socket.close();
+    } catch {
+      // Best-effort; closed sockets may throw on close.
+    }
+    this.socket = this.openSocket();
   }
 
   /**
@@ -525,6 +567,22 @@ export class AioPtyClient implements TerminalPty {
   /** Send the `tmux attach -t <sessionName>` input that joins the live session. */
   private attachSession(): void {
     this.sendInput(`tmux attach -t ${this.sessionName}\n`);
+    this.flushPendingInputSoon();
+  }
+
+  /** Drain operator input queued while the sandbox terminal WS was re-opening. */
+  private flushPendingInputSoon(): void {
+    if (this.pendingInput.length === 0) return;
+    setTimeout(() => {
+      if (this.socket.readyState !== WebSocket.OPEN) {
+        this.reconnectForInput();
+        return;
+      }
+      const pending = this.pendingInput.splice(0);
+      for (const data of pending) {
+        this.sendInput(data);
+      }
+    }, 100);
   }
 
   /**
@@ -659,6 +717,7 @@ export class AioPtyClient implements TerminalPty {
         // replay-only terminal does neither. Best-effort: an error is logged,
         // never thrown, so it cannot break the WS message handler.
         this.established = true;
+        this.reconnectingForInput = false;
         if (this.mode === 'launch-or-attach') {
           void this.launchOrAttachOnReady();
         }
@@ -1047,13 +1106,18 @@ export class AioPtyClient implements TerminalPty {
 
   /** Send an AIO `{type:"input",data}` frame to the sandbox. */
   private sendInput(data: string): void {
-    this.sendJson({ type: 'input', data });
+    const sent = this.sendJson({ type: 'input', data });
+    if (!sent) {
+      this.pendingInput.push(data);
+      this.reconnectForInput();
+    }
   }
 
   /** Serialize and send an AIO JSON frame if the socket is open. */
-  private sendJson(frame: Record<string, unknown>): void {
-    if (this.socket.readyState !== WebSocket.OPEN) return;
+  private sendJson(frame: Record<string, unknown>): boolean {
+    if (this.socket.readyState !== WebSocket.OPEN) return false;
     this.socket.send(JSON.stringify(frame));
+    return true;
   }
 
   /** Parse an inbound `ws` payload into an AIO JSON frame, or null to drop it. */

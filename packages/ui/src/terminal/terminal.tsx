@@ -56,6 +56,21 @@ export interface TerminalHandle {
    */
   scrollToTop(): void;
   /**
+   * Move the viewport to the bottom of the scrollback (the current live frame).
+   * Used after reconnect replay so a refreshed live terminal lands on the latest
+   * screen instead of briefly showing the replay fill position.
+   */
+  scrollToBottom(): void;
+  /**
+   * Force xterm to resync its internal scroll area with the buffer. Long,
+   * paced writes can leave the DOM viewport height stale until xterm runs its
+   * resize path. When `preserveScroll` is true, a user-scrolled history position
+   * is restored after the nudge instead of snapping back to the live bottom.
+   */
+  syncViewport(options?: { preserveScroll?: boolean }): void;
+  /** Repaint the currently visible rows. */
+  refresh(): void;
+  /**
    * Move keyboard focus into the terminal (xterm's public `Terminal.focus()`,
    * which targets its hidden helper textarea). Scoped to THIS instance, so
    * consumers never reach for an unscoped `document.querySelector` on xterm's
@@ -102,6 +117,14 @@ export interface TerminalProps {
    * so the live canvas matches the prototype's `.xterm-host`/`.terminal-body`.
    */
   fontFamily?: string;
+}
+
+function refreshVisibleRows(term: XTerm): void {
+  try {
+    term.refresh(0, Math.max(0, term.rows - 1));
+  } catch {
+    // Ignore renderer refresh failures during teardown.
+  }
 }
 
 export function Terminal({
@@ -206,6 +229,57 @@ export function Terminal({
       fitRef.current = fitAddon;
       serializeRef.current = serializeAddon;
 
+      const viewport = container.querySelector<HTMLElement>(".xterm-viewport");
+      let viewportScrollRaf: number | null = null;
+      let syncingViewportScroll = false;
+      if (viewport) {
+        const onViewportScroll = (): void => {
+          if (syncingViewportScroll || viewportScrollRaf !== null) return;
+          viewportScrollRaf = window.requestAnimationFrame(() => {
+            viewportScrollRaf = null;
+            const maxScrollTop = viewport.scrollHeight - viewport.clientHeight;
+            const maxLine = term.buffer.active.baseY;
+            if (maxScrollTop <= 0 || maxLine <= 0) return;
+            const targetLine = Math.max(
+              0,
+              Math.min(
+                maxLine,
+                Math.round((viewport.scrollTop / maxScrollTop) * maxLine),
+              ),
+            );
+            if (targetLine !== term.buffer.active.viewportY) {
+              syncingViewportScroll = true;
+              try {
+                term.scrollToLine(targetLine);
+              } catch {
+                // Ignore transient invalid scroll positions while xterm resizes.
+              } finally {
+                window.requestAnimationFrame(() => {
+                  syncingViewportScroll = false;
+                });
+              }
+            }
+            refreshVisibleRows(term);
+          });
+        };
+        viewport.addEventListener("scroll", onViewportScroll, { passive: true });
+        disposables.push({
+          dispose() {
+            viewport.removeEventListener("scroll", onViewportScroll);
+            if (viewportScrollRaf !== null) {
+              window.cancelAnimationFrame(viewportScrollRaf);
+              viewportScrollRaf = null;
+            }
+          },
+        });
+      }
+
+      disposables.push(
+        term.onScroll(() => {
+          refreshVisibleRows(term);
+        }),
+      );
+
       // Keystroke input → parent (forwarded through the write-lock upstream).
       disposables.push(
         term.onData((data) => {
@@ -266,6 +340,39 @@ export function Terminal({
         },
         scrollToTop() {
           term.scrollToTop();
+        },
+        scrollToBottom() {
+          term.scrollToBottom();
+        },
+        syncViewport(options) {
+          const preserveScroll = options?.preserveScroll ?? false;
+          const viewportY = term.buffer.active.viewportY;
+          const wasAtBottom = viewportY >= term.buffer.active.baseY;
+          const cols = term.cols;
+          const rows = term.rows;
+          try {
+            term.resize(cols, rows + 1);
+            term.resize(cols, rows);
+          } catch {
+            return;
+          }
+          if (preserveScroll && !wasAtBottom) {
+            try {
+              term.scrollToLine(viewportY);
+            } catch {
+              // Ignore stale viewport positions after a trim/resize race.
+            }
+          } else {
+            term.scrollToBottom();
+          }
+          try {
+            refreshVisibleRows(term);
+          } catch {
+            // Ignore renderer refresh failures during teardown.
+          }
+        },
+        refresh() {
+          refreshVisibleRows(term);
         },
         focus() {
           term.focus();
