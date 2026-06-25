@@ -36,7 +36,6 @@ import { Logger } from '@nestjs/common';
 import WebSocket from 'ws';
 import type { TerminalPty } from './terminal.gateway';
 import {
-  argvDisablesHooks,
   buildDetachedCodexLaunchLine,
   buildHasSessionCommand,
   detachedSessionName,
@@ -92,19 +91,13 @@ const SYNTHETIC_CPR_REPLY = '\x1b[1;1R';
 
 /**
  * The codex launch argv injected in-shell over `/v1/shell/ws` (harden-aio-execution
- * integration task 6.1). Updated for codex 0.131 (the old `--full-auto` was
- * REMOVED upstream — 0.131 rejects it with "unexpected argument", verified live):
+ * integration task 6.1):
  *   - `-C /home/gem/workspace` runs codex in the cloned task repo (the
  *     /v1/shell/ws shell's cwd is HOME=/home/gem, not the clone dir).
- *   - `--ask-for-approval never --sandbox danger-full-access` is the 0.131
- *     non-interactive auto-run equivalent. LONG-form `--sandbox` is deliberate:
- *     the {@link launchCodex} guard rejects `-s`/`bypass-approvals`/`--yolo`, and
- *     `--sandbox`/`--ask-for-approval` clear it.
- *   - `--dangerously-bypass-hook-trust` trusts the baked `~/.codex/hooks.json`
- *     non-interactively. NOTE: it does NOT skip the DIRECTORY-trust prompt — that
- *     is handled out-of-band by writing `~/.codex/config.toml`
- *     `[projects."/home/gem/workspace"] trust_level="trusted"` at provision time
- *     (AioSandboxProvider), NOT via a launch flag.
+ *   - `--dangerously-bypass-approvals-and-sandbox` is Codex's documented
+ *     YOLO-style launch mode, intentionally skipping approvals and the inner
+ *     Codex sandbox because the platform already runs each task in an isolated
+ *     AIO container.
  *   - `--no-alt-screen` runs codex's TUI in INLINE mode (no alternate screen), so
  *     its output stays in the NORMAL buffer and the live xterm keeps a scrollable
  *     history. codex defaults to the alternate screen, which by spec has NO
@@ -124,7 +117,7 @@ const SYNTHETIC_CPR_REPLY = '\x1b[1;1R';
  * auto-submit (aio-codex-prompt-autostart), preserved WITHIN the detached session.
  */
 const DEFAULT_CODEX_LAUNCH_ARGV =
-  'codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
+  'codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox';
 
 /**
  * The Enter key (carriage return) codex's TUI composer submits on. Injected ONCE
@@ -471,8 +464,8 @@ export class AioPtyClient implements TerminalPty {
     // RESOLVED runtime (codex OR claude-code): build the detached-tmux launch line
     // from the runtime itself (it owns the agent argv + env + `$(cat <prompt-file>)`
     // shape — for codex `CodexRuntime.buildLaunchLine` wraps the SAME
-    // `CODEX_LAUNCH_ARGV` via the SAME `buildDetachedCodexLaunchLine`, including the
-    // hook-disabling guard) and run it over the same WS-shell input + attach.
+    // `CODEX_LAUNCH_ARGV` via the SAME `buildDetachedCodexLaunchLine`) and run it
+    // over the same WS-shell input + attach.
     const launchCtx: LaunchContext = {
       taskId: this.taskId,
       workspaceDir: CLAUDE_WORKSPACE_DIR,
@@ -528,19 +521,6 @@ export class AioPtyClient implements TerminalPty {
      */
     armAutoSubmit = true,
   ): void {
-    // Guard: never launch codex with a flag that DISABLES hooks. `-s` /
-    // bypass-approvals turn the baked approval hooks off, which would fail OPEN
-    // on approvals; refuse rather than launch an unguarded agent.
-    // Guard inspects ONLY the fixed launch flags (`argv`), never the operator
-    // prompt text — the prompt rides the injected file referenced via
-    // `"$(cat …)"` inside buildCodexLaunchLine, so a prompt that merely mentions
-    // `-s`/`--yolo`/`bypass-approvals` cannot false-positive here. Wrapping the
-    // line in tmux does NOT change what the guard sees: it still inspects `argv`.
-    if (argvDisablesHooks(argv)) {
-      throw new Error(
-        `refusing to launch codex with hook-disabling flags (-s / --yolo / bypass-approvals would fail open on approvals): ${argv}`,
-      );
-    }
     // Create the detached session carrying codex with the task prompt PRE-FILLED
     // (when one was injected at provision time) without inlining the prompt text,
     // then attach so its output streams here and the output-quiescence trigger in

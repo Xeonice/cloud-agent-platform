@@ -479,7 +479,7 @@ test('E. codex starts in the AIO sandbox (AioPtyClient CPR injection unblocks cr
 // Like codex (test E), claude runs through the
 // orchestrator's runtime auto-launch: the provider injects CLAUDE_CODE_OAUTH_TOKEN
 // + CLAUDE_CODE_SANDBOXED + the pre-seeded ~/.claude.json, then buildLaunchLine
-// runs `claude --permission-mode acceptEdits "<prompt>"`. So this test does NOT
+// runs `claude --dangerously-skip-permissions "<prompt>"`. So this test does NOT
 // type a launch command — it creates a `claude-code` task with a deterministic
 // prompt and waits for the AUTO-RUN answer to stream back, proving the clean-env
 // OAuth-token auth + the auto-submitted positional prompt + the inline-buffer

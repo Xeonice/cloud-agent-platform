@@ -1,5 +1,4 @@
 import {
-  argvDisablesHooks,
   buildDetachedCodexLaunchLine,
   buildHasSessionCommand,
   CODEX_PROMPT_FILE_PATH,
@@ -50,16 +49,16 @@ export class CodexRuntime implements AgentRuntime {
   /**
    * The codex launch argv — the SAME base string the `AioPtyClient` uses
    * ({@link DEFAULT_CODEX_LAUNCH_ARGV}) and the derived image bakes as
-   * `CODEX_LAUNCH_ARGV`. 0.131 non-interactive auto-run:
-   * `--ask-for-approval never --sandbox danger-full-access` +
-   * `--dangerously-bypass-hook-trust`, run in the cloned workspace via `-C`.
+   * `CODEX_LAUNCH_ARGV`. The launch uses Codex's documented YOLO-style bypass
+   * flag (`--dangerously-bypass-approvals-and-sandbox`) so task agents do not
+   * stop for per-command approvals inside the already-isolated per-task sandbox.
    * `--no-alt-screen` runs the TUI INLINE (normal buffer) so the live xterm keeps a
    * scrollable history — codex's default alternate screen has NO scrollback by spec,
    * so operators could not scroll up in the live terminal (codex 0.131 flag:
    * "inline mode, preserving terminal scrollback history").
    */
   static readonly DEFAULT_CODEX_LAUNCH_ARGV =
-    'codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
+    'codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox';
 
   /** The codex `~/.codex` directory the auth.json is written into. */
   private static readonly CODEX_HOME_DIR = '/home/gem/.codex';
@@ -95,17 +94,6 @@ export class CodexRuntime implements AgentRuntime {
     // detached named tmux session whose inner line reads the prompt file via
     // `$(cat …)` and passes it positionally. Workspace cwd is `ctx.workspaceDir`.
     const argv = this.resolveArgv();
-    // VR-5: preserve the hook-disabling guard that lived in `launchCodex` — never
-    // launch codex with a flag that turns the baked approval hooks off (`-s` /
-    // `--yolo` / bypass-approvals would fail OPEN on approvals). The guard inspects
-    // ONLY the fixed `argv`, never the operator prompt (which rides the `$(cat)`
-    // file), so it cannot false-positive on prompt text. Moved here so codex driven
-    // THROUGH this port keeps the guard the inline path had.
-    if (argvDisablesHooks(argv)) {
-      throw new Error(
-        `refusing to launch codex with hook-disabling flags (-s / --yolo / bypass-approvals would fail open on approvals): ${argv}`,
-      );
-    }
     return buildDetachedCodexLaunchLine(
       ctx.taskId,
       argv,

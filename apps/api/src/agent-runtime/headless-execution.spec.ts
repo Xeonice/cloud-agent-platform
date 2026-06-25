@@ -61,6 +61,7 @@ test('ClaudeCodeRuntime.buildHeadlessLine is claude -p stream-json with --sessio
   assert.match(line, /claude -p/);
   assert.match(line, /--output-format stream-json/);
   assert.match(line, /--verbose/); // stream-json REQUIRES --verbose — pin it
+  assert.match(line, /--dangerously-skip-permissions/);
   assert.match(line, new RegExp(`--session-id ${CTX.sessionId}`));
   assert.match(line, /< \/dev\/null/);
 });

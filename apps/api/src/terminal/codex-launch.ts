@@ -15,20 +15,6 @@
 export const CODEX_PROMPT_FILE_PATH = '/home/gem/.codex/task-prompt.txt';
 
 /**
- * True when `argv` carries a flag that DISABLES codex's approval hooks
- * (`-s` / `--yolo` / `bypass-approvals`) — launching with these would fail OPEN
- * on approvals. The bridge refuses such an argv.
- *
- * This inspects ONLY the fixed launch flags. The operator prompt text is NEVER
- * part of `argv` (it rides the injected file referenced via `"$(cat …)"`), so a
- * prompt that merely MENTIONS `--yolo`/`-s`/`bypass-approvals` can never trip
- * this guard.
- */
-export function argvDisablesHooks(argv: string): boolean {
-  return /(^|\s)-s(\s|$)|bypass-approvals|(^|\s)--yolo(\s|$)/.test(argv);
-}
-
-/**
  * Build the in-shell codex launch line that PRE-FILLS the composer with the
  * task prompt (when one was injected) WITHOUT inlining the prompt text into the
  * command line.
@@ -45,9 +31,8 @@ export function argvDisablesHooks(argv: string): boolean {
  * - A missing/empty file (`2>/dev/null` + `[ -n "$P" ]`) launches codex with NO
  *   positional argument — a blank composer — rather than an empty-string arg,
  *   the documented degradation when there is no prompt or injection was skipped.
- * - The prompt text never appears in the literal command, so the hook-disabling
- *   guard ({@link argvDisablesHooks}) — which inspects `argv` — cannot false-
- *   positive on prompt content.
+ * - The prompt text never appears in the literal command, so launch flags and
+ *   prompt content cannot be confused with each other.
  */
 export function buildCodexLaunchLine(
   baseArgv: string,
@@ -97,8 +82,8 @@ export function detachedSessionName(taskId: string): string {
  * Single-quote safety: the inner line is fixed launch text (no operator prompt is
  * ever inlined — the prompt rides the injected file), so it contains no single
  * quote; `'<line>'` is therefore a clean single-quoted shell word. The
- * hook-disabling guard ({@link argvDisablesHooks}) still inspects ONLY the fixed
- * `argv`, so wrapping in tmux changes nothing for that guard.
+ * prompt content never enters `baseArgv`, so wrapping in tmux cannot turn
+ * operator free text into shell flags.
  */
 export function buildDetachedCodexLaunchLine(
   taskId: string,

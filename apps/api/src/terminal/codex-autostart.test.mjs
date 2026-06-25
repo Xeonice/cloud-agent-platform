@@ -241,14 +241,9 @@ async function main() {
         'fresh launch wraps codex in a DETACHED named tmux session',
       );
       assert(launch.includes('if [ -n "$P" ]'), 'launch line branches on a non-empty prompt');
-      // The hook-disabling forms are codex `--yolo` / `bypass-approvals` / a codex
-      // `-s` flag. (tmux's own `-s <session-name>` is NOT a codex flag and must not
-      // be mistaken for one — so match `codex -s`, not a bare ` -s `.)
       assert(
-        !launch.includes('--yolo') &&
-          !launch.includes('bypass-approvals') &&
-          !/\bcodex\s+-s\b/.test(launch),
-        'launch line carries no hook-disabling codex flags',
+        launch.includes('--dangerously-bypass-approvals-and-sandbox'),
+        'launch line carries the documented Codex bypass/YOLO flag',
       );
     }
     assert(

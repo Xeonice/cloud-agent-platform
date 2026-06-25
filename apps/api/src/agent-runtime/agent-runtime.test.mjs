@@ -9,8 +9,8 @@
  *     a mid-turn `tool_use` is NOT done, and a clarifying-question ending IS done;
  *   - CLAUDE auth: the OAuth token is set and ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/
  *     apiKeyHelper are UNSET on the launch env, with a missing token failing closed;
- *   - CLAUDE launch flags (acceptEdits, sandboxed/inline-buffer/config-dir env, the
- *     `$(cat)` positional prompt) and the forbidden flags are absent;
+ *   - CLAUDE launch flags (bypass permissions, sandboxed/inline-buffer/config-dir env,
+ *     the `$(cat)` positional prompt) and the incompatible flags are absent;
  *   - CLAUDE autosubmit is a no-op (no CR injected, no DSR/CPR machinery).
  *
  * Compiles the REAL agent-runtime sources with tsc, imports them; plain node with
@@ -228,9 +228,9 @@ async function main() {
   assert(
     codexLine.includes(CodexRuntime.DEFAULT_CODEX_LAUNCH_ARGV) ||
       codexLine.includes(
-        'codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust',
+        'codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox',
       ),
-    'codex launch line carries the default argv (now with --no-alt-screen)',
+    'codex launch line carries the default bypass argv (with --no-alt-screen)',
   );
 
   // (codex's provision-time auth/config + prompt writes are now the pure
@@ -314,9 +314,9 @@ async function main() {
   );
   assert(
     claudeLine.includes(
-      'claude --session-id 11111111-2222-3333-4444-555555555555 --permission-mode acceptEdits "$P"',
+      'claude --session-id 11111111-2222-3333-4444-555555555555 --dangerously-skip-permissions "$P"',
     ),
-    'claude launch line is `claude --session-id <uuid> --permission-mode acceptEdits "$P"`',
+    'claude launch line is `claude --session-id <uuid> --dangerously-skip-permissions "$P"`',
   );
   assert(
     claudeLine.includes('CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1') &&
@@ -331,10 +331,9 @@ async function main() {
   assert(
     !claudeLine.includes('claude attach') &&
       !claudeLine.includes('claude agents') &&
-      !claudeLine.includes('--dangerously-skip-permissions') &&
       !claudeLine.includes('--bare') &&
       !claudeLine.includes('--no-session-persistence'),
-    'claude launch line uses NONE of the forbidden flags',
+    'claude launch line uses NONE of the incompatible flags',
   );
   let threwNoSession = false;
   try {
@@ -573,7 +572,8 @@ async function main() {
   assert(clTok.commands[0].tolerateUnresolvedExit === true, 'claude auth-env command tolerates unresolved exit');
   assert(clTok.commands[1].tolerateUnresolvedExit === false, 'claude prompt command is strict');
 
-  // claude: token, no prompt → 1 command; launch-env.sh + .claude.json byte-exact
+  // claude: token, no prompt → 1 command; launch-env.sh + settings.json +
+  // .claude.json byte-exact
   const clNoP = claude.sandboxSetupCommands({ taskId: 't', workspaceDir: WS, prompt: null }, { oauthToken: CLTOK });
   assert(clNoP.ok === true && clNoP.commands.length === 1, 'claude setup (token, no prompt) → 1 command');
   const clSnippet =
@@ -587,10 +587,17 @@ async function main() {
     bypassPermissionsModeAccepted: true,
     projects: { [WS]: { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } },
   });
+  const clSettings = JSON.stringify({
+    permissions: { skipDangerousModePermissionPrompt: true },
+  });
   assert(
     clNoP.commands[0].command ===
-      `mkdir -p /home/gem/.claude && printf %s '${toB64(clSnippet)}' | base64 -d > /home/gem/.claude/launch-env.sh && chmod 600 /home/gem/.claude/launch-env.sh && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude.json && chmod 600 /home/gem/.claude.json`,
-    'claude GOLDEN: launch-env.sh + .claude.json command byte-exact',
+      `mkdir -p /home/gem/.claude && printf %s '${toB64(clSnippet)}' | base64 -d > /home/gem/.claude/launch-env.sh && chmod 600 /home/gem/.claude/launch-env.sh && printf %s '${toB64(clSettings)}' | base64 -d > /home/gem/.claude/settings.json && chmod 600 /home/gem/.claude/settings.json && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude.json && chmod 600 /home/gem/.claude.json`,
+    'claude GOLDEN: launch-env.sh + settings.json + .claude.json command byte-exact',
+  );
+  assert(
+    clNoP.commands[0].command.includes('/home/gem/.claude/settings.json'),
+    'claude GUARD: user settings suppress the dangerous-mode confirmation prompt',
   );
   // REGRESSION GUARD (fix-claude-onboarding-seed-path): the onboarding pre-seed MUST
   // land in the HOME-root `.claude.json` (the file Claude actually reads), NOT inside
