@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.0...v0.23.1) (2026-06-25)
+
+
+### Bug Fixes
+
+* stabilize live terminal replay and input ([6b9c624](https://github.com/Xeonice/cloud-agent-platform/commit/6b9c624ea205f1af0423a278f71531907c644e31))
+
 ## [0.23.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.22.0...v0.23.0) (2026-06-25)
 
 
