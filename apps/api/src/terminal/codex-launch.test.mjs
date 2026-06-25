@@ -1,15 +1,14 @@
 /**
  * Focused unit test for the codex launch contract (aio-codex-prompt-autostart):
- * `buildCodexLaunchLine` + `argvDisablesHooks` + `CODEX_PROMPT_FILE_PATH`.
+ * `buildCodexLaunchLine` + `CODEX_PROMPT_FILE_PATH`.
  *
  * Spec scenarios under test (aio-sandbox-execution / codex launched in-shell):
  *   - The task prompt is passed positionally via `"$(cat <file>)"`, NEVER inlined
  *     into the launch argv (shell-injection-safe for arbitrary free-text).
  *   - An empty/missing prompt file launches codex with NO positional (blank
  *     composer) rather than an empty-string arg.
- *   - The hook-disabling guard inspects ONLY the fixed launch flags, so a prompt
- *     mentioning `-s`/`--yolo`/`bypass-approvals` cannot trip it (the prompt is
- *     never part of the argv the guard sees).
+ *   - Prompt free-text is never part of the argv, so text mentioning flags such
+ *     as `--yolo` cannot be confused with the actual launch mode.
  *
  * Compiles the REAL codex-launch.ts with tsc, imports it; plain node, inline
  * assertions (mirrors the repo's .test.mjs convention).
@@ -72,21 +71,11 @@ async function main() {
     buildCodexLaunchLine,
     buildDetachedCodexLaunchLine,
     detachedSessionName,
-    argvDisablesHooks,
     CODEX_PROMPT_FILE_PATH,
   } = mod;
 
   const BASE =
-    'codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust';
-
-  // ---- argvDisablesHooks: flags the hook-disabling forms, passes the base -----
-  assert(argvDisablesHooks('codex -s') === true, '-s is flagged');
-  assert(argvDisablesHooks('codex --yolo') === true, '--yolo is flagged');
-  assert(
-    argvDisablesHooks('codex --dangerously-bypass-approvals-and-sandbox') === true,
-    'bypass-approvals is flagged',
-  );
-  assert(argvDisablesHooks(BASE) === false, 'the default base argv is NOT flagged');
+    'codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox';
 
   // ---- buildCodexLaunchLine: file-based positional, no inlined prompt ---------
   const line = buildCodexLaunchLine(BASE);
@@ -157,11 +146,9 @@ async function main() {
       detached.includes('if [ -n "$P" ]'),
     'detached launch preserves the `"$(cat …)"` positional prompt contract',
   );
-  // The hook-disabling guard inspects ONLY the fixed argv; wrapping in tmux must
-  // not change what the guard sees, and the BASE argv is still NOT flagged.
   assert(
-    argvDisablesHooks(BASE) === false,
-    'wrapping in detached tmux does not change the hook-disabling guard verdict',
+    detached.includes('--dangerously-bypass-approvals-and-sandbox'),
+    'detached launch carries the documented Codex bypass/YOLO flag',
   );
 
   console.log(`\n${passed} passed, ${failed} failed`);

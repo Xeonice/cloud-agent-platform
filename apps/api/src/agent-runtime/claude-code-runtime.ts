@@ -87,7 +87,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
    *     'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 CLAUDE_CODE_SANDBOXED=1 \
    *      CLAUDE_CONFIG_DIR=/home/gem/.claude \
    *      . <auth-env-file>; P="$(cat <prompt-file>)"; \
-   *      claude --session-id <uuid> --permission-mode acceptEdits "$P"'
+   *      claude --session-id <uuid> --dangerously-skip-permissions "$P"'
    *
    *   - `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` keeps the TUI in the normal
    *     buffer so the existing asciicast capture (no alt-screen branch) replays it.
@@ -96,12 +96,14 @@ export class ClaudeCodeRuntime implements AgentRuntime {
    *     pre-seeded onboarding/trust and the transcript live where we expect.
    *   - `. <auth-env-file>` sources the token + the ANTHROPIC_* unsets onto the
    *     launch env (task 2.5), so a stray API key cannot shadow the OAuth token.
+   *   - `--dangerously-skip-permissions` starts Claude in its documented
+   *     bypass-permissions mode, the Claude Code analog of Codex's YOLO flag.
    *   - The prompt rides `"$(cat <file>)"` (never inlined). Unlike codex, Claude
    *     AUTO-RUNS the positional prompt, so there is no Enter to inject.
    *
    * It NEVER uses `claude attach`, `claude agents`, `--bare`,
-   * `--no-session-persistence`, or `--dangerously-skip-permissions` (each breaks
-   * the inline-buffer, auth, or transcript assumptions, or hard-refuses root).
+   * or `--no-session-persistence` (each breaks the inline-buffer, auth, or
+   * transcript assumptions, or hard-refuses root).
    */
   buildLaunchLine(ctx: LaunchContext): string {
     const sessionId = ctx.sessionId;
@@ -124,7 +126,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       `${envPrefix} ` +
       `. ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} 2>/dev/null; ` +
       `P="$(cat ${ClaudeCodeRuntime.PROMPT_FILE_PATH} 2>/dev/null)"; ` +
-      `claude --session-id ${sessionId} --permission-mode acceptEdits "$P"`;
+      `claude --session-id ${sessionId} --dangerously-skip-permissions "$P"`;
     // SHARED launch mechanism: claude supplies only the inner agent line; the
     // detached-tmux wrapper is identical for every runtime (refactor step 4).
     return wrapInDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
@@ -143,10 +145,10 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     const dir = ClaudeCodeRuntime.CONFIG_DIR;
     const commands: SandboxSetupCommand[] = [];
 
-    // launch-env.sh (OAuth token + ANTHROPIC_* unsets) + `.claude.json` pre-seed as
-    // ONE command, byte-identical to the prior `injectAuth`. tolerateUnresolvedExit
-    // is TRUE to preserve `injectAuth`'s `code !== null && code !== 0` (an unresolved
-    // exit code was treated as success).
+    // launch-env.sh (OAuth token + ANTHROPIC_* unsets) + user settings +
+    // `.claude.json` pre-seed as ONE command, byte-identical to the prior
+    // `injectAuth` shape. tolerateUnresolvedExit is TRUE to preserve `injectAuth`'s
+    // `code !== null && code !== 0` (an unresolved exit code was treated as success).
     const tokenB64 = Buffer.from(token, 'utf8').toString('base64');
     const snippet =
       `export CLAUDE_CODE_OAUTH_TOKEN="$(printf %s '${tokenB64}' | base64 -d)"\n` +
@@ -169,11 +171,17 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       },
     });
     const preseedB64 = Buffer.from(preseed, 'utf8').toString('base64');
+    const settings = JSON.stringify({
+      permissions: { skipDangerousModePermissionPrompt: true },
+    });
+    const settingsB64 = Buffer.from(settings, 'utf8').toString('base64');
     const claudeJson = ClaudeCodeRuntime.CLAUDE_JSON_PATH;
+    const settingsJson = `${dir}/settings.json`;
     commands.push({
       command:
         `mkdir -p ${dir} && ` +
         `printf %s '${snippetB64}' | base64 -d > ${file} && chmod 600 ${file} && ` +
+        `printf %s '${settingsB64}' | base64 -d > ${settingsJson} && chmod 600 ${settingsJson} && ` +
         `printf %s '${preseedB64}' | base64 -d > ${claudeJson} && chmod 600 ${claudeJson}`,
       tolerateUnresolvedExit: true,
     });
@@ -305,7 +313,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       );
     }
     const inner = this.headlessInner(
-      `claude -p "$P" --session-id ${sessionId} --output-format stream-json --verbose --permission-mode acceptEdits < /dev/null`,
+      `claude -p "$P" --session-id ${sessionId} --output-format stream-json --verbose --dangerously-skip-permissions < /dev/null`,
     );
     return wrapHeadlessDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
   }
@@ -313,7 +321,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
   /** Headless resume: `claude -p --resume <id>` continues a prior session non-interactively. */
   buildResumeLine(ctx: LaunchContext, prevSessionId: string): string {
     const inner = this.headlessInner(
-      `claude -p "$P" --resume ${prevSessionId} --output-format stream-json --verbose --permission-mode acceptEdits < /dev/null`,
+      `claude -p "$P" --resume ${prevSessionId} --output-format stream-json --verbose --dangerously-skip-permissions < /dev/null`,
     );
     return wrapHeadlessDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
   }

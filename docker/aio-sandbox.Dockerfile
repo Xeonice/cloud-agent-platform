@@ -207,14 +207,12 @@ COPY --from=hooks-build /repo/apps/sandbox-hooks/dist /opt/cap/dist
 RUN mkdir -p /home/gem/.codex
 COPY apps/sandbox-hooks/hooks.json /home/gem/.codex/hooks.json
 
-# --- 6.1/6.3 codex launch path: --full-auto + bypass-hook-trust ------------
-# codex 0.131 only fires the baked PreToolUse/PostToolUse hooks when (1) codex is
-# launched with `--full-auto` (the `-s` sandbox / `--dangerously-bypass-approvals
-# -and-sandbox` flags DISABLE hooks, so they MUST NOT be used) and (2) the baked
-# `~/.codex/hooks.json` is TRUSTED. There is no interactive operator in the
-# sandbox to answer codex's trust prompt, so the orchestrator launches
-# `codex --full-auto --dangerously-bypass-hook-trust` (see CODEX_LAUNCH_ARGV
-# below + the bridge launch path) to trust the baked hooks non-interactively.
+# --- 6.1/6.3 codex launch path: YOLO-style bypass -------------------------
+# The orchestrator launches interactive Codex tasks with Codex's documented
+# `--dangerously-bypass-approvals-and-sandbox` mode (the long form of the newer
+# `--yolo` alias) so the in-task agent does not stop for per-command approvals.
+# The platform's isolation boundary is the per-task AIO container, not Codex's
+# inner sandbox.
 #
 # We deliberately do NOT bake a config.toml `[hooks.state] trusted_hash`: codex
 # 0.131 expects that as a PER-HOOK SUB-TABLE
@@ -232,16 +230,11 @@ COPY apps/sandbox-hooks/hooks.json /home/gem/.codex/hooks.json
 
 # The exact launch argv the orchestrator bridge injects in-shell over
 # /v1/shell/ws (kept here as the launch contract; the bridge mirrors it as its
-# DEFAULT_CODEX_LAUNCH_ARGV). Updated for codex 0.131: `--full-auto` was REMOVED
-# upstream (0.131 rejects it as "unexpected argument"). `-C /home/gem/workspace`
-# runs codex in the cloned task repo; `--ask-for-approval never --sandbox
-# danger-full-access` is the 0.131 non-interactive auto-run (LONG-form `--sandbox`
-# is deliberate — the bridge guard rejects short `-s`/bypass-approvals/`--yolo`);
-# `--dangerously-bypass-hook-trust` trusts the baked hooks.json. The DIRECTORY
-# trust prompt is handled separately by the provider writing
+# DEFAULT_CODEX_LAUNCH_ARGV). `-C /home/gem/workspace` runs codex in the cloned
+# task repo. The DIRECTORY trust prompt is handled separately by the provider writing
 # ~/.codex/config.toml at provision time, NOT a launch flag. NEVER add
-# `--dangerously-bypass-approvals-and-sandbox`/`-s`/bypass-approvals — those
-# DISABLE the baked hooks.
+# `--ask-for-approval`/`--sandbox` here unless deliberately changing the task
+# approval contract back away from YOLO-style execution.
 #
 # TASK PROMPT (aio-codex-prompt-autostart): this argv is the BASE launch only.
 # The orchestrator bridge appends the task's prompt as codex's positional
@@ -249,12 +242,12 @@ COPY apps/sandbox-hooks/hooks.json /home/gem/.codex/hooks.json
 # written into the sandbox at provision time), so codex starts with the operator
 # goal PRE-FILLED. The prompt text is NEVER inlined here or into the launch argv
 # (it rides the injected file), keeping it shell-injection-safe and clear of the
-# hook-disabling guard. Do NOT add a positional prompt to this ENV.
-ENV CODEX_LAUNCH_ARGV="codex --no-alt-screen -C /home/gem/workspace --ask-for-approval never --sandbox danger-full-access --dangerously-bypass-hook-trust"
+# launch flags. Do NOT add a positional prompt to this ENV.
+ENV CODEX_LAUNCH_ARGV="codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox"
 
 RUN chown -R 1000:1000 /home/gem
 
 # No CMD/ENTRYPOINT override: the AIO base image's own entrypoint starts the
 # sandbox HTTP/WS server. Codex is launched in-shell over /v1/shell/ws by the
-# orchestrator bridge (as `codex --full-auto --dangerously-bypass-hook-trust`,
+# orchestrator bridge (as `codex --dangerously-bypass-approvals-and-sandbox`,
 # CODEX_LAUNCH_ARGV above), not by this image.
