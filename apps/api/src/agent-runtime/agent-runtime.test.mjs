@@ -486,6 +486,7 @@ async function main() {
   const toB64 = (s) => Buffer.from(s, 'utf8').toString('base64');
   const CXDIR = '/home/gem/.codex';
   const WS = '/home/gem/workspace';
+  const CRED_STORE = 'cli_auth_credentials_store = "file"\n';
   const TRUST = `[projects."${WS}"]\ntrust_level = "trusted"\n`;
 
   // codex: null material, no prompt → 1 command (trust-only config.toml, strict)
@@ -496,7 +497,7 @@ async function main() {
   );
   assert(
     cxNull.commands[0].command ===
-      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(TRUST)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml`,
+      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(CRED_STORE + TRUST)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml`,
     'codex GOLDEN: trust-only config.toml command byte-exact',
   );
   assert(
@@ -514,7 +515,7 @@ async function main() {
   assert(cxOff.ok === true && cxOff.commands.length === 2, 'codex setup (official + prompt) → 2 commands');
   assert(
     cxOff.commands[0].command ===
-      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(TRUST)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml && printf %s '${toB64(cxAuthJson)}' | base64 -d > ${CXDIR}/auth.json && chmod 600 ${CXDIR}/auth.json`,
+      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(CRED_STORE + TRUST)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml && printf %s '${toB64(cxAuthJson)}' | base64 -d > ${CXDIR}/auth.json && chmod 600 ${CXDIR}/auth.json`,
     'codex GOLDEN: official config+auth.json as ONE command byte-exact (TRAP-1)',
   );
   assert(
@@ -526,6 +527,7 @@ async function main() {
   // codex: compatible, no prompt → 1 command, NO auth.json, model_providers.cap TOML
   const COMPAT = { baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test', model: 'gpt-4o' };
   const COMPAT_TOML =
+    CRED_STORE +
     `model = "gpt-4o"\nmodel_provider = "cap"\n` +
     TRUST +
     `[model_providers.cap]\nname = "Compatible provider"\nbase_url = "https://api.example.com/v1"\nwire_api = "responses"\nexperimental_bearer_token = "sk-test"\n`;
@@ -547,6 +549,11 @@ async function main() {
       cxTrim[0] ===
         `rm -rf ${CXDIR}/cache ${CXDIR}/logs_*.sqlite ${CXDIR}/logs_*.sqlite-shm ${CXDIR}/logs_*.sqlite-wal 2>/dev/null; : > ${CXDIR}/auth.json 2>/dev/null; true`,
     'codex GOLDEN: pre-stop trim byte-exact (: > truncate, keeps sessions/)',
+  );
+  assert(
+    codex.preflightProbes().map((p) => p.name).join(',') ===
+      'codex cli,git,tmux,bash,tar,gzip',
+    'codex preflight declares required image tools',
   );
 
   // claude: no/blank token → fail closed BEFORE any command (TRAP-3)
@@ -600,6 +607,11 @@ async function main() {
     claude.preStopTrimCommands()[0] ===
       `find /home/gem/.claude -mindepth 1 -maxdepth 1 ! -name projects -exec rm -rf {} + 2>/dev/null; true`,
     'claude GOLDEN: pre-stop trim keeps projects/',
+  );
+  assert(
+    claude.preflightProbes().map((p) => p.name).join(',') ===
+      'claude cli,git,tmux,bash,tar,gzip',
+    'claude preflight declares required image tools',
   );
 
   console.log(`\n${passed} passed, ${failed} failed`);

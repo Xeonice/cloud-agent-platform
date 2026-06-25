@@ -14,6 +14,7 @@ import type {
   ProvisionContext,
   SandboxConnection,
   SandboxMode,
+  SandboxProviderCapability,
   SandboxProvider,
 } from './sandbox-provider.port.js';
 import { CODEX_AUTH_SOURCE, type CodexAuthSource } from './codex-auth-source.port';
@@ -25,6 +26,7 @@ import type {
   AuthMaterial,
   LaunchContext,
   RuntimeId,
+  SandboxRuntimePreflightProbe,
   SandboxSetupCommand,
 } from '../agent-runtime/agent-runtime.port';
 import { sessionIdForTask } from '../agent-runtime/agent-runtime.integration';
@@ -36,8 +38,24 @@ import { CodexRuntime } from '../agent-runtime/codex-runtime';
 import { PROVISION_LOOKUP, type ProvisionLookup } from './provision-lookup.port';
 import type { TranscriptSource } from './transcript-source';
 import { resolveSkillInstaller } from './skill-allowlist';
-import { extractFilesFromTar } from './tar-extract';
-import { assertSafeProviderUrl } from '../settings/assert-safe-provider-url';
+import {
+  AIO_SANDBOX_SKILL_INSTALL_TIMEOUT_MS,
+  AIO_SANDBOX_TRIM_TIMEOUT_MS,
+  AIO_SANDBOX_WORKSPACE_DIR,
+  AioSandboxContainerController,
+  parseAioExecResult,
+  scrubAioExecSecrets,
+  type AioDockerClient,
+} from '@cap/sandbox';
+import {
+  deliverGitWorkspaceChanges,
+  materializeGitWorkspace,
+} from './aio-workspace';
+import {
+  RUNTIME_MATERIAL_RESOLVER_REGISTRY,
+  RuntimeMaterialResolverRegistry,
+  createDefaultRuntimeMaterialResolverRegistry,
+} from './runtime-material-resolver';
 // add-claude-code-runtime Track 3 (3.1): the provider delegates per-runtime
 // credential/config injection and the pre-stop trim to the task's selected
 // AgentRuntime (resolved by the RuntimeRegistry, Track 2) instead of hard-coding
@@ -116,33 +134,19 @@ export class AioSandboxProvider
 {
   private readonly logger = new Logger(AioSandboxProvider.name);
   private readonly docker = new Docker();
-  /** taskId -> the per-task AIO container. */
-  private readonly containers = new Map<string, Docker.Container>();
-  /** taskId -> the connection handle returned for an already-provisioned task. */
-  private readonly connections = new Map<string, SandboxConnection>();
-  /**
-   * Re-adoption (survive-api-redeploy D3): the taskIds whose RUNNING
-   * `cap-aio-<taskId>` container AND live detached `task<taskId>` tmux session
-   * were re-adopted at {@link onApplicationBootstrap} — re-registered into the
-   * provider/connection maps above rather than reaped. The guardrails recovery
-   * (Track 4) reads this via {@link listReadoptable} to DB-validate each candidate
-   * (`running`/`awaiting_input`) and re-attach the live ones; the provider itself
-   * holds no DB reference, so the DB cross-check is layered by the caller. An entry
-   * is dropped once its task settles (its handle leaves the maps via teardown).
-   */
-  private readonly readopted = new Set<string>();
-  /**
-   * Memoized boot-time re-adoption scan (survive-api-redeploy D3 fix). The scan
-   * that populates {@link readopted} MUST run exactly once and MUST be observable
-   * to BOTH callers regardless of order: the provider's own
-   * {@link onApplicationBootstrap} AND the tasks-service recovery's
-   * {@link listReadoptable}. NestJS does NOT guarantee cross-provider
-   * `onApplicationBootstrap` ordering, so whichever caller runs first triggers
-   * this single promise and the other awaits the SAME settled scan — eliminating
-   * the split-brain where the tasks service read an empty set (and force-failed a
-   * live task) because its hook ran before the provider populated {@link readopted}.
-   */
-  private readoptScan?: Promise<void>;
+  private aioController?: AioSandboxContainerController<Docker.Container>;
+  private readonly materialResolvers: RuntimeMaterialResolverRegistry;
+
+  private get controller(): AioSandboxContainerController<Docker.Container> {
+    return (this.aioController ??= new AioSandboxContainerController({
+      docker: this.docker as unknown as AioDockerClient<Docker.Container>,
+      logger: {
+        debug: (message) => this.logger.debug(message),
+        log: (message) => this.logger.log(message),
+        warn: (message) => this.logger.warn(message),
+      },
+    }));
+  }
 
   /**
    * @param lookup           Resolves the per-task clone URL (`task → repo.gitSource`
@@ -172,35 +176,32 @@ export class AioSandboxProvider
     @Optional()
     @Inject(CLAUDE_AUTH_SOURCE)
     private readonly claudeAuth?: ClaudeAuthSource,
-  ) {}
+    @Optional()
+    @Inject(RUNTIME_MATERIAL_RESOLVER_REGISTRY)
+    materialResolvers?: RuntimeMaterialResolverRegistry,
+  ) {
+    this.materialResolvers =
+      materialResolvers ??
+      createDefaultRuntimeMaterialResolverRegistry({
+        codexAuthSource,
+        claudeAuthSource: claudeAuth,
+        warn: (message) => this.logger.warn(message),
+      });
+  }
 
-  /** The exposed AIO HTTP/WS port inside the container (never published to the host). */
-  private static readonly AIO_PORT = 8080;
-  /** Required security option — the container is invalid without it. */
-  private static readonly SECCOMP_UNCONFINED = 'seccomp=unconfined';
-  /** Shared-memory size for the heavy AIO container (~2g). */
-  private static readonly SHM_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
   /**
    * Dedicated, EMPTY workspace directory the task repository is cloned into.
    * NEVER the non-empty `/home/gem` HOME (cloning into it fails with
    * "destination path already exists and is not an empty directory").
    */
-  private static readonly WORKSPACE_DIR = '/home/gem/workspace';
-  /**
-   * codex's home inside the sandbox. `sessions/` under it holds the rollout
-   * JSONL (the replay source, D3); `cache` + `logs_*.sqlite` are the trimmable
-   * bulk; `auth.json` is the credential that retention zeroes before stop (D4).
-   */
-  private static readonly CODEX_HOME_DIR = '/home/gem/.codex';
-  /** Name prefix for the per-task sandbox containers (`cap-aio-<taskId>`). */
-  private static readonly CONTAINER_PREFIX = 'cap-aio-';
+  private static readonly WORKSPACE_DIR = AIO_SANDBOX_WORKSPACE_DIR;
   /**
    * Upper bound on a single skill installer's wall-clock (task-preinstall-skills).
    * The live spike measured ~3–6s with warm egress; this generous ceiling covers
    * a cold `npx` fetch. On timeout the skill is skipped (fail-soft), never
    * blocking the provision.
    */
-  private static readonly SKILL_INSTALL_TIMEOUT_MS = 120_000;
+  private static readonly SKILL_INSTALL_TIMEOUT_MS = AIO_SANDBOX_SKILL_INSTALL_TIMEOUT_MS;
 
   /**
    * Upper bound on the pre-stop `~/.codex` trim's wall-clock (D4). The trim is a
@@ -208,17 +209,7 @@ export class AioSandboxProvider
    * sandbox from stalling settle. On timeout the trim is skipped (the kept
    * container is just larger) and the stop proceeds — never fatal.
    */
-  private static readonly TRIM_TIMEOUT_MS = 10_000;
-
-  /**
-   * Upper bound on the boot-time detached-session liveness probe
-   * (survive-api-redeploy D3). `tmux has-session` over `/v1/shell/exec` is a
-   * single fast in-container command; this tight ceiling keeps an unreachable or
-   * wedged sandbox from stalling startup — on timeout the probe returns NOT alive
-   * so the container is reaped rather than re-adopted (fail toward reaping a
-   * sandbox we cannot confirm is live).
-   */
-  private static readonly SESSION_PROBE_TIMEOUT_MS = 5_000;
+  private static readonly TRIM_TIMEOUT_MS = AIO_SANDBOX_TRIM_TIMEOUT_MS;
 
   /**
    * Reported sandbox mode, surfaced as INFORMATIONAL metadata only. The real
@@ -229,6 +220,16 @@ export class AioSandboxProvider
     return 'danger-full-access';
   }
 
+  getProviderCapabilities(): readonly SandboxProviderCapability[] {
+    return [
+      'terminal.websocket',
+      'workspace.git.materialize',
+      'workspace.git.deliver',
+      'transcript.retained-read',
+      'lifecycle.readopt',
+    ];
+  }
+
   /**
    * Provision the per-task AIO Sandbox container and return its addressable
    * {@link SandboxConnection} handle. Idempotent: a second call for an already
@@ -237,85 +238,32 @@ export class AioSandboxProvider
    */
   async provision(ctx: ProvisionContext): Promise<SandboxConnection> {
     // Idempotent for an already-provisioned task.
-    const existing = this.connections.get(ctx.taskId);
+    const existing = this.controller.getConnection(ctx.taskId);
     if (existing) return existing;
 
-    const image = process.env.AIO_SANDBOX_IMAGE;
-    if (!image) {
-      throw new Error('AIO_SANDBOX_IMAGE must be set to provision an AIO sandbox container');
-    }
-    if (image.endsWith(':latest') || !image.includes(':')) {
-      throw new Error(
-        `AIO_SANDBOX_IMAGE must be a pinned tag (not ':latest' / untagged) for reproducible provisioning, received: ${image}`,
-      );
-    }
-    const network = process.env.AIO_SANDBOX_NETWORK ?? 'cap-net';
-
-    const containerName = `${AioSandboxProvider.CONTAINER_PREFIX}${ctx.taskId}`;
-    const baseUrl = `http://${containerName}:${AioSandboxProvider.AIO_PORT}`;
-    const wsUrl = `ws://${containerName}:${AioSandboxProvider.AIO_PORT}/v1/shell/ws`;
-
-    // Built once so the seccomp guard below asserts EXACTLY what is sent to
-    // dockerode — a container without `seccomp=unconfined` is never started.
-    const securityOpt = [AioSandboxProvider.SECCOMP_UNCONFINED];
-    this.assertSeccompUnconfined(securityOpt);
-
-    // Env injected into the sandbox container so the baked Codex hooks can call
-    // back IN to the orchestrator approvals endpoint (5.5) over `cap-net`. The
-    // approvals URL is the orchestrator dialled BY CONTAINER NAME on `cap-net`
-    // (it has no host port); `ORCHESTRATOR_APPROVALS_BASE` defaults to the
-    // compose service name so the hook's outbound POST reaches the controller.
-    const approvalsBase =
-      process.env.ORCHESTRATOR_APPROVALS_BASE ?? `http://api:${process.env.PORT ?? '8080'}`;
-    const env = [
-      `TASK_ID=${ctx.taskId}`,
-      `ORCHESTRATOR_APPROVALS_URL=${approvalsBase.replace(/\/+$/, '')}/v1/approvals`,
-    ];
-
-    const container = await this.docker.createContainer({
-      Image: image,
-      // The name doubles as the `cap-net` DNS name the orchestrator dials.
-      name: containerName,
-      // Injected so the baked hooks know their task identity and the orchestrator
-      // approvals callback URL (read by the HttpApprovalTransport / HttpReportTransport).
-      Env: env,
-      HostConfig: {
-        SecurityOpt: securityOpt,
-        ShmSize: AioSandboxProvider.SHM_SIZE_BYTES,
-        // RETENTION (session-sandbox-retention D1): `false`, NOT `true` — a
-        // settled task's container is STOPPED, not removed, so its codex rollout
-        // transcript + workspace survive for read-only history replay (and the
-        // deferred resume-run). The retention cleaner removes it past the
-        // retention window; `teardownSandbox` stops only.
-        AutoRemove: false,
-        // Join the private network so the orchestrator can dial by container
-        // name; the default bridge has no container-name DNS.
-        NetworkMode: network,
-        // NO PortBindings — the sandbox publishes no host port; network
-        // isolation on `cap-net` is the execution security boundary.
-        // structured-logging: bound the per-task container's json-file logs so a
-        // chatty codex run cannot exhaust host disk (mirrors the compose
-        // *default-logging ceiling, which does not apply to DooD-created siblings).
-        LogConfig: {
-          Type: 'json-file',
-          Config: { 'max-size': '20m', 'max-file': '5' },
-        },
-      },
-    });
-    this.containers.set(ctx.taskId, container);
-    await container.start();
-    this.logger.debug(`provisioned AIO container ${containerName} from ${image}`);
+    const { spec, connection } = await this.controller.createAndStart(ctx.taskId);
 
     // Post-start steps run against the now-LIVE, already-registered container and
     // can fail (injectCodexAuth / cloneTaskRepository fail CLOSED on a non-zero
-    // exit). On ANY failure here the container is running + in `this.containers`,
-    // so tear it down before rethrowing — otherwise a failed provision leaks a
-    // running cap-aio-<taskId> AND a clean retry (which clones into the now
-    // non-empty workspace) is impossible. The caller (guardrails) then fails the
-    // task and releases the run slot.
+    // exit). On ANY failure here the controller has retained the container handle,
+    // so tear it down before rethrowing; otherwise a failed provision leaks a running
+    // cap-aio-<taskId> and a clean retry is impossible. The caller (guardrails) then
+    // fails the task and releases the run slot.
     try {
       // Readiness: do not treat the sandbox as usable until its HTTP API answers.
-      await this.waitForReadiness(baseUrl, ctx.taskId);
+      await this.controller.waitForReadiness({
+        baseUrl: connection.baseUrl,
+        taskId: ctx.taskId,
+        timeoutMs: spec.readinessTimeoutMs,
+      });
+      // Sandbank-style selected run context: resolve the runtime ONCE for this
+      // provision and carry that selected runtime through preflight + setup, so a
+      // DB/settings race cannot make the image probes and setup commands disagree.
+      const runtime = await this.resolveProvisionRuntime(ctx.taskId);
+      // Sandbank-aligned runtime preflight: the runtime declares the image tools
+      // it needs and the provider probes them before writing credentials or
+      // materializing the repository.
+      await this.preflightRuntime(connection.baseUrl, ctx.taskId, runtime);
       // 3.1 — delegate credential/config + prompt injection to the task's selected
       // AgentRuntime. CODEX stays byte-identical: for a `codex` task the provider
       // runs the SAME `injectCodexAuth` (config.toml/auth.json or the
@@ -329,22 +277,20 @@ export class AioSandboxProvider
       // returns; fail CLOSED on a non-zero exit so a broken setup never silently
       // burns a run slot. The taskId scopes the codex credential to the task's
       // OWNING account (owner-scoped resolution, design D3).
-      await this.injectRuntimeSetup(baseUrl, ctx.taskId);
-      await this.cloneTaskRepository(baseUrl, ctx.taskId);
+      await this.injectRuntimeSetup(connection.baseUrl, ctx.taskId, runtime);
+      await this.cloneTaskRepository(connection.baseUrl, ctx.taskId, ctx.cloneSpec);
       // task-preinstall-skills: AFTER the clone (the installers run against the
       // cloned workspace) and before the handle returns. FAIL-SOFT — a skill
       // installer failure is logged but does NOT abort provision (codex still
       // launches without that skill), so this is NOT in the fail-closed try/throw
       // contract of auth/clone above; it swallows its own errors internally.
-      await this.preinstallSkills(baseUrl, ctx.taskId);
+      await this.preinstallSkills(connection.baseUrl, ctx.taskId);
     } catch (err) {
       await this.teardownSandbox(ctx.taskId).catch(() => undefined);
       throw err;
     }
 
-    const connection: SandboxConnection = { taskId: ctx.taskId, baseUrl, wsUrl };
-    this.connections.set(ctx.taskId, connection);
-    return connection;
+    return this.controller.registerConnection(connection);
   }
 
   /**
@@ -356,41 +302,15 @@ export class AioSandboxProvider
    * settling a task that already exited or never started is a safe no-op.
    */
   async teardownSandbox(taskId: string): Promise<void> {
-    const connection = this.connections.get(taskId);
-    this.connections.delete(taskId);
-    // A re-adopted task that reaches a terminal state settles through here — drop
-    // it from the re-adopted set so {@link listReadoptable} reflects only tasks
-    // still held alive (a settled task is no longer re-adoptable).
-    this.readopted.delete(taskId);
-    const container = this.containers.get(taskId);
-    if (!container) return;
-    this.containers.delete(taskId);
-    // D4 / V.2 — best-effort, time-boxed pre-stop trim. The baseUrl is
-    // DETERMINISTIC from the container name, so this ALSO fires on the
-    // provision-FAILURE teardown (`provision()` tears down before
-    // `connections.set`, so `connection` is undefined) — a retained container
-    // must NEVER hold a live `auth.json`, even when provision failed AFTER the
-    // auth inject. A sandbox whose HTTP server never came up fast-fails
-    // (ECONNREFUSED); a trim failure NEVER blocks the stop.
-    const baseUrl =
-      connection?.baseUrl ??
-      `http://${AioSandboxProvider.CONTAINER_PREFIX}${taskId}:${AioSandboxProvider.AIO_PORT}`;
-    // 3.1 — the pre-stop trim is DISPATCHED to the task's selected runtime: codex
-    // trims `~/.codex` (the unchanged {@link trimCodexHomeBeforeStop}); claude trims
-    // `~/.claude` while KEEPING `~/.claude/projects/` (the session transcript) as the
-    // defense-in-depth analog. A trim failure NEVER blocks the stop+retain (the
-    // dispatcher swallows its own errors), so settle stays fast even if wedged.
-    // fix-codex-headless-subscription-auth: BEFORE the trim zeroes auth.json, capture codex's
-    // (possibly refreshed) auth.json and persist the rotated single-use refresh_token back to the
-    // owner's stored credential, so the next task does not reuse a revoked seed. Best-effort; the
-    // trim below STILL zeroes the file (the retained container holds no live credential).
-    await this.captureAndPersistCodexAuth(baseUrl, taskId);
-    await this.trimRuntimeHomeBeforeStop(baseUrl, taskId);
-    // `t: 0` = stop immediately. With AutoRemove:false the container persists in
-    // an `Exited` state (the rollout/workspace frozen) until the retention
-    // cleaner removes it. Already stopped → safe no-op.
-    await container.stop({ t: 0 }).catch(() => {
-      // Already stopped — fine.
+    await this.controller.teardownSandbox(taskId, {
+      beforeStop: async ({ baseUrl }) => {
+        // 3.1 — the pre-stop trim is DISPATCHED to the task's selected runtime: codex
+        // trims `~/.codex`; claude trims `~/.claude` while keeping transcript projects.
+        // fix-codex-headless-subscription-auth: capture codex's possibly refreshed
+        // auth.json BEFORE the trim zeroes it. Both hooks are best-effort internally.
+        await this.captureAndPersistCodexAuth(baseUrl, taskId);
+        await this.trimRuntimeHomeBeforeStop(baseUrl, taskId);
+      },
     });
   }
 
@@ -406,81 +326,14 @@ export class AioSandboxProvider
     taskId: string,
     args: DeliverWorkspaceArgs,
   ): Promise<DeliverWorkspaceResult> {
-    const baseUrl =
-      this.connections.get(taskId)?.baseUrl ??
-      `http://${AioSandboxProvider.CONTAINER_PREFIX}${taskId}:${AioSandboxProvider.AIO_PORT}`;
-    const ws = AioSandboxProvider.WORKSPACE_DIR;
-    const ident =
-      "-c user.name='cap-bot' -c user.email='cap-bot@users.noreply.github.com'";
-    const msgPath = '/tmp/cap-commit-msg';
-    const run = (command: string) => this.runDeliverExec(baseUrl, command);
-    try {
-      // 1. dirty? (empty porcelain ⇒ no_changes — no branch/commit/push)
-      const status = await run(`git -C ${ws} status --porcelain`);
-      if (status.exitCode !== 0) {
-        return { hadChanges: false, commitSha: null, error: `git status exit ${status.exitCode}` };
-      }
-      if (status.output.trim().length === 0) {
-        return { hadChanges: false, commitSha: null, error: null };
-      }
-      // 2. commit message → file (base64 is [A-Za-z0-9+/=], safe single-quoted).
-      const b64 = Buffer.from(args.commitMessage, 'utf8').toString('base64');
-      const wrote = await run(`printf %s '${b64}' | base64 -d > ${msgPath}`);
-      if (wrote.exitCode !== 0) {
-        return { hadChanges: true, commitSha: null, error: 'failed to stage commit message' };
-      }
-      // 3. branch + add + commit (cap-bot identity; message file-injected).
-      const committed = await run(
-        `git -C ${ws} checkout -B ${args.branch} && git -C ${ws} add -A && ` +
-          `git -C ${ws} ${ident} commit -F ${msgPath}`,
-      );
-      if (committed.exitCode !== 0) {
-        return {
-          hadChanges: true,
-          commitSha: null,
-          error: AioSandboxProvider.scrubSecrets(committed.output).trim() || 'commit failed',
-        };
-      }
-      // 4. resolve the commit sha (best-effort).
-      const sha = await run(`git -C ${ws} rev-parse HEAD`);
-      const commitSha = sha.exitCode === 0 ? sha.output.trim().split(/\s+/)[0] || null : null;
-      // 5. push (auth via http.extraHeader only; force-with-lease for re-runs).
-      const pushed = await run(
-        `git -C ${ws} -c http.extraHeader='${args.authHeader}' ` +
-          `push --force-with-lease origin ${args.branch}`,
-      );
-      if (pushed.exitCode !== 0) {
-        return {
-          hadChanges: true,
-          commitSha,
-          error: AioSandboxProvider.scrubSecrets(pushed.output).trim() || 'push failed',
-        };
-      }
-      return { hadChanges: true, commitSha, error: null };
-    } catch (err) {
-      return {
-        hadChanges: false,
-        commitSha: null,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
-  }
-
-  /** One `/v1/shell/exec` round-trip for delivery, time-boxed. */
-  private async runDeliverExec(
-    baseUrl: string,
-    command: string,
-  ): Promise<{ exitCode: number; output: string }> {
-    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command }),
-      signal: AbortSignal.timeout(AioSandboxProvider.TRIM_TIMEOUT_MS),
+    const baseUrl = this.controller.resolveBaseUrl(taskId);
+    return deliverGitWorkspaceChanges({
+      baseUrl,
+      taskId,
+      workspaceDir: AioSandboxProvider.WORKSPACE_DIR,
+      timeoutMs: AioSandboxProvider.TRIM_TIMEOUT_MS,
+      deliver: args,
     });
-    if (!res.ok) {
-      throw new Error(`/v1/shell/exec responded ${res.status}`);
-    }
-    return AioSandboxProvider.parseExecResult(await res.json().catch(() => undefined));
   }
 
   /**
@@ -489,14 +342,7 @@ export class AioSandboxProvider
    * the lifecycle keeps the container and only the cleaner deletes it. Idempotent.
    */
   async removeSandbox(taskId: string): Promise<void> {
-    const container =
-      this.containers.get(taskId) ??
-      this.docker.getContainer(`${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`);
-    this.containers.delete(taskId);
-    this.readopted.delete(taskId);
-    await container.remove({ force: true }).catch(() => {
-      // Already removed / never existed — fine.
-    });
+    await this.controller.removeSandbox(taskId);
   }
 
   /**
@@ -573,25 +419,13 @@ export class AioSandboxProvider
     taskId: string,
     command: string,
   ): Promise<void> {
-    try {
-      const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command }),
-        signal: AbortSignal.timeout(AioSandboxProvider.TRIM_TIMEOUT_MS),
-      });
-      if (!res.ok) {
-        this.logger.warn(
-          `pre-stop HOME trim for task ${taskId} returned HTTP ${res.status} (kept container will be larger; not fatal)`,
-        );
-      }
-    } catch (err) {
-      this.logger.warn(
-        `pre-stop HOME trim for task ${taskId} failed (kept container will be larger; not fatal): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    await this.controller.runShellExecBestEffort({
+      baseUrl,
+      taskId,
+      command,
+      timeoutMs: AioSandboxProvider.TRIM_TIMEOUT_MS,
+      label: 'pre-stop HOME trim',
+    });
   }
 
   /**
@@ -655,57 +489,10 @@ export class AioSandboxProvider
     // the single-newest-JSONL read; a future multi-record runtime declares a different
     // strategy without editing this dispatch.
     if (runtime.readTranscriptSource.kind === 'single-newest-jsonl') {
-      const jsonl = await this.readSingleNewestJsonl(taskId, dir, filenameGlob);
+      const jsonl = await this.controller.readSingleNewestJsonl(taskId, dir, filenameGlob);
       return jsonl === null ? null : { format, jsonl };
     }
     return null;
-  }
-
-  /**
-   * The single-newest-JSONL read mechanism (unify-transcript-parsers D3): tar the declared
-   * `dir` out of the FROZEN container layer, pick the lexicographically-newest file matching
-   * `filenameGlob`, and return its raw UTF-8 text — BYTE-IDENTICAL to the prior inline read.
-   * Returns `null` on any miss (no container / no match / unreadable); NEVER throws.
-   */
-  private async readSingleNewestJsonl(
-    taskId: string,
-    dir: string,
-    filenameGlob: RegExp,
-  ): Promise<string | null> {
-    const container =
-      this.containers.get(taskId) ??
-      this.docker.getContainer(`${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`);
-    let stream: NodeJS.ReadableStream;
-    try {
-      stream = await container.getArchive({ path: dir });
-    } catch {
-      // 404 (container removed / path absent) → no transcript to replay.
-      return null;
-    }
-    let tar: Buffer;
-    try {
-      tar = await AioSandboxProvider.streamToBuffer(stream);
-    } catch {
-      return null;
-    }
-    const files = extractFilesFromTar(tar, (name) => filenameGlob.test(name));
-    if (files.length === 0) return null;
-    // The newest transcript file: codex rollouts carry an ISO timestamp in the
-    // filename, claude has one file per `--session-id` — lexicographic max picks the
-    // right one in both cases.
-    files.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-    return files[files.length - 1]!.content.toString('utf8');
-  }
-
-  /** Collect a (dockerode getArchive) readable stream fully into a Buffer. */
-  private static async streamToBuffer(
-    stream: NodeJS.ReadableStream,
-  ): Promise<Buffer> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of stream as AsyncIterable<Buffer | string>) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    }
-    return Buffer.concat(chunks);
   }
 
   /**
@@ -715,15 +502,7 @@ export class AioSandboxProvider
    * (`empty`). `inspect()` 404s when the container is gone → false; never throws.
    */
   async sandboxExists(taskId: string): Promise<boolean> {
-    const container =
-      this.containers.get(taskId) ??
-      this.docker.getContainer(`${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`);
-    try {
-      await container.inspect();
-      return true;
-    } catch {
-      return false;
-    }
+    return this.controller.sandboxExists(taskId);
   }
 
   /**
@@ -763,72 +542,7 @@ export class AioSandboxProvider
    * Best-effort and never throws: a docker hiccup must not block app startup.
    */
   async onApplicationBootstrap(): Promise<void> {
-    await this.ensureReadoptionScan();
-  }
-
-  /**
-   * Run the boot-time re-adoption scan AT MOST ONCE (memoized via
-   * {@link readoptScan}). Both {@link onApplicationBootstrap} and
-   * {@link listReadoptable} await this, so the scan result is order-independent:
-   * whichever lifecycle hook fires first triggers it, the other awaits the same
-   * promise. NEVER throws (the inner scan swallows its own errors).
-   */
-  private ensureReadoptionScan(): Promise<void> {
-    return (this.readoptScan ??= this.scanForReadoption());
-  }
-
-  /** The actual re-adoption scan body (memoized by {@link ensureReadoptionScan}). */
-  private async scanForReadoption(): Promise<void> {
-    try {
-      const running = await this.docker.listContainers({
-        // Only running containers: `all` defaults to false, but be explicit so
-        // the retention intent (spare stopped/`Exited` history) is unmistakable.
-        all: false,
-        filters: {
-          name: [AioSandboxProvider.CONTAINER_PREFIX],
-          status: ['running'],
-        },
-      });
-      if (running.length === 0) return;
-
-      let readopted = 0;
-      let reaped = 0;
-      await Promise.all(
-        running.map(async (info) => {
-          const taskId = AioSandboxProvider.parseTaskId(info.Names);
-          // Could not parse a taskId from any of the container's names → treat as
-          // an unknown/foreign container and reap it (it cannot be re-adopted).
-          if (taskId && (await this.hasLiveSession(taskId))) {
-            // RE-ADOPT: re-register the maps so this process owns the still-running
-            // sandbox again; Track 4 DB-validates + re-attaches the terminal.
-            this.reregister(taskId);
-            this.readopted.add(taskId);
-            readopted += 1;
-            return;
-          }
-          // FORCE-REMOVE: RUNNING but no live AGENT session → true orphan
-          // (runtime-agnostic — `task<id>` is the session name for codex AND claude).
-          await this.docker
-            .getContainer(info.Id)
-            .remove({ force: true })
-            .catch(() => undefined);
-          reaped += 1;
-        }),
-      );
-
-      this.logger.log(
-        `startup re-adoption: re-adopted ${readopted} still-running ` +
-          `${AioSandboxProvider.CONTAINER_PREFIX}* sandbox(es) with a live agent session, ` +
-          `force-removed ${reaped} orphan(s) with no live task ` +
-          `(stopped containers spared as retained history)`,
-      );
-    } catch (err) {
-      this.logger.warn(
-        `startup re-adoption of running sandboxes failed (continuing): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    await this.controller.listReadoptable();
   }
 
   /**
@@ -846,13 +560,7 @@ export class AioSandboxProvider
    * with respect to the running sandboxes.
    */
   onModuleDestroy(): void {
-    this.containers.clear();
-    this.connections.clear();
-    this.readopted.clear();
-    // Neutralize the memoized scan so a post-shutdown {@link listReadoptable}
-    // cannot trigger a FRESH re-adoption scan that re-populates the just-cleared
-    // set — the instance is being destroyed; there is nothing left to re-adopt.
-    this.readoptScan = Promise.resolve();
+    this.controller.releaseHandles();
   }
 
   /**
@@ -864,10 +572,7 @@ export class AioSandboxProvider
    * array snapshot so the caller cannot mutate the provider's internal set.
    */
   async listReadoptable(): Promise<string[]> {
-    // Await the memoized scan so a caller that races ahead of the provider's own
-    // onApplicationBootstrap still observes the populated set (the split-brain fix).
-    await this.ensureReadoptionScan();
-    return [...this.readopted];
+    return this.controller.listReadoptable();
   }
 
   /**
@@ -879,133 +584,7 @@ export class AioSandboxProvider
    * was not among the boot-time re-adopted set (nothing to re-attach).
    */
   reattach(taskId: string): SandboxConnection | null {
-    if (!this.readopted.has(taskId)) return null;
-    this.reregister(taskId);
-    return this.connections.get(taskId) ?? null;
-  }
-
-  /**
-   * Re-register the provider/connection maps for an already-RUNNING
-   * `cap-aio-<taskId>` container this process did not provision (re-adoption /
-   * re-attach). The container handle is addressed by its deterministic name and
-   * the {@link SandboxConnection} reconstructed from the same name → URLs the
-   * gateway dials, so a re-adopted task is indistinguishable from a freshly
-   * provisioned one to every consumer. Idempotent.
-   */
-  private reregister(taskId: string): void {
-    if (!this.containers.has(taskId)) {
-      this.containers.set(
-        taskId,
-        this.docker.getContainer(
-          `${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`,
-        ),
-      );
-    }
-    if (!this.connections.has(taskId)) {
-      const containerName = `${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`;
-      this.connections.set(taskId, {
-        taskId,
-        baseUrl: `http://${containerName}:${AioSandboxProvider.AIO_PORT}`,
-        wsUrl: `ws://${containerName}:${AioSandboxProvider.AIO_PORT}/v1/shell/ws`,
-      });
-    }
-  }
-
-  /**
-   * Whether the task's DETACHED agent session is still alive — the `has-session`
-   * liveness check, issued as the provider's OWN `POST /v1/shell/exec` running
-   * `tmux has-session -t task<taskId>` (exit 0 when the session exists). RUNTIME-
-   * AGNOSTIC (add-claude-code-runtime 3.4): the session name `task<taskId>` is the
-   * SAME for codex and claude-code (the shared `detachedSessionName`), so this
-   * probe makes NO codex-specific assumption — it only asks whether SOME agent
-   * session for this task is running. For claude that session stays alive across the
-   * turn and is killed by the runtime's `detectExit` on `end_turn`; this probe then
-   * sees it gone (the abnormal-death case is likewise caught). This is a CONSUMED
-   * contract, not a shared-file edit: the provider already reaches the sandbox HTTP
-   * API directly elsewhere (readiness/clone/auth), so probing liveness over the same
-   * surface keeps this track's file set disjoint from the terminal module. A
-   * non-zero exit, a non-`ok` HTTP status, or any transport error is treated as NOT
-   * alive (so a wedged/unreachable sandbox is reaped, never re-adopted). Never throws.
-   */
-  private async hasLiveSession(taskId: string): Promise<boolean> {
-    const containerName = `${AioSandboxProvider.CONTAINER_PREFIX}${taskId}`;
-    const baseUrl = `http://${containerName}:${AioSandboxProvider.AIO_PORT}`;
-    const command = `tmux has-session -t task${taskId}`;
-    try {
-      const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command }),
-        signal: AbortSignal.timeout(AioSandboxProvider.SESSION_PROBE_TIMEOUT_MS),
-      });
-      if (!res.ok) return false;
-      const { exitCode } = AioSandboxProvider.parseExecResult(
-        await res.json().catch(() => undefined),
-      );
-      return exitCode === 0;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Parse the `taskId` out of a docker container's `Names` (the `listContainers`
-   * shape gives leading-slash names, e.g. `/cap-aio-<taskId>`). Returns the first
-   * name that matches the `cap-aio-` prefix with a non-empty suffix, or `null`
-   * when none does (a foreign / unparseable container that cannot be re-adopted).
-   */
-  private static parseTaskId(names: readonly string[] | undefined): string | null {
-    for (const raw of names ?? []) {
-      const name = raw.startsWith('/') ? raw.slice(1) : raw;
-      if (
-        name.startsWith(AioSandboxProvider.CONTAINER_PREFIX) &&
-        name.length > AioSandboxProvider.CONTAINER_PREFIX.length
-      ) {
-        return name.slice(AioSandboxProvider.CONTAINER_PREFIX.length);
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Guard: a container MUST be created with `seccomp=unconfined`. A misconfigured
-   * container (missing the option) is invalid and must never be used for
-   * execution, so we throw before starting it.
-   */
-  private assertSeccompUnconfined(securityOpt: readonly string[]): void {
-    if (!securityOpt.includes(AioSandboxProvider.SECCOMP_UNCONFINED)) {
-      throw new Error(
-        `AIO sandbox container is invalid: HostConfig.SecurityOpt must include '${AioSandboxProvider.SECCOMP_UNCONFINED}'`,
-      );
-    }
-  }
-
-  /**
-   * Poll `GET <baseUrl>/v1/docs` until it responds successfully (readiness),
-   * bounded by `AIO_SANDBOX_READINESS_TIMEOUT_MS`. Surfaces a clear provision
-   * error if readiness never arrives within the bound.
-   */
-  private async waitForReadiness(baseUrl: string, taskId: string): Promise<void> {
-    const timeoutMs = Number(process.env.AIO_SANDBOX_READINESS_TIMEOUT_MS ?? 60_000);
-    const intervalMs = 250;
-    const deadline = Date.now() + timeoutMs;
-    let lastError: unknown;
-
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${baseUrl}/v1/docs`);
-        if (res.ok) return;
-        lastError = new Error(`/v1/docs responded with status ${res.status}`);
-      } catch (err) {
-        lastError = err;
-      }
-      await this.delay(intervalMs);
-    }
-
-    throw new Error(
-      `AIO sandbox for task ${taskId} did not become ready within ${timeoutMs}ms ` +
-        `(last error: ${lastError instanceof Error ? lastError.message : String(lastError)})`,
-    );
+    return this.controller.reattach(taskId);
   }
 
   /**
@@ -1025,45 +604,24 @@ export class AioSandboxProvider
    * error carrying the command `output`. "cloned task repository" is logged ONLY
    * on a genuinely successful clone.
    */
-  private async cloneTaskRepository(baseUrl: string, taskId: string): Promise<void> {
-    const spec = await this.lookup.getCloneSpec(taskId);
+  private async cloneTaskRepository(
+    baseUrl: string,
+    taskId: string,
+    selectedSpec: ProvisionContext['cloneSpec'],
+  ): Promise<void> {
+    const spec =
+      selectedSpec === undefined ? await this.lookup.getCloneSpec(taskId) : selectedSpec;
     if (!spec) {
       this.logger.debug(`no clone spec resolved for task ${taskId}; skipping clone`);
       return;
     }
 
-    const workspaceDir = AioSandboxProvider.WORKSPACE_DIR;
-    // Auth (when present) rides `git -c http.extraHeader=...`, NEVER the URL — so a
-    // clone-failure stderr that echoes the URL cannot carry the token. The header
-    // value is base64 + fixed text (no single quote), so single-quoting it for the
-    // shell is safe. Clone into a dedicated EMPTY workspace dir, never the
-    // non-empty HOME. No trailing pipe, so the reported exit_code is the clone's.
-    const command = spec.authHeader
-      ? `git -c http.extraHeader='${spec.authHeader}' clone ${spec.url} ${workspaceDir}`
-      : `git clone ${spec.url} ${workspaceDir}`;
-    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command }),
+    await materializeGitWorkspace({
+      baseUrl,
+      taskId,
+      spec,
+      workspaceDir: AioSandboxProvider.WORKSPACE_DIR,
     });
-    if (!res.ok) {
-      throw new Error(
-        `git clone into AIO sandbox for task ${taskId} failed: /v1/shell/exec responded ${res.status}`,
-      );
-    }
-
-    // Parse the response and treat a non-zero clone exit_code as a real
-    // provisioning failure — an HTTP 200 with a failed command is NOT success.
-    const { exitCode, output } = AioSandboxProvider.parseExecResult(
-      await res.json().catch(() => undefined),
-    );
-    if (exitCode !== 0) {
-      const scrubbed = AioSandboxProvider.scrubSecrets(output);
-      throw new Error(
-        `git clone into AIO sandbox for task ${taskId} failed: exit_code ${exitCode}` +
-          (scrubbed ? ` — ${scrubbed.trim()}` : ''),
-      );
-    }
 
     this.logger.debug(`cloned task repository into AIO sandbox for task ${taskId}`);
   }
@@ -1082,15 +640,16 @@ export class AioSandboxProvider
    * throws, which the caller's provision try/catch maps to a torn-down container +
    * failed task. An unresolved/errored runtime degrades to the codex default.
    */
-  private async injectRuntimeSetup(baseUrl: string, taskId: string): Promise<void> {
+  private async injectRuntimeSetup(
+    baseUrl: string,
+    taskId: string,
+    runtime: AgentRuntime,
+  ): Promise<void> {
     // UNIFORM provision-time setup for EVERY runtime — NO agent-identity branch. The
     // runtime emits its ordered setup commands as DATA; the provider (mechanism)
     // resolves the per-runtime material + the task prompt, then runs the commands
-    // fail-closed. An unresolved/errored runtime degrades to the codex default.
-    const runtime =
-      (await this.resolveRuntime(taskId)) ??
-      this.runtimes?.resolve?.(null) ??
-      new CodexRuntime();
+    // fail-closed. The selected runtime is resolved once by provision() and
+    // carried through preflight + setup, mirroring Sandbank's selected run context.
     const [material, prompt] = await Promise.all([
       this.resolveProvisionMaterial(runtime, taskId),
       this.lookup.getTaskPrompt(taskId),
@@ -1134,6 +693,38 @@ export class AioSandboxProvider
   }
 
   /**
+   * Runtime image/tooling preflight, inspired by Sandbank's provider scheduler
+   * preflight but scoped to our current single AIO provider. Missing tools fail
+   * provisioning before auth material, repository clone, skill install, or agent
+   * launch, yielding a precise image-capability error and preventing a bad image
+   * from consuming a long-running slot.
+   */
+  private async preflightRuntime(
+    baseUrl: string,
+    taskId: string,
+    runtime: AgentRuntime,
+  ): Promise<void> {
+    const probes: readonly SandboxRuntimePreflightProbe[] = runtime.preflightProbes();
+    if (probes.length === 0) return;
+
+    const exec = this.runSandboxExec(baseUrl);
+    for (const probe of probes) {
+      const { exitCode, output } = await exec(probe.command);
+      if (exitCode !== 0) {
+        const scrubbed = AioSandboxProvider.scrubSecrets(output).trim();
+        throw new Error(
+          `runtime "${runtime.id}" preflight for task ${taskId} failed: ` +
+            `${probe.name} (${probe.command}) exit_code ${exitCode}` +
+            (scrubbed ? ` — ${scrubbed}` : ''),
+        );
+      }
+    }
+    this.logger.debug(
+      `runtime "${runtime.id}" preflight passed for task ${taskId} (${probes.length} probe(s))`,
+    );
+  }
+
+  /**
    * The per-command fail-closed predicate (refactor step 3 — extracted so the
    * fail-closed matrix is unit-testable WITHOUT constructing the provider). A REAL
    * non-zero exit ALWAYS fails closed; an UNRESOLVED (NaN) exit fails closed UNLESS
@@ -1148,61 +739,15 @@ export class AioSandboxProvider
   }
 
   /**
-   * Resolve the per-runtime auth material the runtime's setup emitter consumes. The
-   * async I/O (credential source read) + the SSRF guard are MECHANISM and live here,
-   * never in the pure runtime. Dispatched by runtime id via a DATA-DRIVEN table — NOT
-   * a hardcoded agent-identity control-flow branch. (Follow-up: a credential-source
-   * registry would let a third runtime register its source without touching the provider.)
+   * Resolve the per-runtime auth material the runtime's setup emitter consumes.
+   * The provider depends only on the registry; credential-source I/O and SSRF
+   * validation live behind runtime-specific resolvers registered at composition.
    */
   private async resolveProvisionMaterial(
-    runtime: { id: RuntimeId },
+    runtime: { id: string },
     taskId: string,
   ): Promise<AuthMaterial | null> {
-    const resolvers: Partial<
-      Record<RuntimeId, () => Promise<AuthMaterial | null>>
-    > = {
-      codex: () => this.resolveCodexMaterial(taskId),
-      'claude-code': () => this.resolveClaudeMaterial(),
-    };
-    return (await resolvers[runtime.id]?.()) ?? null;
-  }
-
-  /**
-   * Codex: resolve the {@link CodexAuthSource} material + SSRF-validate a compatible
-   * provider, mapping the result into the port's thin {@link AuthMaterial}. An unsafe
-   * compatible Base URL is treated as NO credential (codex runs unauthenticated) —
-   * byte-identical to the prior inline `injectCodexAuth` behavior.
-   */
-  private async resolveCodexMaterial(taskId: string): Promise<AuthMaterial | null> {
-    const material = await this.codexAuthSource.getCodexAuth(taskId);
-    if (!material) return null;
-    if (material.kind === 'compatible') {
-      try {
-        await assertSafeProviderUrl(material.baseUrl);
-      } catch (err) {
-        this.logger.warn(
-          `compatible provider Base URL for task ${taskId} failed host-safety validation (${
-            err instanceof Error ? err.message : String(err)
-          }); skipping provider injection (codex will be unauthenticated)`,
-        );
-        return null;
-      }
-      return {
-        codexCompatible: {
-          baseUrl: material.baseUrl,
-          apiKey: material.apiKey,
-          model: material.model,
-        },
-      };
-    }
-    return { authJson: material.authJson };
-  }
-
-  /** Claude: the resolved OAuth token (or null) mapped into the port AuthMaterial. */
-  private async resolveClaudeMaterial(): Promise<AuthMaterial | null> {
-    if (!this.claudeAuth) return null;
-    const material = await this.claudeAuth.getClaudeAuth();
-    return material ? { oauthToken: material.oauthToken } : null;
+    return this.materialResolvers.resolve(runtime, { taskId });
   }
 
   /**
@@ -1226,6 +771,20 @@ export class AioSandboxProvider
   }
 
   /**
+   * Resolve the selected runtime for one provision pass. This is the local analog
+   * of Sandbank's `SelectedSandboxProvider`/run context: once selected, the same
+   * runtime is used for image preflight and provision-time setup, instead of
+   * re-reading task runtime state between those phases.
+   */
+  private async resolveProvisionRuntime(taskId: string): Promise<AgentRuntime> {
+    return (
+      (await this.resolveRuntime(taskId)) ??
+      this.runtimes?.resolve?.(null) ??
+      new CodexRuntime()
+    );
+  }
+
+  /**
    * Build the {@link SandboxExec} closure a runtime uses to run a command in THIS
    * sandbox over `POST <baseUrl>/v1/shell/exec`, returning the parsed
    * `{exitCode, output}` via the SAME {@link parseExecResult} the provider uses for
@@ -1236,15 +795,7 @@ export class AioSandboxProvider
    */
   private runSandboxExec(baseUrl: string): SandboxExec {
     return async (command: string): Promise<SandboxExecResult> => {
-      const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command }),
-      });
-      if (!res.ok) {
-        return { exitCode: Number.NaN, output: `/v1/shell/exec responded ${res.status}` };
-      }
-      return AioSandboxProvider.parseExecResult(await res.json().catch(() => undefined));
+      return this.controller.runSandboxExec(baseUrl, command);
     };
   }
 
@@ -1341,9 +892,7 @@ export class AioSandboxProvider
    * are exactly where a credential-bearing URL would otherwise surface.
    */
   private static scrubSecrets(output: string): string {
-    return output
-      .replace(/https:\/\/[^@\s/]+:[^@\s/]+@/g, 'https://***:***@')
-      .replace(/(Authorization:\s*Basic\s+)\S+/gi, '$1***');
+    return scrubAioExecSecrets(output);
   }
 
   /**
@@ -1356,34 +905,6 @@ export class AioSandboxProvider
    * too. A missing code stays NaN — never `=== 0` — so absence is a failure.
    */
   private static parseExecResult(raw: unknown): { exitCode: number; output: string } {
-    const top = (raw ?? {}) as Record<string, unknown>;
-    const d = (top.data ?? top) as Record<string, unknown>;
-    const exitCode = AioSandboxProvider.coerceExitCode(
-      d.exit_code ?? d.exitCode ?? d.code,
-    );
-    const output =
-      (typeof d.output === 'string' && d.output) ||
-      (typeof d.stderr === 'string' && d.stderr) ||
-      (typeof d.stdout === 'string' && d.stdout) ||
-      '';
-    return { exitCode, output };
-  }
-
-  /**
-   * Coerce an arbitrary `/v1/shell/exec` exit-code field to a number. A missing
-   * or unparseable code is treated as a non-zero failure (`NaN` is never `=== 0`),
-   * so an absent `exit_code` never masquerades as a successful clone.
-   */
-  private static coerceExitCode(raw: unknown): number {
-    if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-    if (typeof raw === 'string' && raw.trim() !== '') {
-      const n = Number(raw.trim());
-      if (Number.isFinite(n)) return n;
-    }
-    return Number.NaN;
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return parseAioExecResult(raw);
   }
 }

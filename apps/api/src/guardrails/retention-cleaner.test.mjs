@@ -25,6 +25,7 @@ const apiRoot = resolve(__dirname, '..', '..');
 const repoRoot = resolve(apiRoot, '..', '..');
 const tscBin = join(repoRoot, 'node_modules', '.bin', 'tsc');
 const cleanerSrc = join(__dirname, 'retention-cleaner.ts');
+const storeSrc = join(__dirname, 'sandbox-retention-store.ts');
 
 let passed = 0, failed = 0;
 function assert(cond, label) {
@@ -36,13 +37,15 @@ const outDir = mkdtempSync(join(apiRoot, '.retention-cleaner-test-'));
 function compile() {
   execFileSync(tscBin, [
     cleanerSrc,
+    storeSrc,
     '--outDir', outDir,
     '--module', 'commonjs', '--moduleResolution', 'node', '--target', 'ES2021',
     '--experimentalDecorators', '--esModuleInterop', '--skipLibCheck',
   ], { cwd: apiRoot, stdio: 'pipe' });
-  const hit = findFile(outDir, 'retention-cleaner.js');
-  if (hit) return hit;
-  throw new Error('compiled retention-cleaner.js not found');
+  const cleaner = findFile(outDir, 'retention-cleaner.js');
+  const store = findFile(outDir, 'sandbox-retention-store.js');
+  if (cleaner && store) return { cleaner, store };
+  throw new Error('compiled retention-cleaner.js or sandbox-retention-store.js not found');
 }
 function findFile(dir, name) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -94,6 +97,22 @@ function makeDocker(containers) {
   };
 }
 
+function makeRetentionStore(candidates) {
+  const removed = [];
+  let listCalls = 0;
+  return {
+    removed,
+    get listCalls() { return listCalls; },
+    async listStoppedSandboxes() {
+      listCalls += 1;
+      return [...candidates].sort((a, b) => a.finishedAtMs - b.finishedAtMs);
+    },
+    async removeStopped(sandbox) {
+      removed.push(sandbox.id);
+    },
+  };
+}
+
 function makePrisma(retentions /* number[] | null */) {
   return {
     accountSettings: {
@@ -106,95 +125,107 @@ function makePrisma(retentions /* number[] | null */) {
 }
 
 async function main() {
-  const { RetentionCleaner } = await import(pathToFileURL(compile()).href);
+  const compiled = compile();
+  const { RetentionCleaner } = await import(pathToFileURL(compiled.cleaner).href);
+  const { DockerSandboxRetentionStore } = await import(pathToFileURL(compiled.store).href);
 
   // helper: build a cleaner with a fake docker, prisma, fixed free-disk, high floor
-  function buildCleaner(docker, prisma, { freeBytes = 1000 * GB, floorGb = 10 } = {}) {
-    const c = new RetentionCleaner(prisma);
-    c.docker = docker;
+  function buildCleaner(store, prisma, { freeBytes = 1000 * GB, floorGb = 10 } = {}) {
+    const c = new RetentionCleaner(prisma, store);
     c.diskFloorBytes = floorGb * GB;
     c.getFreeDiskBytes = async () => freeBytes;
     return c;
   }
 
-  // ---- 1) Policy 1 age-trip with DEFAULT 30-day window -----------------------
+  // ---- 0) Docker retention store adapter: AIO filter + stopped-only safety ---
   {
     const docker = makeDocker([
-      { Id: 'old', state: 'exited', finishedAt: iso(40 * DAY) },
-      { Id: 'young', state: 'exited', finishedAt: iso(5 * DAY) },
+      { Id: 'running-old', state: 'running', finishedAt: iso(99 * DAY) },
+      { Id: 'stopped-new', state: 'exited', finishedAt: iso(1 * DAY) },
+      { Id: 'stopped-old', state: 'exited', finishedAt: iso(3 * DAY) },
     ]);
-    const c = buildCleaner(docker, makePrisma([])); // no rows → default 30
-    await c.sweep();
-    assert(docker.removed.includes('old'), 'age policy removes a container stopped past the 30-day default');
-    assert(!docker.removed.includes('young'), 'age policy keeps a container stopped within the window');
-    assert(docker.removeForce.every((f) => f === false), 'removal always uses force:false (never kills)');
+    const store = new DockerSandboxRetentionStore(docker, 'cap-aio-');
+    const listed = await store.listStoppedSandboxes();
+    assert(listed.map((c) => c.id).join(',') === 'stopped-old,stopped-new', 'docker store lists stopped sandboxes oldest-first');
+    assert(!listed.some((c) => c.id === 'running-old'), 'docker store excludes running containers defensively');
     assert(Array.isArray(docker.lastFilter?.status) && docker.lastFilter.status.includes('exited'), 'the list query filters to stopped (exited) containers');
     assert(Array.isArray(docker.lastFilter?.name) && docker.lastFilter.name.some((n) => n.includes('cap-aio-')), 'the list query filters by the cap-aio- prefix');
+    await store.removeStopped({ id: 'stopped-old', name: 'stopped-old', finishedAtMs: Date.now() });
+    assert(docker.removeForce.every((f) => f === false), 'docker store removal always uses force:false (never kills)');
+  }
+
+  // ---- 1) Policy 1 age-trip with DEFAULT 30-day window -----------------------
+  {
+    const store = makeRetentionStore([
+      { id: 'old', name: 'old', finishedAtMs: Date.now() - 40 * DAY },
+      { id: 'young', name: 'young', finishedAtMs: Date.now() - 5 * DAY },
+    ]);
+    const c = buildCleaner(store, makePrisma([])); // no rows → default 30
+    await c.sweep();
+    assert(store.removed.includes('old'), 'age policy removes a container stopped past the 30-day default');
+    assert(!store.removed.includes('young'), 'age policy keeps a container stopped within the window');
   }
 
   // ---- 2) persisted retention window (MAX across accounts) overrides default --
   {
-    const docker = makeDocker([{ Id: 'old', state: 'exited', finishedAt: iso(40 * DAY) }]);
-    const c = buildCleaner(docker, makePrisma([7, 90])); // max 90 days
+    const store = makeRetentionStore([{ id: 'old', name: 'old', finishedAtMs: Date.now() - 40 * DAY }]);
+    const c = buildCleaner(store, makePrisma([7, 90])); // max 90 days
     await c.sweep();
-    assert(!docker.removed.includes('old'), 'a 40-day-old container is KEPT when the persisted window is 90 (max across accounts)');
+    assert(!store.removed.includes('old'), 'a 40-day-old container is KEPT when the persisted window is 90 (max across accounts)');
   }
 
   // ---- 2b) DB unavailable → falls back to the default window -----------------
   {
-    const docker = makeDocker([{ Id: 'old', state: 'exited', finishedAt: iso(40 * DAY) }]);
-    const c = buildCleaner(docker, makePrisma(null)); // findMany throws
+    const store = makeRetentionStore([{ id: 'old', name: 'old', finishedAtMs: Date.now() - 40 * DAY }]);
+    const c = buildCleaner(store, makePrisma(null)); // findMany throws
     await c.sweep();
-    assert(docker.removed.includes('old'), 'a DB failure degrades to the 30-day default (40-day-old removed)');
+    assert(store.removed.includes('old'), 'a DB failure degrades to the 30-day default (40-day-old removed)');
   }
 
   // ---- 3) Policy 2 low-disk OLDEST-first eviction ----------------------------
   {
     // three YOUNG containers (age policy keeps all); disk below floor.
-    const docker = makeDocker([
-      { Id: 'mid', state: 'exited', finishedAt: iso(2 * DAY) },
-      { Id: 'oldest', state: 'exited', finishedAt: iso(3 * DAY) },
-      { Id: 'newest', state: 'exited', finishedAt: iso(1 * DAY) },
+    const store = makeRetentionStore([
+      { id: 'mid', name: 'mid', finishedAtMs: Date.now() - 2 * DAY },
+      { id: 'oldest', name: 'oldest', finishedAtMs: Date.now() - 3 * DAY },
+      { id: 'newest', name: 'newest', finishedAtMs: Date.now() - 1 * DAY },
     ]);
-    const c = new RetentionCleaner(makePrisma([]));
-    c.docker = docker;
+    const c = new RetentionCleaner(makePrisma([]), store);
     c.diskFloorBytes = 10 * GB;
     // free disk: 5GB (below floor) until 2 removed, then 20GB (recovered).
-    c.getFreeDiskBytes = async () => (docker.removed.length >= 2 ? 20 * GB : 5 * GB);
+    c.getFreeDiskBytes = async () => (store.removed.length >= 2 ? 20 * GB : 5 * GB);
     await c.sweep();
-    assert(docker.removed.length === 2, 'disk-pressure eviction stops once free disk recovers above the floor');
-    assert(docker.removed[0] === 'oldest' && docker.removed[1] === 'mid', 'disk-pressure evicts OLDEST-stopped first, then next-oldest');
-    assert(!docker.removed.includes('newest'), 'the newest stopped container is spared once disk recovers');
+    assert(store.removed.length === 2, 'disk-pressure eviction stops once free disk recovers above the floor');
+    assert(store.removed[0] === 'oldest' && store.removed[1] === 'mid', 'disk-pressure evicts OLDEST-stopped first, then next-oldest');
+    assert(!store.removed.includes('newest'), 'the newest stopped container is spared once disk recovers');
   }
 
   // ---- 3b) disk above floor → Policy 2 evicts nothing ------------------------
   {
-    const docker = makeDocker([{ Id: 'young', state: 'exited', finishedAt: iso(1 * DAY) }]);
-    const c = buildCleaner(docker, makePrisma([]), { freeBytes: 500 * GB, floorGb: 10 });
+    const store = makeRetentionStore([{ id: 'young', name: 'young', finishedAtMs: Date.now() - 1 * DAY }]);
+    const c = buildCleaner(store, makePrisma([]), { freeBytes: 500 * GB, floorGb: 10 });
     await c.sweep();
-    assert(docker.removed.length === 0, 'no eviction when free disk is above the floor and nothing is aged out');
+    assert(store.removed.length === 0, 'no eviction when free disk is above the floor and nothing is aged out');
   }
 
-  // ---- 4) a RUNNING container is NEVER reaped --------------------------------
+  // ---- 4) cleaner trusts the retention store's stopped-only boundary ----------
   {
-    const docker = makeDocker([
-      { Id: 'running-old', state: 'running', finishedAt: iso(99 * DAY) }, // "old" but running
-      { Id: 'stopped-old', state: 'exited', finishedAt: iso(99 * DAY) },
+    const store = makeRetentionStore([
+      { id: 'stopped-old', name: 'stopped-old', finishedAtMs: Date.now() - 99 * DAY },
     ]);
-    const c = buildCleaner(docker, makePrisma([])); // default window; both "old"
+    const c = buildCleaner(store, makePrisma([]));
     await c.sweep();
-    assert(!docker.removed.includes('running-old'), 'a RUNNING container is never considered for removal (defensive guard)');
-    assert(docker.removed.includes('stopped-old'), 'a co-resident stopped container IS still reaped');
+    assert(store.removed.includes('stopped-old'), 'a stopped sandbox returned by the retention store is reaped');
   }
 
   // ---- 5) the overlap guard skips a re-entrant tick --------------------------
   {
-    const docker = makeDocker([{ Id: 'old', state: 'exited', finishedAt: iso(99 * DAY) }]);
-    const c = buildCleaner(docker, makePrisma([]));
+    const store = makeRetentionStore([{ id: 'old', name: 'old', finishedAtMs: Date.now() - 99 * DAY }]);
+    const c = buildCleaner(store, makePrisma([]));
     c.sweeping = true; // simulate a sweep already in flight
     await c.sweep();
-    assert(docker.listCalls === 0, 'a re-entrant sweep returns immediately without listing/removing anything');
-    assert(docker.removed.length === 0, 'the overlap guard prevents the re-entrant tick from removing containers');
+    assert(store.listCalls === 0, 'a re-entrant sweep returns immediately without listing/removing anything');
+    assert(store.removed.length === 0, 'the overlap guard prevents the re-entrant tick from removing containers');
   }
 
   // stop the unref'd timers the constructor started

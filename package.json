@@ -13,9 +13,11 @@
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",
     "verify": "turbo typecheck lint build",
+    "coverage:sandbox": "pnpm --filter @cap/sandbox-core coverage && pnpm --filter @cap/sandbox-scheduler coverage && pnpm --filter @cap/sandbox-lifecycle coverage && pnpm --filter @cap/sandbox-workspace-git coverage && pnpm --filter @cap/sandbox-conformance coverage && pnpm --filter @cap/sandbox-aio-local coverage && pnpm --filter @cap/sandbox-cloud-http coverage && pnpm --filter @cap/sandbox-provider-aio coverage && pnpm --filter @cap/sandbox coverage",
     "prepare": "husky"
   },
   "devDependencies": {
+    "c8": "^11.0.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.5.2",
     "turbo": "^2.5.4",

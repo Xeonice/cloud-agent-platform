@@ -11,8 +11,13 @@ import {
 import { SessionTranscriptService } from '../tasks/session-transcript.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RetentionCleaner } from './retention-cleaner';
+import {
+  DockerSandboxRetentionStore,
+  SANDBOX_RETENTION_STORE,
+} from './sandbox-retention-store';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
+import { PROVISION_LOOKUP, type ProvisionLookup } from '../sandbox/provision-lookup.port';
 import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
@@ -52,6 +57,7 @@ import {
         ModuleRef,
         SessionCredentialsService,
         { token: SANDBOX_PROVIDER, optional: true },
+        { token: PROVISION_LOOKUP, optional: true },
         { token: AUDIT_RECORDER_TOKEN, optional: true },
         // PrismaService resolves from the @Global PrismaModule; optional so a
         // guardrails-only unit context still constructs without a database —
@@ -68,6 +74,7 @@ import {
         moduleRef: ModuleRef,
         creds: SessionCredentialsService,
         sandbox?: SandboxProvider,
+        provisionLookup?: ProvisionLookup,
         audit?: AuditRecorderPort,
         prisma?: PrismaService,
         transcripts?: ITranscriptCapture,
@@ -77,6 +84,7 @@ import {
           creds,
           sandbox,
           readGuardrailsConfig(),
+          provisionLookup,
           audit,
           prisma,
           transcripts,
@@ -91,6 +99,10 @@ import {
     {
       provide: TRANSCRIPT_SERVICE_TOKEN,
       useExisting: SessionTranscriptService,
+    },
+    {
+      provide: SANDBOX_RETENTION_STORE,
+      useFactory: () => new DockerSandboxRetentionStore(),
     },
     // Retention cleaner (session-sandbox-retention Track 5): a self-starting
     // unref'd sweeper that removes settled, retained `cap-aio-*` containers past

@@ -41,6 +41,9 @@ import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
+import {
+  selectRetainedTranscriptSandboxProvider,
+} from '../sandbox/sandbox-scheduler';
 import { parseTranscript } from '../sandbox/parse-transcript';
 import {
   transcriptFormatForRuntime,
@@ -157,19 +160,32 @@ export class McpServerFactory implements McpToolDeps {
     // provider returns the runtime-tagged TranscriptSource (unify-transcript-parsers
     // D3); we consume its RAW `jsonl` so the durable archive stays byte-for-byte the
     // same raw text and the parse facade keeps its stable `(jsonl, format)` signature.
-    const source = await this.sandbox.readRolloutFromContainer(id, runtime);
-    if (source !== null) {
-      // Read-through backfill so the NEXT read is a durable hit. Best-effort.
-      await this.transcripts.backfill(id, source.jsonl);
-      return toAvailable(id, source.jsonl, task.status, format);
+    const selected = this.selectRetainedTranscriptSandbox();
+    if (selected) {
+      const source = await selected.readRolloutFromContainer(id, runtime);
+      if (source !== null) {
+        // Read-through backfill so the NEXT read is a durable hit. Best-effort.
+        await this.transcripts.backfill(id, source.jsonl);
+        return toAvailable(id, source.jsonl, task.status, format);
+      }
+
+      // (3) Neither source yields a rollout: distinguish a reaped session
+      // (`expired`) from a present-but-transcriptless sandbox (`empty`).
+      const exists = await selected.sandboxExists(id);
+      return SessionHistorySchema.parse(
+        exists ? { status: 'empty', reason: 'no-rollout' } : { status: 'expired' },
+      );
     }
 
-    // (3) Neither source yields a rollout: distinguish a reaped session
-    // (`expired`) from a present-but-transcriptless sandbox (`empty`).
-    const exists = await this.sandbox.sandboxExists(id);
-    return SessionHistorySchema.parse(
-      exists ? { status: 'empty', reason: 'no-rollout' } : { status: 'expired' },
-    );
+    return SessionHistorySchema.parse({ status: 'expired' });
+  }
+
+  private selectRetainedTranscriptSandbox(): SandboxProvider | null {
+    try {
+      return selectRetainedTranscriptSandboxProvider(this.sandbox).provider;
+    } catch {
+      return null;
+    }
   }
 }
 

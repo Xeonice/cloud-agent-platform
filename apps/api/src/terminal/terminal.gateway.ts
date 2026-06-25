@@ -1311,6 +1311,13 @@ export class TerminalGateway
       session.snapshots.resizeHeadless(frame.cols, frame.rows);
     }
 
+    // `onPtyOutput` streams to live operators synchronously but persists
+    // `session.log` through a per-task async append chain. Reconnect is the
+    // durable replay boundary, so wait for already-observed output to land before
+    // reading the log; otherwise a fast reconnect can see live bytes on the old
+    // socket and an empty tail on the new socket.
+    await this.flushSessionLog(taskId);
+
     const frames: WsControlFrame[] = await session.snapshots.buildReconnectFrames(
       {
         fromSeq: frame.lastSeq,
@@ -1481,6 +1488,20 @@ export class TerminalGateway
         );
       }
     });
+  }
+
+  private async flushSessionLog(taskId: string): Promise<void> {
+    const entry = this.sessionLogs.get(taskId);
+    if (!entry) return;
+    try {
+      await entry.tail;
+    } catch (err) {
+      this.logger.warn(
+        `task ${taskId}: session.log flush failed before reconnect: ${
+          (err as Error).message
+        }`,
+      );
+    }
   }
 
   /**

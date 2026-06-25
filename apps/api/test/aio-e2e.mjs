@@ -19,9 +19,9 @@
  *       shell -> an injected command is EXECUTED (proven with arithmetic whose
  *       result is absent from the input, ruling out PTY input-echo).
  *   (D) write-lock: only the lease holder's keystrokes reach the PTY.
- *   (E) codex starts in-sandbox: injecting `codex` triggers crossterm's DSR
- *       cursor-position query; the AioPtyClient CPR injection must unblock it so
- *       codex renders its TUI instead of aborting with a cursor-read error.
+ *   (E) codex starts in-sandbox: the AioPtyClient auto-launches codex, observes
+ *       crossterm's DSR cursor-position query, and injects CPR so codex renders
+ *       instead of aborting with a cursor-read error.
  *
  * Topology / prereqs: the compose stack must be UP with a built derived AIO image
  * (AIO_SANDBOX_IMAGE) and the api reachable at `API` (default http://127.0.0.1:8080).
@@ -37,6 +37,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 import Docker from 'dockerode';
@@ -102,6 +103,56 @@ async function waitFor(predicate, { timeoutMs = PROVISION_TIMEOUT_MS, stepMs = 5
     await delay(stepMs);
   }
   return false;
+}
+
+async function waitForSandboxContainer(taskId, { timeoutMs = PROVISION_TIMEOUT_MS } = {}) {
+  const docker = new Docker();
+  const name = `cap-aio-${taskId}`;
+  const container = docker.getContainer(name);
+  let lastState = 'not inspected';
+  const running = await waitFor(async () => {
+    try {
+      const info = await container.inspect();
+      lastState = info?.State?.Status ?? 'unknown';
+      return info?.State?.Running === true;
+    } catch (err) {
+      lastState = err instanceof Error ? err.message : String(err);
+      return false;
+    }
+  }, { timeoutMs });
+  assert.ok(running, `sandbox container ${name} must be running; last state: ${lastState}`);
+  return container;
+}
+
+async function execInSandbox(taskId, command, { timeoutMs = 30_000 } = {}) {
+  const container = await waitForSandboxContainer(taskId);
+  const exec = await container.exec({
+    Cmd: ['bash', '-lc', command],
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: true,
+  });
+  const stream = await exec.start({ Tty: true });
+  let output = '';
+  stream.on('data', (chunk) => {
+    output += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+  });
+  await Promise.race([
+    once(stream, 'end'),
+    once(stream, 'close'),
+    once(stream, 'error').then(([err]) => {
+      throw err;
+    }),
+    delay(timeoutMs).then(() => {
+      stream.destroy?.();
+      throw new Error(`sandbox exec timed out after ${timeoutMs}ms: ${command}`);
+    }),
+  ]);
+  const inspected = await exec.inspect();
+  return {
+    exitCode: typeof inspected.ExitCode === 'number' ? inspected.ExitCode : null,
+    output,
+  };
 }
 
 function openWs(url) {
@@ -250,29 +301,51 @@ test('F. reconnect replay: a reconnecting operator receives prior output from sn
   const writer = await startOperator(taskId, { takeover: true });
   t.after(() => writer.close());
 
-  // Inject a unique marker and wait for it to appear so session.log has content.
+  // Inject a unique marker and keep the shell alive briefly. Codex is auto-run in
+  // the same PTY; on an unauthenticated local stack it can exit quickly, so this
+  // test holds the underlying shell long enough to exercise reconnect while the
+  // session is still registered.
   const marker = `RECONNECT_${randomUUID().slice(0, 8)}`;
+  let lastInjectedAt = 0;
   const marked = await waitFor(() => {
-    writer.keystroke(`echo ${marker}\n`);
+    const now = Date.now();
+    if (now - lastInjectedAt > 1000) {
+      writer.keystroke(`printf '${marker}\\n'; sleep 15\n`);
+      lastInjectedAt = now;
+    }
     return writer.getOutput().includes(marker);
   });
   assert.ok(marked, `marker must appear in PTY output before reconnect`);
 
-  // Give the gateway a moment to flush the append to session.log.
-  await delay(600);
-
   // Reconnect: a fresh WebSocket on the same task, send connect_auth then a
   // reconnect frame (fromSeq=0 so we receive everything from the beginning).
+  // Auth is async, so reconnect is retried until it is accepted and returns
+  // replay content instead of racing a pre-auth dropped frame.
   const replayed = await new Promise((resolve) => {
     const result = { hasSnapshot: false, tailContent: '' };
     const ws = new WebSocket(
       `${WS_BASE}/terminal?taskId=${taskId}&token=${encodeURIComponent(AUTH_TOKEN)}`,
     );
-    const timeout = setTimeout(() => { ws.close(); resolve(result); }, 12_000);
-    ws.once('error', () => { clearTimeout(timeout); ws.close(); resolve(result); });
+    let settled = false;
+    let retry = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (retry) clearInterval(retry);
+      clearTimeout(timeout);
+      ws.close();
+      resolve(result);
+    };
+    const requestReplay = () => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      send(ws, { channel: CONTROL, type: 'reconnect', lastSeq: 0, cols: 80, rows: 24 });
+    };
+    const timeout = setTimeout(finish, 15_000);
+    ws.once('error', finish);
     ws.once('open', () => {
       send(ws, { channel: CONTROL, type: 'connect_auth', token: AUTH_TOKEN, taskId });
-      send(ws, { channel: CONTROL, type: 'reconnect', lastSeq: 0, cols: 80, rows: 24 });
+      requestReplay();
+      retry = setInterval(requestReplay, 250);
     });
     ws.on('message', (buf) => {
       let frame;
@@ -282,7 +355,7 @@ test('F. reconnect replay: a reconnecting operator receives prior output from sn
       }
       if (frame.channel === CONTROL && frame.type === 'tail_replay') {
         if (frame.data) result.tailContent += unb64(frame.data);
-        if (frame.final) { clearTimeout(timeout); ws.close(); resolve(result); }
+        if (frame.final && (result.hasSnapshot || result.tailContent.length > 0)) finish();
       }
     });
   });
@@ -300,83 +373,66 @@ test('F. reconnect replay: a reconnecting operator receives prior output from sn
 });
 
 // ── (G) clone success: git clone into the dedicated empty workspace succeeds ──
-test('G. clone success: git clone into /home/gem/workspace succeeds with exit_code 0', { skip: SKIP }, async (t) => {
+test('G. clone success: git clone into /home/gem/workspace succeeds with exit_code 0', { skip: SKIP }, async () => {
   await reapSandboxContainers();
   const taskId = await createTask();
-  const operator = await startOperator(taskId);
-  t.after(() => operator.close());
 
   // Create a minimal local bare repo and clone it into the dedicated workspace
   // directory. Using a local source avoids any external network dependency.
   // If the workspace already has content (TASK_REPO_URL was set at provision),
   // we clone into a sub-path instead so the test remains self-contained.
   const src = `/tmp/cap-e2e-src-${randomUUID().slice(0, 8)}`;
+  const target = `/home/gem/workspace/e2e-clone-${randomUUID().slice(0, 8)}`;
   const cloneCmd =
-    `git init --bare ${src} 2>/dev/null` +
+    `rm -rf ${src} ${target}` +
+    ` && git init --bare ${src} 2>/dev/null` +
     ` && ([ "$(ls -A /home/gem/workspace 2>/dev/null)" ] ` +
-    `     && git clone ${src} /home/gem/workspace/e2e-clone ` +
+    `     && git clone ${src} ${target} ` +
     `     || git clone ${src} /home/gem/workspace)` +
     ` && echo CLONE_OK || echo CLONE_FAIL`;
 
-  const shellLive = await waitFor(() => {
-    operator.keystroke(`echo SHELL_READY\n`);
-    return operator.getOutput().includes('SHELL_READY');
-  }, { timeoutMs: PROVISION_TIMEOUT_MS });
-  assert.ok(shellLive, 'shell must be live before running clone test');
-
-  const cloneDone = await waitFor(() => {
-    operator.keystroke(`${cloneCmd}\n`);
-    return operator.getOutput().includes('CLONE_OK') || operator.getOutput().includes('CLONE_FAIL');
-  }, { timeoutMs: 30_000 });
-
-  assert.ok(cloneDone, 'clone command must complete within timeout');
-  assert.ok(
-    operator.getOutput().includes('CLONE_OK'),
+  const result = await execInSandbox(taskId, cloneCmd);
+  assert.equal(
+    result.exitCode,
+    0,
     `git clone into /home/gem/workspace must succeed (exit_code 0); ` +
-      `output tail: ${JSON.stringify(operator.getOutput().slice(-400))}`,
+      `exit_code=${result.exitCode}; output tail: ${JSON.stringify(result.output.slice(-400))}`,
+  );
+  assert.ok(
+    result.output.includes('CLONE_OK'),
+    `clone command should print CLONE_OK; output tail: ${JSON.stringify(result.output.slice(-400))}`,
   );
 });
 
 // ── (H) forced clone failure: non-empty target raises a non-zero exit_code ───
-test('H. forced clone failure: git clone into a non-empty target fails closed (non-zero exit_code)', { skip: SKIP }, async (t) => {
+test('H. forced clone failure: git clone into a non-empty target fails closed (non-zero exit_code)', { skip: SKIP }, async () => {
   await reapSandboxContainers();
   const taskId = await createTask();
-  const operator = await startOperator(taskId);
-  t.after(() => operator.close());
-
-  const shellLive = await waitFor(() => {
-    operator.keystroke(`echo SHELL_READY\n`);
-    return operator.getOutput().includes('SHELL_READY');
-  }, { timeoutMs: PROVISION_TIMEOUT_MS });
-  assert.ok(shellLive, 'shell must be live before running clone-failure test');
 
   // Make /home/gem/workspace non-empty, then attempt to clone into it.
   // git clone refuses a non-empty destination (exit 128), which is the exact
   // scenario AioSandboxProvider.cloneTaskRepository catches as a provision error.
   const src = `/tmp/cap-e2e-src-fail-${randomUUID().slice(0, 8)}`;
   const failCmd =
-    `git init --bare ${src} 2>/dev/null` +
-    ` && mkdir -p /home/gem/workspace && touch /home/gem/workspace/.cap-e2e-guard` +
-    ` && git clone ${src} /home/gem/workspace 2>&1` +
-    `; echo CLONE_EXIT:$?`;
+    `rm -rf ${src}; ` +
+    `git init --bare ${src} 2>/dev/null; ` +
+    `mkdir -p /home/gem/workspace && touch /home/gem/workspace/.cap-e2e-guard; ` +
+    `git clone ${src} /home/gem/workspace 2>&1; ` +
+    `code=$?; echo CLONE_EXIT:$code; exit $code`;
 
-  const failDone = await waitFor(() => {
-    operator.keystroke(`${failCmd}\n`);
-    return operator.getOutput().includes('CLONE_EXIT:');
-  }, { timeoutMs: 30_000 });
-
-  assert.ok(failDone, 'forced clone-failure command must complete within timeout');
+  const result = await execInSandbox(taskId, failCmd);
   // Parse the exit code: must be non-zero (git exits 128 for non-empty target).
-  const match = operator.getOutput().match(/CLONE_EXIT:(\d+)/);
+  const match = result.output.match(/CLONE_EXIT:(\d+)/);
   const exitCode = match ? Number(match[1]) : null;
   assert.ok(
     exitCode !== null && exitCode !== 0,
     `git clone into a non-empty target must fail closed (non-zero exit_code); ` +
-      `got CLONE_EXIT:${exitCode}; output tail: ${JSON.stringify(operator.getOutput().slice(-400))}`,
+      `got CLONE_EXIT:${exitCode}; docker exec exit_code=${result.exitCode}; ` +
+      `output tail: ${JSON.stringify(result.output.slice(-400))}`,
   );
   // No false "CLONE_OK" must appear — the failure is real, not silently swallowed.
   assert.ok(
-    !operator.getOutput().includes('CLONE_OK'),
+    !result.output.includes('CLONE_OK'),
     'no CLONE_OK must appear after a forced clone failure (no silent success)',
   );
 });
@@ -388,29 +444,28 @@ test('E. codex starts in the AIO sandbox (AioPtyClient CPR injection unblocks cr
   const operator = await startOperator(taskId);
   t.after(() => operator.close());
 
-  // Confirm the shell is live first, so a codex failure later is codex-specific
-  // and not just an unprovisioned session.
-  const ready = `READY_${randomUUID().slice(0, 6)}`;
-  const shellLive = await waitFor(() => {
-    operator.keystroke(`echo ${ready}\n`);
-    return operator.getOutput().includes(ready);
-  });
-  assert.ok(shellLive, 'shell must be live before launching codex');
+  // Codex is auto-launched by the AioPtyClient once the AIO shell reports ready;
+  // the e2e should assert that current contract instead of racing to type a second
+  // `codex` command before the detached tmux session attaches.
+  const stripAnsi = (s) =>
+    s
+      .replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1B[@-Z\\-_]/g, '')
+      .replace(/\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, '');
 
-  // Launch codex in-shell. crossterm emits a DSR cursor-position query (\x1b[6n)
-  // on startup and ABORTS with "cursor position could not be read" unless a CPR
-  // reply arrives; the AioPtyClient must inject the synthetic CPR (\x1b[1;1R).
-  const before = operator.getOutput().length;
-  operator.keystroke('codex\n');
-  // codex needs a few seconds to start, probe the cursor, and render (or fail).
   const rendered = await waitFor(
     () => {
-      const out = operator.getOutput().slice(before);
-      return /welcome to codex|openai|sign in|\/help|to get started/i.test(out) || out.includes('\x1b[?1049h');
+      const out = operator.getOutput();
+      const text = stripAnsi(out);
+      return (
+        out.includes('\x1b[6n') ||
+        /welcome to codex|openai|sign in|\/help|to get started|missing bearer|api key|login/i.test(text)
+      );
     },
-    { timeoutMs: 30_000 },
+    { timeoutMs: PROVISION_TIMEOUT_MS },
   );
-  const codexOut = operator.getOutput().slice(before);
+  await delay(1500);
+  const codexOut = operator.getOutput();
   const hasCursorError = /cursor position could not be read/i.test(codexOut);
 
   assert.ok(!hasCursorError, 'CPR injection must prevent the crossterm cursor-position read error');
@@ -421,7 +476,7 @@ test('E. codex starts in the AIO sandbox (AioPtyClient CPR injection unblocks cr
 });
 
 // ── (I) claude-code runtime full turn (add-claude-code-runtime, Track 7.2) ─────
-// Unlike codex (test E, operator-launched), claude can ONLY run through the
+// Like codex (test E), claude runs through the
 // orchestrator's runtime auto-launch: the provider injects CLAUDE_CODE_OAUTH_TOKEN
 // + CLAUDE_CODE_SANDBOXED + the pre-seeded ~/.claude.json, then buildLaunchLine
 // runs `claude --permission-mode acceptEdits "<prompt>"`. So this test does NOT

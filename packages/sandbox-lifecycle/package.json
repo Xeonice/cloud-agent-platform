@@ -1,0 +1,33 @@
+{
+  "name": "@cap/sandbox-lifecycle",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Provider-neutral sandbox settle and retention lifecycle plans for CAP.",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "src"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && node src/sandbox-lifecycle.test.mjs",
+    "coverage": "pnpm build && c8 --100 --include=dist/**/*.js --reporter=text node src/sandbox-lifecycle.test.mjs",
+    "lint": "eslint src --ext .ts"
+  },
+  "devDependencies": {
+    "@cap/eslint-config": "workspace:*",
+    "@cap/tsconfig": "workspace:*",
+    "@types/node": "^20.14.0",
+    "eslint": "^9.27.0",
+    "typescript": "^5.5.4"
+  }
+}

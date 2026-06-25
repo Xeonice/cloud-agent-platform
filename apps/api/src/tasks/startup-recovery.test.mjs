@@ -65,10 +65,17 @@ class FakePrisma {
  * raced to gone between the list and the reattach). Mirrors `ISandboxReadoption`.
  */
 class FakeSandbox {
-  constructor({ readoptable = [], goneOnReattach = [] } = {}) {
+  constructor({ readoptable = [], goneOnReattach = [], capabilities = null } = {}) {
     this.readoptable = readoptable;
     this.goneOnReattach = new Set(goneOnReattach);
     this.reattached = [];
+    this.capabilities = capabilities;
+  }
+  getSandboxMode() {
+    return 'test';
+  }
+  getProviderCapabilities() {
+    return this.capabilities ?? undefined;
   }
   async listReadoptable() {
     return [...this.readoptable];
@@ -82,6 +89,19 @@ class FakeSandbox {
       wsUrl: `ws://cap-aio-${taskId}:8080/v1/shell/ws`,
     };
   }
+}
+
+function selectSandboxProvider(provider, required) {
+  if (!provider) throw new Error('No sandbox provider is configured');
+  const declaredCapabilities = provider.getProviderCapabilities?.();
+  if (!declaredCapabilities) return { provider, capabilities: [], compatibility: 'legacy-assumed' };
+  const missing = required.filter((capability) => !declaredCapabilities.includes(capability));
+  if (missing.length > 0) {
+    throw new Error(
+      `Sandbox provider "${provider.getSandboxMode()}" missing required capabilities: ${missing.join(', ')}`,
+    );
+  }
+  return { provider, capabilities: declaredCapabilities, compatibility: 'declared' };
 }
 
 /**
@@ -177,18 +197,25 @@ class RecoveryHarness {
   // mirrors TasksService.readoptSurvivorsOnStartup (Phase 0)
   async readoptSurvivorsOnStartup() {
     const readopted = new Set();
-    if (!this.sandbox?.listReadoptable || !this.guardrails?.readopt) {
+    const sandbox = this.sandbox;
+    if (!sandbox?.listReadoptable || !this.guardrails?.readopt) {
+      return readopted;
+    }
+    let selected;
+    try {
+      selected = selectSandboxProvider(sandbox, ['lifecycle.readopt']).provider;
+    } catch {
       return readopted;
     }
     let candidates;
     try {
-      candidates = await this.sandbox.listReadoptable();
+      candidates = await selected.listReadoptable();
     } catch {
       return readopted; // best-effort: none re-adopted
     }
     for (const taskId of candidates) {
       try {
-        const connection = await this.sandbox.reattach?.(taskId);
+        const connection = await selected.reattach?.(taskId);
         if (!connection) continue; // raced to gone -> let Phase 1 fail it
         const row = await this.prisma.task.findUnique({
           where: { id: taskId },
@@ -396,6 +423,22 @@ test('a live-session task is re-adopted: kept running (not failed), slot held, t
     'deadline + idle watchers re-armed from the persisted task row',
   );
   assert.ok(guardrails.events.includes('readopt:alive'), 'readopt was driven for the survivor');
+});
+
+test('a declared provider missing lifecycle.readopt is not used for startup re-adoption', async () => {
+  const prisma = new FakePrisma([runningRow('alive', 1)]);
+  const guardrails = new FakeGuardrails({ envCeiling: 5 });
+  const sandbox = new FakeSandbox({
+    readoptable: ['alive'],
+    capabilities: ['terminal.websocket'],
+  });
+  const harness = new RecoveryHarness(prisma, guardrails, sandbox);
+
+  await harness.onApplicationBootstrap();
+
+  assert.deepEqual(sandbox.reattached, [], 'reattach is not attempted without lifecycle.readopt');
+  assert.deepEqual(guardrails.running, [], 'no running slot is held for a provider that cannot re-adopt');
+  assert.deepEqual(harness.failed, ['alive'], 'the in-flight task falls through to Phase 1 reclaim');
 });
 
 test('a dead-session task is force-failed: only non-re-adopted in-flight tasks are reclaimed', async () => {

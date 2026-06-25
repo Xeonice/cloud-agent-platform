@@ -13,7 +13,9 @@
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
     "pretest": "pnpm -w exec turbo run build --filter=@cap/api",
-    "test": "node --test --test-force-exit \"dist/**/*.spec.js\"",
+    "test": "pnpm run test:compiled && pnpm run test:sandbox-src",
+    "test:compiled": "node --test --test-force-exit \"dist/**/*.spec.js\"",
+    "test:sandbox-src": "node --test --test-force-exit \"src/sandbox/*.test.mjs\" \"src/guardrails/retention-cleaner.test.mjs\" \"src/tasks/startup-recovery.test.mjs\"",
     "test:e2e": "node --env-file=../../.env --test --test-force-exit test/api-e2e.mjs",
     "pretest:e2e": "pnpm -w exec turbo run build --filter=@cap/api",
     "test:e2e:aio": "bash ../../scripts/aio-e2e.sh"
@@ -24,6 +26,7 @@
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^7.3.0",
     "@cap/contracts": "workspace:*",
+    "@cap/sandbox": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@nestjs/common": "^10.4.0",
     "@nestjs/core": "^10.4.0",
