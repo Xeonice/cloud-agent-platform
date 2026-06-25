@@ -17,12 +17,16 @@
 #   AIO_BASE_TAG        ghcr.io/agent-infra/sandbox base tag the derived image is FROM.
 #                       If unset, any locally present sandbox image is retagged and
 #                       used (offline build); otherwise the pinned default is pulled.
-#   AUTH_TOKEN          operator bearer token (default dev-local-operator-token-change-me)
+#   AUTH_TOKEN          operator bearer token (default: value from apps/api/.env,
+#                       falling back to dev-local-operator-token-change-me)
 #   API                 api base URL the suite drives (default http://127.0.0.1:8080)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 AIO_IMAGE="${AIO_SANDBOX_IMAGE:-cap-aio-sandbox:e2e}"
+if [ -z "${AUTH_TOKEN:-}" ] && [ -f apps/api/.env ]; then
+  AUTH_TOKEN="$(node --env-file=apps/api/.env -p 'process.env.AUTH_TOKEN || ""' 2>/dev/null || true)"
+fi
 AUTH_TOKEN="${AUTH_TOKEN:-dev-local-operator-token-change-me}"
 API="${API:-http://127.0.0.1:8080}"
 PINNED_DEFAULT="1.0.0.125"

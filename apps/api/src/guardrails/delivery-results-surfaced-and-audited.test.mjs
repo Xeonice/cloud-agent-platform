@@ -62,10 +62,17 @@ function makeForgeRegistry({ existingCR = null, openCRResult = null } = {}) {
   };
 }
 
-function makeSandbox({ hadChanges = true, commitSha = 'cafebabe', error = null, throwOnDeliver = false } = {}) {
+function makeSandbox({
+  hadChanges = true,
+  commitSha = 'cafebabe',
+  error = null,
+  throwOnDeliver = false,
+  capabilities = null,
+} = {}) {
   const calls = { deliverWorkspaceChanges: [], teardownSandbox: [] };
-  return {
+  const sandbox = {
     calls,
+    getSandboxMode() { return 'test'; },
     async deliverWorkspaceChanges(taskId, _opts) {
       calls.deliverWorkspaceChanges.push(taskId);
       if (throwOnDeliver) throw new Error('sandbox exploded');
@@ -75,6 +82,23 @@ function makeSandbox({ hadChanges = true, commitSha = 'cafebabe', error = null, 
       calls.teardownSandbox.push(taskId);
     },
   };
+  if (capabilities) {
+    sandbox.getProviderCapabilities = () => capabilities;
+  }
+  return sandbox;
+}
+
+function selectSandboxProvider(provider, required) {
+  if (!provider) throw new Error('No sandbox provider is configured');
+  const declaredCapabilities = provider.getProviderCapabilities?.();
+  if (!declaredCapabilities) return { provider, capabilities: [], compatibility: 'legacy-assumed' };
+  const missing = required.filter((capability) => !declaredCapabilities.includes(capability));
+  if (missing.length > 0) {
+    throw new Error(
+      `Sandbox provider "${provider.getSandboxMode()}" missing required capabilities: ${missing.join(', ')}`,
+    );
+  }
+  return { provider, capabilities: declaredCapabilities, compatibility: 'declared' };
 }
 
 /**
@@ -114,6 +138,7 @@ class DeliveryHarness {
       const deliver = (task.deliver ?? 'none');
       if (deliver === 'none') return;
 
+      const selected = selectSandboxProvider(this.sandbox, ['workspace.git.deliver']);
       const target = await resolver.getForgeTarget(taskId);
       if (!target) {
         await this._persistDeliver(taskId, { deliverStatus: 'skipped' });
@@ -123,7 +148,7 @@ class DeliveryHarness {
       const branch = `cap/task-${taskId}`;
       const commitMessage = `cap: deliver task ${taskId}\n\nAutomated delivery.`;
 
-      const pushResult = await this.sandbox.deliverWorkspaceChanges(taskId, {
+      const pushResult = await selected.provider.deliverWorkspaceChanges(taskId, {
         authHeader: forge.cloneAuthHeader(target),
         branch,
         commitMessage,
@@ -419,6 +444,36 @@ function assert(condition, label) {
   // The PR result columns should still be persisted (deliver completes before audit is called)
   assert(rows[taskId].deliverStatus === 'pr_opened',
     'T8d: deliverStatus still persisted as pr_opened (audit throw happens after persist)');
+}
+
+// ── T9: provider capability selection gates delivery ─────────────────────────
+{
+  console.log('\nT9: missing workspace.git.deliver capability — delivery is failed before push-back');
+  const taskId = 'T9';
+  const rows = {
+    [taskId]: { id: taskId, status: 'completed', deliver: 'branch', branch: null },
+  };
+  const prisma = makePrisma(rows);
+  const sandbox = makeSandbox({ capabilities: ['terminal.websocket'] });
+  const h = new DeliveryHarness({ prisma, sandbox, forgeResolver: makeForgeResolver(), forgeRegistry: makeForgeRegistry(), audit: null });
+
+  let threw = false;
+  try {
+    await h.onTerminal(taskId);
+  } catch {
+    threw = true;
+  }
+
+  assert(!threw,
+    'T9a: capability selection failure is swallowed by delivery best-effort boundary');
+  assert(sandbox.calls.deliverWorkspaceChanges.length === 0,
+    'T9b: sandbox.deliverWorkspaceChanges is NOT called without workspace.git.deliver');
+  assert(rows[taskId].deliverStatus === 'failed',
+    'T9c: missing delivery capability is surfaced as deliverStatus failed');
+  assert(sandbox.calls.teardownSandbox.includes(taskId),
+    'T9d: teardown still runs after capability selection failure');
+  assert(h.released.includes(taskId),
+    'T9e: slot is still released after capability selection failure');
 }
 
 // ── summary ───────────────────────────────────────────────────────────────────

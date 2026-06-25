@@ -1,11 +1,21 @@
 import { Global, Module } from '@nestjs/common';
+import {
+  SandboxProviderRouter,
+  defineHttpCloudSandboxProvider,
+  defineLocalSandboxProvider,
+  type RoutableSandboxProvider,
+  type SandboxProviderDescriptor,
+} from '@cap/sandbox';
 import { AioSandboxProvider } from './aio-sandbox.provider';
 import { SANDBOX_PROVIDER, type SandboxProvider } from './sandbox-provider.port';
 import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
 import { PrismaCodexAuthSource } from './prisma-codex-auth-source';
 import { PROVISION_LOOKUP } from './provision-lookup.port';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
+import type { RuntimeId } from '../agent-runtime/agent-runtime.port';
 import { ForgeModule } from '../forge/forge.module';
+import type { TranscriptSource } from './transcript-source';
+import type { CloneSpec } from './provision-lookup.port';
 // add-claude-code-runtime — the cross-track shared wiring file (per the tasks
 // partition note): Track 2 binds the ClaudeAuthSource + the AgentRuntime registry
 // here; Track 3 (this edit) EXPORTS those tokens so the `/runtimes` readiness
@@ -25,6 +35,17 @@ import {
   type ClaudeAuthSource,
 } from './claude-auth-source.port';
 import { PrismaClaudeAuthSource } from './prisma-claude-auth-source';
+import {
+  DEFAULT_CLOUD_HTTP_CAPABILITIES,
+  readNumberEnv,
+  readOptionalEnv,
+  readSandboxLocationEnv,
+  readSandboxProviderCapabilitiesEnv,
+} from './sandbox-provider-config';
+import {
+  RUNTIME_MATERIAL_RESOLVER_REGISTRY,
+  createDefaultRuntimeMaterialResolverRegistry,
+} from './runtime-material-resolver';
 
 /**
  * Sandbox-provider DI wiring (sandbox-provider-port 9.1, integration 9.1b).
@@ -36,13 +57,11 @@ import { PrismaClaudeAuthSource } from './prisma-claude-auth-source';
  * the port by token, consumes the returned {@link SandboxConnection} handle, and
  * honours whatever `getSandboxMode()` it reports.
  *
- * The bound implementation is {@link AioSandboxProvider} — the connect-in AIO
- * Sandbox provider. Under connect-in the orchestrator is the WebSocket *client*:
- * `provision()` dockerode-creates a per-task `cap-aio-<taskId>` container on the
- * private `cap-net` network (no host port) and returns a `SandboxConnection`
- * handle the gateway dials by container name to open the sandbox terminal WS —
- * there is no dial-back to authenticate. A future OS-isolating implementation can
- * replace this binding by satisfying the same port, with no consumer changes.
+ * The exported implementation is a {@link SandboxProviderRouter}: a single
+ * provider-shaped facade over local/cloud candidates. Local AIO is always
+ * registered; the HTTP cloud provider is registered when
+ * `CAP_SANDBOX_CLOUD_HTTP_BASE_URL` is configured. Consumers still inject one
+ * port and remain unaware of the chosen backend.
  *
  * Global so any feature module that provisions execution (terminal-execution /
  * agent-events / guardrails call sites) can inject the port without re-importing
@@ -67,9 +86,12 @@ import { PrismaClaudeAuthSource } from './prisma-claude-auth-source';
       provide: PROVISION_LOOKUP,
       useClass: PrismaProvisionLookup,
     },
+    AioSandboxProvider,
     {
       provide: SANDBOX_PROVIDER,
-      useClass: AioSandboxProvider,
+      useFactory: (aio: AioSandboxProvider): SandboxProvider =>
+        buildConfiguredSandboxProvider(aio),
+      inject: [AioSandboxProvider],
     },
     // add-claude-code-runtime Track 2/3 + pixel-restore-console-to-od Track 3 —
     // the Claude OAuth-token source. Now SETTINGS-BACKED (`PrismaClaudeAuthSource`,
@@ -82,6 +104,18 @@ import { PrismaClaudeAuthSource } from './prisma-claude-auth-source';
     {
       provide: CLAUDE_AUTH_SOURCE,
       useClass: PrismaClaudeAuthSource,
+    },
+    {
+      provide: RUNTIME_MATERIAL_RESOLVER_REGISTRY,
+      useFactory: (
+        codexAuthSource: PrismaCodexAuthSource,
+        claudeAuthSource: PrismaClaudeAuthSource,
+      ) =>
+        createDefaultRuntimeMaterialResolverRegistry({
+          codexAuthSource,
+          claudeAuthSource,
+        }),
+      inject: [CODEX_AUTH_SOURCE, CLAUDE_AUTH_SOURCE],
     },
     // add-claude-code-runtime Track 2/3 — the AgentRuntime registry that resolves a
     // task's selected runtime (`codex` | `claude-code`) to its CodexRuntime /
@@ -101,7 +135,9 @@ import { PrismaClaudeAuthSource } from './prisma-claude-auth-source';
   // CLAUDE_AUTH_SOURCE. SANDBOX_PROVIDER stays exported as before.
   exports: [
     SANDBOX_PROVIDER,
+    PROVISION_LOOKUP,
     RUNTIME_REGISTRY,
+    RUNTIME_MATERIAL_RESOLVER_REGISTRY,
     CLAUDE_AUTH_SOURCE,
     CODEX_AUTH_SOURCE,
   ],
@@ -115,3 +151,42 @@ export type { SandboxProvider };
 export { RUNTIME_REGISTRY };
 export { CLAUDE_AUTH_SOURCE };
 export type { ClaudeAuthSource };
+
+type ApiRoutableSandboxProvider = RoutableSandboxProvider<
+  CloneSpec,
+  RuntimeId,
+  TranscriptSource
+>;
+
+function buildConfiguredSandboxProvider(aio: AioSandboxProvider): SandboxProvider {
+  const providers: SandboxProviderDescriptor<ApiRoutableSandboxProvider>[] = [
+    defineLocalSandboxProvider({
+      id: 'aio-local',
+      provider: aio,
+      priority: readNumberEnv('CAP_SANDBOX_LOCAL_PRIORITY', 10),
+    }),
+  ];
+
+  const cloudBaseUrl = readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_BASE_URL');
+  if (cloudBaseUrl) {
+    providers.push(
+      defineHttpCloudSandboxProvider<CloneSpec, RuntimeId, TranscriptSource>({
+        id: readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_ID') ?? 'cloud-http',
+        baseUrl: cloudBaseUrl,
+        apiToken: readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_TOKEN'),
+        capabilities: readSandboxProviderCapabilitiesEnv(
+          'CAP_SANDBOX_CLOUD_HTTP_CAPABILITIES',
+          DEFAULT_CLOUD_HTTP_CAPABILITIES,
+        ),
+        priority: readNumberEnv('CAP_SANDBOX_CLOUD_HTTP_PRIORITY', 50),
+      }),
+    );
+  }
+
+  return new SandboxProviderRouter<CloneSpec, RuntimeId, TranscriptSource>(
+    providers,
+    {
+      preferLocation: readSandboxLocationEnv('CAP_SANDBOX_PREFER_LOCATION'),
+    },
+  );
+}

@@ -166,6 +166,20 @@ export interface SandboxSetupCommand {
 }
 
 /**
+ * A runtime-declared image/tooling probe that the provider runs after sandbox
+ * readiness and before credential/setup commands. This mirrors Sandbank's
+ * provider-scheduler preflight shape at our current single-provider boundary:
+ * the runtime declares WHAT capability it needs, while the provider owns HOW the
+ * command is executed and how failures abort provisioning.
+ */
+export interface SandboxRuntimePreflightProbe {
+  /** Human-readable probe name surfaced in provision failures. */
+  readonly name: string;
+  /** Shell command that exits 0 only when the required tool/capability exists. */
+  readonly command: string;
+}
+
+/**
  * The runtime's declarative provision-time setup plan. `ok:false` fails the task
  * closed BEFORE any command runs (claude with no token); `ok:true` carries the
  * ORDERED commands the provider runs over the shared exec. The runtime owns NO I/O —
@@ -284,6 +298,13 @@ export interface AgentRuntime {
     ctx: SandboxSetupContext,
     material: AuthMaterial | null,
   ): SandboxSetupPlan;
+
+  /**
+   * Runtime image/tooling preflight probes. The provider runs these fail-closed
+   * before setup/clone so a bad sandbox image fails fast with a concrete missing
+   * capability instead of surfacing later as an opaque launch or transcript bug.
+   */
+  preflightProbes(): readonly SandboxRuntimePreflightProbe[];
 
   /**
    * Emit the pre-stop HOME-trim commands (drop caches/credentials, KEEP the

@@ -1,7 +1,18 @@
-import { Injectable, Logger, Optional, type OnModuleDestroy } from '@nestjs/common';
-import Docker from 'dockerode';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+  type OnModuleDestroy,
+} from '@nestjs/common';
 import { statfs } from 'node:fs/promises';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  DockerSandboxRetentionStore,
+  SANDBOX_RETENTION_STORE,
+  type RetainedSandbox,
+  type SandboxRetentionStore,
+} from './sandbox-retention-store';
 
 /**
  * Retention cleaner for settled, RETAINED sandbox containers
@@ -35,13 +46,11 @@ import { PrismaService } from '../prisma/prisma.service';
 @Injectable()
 export class RetentionCleaner implements OnModuleDestroy {
   private readonly logger = new Logger(RetentionCleaner.name);
-  private docker = new Docker();
+  private readonly retentionStore: SandboxRetentionStore;
   private sweeper?: ReturnType<typeof setInterval>;
   /** In-process re-entrancy guard (no distributed lock — single instance). */
   private sweeping = false;
 
-  /** Container name prefix for per-task sandboxes (`cap-aio-<taskId>`). */
-  private static readonly CONTAINER_PREFIX = 'cap-aio-';
   /** Sweep cadence. Retention is a daily-scale policy; 6h is ample. */
   private static readonly SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
   /**
@@ -57,7 +66,13 @@ export class RetentionCleaner implements OnModuleDestroy {
   /** Evict oldest-stopped sandboxes once free disk falls below this. */
   private diskFloorBytes: number;
 
-  constructor(@Optional() private readonly prisma?: PrismaService) {
+  constructor(
+    @Optional() private readonly prisma?: PrismaService,
+    @Optional()
+    @Inject(SANDBOX_RETENTION_STORE)
+    retentionStore?: SandboxRetentionStore,
+  ) {
+    this.retentionStore = retentionStore ?? new DockerSandboxRetentionStore();
     this.diskPath = process.env.CAP_SANDBOX_DISK_PATH || '/';
     const floorGb = Number(process.env.CAP_SANDBOX_DISK_FLOOR_GB);
     this.diskFloorBytes =
@@ -86,7 +101,7 @@ export class RetentionCleaner implements OnModuleDestroy {
     this.sweeping = true;
     try {
       const days = await this.resolveRetentionDays();
-      const candidates = await this.listStoppedSandboxes(); // oldest-stop first
+      const candidates = await this.retentionStore.listStoppedSandboxes(); // oldest-stop first
       const removed = await this.evictAged(candidates, days);
       const survivors = candidates.filter((c) => !removed.has(c.id));
       await this.evictForDiskPressure(survivors);
@@ -123,55 +138,16 @@ export class RetentionCleaner implements OnModuleDestroy {
     }
   }
 
-  /** List non-running `cap-aio-*` containers, sorted oldest-stop first. */
-  private async listStoppedSandboxes(): Promise<StoppedSandbox[]> {
-    const list = await this.docker.listContainers({
-      all: true,
-      filters: {
-        name: [RetentionCleaner.CONTAINER_PREFIX],
-        status: ['exited', 'created', 'dead'],
-      },
-    });
-    const out: StoppedSandbox[] = [];
-    for (const info of list) {
-      // Defensive: never consider a RUNNING container even if a filter let one
-      // through — Policy invariant is "stopped only".
-      if (info.State === 'running') continue;
-      out.push({
-        id: info.Id,
-        name: info.Names?.[0]?.replace(/^\//, '') ?? info.Id,
-        finishedAtMs: await this.finishedAtMs(info.Id),
-      });
-    }
-    out.sort((a, b) => a.finishedAtMs - b.finishedAtMs);
-    return out;
-  }
-
-  /** Time-since-stop (ms epoch) from `State.FinishedAt`, falling back to Created. */
-  private async finishedAtMs(id: string): Promise<number> {
-    try {
-      const info = await this.docker.getContainer(id).inspect();
-      const finished = info?.State?.FinishedAt;
-      const t = finished ? Date.parse(finished) : NaN;
-      if (Number.isFinite(t) && t > 0) return t;
-      const created = info?.Created ? Date.parse(info.Created) : NaN;
-      return Number.isFinite(created) && created > 0 ? created : 0;
-    } catch {
-      // Un-inspectable stopped orphan → treat as very old (eligible to reclaim).
-      return 0;
-    }
-  }
-
   /** Policy 1: remove every candidate stopped longer than the window. */
   private async evictAged(
-    candidates: StoppedSandbox[],
+    candidates: RetainedSandbox[],
     days: number,
   ): Promise<Set<string>> {
     const removed = new Set<string>();
     const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
     for (const c of candidates) {
       if (c.finishedAtMs <= cutoff) {
-        await this.removeStopped(c);
+        await this.retentionStore.removeStopped(c);
         removed.add(c.id);
       }
     }
@@ -188,14 +164,14 @@ export class RetentionCleaner implements OnModuleDestroy {
    * first until it recovers (or no candidates remain).
    */
   private async evictForDiskPressure(
-    survivors: StoppedSandbox[],
+    survivors: RetainedSandbox[],
   ): Promise<void> {
     let free = await this.getFreeDiskBytes();
     if (free === null || free >= this.diskFloorBytes) return;
     let evicted = 0;
     for (const c of survivors) {
       if (free !== null && free >= this.diskFloorBytes) break;
-      await this.removeStopped(c);
+      await this.retentionStore.removeStopped(c);
       evicted += 1;
       const measured = await this.getFreeDiskBytes();
       if (measured !== null) free = measured;
@@ -207,19 +183,6 @@ export class RetentionCleaner implements OnModuleDestroy {
     }
   }
 
-  /**
-   * Force-`false` remove: a stopped container is deleted; a container that raced
-   * back to RUNNING is REFUSED by the daemon (not killed) and the error is
-   * swallowed — the "never reap a running container" invariant holds even under
-   * a race. Deliberately diverges from the device-login sweeper's `force:true`.
-   */
-  private async removeStopped(c: StoppedSandbox): Promise<void> {
-    await this.docker
-      .getContainer(c.id)
-      .remove({ force: false })
-      .catch(() => undefined);
-  }
-
   /** Free bytes on {@link diskPath}, or null when it cannot be measured. */
   async getFreeDiskBytes(): Promise<number | null> {
     try {
@@ -229,12 +192,4 @@ export class RetentionCleaner implements OnModuleDestroy {
       return null;
     }
   }
-}
-
-/** A non-running sandbox candidate for retention eviction. */
-interface StoppedSandbox {
-  id: string;
-  name: string;
-  /** Epoch ms the container stopped (oldest-first sort key). */
-  finishedAtMs: number;
 }

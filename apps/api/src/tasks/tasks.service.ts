@@ -33,7 +33,11 @@ import {
 import {
   SANDBOX_PROVIDER,
   type SandboxConnection,
+  type SandboxProviderCapability,
 } from '../sandbox/sandbox-provider.port';
+import {
+  selectReadoptionSandboxProvider,
+} from '../sandbox/sandbox-scheduler';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
@@ -96,6 +100,8 @@ export const GUARDRAILS_SERVICE_TOKEN = 'GUARDRAILS_SERVICE';
  *    no longer be re-adopted (raced to gone between the list and the reattach).
  */
 export interface ISandboxReadoption {
+  getSandboxMode(): string;
+  getProviderCapabilities?(): readonly SandboxProviderCapability[];
   listReadoptable?(): Promise<string[]>;
   reattach?(taskId: string): Promise<SandboxConnection | undefined>;
 }
@@ -299,12 +305,24 @@ export class TasksService implements OnApplicationBootstrap {
    */
   async readoptSurvivorsOnStartup(): Promise<Set<string>> {
     const readopted = new Set<string>();
-    if (!this.sandbox?.listReadoptable || !this.guardrails?.readopt) {
+    const sandbox = this.sandbox;
+    if (!sandbox?.listReadoptable || !this.guardrails?.readopt) {
+      return readopted;
+    }
+    let selected: ISandboxReadoption;
+    try {
+      selected = selectReadoptionSandboxProvider(sandbox).provider;
+    } catch (err) {
+      this.logger.warn(
+        `startup re-adopt: sandbox provider cannot satisfy re-adoption capability (none re-adopted): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
       return readopted;
     }
     let candidates: string[];
     try {
-      candidates = await this.sandbox.listReadoptable();
+      candidates = await selected.listReadoptable?.() ?? [];
     } catch (err) {
       this.logger.warn(
         `startup re-adopt: could not list re-adoptable sandboxes (none re-adopted): ${
@@ -316,7 +334,7 @@ export class TasksService implements OnApplicationBootstrap {
     for (const taskId of candidates) {
       try {
         // Pull the still-valid connection handle (provider re-registers its maps).
-        const connection = await this.sandbox.reattach?.(taskId);
+        const connection = await selected.reattach?.(taskId);
         if (!connection) {
           // Raced to gone between the list and the reattach — let Phase 1 fail it.
           continue;

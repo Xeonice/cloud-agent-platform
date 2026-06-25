@@ -105,9 +105,11 @@ function makeTasks(statusOrError, executionMode) {
  * Any OTHER method access throws — a controller that reached for, say, a
  * credential export would fail the test (credentials-never-exported).
  */
-function makeProvider({ rollout = null, exists = false } = {}) {
+function makeProvider({ rollout = null, exists = false, capabilities = null } = {}) {
   const calls = { readRollout: 0, sandboxExists: 0, other: [] };
   const base = {
+    getSandboxMode() { return 'test'; },
+    getProviderCapabilities: capabilities ? () => capabilities : undefined,
     // readRolloutFromContainer returns a TranscriptSource `{ format, jsonl }` (or
     // null) — unify-transcript-parsers D3. The controller consumes `.jsonl`.
     async readRolloutFromContainer() {
@@ -223,6 +225,21 @@ async function main() {
     assert(second.status === 'available', 'fallback: the NEXT read is still available');
     assert(tCalls.readDurable === 2, 'fallback: the next read consults the durable store again');
     assert(calls.readRollout === 1, 'fallback: the next read is a durable hit — the container is NOT read a second time');
+  }
+
+  // ---- declared provider without retained-read → no container access ---------
+  {
+    const { provider, calls } = makeProvider({
+      rollout: ROLLOUT,
+      exists: true,
+      capabilities: ['terminal.websocket'],
+    });
+    const { transcripts, calls: tCalls } = makeTranscripts({ durable: null });
+    const ctrl = new SessionHistoryController(makeTasks('completed'), provider, transcripts, makeAudit());
+    const res = await ctrl.get(TASK_ID);
+    assert(res.status === 'expired', 'missing retained-read capability + no durable archive → expired (no retained source)');
+    assert(tCalls.readDurable === 1, 'missing retained-read: durable store is still consulted first');
+    assert(calls.readRollout === 0 && calls.sandboxExists === 0, 'missing retained-read: the container is never read');
   }
 
   // ---- running headless → LIVE read from the sandbox (headless-task-conversation-view) -

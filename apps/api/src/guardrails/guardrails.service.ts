@@ -17,6 +17,15 @@ import {
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
 import {
+  buildSandboxProvisionPlan,
+  forceFailSettlePlan,
+  selectDeliverySandboxProvider,
+  selectSandboxProvider,
+  terminalSettlePlan,
+  type SandboxSettlePlan,
+} from '../sandbox/sandbox-scheduler';
+import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
+import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
 } from '../audit/audit-recorder.port';
@@ -260,6 +269,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     @Inject(SANDBOX_PROVIDER)
     private readonly sandbox?: SandboxProvider,
     @Optional() config: GuardrailsConfig = DEFAULT_GUARDRAILS_CONFIG,
+    @Optional()
+    private readonly provisionLookup?: ProvisionLookup,
     /**
      * Best-effort audit recorder (6.2), injected by the {@link AUDIT_RECORDER_TOKEN}
      * (verify-phase wiring in `app.module.ts`). Optional so the service still
@@ -635,23 +646,33 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     this.clearTimers(taskId);
     // Close the runner-minutes interval (no-op if the task never ran) (5.4).
     this.runnerMinutes.recordEnd(taskId);
-    // persist-session-transcripts 3.2 — capture the task's rollout to durable
-    // storage WHILE the container is still present, immediately before the
-    // stop-only teardown below. Best-effort + awaited-and-swallowed: a capture
-    // error never blocks the stop-only teardown or the slot release that follow.
-    await this.captureTranscript(taskId);
-    // add-multi-forge-task-delivery — opt-in result delivery, in the SAME window:
-    // the working tree is intact + the container is still live (before the
-    // stop-only teardown below). Best-effort + never throws, so a delivery error
-    // can never block the teardown or the slot release that follow.
-    await this.deliverResult(taskId);
-    // Settle the AIO sandbox: STOP it but KEEP it (session-sandbox-retention
-    // 6.1). `teardownSandbox` is now stop-only — the stopped container's codex
-    // rollout stays readable for history replay (the retention cleaner removes
-    // it later). Then destroy the session-scoped credentials. Slot release below
-    // is independent of this (the `.catch` ensures a teardown hiccup never holds
-    // the slot), so a completed task is retained AND its slot is freed.
-    if (this.sandbox) {
+    await this.settleTask(taskId, terminalSettlePlan());
+  }
+
+  /**
+   * Settle an admitted task through the single lifecycle boundary shared by
+   * natural terminal exits and guardrail force-failures:
+   *
+   *  1. capture transcript while the sandbox is still present;
+   *  2. optionally deliver workspace changes while the sandbox is still live;
+   *  3. stop-only teardown the sandbox so retained history remains readable;
+   *  4. tear down session credentials and unregister the terminal session;
+   *  5. release the concurrency slot, admitting the next queued task.
+   *
+   * Each external step is best-effort; teardown/session cleanup/slot release must
+   * still run if transcript capture, delivery, or sandbox stop has a problem.
+   */
+  private async settleTask(
+    taskId: string,
+    plan: SandboxSettlePlan,
+  ): Promise<void> {
+    if (plan.captureTranscript) {
+      await this.captureTranscript(taskId);
+    }
+    if (plan.deliverWorkspace) {
+      await this.deliverResult(taskId);
+    }
+    if (plan.teardownSandbox && this.sandbox) {
       await this.sandbox.teardownSandbox(taskId).catch((err: unknown) => {
         this.logger.warn(
           `sandbox teardown for task ${taskId} failed: ${
@@ -660,9 +681,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         );
       });
     }
-    this.teardownSession(taskId, 'completed');
-    // release() admits the next queued task via the onAdmit callback.
-    this.semaphore.release(taskId);
+    if (plan.teardownSession) {
+      this.teardownSession(taskId, plan.sessionReason);
+    }
+    if (plan.releaseSlot) {
+      this.semaphore.release(taskId);
+    }
   }
 
   /**
@@ -675,7 +699,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async deliverResult(taskId: string): Promise<void> {
     const resolver = this.forgeResolver;
     const registry = this.forgeRegistry;
-    if (!resolver || !registry || !this.sandbox || !this.prisma) return;
+    const sandbox = this.sandbox;
+    if (!resolver || !registry || !sandbox || !this.prisma) return;
     try {
       const task = await this.prisma.task.findUnique({
         where: { id: taskId },
@@ -686,6 +711,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       const deliver = (task.deliver as 'none' | 'branch' | 'pr' | null) ?? 'none';
       if (deliver === 'none') return;
 
+      const selected = selectDeliverySandboxProvider(sandbox);
       const target = await resolver.getForgeTarget(taskId);
       if (!target) {
         await this.persistDeliver(taskId, { deliverStatus: 'skipped' });
@@ -697,7 +723,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         `cap: deliver task ${taskId}\n\n` +
         `Automated delivery of the agent's workspace changes.`;
 
-      const pushResult = await this.sandbox.deliverWorkspaceChanges(taskId, {
+      const pushResult = await selected.provider.deliverWorkspaceChanges(taskId, {
         authHeader: forge.cloneAuthHeader(target),
         branch,
         commitMessage,
@@ -807,15 +833,50 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // terminal gateway, which opens an `AioPtyClient` to `connection.wsUrl` and
     // registers the `TerminalSession` (4.2). Best-effort: a provision failure is
     // logged, not fatal to the lifecycle transition.
-    if (this.sandbox) {
-      const connection = await this.sandbox.provision({ taskId }).catch((err: unknown) => {
-        this.logger.error(
-          `provision sandbox for task ${taskId} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        return undefined;
-      });
+    const sandbox = this.sandbox;
+    if (sandbox) {
+      const provisionPlan = await this.resolveProvisionPlan(taskId).catch(
+        (err: unknown) => {
+          this.logger.error(
+            `resolve sandbox requirements for task ${taskId} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          return undefined;
+        },
+      );
+      if (!provisionPlan) {
+        await this.forceFail(taskId, 'provision_failed');
+        return;
+      }
+
+      const selected = await Promise.resolve()
+        .then(() =>
+          selectSandboxProvider(sandbox, provisionPlan.requiredCapabilities),
+        )
+        .catch((err: unknown) => {
+          this.logger.error(
+            `select sandbox provider for task ${taskId} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          return undefined;
+        });
+      if (!selected) {
+        await this.forceFail(taskId, 'provision_failed');
+        return;
+      }
+
+      const connection = await selected.provider
+        .provision({ taskId, cloneSpec: provisionPlan.cloneSpec })
+        .catch((err: unknown) => {
+          this.logger.error(
+            `provision sandbox for task ${taskId} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+          return undefined;
+        });
       if (connection) {
         this.connections.set(taskId, connection);
         // 4.2 — hand the handle through to the terminal gateway so it dials the
@@ -846,6 +907,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
   }
 
+  private async resolveProvisionPlan(taskId: string) {
+    const cloneSpec = await this.provisionLookup?.getCloneSpec(taskId);
+    return buildSandboxProvisionPlan({ cloneSpec });
+  }
+
   /**
    * Reclaim a task from a guardrail trip: stop/kill its running sandbox (VR.2), tear
    * down its session credentials, and release its slot (admitting the next queued
@@ -861,52 +927,30 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // structured-logging: bind taskId for all force-fail logs (incl. timer-driven
     // deadline/idle/circuit_breaker entrypoints that run outside any request).
     return runWithTaskLog(taskId, async () => {
-    // An idle ceiling on a RESIDENT session is a graceful end of life — reclaim it as
-    // `completed`, not a force-`failed`. Every other cause stays a failure. The
-    // capture / stop-only teardown / slot-release below is identical for both.
-    const terminal: 'completed' | 'failed' = cause === 'idle' ? 'completed' : 'failed';
-    this.logger.warn(
-      `${terminal === 'completed' ? 'reclaiming idle task' : 'force-failing task'} ${taskId} (${cause})`,
-    );
-    this.clearTimers(taskId);
-    // Close the runner-minutes interval on the forced-failure terminal too (5.4).
-    this.runnerMinutes.recordEnd(taskId);
-    // 6.2 — record the force-fail naming its CAUSE (deadline / idle /
-    // circuit_breaker), so the timeline shows WHY the task was reclaimed. The
-    // generic `task.failed` transition is also recorded centrally by the tasks
-    // service when the `failed` write below is accepted; the two are distinct
-    // events (the terminal transition + its cause).
-    // The cause-specific `recordForceFailed` event is only for actual failures; an
-    // idle reclamation to `completed` relies on the central `task.completed` audit
-    // emitted by the status-write chokepoint.
-    if (terminal === 'failed') {
-      await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
-    }
-    await this.safeTransition(taskId, terminal);
-    // persist-session-transcripts 3.3 — capture the rollout to durable storage
-    // for ALL abnormal causes (deadline / idle / circuit_breaker /
-    // provision_failed / abnormal_exit) WHILE the container is still present,
-    // immediately before the stop-only teardown below. Best-effort +
-    // awaited-and-swallowed: a capture error never blocks the stop-only teardown
-    // or the slot release that follow.
-    await this.captureTranscript(taskId);
-    // VR.2 / session-sandbox-retention 6.2 — STOP the running sandbox (not just
-    // the credentials) for ALL five abnormal causes, INCLUDING a SIGKILL'd exit:
-    // `teardownSandbox` is stop-only, so the container is RETAINED (its rollout
-    // readable for replay) while its slot is freed below. The pre-stop trim has
-    // already zeroed the credential. Idempotent: safe if the sandbox already
-    // exited.
-    if (this.sandbox) {
-      await this.sandbox.teardownSandbox(taskId).catch((err: unknown) => {
-        this.logger.warn(
-          `sandbox teardown for task ${taskId} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
-    }
-    this.teardownSession(taskId, terminal);
-    this.semaphore.release(taskId);
+      // An idle ceiling on a RESIDENT session is a graceful end of life —
+      // reclaim it as `completed`, not a force-`failed`. Every other cause stays
+      // a failure. The capture / stop-only teardown / slot-release below is
+      // identical for both.
+      const terminal: 'completed' | 'failed' = cause === 'idle' ? 'completed' : 'failed';
+      this.logger.warn(
+        `${terminal === 'completed' ? 'reclaiming idle task' : 'force-failing task'} ${taskId} (${cause})`,
+      );
+      this.clearTimers(taskId);
+      // Close the runner-minutes interval on the forced-failure terminal too (5.4).
+      this.runnerMinutes.recordEnd(taskId);
+      // 6.2 — record the force-fail naming its CAUSE (deadline / idle /
+      // circuit_breaker), so the timeline shows WHY the task was reclaimed. The
+      // generic `task.failed` transition is also recorded centrally by the tasks
+      // service when the `failed` write below is accepted; the two are distinct
+      // events (the terminal transition + its cause).
+      // The cause-specific `recordForceFailed` event is only for actual failures;
+      // an idle reclamation to `completed` relies on the central `task.completed`
+      // audit emitted by the status-write chokepoint.
+      if (terminal === 'failed') {
+        await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
+      }
+      await this.safeTransition(taskId, terminal);
+      await this.settleTask(taskId, forceFailSettlePlan({ terminal }));
     });
   }
 
@@ -992,6 +1036,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   /** The sandbox mode the bound provider reports, when wired (9.1b). */
   sandboxMode(): string | null {
     return this.sandbox?.getSandboxMode() ?? null;
+  }
+
+  /** Scheduler-facing sandbox capabilities the bound provider declares. */
+  sandboxCapabilities(): readonly string[] {
+    return this.sandbox?.getProviderCapabilities?.() ?? [];
   }
 
   // -------------------------------------------------------------------------

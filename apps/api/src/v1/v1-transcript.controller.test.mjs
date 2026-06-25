@@ -68,10 +68,18 @@ const TASK_ID = 'task-v1';
 const REQ = { operatorPrincipal: {} };
 
 const makeTasks = (status) => ({ async findById() { return { id: TASK_ID, status }; } });
-const makeProvider = () => ({
-  async readRolloutFromContainer() { return null; },
-  async sandboxExists() { return false; },
-});
+function makeProvider({ capabilities = null } = {}) {
+  const calls = { readRollout: 0, sandboxExists: 0 };
+  return {
+    provider: {
+      getSandboxMode() { return 'test'; },
+      getProviderCapabilities: capabilities ? () => capabilities : undefined,
+      async readRolloutFromContainer() { calls.readRollout++; return null; },
+      async sandboxExists() { calls.sandboxExists++; return false; },
+    },
+    calls,
+  };
+}
 const makeTranscripts = (durable) => ({ async readDurable() { return durable; }, async backfill() {} });
 const makeAudit = (events = []) => ({ async queryTask() { return events; } });
 
@@ -101,7 +109,7 @@ async function main() {
       { type: 'task.created', title: '任务创建', description: 'repo', level: 'info', timestamp: new Date('2026-06-01T10:00:00Z') },
     ];
     const ctrl = new V1TranscriptController(
-      makeTasks('completed'), makeProvider(), makeTranscripts(RICH_ROLLOUT), makeAudit(events),
+      makeTasks('completed'), makeProvider().provider, makeTranscripts(RICH_ROLLOUT), makeAudit(events),
     );
     const res = await ctrl.get(TASK_ID, REQ);
     assert(res.status === 'available', '/v1 transcript resolves to available');
@@ -117,12 +125,23 @@ async function main() {
   // ---- backward-compatible: an old archive omits the new fields, still valid -
   {
     const ctrl = new V1TranscriptController(
-      makeTasks('completed'), makeProvider(), makeTranscripts(OLD_ROLLOUT), makeAudit([]),
+      makeTasks('completed'), makeProvider().provider, makeTranscripts(OLD_ROLLOUT), makeAudit([]),
     );
     const res = await ctrl.get(TASK_ID, REQ);
     assert(res.status === 'available', '/v1 old archive still resolves to available');
     assert(res.turns.every((t) => t.at === undefined), '/v1 old-archive turns omit at (additive-optional)');
     assert(res.meta.totalTokens === undefined && res.meta.durationMs === undefined, '/v1 old-archive meta omits totals (no error)');
+  }
+
+  // ---- no durable + declared provider without retained-read → no container touch -
+  {
+    const { provider, calls } = makeProvider({ capabilities: ['terminal.websocket'] });
+    const ctrl = new V1TranscriptController(
+      makeTasks('completed'), provider, makeTranscripts(null), makeAudit([]),
+    );
+    const res = await ctrl.get(TASK_ID, REQ);
+    assert(res.status === 'expired', '/v1 missing retained-read capability + durable miss → expired');
+    assert(calls.readRollout === 0 && calls.sandboxExists === 0, '/v1 missing retained-read: container is never read');
   }
 }
 

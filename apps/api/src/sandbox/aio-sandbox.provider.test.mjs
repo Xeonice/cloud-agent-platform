@@ -117,6 +117,7 @@ function compileProvider() {
       // uniform sandboxSetupCommands path) so it imports CLAUDE_AUTH_SOURCE and the
       // agent-runtime port's AuthMaterial/RuntimeId types — listed so their .js emit.
       join(__dirname, 'claude-auth-source.port.ts'),
+      join(__dirname, 'runtime-material-resolver.ts'),
       join(__dirname, '..', 'agent-runtime', 'agent-runtime.port.ts'),
       // The provider falls back to the codex default runtime (new CodexRuntime())
       // when the registry can't resolve one, so its .js must be emitted + required.
@@ -128,10 +129,9 @@ function compileProvider() {
       // the emitted provider lands under a nested path (findFile resolves it).
       join(__dirname, '..', 'terminal', 'codex-launch.ts'),
       join(__dirname, 'skill-allowlist.ts'),
-      // The provider now imports the minimal tar reader (`./tar-extract`) for the
-      // read-only rollout extraction (session-sandbox-retention 3.5). Listed so
-      // its .js is emitted beside provider.js and the require resolves.
-      join(__dirname, 'tar-extract.ts'),
+      // Workspace materialization is now a separate Sandbank-aligned helper,
+      // imported by the provider for the git clone bridge.
+      join(__dirname, 'aio-workspace.ts'),
       // The SSRF guard (real module or temp stub) — so its .js lands under
       // outDir/settings and the provider's `require('../settings/...')` resolves.
       compileSrc,
@@ -287,6 +287,10 @@ function installFetchMock(execExitCode = 0, execOutput = '') {
     const u = String(url);
     fetchCalls.push({ url: u, init });
     if (u.endsWith('/v1/shell/exec')) {
+      const command = JSON.parse(init.body).command;
+      const isPreflightProbe = command.startsWith('command -v ');
+      const exitCode = isPreflightProbe ? 0 : execExitCode;
+      const output = isPreflightProbe ? '' : execOutput;
       return {
         ok: true,
         status: 200,
@@ -297,7 +301,7 @@ function installFetchMock(execExitCode = 0, execOutput = '') {
           return {
             success: true,
             message: 'Command executed',
-            data: { status: 'completed', exit_code: execExitCode, output: execOutput },
+            data: { status: 'completed', exit_code: exitCode, output },
           };
         },
       };
@@ -426,6 +430,11 @@ try {
     const provider = new AioSandboxProvider(makeLookup(null), makeCodexAuthSource());
     // Inject the mocked dockerode in place of the real `new Docker()`.
     provider.docker = fakeDocker;
+    assert(
+      provider.getProviderCapabilities().join(',') ===
+        'terminal.websocket,workspace.git.materialize,workspace.git.deliver,transcript.retained-read,lifecycle.readopt',
+      'AIO provider declares scheduler-facing capabilities',
+    );
 
     connection = await provider.provision({ taskId: TASK_ID });
 
@@ -538,6 +547,45 @@ try {
       okClone.restore();
     }
 
+    // Scheduler-selected clone spec is carried through ProvisionContext. The
+    // provider must use that exact spec and must NOT re-query ProvisionLookup,
+    // otherwise scheduler preflight and actual materialization can drift.
+    {
+      const selectedClone = installFetchMock(0, '');
+      let lookupCalls = 0;
+      const lookup = {
+        async getCloneSpec() {
+          lookupCalls++;
+          throw new Error('lookup should not run when cloneSpec is selected');
+        },
+        async getTaskPrompt() { return null; },
+        async getTaskSkills() { return []; },
+        async getTaskRuntime() { return null; },
+        async getTaskExecutionMode() { return null; },
+      };
+      try {
+        const p = new AioSandboxProvider(lookup, makeCodexAuthSource());
+        p.docker = makeFakeDocker(makeFakeContainer());
+        await p.provision({
+          taskId: 'task-selected-clone',
+          cloneSpec: { url: 'https://example.test/selected.git' },
+        });
+        const cloneCall = selectedClone.fetchCalls.find(
+          (c) =>
+            c.url.endsWith('/v1/shell/exec') &&
+            JSON.parse(c.init.body).command.includes('git clone'),
+        );
+        const command = cloneCall ? JSON.parse(cloneCall.init.body).command : '';
+        assert(lookupCalls === 0, 'selected cloneSpec bypasses ProvisionLookup (no drift)');
+        assert(
+          command.includes('https://example.test/selected.git'),
+          'selected cloneSpec is the materialized repository',
+        );
+      } finally {
+        selectedClone.restore();
+      }
+    }
+
     // Induced clone failure (non-zero exit_code, e.g. non-empty dir) raises a
     // provision error carrying the command output — never a silent success.
     const failClone = installFetchMock(
@@ -615,6 +663,43 @@ try {
       );
     } finally {
       authMock.restore();
+    }
+
+    // Runtime material is now supplied through an injected registry. This pins
+    // the provider boundary: adding another runtime material source should not
+    // require editing AioSandboxProvider's provision loop.
+    const registryMock = installFetchMock(0, '');
+    try {
+      const source = makeCodexAuthSource(null);
+      const registryAuthJson = '{"auth_mode":"chatgpt","source":"registry"}';
+      const pRegistry = new AioSandboxProvider(
+        makeLookup(null),
+        source,
+        undefined,
+        undefined,
+        {
+          async resolve(runtime, ctx) {
+            assert(runtime.id === 'codex', 'runtime material registry receives selected runtime');
+            assert(ctx.taskId === 'task-registry-material', 'runtime material registry receives task context');
+            return { authJson: registryAuthJson };
+          },
+        },
+      );
+      pRegistry.docker = makeFakeDocker(makeFakeContainer());
+      await pRegistry.provision({ taskId: 'task-registry-material' });
+      assert(source.receivedTaskIds.length === 0, 'provider does not bypass the injected material registry');
+      const injectCall = registryMock.fetchCalls.find(
+        (c) =>
+          c.url.endsWith('/v1/shell/exec') &&
+          JSON.parse(c.init.body).command.includes('/home/gem/.codex/auth.json'),
+      );
+      const cmd = injectCall ? JSON.parse(injectCall.init.body).command : '';
+      assert(
+        cmd.includes(`'${Buffer.from(registryAuthJson, 'utf8').toString('base64')}'`),
+        'provider injects auth material returned by the runtime material registry',
+      );
+    } finally {
+      registryMock.restore();
     }
 
     // ---- 3.5: compatible material → config.toml provider block, NO auth.json ----
@@ -1097,9 +1182,69 @@ try {
       } finally {
         globalThis.fetch = orig;
       }
+    assert(
+      !cmds.some((c) => c.includes('npx')),
+      'no skills selected → no installer command is run (no-op)',
+    );
+    }
+
+    // ---- selected runtime is resolved once and reused across preflight/setup --
+    {
+      const commands = [];
+      const runtimeCalls = { resolveForTask: 0, resolve: 0 };
+      const selectedRuntime = {
+        id: 'codex',
+        preflightProbes() {
+          return [{ name: 'selected runtime probe', command: 'echo selected-preflight' }];
+        },
+        sandboxSetupCommands(ctx, material) {
+          commands.push(`setup:${ctx.taskId}:${material?.authJson ?? 'no-auth'}`);
+          return {
+            ok: true,
+            commands: [{ command: 'echo selected-setup', tolerateUnresolvedExit: false }],
+          };
+        },
+      };
+      const registry = {
+        resolveForTask(taskId) {
+          runtimeCalls.resolveForTask++;
+          assert(taskId === 'task-selected-runtime', 'selected-runtime test passes taskId to runtime registry');
+          return selectedRuntime;
+        },
+        resolve() {
+          runtimeCalls.resolve++;
+          return selectedRuntime;
+        },
+      };
+      const orig = globalThis.fetch;
+      globalThis.fetch = async (url, init) => {
+        const u = String(url);
+        if (u.endsWith('/v1/shell/exec')) {
+          commands.push(JSON.parse(init.body).command);
+          return { ok: true, status: 200, async json() { return { data: { exit_code: 0, output: '' } }; } };
+        }
+        return { ok: true, status: 200, async json() { return {}; } };
+      };
+      try {
+        const p = new AioSandboxProvider(
+          makeLookup(null, 'selected prompt', []),
+          makeCodexAuthSource({ authJson: '{"selected":true}' }),
+          registry,
+        );
+        p.docker = makeFakeDocker(makeFakeContainer());
+        await p.provision({ taskId: 'task-selected-runtime' });
+      } finally {
+        globalThis.fetch = orig;
+      }
       assert(
-        !cmds.some((c) => c.includes('npx')),
-        'no skills selected → no installer command is run (no-op)',
+        runtimeCalls.resolveForTask === 1 && runtimeCalls.resolve === 0,
+        'provision resolves the selected runtime exactly once (no preflight/setup drift)',
+      );
+      assert(
+        commands.includes('echo selected-preflight') &&
+          commands.includes('echo selected-setup') &&
+          commands.includes('setup:task-selected-runtime:{"selected":true}'),
+        'preflight and setup both use the selected runtime instance',
       );
     }
 

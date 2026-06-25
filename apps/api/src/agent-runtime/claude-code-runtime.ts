@@ -12,6 +12,7 @@ import type {
   LaunchContext,
   RuntimeId,
   SandboxExec,
+  SandboxRuntimePreflightProbe,
   SandboxSetupCommand,
   SandboxSetupContext,
   SandboxSetupPlan,
@@ -188,6 +189,17 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       });
     }
     return { ok: true, commands };
+  }
+
+  preflightProbes(): readonly SandboxRuntimePreflightProbe[] {
+    return [
+      { name: 'claude cli', command: 'command -v claude' },
+      { name: 'git', command: 'command -v git' },
+      { name: 'tmux', command: 'command -v tmux' },
+      { name: 'bash', command: 'command -v bash' },
+      { name: 'tar', command: 'command -v tar' },
+      { name: 'gzip', command: 'command -v gzip' },
+    ];
   }
 
   preStopTrimCommands(): readonly string[] {
