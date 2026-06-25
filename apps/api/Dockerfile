@@ -34,10 +34,11 @@ COPY apps/api ./apps/api
 # Install the whole workspace (api depends on packages/contracts via workspace:*).
 RUN pnpm install --frozen-lockfile
 
-# Build contracts then the api (prisma generate runs inside the api build script).
+# Build workspace libraries then the api (prisma generate runs inside the api build script).
 # Dev deps (the prisma CLI + nest build toolchain) are intentionally kept so
 # `prisma migrate deploy` can run at container start in the runtime stage.
 RUN pnpm --filter @cap/contracts build \
+  && pnpm --filter @cap/sandbox build \
   && pnpm --filter @cap/api build
 
 # --- runtime ----------------------------------------------------------------

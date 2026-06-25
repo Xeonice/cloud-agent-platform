@@ -145,6 +145,16 @@ assert(
   'release.sh: verifies all three images (cap-api, cap-web, cap-aio-sandbox)',
 );
 
+// The api image's isolated Docker build must build the sandbox facade before
+// Nest compiles @cap/api; otherwise TS resolves @cap/sandbox to a missing dist/.
+const apiDockerfile = readFileSync(join(here, '..', 'apps/api/Dockerfile'), 'utf8');
+const sandboxBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/sandbox build');
+const apiBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/api build');
+assert(
+  sandboxBuildIdx !== -1 && apiBuildIdx !== -1 && sandboxBuildIdx < apiBuildIdx,
+  'api Dockerfile: builds @cap/sandbox before @cap/api',
+);
+
 console.log(`\n${'─'.repeat(48)}`);
 console.log(`Results: ${passed} passed, ${failed} failed`);
 if (failed === 0) {
