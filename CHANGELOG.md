@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.23.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.22.0...v0.23.0) (2026-06-25)
+
+
+### Features
+
+* surface a Claude Code one-click deploy path ([cc56e6f](https://github.com/Xeonice/cloud-agent-platform/commit/cc56e6f5b09983a1bc40b871f74ac969ecb5157e))
+* surface a Claude Code one-click deploy path ([47082c1](https://github.com/Xeonice/cloud-agent-platform/commit/47082c113f68f553dcfc9f998cfb4c6633d3ee47))
+
 ## [0.22.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.21.0...v0.22.0) (2026-06-25)
 
 
