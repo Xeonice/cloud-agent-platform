@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.1...v0.23.2) (2026-06-25)
+
+
+### Bug Fixes
+
+* enable yolo agent launch ([6772a11](https://github.com/Xeonice/cloud-agent-platform/commit/6772a11d7fda51406dafadd89d663d03926b3873))
+
 ## [0.23.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.0...v0.23.1) (2026-06-25)
 
 
