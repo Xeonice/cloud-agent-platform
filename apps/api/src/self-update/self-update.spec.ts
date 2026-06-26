@@ -44,7 +44,6 @@ import {
   type TopologyResolver,
 } from './self-update.service';
 import { UpdateStatusService } from '../update-status/update-status.service';
-import { SELF_UPDATE_ADMINS_ENV } from '../auth/admin';
 import type { OperatorPrincipal } from '../auth/operator-principal';
 
 const LATEST = 'v1.4.0';
@@ -325,7 +324,7 @@ test('resolveServiceSets: SELF_UPDATE_PULL_ONLY_SERVICES overrides the default; 
 test('updater binds the working dir AND its parent so a sibling env_file (../files/api.env) resolves', () => {
   // Regression: binding ONLY the working dir made the detached updater's compose run
   // silently skip `env_file: ../files/api.env` (required:false), dropping the api's
-  // secrets (GITHUB_CLIENT_ID/SESSION_SECRET/…) on recreate → broken login.
+  // secrets (SESSION_SECRET/CODEX_CRED_ENC_KEY/…) on recreate → broken login.
   const workingDir = '/etc/dokploy/compose/cloud-agent-platform/resident';
   const dirs = updaterBindDirs(workingDir, [`${workingDir}/docker-compose.prod.yml`]);
   assert.ok(dirs.includes(workingDir), 'binds the working dir (its .env)');
@@ -388,10 +387,10 @@ class StubAuthGuard implements CanActivate {
 const ADMIN_ID = 4242;
 const NON_ADMIN_ID = 7;
 
-function sessionPrincipal(githubId: number): OperatorPrincipal {
+function sessionPrincipal(githubId: number, role: 'admin' | 'member' = 'member'): OperatorPrincipal {
   return {
     kind: 'session',
-    user: { id: `user-${githubId}`, githubId, login: 'op', name: 'Op', avatarUrl: '', allowed: true, role: 'member', mustChangePassword: false },
+    user: { id: `user-${githubId}`, githubId, login: 'op', name: 'Op', avatarUrl: '', allowed: true, role, mustChangePassword: false },
   };
 }
 
@@ -404,8 +403,6 @@ let app: INestApplication;
 let port: number;
 
 before(async () => {
-  process.env[SELF_UPDATE_ADMINS_ENV] = String(ADMIN_ID);
-
   const moduleRef = await Test.createTestingModule({
     controllers: [SelfUpdateController],
     providers: [
@@ -432,7 +429,6 @@ before(async () => {
 
 after(async () => {
   await app?.close();
-  delete process.env[SELF_UPDATE_ADMINS_ENV];
 });
 
 function postSelfUpdate(target: string): Promise<Response> {
@@ -455,7 +451,7 @@ test('HTTP: a non-admin authenticated operator is 403 (admin gate), service neve
 
 test('HTTP: an admin on a DISABLED instance is refused 404 (env gate), no launch', async () => {
   delete httpEnv[SELF_UPDATE_ENABLED_ENV]; // disabled → inert
-  currentPrincipal = sessionPrincipal(ADMIN_ID);
+  currentPrincipal = sessionPrincipal(ADMIN_ID, 'admin');
   const before = httpLauncher.launched().length;
 
   const res = await postSelfUpdate(LATEST);
@@ -465,7 +461,7 @@ test('HTTP: an admin on a DISABLED instance is refused 404 (env gate), no launch
 
 test('HTTP: an admin + enabled + valid target ACKS update-started and launches the detached updater', async () => {
   httpEnv[SELF_UPDATE_ENABLED_ENV] = 'true';
-  currentPrincipal = sessionPrincipal(ADMIN_ID);
+  currentPrincipal = sessionPrincipal(ADMIN_ID, 'admin');
   const before = httpLauncher.launched().length;
 
   const res = await postSelfUpdate(LATEST);
@@ -478,7 +474,7 @@ test('HTTP: an admin + enabled + valid target ACKS update-started and launches t
 
 test('HTTP: an admin + enabled + MISMATCHED target is rejected 422, no launch', async () => {
   httpEnv[SELF_UPDATE_ENABLED_ENV] = 'true';
-  currentPrincipal = sessionPrincipal(ADMIN_ID);
+  currentPrincipal = sessionPrincipal(ADMIN_ID, 'admin');
   const before = httpLauncher.launched().length;
 
   const res = await postSelfUpdate('v9.9.9');

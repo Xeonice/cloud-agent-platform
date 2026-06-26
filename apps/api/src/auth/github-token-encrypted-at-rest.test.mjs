@@ -1,13 +1,10 @@
 /**
- * Minimal test: "The operator GitHub login token is encrypted at rest"
- * (add-forge-credentials requirement, scenario: Login persists the token
- * encrypted and all readers decrypt)
+ * Minimal test: stored forge tokens are encrypted at rest.
  *
  * Drives the REAL compiled helpers (dist/) — no mocking of the encryption logic.
  * Three assertions:
  *   1. storeMaybeEncrypted writes CIPHERTEXT (not the plaintext) when a key is set.
- *   2. readMaybeEncrypted decrypts the ciphertext back to the original token
- *      (clone-auth reader and repo-import reader both use this path).
+ *   2. readMaybeEncrypted decrypts the ciphertext back to the original token.
  *   3. readMaybeEncrypted is transparent for a legacy plaintext token (non-breaking).
  */
 
@@ -41,11 +38,11 @@ function assert(cond, label) {
   }
 }
 
-console.log('\n=== github login token encrypted at rest (add-forge-credentials) ===\n');
+console.log('\n=== forge token encrypted at rest ===\n');
 
 // T1 — Write path: storeMaybeEncrypted produces ciphertext envelope, not plaintext.
 {
-  const plaintextToken = 'ghp_fakeGitHubOAuthToken1234567890';
+  const plaintextToken = 'ghp_fakeGitHubPat1234567890';
   const stored = storeMaybeEncrypted(plaintextToken, envWithKey);
   assert(
     stored !== plaintextToken,
@@ -63,7 +60,7 @@ console.log('\n=== github login token encrypted at rest (add-forge-credentials) 
 
 // T2 — Read path (clone-auth + repo-import readers): readMaybeEncrypted decrypts.
 {
-  const plaintextToken = 'ghp_fakeGitHubOAuthToken1234567890';
+  const plaintextToken = 'ghp_fakeGitHubPat1234567890';
   const stored = storeMaybeEncrypted(plaintextToken, envWithKey);
   const recovered = readMaybeEncrypted(stored, envWithKey);
   assert(

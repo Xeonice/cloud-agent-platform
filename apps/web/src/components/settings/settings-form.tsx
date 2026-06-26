@@ -1,16 +1,12 @@
 /**
- * `SettingsForm` — the "访问与默认值" form (`#github` + `#safety`, task 14.3).
+ * `SettingsForm` — the "访问与默认值" form (`#account` + `#safety`, task 14.3).
  *
  * The prototype `.panel.settings-form`: a panel-head ("访问与默认值" + a mono
  * "保存到本地状态" note), then five controls and an action row:
- *   1. GitHub 授权白名单 — a READ-ONLY display of the env-managed allowlist
- *      (`AUTH_ALLOWLIST`, GitHub numeric IDs). add-private-account-identity
- *      (task 9.6): GitHub login is ONE of three console login methods; the
- *      allowlist that gates it is governed by the deployment environment
- *      (`AUTH_ALLOWLIST`), NOT editable in the UI — shown read-only with a note
- *      that local accounts are opened on the 账号管理 page (no inline account
- *      management here). It is never submitted (the update contract has no
- *      `allowedAccount` field).
+ *   1. 当前账号 — a READ-ONLY display of the authenticated console account.
+ *      Account enablement and login methods live on the 账号管理/auth surfaces,
+ *      not in this preferences form. It is never submitted (the update contract
+ *      has no `allowedAccount` field).
  *   2. 默认仓库 — a `Select` whose options are the imported repos
  *      (`reposQuery`); saving validates the choice references an imported repo.
  *   3. 会话记录保留 — a `Select` over the allowed retention windows (30/7/90 天,
@@ -18,7 +14,7 @@
  *   4. 任务槽位上限 — the SYSTEM-WIDE `maxConcurrentTasks` slot ceiling
  *      (configurable-task-slots): a numeric control client-validated as an
  *      integer in 1–20; an invalid value blocks the submit so it is never sent.
- *      This is one shared value for all allowlisted operators, NOT a per-account
+ *      This is one shared value for all console operators, NOT a per-account
  *      preference.
  *   5. 写入前必须确认 — the `#safety` destructive-write gate checkbox.
  * 保存设置 runs `saveSettingsMutation`; 恢复默认 restores the contract defaults
@@ -26,8 +22,7 @@
  * WITHOUT auto-saving — matching the prototype's local reset.
  *
  * SECURITY/CONCEPT split: the editable preferences here NEVER touch the console
- * login identity (the GitHub allowlist is read-only/env-managed above; local
- * accounts live on 账号管理) or the Codex execution credential (the `#codex`
+ * login identity (accounts live on 账号管理) or the Codex execution credential (the `#codex`
  * section). They are distinct concerns and are never conflated.
  *
  * SSR-safe: the draft is plain `useState` seeded from the (server-hydrated)
@@ -213,16 +208,12 @@ export function SettingsForm({
         </span>
       </div>
 
-      {/* GitHub 授权白名单 — READ-ONLY, env-managed (AUTH_ALLOWLIST). GitHub login
-          is one of three methods; the allowlist that gates it is governed by the
-          deployment environment and is NOT editable here. Local accounts are
-          opened on the 账号管理 page (no inline account management). */}
+      {/* Current account — read-only. Local accounts are opened on the 账号管理 page
+          (no inline account management here). */}
       <div className="mb-3.5 grid gap-2">
-        <span className={fieldLabel}>GitHub 授权白名单</span>
+        <span className={fieldLabel}>当前账号</span>
         <small className={fieldHint}>
-          GitHub 登录是进入控制台的方式之一，仅白名单内的账号可通过。名单由部署环境变量{" "}
-          <span className="font-mono">AUTH_ALLOWLIST</span>（GitHub 数字
-          ID）管理，此处只读展示当前生效项。
+          控制台账号由管理员开通；此处只读展示当前登录身份。
         </small>
         <div
           className="flex items-center justify-between gap-3 rounded-md bg-[#fafafa] px-3.5 py-3 shadow-ring"
@@ -233,15 +224,15 @@ export function SettingsForm({
               {settings.allowedAccount}
             </strong>
             <span className="block font-mono text-xs text-muted-foreground">
-              github.com/{settings.allowedAccount}
+              local account
             </span>
           </div>
           <StatusPill variant="green" className="shrink-0">
-            已允许
+            已启用
           </StatusPill>
         </div>
         <small className={fieldHint}>
-          修改白名单需更新部署环境变量并重启；本地账号请在左下角账户菜单的「账号管理」页开通。
+          账号开通、停用和重置请在左下角账户菜单的「账号管理」页处理。
         </small>
       </div>
 

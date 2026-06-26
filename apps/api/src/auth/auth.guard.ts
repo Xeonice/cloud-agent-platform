@@ -15,21 +15,18 @@ import {
 import { SESSION_COOKIE_NAME, readCookie } from './session-token';
 
 /**
- * Operator session guard (be-oauth-allowlist, task 2.6; supersedes the
- * shared-`AUTH_TOKEN`-only guard from single-user-auth 11.2).
+ * Operator session guard.
  *
  * Enforces that every protected REST request carries a VALID operator principal
  * before the route handler runs. A request is admitted when EITHER:
- *   - it carries a valid GitHub-OAuth SESSION — resolved from the `cap_session`
- *     cookie OR a `bearer.<token>` subprotocol-carried token — whose owning user
- *     is STILL allowlisted (membership is RE-CONFIRMED at request time inside
- *     {@link AuthSessionService.resolveSession}, so a de-allowlisted operator is
- *     denied on their very next request); or
+ *   - it carries a valid session — resolved from the `cap_session` cookie OR a
+ *     `bearer.<token>` subprotocol-carried token — whose owning user is still
+ *     enabled in the database; or
  *   - the legacy shared-`AUTH_TOKEN` operator bearer is presented AND the legacy
  *     path is enabled (task 2.8) — see {@link resolveOperatorPrincipal}.
  *
  * Anything else — missing/malformed credentials, an expired/revoked session, a
- * de-allowlisted user, or the legacy bearer while the legacy path is disabled —
+ * disabled user, or the legacy bearer while the legacy path is disabled —
  * is rejected with HTTP 401 (`UnauthorizedException`). The guard runs BEFORE the
  * route handler, so a rejected request never reaches business logic: NO state
  * change occurs on a denial.
@@ -39,7 +36,7 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  * identity entry point. Under the connect-in model the per-task AIO sandbox's
  * baked Codex hook POSTs its approval/report callback IN to the orchestrator over
  * the private `cap-net` network. The sandbox is NOT a human operator and holds no
- * operator credential (neither a GitHub-OAuth session nor the legacy `AUTH_TOKEN`);
+ * operator credential (neither a session nor the legacy `AUTH_TOKEN`);
  * its security boundary is network isolation (reachable only by sibling sandbox
  * containers by container name on `cap-net`, which publish no host port), NOT an
  * operator principal. Gating it with this guard would 401 every hook callback and
@@ -54,17 +51,16 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  *
  * Exemptions (these ESTABLISH or probe identity rather than presenting one):
  *   - `/health` liveness so platform probes work without a credential;
- *   - the GitHub-OAuth entry points (`/auth/github/login`, `/auth/github/callback`)
- *     an unauthenticated operator must reach to obtain a session, plus
- *     `/auth/session` / `/auth/logout`, which read/clear the session cookie and
- *     return 401 on their own when there is no session.
+ *   - `/auth/session` / `/auth/logout`, which read/clear the session cookie and
+ *     return 401 on their own when there is no session;
+ *   - the local password/OTP login and first-login password-change endpoints.
  *
  * Plus the network-isolation exemption (NOT an identity probe): `/v1/approvals`,
  * the connect-in sandbox hook callback described above.
  *
  * Configuration is read at CHECK time, not module load, so the fail-closed
- * posture (e.g. `AUTH_ALLOWLIST` / `AUTH_TOKEN` unset) is evaluated against the
- * live environment on each request.
+ * posture (e.g. `AUTH_TOKEN` unset while legacy auth is enabled) is evaluated
+ * against the live environment on each request.
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -122,9 +118,7 @@ export class AuthGuard implements CanActivate {
   /**
    * Paths exempt from the session guard because they ESTABLISH or resolve an
    * operator session rather than presenting an operator principal
-   * (be-oauth-allowlist tasks 2.2–2.6; add-private-account-identity tasks 2.6 / D10):
-   *   - `/auth/github/login` / `/auth/github/callback` — the OAuth round trip an
-   *     unauthenticated operator must reach to obtain a session;
+   * (add-private-account-identity tasks 2.6 / D10):
    *   - `/auth/session` / `/auth/logout` — read/clear the session cookie and
    *     enforce their own 401 when no session resolves;
    *   - `/auth/password` — email+password login (mints a session on verify);
@@ -141,9 +135,7 @@ export class AuthGuard implements CanActivate {
    * The match is EXACT (see {@link normalizePath}) — only these exact paths are
    * exempt, never a `/auth*` prefix.
    */
-  private static readonly OAUTH_EXEMPT_PATHS: readonly string[] = [
-    '/auth/github/login',
-    '/auth/github/callback',
+  private static readonly PUBLIC_AUTH_PATHS: readonly string[] = [
     '/auth/session',
     '/auth/logout',
     '/auth/password',
@@ -176,7 +168,7 @@ export class AuthGuard implements CanActivate {
 
     if (
       AuthGuard.isHealthCheck(request) ||
-      AuthGuard.isOAuthEntryPoint(request) ||
+      AuthGuard.isSessionEntryPoint(request) ||
       AuthGuard.isSandboxCallback(request) ||
       AuthGuard.isMcpEndpoint(request)
     ) {
@@ -192,7 +184,7 @@ export class AuthGuard implements CanActivate {
         resolveSession: (token) => this.authSession.resolveSession(token),
         resolveApiKey: (raw) => this.authSession.resolveApiKey(raw),
         // Bind the reserved `mcp_` slot (remote-mcp-server, task 3.3): an `mcp_`
-        // bearer presented to a NON-`/mcp` route resolves (hash → allowlist
+        // bearer presented to a NON-`/mcp` route resolves (hash → DB allowed
         // re-check) to an `mcp` MACHINE principal carrying the token's scopes —
         // never tried as a session/legacy/api-key credential. `/mcp` itself is
         // exempt above and gated by `requireBearerAuth`; this binding makes an
@@ -216,7 +208,7 @@ export class AuthGuard implements CanActivate {
 
     // mustChangePassword chokepoint (task 2.7 / D9): once a principal resolves, a
     // user with a PENDING password change is blocked from EVERY protected route.
-    // The change-password endpoint and logout are already in OAUTH_EXEMPT_PATHS
+    // The change-password endpoint and logout are already in PUBLIC_AUTH_PATHS
     // (they returned `true` above and never reach here), so this single check
     // denies all other protected actions with a distinct "password change
     // required" signal the frontend turns into the forced-change dialog. A 403
@@ -250,9 +242,9 @@ export class AuthGuard implements CanActivate {
     );
   }
 
-  /** True when the request targets a GitHub-OAuth session entry point. */
-  private static isOAuthEntryPoint(request: Request): boolean {
-    return AuthGuard.OAUTH_EXEMPT_PATHS.includes(AuthGuard.normalizePath(request));
+  /** True when the request targets a session/login entry point. */
+  private static isSessionEntryPoint(request: Request): boolean {
+    return AuthGuard.PUBLIC_AUTH_PATHS.includes(AuthGuard.normalizePath(request));
   }
 
   /**
@@ -285,7 +277,7 @@ export class AuthGuard implements CanActivate {
   }
 
   /**
-   * Reads the opaque GitHub-OAuth session token a REST request carries, from the
+   * Reads the opaque session token a REST request carries, from the
    * `cap_session` cookie. Returns `null` when no session cookie is present.
    */
   private static extractSessionToken(request: Request): string | null {

@@ -48,8 +48,8 @@ export const Route = createFileRoute("/")({
 
 /** Access-mode trust pills (verbatim design copy). */
 const TRUST_PILLS = [
-  "GitHub OAuth 白名单",
-  "GitHub 账号仓库导入",
+  "本地账号访问",
+  "GitHub PAT 仓库导入",
   "远端 Agent CLI",
 ] as const;
 
@@ -114,7 +114,7 @@ function LandingPage() {
                 </span>
               </h1>
               <p className="max-w-[520px] text-[clamp(18px,2.1vw,22px)] leading-[1.68] text-muted-foreground">
-                GitHub OAuth 只负责确认身份；仓库导入决定 Agent
+                本地账号确认谁能进入控制台；PAT 仓库导入决定 Agent
                 能碰什么；任务队列负责调度；实时终端把最后的控制权留给你。
               </p>
 
@@ -127,7 +127,7 @@ function LandingPage() {
                 ) : (
                   <>
                     <Button asChild>
-                      <Link to="/login">使用 GitHub 登录</Link>
+                      <Link to="/login">登录控制台</Link>
                     </Button>
                     {/* Secondary is a non-bouncing in-page jump to the demo, not
                         a console route that the gate would silently reject. */}

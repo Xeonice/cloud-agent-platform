@@ -21,7 +21,7 @@
  * than surfaced as an error. The data is read EXCLUSIVELY through
  * `githubReposQuery` (never a bespoke fetch), so flipping the `githubImport`
  * capability repoints it at the real `GET /user/repos` with no change here; the
- * distinct empty-vs-error-vs-reauth states are kept as honest seams.
+ * distinct empty-vs-error-vs-PAT-required states are kept as honest seams.
  *
  * SSR-safe: the dialog content mounts only when open (Radix portals on the
  * client); the fetch is deferred until the operator clicks 同步仓库列表 (the query
@@ -106,9 +106,10 @@ export function ImportDialog({
 }: ImportDialogProps) {
   const queryClient = useQueryClient();
 
-  // The GitHub list is fetched lazily: armed only after the operator clicks
-  // 同步仓库列表 (and re-armed whenever the dialog reopens). Reading through
-  // `githubReposQuery` keeps the real/mock switch + cache key intact.
+  // The GitHub list is fetched lazily through the connected GitHub PAT: armed
+  // only after the operator clicks 同步仓库列表 (and re-armed whenever the dialog
+  // reopens). Reading through `githubReposQuery` keeps the real/mock switch +
+  // cache key intact.
   const [armed, setArmed] = React.useState(false);
   const [search, setSearch] = React.useState("");
   const [importingId, setImportingId] = React.useState<number | null>(null);
@@ -209,11 +210,11 @@ export function ImportDialog({
     );
   }
 
-  // Distinguish the failure modes honestly (task 14.2). A re-auth signal
-  // (401/403) prompts re-authorization; everything else is a transient/unknown
+  // Distinguish the failure modes honestly (task 14.2). A PAT signal (401/403)
+  // prompts a settings-side token refresh; everything else is a transient/unknown
   // listing error. An empty-but-successful list is NOT an error.
   const fetchError = githubRepos.error;
-  const needsReauth =
+  const needsPat =
     fetchError instanceof ApiError &&
     (fetchError.status === 401 || fetchError.status === 403);
 
@@ -261,7 +262,7 @@ export function ImportDialog({
               添加仓库
             </DialogTitle>
             <DialogDescription className="max-w-[620px] text-[13px] leading-[1.55] text-muted-foreground">
-              拉取当前 GitHub 授权账号下的仓库，只把明确选择的项目加入远端调度池。
+              使用设置中的 GitHub PAT 拉取可访问仓库，只把明确选择的项目加入远端调度池。
             </DialogDescription>
           </div>
           <button
@@ -313,7 +314,7 @@ export function ImportDialog({
                 先同步仓库列表，再选择调度范围。
               </h3>
               <p className="m-0 text-[13px] leading-[1.55] text-muted-foreground">
-                同步只读取仓库名称、默认分支和更新时间；写入 token 会在任务创建时按仓库短期签发。
+                同步只读取仓库名称、默认分支和更新时间；PAT 只在服务端使用，不会返回浏览器。
               </p>
               <button
                 type="button"
@@ -344,11 +345,11 @@ export function ImportDialog({
               className="grid gap-3 rounded-lg bg-[#fff1f0] p-[18px] shadow-ring"
             >
               <StatusPill variant="danger" className="justify-self-start">
-                {needsReauth ? "需要重新授权" : "拉取失败"}
+                {needsPat ? "需要 GitHub PAT" : "拉取失败"}
               </StatusPill>
               <p className="m-0 text-[13px] leading-[1.55] text-foreground">
-                {needsReauth
-                  ? "GitHub 授权已失效，请重新授权后再同步仓库列表。"
+                {needsPat
+                  ? "GitHub PAT 未连接、已失效或权限不足，请在设置「代码托管连接」中连接后再同步仓库列表。"
                   : "暂时无法读取 GitHub 仓库列表，请稍后重试。"}
               </p>
               <button
@@ -356,7 +357,7 @@ export function ImportDialog({
                 onClick={() => void githubRepos.refetch()}
                 className="inline-flex h-9 w-fit min-w-[180px] items-center justify-center rounded-md bg-card px-4 text-sm font-medium text-foreground shadow-ring hover:bg-secondary"
               >
-                {needsReauth ? "重新授权 GitHub" : "重试同步"}
+                重试同步
               </button>
             </div>
           ) : null}

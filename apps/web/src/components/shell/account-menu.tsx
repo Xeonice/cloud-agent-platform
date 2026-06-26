@@ -4,8 +4,8 @@
  * Shared by BOTH the desktop sidebar footer (the prototype "private card") and
  * the mobile bottom-nav "账户" cell, selected via the `variant` prop. Identity
  * is read from `authSessionQuery` so the same render path serves the mock gate
- * and the real OAuth session; it NEVER renders empty — login + initials fall
- * back to the allowlisted `ALLOWED_ACCOUNT` ("tanghehui") when the session has
+ * and the real backend session; it NEVER renders empty — login + initials fall
+ * back to `ALLOWED_ACCOUNT` ("tanghehui") when the session has
  * not yet resolved.
  *
  * Built on shadcn `DropdownMenu` (Radix), which supplies Esc-to-close,
@@ -67,7 +67,7 @@ export function AccountMenu({ variant = "sidebar" }: AccountMenuProps) {
   // admins; a non-admin is 403'd server-side regardless). UX-gate it here.
   const isAdmin = useIsAdmin();
 
-  // Never render empty: fall back to the allowlisted account identity until the
+  // Never render empty: fall back to the mock account identity until the
   // session query resolves (and on the server, where the client gate is unread).
   const login = session?.login ?? ALLOWED_ACCOUNT;
   const initials = deriveInitials(session?.name, login);
@@ -101,7 +101,7 @@ export function AccountMenu({ variant = "sidebar" }: AccountMenuProps) {
               </strong>
               <span className="inline-flex min-w-0 items-center gap-1.5 text-xs leading-tight whitespace-nowrap text-muted-foreground">
                 <span className="size-1.5 rounded-full bg-success" aria-hidden="true" />
-                OAuth 已验证
+                会话已验证
               </span>
             </span>
             <span className="font-mono text-[11px] text-muted-foreground" aria-hidden="true">

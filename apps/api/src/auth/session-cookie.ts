@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import { readSessionCookieDomain, readWebOrigin } from './oauth-config';
+import { readSessionCookieDomain, readWebOrigin } from './auth-config';
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -7,10 +7,9 @@ import {
 } from './session-token';
 
 /**
- * Builds the `Set-Cookie` directive(s) for a freshly-minted session
- * (add-private-account-identity). Shared by EVERY login method that mints a
- * session out-of-band of the GitHub callback — email+password and email-OTP — so
- * their cookies behave identically to the GitHub flow's:
+ * Builds the `Set-Cookie` directive(s) for a freshly-minted session.
+ * Shared by EVERY local login method that mints a session — email+password and
+ * email-OTP — so their cookies behave identically:
  *  - httpOnly + Secure (Secure forced when cross-origin, where SameSite=None is
  *    required and browsers reject a non-Secure None cookie);
  *  - SameSite=None for a cross-origin deploy (the web app reads `/auth/session`

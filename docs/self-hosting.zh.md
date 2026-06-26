@@ -1,17 +1,16 @@
 # 自托管 cap
 
 这是面向操作者的指南，教你用 `docker compose up` 搭起自己的 cap 实例。cap
-是 **OAuth 优先**的：一套干净的自托管通过受硬白名单约束的 **GitHub OAuth
-应用**来鉴别操作者身份 —— 你**不**需要 legacy 操作者令牌（那条路径只为本地开发 /
-应急通道而存在，参见 [可选：legacy 令牌](#可选legacy-令牌仅限-dev)）。
+自托管使用**本地账号登录**：栈会种下默认管理员，管理员可以继续创建密码账号或邮箱验证码账号。
+仓库访问与控制台登录分离，通过每个账号自己的代码托管 PAT 配置。
 
 > **先说安全须知。** cap 通过 Docker socket（`/var/run/docker.sock`）以**主机 root**
-> 身份运行任务。因此「谁能登录」就等于「谁能在主机上以 root 身份运行」。白名单
+> 身份运行任务。因此「谁能登录」就等于「谁能在主机上以 root 身份运行」。账号访问
 > 是一道承重的安全边界，而不是一层便利封装 —— 务必收紧。参见 README 的
 > [鉴权与主机 root 边界](../README.zh.md#鉴权与主机-root-边界)。
 
 本指南是 [OSS 自更新 epic](./oss-self-update-epic.md) 的 Phase 0（「陌生人也能跑起来」）：
-一套完整、可用 env 配置、OAuth 优先的 compose 栈。下文默认路径会从源码构建一切；
+一套完整、可用 env 配置、本地账号登录的 compose 栈。下文默认路径会从源码构建一切；
 一旦某个 Release 发布了预构建镜像，你也可以改为直接拉取 —— 参见
 [可选：运行预构建镜像](#可选运行预构建镜像而非从源码构建)。
 应用内升级是后续阶段，今天自托管并不需要它。
@@ -26,7 +25,7 @@
 >
 > 它只是面向**本地**试用的便利封装，而非生产路径：手动的 `make up`（本地）以及下文的
 > `docker compose` 流程**仍是事实来源**。脚本以纯文本提供 —— 先读一遍，或使用站点同样给出的
-> 等效手动命令 `git clone … && make up`。要做真正的 OAuth 优先生产部署，请遵循本指南的步骤。
+> 等效手动命令 `git clone … && make up`。要做真正的生产部署，请遵循本指南的步骤。
 
 > **⚡ 快速路径 —— 运行预构建镜像，无需 `git clone`（amd64 主机）。** 一旦有了某个
 > Release，你根本不需要源码：从
@@ -38,10 +37,10 @@
 > 这个无源码运行包正是构建/运行分离 —— 构建留在构建平台，运行就是这一个文件。详见：
 > [从预构建镜像运行（无源码）](#或者免源码运行包无需-clone)。
 
-> **让 Claude Code 帮你部署。** 装了 Claude Code 的话，把下面这段提示词贴给它，它会读 `install.sh`、预检 Docker、克隆仓库跑 `make up`，并一步步引导你完成下文第 2 节的 GitHub OAuth 应用与 `.env` 配置 —— 走的是同一条源码构建 + OAuth 优先的生产路径：
+> **让 Claude Code 帮你部署。** 装了 Claude Code 的话，把下面这段提示词贴给它，它会读 `install.sh`、预检 Docker、克隆仓库跑 `make up`，并一步步引导你完成本地账号登录、web/api 域名和 `.env` 配置 —— 走的是同一条源码构建的生产路径：
 >
 > ```text
-> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 安装脚本，确认 Docker 与可用的 docker.sock 已就绪。然后克隆 https://github.com/<owner>/cloud-agent-platform，进入目录运行 `make up` 构建并启动整套栈。帮我创建 GitHub OAuth 应用并填好 .env，以便用白名单做生产登录；最后告诉我控制台地址和它打印的 Authorization: Bearer 令牌。
+> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 安装脚本，确认 Docker 与可用的 docker.sock 已就绪。然后克隆 https://github.com/<owner>/cloud-agent-platform，进入目录运行 `make up` 构建并启动整套栈。帮我配置本地账号登录、web/api 域名，以及基于 PAT 的仓库访问；最后告诉我控制台地址和生成的管理员 / legacy 凭据。
 > ```
 >
 > 它只是对 `make up` 的封装而非替代，脚本以纯文本提供、可先读后跑，你全程可接管。
@@ -54,7 +53,7 @@
 | 服务       | 角色                                                              |
 | ---------- | ----------------------------------------------------------------- |
 | `web`      | TanStack Start 控制台（Nitro `node-server`），主机端口 3000 —— **`web` profile** |
-| `api`      | NestJS 编排器（OAuth/会话/白名单、任务、WS），8080 |
+| `api`      | NestJS 编排器（本地会话、任务、WS），8080 |
 | `postgres` | 支撑任务/审计/历史的数据库                          |
 
 网页控制台**只通过 api 的公开 URL**（`VITE_API_BASE_URL`
@@ -69,64 +68,46 @@
   （在 api 前用 Cloudflare 或 nginx 之类的反向代理终结 HTTPS —— 参见
   `docker-compose.yml` 中可选启用的 `proxy` profile）。Cookie 在跨域时以
   `Secure` 发送，因此生产环境中 api 必须可经 **HTTPS** 访问。
-- 用于白名单的你的数字 **GitHub 用户 id**（参见第 2 节）。
+- 默认管理员的邮箱 / 初始密码规划，以及需要导入私有仓库时对应代码托管平台的 PAT。
 
-## 1. 创建 GitHub OAuth 应用
+## 1. 配置本地账号登录
 
-GitHub OAuth 是主登录路径。这是一次性的**人工**步骤，无法自动化。
+自托管控制台使用本地账号登录。无需 GitHub OAuth 应用、GitHub App、回调 URL 或 GitHub 白名单。
 
-1. 前往 **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
-   （或 `https://github.com/settings/developers`）。
-2. 填写：
-   - **Application name** —— 任意（例如 `cap`）。
-   - **Homepage URL** —— 你的网页控制台源（例如 `https://cap.example.com`）。
-   - **Authorization callback URL** —— **必须**是你的 **api** 源加上
-     `/auth/github/callback`：
-
-     ```
-     <api-origin>/auth/github/callback
-     ```
-
-     例如 `https://cap-api.example.com/auth/github/callback`。回调在 **api** 上，
-     而不是网页控制台上 —— 这是一个常见错误。
-3. 点击 **Register application**，然后 **Generate a new client secret**。
-4. 把 **Client ID** 和 **Client secret** 复制进 `apps/api/.env`：
-
-   ```ini
-   GITHUB_CLIENT_ID=Iv1.xxxxxxxxxxxx
-   GITHUB_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-   ```
-
-登录流程**fail-closed**：除非 client id 和 secret 两者都已设置，否则它拒绝启动。
-
-> **可选：`GITHUB_OAUTH_REDIRECT_URI`。** 不设它则使用应用注册的回调。只有当你需要覆盖
-> cap 发给 GitHub 的重定向时才设置它（例如位于某个不寻常的代理之后）—— 它仍必须匹配
-> OAuth 应用上注册的某个回调 URL。
-
-## 2. 设置操作者白名单
-
-`AUTH_ALLOWLIST` 是以逗号分隔的**不可变数字 GitHub id** 列表（绝不是登录名 ——
-被改名/重建的账号无法冒充某个白名单内的操作者）。只有这些身份可以进入主机 root
-控制台；**空 / 未设置 / 无法解析的白名单会拒绝一切访问**（fail-closed）。
-
-查找你的数字 id：
-
-```bash
-curl -s https://api.github.com/users/<your-github-login> | grep '"id"'
-# 或者，已认证情况下，查当前登录用户：
-gh api user --jq .id
-```
-
-然后在 `apps/api/.env` 中：
+必要的鉴权相关环境变量：
 
 ```ini
-# 单个操作者
-AUTH_ALLOWLIST=1234567
-# 多个操作者
-AUTH_ALLOWLIST=1234567,7654321
+SESSION_SECRET=<64 位以上随机字符串>
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=<初始管理员密码>
+PASSWORD_AUTH_ENABLED=true
 ```
 
-白名单成员资格会在**请求时重新校验**，因此移除某个 id 会在下一次请求时立即吊销其访问权。
+邮箱验证码登录需要 SMTP。未配置 SMTP 时，登录页不会展示验证码方式：
+
+```ini
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=noreply@example.com
+SMTP_PASS=...
+SMTP_FROM=noreply@example.com
+```
+
+管理员可以在控制台继续创建 / 禁用账号。账号启用状态会在每次 session / API key / MCP token
+解析时重新确认，因此禁用账号会在下一次请求立即生效。
+
+## 2. 用 PAT 连接仓库
+
+控制台登录和仓库访问是两件事。要导入私有仓库，或让任务推分支 / 开 PR，每个操作者需要在控制台
+**设置 -> 代码托管连接**里连接自己的 forge 凭据。
+
+GitHub 使用 Personal Access Token：
+
+- 细粒度 PAT：给目标仓库授予 Contents + Pull requests 写权限。
+- 经典 PAT：私有仓库使用 `repo`，仅公开仓库可用 `public_repo`。
+
+GitLab / Gitee 使用各自平台的 PAT，并可填写自托管实例地址。PAT 按账号保存，仅用于仓库列表、
+导入、clone、push 和 PR/MR 操作。
 
 ## 3. 配置你的公开域名（易出错的一步）
 
@@ -245,8 +226,8 @@ COMPOSE_PROFILES=web docker compose up --build
 拉起后：
 
 1. 打开网页控制台（你的 web origin）。
-2. 点击 **Sign in with GitHub** → 授权该 OAuth 应用。
-3. 如果你的数字 id 在 `AUTH_ALLOWLIST` 上，你会进入控制台；否则被拒绝（fail-closed）。
+2. 使用第 1 节配置的默认管理员邮箱 / 密码登录。
+3. 按需在 **账号管理**里创建更多本地账号；导入私有仓库前，在**设置 -> 代码托管连接**里连接 PAT。
 
 如果登录被弹回，或 cookie 不生效，请重读 [第 3 节](#3-配置你的公开域名易出错的一步)——几乎每次都是 `WEB_ORIGIN`、`SESSION_COOKIE_DOMAIN` 与写死的 `VITE_API_BASE_URL` 三者不一致所致。
 
@@ -254,7 +235,7 @@ COMPOSE_PROFILES=web docker compose up --build
 
 上面的一切都会在你的主机上**从源码**构建 `api` / `web` / AIO-sandbox 镜像——这是默认方式，也是在尚无 Release 之前唯一可行的路径。一旦维护者发布了 GitHub Release，该 Release 就会向 GHCR 发布一组**匹配的、版本钉死的**镜像（`ghcr.io/xeonice/cap-api`、`cap-web`、`cap-aio-sandbox`，全都在同一个 `vX.Y.Z`）。之后你就可以**拉取**这组钉死的镜像而不必编译，方法是在基础 compose 之上叠加 `docker-compose.images.yml` **override**。
 
-> **你仍然需要 Steps 1–5。** override 只改变镜像**来自哪里**（拉取 vs. 构建）。你的 OAuth 应用、白名单、域名、密钥以及（可选的）外部 DB 与上文完全一样配置——预构建镜像读取的是同一份 `apps/api/.env` 和同一套构建期 `VITE_*`（Release 已把它们烤进发布出来的 `cap-web`）。
+> **你仍然需要 Steps 1–5。** override 只改变镜像**来自哪里**（拉取 vs. 构建）。你的本地账号鉴权、域名、密钥以及（可选的）外部 DB 与上文完全一样配置——预构建镜像读取的是同一份 `apps/api/.env` 和同一套构建期 `VITE_*`（Release 已把它们烤进发布出来的 `cap-web`）。
 
 把整套栈钉到某个已发布的 Release tag，并在**不带 `--build`** 的情况下拉起：
 
@@ -282,7 +263,7 @@ COMPOSE_PROFILES=web \
 
 ```bash
 # 从 Releases 页面下载这两个文件（无需 clone），然后：
-cp docker-compose.prod.env.example .env     # OAuth/白名单/密钥/域名（Steps 1–5）；CAP_VERSION 可选（默认 latest）
+cp docker-compose.prod.env.example .env     # 鉴权/密钥/域名（Steps 1–5）；CAP_VERSION 可选（默认 latest）
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d            # 加上 --profile web 以启用 compose 内的控制台
 ```
@@ -299,9 +280,9 @@ docker compose -f docker-compose.prod.yml up -d            # 加上 --profile we
 - **单文件平台（Dokploy）：** 把应用的 compose 文件指向 `docker-compose.prod.yml`，并在其 Environment 中设置 env（`CAP_VERSION` 可选——默认 `latest`）；更新 = 重新部署（或抬升钉死的 `CAP_VERSION`）。
 - **`web` 注意事项：** 预构建的 `cap-web` 在构建期烤入 `VITE_*`（默认指向 localhost），所以 compose 内的控制台只对同主机试用正确；要用真实域名，请在别处（例如 Vercel）提供控制台，或重新构建 `cap-web`。
 
-### 或者：agent 一键（`scripts/quick-deploy.sh`）——预构建镜像、免 OAuth
+### 或者：agent 一键（`scripts/quick-deploy.sh`）——预构建镜像
 
-要一个**可由 agent 驱动**、**无需 GitHub OAuth 应用**、**无需源码构建**的拉起方式，仓库提供了 `scripts/quick-deploy.sh`。它通过 `docker-compose.prod.yml` 运行预构建的 `ghcr.io/xeonice/cap-*:${CAP_VERSION}` 镜像，并**合成一份 legacy-token 的 `.env`**，让发布出来的 api 无需 OAuth 应用即可启动——依赖的事实是 prod compose 读取 `env_file: .env` 且不重新声明这些 auth 密钥：
+要一个**可由 agent 驱动**、**无需源码构建**的拉起方式，仓库提供了 `scripts/quick-deploy.sh`。它通过 `docker-compose.prod.yml` 运行预构建的 `ghcr.io/xeonice/cap-*:${CAP_VERSION}` 镜像，并为本地试用**合成一份 legacy-token 的 `.env`**——依赖的事实是 prod compose 读取 `env_file: .env` 且不重新声明这些 auth 密钥：
 
 ```bash
 # 从一个 clone 运行（用仓库的 docker-compose.prod.yml），或在任意位置运行（它会自行抓取）：
@@ -312,7 +293,7 @@ CAP_SMOKE_REPO_ID=<id> RUN_SMOKE=1 scripts/quick-deploy.sh   # + 预置冒烟测
 
 它以 fail-closed 的**关卡（gates）**方式运行：① 架构（预构建镜像**仅 amd64**；在 arm64 上它会停下并指引你走从源码的 `make up`），② 基础工具链，③ **Docker engine 可达**——在 WSL 上带有界自愈（选择一个存活的 context；通过 interop 启动 Docker Desktop），若失败则给出确切的人工步骤（为该发行版启用 Docker Desktop 的 **WSL Integration**，或 `sudo systemctl restart docker`），④ 拉取 `docker-compose.prod.yml`，⑤ 幂等地写出 legacy-token 的 `.env`（已存在的 `.env` 会被复用、绝不覆盖；它保持 gitignore），⑥ `pull` + `up`，⑦ 等待 `/health` 并打印 `Authorization: Bearer` 令牌。
 
-> **这是 legacy-token 路径，不是 OAuth 优先的生产部署。** 它**等同于主机 root**（它挂载主机的 `docker.sock`），所以谁持有打印出来的令牌，谁就能在主机上以 root 身份运行——请只把它用于单用户 / 试用主机。预构建的 `cap-web` **仅限 localhost**（其 `VITE_*` 烤死为 localhost）；要用真实域名，请改走上文的 OAuth 优先步骤。普通 PC 上的 WSL2 是 amd64，因此很适合作为这条路径的目标。
+> **这是 legacy-token 路径，不是常规本地账号生产路径。** 它**等同于主机 root**（它挂载主机的 `docker.sock`），所以谁持有打印出来的令牌，谁就能在主机上以 root 身份运行——请只把它用于单用户 / 试用主机。预构建的 `cap-web` **仅限 localhost**（其 `VITE_*` 烤死为 localhost）；要用真实域名，请改走上文的本地账号步骤。普通 PC 上的 WSL2 是 amd64，因此很适合作为这条路径的目标。
 
 ## 可选：应用内一键自更新（`SELF_UPDATE_ENABLED`，默认 OFF）
 
@@ -328,7 +309,8 @@ CAP_SMOKE_REPO_ID=<id> RUN_SMOKE=1 scripts/quick-deploy.sh   # + 预置冒烟测
 
 要激活它（在已有 Release 且 prod 跑着钉死-release 命令之后）：
 
-- 在 `apps/api/.env` 中设置 `SELF_UPDATE_ENABLED=true` 以及管理员白名单（`AUTH_ALLOWLIST` 的一个严格子集——被允许按 Upgrade 的那些 GitHub 数字 id），以及
+- 在 `apps/api/.env` 中设置 `SELF_UPDATE_ENABLED=true`；
+- 确认可按 Upgrade 的操作者拥有 `role = admin`；
 - 把 web 的 `selfUpdate` capability flag 翻为 `true`（`apps/web/src/lib/api/capabilities.ts`）并重新部署控制台。
 
 完整的激活步骤、分离式自重建机制以及威胁模型，见 [`deploy/DEPLOY.md`](../deploy/DEPLOY.md)（self-update 一节）。
@@ -348,9 +330,9 @@ GITHUB_API_BASE=https://api.github.com
 
 ## 可选：邮箱 OTP 登录（经 Resend 的 SMTP）
 
-邮箱验证码（OTP）登录方式在**配置 SMTP 之前是关闭的**。设置那五个 `SMTP_*` 变量（全部必填——配置不全会 fail-closed，隐藏 OTP 方式并拒绝 OTP 请求），控制台便会显示「邮箱验证码」方式；密码 + GitHub 登录则不受影响。cap 可经任何标准 SMTP provider 发送；推荐的默认是 **Resend**（标准 SMTP，无需审批 / 实名 / ICP，免费额度对 OTP 绰绰有余，且 Cloudflare 能一键写入其 DNS）。
+邮箱验证码（OTP）登录方式在**配置 SMTP 之前是关闭的**。设置那五个 `SMTP_*` 变量（全部必填——配置不全会 fail-closed，隐藏 OTP 方式并拒绝 OTP 请求），控制台便会显示「邮箱验证码」方式；密码登录不受影响。cap 可经任何标准 SMTP provider 发送；推荐的默认是 **Resend**（标准 SMTP，无需审批 / 实名 / ICP，免费额度对 OTP 绰绰有余，且 Cloudflare 能一键写入其 DNS）。
 
-> **中国大陆注意：** Resend——和所有国际发件方一样——投递到 `@qq.com` / `@163.com` / `@126.com` 并不可靠。大陆运营方应使用密码或 GitHub 登录。专门的大陆通道（例如阿里云 DirectMail）是未来的附加项；邮件模块已经为此带有收件人路由的接缝。
+> **中国大陆注意：** Resend——和所有国际发件方一样——投递到 `@qq.com` / `@163.com` / `@126.com` 并不可靠。大陆运营方应保留密码登录。专门的大陆通道（例如阿里云 DirectMail）是未来的附加项；邮件模块已经为此带有收件人路由的接缝。
 
 ### 1 — Resend 账号 + 发件域名
 
@@ -385,14 +367,14 @@ SMTP_FROM=no-reply@auth.yourdomain.com # the verified (sub)domain
 
 ## 可选：legacy 令牌（仅限 dev）
 
-那条 legacy 的单一共享 `AUTH_TOKEN` 操作者路径**默认 OFF**，且**对 OAuth 优先的自托管并不需要**。它的存在是为了本地 dev（`make up` 会生成一个）和应急通道（break-glass）。要启用它你必须同时设置两者：
+那条 legacy 的单一共享 `AUTH_TOKEN` 操作者路径**默认 OFF**，且**对常规本地账号自托管并不需要**。它的存在是为了本地 dev（`make up` 会生成一个）和应急通道（break-glass）。要启用它你必须同时设置两者：
 
 ```ini
 AUTH_TOKEN_LEGACY_ENABLED=true   # only true/1/yes turns it on
 AUTH_TOKEN=<a-long-random-token>
 ```
 
-对于 OAuth 优先的生产部署，让这两者保持默认（`false` / 空）——api 无需 legacy 令牌即可启动。
+对于本地账号生产部署，让这两者保持默认（`false` / 空）——api 无需 legacy 令牌即可启动。
 
 ## 可选：远程 MCP 服务器（`mcpServerEnabled`，默认 OFF）
 
@@ -402,11 +384,11 @@ AUTH_TOKEN=<a-long-random-token>
 
 - **端点**：`https://<your-api-domain>/mcp`（例如 `https://cap-api.douglasdong.com/mcp`）。它是单个 streamable-HTTP 路由（POST/GET/DELETE），由 api 进程内提供（没有单独的 MCP 进程）。
 - **规范资源 URI**：`cap:mcp`——每个铸造出来的 `mcp_` 令牌所对应的固定 RFC 8707 资源标识符。在设置铸造模型里**没有** OAuth audience 协商，也**没有** `.well-known` 发现面：令牌本身即凭据。
-- **鉴权**：把一个设置铸造的 `mcp_` 令牌粘进客户端的 `Authorization: Bearer mcp_…` 头。api 在每个请求上校验它（哈希 → 查表 → 拒绝已撤销 / 已过期 → 再次确认持有者的白名单），所以撤销一个令牌或把其持有者移出白名单，会在下一次调用时拒绝它。`/mcp` 的 CORS 是仅 bearer 且**非凭据式**的（那里永不接受任何 cookie）；控制台的凭据式 CORS 是另一个域名，且绝不包含 MCP 客户端的 origin。
+- **鉴权**：把一个设置铸造的 `mcp_` 令牌粘进客户端的 `Authorization: Bearer mcp_…` 头。api 在每个请求上校验它（哈希 → 查表 → 拒绝已撤销 / 已过期 → 再次确认持有者账号仍启用），所以撤销一个令牌或禁用其持有者，会在下一次调用时拒绝它。`/mcp` 的 CORS 是仅 bearer 且**非凭据式**的（那里永不接受任何 cookie）；控制台的凭据式 CORS 是另一个域名，且绝不包含 MCP 客户端的 origin。
 
 ### 开启它
 
-1. 设置 `mcpServerEnabled = true`——这是控制台 **Settings → MCP Server** 卡片里的系统级开关（仅管理员；管理员是 `SELF_UPDATE_ADMINS` 里的一个 login）。当为 `false` 时，`/mcp` 返回一个 JSON-RPC "disabled" 响应且不连接任何 transport，所以那里没有令牌能用。
+1. 设置 `mcpServerEnabled = true`——这是控制台 **Settings → MCP Server** 卡片里的系统级开关（仅 `role = admin` 的账号可操作）。当为 `false` 时，`/mcp` 返回一个 JSON-RPC "disabled" 响应且不连接任何 transport，所以那里没有令牌能用。
 2. 在同一张卡片里，**铸造一个 MCP 令牌**：选一个名字 + scope（`tasks:read`、`tasks:write`、`repos:read`），可选一个过期时间。原始的 `mcp_…` 令牌**只展示一次**——当场复制；之后只会再展示它的 `mcp_` 前缀 + 末 4 位。撤销是幂等且仅限自身 scope 的。
 
 ### 各客户端的连接配置

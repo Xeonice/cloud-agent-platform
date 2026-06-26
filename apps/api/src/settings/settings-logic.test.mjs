@@ -3,7 +3,7 @@
  * (account-settings, tasks 7.2 / 7.3 / 7.4).
  *
  * Requirement semantics (from settings-logic.ts):
- *   1. resolveAccountSettings: allowedAccount is the read-only OAuth-sourced
+ *   1. resolveAccountSettings: allowedAccount is the read-only session-sourced
  *      identity; defaults (retention 30, writeConfirm true, defaultRepoId null)
  *      are returned when nothing is saved; the stored row (THIS account's only)
  *      otherwise. Per-account scoping = caller passes only that account's row.
@@ -126,7 +126,7 @@ test('per-account scoping: each account sees only its own passed-in row', () => 
   assert.equal(b.defaultRepoId, null); // bob never sees alice's repo
 });
 
-test('allowedAccount always tracks the OAuth identity, never a stored value', () => {
+test('allowedAccount always tracks the session identity, never a stored value', () => {
   // even if a (hypothetical) stored object carried allowedAccount, it is ignored
   const stored = { defaultRepoId: null, retention: 30, writeConfirm: true, allowedAccount: 'EVIL' };
   const s = resolveAccountSettings('realuser', stored);

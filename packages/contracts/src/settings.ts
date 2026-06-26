@@ -5,12 +5,12 @@ import { z } from 'zod';
  *
  * Two strictly separate concepts live here:
  *  - {@link AccountSettingsSchema}: per-account console preferences (default repo,
- *    retention window, destructive-write gate) plus the read-only allowlisted
- *    account display identity sourced from the OAuth identity.
+ *    retention window, destructive-write gate) plus the read-only console account
+ *    display identity.
  *  - {@link CodexCredentialSchema}: the Codex *execution* credential
  *    ("任务运行用什么模型"), a concept entirely distinct from the console login
- *    identity ("谁能进控制台"). Connecting/clearing it never touches OAuth identity
- *    or allowlist membership.
+ *    identity ("谁能进控制台"). Connecting/clearing it never touches account
+ *    enablement or login methods.
  *
  * Secret discipline: the compatible-provider API key is WRITE-ONLY. It is
  * accepted on the save request but NEVER returned by any read shape — reads
@@ -56,17 +56,17 @@ export type MaxConcurrentTasks = z.infer<typeof MaxConcurrentTasksSchema>;
 /**
  * Per-account console preferences (read shape).
  *
- * `allowedAccount` is the read-only allowlisted account display identity
- * (e.g. `tanghehui`), derived solely from the OAuth identity and NOT writable
- * through the update API — "who can log into the console" is governed by the
- * multi-user-oauth allowlist, not by editable preferences.
+ * `allowedAccount` is the read-only console account display identity
+ * (e.g. an email or handle), derived solely from the authenticated session and
+ * NOT writable through the update API — "who can log into the console" is
+ * governed by account administration, not by editable preferences.
  *
  * `defaultRepoId` references an imported repo by id and is NULLABLE (no default
  * selected). `retention` is the audit retention window in days. `writeConfirm`
  * is the destructive-action gate toggle ("破坏性写入前停止").
  */
 export const AccountSettingsSchema = z.object({
-  /** Read-only allowlisted account display identity, sourced from OAuth. */
+  /** Read-only console account display identity, sourced from the session. */
   allowedAccount: z.string().min(1),
   /** Selected default repository (FK to an imported repo), or null when unset. */
   defaultRepoId: z.string().uuid().nullable(),
@@ -481,9 +481,9 @@ export type UpdateMcpServerSettingsRequest = z.infer<
 // ---------------------------------------------------------------------------
 
 /**
- * The forge a credential targets. A forge credential is the write-scoped token
- * used to clone/push + open a PR/MR on the operator's OWN connected forge — a
- * concept entirely distinct from the GitHub *login* identity ("谁能进控制台").
+ * The forge a credential targets. A forge credential is the token used to
+ * clone/push + open a PR/MR on the operator's OWN connected forge — a concept
+ * entirely distinct from console login ("谁能进控制台").
  */
 export const ForgeKindSchema = z.enum(['github', 'gitlab', 'gitee']);
 export type ForgeKind = z.infer<typeof ForgeKindSchema>;

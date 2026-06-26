@@ -5,7 +5,7 @@ import { AUTH_THROTTLE_NAME } from './throttler.options';
 /**
  * The public, pre-authentication auth endpoints this guard scopes its IP+email
  * brute-force tier to. Kept in one place so the throttle surface and the auth
- * guard's `OAUTH_EXEMPT_PATHS` cannot silently drift: every path here is an
+ * guard's `PUBLIC_AUTH_PATHS` cannot silently drift: every path here is an
  * unauthenticated POST that mints/changes a credential, so it is exactly the set
  * that must be brute-force throttled WITHOUT a resolved principal. Normalized
  * (no trailing slash, lower-cased) the same way {@link normalizeAuthPath} treats
@@ -31,7 +31,7 @@ const AUTH_THROTTLED_PATHS: readonly string[] = [
  *
  * The endpoints this guards — password login, OTP request, OTP verify, and
  * change-password attempts — run BEFORE a principal is resolved (they are in
- * `OAUTH_EXEMPT_PATHS`), so the global {@link PrincipalThrottlerGuard} has no
+ * `PUBLIC_AUTH_PATHS`), so the global {@link PrincipalThrottlerGuard} has no
  * `req.operatorPrincipal` to key on and would lump every anonymous attempt into a
  * single shared per-IP bucket. This guard instead keys its bucket on the client
  * IP COMBINED WITH the submitted email, so:

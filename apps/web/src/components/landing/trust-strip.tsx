@@ -3,7 +3,7 @@
  * Track 12).
  *
  * A wrapping row of plain `.pill` chips listing the product's access surfaces
- * (GitHub OAuth 白名单 / GitHub 账号仓库导入 / 远端 Agent CLI). These are the
+ * (本地账号访问 / GitHub PAT 仓库导入 / 远端 Agent CLI). These are the
  * prototype's BASE `.pill` (the soft-blue info chip), distinct from the shared
  * `StatusPill` status family — so the exact prototype tint (#ebf5ff surface /
  * #0068d6 ink) is reproduced inline here rather than borrowing a status tone.

@@ -1,27 +1,17 @@
 /**
- * GitHub-OAuth + session configuration readers (be-oauth-allowlist, tasks 2.2–2.5).
+ * Auth/session configuration readers.
  *
  * Every value here is read from `process.env` AT RUNTIME (never captured at module
- * load) so the flow's fail-closed posture is evaluated against the live
- * environment on each request. The OAuth flow is the load-bearing control over
- * host-root task execution, so each reader either returns a fully-configured,
- * non-empty value or signals "unconfigured" — there is NO partial/defaulted
- * fallback that could silently weaken the gate.
- *
- * The pure parsing/normalisation here (no NestJS, no I/O) is unit-testable in
- * isolation; the verify phase exercises {@link readOAuthAppConfig} returning
- * `null` when credentials are missing and {@link readSessionSecret} failing
- * closed on an unset secret.
+ * load) so the live deployment configuration is reflected on each request.
+ * External code-host login is intentionally not part of the console login surface;
+ * self-hosted installs use local accounts, while repository access is configured
+ * separately through forge PAT credentials.
  */
 
 import { isSmtpConfigured, type DbSmtpConfigResolver } from '../mail/mail.service';
 
 /** Env var names, centralised so the controller/service/tests agree on spelling. */
 export const ENV = {
-  GITHUB_CLIENT_ID: 'GITHUB_CLIENT_ID',
-  GITHUB_CLIENT_SECRET: 'GITHUB_CLIENT_SECRET',
-  GITHUB_OAUTH_REDIRECT_URI: 'GITHUB_OAUTH_REDIRECT_URI',
-  AUTH_ALLOWLIST: 'AUTH_ALLOWLIST',
   SESSION_SECRET: 'SESSION_SECRET',
   AUTH_TOKEN_LEGACY_ENABLED: 'AUTH_TOKEN_LEGACY_ENABLED',
   AUTH_TOKEN: 'AUTH_TOKEN',
@@ -43,64 +33,10 @@ export const ENV = {
   SMTP_HOST: 'SMTP_HOST',
 } as const;
 
-/** GitHub OAuth 2.0 endpoints (authorize / token / user / emails). */
-export const GITHUB_ENDPOINTS = {
-  AUTHORIZE: 'https://github.com/login/oauth/authorize',
-  TOKEN: 'https://github.com/login/oauth/access_token',
-  USER: 'https://api.github.com/user',
-  /** Lists the operator's emails (verified/primary flags) under `user:email`. */
-  EMAILS: 'https://api.github.com/user/emails',
-} as const;
-
 /**
- * Scopes requested at authorize time: `read:user` for the operator identity,
- * `user:email` so the callback can read the operator's PRIMARY VERIFIED email
- * (add-private-account-identity, task 2.3 — canonical handle for local accounts +
- * the verified-email auto-link, D4/D8), and `repo` so a later `/user/repos` import
- * (be-github-import) can enumerate the operator's repositories. The space-joined
- * value is what GitHub expects in the `scope` query parameter.
- */
-export const GITHUB_OAUTH_SCOPES = ['read:user', 'user:email', 'repo'] as const;
-export const GITHUB_OAUTH_SCOPE_PARAM = GITHUB_OAUTH_SCOPES.join(' ');
-
-/** The fully-resolved OAuth app credentials needed to run the authorization-code flow. */
-export interface OAuthAppConfig {
-  readonly clientId: string;
-  readonly clientSecret: string;
-  /** Registered redirect URI, when configured; GitHub falls back to the app default when absent. */
-  readonly redirectUri: string | null;
-}
-
-/**
- * Reads the OAuth app credentials, FAILING CLOSED to `null` when either
- * `GITHUB_CLIENT_ID` or `GITHUB_CLIENT_SECRET` is unset or empty. The flow MUST
- * NOT proceed (no authorize redirect, no code exchange) on a `null` result — this
- * is the "refuse to run the flow without OAuth credentials" boundary, never a
- * fall-back to unauthenticated or shared-token login.
- *
- * `redirectUri` is optional: GitHub uses the app's registered default when it is
- * absent, so an unset redirect does not by itself disable the flow.
- */
-export function readOAuthAppConfig(
-  env: NodeJS.ProcessEnv = process.env,
-): OAuthAppConfig | null {
-  const clientId = nonEmpty(env[ENV.GITHUB_CLIENT_ID]);
-  const clientSecret = nonEmpty(env[ENV.GITHUB_CLIENT_SECRET]);
-  if (clientId === null || clientSecret === null) {
-    return null;
-  }
-  return {
-    clientId,
-    clientSecret,
-    redirectUri: nonEmpty(env[ENV.GITHUB_OAUTH_REDIRECT_URI]),
-  };
-}
-
-/**
- * Reads `SESSION_SECRET` (used to sign the anti-CSRF state cookie and as the
- * opaque-session HMAC key), returning `null` when unset/empty. Callers FAIL
- * CLOSED on `null`: an unsigned state cookie would let an attacker forge the
- * CSRF token, so the flow must not run without it.
+ * Reads `SESSION_SECRET`, returning `null` when unset/empty. Password/OTP login
+ * paths mint opaque sessions via `session-token`; keeping this reader here gives
+ * tests and setup checks a single source of truth.
  */
 export function readSessionSecret(env: NodeJS.ProcessEnv = process.env): string | null {
   return nonEmpty(env[ENV.SESSION_SECRET]);
@@ -169,12 +105,8 @@ export async function isOtpAuthEnabled(
  * list of cross-origin web origins permitted to reach the api.
  *
  * This is the SINGLE source of truth for the web-origin allow-list: `main.ts`
- * uses it to configure CORS (the set of origins allowed to call the api with the
- * operator credentials) and the OAuth callback uses {@link readWebOrigin} (built
- * on this) to know where to send the browser after login. Keeping both on the
- * same parser guarantees the CORS allow-list and the post-login redirect target
- * never diverge — e.g. we can never accept a fetch from an origin we then refuse
- * to redirect to, or redirect to an origin CORS would reject.
+ * uses it to configure CORS and session-cookie helpers use {@link readWebOrigin}
+ * (built on this) to decide when cross-origin cookies require SameSite=None.
  */
 export function parseWebOrigins(raw: string | undefined): string[] {
   if (typeof raw !== 'string') {
@@ -191,17 +123,14 @@ export function parseWebOrigins(raw: string | undefined): string[] {
 }
 
 /**
- * The PRIMARY web origin the operator's browser should be sent to after the
- * OAuth callback resolves: the FIRST entry of the `WEB_ORIGIN` allow-list
+ * The PRIMARY web origin: the FIRST entry of the `WEB_ORIGIN` allow-list
  * (trimmed), or `null` when `WEB_ORIGIN` is unset/empty.
  *
  * A `null` result signals a SAME-ORIGIN deployment (the api also serves the web
- * app), where the callback must keep using relative redirect paths and the
- * default `SameSite=Lax` session cookie. A non-null result signals a CROSS-ORIGIN
- * deployment (web on Vercel / a different host from the Fly/compose api), where
- * the callback must redirect to an ABSOLUTE URL on this origin and — because the
- * front-end reads the session via a cross-origin `fetch(credentials:"include")` —
- * set the session cookie `SameSite=None; Secure`.
+ * app), where the default `SameSite=Lax` session cookie is correct. A non-null
+ * result signals a CROSS-ORIGIN deployment, where the front-end reads the session
+ * via `fetch(credentials:"include")` and the cookie helper sets
+ * `SameSite=None; Secure`.
  */
 export function readWebOrigin(env: NodeJS.ProcessEnv = process.env): string | null {
   const origins = parseWebOrigins(env[ENV.WEB_ORIGIN]);

@@ -17,7 +17,7 @@
  * Auth gate (`beforeLoad`, D1): an unauthenticated visitor to ANY `_app` route
  * is redirected to `/login` BEFORE the shell renders.
  *
- *   - REAL OAuth (`auth` capable): the gate resolves the session on BOTH the
+ *   - REAL auth (`auth` capable): the gate resolves the session on BOTH the
  *     server and the client. This is load-bearing: `beforeLoad` does NOT re-run
  *     on the client during hydration of a DIRECT load / refresh / deep-link, so
  *     a client-only check would silently let an unauthenticated visitor land on
@@ -50,7 +50,7 @@ export const Route = createFileRoute("/_app")({
   beforeLoad: async ({ context, location }) => {
     let authed: boolean;
     if (isAuthCapable()) {
-      // Real OAuth: resolve the session on BOTH server and client so a DIRECT
+      // Real auth: resolve the session on BOTH server and client so a DIRECT
       // load / refresh / deep-link is gated (beforeLoad does not re-run on the
       // client during hydration). On SSR the session cookie is forwarded
       // (lib/server-cookie.ts) and `getAuthSession` maps a 401 to `null`, so an

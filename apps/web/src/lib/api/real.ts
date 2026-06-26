@@ -7,11 +7,9 @@
  * against the `@cap/contracts` schemas so the web app never re-declares the
  * shared shapes — contracts is the single source of truth.
  *
- * Requests are sent with `credentials: "include"` so that, once the backend
- * migrates from the operator bearer token to a GitHub-OAuth session cookie
- * (D1/D6), the httpOnly session cookie rides cross-origin automatically (the
- * api must CORS-allowlist the web origin). The bearer header is still attached
- * while the legacy single-token api is in place.
+ * Requests are sent with `credentials: "include"` so the httpOnly session cookie
+ * rides cross-origin automatically (the api must CORS-allowlist the web origin).
+ * The bearer header is still attached for the optional legacy shared-token path.
  *
  * As the backend lands new endpoints, they are added here and switched on by
  * flipping their `BACKEND_CAPABILITIES` flag in `lib/api/capabilities.ts`
@@ -152,7 +150,7 @@ function authHeaders(extra?: Record<string, string>): Record<string, string> {
 async function request(path: string, init?: RequestInit): Promise<unknown> {
   const headers = authHeaders(init?.headers as Record<string, string> | undefined);
   // SSR-only: forward the incoming browser request's Cookie header so the
-  // server-side fetch carries the same OAuth session cookie the browser would
+  // server-side fetch carries the same session cookie the browser would
   // send. On the client this is a no-op ("") — the browser attaches the cookie
   // to fetch itself via `credentials: "include"` below. Never throws.
   const incomingCookie = await getIncomingCookieHeader();
@@ -462,11 +460,11 @@ export async function stopTask(taskId: string): Promise<TaskResponse> {
 }
 
 // ---------------------------------------------------------------------------
-// Not-yet-flipped domains (D5).
+// Real domains behind capability flags.
 //
 // The backend endpoints below are IMPLEMENTED but their `BACKEND_CAPABILITIES`
-// flag is still `false` (mock) pending end-to-end verification against the
-// running api + an OAuth session. They live here, fully written, so flipping a
+// flag may still be `false` (mock) pending end-to-end verification against the
+// running api + a session. They live here, fully written, so flipping a
 // flag to `true` is the entire integration step — no page rewrite, no new
 // function. Each parses against `@cap/contracts` exactly like the four live
 // endpoints above and rides the same `credentials: "include"` session-cookie
@@ -474,9 +472,9 @@ export async function stopTask(taskId: string): Promise<TaskResponse> {
 // ---------------------------------------------------------------------------
 
 /**
- * `GET /auth/session` — the current GitHub-OAuth session identity, or `null`
- * when unauthenticated. Per `multi-user-oauth`, EVERY authenticated endpoint
- * (this one included) answers a missing/expired/revoked/non-allowlisted session
+ * `GET /auth/session` — the current console session identity, or `null`
+ * when unauthenticated. EVERY authenticated endpoint
+ * (this one included) answers a missing/expired/revoked/disabled-account session
  * with HTTP 401 — there is NO `200 { user: null }` body. So a 401 here is the
  * normal "logged out" signal, NOT an error: we map it to `null` (a resolved
  * `AuthSession`) so the auth gate and session-aware UI treat it as logged out
@@ -490,7 +488,7 @@ export async function getAuthSession(): Promise<AuthSession> {
     );
     return body.user;
   } catch (err) {
-    // 401 = unauthenticated (no / expired / revoked / non-allowlisted session);
+    // 401 = unauthenticated (no / expired / revoked / disabled-account session);
     // that is "logged out", not a failure — resolve it to `null`.
     if (err instanceof ApiError && err.status === 401) return null;
     throw err;
@@ -707,7 +705,7 @@ export async function cancelCodexDeviceLogin(): Promise<void> {
 
 /**
  * `GET /repos/github/available` — the operator's importable GitHub repositories,
- * sourced server-side via the stored OAuth token (the token never reaches the
+ * sourced server-side via the connected GitHub PAT (the token never reaches the
  * browser). Gated by `BACKEND_CAPABILITIES.githubImport`.
  */
 export async function listGithubRepos(): Promise<ListAvailableGithubReposResponse> {
@@ -990,7 +988,7 @@ export async function setMcpServerEnabled(enabled: boolean): Promise<boolean> {
 // updated row, but the page re-reads the list (invalidate) as the source of truth.
 // ---------------------------------------------------------------------------
 
-/** `GET /accounts` — every account (local + github-linked) as non-secret rows. */
+/** `GET /accounts` — every account as non-secret rows. */
 export async function listAdminAccounts(): Promise<AdminAccountListResponse> {
   return AdminAccountListResponseSchema.parse(await request("/accounts"));
 }

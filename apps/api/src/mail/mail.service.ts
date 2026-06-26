@@ -54,7 +54,7 @@ export interface ResolvedSmtpConfig {
  * partial config is treated as unconfigured (fail closed). This is the SINGLE
  * source of truth for "is SMTP configured": both {@link MailService.isConfigured}
  * and the OTP capability flag ({@link isSmtpConfigured}, consumed by
- * `oauth-config.isOtpAuthEnabled`) derive from it, so what the frontend is told is
+ * `auth-config.isOtpAuthEnabled`) derive from it, so what the frontend is told is
  * available can never over-advertise relative to what `sendMail` will actually do.
  */
 export function resolveSmtpConfig(
@@ -153,7 +153,7 @@ export async function resolveTransportFor(
 
 /**
  * True when at least one mail transport is configured (DB config OR env). The OTP
- * capability flag (`oauth-config.isOtpAuthEnabled`) consumes THIS so the advertised
+ * capability flag (`auth-config.isOtpAuthEnabled`) consumes THIS so the advertised
  * availability matches what {@link MailService.sendMail} can actually do — and is
  * now true when EITHER a console-saved DB config OR the `SMTP_*` env is present
  * (D7). `resolveDb` is injected (defaults to the no-DB resolver) for testability.

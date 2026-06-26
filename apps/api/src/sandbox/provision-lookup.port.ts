@@ -32,7 +32,7 @@ export interface ProvisionLookup {
   /**
    * Resolve how to clone `taskId`'s repository: the task's OWN `repo.gitSource`
    * (replacing the global `TASK_REPO_URL` stopgap), plus an `authHeader` carrying
-   * the operator's GitHub token for private `https://github.com/...` repos.
+   * the repo owner's connected forge PAT for private `https://github.com/...` repos.
    * Returns `null` when no repo/url resolves — the provider then SKIPS the clone.
    */
   getCloneSpec(taskId: string): Promise<CloneSpec | null>;

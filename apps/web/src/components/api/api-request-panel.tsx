@@ -5,7 +5,7 @@
  * The prototype `.api-main` request region (`screens/api.html`): a request bar
  * (`.api-reqbar`) with a colored method tag + the resolved path (host prefix
  * muted) + a 发送 button; a `.api-base` line stating the request is
- * session-signed ("会话已签名 · OAuth 自动注入") — there is NO token field
+ * session-signed ("会话已签名 · 自动注入") — there is NO token field
  * (design D1 / spec "No manual token entry"); then a tabbed card with:
  *  - Body — a JSON editor (`<textarea>`) + a 格式化 action (write endpoints),
  *  - 参数 — the query params (e.g. `limit`/`cursor`) as labeled inputs,
@@ -216,7 +216,7 @@ export function ApiRequestPanel({
 
       {/* Session-signed auth line — NO token field (design D1). */}
       <div className="flex flex-wrap items-center gap-2.5">
-        <StatusPill variant="green">会话已签名 · OAuth 自动注入</StatusPill>
+        <StatusPill variant="green">会话已签名 · 自动注入</StatusPill>
         <span className="text-xs text-muted-foreground">
           凭据来自当前操作者会话，请求以 Bearer 形式签名
         </span>

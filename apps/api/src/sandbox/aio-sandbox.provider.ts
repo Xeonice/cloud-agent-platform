@@ -118,7 +118,7 @@ import {
  *     `/v1/docs` readiness poll; default 60000.
  *   - `TASK_REPO_URL` (optional) — a GLOBAL FALLBACK clone URL only. The per-task
  *     clone URL is now resolved via the {@link ProvisionLookup} port
- *     (`task → repo.gitSource`, with the operator's GitHub token attached as an
+ *     (`task → repo.gitSource`, with the repo owner's connected forge PAT attached as an
  *     `http.extraHeader` auth — never embedded in the URL — for private repos);
  *     `TASK_REPO_URL` is used only when that task/repo lookup yields nothing.
  *
@@ -150,7 +150,7 @@ export class AioSandboxProvider
 
   /**
    * @param lookup           Resolves the per-task clone URL (`task → repo.gitSource`
-   *                         with the operator's GitHub token spliced in for private
+   *                         with the repo owner's connected forge PAT spliced in for private
    *                         repos), replacing the global `TASK_REPO_URL` stopgap.
    *                         Behind a port so the provider never touches the DB
    *                         directly (keeps its focused unit test compilable in

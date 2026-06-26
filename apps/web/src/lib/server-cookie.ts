@@ -1,17 +1,16 @@
 /**
- * SSR Cookie forwarding helper (rebuild-console-tanstack-start D1/D6; OAuth
- * SSR-first-paint fix).
+ * SSR Cookie forwarding helper.
  *
  * THE PROBLEM: app-shell route loaders call `ensureQueryData(...)`, whose
  * queryFns run ON THE SERVER during SSR and hit the cross-origin api via
- * `lib/api/real.ts`. The browser's httpOnly GitHub-OAuth session cookie lives
+ * `lib/api/real.ts`. The browser's httpOnly session cookie lives
  * in the user's browser, NOT in the Nitro/node server process — so an SSR
  * backend `fetch` carries no session and the api answers 401, the loader
  * throws, and the SSR first paint becomes a 500. (Client-side navigation works
  * because the browser attaches the cookie itself.) Under the legacy
  * single-token api this was latent: `VITE_AUTH_TOKEN` is an env var the server
  * also reads, so SSR fetches were bearer-authenticated. It only surfaced in
- * pure OAuth (cookie-only) mode.
+ * cookie-only mode.
  *
  * THE FIX: during SSR, read the INCOMING browser request's `Cookie` header and
  * forward it onto the outgoing backend `fetch`, so the server-side fetch

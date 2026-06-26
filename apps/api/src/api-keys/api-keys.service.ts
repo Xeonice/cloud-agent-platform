@@ -16,7 +16,7 @@ import { hashSessionToken } from '../auth/session-token';
  * Mints, lists, and revokes the per-user, revocable, attributable MACHINE
  * credentials whose resolution path lives in {@link AuthSessionService.resolveApiKey}
  * (auth-core, task 4.1). This service owns only the OPERATOR-facing management
- * side; it is reached exclusively by a GitHub-OAuth SESSION principal (the
+ * side; it is reached exclusively by a human SESSION principal (the
  * controller rejects any `api-key`/legacy/mcp principal, so a key can never mint
  * another key — no escalation chain, task 5.3).
  *

@@ -15,14 +15,12 @@
 
 ### 终端版（Agent）
 
-GitHub 可纯终端铸 token，无需打开网页：
+GitHub 的 PAT 需要在网页里创建。拿到 PAT 后，可以用 CLI 做一次校验：
 
 ```bash
-gh auth login --scopes repo      # 设备码 OAuth，按提示输入一次性码
-gh auth token                    # 打印 token，复制去控制台粘贴
+printf '%s' '<PAT>' | gh auth login --with-token
+gh auth status
 ```
-
-> 注意：`gh` 产出的是 **gh 托管的 OAuth 令牌**，与「Personal Access Token」是两种东西，但都能用于连接。
 
 ## GitLab
 

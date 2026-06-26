@@ -1,18 +1,15 @@
 import { Injectable, Optional } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
-import { readMaybeEncrypted } from '../settings/secret-storage';
-import { GITHUB_IDENTITY_PROVIDER } from '../auth/github-identity';
 import { ForgeTargetResolver } from '../forge/forge-target-resolver';
 import { DefaultForgeRegistry } from '../forge/forge-registry';
 import type { CloneSpec, ProvisionLookup } from './provision-lookup.port';
 
 /**
  * Prisma-backed {@link ProvisionLookup}: resolves a task's clone spec from its
- * own `repo.gitSource`, attaching the single operator's stored GitHub OAuth token
- * as an `Authorization` header (NOT in the URL) for private
- * `https://github.com/...` repos. This is where the database access lives so
- * {@link AioSandboxProvider} stays a pure port consumer.
+ * own `repo.gitSource`, attaching the task owner's forge PAT as an Authorization
+ * header (NOT in the URL) for private repos. This is where the database access
+ * lives so {@link AioSandboxProvider} stays a pure port consumer.
  */
 @Injectable()
 export class PrismaProvisionLookup implements ProvisionLookup {
@@ -45,15 +42,10 @@ export class PrismaProvisionLookup implements ProvisionLookup {
         return { url: target.cloneUrl, authHeader };
       }
     }
-    // Fallback (unattributed/system task, or no connected credential): the legacy
-    // github-only global operator token for a github https repo; ssh/other hosts
-    // and public repos clone with the bare URL.
-    const m = gitSource.match(/^https:\/\/github\.com\/.+$/);
-    if (!m) return { url: gitSource };
-    const token = await this.resolveGitHubToken();
-    if (!token) return { url: gitSource };
-    const basic = Buffer.from(`x-access-token:${token}`, 'utf8').toString('base64');
-    return { url: gitSource, authHeader: `Authorization: Basic ${basic}` };
+    // No owner-scoped forge PAT could be resolved. Clone public repos with the
+    // bare URL; private repos will fail closed inside git rather than borrowing a
+    // global or OAuth-derived credential.
+    return { url: gitSource };
   }
 
   /**
@@ -107,31 +99,4 @@ export class PrismaProvisionLookup implements ProvisionLookup {
     return task?.executionMode ?? null;
   }
 
-  /**
-   * The single allowed operator's stored GitHub OAuth access token (single-user
-   * self-host: the allowlist admits exactly one identity, so the earliest allowed
-   * user holding a captured token IS the operator). Used only to authenticate the
-   * in-sandbox private-repo clone; never logged.
-   *
-   * add-private-account-identity (3.2): the token now lives as the `secret` of a
-   * `github` `IdentityLink` rather than a `User.githubAccessToken` column, so the
-   * global fallback queries the earliest `github` identity whose owning `User` is
-   * `allowed` and that carries a non-null secret — preserving the prior
-   * "an allowed user with a github token" semantics over the normalized schema.
-   */
-  private async resolveGitHubToken(): Promise<string | null> {
-    const identity = await this.prisma.identityLink.findFirst({
-      where: {
-        provider: GITHUB_IDENTITY_PROVIDER,
-        secret: { not: null },
-        user: { allowed: true },
-      },
-      orderBy: { createdAt: 'asc' },
-      select: { secret: true },
-    });
-    // Decrypt at point of use (add-forge-credentials): the secret stores the
-    // encrypted envelope when a server key is configured, or a legacy plaintext
-    // token otherwise — readMaybeEncrypted recovers the plaintext for both.
-    return readMaybeEncrypted(identity?.secret);
-  }
 }

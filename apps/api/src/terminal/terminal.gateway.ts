@@ -23,11 +23,11 @@
  * inbound peers are operator console clients. The layers above the `TerminalPty`
  * seam (auth, lease, approval routing, backpressure, snapshots, guardrails) are
  * unchanged by this inversion. The gateway layers on:
- *   - connect-time OPERATOR authentication of console clients via the GitHub-OAuth
- *     SESSION (cookie or `bearer.<token>` subprotocol) with an allowlist re-check,
+ *   - connect-time OPERATOR authentication of console clients via the human
+ *     SESSION (cookie or `bearer.<token>` subprotocol) with a DB allowed re-check,
  *     and the gated legacy `AUTH_TOKEN` break-glass path, resolved by the shared
- *     `resolveOperatorPrincipal` — closing unauthenticated/expired/non-allowlisted
- *     connections before they join any task stream (be-oauth-allowlist 2.7);
+ *     `resolveOperatorPrincipal` — closing unauthenticated/expired/disabled
+ *     connections before they join any task stream;
  *   - approval routing (6.5) — a sandbox `permission_request`, delivered over an
  *     OUTBOUND HTTP callback (re-homed in the integration track), is fanned out to
  *     operator clients and the resolved `decision` is returned to the blocked hook
@@ -99,7 +99,7 @@ import {
 } from '../agent-runtime/agent-runtime.integration';
 import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
 import { WriteLockService } from '../write-lock/write-lock.service';
-// be-oauth-allowlist 2.7 — connect-time operator SESSION authentication (replaces
+// Connect-time operator SESSION authentication (replaces
 // the AUTH_TOKEN-only operator check). `resolveOperatorPrincipal` is the shared,
 // transport-agnostic decision point (also used by the REST guard), and it performs
 // the constant-time legacy-bearer comparison internally, so the gateway needs no
@@ -416,11 +416,11 @@ export class TerminalGateway
    * Under the connect-in model the only inbound peer is an OPERATOR console
    * client; the orchestrator dials sandboxes OUT via {@link AioPtyClient}, so
    * there is no inbound runner dial-back to handshake. The operator is
-   * authenticated at connect time against a GitHub-OAuth SESSION
-   * (be-oauth-allowlist, task 2.7), resolved from the URL `token` query param or
+   * authenticated at connect time against a human SESSION, resolved from the URL
+   * `token` query param or
    * the `bearer.<token>` subprotocol (browsers cannot set an `Authorization`
-   * header on a WS handshake). The session resolver RE-CONFIRMS allowlist
-   * membership, so an expired/revoked/de-allowlisted session fails. The legacy
+   * header on a WS handshake). The session resolver RE-CONFIRMS the DB allowed
+   * gate, so an expired/revoked/disabled session fails. The legacy
    * shared `AUTH_TOKEN` is accepted on this same channel ONLY when
    * `AUTH_TOKEN_LEGACY_ENABLED` is on (task 2.8). An unauthenticated/invalid
    * operator connection is closed immediately, BEFORE it can join any task stream
@@ -454,7 +454,7 @@ export class TerminalGateway
 
     // 2.7 — connect-time operator SESSION authentication. Reject (close) before
     // the connection can join any task stream when no valid principal resolves
-    // (missing/expired/revoked/de-allowlisted session, or — with the legacy path
+    // (missing/expired/revoked/disabled session, or — with the legacy path
     // off — a bare `AUTH_TOKEN`). Auth is async (the session is resolved against
     // the store), so the connection stays `authenticated: false` until it lands.
     const presented = extractWsOperatorToken({
@@ -662,15 +662,15 @@ export class TerminalGateway
   }
 
   // -------------------------------------------------------------------------
-  // 2.7 — operator connect-time SESSION authentication
+  // Operator connect-time SESSION authentication
   // -------------------------------------------------------------------------
 
   /**
    * Resolves a presented operator credential to a valid principal at connect
-   * time (be-oauth-allowlist, task 2.7). The credential is treated FIRST as a
-   * GitHub-OAuth session token (resolved via {@link AuthSessionService}, which
-   * RE-CONFIRMS allowlist membership so expired/revoked/de-allowlisted sessions
-   * fail) and, only when the session does not resolve, as the legacy shared
+   * time. The credential is treated FIRST as a session token (resolved via
+   * {@link AuthSessionService}, which RE-CONFIRMS DB allowed state so
+   * expired/revoked/disabled sessions fail) and, only when the session does not
+   * resolve, as the legacy shared
    * `AUTH_TOKEN` operator bearer — accepted in CONSTANT TIME and ONLY when
    * `AUTH_TOKEN_LEGACY_ENABLED` is on (task 2.8).
    *

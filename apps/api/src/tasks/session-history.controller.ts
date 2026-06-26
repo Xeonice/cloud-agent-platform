@@ -150,7 +150,7 @@ export function mergeSystemTurns(
  * path, and the raw rollout JSONL never leaves the api.
  *
  * Auth: behind the global `APP_GUARD` (auth.module) exactly like `/tasks/:id`
- * and `/metrics` — an unauthenticated / de-allowlisted request is rejected 401
+ * and `/metrics` — an unauthenticated / disabled request is rejected 401
  * before any archive or container is read, so no transcript is ever served
  * without a valid operator principal.
  */

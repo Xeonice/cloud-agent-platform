@@ -11,10 +11,9 @@
  * Current posture (2026-06): the backend NOW implements
  * auth / metrics / history(audit) / settings / githubImport / branch+strategy
  * persistence — those backend tracks have shipped. But end-to-end REAL wiring
- * additionally requires (a) the api process running and reachable at
- * `VITE_API_BASE_URL`, and (b) an established, allowlisted GitHub-OAuth SESSION
- * (the OAuth App registration is still pending). Until BOTH are verified against
- * the running api, these domains default to `false` (mock) so all 10 pages
+ * additionally requires the api process running and reachable at
+ * `VITE_API_BASE_URL`, plus an established console session. Until verified
+ * against the running api, domains can default to `false` (mock) so pages
  * render today on typed mocks. Each flag flips to `true` the moment its real
  * path is verified against the running api + a live session — that is the
  * "render today on mock, flip one flag to go real" seam.
@@ -34,8 +33,8 @@ export interface BackendCapabilities {
    * the session query, the `_app` gate, and the login flow all read it through
    * `isCapable('auth')` (re-exported by `mock-session.ts` as `isAuthCapable`).
    *
-   * add-private-account-identity: the auth domain now fronts THREE login methods
-   * (email+password, email OTP, GitHub) plus a forced first-login change. The
+   * add-private-account-identity: the auth domain now fronts local login methods
+   * (email+password, email OTP) plus a forced first-login change. The
    * per-METHOD availability is a sub-axis OWNED by `mock-session.ts`
    * (`loginCapabilities()` — mirroring the backend `passwordAuthEnabled` /
    * `otpAuthEnabled` flags) rather than a separate `BackendCapabilities` entry,
@@ -54,7 +53,7 @@ export interface BackendCapabilities {
   settings: boolean;
   /**
    * `GET/POST/PATCH /accounts` — admin-only account administration (list local +
-   * github-linked accounts, create local accounts, enable/disable any account,
+   * legacy-linked accounts, create local accounts, enable/disable any account,
    * reset a local password, assign role). The real/mock switch for the `/accounts`
    * admin page; non-admins are 403'd server-side regardless of this flag.
    */
@@ -124,7 +123,8 @@ export interface BackendCapabilities {
    * `mockMcpServerEnabled` through the standard seam — so the card renders today
    * with no live backend. It flips to `true` once the `McpTokensModule` +
    * `/settings/mcp-server` endpoints are verified against the running api + an
-   * OAuth session (and, for the live connect affordance, `mcpServerEnabled` on).
+   * authenticated console session (and, for the live connect affordance,
+   * `mcpServerEnabled` on).
    * The raw `mcp_` token is the SERVER's one-time mint response in BOTH modes
    * (the mock seam fabricates a stand-in; the real path returns the api's) — the
    * card never client-fabricates it.
@@ -150,15 +150,15 @@ export interface BackendCapabilities {
  * (`tasks` / `repos` / `createTask`) plus the session-gated domains
  * (`auth` / `metrics` / `history` / `settings` / `githubImport` / `branches`)
  * were verified end-to-end (2026-06-06) against the compose api with a real
- * GitHub-OAuth session: OAuth login → allowlist admit → cross-origin session
- * cookie (SameSite=None+Secure) → real `/auth/session`, `/metrics`, `/settings`,
+ * console session: local login → cross-origin session cookie
+ * (SameSite=None+Secure) → real `/auth/session`, `/metrics`, `/settings`,
  * `/audit/events`, `/repos/github/*`, and `Task.branch/strategy` read-back, on
  * both client navigation and SSR first paint (the SSR loader forwards the
  * browser cookie — see `lib/server-cookie.ts`).
  *
  * DEPLOY NOTE: with these `true`, the app targets the real api on every surface,
  * so a deployment MUST have the api reachable (`VITE_API_BASE_URL`/`VITE_WS_URL`)
- * and, for the gated domains, an established allowlisted OAuth session. To render
+ * and, for the gated domains, an established console session. To render
  * on typed mocks instead (e.g. a backend-less preview), flip a domain to `false`.
  */
 export const BACKEND_CAPABILITIES: BackendCapabilities = {
@@ -167,14 +167,14 @@ export const BACKEND_CAPABILITIES: BackendCapabilities = {
   repos: true,
   createTask: true,
 
-  // Session-gated domains — verified e2e against the running api + OAuth session.
-  auth: true, // GET /auth/session — OAuth login + allowlist gate.
+  // Session-gated domains — verified e2e against the running api + console session.
+  auth: true, // GET /auth/session — local-account session gate.
   metrics: true, // GET /metrics — semaphore capacity + docker-stats sampling.
   history: true, // GET /audit/events — audit timeline.
-  settings: true, // /settings + /settings/codex — per-account, GitHub-identity session.
+  settings: true, // /settings + /settings/codex — per-account console session.
   apiKeys: true, // POST/GET/DELETE /api-keys — session-minted machine credentials; show-once raw key is the server response.
   accounts: true, // /accounts CRUD — admin-only account administration (list/create/enable/disable/reset/role).
-  githubImport: true, // /repos/github/* — import via the operator's OAuth token.
+  githubImport: true, // /repos/github/* — import via the operator's GitHub PAT.
   branches: true, // Task.branch/strategy read-back on the real task read.
 
   // Durable-first session-history (persist-session-transcripts): the rollout is

@@ -281,13 +281,13 @@ function buildRepoList(): ListReposResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Auth — session + allowlist (allowlisted account `tanghehui`)
+// Auth — mock local-account session (`tanghehui`)
 // ---------------------------------------------------------------------------
 
 /**
- * The mock OAuth session: an allowlisted `tanghehui` identity when the local
- * gate is connected, else `null` (the login gate). The session is gated on the
- * persisted `githubConnected` flag so the mock login/logout flow drives it.
+ * The mock local-account session: a `tanghehui` identity when the local gate is
+ * connected, else `null` (the login gate). The session is gated on the persisted
+ * `githubConnected` flag so the mock login/logout flow drives it.
  */
 export async function mockAuthSession(): Promise<AuthSession> {
   await delay();
@@ -692,10 +692,10 @@ export async function mockHistory(
 }
 
 // ---------------------------------------------------------------------------
-// Settings — allowedAccount / retention / writeConfirm + Codex credential state
+// Settings — account display / retention / writeConfirm + Codex credential state
 // ---------------------------------------------------------------------------
 
-/** Account preferences: read-only allowlisted identity + the editable draft. */
+/** Account preferences: read-only account identity + the editable draft. */
 export async function mockSettings(): Promise<AccountSettings> {
   await delay();
   const { settings } = getState();
@@ -1109,25 +1109,14 @@ export async function mockRevokeApiKey(
 // ---------------------------------------------------------------------------
 // Account administration (account-administration) — admin-only.
 //
-// An in-memory account set matching the api's list projection EXACTLY (the
-// corrected `@cap/contracts` wire shape: `identity`/`isGithubLinked`, no secret),
-// seeded with the design's rows (incl. a github-linked admin) so the page is
-// interactive under the mock gate. create/enable/disable/role mutate the store so
+// An in-memory account set matching the api's list projection EXACTLY (no secret),
+// seeded with local-account rows so the page is interactive under the mock gate.
+// create/enable/disable/role mutate the store so
 // a subsequent list read reflects them (the read-state/render loop); reset is a
 // no-op on the non-secret projection (it rotates a password the list never shows).
 // ---------------------------------------------------------------------------
 
 let mockAccountStore: AdminAccountListItem[] = [
-  {
-    id: "gh-tanghehui",
-    email: null,
-    name: "tanghehui",
-    identity: "tanghehui",
-    role: "admin",
-    allowed: true,
-    loginMethods: ["github"],
-    isGithubLinked: true,
-  },
   {
     id: "local-admin",
     email: "admin@local",
@@ -1171,7 +1160,7 @@ let mockAccountStore: AdminAccountListItem[] = [
 ];
 let mockAccountSeq = 0;
 
-/** `GET /accounts` (mock) — every account (local + github-linked). */
+/** `GET /accounts` (mock) — every local account. */
 export async function mockListAdminAccounts(): Promise<AdminAccountListResponse> {
   await delay();
   return { accounts: mockAccountStore.map((a) => ({ ...a })) };

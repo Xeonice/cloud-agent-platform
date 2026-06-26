@@ -7,9 +7,9 @@
  *   THEN the login modal does not render the verification-code method
  *        and offers only the remaining enabled methods
  *
- * Scenario 2: All enabled methods are offered
- *   WHEN password, OTP, and GitHub capabilities are all enabled
- *   THEN the login modal presents all three methods in its switch
+ * Scenario 2: Mock mode offers both local methods
+ *   WHEN the frontend is in mock posture
+ *   THEN the login modal presents password and OTP
  *
  * Strategy: mock `./api/capabilities` so `isCapable("auth")` is controllable,
  * then call `loginCapabilities()` directly and assert the returned flag map
@@ -57,40 +57,31 @@ describe("loginCapabilities() gates login methods by backend capability flags", 
     _authCapable = true;
     const caps = loginCapabilities();
 
-    // password and github are always available in real-auth mode
+    // password is available in real-auth mode by default
     expect(caps.password).toBe(true);
-    expect(caps.github).toBe(true);
 
     // OTP is disabled — the backend prerequisite (SMTP) is absent
     expect(caps.otp).toBe(false);
 
     // Derive enabled methods exactly as login.tsx does
-    const METHOD_ORDER = ["password", "otp", "github"] as const;
+    const METHOD_ORDER = ["password", "otp"] as const;
     const enabledMethods = METHOD_ORDER.filter((m) => caps[m]);
 
     // OTP must NOT be in the offered set
     expect(enabledMethods).not.toContain("otp");
-    // The two enabled methods are present
-    expect(enabledMethods).toContain("password");
-    expect(enabledMethods).toContain("github");
+    expect(enabledMethods).toEqual(["password"]);
   });
 
-  it("Scenario: All enabled methods are offered (mock / SMTP-configured posture)", () => {
-    // In mock mode (auth capability off) all three methods are returned enabled,
-    // matching the full 3-method design and the case when SMTP IS configured.
+  it("Scenario: Both local methods are offered in mock posture", () => {
     _authCapable = false;
     const caps = loginCapabilities();
 
     expect(caps.password).toBe(true);
     expect(caps.otp).toBe(true);
-    expect(caps.github).toBe(true);
 
-    const METHOD_ORDER = ["password", "otp", "github"] as const;
+    const METHOD_ORDER = ["password", "otp"] as const;
     const enabledMethods = METHOD_ORDER.filter((m) => caps[m]);
 
-    expect(enabledMethods).toHaveLength(3);
-    expect(enabledMethods).toContain("password");
-    expect(enabledMethods).toContain("otp");
-    expect(enabledMethods).toContain("github");
+    expect(enabledMethods).toEqual(["password", "otp"]);
   });
 });

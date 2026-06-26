@@ -18,7 +18,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isOtpAuthEnabled } from '../auth/oauth-config';
+import { isOtpAuthEnabled } from '../auth/auth-config';
 import { MailService, type DbSmtpConfigResolver } from '../mail/mail.service';
 import { EmailOtpService } from '../auth-otp/email-otp.service';
 import { OtpController } from '../auth-otp/otp.controller';

@@ -6,7 +6,7 @@
  *   - adminAccountsQuery factory exists with the correct query key;
  *   - the `accounts` capability is `true` (activated), so queryFn routes to the
  *     real api seam — verified here against a stubbed fetch;
- *   - the mock layer returns the seeded account list (local + github-linked)
+ *   - the mock layer returns the seeded local account list
  *     shaped by AdminAccountListResponseSchema;
  *   - create / enable-disable lifecycle reflects on the next list read (the
  *     read-state/render loop the route's useMutation invalidates).
@@ -61,14 +61,14 @@ describe("Account administration page — data seam (adminAccountsQuery)", () =>
         json: async () => ({
           accounts: [
             {
-              id: "gh-tanghehui",
-              email: null,
-              name: "tanghehui",
-              identity: "tanghehui",
+              id: "local-admin",
+              email: "admin@local",
+              name: "平台管理员",
+              identity: "admin@local",
               role: "admin",
               allowed: true,
-              loginMethods: ["github"],
-              isGithubLinked: true,
+              loginMethods: ["password", "otp"],
+              isGithubLinked: false,
             },
           ],
         }),
@@ -91,7 +91,7 @@ describe("Account administration page — data seam (adminAccountsQuery)", () =>
 
 describe("Account administration page — mock layer (add-private-account-identity)", () => {
   it(
-    "mockListAdminAccounts returns a seeded list with local + github-linked accounts",
+    "mockListAdminAccounts returns a seeded list with local accounts",
     async () => {
       const response = await mockListAdminAccounts();
       // Must parse against the contract schema (the drift guard).
@@ -100,14 +100,10 @@ describe("Account administration page — mock layer (add-private-account-identi
       const { accounts } = response;
       expect(accounts.length).toBeGreaterThanOrEqual(1);
 
-      // At least one GitHub-linked account is present (the seeded tanghehui admin).
-      const githubAcct = accounts.find((a) => a.isGithubLinked);
-      expect(githubAcct).toBeDefined();
-      expect(githubAcct?.loginMethods).toContain("github");
-
-      // At least one local (non-github) account is present.
+      // At least one local account is present.
       const localAcct = accounts.find((a) => !a.isGithubLinked);
       expect(localAcct).toBeDefined();
+      expect(localAcct?.loginMethods as readonly string[]).not.toContain("github");
     },
     TIMEOUT,
   );
@@ -139,7 +135,7 @@ describe("Account administration page — mock layer (add-private-account-identi
 
       // The created row must validate against the contract.
       expect(() => AdminAccountListItemSchema.parse(created)).not.toThrow();
-      // New local account: not github-linked, enabled by default.
+      // New local account: no legacy external link, enabled by default.
       expect(created.isGithubLinked).toBe(false);
       expect(created.allowed).toBe(true);
       expect(created.identity).toBe("newuser@example.com");
@@ -204,13 +200,10 @@ describe("Account administration page — mock layer (add-private-account-identi
   );
 
   it(
-    "github-linked accounts are listed but cannot have passwords reset (kind gate)",
+    "mock list no longer exposes github as a login method",
     async () => {
       const { accounts } = await mockListAdminAccounts();
-      const github = accounts.find((a) => a.isGithubLinked);
-      expect(github).toBeDefined();
-      // GitHub accounts have no password login method.
-      expect(github?.loginMethods).not.toContain("password");
+      expect(accounts.some((a) => (a.loginMethods as readonly string[]).includes("github"))).toBe(false);
     },
     TIMEOUT,
   );

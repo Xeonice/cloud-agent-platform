@@ -91,52 +91,15 @@ export function selectBannerView(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Admin gate (self-update-action D2) — read the auth session INSIDE the banner
-// ---------------------------------------------------------------------------
-
 /**
- * The admin allowlist the web upgrade gate consults — the comma-separated GitHub
- * logins in `VITE_ADMIN_LOGINS`. This MIRRORS the api's self-contained
- * env-allowlist admin gate (Track 1 `apps/api/src/auth/admin.ts`): there is no
- * `admin` field on the shared `SessionUser` contract (it would be a cross-track
- * shared file), so the web side keeps its own local, env-driven predicate. The UI
- * gate is convenience only — the api re-enforces the admin check server-side on
- * every `POST /self-update`, so a non-admin who forced the action through still
- * gets a 403 (defense in depth; spec "operator-admin-only").
- *
- * SSR-safe: reads `import.meta.env` (a build-time constant map), never `window`.
+ * Whether the resolved auth session belongs to an admin operator. The UI gate is
+ * convenience only — the api re-enforces the role check server-side on admin
+ * routes. A `null`/unresolved session or disabled account is never an admin.
  */
-function adminLogins(): readonly string[] {
-  const env = import.meta.env as Record<string, string | undefined>;
-  const raw = env.VITE_ADMIN_LOGINS;
-  if (!raw) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter((s) => s.length > 0);
-}
-
-/**
- * Whether the resolved auth session belongs to an admin operator (the narrowest
- * available admin principal, design D2). PURE w.r.t. the session it is handed and
- * the env allowlist, so the "absent for a non-admin" contract is unit-testable.
- * A `null`/unresolved session (logged out, or before the query resolves) is never
- * an admin — fail closed. A non-allowlisted session, or an empty allowlist (no
- * admins configured), is likewise not an admin.
- */
-export function isAdminSession(
-  session: AuthSession | undefined,
-  admins: readonly string[] = adminLogins(),
-): boolean {
+export function isAdminSession(session: AuthSession | undefined): boolean {
   if (!session) return false;
   if (!session.allowed) return false;
-  if (admins.length === 0) return false;
-  // `login` is nullable (a local password/OTP account has no GitHub handle). The
-  // admin allowlist is keyed on the GitHub login, so an account without one can
-  // never match it — fail closed.
-  if (!session.login) return false;
-  return admins.includes(session.login.toLowerCase());
+  return session.role === "admin";
 }
 
 // ---------------------------------------------------------------------------

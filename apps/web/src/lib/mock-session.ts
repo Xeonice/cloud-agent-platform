@@ -2,77 +2,64 @@
  * Mock session gate (task 10.6).
  *
  * Reproduces the prototype's client-side token gate so the login flow and the
- * `_app` allowlist `beforeLoad` have an authentication signal BEFORE the real
- * GitHub-OAuth backend is wired. The single seam is the `auth` capability flag:
+ * `_app` beforeLoad have an authentication signal before the real backend is
+ * available. The single seam is the `auth` capability flag:
  *
  *  - When `BACKEND_CAPABILITIES.auth` is `false` (today), authentication is the
- *    local client gate persisted here — `login()` flips it on, `logout()` clears
- *    it (and resets the local UI store), `isAuthenticated()` reads it.
- *  - When `auth` flips to `true`, this module DEFERS to the real OAuth session:
+ *    local client gate persisted here; credential methods flip it on,
+ *    `logout()` clears it (and resets the local UI store), `isAuthenticated()`
+ *    reads it.
+ *  - When `auth` flips to `true`, this module defers to the real session:
  *    callers read `authSessionQuery` (which calls `real.getAuthSession()`), and
- *    `login()`/`logout()` initiate the real `GET /auth/github/login` redirect /
- *    `POST /auth/logout`. The local gate is then inert.
+ *    `logout()` hits `POST /auth/logout`. The local gate is then inert.
  *
  * This keeps the mock/real switch in ONE place and never lets the mock gate
  * masquerade as a real session once the capability is on.
  *
- * add-private-account-identity (track frontend, task 9.3): the gate now fronts
- * THREE login methods — email+password, email verification code (OTP), and
- * GitHub authorization — plus a forced first-login password change. The mock
- * seam grows to cover them WITHOUT a new persisted-store field: the new methods
- * all converge on the same `githubConnected` gate (the single mock "session
- * established" signal), and `mustChangePassword` is held in module memory so the
- * login route can drive the forced-change dialog under the mock. Each function
- * defers to the real backend the moment `auth` is capable, exactly like
- * `login()`/`logout()` already do — the mock is never allowed to shadow a real
- * decision once the capability flips.
+ * The gate fronts two local login methods — email+password and email verification
+ * code (OTP) — plus a forced first-login password change. The mock seam covers
+ * them without a new persisted-store field: both methods converge on the same
+ * `githubConnected` gate (the legacy mock "session established" signal), and
+ * `mustChangePassword` is held in module memory so the login route can drive the
+ * forced-change dialog under the mock.
  */
 import { isCapable } from "./api/capabilities";
 import { getAuthCapabilities } from "./api/real";
 import { resetState, setState } from "./store";
 import { apiBaseUrl } from "./config";
-import { safeRelativePath } from "./safe-redirect";
 
-/** The allowlisted account the prototype gate admits (design D1; "tanghehui"). */
+/** The mock account the prototype gate admits (design D1; "tanghehui"). */
 export const ALLOWED_ACCOUNT = "tanghehui" as const;
 
 /** `sessionStorage` key for the mock gate (distinct from the persisted store). */
 const GATE_KEY = "agent-control-plane-session";
 
 /**
- * The three console login methods (D11). The login modal renders only the
+ * The local console login methods. The login modal renders only the
  * methods whose backend capability flag is enabled (`loginCapabilities`).
  */
-export type LoginMethod = "password" | "otp" | "github";
+export type LoginMethod = "password" | "otp";
 
 /**
  * Which login methods the console offers. These mirror the backend capability
- * flags (`passwordAuthEnabled`, `otpAuthEnabled` = SMTP configured, plus the
- * GitHub-OAuth capability) the api will expose through its capabilities surface
- * (task 2.8). Until the FE reads that live surface, this is the single seam:
+ * flags (`passwordAuthEnabled`, `otpAuthEnabled` = SMTP configured). Until the
+ * FE reads that live surface, this is the single seam:
  *
- *  - Under the MOCK gate (`auth` off — incl. the `VITE_FORCE_MOCK` visual
- *    harness) ALL three methods are reported enabled so the modal renders its
- *    full 3-method switch on the typed-mock posture (matching the design).
- *  - Under REAL auth the password + GitHub methods are reported enabled; OTP is
- *    reported DISABLED here because its availability depends on SMTP being
- *    configured, which only the backend knows — surfacing it true by default
- *    would offer a method whose prerequisite may be absent (spec: "never present
- *    a method whose backend prerequisite is absent"). When the api exposes the
- *    live `otpAuthEnabled` flag, this reader is the one place that consults it.
+ *  - Under the MOCK gate (`auth` off, including the `VITE_FORCE_MOCK` visual
+ *    harness) both local methods are reported enabled.
+ *  - Under REAL auth password is enabled by default; OTP is disabled until the
+ *    live backend capability confirms SMTP is configured.
  *
  * The returned shape is keyed by {@link LoginMethod} so the modal can map over
  * it deterministically and pick the first enabled method as the default tab.
  */
 export function loginCapabilities(): Record<LoginMethod, boolean> {
   if (!isAuthCapable()) {
-    // Mock / visual-harness posture: render the full 3-method switch.
-    return { password: true, otp: true, github: true };
+    return { password: true, otp: true };
   }
-  // Real posture: a SAFE default for SSR / first paint before the live flags are
-  // read — password + GitHub on, OTP off (it depends on SMTP, which only the
-  // backend knows). The live values come from {@link fetchLoginCapabilities}.
-  return { password: true, otp: false, github: true };
+  // Real posture: safe first paint before the live flags are read. OTP depends
+  // on SMTP, which only the backend knows.
+  return { password: true, otp: false };
 }
 
 /**
@@ -87,7 +74,7 @@ export async function fetchLoginCapabilities(): Promise<
   Record<LoginMethod, boolean>
 > {
   if (!isAuthCapable()) {
-    return { password: true, otp: true, github: true };
+    return { password: true, otp: true };
   }
   const caps = await getAuthCapabilities();
   if (!caps) {
@@ -96,7 +83,6 @@ export async function fetchLoginCapabilities(): Promise<
   return {
     password: caps.passwordAuthEnabled,
     otp: caps.otpAuthEnabled,
-    github: caps.githubAuthEnabled,
   };
 }
 
@@ -109,7 +95,7 @@ export async function fetchLoginCapabilities(): Promise<
  */
 let mockMustChangePassword = false;
 
-/** True while real OAuth is wired in; callers should read `authSessionQuery`. */
+/** True while real backend auth is wired in; callers should read `authSessionQuery`. */
 export function isAuthCapable(): boolean {
   // Via `isCapable` (not the raw flag map) so `VITE_FORCE_MOCK=1` — the visual
   // harness's deterministic mock data mode — also returns the AUTH GATE to the
@@ -133,38 +119,7 @@ export function isAuthenticated(): boolean {
 }
 
 /**
- * Begin a login. Under the mock gate, flips the local flag on (the caller then
- * navigates into the app shell). Under real OAuth, redirects the browser to the
- * backend's GitHub authorization-code start endpoint, forwarding an optional
- * `redirect` deep-link (the app path the auth gate bounced the operator from) as a
- * query param. The backend re-validates it with its open-redirect guard, so a
- * malformed value is harmless; we still only forward a same-origin relative path.
- */
-export function login(redirect?: string): void {
-  if (isAuthCapable()) {
-    if (typeof window !== "undefined") {
-      const safe = safeRelativePath(redirect);
-      const url = new URL(`${apiBaseUrl()}/auth/github/login`);
-      if (safe) url.searchParams.set("redirect", safe);
-      window.location.href = url.toString();
-    }
-    return;
-  }
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.setItem(GATE_KEY, "1");
-  } catch {
-    // Ignore storage failure; the gate simply won't persist across reloads.
-  }
-  // Keep the two mock signals coherent: the `_app` gate reads the sessionStorage
-  // flag above, but the mock session SOURCE (`mockAuthSession`) derives identity
-  // from `store.githubConnected`. Set both so `AccountMenu`/`authSessionQuery`
-  // resolve the allowlisted session instead of falling back to the constant.
-  // `logout()`'s `resetState()` clears `githubConnected`, keeping them in sync.
-  setState({ githubConnected: true });
-}
-
-/** The shape every credential login resolves to: success + the post-login dest. */
+/** The shape every credential login resolves to. */
 export interface LoginResult {
   /** Whether the credential was accepted (the mock always accepts; real maps the API result). */
   ok: boolean;
@@ -183,7 +138,7 @@ export interface LoginResult {
  * Establish the MOCK session (the shared "logged in" effect for every
  * credential method). Mirrors `login()`'s mock branch: flips the sessionStorage
  * gate AND `store.githubConnected` so `authSessionQuery`/`AccountMenu` resolve
- * the allowlisted session. Used by the password + OTP mock flows.
+ * the mock session. Used by the password + OTP mock flows.
  */
 function establishMockSession(): void {
   if (typeof window !== "undefined") {
@@ -351,7 +306,7 @@ export async function changePassword(newPassword: string): Promise<LoginResult> 
 
 /**
  * Log out. Under the mock gate, clears the local flag and resets the local UI
- * store. Under real OAuth, hits `POST /auth/logout` to revoke the server-side
+ * store. Under real backend auth, hits `POST /auth/logout` to revoke the server-side
  * session (immediate revocation matters because login == host root, D1).
  */
 export async function logout(): Promise<void> {

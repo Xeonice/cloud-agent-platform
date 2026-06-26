@@ -5,16 +5,16 @@
  * Asserts the load-bearing requirements of tracks 7.1 / 7.2:
  *   1. ADMIN CRUD — an admin creates a local password account (allowed=true,
  *      mustChangePassword=true, a `password` identity holding the argon2 hash) and
- *      an OTP-only account (no password identity), lists local + github accounts,
+ *      an OTP-only account (no password identity), lists local accounts,
  *      resets a local password, assigns roles.
  *   2. NON-ADMIN 403 — a `member` (and any scopeless / no-user principal) is 403'd
  *      at the controller BEFORE any service method runs; no write happens.
  *   3. DISABLE -> REVOKE — disabling flips `User.allowed` to false (the single
  *      runtime gate that denies the account's next request), and re-enabling
  *      restores it.
- *   4. GITHUB-ACCOUNT DISABLE PATH — a github-linked account is disable-able (the
- *      pure-DB revocation path) WITHOUT touching its github identity secret, while
- *      password reset on a github-only account is rejected (no password identity).
+ *   4. LEGACY-ACCOUNT DISABLE PATH — a legacy linked account is disable-able (the
+ *      pure-DB revocation path) WITHOUT touching its identity secret, while
+ *      password reset on an account without a password identity is rejected.
  *   5. NO PLAINTEXT / NO SECRET LEAK — the plaintext password is never stored and
  *      never appears in a response; identity secrets are never projected.
  *
@@ -309,11 +309,11 @@ test('duplicate email is rejected (no public registration / no silent merge)', a
   assert.equal(db.users.length, 1, 'no duplicate account created');
 });
 
-test('admin lists local + github accounts with identity, role, methods, enabled', async () => {
+test('admin lists local + legacy linked accounts with identity, role, methods, enabled', async () => {
   const db = makeFakePrisma();
   const service = new AccountsService(db.prisma);
 
-  // A github-linked account (no email captured) + a local password account.
+  // A legacy linked account (no email captured) + a local password account.
   const gh = db.seedUser({ id: 'gh-1', email: null, name: 'Octo', role: 'member', allowed: true });
   db.seedIdentity({ id: 'gh-id', userId: gh.id, provider: 'github', providerAccountId: '12345', secret: 'enc-token' });
   await service.create({
@@ -330,8 +330,8 @@ test('admin lists local + github accounts with identity, role, methods, enabled'
   const ghRow = list.find((a) => a.id === 'gh-1');
   assert.ok(ghRow);
   assert.equal(ghRow.isGithubLinked, true);
-  assert.equal(ghRow.identity, '12345', 'github row identity falls back to the github handle');
-  assert.deepEqual(ghRow.loginMethods, ['github']);
+  assert.equal(ghRow.identity, '12345', 'legacy row identity falls back to its provider handle');
+  assert.deepEqual(ghRow.loginMethods, [], 'legacy github identity is not a login method');
 
   const localRow = list.find((a) => a.email === 'local@example.com');
   assert.ok(localRow);
@@ -339,7 +339,7 @@ test('admin lists local + github accounts with identity, role, methods, enabled'
   assert.deepEqual(localRow.loginMethods, ['password', 'otp']);
 
   // No identity secret leaks anywhere in the list response.
-  assert.ok(!JSON.stringify(list).includes('enc-token'), 'github token secret absent from list');
+  assert.ok(!JSON.stringify(list).includes('enc-token'), 'legacy token secret absent from list');
 });
 
 test('admin resets a local password (re-flags mustChangePassword, rotates the hash)', async () => {
@@ -420,10 +420,10 @@ test('unknown account id is a 404 on management ops', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 7.3 — github-account disable path (and no password reset)
+// 7.3 — legacy-account disable path (and no password reset)
 // ---------------------------------------------------------------------------
 
-test('a github-linked account is disable-able without touching its identity secret', async () => {
+test('a legacy linked account is disable-able without touching its identity secret', async () => {
   const db = makeFakePrisma();
   const service = new AccountsService(db.prisma);
   const gh = db.seedUser({ id: 'gh-9', email: null, name: 'Octo', role: 'member', allowed: true });
@@ -436,16 +436,16 @@ test('a github-linked account is disable-able without touching its identity secr
   });
 
   const disabled = await service.setEnabled(gh.id, false);
-  assert.equal(disabled.allowed, false, 'github account is revoked via User.allowed');
+  assert.equal(disabled.allowed, false, 'legacy account is revoked via User.allowed');
   assert.equal(disabled.isGithubLinked, true);
   assert.equal(
     db.identities.find((i) => i.id === 'gh-id-9')!.secret,
     'encrypted-github-token',
-    'the github identity secret is left untouched',
+    'the legacy identity secret is left untouched',
   );
 });
 
-test('password reset is rejected for a github-only account (no password identity)', async () => {
+test('password reset is rejected for an account with no password identity', async () => {
   const db = makeFakePrisma();
   const service = new AccountsService(db.prisma);
   const gh = db.seedUser({ id: 'gh-8', email: null, name: 'Octo', role: 'member', allowed: true });
@@ -454,7 +454,7 @@ test('password reset is rejected for a github-only account (no password identity
   await assert.rejects(
     () => service.resetPassword(gh.id, 'cannot-set-this'),
     BadRequestException,
-    'github-only accounts have no password to reset',
+    'accounts without password identity have no password to reset',
   );
 });
 

@@ -52,7 +52,7 @@ export * from './api-key.js';
 // shared ScopeSchema + the reserved `mcp_` credential prefix)
 export * from './mcp-token.js';
 
-// Multi-user GitHub OAuth session identity + GET /auth/session response shape
+// Session identity + GET /auth/session response shape
 export * from './session.js';
 
 // Composed discriminated control-frame union + full WS frame union

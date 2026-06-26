@@ -16,10 +16,8 @@
  *      `127.0.0.1` client IP — a per-IP limiter would lump them into one bucket.
  *      We exhaust principal A's window, then show principal B from the same IP is
  *      untouched: the bucket is keyed per-principal (here on the GitHub id), not
- *      per-IP. (The spec's canonical phrasing is "two api-keys from one IP"; in
- *      this tree only the GitHub-OAuth `session` principal exists, whose tracker
- *      key is its `githubId`, so two distinct owners are the per-principal axis —
- *      identical mechanism, identical guarantee.)
+ *      per-IP. The same mechanism applies to session and api-key principals; the
+ *      test uses distinct session owners as the per-principal axis.
  *   2. Exceeding the window returns 429. With `LIMIT` requests admitted in the
  *      TTL window, the `LIMIT + 1`-th from the SAME principal is rejected 429.
  *   3. The limiter runs AFTER auth so it can key on the principal. The stub auth

@@ -63,7 +63,7 @@ export function RuntimeCredentialTabs({
             Agent 模型凭据
           </h2>
           <p className="mt-1 text-[13px] leading-[1.55] text-muted-foreground">
-            GitHub OAuth 决定谁能进入控制台；这里选择远端 Agent 运行任务时使用的模型凭据。
+            控制台登录决定谁能进入平台；这里选择远端 Agent 运行任务时使用的模型凭据。
           </p>
         </div>
         <StatusPill variant={anyConnected ? "green" : "neutral"}>

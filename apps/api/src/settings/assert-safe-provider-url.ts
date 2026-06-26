@@ -5,7 +5,7 @@ import { lookup } from 'node:dns/promises';
  * SSRF guard for operator-supplied compatible-provider Base URLs
  * (wire-compatible-provider-execution, task 2.1 / design D4).
  *
- * A compatible-provider Base URL is attacker-influenced (any allowlisted
+ * A compatible-provider Base URL is attacker-influenced (any enabled
  * operator types it in) and is fetched server-side by the discovery probe
  * (`model-discovery.client.ts`) and, at provision time, written into the codex
  * `config.toml` the sandbox uses to reach the provider. Without a guard the

@@ -8,7 +8,7 @@
  * verify phase can unit-test them under plain `node`:
  *
  *   - {@link resolveAccountSettings} — composes the per-account READ shape from
- *     the OAuth-sourced (read-only) display identity + the stored row, returning
+ *     the session-sourced (read-only) display identity + the stored row, returning
  *     DEFAULTS when nothing has been saved (7.2). Per-account scoping is enforced
  *     by the caller passing only THAT account's stored row.
  *   - {@link validateDefaultRepoSelection} — a `defaultRepoId` is accepted ONLY
@@ -59,8 +59,8 @@ export interface StoredAccountPrefs {
 /**
  * Composes the per-account settings READ shape (7.2).
  *
- * `allowedAccount` is sourced SOLELY from the OAuth identity (`displayAccount`,
- * e.g. the GitHub login) and is READ-ONLY — it is never read from or written to
+ * `allowedAccount` is sourced SOLELY from the authenticated session's
+ * `displayAccount` and is READ-ONLY — it is never read from or written to
  * storage. When `stored` is `null` (nothing saved for this account) the
  * documented defaults are returned, so a never-configured account still gets a
  * complete, valid settings object. Because the caller passes only THIS account's

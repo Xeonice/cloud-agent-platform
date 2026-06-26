@@ -20,7 +20,7 @@ import { McpTokensService } from './mcp-tokens.service';
  *
  * The RESOLUTION path (`resolveMcpToken`) deliberately lives in
  * `AuthSessionService` (the auth core), NOT here — the security-critical
- * resolve/allowlist-recheck decision sits next to `resolveSession`, while this
+ * resolve/enabled-account recheck decision sits next to `resolveSession`, while this
  * module owns only the operator-facing credential lifecycle.
  */
 @Module({

@@ -1,19 +1,15 @@
 /**
- * Operator-principal resolution (be-oauth-allowlist, tasks 2.6 / 2.7 / 2.8;
- * extended by api-key-machine-identity, tasks 4.2 / 4.3 / 4.5).
+ * Operator-principal resolution.
  *
  * A single, transport-agnostic decision point for "is this request/connection a
  * valid operator (or machine principal), and if so who?". Both the REST session
  * guard and the WS handshake guard funnel through {@link resolveOperatorPrincipal}
  * so the two surfaces cannot drift on the security-critical questions:
  *
- *   1. an opaque GitHub-OAuth SESSION token (cookie on REST, query-param or
- *      `bearer.<token>` subprotocol on WS) is the primary HUMAN credential. It is
- *      resolved by {@link AuthSessionService.resolveSession}, which RE-CONFIRMS
- *      allowlist membership at resolution time — so a de-allowlisted operator is
- *      denied on their very next request/connect (the membership re-check stays a
- *      property of the session service, exercised here through the injected
- *      resolver).
+ *   1. an opaque SESSION token (cookie on REST, query-param or `bearer.<token>`
+ *      subprotocol on WS) is the primary HUMAN credential. It is resolved by
+ *      {@link AuthSessionService.resolveSession}, which re-confirms the owning
+ *      user's DB `allowed` flag at resolution time.
  *   2. the legacy shared `AUTH_TOKEN` operator bearer is accepted ONLY when
  *      `AUTH_TOKEN_LEGACY_ENABLED` is on (2.8), compared in CONSTANT TIME, and is
  *      a DISTINCT trust domain from the runner `TASK_TOKEN` — a `TASK_TOKEN`
@@ -21,7 +17,7 @@
  *      the ordinary comparison (there is no special case admitting it).
  *   3. an API-key (`cap_sk_…`) MACHINE credential, resolved by the injected
  *      api-key resolver, which hashes → looks up → rejects revoked/expired →
- *      RE-CONFIRMS the owner's allowlist membership, yielding the owner + the
+ *      re-confirms the owner's DB `allowed` flag, yielding the owner + the
  *      key's granted scopes (api-key-machine-identity, task 4.1/4.3).
  *   4. a reserved `mcp_…` MACHINE slot, routed to an injected MCP resolver that
  *      DENIES until the MCP track binds it (task 4.3) — reserving the prefix
@@ -39,7 +35,7 @@
  * resolved session-token + bearer candidates and the resolvers, so this module
  * captures NO transport details and NO `process.env` directly. The verify phase
  * can unit-test it with stub resolvers and an explicit env, and confirm: prefix
- * dispatch never hits the session lookup, session admit, de-allowlisted denial,
+ * dispatch never hits the session lookup, session admit, disabled-user denial,
  * legacy-on admit, legacy-off denial, `TASK_TOKEN`-as-operator denial, api-key
  * admit/deny, and the reserved-mcp deny.
  */
@@ -47,11 +43,11 @@
 import type { Scope, SessionUser } from '@cap/contracts';
 import { CREDENTIAL_PREFIX } from '@cap/contracts';
 import { constantTimeEqual } from './constant-time';
-import { ENV, isLegacyTokenEnabled } from './oauth-config';
+import { ENV, isLegacyTokenEnabled } from './auth-config';
 
 /**
  * How a request/connection was authenticated:
- *   - `'session'`     — the GitHub-OAuth HUMAN operator identity;
+ *   - `'session'`     — the HUMAN console session identity;
  *   - `'legacy-token'`— the shared `AUTH_TOKEN` operator (only reachable when the
  *                       legacy path is enabled);
  *   - `'api-key'`     — a `cap_sk_…` per-user MACHINE credential (a key resolves to
@@ -69,7 +65,7 @@ export interface OperatorPrincipal {
   /**
    * The resolved user for a `'session'` or `'api-key'` principal (the session
    * user, resp. the API key's owner); `null` for the legacy shared-token operator
-   * (which has no GitHub identity attached).
+   * (which has no account identity attached).
    */
   readonly user: SessionUser | null;
   /**
@@ -112,7 +108,7 @@ export const denyMcpResolver: McpResolver = async () => null;
  * The credentials extracted from a request/connection, normalised so this module
  * is transport-agnostic.
  *
- * - `sessionToken`: the opaque GitHub-OAuth SESSION token, from the REST cookie or
+ * - `sessionToken`: the opaque SESSION token, from the REST cookie or
  *   the WS `?token=` query / `bearer.<token>` subprotocol. `null` when absent.
  *   Used ONLY by the unprefixed session path; a reserved-prefix bearer never
  *   reaches it (dispatch returns first), so a `cap_sk_`/`mcp_` token presented on
@@ -132,7 +128,7 @@ export interface OperatorCredentials {
 
 /**
  * The resolvers a caller injects so this module performs NO I/O itself: the
- * session resolver re-confirms allowlist + expiry; the api-key resolver does the
+ * session resolver re-confirms DB allowed + expiry; the api-key resolver does the
  * same for a `cap_sk_` key; the MCP resolver defaults to DENY when the MCP track
  * is absent.
  */
@@ -156,7 +152,7 @@ export interface OperatorResolvers {
  *      The prefix is a non-secret routing decision; each domain still performs its
  *      own hash-lookup / constant-time compare, so dispatch leaks nothing.
  *   1. SESSION. Otherwise, if a session token is present, resolve it via
- *      `resolveSession` (which re-confirms allowlist membership). On a
+ *      `resolveSession` (which re-confirms DB allowed membership). On a
  *      `SessionUser` we admit immediately as a `'session'` principal.
  *   2. LEGACY. Otherwise, if an (unprefixed) bearer is present AND
  *      `AUTH_TOKEN_LEGACY_ENABLED` is on AND `AUTH_TOKEN` is configured non-empty,
@@ -207,7 +203,7 @@ export async function resolveOperatorPrincipal(
     }
   }
 
-  // 1. Session-first (for an UNPREFIXED credential). A valid, still-allowlisted
+  // 1. Session-first (for an UNPREFIXED credential). A valid, still-enabled
   //    session is authoritative.
   const sessionToken = credentials.sessionToken;
   if (typeof sessionToken === 'string' && sessionToken.length > 0) {

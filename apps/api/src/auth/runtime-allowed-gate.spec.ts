@@ -25,7 +25,7 @@ function sha256Hex(s: string): string {
 }
 
 function serviceOver(prisma: unknown): AuthSessionService {
-  return new AuthSessionService(prisma as never, null as never);
+  return new AuthSessionService(prisma as never);
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +71,7 @@ test('resolveSession: allowed=false → null (denied fail-closed on next request
   assert.equal(
     result,
     null,
-    'de-allowlisted user must be denied fail-closed on their next request',
+    'disabled user must be denied fail-closed on their next request',
   );
 });
 
@@ -128,6 +128,6 @@ test('resolveApiKey: allowed=false → null (denied fail-closed on next request)
   assert.equal(
     result,
     null,
-    'de-allowlisted owner API key must be denied fail-closed',
+    'disabled owner API key must be denied fail-closed',
   );
 });

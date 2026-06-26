@@ -8,7 +8,7 @@
  * flag — `false`/mock today so the card renders with no live backend):
  *
  *   1. The `mcpServerEnabled` toggle — ADMIN-GATED. Only an admin operator (the
- *      `isAdminSession` env-allowlist gate the self-update banner already uses)
+ *      `isAdminSession` role gate the self-update banner already uses)
  *      may flip it; a non-admin sees the current state as a read-only pill with
  *      the switch disabled. The api re-enforces the admin check on write, so a
  *      forced flip still 403s (defense in depth). Off by default; when off the

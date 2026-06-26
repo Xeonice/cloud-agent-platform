@@ -10,12 +10,12 @@
  * Prisma.
  *
  * The gate has two independent conditions (controller `requireAdmin`):
- *   1. the principal MUST be a GitHub-OAuth `session` — a MACHINE credential
- *      (`mcp` / `api-key`) is rejected 403 even when its owner is on the admin
- *      allowlist (no-escalation: a machine credential can never flip the surface
+ *   1. the principal MUST be a human `session` — a MACHINE credential
+ *      (`mcp` / `api-key`) is rejected 403 even when its owner is an admin
+ *      (no-escalation: a machine credential can never flip the surface
  *      that mints its own kind of access); and
- *   2. the session MUST be an explicitly-allowlisted admin (`SELF_UPDATE_ADMINS`)
- *      — a merely-logged-in non-admin operator is rejected 403.
+ *   2. the session MUST have `role=admin` — a merely-logged-in non-admin operator
+ *      is rejected 403.
  *
  * A successful read surfaces the current flag; a successful write flips it and
  * echoes the new value.
@@ -37,7 +37,6 @@ import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { CodexDeviceLoginService } from './codex-device-login.service';
 import { ForgeCredentialService } from './forge-credential.service';
-import { SELF_UPDATE_ADMINS_ENV } from '../auth/admin';
 import type { OperatorPrincipal } from '../auth/operator-principal';
 
 const ADMIN_ID = 4242;
@@ -58,10 +57,10 @@ class StubAuthGuard implements CanActivate {
   }
 }
 
-function sessionPrincipal(githubId: number): OperatorPrincipal {
+function sessionPrincipal(githubId: number, role: 'admin' | 'member' = 'member'): OperatorPrincipal {
   return {
     kind: 'session',
-    user: { id: `user-${githubId}`, githubId, login: 'op', name: 'Op', avatarUrl: '', allowed: true, role: 'member', mustChangePassword: false },
+    user: { id: `user-${githubId}`, githubId, login: 'op', name: 'Op', avatarUrl: '', allowed: true, role, mustChangePassword: false },
   };
 }
 
@@ -116,8 +115,6 @@ let app: INestApplication;
 let port: number;
 
 before(async () => {
-  process.env[SELF_UPDATE_ADMINS_ENV] = String(ADMIN_ID);
-
   const moduleRef = await Test.createTestingModule({
     controllers: [SettingsController],
     providers: [
@@ -137,7 +134,6 @@ before(async () => {
 
 after(async () => {
   await app?.close();
-  delete process.env[SELF_UPDATE_ADMINS_ENV];
 });
 
 function getMcpServer(): Promise<Response> {
@@ -162,7 +158,7 @@ function putMcpServer(mcpServerEnabled: boolean): Promise<Response> {
 test('PUT: an admin session flips mcpServerEnabled and the new value is echoed', async () => {
   fakeSettings.flag = false;
   fakeSettings.writes = [];
-  currentPrincipal = sessionPrincipal(ADMIN_ID);
+  currentPrincipal = sessionPrincipal(ADMIN_ID, 'admin');
 
   const res = await putMcpServer(true);
   assert.equal(res.status, 200, 'an admin session may toggle the MCP server');
@@ -213,7 +209,7 @@ test('PUT: an unauthenticated request (no principal) is rejected, no write', asy
 
 test('GET: an admin session reads the CURRENT flag (false)', async () => {
   fakeSettings.flag = false;
-  currentPrincipal = sessionPrincipal(ADMIN_ID);
+  currentPrincipal = sessionPrincipal(ADMIN_ID, 'admin');
 
   const res = await getMcpServer();
   assert.equal(res.status, 200, 'an admin session may read the toggle');
@@ -223,7 +219,7 @@ test('GET: an admin session reads the CURRENT flag (false)', async () => {
 
 test('GET: an admin session reads the CURRENT flag (true after an enable)', async () => {
   fakeSettings.flag = true;
-  currentPrincipal = sessionPrincipal(ADMIN_ID);
+  currentPrincipal = sessionPrincipal(ADMIN_ID, 'admin');
 
   const res = await getMcpServer();
   assert.equal(res.status, 200, 'an admin session may read the toggle');

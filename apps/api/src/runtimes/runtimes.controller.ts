@@ -17,7 +17,7 @@ import {
  *
  * Like `/update-status` / `/metrics` (and UNLIKE the unauthenticated `/version`),
  * it is NOT in the global {@link AuthGuard}'s exemption list, so the
- * `APP_GUARD`-registered guard rejects an unauthenticated / de-allowlisted request
+ * `APP_GUARD`-registered guard rejects an unauthenticated / disabled request
  * with 401 BEFORE this handler runs — it is console data that reflects deployment
  * credential state, so it requires a valid operator principal. The handler is a
  * thin pass-through; the service never throws (it fails a runtime CLOSED to "not

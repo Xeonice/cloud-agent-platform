@@ -14,7 +14,7 @@ import {
 } from '@cap/contracts';
 import { AppModule } from './app.module';
 import { AuthSessionService } from './auth/auth-session.service';
-import { isLegacyTokenEnabled, parseWebOrigins } from './auth/oauth-config';
+import { isLegacyTokenEnabled, parseWebOrigins } from './auth/auth-config';
 
 // public-v1-api (Integration 4.1): the ONCE-per-process `extendZodWithOpenApi`
 // init, owned here (outside `@cap/contracts`) so the `.openapi(...)` augmentation
@@ -41,10 +41,8 @@ extendZodWithOpenApi(contractsZod);
  *            token path is enabled (`AUTH_TOKEN_LEGACY_ENABLED`) but `AUTH_TOKEN`
  *            is unset/empty — when that break-glass path is on, the token is the
  *            credential gating it, so an unconfigured token is fatal rather than
- *            fail-open. An OAuth-FIRST instance (legacy path NOT enabled) needs no
- *            `AUTH_TOKEN` at all and boots on GitHub-OAuth config alone
- *            (self-hostable-deployment — "OAuth-first self-host boots without a
- *            legacy operator token").
+ *            fail-open. A normal local-account instance (legacy path NOT enabled)
+ *            needs no `AUTH_TOKEN` at all.
  *   - 11.2b: register the operator-auth guard GLOBALLY on all REST endpoints
  *            (exempting `/health`). The global `APP_GUARD` binding lives in
  *            {@link AppModule}; this bootstrap only guarantees the token exists.
@@ -58,9 +56,9 @@ async function bootstrap(): Promise<void> {
   // 11.3b — refuse to boot on an unset/empty AUTH_TOKEN ONLY when the legacy
   // operator-token break-glass path is enabled. The constant-time helper (11.3)
   // underpins the runtime comparison; here we require the token to be a non-empty
-  // string per the contracts config schema, failing fast otherwise. An OAuth-first
-  // instance leaves the legacy path off and authenticates operators via GitHub
-  // OAuth, so it needs no AUTH_TOKEN and skips this gate entirely.
+  // string per the contracts config schema, failing fast otherwise. A local-account
+  // instance leaves the legacy path off, so it needs no AUTH_TOKEN and skips this
+  // gate entirely.
   if (isLegacyTokenEnabled(process.env)) {
     const tokenCheck = authTokenConfigSchema.safeParse(process.env.AUTH_TOKEN);
     if (!tokenCheck.success) {
@@ -69,7 +67,7 @@ async function bootstrap(): Promise<void> {
           'The legacy operator-token path is the credential gating every REST ' +
           'endpoint and client WebSocket connection when enabled, so the ' +
           'orchestrator refuses to boot without it. Set a non-empty AUTH_TOKEN ' +
-          '(or disable the legacy path for an OAuth-first deploy) and restart.',
+          '(or disable the legacy path for local-account auth) and restart.',
       );
       process.exit(1);
     }
@@ -118,11 +116,10 @@ async function bootstrap(): Promise<void> {
   // cross-origin browser app (same-origin/cURL still work) rather than `*`,
   // because the operator bearer token travels on these requests.
   //
-  // The parse is shared with the OAuth callback via `parseWebOrigins`
-  // (auth/oauth-config) so the CORS allow-list and the post-login redirect
-  // target can never diverge: the callback's `readWebOrigin` is the FIRST entry
-  // of this very list. CORS behaviour is unchanged — an empty list still maps to
-  // `origin: false` (no cross-origin browser app), never `*`.
+  // The parse is shared with session-cookie helpers via `parseWebOrigins`
+  // (auth/auth-config) so the CORS allow-list and the cookie cross-origin policy
+  // use the same web-origin list. CORS behaviour is unchanged — an empty list
+  // still maps to `origin: false` (no cross-origin browser app), never `*`.
   const allowedOrigins = parseWebOrigins(process.env.WEB_ORIGIN);
   // The console's CREDENTIALED CORS — but applied via a per-request DELEGATE so it
   // is NEVER applied to `/mcp` (remote-mcp-server, task 7.2). The MCP surface is a
@@ -231,10 +228,10 @@ function mcpCorsMiddleware(): RequestHandler {
 
 /**
  * The SDK `requireBearerAuth` middleware bound to {@link AuthSessionService}'s
- * `resolveMcpToken` (remote-mcp-server, task 7.2 / G1). The verifier hashes →
- * looks up → re-confirms the owner's allowlist and returns a FULL `AuthInfo`
+ * `resolveMcpToken` (remote-mcp-server, task 7.2 / G1). The verifier hashes ->
+ * looks up -> re-confirms the owner's enabled state and returns a FULL `AuthInfo`
  * (`expiresAt` populated in seconds, so the SDK never 401s a valid token); a
- * null resolution (unknown / revoked / expired / de-allowlisted) is surfaced as
+ * null resolution (unknown / revoked / expired / disabled owner) is surfaced as
  * an `InvalidTokenError`, which the SDK renders as a 401 that ENDS the request —
  * no OAuth discovery header is configured because the token is settings-minted,
  * not negotiated. The transport threads the resolved `AuthInfo` into each tool's

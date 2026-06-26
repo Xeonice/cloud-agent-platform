@@ -20,7 +20,7 @@ import { hashPassword } from '../auth/argon2';
  *
  * Load-bearing properties:
  *   - NO PUBLIC REGISTRATION — accounts are born ONLY here (admin create), in the
- *     default-admin seed, or via GitHub provisioning; {@link create} is the only
+ *     default-admin seed; {@link create} is the only
  *     write path and it always sets `allowed = true` (account-administration:
  *     "Creating a local account SHALL set allowed = true").
  *   - PASSWORD HASH-ONLY — a `password` identity stores the argon2 hash as its
@@ -28,12 +28,10 @@ import { hashPassword } from '../auth/argon2';
  *     returned. The hash is produced by the shared auth-core argon2 util so a
  *     locally-created credential verifies on the password-login path.
  *   - DISABLE = REVOKE — {@link setEnabled} flips `User.allowed`, the SINGLE
- *     runtime gate (local-account-identity D2). It applies to GitHub-linked
- *     accounts too, providing the revocation path the pure-DB gate requires
- *     (account-administration: "Disabling any account revokes access on next
- *     request"). It NEVER touches the github `IdentityLink` secret.
+ *     runtime gate (local-account-identity D2). It applies to every account row
+ *     and takes effect on the next request. It NEVER touches identity secrets.
  *   - NO DISCLOSURE LEAK — list/read shapes carry only non-secret metadata; an
- *     `IdentityLink.secret` (argon2 hash or encrypted github token) is never
+ *     `IdentityLink.secret` (argon2 hash or legacy token) is never
  *     projected into a response.
  */
 @Injectable()
@@ -103,8 +101,8 @@ export class AccountsService {
   }
 
   /**
-   * List all accounts (local AND github-linked) as non-secret rows for the admin
-   * page: identity (email or github handle), role, login methods, and
+   * List all accounts as non-secret rows for the admin
+   * page: identity, role, login methods, and
    * enabled/disabled status (account-administration: "Account administration page").
    * Newest first. No `IdentityLink.secret` is ever projected.
    */
@@ -121,8 +119,7 @@ export class AccountsService {
    * (local-account-identity D2). Disabling takes effect on the account's next
    * request (its sessions/tokens stop resolving because the gate re-confirms
    * `allowed` at request time); re-enabling restores access. Applies to
-   * github-linked accounts too — the documented revocation path under the pure-DB
-   * gate — and NEVER touches any identity secret.
+   * legacy linked accounts too and NEVER touches any identity secret.
    */
   async setEnabled(id: string, allowed: boolean): Promise<AccountListItem> {
     await this.requireAccount(id);
@@ -138,9 +135,7 @@ export class AccountsService {
    * Reset a LOCAL account's password: rotate the `password` `IdentityLink` secret
    * to a fresh argon2 hash and re-flag `mustChangePassword = true` so the
    * admin-set credential is again a one-time temporary one. Rejects a
-   * github-linked account that has no password identity (github rows offer no
-   * password reset — account-administration D7). The plaintext is never persisted
-   * or returned.
+   * row that has no password identity. The plaintext is never persisted or returned.
    */
   async resetPassword(id: string, password: string): Promise<AccountListItem> {
     const account = await this.requireAccount(id);
@@ -167,9 +162,8 @@ export class AccountsService {
   /**
    * Assign an account's `role` (admin|member). `role` gates ONLY the admin panel —
    * it carries NO execution privilege (every allowed account is host-root) — so
-   * this is purely a panel-access change. Applies to local and github-linked
-   * accounts alike at the data layer (the UI presents github role read-only, but
-   * the service does not special-case it).
+   * this is purely a panel-access change. Applies to all accounts alike at the
+   * data layer.
    */
   async assignRole(id: string, role: AccountRole): Promise<AccountListItem> {
     await this.requireAccount(id);
@@ -207,8 +201,8 @@ export class AccountsService {
 export const AccountRoleSchema = z.enum(['admin', 'member']);
 export type AccountRole = z.infer<typeof AccountRoleSchema>;
 
-/** A login method an account can authenticate with, derived from its identities. */
-export type AccountLoginMethod = 'github' | 'password' | 'otp';
+/** A local login method an account can authenticate with, derived from its identities. */
+export type AccountLoginMethod = 'password' | 'otp';
 
 /** Minimum password length for an admin-set local credential. */
 const MIN_PASSWORD_LENGTH = 8;
@@ -251,10 +245,10 @@ export const AssignRoleSchema = z.object({ role: AccountRoleSchema });
 export type AssignRoleInput = z.infer<typeof AssignRoleSchema>;
 
 /**
- * A non-secret account row for the admin page. `identity` is the email when present
- * else the github handle; `loginMethods` is derived from the account's identities;
- * `isGithubLinked` flags a github `IdentityLink` so the UI can render role
- * read-only + hide password reset. No identity `secret` ever appears here.
+ * A non-secret account row for the admin page. `identity` is the email when
+ * present else a legacy handle; `loginMethods` is derived from local identities;
+ * `isGithubLinked` flags a legacy github `IdentityLink` for display/compatibility
+ * only. No identity `secret` ever appears here.
  */
 export interface AccountListItem {
   id: string;
@@ -301,10 +295,10 @@ interface AccountWithIdentities {
 
 /**
  * Project a loaded account into the non-secret list shape. By construction this
- * reads NO identity `secret` — the argon2 hash / encrypted github token never
- * reaches a response. `loginMethods` maps each identity provider to a login method;
- * `otp` is surfaced for any email-bearing account (it can log in by code once SMTP
- * is configured), so the row reflects what the account can actually do.
+ * reads NO identity `secret` — the argon2 hash / legacy token never
+ * reaches a response. `loginMethods` contains only local login methods; `otp` is
+ * surfaced for any email-bearing account (it can log in by code once SMTP is
+ * configured), so the row reflects what the account can actually do.
  */
 function toListItem(account: AccountWithIdentities): AccountListItem {
   const providers = new Set(account.identities.map((i) => i.provider));
@@ -312,13 +306,12 @@ function toListItem(account: AccountWithIdentities): AccountListItem {
   const isGithubLinked = providers.has('github');
 
   const loginMethods: AccountLoginMethod[] = [];
-  if (isGithubLinked) loginMethods.push('github');
   if (providers.has('password')) loginMethods.push('password');
   // OTP is available to any account with an email handle once SMTP is configured.
   if (account.email) loginMethods.push('otp');
 
-  // Prefer the canonical email handle; fall back to the github handle for a
-  // github-only account that has no captured email.
+  // Prefer the canonical email handle; fall back to a legacy github handle for a
+  // historical row that has no captured email.
   const identity = account.email ?? githubIdentity?.providerAccountId ?? account.id;
 
   return {

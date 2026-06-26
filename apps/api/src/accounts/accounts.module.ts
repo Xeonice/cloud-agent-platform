@@ -10,7 +10,7 @@ import { AccountsService } from './accounts.service';
  *    `AuthGuard`, then admin-ONLY-gated in the controller (re-confirmed against the
  *    live `User` row) so a non-admin cannot create/list/mutate accounts;
  *  - {@link AccountsService} — admin create (no public registration), enable/disable
- *    (the pure-DB `User.allowed` revocation path, incl. github-linked accounts),
+ *    (the pure-DB `User.allowed` revocation path for every account row),
  *    reset-password (local only), and role assignment.
  *
  * Relies on the global `PrismaModule` for DB access and reuses the auth-core argon2

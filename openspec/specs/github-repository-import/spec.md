@@ -3,34 +3,34 @@
 ## Purpose
 TBD - created by archiving change rebuild-console-tanstack-start. Update Purpose after archive.
 ## Requirements
-### Requirement: List the authenticated allowlisted user's GitHub repositories
+### Requirement: List the authenticated operator's GitHub repositories
 
-The orchestrator SHALL expose an endpoint that returns the list of GitHub repositories the currently authenticated operator can access, by calling the GitHub REST API `GET /user/repos` on the server using that operator's own GitHub OAuth access token (obtained during the multi-user-oauth login flow). The operator's GitHub access token SHALL NEVER be returned to the browser; the call to GitHub MUST happen server-side. This endpoint is a protected REST endpoint and SHALL be subject to the same session validation as every other protected endpoint: it SHALL require a valid, non-expired session resolving to an allowlisted user, and SHALL respond HTTP 401 to a missing, malformed, expired, revoked, or non-allowlisted session. Each returned entry SHALL carry at minimum the GitHub repository's stable identity (numeric `id` and/or `full_name` such as `owner/name`), its `name`/`full_name`, its default branch, its visibility (private/public), and its description when present. This list represents "available GitHub repositories" sourced live from GitHub and is distinct from the platform's imported `Repo` records.
+The orchestrator SHALL expose an endpoint that returns the list of GitHub repositories the currently authenticated operator can access, by calling the GitHub REST API `GET /user/repos` on the server using that operator's own connected GitHub PAT from the forge credential store (`kind=github`, `host=github.com`). The operator's GitHub PAT SHALL NEVER be returned to the browser; the call to GitHub MUST happen server-side. This endpoint is a protected REST endpoint and SHALL be subject to the same session validation as every other protected endpoint: it SHALL require a valid, non-expired session resolving to an enabled local account, and SHALL respond HTTP 401 to a missing, malformed, expired, revoked, or disabled session. Each returned entry SHALL carry at minimum the GitHub repository's stable identity (numeric `id` and/or `full_name` such as `owner/name`), its `name`/`full_name`, its default branch, its visibility (private/public), and its description when present. This list represents "available GitHub repositories" sourced live from GitHub and is distinct from the platform's imported `Repo` records.
 
 This endpoint is the load-bearing backend for the prototype's "仓库导入" import dialog (the prototype's `USER_REPOSITORIES` mock that simulates `GET /user/repos`).
 
 #### Scenario: Authenticated operator lists their GitHub repositories
-- **WHEN** an operator with a valid allowlisted session requests the available-GitHub-repositories endpoint
-- **THEN** the orchestrator calls GitHub `GET /user/repos` server-side using that operator's GitHub OAuth access token
+- **WHEN** an operator with a valid enabled-account session requests the available-GitHub-repositories endpoint
+- **THEN** the orchestrator calls GitHub `GET /user/repos` server-side using that operator's connected GitHub PAT
 - **AND** it returns the repositories with at least each repo's GitHub numeric `id`, `full_name`, default branch, visibility, and description (when present)
-- **AND** it never returns the operator's GitHub access token to the browser
+- **AND** it never returns the operator's GitHub PAT to the browser
 
 #### Scenario: Unauthenticated request for GitHub repositories is rejected
-- **WHEN** a request to the available-GitHub-repositories endpoint omits the session credential or presents one that is malformed, expired, revoked, or non-allowlisted
+- **WHEN** a request to the available-GitHub-repositories endpoint omits the session credential or presents one that is malformed, expired, revoked, or disabled
 - **THEN** the orchestrator responds HTTP 401, does not call GitHub, and returns no repository data
 
 #### Scenario: List uses the requesting operator's own token, not a shared token
-- **WHEN** two different allowlisted operators each request the available-GitHub-repositories endpoint
-- **THEN** each request calls GitHub with that operator's own GitHub OAuth access token, so each operator sees only the repositories their own GitHub account can access
+- **WHEN** two different enabled operators each request the available-GitHub-repositories endpoint
+- **THEN** each request calls GitHub with that operator's own connected GitHub PAT, so each operator sees only the repositories their token can access
 
 ### Requirement: Surface GitHub listing and import errors instead of masking them
 
-The orchestrator SHALL surface failures from the GitHub API and from the import operation to the console as distinguishable, actionable errors rather than silently returning an empty list or a generic success. When the GitHub `GET /user/repos` call fails because the operator's stored GitHub access token is missing, expired, or revoked by GitHub, the orchestrator SHALL respond with a status that the console can interpret as "GitHub authorization required" (prompting re-authorization) rather than HTTP 401-as-session-expired and rather than an empty repository list. When the GitHub call fails for other reasons (rate limiting, GitHub outage, network error), the orchestrator SHALL respond with an error that preserves the cause (for example a 429/5xx-class signal) so the console can show a retry-able failure state. The console SHALL distinguish the empty state ("no repositories returned") from the error state ("the listing failed") so an operator is never shown an empty importable list that is actually a hidden failure.
+The orchestrator SHALL surface failures from the GitHub API and from the import operation to the console as distinguishable, actionable errors rather than silently returning an empty list or a generic success. When the GitHub `GET /user/repos` call fails because the operator's connected GitHub PAT is missing, expired, revoked, or lacks scope, the orchestrator SHALL respond with a status that the console can interpret as "GitHub PAT required" (prompting the operator to connect or refresh the PAT) rather than HTTP 401-as-session-expired and rather than an empty repository list. When the GitHub call fails for other reasons (rate limiting, GitHub outage, network error), the orchestrator SHALL respond with an error that preserves the cause (for example a 429/5xx-class signal) so the console can show a retry-able failure state. The console SHALL distinguish the empty state ("no repositories returned") from the error state ("the listing failed") so an operator is never shown an empty importable list that is actually a hidden failure.
 
-#### Scenario: Expired or revoked GitHub token surfaces a re-authorization prompt
-- **WHEN** the GitHub `GET /user/repos` call fails because the operator's GitHub access token is missing, expired, or revoked by GitHub
-- **THEN** the orchestrator returns a response the console interprets as "GitHub authorization required"
-- **AND** the console prompts the operator to re-authorize GitHub rather than showing an empty importable list
+#### Scenario: Missing or revoked GitHub PAT surfaces a PAT-required prompt
+- **WHEN** the GitHub `GET /user/repos` call fails because the operator's GitHub PAT is missing, expired, revoked, or lacks scope
+- **THEN** the orchestrator returns a response the console interprets as "GitHub PAT required"
+- **AND** the console prompts the operator to connect or refresh the GitHub PAT rather than showing an empty importable list
 
 #### Scenario: GitHub rate-limit or outage surfaces a retry-able error
 - **WHEN** the GitHub `GET /user/repos` call fails with a rate-limit, outage, or network error
@@ -44,12 +44,12 @@ The orchestrator SHALL surface failures from the GitHub API and from the import 
 
 ### Requirement: Import a selected GitHub repository into the platform
 
-The orchestrator SHALL expose an endpoint that imports a single GitHub repository, selected from the available-GitHub-repositories listing, into the platform by creating a platform `Repo` record. The endpoint SHALL be a protected REST endpoint subject to the same session validation as every other protected endpoint (valid, non-expired, allowlisted session; otherwise HTTP 401). On import the orchestrator SHALL persist the platform `Repo` with at least its required `name` and git source derived from the selected GitHub repository (the GitHub clone URL or `full_name`), and SHALL capture GitHub-import metadata sufficient to render the prototype's imported-repository panel and to de-duplicate future imports — at minimum the originating GitHub repository's stable numeric `id` (or `full_name`), default branch, and description. The originating GitHub repository's stable identity SHALL be recorded on the created `Repo` so that the platform can later distinguish a GitHub-imported repo from a manually created one and so that re-import attempts can be detected. On success the endpoint SHALL return HTTP 201 with the created platform `Repo` (including its generated platform id).
+The orchestrator SHALL expose an endpoint that imports a single GitHub repository, selected from the available-GitHub-repositories listing, into the platform by creating a platform `Repo` record. The endpoint SHALL be a protected REST endpoint subject to the same session validation as every other protected endpoint (valid, non-expired, enabled-account session; otherwise HTTP 401). On import the orchestrator SHALL persist the platform `Repo` with at least its required `name` and git source derived from the selected GitHub repository (the GitHub clone URL or `full_name`), and SHALL capture GitHub-import metadata sufficient to render the prototype's imported-repository panel and to de-duplicate future imports — at minimum the originating GitHub repository's stable numeric `id` (or `full_name`), default branch, and description. The originating GitHub repository's stable identity SHALL be recorded on the created `Repo` so that the platform can later distinguish a GitHub-imported repo from a manually created one and so that re-import attempts can be detected. On success the endpoint SHALL return HTTP 201 with the created platform `Repo` (including its generated platform id).
 
 This endpoint extends the existing `Repo` create path (repo-and-task-management) with GitHub-import provenance; it does not replace the generic create-repo endpoint.
 
 #### Scenario: Importing a selected GitHub repo creates a platform Repo
-- **WHEN** an authenticated allowlisted operator imports a GitHub repository chosen from their available-GitHub-repositories listing
+- **WHEN** an authenticated enabled operator imports a GitHub repository chosen from their available-GitHub-repositories listing
 - **THEN** the orchestrator creates a platform `Repo` record with the repo's `name`, a git source derived from the GitHub repository, and GitHub-import metadata including the originating GitHub numeric `id` (or `full_name`), default branch, and description
 - **AND** it returns HTTP 201 with the created platform `Repo` carrying its generated platform id
 
@@ -57,8 +57,8 @@ This endpoint extends the existing `Repo` create path (repo-and-task-management)
 - **WHEN** the created platform `Repo` from a GitHub import is inspected
 - **THEN** it carries the originating GitHub repository's stable identity so the platform can distinguish it from a manually created repo and detect re-import attempts
 
-#### Scenario: Import requires a valid allowlisted session
-- **WHEN** an import request omits the session credential or presents one that is malformed, expired, revoked, or non-allowlisted
+#### Scenario: Import requires a valid enabled-account session
+- **WHEN** an import request omits the session credential or presents one that is malformed, expired, revoked, or disabled
 - **THEN** the orchestrator responds HTTP 401 and creates no `Repo` record
 
 ### Requirement: De-duplicate imports against already-imported repositories
@@ -97,7 +97,7 @@ The orchestrator SHALL allow an operator to designate exactly one imported platf
 
 ### Requirement: Distinguish available GitHub repositories from imported platform repositories
 
-The orchestrator and console SHALL treat "available GitHub repositories" (live entries from GitHub `GET /user/repos`, scoped to the requesting operator's GitHub account) and "imported repositories" (durable platform `Repo` records) as two distinct concepts exposed through distinct reads. The available-GitHub-repositories read SHALL reflect the operator's current GitHub access and SHALL NOT be treated as the platform's repository inventory. The imported-repositories read (the existing list-repos endpoint from repo-and-task-management) SHALL reflect only repositories that have been imported into the platform and SHALL be the source of truth for repo selection in task creation and scope decisions. A GitHub repository SHALL only become usable for task creation after it has been imported into a platform `Repo`.
+The orchestrator and console SHALL treat "available GitHub repositories" (live entries from GitHub `GET /user/repos`, scoped to the requesting operator's connected GitHub PAT) and "imported repositories" (durable platform `Repo` records) as two distinct concepts exposed through distinct reads. The available-GitHub-repositories read SHALL reflect the operator's current PAT access and SHALL NOT be treated as the platform's repository inventory. The imported-repositories read (the existing list-repos endpoint from repo-and-task-management) SHALL reflect only repositories that have been imported into the platform and SHALL be the source of truth for repo selection in task creation and scope decisions. A GitHub repository SHALL only become usable for task creation after it has been imported into a platform `Repo`.
 
 #### Scenario: Available list reflects GitHub, imported list reflects the platform
 - **WHEN** an operator has GitHub access to several repositories but has imported only some of them
@@ -109,26 +109,26 @@ The orchestrator and console SHALL treat "available GitHub repositories" (live e
 - **THEN** it offers only imported platform `Repo` records, not un-imported available GitHub repositories
 - **AND** a GitHub repository becomes selectable only after it has been imported
 
-### Requirement: A local account with a connected GitHub identity can import repos
+### Requirement: A local account with a connected GitHub PAT can import repos
 
-GitHub repo listing/import SHALL resolve the requesting account's OWN stored GitHub token by the
-account primary key (`user.id`), so a local (password/OTP) account that has SEPARATELY connected a
-GitHub `IdentityLink` can list and import. The boundary gate SHALL require an authenticated account
-(an identity-less principal is rejected); an account with no usable GitHub token SHALL receive the
-distinct `github_auth_required` signal — NOT a session 401, NOT a silent empty list.
+GitHub repo listing/import SHALL resolve the requesting account's OWN connected GitHub PAT by the
+account primary key (`user.id`) from the forge credential store (`kind=github`, `host=github.com`),
+so a local (password/OTP) account that has connected a GitHub PAT can list and import. The boundary
+gate SHALL require an authenticated account (an identity-less principal is rejected); an account
+with no usable GitHub PAT SHALL receive the distinct `github_auth_required` signal — NOT a session
+401, NOT a silent empty list.
 
-#### Scenario: Local account with a connected GitHub identity imports
+#### Scenario: Local account with a connected GitHub PAT imports
 
-- **WHEN** a local account that has connected a GitHub `IdentityLink` lists or imports GitHub repos
-- **THEN** its own stored token is resolved by account id and the operation proceeds
+- **WHEN** a local account that has connected a GitHub PAT lists or imports GitHub repos
+- **THEN** its own connected GitHub PAT is resolved by account id and the operation proceeds
 
-#### Scenario: No usable GitHub token yields github_auth_required
+#### Scenario: No usable GitHub PAT yields github_auth_required
 
-- **WHEN** an authenticated account has no usable GitHub token
+- **WHEN** an authenticated account has no usable GitHub PAT
 - **THEN** it receives `github_auth_required` (not a session 401, not a silent empty list)
 
 #### Scenario: Identity-less principal is rejected at the boundary
 
 - **WHEN** a machine/legacy principal with no account calls the import surface
 - **THEN** it is rejected before any token read
-

@@ -1,23 +1,17 @@
 /**
- * Opaque session-token + anti-CSRF-state + cookie primitives
- * (be-oauth-allowlist, tasks 2.2 / 2.5).
+ * Opaque session-token + cookie primitives.
  *
  * All functions here are pure (crypto over their arguments; no env capture, no
  * I/O) so the verify phase can unit-test token minting, the store-only-the-HASH
- * property, expiry evaluation, signed-state round-tripping, and cookie
- * serialisation/parsing in isolation.
+ * property, expiry evaluation, and cookie serialisation/parsing in isolation.
  *
- * Two distinct secrets-handling rules are enforced by construction:
- * - The opaque SESSION token is unguessable random bytes; the server persists
+ * The opaque SESSION token is unguessable random bytes; the server persists
  *   only its SHA-256 HASH, so a database read can never recover a usable
  *   credential. The raw token is returned to the caller exactly once (to set the
  *   cookie) and never stored.
- * - The anti-CSRF STATE is HMAC-signed with `SESSION_SECRET` and carried in a
- *   cookie for the OAuth round trip; the signature is verified in constant time
- *   so a forged/tampered state cannot pass the callback check.
  */
 
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Opaque session token
@@ -70,78 +64,11 @@ export function sessionExpiryFrom(now: Date = new Date(), ttlMs: number = SESSIO
 }
 
 // ---------------------------------------------------------------------------
-// Anti-CSRF signed state
-// ---------------------------------------------------------------------------
-
-/** Bytes of entropy in the random nonce inside an anti-CSRF state value. */
-const STATE_NONCE_BYTES = 16;
-
-/**
- * Generates a signed anti-CSRF `state` of the form `<nonce>.<hmac>`, where the
- * HMAC is over the nonce keyed by `secret`. The signature lets the callback
- * confirm the state was minted by this server (defence-in-depth alongside the
- * persisted-cookie comparison) and was not tampered with.
- */
-export function signState(secret: string): string {
-  const nonce = randomBytes(STATE_NONCE_BYTES).toString('base64url');
-  const sig = hmac(nonce, secret);
-  return `${nonce}.${sig}`;
-}
-
-/**
- * Verifies that `state` is a well-formed `<nonce>.<hmac>` whose signature matches
- * `secret`, comparing the signature in constant time. Returns `false` for any
- * missing/malformed/tampered value — never throws — so a bad state is a quiet
- * rejection at the callback.
- */
-export function verifyStateSignature(state: string | undefined | null, secret: string): boolean {
-  if (typeof state !== 'string' || state.length === 0) {
-    return false;
-  }
-  const dot = state.lastIndexOf('.');
-  if (dot <= 0 || dot === state.length - 1) {
-    return false;
-  }
-  const nonce = state.slice(0, dot);
-  const presentedSig = state.slice(dot + 1);
-  const expectedSig = hmac(nonce, secret);
-  return constantTimeStringEqual(presentedSig, expectedSig);
-}
-
-/**
- * Constant-time check that the persisted state cookie equals the state returned
- * by GitHub. Both must be present and equal; comparison is timing-safe to avoid
- * leaking the persisted state byte-by-byte.
- */
-export function statesMatch(
-  cookieState: string | undefined | null,
-  callbackState: string | undefined | null,
-): boolean {
-  if (typeof cookieState !== 'string' || cookieState.length === 0) {
-    return false;
-  }
-  if (typeof callbackState !== 'string' || callbackState.length === 0) {
-    return false;
-  }
-  return constantTimeStringEqual(cookieState, callbackState);
-}
-
-// ---------------------------------------------------------------------------
 // Cookie serialisation / parsing (node built-ins only — no cookie-parser dep)
 // ---------------------------------------------------------------------------
 
 /** Cookie name carrying the opaque session token. */
 export const SESSION_COOKIE_NAME = 'cap_session';
-/** Cookie name carrying the signed anti-CSRF state for the OAuth round trip. */
-export const OAUTH_STATE_COOKIE_NAME = 'cap_oauth_state';
-/**
- * Cookie name carrying the (open-redirect-guarded) post-login deep-link path
- * across the OAuth round trip (auth-redirects-and-landing). Short-lived, httpOnly,
- * SameSite=Lax like the state cookie — it survives GitHub's top-level redirect
- * back and is cleared one-shot at the callback. Distinct from the CSRF state; its
- * value is re-validated with `safeRedirectPath` at read time.
- */
-export const OAUTH_REDIRECT_COOKIE_NAME = 'cap_oauth_redirect';
 
 export interface CookieOptions {
   readonly httpOnly?: boolean;
@@ -164,8 +91,7 @@ export interface CookieOptions {
 
 /**
  * Serialises a `Set-Cookie` header value with the given attributes. Used for the
- * httpOnly + Secure + SameSite=Lax session cookie and the short-lived state
- * cookie; pure so the attribute string is verifiable in a test.
+ * httpOnly session cookie; pure so the attribute string is verifiable in a test.
  */
 export function serializeCookie(name: string, value: string, options: CookieOptions = {}): string {
   const segments = [`${name}=${value}`];
@@ -192,7 +118,7 @@ export function serializeCookie(name: string, value: string, options: CookieOpti
  * Parses a raw `Cookie` request header into a name->value map. Returns the named
  * cookie's value, or `null` when the header is absent or the cookie missing.
  * Tolerant of surrounding whitespace; values are returned verbatim (the session
- * token and signed state are URL-safe, so no decoding is required).
+ * token is URL-safe, so no decoding is required).
  */
 export function readCookie(cookieHeader: string | undefined, name: string): string | null {
   if (typeof cookieHeader !== 'string' || cookieHeader.length === 0) {
@@ -209,23 +135,4 @@ export function readCookie(cookieHeader: string | undefined, name: string): stri
     }
   }
   return null;
-}
-
-// ---------------------------------------------------------------------------
-// internals
-// ---------------------------------------------------------------------------
-
-function hmac(message: string, secret: string): string {
-  return createHmac('sha256', secret).update(message, 'utf8').digest('base64url');
-}
-
-/**
- * Constant-time string equality. Hashes both inputs to a fixed-width digest so
- * `timingSafeEqual`'s equal-length precondition holds and no length/prefix timing
- * leaks (mirrors the operator-token comparison in `constant-time.ts`).
- */
-function constantTimeStringEqual(a: string, b: string): boolean {
-  const da = createHash('sha256').update(a, 'utf8').digest();
-  const db = createHash('sha256').update(b, 'utf8').digest();
-  return timingSafeEqual(da, db);
 }

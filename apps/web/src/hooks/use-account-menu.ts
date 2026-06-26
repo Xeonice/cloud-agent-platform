@@ -105,7 +105,7 @@ export function useAccountMenu<
  * derives from). `role` is added to the session shape by the contracts/auth-core
  * tracks; under REAL auth this reads it STRUCTURALLY and treats the operator as
  * admin ONLY when the session explicitly reports `role === "admin"`. Under the
- * MOCK gate (and the `VITE_FORCE_MOCK` visual harness) the single allowlisted
+ * MOCK gate (and the `VITE_FORCE_MOCK` visual harness) the single mock
  * operator IS the admin, so this returns `true` — keeping the 账号管理 entry
  * present in the mock/visual posture (matching the design).
  *
@@ -113,7 +113,7 @@ export function useAccountMenu<
  */
 export function useIsAdmin(): boolean {
   const { data: session } = useQuery(authSessionQuery());
-  // Mock gate: the lone allowlisted operator is the admin (design posture).
+  // Mock gate: the lone mock operator is the admin (design posture).
   if (!isAuthCapable()) return true;
   const role = (session as { role?: unknown } | null | undefined)?.role;
   return role === "admin";

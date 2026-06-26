@@ -2,11 +2,11 @@
  * `AccountsTable` — the account-administration table (add-private-account-identity,
  * track frontend, task 9.4; design `screens/accounts.html`).
  *
- * Lists ALL accounts (local + GitHub-linked) with identity, role, login methods,
+ * Lists accounts with identity, role, login methods,
  * and enabled/disabled status. A search + type filter narrows the rows and the
  * count pill reflects the visible rows. Row actions differ by kind (D7):
  *   - LOCAL rows offer 重置密码 + 启用/禁用;
- *   - GITHUB-linked rows show role read-only and offer 启用/禁用 only (no reset).
+ *   - legacy external rows offer 启用/禁用 only (no reset).
  * The page makes clear that role gates only the admin panel and does NOT isolate
  * execution — every enabled account is host-root.
  *
@@ -31,8 +31,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-/** Which identity provider an account authenticates through. */
-export type AccountKind = "local" | "github";
+/** Which account row type is rendered. */
+export type AccountKind = "local" | "legacy";
 
 /** A console role — gates the admin panel only (NOT execution isolation). */
 export type AccountRole = "admin" | "member";
@@ -41,11 +41,11 @@ export type AccountRole = "admin" | "member";
 export interface AccountRow {
   /** Stable row id (the user id). */
   id: string;
-  /** Primary identity: the email (local) or GitHub login (github-linked). */
+  /** Primary identity, normally the email. */
   identity: string;
-  /** A secondary descriptor line (e.g. `github.com/<login> · 经 GitHub 白名单`). */
+  /** A secondary descriptor line. */
   sublabel: string;
-  /** Whether this is a local or GitHub-linked account. */
+  /** Whether this is a local or legacy external account. */
   kind: AccountKind;
   /** The console role. */
   role: AccountRole;
@@ -89,7 +89,7 @@ const actionButton =
   "inline-flex min-h-[30px] items-center justify-center rounded-md px-2.5 text-xs font-medium shadow-ring transition-colors";
 
 export interface AccountsTableProps {
-  /** Every account (local + github-linked). */
+  /** Every account row. */
   rows: readonly AccountRow[];
   /** Toggle an account's enabled state (enable/disable). */
   onToggleEnabled: (row: AccountRow) => void;
@@ -216,7 +216,7 @@ export function AccountsTable({
                 </TableCell>
                 <TableCell className="py-[13px] pr-0 text-right align-middle">
                   <div className="flex flex-nowrap justify-end gap-2">
-                    {/* Local rows can reset password; github rows cannot. */}
+                    {/* Local rows can reset password; legacy external rows cannot. */}
                     {row.kind === "local" ? (
                       <button
                         type="button"

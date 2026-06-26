@@ -3,10 +3,9 @@
  * track frontend, task 9.4; design `screens/accounts.html`).
  *
  * The admin-only account-administration page reached from the account menu's
- * 账号管理 entry. It lists ALL accounts (local + GitHub-linked) in a filterable
+ * 账号管理 entry. It lists all accounts in a filterable
  * table and offers the admin lifecycle actions: 新建账号 (create), 重置密码
- * (reset, local only), and 启用/禁用 (enable/disable, any account incl.
- * github-linked). Role gates only the admin panel — every enabled account is
+ * (reset, password accounts only), and 启用/禁用 (enable/disable). Role gates only the admin panel — every enabled account is
  * host-root, called out in the lead.
  *
  * ROUTE PLACEMENT: like `/login` and `/` (and unlike the `_app/*` body pages),
@@ -106,8 +105,7 @@ export const Route = createFileRoute("/accounts")({
 });
 
 /** Display labels for the api's `loginMethods` enum (design copy). */
-const LOGIN_METHOD_LABEL: Record<"github" | "password" | "otp", string> = {
-  github: "GitHub OAuth",
+const LOGIN_METHOD_LABEL: Record<"password" | "otp", string> = {
   password: "密码",
   otp: "邮箱验证码",
 };
@@ -118,11 +116,11 @@ function toAccountRow(item: AdminAccountListItem): AccountRow {
     id: item.id,
     identity: item.identity,
     sublabel: item.isGithubLinked
-      ? `github.com/${item.identity} · 经 GitHub 白名单`
+      ? "历史外部关联 · 已停止作为登录方式"
       : item.name && item.name !== item.identity
         ? item.name
         : "本地账号",
-    kind: item.isGithubLinked ? "github" : "local",
+    kind: item.isGithubLinked ? "legacy" : "local",
     role: item.role,
     loginMethods:
       item.loginMethods.map((m) => LOGIN_METHOD_LABEL[m]).join(" · ") || "—",
@@ -205,8 +203,7 @@ function AccountsPage() {
               账号管理
             </h1>
             <p className="mt-[7px] max-w-[820px] text-sm leading-[1.58] text-muted-foreground">
-              在此统一启用 / 禁用所有账号：本地账号（邮箱 + 密码 / 邮箱验证码）由管理员开通，经
-              GitHub 白名单进入的账号也一并列出（角色只读、可禁用）。平台不开放公开注册。角色只控制后台权限，不隔离执行——所有启用账号都是
+              在此统一启用 / 禁用所有本地账号：邮箱 + 密码 / 邮箱验证码由管理员开通。平台不开放公开注册。角色只控制后台权限，不隔离执行——所有启用账号都是
               host-root。
             </p>
           </div>

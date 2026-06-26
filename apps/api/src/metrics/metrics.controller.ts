@@ -7,9 +7,9 @@ import { MetricsService } from './metrics.service';
  *
  * `GET /metrics` returns the composed derived-capacity + sampled-resource
  * payload in one round trip. The endpoint is NOT in the {@link AuthGuard}'s
- * exemption list (`/health` + the OAuth entry points), and the guard is
+ * exemption list (`/health` + local auth entry points), and the guard is
  * registered GLOBALLY via `APP_GUARD` (auth.module), so an unauthenticated /
- * de-allowlisted request is rejected with 401 BEFORE this handler runs — meaning
+ * disabled request is rejected with 401 BEFORE this handler runs — meaning
  * no task ids, queue depth, or CPU/memory figures are ever serialized to a
  * caller without a valid operator principal.
  */
@@ -25,7 +25,7 @@ export class MetricsController {
   /**
    * Per-task resource read. Same global `APP_GUARD` auth as `/metrics` (a
    * per-task CPU/memory figure is still host-execution operational data, so an
-   * unauthenticated / de-allowlisted request is rejected 401 before this runs).
+   * unauthenticated / disabled request is rejected 401 before this runs).
    * Real-time only — filters the latest sampler snapshot for this task; returns
    * an explicit `not-running` state (not an error) when the task has no live
    * sampled container.

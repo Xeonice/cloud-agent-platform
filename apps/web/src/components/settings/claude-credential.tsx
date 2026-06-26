@@ -60,7 +60,7 @@ export function ClaudeCredentialCard({
           {statePill(cred)}
         </div>
         <p className="mt-2 text-[13px] leading-[1.55] text-muted-foreground">
-          远端 Claude Code 运行任务时使用的凭据；GitHub OAuth 决定谁能进入控制台，这里决定用什么登录跑 <span className="font-mono">claude -p</span>。
+          远端 Claude Code 运行任务时使用的凭据；控制台登录决定谁能操作平台，这里决定用什么登录跑 <span className="font-mono">claude -p</span>。
         </p>
         <p className="mt-2 text-xs text-muted-foreground">
           当前模式：

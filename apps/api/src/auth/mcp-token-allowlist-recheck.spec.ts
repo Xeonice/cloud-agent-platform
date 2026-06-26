@@ -1,17 +1,16 @@
 /**
- * Ground-truth test: "MCP token resolution re-confirms the allowlist and
+ * Ground-truth test: "MCP token resolution re-confirms the owner's enabled state and
  * returns a full AuthInfo" (add-private-account-identity, task 2.5 / D2).
  *
  * The requirement:
  *   `resolveMcpToken` MUST re-check `User.allowed` on EVERY call (the pure-DB
- *   runtime gate introduced by add-private-account-identity, replacing the prior
- *   `isAllowlistedRaw(githubId, AUTH_ALLOWLIST)` env-variable re-check), AND
+ *   runtime gate introduced by add-private-account-identity), AND
  *   on success it MUST return a FULL `McpAuthInfo`:
  *     { token, clientId, scopes, expiresAt (number, seconds), resource, ownerGithubId }.
  *
  *   Concretely:
  *     - owner `allowed = true`  → resolves to a full AuthInfo (all fields populated).
- *     - owner `allowed = false` → resolves to null (de-allowlist takes effect
+ *     - owner `allowed = false` -> resolves to null (disable takes effect
  *       on the VERY NEXT request — no caching of a prior admit).
  *     - `ownerGithubId` is nullable: a local-account owner (no github identity)
  *       carries `null` and is still ADMITTED when `allowed = true`.
@@ -66,16 +65,16 @@ function makePrismaWithToken(row: FakeMcpTokenRow | null) {
   };
 }
 
-/** Construct a real `AuthSessionService` over a fake Prisma (audit is unused here). */
+/** Construct a real `AuthSessionService` over a fake Prisma. */
 function serviceOver(prisma: unknown): AuthSessionService {
-  return new AuthSessionService(prisma as never, null as never);
+  return new AuthSessionService(prisma as never);
 }
 
 // ---------------------------------------------------------------------------
 // The raw token we present in each call.
 // ---------------------------------------------------------------------------
 
-const RAW_TOKEN = 'mcp_test_allowlist_recheck_scenario';
+const RAW_TOKEN = 'mcp_test_enabled_recheck_scenario';
 
 /**
  * Build a reusable token row. `tokenHash` matches `RAW_TOKEN` exactly as
@@ -129,10 +128,10 @@ test('resolveMcpToken: an allowed owner resolves to a FULL AuthInfo (all fields 
   );
 });
 
-test('resolveMcpToken: a de-allowlisted owner resolves to null (DB allowed flag re-confirmed per call)', async () => {
+test('resolveMcpToken: a disabled owner resolves to null (DB allowed flag re-confirmed per call)', async () => {
   // Same token material, same DB record — ONLY the owner's `allowed` flag changed.
   // The add-private-account-identity requirement: resolveMcpToken re-checks
-  // `user.allowed` on EVERY call (pure-DB gate, not env allowlist).
+  // `user.allowed` on EVERY call.
   const svc = serviceOver(makePrismaWithToken(tokenRow(false)));
 
   const info = await svc.resolveMcpToken(RAW_TOKEN);
@@ -140,7 +139,7 @@ test('resolveMcpToken: a de-allowlisted owner resolves to null (DB allowed flag 
   assert.equal(
     info,
     null,
-    'should return null when owner.allowed is false — de-allowlisting takes effect on the very next request',
+    'should return null when owner.allowed is false on the very next request',
   );
 });
 
@@ -153,13 +152,13 @@ test('resolveMcpToken: allowed→null per-call — no caching of a prior admit',
   const r1 = await svcAllowed.resolveMcpToken(RAW_TOKEN);
   assert.ok(r1 !== null, 'request 1: token resolves while owner is allowed');
 
-  // Request 2: owner has been de-allowlisted → same token, null result.
+  // Request 2: owner has been disabled -> same token, null result.
   const svcDenied = serviceOver(makePrismaWithToken(tokenRow(false)));
   const r2 = await svcDenied.resolveMcpToken(RAW_TOKEN);
   assert.equal(
     r2,
     null,
-    'request 2: same token returns null after owner is de-allowlisted — no caching of the prior admit',
+    'request 2: same token returns null after owner is disabled — no caching of the prior admit',
   );
 });
 

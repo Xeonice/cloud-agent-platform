@@ -11,7 +11,7 @@
  * Requires `pnpm --filter @cap/api build` (refreshes dist/) before running.
  *
  * Covers:
- *   - classifyGithubListError: missing/expired(401)/revoked-scope(403)-token ->
+ *   - classifyGithubListError: missing/expired(401)/revoked-scope(403)-PAT ->
  *     github_auth_required (non-retryable); 429 / 5xx / 403-rate-limit / network
  *     -> github_unavailable (retryable). Empty-but-successful is NEVER passed
  *     here (asserted at the call site by returning [], not an error).
@@ -46,13 +46,13 @@ const {
 // 4.2 — error classification (auth-required vs retry-able; empty != failure)
 // ---------------------------------------------------------------------------
 
-test('4.2 missing token -> github_auth_required, non-retryable', () => {
+test('4.2 missing PAT -> github_auth_required, non-retryable', () => {
   const r = classifyGithubListError({ tokenMissing: true });
   assert.equal(r.code, 'github_auth_required');
   assert.equal(r.retryable, false);
 });
 
-test('4.2 HTTP 401 (expired/revoked token) -> github_auth_required, non-retryable', () => {
+test('4.2 HTTP 401 (expired/revoked PAT) -> github_auth_required, non-retryable', () => {
   const r = classifyGithubListError({ status: 401 });
   assert.equal(r.code, 'github_auth_required');
   assert.equal(r.retryable, false);

@@ -3,8 +3,8 @@ import { z } from 'zod';
 /**
  * Private-account identity contracts (add-private-account-identity).
  *
- * The wire shapes for the self-hostable identity layer that lives ALONGSIDE
- * GitHub OAuth: email+password login, email verification-code (OTP) login, the
+ * The wire shapes for the self-hostable identity layer: email+password login,
+ * email verification-code (OTP) login, the
  * forced first-login password change, admin-only account lifecycle management,
  * the one-time default-admin credential reveal, and the unauthenticated auth
  * capability flags the login modal reads to decide which methods to render.
@@ -31,7 +31,7 @@ export const RoleSchema = z.enum(['admin', 'member']);
 export type Role = z.infer<typeof RoleSchema>;
 
 /** A login identity provider kind. OTP is NOT a provider — it keys on the email. */
-export const IdentityProviderSchema = z.enum(['github', 'password']);
+export const IdentityProviderSchema = z.enum(['password']);
 export type IdentityProvider = z.infer<typeof IdentityProviderSchema>;
 
 /** Canonical account email — the password/OTP login handle and auto-link key. */
@@ -58,13 +58,11 @@ export const OtpCodeSchema = z.string().regex(/^\d{6}$/, 'A 6-digit code is requ
 
 /**
  * The unauthenticated auth-method capability flags the login modal reads to
- * decide which of the three methods to render. Exposed by the backend so a
+ * decide which local methods to render. Exposed by the backend so a
  * method whose prerequisites are unmet is simply not offered:
  *   - `passwordAuthEnabled` — email+password login is available.
  *   - `otpAuthEnabled` — email verification-code login is available (true only
  *     when SMTP is configured, per `email-otp-login`).
- *   - `githubAuthEnabled` — GitHub OAuth is available (true when the OAuth
- *     client credentials are configured).
  * These describe AVAILABILITY only; they are never an authorization decision and
  * carry no secret.
  */
@@ -73,8 +71,6 @@ export const AuthCapabilitiesSchema = z.object({
   passwordAuthEnabled: z.boolean(),
   /** Whether email verification-code (OTP) login is offered (SMTP configured). */
   otpAuthEnabled: z.boolean(),
-  /** Whether GitHub OAuth login is offered (OAuth client credentials configured). */
-  githubAuthEnabled: z.boolean(),
 });
 export type AuthCapabilities = z.infer<typeof AuthCapabilitiesSchema>;
 
@@ -176,7 +172,7 @@ export type InitialCredentialKind = z.infer<typeof InitialCredentialKindSchema>;
  * `initialPassword` MUST be present and a `password` identity is created with its
  * argon2 hash plus `mustChangePassword = true`; `otp-only` creates no password
  * identity. There is NO public registration — accounts come only from this admin
- * flow, the default-admin seed, or GitHub provisioning.
+ * flow or the default-admin seed.
  */
 export const AdminCreateAccountRequestSchema = z
   .object({
@@ -208,8 +204,8 @@ export type AdminCreateAccountRequest = z.infer<
 
 /**
  * Request body for an admin enabling/disabling an account (sets `allowed`).
- * Applies to GitHub-linked accounts too — the documented revocation path under
- * the pure-DB runtime gate. Takes effect on the account's next request.
+ * Applies to every account row under the pure-DB runtime gate. Takes effect on
+ * the account's next request.
  */
 export const AdminSetEnabledRequestSchema = z.object({
   /** New enabled state: `true` sets `allowed = true`, `false` sets `allowed = false`. */
@@ -219,8 +215,8 @@ export type AdminSetEnabledRequest = z.infer<typeof AdminSetEnabledRequestSchema
 
 /**
  * Request body for an admin resetting a LOCAL account's password. Stores the new
- * argon2 hash and flags `mustChangePassword`; not available for GitHub-linked
- * accounts (which carry no password identity).
+ * argon2 hash and flags `mustChangePassword`; not available for rows without a
+ * password identity.
  */
 export const AdminResetPasswordRequestSchema = z.object({
   /** The new temporary password (stored as an argon2 hash; forces a change). */
@@ -248,16 +244,15 @@ export type AdminAccountParams = z.infer<typeof AdminAccountParamsSchema>;
  * Carries identity + lifecycle facts ONLY — never a password hash, OTP code, or
  * any secret. This shape mirrors the api's projection EXACTLY (the single wire
  * contract both the backend list endpoint and the console read): `identity` is
- * the display handle (the email for a local account, else the github handle),
- * `loginMethods` is the set of ways this account can authenticate, and
- * `isGithubLinked` flags a github identity so the UI renders role read-only and
- * hides password reset.
+ * the display handle (normally the email), `loginMethods` is the set of local
+ * ways this account can authenticate, and `isGithubLinked` flags a legacy
+ * GitHub identity row for display/compatibility only.
  */
 export const AdminAccountListItemSchema = z.object({
   /** The account (`User`) id. */
   id: z.string(),
   /**
-   * Canonical account email, or null when the account has none (github-only).
+   * Canonical account email, or null when the account has none.
    * A STORED value for display, NOT input — kept a lenient nullable string (not
    * the strict `EmailSchema`) so the list never fails to parse on an
    * operator-provided address that the strict form would reject (e.g. an intranet
@@ -266,15 +261,15 @@ export const AdminAccountListItemSchema = z.object({
   email: z.string().nullable(),
   /** Display name. */
   name: z.string(),
-  /** The primary display handle: the email (local) or the github login. */
+  /** The primary display handle, normally the email. */
   identity: z.string(),
   /** Assigned role. */
   role: RoleSchema,
   /** Whether the account is currently allowed (enabled). */
   allowed: z.boolean(),
   /** The login methods this account can use. */
-  loginMethods: z.array(z.enum(['github', 'password', 'otp'])),
-  /** Whether a github identity is linked (role read-only + no password reset). */
+  loginMethods: z.array(z.enum(['password', 'otp'])),
+  /** Whether a legacy github identity is linked. It is not a login method. */
   isGithubLinked: z.boolean(),
 });
 export type AdminAccountListItem = z.infer<typeof AdminAccountListItemSchema>;

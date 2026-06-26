@@ -4,7 +4,7 @@
  * The security-critical credential resolution: the push-back token is the TASK
  * OWNER's `ForgeCredential` for the resolved (kind, host); an unattributed task,
  * an unresolved forge, or a missing credential all resolve to null (→ push-back
- * skips). The github public-host case falls back to the owner's github token.
+ * skips). GitHub uses the same owner-scoped forge PAT path as every other forge.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,19 +27,11 @@ function resolver(opts: {
   location?: ForgeLocation | null;
   ownerId?: string | null;
   forgeCredential?: { tokenCiphertext: string } | null;
-  githubAccessToken?: string | null;
 }) {
   const prisma = {
     task: { findUnique: async () => ({ repo: { gitSource: 'https://gitlab.com/g/p.git' } }) },
     auditEvent: { findFirst: async () => (opts.ownerId ? { userId: opts.ownerId } : null) },
     forgeCredential: { findUnique: async () => opts.forgeCredential ?? null },
-    // add-private-account-identity (3.3): the github fallback token now lives as
-    // the `secret` of the owner's `github` IdentityLink, read via the shared
-    // github-identity helper (`identityLink.findFirst`), not a User column.
-    identityLink: {
-      findFirst: async () =>
-        opts.githubAccessToken != null ? { secret: opts.githubAccessToken } : null,
-    },
   } as unknown as PrismaService;
   const registry = {
     detect: async () => (opts.location === undefined ? GITLAB_LOC : opts.location),
@@ -70,7 +62,7 @@ test('owner with NO credential and non-github → null (skip)', async () => {
   assert.equal(target, null);
 });
 
-test('github public-host falls back to the owner github token', async () => {
+test('github public-host with no forge PAT resolves to null', async () => {
   const githubLoc: ForgeLocation = {
     kind: 'github',
     apiBaseUrl: 'https://api.github.com',
@@ -81,9 +73,7 @@ test('github public-host falls back to the owner github token', async () => {
     location: githubLoc,
     ownerId: 'u1',
     forgeCredential: null,
-    githubAccessToken: 'gho_owner_login_token',
   });
   const target = await r.getForgeTarget('t1', ENV);
-  assert.equal(target?.kind, 'github');
-  assert.equal(target?.token, 'gho_owner_login_token');
+  assert.equal(target, null);
 });

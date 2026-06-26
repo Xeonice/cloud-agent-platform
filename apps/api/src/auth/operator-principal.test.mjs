@@ -1,11 +1,11 @@
 /**
  * Verify-phase test for operator-principal resolution
- * (be-oauth-allowlist, tasks 2.6 / 2.7 / 2.8; extended by
+ * (session auth + legacy-token routing; extended by
  * api-key-machine-identity, tasks 4.2 / 4.3 / 4.5 / 4.6 / 4.7).
  *
  * Requirement semantics (from operator-principal.ts + main.ts):
- *   1. A valid, still-allowlisted SESSION admits as a `'session'` principal
- *      (the session resolver RE-CONFIRMS allowlist, so a de-allowlisted user
+ *   1. A valid, still-enabled SESSION admits as a `'session'` principal
+ *      (the session resolver re-confirms account enablement, so a disabled user
  *      whose resolver now returns null is denied — task 2.6).
  *   2. An expired/revoked/unknown session (resolver -> null) does NOT admit on
  *      the session domain.
@@ -21,8 +21,8 @@
  *      tried ONLY against the api-key resolver and an `mcp_…` bearer ONLY against
  *      the reserved MCP resolver — NEITHER ever reaches the session lookup, on the
  *      REST header OR the WS channel (where the same token also fills the session
- *      slot). The api-key resolver re-confirms the owner's allowlist, so a
- *      de-allowlisted owner's key is denied on its next request.
+ *      slot). The api-key resolver re-confirms the owner's enabled state, so a
+ *      disabled owner's key is denied on its next request.
  *   8. The reserved `mcp_…` slot DENIES until a resolver is bound (default deny).
  *   9. `hasScope` is allow-all for a scopeless principal and per-scope for a
  *      scoped (api-key) principal (task 4.5).
@@ -49,7 +49,7 @@ function constantTimeEqual(presented, configured) {
   return timingSafeEqual(da, db);
 }
 
-// ---- inline (mirrors oauth-config.isLegacyTokenEnabled) ----
+// ---- inline (mirrors auth-config.isLegacyTokenEnabled) ----
 
 const ENV = { AUTH_TOKEN_LEGACY_ENABLED: 'AUTH_TOKEN_LEGACY_ENABLED', AUTH_TOKEN: 'AUTH_TOKEN' };
 
@@ -150,9 +150,8 @@ function spySessionResolver() {
   return fn;
 }
 
-/** An api-key resolver that admits ONLY `liveKey` (and re-confirms allowlist by
- *  returning null for `deAllowlistedKey`, modelling the owner falling off the
- *  list at resolution time). */
+/** An api-key resolver that admits ONLY `liveKey`, modelling the owner enablement
+ *  re-check by returning null for every other key. */
 function apiKeyResolverFor(liveKey) {
   return async (raw) =>
     raw === liveKey ? { user: KEY_OWNER, scopes: ['tasks:read'], keyId: 'key-1' } : null;
@@ -182,7 +181,7 @@ const OPERATOR_TOKEN = 'shared-operator-secret';
 const run = async () => {
   console.log('\n=== Operator-principal resolution ===\n');
 
-  // T1: valid still-allowlisted session admits as 'session'.
+  // T1: valid still-enabled session admits as 'session'.
   {
     const p = await resolveOperatorPrincipal(
       { sessionToken: 'live-session', bearerToken: null },
@@ -190,17 +189,17 @@ const run = async () => {
       {},
     );
     assert(p !== null && p.kind === 'session' && p.user.githubId === 12345,
-      'T1: valid allowlisted session admits as session principal');
+      'T1: valid enabled session admits as session principal');
   }
 
-  // T2: de-allowlisted / revoked / expired session (resolver -> null) denied.
+  // T2: disabled / revoked / expired session (resolver -> null) denied.
   {
     const p = await resolveOperatorPrincipal(
       { sessionToken: 'stale-session', bearerToken: null },
       baseResolvers({ resolveSession: resolverFor('live-session') }),
       {},
     );
-    assert(p === null, 'T2: non-resolving (revoked/expired/de-allowlisted) session denied');
+    assert(p === null, 'T2: non-resolving (revoked/expired/disabled) session denied');
   }
 
   // T3: legacy bearer admits when enabled + configured + matching.
@@ -333,17 +332,17 @@ const run = async () => {
     assert(spy.calls.length === 0, 'T11b: cap_sk_ key on WS NEVER produces a Session lookup');
   }
 
-  // T12: an UNKNOWN / revoked / expired / de-allowlisted-owner cap_sk_ key is
+  // T12: an UNKNOWN / revoked / expired / disabled-owner cap_sk_ key is
   //      denied (the api-key resolver returns null) and does NOT fall through to a
   //      session lookup or the legacy compare.
   {
     const spy = spySessionResolver();
     const p = await resolveOperatorPrincipal(
-      { sessionToken: 'cap_sk_someones-cookie', bearerToken: 'cap_sk_de-allowlisted-owner' },
+      { sessionToken: 'cap_sk_someones-cookie', bearerToken: 'cap_sk_disabled-owner' },
       baseResolvers({ resolveSession: spy, resolveApiKey: apiKeyResolverFor(LIVE_KEY) }),
-      { AUTH_TOKEN_LEGACY_ENABLED: 'true', AUTH_TOKEN: 'cap_sk_de-allowlisted-owner' },
+      { AUTH_TOKEN_LEGACY_ENABLED: 'true', AUTH_TOKEN: 'cap_sk_disabled-owner' },
     );
-    assert(p === null, 'T12: de-allowlisted/unknown cap_sk_ key denied (resolver -> null)');
+    assert(p === null, 'T12: disabled/unknown cap_sk_ key denied (resolver -> null)');
     assert(spy.calls.length === 0, 'T12b: a denied cap_sk_ key does NOT fall through to a Session lookup');
   }
 

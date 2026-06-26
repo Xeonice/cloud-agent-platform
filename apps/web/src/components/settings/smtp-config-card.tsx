@@ -11,8 +11,8 @@
  *
  * ADMIN GATE (UX only — the backend independently enforces admin-only on every
  * SMTP endpoint): the management controls (the 配置 button → the dialog) are shown
- * only for an admin session (`isAdminSession`, the same env-allowlist gate the
- * MCP card / self-update banner use). A non-admin sees the masked status but no
+ * only for an admin session (`isAdminSession`, the same role gate the MCP card /
+ * self-update banner use). A non-admin sees the masked status but no
  * configure affordance. Per the spec the whole section is mounted admin-only by
  * the settings page, so a non-admin never reaches this card; the in-card gate is
  * defense in depth.

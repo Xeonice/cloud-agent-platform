@@ -1,14 +1,12 @@
 /**
- * `/login` — centered login modal with a 3-method switch (add-private-account-identity,
+ * `/login` — centered login modal with local account methods (add-private-account-identity,
  * track frontend, tasks 9.1 + 9.2; design `login.html`).
  *
  * A top-level route (NOT under `_app`), so NO auth gate runs on it — this is the
- * page the gate redirects an unauthenticated visitor TO. Rebuilt from the prior
- * two-column GitHub-only gate into the simplified design: a centered
- * `.dialog.dialog-sm` login card offering a method switch among
+ * page the gate redirects an unauthenticated visitor TO. A centered
+ * `.dialog.dialog-sm` login card offers a method switch among
  *   - email + password  → `passwordLogin`
  *   - email OTP         → `requestOtp` then `verifyOtp`
- *   - GitHub authorize  → `login()` (the existing OAuth redirect / mock gate)
  * rendering ONLY the methods whose backend capability flag is enabled
  * (`loginCapabilities()`, D11). On success the page routes into the CONSOLE
  * (`/dashboard` by default, or the carried `redirect` deep-link).
@@ -22,16 +20,13 @@
  *
  * Auth flow (capability seam via `@/lib/mock-session` + `isAuthCapable()`):
  *   - MOCK (today, `auth` off): the credential calls establish the local gate
- *     and resolve immediately; GitHub `login()` flips the gate too. The page
- *     then either shows the forced-change dialog (if the mock must-change flag is
- *     set) or navigates into the console.
+ *     and resolve immediately. The page then either shows the forced-change
+ *     dialog (if the mock must-change flag is set) or navigates into the console.
  *   - REAL (`auth` on): password/OTP POST to the backend and set the session
- *     cookie; GitHub `login()` redirects to `GET /auth/github/login`. A
- *     non-allowlisted / denied GitHub callback comes back with `?error`/`?denied`
- *     and we render the rejection copy under the GitHub method.
+ *     cookie.
  *
  * SSR-safe: the server renders the default-method card deterministically; method
- * switching, credential submission, the gate read, and `login()` all run only on
+ * switching, credential submission, and the gate read all run only on
  * the client (user handlers / `useEffect` after mount). No bare
  * window/document/clock/random during render or at module top-level.
  */
@@ -49,7 +44,6 @@ import {
   fetchLoginCapabilities,
   isAuthCapable,
   isAuthenticated,
-  login,
   loginCapabilities,
   passwordLogin,
   requestOtp,
@@ -62,15 +56,8 @@ import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
 import { Input } from "@/components/ui/input";
 
-/**
- * `?error`/`?denied` carry a rejected/non-allowlisted GitHub OAuth callback
- * (real mode). `?redirect` is the app path the auth gate bounced the operator
- * from, threaded so the post-login flow can return them there (open-redirect-
- * guarded server-side).
- */
+/** `?redirect` is the app path the auth gate bounced the operator from. */
 export interface LoginSearch {
-  error?: string;
-  denied?: boolean;
   redirect?: string;
   /**
    * Set by the `_app` auth gate when an authenticated session has a pending
@@ -82,8 +69,6 @@ export interface LoginSearch {
 
 export const Route = createFileRoute("/login")({
   validateSearch: (search: Record<string, unknown>): LoginSearch => ({
-    error: typeof search.error === "string" ? search.error : undefined,
-    denied: search.denied === true || search.denied === "true",
     redirect: typeof search.redirect === "string" ? search.redirect : undefined,
     change: search.change === true || search.change === "true",
   }),
@@ -98,9 +83,9 @@ function safeClientRedirect(redirect: string | undefined): string {
 /**
  * Enter the authenticated console with a FULL DOCUMENT LOAD (NOT a soft navigate).
  * A fresh page discards the react-query cache so the `_app` gate re-resolves the
- * session from the existing cookie instead of bouncing on a landing-prewarmed stale
- * `authSession` (or a cached `mustChangePassword`). Mirrors the GitHub OAuth full-page
- * path. Exported as the single seam the post-auth test spies. Destination is the
+ * session from the existing cookie instead of bouncing on a landing-prewarmed
+ * stale `authSession` (or a cached `mustChangePassword`). Exported as the single
+ * seam the post-auth test spies. Destination is the
  * open-redirect-guarded relative `redirect`, else `/dashboard`.
  */
 export function enterConsole(redirect: string | undefined): void {
@@ -111,11 +96,10 @@ export function enterConsole(redirect: string | undefined): void {
 const METHOD_LABEL: Record<LoginMethod, string> = {
   password: "密码",
   otp: "邮箱验证码",
-  github: "GitHub",
 };
 
 /** The fixed display order of the method switch (design order). */
-const METHOD_ORDER: readonly LoginMethod[] = ["password", "otp", "github"];
+const METHOD_ORDER: readonly LoginMethod[] = ["password", "otp"];
 
 const primaryButton =
   "inline-flex min-h-[42px] w-full items-center justify-center gap-2 rounded-md bg-primary px-3.5 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60";
@@ -180,7 +164,7 @@ export function isOtpSendDisabled(opts: {
 
 function LoginPage() {
   const navigate = useNavigate();
-  const { error, denied, redirect, change } = useSearch({ from: "/login" });
+  const { redirect, change } = useSearch({ from: "/login" });
 
   // Which methods to render. The SSR render + first client paint use the safe
   // synchronous default (`loginCapabilities`); after mount we read the LIVE
@@ -199,7 +183,7 @@ function LoginPage() {
     };
   }, []);
   const enabledMethods = METHOD_ORDER.filter((m) => caps[m]);
-  const defaultMethod: LoginMethod = enabledMethods[0] ?? "github";
+  const defaultMethod: LoginMethod = enabledMethods[0] ?? "password";
 
   const [method, setMethod] = React.useState<LoginMethod>(defaultMethod);
 
@@ -211,23 +195,15 @@ function LoginPage() {
     change === true,
   );
 
-  // In real mode, an `?error`/`?denied` callback means the GitHub account is not
-  // on the allowlist (or the user cancelled) — show the rejection copy on the
-  // GitHub method.
-  const githubRejected = isAuthCapable() && (denied === true || Boolean(error));
-
   // An already-authenticated MOCK-gate visitor is bounced to `/workspace`
-  // (CLIENT-only; the server can't read the sessionStorage gate). In real mode
-  // the OAuth callback owns redirects — real authenticated sessions that land
-  // here are intentionally not bounced.
+  // (CLIENT-only; the server can't read the sessionStorage gate).
   React.useEffect(() => {
-    if (githubRejected) return;
     if (forceChangeOpen) return;
-    if (isAuthCapable()) return; // real-mode redirect is the OAuth callback's job
+    if (isAuthCapable()) return;
     if (isAuthenticated()) {
       void navigate({ to: "/workspace" });
     }
-  }, [navigate, githubRejected, forceChangeOpen]);
+  }, [navigate, forceChangeOpen]);
 
   /**
    * Shared post-credential-success path: if the just-authenticated account must
@@ -329,9 +305,6 @@ function LoginPage() {
           ) : null}
           {method === "otp" && caps.otp ? (
             <OtpPanel onSuccess={afterLoginSuccess} />
-          ) : null}
-          {method === "github" && caps.github ? (
-            <GithubPanel redirect={redirect} rejected={githubRejected} />
           ) : null}
 
           <p className="m-0 border-t border-border pt-3.5 text-xs leading-[1.6] text-muted-foreground">
@@ -572,49 +545,6 @@ function OtpPanel({
         验证码 10 分钟内有效，60 秒内可重发一次；仅向已开通的邮箱发送。
       </p>
     </form>
-  );
-}
-
-/** 方式三：GitHub 授权（白名单 gate 不变）. */
-function GithubPanel({
-  redirect,
-  rejected,
-}: {
-  redirect: string | undefined;
-  rejected: boolean;
-}) {
-  function handleLogin() {
-    // Real mode: `login(redirect)` redirects to `GET /auth/github/login?redirect=…`
-    // (the backend owns the post-login redirect, open-redirect-guarded). Mock
-    // mode: the gate is flipped; the page-level `useEffect` / success path then
-    // routes into the console.
-    login(redirect);
-  }
-
-  return (
-    <div className="grid gap-3.5">
-      {rejected ? (
-        <div className="grid justify-items-start gap-2">
-          <StatusPill variant="danger">无法进入</StatusPill>
-          <p className="m-0 text-[13px] text-ink">
-            该 GitHub 账号不在白名单内，无法进入控制台。
-          </p>
-        </div>
-      ) : null}
-      <button type="button" onClick={handleLogin} className={primaryButton}>
-        <span
-          className="grid size-[26px] place-items-center rounded-full bg-background font-mono text-[10px] font-bold text-ink"
-          aria-hidden="true"
-        >
-          GH
-        </span>
-        <span>使用 GitHub 授权登录</span>
-      </button>
-      <p className={fieldHint}>
-        仅 <span className="font-mono">AUTH_ALLOWLIST</span>{" "}
-        白名单内的 GitHub 账号可进入；从任务会话被拦截登录会回到原页面。
-      </p>
-    </div>
   );
 }
 

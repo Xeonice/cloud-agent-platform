@@ -56,11 +56,11 @@ export const AIO_APPROVAL_ENFORCER = Symbol('AioApprovalEnforcer');
  * import of the gateway, which would re-form the `GuardrailsModule <->
  * TerminalModule` cycle.
  *
- * be-oauth-allowlist 2.7: `AuthModule` is imported so the gateway can inject
- * the exported {@link AuthSessionService} and authenticate the operator's
- * GitHub-OAuth SESSION at connect time (resolving the connect query param or
- * `bearer.<token>` subprotocol), closing unauthenticated/expired/revoked/
- * non-allowlisted connections before they join any task stream.
+ * `AuthModule` is imported so the gateway can inject the exported
+ * {@link AuthSessionService} and authenticate the operator's SESSION at connect
+ * time (resolving the connect query param or `bearer.<token>` subprotocol),
+ * closing unauthenticated/expired/revoked/disabled connections before they join
+ * any task stream.
  */
 @Module({
   imports: [WriteLockModule, TasksModule, GuardrailsModule, AuthModule],

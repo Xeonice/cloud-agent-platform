@@ -9,7 +9,7 @@ import { OtpController } from './otp.controller';
  *
  * Wires:
  *  - {@link OtpController} (`/auth/otp/request`, `/auth/otp/verify`) — public
- *    pre-auth endpoints (added to the guard's `OAUTH_EXEMPT_PATHS` in task 2.6);
+ *    pre-auth endpoints (added to the guard's `PUBLIC_AUTH_PATHS` in task 2.6);
  *  - {@link EmailOtpService} — issue/verify with hash-at-rest codes, TTL, resend
  *    cooldown, single-use, and attempt cap; mints a session on a valid code.
  *

@@ -272,8 +272,8 @@ test('fresh deploy seeds an admin (role=admin, allowed, mustChangePassword) with
 
 test('an existing non-admin ADMIN_EMAIL account is promoted to admin (role only, no reset)', async () => {
   const db = freshDb();
-  // Pre-existing account keyed by ADMIN_EMAIL (e.g. created via GitHub OAuth → member),
-  // with its own customized password identity, enabled, and NOT must-change.
+  // Pre-existing account keyed by ADMIN_EMAIL with its own customized password
+  // identity, enabled, and NOT must-change.
   db.users.push({
     id: 'u-existing',
     email: ADMIN_EMAIL,

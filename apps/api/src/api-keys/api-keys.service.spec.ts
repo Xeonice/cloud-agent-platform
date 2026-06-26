@@ -3,8 +3,8 @@
  *
  * Asserts the three load-bearing requirements:
  *   1. NO ESCALATION CHAIN — an `api-key` principal (and any non-`session`
- *      principal: legacy/mcp) cannot mint/list/revoke; only a GitHub-OAuth
- *      `session` principal reaches the service. Tested at the controller's
+ *      principal: legacy/mcp) cannot mint/list/revoke; only a human `session`
+ *      principal reaches the service. Tested at the controller's
  *      session-only gate.
  *   2. NO LEAK — neither the raw key value nor the stored SHA-256 hash ever
  *      appears in a list (or revoke) response; mint persists ONLY the hash.

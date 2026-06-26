@@ -19,7 +19,7 @@ import { MCP_TOKEN_PREFIX } from './credential-prefix.js';
  * own settings card, never confused with the `cap_sk_` API-key principal.
  *
  * These are the OPERATOR-facing CRUD shapes only; the resolution path (hashing a
- * presented token, re-confirming the owner's allowlist, yielding the `mcp`
+ * presented token, re-confirming the owner's enabled state, yielding the `mcp`
  * principal) lives in `apps/api` and never returns any of these shapes to a
  * token holder.
  */

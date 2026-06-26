@@ -1,19 +1,18 @@
 # Self-hosting cap
 
 This is the operator-facing guide to standing up your own cap instance with
-`docker compose up`. cap is **OAuth-first**: a clean self-host authenticates
-operators through a **GitHub OAuth app** gated by a hard allowlist — you do
-**not** need the legacy operator token (that path exists only for local dev /
-break-glass; see [Optional: legacy token](#optional-legacy-token-dev-only)).
+`docker compose up`. cap uses **local account auth** for self-hosting: the stack
+seeds a default admin, and admins can create password or email-code accounts.
+Repository access is configured separately with per-account forge PATs.
 
 > **Security note up front.** cap runs tasks as **host-root via the Docker
 > socket** (`/var/run/docker.sock`). "Who can log in" therefore equals "who can
-> run as root on the host." The allowlist is a load-bearing security boundary,
+> run as root on the host." Account access is a load-bearing security boundary,
 > not a convenience layer — keep it tight. See the README's
 > [Auth & the host-root boundary](../README.md#auth--the-host-root-boundary).
 
 This guide is Phase 0 of the [OSS self-update epic](./oss-self-update-epic.md)
-("a stranger can run it"): a complete, env-configurable, OAuth-first compose
+("a stranger can run it"): a complete, env-configurable, local-account compose
 stack. The default path below builds everything from source; once a Release has
 published prebuilt images you can pull them instead — see
 [Optional: run prebuilt images](#optional-run-prebuilt-images-instead-of-building-from-source).
@@ -32,7 +31,7 @@ In-app upgrades are a later phase you do not need to self-host today.
 > manual `make up` (local) and the `docker compose` flow below **remain the
 > source of truth**. The script is served as plain text — read it first, or use
 > the equivalent manual `git clone … && make up` the site also shows. For a real
-> OAuth-first production deploy, follow the steps in this guide.
+> production deploy, follow the steps in this guide.
 
 > **⚡ Fast path — run prebuilt images, NO `git clone` (amd64 host).** Once a
 > Release exists, you don't need the source at all: download
@@ -47,11 +46,11 @@ In-app upgrades are a later phase you do not need to self-host today.
 
 > **Let Claude Code deploy it.** With Claude Code installed, paste the prompt
 > below — it reads `install.sh`, preflights Docker, clones the repo and runs
-> `make up`, and walks you step by step through the GitHub OAuth app and `.env`
-> setup in Step 2 below — the same source-build, OAuth-first production path:
+> `make up`, and walks you step by step through local-account auth and `.env`
+> setup below — the same source-build production path:
 >
 > ```text
-> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` to build and start the full stack. Help me create a GitHub OAuth app and fill the .env for production login against my allowlist, then report the console URL and the Authorization: Bearer token it prints.
+> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` to build and start the full stack. Help me configure local account login, web/api origins, and PAT-based repository access, then report the console URL and the generated admin/legacy credentials it prints.
 > ```
 >
 > It wraps `make up` rather than replacing it; the script is served as plain text
@@ -65,7 +64,7 @@ Enable the in-compose console with the `web` profile (`COMPOSE_PROFILES=web`);
 | Service    | Role                                                              |
 | ---------- | ----------------------------------------------------------------- |
 | `web`      | The TanStack Start console (Nitro `node-server`), host port 3000 — **`web` profile** |
-| `api`      | The NestJS orchestrator (OAuth/session/allowlist, tasks, WS), 8080 |
+| `api`      | The NestJS orchestrator (local sessions, tasks, WS), 8080 |
 | `postgres` | The database backing tasks/audit/history                          |
 
 The web console talks to the api **only by its public URLs** (`VITE_API_BASE_URL`
@@ -81,69 +80,52 @@ important — and most error-prone — part of setup. Read
   (a reverse proxy such as Cloudflare or nginx terminating HTTPS in front of the
   api — see the opt-in `proxy` profile in `docker-compose.yml`). Cookies are sent
   `Secure` cross-origin, so the api must be reachable over **HTTPS** in production.
-- Your numeric **GitHub user id(s)** for the allowlist (see Step 2).
+- An admin email/password plan for the default local account, and PATs for any
+  private code-host repositories you want the platform to import.
 
-## Step 1 — Create a GitHub OAuth app
+## Step 1 — Configure local account auth
 
-GitHub OAuth is the primary login path. This is a one-time **human** step that
-cannot be automated.
+Self-hosted console login is local-account based. There is no GitHub OAuth app,
+GitHub App, callback URL, or GitHub allowlist to configure.
 
-1. Go to **GitHub → Settings → Developer settings → OAuth Apps → New OAuth App**
-   (or `https://github.com/settings/developers`).
-2. Fill in:
-   - **Application name** — anything (e.g. `cap`).
-   - **Homepage URL** — your web console origin (e.g. `https://cap.example.com`).
-   - **Authorization callback URL** — **must** be your **api** origin plus
-     `/auth/github/callback`:
-
-     ```
-     <api-origin>/auth/github/callback
-     ```
-
-     e.g. `https://cap-api.example.com/auth/github/callback`. The callback is on
-     the **api**, not the web console — this is a common mistake.
-3. Click **Register application**, then **Generate a new client secret**.
-4. Copy the **Client ID** and **Client secret** into `apps/api/.env`:
-
-   ```ini
-   GITHUB_CLIENT_ID=Iv1.xxxxxxxxxxxx
-   GITHUB_CLIENT_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-   ```
-
-The login flow **fails closed**: it refuses to start unless BOTH the client id
-and secret are set.
-
-> **Optional: `GITHUB_OAUTH_REDIRECT_URI`.** Leave this unset to use the app's
-> registered callback. Set it only if you need to override the redirect that cap
-> sends to GitHub (e.g. behind an unusual proxy) — it must still match a callback
-> URL registered on the OAuth app.
-
-## Step 2 — Set the operator allowlist
-
-`AUTH_ALLOWLIST` is a comma-separated list of **immutable numeric GitHub ids**
-(never logins — a renamed/recreated account cannot impersonate an allowlisted
-operator). Only these identities may enter the host-root console; an
-**empty/unset/unparseable allowlist denies ALL access** (fail-closed).
-
-Find your numeric id:
-
-```bash
-curl -s https://api.github.com/users/<your-github-login> | grep '"id"'
-# or, authenticated, for the logged-in user:
-gh api user --jq .id
-```
-
-Then in `apps/api/.env`:
+Required auth-related environment:
 
 ```ini
-# one operator
-AUTH_ALLOWLIST=1234567
-# multiple operators
-AUTH_ALLOWLIST=1234567,7654321
+SESSION_SECRET=<64+ random characters>
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=<initial admin password>
+PASSWORD_AUTH_ENABLED=true
 ```
 
-Allowlist membership is **re-checked at request time**, so removing an id revokes
-access immediately on the next request.
+Optional email-code login requires SMTP. If SMTP is absent, OTP is simply not
+offered by the login screen:
+
+```ini
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=noreply@example.com
+SMTP_PASS=...
+SMTP_FROM=noreply@example.com
+```
+
+Admins can create/disable accounts from the console. Account enablement is
+re-checked on every session/API-key/MCP-token resolution, so disabling an account
+revokes access on the next request.
+
+## Step 2 — Connect repositories with PATs
+
+Console login and repository access are separate. To import private repositories
+or let tasks push branches/open PRs, each operator connects a forge credential in
+the console: **Settings -> Code hosting connections**.
+
+For GitHub, create a Personal Access Token with repository access:
+
+- Fine-grained PAT: grant the target repositories Contents + Pull requests write
+  permissions.
+- Classic PAT: use `repo` for private repositories, or `public_repo` for public-only.
+
+GitLab/Gitee use their own PATs and optional self-hosted instance URL. These PATs
+are stored per account and used only for repository listing/import/clone/push.
 
 ## Step 3 — Configure your public domains (the error-prone step)
 
@@ -276,9 +258,10 @@ This builds the `web` image (passing `VITE_API_BASE_URL` / `VITE_WS_URL`), the
 When it's up:
 
 1. Open the web console (your web origin).
-2. Click **Sign in with GitHub** → authorize the OAuth app.
-3. If your numeric id is on `AUTH_ALLOWLIST`, you land in the console; otherwise
-   you're denied (fail-closed).
+2. Sign in with the default admin email/password configured in Step 1.
+3. Create additional local accounts from **Accounts** as needed. Connect forge
+   PATs from **Settings -> Code hosting connections** before importing private
+   repositories.
 
 If login bounces or the cookie doesn't stick, re-read
 [Step 3](#step-3--configure-your-public-domains-the-error-prone-step) — a
@@ -296,7 +279,7 @@ version-pinned set** of images to GHCR
 `docker-compose.images.yml` **override** layered on top of the base compose.
 
 > **You still need Steps 1–5.** The override only changes WHERE the images come
-> from (pull vs. build). Your OAuth app, allowlist, domains, secrets, and (optional)
+> from (pull vs. build). Your local auth, domains, secrets, and (optional)
 > external DB are configured exactly as above — the prebuilt images read the same
 > `apps/api/.env` and the same build-time `VITE_*` (already baked into the
 > published `cap-web` by the Release).
@@ -346,7 +329,7 @@ bind-mounts, and runs the pinned `ghcr.io/xeonice/cap-*:${CAP_VERSION}` set:
 
 ```bash
 # Download the two files from the Releases page (no clone), then:
-cp docker-compose.prod.env.example .env     # OAuth/allowlist/secrets/domains (Steps 1–5); CAP_VERSION optional (defaults latest)
+cp docker-compose.prod.env.example .env     # auth/secrets/domains (Steps 1–5); CAP_VERSION optional (defaults latest)
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d            # add: --profile web  for the in-compose console
 ```
@@ -379,12 +362,12 @@ docker compose -f docker-compose.prod.yml up -d            # add: --profile web 
   localhost), so the in-compose console is only correct for a same-host trial; for
   a real domain serve the console elsewhere (e.g. Vercel) or rebuild `cap-web`.
 
-### Or: agent one-click (`scripts/quick-deploy.sh`) — prebuilt images, no OAuth
+### Or: agent one-click (`scripts/quick-deploy.sh`) — prebuilt images
 
-For an **agent-drivable** bring-up that needs **no GitHub OAuth app** and **no source
-build**, the repo ships `scripts/quick-deploy.sh`. It runs the prebuilt
+For an **agent-drivable** bring-up that needs **no source build**, the repo ships
+`scripts/quick-deploy.sh`. It runs the prebuilt
 `ghcr.io/xeonice/cap-*:${CAP_VERSION}` images via `docker-compose.prod.yml` and
-**synthesizes a legacy-token `.env`** so the published api boots without an OAuth app —
+**synthesizes a legacy-token `.env`** for a local trial —
 relying on the fact that the prod compose reads `env_file: .env` and does not redeclare
 the auth secrets:
 
@@ -404,11 +387,11 @@ docker`), ④ fetch `docker-compose.prod.yml`, ⑤ idempotently write the legacy
 (an existing `.env` is reused, never overwritten; it stays gitignored), ⑥ `pull` + `up`,
 ⑦ wait for `/health` and print the `Authorization: Bearer` token.
 
-> **This is the legacy-token path, NOT OAuth-first production.** It is
+> **This is the legacy-token path, not the normal local-account production path.** It is
 > **host-root-equivalent** (it mounts the host `docker.sock`), so whoever holds the
 > printed token can run as root on the host — keep it to a single-user / trial host. The
 > prebuilt `cap-web` is **localhost-only** (its `VITE_*` are baked to localhost); for a
-> real domain, follow the OAuth-first steps above instead. WSL2 on a normal PC is amd64,
+> real domain, follow the local-account steps above instead. WSL2 on a normal PC is amd64,
 > which makes it a good target for this path.
 
 ## Optional: in-app one-click self-update (`SELF_UPDATE_ENABLED`, default OFF)
@@ -437,9 +420,8 @@ What it can do — even when enabled — is deliberately **bounded**:
 
 To activate it (after a Release exists and prod runs the pinned-release line):
 
-- set `SELF_UPDATE_ENABLED=true` and the admin allowlist (a strict subset of
-  `AUTH_ALLOWLIST` — the numeric GitHub ids permitted to press Upgrade) in
-  `apps/api/.env`, and
+- set `SELF_UPDATE_ENABLED=true` in `apps/api/.env`,
+- ensure the operators who may press Upgrade have `role = admin`, and
 - flip the web `selfUpdate` capability flag to `true`
   (`apps/web/src/lib/api/capabilities.ts`) and redeploy the console.
 
@@ -477,13 +459,13 @@ at your own fork works either through the mirror or direct.
 The email verification-code (OTP) login method is **off until SMTP is configured**. Set
 the five `SMTP_*` vars (all required — a partial config fails closed, hiding the OTP
 method and refusing OTP requests) and the console shows the 邮箱验证码 method; password
-+ GitHub login work regardless. cap sends over any standard SMTP provider; the
+login works regardless. cap sends over any standard SMTP provider; the
 recommended default is **Resend** (standard SMTP, no approval/real-name/ICP, a free tier
 ample for OTP, and Cloudflare can write its DNS in one click).
 
 > **Mainland-China note:** Resend — like every international sender — delivers
 > unreliably to `@qq.com` / `@163.com` / `@126.com`. Mainland operators should use
-> password or GitHub login. A dedicated mainland channel (e.g. Aliyun DirectMail) is a
+> password login. A dedicated mainland channel (e.g. Aliyun DirectMail) is a
 > future add-on; the mail module already carries the recipient-routing seam for it.
 
 ### 1 — Resend account + sender domain
@@ -528,7 +510,7 @@ is read-only for DNS). Click **Verify** in Resend; once green, OTP delivery work
 ## Optional: legacy token (dev only)
 
 The legacy single shared-`AUTH_TOKEN` operator path is **OFF by default** and
-**not needed for an OAuth-first self-host**. It exists for local dev (`make up`
+**not needed for a normal local-account self-host**. It exists for local dev (`make up`
 generates one) and break-glass. To enable it you must set BOTH:
 
 ```ini
@@ -536,7 +518,7 @@ AUTH_TOKEN_LEGACY_ENABLED=true   # only true/1/yes turns it on
 AUTH_TOKEN=<a-long-random-token>
 ```
 
-Leave both at their defaults (`false` / empty) for a production OAuth-first
+Leave both at their defaults (`false` / empty) for a production local-account
 deploy — the api boots without a legacy token.
 
 ## Optional: remote MCP server (`mcpServerEnabled`, default OFF)
@@ -558,8 +540,8 @@ on, and even then every request is gated by a settings-minted credential.
   model: the token IS the credential.
 - **Auth**: a settings-minted `mcp_` token pasted into the client's
   `Authorization: Bearer mcp_…` header. The api validates it on every request
-  (hash → lookup → reject revoked/expired → re-confirm the owner's allowlist), so
-  revoking a token or de-allowlisting its owner denies it on the next call. The
+  (hash → lookup → reject revoked/expired → re-confirm the owner's enabled
+  state), so revoking a token or disabling its owner denies it on the next call. The
   `/mcp` CORS is bearer-only and **non-credentialed** (no cookie is ever accepted
   there); the console's credentialed CORS is a separate domain and never includes
   an MCP-client origin.
@@ -567,8 +549,8 @@ on, and even then every request is gated by a settings-minted credential.
 ### Turning it on
 
 1. Set `mcpServerEnabled = true` — the system-level toggle in the console
-   **Settings → MCP Server** card (admin-only; an admin is a login in
-   `SELF_UPDATE_ADMINS`). While `false`, `/mcp` returns a JSON-RPC "disabled"
+   **Settings → MCP Server** card (admin-only; the operator must have
+   `role = admin`). While `false`, `/mcp` returns a JSON-RPC "disabled"
    response and connects no transport, so no token works there.
 2. In the same card, **mint an MCP token**: pick a name + scopes
    (`tasks:read`, `tasks:write`, `repos:read`), optionally an expiry. The raw

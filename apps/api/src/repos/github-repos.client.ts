@@ -10,10 +10,10 @@ import {
  * GitHub `GET /user/repos` HTTP boundary (be-github-import, 4.1 / 4.2).
  *
  * Owns the single network interaction this track makes: listing the repositories
- * the REQUESTING operator can access, using THAT operator's OWN stored OAuth
- * token. The token is passed in by the service (read from the operator's User
- * row) and is used only as the `Authorization` bearer here — it is NEVER logged,
- * echoed, or returned toward the browser.
+ * the REQUESTING operator can access, using THAT operator's OWN connected GitHub
+ * PAT. The token is passed in by the service and is used only as the
+ * `Authorization` bearer here — it is NEVER logged, echoed, or returned toward
+ * the browser.
  *
  * The transport here is deliberately thin: it performs the call, normalises the
  * outcome into a {@link GithubListOutcome}, and on failure delegates to the PURE
@@ -54,10 +54,10 @@ export class GithubReposClient {
   private readonly logger = new Logger(GithubReposClient.name);
 
   /**
-   * Lists the operator's GitHub repositories with THEIR OWN access token.
+   * Lists the operator's GitHub repositories with THEIR OWN connected GitHub PAT.
    *
-   * - `accessToken === null` (operator has no stored token) short-circuits to a
-   *   `github_auth_required` failure WITHOUT any network call — a missing
+   * - `accessToken === null` (operator has no connected GitHub PAT) short-circuits
+   *   to a `github_auth_required` failure WITHOUT any network call — a missing
    *   credential is the same operator signal as an expired/revoked one.
    * - On a non-OK GitHub response or a thrown transport error, the outcome is
    *   normalised and run through {@link classifyGithubListError} so the failure

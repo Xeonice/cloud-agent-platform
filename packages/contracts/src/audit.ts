@@ -52,12 +52,9 @@ export const AuditEventSchema = z.object({
    */
   taskId: z.string().uuid(),
   /**
-   * The GitHub-identity user the event is attributed to — the operator under
-   * whom the action occurred (per the multi-user OAuth identity model) — so the
-   * history page can show who initiated or owns a recorded action. This is the
-   * stable, immutable GitHub numeric account id (`githubId`), matching the
-   * user-record/allowlist key in `SessionUserSchema` (`./session.js`), never the
-   * mutable `login`.
+   * The numeric operator id the event is attributed to, retained for legacy
+   * GitHub-backed audit records so the history page can show who initiated or
+   * owns a recorded action.
    */
   userId: z.number().int(),
   /**

@@ -106,8 +106,8 @@ function RepositoriesPage() {
         />
         <RepoStatTile
           label="PERMISSION"
-          value="GitHub App scoped"
-          caption="仓库 token 按任务短期签发。"
+          value="GitHub PAT"
+          caption="使用已连接 PAT 授权 clone/push。"
         />
         <RepoStatTile
           label="SYNC"

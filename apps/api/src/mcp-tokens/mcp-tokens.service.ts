@@ -26,12 +26,12 @@ type Scope = McpTokenListItem['scopes'][number];
  *
  * Trust-domain separation (D1): a distinct `McpToken` model + the reserved
  * `mcp_` prefix keeps the MCP audience (`mcp` principal) separate from both the
- * GitHub-OAuth `session` operator and the `cap_sk_` API-key principal, so MCP
- * tokens are listed/revoked independently in their own settings card.
+ * human `session` operator and the `cap_sk_` API-key principal, so MCP tokens
+ * are listed/revoked independently in their own settings card.
  *
  * This service owns the CREDENTIAL lifecycle only (mint / list / revoke). The
- * RESOLUTION path (hashing a presented token, re-confirming the owner's
- * allowlist, yielding an `mcp` principal with a full SDK `AuthInfo`) lives in
+ * RESOLUTION path (hashing a presented token, re-confirming the owner's DB
+ * `allowed` gate, yielding an `mcp` principal with a full SDK `AuthInfo`) lives in
  * {@link AuthSessionService.resolveMcpToken} so the security-critical resolve
  * decision sits next to `resolveSession` in the auth core.
  */

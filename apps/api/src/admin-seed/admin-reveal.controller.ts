@@ -14,7 +14,7 @@ import {
  * Mounted at `POST /auth/admin/reveal`. It is a PUBLIC (pre-auth) endpoint — a
  * fresh deploy has no session yet, so the operator must be able to read the
  * generated admin credential without first logging in. The auth-core track adds
- * this exact path to `OAUTH_EXEMPT_PATHS` (task 2.6) so the global `AuthGuard`
+ * this exact path to `PUBLIC_AUTH_PATHS` (task 2.6) so the global `AuthGuard`
  * lets it through; the per-IP auth throttle tier (track rate-limit-auth) caps it.
  *
  * Single-use is enforced by an ATOMIC claim of the persisted

@@ -2,19 +2,17 @@
  * Shared at-rest secret storage helpers (add-forge-credentials).
  *
  * Centralizes the `ciphertext.iv.authTag` joined-string envelope used by the
- * settings credentials, so the forge PAT (ForgeCredential) and the operator
- * GitHub token (`User.githubAccessToken`) share ONE encrypt/decrypt path instead
- * of re-implementing it per call-site (the review's "one shared helper" point).
+ * settings credentials, so forge PATs and model-provider credentials share ONE
+ * encrypt/decrypt path instead of re-implementing it per call-site.
  *
  * Two storage disciplines:
  *  - {@link encryptToStored} / {@link decryptStored}: FAIL-CLOSED (require a key).
  *    Used for born-encrypted secrets like the forge PAT — connecting requires the
  *    server key, exactly like the codex compatible key.
- *  - {@link storeMaybeEncrypted} / {@link readMaybeEncrypted}: github-token
+ *  - {@link storeMaybeEncrypted} / {@link readMaybeEncrypted}: legacy-compatible
  *    discipline — encrypt when a key is configured, else store plaintext (keyless
  *    dev), and read back transparently whether the value is an encrypted envelope
- *    or a legacy plaintext token. This makes encryption non-breaking: tokens
- *    become ciphertext on the next login write, and reads work for both.
+ *    or a legacy plaintext token.
  *
  * Pure functions of `(plaintext|stored, env)` — no Prisma/NestJS — so the
  * round-trip is unit-testable under plain `node`.
@@ -40,7 +38,7 @@ export function isEncryptionKeyConfigured(env: NodeJS.ProcessEnv = process.env):
  * Boot fail-fast: when a key is CONFIGURED it MUST be valid (32 bytes). A
  * configured-but-malformed key throws here so startup fails loudly rather than
  * silently breaking every encrypted write. When no key is configured this is a
- * no-op (encryption disabled — github tokens stay plaintext as before).
+ * no-op (encryption disabled for legacy-compatible writes).
  */
 export function assertEncryptionKeyValidIfConfigured(
   env: NodeJS.ProcessEnv = process.env,

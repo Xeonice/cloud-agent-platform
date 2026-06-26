@@ -7,7 +7,7 @@ import { RepoSchema } from './task.js';
  * Two distinct concepts live here, kept separate by design:
  *
  *  1. {@link AvailableGithubRepoSchema} — a live entry sourced from GitHub
- *     `GET /user/repos`, scoped to the requesting operator's GitHub account.
+ *     `GET /user/repos`, scoped to the requesting operator's connected GitHub PAT.
  *     This is NOT the platform's repository inventory; it is what the "仓库导入"
  *     import dialog lists. It carries the GitHub repo's stable identity so the
  *     console can reconcile it against already-imported platform `Repo` records.
@@ -15,9 +15,8 @@ import { RepoSchema } from './task.js';
  *  2. {@link ImportRepoRequestSchema} — the selected GitHub repo identity the
  *     console sends to import that repo into the platform as a `Repo` record.
  *
- * The operator's GitHub OAuth access token is NEVER part of these shapes: the
- * `GET /user/repos` call happens server-side and the token never reaches the
- * browser.
+ * The operator's GitHub PAT is NEVER part of these shapes: the `GET /user/repos`
+ * call happens server-side and the token never reaches the browser.
  */
 
 // ---------------------------------------------------------------------------
@@ -99,10 +98,11 @@ export type ImportRepoRequest = z.infer<typeof ImportRepoRequestSchema>;
  * Why a server-side GitHub listing failed, kept DISTINCT from one another and
  * from an empty-but-successful result so the console never conflates them:
  *
- *  - `github_auth_required` — the operator's stored OAuth token is missing,
- *    expired, or revoked (GitHub answered 401/403 in a way that indicates the
- *    credential itself is bad). This is NOT a platform-session 401 and NOT an
- *    empty list: the console must prompt the operator to (re)authorize GitHub.
+ *  - `github_auth_required` — the operator's connected GitHub PAT is missing,
+ *    expired, revoked, or lacks scope (GitHub answered 401/403 in a way that
+ *    indicates the credential itself is bad). This is NOT a platform-session 401
+ *    and NOT an empty list: the console must prompt the operator to connect or
+ *    refresh the GitHub PAT.
  *  - `github_unavailable` — a transient/retry-able condition: GitHub rate-limit
  *    (429), a 5xx outage, or a network/transport error. The originating cause is
  *    preserved so the API can surface a retry-able 429/5xx.

@@ -17,7 +17,7 @@
  *   2. `AuthGuard.canActivate`: a valid session with `mustChangePassword` is
  *      blocked with HTTP 403 carrying `{ error: 'password_change_required' }`
  *      on every protected route; the change-password endpoint itself is exempt
- *      (in OAUTH_EXEMPT_PATHS, so the guard returns `true` before reaching the
+ *      (in PUBLIC_AUTH_PATHS, so the guard returns `true` before reaching the
  *      must-change chokepoint).
  *
  * No DB, no DI container. Uses real classes over fake Prisma doubles.
@@ -64,7 +64,7 @@ function makePrisma(row: FakeSessionRow | null) {
 }
 
 function serviceOver(prisma: unknown): AuthSessionService {
-  return new AuthSessionService(prisma as never, null as never);
+  return new AuthSessionService(prisma as never);
 }
 
 const FAR_FUTURE = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -227,7 +227,7 @@ test('guard: a normal (no mustChangePassword) session passes a protected route',
 
 // ---------------------------------------------------------------------------
 // Scenario 3 (guard-level): change-password endpoint is EXEMPT
-// (it is in OAUTH_EXEMPT_PATHS, so the guard returns true before the
+// (it is in PUBLIC_AUTH_PATHS, so the guard returns true before the
 //  must-change chokepoint is reached)
 // ---------------------------------------------------------------------------
 
@@ -235,7 +235,7 @@ test('guard: /auth/change-password is EXEMPT from the must-change block (a mustC
   const prisma = makePrisma(sessionRow({ mustChangePassword: true }));
   const guard = guardWith(prisma);
 
-  // /auth/change-password is in OAUTH_EXEMPT_PATHS — the guard returns true
+  // /auth/change-password is in PUBLIC_AUTH_PATHS — the guard returns true
   // before resolving any principal, so requiresPasswordChange is never called.
   const result = await activate(
     guard,

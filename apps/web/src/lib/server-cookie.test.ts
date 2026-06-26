@@ -1,5 +1,5 @@
 /**
- * SSR Cookie forwarding helper tests (OAuth SSR-first-paint fix).
+ * SSR Cookie forwarding helper tests (session SSR-first-paint fix).
  *
  * `getIncomingCookieHeader` is a `createIsomorphicFn().client(...).server(...)`.
  * In the BUILD, Start's compiler replaces the whole call with the env-matching

@@ -54,7 +54,7 @@ import { ForgeCredentialService } from './forge-credential.service';
  * `/settings`.
  *
  * Every route is session-gated by the GLOBAL `AuthGuard` (an unauthenticated /
- * de-allowlisted caller gets 401 before reaching these handlers). The handlers
+ * disabled caller gets 401 before reaching these handlers). The handlers
  * resolve the operator principal the guard attached and pass it to the service,
  * which scopes every read/write to THAT account by the immutable numeric
  * `githubId` — settings never leak across accounts and the body can never name
@@ -62,7 +62,7 @@ import { ForgeCredentialService } from './forge-credential.service';
  *
  * - `GET   /settings`               -> 200 the account's preferences (defaults
  *                                      when unsaved); `allowedAccount` is the
- *                                      read-only OAuth-sourced identity.
+ *                                      read-only session-sourced identity.
  * - `PATCH /settings` / `PUT`       -> 200 updated sanitized preferences; a
  *                                      defaultRepoId MUST be imported (else 4xx,
  *                                      nothing mutated); allowedAccount is
@@ -241,7 +241,7 @@ export class SettingsController {
 
   /**
    * remote-mcp-server 5.2 — Reads the SYSTEM-LEVEL `mcpServerEnabled` flag.
-   * ADMIN-gated: only an explicitly-allowlisted admin operator may observe the
+   * ADMIN-gated: only an enabled role=admin operator may observe the
    * toggle state (mirroring the self-update admin gate). A non-admin session or a
    * machine principal (mcp / api-key) is rejected 403 BEFORE the service runs.
    * The flag is instance-wide, so this is NOT account-scoped.
@@ -324,21 +324,20 @@ export class SettingsController {
   }
 
   /**
-   * remote-mcp-server 5.2/5.3 — Narrows the guard-attached principal to an
-   * explicitly-allowlisted ADMIN *session*. The global `AuthGuard` has already
-   * 401'd an unauthenticated / de-allowlisted caller and attached the resolved
+   * remote-mcp-server 5.2/5.3 — Narrows the guard-attached principal to a
+   * role=admin *session*. The global `AuthGuard` has already
+   * 401'd an unauthenticated / disabled caller and attached the resolved
    * principal; this re-narrows on TWO independent conditions so the toggle is
    * never read or mutated by the wrong caller:
    *
-   *   1. it MUST be a GitHub-OAuth `session` principal — a MACHINE credential
+   *   1. it MUST be a human `session` principal — a MACHINE credential
    *      (`mcp` / `api-key`) or the identity-less `legacy-token` operator is
-   *      rejected 403 even if its owner is on the admin allowlist, so the
+   *      rejected 403 even if its owner is an admin, so the
    *      outward-facing execution surface can never be flipped by a machine
    *      credential (no-escalation, mirroring the API-key CRUD gate); and
-   *   2. it MUST be an explicitly-allowlisted admin
-   *      ({@link isAdminPrincipal} / `SELF_UPDATE_ADMINS`, the same narrow admin
-   *      set the host-root self-update uses) — a merely-logged-in non-admin
-   *      operator is rejected 403.
+   *   2. it MUST be a role=admin account
+   *      ({@link isAdminPrincipal}, the same admin gate host-root self-update
+   *      uses) — a merely-logged-in non-admin operator is rejected 403.
    *
    * "Who may flip the MCP server" is therefore the narrow ADMIN-SESSION set, not
    * any operator and never a machine credential.
@@ -353,8 +352,8 @@ export class SettingsController {
       throw new ForbiddenException({
         error: 'admin_required',
         message:
-          'Toggling the MCP server requires an admin operator session ' +
-          '(SELF_UPDATE_ADMINS); a non-admin or a machine credential cannot.',
+          'Toggling the MCP server requires an admin console session; ' +
+          'a non-admin or a machine credential cannot.',
       });
     }
   }

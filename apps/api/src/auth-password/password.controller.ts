@@ -25,7 +25,7 @@ import { PasswordAuthService } from './password.service';
  * Email + password login surface (add-private-account-identity, tasks 4.1 / 4.2),
  * mounted under `/auth`.
  *
- * Both routes are PUBLIC pre-auth members of the guard's `OAUTH_EXEMPT_PATHS`
+ * Both routes are PUBLIC pre-auth members of the guard's `PUBLIC_AUTH_PATHS`
  * (task 2.6) and sit behind the dedicated IP+email throttle tier (task 8.1) since
  * the principal throttler cannot key on an absent principal.
  *

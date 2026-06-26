@@ -33,7 +33,7 @@ type OtpVerifyBody = z.infer<typeof OtpVerifySchema>;
  * task 5.3), mounted under `/auth/otp`.
  *
  * Both routes are PUBLIC (pre-auth): they are exact-match members of the guard's
- * `OAUTH_EXEMPT_PATHS` (added in task 2.6) so they reach these handlers without a
+ * `PUBLIC_AUTH_PATHS` (added in task 2.6) so they reach these handlers without a
  * resolved principal, and they live behind the dedicated IP+email throttle tier
  * (task 8.1) since the principal throttler cannot key on an absent principal.
  *
@@ -79,8 +79,8 @@ export class OtpController {
    * `POST /auth/otp/verify` — exchange a code for a session.
    *
    * 404 when SMTP is unconfigured. On a matching, unexpired, unconsumed code for
-   * an allowed account: mints a session, sets the same httpOnly session cookie the
-   * GitHub flow uses, and returns 200 `{ user }`. EVERY failure path returns a
+   * an allowed account: mints a session, sets the standard httpOnly session cookie
+   * used by local login methods, and returns 200 `{ user }`. EVERY failure path returns a
    * single uniform 401 so nothing about the account or code state leaks.
    */
   @Post('verify')
@@ -107,4 +107,3 @@ export class OtpController {
     res.status(HttpStatus.OK).json(responseBody);
   }
 }
-

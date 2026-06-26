@@ -23,13 +23,13 @@ import { ZodValidationPipe } from './zod-validation.pipe';
  * caller gets 401 before reaching these handlers). The handlers additionally
  * require an authenticated ACCOUNT principal — scoped on its primary key
  * `user.id` (present for BOTH local and GitHub accounts,
- * fix-local-account-settings-scope) — so the account's OWN stored GitHub OAuth
- * token can be resolved server-side by `userId`. A GitHub identity is NOT required
- * at the boundary: a LOCAL account (password/OTP) that has separately connected a
- * `github` IdentityLink can list/import too. Only the IDENTITY-LESS legacy
- * shared-`AUTH_TOKEN` / machine principal (no account at all) — or any account
- * lacking a usable GitHub token — gets the distinct `github_auth_required` signal,
- * NOT a session 401. The account's OAuth token is NEVER part of any response.
+ * fix-local-account-settings-scope) — so the account's OWN connected GitHub PAT
+   * can be resolved server-side by `userId`. An external login identity is NOT
+   * required at the boundary: a LOCAL account (password/OTP) that has connected a
+ * GitHub PAT can list/import too. Only the IDENTITY-LESS legacy shared-`AUTH_TOKEN`
+ * / machine principal (no account at all) — or any account lacking a usable
+ * GitHub PAT — gets the distinct `github_auth_required` signal, NOT a session
+ * 401. The account's PAT is NEVER part of any response.
  *
  * - `GET  /repos/github/available`     -> 200 available GitHub repos (reconciled
  *                                         with imported), or the distinct
@@ -56,8 +56,11 @@ export class GithubImportController {
   @Post('import')
   @HttpCode(HttpStatus.CREATED)
   @UsePipes(new ZodValidationPipe(ImportRepoRequestSchema))
-  async import(@Body() body: ImportRepoRequest): Promise<RepoResponse> {
-    return this.importService.importRepo(body);
+  async import(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: ImportRepoRequest,
+  ): Promise<RepoResponse> {
+    return this.importService.importRepoForOperator(this.requireAccountId(req), body);
   }
 
   @Post('default')
@@ -76,23 +79,23 @@ export class GithubImportController {
    * Extracts the requesting account's primary key `user.id` — the SINGLE
    * per-account scope key (present for BOTH local and GitHub accounts,
    * fix-local-account-settings-scope), used downstream to resolve the account's
-   * OWN stored GitHub OAuth token by `userId`.
+   * OWN connected GitHub PAT by `userId`.
    *
-   * The GitHub identity is no longer required HERE: a LOCAL account (password/OTP,
-   * `githubId === null`) that has separately connected a `github` IdentityLink can
-   * import too. Whether a usable GitHub token actually exists for the account is
-   * decided downstream — a missing/expired token still yields the distinct
+   * The GitHub identity is not required HERE: a LOCAL account (password/OTP,
+   * `githubId === null`) that has separately connected a GitHub PAT can import
+   * too. Whether a usable GitHub PAT actually exists for the account is decided
+   * downstream — a missing/expired PAT still yields the distinct
    * `github_auth_required` signal (NOT a session 401, NOT a silent empty list).
    *
    * This boundary gate is retained ONLY for the IDENTITY-LESS principal (a
    * machine/legacy token with `user === null`), which has no account at all and
-   * therefore no per-account GitHub token to import with.
+   * therefore no per-account GitHub PAT to import with.
    */
   private requireAccountId(req: AuthenticatedRequest): string {
     const user = req.operatorPrincipal?.user;
     if (!user) {
       // No authenticated account at all (the legacy shared-token / machine
-      // principal): there is no per-account GitHub OAuth token to import with, so
+      // principal): there is no per-account GitHub PAT to import with, so
       // it gets the distinct `github_auth_required` signal rather than a 401.
       throw new GithubAuthorizationRequiredException();
     }

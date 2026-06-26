@@ -14,7 +14,7 @@ import {
   type RepoResponse,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
-import { getGithubTokenForUser } from '../auth/github-identity';
+import { decryptStored } from '../settings/secret-storage';
 import {
   findExistingImport,
   githubDedupKey,
@@ -32,21 +32,23 @@ import { GithubReposClient } from './github-repos.client';
  * Composes the PURE decision logic ({@link github-import.logic}) with the GitHub
  * HTTP boundary ({@link GithubReposClient}) and Prisma persistence. The
  * security-critical token handling lives here: the requesting operator's OWN
- * stored OAuth token is read from their `github` `IdentityLink` (resolved by the
- * immutable numeric `githubId`) via the shared github-identity helper, used ONLY
+ * stored GitHub PAT is read from their `github.com` ForgeCredential, used ONLY
  * as the server-side bearer, and NEVER returned to the browser (it is not on any
  * response shape).
  */
 
-/** Distinct signal: the operator must (re)authorize GitHub (4.2). */
+const GITHUB_FORGE_KIND = 'github';
+const GITHUB_FORGE_HOST = 'github.com';
+
+/** Distinct signal: the operator must connect or refresh their GitHub PAT (4.2). */
 export class GithubAuthorizationRequiredException extends HttpException {
   constructor() {
     super(
       {
         error: 'github_auth_required',
         message:
-          'GitHub authorization is required: no valid GitHub access token for ' +
-          'this operator. Reconnect GitHub to list repositories.',
+          'GitHub PAT is required: no valid connected GitHub PAT for this ' +
+          'operator. Connect a GitHub PAT in settings to list repositories.',
       },
       // A distinct, non-session 4xx so the console can branch on it. It is NOT a
       // platform-session 401 (the operator IS authenticated to the platform).
@@ -80,14 +82,14 @@ export class GithubImportService {
 
   /**
    * 4.1 / 4.2 — Lists the available GitHub repos for the requesting account
-   * using THEIR OWN stored token, then reconciles against imported platform
+   * using THEIR OWN stored GitHub PAT, then reconciles against imported platform
    * Repos so the console can mark already-imported entries. Throws the distinct
    * auth-required / retry-able exceptions on the respective failure modes; an
    * empty-but-successful listing returns `[]`.
    */
   async listAvailable(operatorId: string): Promise<AvailableGithubRepo[]> {
-    const accessToken = await this.readOperatorToken(operatorId);
-    const result = await this.githubRepos.listForOperator(accessToken);
+    const pat = await this.readOperatorPat(operatorId);
+    const result = await this.githubRepos.listForOperator(pat);
     if (!result.ok) {
       throw result.error.retryable
         ? new GithubUnavailableException()
@@ -123,6 +125,24 @@ export class GithubImportService {
    * an already-imported repo it throws 409 identifying the existing Repo. Returns
    * the created (or, conceptually, existing) Repo with its platform id.
    */
+  async importRepoForOperator(
+    operatorId: string,
+    body: ImportRepoRequest,
+  ): Promise<RepoResponse> {
+    const available = await this.listAvailable(operatorId);
+    const accessible = available.some(
+      (repo) => repo.id === body.id && repo.full_name === body.full_name,
+    );
+    if (!accessible) {
+      throw new ForbiddenException({
+        error: 'github_repo_not_accessible',
+        message:
+          'The requested GitHub repository is not visible to the connected PAT.',
+      });
+    }
+    return this.importRepo(body);
+  }
+
   async importRepo(body: ImportRepoRequest): Promise<RepoResponse> {
     const imported = await this.loadImportedRefs();
     const existing = findExistingImport(
@@ -210,24 +230,25 @@ export class GithubImportService {
   // ----- internals -----------------------------------------------------------
 
   /**
-   * Reads the requesting account's OWN stored GitHub OAuth token by the account
-   * primary key `userId` — the SINGLE per-account scope key, present for BOTH
-   * local and GitHub accounts (fix-local-account-settings-scope). Returns `null`
-   * when the account has no `github` IdentityLink / no token stored — the client
-   * maps that to the same `github_auth_required` signal as an expired/revoked
-   * token. The token is NEVER returned beyond the server-side GitHub call.
-   *
-   * add-private-account-identity (3.1): the token is the `secret` of the account's
-   * `github` `IdentityLink`. We read+decrypt it directly by `userId` through the
-   * single shared github-identity helper (the IdentityLink table is already FK
-   * `User.id`, so no reverse lookup by the numeric github id is required — a LOCAL
-   * account that has connected a `github` identity resolves the same way).
+   * Reads the requesting account's OWN stored GitHub PAT by the account primary
+   * key `userId` — the SINGLE per-account scope key, present for BOTH local and
+   * GitHub accounts (fix-local-account-settings-scope). Returns `null` when the
+   * account has no connected `github.com` ForgeCredential, the credential is
+   * missing, or decryption fails. The PAT is NEVER returned beyond the server-side
+   * GitHub call.
    */
-  private async readOperatorToken(operatorId: string): Promise<string | null> {
-    // Decrypt at point of use through the shared helper (handles both the
-    // encrypted envelope and a legacy plaintext token); `null` when the account
-    // has no github identity at all (e.g. a LOCAL account that never connected one).
-    return getGithubTokenForUser(this.prisma, operatorId);
+  private async readOperatorPat(operatorId: string): Promise<string | null> {
+    const row = await this.prisma.forgeCredential.findUnique({
+      where: {
+        userId_kind_host: {
+          userId: operatorId,
+          kind: GITHUB_FORGE_KIND,
+          host: GITHUB_FORGE_HOST,
+        },
+      },
+      select: { tokenCiphertext: true },
+    });
+    return decryptStored(row?.tokenCiphertext);
   }
 
   /** Loads the de-dup view of every imported Repo (a non-null githubId). */

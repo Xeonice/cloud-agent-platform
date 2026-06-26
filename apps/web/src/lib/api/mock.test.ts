@@ -160,7 +160,7 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
       expect(() => AuthSessionSchema.parse(disconnected)).not.toThrow();
       expect(disconnected).toBeNull();
 
-      // Drive the gate so the populated allowlisted-user branch is validated.
+      // Drive the gate so the populated mock-user branch is validated.
       setState({ githubConnected: true });
       const connected = await mockAuthSession();
       expect(() => AuthSessionSchema.parse(connected)).not.toThrow();

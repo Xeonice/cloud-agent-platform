@@ -12,10 +12,8 @@
  * the REST and WS clients both import from here rather than reading env
  * directly, so there is exactly one place that knows the cross-origin contract.
  *
- * NOTE (rebuild design D1/D6): the human-facing auth model migrates from the
- * single operator bearer token to a GitHub-OAuth session cookie. Until that
- * lands, `operatorToken()` continues to read `VITE_AUTH_TOKEN` so the existing
- * REST/WS clients keep working against the current single-token api.
+ * NOTE: `operatorToken()` continues to read `VITE_AUTH_TOKEN` for the optional
+ * legacy shared-token path; normal browser auth uses the httpOnly session cookie.
  */
 
 /** Read the first defined `VITE_*` value from `import.meta.env`. */

@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { decryptStored } from '../settings/secret-storage';
-import { getGithubTokenForUser } from '../auth/github-identity';
 import { DefaultForgeRegistry } from './forge-registry';
 import type { ForgeKind, ForgeTarget } from './forge.port';
 
@@ -10,10 +9,8 @@ import type { ForgeKind, ForgeTarget } from './forge.port';
  * (add-multi-forge-task-delivery). Detection (registry) + OWNER-SCOPED credential:
  * the token is the task owner's `ForgeCredential` for the resolved (kind, host)
  * — the owner is the `task.created` audit-event userId, exactly the
- * `PrismaCodexAuthSource` discipline. The github public-host case falls back to
- * the owner's encrypted `github` `IdentityLink` token (via the shared
- * github-identity helper). An unattributed task, or one
- * with no usable credential, resolves to null → push-back is skipped (fail-open).
+ * `PrismaCodexAuthSource` discipline. An unattributed task, or one with no usable
+ * forge PAT credential, resolves to null → push-back is skipped (fail-open).
  *
  * Reads `forgeCredential` directly + decrypts via the shared pure helpers (no
  * NestJS dependency on SettingsModule → no module cycle into guardrails).
@@ -54,10 +51,7 @@ export class ForgeTargetResolver {
       return null;
     }
 
-    let token = await this.forgeCredentialToken(ownerId, location.kind, host, env);
-    if (!token && location.kind === 'github' && host === 'github.com') {
-      token = await this.ownerGithubToken(ownerId, env);
-    }
+    const token = await this.forgeCredentialToken(ownerId, location.kind, host, env);
     if (!token) {
       return null;
     }
@@ -75,20 +69,6 @@ export class ForgeTargetResolver {
       where: { userId_kind_host: { userId, kind, host } },
     });
     return decryptStored(row?.tokenCiphertext, env);
-  }
-
-  /**
-   * The owner's decrypted GitHub login token (the github public-host fallback).
-   *
-   * add-private-account-identity (3.3): the token is now the `secret` of the
-   * owner's `github` `IdentityLink` rather than a `User.githubAccessToken` column,
-   * read through the single shared github-identity helper.
-   */
-  private async ownerGithubToken(
-    ownerId: string,
-    env: NodeJS.ProcessEnv,
-  ): Promise<string | null> {
-    return getGithubTokenForUser(this.prisma, ownerId, env);
   }
 
   /** The task owner's userId (the `task.created` audit event), or null. */

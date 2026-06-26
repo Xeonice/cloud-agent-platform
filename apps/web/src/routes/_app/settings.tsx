@@ -18,18 +18,18 @@
  * Data wiring (read EXCLUSIVELY through the query factories): the loader ensures
  * `settingsQuery` + `reposQuery` + `codexCredentialQuery` + `apiKeysQuery` in
  * PARALLEL so the form / picker / status / key list are hydrated before render.
- * `saveSettingsMutation` persists writable prefs (allowedAccount stays read-only —
- * the allowlist governs login); `saveCodexCredentialMutation` persists the
+ * `saveSettingsMutation` persists writable prefs (allowedAccount stays read-only);
+ * `saveCodexCredentialMutation` persists the
  * execution credential (the plaintext key is dropped to a `hasApiKey` +
  * masked-suffix projection — never re-displayed). `mintApiKeyMutation` /
  * `revokeApiKeyMutation` go through the real/mock seam (api-key-machine-identity):
  * the show-once raw key is the SERVER's one-time response, and both invalidate
  * `apiKeys` so the card's list re-derives.
  *
- * CONCEPT split (never conflated): GitHub OAuth = who may enter the console
- * (read-only identity); the Codex credential = which model the remote Agent runs
- * with; an API key = a machine credential to drive the platform's own API. They
- * are managed in distinct sections and never cross-write.
+ * CONCEPT split (never conflated): the console account = who may enter the
+ * console; the runtime credential = which model the remote Agent runs with; an
+ * API key = a machine credential to drive the platform's own API. They are
+ * managed in distinct sections and never cross-write.
  *
  * SSR-safe: deterministic render off query data; dialog-open + active-tab flags
  * are plain `useState`. No window/clock/random during render or at module scope.

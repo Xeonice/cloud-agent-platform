@@ -37,14 +37,14 @@ import { TasksService } from './tasks.service';
  *                                  already in a terminal state).
  *
  * Auth: the whole surface is behind the global `APP_GUARD` (auth.module), so the
- * stop route is rejected with 401 for an unauthenticated / de-allowlisted caller
+ * stop route is rejected with 401 for an unauthenticated / disabled caller
  * before any state change, exactly like the read/create routes.
  *
  * Scopes (api-key-machine-identity, route-integration 6.2): the guard attaches a
  * resolved {@link OperatorPrincipal}. A principal that carries scopes (an
  * api-key) is admitted to a scoped route only when its scopes include the route's
  * required scope; otherwise this controller rejects with 403 (insufficient
- * scope), distinct from the guard's 401. A scopeless principal (a GitHub session
+ * scope), distinct from the guard's 401. A scopeless principal (a console session
  * or the legacy operator token) has `scopes === undefined`, which {@link hasScope}
  * treats as allow-all, so existing console behavior is unchanged.
  *

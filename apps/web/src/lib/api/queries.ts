@@ -330,7 +330,7 @@ export function settingsQuery() {
 }
 
 /**
- * The admin account-administration list (local + github-linked accounts).
+ * The admin account-administration list.
  * Real/mock switch on `isCapable('accounts')`; the page is admin-guarded and the
  * api 403s a non-admin regardless.
  */
@@ -385,8 +385,8 @@ export function apiKeysQuery() {
 // ---------------------------------------------------------------------------
 
 /**
- * The current OAuth session identity (or `null`). When `auth` is off this reads
- * the mock allowlisted `tanghehui` session driven by the local gate; when on it
+ * The current console session identity (or `null`). When `auth` is off this reads
+ * the mock `tanghehui` session driven by the local gate; when on it
  * reads `GET /auth/session`. `staleTime: 0` so the gate re-checks promptly.
  */
 export function authSessionQuery() {

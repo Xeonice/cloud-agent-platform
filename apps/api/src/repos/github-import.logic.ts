@@ -31,9 +31,9 @@ import type { GithubListErrorCode } from '@cap/contracts';
  */
 export interface GithubListOutcome {
   /**
-   * `true` when the operator has NO stored GitHub OAuth token at all. A missing
+   * `true` when the operator has NO connected GitHub PAT at all. A missing
    * credential is the same operator-facing signal as an expired/revoked one:
-   * GitHub authorization is required.
+   * GitHub PAT connection is required.
    */
   readonly tokenMissing?: boolean;
   /**
@@ -55,7 +55,7 @@ export interface GithubListOutcome {
  *
  * `retryable` is `true` only for {@link GithubListErrorCode} `github_unavailable`
  * so the API layer can map it to a 429/5xx; `github_auth_required` is a terminal
- * "(re)authorize GitHub" signal, never retried as-is.
+ * "connect/refresh GitHub PAT" signal, never retried as-is.
  */
 export interface ClassifiedGithubListError {
   readonly code: GithubListErrorCode;
@@ -66,8 +66,8 @@ export interface ClassifiedGithubListError {
  * Classifies a failed `GET /user/repos` outcome into the auth-required vs
  * retry-able buckets (4.2), keeping the two modes distinct:
  *
- *  - no stored token OR a 401 (token expired/revoked) OR a 403 that is NOT a
- *    rate-limit  →  `github_auth_required` (non-retryable; prompt re-authorize);
+ *  - no connected PAT OR a 401 (token expired/revoked) OR a 403 that is NOT a
+ *    rate-limit  →  `github_auth_required` (non-retryable; prompt PAT refresh);
  *  - 429, any 5xx, a 403 rate-limit, or a network error  →  `github_unavailable`
  *    (retryable; surface as 429/5xx);
  *  - any other unexpected status defaults to retry-able `github_unavailable`
@@ -90,13 +90,13 @@ export function classifyGithubListError(
 
   const status = outcome.status;
 
-  // 401: the token is present but rejected (expired/revoked) -> re-authorize.
+  // 401: the PAT is present but rejected (expired/revoked) -> refresh it.
   if (status === 401) {
     return { code: 'github_auth_required', retryable: false };
   }
 
   // 403: ambiguous. GitHub uses 403 for BOTH a rate-limit (retry-able) and an
-  // insufficient/revoked-scope authorization (re-authorize). A rate-limit 403 is
+  // insufficient/revoked-scope authorization (refresh PAT). A rate-limit 403 is
   // distinguished by exhaustion headers, surfaced via `isRateLimited`.
   if (status === 403) {
     return isRateLimited(outcome)
@@ -110,7 +110,7 @@ export function classifyGithubListError(
   }
 
   // Any other unexpected status: fail safe to retry-able rather than claiming a
-  // (possibly wrong) auth problem that would force a needless re-authorize.
+  // (possibly wrong) auth problem that would force a needless PAT refresh.
   return { code: 'github_unavailable', retryable: true };
 }
 

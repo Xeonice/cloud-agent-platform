@@ -1,9 +1,9 @@
 /**
- * Ground-truth test: "API key resolution re-confirms the allowlist on every request"
+ * Ground-truth test: "API key resolution re-confirms the owner's enabled state on every request"
  * (add-private-account-identity, task 2.5 / D2).
  *
  * The requirement: `resolveApiKey` must re-check `User.allowed` on EVERY call, so
- * that de-allowlisting a user's account causes their API keys to stop working on
+ * that disabling a user's account causes their API keys to stop working on
  * the very next request — without waiting for a cache flush or server restart.
  *
  * Exercises the REAL `AuthSessionService.resolveApiKey` against a fake Prisma
@@ -56,16 +56,16 @@ function makePrismaWithKey(row: FakeApiKeyRow | null) {
   };
 }
 
-/** Construct a real `AuthSessionService` over a fake Prisma (audit is unused here). */
+/** Construct a real `AuthSessionService` over a fake Prisma. */
 function serviceOver(prisma: unknown): AuthSessionService {
-  return new AuthSessionService(prisma as never, null as never);
+  return new AuthSessionService(prisma as never);
 }
 
 // ---------------------------------------------------------------------------
 // The raw key we will present in each call.
 // ---------------------------------------------------------------------------
 
-const RAW_KEY = 'cap_sk_test_key_for_allowlist_recheck';
+const RAW_KEY = 'cap_sk_test_key_for_enabled_recheck';
 
 /**
  * A reusable "valid" key row pointing to an ALLOWED owner.
@@ -104,7 +104,7 @@ test('resolveApiKey: a key whose owner is allowed resolves to the owner + scopes
   assert.deepEqual(result.scopes, ['tasks:read']);
 });
 
-test('resolveApiKey: a key whose owner is de-allowlisted resolves to null (allowlist re-checked)', async () => {
+test('resolveApiKey: a key whose owner is disabled resolves to null (allowed re-checked)', async () => {
   // Same key material, same DB record — ONLY the owner's `allowed` flag changed.
   // The requirement is that resolveApiKey re-confirms this flag on EVERY call.
   const svc = serviceOver(makePrismaWithKey(keyRow(false)));
@@ -114,11 +114,11 @@ test('resolveApiKey: a key whose owner is de-allowlisted resolves to null (allow
   assert.equal(
     result,
     null,
-    'should return null when owner.allowed is false — de-allowlisting takes effect on the very next call',
+    'should return null when owner.allowed is false on the very next call',
   );
 });
 
-test('resolveApiKey: a key for an allowed owner, then same key for a de-allowlisted owner — re-check is per-call', async () => {
+test('resolveApiKey: a key for an allowed owner, then same key for a disabled owner — re-check is per-call', async () => {
   // Simulate two sequential requests using the same raw key.
   // Between request 1 and request 2, an admin flips `allowed` to false.
 
@@ -127,13 +127,13 @@ test('resolveApiKey: a key for an allowed owner, then same key for a de-allowlis
   const r1 = await svcAllowed.resolveApiKey(RAW_KEY);
   assert.ok(r1 !== null, 'request 1: key resolves while owner is allowed');
 
-  // Request 2: owner has been de-allowlisted → same key, null result.
+  // Request 2: owner has been disabled -> same key, null result.
   const svcDenied = serviceOver(makePrismaWithKey(keyRow(false)));
   const r2 = await svcDenied.resolveApiKey(RAW_KEY);
   assert.equal(
     r2,
     null,
-    'request 2: same key returns null after owner is de-allowlisted — no caching of the prior admit',
+    'request 2: same key returns null after owner is disabled — no caching of the prior admit',
   );
 });
 

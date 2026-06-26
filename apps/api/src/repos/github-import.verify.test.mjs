@@ -15,7 +15,7 @@
  *     level (findExistingImport returns the SAME existing platform repo → 409);
  *   - set/clear/read default: at most one default after a write; defaulting an
  *     un-imported repo is rejected; read-back picks the single default;
- *   - GitHub error mapping: missing-token → reauth signal vs rate-limit →
+ *   - GitHub error mapping: missing-PAT → PAT-required signal vs rate-limit →
  *     retry-able vs empty-but-success ≠ failure;
  *   - only-imported-selectable: a plain gitSource (githubId null) repo can never
  *     be set default.
@@ -123,16 +123,16 @@ test('4.4 reconcileAvailableRepos marks only the genuinely-imported entry among 
 });
 
 // ---------------------------------------------------------------------------
-// 4.2 — GitHub error mapping (reauth vs retry-able vs empty≠failure)
+// 4.2 — GitHub error mapping (PAT-required vs retry-able vs empty≠failure)
 // ---------------------------------------------------------------------------
 
-test('4.2 missing token → reauth signal (github_auth_required, non-retryable)', () => {
+test('4.2 missing PAT → PAT-required signal (github_auth_required, non-retryable)', () => {
   const r = classifyGithubListError({ tokenMissing: true });
   assert.equal(r.code, 'github_auth_required');
   assert.equal(r.retryable, false);
 });
 
-test('4.2 401 expired / 403 revoked-scope token → reauth signal (non-retryable)', () => {
+test('4.2 401 expired / 403 revoked-scope PAT → PAT-required signal (non-retryable)', () => {
   for (const status of [401, 403]) {
     const r = classifyGithubListError({ status }); // 403 without rate-limit headers
     assert.equal(r.code, 'github_auth_required', `status ${status}`);
@@ -148,7 +148,7 @@ test('4.2 403 rate-limit / 429 / 5xx / network → retry-able (github_unavailabl
     { status: 500 },
     { status: 503 },
     { networkError: true },
-    { status: 418 }, // unexpected → fail SAFE to retry-able, not a false reauth
+    { status: 418 }, // unexpected → fail SAFE to retry-able, not a false PAT-required signal
   ];
   for (const c of cases) {
     const r = classifyGithubListError(c);
@@ -157,11 +157,11 @@ test('4.2 403 rate-limit / 429 / 5xx / network → retry-able (github_unavailabl
   }
 });
 
-test('4.2 reauth and retry-able are DISTINCT modes (a rate-limit 403 ≠ a revoked 403)', () => {
-  const reauth = classifyGithubListError({ status: 403 });
+test('4.2 PAT-required and retry-able are DISTINCT modes (a rate-limit 403 ≠ a revoked 403)', () => {
+  const patRequired = classifyGithubListError({ status: 403 });
   const limited = classifyGithubListError({ status: 403, rateLimited: true });
-  assert.notEqual(reauth.code, limited.code);
-  assert.equal(reauth.retryable, false);
+  assert.notEqual(patRequired.code, limited.code);
+  assert.equal(patRequired.retryable, false);
   assert.equal(limited.retryable, true);
 });
 

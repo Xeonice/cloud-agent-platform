@@ -4,10 +4,10 @@
  * The prototype `.panel.account-panel`: a panel-head ("当前身份" + a green
  * 已验证 `StatusPill`), an `.account-identity` row (large avatar with the login
  * initials + the login + the mono `github.com/<login>` handle), and a
- * `.config-list` of three read-only rows (登录方式 / 控制台范围 / 仓库来源).
+ * `.config-list` of read-only rows (角色 / 登录方式 / 控制台范围 / 仓库来源).
  *
  * This card surfaces the READ-ONLY console login identity — the operator
- * account that is allowed into the console (governed by the allowlist / admin
+ * account that is allowed into the console (governed by account administration
  * provisioning, NOT editable here). The login is passed in from
  * `settingsQuery().allowedAccount` (never hardcoded). This is DISTINCT from the
  * Codex execution credential managed in the `#codex` section.
@@ -84,13 +84,13 @@ export function AccountPanel({
         <div className="min-w-0">
           <strong className="block text-foreground">{login}</strong>
           <span className="block font-mono text-muted-foreground">
-            github.com/{login}
+            local account
           </span>
         </div>
       </div>
       <div className="grid overflow-hidden rounded-md shadow-ring">
         <ConfigRow label="角色" value={ROLE_LABEL[role]} />
-        <ConfigRow label="登录方式" value="GitHub OAuth" />
+        <ConfigRow label="登录方式" value="本地账号" />
         <ConfigRow label="控制台范围" value="私有访问" />
         <ConfigRow label="仓库来源" value="已导入仓库" />
       </div>

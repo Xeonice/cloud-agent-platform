@@ -271,7 +271,7 @@ export type MetricsResponse = z.infer<typeof MetricsResponseSchema>;
  *    it has genuinely left the sampled set beyond the carry-forward bound). NOT an
  *    error and NOT fabricated zeros — the console renders "未运行/未采样".
  *
- * The endpoint is auth-gated identically to `/metrics` (allowlisted session;
+ * The endpoint is auth-gated identically to `/metrics` (enabled account session;
  * 401 otherwise) — a per-task figure is still host-execution operational data.
  *
  * The `scope` discriminator is {@link TaskResourceScopeSchema}, declared with

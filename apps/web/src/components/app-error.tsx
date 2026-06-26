@@ -10,8 +10,8 @@
  *
  * LOGIN-GATE DETECTION (D1, the load-bearing security boundary): the real REST
  * client throws an {@link ApiError} carrying the HTTP status. A `401` means the
- * request was unauthenticated — session expired, never signed in, or the GitHub
- * identity is NOT on the hard allowlist (the backend returns 401 in all three).
+ * request was unauthenticated — session expired, never signed in, or the account
+ * is disabled (the backend returns 401 in all three).
  * Because login == host root, a 401 must NOT look like a generic crash: it
  * routes to a dedicated re-login prompt with a link to `/login`, never an
  * actionable stack the operator would try to "retry" against.
@@ -25,7 +25,7 @@ import { ApiError } from "@/lib/api/real";
 /**
  * Whether `error` is an authentication/authorization failure (HTTP 401) raised
  * by the real REST client. Covers session-expired, unauthenticated, and
- * non-allowlisted GitHub identities alike — the backend returns 401 for all.
+ * disabled accounts alike — the backend returns 401 for all.
  */
 function isUnauthorized(error: unknown): boolean {
   return error instanceof ApiError && error.status === 401;

@@ -9,7 +9,7 @@
  * Configurable (task 12.4 reuse): each standalone page passes its OWN nav links
  * + CTA via props, so the same chrome serves both the `/workspace` launcher
  * (产品介绍 / 仓库 / 历史 → 进入工作台) and the `/` marketing landing
- * (流程 / 权限 / 控制台 → GitHub 登录). The props DEFAULT to the workspace
+ * (流程 / 权限 / 控制台 → 登录控制台). The props DEFAULT to the workspace
  * (index.html) link-set already in place, so `/workspace` + `/resume` keep
  * working unchanged when they drop in a bare `<LandingNav />`.
  *
@@ -20,7 +20,7 @@
  *     the target section to clear this fixed 64px nav).
  *
  * Account affordance (verify-reopened V1): the optional `account` prop renders
- * the authenticated operator's identity (avatar-or-initials + GitHub login)
+ * the authenticated operator's identity (avatar-or-initials + display login)
  * alongside the CTA, per the "Landing is session-aware" scenario. Pages pass it
  * only once the session is known on the client, so the SSR/first-paint markup
  * stays the anonymous state (no hydration mismatch).
@@ -56,9 +56,9 @@ export interface LandingNavCta {
 
 /** The authenticated operator identity shown alongside the CTA. */
 export interface LandingNavAccount {
-  /** GitHub login (the allowlist identity). */
+  /** Display login for the authenticated operator. */
   login: string;
-  /** GitHub avatar URL; falls back to login-derived initials when absent. */
+  /** Avatar URL; falls back to login-derived initials when absent. */
   avatarUrl?: string;
 }
 

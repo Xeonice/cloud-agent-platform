@@ -32,7 +32,7 @@ import {
  * tasks 7.1 / 7.2), mounted under `/accounts`.
  *
  * Every route is gated TWICE over:
- *   1. the GLOBAL `AuthGuard` first rejects any unauthenticated / de-allowlisted
+ *   1. the GLOBAL `AuthGuard` first rejects any unauthenticated / disabled
  *      caller with 401 (no principal reaches these handlers); then
  *   2. {@link requireAdmin} re-confirms the resolved principal is an `allowed`
  *      account whose `role = admin` by reading the live `User` row — a `member`
@@ -46,13 +46,13 @@ import {
  * allowed account is host-root), per the change's explicit non-goal.
  *
  * Routes (all admin-gated):
- *   - `GET   /accounts`               -> 200 all accounts (local + github-linked),
+ *   - `GET   /accounts`               -> 200 all accounts,
  *                                        non-secret rows for the admin table.
  *   - `POST  /accounts`               -> 201 the created account (no secret).
  *   - `PATCH /accounts/:id/enabled`   -> 200 the account after the `allowed` flip
- *                                        (works for github-linked accounts too).
- *   - `PATCH /accounts/:id/password`  -> 200 after rotating a LOCAL account's
- *                                        password (400 for a github-only account).
+ *                                        (works for every account row).
+ *   - `PATCH /accounts/:id/password`  -> 200 after rotating an account password
+ *                                        (400 when the row has no password identity).
  *   - `PATCH /accounts/:id/role`      -> 200 after assigning the role.
  */
 @Controller('accounts')

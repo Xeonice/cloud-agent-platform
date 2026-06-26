@@ -33,7 +33,7 @@ const PUBLIC_HOST: Record<ForgeKind, string> = {
 };
 
 const ROWS: ReadonlyArray<{ kind: ForgeKind; label: string; hint: string }> = [
-  { kind: "github", label: "GitHub", hint: "需 repo 范围的 PAT（或复用登录令牌）" },
+  { kind: "github", label: "GitHub", hint: "需 repo 范围的 PAT" },
   { kind: "gitlab", label: "GitLab", hint: "需 api 范围的 Personal Access Token" },
   { kind: "gitee", label: "Gitee", hint: "需 projects + pull_requests 范围的私人令牌" },
 ];

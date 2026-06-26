@@ -198,11 +198,11 @@ function WorkspacePage() {
             pill="Repository scope"
             pillTone="default"
             title="仓库导入"
-            footerMeta="OAuth scoped"
+            footerMeta="PAT scoped"
             footerAction="管理"
             to="/repositories"
           >
-            只把当前 GitHub 账号下明确导入的仓库交给远端 Agent，默认仓库可随时切换。
+            只把当前 PAT 可访问且明确导入的仓库交给远端 Agent，默认仓库可随时切换。
           </ScreenCard>
 
           {liveTask ? (
@@ -249,7 +249,7 @@ function WorkspacePage() {
             footerAction="配置"
             to="/settings"
           >
-            控制白名单账号、默认仓库、会话保留策略，以及 Codex 与 Claude Code 的模型凭据接入。
+            管理本地账号、默认仓库、会话保留策略，以及 Codex 与 Claude Code 的模型凭据接入。
           </ScreenCard>
 
           <ScreenCard
@@ -260,7 +260,7 @@ function WorkspacePage() {
             footerAction="阅读"
             to="/"
           >
-            面向第一次进入的人解释产品结构：OAuth、仓库范围、远端 runner 和实时终端如何协作。
+            面向第一次进入的人解释产品结构：本地登录、PAT 仓库范围、远端 runner 和实时终端如何协作。
           </ScreenCard>
         </LauncherGrid>
       </main>

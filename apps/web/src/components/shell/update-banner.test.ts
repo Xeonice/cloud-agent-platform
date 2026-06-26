@@ -114,7 +114,7 @@ describe("selectBannerView — the banner's show/hide decision", () => {
 // Self-update upgrade action gate (self-update-action task 2.3)
 // ---------------------------------------------------------------------------
 
-/** An allowlisted session user, overridable per case. */
+/** An enabled session user, overridable per case. */
 function session(overrides: Partial<NonNullable<AuthSession>> = {}): AuthSession {
   return {
     id: "u_test_operator",
@@ -137,28 +137,22 @@ const VIEW: UpdateBannerView = {
   releaseName: "v0.4.0",
 };
 
-describe("isAdminSession — the banner's admin gate (env allowlist, design D2)", () => {
-  it("is an admin when the allowlisted login is in the admin allowlist (case-insensitive)", () => {
-    expect(isAdminSession(session({ login: "tanghehui" }), ["tanghehui"])).toBe(true);
-    expect(isAdminSession(session({ login: "TangHehui" }), ["tanghehui"])).toBe(true);
+describe("isAdminSession — the banner's admin gate", () => {
+  it("is an admin when the session role is admin", () => {
+    expect(isAdminSession(session({ role: "admin" }))).toBe(true);
   });
 
-  it("is NOT an admin when the login is absent from the allowlist", () => {
-    expect(isAdminSession(session({ login: "someoneelse" }), ["tanghehui"])).toBe(false);
+  it("is NOT an admin when the session role is member", () => {
+    expect(isAdminSession(session({ role: "member" }))).toBe(false);
   });
 
   it("fails closed for a logged-out / unresolved session", () => {
-    expect(isAdminSession(null, ["tanghehui"])).toBe(false);
-    expect(isAdminSession(undefined, ["tanghehui"])).toBe(false);
+    expect(isAdminSession(null)).toBe(false);
+    expect(isAdminSession(undefined)).toBe(false);
   });
 
-  it("fails closed for a non-allowlisted session even if the login matches", () => {
-    expect(isAdminSession(session({ allowed: false }), ["tanghehui"])).toBe(false);
-  });
-
-  it("fails closed when NO admins are configured (empty allowlist)", () => {
-    // No admin set ⇒ nobody is admin (the shipped posture before activation).
-    expect(isAdminSession(session(), [])).toBe(false);
+  it("fails closed for a disabled admin session", () => {
+    expect(isAdminSession(session({ allowed: false, role: "admin" }))).toBe(false);
   });
 });
 

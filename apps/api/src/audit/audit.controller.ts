@@ -17,11 +17,11 @@ import { TerminalGateway } from '../terminal/terminal.gateway';
  *
  * Every route here is protected by the GLOBAL operator `AuthGuard` (registered
  * via `APP_GUARD` in `AuthModule`): these paths are NOT in the guard's exemption
- * list (`/health` + the OAuth entry points), so a request without a valid
- * operator principal — missing/expired credentials or a now-de-allowlisted user —
+ * list (`/health` + local auth entry points), so a request without a valid
+ * operator principal — missing/expired credentials or a now-disabled user —
  * is rejected with 401 BEFORE any handler runs and no audit history or pending
  * approval is ever serialized to an unauthenticated caller (6.4/6.5 "401 on
- * missing/expired/non-allowlisted").
+ * missing/expired/disabled").
  *
  * - `GET /audit/events`          -> 200, recent events most-recent-first,
  *                                   filterable by `level` and task `status`,

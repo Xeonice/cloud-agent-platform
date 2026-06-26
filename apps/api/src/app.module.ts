@@ -155,7 +155,7 @@ import { SmtpEnvMigrationModule } from './mail/smtp-env-migration.module';
     //     outage) + `POST /auth/admin/reveal` one-time reveal.
     //   - `PasswordModule` — `/auth/password` (email+password login) +
     //     `/auth/change-password` (forced first-login + self-service change). Both
-    //     paths are exact-match members of the guard's `OAUTH_EXEMPT_PATHS` and the
+    //     paths are exact-match members of the guard's `PUBLIC_AUTH_PATHS` and the
     //     `auth` IP+email throttle tier, so they are governed pre-auth.
     MailModule,
     OtpModule,

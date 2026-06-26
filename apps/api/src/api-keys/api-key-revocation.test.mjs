@@ -27,10 +27,18 @@ const { ApiKeysService }     = require(path.join(DIST_KEYS, 'api-keys.service.js
 
 const GITHUB_ID  = 7777;
 const USER_ID    = 'user-00000000-0000-0000-0000-000000000001';
-const AUTH_ENV   = { AUTH_ALLOWLIST: String(GITHUB_ID) };
 
 function makePrisma() {
-  const users  = [{ id: USER_ID, githubId: GITHUB_ID, login: 'tester', name: 'Tester', avatarUrl: '' }];
+  const users  = [{
+    id: USER_ID,
+    githubId: GITHUB_ID,
+    login: 'tester',
+    name: 'Tester',
+    avatarUrl: '',
+    allowed: true,
+    role: 'member',
+    mustChangePassword: false,
+  }];
   const apiKeys = [];
   let seq = 0;
 
@@ -113,12 +121,12 @@ const run = async () => {
   const authSvc   = new AuthSessionService(prisma);
 
   // Step 1: Mint a key.
-  const minted = await keySvc.mint(GITHUB_ID, { name: 'ci-bot', scopes: ['tasks:read'] });
+  const minted = await keySvc.mint(USER_ID, { name: 'ci-bot', scopes: ['tasks:read'] });
   assert(typeof minted.key === 'string' && minted.key.startsWith('cap_sk_'),
     'Step 1: mint returns a raw cap_sk_ key');
 
   // Step 2: The raw key resolves to a principal (key is active).
-  const before = await authSvc.resolveApiKey(minted.key, AUTH_ENV);
+  const before = await authSvc.resolveApiKey(minted.key);
   assert(before !== null, 'Step 2: active key resolves to a principal (not null)');
   assert(before?.user?.githubId === GITHUB_ID,
     'Step 2b: resolved principal carries the correct githubId');
@@ -126,21 +134,21 @@ const run = async () => {
     'Step 2c: resolved principal carries the correct keyId');
 
   // Step 3: Revoke the key.
-  const revokeResult = await keySvc.revoke(GITHUB_ID, minted.id);
+  const revokeResult = await keySvc.revoke(USER_ID, minted.id);
   assert(revokeResult.revokedAt !== null,
     'Step 3: revoke stamps revokedAt on the key record');
 
   // Step 4: The same raw key no longer resolves — revocation takes effect immediately.
-  const after = await authSvc.resolveApiKey(minted.key, AUTH_ENV);
+  const after = await authSvc.resolveApiKey(minted.key);
   assert(after === null,
     'Step 4: revoked key resolves to null (authentication denied)');
 
   // Step 5: Idempotency — revoking again still returns a stamped record and the
   //         key still does not resolve.
-  const revokeAgain = await keySvc.revoke(GITHUB_ID, minted.id);
+  const revokeAgain = await keySvc.revoke(USER_ID, minted.id);
   assert(revokeAgain.revokedAt === revokeResult.revokedAt,
     'Step 5a: second revoke is idempotent (revokedAt timestamp unchanged)');
-  const afterAgain = await authSvc.resolveApiKey(minted.key, AUTH_ENV);
+  const afterAgain = await authSvc.resolveApiKey(minted.key);
   assert(afterAgain === null,
     'Step 5b: key still does not resolve after idempotent re-revoke');
 

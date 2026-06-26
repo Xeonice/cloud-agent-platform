@@ -1,17 +1,18 @@
 /**
- * fix-local-account-settings-scope (repos-github-import) — the GitHub-import
- * surface scopes the account's OWN GitHub OAuth token on the account primary key
- * `user.id`, NOT on the GitHub identity. A LOCAL account (password/OTP,
- * `githubId === null`) that has separately connected a `github` IdentityLink can
- * list/import; a GitHub account is unaffected; the per-account token never leaks
- * across accounts; an IDENTITY-LESS principal (no account at all) is still
- * rejected with the distinct `github_auth_required` signal (NOT a session 401).
+ * repos-github-import — the GitHub-import surface scopes the account's OWN
+ * connected GitHub PAT on the account primary key `user.id`, NOT on the GitHub
+ * identity. A LOCAL account (password/OTP, `githubId === null`) that has
+ * connected a GitHub PAT can list/import; a GitHub account is unaffected; the
+ * per-account token never leaks across accounts; an IDENTITY-LESS principal (no
+ * account at all) is still rejected with the distinct `github_auth_required`
+ * signal (NOT a session 401).
  *
  * The controller's account-id gate and the service's `userId`-keyed token read are
  * exercised together with stub Prisma/HTTP boundaries — no live GitHub, no DB.
  */
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
+import { ForbiddenException } from '@nestjs/common';
 
 import type { AvailableGithubRepo, SessionUser } from '@cap/contracts';
 
@@ -23,6 +24,7 @@ import {
 import type { PrismaService } from '../prisma/prisma.service';
 import type { GithubReposClient, GithubListResult } from './github-repos.client';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
+import { encryptToStored } from '../settings/secret-storage';
 
 // --- fixtures --------------------------------------------------------------
 
@@ -73,19 +75,37 @@ const SAMPLE_REPO: AvailableGithubRepo = {
   description: null,
 };
 
+const ORIGINAL_ENC_KEY = process.env.CODEX_CRED_ENC_KEY;
+const TEST_ENC_KEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+process.env.CODEX_CRED_ENC_KEY = TEST_ENC_KEY;
+
+after(() => {
+  if (ORIGINAL_ENC_KEY === undefined) {
+    delete process.env.CODEX_CRED_ENC_KEY;
+  } else {
+    process.env.CODEX_CRED_ENC_KEY = ORIGINAL_ENC_KEY;
+  }
+});
+
 /**
- * A Prisma stub whose `identityLink.findFirst` returns each account's OWN secret
- * keyed by `userId` (the FK on the github IdentityLink) — exactly the query
- * `getGithubTokenForUser({ where: { userId, provider } })` makes. An account with
- * no entry (a local account that never connected GitHub) yields `null`, the same
- * signal as a missing token.
+ * A Prisma stub whose `forgeCredential.findUnique` returns each account's OWN
+ * encrypted GitHub PAT keyed by `(userId, github, github.com)`. An account with no
+ * entry yields `null`, the same signal as a missing token.
  */
-function prismaWithTokens(tokensByUserId: Record<string, string>): PrismaService {
+function prismaWithPats(tokensByUserId: Record<string, string>): PrismaService {
   return {
-    identityLink: {
-      findFirst: async (args: { where: { userId: string; provider: string } }) => {
-        const secret = tokensByUserId[args.where.userId];
-        return secret === undefined ? null : { secret };
+    forgeCredential: {
+      findUnique: async (args: {
+        where: { userId_kind_host: { userId: string; kind: string; host: string } };
+      }) => {
+        const key = args.where.userId_kind_host;
+        if (key.kind !== 'github' || key.host !== 'github.com') {
+          return null;
+        }
+        const token = tokensByUserId[key.userId];
+        return token === undefined
+          ? null
+          : { tokenCiphertext: encryptToStored(token) };
       },
     },
     repo: {
@@ -123,9 +143,9 @@ function reqFor(user: SessionUser | null): AuthenticatedRequest {
 
 // --- tests -----------------------------------------------------------------
 
-test('LOCAL account (githubId=null) with a connected github identity can list repos', async () => {
+test('LOCAL account (githubId=null) with a connected GitHub PAT can list repos', async () => {
   const { client, seenTokens } = recordingClient();
-  const prisma = prismaWithTokens({ [LOCAL_ACCOUNT.id]: 'local-gh-token' });
+  const prisma = prismaWithPats({ [LOCAL_ACCOUNT.id]: 'local-gh-pat' });
   const svc = new GithubImportService(prisma, client);
   const controller = new GithubImportController(svc);
 
@@ -133,27 +153,27 @@ test('LOCAL account (githubId=null) with a connected github identity can list re
 
   assert.equal(out.length, 1);
   assert.equal(out[0].full_name, 'owner/repo');
-  // The token resolved was the LOCAL account's own (keyed on user.id), proving the
-  // identity gate no longer blocks a local account from importing.
-  assert.deepEqual(seenTokens, ['local-gh-token']);
+  // The PAT resolved was the LOCAL account's own (keyed on user.id), proving the
+  // identity gate does not block a local account from importing.
+  assert.deepEqual(seenTokens, ['local-gh-pat']);
 });
 
-test('GitHub account is unaffected — resolves ITS OWN token by user.id (no regression)', async () => {
+test('GitHub account is unaffected — resolves ITS OWN PAT by user.id (no regression)', async () => {
   const { client, seenTokens } = recordingClient();
-  const prisma = prismaWithTokens({ [GITHUB_ACCOUNT.id]: 'gh-token' });
+  const prisma = prismaWithPats({ [GITHUB_ACCOUNT.id]: 'gh-pat' });
   const svc = new GithubImportService(prisma, client);
   const controller = new GithubImportController(svc);
 
   const out = await controller.listAvailable(reqFor(GITHUB_ACCOUNT));
 
   assert.equal(out.length, 1);
-  assert.deepEqual(seenTokens, ['gh-token']);
+  assert.deepEqual(seenTokens, ['gh-pat']);
 });
 
 test('per-account isolation — account A never reads account B’s token', async () => {
-  const prisma = prismaWithTokens({
-    [GITHUB_ACCOUNT.id]: 'A-token',
-    [OTHER_ACCOUNT.id]: 'B-token',
+  const prisma = prismaWithPats({
+    [GITHUB_ACCOUNT.id]: 'A-pat',
+    [OTHER_ACCOUNT.id]: 'B-pat',
   });
 
   const a = recordingClient();
@@ -166,15 +186,15 @@ test('per-account isolation — account A never reads account B’s token', asyn
     new GithubImportService(prisma, b.client),
   ).listAvailable(reqFor(OTHER_ACCOUNT));
 
-  assert.deepEqual(a.seenTokens, ['A-token'], 'A sees only A token');
-  assert.deepEqual(b.seenTokens, ['B-token'], 'B sees only B token');
+  assert.deepEqual(a.seenTokens, ['A-pat'], 'A sees only A PAT');
+  assert.deepEqual(b.seenTokens, ['B-pat'], 'B sees only B PAT');
 });
 
-test('account with NO connected github identity gets github_auth_required (not an empty list)', async () => {
+test('account with NO connected GitHub PAT gets github_auth_required (not an empty list)', async () => {
   const { client } = recordingClient();
-  // No entry for the local account → getGithubTokenForUser returns null → client
+  // No forge credential for the local account → service returns null → client
   // short-circuits to the auth-required failure.
-  const prisma = prismaWithTokens({});
+  const prisma = prismaWithPats({});
   const svc = new GithubImportService(prisma, client);
   const controller = new GithubImportController(svc);
 
@@ -189,9 +209,55 @@ test('account with NO connected github identity gets github_auth_required (not a
   );
 });
 
+test('account with NO connected GitHub PAT cannot import by posting a repo body directly', async () => {
+  const { client } = recordingClient();
+  const prisma = prismaWithPats({});
+  const svc = new GithubImportService(prisma, client);
+  const controller = new GithubImportController(svc);
+
+  await assert.rejects(
+    () =>
+      controller.import(reqFor(LOCAL_ACCOUNT), {
+        id: 1,
+        full_name: 'owner/repo',
+        defaultBranch: 'main',
+        description: null,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof GithubAuthorizationRequiredException);
+      const body = err.getResponse() as { error: string };
+      assert.equal(body.error, 'github_auth_required');
+      return true;
+    },
+  );
+});
+
+test('connected GitHub PAT cannot import a repo outside its visible list', async () => {
+  const { client } = recordingClient([]);
+  const prisma = prismaWithPats({ [LOCAL_ACCOUNT.id]: 'local-gh-pat' });
+  const svc = new GithubImportService(prisma, client);
+  const controller = new GithubImportController(svc);
+
+  await assert.rejects(
+    () =>
+      controller.import(reqFor(LOCAL_ACCOUNT), {
+        id: 1,
+        full_name: 'owner/repo',
+        defaultBranch: 'main',
+        description: null,
+      }),
+    (err: unknown) => {
+      assert.ok(err instanceof ForbiddenException);
+      const body = err.getResponse() as { error: string };
+      assert.equal(body.error, 'github_repo_not_accessible');
+      return true;
+    },
+  );
+});
+
 test('IDENTITY-LESS principal (machine/legacy token, user=null) is rejected at the boundary', async () => {
   const { client, seenTokens } = recordingClient();
-  const prisma = prismaWithTokens({});
+  const prisma = prismaWithPats({});
   const svc = new GithubImportService(prisma, client);
   const controller = new GithubImportController(svc);
 

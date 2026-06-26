@@ -43,12 +43,12 @@ interface SelfUpdateAck {
  * Layered containment, each enforced BEFORE any docker op:
  *
  *   1. OPERATOR GUARD (D2): the GLOBAL `APP_GUARD` `AuthGuard` already rejects any
- *      unauthenticated / de-allowlisted request with 401 before this handler runs
+ *      unauthenticated / disabled-account request with 401 before this handler runs
  *      and attaches the resolved {@link OperatorPrincipal} to the request. This
  *      route is NOT exempt, so it is operator-guarded like every protected route.
- *   2. ADMIN GATE (D2): even an authenticated operator must be an explicitly
- *      allowlisted ADMIN ({@link isAdminPrincipal} / `SELF_UPDATE_ADMINS`). A
- *      non-admin is rejected 403 — "who can press it" == "who can run as root".
+ *   2. ADMIN GATE (D2): even an authenticated operator must be a role=admin
+ *      session. A non-admin is rejected 403 — "who can press it" ==
+ *      "who can run as root".
  *   3. ENV GATE (D1): `SELF_UPDATE_ENABLED` default OFF → the service refuses and
  *      the handler maps it to 404, so a deployed-but-disabled instance is INERT
  *      (no live upgrade capability is exposed).
@@ -74,12 +74,11 @@ export class SelfUpdateController {
     @Body() body: SelfUpdateRequestBody,
   ): Promise<SelfUpdateAck> {
     // ADMIN GATE (D2). The global AuthGuard has already attached a resolved
-    // operator principal (or 401'd); narrow further to an explicitly-allowlisted
-    // admin. A non-admin (or the identity-less legacy bearer) is refused 403 — the
-    // host-root button requires a named admin, not merely a logged-in operator.
+    // operator principal (or 401'd); narrow further to a role=admin human session.
+    // A non-admin (or the identity-less legacy bearer) is refused 403.
     if (!isAdminPrincipal(req.operatorPrincipal)) {
       throw new ForbiddenException(
-        'self-update requires an admin operator (SELF_UPDATE_ADMINS)',
+        'self-update requires an admin console session',
       );
     }
 

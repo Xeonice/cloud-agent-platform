@@ -245,7 +245,7 @@ export function CodexDirectDialog({
           <div className="grid gap-2" aria-label="授权范围">
             <ScopeRow label="会话范围" value="仅用于远端 Agent 执行当前任务" />
             <ScopeRow label="登录态存储" value="auth.json 经 AES-256-GCM 加密存于服务端，永不回显" />
-            <ScopeRow label="仓库权限" value="沿用 GitHub OAuth 与仓库导入范围" />
+            <ScopeRow label="仓库权限" value="沿用已连接 GitHub PAT 与仓库导入范围" />
           </div>
 
           {connected && phase === "idle" ? (

@@ -74,7 +74,7 @@ function makePrisma(row: FakeSessionRow | null) {
 }
 
 function serviceOver(prisma: unknown): AuthSessionService {
-  return new AuthSessionService(prisma as never, null as never);
+  return new AuthSessionService(prisma as never);
 }
 
 /** Build a guard whose injected service delegates to a real AuthSessionService over `prisma`. */
@@ -230,7 +230,7 @@ test('REST session validation: user.allowed=false while holding a live session â
 
   const result = await activate(guard, context);
 
-  assert.equal(result.threw, true, 'de-allowlisted user must be denied');
+  assert.equal(result.threw, true, 'disabled user must be denied');
   assert.equal(
     result.status,
     401,
@@ -270,7 +270,7 @@ test('REST session validation: mustChangePassword user â†’ 403 password_change_r
 test('REST session validation: mustChangePassword user CAN reach /auth/change-password (exempt path)', async () => {
   const prisma = makePrisma(sessionRow({ mustChangePassword: true }));
   const guard = guardOverPrisma(prisma);
-  // /auth/change-password is in OAUTH_EXEMPT_PATHS; the guard returns true before
+  // /auth/change-password is in PUBLIC_AUTH_PATHS; the guard returns true before
   // resolving any principal, so the must-change chokepoint is never reached.
   const context = ctx({ path: '/auth/change-password', cookie: SESSION_COOKIE });
 

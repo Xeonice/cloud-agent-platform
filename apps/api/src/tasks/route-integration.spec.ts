@@ -66,7 +66,7 @@ function makeSessionUser(githubId: number): SessionUser {
   };
 }
 
-/** A GitHub-OAuth session principal — carries NO scopes (allow-all). */
+/** A human session principal — carries NO scopes (allow-all). */
 function sessionPrincipal(githubId: number): OperatorPrincipal {
   return { kind: 'session', user: makeSessionUser(githubId) };
 }

@@ -19,7 +19,7 @@ import { TerminalModule } from '../terminal/terminal.module';
  *    (recent, filterable, capped), `GET /audit/tasks/:taskId` (one task's full
  *    ordered sequence), and `GET /audit/approvals/pending` (pending
  *    `PermissionRequest` decisions, 6.5). All routes inherit the GLOBAL operator
- *    `AuthGuard`, so an unauthenticated/de-allowlisted caller gets 401.
+ *    `AuthGuard`, so an unauthenticated/disabled caller gets 401.
  *
  * Imports {@link TerminalModule} for the {@link TerminalGateway}, whose live
  * pending-approval map backs the 6.5 read endpoint. The DB access uses the

@@ -27,10 +27,9 @@ import { RepoRow, RepoListHead, repoFullName } from "./repo-row";
 
 /**
  * The permission label shown for every scoped imported repo. GitHub-imported
- * repos receive a short-lived per-task token; the prototype labels each scoped
- * repo "GitHub App scoped".
+ * repos use the operator's connected GitHub PAT server-side.
  */
-const PERMISSION_LABEL = "GitHub App scoped";
+const PERMISSION_LABEL = "GitHub PAT";
 
 export interface ImportedReposPanelProps {
   /** The imported platform repos (from `reposQuery`). */
@@ -103,7 +102,7 @@ export function ImportedReposPanel({
                 policy={
                   <>
                     <p className="m-0 truncate">{PERMISSION_LABEL}</p>
-                    <p className="m-0 truncate text-xs">仓库 token 按任务短期签发。</p>
+                    <p className="m-0 truncate text-xs">使用已连接 PAT 授权 clone/push。</p>
                   </>
                 }
                 sync={

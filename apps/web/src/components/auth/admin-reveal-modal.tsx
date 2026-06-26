@@ -36,7 +36,7 @@ export interface AdminRevealCredentials {
   password: string;
 }
 
-/** The reveal endpoint path (exact-match `OAUTH_EXEMPT_PATHS`, D10). */
+/** The reveal endpoint path (exact-match `PUBLIC_AUTH_PATHS`, D10). */
 const REVEAL_PATH = "/auth/admin-reveal";
 
 /**

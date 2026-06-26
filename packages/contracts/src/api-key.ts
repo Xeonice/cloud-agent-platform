@@ -12,7 +12,7 @@ import { API_KEY_PREFIX } from './credential-prefix.js';
  * shape carries the raw key or its stored hash ({@link ApiKeyListItemSchema}).
  *
  * These are the OPERATOR-facing CRUD shapes only; the resolution path (hashing a
- * presented key, re-confirming the owner's allowlist, yielding the principal)
+ * presented key, re-confirming the owner's enabled state, yielding the principal)
  * lives in `apps/api` and never returns any of these shapes to a key holder.
  */
 

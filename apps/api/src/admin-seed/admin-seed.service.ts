@@ -192,8 +192,7 @@ export class AdminSeedService implements OnApplicationBootstrap {
     }
 
     // The ADMIN_EMAIL account already exists. Ensure it is an admin (idempotent
-    // promotion) however it was created — e.g. GitHub OAuth defaults new accounts to
-    // `role=member`, which would otherwise leave the owner unable to administer. Touch
+    // promotion) however it was created. Touch
     // ONLY the role; never reset the password / allowed / mustChangePassword (that is
     // the "never reset a customized admin" discipline).
     if (existing.role !== 'admin') {

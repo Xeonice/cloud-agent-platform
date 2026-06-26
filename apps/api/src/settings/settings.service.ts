@@ -101,9 +101,9 @@ export class SettingsService {
   ) {}
 
   /**
-   * 7.2 — Reads the current allowlisted account's preferences, scoped to that
-   * account. `allowedAccount` is the read-only OAuth-sourced display identity
-   * (the GitHub login), never stored; the rest comes from the account's own
+   * 7.2 — Reads the current account's preferences, scoped to that account.
+   * `allowedAccount` is the read-only session-sourced display identity, never
+   * stored; the rest comes from the account's own
    * stored row, or the documented defaults when nothing has been saved.
    *
    * Additionally surfaces the SYSTEM-LEVEL `maxConcurrentTasks` (5.1) resolved
@@ -756,8 +756,8 @@ export class SettingsService {
   }
 
   /**
-   * The read-only display identity for `allowedAccount`. For a GitHub account
-   * this is the OAuth `login`; a LOCAL account (password/OTP) has no github
+   * The read-only display identity for `allowedAccount`. For a legacy GitHub row
+   * this is the stored login; a LOCAL account (password/OTP) has no github
    * handle (`login === null` — add-private-account-identity), so it falls back to
    * the always-present display name (which for a local account is its email).
    */

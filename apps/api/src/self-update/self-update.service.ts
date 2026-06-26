@@ -547,7 +547,7 @@ function parentDir(p: string): string {
  * working dir — the resident layout uses `env_file: ../files/api.env`, i.e.
  * `<project>/files/api.env`, a SIBLING of `<project>/resident/`. Binding only the
  * working dir made compose silently skip that `required:false` env_file inside the
- * updater container, dropping the api's secrets (GITHUB_CLIENT_ID/SESSION_SECRET/…)
+ * updater container, dropping the api's secrets (SESSION_SECRET/CODEX_CRED_ENC_KEY/…)
  * on recreate. Binding the parent covers `../<sibling>/…`. Also binds each compose
  * file's own dir. (Deeply-relative env_files like `../../x` would need the working
  * dir set higher / an explicit bind; the parent covers the standard project layout.)

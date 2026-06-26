@@ -28,9 +28,9 @@ import { ApiKeysService } from './api-keys.service';
  * under `/api-keys`.
  *
  * Every route is session-gated TWICE over:
- *   1. the GLOBAL `AuthGuard` first rejects any unauthenticated / de-allowlisted
+ *   1. the GLOBAL `AuthGuard` first rejects any unauthenticated / disabled
  *      caller with 401 (no principal reaches these handlers); then
- *   2. {@link requireSessionUser} rejects any principal that is NOT a GitHub-OAuth
+ *   2. {@link requireSessionUser} rejects any principal that is NOT a human
  *      `session` — an `api-key`, `legacy-token`, or reserved `mcp` principal is
  *      403'd — so a key can NEVER be used to mint/list/revoke another key (no
  *      privilege-escalation chain, spec "API key CRUD is session-authenticated
@@ -83,8 +83,8 @@ export class ApiKeysController {
   }
 
   /**
-   * Enforces that the request is authenticated by a GitHub-OAuth `session`
-   * principal and returns its user. Any other principal kind — an `api-key`,
+   * Enforces that the request is authenticated by a human `session` principal and
+   * returns its user. Any other principal kind — an `api-key`,
    * the `legacy-token` operator, or a reserved `mcp` machine principal — is
    * rejected with 403, so an API key cannot mint/list/revoke API keys (the
    * no-escalation-chain guarantee). The session user is taken from the
@@ -102,7 +102,7 @@ export class ApiKeysController {
       throw new ForbiddenException({
         error: 'session_required',
         message:
-          'API-key management is reachable only by a GitHub-OAuth session; ' +
+          'API-key management is reachable only by a human console session; ' +
           'a machine credential cannot mint, list, or revoke API keys.',
       });
     }

@@ -2,7 +2,7 @@
  * Lightweight persisted UI store (rebuild-console-tanstack-start D5.3; task 10.6).
  *
  * Holds the WRITABLE client-side UI state the prototype kept in `localStorage`:
- * GitHub connection flag, the imported-repo set, the selected/default repo, the
+ * mock session flag, the imported-repo set, the selected/default repo, the
  * account settings draft, and the Codex credential draft. Mutations (10.5) write
  * this store and then `invalidateQueries` so the affected queries re-derive and
  * re-render — reproducing the prototype's read-state/render loop. As real
@@ -66,7 +66,7 @@ export interface SettingsDraft {
 
 /** The full persisted store shape. */
 export interface PersistedState {
-  /** Whether the operator has connected GitHub (mock OAuth handshake). */
+  /** Whether the mock local-account session has been established. */
   githubConnected: boolean;
   /** The set of repos imported into the platform (de-duplicated by `id`). */
   importedRepos: ImportedRepo[];
