@@ -168,8 +168,40 @@ model Task {
   /// double-admit a sandbox (public-v1-api).
   idempotencyKeys IdempotencyKey[]
 
+  /// Provider-owned sandbox run records. Additive owner metadata for
+  /// multi-provider readoption/delivery/teardown; one task may accumulate
+  /// multiple attempts over time.
+  sandboxRuns SandboxRun[]
+
   @@index([repoId])
   @@map("tasks")
+}
+
+/// Provider-owned sandbox run metadata for a task provision attempt.
+///
+/// This table stores routing/reattach metadata only. It MUST NOT store provider
+/// credentials or task secrets; `connectionJson` is limited to addressable
+/// non-secret handles such as task/base/ws URLs.
+model SandboxRun {
+  id String @id @default(uuid())
+
+  taskId String @map("task_id")
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  providerId        String  @map("provider_id")
+  providerSandboxId String? @map("provider_sandbox_id")
+  status            String  @default("running")
+  connectionJson    Json?   @map("connection_json")
+  metadata          Json?   @map("metadata")
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  terminalAt DateTime? @map("terminal_at")
+  removedAt  DateTime? @map("removed_at")
+
+  @@index([taskId, status])
+  @@index([providerId, providerSandboxId])
+  @@map("sandbox_runs")
 }
 
 /// An authenticated GitHub operator identity (multi-user-oauth spec).

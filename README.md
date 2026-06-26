@@ -73,8 +73,9 @@ single command (requires Docker + a host `docker.sock`):
 >
 > It is a thin wrapper, not a replacement: **`make up` below stays the source of
 > truth**, and the script is served as plain text so you can read it first (the
-> site also shows the equivalent manual `git clone … && make up` path). On Apple
-> Silicon it defaults to the faster `make up-cp`. See the public site and the
+> site also shows the equivalent manual `git clone … && make up` path). By
+> default macOS uses the BoxLite sandbox path and Linux uses AIO; override with
+> `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane`. See the public site and the
 > [Self-hosting guide](docs/self-hosting.md) for details.
 
 > **Let Claude Code deploy it (recommended).** If you have Claude Code, paste the
@@ -82,17 +83,18 @@ single command (requires Docker + a host `docker.sock`):
 > runs `make up`, and walks you through local-account setup:
 >
 > ```text
-> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` to build and start the full stack. Help me configure local account login and the web/api origins for a production-like deploy, then report the console URL and the credentials it prints.
+> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` so the repo selects the default sandbox path for this OS (macOS BoxLite, Linux AIO). Help me configure local account login and the web/api origins for a production-like deploy, then report the console URL and the credentials it prints.
 > ```
 >
 > Like the one-liner, it wraps `make up` rather than replacing it — Claude Code
 > follows the same readable `install.sh`, and you can take over at any point.
 
 ```bash
-make up        # bootstrap apps/api/.env (if absent) + build & start the full stack,
-               # then wait for /health and print a local auth token
-make up-cp     # control-plane only (api + postgres) — skips the heavy amd64
-               # sandbox image build; fast on Apple Silicon
+make up          # auto-select sandbox provider (macOS→BoxLite, Linux→AIO),
+                 # bootstrap apps/api/.env, wait for /health, print auth token
+make up-aio      # force AIO full stack (incl. cap-aio-sandbox image)
+make up-boxlite  # force BoxLite endpoint-backed stack (api + postgres)
+make up-cp       # control-plane only (api + postgres), no sandbox provider
 make down      # stop the stack (PRESERVES the pgdata / workspaces volumes)
 make down-v    # stop AND drop the volumes (DESTRUCTIVE — local data loss)
 ```
@@ -105,10 +107,15 @@ accounts). No GitHub OAuth app is required.
 
 Notes:
 
-- The per-task sandbox image (`cap-aio-sandbox:pinned`) is **build-only** — an
-  actual `cap-aio-<taskId>` sandbox is provisioned per task when you create one.
-- On Apple Silicon the `amd64` AIO base builds under emulation on the first run
-  (slow, then cached); use `make up-cp` for a fast control-plane-only bring-up.
+- Linux `make up` uses the per-task AIO sandbox image
+  (`cap-aio-sandbox:pinned`), which is **build-only** — an actual
+  `cap-aio-<taskId>` sandbox is provisioned per task when you create one.
+- macOS `make up` defaults to BoxLite. Because CAP does not vendor a BoxLite
+  daemon yet, set `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and `BOXLITE_IMAGE`
+  for your BoxLite control plane before running it.
+- `api` and optional `web` host ports bind to `0.0.0.0` by default. Configure
+  DNS, TLS, reverse proxy, OAuth callback/cookie scope, and firewall exposure
+  yourself before making the stack public.
 - The **web console now ships in the compose stack** (a `web` Node-server
   service, port 3000) so `docker compose up` brings up web + api + Postgres
   together; for local dev you can still run it standalone

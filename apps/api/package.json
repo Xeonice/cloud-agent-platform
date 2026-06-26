@@ -13,9 +13,10 @@
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
     "pretest": "pnpm -w exec turbo run build --filter=@cap/api",
-    "test": "pnpm run test:compiled && pnpm run test:sandbox-src",
+    "test": "pnpm run test:compiled && pnpm run test:sandbox-src && pnpm run test:terminal-src",
     "test:compiled": "node --test --test-force-exit \"dist/**/*.spec.js\"",
     "test:sandbox-src": "node --test --test-force-exit \"src/sandbox/*.test.mjs\" \"src/guardrails/retention-cleaner.test.mjs\" \"src/tasks/startup-recovery.test.mjs\"",
+    "test:terminal-src": "node --test --test-force-exit \"src/terminal/cast-writer.test.mjs\" \"src/terminal/codex-launch.test.mjs\" \"src/terminal/cpr-detector.test.mjs\" \"src/terminal/codex-autostart.test.mjs\" \"src/terminal/terminal-transport-selection.test.mjs\" \"src/terminal/reconnect-replay.test.mjs\" \"src/terminal/concurrent-attach-single-writer.test.mjs\"",
     "test:e2e": "node --env-file=../../.env --test --test-force-exit test/api-e2e.mjs",
     "pretest:e2e": "pnpm -w exec turbo run build --filter=@cap/api",
     "test:e2e:aio": "bash ../../scripts/aio-e2e.sh"

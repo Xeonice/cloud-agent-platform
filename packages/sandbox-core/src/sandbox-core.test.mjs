@@ -31,6 +31,31 @@ await test('exports concrete capability and location vocabularies', () => {
     'transcript.retained-read',
     'lifecycle.readopt',
   ]);
+  assert.deepEqual(mod.SANDBOX_PROVIDER_FEATURE_CAPABILITIES, [
+    'terminal.interactive',
+    'command.exec',
+    'workspace.archive.transfer',
+    'transcript.retained-source',
+    'lifecycle.readoption',
+    'lifecycle.sleep',
+    'lifecycle.snapshot',
+    'port.expose',
+  ]);
+  assert.deepEqual(mod.SANDBOX_PROVIDER_KNOWN_CAPABILITIES, [
+    'terminal.websocket',
+    'workspace.git.materialize',
+    'workspace.git.deliver',
+    'transcript.retained-read',
+    'lifecycle.readopt',
+    'terminal.interactive',
+    'command.exec',
+    'workspace.archive.transfer',
+    'transcript.retained-source',
+    'lifecycle.readoption',
+    'lifecycle.sleep',
+    'lifecycle.snapshot',
+    'port.expose',
+  ]);
   assert.deepEqual(mod.SANDBOX_PROVIDER_LOCATIONS, ['local', 'cloud']);
   assert.deepEqual(mod.SANDBOX_EXECUTION_MODES, [
     'read-only',
@@ -56,6 +81,24 @@ await test('exports operation-specific required capability sets', () => {
   assert.deepEqual(mod.RETAINED_TRANSCRIPT_SANDBOX_REQUIRED_CAPABILITIES, [
     'transcript.retained-read',
   ]);
+  assert.deepEqual(mod.INTERACTIVE_SANDBOX_FEATURE_CAPABILITIES, [
+    'terminal.interactive',
+    'command.exec',
+  ]);
+  assert.deepEqual(mod.ARCHIVE_WORKSPACE_SANDBOX_FEATURE_CAPABILITIES, [
+    'workspace.archive.transfer',
+    'command.exec',
+  ]);
+  assert.deepEqual(mod.DELIVERY_SANDBOX_FEATURE_CAPABILITIES, [
+    'workspace.git.deliver',
+    'command.exec',
+  ]);
+  assert.deepEqual(mod.READOPTION_SANDBOX_FEATURE_CAPABILITIES, [
+    'lifecycle.readoption',
+  ]);
+  assert.deepEqual(mod.RETAINED_TRANSCRIPT_SANDBOX_FEATURE_CAPABILITIES, [
+    'transcript.retained-source',
+  ]);
 });
 
 await test('provider descriptor reads capabilities from declared providers', () => {
@@ -73,6 +116,83 @@ await test('provider descriptor reads capabilities from declared providers', () 
     capabilities: ['terminal.websocket'],
     priority: 20,
   });
+});
+
+await test('command executor helpers normalize provider command results', async () => {
+  const nested = mod.normalizeSandboxCommandResult({
+    data: {
+      exit_code: '7',
+      stderr: 'boom',
+      timed_out: true,
+    },
+  });
+  assert.equal(nested.exitCode, 7);
+  assert.equal(nested.output, 'boom');
+  assert.equal(nested.stderr, 'boom');
+  assert.equal(nested.stdout, '');
+  assert.equal(nested.timedOut, true);
+
+  const flat = mod.normalizeSandboxCommandResult({
+    code: 0,
+    stdout: 'ok',
+  });
+  assert.equal(flat.exitCode, 0);
+  assert.equal(flat.output, 'ok');
+  assert.equal(flat.timedOut, false);
+
+  assert(Number.isNaN(mod.normalizeSandboxCommandResult({ output: 'missing' }).exitCode));
+  assert(Number.isNaN(mod.normalizeSandboxCommandResult(null).exitCode));
+  assert.equal(
+    mod.normalizeSandboxCommandResult({ exitCode: 2, stdout: '', stderr: '' }).output,
+    '',
+  );
+  assert.equal(
+    mod.normalizeSandboxCommandResult({ exit_code: 0, timeout: true }).timedOut,
+    true,
+  );
+  assert.equal(
+    mod.normalizeSandboxCommandResult({ exit_code: 0, timedOut: true }).timedOut,
+    true,
+  );
+
+  const executor = mod.createSandboxCommandExecutor(async (request) => ({
+    exitCode: 0,
+    output: `${request.command} @ ${request.cwd ?? ''}`,
+  }));
+  const result = await executor.exec({
+    command: 'pwd',
+    cwd: '/home/gem/workspace',
+    timeoutMs: 10_000,
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.output, 'pwd @ /home/gem/workspace');
+});
+
+await test('command executor helpers wrap cwd and scrub command output', () => {
+  assert.equal(mod.buildSandboxCommandLine({ command: 'pwd' }), 'pwd');
+  assert.equal(
+    mod.buildSandboxCommandLine({
+      cwd: "/workspace path/with spaces'; rm -rf /",
+      command: 'git status',
+    }),
+    "cd '/workspace path/with spaces'\\''; rm -rf /' && git status",
+  );
+  assert.equal(
+    mod.scrubSandboxCommandOutput(
+      'https://u:p@example.com/x Authorization: Basic abc Bearer secret.token',
+    ),
+    'https://***:***@example.com/x Authorization: Basic *** Bearer ***',
+  );
+  assert.equal(
+    mod.normalizeSandboxCommandResult(
+      {
+        exit_code: 1,
+        output: 'Authorization: Basic abc',
+      },
+      { scrubOutput: true },
+    ).output,
+    'Authorization: Basic ***',
+  );
 });
 
 await test('provider descriptor accepts explicit capabilities for legacy providers', () => {

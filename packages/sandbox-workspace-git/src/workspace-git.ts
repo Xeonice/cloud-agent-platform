@@ -1,4 +1,8 @@
-import type { GitCloneSpec } from '@cap/sandbox-core';
+import {
+  normalizeSandboxCommandResult,
+  scrubSandboxCommandOutput,
+  type GitCloneSpec,
+} from '@cap/sandbox-core';
 
 export interface DeliverGitWorkspaceCommandArgs {
   readonly workspaceDir: string;
@@ -50,9 +54,7 @@ export function buildGitDeliveryCommands(
 }
 
 export function scrubSandboxExecSecrets(output: string): string {
-  return output
-    .replace(/https:\/\/[^@\s/]+:[^@\s/]+@/g, 'https://***:***@')
-    .replace(/(Authorization:\s*Basic\s+)\S+/gi, '$1***');
+  return scrubSandboxCommandOutput(output);
 }
 
 export interface SandboxExecResult {
@@ -61,24 +63,8 @@ export interface SandboxExecResult {
 }
 
 export function parseSandboxExecResult(raw: unknown): SandboxExecResult {
-  const top = (raw ?? {}) as Record<string, unknown>;
-  const d = (top.data ?? top) as Record<string, unknown>;
-  const exitCode = coerceExitCode(d.exit_code ?? d.exitCode ?? d.code);
-  const output =
-    (typeof d.output === 'string' && d.output) ||
-    (typeof d.stderr === 'string' && d.stderr) ||
-    (typeof d.stdout === 'string' && d.stdout) ||
-    '';
-  return { exitCode, output };
-}
-
-function coerceExitCode(raw: unknown): number {
-  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
-  if (typeof raw === 'string' && raw.trim() !== '') {
-    const n = Number(raw);
-    if (Number.isFinite(n)) return n;
-  }
-  return Number.NaN;
+  const result = normalizeSandboxCommandResult(raw);
+  return { exitCode: result.exitCode, output: result.output };
 }
 
 function singleQuoteValue(value: string): string {

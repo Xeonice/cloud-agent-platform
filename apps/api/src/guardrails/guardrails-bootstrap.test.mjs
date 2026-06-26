@@ -113,6 +113,7 @@ class GuardrailsBootstrapHarness {
     this.defaultIdleTimeoutMs = config.defaultIdleTimeoutMs ?? null;
     this.connections = new Map(); // taskId -> connection handle (captured)
     this.attached = []; // taskId — gateway.openSession (attach-to-live) calls
+    this.attachedRuns = new Map(); // taskId -> selected-run metadata passed to openSession
     this.armedIdle = new Map(); // taskId -> idle ceiling armed
     this.armedDeadline = new Map(); // taskId -> deadline armed
     this.runnerStarted = []; // taskId — runner-minutes interval opened
@@ -129,10 +130,11 @@ class GuardrailsBootstrapHarness {
    * terminal (gateway.openSession), and re-arm the idle/deadline watchers from
    * the persisted params — with NO lifecycle transition and NO fresh provision.
    */
-  readopt(taskId, connection, params = {}) {
+  readopt(taskId, connection, params = {}, selectedRun = null) {
     this.semaphore.offer(taskId);
     this.connections.set(taskId, connection);
     this.attached.push(taskId);
+    this.attachedRuns.set(taskId, selectedRun);
     const idleMs = params.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
     if (idleMs !== undefined) {
       this.armedIdle.set(taskId, idleMs);
@@ -311,6 +313,19 @@ const conn = (taskId) => ({
   assert(svc.armedDeadline.get('t-live') === 60000, 'R1e: deadline re-armed from persisted deadlineMs');
   assert(svc.armedIdle.get('t-live') === 30000, 'R1f: idle re-armed from persisted idleTimeoutMs');
   assert(svc.runnerStarted.includes('t-live'), 'R1g: runner-minutes interval re-opened');
+}
+
+// R1-selected: selected-run metadata is forwarded to the terminal attach path.
+{
+  const svc = new GuardrailsBootstrapHarness({ maxConcurrentTasks: seedMaxConcurrentTasks('5') });
+  const selectedRun = {
+    taskId: 't-live',
+    providerId: 'boxlite-test',
+    terminal: { protocol: 'boxlite-v1', wsUrl: 'wss://boxlite/t-live/tty' },
+  };
+  svc.readopt('t-live', conn('t-live'), {}, selectedRun);
+
+  assert(svc.attachedRuns.get('t-live') === selectedRun, 'R1h: selected-run metadata is forwarded to openSession');
 }
 
 // R2: re-adopt with NO persisted params — no deadline, idle left to the

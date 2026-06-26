@@ -65,9 +65,10 @@ step "GATE 1 — architecture"
 arch="$(uname -m 2>/dev/null || echo unknown)"
 case "$arch" in
   x86_64|amd64) echo "  amd64 OK ($arch)";;
-  *) die "The prebuilt cap images (incl. the per-task AIO sandbox base) are amd64-only;
-       this host is '$arch'. On arm64 (e.g. Apple Silicon) use the from-source path
-       instead:  make up   (or  make up-cp  for a fast control-plane-only bring-up).";;
+  *) die "The prebuilt cap images are amd64/AIO-oriented and this host is '$arch'.
+       On arm64/macOS use the source installer or run \`make up\` from a clone;
+       that platform-aware path defaults macOS to BoxLite. To override manually:
+       CAP_SANDBOX_PROVIDER=boxlite make up  (or CAP_SANDBOX_PROVIDER=control-plane make up).";;
 esac
 
 # ── GATE 2 — base tooling ──────────────────────────────────────────────────────

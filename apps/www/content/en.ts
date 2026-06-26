@@ -43,15 +43,15 @@ export const en: SiteContent = {
       title: "Let Claude Code deploy it",
       badge: "Recommended",
       blurb:
-        "Paste this into Claude Code. It reads the installer, checks your host, walks you through GitHub OAuth, and brings the stack up for you.",
+        "Paste this into Claude Code. It reads the installer, checks your host, walks you through GitHub OAuth, and brings the platform-aware stack up for you.",
       prompt:
-        "Deploy cloud-agent-platform on this machine. First read the installer at https://{domain}/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/{repo}, cd into it, and run `make up` to build and start the full stack. Help me create a GitHub OAuth app and fill the .env for production login against my allowlist, then report the console URL and the Authorization: Bearer token it prints.",
+        "Deploy cloud-agent-platform on this machine. First read the installer at https://{domain}/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/{repo}, cd into it, and run `make up` (macOS defaults to BoxLite, Linux defaults to AIO) to build and start the stack. Help me create a GitHub OAuth app and fill the .env for production login against my allowlist, then report the console URL and the Authorization: Bearer token it prints.",
       copyLabel: "Copy the Claude Code prompt",
     },
     install: {
       title: "Install it yourself",
       blurb:
-        "Source build with GitHub OAuth — the path for a real, multi-user deployment.",
+        "Source build with GitHub OAuth — macOS defaults to BoxLite, Linux defaults to AIO.",
       command: "curl -fsSL https://{domain}/install.sh | sh",
       inspectLabel: "Inspect the script",
       manual: {
@@ -61,17 +61,17 @@ export const en: SiteContent = {
           "cd cloud-agent-platform",
           "make up",
         ],
-        note: "make up stays the source of truth — the one-liner only wraps it. It prints an Authorization: Bearer token you log in with.",
+        note: "make up stays the source of truth — the one-liner only wraps it. Override with CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane. api/web bind 0.0.0.0 by default; public DNS/TLS/proxy remain yours.",
       },
     },
     prebuilt: {
       title: "Just try it fast",
       blurb:
-        "Prebuilt images, no GitHub OAuth — fastest on amd64 / WSL2, for a local trial.",
+        "Prebuilt images, no GitHub OAuth — AIO/amd64 only, fastest on WSL2, for a local trial.",
       command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
       inspectLabel: "Inspect the script",
       caveat:
-        "Local trial only: it synthesizes a legacy token and the bundled console stays localhost-only — not the production path. amd64 / WSL2.",
+        "Local trial only: it synthesizes a legacy token and the bundled console stays localhost-only — not the production path. amd64/AIO; macOS should use the source installer for BoxLite.",
       manual: {
         summary: "Prefer to read it first? Run the prebuilt compose by hand:",
         commands: [
@@ -79,7 +79,7 @@ export const en: SiteContent = {
           "# write a .env: AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d",
         ],
-        note: "The script does the .env synthesis for you (see the inspectable source). Both files are served by this site — no clone needed. amd64 only.",
+        note: "The script does the .env synthesis for you (see the inspectable source). Both files are served by this site — no clone needed. amd64/AIO only.",
       },
     },
     secondaryCta: { label: "See how it works", href: "#how-it-works" },
@@ -132,7 +132,7 @@ export const en: SiteContent = {
     eyebrow: "How it works",
     title: "From a clean host to a session you can take over.",
     description:
-      "Five steps, no bespoke provisioning — the installer wraps the same make up flow you would run by hand.",
+      "Five steps, no bespoke provisioning — the installer wraps the same platform-aware make up flow you would run by hand.",
     steps: [
       {
         index: "01",
@@ -142,7 +142,7 @@ export const en: SiteContent = {
       {
         index: "02",
         title: "Install",
-        body: "Run the one-liner (or make up). It builds and starts the stack and prints a local Bearer token.",
+        body: "Run the one-liner (or make up). macOS selects BoxLite, Linux selects AIO, and the stack prints a local Bearer token.",
       },
       {
         index: "03",

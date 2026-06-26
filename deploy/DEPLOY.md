@@ -12,6 +12,11 @@ The web console is deployed separately to Vercel (HTTPS). This runbook covers th
 self-hosted **api orchestrator** on a VPS, fronted by an nginx reverse proxy that
 lives in the same docker-compose stack and is enabled with the `proxy` profile.
 
+This VPS runbook assumes a Linux/amd64 Docker host and the AIO sandbox provider.
+For a local macOS source install, use the platform-aware `make up` path instead:
+it defaults to BoxLite and requires `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and
+`BOXLITE_IMAGE` for an operator-supplied BoxLite control plane.
+
 Why nginx is here: Cloudflare terminates TLS to the browser, so the cross-origin
 OAuth session cookie must be `SameSite=None; Secure`. The api decides that from
 `X-Forwarded-Proto` (`apps/api/src/auth/github-oauth.controller.ts` `isSecureRequest()`),
@@ -68,6 +73,10 @@ derived image (`AIO_SANDBOX_IMAGE`, defaulted to `cap-aio-sandbox:pinned` in
 `docker-compose.yml`). The provider REJECTS `:latest`/untagged tags, so it must
 be a pinned tag. Build it from the in-repo Dockerfile:
 
+This step is for the Linux/AIO source-compose path. macOS local `make up`
+defaults to the BoxLite endpoint-backed path and does not need this AIO image
+unless you explicitly force `make up-aio`.
+
 ```bash
 # From the repo root. This is the real build wired into the smoke check
 # (scripts/aio-image-smoke.sh): -f docker/aio-sandbox.Dockerfile with the
@@ -106,8 +115,10 @@ docker compose --profile proxy up -d --build
 
 - `--profile proxy` starts the `nginx` service (publishing host `:80`). Without
   this flag (plain local dev), nginx does NOT start and you hit `api` on `:8080`.
-- `api` still publishes `8080:8080`, so it is reachable directly on the VPS for
-  debugging and is the nginx upstream (`api:8080` on the `default` network).
+- `api` publishes `${API_HOST_BIND:-0.0.0.0}:${API_HOST_PORT:-8080}:8080`, so it
+  is reachable directly on the VPS for debugging and is the nginx upstream
+  (`api:8080` on the `default` network). Set `API_HOST_BIND=127.0.0.1` if you
+  want direct host access to be loopback-only behind your proxy.
 - `postgres` comes up with the api as before.
 
 Check:
@@ -115,7 +126,7 @@ Check:
 ```bash
 docker compose --profile proxy ps
 curl -s http://localhost/healthz        # nginx origin health (does not touch the api)
-curl -s http://localhost:8080/...       # api directly (debug)
+curl -s http://localhost:${API_HOST_PORT:-8080}/...       # api directly (debug)
 ```
 
 ---

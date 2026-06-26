@@ -30,6 +30,11 @@
  *      subsequently-GONE session does NOT fire a second `onExit` — the
  *      liveness-driven termination drives `recordExit` EXACTLY ONCE even when a
  *      `forceFail` backstop tore the session down while the poller was still armed.
+ *   9. Resize frames are translated to AIO `{type:"resize",data:{cols,rows}}`
+ *      without passing through the operator input path.
+ *  10. A stale/closed bridge is replaced on the next operator write; the new bridge
+ *      re-attaches to the detached session and flushes queued input exactly through
+ *      the fresh socket.
  *
  * The quiescence + liveness windows are forced small via env so the test runs
  * fast. Compiles the REAL aio-pty-client.ts with tsc, imports it, drives a fake
@@ -157,9 +162,22 @@ function startFakeSandbox(opts = {}) {
 
   const wss = new WebSocketServer({ server: http });
   let socket;
+  let connectionCount = 0;
+  const connectionWaiters = [];
+  function notifyConnectionWaiters() {
+    for (let i = connectionWaiters.length - 1; i >= 0; i--) {
+      const waiter = connectionWaiters[i];
+      if (connectionCount >= waiter.count) {
+        connectionWaiters.splice(i, 1);
+        waiter.resolve();
+      }
+    }
+  }
   const ready = new Promise((resolveReady) => {
     wss.on('connection', (ws) => {
       socket = ws;
+      connectionCount++;
+      notifyConnectionWaiters();
       ws.on('message', (raw) => {
         try {
           inbound.push(JSON.parse(raw.toString('utf8')));
@@ -178,6 +196,12 @@ function startFakeSandbox(opts = {}) {
     inbound,
     ready,
     listening,
+    waitForConnectionCount(count) {
+      if (connectionCount >= count) return Promise.resolve();
+      return new Promise((resolveWaiter) => {
+        connectionWaiters.push({ count, resolve: resolveWaiter });
+      });
+    },
     setSessionAlive(v) {
       sessionAlive = v;
     },
@@ -446,6 +470,76 @@ async function main() {
       'after close() (terminal-teardown release) a GONE session does NOT re-fire onExit (exactly-once)',
     );
 
+    sandbox.close();
+  }
+
+  // --- Case 9: resize translates to an AIO resize frame -----------------------
+  {
+    const sandbox = startFakeSandbox({ sessionAlive: true });
+    await sandbox.listening;
+    const client = new AioPtyClient('autostart-8', sandbox.wsUrl, sandbox.baseUrl, undefined, 'replay-only');
+    await sandbox.ready;
+    await delay(60);
+
+    client.resize(123, 45);
+    await delay(60);
+
+    const resizeFrames = sandbox.inbound.filter((f) => f.type === 'resize');
+    assert(resizeFrames.length === 1, 'resize() emits exactly one AIO resize frame');
+    if (resizeFrames.length === 1) {
+      assert(
+        resizeFrames[0].data?.cols === 123 && resizeFrames[0].data?.rows === 45,
+        'resize frame carries the browser cols/rows unchanged',
+      );
+    }
+    assert(
+      !inputs(sandbox.inbound).some((f) => f.data === '123x45'),
+      'resize does not pass through the raw input path',
+    );
+
+    client.close();
+    sandbox.close();
+  }
+
+  // --- Case 10: stale bridge replacement re-attaches and flushes input --------
+  {
+    const sandbox = startFakeSandbox({ sessionAlive: true });
+    await sandbox.listening;
+    const client = new AioPtyClient(
+      'autostart-9',
+      sandbox.wsUrl,
+      sandbox.baseUrl,
+      undefined,
+      'launch-or-attach',
+    );
+    await sandbox.ready;
+    await delay(120); // first socket established + attached
+
+    const attachBefore = inputData(sandbox.inbound).filter((d) =>
+      d.startsWith('tmux attach -t taskautostart-9'),
+    ).length;
+    assert(attachBefore === 1, 'initial live session attach happens once');
+
+    sandbox.closeServerSocket();
+    await delay(80);
+    client.write('queued-after-stale-bridge\r');
+
+    await sandbox.waitForConnectionCount(2);
+    await delay(250); // new socket ready, attach, pending-input flush
+
+    const attachAfter = inputData(sandbox.inbound).filter((d) =>
+      d.startsWith('tmux attach -t taskautostart-9'),
+    ).length;
+    assert(
+      attachAfter === 2,
+      'typing after a stale bridge opens a replacement socket and re-attaches once',
+    );
+    assert(
+      inputData(sandbox.inbound).filter((d) => d === 'queued-after-stale-bridge\r').length === 1,
+      'queued operator input is flushed once through the replacement bridge',
+    );
+
+    client.close();
     sandbox.close();
   }
 

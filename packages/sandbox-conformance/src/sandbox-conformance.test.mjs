@@ -41,6 +41,35 @@ function makeProvider({
     listReadoptable: async () => ['task-1'],
     reattach: async () => reattach,
     teardownSandbox: async () => undefined,
+    getSelectedSandboxRun: async (taskId) => ({
+      taskId,
+      providerId: 'fake-provider',
+      provider: {},
+      capabilities,
+      connection: {
+        taskId,
+        baseUrl: `http://sandbox/${taskId}`,
+        wsUrl: `ws://sandbox/${taskId}/ws`,
+      },
+    }),
+    getTerminalDescriptor: async () => ({
+      protocol: 'provider-native',
+      wsUrl: 'ws://sandbox/terminal',
+    }),
+    getCommandDescriptor: async () => ({
+      protocol: 'provider-native',
+      baseUrl: 'http://sandbox/exec',
+      workingDirectory: '/workspace',
+    }),
+    getWorkspaceDescriptor: async () => ({
+      mode: 'archive',
+      path: '/workspace',
+      archive: { upload: true, download: true },
+    }),
+    getRetentionPolicy: async () => ({
+      mode: 'snapshot',
+      retainTranscript: true,
+    }),
   };
 }
 
@@ -101,6 +130,40 @@ await test('conformance supports absent transcript and disabled readoption scena
   }
 });
 
+await test('conformance adds descriptor scenarios for declared feature capabilities', async () => {
+  const scenarios = mod.createSandboxProviderConformanceScenarios(
+    {
+      provider: makeProvider({
+        capabilities: [
+          ...core.SANDBOX_PROVIDER_CAPABILITIES,
+          'terminal.interactive',
+          'command.exec',
+          'workspace.archive.transfer',
+          'lifecycle.readoption',
+          'lifecycle.snapshot',
+        ],
+      }),
+      taskId: 'task-1',
+      requiredCapabilities: [
+        'terminal.interactive',
+        'command.exec',
+        'workspace.archive.transfer',
+      ],
+      expectSelectedRun: true,
+    },
+    assert,
+  );
+
+  assert(scenarios.some((scenario) => scenario.name.includes('terminal descriptor')));
+  assert(scenarios.some((scenario) => scenario.name.includes('command descriptor')));
+  assert(scenarios.some((scenario) => scenario.name.includes('workspace descriptor')));
+  assert(scenarios.some((scenario) => scenario.name.includes('retention policy')));
+  assert(scenarios.some((scenario) => scenario.name.includes('selected run')));
+  for (const scenario of scenarios) {
+    await scenario.run();
+  }
+});
+
 await test('conformance reports missing expected transcript sources', async () => {
   const scenario = mod.createSandboxProviderConformanceScenarios(
     {
@@ -110,6 +173,71 @@ await test('conformance reports missing expected transcript sources', async () =
     assert,
   ).find((entry) => entry.name.startsWith('retained transcript'));
   await assert.rejects(() => scenario.run(), /transcript source should be present/);
+});
+
+await test('conformance reports missing selected-run and feature descriptors', async () => {
+  const selectedRunScenario = mod.createSandboxProviderConformanceScenarios(
+    {
+      provider: {
+        ...makeProvider(),
+        getSelectedSandboxRun: async () => null,
+      },
+      taskId: 'task-1',
+      expectSelectedRun: true,
+    },
+    assert,
+  ).find((entry) => entry.name.startsWith('selected run descriptor'));
+  await assert.rejects(
+    () => selectedRunScenario.run(),
+    /selected run descriptor should be present/,
+  );
+
+  const terminalScenario = mod.createSandboxProviderConformanceScenarios(
+    {
+      provider: {
+        ...makeProvider({
+          capabilities: ['terminal.websocket', 'terminal.interactive'],
+        }),
+        getTerminalDescriptor: async () => null,
+      },
+      taskId: 'task-1',
+    },
+    assert,
+  ).find((entry) => entry.name.startsWith('interactive terminal capability'));
+  await assert.rejects(
+    () => terminalScenario.run(),
+    /terminal descriptor should be present/,
+  );
+
+  const commandScenario = mod.createSandboxProviderConformanceScenarios(
+    {
+      provider: {
+        ...makeProvider({ capabilities: ['command.exec'] }),
+        getCommandDescriptor: async () => null,
+      },
+      taskId: 'task-1',
+    },
+    assert,
+  ).find((entry) => entry.name.startsWith('command execution capability'));
+  await assert.rejects(
+    () => commandScenario.run(),
+    /command descriptor should be present/,
+  );
+
+  const workspaceScenario = mod.createSandboxProviderConformanceScenarios(
+    {
+      provider: {
+        ...makeProvider({ capabilities: ['workspace.archive.transfer'] }),
+        getWorkspaceDescriptor: async () => null,
+      },
+      taskId: 'task-1',
+    },
+    assert,
+  ).find((entry) => entry.name.startsWith('archive workspace capability'));
+  await assert.rejects(
+    () => workspaceScenario.run(),
+    /workspace descriptor should be present/,
+  );
 });
 
 await test('conformance can be used with non-throwing assertion adapters', async () => {
@@ -182,6 +310,10 @@ await test('shape assertion helpers accept nullable fields and omit task id chec
     assert,
   );
   mod.assertSandboxTranscriptSource({ format: 'codex-rollout', jsonl: '' }, assert);
+  mod.assertTerminalDescriptor({ protocol: 'provider-native' }, assert);
+  mod.assertTerminalDescriptor({ protocol: 'provider-native', url: 'http://terminal' }, assert);
+  mod.assertCommandDescriptor({ protocol: 'provider-native' }, assert);
+  mod.assertWorkspaceDescriptor({ mode: 'archive' }, assert);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

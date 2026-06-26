@@ -476,6 +476,35 @@ function assert(condition, label) {
     'T9e: slot is still released after capability selection failure');
 }
 
+// ── T10: provider-router remains the delivery writer boundary ────────────────
+{
+  console.log('\nT10: router-owned delivery result is surfaced without bypassing the sandbox port');
+  const taskId = 'T10';
+  const rows = {
+    [taskId]: { id: taskId, status: 'completed', deliver: 'branch', branch: null },
+  };
+  const prisma = makePrisma(rows);
+  const sandbox = makeSandbox({
+    capabilities: ['workspace.git.deliver'],
+    hadChanges: true,
+    commitSha: 'router-owned',
+  });
+  const h = new DeliveryHarness({ prisma, sandbox, forgeResolver: makeForgeResolver(), forgeRegistry: makeForgeRegistry(), audit: null });
+
+  await h.onTerminal(taskId);
+
+  assert(sandbox.calls.deliverWorkspaceChanges.length === 1,
+    'T10a: guardrails dispatches delivery through the injected sandbox provider/router');
+  assert(sandbox.calls.deliverWorkspaceChanges[0] === taskId,
+    'T10b: delivery keeps the task owner lookup inside sandbox.deliverWorkspaceChanges');
+  assert(rows[taskId].deliverStatus === 'pushed',
+    'T10c: router-owned successful delivery is persisted as pushed');
+  assert(rows[taskId].commitSha === 'router-owned',
+    'T10d: router-owned commit sha is persisted');
+  assert(sandbox.calls.teardownSandbox.includes(taskId),
+    'T10e: teardown still runs after router-owned delivery');
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${'─'.repeat(56)}`);

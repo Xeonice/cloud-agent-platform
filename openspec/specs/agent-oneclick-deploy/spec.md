@@ -7,9 +7,7 @@ from published prebuilt images using `docker-compose.prod.yml` — performing no
 build and no `git clone` of the application source, requiring no GitHub OAuth app
 (legacy operator-token auth instead), and gating on architecture and Docker engine
 reachability before any mutation, with health verification and credential surfacing.
-
 ## Requirements
-
 ### Requirement: Scripted source-free prebuilt-image bring-up
 
 The project SHALL provide a committed, agent-drivable bring-up script that stands up a cap
@@ -70,21 +68,18 @@ generated file SHALL remain gitignored so no secret is written to a tracked file
 
 ### Requirement: Architecture gate for amd64-only prebuilt images
 
-The script SHALL verify the host architecture is amd64/x86_64 BEFORE pulling, because the
-published images (including the per-task AIO sandbox base) are amd64-only. On a non-amd64 host
-(e.g. arm64 / Apple Silicon) it SHALL stop with a clear message that directs the user to the
-from-source `make up` path instead of failing later with an opaque manifest error.
+The prebuilt quick-deploy script SHALL verify the host architecture is amd64/x86_64 before pulling, because the published prebuilt image set remains AIO-oriented and amd64-only unless a BoxLite-backed source-free run package is explicitly added. On a non-amd64 host (including macOS on Apple Silicon) it SHALL stop with a clear message that directs the user to the source installer/local bring-up path, whose platform auto-selection defaults macOS to BoxLite, instead of failing later with an opaque manifest error.
 
-#### Scenario: arm64 host is stopped early with guidance
+#### Scenario: arm64 host is stopped early with source-installer guidance
 
-- **WHEN** the script runs on an arm64 host
-- **THEN** it stops before pulling and prints that the prebuilt images are amd64-only and that
-  the from-source `make up` path should be used instead
+- **WHEN** the prebuilt quick-deploy script runs on an arm64 host
+- **THEN** it stops before pulling and prints that the prebuilt images are amd64/AIO-oriented
+- **AND** it directs the user to the source installer or `make up`, which will select BoxLite by default on macOS
 
 #### Scenario: amd64 host passes the gate
 
-- **WHEN** the script runs on an x86_64 host
-- **THEN** the architecture gate passes and the bring-up proceeds
+- **WHEN** the prebuilt quick-deploy script runs on an x86_64 host
+- **THEN** the architecture gate passes and the prebuilt AIO bring-up proceeds
 
 ### Requirement: Docker engine reachability gate with WSL self-heal and honest remediation
 
@@ -166,3 +161,12 @@ bring-up.
 
 - **WHEN** the smoke is enabled but no credential/repo is available
 - **THEN** the smoke is skipped with a warning and the bring-up still succeeds
+
+### Requirement: Prebuilt quick-deploy does not override platform-aware source defaults
+
+The prebuilt quick-deploy path SHALL remain a separate source-free path from the source installer. Its amd64/AIO constraints SHALL NOT change the source installer defaults: macOS source installs default to BoxLite and Linux source installs default to AIO.
+
+#### Scenario: Source installer defaults remain independent
+
+- **WHEN** quick-deploy is present in the repository and on the site
+- **THEN** the source installer still applies macOS BoxLite and Linux AIO auto-selection

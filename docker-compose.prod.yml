@@ -78,7 +78,10 @@ services:
       # Claude runtime reports not-ready; the codex path is unaffected. Mint it on a
       # workstation with `claude setup-token` (see docker-compose.prod.env.example).
     ports:
-      - "8080:8080"
+      # User-facing api binds all host interfaces by default. Public DNS/TLS,
+      # reverse proxy, OAuth callback/cookie scope, and firewall policy remain
+      # operator-managed. Set API_HOST_BIND=127.0.0.1 for loopback-only.
+      - "${API_HOST_BIND:-0.0.0.0}:${API_HOST_PORT:-8080}:8080"
     networks:
       - default
       - cap-net
@@ -102,7 +105,9 @@ services:
     environment:
       PORT: "3000"
     ports:
-      - "${WEB_HOST_PORT:-3000}:3000"
+      # User-facing web binds all host interfaces by default. Set
+      # WEB_HOST_BIND=127.0.0.1 for loopback-only.
+      - "${WEB_HOST_BIND:-0.0.0.0}:${WEB_HOST_PORT:-3000}:3000"
     networks:
       - default
 

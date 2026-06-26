@@ -34,6 +34,8 @@ The implementation packages are:
 - `@cap/sandbox-cloud-http`: cloud HTTP provider adapter.
 - `@cap/sandbox-provider-aio`: AIO/Docker provider controller for container
   lifecycle, readiness, shell exec, retained transcript reads, and readoption.
+- `@cap/sandbox-provider-boxlite`: optional BoxLite provider client, config,
+  command/archive adapters, runtime preflight, and conformance fakes.
 
 All implementation packages remain framework-free except provider adapters at
 the edge. They must not import Nest, Prisma, or app-specific runtime/auth ports.
@@ -57,6 +59,10 @@ The first local adapter config package is `@cap/sandbox-aio-local`; its Docker
 lifecycle controller is `@cap/sandbox-provider-aio`. The first cloud adapter
 package is `@cap/sandbox-cloud-http`, which talks to a CAP-compatible managed
 sandbox control plane over HTTP.
+
+BoxLite is a second optional provider package. It is registered by the API only
+when valid `BOXLITE_*` configuration is present; otherwise the router keeps the
+existing AIO-only behavior.
 
 `SandboxProviderRegistry` owns the in-memory candidate set for a process. It can
 list local/cloud providers separately and select a capability-compatible

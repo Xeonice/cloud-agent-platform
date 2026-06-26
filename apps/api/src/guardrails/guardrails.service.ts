@@ -15,6 +15,7 @@ import {
   SANDBOX_PROVIDER,
   type SandboxConnection,
   type SandboxProvider,
+  type SelectedSandboxRun,
 } from '../sandbox/sandbox-provider.port';
 import {
   buildSandboxProvisionPlan,
@@ -98,7 +99,10 @@ export interface ITerminalGateway {
    * terminal OUT (an `AioPtyClient` to `connection.wsUrl`) and register the
    * `TerminalSession`. Idempotent for an already-open task.
    */
-  openSession(connection: SandboxConnection): unknown;
+  openSession(
+    connection: SandboxConnection,
+    selectedRun?: SelectedSandboxRun | null,
+  ): unknown;
   /** Remove a task's terminal session (e.g. on completion/teardown). */
   unregisterSession(taskId: string): void;
   /**
@@ -475,6 +479,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     taskId: string,
     connection: SandboxConnection,
     params: GuardrailParams = {},
+    selectedRun?: SelectedSandboxRun | null,
   ): void {
     // Re-account the slot. At boot the running set is empty so this takes a slot;
     // idempotent if the same task is re-adopted twice. This is the slot the later
@@ -486,7 +491,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // (Track 2 D2) rather than launching a fresh codex. Best-effort.
     if (this.gateway) {
       try {
-        this.gateway.openSession(connection);
+        this.gateway.openSession(connection, selectedRun);
       } catch (err: unknown) {
         this.logger.error(
           `re-attaching terminal session for re-adopted task ${taskId} failed: ${
@@ -634,6 +639,19 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    */
   connectionFor(taskId: string): SandboxConnection | undefined {
     return this.connections.get(taskId);
+  }
+
+  private async resolveSelectedRun(taskId: string): Promise<SelectedSandboxRun | null> {
+    try {
+      return (await this.sandbox?.getSelectedSandboxRun?.(taskId)) ?? null;
+    } catch (err) {
+      this.logger.warn(
+        `selected sandbox run metadata for task ${taskId} unavailable (continuing with connection only): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -876,16 +894,17 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
             }`,
           );
           return undefined;
-        });
+      });
       if (connection) {
         this.connections.set(taskId, connection);
+        const selectedRun = await this.resolveSelectedRun(taskId);
         // 4.2 — hand the handle through to the terminal gateway so it dials the
         // sandbox terminal OUT and registers the session (replacing the previous
         // dial-back-registers-the-session flow). Idempotent on the gateway side;
         // best-effort so a terminal wiring hiccup never fails the lifecycle.
         if (this.gateway) {
           try {
-            this.gateway.openSession(connection);
+            this.gateway.openSession(connection, selectedRun);
           } catch (err: unknown) {
             this.logger.error(
               `opening terminal session for task ${taskId} failed: ${

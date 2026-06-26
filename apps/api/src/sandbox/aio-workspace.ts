@@ -4,11 +4,13 @@ import {
   buildGitDeliveryCommands,
   parseSandboxExecResult,
   scrubSandboxExecSecrets,
+  type SandboxCommandExecutor,
 } from '@cap/sandbox';
 import type {
   DeliverWorkspaceArgs,
   DeliverWorkspaceResult,
 } from './sandbox-provider.port';
+import { createAioHttpCommandExecutor } from './sandbox-command-executor';
 
 export interface AioExecResult {
   readonly exitCode: number;
@@ -16,14 +18,16 @@ export interface AioExecResult {
 }
 
 export interface MaterializeGitWorkspaceArgs {
-  readonly baseUrl: string;
+  readonly baseUrl?: string;
+  readonly executor?: SandboxCommandExecutor;
   readonly taskId: string;
   readonly spec: CloneSpec;
   readonly workspaceDir: string;
 }
 
 export interface DeliverGitWorkspaceArgs {
-  readonly baseUrl: string;
+  readonly baseUrl?: string;
+  readonly executor?: SandboxCommandExecutor;
   readonly taskId: string;
   readonly workspaceDir: string;
   readonly timeoutMs: number;
@@ -40,9 +44,10 @@ export async function materializeGitWorkspace(
   args: MaterializeGitWorkspaceArgs,
 ): Promise<void> {
   const command = buildGitCloneCommand(args.spec, args.workspaceDir);
+  const executor = resolveWorkspaceExecutor(args);
   let result: AioExecResult;
   try {
-    result = await runAioShellExec(args.baseUrl, command);
+    result = await runWorkspaceCommand(executor, command);
   } catch (err) {
     throw new Error(
       `git clone into AIO sandbox for task ${args.taskId} failed: ${
@@ -74,8 +79,9 @@ export async function deliverGitWorkspaceChanges(
     branch: args.deliver.branch,
     commitMessage: args.deliver.commitMessage,
   });
+  const executor = resolveWorkspaceExecutor(args);
   const run = (command: string) =>
-    runAioShellExec(args.baseUrl, command, args.timeoutMs);
+    runWorkspaceCommand(executor, command, args.timeoutMs);
 
   try {
     const status = await run(commands.status);
@@ -139,16 +145,14 @@ export async function runAioShellExec(
   command: string,
   timeoutMs?: number,
 ): Promise<AioExecResult> {
-  const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ command }),
-    signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
+  const result = await createAioHttpCommandExecutor({ baseUrl }).exec({
+    command,
+    timeoutMs,
   });
-  if (!res.ok) {
-    throw new Error(`/v1/shell/exec responded ${res.status}`);
+  if (Number.isNaN(result.exitCode) && result.output.startsWith('/v1/shell/exec responded')) {
+    throw new Error(result.output);
   }
-  return parseAioExecResult(await res.json().catch(() => undefined));
+  return { exitCode: result.exitCode, output: result.output };
 }
 
 /**
@@ -162,4 +166,22 @@ export function parseAioExecResult(raw: unknown): AioExecResult {
 
 export function scrubAioExecSecrets(output: string): string {
   return scrubSandboxExecSecrets(output);
+}
+
+function resolveWorkspaceExecutor(args: {
+  readonly baseUrl?: string;
+  readonly executor?: SandboxCommandExecutor;
+}): SandboxCommandExecutor {
+  if (args.executor) return args.executor;
+  if (args.baseUrl) return createAioHttpCommandExecutor({ baseUrl: args.baseUrl });
+  throw new Error('workspace command executor is required');
+}
+
+async function runWorkspaceCommand(
+  executor: SandboxCommandExecutor,
+  command: string,
+  timeoutMs?: number,
+): Promise<AioExecResult> {
+  const result = await executor.exec({ command, timeoutMs });
+  return { exitCode: result.exitCode, output: result.output };
 }

@@ -41,14 +41,14 @@ export const zh: SiteContent = {
       title: "让 Claude Code 帮你装",
       badge: "推荐",
       blurb:
-        "把这段话贴给 Claude Code。它会读安装脚本、检查你的主机、引导你完成 GitHub OAuth，帮你把整套栈跑起来。",
+        "把这段话贴给 Claude Code。它会读安装脚本、检查你的主机、引导你完成 GitHub OAuth，帮你把平台感知的栈跑起来。",
       prompt:
-        "在这台机器上部署 cloud-agent-platform。先读取 https://{domain}/install.sh 安装脚本，确认 Docker 与可用的 docker.sock 已就绪。然后克隆 https://github.com/{repo}，进入目录运行 `make up` 构建并启动整套栈。帮我创建 GitHub OAuth 应用并填好 .env，以便用白名单做生产登录；最后告诉我控制台地址和它打印的 Authorization: Bearer 令牌。",
+        "在这台机器上部署 cloud-agent-platform。先读取 https://{domain}/install.sh 安装脚本，确认 Docker 与可用的 docker.sock 已就绪。然后克隆 https://github.com/{repo}，进入目录运行 `make up`（macOS 默认 BoxLite，Linux 默认 AIO）构建并启动栈。帮我创建 GitHub OAuth 应用并填好 .env，以便用白名单做生产登录；最后告诉我控制台地址和它打印的 Authorization: Bearer 令牌。",
       copyLabel: "复制 Claude Code 提示词",
     },
     install: {
       title: "自己用命令行装",
-      blurb: "源码构建 + GitHub OAuth —— 面向真正的多用户生产部署。",
+      blurb: "源码构建 + GitHub OAuth —— macOS 默认 BoxLite，Linux 默认 AIO。",
       command: "curl -fsSL https://{domain}/install.sh | sh",
       inspectLabel: "查看脚本",
       manual: {
@@ -58,16 +58,16 @@ export const zh: SiteContent = {
           "cd cloud-agent-platform",
           "make up",
         ],
-        note: "make up 始终是事实源 —— 一键命令只是对它的封装。它会打印用于登录的 Authorization: Bearer 令牌。",
+        note: "make up 始终是事实源 —— 一键命令只是对它的封装。可用 CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane 覆盖。api/web 默认监听 0.0.0.0；公网 DNS/TLS/代理仍由你配置。",
       },
     },
     prebuilt: {
       title: "只想最快试一下",
-      blurb: "预构建镜像，免 GitHub OAuth —— 在 amd64 / WSL2 上最快，适合本地试用。",
+      blurb: "预构建镜像，免 GitHub OAuth —— AIO/amd64 路径，在 WSL2 上最快，适合本地试用。",
       command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
       inspectLabel: "查看脚本",
       caveat:
-        "仅限本地试用：自动生成 legacy 令牌，自带控制台仅限 localhost —— 不是生产路径。amd64 / WSL2。",
+        "仅限本地试用：自动生成 legacy 令牌，自带控制台仅限 localhost —— 不是生产路径。amd64/AIO；macOS 请走源码安装以默认使用 BoxLite。",
       manual: {
         summary: "想先读一遍？用预构建 compose 手动执行：",
         commands: [
@@ -75,7 +75,7 @@ export const zh: SiteContent = {
           "# 写一个 .env：AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d",
         ],
-        note: "脚本会替你完成 .env 合成（见可读源码）。两个文件都由本站托管 —— 无需 clone。仅限 amd64。",
+        note: "脚本会替你完成 .env 合成（见可读源码）。两个文件都由本站托管 —— 无需 clone。仅限 amd64/AIO。",
       },
     },
     secondaryCta: { label: "了解工作流程", href: "#how-it-works" },
@@ -126,7 +126,7 @@ export const zh: SiteContent = {
   howItWorks: {
     eyebrow: "流程",
     title: "从一台干净的主机，到一场你能接管的会话。",
-    description: "五步，无任何定制 provisioning —— 安装器封装的，正是你会手动跑的那套 make up 流程。",
+    description: "五步，无任何定制 provisioning —— 安装器封装的，正是你会手动跑的平台感知 make up 流程。",
     steps: [
       {
         index: "01",
@@ -136,7 +136,7 @@ export const zh: SiteContent = {
       {
         index: "02",
         title: "安装",
-        body: "运行一键命令（或 make up）：构建并启动整套栈，并打印一个本地 Bearer 令牌。",
+        body: "运行一键命令（或 make up）：macOS 选择 BoxLite，Linux 选择 AIO，并打印一个本地 Bearer 令牌。",
       },
       {
         index: "03",

@@ -16,6 +16,7 @@ import type {
   SandboxMode,
   SandboxProviderCapability,
   SandboxProvider,
+  SelectedSandboxRun,
 } from './sandbox-provider.port.js';
 import { CODEX_AUTH_SOURCE, type CodexAuthSource } from './codex-auth-source.port';
 import {
@@ -43,14 +44,20 @@ import {
   AIO_SANDBOX_TRIM_TIMEOUT_MS,
   AIO_SANDBOX_WORKSPACE_DIR,
   AioSandboxContainerController,
-  parseAioExecResult,
+  buildAioSandboxConnection,
   scrubAioExecSecrets,
+  type SandboxCommandExecutor,
+  type SandboxCommandEndpointDescriptor,
+  type SandboxRetentionPolicy,
+  type SandboxTerminalEndpointDescriptor,
+  type SandboxWorkspaceDescriptor,
   type AioDockerClient,
 } from '@cap/sandbox';
+import { buildSandboxWorkspaceBridge } from './sandbox-workspace-bridge';
 import {
-  deliverGitWorkspaceChanges,
-  materializeGitWorkspace,
-} from './aio-workspace';
+  createAioHttpCommandExecutor,
+  toLegacySandboxExecResult,
+} from './sandbox-command-executor';
 import {
   RUNTIME_MATERIAL_RESOLVER_REGISTRY,
   RuntimeMaterialResolverRegistry,
@@ -230,6 +237,62 @@ export class AioSandboxProvider
     ];
   }
 
+  getTerminalDescriptor(taskId: string): SandboxTerminalEndpointDescriptor {
+    const connection = this.connectionForTask(taskId);
+    return {
+      protocol: 'aio-json-v1',
+      wsUrl: connection.wsUrl,
+      metadata: { provider: 'aio-local' },
+    };
+  }
+
+  getCommandDescriptor(taskId: string): SandboxCommandEndpointDescriptor {
+    const connection = this.connectionForTask(taskId);
+    return {
+      protocol: 'aio-http-exec-v1',
+      baseUrl: connection.baseUrl,
+      workingDirectory: AioSandboxProvider.WORKSPACE_DIR,
+      metadata: { provider: 'aio-local' },
+    };
+  }
+
+  getWorkspaceDescriptor(_taskId: string): SandboxWorkspaceDescriptor {
+    return {
+      mode: 'git',
+      path: AioSandboxProvider.WORKSPACE_DIR,
+      git: {
+        materialized: true,
+        deliverable: true,
+      },
+      metadata: { provider: 'aio-local' },
+    };
+  }
+
+  getRetentionPolicy(_taskId: string): SandboxRetentionPolicy {
+    return {
+      mode: 'stop-retain',
+      retainTranscript: true,
+      cleanupEligible: true,
+      metadata: { provider: 'aio-local' },
+    };
+  }
+
+  async getSelectedSandboxRun(taskId: string): Promise<SelectedSandboxRun> {
+    const connection = this.connectionForTask(taskId);
+    return {
+      taskId,
+      providerId: 'aio-local',
+      providerSandboxId: connection.taskId,
+      provider: this,
+      capabilities: this.getProviderCapabilities(),
+      connection,
+      terminal: this.getTerminalDescriptor(taskId),
+      command: this.getCommandDescriptor(taskId),
+      workspace: this.getWorkspaceDescriptor(taskId),
+      retention: this.getRetentionPolicy(taskId),
+    };
+  }
+
   /**
    * Provision the per-task AIO Sandbox container and return its addressable
    * {@link SandboxConnection} handle. Idempotent: a second call for an already
@@ -260,10 +323,11 @@ export class AioSandboxProvider
       // provision and carry that selected runtime through preflight + setup, so a
       // DB/settings race cannot make the image probes and setup commands disagree.
       const runtime = await this.resolveProvisionRuntime(ctx.taskId);
+      const executor = this.createCommandExecutor(connection.baseUrl);
       // Sandbank-aligned runtime preflight: the runtime declares the image tools
       // it needs and the provider probes them before writing credentials or
       // materializing the repository.
-      await this.preflightRuntime(connection.baseUrl, ctx.taskId, runtime);
+      await this.preflightRuntime(executor, ctx.taskId, runtime);
       // 3.1 — delegate credential/config + prompt injection to the task's selected
       // AgentRuntime. CODEX stays byte-identical: for a `codex` task the provider
       // runs the SAME `injectCodexAuth` (config.toml/auth.json or the
@@ -277,14 +341,14 @@ export class AioSandboxProvider
       // returns; fail CLOSED on a non-zero exit so a broken setup never silently
       // burns a run slot. The taskId scopes the codex credential to the task's
       // OWNING account (owner-scoped resolution, design D3).
-      await this.injectRuntimeSetup(connection.baseUrl, ctx.taskId, runtime);
-      await this.cloneTaskRepository(connection.baseUrl, ctx.taskId, ctx.cloneSpec);
+      await this.injectRuntimeSetup(executor, ctx.taskId, runtime);
+      await this.cloneTaskRepository(executor, ctx.taskId, ctx.cloneSpec);
       // task-preinstall-skills: AFTER the clone (the installers run against the
       // cloned workspace) and before the handle returns. FAIL-SOFT — a skill
       // installer failure is logged but does NOT abort provision (codex still
       // launches without that skill), so this is NOT in the fail-closed try/throw
       // contract of auth/clone above; it swallows its own errors internally.
-      await this.preinstallSkills(connection.baseUrl, ctx.taskId);
+      await this.preinstallSkills(executor, ctx.taskId);
     } catch (err) {
       await this.teardownSandbox(ctx.taskId).catch(() => undefined);
       throw err;
@@ -304,12 +368,13 @@ export class AioSandboxProvider
   async teardownSandbox(taskId: string): Promise<void> {
     await this.controller.teardownSandbox(taskId, {
       beforeStop: async ({ baseUrl }) => {
+        const executor = this.createCommandExecutor(baseUrl);
         // 3.1 — the pre-stop trim is DISPATCHED to the task's selected runtime: codex
         // trims `~/.codex`; claude trims `~/.claude` while keeping transcript projects.
         // fix-codex-headless-subscription-auth: capture codex's possibly refreshed
         // auth.json BEFORE the trim zeroes it. Both hooks are best-effort internally.
-        await this.captureAndPersistCodexAuth(baseUrl, taskId);
-        await this.trimRuntimeHomeBeforeStop(baseUrl, taskId);
+        await this.captureAndPersistCodexAuth(executor, taskId);
+        await this.trimRuntimeHomeBeforeStop(executor, taskId);
       },
     });
   }
@@ -327,10 +392,12 @@ export class AioSandboxProvider
     args: DeliverWorkspaceArgs,
   ): Promise<DeliverWorkspaceResult> {
     const baseUrl = this.controller.resolveBaseUrl(taskId);
-    return deliverGitWorkspaceChanges({
-      baseUrl,
+    const executor = this.createCommandExecutor(baseUrl);
+    return buildSandboxWorkspaceBridge({
+      executor,
+      descriptor: this.getWorkspaceDescriptor(taskId),
+    }).deliverGit({
       taskId,
-      workspaceDir: AioSandboxProvider.WORKSPACE_DIR,
       timeoutMs: AioSandboxProvider.TRIM_TIMEOUT_MS,
       deliver: args,
     });
@@ -355,7 +422,7 @@ export class AioSandboxProvider
    * sandbox is wedged.
    */
   private async trimRuntimeHomeBeforeStop(
-    baseUrl: string,
+    executor: SandboxCommandExecutor,
     taskId: string,
   ): Promise<void> {
     let runtime: { preStopTrimCommands(): readonly string[] } | undefined;
@@ -366,7 +433,7 @@ export class AioSandboxProvider
     }
     const commands = (runtime ?? new CodexRuntime()).preStopTrimCommands();
     for (const command of commands) {
-      await this.runTrimCommandBestEffort(baseUrl, taskId, command);
+      await this.runTrimCommandBestEffort(executor, taskId, command);
     }
   }
 
@@ -380,7 +447,7 @@ export class AioSandboxProvider
    * compatible/env-fallback task is a safe no-op. NEVER throws or blocks the stop.
    */
   private async captureAndPersistCodexAuth(
-    baseUrl: string,
+    executor: SandboxCommandExecutor,
     taskId: string,
   ): Promise<void> {
     try {
@@ -392,7 +459,7 @@ export class AioSandboxProvider
       }
       // claude has no ~/.codex/auth.json; an unresolved runtime defaults to codex, so it proceeds.
       if (runtime && runtime.id !== 'codex') return;
-      const exec = this.runSandboxExec(baseUrl);
+      const exec = this.runSandboxExec(executor);
       const res = await exec('cat /home/gem/.codex/auth.json 2>/dev/null');
       if (res.exitCode !== 0) return; // missing/unreadable (e.g. compatible writes no auth.json)
       const authJson = typeof res.output === 'string' ? res.output.trim() : '';
@@ -415,17 +482,27 @@ export class AioSandboxProvider
    * drops caches, and zeroes credentials; see the runtimes' `preStopTrimCommands`.
    */
   private async runTrimCommandBestEffort(
-    baseUrl: string,
+    executor: SandboxCommandExecutor,
     taskId: string,
     command: string,
   ): Promise<void> {
-    await this.controller.runShellExecBestEffort({
-      baseUrl,
-      taskId,
-      command,
-      timeoutMs: AioSandboxProvider.TRIM_TIMEOUT_MS,
-      label: 'pre-stop HOME trim',
-    });
+    try {
+      const result = await executor.exec({
+        command,
+        timeoutMs: AioSandboxProvider.TRIM_TIMEOUT_MS,
+      });
+      if (result.exitCode !== 0) {
+        this.logger.warn(
+          `pre-stop HOME trim for task ${taskId} exited ${result.exitCode} (not fatal)`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `pre-stop HOME trim for task ${taskId} failed (not fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /**
@@ -605,7 +682,7 @@ export class AioSandboxProvider
    * on a genuinely successful clone.
    */
   private async cloneTaskRepository(
-    baseUrl: string,
+    executor: SandboxCommandExecutor,
     taskId: string,
     selectedSpec: ProvisionContext['cloneSpec'],
   ): Promise<void> {
@@ -616,11 +693,12 @@ export class AioSandboxProvider
       return;
     }
 
-    await materializeGitWorkspace({
-      baseUrl,
+    await buildSandboxWorkspaceBridge({
+      executor,
+      descriptor: this.getWorkspaceDescriptor(taskId),
+    }).materializeGit({
       taskId,
       spec,
-      workspaceDir: AioSandboxProvider.WORKSPACE_DIR,
     });
 
     this.logger.debug(`cloned task repository into AIO sandbox for task ${taskId}`);
@@ -641,7 +719,7 @@ export class AioSandboxProvider
    * failed task. An unresolved/errored runtime degrades to the codex default.
    */
   private async injectRuntimeSetup(
-    baseUrl: string,
+    executor: SandboxCommandExecutor,
     taskId: string,
     runtime: AgentRuntime,
   ): Promise<void> {
@@ -676,7 +754,7 @@ export class AioSandboxProvider
     const commands: readonly SandboxSetupCommand[] = (
       plan as { commands?: readonly SandboxSetupCommand[] }
     ).commands ?? [];
-    const exec = this.runSandboxExec(baseUrl);
+    const exec = this.runSandboxExec(executor);
     for (const { command, tolerateUnresolvedExit } of commands) {
       const { exitCode, output } = await exec(command);
       if (AioSandboxProvider.setupCommandFailed(exitCode, tolerateUnresolvedExit)) {
@@ -700,14 +778,14 @@ export class AioSandboxProvider
    * from consuming a long-running slot.
    */
   private async preflightRuntime(
-    baseUrl: string,
+    executor: SandboxCommandExecutor,
     taskId: string,
     runtime: AgentRuntime,
   ): Promise<void> {
     const probes: readonly SandboxRuntimePreflightProbe[] = runtime.preflightProbes();
     if (probes.length === 0) return;
 
-    const exec = this.runSandboxExec(baseUrl);
+    const exec = this.runSandboxExec(executor);
     for (const probe of probes) {
       const { exitCode, output } = await exec(probe.command);
       if (exitCode !== 0) {
@@ -784,18 +862,26 @@ export class AioSandboxProvider
     );
   }
 
+  private createCommandExecutor(baseUrl: string): SandboxCommandExecutor {
+    return createAioHttpCommandExecutor({ baseUrl });
+  }
+
+  private connectionForTask(taskId: string): SandboxConnection {
+    return this.controller.getConnection(taskId) ?? buildAioSandboxConnection(taskId);
+  }
+
   /**
    * Build the {@link SandboxExec} closure a runtime uses to run a command in THIS
-   * sandbox over `POST <baseUrl>/v1/shell/exec`, returning the parsed
-   * `{exitCode, output}` via the SAME {@link parseExecResult} the provider uses for
-   * its own injections — so a runtime sees identical exit-code semantics (a missing
-   * `exit_code` is a non-zero failure, the live-server `data`-nesting is unwrapped).
+   * sandbox through the selected provider command executor, returning the parsed
+   * `{exitCode, output}` via the same normalization the provider uses for its own
+   * injections — so a runtime sees identical exit-code semantics (a missing
+   * `exit_code` is a non-zero failure, live-server `data`-nesting is unwrapped).
    * A non-`ok` HTTP status surfaces as `{exitCode: NaN}` so the runtime fails closed
    * exactly as the inline codex path does.
    */
-  private runSandboxExec(baseUrl: string): SandboxExec {
+  private runSandboxExec(executor: SandboxCommandExecutor): SandboxExec {
     return async (command: string): Promise<SandboxExecResult> => {
-      return this.controller.runSandboxExec(baseUrl, command);
+      return toLegacySandboxExecResult(await executor.exec({ command }));
     };
   }
 
@@ -814,7 +900,10 @@ export class AioSandboxProvider
    * independently, so one failing does not block the others. This method
    * swallows all its own errors and never throws into the provision path.
    */
-  private async preinstallSkills(baseUrl: string, taskId: string): Promise<void> {
+  private async preinstallSkills(
+    executor: SandboxCommandExecutor,
+    taskId: string,
+  ): Promise<void> {
     let skills: string[] = [];
     try {
       skills = await this.lookup.getTaskSkills(taskId);
@@ -845,23 +934,10 @@ export class AioSandboxProvider
         .command(AioSandboxProvider.WORKSPACE_DIR)
         .join(' ')} < /dev/null`;
       try {
-        const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ command }),
-          signal: AbortSignal.timeout(
-            AioSandboxProvider.SKILL_INSTALL_TIMEOUT_MS,
-          ),
+        const { exitCode, output } = await executor.exec({
+          command,
+          timeoutMs: AioSandboxProvider.SKILL_INSTALL_TIMEOUT_MS,
         });
-        if (!res.ok) {
-          this.logger.warn(
-            `task ${taskId}: skill "${id}" (${installer.label}) preinstall HTTP ${res.status} — degrading (codex launches without it)`,
-          );
-          continue;
-        }
-        const { exitCode, output } = AioSandboxProvider.parseExecResult(
-          await res.json().catch(() => undefined),
-        );
         if (exitCode !== 0) {
           const scrubbed = AioSandboxProvider.scrubSecrets(output);
           this.logger.warn(
@@ -893,18 +969,5 @@ export class AioSandboxProvider
    */
   private static scrubSecrets(output: string): string {
     return scrubAioExecSecrets(output);
-  }
-
-  /**
-   * Parse an AIO `/v1/shell/exec` response into `{exitCode, output}`. The live
-   * AIO server NESTS the command result under a `data` object
-   * (`{success, message, data:{exit_code, output, status, ...}}`), so reading the
-   * fields off the TOP level yields `undefined` → a NaN exit code that fails
-   * closed even on a successful command (the bug that blocked auth-inject/clone).
-   * We read from `data` and tolerate a flat shape (older servers / unit mocks)
-   * too. A missing code stays NaN — never `=== 0` — so absence is a failure.
-   */
-  private static parseExecResult(raw: unknown): { exitCode: number; output: string } {
-    return parseAioExecResult(raw);
   }
 }

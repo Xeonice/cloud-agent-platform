@@ -7,7 +7,9 @@ import {
   type SandboxExecutionMode,
   type SandboxProviderCapability,
   type SandboxProviderPort,
+  type SandboxSelectedRunPort,
   type SandboxProvisionContext,
+  type SelectedSandboxRun,
 } from '@cap/sandbox';
 import type { RuntimeId } from '../agent-runtime/agent-runtime.port';
 import type { TranscriptSource } from './transcript-source';
@@ -42,6 +44,7 @@ export { SANDBOX_PROVIDER_CAPABILITIES };
 export type {
   SandboxConnection,
   SandboxProviderCapability,
+  SelectedSandboxRun,
 };
 
 export type ProvisionContext = SandboxProvisionContext<CloneSpec>;
@@ -66,7 +69,8 @@ export type SandboxProvider = SandboxProviderPort<
   CloneSpec,
   RuntimeId,
   TranscriptSource
->;
+> &
+  SandboxSelectedRunPort;
 
 export type DeliverWorkspaceArgs = SandboxDeliverWorkspaceArgs;
 

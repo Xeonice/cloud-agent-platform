@@ -34,6 +34,135 @@ export interface SandboxConnection {
   readonly wsUrl: string;
 }
 
+export type SandboxTerminalProtocol =
+  | 'aio-json-v1'
+  | 'boxlite-v1'
+  | 'provider-native'
+  | (string & {});
+
+export type SandboxCommandProtocol =
+  | 'aio-http-exec-v1'
+  | 'boxlite-exec-v1'
+  | 'provider-native'
+  | (string & {});
+
+export type SandboxWorkspaceMaterializationMode =
+  | 'none'
+  | 'git'
+  | 'archive'
+  | 'provider-native'
+  | (string & {});
+
+export type SandboxRetentionMode =
+  | 'none'
+  | 'stop-retain'
+  | 'snapshot'
+  | 'provider-native'
+  | (string & {});
+
+export interface SandboxDescriptorMetadata {
+  readonly [key: string]: unknown;
+}
+
+export interface SandboxTerminalEndpointDescriptor {
+  readonly protocol: SandboxTerminalProtocol;
+  readonly url?: string;
+  readonly wsUrl?: string;
+  readonly metadata?: SandboxDescriptorMetadata;
+}
+
+export interface SandboxCommandEndpointDescriptor {
+  readonly protocol: SandboxCommandProtocol;
+  readonly baseUrl?: string;
+  readonly workingDirectory?: string;
+  readonly metadata?: SandboxDescriptorMetadata;
+}
+
+export interface SandboxWorkspaceDescriptor {
+  readonly mode: SandboxWorkspaceMaterializationMode;
+  readonly path?: string;
+  readonly git?: {
+    readonly materialized?: boolean;
+    readonly deliverable?: boolean;
+  };
+  readonly archive?: {
+    readonly upload?: boolean;
+    readonly download?: boolean;
+  };
+  readonly metadata?: SandboxDescriptorMetadata;
+}
+
+export interface SandboxRetentionPolicy {
+  readonly mode: SandboxRetentionMode;
+  readonly retainTranscript?: boolean;
+  readonly cleanupEligible?: boolean;
+  readonly metadata?: SandboxDescriptorMetadata;
+}
+
+export interface SandboxPreflightProbeResult {
+  readonly name: string;
+  readonly command?: string;
+  readonly ok: boolean;
+  readonly output?: string;
+}
+
+export interface SandboxPreflightResult {
+  readonly status: 'skipped' | 'passed' | 'failed';
+  readonly checkedAt?: string;
+  readonly image?: string;
+  readonly runtimeId?: string;
+  readonly probes?: readonly SandboxPreflightProbeResult[];
+  readonly error?: string;
+}
+
+export type SandboxRunOwnerStatus =
+  | 'provisioning'
+  | 'running'
+  | 'terminal'
+  | 'removed'
+  | 'failed';
+
+export interface SandboxRunOwnerRecord {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly providerSandboxId?: string;
+  readonly status: SandboxRunOwnerStatus;
+  readonly connection?: SandboxConnection;
+  readonly metadata?: SandboxDescriptorMetadata;
+}
+
+export interface RecordSandboxRunOwnerArgs {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly providerSandboxId?: string;
+  readonly connection?: SandboxConnection;
+  readonly metadata?: SandboxDescriptorMetadata;
+}
+
+export interface SandboxRunOwnerStore {
+  getSandboxRunOwner(taskId: string): Promise<SandboxRunOwnerRecord | null>;
+  recordSandboxRunOwner(args: RecordSandboxRunOwnerArgs): Promise<void>;
+  markSandboxRunOwnerStatus?(
+    taskId: string,
+    status: SandboxRunOwnerStatus,
+  ): Promise<void>;
+}
+
+export interface SelectedSandboxRun<TProvider extends SandboxCapabilitySource = SandboxCapabilitySource> {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly provider: TProvider;
+  readonly providerSandboxId?: string;
+  readonly capabilities: readonly SandboxProviderCapability[];
+  readonly connection: SandboxConnection;
+  readonly terminal?: SandboxTerminalEndpointDescriptor;
+  readonly command?: SandboxCommandEndpointDescriptor;
+  readonly workspace?: SandboxWorkspaceDescriptor;
+  readonly retention?: SandboxRetentionPolicy;
+  readonly preflight?: SandboxPreflightResult;
+  readonly owner?: SandboxRunOwnerRecord;
+}
+
 export interface SandboxProvisionContext<TCloneSpec = GitCloneSpec> {
   readonly taskId: string;
   /**
@@ -85,6 +214,30 @@ export interface SandboxProviderPort<
     taskId: string,
     args: SandboxDeliverWorkspaceArgs,
   ): Promise<SandboxDeliverWorkspaceResult>;
+}
+
+export interface SandboxSelectedRunPort<TProvider extends SandboxCapabilitySource = SandboxCapabilitySource> {
+  getSelectedSandboxRun?(taskId: string): Promise<SelectedSandboxRun<TProvider> | null>;
+}
+
+export interface SandboxTerminalDescriptorPort {
+  getTerminalDescriptor?(
+    taskId: string,
+  ): Promise<SandboxTerminalEndpointDescriptor | null>;
+}
+
+export interface SandboxCommandDescriptorPort {
+  getCommandDescriptor?(
+    taskId: string,
+  ): Promise<SandboxCommandEndpointDescriptor | null>;
+}
+
+export interface SandboxWorkspaceDescriptorPort {
+  getWorkspaceDescriptor?(taskId: string): Promise<SandboxWorkspaceDescriptor | null>;
+}
+
+export interface SandboxRetentionDescriptorPort {
+  getRetentionPolicy?(taskId: string): Promise<SandboxRetentionPolicy | null>;
 }
 
 export interface SandboxReadoptionPort {

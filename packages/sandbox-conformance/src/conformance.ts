@@ -1,11 +1,20 @@
 import {
   SANDBOX_EXECUTION_MODES,
   type SandboxConnection,
+  type SandboxCommandDescriptorPort,
+  type SandboxCommandEndpointDescriptor,
   type SandboxDeliverWorkspaceArgs,
   type SandboxDeliverWorkspaceResult,
   type SandboxProviderPort,
   type SandboxReadoptionPort,
+  type SandboxRetentionDescriptorPort,
+  type SandboxSelectedRunPort,
+  type SandboxTerminalDescriptorPort,
+  type SandboxTerminalEndpointDescriptor,
   type SandboxTranscriptSourceBase,
+  type SandboxWorkspaceDescriptor,
+  type SandboxWorkspaceDescriptorPort,
+  type SelectedSandboxRun,
 } from '@cap/sandbox-core';
 import type { SandboxProviderCapability } from '@cap/sandbox-core';
 import { missingCapabilities } from '@cap/sandbox-scheduler';
@@ -16,7 +25,12 @@ export interface SandboxProviderConformanceOptions<
   TTranscriptSource extends SandboxTranscriptSourceBase,
 > {
   readonly provider: SandboxProviderPort<TCloneSpec, TRuntimeId, TTranscriptSource> &
-    Partial<SandboxReadoptionPort>;
+    Partial<SandboxReadoptionPort> &
+    Partial<SandboxSelectedRunPort> &
+    Partial<SandboxTerminalDescriptorPort> &
+    Partial<SandboxCommandDescriptorPort> &
+    Partial<SandboxWorkspaceDescriptorPort> &
+    Partial<SandboxRetentionDescriptorPort>;
   readonly taskId: string;
   readonly requiredCapabilities?: readonly SandboxProviderCapability[];
   readonly cloneSpec?: TCloneSpec | null;
@@ -31,6 +45,11 @@ export interface SandboxProviderConformanceOptions<
    * Set to false when the provider does not declare `lifecycle.readopt`.
    */
   readonly expectReadoption?: boolean;
+  /**
+   * Set to true for providers that should expose a selected-run descriptor during
+   * conformance. Kept opt-in so existing connection-only adapters remain valid.
+   */
+  readonly expectSelectedRun?: boolean;
 }
 
 export interface SandboxProviderConformanceScenario {
@@ -65,7 +84,7 @@ export function createSandboxProviderConformanceScenarios<
       commitMessage: 'CAP sandbox conformance',
     } satisfies SandboxDeliverWorkspaceArgs);
 
-  return [
+  const scenarios: SandboxProviderConformanceScenario[] = [
     {
       name: 'provider declares a valid execution mode and required capabilities',
       async run() {
@@ -150,7 +169,10 @@ export function createSandboxProviderConformanceScenarios<
           options.expectReadoption ??
           options.provider
             .getProviderCapabilities?.()
-            ?.includes('lifecycle.readopt') === true;
+            ?.some((capability) =>
+              capability === 'lifecycle.readopt' ||
+              capability === 'lifecycle.readoption',
+            ) === true;
         if (!shouldReadopt) return;
         assert.equal(
           typeof options.provider.listReadoptable,
@@ -177,6 +199,10 @@ export function createSandboxProviderConformanceScenarios<
       },
     },
   ];
+
+  scenarios.push(...createFeatureConformanceScenarios(options, assert));
+
+  return scenarios;
 }
 
 export function assertSandboxConnection(
@@ -212,4 +238,175 @@ export function assertSandboxTranscriptSource(
 ): void {
   assert.ok(typeof source.format === 'string' && source.format.length > 0, 'format is required');
   assert.equal(typeof source.jsonl, 'string', 'jsonl must be a string');
+}
+
+function createFeatureConformanceScenarios<
+  TCloneSpec,
+  TRuntimeId,
+  TTranscriptSource extends SandboxTranscriptSourceBase,
+>(
+  options: SandboxProviderConformanceOptions<
+    TCloneSpec,
+    TRuntimeId,
+    TTranscriptSource
+  >,
+  assert: SandboxProviderConformanceAssert,
+): readonly SandboxProviderConformanceScenario[] {
+  const capabilities = options.provider.getProviderCapabilities?.() ?? [];
+  const scenarios: SandboxProviderConformanceScenario[] = [];
+
+  if (options.expectSelectedRun === true) {
+    scenarios.push({
+      name: 'selected run descriptor is available when expected',
+      async run() {
+        assert.equal(
+          typeof options.provider.getSelectedSandboxRun,
+          'function',
+          'selected-run provider must expose getSelectedSandboxRun',
+        );
+        const run = await options.provider.getSelectedSandboxRun?.(options.taskId);
+        if (run === null || run === undefined) {
+          assert.ok(false, 'selected run descriptor should be present');
+          return;
+        }
+        assertSelectedSandboxRun(run, options.taskId, assert);
+      },
+    });
+  }
+
+  if (capabilities.includes('terminal.interactive')) {
+    scenarios.push({
+      name: 'interactive terminal capability exposes a terminal descriptor',
+      async run() {
+        assert.equal(
+          typeof options.provider.getTerminalDescriptor,
+          'function',
+          'interactive terminal provider must expose getTerminalDescriptor',
+        );
+        const descriptor = await options.provider.getTerminalDescriptor?.(options.taskId);
+        if (descriptor === null || descriptor === undefined) {
+          assert.ok(false, 'terminal descriptor should be present');
+          return;
+        }
+        assertTerminalDescriptor(descriptor, assert);
+      },
+    });
+  }
+
+  if (capabilities.includes('command.exec')) {
+    scenarios.push({
+      name: 'command execution capability exposes a command descriptor',
+      async run() {
+        assert.equal(
+          typeof options.provider.getCommandDescriptor,
+          'function',
+          'command executor provider must expose getCommandDescriptor',
+        );
+        const descriptor = await options.provider.getCommandDescriptor?.(options.taskId);
+        if (descriptor === null || descriptor === undefined) {
+          assert.ok(false, 'command descriptor should be present');
+          return;
+        }
+        assertCommandDescriptor(descriptor, assert);
+      },
+    });
+  }
+
+  if (capabilities.includes('workspace.archive.transfer')) {
+    scenarios.push({
+      name: 'archive workspace capability exposes a workspace descriptor',
+      async run() {
+        assert.equal(
+          typeof options.provider.getWorkspaceDescriptor,
+          'function',
+          'workspace transfer provider must expose getWorkspaceDescriptor',
+        );
+        const descriptor = await options.provider.getWorkspaceDescriptor?.(options.taskId);
+        if (descriptor === null || descriptor === undefined) {
+          assert.ok(false, 'workspace descriptor should be present');
+          return;
+        }
+        assertWorkspaceDescriptor(descriptor, assert);
+      },
+    });
+  }
+
+  if (
+    capabilities.includes('lifecycle.snapshot') ||
+    capabilities.includes('lifecycle.sleep')
+  ) {
+    scenarios.push({
+      name: 'provider retention features expose a retention policy',
+      async run() {
+        assert.equal(
+          typeof options.provider.getRetentionPolicy,
+          'function',
+          'retention-capable provider must expose getRetentionPolicy',
+        );
+        const policy = await options.provider.getRetentionPolicy?.(options.taskId);
+        assert.ok(policy !== null && policy !== undefined, 'retention policy should be present');
+      },
+    });
+  }
+
+  return scenarios;
+}
+
+export function assertSelectedSandboxRun(
+  run: SelectedSandboxRun,
+  expectedTaskId: string | undefined,
+  assert: SandboxProviderConformanceAssert,
+): void {
+  if (expectedTaskId !== undefined) {
+    assert.equal(run.taskId, expectedTaskId, 'selected run taskId must match');
+  }
+  assert.ok(typeof run.providerId === 'string' && run.providerId.length > 0, 'providerId is required');
+  assert.ok(Array.isArray(run.capabilities), 'selected run capabilities must be an array');
+  assertSandboxConnection(run.connection, expectedTaskId, assert);
+}
+
+export function assertTerminalDescriptor(
+  descriptor: SandboxTerminalEndpointDescriptor,
+  assert: SandboxProviderConformanceAssert,
+): void {
+  assert.ok(
+    typeof descriptor.protocol === 'string' && descriptor.protocol.length > 0,
+    'terminal protocol is required',
+  );
+  assert.ok(
+    descriptor.url === undefined || typeof descriptor.url === 'string',
+    'terminal url must be string when present',
+  );
+  assert.ok(
+    descriptor.wsUrl === undefined || typeof descriptor.wsUrl === 'string',
+    'terminal wsUrl must be string when present',
+  );
+}
+
+export function assertCommandDescriptor(
+  descriptor: SandboxCommandEndpointDescriptor,
+  assert: SandboxProviderConformanceAssert,
+): void {
+  assert.ok(
+    typeof descriptor.protocol === 'string' && descriptor.protocol.length > 0,
+    'command protocol is required',
+  );
+  assert.ok(
+    descriptor.baseUrl === undefined || typeof descriptor.baseUrl === 'string',
+    'command baseUrl must be string when present',
+  );
+}
+
+export function assertWorkspaceDescriptor(
+  descriptor: SandboxWorkspaceDescriptor,
+  assert: SandboxProviderConformanceAssert,
+): void {
+  assert.ok(
+    typeof descriptor.mode === 'string' && descriptor.mode.length > 0,
+    'workspace mode is required',
+  );
+  assert.ok(
+    descriptor.path === undefined || typeof descriptor.path === 'string',
+    'workspace path must be string when present',
+  );
 }

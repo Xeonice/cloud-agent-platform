@@ -418,6 +418,9 @@ importers:
       '@cap/sandbox-provider-aio':
         specifier: workspace:*
         version: link:../sandbox-provider-aio
+      '@cap/sandbox-provider-boxlite':
+        specifier: workspace:*
+        version: link:../sandbox-provider-boxlite
       '@cap/sandbox-scheduler':
         specifier: workspace:*
         version: link:../sandbox-scheduler
@@ -564,6 +567,31 @@ importers:
       '@cap/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@cap/tsconfig':
+        specifier: workspace:*
+        version: link:../tsconfig
+      '@types/node':
+        specifier: ^20.14.0
+        version: 20.19.41
+      eslint:
+        specifier: ^9.27.0
+        version: 9.39.4(jiti@2.7.0)
+      typescript:
+        specifier: ^5.5.4
+        version: 5.9.3
+
+  packages/sandbox-provider-boxlite:
+    dependencies:
+      '@cap/sandbox-core':
+        specifier: workspace:*
+        version: link:../sandbox-core
+    devDependencies:
+      '@cap/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@cap/sandbox-conformance':
+        specifier: workspace:*
+        version: link:../sandbox-conformance
       '@cap/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
