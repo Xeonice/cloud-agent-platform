@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.4...v0.24.0) (2026-06-26)
+
+
+### Features
+
+* **sandbox:** add BoxLite provider and platform startup defaults ([f0abb79](https://github.com/Xeonice/cloud-agent-platform/commit/f0abb795ce3a30470b2ba35506bb78b6bc7df572))
+
 ## [0.23.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.3...v0.23.4) (2026-06-26)
 
 
