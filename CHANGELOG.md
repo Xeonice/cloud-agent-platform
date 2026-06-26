@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.3...v0.23.4) (2026-06-26)
+
+
+### Bug Fixes
+
+* **web:** render markdown in session replay ([684aeb7](https://github.com/Xeonice/cloud-agent-platform/commit/684aeb70a58a8ccff9da06347d3a248fe0c4875f))
+
 ## [0.23.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.2...v0.23.3) (2026-06-26)
 
 
