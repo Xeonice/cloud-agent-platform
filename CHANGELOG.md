@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.2...v0.23.3) (2026-06-26)
+
+
+### Bug Fixes
+
+* **auth:** release PAT-only repository import ([81a89e9](https://github.com/Xeonice/cloud-agent-platform/commit/81a89e9eeef4d73252e7cfb34a8e7b7c14fdc8d4))
+
 ## [0.23.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.1...v0.23.2) (2026-06-25)
 
 
