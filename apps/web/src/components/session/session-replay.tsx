@@ -23,6 +23,7 @@ import type {
   ReplayPresentationState,
   ExecutionMode,
 } from "@cap/contracts";
+import { TranscriptMarkdown } from "@/components/markdown/transcript-markdown";
 import { sessionHistoryQuery } from "@/lib/api/queries";
 import { cn } from "@/utils";
 import { SessionCastLog } from "./session-cast-log";
@@ -363,7 +364,7 @@ const TurnItem = React.forwardRef<HTMLDivElement, { turn: ConvTurn }>(
         <div ref={ref} className="grid scroll-mt-3 gap-1.5">
           <Role dot="bg-foreground" label="操作员指令" />
           <div className="rounded-lg bg-secondary px-3 py-2.5 text-[13px] font-medium leading-[1.6]">
-            {turn.text}
+            <TranscriptMarkdown source={turn.text} />
           </div>
         </div>
       );
@@ -377,7 +378,7 @@ const TurnItem = React.forwardRef<HTMLDivElement, { turn: ConvTurn }>(
               <span className="mb-2 inline-flex items-center gap-[5px] rounded bg-card px-1.5 py-px text-[10px] font-bold text-success ring-1 ring-success/25">
                 ✓ 最终回答
               </span>
-              <div>{turn.text}</div>
+              <TranscriptMarkdown source={turn.text} />
             </div>
           </div>
         );
@@ -386,7 +387,7 @@ const TurnItem = React.forwardRef<HTMLDivElement, { turn: ConvTurn }>(
         <div ref={ref} className="grid scroll-mt-3 gap-1.5">
           <Role dot="bg-success" label="Codex · 过程" />
           <div className="border-l-2 border-border pl-2.5 text-[13px] italic leading-[1.6] text-muted-foreground">
-            {turn.text}
+            <TranscriptMarkdown source={turn.text} />
           </div>
         </div>
       );
