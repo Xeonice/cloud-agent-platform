@@ -65,10 +65,19 @@ class FakePrisma {
  * raced to gone between the list and the reattach). Mirrors `ISandboxReadoption`.
  */
 class FakeSandbox {
-  constructor({ readoptable = [], goneOnReattach = [], capabilities = null } = {}) {
+  constructor({
+    readoptable = [],
+    goneOnReattach = [],
+    capabilities = null,
+    selectedRuns = {},
+    throwOnSelectedRun = [],
+  } = {}) {
     this.readoptable = readoptable;
     this.goneOnReattach = new Set(goneOnReattach);
     this.reattached = [];
+    this.selectedRunLookups = [];
+    this.selectedRuns = selectedRuns;
+    this.throwOnSelectedRun = new Set(throwOnSelectedRun);
     this.capabilities = capabilities;
   }
   getSandboxMode() {
@@ -88,6 +97,11 @@ class FakeSandbox {
       baseUrl: `http://cap-aio-${taskId}:8080`,
       wsUrl: `ws://cap-aio-${taskId}:8080/v1/shell/ws`,
     };
+  }
+  async getSelectedSandboxRun(taskId) {
+    this.selectedRunLookups.push(taskId);
+    if (this.throwOnSelectedRun.has(taskId)) throw new Error(`metadata down for ${taskId}`);
+    return this.selectedRuns[taskId] ?? null;
   }
 }
 
@@ -119,6 +133,7 @@ class FakeGuardrails {
     this.running = [];
     this.queue = [];
     this.armed = new Map(); // taskId -> params handed to admit (watcher arming)
+    this.selectedRuns = new Map(); // taskId -> selected-run metadata handed to readopt
     this.events = []; // ordered log proving phase/ceiling ordering
   }
 
@@ -147,12 +162,13 @@ class FakeGuardrails {
    * see (running.length is checked against the ceiling), which is exactly the
    * slot-accounting Phase 2's re-offer relies on.
    */
-  readopt(taskId, _connection, params = {}) {
+  readopt(taskId, _connection, params = {}, selectedRun = null) {
     this.events.push(`readopt:${taskId}`);
     if (!this.running.includes(taskId)) {
       this.running.push(taskId);
     }
     this.armed.set(taskId, params);
+    this.selectedRuns.set(taskId, selectedRun);
   }
 
   /**
@@ -217,14 +233,25 @@ class RecoveryHarness {
       try {
         const connection = await selected.reattach?.(taskId);
         if (!connection) continue; // raced to gone -> let Phase 1 fail it
+        let selectedRun = null;
+        try {
+          selectedRun = (await selected.getSelectedSandboxRun?.(taskId)) ?? null;
+        } catch {
+          selectedRun = null;
+        }
         const row = await this.prisma.task.findUnique({
           where: { id: taskId },
           select: { deadlineMs: true, idleTimeoutMs: true },
         });
-        this.guardrails.readopt(taskId, connection, {
-          deadlineMs: row?.deadlineMs ?? undefined,
-          idleTimeoutMs: row?.idleTimeoutMs ?? undefined,
-        });
+        this.guardrails.readopt(
+          taskId,
+          connection,
+          {
+            deadlineMs: row?.deadlineMs ?? undefined,
+            idleTimeoutMs: row?.idleTimeoutMs ?? undefined,
+          },
+          selectedRun,
+        );
         readopted.add(taskId); // KEEP current state — no transition
       } catch {
         // best-effort per task: a re-adopt failure falls through to Phase 1
@@ -460,6 +487,51 @@ test('a dead-session task is force-failed: only non-re-adopted in-flight tasks a
   const lastReadopt = guardrails.events.map((e) => e.startsWith('readopt:')).lastIndexOf(true);
   const firstFail = guardrails.events.findIndex((e) => e.startsWith('fail:'));
   assert.ok(lastReadopt !== -1 && lastReadopt < firstFail, 'Phase 0 re-adopt precedes Phase 1 reclaim');
+});
+
+test('startup re-adoption forwards selected-run metadata into guardrails', async () => {
+  const prisma = new FakePrisma([runningRow('alive', 1)]);
+  const selectedRun = {
+    taskId: 'alive',
+    providerId: 'boxlite-test',
+    connection: {
+      taskId: 'alive',
+      baseUrl: 'https://boxlite/sandboxes/alive',
+      wsUrl: 'wss://boxlite/sandboxes/alive/tty',
+    },
+    terminal: { protocol: 'boxlite-v1', wsUrl: 'wss://boxlite/sandboxes/alive/tty' },
+    command: { protocol: 'boxlite-exec-v1', baseUrl: 'https://boxlite/sandboxes/alive' },
+  };
+  const guardrails = new FakeGuardrails({ envCeiling: 5 });
+  const sandbox = new FakeSandbox({
+    readoptable: ['alive'],
+    capabilities: ['lifecycle.readopt'],
+    selectedRuns: { alive: selectedRun },
+  });
+  const harness = new RecoveryHarness(prisma, guardrails, sandbox);
+
+  await harness.onApplicationBootstrap();
+
+  assert.deepEqual(sandbox.selectedRunLookups, ['alive'], 'selected-run metadata is resolved after reattach');
+  assert.equal(guardrails.selectedRuns.get('alive'), selectedRun, 'selected-run metadata is passed to guardrails.readopt');
+});
+
+test('startup re-adoption falls back to connection-only when selected-run metadata fails', async () => {
+  const prisma = new FakePrisma([runningRow('alive', 1)]);
+  const guardrails = new FakeGuardrails({ envCeiling: 5 });
+  const sandbox = new FakeSandbox({
+    readoptable: ['alive'],
+    capabilities: ['lifecycle.readopt'],
+    throwOnSelectedRun: ['alive'],
+  });
+  const harness = new RecoveryHarness(prisma, guardrails, sandbox);
+
+  await harness.onApplicationBootstrap();
+
+  assert.deepEqual(sandbox.selectedRunLookups, ['alive'], 'selected-run metadata is attempted after reattach');
+  assert.deepEqual(guardrails.running, ['alive'], 'the task is still re-adopted when metadata lookup fails');
+  assert.equal(guardrails.selectedRuns.get('alive'), null, 'guardrails receives a null selected-run fallback');
+  assert.deepEqual(harness.failed, [], 'metadata failure does not force-fail the live survivor');
 });
 
 test('a survivor that raced to gone between list and reattach is reclaimed, not re-adopted', async () => {

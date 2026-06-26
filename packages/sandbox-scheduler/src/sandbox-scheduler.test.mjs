@@ -72,6 +72,10 @@ function routableProvider(name, capabilities, options = {}) {
         ? { ...connection, taskId }
         : null;
     },
+    async getSelectedSandboxRun(taskId) {
+      calls.push(['selectedRun', taskId]);
+      return options.selectedRun?.(taskId) ?? null;
+    },
   };
 }
 
@@ -258,15 +262,69 @@ await test('provision plan couples cloneSpec and required capabilities', () => {
   assert.deepEqual(mod.buildSandboxProvisionPlan({ cloneSpec }), {
     cloneSpec,
     requiredCapabilities: ['terminal.websocket', 'workspace.git.materialize'],
+    featureCapabilities: ['terminal.interactive', 'command.exec'],
   });
   assert.deepEqual(mod.buildSandboxProvisionPlan({ cloneSpec: null }), {
     cloneSpec: null,
     requiredCapabilities: ['terminal.websocket'],
+    featureCapabilities: ['terminal.interactive', 'command.exec'],
   });
   assert.deepEqual(mod.buildSandboxProvisionPlan({ cloneSpec: undefined }), {
     cloneSpec: undefined,
     requiredCapabilities: ['terminal.websocket'],
+    featureCapabilities: ['terminal.interactive', 'command.exec'],
   });
+  assert.deepEqual(mod.buildSandboxProvisionPlan({ cloneSpec, archiveWorkspace: true }), {
+    cloneSpec,
+    requiredCapabilities: ['terminal.websocket', 'workspace.git.materialize'],
+    featureCapabilities: [
+      'terminal.interactive',
+      'command.exec',
+      'workspace.archive.transfer',
+    ],
+  });
+});
+
+await test('selected run builder carries provider, connection, and descriptors', () => {
+  const selected = mod.selectSandboxProviderCandidate(
+    [
+      {
+        id: 'boxlite',
+        provider: provider('boxlite', ['terminal.interactive', 'command.exec']),
+        location: 'cloud',
+        priority: 20,
+      },
+    ],
+    ['terminal.interactive', 'command.exec'],
+  );
+  const connection = {
+    taskId: 'task-selected',
+    baseUrl: 'https://boxlite.test/boxes/task-selected',
+    wsUrl: 'wss://boxlite.test/boxes/task-selected/ws',
+  };
+  const run = mod.buildSelectedSandboxRun({
+    taskId: 'task-selected',
+    selection: selected,
+    connection,
+    providerSandboxId: 'box-task-selected',
+    terminal: { protocol: 'boxlite-v1', wsUrl: connection.wsUrl },
+    command: { protocol: 'boxlite-exec-v1', workingDirectory: '/workspace' },
+    workspace: { mode: 'archive', path: '/workspace', archive: { upload: true } },
+    retention: { mode: 'snapshot', retainTranscript: true },
+    preflight: { status: 'passed', runtimeId: 'codex' },
+  });
+
+  assert.equal(run.taskId, 'task-selected');
+  assert.equal(run.providerId, 'boxlite');
+  assert.equal(run.provider, selected.provider);
+  assert.equal(run.providerSandboxId, 'box-task-selected');
+  assert.equal(run.connection, connection);
+  assert.deepEqual(run.capabilities, ['terminal.interactive', 'command.exec']);
+  assert.equal(run.terminal.protocol, 'boxlite-v1');
+  assert.equal(run.command.protocol, 'boxlite-exec-v1');
+  assert.equal(run.workspace.mode, 'archive');
+  assert.equal(run.retention.mode, 'snapshot');
+  assert.equal(run.preflight.status, 'passed');
 });
 
 await test('missingCapabilities returns only required entries that are absent', () => {
@@ -525,6 +583,295 @@ await test('provider router reattaches before no-owner delivery and never guesse
   assert(readOnly.calls.some((call) => call[0] === 'teardown'));
   assert(wrongDelivery.calls.some((call) => call[0] === 'teardown'));
   assert(owner.calls.some((call) => call[0] === 'teardown'));
+});
+
+await test('provider router persists and prefers stored task ownership', async () => {
+  const records = new Map();
+  const statusUpdates = [];
+  const ownerStore = {
+    async getSandboxRunOwner(taskId) {
+      return records.get(taskId) ?? null;
+    },
+    async recordSandboxRunOwner(record) {
+      records.set(record.taskId, { ...record, status: 'running' });
+    },
+    async markSandboxRunOwnerStatus(taskId, status) {
+      statusUpdates.push([taskId, status]);
+      const existing = records.get(taskId);
+      if (existing) records.set(taskId, { ...existing, status });
+    },
+  };
+
+  const local = routableProvider('local', core.SANDBOX_PROVIDER_CAPABILITIES, {
+    reattachTask: 'task-owned',
+  });
+  const cloud = routableProvider('cloud', core.SANDBOX_PROVIDER_CAPABILITIES, {
+    reattachTask: 'task-owned',
+  });
+  const firstRouter = new mod.SandboxProviderRouter(
+    [
+      core.defineLocalSandboxProvider({ id: 'local', provider: local, priority: 1 }),
+      core.defineCloudSandboxProvider({ id: 'cloud', provider: cloud, priority: 50 }),
+    ],
+    { ownerStore },
+  );
+
+  await firstRouter.provision({ taskId: 'task-owned', cloneSpec: null });
+  assert.equal(records.get('task-owned').providerId, 'cloud');
+
+  const restartedRouter = new mod.SandboxProviderRouter(
+    [
+      core.defineLocalSandboxProvider({ id: 'local', provider: local, priority: 1 }),
+      core.defineCloudSandboxProvider({ id: 'cloud', provider: cloud, priority: 50 }),
+    ],
+    { ownerStore },
+  );
+
+  const delivery = await restartedRouter.deliverWorkspaceChanges('task-owned', {
+    authHeader: 'Authorization: Basic x',
+    branch: 'cap/task-owned',
+    commitMessage: 'done',
+  });
+  assert.equal(delivery.commitSha, 'cloud');
+  assert(!local.calls.some((call) => call[0] === 'deliver'));
+  assert(cloud.calls.some((call) => call[0] === 'deliver'));
+
+  const selectedRun = await restartedRouter.getSelectedSandboxRun('task-owned');
+  assert.equal(selectedRun.providerId, 'cloud');
+  assert.equal(selectedRun.connection.baseUrl, 'http://cloud/task-owned');
+  assert.equal(selectedRun.owner.providerId, 'cloud');
+
+  assert.equal((await restartedRouter.reattach('task-owned'))?.baseUrl, 'http://cloud');
+  assert(!local.calls.some((call) => call[0] === 'reattach'));
+  await restartedRouter.teardownSandbox('task-owned');
+  assert.deepEqual(statusUpdates, [['task-owned', 'removed']]);
+});
+
+await test('provider router builds selected run after readoption when no owner is known', async () => {
+  const records = new Map();
+  const ownerStore = {
+    async getSandboxRunOwner(taskId) {
+      return records.get(taskId) ?? null;
+    },
+    async recordSandboxRunOwner(record) {
+      records.set(record.taskId, { ...record, status: 'running' });
+    },
+  };
+  const owner = routableProvider('readopt-owner', [
+    'lifecycle.readopt',
+    'terminal.websocket',
+  ], {
+    reattachTask: 'task-readopt-run',
+  });
+  const router = new mod.SandboxProviderRouter([
+    core.defineCloudSandboxProvider({
+      id: 'readopt-owner',
+      provider: owner,
+      capabilities: ['lifecycle.readopt', 'terminal.websocket'],
+    }),
+  ], { ownerStore });
+
+  const run = await router.getSelectedSandboxRun('task-readopt-run');
+  assert.equal(run.providerId, 'readopt-owner');
+  assert.equal(run.connection.baseUrl, 'http://readopt-owner');
+  assert.equal(run.owner.providerId, 'readopt-owner');
+  assert.deepEqual(
+    owner.calls.map((call) => call[0]),
+    ['reattach', 'selectedRun'],
+  );
+});
+
+await test('provider router selected-run returns null when readoption cannot prove ownership', async () => {
+  const owner = routableProvider('readopt-owner', [
+    'lifecycle.readopt',
+    'terminal.websocket',
+  ]);
+  const router = new mod.SandboxProviderRouter([
+    core.defineCloudSandboxProvider({
+      id: 'readopt-owner',
+      provider: owner,
+      capabilities: ['lifecycle.readopt', 'terminal.websocket'],
+    }),
+  ]);
+
+  assert.equal(await router.getSelectedSandboxRun('not-live'), null);
+  assert.deepEqual(owner.calls.map((call) => call[0]), ['reattach']);
+});
+
+await test('provider router selected-run handles incomplete and stale stored owners', async () => {
+  const records = new Map([
+    ['task-no-connection', {
+      taskId: 'task-no-connection',
+      providerId: 'owner',
+      providerSandboxId: 'stored-box',
+      status: 'running',
+    }],
+    ['task-missing-provider', {
+      taskId: 'task-missing-provider',
+      providerId: 'missing',
+      status: 'running',
+    }],
+  ]);
+  const ownerStore = {
+    async getSandboxRunOwner(taskId) {
+      return records.get(taskId) ?? null;
+    },
+  };
+  const owner = routableProvider('owner', ['terminal.websocket']);
+  const router = new mod.SandboxProviderRouter([
+    core.defineCloudSandboxProvider({
+      id: 'owner',
+      provider: owner,
+      capabilities: ['terminal.websocket'],
+    }),
+  ], { ownerStore });
+
+  assert.equal(await router.getSelectedSandboxRun('task-no-connection'), null);
+  assert.equal(await router.getSelectedSandboxRun('task-missing-provider'), null);
+});
+
+await test('provider router selected-run uses provider descriptor fallbacks', async () => {
+  const connection = {
+    taskId: 'task-descriptors',
+    baseUrl: 'http://descriptor-owner',
+    wsUrl: 'ws://descriptor-owner',
+  };
+  const ownerStore = {
+    async getSandboxRunOwner() {
+      return {
+        taskId: 'task-descriptors',
+        providerId: 'descriptor-owner',
+        providerSandboxId: 'stored-sandbox',
+        status: 'running',
+        connection,
+      };
+    },
+  };
+  const provider = {
+    getSandboxMode: () => 'workspace-write',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision() { return connection; },
+    async teardownSandbox() {},
+    async readRolloutFromContainer() { return null; },
+    async sandboxExists() { return true; },
+    async deliverWorkspaceChanges() {
+      return { hadChanges: false, commitSha: null, error: null };
+    },
+    async getSelectedSandboxRun() { return null; },
+    async getTerminalDescriptor() {
+      return { protocol: 'provider-native', wsUrl: 'ws://terminal' };
+    },
+    async getCommandDescriptor() {
+      return { protocol: 'provider-native', baseUrl: 'http://exec' };
+    },
+    async getWorkspaceDescriptor() {
+      return { mode: 'archive', path: '/workspace', archive: { upload: true } };
+    },
+    async getRetentionPolicy() {
+      return { mode: 'snapshot', retainTranscript: true };
+    },
+  };
+  const router = new mod.SandboxProviderRouter([
+    core.defineCloudSandboxProvider({
+      id: 'descriptor-owner',
+      provider,
+      capabilities: ['terminal.websocket'],
+    }),
+  ], { ownerStore });
+
+  const run = await router.getSelectedSandboxRun('task-descriptors');
+  assert.equal(run.providerSandboxId, 'stored-sandbox');
+  assert.equal(run.terminal.wsUrl, 'ws://terminal');
+  assert.equal(run.command.baseUrl, 'http://exec');
+  assert.equal(run.workspace.mode, 'archive');
+  assert.equal(run.retention.mode, 'snapshot');
+});
+
+await test('provider router selected-run prefers provider-run descriptors', async () => {
+  const storeConnection = {
+    taskId: 'task-provider-run',
+    baseUrl: 'http://stored',
+    wsUrl: 'ws://stored',
+  };
+  const providerConnection = {
+    taskId: 'task-provider-run',
+    baseUrl: 'http://provider-run',
+    wsUrl: 'ws://provider-run',
+  };
+  const ownerStore = {
+    async getSandboxRunOwner() {
+      return {
+        taskId: 'task-provider-run',
+        providerId: 'provider-run-owner',
+        providerSandboxId: 'stored-sandbox',
+        status: 'running',
+        connection: storeConnection,
+      };
+    },
+  };
+  const provider = {
+    getSandboxMode: () => 'workspace-write',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision() { return providerConnection; },
+    async teardownSandbox() {},
+    async readRolloutFromContainer() { return null; },
+    async sandboxExists() { return true; },
+    async deliverWorkspaceChanges() {
+      return { hadChanges: false, commitSha: null, error: null };
+    },
+    async getSelectedSandboxRun() {
+      return {
+        taskId: 'task-provider-run',
+        providerId: 'provider-run-owner',
+        provider,
+        providerSandboxId: 'provider-sandbox',
+        capabilities: ['terminal.websocket'],
+        connection: providerConnection,
+        terminal: { protocol: 'provider-native', wsUrl: 'ws://provider-terminal' },
+        command: { protocol: 'provider-native', baseUrl: 'http://provider-exec' },
+        workspace: { mode: 'provider-native', path: '/provider-workspace' },
+        retention: { mode: 'provider-native', cleanupEligible: true },
+        preflight: { status: 'passed' },
+      };
+    },
+  };
+  const router = new mod.SandboxProviderRouter([
+    core.defineCloudSandboxProvider({
+      id: 'provider-run-owner',
+      provider,
+      capabilities: ['terminal.websocket'],
+    }),
+  ], { ownerStore });
+
+  const run = await router.getSelectedSandboxRun('task-provider-run');
+  assert.equal(run.connection.baseUrl, 'http://provider-run');
+  assert.equal(run.providerSandboxId, 'provider-sandbox');
+  assert.equal(run.terminal.wsUrl, 'ws://provider-terminal');
+  assert.equal(run.command.baseUrl, 'http://provider-exec');
+  assert.equal(run.workspace.path, '/provider-workspace');
+  assert.equal(run.retention.cleanupEligible, true);
+  assert.equal(run.preflight.status, 'passed');
+});
+
+await test('provider router selected-run can use reattached connection without owner store', async () => {
+  const owner = routableProvider('readopt-no-store', [
+    'lifecycle.readopt',
+    'terminal.websocket',
+  ], {
+    reattachTask: 'task-no-store',
+  });
+  const router = new mod.SandboxProviderRouter([
+    core.defineCloudSandboxProvider({
+      id: 'readopt-no-store',
+      provider: owner,
+      capabilities: ['lifecycle.readopt', 'terminal.websocket'],
+    }),
+  ]);
+
+  const run = await router.getSelectedSandboxRun('task-no-store');
+  assert.equal(run.connection.baseUrl, 'http://readopt-no-store');
+  assert.equal(run.providerSandboxId, 'task-no-store');
+  assert.equal(run.owner, undefined);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

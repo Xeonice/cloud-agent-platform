@@ -230,10 +230,18 @@ await test('provision plan couples cloneSpec and required capabilities', () => {
     'terminal.websocket',
     'workspace.git.materialize',
   ]);
+  assert.deepEqual(withWorkspace.featureCapabilities, [
+    'terminal.interactive',
+    'command.exec',
+  ]);
 
   const withoutWorkspace = mod.buildSandboxProvisionPlan({ cloneSpec: null });
   assert.equal(withoutWorkspace.cloneSpec, null);
   assert.deepEqual(withoutWorkspace.requiredCapabilities, ['terminal.websocket']);
+  assert.deepEqual(withoutWorkspace.featureCapabilities, [
+    'terminal.interactive',
+    'command.exec',
+  ]);
 });
 
 await test('settle plans preserve terminal and force-fail lifecycle ordering flags', () => {

@@ -435,6 +435,28 @@ try {
         'terminal.websocket,workspace.git.materialize,workspace.git.deliver,transcript.retained-read,lifecycle.readopt',
       'AIO provider declares scheduler-facing capabilities',
     );
+    const selectedRun = await provider.getSelectedSandboxRun(TASK_ID);
+    assert(
+      selectedRun.terminal?.protocol === 'aio-json-v1' &&
+        selectedRun.terminal.wsUrl === `ws://cap-aio-${TASK_ID}:8080/v1/shell/ws`,
+      'AIO selected-run exposes the terminal transport descriptor',
+    );
+    assert(
+      selectedRun.command?.protocol === 'aio-http-exec-v1' &&
+        selectedRun.command.baseUrl === `http://cap-aio-${TASK_ID}:8080`,
+      'AIO selected-run exposes the command executor descriptor',
+    );
+    assert(
+      selectedRun.workspace?.mode === 'git' &&
+        selectedRun.workspace.path === '/home/gem/workspace' &&
+        selectedRun.workspace.git?.deliverable === true,
+      'AIO selected-run exposes the git workspace descriptor',
+    );
+    assert(
+      selectedRun.retention?.mode === 'stop-retain' &&
+        selectedRun.retention.retainTranscript === true,
+      'AIO selected-run exposes the stop-retain transcript retention policy',
+    );
 
     connection = await provider.provision({ taskId: TASK_ID });
 

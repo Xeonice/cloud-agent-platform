@@ -33,8 +33,14 @@
  * sandbox `exec`/`wait` HTTP surfaces) and maps it to guardrails.
  */
 import { Logger } from '@nestjs/common';
-import WebSocket from 'ws';
-import type { TerminalPty } from './terminal.gateway';
+import { AioTerminalTransport } from './aio-terminal-transport';
+import type {
+  AgentTerminalPty,
+  TerminalExitStatus,
+  TerminalTransport,
+  TerminalTransportFrame,
+  TerminalTransportFactory,
+} from './agent-terminal-pty';
 import {
   buildDetachedCodexLaunchLine,
   buildHasSessionCommand,
@@ -68,6 +74,11 @@ import type {
   TerminalStartup,
 } from '../agent-runtime/agent-runtime.port';
 import { selectLaunch } from './select-launch';
+import type { SandboxCommandExecutor } from '@cap/sandbox';
+import {
+  createAioHttpCommandExecutor,
+  toLegacySandboxExecResult,
+} from '../sandbox/sandbox-command-executor';
 
 /**
  * The DSR (Device Status Report) cursor-position query crossterm emits on
@@ -160,42 +171,26 @@ const CODEX_LIVENESS_POLL_MS = Number(
  */
 const CLAUDE_WORKSPACE_DIR = '/home/gem/workspace';
 
-/** A sandbox AIO JSON frame received over the terminal WebSocket. */
-interface AioInboundFrame {
-  type: string;
-  data?: unknown;
-  [key: string]: unknown;
-}
-
 /** The resolved exit outcome of a terminated sandbox session. */
-export interface AioExitStatus {
-  /** The numeric exit code, or null when it could not be resolved. */
-  readonly code: number | null;
-  /**
-   * True when the session terminated abnormally (the WS closed before a
-   * `session_id`/`ready` was ever seen, or the exit status could not be
-   * resolved). An abnormal termination maps to guardrails `recordFailure`
-   * regardless of `code`.
-   */
-  readonly abnormal: boolean;
-}
+export type AioExitStatus = TerminalExitStatus;
 
 /**
  * `AioPtyClient` opens an OUTBOUND `ws` client into the sandbox terminal and
  * presents it to the gateway as a {@link TerminalPty}, exposing the same
  * `onData`/`write`/`resize`/`pause`/`resume` surface the gateway consumes.
  */
-export class AioPtyClient implements TerminalPty {
+export class AioPtyClient implements AgentTerminalPty {
   private readonly logger = new Logger(AioPtyClient.name);
 
   /** Subscribers to translated raw PTY output (decoded sandbox `output` data). */
   private readonly dataListeners = new Set<(chunk: string) => void>();
 
-  /** The outbound terminal WebSocket into the sandbox. */
-  private socket: WebSocket;
+  /** The provider terminal transport into the sandbox. */
+  private transport: TerminalTransport;
 
-  /** The sandbox terminal WS URL, reused when a closed bridge must re-attach. */
-  private readonly wsUrl: string;
+  /** Opens a fresh provider terminal transport when a closed bridge must re-attach. */
+  private readonly transportFactory: TerminalTransportFactory;
+  private readonly commandExecutor: SandboxCommandExecutor;
 
   /** Operator input collected while the sandbox terminal WS is being re-opened. */
   private readonly pendingInput: string[] = [];
@@ -332,8 +327,14 @@ export class AioPtyClient implements TerminalPty {
     private readonly resolveExecutionMode?: () => Promise<
       ExecutionMode | null | undefined
     >,
+    transportFactory?: TerminalTransportFactory,
+    commandExecutor?: SandboxCommandExecutor,
   ) {
-    this.wsUrl = wsUrl;
+    this.transportFactory = transportFactory ?? {
+      open: () => new AioTerminalTransport(this.taskId, wsUrl),
+    };
+    this.commandExecutor =
+      commandExecutor ?? createAioHttpCommandExecutor({ baseUrl });
     this.sessionName = detachedSessionName(taskId);
     // Connect WITHOUT any `?session_id=` query parameter so the sandbox creates a
     // fresh tmux-backed AIO shell. Rejoining an existing AIO session by passing
@@ -341,7 +342,7 @@ export class AioPtyClient implements TerminalPty {
     // lives in a DETACHED tmux session we launch-or-attach to over a fresh WS
     // (survive-api-redeploy D1/D2), and `SnapshotManager` (above the seam) owns
     // operator reconnect/restore.
-    this.socket = this.openSocket();
+    this.transport = this.openTransport();
   }
 
   // -------------------------------------------------------------------------
@@ -363,22 +364,22 @@ export class AioPtyClient implements TerminalPty {
     this.sendInput(data);
   }
 
-  /** Open a sandbox terminal WS and fence late events from superseded sockets. */
-  private openSocket(): WebSocket {
-    const socket = new WebSocket(this.wsUrl);
-    socket.on('message', (raw) => {
-      if (socket !== this.socket) return;
-      this.onSocketMessage(raw);
+  /** Open a provider terminal transport and fence late events from superseded transports. */
+  private openTransport(): TerminalTransport {
+    const transport = this.transportFactory.open();
+    transport.onFrame((frame) => {
+      if (transport !== this.transport) return;
+      this.onTransportFrame(frame);
     });
-    socket.on('close', () => {
-      if (socket !== this.socket) return;
-      this.onSocketClose();
+    transport.onClose(() => {
+      if (transport !== this.transport) return;
+      this.onTransportClose();
     });
-    socket.on('error', (err) => {
-      if (socket !== this.socket) return;
-      this.logger.warn(`task ${this.taskId}: sandbox terminal WS error: ${err.message}`);
+    transport.onError(() => {
+      // The transport logs provider-level errors. Keeping the subscription here
+      // ensures future transports have the same fenced lifecycle hook surface.
     });
-    return socket;
+    return transport;
   }
 
   /**
@@ -388,16 +389,12 @@ export class AioPtyClient implements TerminalPty {
    */
   private reconnectForInput(): void {
     if (this.reconnectingForInput) return;
-    if (this.socket.readyState === WebSocket.CONNECTING) return;
+    if (this.transport.readyState === 'connecting') return;
     this.reconnectingForInput = true;
     this.established = false;
     this.sawSessionId = false;
-    try {
-      this.socket.close();
-    } catch {
-      // Best-effort; closed sockets may throw on close.
-    }
-    this.socket = this.openSocket();
+    this.transport.close();
+    this.transport = this.openTransport();
   }
 
   /**
@@ -554,7 +551,7 @@ export class AioPtyClient implements TerminalPty {
   private flushPendingInputSoon(): void {
     if (this.pendingInput.length === 0) return;
     setTimeout(() => {
-      if (this.socket.readyState !== WebSocket.OPEN) {
+      if (this.transport.readyState !== 'open') {
         this.reconnectForInput();
         return;
       }
@@ -621,7 +618,7 @@ export class AioPtyClient implements TerminalPty {
    * "identical cols and rows" live-frame parity precondition reachable (VR.8).
    */
   resize(cols: number, rows: number): void {
-    this.sendJson({ type: 'resize', data: { cols, rows } });
+    this.transport.sendResize(cols, rows);
   }
 
   /**
@@ -631,12 +628,12 @@ export class AioPtyClient implements TerminalPty {
    * browser independently.
    */
   pause(): void {
-    this.socket.pause();
+    this.transport.pause();
   }
 
   /** Resume the WS read side previously paused by {@link pause}. */
   resume(): void {
-    this.socket.resume();
+    this.transport.resume();
   }
 
   /**
@@ -665,9 +662,9 @@ export class AioPtyClient implements TerminalPty {
       this.autoSubmitTimer = undefined;
     }
     try {
-      this.socket.close();
+      this.transport.close();
     } catch {
-      // Best-effort; the socket may already be closing.
+      // Best-effort; the transport may already be closing.
     }
   }
 
@@ -680,10 +677,7 @@ export class AioPtyClient implements TerminalPty {
    * type onto the existing pipeline per the translation table; unknown frame
    * types are inert.
    */
-  private onSocketMessage(raw: WebSocket.RawData): void {
-    const frame = this.parseFrame(raw);
-    if (!frame) return;
-
+  private onTransportFrame(frame: TerminalTransportFrame): void {
     switch (frame.type) {
       case 'session_id':
         // The server-sent `session_id` precedes `ready`; observing it marks the
@@ -709,7 +703,7 @@ export class AioPtyClient implements TerminalPty {
         // Answer a sandbox liveness ping with an INTERNAL pong distinct from the
         // operator write-lease heartbeat — it never routes through
         // `WriteLockService`; it is purely a transport-level keepalive reply.
-        this.sendJson({ type: 'pong', timestamp: Date.now() });
+        this.transport.sendPong(Date.now());
         break;
       default:
         // Other AIO frame types are inert at this seam.
@@ -723,7 +717,7 @@ export class AioPtyClient implements TerminalPty {
    * observing the DSR cursor-position query in the output, immediately reply with
    * the synthetic CPR input so codex starts.
    */
-  private onOutput(frame: AioInboundFrame): void {
+  private onOutput(frame: TerminalTransportFrame): void {
     const data = typeof frame.data === 'string' ? frame.data : '';
     if (data.length === 0) return;
 
@@ -792,7 +786,7 @@ export class AioPtyClient implements TerminalPty {
    * poller was ever armed — that is an abnormal start and is resolved here so the
    * task is not left dangling.
    */
-  private onSocketClose(): void {
+  private onTransportClose(): void {
     // Cancel any pending prompt auto-submit so it cannot fire after the WS closed.
     if (this.autoSubmitTimer) {
       clearTimeout(this.autoSubmitTimer);
@@ -955,36 +949,10 @@ export class AioPtyClient implements TerminalPty {
    * completion.
    */
   private runSandboxExec(): SandboxExec {
-    const baseUrl = this.baseUrl;
     return async (command: string): Promise<SandboxExecResult> => {
-      const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command }),
-      });
-      if (!res.ok) {
-        return { exitCode: Number.NaN, output: `/v1/shell/exec responded ${res.status}` };
-      }
-      const body = (await res.json().catch(() => undefined)) as
-        | { exitCode?: unknown; code?: unknown; stdout?: unknown; output?: unknown; data?: unknown }
-        | undefined;
-      // Tolerate both the flat shape and the live AIO `data`-nested shape (the same
-      // unwrap the provider's parseExecResult does), so a runtime sees consistent
-      // exit-code semantics on both servers.
-      const top = (body ?? {}) as Record<string, unknown>;
-      const d = (top.data ?? top) as Record<string, unknown>;
-      const rawCode = d.exit_code ?? d.exitCode ?? d.code;
-      const exitCode =
-        typeof rawCode === 'number' && Number.isFinite(rawCode)
-          ? rawCode
-          : typeof rawCode === 'string' && rawCode.trim() !== '' && Number.isFinite(Number(rawCode.trim()))
-            ? Number(rawCode.trim())
-            : Number.NaN;
-      const output =
-        (typeof d.output === 'string' && d.output) ||
-        (typeof d.stdout === 'string' && d.stdout) ||
-        '';
-      return { exitCode, output };
+      return toLegacySandboxExecResult(
+        await this.commandExecutor.exec({ command }),
+      );
     };
   }
 
@@ -998,7 +966,7 @@ export class AioPtyClient implements TerminalPty {
    * probe and this poller share one implementation.
    */
   hasSession(): Promise<boolean | null> {
-    return probeSessionLiveness(this.baseUrl, this.taskId);
+    return probeSessionLiveness(this.commandExecutor, this.taskId);
   }
 
   /**
@@ -1050,14 +1018,10 @@ export class AioPtyClient implements TerminalPty {
    */
   private async resolveViaExitFile(): Promise<number | null> {
     try {
-      const res = await fetch(`${this.baseUrl}/v1/shell/exec`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: `cat ${headlessExitFile(this.taskId)}` }),
+      const res = await this.commandExecutor.exec({
+        command: `cat ${headlessExitFile(this.taskId)}`,
       });
-      if (!res.ok) return null;
-      // Unwrap the live AIO `data`-nested exec shape (see {@link exitCodeFromExecBody}).
-      return exitCodeFromExecBody(await res.json());
+      return coerceExitCode(res.output.trim());
     } catch {
       return null;
     }
@@ -1066,15 +1030,8 @@ export class AioPtyClient implements TerminalPty {
   /** Resolve the exit code via `POST /v1/shell/exec` running `echo $?`. */
   private async resolveViaEcho(): Promise<number | null> {
     try {
-      const res = await fetch(`${this.baseUrl}/v1/shell/exec`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: 'echo $?' }),
-      });
-      if (!res.ok) return null;
-      const body = (await res.json()) as { stdout?: unknown; output?: unknown };
-      const out = typeof body.stdout === 'string' ? body.stdout : typeof body.output === 'string' ? body.output : '';
-      return coerceExitCode(out.trim());
+      const res = await this.commandExecutor.exec({ command: 'echo $?' });
+      return coerceExitCode(res.output.trim());
     } catch {
       return null;
     }
@@ -1086,42 +1043,11 @@ export class AioPtyClient implements TerminalPty {
 
   /** Send an AIO `{type:"input",data}` frame to the sandbox. */
   private sendInput(data: string): void {
-    const sent = this.sendJson({ type: 'input', data });
+    const sent = this.transport.sendInput(data);
     if (!sent) {
       this.pendingInput.push(data);
       this.reconnectForInput();
     }
-  }
-
-  /** Serialize and send an AIO JSON frame if the socket is open. */
-  private sendJson(frame: Record<string, unknown>): boolean {
-    if (this.socket.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(JSON.stringify(frame));
-    return true;
-  }
-
-  /** Parse an inbound `ws` payload into an AIO JSON frame, or null to drop it. */
-  private parseFrame(raw: WebSocket.RawData): AioInboundFrame | null {
-    let text: string;
-    if (typeof raw === 'string') {
-      text = raw;
-    } else if (Buffer.isBuffer(raw)) {
-      text = raw.toString('utf8');
-    } else if (Array.isArray(raw)) {
-      text = Buffer.concat(raw).toString('utf8');
-    } else {
-      text = Buffer.from(raw as ArrayBuffer).toString('utf8');
-    }
-    let obj: unknown;
-    try {
-      obj = JSON.parse(text);
-    } catch {
-      return null;
-    }
-    if (typeof obj !== 'object' || obj === null || typeof (obj as { type?: unknown }).type !== 'string') {
-      return null;
-    }
-    return obj as AioInboundFrame;
   }
 }
 
@@ -1135,26 +1061,14 @@ export class AioPtyClient implements TerminalPty {
  * (Track 3) consumes the same shape via its own `/v1/shell/exec` call.
  */
 export async function probeSessionLiveness(
-  baseUrl: string,
+  executor: SandboxCommandExecutor,
   taskId: string,
 ): Promise<boolean | null> {
   try {
-    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        command: `${buildHasSessionCommand(taskId)}; echo __cap_has__$?`,
-      }),
+    const result = await executor.exec({
+      command: `${buildHasSessionCommand(taskId)}; echo __cap_has__$?`,
     });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { stdout?: unknown; output?: unknown };
-    const out =
-      typeof body.stdout === 'string'
-        ? body.stdout
-        : typeof body.output === 'string'
-          ? body.output
-          : '';
-    const match = /__cap_has__(-?\d+)/.exec(out);
+    const match = /__cap_has__(-?\d+)/.exec(result.output);
     if (!match) return null;
     return match[1] === '0';
   } catch {

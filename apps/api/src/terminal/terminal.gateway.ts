@@ -70,7 +70,6 @@ import {
 import {
   BackpressureController,
   type FlowSignal,
-  type PausablePty,
 } from './backpressure';
 import {
   SnapshotManager,
@@ -86,6 +85,10 @@ import {
   castResizeData,
 } from './cast-writer';
 import { AioPtyClient, type AioExitStatus } from './aio-pty-client';
+import type { AgentTerminalPty } from './agent-terminal-pty';
+import { buildTerminalTransportFactory } from './terminal-transport-selection';
+import { buildSandboxCommandExecutor } from '../sandbox/sandbox-command-executor';
+import type { SelectedSandboxRun } from '@cap/sandbox';
 import type { SandboxConnection } from '../sandbox/sandbox-provider.port';
 // add-claude-code-runtime Track 3 (3.2): the gateway resolves the task's selected
 // AgentRuntime (Track 2's RuntimeRegistry) and threads it into the AioPtyClient so
@@ -179,7 +182,7 @@ class XtermHeadlessTerminal implements HeadlessTerminal {
 }
 
 /** A node-pty handle: a pausable producer the gateway streams to clients. */
-export interface TerminalPty extends PausablePty {
+export interface TerminalPty extends AgentTerminalPty {
   /** Subscribe to raw PTY output; returns an unsubscribe handle. */
   onData(listener: (chunk: string) => void): { dispose(): void };
   /** Forward raw input bytes to the PTY (lock-gated keystroke path, 7.5). */
@@ -781,7 +784,10 @@ export class TerminalGateway
    * @returns the registered {@link TerminalSession}, so the caller can hold the
    *          handle if needed.
    */
-  openSession(connection: SandboxConnection): TerminalSession {
+  openSession(
+    connection: SandboxConnection,
+    selectedRun?: SelectedSandboxRun | null,
+  ): TerminalSession {
     const { taskId, wsUrl, baseUrl } = connection;
     const existing = this.sessions.get(taskId);
     if (existing) return existing;
@@ -814,6 +820,8 @@ export class TerminalGateway
       // instead of the interactive TUI. Best-effort + lazily bound like the runtime
       // resolver; a console task (or unresolved mode) stays interactive-pty.
       () => this.resolveExecutionModeForTask(taskId),
+      buildTerminalTransportFactory({ taskId, connection, selectedRun }),
+      buildSandboxCommandExecutor({ connection, selectedRun }),
     );
     const session: TerminalSession = { taskId, pty, snapshots };
     this.registerSession(session);

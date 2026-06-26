@@ -2,7 +2,9 @@ import { Global, Module } from '@nestjs/common';
 import {
   SandboxProviderRouter,
   defineHttpCloudSandboxProvider,
+  defineBoxLiteSandboxProvider,
   defineLocalSandboxProvider,
+  readBoxLiteProviderConfig,
   type RoutableSandboxProvider,
   type SandboxProviderDescriptor,
 } from '@cap/sandbox';
@@ -42,6 +44,7 @@ import {
   readSandboxLocationEnv,
   readSandboxProviderCapabilitiesEnv,
 } from './sandbox-provider-config';
+import { SandboxRunOwnerService } from './sandbox-run-owner.service';
 import {
   RUNTIME_MATERIAL_RESOLVER_REGISTRY,
   createDefaultRuntimeMaterialResolverRegistry,
@@ -87,11 +90,14 @@ import {
       useClass: PrismaProvisionLookup,
     },
     AioSandboxProvider,
+    SandboxRunOwnerService,
     {
       provide: SANDBOX_PROVIDER,
-      useFactory: (aio: AioSandboxProvider): SandboxProvider =>
-        buildConfiguredSandboxProvider(aio),
-      inject: [AioSandboxProvider],
+      useFactory: (
+        aio: AioSandboxProvider,
+        ownerStore: SandboxRunOwnerService,
+      ): SandboxProvider => buildConfiguredSandboxProvider(aio, ownerStore),
+      inject: [AioSandboxProvider, SandboxRunOwnerService],
     },
     // add-claude-code-runtime Track 2/3 + pixel-restore-console-to-od Track 3 —
     // the Claude OAuth-token source. Now SETTINGS-BACKED (`PrismaClaudeAuthSource`,
@@ -140,6 +146,7 @@ import {
     RUNTIME_MATERIAL_RESOLVER_REGISTRY,
     CLAUDE_AUTH_SOURCE,
     CODEX_AUTH_SOURCE,
+    SandboxRunOwnerService,
   ],
 })
 export class SandboxModule {}
@@ -158,7 +165,10 @@ type ApiRoutableSandboxProvider = RoutableSandboxProvider<
   TranscriptSource
 >;
 
-function buildConfiguredSandboxProvider(aio: AioSandboxProvider): SandboxProvider {
+function buildConfiguredSandboxProvider(
+  aio: AioSandboxProvider,
+  ownerStore: SandboxRunOwnerService,
+): SandboxProvider {
   const providers: SandboxProviderDescriptor<ApiRoutableSandboxProvider>[] = [
     defineLocalSandboxProvider({
       id: 'aio-local',
@@ -183,10 +193,20 @@ function buildConfiguredSandboxProvider(aio: AioSandboxProvider): SandboxProvide
     );
   }
 
+  const boxlite = readBoxLiteProviderConfig();
+  if (boxlite.status === 'valid') {
+    providers.push(
+      defineBoxLiteSandboxProvider<CloneSpec, RuntimeId, TranscriptSource>({
+        config: boxlite.config,
+      }),
+    );
+  }
+
   return new SandboxProviderRouter<CloneSpec, RuntimeId, TranscriptSource>(
     providers,
     {
       preferLocation: readSandboxLocationEnv('CAP_SANDBOX_PREFER_LOCATION'),
+      ownerStore,
     },
   );
 }

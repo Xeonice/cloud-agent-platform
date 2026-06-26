@@ -10,9 +10,10 @@
  *   - 3.1: raw PTY output is appended to `workspaces/<id>/session.log` in lockstep
  *          with the byte-offset fed to `snapshots.feed`, so the snapshot boundary
  *          (`seq`) and the replayed tail align.
- *   - reconnect: `buildReconnectFrames` returns the prior output — a NON-EMPTY
- *          `snapshot` frame followed by the `tail_replay` of the bytes appended
- *          AFTER the snapshot — rather than nothing.
+ *   - reconnect: fresh browser loads replay recent `session.log` bytes so
+ *          scrollback rebuilds; incremental reconnects still return a NON-EMPTY
+ *          `snapshot` frame followed by the `tail_replay` of bytes appended AFTER
+ *          the snapshot.
  *
  * The test drives the compiled `SnapshotManager` from `dist/terminal/snapshot.js`
  * (build with `pnpm --filter @cap/api build` first) plus a real headless xterm
@@ -73,7 +74,7 @@ function flush() {
   return new Promise((resolve) => setTimeout(resolve, 20));
 }
 
-test('reconnect replays a non-empty snapshot then the session.log tail (3.1/3.2/3.3)', async () => {
+test('reconnect replays session.log for fresh loads and snapshot+tail for incremental reconnects (3.1/3.2/3.3)', async () => {
   const workspaceDir = await mkdtemp(path.join(tmpdir(), 'cap-reconnect-'));
   try {
     const headless = makeHeadless();
@@ -114,49 +115,64 @@ test('reconnect replays a non-empty snapshot then the session.log tail (3.1/3.2/
     await emit('TAIL-AFTER-SNAPSHOT-LINE\r\n');
     await flush();
 
-    // A fresh client (fromSeq 0) reconnecting receives snapshot THEN tail.
-    const frames = await mgr.buildReconnectFrames({ fromSeq: 0, clientCols: 80, clientRows: 24 });
+    // A fresh client (fromSeq 0) reconnecting receives bounded session.log bytes,
+    // not only the visible-frame snapshot, so xterm can rebuild scrollback.
+    const freshFrames = await mgr.buildReconnectFrames({ fromSeq: 0, clientCols: 80, clientRows: 24 });
+    assert.ok(freshFrames.length >= 1, 'fresh reconnect returns at least one tail frame');
+    for (const f of freshFrames) assert.equal(f.type, 'tail_replay');
+    assert.equal(freshFrames[freshFrames.length - 1].final, true, 'fresh replay final frame is marked final');
+    const freshText = freshFrames
+      .map((f) => Buffer.from(f.data, 'base64').toString('utf8'))
+      .join('');
+    assert.ok(
+      freshText.includes('hello from the agent') &&
+        freshText.includes('TAIL-AFTER-SNAPSHOT-LINE'),
+      'fresh reconnect replays session.log bytes from before and after the snapshot',
+    );
+    assert.equal(
+      freshFrames[freshFrames.length - 1].seq,
+      mgr.currentOffset,
+      'fresh replay end offset == total fed offset (file/offset lockstep)',
+    );
+    assert.ok(
+      freshText.length > 0,
+      'fresh reconnect delivers prior output, not an empty replay',
+    );
 
-    assert.ok(frames.length >= 2, 'reconnect returns at least a snapshot + a tail frame');
-
-    const snapshotFrame = frames[0];
-    assert.equal(snapshotFrame.type, 'snapshot', 'first frame is the snapshot');
-    assert.ok(snapshotFrame.data.length > 0, 'reconnect snapshot frame is non-empty');
+    // An incremental reconnect uses the faster snapshot + tail path.
+    const incrementalFrames = await mgr.buildReconnectFrames({
+      fromSeq: 1,
+      clientCols: 80,
+      clientRows: 24,
+    });
+    assert.ok(incrementalFrames.length >= 2, 'incremental reconnect returns snapshot + tail');
+    const snapshotFrame = incrementalFrames[0];
+    assert.equal(snapshotFrame.type, 'snapshot', 'incremental first frame is the snapshot');
+    assert.ok(snapshotFrame.data.length > 0, 'incremental snapshot frame is non-empty');
     assert.equal(snapshotFrame.cols, 80);
     assert.equal(snapshotFrame.rows, 24);
     assert.equal(snapshotFrame.seq, snapshotOffset, 'snapshot frame seq == capture offset');
 
-    // The remaining frames are the tail_replay of bytes appended AFTER the
-    // snapshot offset, ending with a final frame.
-    const tail = frames.slice(1);
-    assert.ok(tail.length >= 1, 'there is at least one tail frame');
+    const tail = incrementalFrames.slice(1);
+    assert.ok(tail.length >= 1, 'incremental reconnect has at least one tail frame');
     for (const f of tail) assert.equal(f.type, 'tail_replay');
-    assert.equal(tail[tail.length - 1].final, true, 'last tail frame is marked final');
+    assert.equal(tail[tail.length - 1].final, true, 'incremental last tail frame is marked final');
 
     const tailText = tail
       .map((f) => Buffer.from(f.data, 'base64').toString('utf8'))
       .join('');
     assert.ok(
       tailText.includes('TAIL-AFTER-SNAPSHOT-LINE'),
-      'tail replays the bytes appended after the snapshot',
+      'incremental tail replays bytes appended after the snapshot',
     );
     assert.ok(
       !tailText.includes('hello from the agent'),
-      'tail does NOT re-replay bytes already covered by the snapshot offset',
+      'incremental tail does NOT re-replay bytes already covered by the snapshot offset',
     );
-
-    // The last frame seq equals the total bytes written — offset stayed in
-    // lockstep with the file across snapshot boundary + tail.
     assert.equal(
       tail[tail.length - 1].seq,
       mgr.currentOffset,
-      'tail end offset == total fed offset (file/offset lockstep)',
-    );
-
-    // buildReconnectFrames returned PRIOR output rather than nothing.
-    assert.ok(
-      frames.length > 1 && tailText.length > 0,
-      'reconnect delivers prior output, not an empty replay',
+      'incremental tail end offset == total fed offset (file/offset lockstep)',
     );
   } finally {
     await rm(workspaceDir, { recursive: true, force: true });

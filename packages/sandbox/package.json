@@ -21,8 +21,8 @@
     "docs"
   ],
   "scripts": {
-    "build": "pnpm --filter @cap/sandbox-core build && pnpm --filter @cap/sandbox-scheduler build && pnpm --filter @cap/sandbox-lifecycle build && pnpm --filter @cap/sandbox-workspace-git build && pnpm --filter @cap/sandbox-conformance build && pnpm --filter @cap/sandbox-aio-local build && pnpm --filter @cap/sandbox-cloud-http build && pnpm --filter @cap/sandbox-provider-aio build && tsc -p tsconfig.json",
-    "typecheck": "pnpm --filter @cap/sandbox-core build && pnpm --filter @cap/sandbox-scheduler build && pnpm --filter @cap/sandbox-lifecycle build && pnpm --filter @cap/sandbox-workspace-git build && pnpm --filter @cap/sandbox-conformance build && pnpm --filter @cap/sandbox-aio-local build && pnpm --filter @cap/sandbox-cloud-http build && pnpm --filter @cap/sandbox-provider-aio build && tsc -p tsconfig.json --noEmit",
+    "build": "pnpm --filter @cap/sandbox-core build && pnpm --filter @cap/sandbox-scheduler build && pnpm --filter @cap/sandbox-lifecycle build && pnpm --filter @cap/sandbox-workspace-git build && pnpm --filter @cap/sandbox-conformance build && pnpm --filter @cap/sandbox-aio-local build && pnpm --filter @cap/sandbox-cloud-http build && pnpm --filter @cap/sandbox-provider-aio build && pnpm --filter @cap/sandbox-provider-boxlite build && tsc -p tsconfig.json",
+    "typecheck": "pnpm --filter @cap/sandbox-core build && pnpm --filter @cap/sandbox-scheduler build && pnpm --filter @cap/sandbox-lifecycle build && pnpm --filter @cap/sandbox-workspace-git build && pnpm --filter @cap/sandbox-conformance build && pnpm --filter @cap/sandbox-aio-local build && pnpm --filter @cap/sandbox-cloud-http build && pnpm --filter @cap/sandbox-provider-aio build && pnpm --filter @cap/sandbox-provider-boxlite build && tsc -p tsconfig.json --noEmit",
     "test": "pnpm build && node src/sandbox-core.test.mjs",
     "coverage": "pnpm build && c8 --100 --include=dist/**/*.js --reporter=text node src/sandbox-core.test.mjs",
     "lint": "eslint src --ext .ts"
@@ -34,6 +34,7 @@
     "@cap/sandbox-core": "workspace:*",
     "@cap/sandbox-lifecycle": "workspace:*",
     "@cap/sandbox-provider-aio": "workspace:*",
+    "@cap/sandbox-provider-boxlite": "workspace:*",
     "@cap/sandbox-scheduler": "workspace:*",
     "@cap/sandbox-workspace-git": "workspace:*"
   },

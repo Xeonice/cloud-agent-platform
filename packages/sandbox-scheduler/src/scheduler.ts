@@ -1,12 +1,21 @@
 import type {
   GitCloneSpec,
   SandboxCapabilitySource,
+  SandboxCommandEndpointDescriptor,
+  SandboxConnection,
+  SandboxPreflightResult,
   SandboxProviderCapability,
   SandboxProviderLocation,
+  SandboxRetentionPolicy,
+  SandboxTerminalEndpointDescriptor,
+  SandboxWorkspaceDescriptor,
+  SelectedSandboxRun,
 } from '@cap/sandbox-core';
 import {
+  ARCHIVE_WORKSPACE_SANDBOX_FEATURE_CAPABILITIES,
   DELIVERY_SANDBOX_REQUIRED_CAPABILITIES,
   INTERACTIVE_SANDBOX_REQUIRED_CAPABILITIES,
+  INTERACTIVE_SANDBOX_FEATURE_CAPABILITIES,
   MATERIALIZED_WORKSPACE_SANDBOX_REQUIRED_CAPABILITIES,
   READOPTION_SANDBOX_REQUIRED_CAPABILITIES,
   RETAINED_TRANSCRIPT_SANDBOX_REQUIRED_CAPABILITIES,
@@ -55,6 +64,7 @@ export interface SelectSandboxProviderCandidateOptions {
 export interface SandboxProvisionPlan<TCloneSpec = GitCloneSpec> {
   readonly cloneSpec: TCloneSpec | null | undefined;
   readonly requiredCapabilities: readonly SandboxProviderCapability[];
+  readonly featureCapabilities: readonly SandboxProviderCapability[];
 }
 
 export function provisionSandboxRequiredCapabilities(args: {
@@ -65,14 +75,63 @@ export function provisionSandboxRequiredCapabilities(args: {
     : INTERACTIVE_SANDBOX_REQUIRED_CAPABILITIES;
 }
 
+export function provisionSandboxFeatureCapabilities(args: {
+  readonly materializeWorkspace: boolean;
+  readonly archiveWorkspace?: boolean;
+}): readonly SandboxProviderCapability[] {
+  const out = new Set<SandboxProviderCapability>(INTERACTIVE_SANDBOX_FEATURE_CAPABILITIES);
+  if (args.materializeWorkspace && args.archiveWorkspace === true) {
+    for (const capability of ARCHIVE_WORKSPACE_SANDBOX_FEATURE_CAPABILITIES) {
+      out.add(capability);
+    }
+  }
+  return [...out];
+}
+
 export function buildSandboxProvisionPlan<TCloneSpec>(args: {
   readonly cloneSpec: TCloneSpec | null | undefined;
+  readonly archiveWorkspace?: boolean;
 }): SandboxProvisionPlan<TCloneSpec> {
+  const materializeWorkspace = args.cloneSpec !== null && args.cloneSpec !== undefined;
   return {
     cloneSpec: args.cloneSpec,
     requiredCapabilities: provisionSandboxRequiredCapabilities({
-      materializeGitWorkspace: args.cloneSpec !== null && args.cloneSpec !== undefined,
+      materializeGitWorkspace: materializeWorkspace,
     }),
+    featureCapabilities: provisionSandboxFeatureCapabilities({
+      materializeWorkspace,
+      archiveWorkspace: args.archiveWorkspace,
+    }),
+  };
+}
+
+export interface BuildSelectedSandboxRunArgs<TProvider extends SandboxCapabilitySource> {
+  readonly taskId: string;
+  readonly selection: SandboxProviderCandidateSelection<TProvider>;
+  readonly connection: SandboxConnection;
+  readonly providerSandboxId?: string;
+  readonly terminal?: SandboxTerminalEndpointDescriptor;
+  readonly command?: SandboxCommandEndpointDescriptor;
+  readonly workspace?: SandboxWorkspaceDescriptor;
+  readonly retention?: SandboxRetentionPolicy;
+  readonly preflight?: SandboxPreflightResult;
+}
+
+export function buildSelectedSandboxRun<TProvider extends SandboxCapabilitySource>(
+  args: BuildSelectedSandboxRunArgs<TProvider>,
+): SelectedSandboxRun<TProvider> {
+  return {
+    taskId: args.taskId,
+    providerId: args.selection.id,
+    provider: args.selection.provider,
+    providerSandboxId: args.providerSandboxId,
+    capabilities: args.selection.capabilities,
+    connection: args.connection,
+    terminal: args.terminal,
+    command: args.command,
+    workspace: args.workspace,
+    retention: args.retention,
+    preflight: args.preflight,
   };
 }
 

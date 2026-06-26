@@ -5,10 +5,11 @@
 #
 # This is a THIN WRAPPER, not a re-implementation. It (1) preflights Docker and
 # the host docker.sock, (2) clones the public repository, (3) cd's into it, and
-# (4) runs `make up` (or `make up-cp` on arm64) — which is the real, source-of-
-# truth bring-up. `make up` itself bootstraps the env, builds + starts the
-# stack, waits for /health, and PRINTS the `Authorization: Bearer <token>` you
-# log in with; this script simply surfaces that output unmodified.
+# (4) runs `make up` — which is the real, source-of-truth bring-up. `make up`
+# itself bootstraps the env, selects the sandbox provider (macOS -> BoxLite,
+# Linux -> AIO, unless overridden), builds + starts the stack, waits for /health,
+# and PRINTS the `Authorization: Bearer <token>` you log in with; this script
+# simply surfaces that output unmodified.
 #
 # The repo URL and site domain below are TEMPLATE MARKERS replaced with literal
 # values when the site is built (so the published file contains no placeholders).
@@ -68,24 +69,35 @@ if ! docker info >/dev/null 2>&1; then
        This tool talks to the host docker.sock — see the security note on $SITE_DOMAIN."
 fi
 
-# --- Architecture guidance (arm64 / Apple Silicon) -----------------------------
-# `make up` builds the amd64 AIO sandbox image. On arm64 that first build runs
-# under emulation and is slow; `make up-cp` brings up the control plane only and
-# skips that heavy build. Detect arm64 and prefer the fast path.
-UP_TARGET="up"
-ARCH="$(uname -m 2>/dev/null || echo unknown)"
-case "$ARCH" in
-  arm64|aarch64)
-    UP_TARGET="up-cp"
-    warn "Detected an arm64 host (e.g. Apple Silicon)."
-    warn "The full \`make up\` builds the amd64 AIO sandbox image under emulation —"
-    warn "the FIRST run is slow (then cached). Defaulting to the fast control-plane-"
-    warn "only path: \`make up-cp\` (api + postgres). Set CAP_UP_TARGET=up to force the"
-    warn "full bring-up, or run \`make up\` yourself later to build the sandbox image."
-    ;;
-esac
-# Allow an explicit override of the chosen make target.
-UP_TARGET="${CAP_UP_TARGET:-$UP_TARGET}"
+# --- Platform default ----------------------------------------------------------
+# Provider selection is OS-based, not architecture-based:
+#   macOS/Darwin -> BoxLite endpoint-backed sandbox
+#   Linux        -> AIO Docker sandbox
+# Operators may set CAP_SANDBOX_PROVIDER=auto|aio|boxlite|control-plane. The old
+# CAP_UP_TARGET escape hatch is still honored for compatibility.
+UP_TARGET="${CAP_UP_TARGET:-up}"
+if [ -z "${CAP_SANDBOX_PROVIDER:-}" ]; then
+  OS="$(uname -s 2>/dev/null || echo unknown)"
+  case "$OS" in
+    Darwin)
+      CAP_SANDBOX_PROVIDER="boxlite"
+      warn "Detected macOS. Defaulting to CAP_SANDBOX_PROVIDER=boxlite."
+      warn "Set BOXLITE_ENDPOINT / BOXLITE_API_TOKEN / BOXLITE_IMAGE before running,"
+      warn "or set CAP_SANDBOX_PROVIDER=aio|control-plane to override."
+      ;;
+    Linux)
+      CAP_SANDBOX_PROVIDER="aio"
+      info "Detected Linux. Defaulting to CAP_SANDBOX_PROVIDER=aio."
+      ;;
+    *)
+      CAP_SANDBOX_PROVIDER="auto"
+      warn "Could not identify OS '$OS'; repository startup will resolve CAP_SANDBOX_PROVIDER=auto."
+      ;;
+  esac
+  export CAP_SANDBOX_PROVIDER
+else
+  info "Using CAP_SANDBOX_PROVIDER=${CAP_SANDBOX_PROVIDER}."
+fi
 
 # --- Clone the public repository -----------------------------------------------
 if [ -e "$CLONE_DIR" ]; then
@@ -104,6 +116,7 @@ make "$UP_TARGET"
 
 printf '\n%s%s Done.%s Cloud Agent Platform is bootstrapping in %s/\n' "$B" "$GRN" "$R" "$CLONE_DIR"
 printf '%sLog in with the Authorization: Bearer token printed by "make %s" above.%s\n' "$DIM" "$UP_TARGET" "$R"
+printf '%sapi/web host ports bind to 0.0.0.0 by default; configure DNS/TLS/proxy/firewall/OAuth origins yourself before public exposure.%s\n' "$DIM" "$R"
 if [ "$UP_TARGET" = "up-cp" ]; then
-  printf '%sControl-plane only was started. To build the per-task sandbox image, run "make up" in %s/.%s\n' "$DIM" "$CLONE_DIR" "$R"
+  printf '%sControl-plane only was started. To start a sandbox provider, run "make up-aio" or "make up-boxlite" in %s/.%s\n' "$DIM" "$CLONE_DIR" "$R"
 fi

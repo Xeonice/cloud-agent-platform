@@ -2,7 +2,6 @@
 
 ## Purpose
 A running task survives an api restart/redeploy: codex runs in a detached named tmux session that outlives the orchestrator's terminal WebSocket, the api re-adopts still-running sandboxes on boot (re-attach + rebuild guardrail/slot state) instead of reaping and failing them, task termination is detected by codex/tmux liveness rather than WS-close, api shutdown does not tear down sandboxes, and concurrent attach is single-writer. (created by archiving change survive-api-redeploy)
-
 ## Requirements
 ### Requirement: Codex launches in a detached named tmux session that outlives the terminal WebSocket
 The system SHALL launch codex inside a DETACHED, NAMED tmux session (`tmux new-session -d -s task<taskId> -c /home/gem/workspace '<codex launch line>'`) sent over the `/v1/shell/ws` terminal channel, so codex becomes a child of the container's tmux daemon rather than a foreground child of the WS-spawned shell, and therefore KEEPS RUNNING when that WebSocket closes. This wraps (does not replace) the existing in-shell launch + prompt-injection contract: the prompt file, positional `"$(cat …)"` argument, hook-disabling guard, and DSR-gated auto-submit all still apply WITHIN the detached session.
@@ -55,3 +54,37 @@ The system SHALL allow multiple operators to ATTACH to the same task's named tmu
 #### Scenario: Only the lease holder writes to a shared attached session
 - **WHEN** two operators are attached to the same task's named tmux session and one holds the write lease
 - **THEN** both see the live output, but only the lease holder's keystrokes are injected into the session and the non-holder's input is suppressed
+
+### Requirement: Readoption routes through the owning provider
+
+The system SHALL re-adopt running tasks through the provider that owns their sandbox. When durable provider owner metadata exists, readoption SHALL use that provider first; when it does not exist, the system MAY probe compatible providers but SHALL only adopt a task after a provider proves the sandbox and detached session are alive.
+
+#### Scenario: Stored owner drives readoption
+- **WHEN** the API restarts and a running task has provider owner metadata for BoxLite
+- **THEN** readoption asks the BoxLite provider to reattach that task's sandbox and detached session
+- **AND** it does not attempt to reattach the task through AIO first
+
+#### Scenario: Provider must prove session liveness
+- **WHEN** a provider claims a running task during readoption
+- **THEN** it verifies the provider sandbox is alive and the detached task session is alive before the task is kept running
+
+### Requirement: Detached session semantics are provider-neutral
+
+Interactive runtimes SHALL continue to run inside a detached named session that outlives the API-to-provider terminal transport. The initial implementation MAY use tmux for both AIO and BoxLite, but callers SHALL depend on a detached-session driver rather than AIO-specific shell commands.
+
+#### Scenario: Transport close does not stop the agent
+- **WHEN** the API-to-BoxLite terminal transport closes while the detached task session is alive
+- **THEN** the agent process keeps running inside the provider sandbox
+
+#### Scenario: Reconnect attaches to the existing session
+- **WHEN** an operator reconnects to a BoxLite-backed task whose detached session is alive
+- **THEN** CAP attaches to that existing session rather than launching a new agent process
+
+### Requirement: Concurrent attach remains single-writer for every provider
+
+Multiple operators MAY view the same provider-backed task session, but only the CAP write-lease holder SHALL inject input. Provider-native terminal sharing or attach behavior SHALL NOT bypass CAP's write-lock.
+
+#### Scenario: BoxLite shared session is read-only for non-holders
+- **WHEN** two operators are attached to a BoxLite-backed task and only one holds the write lease
+- **THEN** both operators see output
+- **AND** only the lease holder's input is forwarded to the provider transport

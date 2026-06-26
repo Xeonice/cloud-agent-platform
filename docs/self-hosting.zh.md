@@ -16,8 +16,9 @@
 应用内升级是后续阶段，今天自托管并不需要它。
 
 > **🚀 想在一台全新的本地主机上试试？** 公开宣传站托管了一个一键安装脚本，封装了本地的
-> `make up` 拉起流程 —— 它会预检 Docker、克隆本仓库、运行 `make up`（在 Apple
-> Silicon 上是 `make up-cp`），并把打印出的 Bearer 令牌呈现给你：
+> `make up` 拉起流程 —— 它会预检 Docker、克隆本仓库、运行 `make up`，并把打印出的
+> Bearer 令牌呈现给你。源码路径会按平台自动选择 sandbox：macOS 默认 BoxLite，
+> Linux 默认 AIO；可用 `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane` 覆盖。
 >
 > ```bash
 > curl -fsSL https://<site-domain>/install.sh | sh
@@ -26,6 +27,9 @@
 > 它只是面向**本地**试用的便利封装，而非生产路径：手动的 `make up`（本地）以及下文的
 > `docker compose` 流程**仍是事实来源**。脚本以纯文本提供 —— 先读一遍，或使用站点同样给出的
 > 等效手动命令 `git clone … && make up`。要做真正的生产部署，请遵循本指南的步骤。
+>
+> api/web 主机端口默认监听 `0.0.0.0`。公共 DNS、TLS、反向代理、OAuth callback、
+> cookie 域与防火墙仍需由你在公开暴露前自行配置。
 
 > **⚡ 快速路径 —— 运行预构建镜像，无需 `git clone`（amd64 主机）。** 一旦有了某个
 > Release，你根本不需要源码：从
@@ -40,7 +44,7 @@
 > **让 Claude Code 帮你部署。** 装了 Claude Code 的话，把下面这段提示词贴给它，它会读 `install.sh`、预检 Docker、克隆仓库跑 `make up`，并一步步引导你完成本地账号登录、web/api 域名和 `.env` 配置 —— 走的是同一条源码构建的生产路径：
 >
 > ```text
-> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 安装脚本，确认 Docker 与可用的 docker.sock 已就绪。然后克隆 https://github.com/<owner>/cloud-agent-platform，进入目录运行 `make up` 构建并启动整套栈。帮我配置本地账号登录、web/api 域名，以及基于 PAT 的仓库访问；最后告诉我控制台地址和生成的管理员 / legacy 凭据。
+> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 安装脚本，确认 Docker 与可用的 docker.sock 已就绪。然后克隆 https://github.com/<owner>/cloud-agent-platform，进入目录运行 `make up`，让仓库按当前系统选择默认 sandbox 路径（macOS BoxLite，Linux AIO）。帮我配置本地账号登录、web/api 域名，以及基于 PAT 的仓库访问；最后告诉我控制台地址和生成的管理员 / legacy 凭据。
 > ```
 >
 > 它只是对 `make up` 的封装而非替代，脚本以纯文本提供、可先读后跑，你全程可接管。
@@ -219,7 +223,7 @@ cp apps/api/.env.example apps/api/.env   # 然后填好 Steps 1–5 的内容
 COMPOSE_PROFILES=web docker compose up --build
 ```
 
-这会构建 `web` 镜像（传入 `VITE_API_BASE_URL` / `VITE_WS_URL`）、`api`，并启动 Postgres。网页控制台发布在主机端口 **3000**（用 `WEB_HOST_PORT` 覆盖），api 在 **8080**。
+这会构建 `web` 镜像（传入 `VITE_API_BASE_URL` / `VITE_WS_URL`）、`api`，并启动 Postgres。网页控制台发布在主机端口 **3000**（用 `WEB_HOST_PORT` 覆盖），api 在 **8080**（用 `API_HOST_PORT` 覆盖）。两者默认绑定 `0.0.0.0`；如需仅本机访问，可把 `WEB_HOST_BIND` 或 `API_HOST_BIND` 设为 `127.0.0.1`。
 
 > `web` 服务位于 `web` compose profile 之后（与 `observability`/`grafana`/`proxy` 一样），所以你必须启用它（`COMPOSE_PROFILES=web`，或 `docker compose --profile web up`）。如果你在别处（例如 Vercel）提供控制台，就让该 profile 关着，compose 内的 web 服务永不会被构建或运行。
 
@@ -269,7 +273,7 @@ docker compose -f docker-compose.prod.yml up -d            # 加上 --profile we
 ```
 
 - **版本：** `CAP_VERSION` 是**可选**的——不设则运行 `latest`（最新的 Release），所以一个裸的 `up -d` 就是一个常驻的「永远跑最新 release」栈。钉一个 tag（`CAP_VERSION=v0.1.0`）可获得可复现 / 可回滚的部署。
-- **需要 amd64 / x86_64 主机**——发布出来的镜像仅支持 amd64（每任务 AIO sandbox 的基础镜像仅 amd64）。在 arm64 上（例如 Apple Silicon）拉取会报 "no matching manifest for linux/arm64"；请用 x86_64 主机。
+- **需要 amd64 / x86_64 主机**——发布出来的镜像仅支持 amd64（每任务 AIO sandbox 的基础镜像仅 amd64）。在 arm64 上（例如 Apple Silicon）拉取会报 "no matching manifest for linux/arm64"；请用 x86_64 主机，或在 macOS 上使用源码安装/`make up` 路径，它会默认选择 BoxLite。
 - **核心 + 可选的可观测性。** 它运行 api + 每任务 sandbox 镜像 + Postgres（+ 可选的 `web` profile），并且还附带一套需主动选用的可观测性栈（loki + alloy + grafana），其配置**内联**随附，以保持免源码。只有反向代理被排除（其 nginx 配置与源码耦合）——请用你自己的 TLS / 代理（Cloudflare Tunnel / Caddy / Traefik / nginx）来挡在 api（`:8080`）前面。
 - **启动时启用可观测性**（默认：全都不运行）：
   ```bash
@@ -291,7 +295,7 @@ WITH_WEB=0 scripts/quick-deploy.sh                 # 仅 api + postgres
 CAP_SMOKE_REPO_ID=<id> RUN_SMOKE=1 scripts/quick-deploy.sh   # + 预置冒烟测试
 ```
 
-它以 fail-closed 的**关卡（gates）**方式运行：① 架构（预构建镜像**仅 amd64**；在 arm64 上它会停下并指引你走从源码的 `make up`），② 基础工具链，③ **Docker engine 可达**——在 WSL 上带有界自愈（选择一个存活的 context；通过 interop 启动 Docker Desktop），若失败则给出确切的人工步骤（为该发行版启用 Docker Desktop 的 **WSL Integration**，或 `sudo systemctl restart docker`），④ 拉取 `docker-compose.prod.yml`，⑤ 幂等地写出 legacy-token 的 `.env`（已存在的 `.env` 会被复用、绝不覆盖；它保持 gitignore），⑥ `pull` + `up`，⑦ 等待 `/health` 并打印 `Authorization: Bearer` 令牌。
+它以 fail-closed 的**关卡（gates）**方式运行：① 架构（预构建镜像是 **amd64/AIO** 路径；在 arm64 上它会停下并指引你走平台感知的源码 `make up`，该路径在 macOS 默认 BoxLite），② 基础工具链，③ **Docker engine 可达**——在 WSL 上带有界自愈（选择一个存活的 context；通过 interop 启动 Docker Desktop），若失败则给出确切的人工步骤（为该发行版启用 Docker Desktop 的 **WSL Integration**，或 `sudo systemctl restart docker`），④ 拉取 `docker-compose.prod.yml`，⑤ 幂等地写出 legacy-token 的 `.env`（已存在的 `.env` 会被复用、绝不覆盖；它保持 gitignore），⑥ `pull` + `up`，⑦ 等待 `/health` 并打印 `Authorization: Bearer` 令牌。
 
 > **这是 legacy-token 路径，不是常规本地账号生产路径。** 它**等同于主机 root**（它挂载主机的 `docker.sock`），所以谁持有打印出来的令牌，谁就能在主机上以 root 身份运行——请只把它用于单用户 / 试用主机。预构建的 `cap-web` **仅限 localhost**（其 `VITE_*` 烤死为 localhost）；要用真实域名，请改走上文的本地账号步骤。普通 PC 上的 WSL2 是 amd64，因此很适合作为这条路径的目标。
 

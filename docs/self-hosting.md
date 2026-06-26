@@ -20,8 +20,9 @@ In-app upgrades are a later phase you do not need to self-host today.
 
 > **🚀 Trying it on a fresh local host?** The public marketing site hosts a
 > one-line installer that wraps the local `make up` bring-up — it preflights
-> Docker, clones this repo, runs `make up` (or `make up-cp` on Apple Silicon),
-> and surfaces the printed Bearer token:
+> Docker, clones this repo, runs `make up`, and surfaces the printed Bearer
+> token. The source path is platform-aware: macOS defaults to BoxLite, Linux
+> defaults to AIO. Override with `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane`.
 >
 > ```bash
 > curl -fsSL https://<site-domain>/install.sh | sh
@@ -32,6 +33,10 @@ In-app upgrades are a later phase you do not need to self-host today.
 > source of truth**. The script is served as plain text — read it first, or use
 > the equivalent manual `git clone … && make up` the site also shows. For a real
 > production deploy, follow the steps in this guide.
+>
+> The api/web host ports bind to `0.0.0.0` by default. Public DNS, TLS, reverse
+> proxy, OAuth callback URLs, cookie scope, and firewall rules are still your
+> responsibility before exposing the host publicly.
 
 > **⚡ Fast path — run prebuilt images, NO `git clone` (amd64 host).** Once a
 > Release exists, you don't need the source at all: download
@@ -50,7 +55,7 @@ In-app upgrades are a later phase you do not need to self-host today.
 > setup below — the same source-build production path:
 >
 > ```text
-> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` to build and start the full stack. Help me configure local account login, web/api origins, and PAT-based repository access, then report the console URL and the generated admin/legacy credentials it prints.
+> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` so the repo selects the default sandbox path for this OS (macOS BoxLite, Linux AIO). Help me configure local account login, web/api origins, and PAT-based repository access, then report the console URL and the generated admin/legacy credentials it prints.
 > ```
 >
 > It wraps `make up` rather than replacing it; the script is served as plain text
@@ -247,7 +252,9 @@ COMPOSE_PROFILES=web docker compose up --build
 
 This builds the `web` image (passing `VITE_API_BASE_URL` / `VITE_WS_URL`), the
 `api`, and starts Postgres. The web console is published on host port **3000**
-(override with `WEB_HOST_PORT`), the api on **8080**.
+(override with `WEB_HOST_PORT`), the api on **8080** (override with
+`API_HOST_PORT`). Both bind to `0.0.0.0` by default; set `WEB_HOST_BIND` or
+`API_HOST_BIND` to `127.0.0.1` for loopback-only.
 
 > The `web` service is behind the `web` compose profile (like
 > `observability`/`grafana`/`proxy`), so you must enable it
@@ -339,7 +346,8 @@ docker compose -f docker-compose.prod.yml up -d            # add: --profile web 
   Pin a tag (`CAP_VERSION=v0.1.0`) for a reproducible / rollback-able deploy.
 - **Requires an amd64 / x86_64 host** — the published images are amd64-only (the
   per-task AIO sandbox base is amd64-only). On arm64 (e.g. Apple Silicon) the pull
-  errors with "no matching manifest for linux/arm64"; use an x86_64 host.
+  errors with "no matching manifest for linux/arm64"; use an x86_64 host, or use
+  the source installer/`make up` path on macOS, which defaults to BoxLite.
 - **Core + opt-in observability.** It runs api + the per-task sandbox image +
   Postgres (+ optional `web` profile), and ALSO carries an opt-in observability
   stack (loki + alloy + grafana) whose config ships INLINE so it stays source-free.
@@ -378,8 +386,9 @@ WITH_WEB=0 scripts/quick-deploy.sh                 # api + postgres only
 CAP_SMOKE_REPO_ID=<id> RUN_SMOKE=1 scripts/quick-deploy.sh   # + provision smoke
 ```
 
-It runs as fail-closed **gates**: ① architecture (the prebuilt images are **amd64-only**;
-on arm64 it stops and points you at the from-source `make up`), ② base tooling,
+It runs as fail-closed **gates**: ① architecture (the prebuilt images are **amd64/AIO-only**;
+on arm64 it stops and points you at the platform-aware source `make up`, which
+defaults macOS to BoxLite), ② base tooling,
 ③ **Docker engine reachable** — with bounded self-heal on WSL (select a live context;
 start Docker Desktop via interop) and, if that fails, the exact human step
 (enable Docker Desktop **WSL Integration** for the distro, or `sudo systemctl restart

@@ -17,6 +17,7 @@ Every implementation package has a `coverage` script using `c8 --100`.
 - `@cap/sandbox-aio-local`
 - `@cap/sandbox-cloud-http`
 - `@cap/sandbox-provider-aio`
+- `@cap/sandbox-provider-boxlite`
 - `@cap/sandbox` compatibility aggregate
 
 Run all sandbox coverage gates with:
@@ -60,7 +61,11 @@ pnpm coverage:sandbox
   reads, and fail-closed provision/teardown errors. AIO provider-controller tests
   cover Docker create/start/stop/remove mechanics, readiness polling, best-effort
   shell exec, startup readoption/reaping, reattach bookkeeping, retained
-  transcript tar extraction, and malformed archive handling.
+  transcript tar extraction, and malformed archive handling. BoxLite tests cover
+  REST client normalization, explicit config parsing, task-scoped idempotent
+  provision/reattach/teardown, command/archive adapters, terminal capability
+  gating, runtime preflight caching, fake-client conformance, and guarded live
+  integration.
 
 ## Provider Conformance Tests
 
@@ -98,8 +103,9 @@ Every local or cloud provider adapter should run the same conformance suite:
   adapter using test credentials, verifying cloud sandbox creation/destruction,
   addressable terminal handles, workspace materialize/sync, and provider-side
   cleanup. `@cap/sandbox-cloud-http` covers the HTTP control-plane adapter with
-  fake-fetch unit tests; a deployment should add live cloud tests with scoped
-  test credentials.
+  fake-fetch unit tests. `@cap/sandbox-provider-boxlite` covers its BoxLite REST
+  adapter with fake-client tests and runs live BoxLite checks only when
+  `BOXLITE_LIVE_TEST=1` and valid `BOXLITE_*` env vars are configured.
 - Mixed scheduling path: configure one local and one cloud candidate. Verify
   priority wins, location preference is only a tie-breaker, and a higher-priority
   candidate missing required capabilities is skipped.

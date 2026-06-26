@@ -34,6 +34,7 @@ import {
   SANDBOX_PROVIDER,
   type SandboxConnection,
   type SandboxProviderCapability,
+  type SelectedSandboxRun,
 } from '../sandbox/sandbox-provider.port';
 import {
   selectReadoptionSandboxProvider,
@@ -67,6 +68,7 @@ export interface IGuardrailsService {
     taskId: string,
     connection: SandboxConnection,
     params?: { deadlineMs?: number; idleTimeoutMs?: number },
+    selectedRun?: SelectedSandboxRun | null,
   ): void;
   /**
    * configurable-task-slots (6.2): load the persisted system-level slot ceiling
@@ -103,7 +105,8 @@ export interface ISandboxReadoption {
   getSandboxMode(): string;
   getProviderCapabilities?(): readonly SandboxProviderCapability[];
   listReadoptable?(): Promise<string[]>;
-  reattach?(taskId: string): Promise<SandboxConnection | undefined>;
+  reattach?(taskId: string): Promise<SandboxConnection | null | undefined>;
+  getSelectedSandboxRun?(taskId: string): Promise<SelectedSandboxRun | null>;
 }
 
 /**
@@ -339,16 +342,31 @@ export class TasksService implements OnApplicationBootstrap {
           // Raced to gone between the list and the reattach — let Phase 1 fail it.
           continue;
         }
+        let selectedRun: SelectedSandboxRun | null = null;
+        try {
+          selectedRun = (await selected.getSelectedSandboxRun?.(taskId)) ?? null;
+        } catch (err) {
+          this.logger.warn(
+            `startup re-adopt: selected-run metadata for task ${taskId} unavailable (continuing with connection only): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
         // Restore the persisted per-task guardrail params (null -> undefined, so
         // a re-adopted task arms identically to one admitted before the restart).
         const row = await this.prisma.task.findUnique({
           where: { id: taskId },
           select: { deadlineMs: true, idleTimeoutMs: true },
         });
-        this.guardrails.readopt(taskId, connection, {
-          deadlineMs: row?.deadlineMs ?? undefined,
-          idleTimeoutMs: row?.idleTimeoutMs ?? undefined,
-        });
+        this.guardrails.readopt(
+          taskId,
+          connection,
+          {
+            deadlineMs: row?.deadlineMs ?? undefined,
+            idleTimeoutMs: row?.idleTimeoutMs ?? undefined,
+          },
+          selectedRun,
+        );
         // KEEP the task in its current state — NO transition to failed.
         readopted.add(taskId);
       } catch (err) {
