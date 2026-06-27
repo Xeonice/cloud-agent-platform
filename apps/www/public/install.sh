@@ -8,7 +8,7 @@
 # site-served quick-deploy script, which downloads `docker-compose.prod.yml`,
 # resolves the latest Release tag when CAP_VERSION is unset, runs the published
 # `ghcr.io/xeonice/cap-*:${CAP_VERSION}` images, waits for /health, and PRINTS
-# the `Authorization: Bearer <token>` you log in with.
+# the admin email/password you log in with.
 # No `git clone`, no `make up`, and no local `cloud-agent-platform-api` image.
 #
 # The site domain below is a TEMPLATE MARKER replaced with a literal value when
@@ -70,5 +70,5 @@ info "On macOS, set BOXLITE_ENDPOINT / BOXLITE_API_TOKEN / BOXLITE_IMAGE for the
 curl -fsSL "$QUICK_DEPLOY_URL" | bash
 
 printf '\n%s%s Done.%s Cloud Agent Platform is running from published release images.\n' "$B" "$GRN" "$R"
-printf '%sLog in with the Authorization: Bearer token printed above.%s\n' "$DIM" "$R"
+printf '%sLog in with the admin email/password printed above; the first login requires changing that initial password.%s\n' "$DIM" "$R"
 printf '%sapi/web host ports bind to 0.0.0.0 by default; configure DNS/TLS/proxy/firewall/auth origins yourself before public exposure.%s\n' "$DIM" "$R"

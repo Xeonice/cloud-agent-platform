@@ -22,7 +22,8 @@ In-app upgrades are a later phase you do not need to self-host today.
 > one-line installer that runs the prebuilt release-image package — it preflights
 > Docker, delegates to `quick-deploy.sh`, downloads `docker-compose.prod.yml`,
 > resolves the latest Release tag when `CAP_VERSION` is unset, pulls
-> `ghcr.io/xeonice/cap-*:${CAP_VERSION}`, and surfaces the printed Bearer token.
+> `ghcr.io/xeonice/cap-*:${CAP_VERSION}`, and surfaces the printed admin
+> email/password.
 > macOS defaults to the BoxLite sandbox path; Linux defaults to AIO.
 > Override with `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane`.
 >
@@ -31,10 +32,10 @@ In-app upgrades are a later phase you do not need to self-host today.
 > ```
 >
 > It is a convenience wrapper for a **local** trial, not a full production-domain
-> setup: it writes a legacy-token `.env` and leaves DNS/TLS/proxy/cookie scope to
-> you. The script is served as plain text — read it first, or use the equivalent
-> manual `docker-compose.prod.yml` + `.env` path. It does not `git clone`, run
-> `make up`, or build local images.
+> setup: it writes a local-account `.env` and leaves DNS/TLS/proxy/cookie scope
+> to you. The script is served as plain text — read it first, or use the
+> equivalent manual `docker-compose.prod.yml` + `.env` path. It does not
+> `git clone`, run `make up`, or build local images.
 >
 > The api/web host ports bind to `0.0.0.0` by default. Public DNS, TLS, reverse
 > proxy, auth callback URLs, cookie scope, and firewall rules are still your
@@ -57,7 +58,7 @@ In-app upgrades are a later phase you do not need to self-host today.
 > same release-image path:
 >
 > ```text
-> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the Authorization: Bearer token it prints.
+> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.
 > ```
 >
 > The scripts are served as plain text so you can read them before running, and
@@ -381,16 +382,14 @@ COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgre
 For an **agent-drivable** bring-up that needs **no source build**, the repo ships
 `scripts/quick-deploy.sh`. It runs the prebuilt
 `ghcr.io/xeonice/cap-*:${CAP_VERSION}` images via `docker-compose.prod.yml` and
-**synthesizes a legacy-token `.env`** for a local trial —
-relying on the fact that the prod compose reads `env_file: .env` and does not redeclare
-the auth secrets:
+**synthesizes or updates a local-account `.env`** for a local trial:
 
 ```bash
 # from a clone (uses the repo's docker-compose.prod.yml), or anywhere (it fetches it):
 CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost trial, web on :3000
 CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # api + postgres only
-CAP_SMOKE_REPO_ID=<id> RUN_SMOKE=1 scripts/quick-deploy.sh   # + provision smoke
+CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh   # + provision smoke
 ```
 
 It runs as fail-closed **gates**: ① platform/provider (auto selects macOS
@@ -399,15 +398,17 @@ explicit AIO on non-amd64 fails with BoxLite/control-plane guidance), ② base t
 ③ **Docker engine reachable** — with bounded self-heal on WSL (select a live context;
 start Docker Desktop via interop) and, if that fails, the exact human step
 (enable Docker Desktop **WSL Integration** for the distro, or `sudo systemctl restart
-docker`), ④ fetch `docker-compose.prod.yml`, ⑤ idempotently write the legacy-token `.env`
-(an existing `.env` is reused, never overwritten; it stays gitignored), ⑥ `pull` + `up`,
-⑦ wait for `/health` and print the `Authorization: Bearer` token.
+docker`), ④ fetch `docker-compose.prod.yml`, ⑤ idempotently write the local-account
+`.env` (`ADMIN_EMAIL`, `ADMIN_PASSWORD`, `PASSWORD_AUTH_ENABLED=true`, session
+secrets, and provider pins; an existing `.env` is reused and stays gitignored),
+⑥ `pull` + `up`, ⑦ wait for `/health` and print the admin email/password.
 
-> **This is the legacy-token path, not the normal local-account production path.** It is
-> **host-root-equivalent** (it mounts the host `docker.sock`), so whoever holds the
-> printed token can run as root on the host — keep it to a single-user / trial host. The
-> prebuilt `cap-web` is **localhost-only** (its `VITE_*` are baked to localhost); for a
-> real domain, follow the local-account steps above instead.
+> This path is **host-root-equivalent** (it mounts the host `docker.sock`), so
+> whoever can log in can run as root on the host — keep account access tight. The
+> printed password is an initial admin credential and the first login requires
+> changing it. The prebuilt `cap-web` is **localhost-only** (its `VITE_*` are
+> baked to localhost); for a real domain, follow the local-account domain/cookie
+> steps above.
 
 ## Optional: in-app one-click self-update (`SELF_UPDATE_ENABLED`, default OFF)
 

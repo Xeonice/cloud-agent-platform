@@ -45,7 +45,7 @@ export const en: SiteContent = {
       blurb:
         "Paste this into Claude Code. It reads the release-image installer, checks Docker and platform settings, and brings up the prebuilt stack.",
       prompt:
-        "Deploy cloud-agent-platform on this machine. First read https://{domain}/install.sh and https://{domain}/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path (do not git clone, do not run make up, do not build locally). It defaults to the latest Release; set CAP_VERSION to pin one. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the Authorization: Bearer token it prints.",
+        "Deploy cloud-agent-platform on this machine. First read https://{domain}/install.sh and https://{domain}/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path (do not git clone, do not run make up, do not build locally). It defaults to the latest Release; set CAP_VERSION to pin one. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.",
       copyLabel: "Copy the Claude Code prompt",
     },
     install: {
@@ -58,7 +58,7 @@ export const en: SiteContent = {
         summary: "Prefer to read it first? Run the same release-artifact flow by hand:",
         commands: [
           "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
-          "# write .env: CAP_VERSION=vX.Y.Z + AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "# write .env: CAP_VERSION=vX.Y.Z + ADMIN_EMAIL/ADMIN_PASSWORD + PASSWORD_AUTH_ENABLED=true + SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "# macOS/BoxLite also needs: CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_ENDPOINT/BOXLITE_API_TOKEN/BOXLITE_IMAGE",
           "# Linux/AIO also include: aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
@@ -73,12 +73,12 @@ export const en: SiteContent = {
       command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
       inspectLabel: "Inspect the script",
       caveat:
-        "It synthesizes a legacy token and the bundled console stays localhost-only. macOS requires BoxLite provider env; Linux defaults to AIO. Public DNS, TLS, proxy, and auth origins remain yours.",
+        "It creates or reuses a local admin account and the bundled console stays localhost-only. macOS requires BoxLite provider env; Linux defaults to AIO. Public DNS, TLS, proxy, and auth origins remain yours.",
       manual: {
         summary: "Prefer to read it first? Run the prebuilt compose by hand:",
         commands: [
           "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
-          "# write .env: CAP_VERSION=vX.Y.Z + AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "# write .env: CAP_VERSION=vX.Y.Z + ADMIN_EMAIL/ADMIN_PASSWORD + PASSWORD_AUTH_ENABLED=true + SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "# macOS/BoxLite also needs: CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_*",
           "# Linux/AIO also include: aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
@@ -146,12 +146,12 @@ export const en: SiteContent = {
       {
         index: "02",
         title: "Install",
-        body: "Run the one-liner. It pulls the published release images, starts api/postgres/web, and prints a local Bearer token.",
+        body: "Run the one-liner. It pulls the published release images, starts api/postgres/web, and prints the admin email/password.",
       },
       {
         index: "03",
         title: "Log in",
-        body: "Use the printed token for the local trial; production self-hosts use local accounts and per-account forge PATs.",
+        body: "Use the printed admin email/password, then change that initial password; repository access stays scoped through each account's forge PATs.",
       },
       {
         index: "04",

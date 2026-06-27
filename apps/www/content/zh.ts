@@ -43,7 +43,7 @@ export const zh: SiteContent = {
       blurb:
         "把这段话贴给 Claude Code。它会读发布镜像安装脚本、检查 Docker 与平台参数，并用预构建产物把栈跑起来。",
       prompt:
-        "在这台机器上部署 cloud-agent-platform。先读取 https://{domain}/install.sh 和 https://{domain}/quick-deploy.sh，确认 Docker 与可用的 docker.sock 已就绪，然后运行发布镜像安装路径（不要 git clone，不要 make up，不要本地 build）。默认使用最新 Release；如需固定版本设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN、BOXLITE_IMAGE 已设置；Linux 默认 AIO。最后告诉我控制台地址、/version 返回值，以及脚本打印的 Authorization: Bearer 令牌。",
+        "在这台机器上部署 cloud-agent-platform。先读取 https://{domain}/install.sh 和 https://{domain}/quick-deploy.sh，确认 Docker 与可用的 docker.sock 已就绪，然后运行发布镜像安装路径（不要 git clone，不要 make up，不要本地 build）。默认使用最新 Release；如需固定版本设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN、BOXLITE_IMAGE 已设置；Linux 默认 AIO。最后告诉我控制台地址、/version 返回值，以及脚本打印的管理员邮箱和密码。",
       copyLabel: "复制 Claude Code 提示词",
     },
     install: {
@@ -55,7 +55,7 @@ export const zh: SiteContent = {
         summary: "想先读一遍？用同样的发布产物流程手动执行：",
         commands: [
           "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
-          "# 写一个 .env：CAP_VERSION=vX.Y.Z + AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "# 写一个 .env：CAP_VERSION=vX.Y.Z + ADMIN_EMAIL/ADMIN_PASSWORD + PASSWORD_AUTH_ENABLED=true + SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "# macOS/BoxLite 另写：CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_ENDPOINT/BOXLITE_API_TOKEN/BOXLITE_IMAGE",
           "# Linux/AIO 另带上：aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
@@ -69,12 +69,12 @@ export const zh: SiteContent = {
       command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
       inspectLabel: "查看脚本",
       caveat:
-        "默认生成 legacy 令牌，自带控制台仅限 localhost。macOS 需要 BoxLite provider 环境变量；Linux 默认 AIO。公网域名、TLS、反代和认证来源仍由你配置。",
+        "默认创建或复用本地管理员账号，自带控制台仅限 localhost。macOS 需要 BoxLite provider 环境变量；Linux 默认 AIO。公网域名、TLS、反代和认证来源仍由你配置。",
       manual: {
         summary: "想先读一遍？用预构建 compose 手动执行：",
         commands: [
           "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
-          "# 写一个 .env：CAP_VERSION=vX.Y.Z + AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "# 写一个 .env：CAP_VERSION=vX.Y.Z + ADMIN_EMAIL/ADMIN_PASSWORD + PASSWORD_AUTH_ENABLED=true + SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "# macOS/BoxLite 另写：CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_*",
           "# Linux/AIO 另带上：aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
@@ -140,12 +140,12 @@ export const zh: SiteContent = {
       {
         index: "02",
         title: "安装",
-        body: "运行一键命令；它会拉取已发布镜像，启动 api/postgres/web，并打印本地 Bearer 令牌。",
+        body: "运行一键命令；它会拉取已发布镜像，启动 api/postgres/web，并打印管理员邮箱和密码。",
       },
       {
         index: "03",
         title: "登录",
-        body: "本地试用用打印出的令牌登录；生产自托管使用本地账号和每账号 forge PAT。",
+        body: "用打印出的管理员邮箱和密码登录，然后修改初始密码；仓库访问仍由每个账号自己的 forge PAT 控制。",
       },
       {
         index: "04",

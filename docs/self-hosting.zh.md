@@ -18,7 +18,7 @@
 > **想在一台全新的本地主机上试试？** 公开宣传站托管了一个一键安装脚本，运行预构建
 > 发布镜像运行包 —— 它会预检 Docker，委托 `quick-deploy.sh`，下载
 > `docker-compose.prod.yml`，在 `CAP_VERSION` 未设置时解析最新 Release tag，拉取
-> `ghcr.io/xeonice/cap-*:${CAP_VERSION}`，并把打印出的 Bearer 令牌呈现给你。
+> `ghcr.io/xeonice/cap-*:${CAP_VERSION}`，并把打印出的管理员邮箱和密码呈现给你。
 > macOS 默认 BoxLite，Linux 默认 AIO；可用
 > `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane` 覆盖。
 >
@@ -26,7 +26,7 @@
 > curl -fsSL https://<site-domain>/install.sh | sh
 > ```
 >
-> 它只是面向**本地**试用的便利封装，而非完整生产域名配置：它会写 legacy-token `.env`，
+> 它只是面向**本地**试用的便利封装，而非完整生产域名配置：它会写本地账号 `.env`，
 > DNS/TLS/反代/cookie 作用域仍由你配置。脚本以纯文本提供 —— 先读一遍，或使用等效的
 > `docker-compose.prod.yml` + `.env` 手动路径。它不会 `git clone`、不会 `make up`、
 > 也不会本地构建镜像。
@@ -49,7 +49,7 @@
 > `install.sh`/`quick-deploy.sh`、预检 Docker，并运行同一条发布镜像路径：
 >
 > ```text
-> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 和 https://<site-domain>/quick-deploy.sh，确认 Docker 与可用的 docker.sock 已就绪，然后运行发布镜像安装路径。不要 git clone，不要 make up，不要本地 build。默认使用最新 Release；如需固定版本我会设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN、BOXLITE_IMAGE 已设置；Linux 使用默认 AIO 路径。最后告诉我控制台地址、/version 返回值，以及脚本打印的 Authorization: Bearer 令牌。
+> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 和 https://<site-domain>/quick-deploy.sh，确认 Docker 与可用的 docker.sock 已就绪，然后运行发布镜像安装路径。不要 git clone，不要 make up，不要本地 build。默认使用最新 Release；如需固定版本我会设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN、BOXLITE_IMAGE 已设置；Linux 使用默认 AIO 路径。最后告诉我控制台地址、/version 返回值，以及脚本打印的管理员邮箱和密码。
 > ```
 >
 > 脚本以纯文本提供、可先读后跑，你全程可接管。
@@ -296,19 +296,19 @@ COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgre
 
 ### 或者：agent 一键（`scripts/quick-deploy.sh`）——预构建镜像
 
-要一个**可由 agent 驱动**、**无需源码构建**的拉起方式，仓库提供了 `scripts/quick-deploy.sh`。它通过 `docker-compose.prod.yml` 运行预构建的 `ghcr.io/xeonice/cap-*:${CAP_VERSION}` 镜像，并为本地试用**合成一份 legacy-token 的 `.env`**——依赖的事实是 prod compose 读取 `env_file: .env` 且不重新声明这些 auth 密钥：
+要一个**可由 agent 驱动**、**无需源码构建**的拉起方式，仓库提供了 `scripts/quick-deploy.sh`。它通过 `docker-compose.prod.yml` 运行预构建的 `ghcr.io/xeonice/cap-*:${CAP_VERSION}` 镜像，并为本地试用**合成或更新一份本地账号 `.env`**：
 
 ```bash
 # 从一个 clone 运行（用仓库的 docker-compose.prod.yml），或在任意位置运行（它会自行抓取）：
 CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost 试用，web 在 :3000
 CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # 仅 api + postgres
-CAP_SMOKE_REPO_ID=<id> RUN_SMOKE=1 scripts/quick-deploy.sh   # + 预置冒烟测试
+CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh   # + 预置冒烟测试
 ```
 
-它以 fail-closed 的**关卡（gates）**方式运行：① 平台 / provider（auto 选择 macOS BoxLite、Linux AIO；非 amd64 主机会固定 `CAP_IMAGE_PLATFORM=linux/amd64`；非 amd64 显式 AIO 会失败并提示 BoxLite/control-plane），② 基础工具链，③ **Docker engine 可达**——在 WSL 上带有界自愈（选择一个存活的 context；通过 interop 启动 Docker Desktop），若失败则给出确切的人工步骤（为该发行版启用 Docker Desktop 的 **WSL Integration**，或 `sudo systemctl restart docker`），④ 拉取 `docker-compose.prod.yml`，⑤ 幂等地写出 legacy-token 的 `.env`（已存在的 `.env` 会被复用、绝不覆盖；它保持 gitignore），⑥ `pull` + `up`，⑦ 等待 `/health` 并打印 `Authorization: Bearer` 令牌。
+它以 fail-closed 的**关卡（gates）**方式运行：① 平台 / provider（auto 选择 macOS BoxLite、Linux AIO；非 amd64 主机会固定 `CAP_IMAGE_PLATFORM=linux/amd64`；非 amd64 显式 AIO 会失败并提示 BoxLite/control-plane），② 基础工具链，③ **Docker engine 可达**——在 WSL 上带有界自愈（选择一个存活的 context；通过 interop 启动 Docker Desktop），若失败则给出确切的人工步骤（为该发行版启用 Docker Desktop 的 **WSL Integration**，或 `sudo systemctl restart docker`），④ 拉取 `docker-compose.prod.yml`，⑤ 幂等地写出本地账号 `.env`（`ADMIN_EMAIL`、`ADMIN_PASSWORD`、`PASSWORD_AUTH_ENABLED=true`、session secrets 与 provider pins；已存在的 `.env` 会被复用并保持 gitignore），⑥ `pull` + `up`，⑦ 等待 `/health` 并打印管理员邮箱和密码。
 
-> **这是 legacy-token 路径，不是常规本地账号生产路径。** 它**等同于主机 root**（它挂载主机的 `docker.sock`），所以谁持有打印出来的令牌，谁就能在主机上以 root 身份运行——请只把它用于单用户 / 试用主机。预构建的 `cap-web` **仅限 localhost**（其 `VITE_*` 烤死为 localhost）；要用真实域名，请改走上文的本地账号步骤。
+> 这条路径**等同于主机 root**（它挂载主机的 `docker.sock`），所以谁能登录，谁就能在主机上以 root 身份运行——请收紧账号访问。打印的密码是初始管理员凭据，首次登录会要求修改。预构建的 `cap-web` **仅限 localhost**（其 `VITE_*` 烤死为 localhost）；要用真实域名，请按上文配置本地账号、域名和 cookie。
 
 ## 可选：应用内一键自更新（`SELF_UPDATE_ENABLED`，默认 OFF）
 
