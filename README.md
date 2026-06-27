@@ -60,34 +60,41 @@ Node/pnpm are workspace-managed (pnpm 10, Node ≥ 22). Run from the repo root.
 
 ## Local one-command start
 
-A freshly-cloned repo goes from zero to a running, **login-able** backend with a
-single command (requires Docker + a host `docker.sock`):
+For a private/self-host install from published artifacts, use the release-image
+installer (requires Docker + a host `docker.sock`):
 
-> **One-line install (wraps `make up`).** The public marketing site hosts an
-> `install.sh` you can pipe to a shell — it preflights Docker, clones this repo,
-> and runs `make up` for you, then surfaces the printed Bearer token:
+> **One-line install (prebuilt release images).** The public marketing site hosts
+> an `install.sh` you can pipe to a shell. It preflights Docker, delegates to
+> `quick-deploy.sh`, downloads `docker-compose.prod.yml`, resolves the latest
+> Release tag when `CAP_VERSION` is unset, and runs the published
+> `ghcr.io/xeonice/cap-*:${CAP_VERSION}` images. It does **not** clone this repo,
+> run `make up`, or build local source images:
 >
 > ```bash
 > curl -fsSL https://<site-domain>/install.sh | sh
 > ```
 >
-> It is a thin wrapper, not a replacement: **`make up` below stays the source of
-> truth**, and the script is served as plain text so you can read it first (the
-> site also shows the equivalent manual `git clone … && make up` path). By
-> default macOS uses the BoxLite sandbox path and Linux uses AIO; override with
-> `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane`. See the public site and the
+> `CAP_VERSION` may be pinned to a release tag; when unset, the installer resolves
+> the latest Release tag before starting the stack. macOS defaults to the BoxLite
+> sandbox provider, so set `CAP_SANDBOX_PROVIDER=boxlite`
+> plus `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and `BOXLITE_IMAGE` before
+> running. Linux defaults to AIO. The script is served as plain text so you can
+> read it first; the equivalent manual path is `docker-compose.prod.yml` + a
+> local `.env`, not `git clone && make up`. See the public site and the
 > [Self-hosting guide](docs/self-hosting.md) for details.
 
 > **Let Claude Code deploy it (recommended).** If you have Claude Code, paste the
-> prompt below — it reads the installer, preflights Docker, clones this repo and
-> runs `make up`, and walks you through local-account setup:
+> prompt below — it reads the installer, preflights Docker, and runs the same
+> release-image path:
 >
 > ```text
-> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` so the repo selects the default sandbox path for this OS (macOS BoxLite, Linux AIO). Help me configure local account login and the web/api origins for a production-like deploy, then report the console URL and the credentials it prints.
+> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the Authorization: Bearer token it prints.
 > ```
 >
-> Like the one-liner, it wraps `make up` rather than replacing it — Claude Code
-> follows the same readable `install.sh`, and you can take over at any point.
+> Claude Code follows the readable scripts and you can take over at any point.
+
+For local source development from a cloned repo, use the platform-aware make
+targets:
 
 ```bash
 make up          # auto-select sandbox provider (macOS→BoxLite, Linux→AIO),
@@ -114,7 +121,7 @@ Notes:
   daemon yet, set `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and `BOXLITE_IMAGE`
   for your BoxLite control plane before running it.
 - `api` and optional `web` host ports bind to `0.0.0.0` by default. Configure
-  DNS, TLS, reverse proxy, OAuth callback/cookie scope, and firewall exposure
+  DNS, TLS, reverse proxy, auth callback/cookie scope, and firewall exposure
   yourself before making the stack public.
 - The **web console now ships in the compose stack** (a `web` Node-server
   service, port 3000) so `docker compose up` brings up web + api + Postgres

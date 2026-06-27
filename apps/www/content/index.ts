@@ -62,13 +62,13 @@ export interface NavContent {
   readonly cta: CtaLink;
 }
 
-/** The disclosed manual `git clone && make up` alternative to `curl | sh`. */
+/** The disclosed manual release-artifact alternative to `curl | sh`. */
 export interface ManualInstallContent {
   /** Short framing line ("Prefer to read it first?"). */
   readonly summary: string;
   /** The shell commands, one per line, for the manual path. */
   readonly commands: readonly string[];
-  /** Note that `make up` is the source of truth the installer wraps. */
+  /** Note what artifact/compose path is the source of truth for the installer. */
   readonly note: string;
 }
 
@@ -76,7 +76,7 @@ export interface ManualInstallContent {
  * The "let Claude Code deploy it" card — the recommended, lowest-friction path.
  * Instead of a shell command, it offers a natural-language `prompt` the visitor
  * pastes into Claude Code, which then reads the installer, checks the host,
- * walks them through GitHub OAuth, and brings the source-build stack up. The
+ * applies the platform-specific release-image path, and brings the prebuilt stack up. The
  * `prompt` carries the `{domain}` / `{repo}` build-time tokens.
  */
 export interface ClaudeCodeInstallContent {
@@ -93,12 +93,10 @@ export interface ClaudeCodeInstallContent {
 }
 
 /**
- * A script-based install card (`curl | sh`): the source-build `install.sh`
- * (OAuth-first production path) or the prebuilt `quick-deploy.sh` (no-OAuth
- * local trial). Each leads with a plain-language `title`/`blurb` so a visitor
- * can tell which one is for them, keeps the inspectable script link, and
- * discloses the equivalent manual path. `caveat` is the prebuilt-only trial
- * warning (omitted for the source-build card). Commands carry the `{domain}` /
+ * A script-based install card (`curl | sh`): the friendly `install.sh` wrapper
+ * or the direct `quick-deploy.sh` path. Both run the same prebuilt release
+ * images; each keeps the inspectable script link and discloses the equivalent
+ * manual path. `caveat` is the direct quick-deploy trial warning. Commands carry the `{domain}` /
  * `{repo}` build-time tokens.
  */
 export interface ScriptInstallContent {
@@ -112,14 +110,14 @@ export interface ScriptInstallContent {
   readonly inspectLabel: string;
   /** The disclosed manual alternative so piping to a shell is never required. */
   readonly manual: ManualInstallContent;
-  /** Optional short trial-only caveat (prebuilt card); omit for the source build. */
+  /** Optional short trial-only caveat for the direct quick-deploy card. */
   readonly caveat?: string;
 }
 
 /**
  * Hero: headline plus the "Get it running" install area, reorganized into three
  * scenario cards — let Claude Code deploy it (recommended), install it yourself
- * (source build + OAuth), or just try it fast (prebuilt, no OAuth) — so a first
+ * (release-image wrapper), or run quick-deploy directly — so a first
  * visitor can tell at a glance which path is theirs.
  */
 export interface HeroContent {
@@ -136,9 +134,9 @@ export interface HeroContent {
   readonly copiedLabel: string;
   /** Card 1: the recommended "let Claude Code deploy it" prompt. */
   readonly claudeCode: ClaudeCodeInstallContent;
-  /** Card 2: the source-build `install.sh` (OAuth-first production) path. */
+  /** Card 2: the release-image `install.sh` wrapper path. */
   readonly install: ScriptInstallContent;
-  /** Card 3: the prebuilt `quick-deploy.sh` (no-OAuth local trial) path. */
+  /** Card 3: the direct prebuilt `quick-deploy.sh` path. */
   readonly prebuilt: ScriptInstallContent;
   /** Quiet secondary link under the cards (e.g. "See how it works"). */
   readonly secondaryCta: CtaLink;

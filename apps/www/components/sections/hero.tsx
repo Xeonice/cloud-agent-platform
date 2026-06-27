@@ -21,10 +21,10 @@ import { resolveTokens, siteDomain } from "../../lib/site-config";
  * is theirs instead of decoding two near-identical `curl | sh` one-liners:
  *
  *   1. Let Claude Code deploy it (recommended) — a copyable natural-language
- *      prompt; Claude Code reads the installer, checks the host, and walks the
- *      visitor through the source-build + GitHub OAuth flow.
- *   2. Install it yourself — the source-build `install.sh` (OAuth-first prod).
- *   3. Just try it fast — the prebuilt `quick-deploy.sh` (no-OAuth local trial).
+ *      prompt; Claude Code reads the installer, checks the host, and runs the
+ *      platform-specific release-image flow.
+ *   2. Install it yourself — the friendly `install.sh` release-image wrapper.
+ *   3. Run quick-deploy directly — the same prebuilt path exposed for debugging.
  *
  * Each card leads with plain-language copy; the dense technical caveats live in
  * a short trial note + the disclosed manual `<details>`. The `{domain}` /

@@ -10,44 +10,49 @@
 > [鉴权与主机 root 边界](../README.zh.md#鉴权与主机-root-边界)。
 
 本指南是 [OSS 自更新 epic](./oss-self-update-epic.md) 的 Phase 0（「陌生人也能跑起来」）：
-一套完整、可用 env 配置、本地账号登录的 compose 栈。下文默认路径会从源码构建一切；
-一旦某个 Release 发布了预构建镜像，你也可以改为直接拉取 —— 参见
-[可选：运行预构建镜像](#可选运行预构建镜像而非从源码构建)。
+一套完整、可用 env 配置、本地账号登录的 compose 栈。推荐安装路径运行已发布镜像；
+源码构建仍保留给开发或自定义镜像工作，但一键安装和 agent 路径不应该 clone 仓库或运行
+`make up`。
 应用内升级是后续阶段，今天自托管并不需要它。
 
-> **🚀 想在一台全新的本地主机上试试？** 公开宣传站托管了一个一键安装脚本，封装了本地的
-> `make up` 拉起流程 —— 它会预检 Docker、克隆本仓库、运行 `make up`，并把打印出的
-> Bearer 令牌呈现给你。源码路径会按平台自动选择 sandbox：macOS 默认 BoxLite，
-> Linux 默认 AIO；可用 `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane` 覆盖。
+> **想在一台全新的本地主机上试试？** 公开宣传站托管了一个一键安装脚本，运行预构建
+> 发布镜像运行包 —— 它会预检 Docker，委托 `quick-deploy.sh`，下载
+> `docker-compose.prod.yml`，在 `CAP_VERSION` 未设置时解析最新 Release tag，拉取
+> `ghcr.io/xeonice/cap-*:${CAP_VERSION}`，并把打印出的 Bearer 令牌呈现给你。
+> macOS 默认 BoxLite，Linux 默认 AIO；可用
+> `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane` 覆盖。
 >
 > ```bash
 > curl -fsSL https://<site-domain>/install.sh | sh
 > ```
 >
-> 它只是面向**本地**试用的便利封装，而非生产路径：手动的 `make up`（本地）以及下文的
-> `docker compose` 流程**仍是事实来源**。脚本以纯文本提供 —— 先读一遍，或使用站点同样给出的
-> 等效手动命令 `git clone … && make up`。要做真正的生产部署，请遵循本指南的步骤。
+> 它只是面向**本地**试用的便利封装，而非完整生产域名配置：它会写 legacy-token `.env`，
+> DNS/TLS/反代/cookie 作用域仍由你配置。脚本以纯文本提供 —— 先读一遍，或使用等效的
+> `docker-compose.prod.yml` + `.env` 手动路径。它不会 `git clone`、不会 `make up`、
+> 也不会本地构建镜像。
 >
-> api/web 主机端口默认监听 `0.0.0.0`。公共 DNS、TLS、反向代理、OAuth callback、
+> api/web 主机端口默认监听 `0.0.0.0`。公共 DNS、TLS、反向代理、认证 callback、
 > cookie 域与防火墙仍需由你在公开暴露前自行配置。
 
-> **⚡ 快速路径 —— 运行预构建镜像，无需 `git clone`（amd64 主机）。** 一旦有了某个
-> Release，你根本不需要源码：从
+> **快速路径 —— 运行预构建镜像，无需 `git clone`。** 一旦有了某个 Release，
+> 你根本不需要源码：从
 > [Releases 页面](https://github.com/Xeonice/cloud-agent-platform/releases)下载
 > `docker-compose.prod.yml` + `docker-compose.prod.env.example`，
 > `cp docker-compose.prod.env.example .env`，填好它（下文第 1–5 节会讲解这些值），
 > 然后 `docker compose -f docker-compose.prod.yml pull && docker compose
-> -f docker-compose.prod.yml up -d`（要带上 compose 内置控制台就加 `--profile web`）。
-> 这个无源码运行包正是构建/运行分离 —— 构建留在构建平台，运行就是这一个文件。详见：
+> -f docker-compose.prod.yml up -d api postgres`（要带上 compose 内置控制台就加 `web`，
+> Linux/AIO 再带上 `aio-sandbox-image`）。这个无源码运行包正是构建/运行分离 ——
+> 构建留在构建平台，运行就是这一个文件。详见：
 > [从预构建镜像运行（无源码）](#或者免源码运行包无需-clone)。
 
-> **让 Claude Code 帮你部署。** 装了 Claude Code 的话，把下面这段提示词贴给它，它会读 `install.sh`、预检 Docker、克隆仓库跑 `make up`，并一步步引导你完成本地账号登录、web/api 域名和 `.env` 配置 —— 走的是同一条源码构建的生产路径：
+> **让 Claude Code 帮你部署。** 装了 Claude Code 的话，把下面这段提示词贴给它；它会读
+> `install.sh`/`quick-deploy.sh`、预检 Docker，并运行同一条发布镜像路径：
 >
 > ```text
-> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 安装脚本，确认 Docker 与可用的 docker.sock 已就绪。然后克隆 https://github.com/<owner>/cloud-agent-platform，进入目录运行 `make up`，让仓库按当前系统选择默认 sandbox 路径（macOS BoxLite，Linux AIO）。帮我配置本地账号登录、web/api 域名，以及基于 PAT 的仓库访问；最后告诉我控制台地址和生成的管理员 / legacy 凭据。
+> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 和 https://<site-domain>/quick-deploy.sh，确认 Docker 与可用的 docker.sock 已就绪，然后运行发布镜像安装路径。不要 git clone，不要 make up，不要本地 build。默认使用最新 Release；如需固定版本我会设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN、BOXLITE_IMAGE 已设置；Linux 使用默认 AIO 路径。最后告诉我控制台地址、/version 返回值，以及脚本打印的 Authorization: Bearer 令牌。
 > ```
 >
-> 它只是对 `make up` 的封装而非替代，脚本以纯文本提供、可先读后跑，你全程可接管。
+> 脚本以纯文本提供、可先读后跑，你全程可接管。
 
 ## 这套栈会拉起什么
 
@@ -185,7 +190,7 @@ api 也在同一个源上提供 web 应用。**让 `WEB_ORIGIN` 和
 ```ini
 # apps/api/.env
 
-# 给 OAuth state（反 CSRF）cookie 和不透明会话签名 —— 要长且随机。
+# 给认证/session cookie 和不透明会话签名 —— 要长且随机。
 SESSION_SECRET=...          # 生成方式：openssl rand -hex 32
 
 # AES-256-GCM 密钥，用于在静态存储时加密兼容 provider 的 API 密钥。
@@ -235,9 +240,9 @@ COMPOSE_PROFILES=web docker compose up --build
 
 如果登录被弹回，或 cookie 不生效，请重读 [第 3 节](#3-配置你的公开域名易出错的一步)——几乎每次都是 `WEB_ORIGIN`、`SESSION_COOKIE_DOMAIN` 与写死的 `VITE_API_BASE_URL` 三者不一致所致。
 
-## 可选：运行预构建镜像而非从源码构建
+## 运行预构建镜像而非从源码构建
 
-上面的一切都会在你的主机上**从源码**构建 `api` / `web` / AIO-sandbox 镜像——这是默认方式，也是在尚无 Release 之前唯一可行的路径。一旦维护者发布了 GitHub Release，该 Release 就会向 GHCR 发布一组**匹配的、版本钉死的**镜像（`ghcr.io/xeonice/cap-api`、`cap-web`、`cap-aio-sandbox`，全都在同一个 `vX.Y.Z`）。之后你就可以**拉取**这组钉死的镜像而不必编译，方法是在基础 compose 之上叠加 `docker-compose.images.yml` **override**。
+上面的源码 compose 流程会在你的主机上**从源码**构建 `api` / `web` / AIO-sandbox 镜像。安装 / 私有化部署请优先使用发布镜像：每个 GitHub Release 都会向 GHCR 发布一组**匹配的、版本钉死的**镜像（`ghcr.io/xeonice/cap-api`、`cap-web`、`cap-aio-sandbox`，全都在同一个 `vX.Y.Z`）。之后你就可以**拉取**这组钉死的镜像而不必编译，方法是在基础 compose 之上叠加 `docker-compose.images.yml` **override**。
 
 > **你仍然需要 Steps 1–5。** override 只改变镜像**来自哪里**（拉取 vs. 构建）。你的本地账号鉴权、域名、密钥以及（可选的）外部 DB 与上文完全一样配置——预构建镜像读取的是同一份 `apps/api/.env` 和同一套构建期 `VITE_*`（Release 已把它们烤进发布出来的 `cap-web`）。
 
@@ -268,13 +273,18 @@ COMPOSE_PROFILES=web \
 ```bash
 # 从 Releases 页面下载这两个文件（无需 clone），然后：
 cp docker-compose.prod.env.example .env     # 鉴权/密钥/域名（Steps 1–5）；CAP_VERSION 可选（默认 latest）
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d            # 加上 --profile web 以启用 compose 内的控制台
+COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml pull api postgres web
+COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web
+# Linux/AIO：两条命令都额外带上 aio-sandbox-image
 ```
 
 - **版本：** `CAP_VERSION` 是**可选**的——不设则运行 `latest`（最新的 Release），所以一个裸的 `up -d` 就是一个常驻的「永远跑最新 release」栈。钉一个 tag（`CAP_VERSION=v0.1.0`）可获得可复现 / 可回滚的部署。
-- **需要 amd64 / x86_64 主机**——发布出来的镜像仅支持 amd64（每任务 AIO sandbox 的基础镜像仅 amd64）。在 arm64 上（例如 Apple Silicon）拉取会报 "no matching manifest for linux/arm64"；请用 x86_64 主机，或在 macOS 上使用源码安装/`make up` 路径，它会默认选择 BoxLite。
-- **核心 + 可选的可观测性。** 它运行 api + 每任务 sandbox 镜像 + Postgres（+ 可选的 `web` profile），并且还附带一套需主动选用的可观测性栈（loki + alloy + grafana），其配置**内联**随附，以保持免源码。只有反向代理被排除（其 nginx 配置与源码耦合）——请用你自己的 TLS / 代理（Cloudflare Tunnel / Caddy / Traefik / nginx）来挡在 api（`:8080`）前面。
+- **平台 / provider：** 发布镜像当前默认 `linux/amd64`，运行包会固定
+  `platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}`，因此 Apple Silicon Docker Desktop /
+  Colima 会用模拟运行 api/web，而不是退回本地源码构建。macOS 使用
+  `CAP_SANDBOX_PROVIDER=boxlite` + `BOXLITE_*`，不要 staging `aio-sandbox-image`。
+  Linux/AIO 需要 staging `aio-sandbox-image`，确保每任务 sandbox 镜像在创建任务前已存在。
+- **核心 + 可选的可观测性。** 它运行 api + Postgres（+ 可选的 `web` profile，+ 选择 AIO 时的镜像 staging），并且还附带一套需主动选用的可观测性栈（loki + alloy + grafana），其配置**内联**随附，以保持免源码。只有反向代理被排除（其 nginx 配置与源码耦合）——请用你自己的 TLS / 代理（Cloudflare Tunnel / Caddy / Traefik / nginx）来挡在 api（`:8080`）前面。
 - **启动时启用可观测性**（默认：全都不运行）：
   ```bash
   # 日志（Loki+Alloy）；要 UI 就再加 ,grafana（回环 127.0.0.1:3001，用你的代理挡在前面）：
@@ -290,14 +300,15 @@ docker compose -f docker-compose.prod.yml up -d            # 加上 --profile we
 
 ```bash
 # 从一个 clone 运行（用仓库的 docker-compose.prod.yml），或在任意位置运行（它会自行抓取）：
-CAP_VERSION=v0.21.0 scripts/quick-deploy.sh        # localhost 试用，web 在 :3000
+CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost 试用，web 在 :3000
+CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # 仅 api + postgres
 CAP_SMOKE_REPO_ID=<id> RUN_SMOKE=1 scripts/quick-deploy.sh   # + 预置冒烟测试
 ```
 
-它以 fail-closed 的**关卡（gates）**方式运行：① 架构（预构建镜像是 **amd64/AIO** 路径；在 arm64 上它会停下并指引你走平台感知的源码 `make up`，该路径在 macOS 默认 BoxLite），② 基础工具链，③ **Docker engine 可达**——在 WSL 上带有界自愈（选择一个存活的 context；通过 interop 启动 Docker Desktop），若失败则给出确切的人工步骤（为该发行版启用 Docker Desktop 的 **WSL Integration**，或 `sudo systemctl restart docker`），④ 拉取 `docker-compose.prod.yml`，⑤ 幂等地写出 legacy-token 的 `.env`（已存在的 `.env` 会被复用、绝不覆盖；它保持 gitignore），⑥ `pull` + `up`，⑦ 等待 `/health` 并打印 `Authorization: Bearer` 令牌。
+它以 fail-closed 的**关卡（gates）**方式运行：① 平台 / provider（auto 选择 macOS BoxLite、Linux AIO；非 amd64 主机会固定 `CAP_IMAGE_PLATFORM=linux/amd64`；非 amd64 显式 AIO 会失败并提示 BoxLite/control-plane），② 基础工具链，③ **Docker engine 可达**——在 WSL 上带有界自愈（选择一个存活的 context；通过 interop 启动 Docker Desktop），若失败则给出确切的人工步骤（为该发行版启用 Docker Desktop 的 **WSL Integration**，或 `sudo systemctl restart docker`），④ 拉取 `docker-compose.prod.yml`，⑤ 幂等地写出 legacy-token 的 `.env`（已存在的 `.env` 会被复用、绝不覆盖；它保持 gitignore），⑥ `pull` + `up`，⑦ 等待 `/health` 并打印 `Authorization: Bearer` 令牌。
 
-> **这是 legacy-token 路径，不是常规本地账号生产路径。** 它**等同于主机 root**（它挂载主机的 `docker.sock`），所以谁持有打印出来的令牌，谁就能在主机上以 root 身份运行——请只把它用于单用户 / 试用主机。预构建的 `cap-web` **仅限 localhost**（其 `VITE_*` 烤死为 localhost）；要用真实域名，请改走上文的本地账号步骤。普通 PC 上的 WSL2 是 amd64，因此很适合作为这条路径的目标。
+> **这是 legacy-token 路径，不是常规本地账号生产路径。** 它**等同于主机 root**（它挂载主机的 `docker.sock`），所以谁持有打印出来的令牌，谁就能在主机上以 root 身份运行——请只把它用于单用户 / 试用主机。预构建的 `cap-web` **仅限 localhost**（其 `VITE_*` 烤死为 localhost）；要用真实域名，请改走上文的本地账号步骤。
 
 ## 可选：应用内一键自更新（`SELF_UPDATE_ENABLED`，默认 OFF）
 

@@ -2,16 +2,15 @@
  * Build-time install.sh injection (one-line-installer spec / task 5.3).
  *
  * `public/install.sh` is the inspectable source-of-truth script and ships with
- * TEMPLATE MARKERS (`__CAP_REPO_URL__`, `__CAP_SITE_DOMAIN__`) so the committed
- * file is readable and the repo carries no hard-coded deploy domain. Next copies
+ * a TEMPLATE MARKER (`__CAP_SITE_DOMAIN__`) so the committed file is readable
+ * and the repo carries no hard-coded deploy domain. Next copies
  * `public/*` verbatim into the static export's `out/`. This post-build step
  * rewrites `out/install.sh` IN PLACE, replacing the markers with the real
  * build-time values so the PUBLISHED file (served at `https://<domain>/install.sh`)
- * contains literal values — never placeholders — per the spec scenario
- * "Repo URL and domain are resolved at build".
+ * contains literal values — never placeholders.
  *
  * Values come from the same build-time public env the site metadata uses
- * (`NEXT_PUBLIC_REPO_URL`, `NEXT_PUBLIC_SITE_URL`). If unset, the script's own
+ * (`NEXT_PUBLIC_SITE_URL`). If unset, the script's own
  * in-file fallbacks (the `case … __CAP_*__ )` arms) still apply at runtime, but
  * we additionally warn so a real deploy does not silently ship the source
  * defaults.
@@ -58,13 +57,6 @@ const rootRedirectHtml = `<!doctype html>
 </html>
 `;
 
-/** Normalize a repo URL: ensure a trailing `.git` for the clone form. */
-function cloneUrl(raw) {
-  const trimmed = (raw ?? "").trim().replace(/\/+$/, "");
-  if (!trimmed) return "";
-  return /\.git$/i.test(trimmed) ? trimmed : `${trimmed}.git`;
-}
-
 /** Bare host (no scheme, no trailing slash) for the served domain marker. */
 function siteDomain(raw) {
   const trimmed = (raw ?? "").trim();
@@ -92,34 +84,21 @@ async function main() {
     return;
   }
 
-  const repo = cloneUrl(process.env.NEXT_PUBLIC_REPO_URL);
   const domain = siteDomain(process.env.NEXT_PUBLIC_SITE_URL);
 
-  if (!repo) {
-    console.warn(
-      "[inject-install-sh] NEXT_PUBLIC_REPO_URL is unset — published install.sh keeps its in-file repo fallback.",
-    );
-  }
   if (!domain) {
     console.warn(
       "[inject-install-sh] NEXT_PUBLIC_SITE_URL is unset — published install.sh keeps its in-file domain fallback.",
     );
   }
 
-  // IMPORTANT: only substitute the two ASSIGNMENT lines
-  //   REPO_URL="__CAP_REPO_URL__"   /   SITE_DOMAIN="__CAP_SITE_DOMAIN__"
-  // and the `curl … https://__CAP_SITE_DOMAIN__/install.sh` comment. We must NOT
-  // touch the marker in the fallback `case "$X" in __CAP_*__)` arms: those arms
-  // exist so the in-file public defaults still apply when the markers were NOT
-  // substituted (e.g. running the committed source copy). Replacing them too
-  // would make the arm match the real injected value and clobber it.
+  // IMPORTANT: only substitute the SITE_DOMAIN assignment line and the header
+  // comment's example `curl … https://__CAP_SITE_DOMAIN__/install.sh`. We must
+  // NOT touch the marker in the fallback `case "$SITE_DOMAIN" in __CAP_*__)` arm:
+  // that arm exists so the in-file public default still applies when the marker
+  // was NOT substituted (e.g. running the committed source copy). Replacing it
+  // too would make the arm match the real injected value and clobber it.
   let script = await readFile(outFile, "utf8");
-  if (repo) {
-    script = script.replace(
-      /^(REPO_URL=")__CAP_REPO_URL__(")$/m,
-      `$1${repo}$2`,
-    );
-  }
   if (domain) {
     script = script.replace(
       /^(SITE_DOMAIN=")__CAP_SITE_DOMAIN__(")$/m,
@@ -132,16 +111,10 @@ async function main() {
     );
   }
 
-  // When BOTH values were injected, the in-file fallback `case` guards are dead
-  // code AND the only remaining `__CAP_*__` markers; strip them so the PUBLISHED
-  // file carries zero placeholders (spec: "not placeholders"). If a value was
-  // NOT injected, leave its guard in place so the runtime fallback still works.
-  if (repo) {
-    script = script.replace(
-      /\ncase "\$REPO_URL" in\n\s*__CAP_REPO_URL__\)[^\n]*\nesac\n/,
-      "\n",
-    );
-  }
+  // When the domain was injected, the in-file fallback `case` guard is dead code
+  // AND the only remaining `__CAP_*__` marker; strip it so the PUBLISHED file
+  // carries zero placeholders. If it was NOT injected, leave its guard in place
+  // so the runtime fallback still works.
   if (domain) {
     script = script.replace(
       /\ncase "\$SITE_DOMAIN" in\n\s*__CAP_SITE_DOMAIN__\)[^\n]*\nesac\n/,
@@ -152,7 +125,7 @@ async function main() {
   await writeFile(outFile, script, "utf8");
 
   console.log(
-    `[inject-install-sh] wrote ${outFile} (repo=${repo || "fallback"}, domain=${domain || "fallback"}).`,
+    `[inject-install-sh] wrote ${outFile} (domain=${domain || "fallback"}).`,
   );
 
   // Stage the prebuilt installer + its compose asset (surface-quick-deploy-installer-on-www).

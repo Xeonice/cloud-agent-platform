@@ -6,9 +6,10 @@ import { FadeUp } from "@/components/motion";
 import type { HowItWorksContent } from "../../content";
 
 /**
- * How-it-works section (task 4.4) — the five honest steps (clone → install →
- * log in → create task → watch terminal) as a numbered list. No bespoke
- * provisioning is implied; the installer wraps the same `make up` flow.
+ * How-it-works section (task 4.4) — the five honest steps (prepare host →
+ * install release images → log in → create task → watch terminal) as a numbered
+ * list. No bespoke provisioning is implied; the installer runs the published
+ * compose package.
  */
 export function HowItWorks({ howItWorks }: { howItWorks: HowItWorksContent }) {
   return (

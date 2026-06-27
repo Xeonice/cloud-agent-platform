@@ -9,7 +9,7 @@
  *   - SEO/OG metadata (canonical + OG URLs)            → `siteUrl()`
  *   - hreflang alternates                              → `siteUrl()`
  *   - the Hero `curl | sh` command + footer/repo links → `siteDomain()` / `repo*`
- *   - the build-time `install.sh` template injection    (5.3, build script)
+ *   - the build-time `install.sh` domain injection      (5.3, build script)
  *
  * Values are read from `process.env.NEXT_PUBLIC_*` at module load so they are
  * inlined into the static export (`output: 'export'`, design D6). They fall back
@@ -81,8 +81,7 @@ export function repoUrl(): string {
 
 /**
  * The `owner/name` slug of the public repo (e.g. `Xeonice/cloud-agent-platform`),
- * used to fill the `{repo}` token in the bilingual content (clone commands,
- * GitHub links).
+ * used to fill the `{repo}` token in bilingual content and GitHub links.
  */
 export function repoSlug(): string {
   return repoUrl().replace(/^https?:\/\/github\.com\//i, "");
@@ -90,7 +89,7 @@ export function repoSlug(): string {
 
 /**
  * Resolve the `{domain}` / `{repo}` / `{apiDomain}` tokens the content modules
- * embed (the one-line install command, the `git clone` URL / GitHub links, and
+ * embed (the one-line install command, GitHub links, and
  * the MCP `/mcp` endpoint URL) against the build-time config, so the rendered
  * HTML carries real values — never the raw tokens. `{apiDomain}` resolves to the
  * API host (NOT the site host), so the MCP-connect copy points at the backend.
