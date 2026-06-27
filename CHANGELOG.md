@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.24.0...v0.24.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* use release images for one-line installer ([ed4d3c9](https://github.com/Xeonice/cloud-agent-platform/commit/ed4d3c95fe144c0301e3fa194d575b8e7537353f))
+
 ## [0.24.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.23.4...v0.24.0) (2026-06-26)
 
 
