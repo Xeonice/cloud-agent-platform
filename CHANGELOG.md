@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.24.1...v0.24.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* use local account quick deploy auth ([dbda5ab](https://github.com/Xeonice/cloud-agent-platform/commit/dbda5ab30588c13081e9a43cce419cdaca4a42ba))
+
 ## [0.24.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.24.0...v0.24.1) (2026-06-27)
 
 
