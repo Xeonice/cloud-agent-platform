@@ -16,6 +16,9 @@ export const ENV = {
   AUTH_TOKEN_LEGACY_ENABLED: 'AUTH_TOKEN_LEGACY_ENABLED',
   AUTH_TOKEN: 'AUTH_TOKEN',
   WEB_ORIGIN: 'WEB_ORIGIN',
+  WEB_ORIGIN_AUTO_SAME_HOST: 'WEB_ORIGIN_AUTO_SAME_HOST',
+  WEB_ORIGIN_AUTO_SAME_HOST_PORT: 'WEB_ORIGIN_AUTO_SAME_HOST_PORT',
+  WEB_HOST_PORT: 'WEB_HOST_PORT',
   SESSION_COOKIE_DOMAIN: 'SESSION_COOKIE_DOMAIN',
   /**
    * Disables the email+password login METHOD when set to an explicit falsy value
@@ -120,6 +123,61 @@ export function parseWebOrigins(raw: string | undefined): string[] {
         .filter((origin) => origin.length > 0),
     ),
   ];
+}
+
+/**
+ * Quick/self-host same-side deploys often expose web and api on the same
+ * hostname but different ports (for example web :3000, api :8080 or :18080).
+ * When explicitly enabled, allow exactly that browser origin without forcing
+ * operators to know the LAN/Tailscale IP ahead of time.
+ */
+export function isAutoSameHostWebOriginEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const raw = env[ENV.WEB_ORIGIN_AUTO_SAME_HOST];
+  if (typeof raw !== 'string') {
+    return false;
+  }
+  const value = raw.trim().toLowerCase();
+  return value === 'true' || value === '1' || value === 'yes';
+}
+
+export function readAutoSameHostWebOriginPort(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  return nonEmpty(env[ENV.WEB_ORIGIN_AUTO_SAME_HOST_PORT])
+    ?? nonEmpty(env[ENV.WEB_HOST_PORT])
+    ?? '3000';
+}
+
+export function isAutoSameHostWebOrigin(
+  origin: string | undefined,
+  requestHost: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!isAutoSameHostWebOriginEnabled(env)) {
+    return false;
+  }
+  if (!origin || !requestHost) {
+    return false;
+  }
+  try {
+    const originUrl = new URL(origin);
+    const requestUrl = new URL(`http://${requestHost}`);
+    return (
+      originUrl.hostname === requestUrl.hostname &&
+      effectiveUrlPort(originUrl) === readAutoSameHostWebOriginPort(env)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function effectiveUrlPort(url: URL): string {
+  if (url.port) {
+    return url.port;
+  }
+  return url.protocol === 'https:' ? '443' : '80';
 }
 
 /**

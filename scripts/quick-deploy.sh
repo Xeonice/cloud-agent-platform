@@ -34,7 +34,7 @@ CAP_VERSION="$REQUESTED_CAP_VERSION"
 WORKDIR="${CAP_WORKDIR:-$PWD}"          # where .env + the compose file live / are written
 API_PORT="${API_PORT:-8080}"
 WEB_PORT="${WEB_PORT:-3000}"
-WITH_WEB="${WITH_WEB:-1}"               # 1 = bring up the in-compose console (localhost-only)
+WITH_WEB="${WITH_WEB:-1}"               # 1 = bring up the in-compose console
 RUN_SMOKE="${RUN_SMOKE:-0}"            # 1 = create+stop a throwaway task as a provision smoke
 REQUESTED_PROVIDER="${CAP_SANDBOX_PROVIDER:-auto}" # auto|aio|boxlite|control-plane
 CAP_IMAGE_PLATFORM="${CAP_IMAGE_PLATFORM:-}"       # defaulted for non-amd64 release images below
@@ -278,6 +278,14 @@ else
 fi
 chmod 600 "$ENV_FILE" 2>/dev/null || true
 
+# Respect host-port pins already present in the run-package .env. This keeps the
+# script's own health/version/login checks aligned with compose interpolation
+# when the default 8080/3000 ports were moved aside for another local service.
+API_HOST_PORT_VALUE="$(value_for API_HOST_PORT)"
+[ -n "$API_HOST_PORT_VALUE" ] && API_PORT="$API_HOST_PORT_VALUE"
+WEB_HOST_PORT_VALUE="$(value_for WEB_HOST_PORT)"
+[ -n "$WEB_HOST_PORT_VALUE" ] && WEB_PORT="$WEB_HOST_PORT_VALUE"
+
 ADMIN_EMAIL_VALUE="$(value_for ADMIN_EMAIL)"
 [ -n "$ADMIN_EMAIL_VALUE" ] || ADMIN_EMAIL_VALUE="admin@example.com"
 
@@ -301,7 +309,12 @@ set_env_value PASSWORD_AUTH_ENABLED true
 set_env_value AUTH_TOKEN_LEGACY_ENABLED false
 set_env_value SESSION_SECRET "$SESSION_SECRET_VALUE"
 set_env_value CODEX_CRED_ENC_KEY "$CODEX_CRED_ENC_KEY_VALUE"
+set_env_value CAP_PUBLIC_API_PORT "$API_PORT"
+set_env_value CAP_PUBLIC_WEB_PORT "$WEB_PORT"
+set_env_value CAP_SERVER_API_BASE_URL "http://api:8080"
 set_env_value WEB_ORIGIN "http://localhost:${WEB_PORT}"
+set_env_value WEB_ORIGIN_AUTO_SAME_HOST true
+set_env_value WEB_ORIGIN_AUTO_SAME_HOST_PORT "$WEB_PORT"
 ADMIN_LOGIN_PAYLOAD="{\"email\":\"$(json_escape "$ADMIN_EMAIL_VALUE")\",\"password\":\"$(json_escape "$ADMIN_PASSWORD_VALUE")\"}"
 
 if [ -n "$(env_file_value AUTH_TOKEN)" ]; then
@@ -376,7 +389,7 @@ cat <<EOF
    version: ${ver}
    provider: ${SELECTED_PROVIDER}
    api:   http://localhost:${API_PORT}    (/health open; protected routes need a session cookie)
-   web:   $( [ "$WITH_WEB" = 1 ] && echo "http://localhost:${WEB_PORT}  (localhost-only — prebuilt cap-web VITE_* baked to localhost)" || echo "(web profile off)" )
+   web:   $( [ "$WITH_WEB" = 1 ] && echo "http://localhost:${WEB_PORT}  (same-host runtime endpoint discovery)" || echo "(web profile off)" )
    user:  ${ADMIN_EMAIL_VALUE}
    pass:  ${ADMIN_PASSWORD_VALUE}
    note:  ${AUTH_NOTE}

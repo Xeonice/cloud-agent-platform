@@ -94,12 +94,11 @@ services:
       - workspaces:/data/workspaces
       - /var/run/docker.sock:/var/run/docker.sock
 
-  # OPTIONAL in-compose web console (`web` profile). CAVEAT: the prebuilt cap-web
-  # image bakes VITE_API_BASE_URL/VITE_WS_URL AT BUILD time, and the release builds
-  # it with the defaults (localhost) — so this prebuilt image is only correct for a
-  # SAME-HOST / localhost console. For a custom domain, serve the console elsewhere
-  # (e.g. Vercel) pointed at your api, or rebuild cap-web with your own VITE_* from
-  # source. (A runtime-config web is future work — see docs/oss-self-update-epic.md.)
+  # OPTIONAL in-compose web console (`web` profile). The release web image now
+  # resolves its api/ws endpoints at runtime: explicit CAP_PUBLIC_* values win,
+  # otherwise the browser uses its current hostname plus CAP_PUBLIC_API_PORT. This
+  # keeps the prebuilt image usable for same-host installs reached by LAN/Tailscale
+  # IPs instead of only localhost.
   web:
     profiles: ["web"]
     image: ghcr.io/xeonice/cap-web:${CAP_VERSION:-latest}
@@ -110,6 +109,16 @@ services:
       - api
     environment:
       PORT: "3000"
+      # Public, browser-visible routing data only. For same-host deploys the
+      # browser derives http(s)://<window.location.hostname>:CAP_PUBLIC_API_PORT.
+      CAP_PUBLIC_API_BASE_URL: ${CAP_PUBLIC_API_BASE_URL:-}
+      CAP_PUBLIC_WS_URL: ${CAP_PUBLIC_WS_URL:-}
+      CAP_PUBLIC_API_HOST: ${CAP_PUBLIC_API_HOST:-}
+      CAP_PUBLIC_API_PORT: ${CAP_PUBLIC_API_PORT:-8080}
+      CAP_PUBLIC_API_PROTOCOL: ${CAP_PUBLIC_API_PROTOCOL:-}
+      # SSR/server-side fetches run from inside the web container, so they should
+      # use the compose service name rather than the browser-facing host port.
+      CAP_SERVER_API_BASE_URL: ${CAP_SERVER_API_BASE_URL:-http://api:8080}
     ports:
       # User-facing web binds all host interfaces by default. Set
       # WEB_HOST_BIND=127.0.0.1 for loopback-only.

@@ -10,13 +10,13 @@
 # `NITRO_PRESET=vercel` in the Vercel project, not here.
 #
 # Node 22 to match the workspace `engines.node` (>=22.0.0). The web app hosts
-# NO WebSocket server of its own; it points at the api's WS via the baked
-# `VITE_WS_URL`.
+# NO WebSocket server of its own; it points at the api's WS via explicit endpoint
+# config or the same-host runtime fallback.
 #
-# `VITE_*` are BUILD-TIME values: Vite inlines only `VITE_`-prefixed vars into
-# the client bundle at build, so `VITE_API_BASE_URL` / `VITE_WS_URL` are passed
-# as build args and BAKED IN — the resulting image is domain-specific. A
-# self-hoster builds the image for their own api origin (see docs/self-hosting.md).
+# `VITE_*` remain supported BUILD-TIME overrides for web-only / Vercel deploys.
+# The release image leaves them blank by default so the node-server runtime can
+# inject CAP_PUBLIC_* config and, when unset, the browser derives the api/ws
+# endpoints from window.location.hostname + CAP_PUBLIC_API_PORT.
 # ---------------------------------------------------------------------------
 
 ARG NODE_VERSION=22
@@ -25,11 +25,11 @@ ARG NODE_VERSION=22
 FROM node:${NODE_VERSION}-bookworm-slim AS build
 WORKDIR /repo
 
-# Build-time api endpoints, baked into the client bundle by Vite. These MUST be
-# provided at build time for a real (cross-origin) deploy; the defaults are the
-# local-dev fallbacks only.
-ARG VITE_API_BASE_URL=http://localhost:8080
-ARG VITE_WS_URL=ws://localhost:8080
+# Optional build-time api endpoints, baked into the client bundle by Vite.
+# Leave blank for the reusable release image; set for domain-specific web-only
+# deploys where runtime same-host discovery is not the desired topology.
+ARG VITE_API_BASE_URL=
+ARG VITE_WS_URL=
 ENV VITE_API_BASE_URL=${VITE_API_BASE_URL}
 ENV VITE_WS_URL=${VITE_WS_URL}
 

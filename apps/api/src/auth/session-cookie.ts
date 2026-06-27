@@ -1,5 +1,10 @@
 import type { Request } from 'express';
-import { readSessionCookieDomain, readWebOrigin } from './auth-config';
+import {
+  isAutoSameHostWebOrigin,
+  parseWebOrigins,
+  readSessionCookieDomain,
+  readWebOrigin,
+} from './auth-config';
 import {
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
@@ -10,10 +15,10 @@ import {
  * Builds the `Set-Cookie` directive(s) for a freshly-minted session.
  * Shared by EVERY local login method that mints a session — email+password and
  * email-OTP — so their cookies behave identically:
- *  - httpOnly + Secure (Secure forced when cross-origin, where SameSite=None is
- *    required and browsers reject a non-Secure None cookie);
- *  - SameSite=None for a cross-origin deploy (the web app reads `/auth/session`
- *    cross-site), else the tighter Lax;
+ *  - httpOnly + Secure when a true cross-host/cross-site browser deploy needs
+ *    SameSite=None (browsers reject non-Secure None cookies);
+ *  - SameSite=Lax for same-host installs, even when web/api use different ports
+ *    (for example http://100.101.167.99:3000 -> http://100.101.167.99:8080);
  *  - domain-scoped when `SESSION_COOKIE_DOMAIN` is set (cross-subdomain deploy),
  *    with a host-only clear emitted first so a stale host-only cookie can't shadow
  *    the canonical one.
@@ -22,7 +27,7 @@ import {
  * is defined in ONE place and the login methods can never drift apart.
  */
 export function buildSessionCookies(req: Request, token: string): string[] {
-  const webOrigin = readWebOrigin();
+  const webOrigin = resolveCookieWebOrigin(req);
   const crossOrigin = isCrossOrigin(req, webOrigin);
   const cookieDomain = readSessionCookieDomain() ?? undefined;
   const secure = crossOrigin ? true : isSecureRequest(req);
@@ -61,8 +66,9 @@ export function isSecureRequest(req: Request): boolean {
 }
 
 /**
- * True when the configured web origin differs from the request's own origin host
- * (a cross-origin deploy), so the session cookie must be SameSite=None; Secure.
+ * True when the configured web origin differs from the request hostname. Same
+ * hostname but different port is still a same-host browser deploy: it needs CORS
+ * because origins differ, but it does NOT need SameSite=None; Secure.
  */
 export function isCrossOrigin(req: Request, webOrigin: string | null): boolean {
   if (!webOrigin) {
@@ -73,9 +79,31 @@ export function isCrossOrigin(req: Request, webOrigin: string | null): boolean {
     return true;
   }
   try {
-    return new URL(webOrigin).host !== reqHost;
+    return new URL(webOrigin).hostname !== requestHostname(reqHost);
   } catch {
     return true;
+  }
+}
+
+function resolveCookieWebOrigin(req: Request): string | null {
+  const origin = headerValue(req.headers.origin);
+  const host = headerValue(req.headers.host) ?? undefined;
+  if (origin) {
+    if (parseWebOrigins(process.env.WEB_ORIGIN).includes(origin)) {
+      return origin;
+    }
+    if (isAutoSameHostWebOrigin(origin, host)) {
+      return origin;
+    }
+  }
+  return readWebOrigin();
+}
+
+function requestHostname(host: string): string {
+  try {
+    return new URL(`http://${host}`).hostname;
+  } catch {
+    return host.split(':')[0] ?? host;
   }
 }
 

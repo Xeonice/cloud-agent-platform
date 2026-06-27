@@ -22,6 +22,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { Toaster } from "sonner";
 
 import { AppErrorComponent, AppNotFound } from "@/components/app-error";
+import { runtimeEndpointConfigScript } from "@/lib/config";
 import appCss from "../styles/app.css?url";
 
 export interface RootRouteContext {
@@ -68,6 +69,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       <head>
         <HeadContent />
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        <script
+          dangerouslySetInnerHTML={{ __html: runtimeEndpointConfigScript() }}
+        />
       </head>
       <body>
         {children}

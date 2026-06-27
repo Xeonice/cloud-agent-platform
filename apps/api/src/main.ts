@@ -14,7 +14,11 @@ import {
 } from '@cap/contracts';
 import { AppModule } from './app.module';
 import { AuthSessionService } from './auth/auth-session.service';
-import { isLegacyTokenEnabled, parseWebOrigins } from './auth/auth-config';
+import {
+  isAutoSameHostWebOrigin,
+  isLegacyTokenEnabled,
+  parseWebOrigins,
+} from './auth/auth-config';
 
 // public-v1-api (Integration 4.1): the ONCE-per-process `extendZodWithOpenApi`
 // init, owned here (outside `@cap/contracts`) so the `.openapi(...)` augmentation
@@ -112,9 +116,10 @@ async function bootstrap(): Promise<void> {
 
   // 10.1b — CORS / WS-origin allow-listing. The Vercel web target is a different
   // origin from the Fly/compose api, so the api must explicitly allow it. The
-  // allow-list is env-configured (comma-separated); an unset list allows no
-  // cross-origin browser app (same-origin/cURL still work) rather than `*`,
-  // because the operator bearer token travels on these requests.
+  // allow-list is env-configured (comma-separated). The release-image self-host
+  // path can additionally opt into same-host discovery: if the browser opened
+  // `http://<host>:WEB_PORT`, then the api at `http://<host>:API_PORT` can echo
+  // that exact Origin without hardcoding the host/IP in `.env`.
   //
   // The parse is shared with session-cookie helpers via `parseWebOrigins`
   // (auth/auth-config) so the CORS allow-list and the cookie cross-origin policy
@@ -135,8 +140,11 @@ async function bootstrap(): Promise<void> {
       callback(null, { origin: false, credentials: false });
       return;
     }
+    const sameHostOrigin = resolveAutoSameHostOrigin(req);
     callback(null, {
-      origin: allowedOrigins.length > 0 ? allowedOrigins : false,
+      origin:
+        sameHostOrigin ??
+        (allowedOrigins.length > 0 ? allowedOrigins : false),
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization'],
@@ -177,6 +185,23 @@ type CorsDelegateCallback = (
     allowedHeaders?: string[];
   },
 ) => void;
+
+function resolveAutoSameHostOrigin(req: Request): string | null {
+  const origin = headerValue(req.headers.origin);
+  if (!origin) {
+    return null;
+  }
+  return isAutoSameHostWebOrigin(origin, headerValue(req.headers.host))
+    ? origin
+    : null;
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) {
+    return value[0]?.trim() || undefined;
+  }
+  return typeof value === 'string' ? value.trim() || undefined : undefined;
+}
 
 /**
  * True when a request URL targets the `/mcp` endpoint (EXACT match on the path,

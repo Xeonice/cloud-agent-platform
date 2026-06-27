@@ -23,7 +23,9 @@ In-app upgrades are a later phase you do not need to self-host today.
 > Docker, delegates to `quick-deploy.sh`, downloads `docker-compose.prod.yml`,
 > resolves the latest Release tag when `CAP_VERSION` is unset, pulls
 > `ghcr.io/xeonice/cap-*:${CAP_VERSION}`, and surfaces the printed admin
-> email/password.
+> email/password. The release web image supports same-host runtime endpoint
+> discovery: open `http://<host>:3000` and it targets the api at the same
+> hostname plus the configured api host port (default 8080).
 > macOS defaults to the BoxLite sandbox path; Linux defaults to AIO.
 > Override with `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane`.
 >
@@ -75,10 +77,14 @@ Enable the in-compose console with the `web` profile (`COMPOSE_PROFILES=web`);
 | `api`      | The NestJS orchestrator (local sessions, tasks, WS), 8080 |
 | `postgres` | The database backing tasks/audit/history                          |
 
-The web console talks to the api **only by its public URLs** (`VITE_API_BASE_URL`
-/ `VITE_WS_URL`). cap is designed for a **cross-origin** topology (web and api on
-different origins), so getting the URLs and cookie scope right is the single most
-important — and most error-prone — part of setup. Read
+The web console talks to the api by its public browser URL. For prebuilt
+same-host installs, that URL is resolved at runtime from the current browser
+hostname plus the configured api port. For split-domain or Vercel-style deploys,
+set explicit api URLs (`VITE_API_BASE_URL` / `VITE_WS_URL` at build time, or
+`CAP_PUBLIC_API_BASE_URL` / `CAP_PUBLIC_WS_URL` for the compose node-server
+image). cap still uses a **cross-origin** topology when web and api are on
+different ports or domains, so getting the URLs and cookie scope right is the
+single most important — and most error-prone — part of setup. Read
 [Step 3](#step-3--configure-your-public-domains-the-error-prone-step) carefully.
 
 ## Prerequisites
@@ -146,17 +152,37 @@ matches your DNS.
 
 | Variable                | Where            | What it is                                                       |
 | ----------------------- | ---------------- | ---------------------------------------------------------------- |
-| `VITE_API_BASE_URL`     | `apps/web` build | HTTP base URL of the api, e.g. `https://cap-api.example.com`     |
-| `VITE_WS_URL`           | `apps/web` build | WebSocket URL of the api, e.g. `wss://cap-api.example.com`       |
+| `VITE_API_BASE_URL`     | `apps/web` build | Optional build-time HTTP base URL of the api, e.g. `https://cap-api.example.com` |
+| `VITE_WS_URL`           | `apps/web` build | Optional build-time WebSocket URL of the api, e.g. `wss://cap-api.example.com` |
+| `CAP_PUBLIC_API_BASE_URL` | `web` runtime | Optional runtime HTTP base URL for the compose node-server image |
+| `CAP_PUBLIC_WS_URL`     | `web` runtime | Optional runtime WebSocket URL for the compose node-server image |
+| `CAP_PUBLIC_API_PORT`   | `web` runtime | Same-host fallback api port when explicit base URLs are unset |
 | `WEB_ORIGIN`            | `apps/api/.env`  | Comma-separated web origin(s) the api CORS-allowlists + redirects to after login |
 | `SESSION_COOKIE_DOMAIN` | `apps/api/.env`  | The cookie `Domain` attribute (see below) — **the most common mistake** |
 
-> **`VITE_*` are build-time, baked into the image.** The web image is
-> **domain-specific**: `VITE_API_BASE_URL` / `VITE_WS_URL` are read by Vite when
-> the bundle is built, not at container start. Pass them as build args
-> (`docker compose build` reads them from your env), and rebuild the `web` image
-> if you change your api domain. They cannot be changed by editing a running
-> container's env.
+> **`VITE_*` are build-time overrides.** Use them for web-only/Vercel deploys or
+> a deliberately domain-specific web image. The published release image leaves
+> them blank and uses runtime `CAP_PUBLIC_*` config instead; when even that is
+> absent, the browser falls back to same-host discovery.
+
+### Topology 0 — same host, different ports (quick-deploy default)
+
+Web and api live on the same hostname, e.g. web at
+`http://100.101.167.99:3000` and api at `http://100.101.167.99:8080` (or a
+custom `API_HOST_PORT` such as `18080`):
+
+```ini
+CAP_PUBLIC_API_PORT=8080
+WEB_ORIGIN=http://localhost:3000
+WEB_ORIGIN_AUTO_SAME_HOST=true
+WEB_ORIGIN_AUTO_SAME_HOST_PORT=3000
+# SESSION_COOKIE_DOMAIN intentionally unset
+```
+
+`quick-deploy.sh` writes these automatically. The explicit `WEB_ORIGIN` keeps
+localhost tunnel access working; `WEB_ORIGIN_AUTO_SAME_HOST` lets the api also
+echo `http://<same-host>:3000` when you open the console through a LAN/Tailscale
+IP. Host-only `SameSite=Lax` cookies are used for this same-host HTTP topology.
 
 ### Topology A — cross-subdomain (recommended)
 
@@ -253,8 +279,10 @@ cp apps/api/.env.example apps/api/.env   # then fill in Steps 1–5
 COMPOSE_PROFILES=web docker compose up --build
 ```
 
-This builds the `web` image (passing `VITE_API_BASE_URL` / `VITE_WS_URL`), the
-`api`, and starts Postgres. The web console is published on host port **3000**
+This builds the `web` image, the `api`, and starts Postgres. Set `VITE_*` only
+when you want a domain-specific web build; otherwise the compose/node-server
+runtime can use `CAP_PUBLIC_*` or same-host discovery. The web console is
+published on host port **3000**
 (override with `WEB_HOST_PORT`), the api on **8080** (override with
 `API_HOST_PORT`). Both bind to `0.0.0.0` by default; set `WEB_HOST_BIND` or
 `API_HOST_BIND` to `127.0.0.1` for loopback-only.
@@ -275,8 +303,8 @@ When it's up:
 
 If login bounces or the cookie doesn't stick, re-read
 [Step 3](#step-3--configure-your-public-domains-the-error-prone-step) — a
-mismatch between `WEB_ORIGIN`, `SESSION_COOKIE_DOMAIN`, and the baked
-`VITE_API_BASE_URL` is the cause ~every time.
+mismatch between the browser-facing api URL, `WEB_ORIGIN`, and
+`SESSION_COOKIE_DOMAIN` is the cause ~every time.
 
 ## Run prebuilt images instead of building from source
 
@@ -290,9 +318,9 @@ version-pinned set** of images to GHCR
 
 > **You still need Steps 1–5.** The override only changes WHERE the images come
 > from (pull vs. build). Your local auth, domains, secrets, and (optional)
-> external DB are configured exactly as above — the prebuilt images read the same
-> `apps/api/.env` and the same build-time `VITE_*` (already baked into the
-> published `cap-web` by the Release).
+> external DB are configured exactly as above. The prebuilt web image reads
+> runtime `CAP_PUBLIC_*` config or falls back to same-host discovery; set
+> explicit endpoints for split-domain deployments.
 
 Pin the whole stack to one published Release tag and bring it up **without
 `--build`**:
@@ -406,9 +434,9 @@ secrets, and provider pins; an existing `.env` is reused and stays gitignored),
 > This path is **host-root-equivalent** (it mounts the host `docker.sock`), so
 > whoever can log in can run as root on the host — keep account access tight. The
 > printed password is an initial admin credential and the first login requires
-> changing it. The prebuilt `cap-web` is **localhost-only** (its `VITE_*` are
-> baked to localhost); for a real domain, follow the local-account domain/cookie
-> steps above.
+> changing it. The prebuilt `cap-web` supports same-host runtime endpoint
+> discovery; for split-domain production, follow the local-account domain/cookie
+> steps above and set explicit public api/ws endpoints.
 
 ## Optional: in-app one-click self-update (`SELF_UPDATE_ENABLED`, default OFF)
 
