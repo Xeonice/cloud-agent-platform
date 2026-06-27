@@ -4,7 +4,7 @@
  * Authored to mirror the bilingual contract in `./index.ts` and the real
  * product capabilities documented in the repo README (per-task container
  * isolation, byte-identical terminal, dual runtime, GitHub import,
- * history/audit/metrics, OAuth + hard allowlist) and the honest host-root
+ * history/audit/metrics, local accounts + PATs) and the honest host-root
  * boundary. The Chinese counterpart in `./zh.ts` ports the console landing's
  * existing zh copy; this file is the authored English equivalent.
  *
@@ -35,7 +35,7 @@ export const en: SiteContent = {
     title: "A remote agent run pool, built for the operator.",
     subtitle: "Turn every CLI session into a workflow you can take over.",
     description:
-      "GitHub OAuth only confirms who you are; the repositories you import decide what the agent can touch; the task queue handles scheduling; and the live terminal leaves the final control with you.",
+      "Local accounts control who can enter; per-account forge PATs decide what repositories the agent can touch; the task queue handles scheduling; and the live terminal leaves the final control with you.",
     methodsHeading: "Get it running",
     copyLabel: "Copy command",
     copiedLabel: "Copied",
@@ -43,43 +43,47 @@ export const en: SiteContent = {
       title: "Let Claude Code deploy it",
       badge: "Recommended",
       blurb:
-        "Paste this into Claude Code. It reads the installer, checks your host, walks you through GitHub OAuth, and brings the platform-aware stack up for you.",
+        "Paste this into Claude Code. It reads the release-image installer, checks Docker and platform settings, and brings up the prebuilt stack.",
       prompt:
-        "Deploy cloud-agent-platform on this machine. First read the installer at https://{domain}/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/{repo}, cd into it, and run `make up` (macOS defaults to BoxLite, Linux defaults to AIO) to build and start the stack. Help me create a GitHub OAuth app and fill the .env for production login against my allowlist, then report the console URL and the Authorization: Bearer token it prints.",
+        "Deploy cloud-agent-platform on this machine. First read https://{domain}/install.sh and https://{domain}/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path (do not git clone, do not run make up, do not build locally). It defaults to the latest Release; set CAP_VERSION to pin one. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the Authorization: Bearer token it prints.",
       copyLabel: "Copy the Claude Code prompt",
     },
     install: {
       title: "Install it yourself",
       blurb:
-        "Source build with GitHub OAuth — macOS defaults to BoxLite, Linux defaults to AIO.",
+        "Prebuilt release images — no clone, no local build. macOS uses BoxLite; Linux uses AIO.",
       command: "curl -fsSL https://{domain}/install.sh | sh",
       inspectLabel: "Inspect the script",
       manual: {
-        summary: "Prefer to read it first? Run the same flow by hand:",
+        summary: "Prefer to read it first? Run the same release-artifact flow by hand:",
         commands: [
-          "git clone https://github.com/{repo}.git",
-          "cd cloud-agent-platform",
-          "make up",
+          "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
+          "# write .env: CAP_VERSION=vX.Y.Z + AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "# macOS/BoxLite also needs: CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_ENDPOINT/BOXLITE_API_TOKEN/BOXLITE_IMAGE",
+          "# Linux/AIO also include: aio-sandbox-image",
+          "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],
-        note: "make up stays the source of truth — the one-liner only wraps it. Override with CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane. api/web bind 0.0.0.0 by default; public DNS/TLS/proxy remain yours.",
+        note: "install.sh delegates to quick-deploy.sh; the source of truth is docker-compose.prod.yml plus the GHCR release images. api/web bind 0.0.0.0 by default; public DNS/TLS/proxy remain yours.",
       },
     },
     prebuilt: {
-      title: "Just try it fast",
+      title: "Run quick-deploy directly",
       blurb:
-        "Prebuilt images, no GitHub OAuth — AIO/amd64 only, fastest on WSL2, for a local trial.",
+        "The same release-image path, exposed directly for agents or manual step-by-step debugging.",
       command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
       inspectLabel: "Inspect the script",
       caveat:
-        "Local trial only: it synthesizes a legacy token and the bundled console stays localhost-only — not the production path. amd64/AIO; macOS should use the source installer for BoxLite.",
+        "It synthesizes a legacy token and the bundled console stays localhost-only. macOS requires BoxLite provider env; Linux defaults to AIO. Public DNS, TLS, proxy, and auth origins remain yours.",
       manual: {
         summary: "Prefer to read it first? Run the prebuilt compose by hand:",
         commands: [
           "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
-          "# write a .env: AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
-          "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d",
+          "# write .env: CAP_VERSION=vX.Y.Z + AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "# macOS/BoxLite also needs: CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_*",
+          "# Linux/AIO also include: aio-sandbox-image",
+          "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],
-        note: "The script does the .env synthesis for you (see the inspectable source). Both files are served by this site — no clone needed. amd64/AIO only.",
+        note: "The script does the .env synthesis for you (see the inspectable source). Both files are served by this site — no clone and no local build needed.",
       },
     },
     secondaryCta: { label: "See how it works", href: "#how-it-works" },
@@ -123,8 +127,8 @@ export const en: SiteContent = {
         body: "Tasks, commands, agent output, and GitHub events are recorded; metrics surface how the run pool is being used.",
       },
       {
-        title: "OAuth + hard allowlist",
-        body: "Multi-user GitHub OAuth gates access against a hard allowlist; there is no public sign-up door.",
+        title: "Local accounts + PATs",
+        body: "Console login uses local accounts; repository access is scoped separately through each operator's forge PATs.",
       },
     ],
   },
@@ -132,22 +136,22 @@ export const en: SiteContent = {
     eyebrow: "How it works",
     title: "From a clean host to a session you can take over.",
     description:
-      "Five steps, no bespoke provisioning — the installer wraps the same platform-aware make up flow you would run by hand.",
+      "Five steps, no local source build — the installer runs the published release-image package you can inspect by hand.",
     steps: [
       {
         index: "01",
-        title: "Clone",
-        body: "Pull the public repository onto a host with Docker and a docker.sock available.",
+        title: "Prepare",
+        body: "Choose a host with Docker and a docker.sock available; on macOS, point CAP at your BoxLite control plane.",
       },
       {
         index: "02",
         title: "Install",
-        body: "Run the one-liner (or make up). macOS selects BoxLite, Linux selects AIO, and the stack prints a local Bearer token.",
+        body: "Run the one-liner. It pulls the published release images, starts api/postgres/web, and prints a local Bearer token.",
       },
       {
         index: "03",
         title: "Log in",
-        body: "Sign in with the printed token locally, or with GitHub OAuth against your allowlist in production.",
+        body: "Use the printed token for the local trial; production self-hosts use local accounts and per-account forge PATs.",
       },
       {
         index: "04",
@@ -211,8 +215,8 @@ export const en: SiteContent = {
         body: "The backend drives tasks through the Docker socket, so whoever can log in can effectively run as root on the host. Treat console access as a host-root privilege.",
       },
       {
-        title: "Fail-closed allowlist",
-        body: "Production is OAuth-first and fail-closed: an account that is not on the allowlist stops at access-denied and never reaches any console resource.",
+        title: "Fail-closed access",
+        body: "Production auth is fail-closed: disabled accounts and invalid sessions stop before they reach any console resource.",
       },
       {
         title: "Write gate before risky actions",
@@ -220,7 +224,7 @@ export const en: SiteContent = {
       },
       {
         title: "Auditable install path",
-        body: "The install script is served as plain text you can read before running, and the equivalent manual git clone && make up path is always available.",
+        body: "The install script is served as plain text you can read before running, and the equivalent manual release-compose path is always available.",
       },
     ],
   },

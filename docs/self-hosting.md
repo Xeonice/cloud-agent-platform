@@ -13,53 +13,55 @@ Repository access is configured separately with per-account forge PATs.
 
 This guide is Phase 0 of the [OSS self-update epic](./oss-self-update-epic.md)
 ("a stranger can run it"): a complete, env-configurable, local-account compose
-stack. The default path below builds everything from source; once a Release has
-published prebuilt images you can pull them instead — see
-[Optional: run prebuilt images](#optional-run-prebuilt-images-instead-of-building-from-source).
+stack. The recommended install path runs published release images. Source builds
+are still documented for development or custom image work, but the one-line
+installer and agent path should not clone the repo or run `make up`.
 In-app upgrades are a later phase you do not need to self-host today.
 
-> **🚀 Trying it on a fresh local host?** The public marketing site hosts a
-> one-line installer that wraps the local `make up` bring-up — it preflights
-> Docker, clones this repo, runs `make up`, and surfaces the printed Bearer
-> token. The source path is platform-aware: macOS defaults to BoxLite, Linux
-> defaults to AIO. Override with `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane`.
+> **Trying it on a fresh local host?** The public marketing site hosts a
+> one-line installer that runs the prebuilt release-image package — it preflights
+> Docker, delegates to `quick-deploy.sh`, downloads `docker-compose.prod.yml`,
+> resolves the latest Release tag when `CAP_VERSION` is unset, pulls
+> `ghcr.io/xeonice/cap-*:${CAP_VERSION}`, and surfaces the printed Bearer token.
+> macOS defaults to the BoxLite sandbox path; Linux defaults to AIO.
+> Override with `CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane`.
 >
 > ```bash
 > curl -fsSL https://<site-domain>/install.sh | sh
 > ```
 >
-> It is a convenience wrapper for a **local** trial, not a production path: the
-> manual `make up` (local) and the `docker compose` flow below **remain the
-> source of truth**. The script is served as plain text — read it first, or use
-> the equivalent manual `git clone … && make up` the site also shows. For a real
-> production deploy, follow the steps in this guide.
+> It is a convenience wrapper for a **local** trial, not a full production-domain
+> setup: it writes a legacy-token `.env` and leaves DNS/TLS/proxy/cookie scope to
+> you. The script is served as plain text — read it first, or use the equivalent
+> manual `docker-compose.prod.yml` + `.env` path. It does not `git clone`, run
+> `make up`, or build local images.
 >
 > The api/web host ports bind to `0.0.0.0` by default. Public DNS, TLS, reverse
-> proxy, OAuth callback URLs, cookie scope, and firewall rules are still your
+> proxy, auth callback URLs, cookie scope, and firewall rules are still your
 > responsibility before exposing the host publicly.
 
-> **⚡ Fast path — run prebuilt images, NO `git clone` (amd64 host).** Once a
-> Release exists, you don't need the source at all: download
+> **Fast path — run prebuilt images, NO `git clone`.** Once a Release exists, you
+> don't need the source at all: download
 > `docker-compose.prod.yml` + `docker-compose.prod.env.example` from the
 > [Releases page](https://github.com/Xeonice/cloud-agent-platform/releases),
 > `cp docker-compose.prod.env.example .env`, fill it (Steps 1–5 below explain the
 > values), then `docker compose -f docker-compose.prod.yml pull && docker compose
-> -f docker-compose.prod.yml up -d` (add `--profile web` for the in-compose
-> console). This SOURCE-FREE run package is the build/run split — build stays on
-> the build platform, run is this one file. Details:
+> -f docker-compose.prod.yml up -d api postgres` (add `web` for the in-compose
+> console, and add `aio-sandbox-image` on Linux/AIO). This SOURCE-FREE run
+> package is the build/run split — build stays on the build platform, run is this
+> one file. Details:
 > [Run from prebuilt images (no source)](#or-source-free-run-package-no-clone).
 
 > **Let Claude Code deploy it.** With Claude Code installed, paste the prompt
-> below — it reads `install.sh`, preflights Docker, clones the repo and runs
-> `make up`, and walks you step by step through local-account auth and `.env`
-> setup below — the same source-build production path:
+> below — it reads `install.sh`/`quick-deploy.sh`, preflights Docker, and runs the
+> same release-image path:
 >
 > ```text
-> Deploy cloud-agent-platform on this machine. First read the installer at https://<site-domain>/install.sh and confirm Docker with a usable docker.sock is available. Then clone https://github.com/<owner>/cloud-agent-platform, cd into it, and run `make up` so the repo selects the default sandbox path for this OS (macOS BoxLite, Linux AIO). Help me configure local account login, web/api origins, and PAT-based repository access, then report the console URL and the generated admin/legacy credentials it prints.
+> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the Authorization: Bearer token it prints.
 > ```
 >
-> It wraps `make up` rather than replacing it; the script is served as plain text
-> so you can read it before running, and you can take over at any point.
+> The scripts are served as plain text so you can read them before running, and
+> you can take over at any point.
 
 ## What the stack brings up
 
@@ -208,7 +210,7 @@ the default host-only `SameSite=Lax` cookie.
 ```ini
 # apps/api/.env
 
-# Signs the OAuth state (anti-CSRF) cookie and the opaque session — long & random.
+# Signs auth/session cookies and opaque sessions — long & random.
 SESSION_SECRET=...          # generate: openssl rand -hex 32
 
 # AES-256-GCM key encrypting compatible-provider API keys at rest.
@@ -275,11 +277,11 @@ If login bounces or the cookie doesn't stick, re-read
 mismatch between `WEB_ORIGIN`, `SESSION_COOKIE_DOMAIN`, and the baked
 `VITE_API_BASE_URL` is the cause ~every time.
 
-## Optional: run prebuilt images instead of building from source
+## Run prebuilt images instead of building from source
 
-Everything above builds the `api` / `web` / AIO-sandbox images **from source** on
-your host — the default, and the only path that works before a Release exists.
-Once the maintainer cuts a GitHub Release, that Release publishes a **matched,
+The source-build compose flow above builds the `api` / `web` / AIO-sandbox images
+**from source** on your host. For install/private deployment, prefer the
+published release images: each GitHub Release publishes a **matched,
 version-pinned set** of images to GHCR
 (`ghcr.io/xeonice/cap-api`, `cap-web`, `cap-aio-sandbox`, all at the SAME
 `vX.Y.Z`). You can then **pull** that pinned set instead of compiling, using the
@@ -337,20 +339,24 @@ bind-mounts, and runs the pinned `ghcr.io/xeonice/cap-*:${CAP_VERSION}` set:
 ```bash
 # Download the two files from the Releases page (no clone), then:
 cp docker-compose.prod.env.example .env     # auth/secrets/domains (Steps 1–5); CAP_VERSION optional (defaults latest)
-docker compose -f docker-compose.prod.yml pull
-docker compose -f docker-compose.prod.yml up -d            # add: --profile web  for the in-compose console
+COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml pull api postgres web
+COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web
+# Linux/AIO: include aio-sandbox-image in both commands.
 ```
 
 - **Version:** `CAP_VERSION` is OPTIONAL — unset runs `latest` (the newest
   Release), so a bare `up -d` is a resident "always run the latest release" stack.
   Pin a tag (`CAP_VERSION=v0.1.0`) for a reproducible / rollback-able deploy.
-- **Requires an amd64 / x86_64 host** — the published images are amd64-only (the
-  per-task AIO sandbox base is amd64-only). On arm64 (e.g. Apple Silicon) the pull
-  errors with "no matching manifest for linux/arm64"; use an x86_64 host, or use
-  the source installer/`make up` path on macOS, which defaults to BoxLite.
-- **Core + opt-in observability.** It runs api + the per-task sandbox image +
-  Postgres (+ optional `web` profile), and ALSO carries an opt-in observability
-  stack (loki + alloy + grafana) whose config ships INLINE so it stays source-free.
+- **Platform/provider:** release images currently default to `linux/amd64`, and
+  the run package pins `platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}` so Apple
+  Silicon Docker Desktop / Colima can run api/web via emulation instead of
+  falling back to a local source build. On macOS use
+  `CAP_SANDBOX_PROVIDER=boxlite` with `BOXLITE_*` and do not stage
+  `aio-sandbox-image`. On Linux/AIO, stage `aio-sandbox-image` so the per-task
+  sandbox image is present before tasks run.
+- **Core + opt-in observability.** It runs api + Postgres (+ optional `web`
+  profile, + AIO image staging when selected), and ALSO carries an opt-in
+  observability stack (loki + alloy + grafana) whose config ships INLINE so it stays source-free.
   Only the reverse proxy is excluded (its nginx config is source-coupled) — front
   the api (`:8080`) with your own TLS/proxy (Cloudflare Tunnel / Caddy / Traefik /
   nginx).
@@ -381,14 +387,15 @@ the auth secrets:
 
 ```bash
 # from a clone (uses the repo's docker-compose.prod.yml), or anywhere (it fetches it):
-CAP_VERSION=v0.21.0 scripts/quick-deploy.sh        # localhost trial, web on :3000
+CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost trial, web on :3000
+CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # api + postgres only
 CAP_SMOKE_REPO_ID=<id> RUN_SMOKE=1 scripts/quick-deploy.sh   # + provision smoke
 ```
 
-It runs as fail-closed **gates**: ① architecture (the prebuilt images are **amd64/AIO-only**;
-on arm64 it stops and points you at the platform-aware source `make up`, which
-defaults macOS to BoxLite), ② base tooling,
+It runs as fail-closed **gates**: ① platform/provider (auto selects macOS
+BoxLite, Linux AIO; non-amd64 hosts pin `CAP_IMAGE_PLATFORM=linux/amd64`;
+explicit AIO on non-amd64 fails with BoxLite/control-plane guidance), ② base tooling,
 ③ **Docker engine reachable** — with bounded self-heal on WSL (select a live context;
 start Docker Desktop via interop) and, if that fails, the exact human step
 (enable Docker Desktop **WSL Integration** for the distro, or `sudo systemctl restart
@@ -400,8 +407,7 @@ docker`), ④ fetch `docker-compose.prod.yml`, ⑤ idempotently write the legacy
 > **host-root-equivalent** (it mounts the host `docker.sock`), so whoever holds the
 > printed token can run as root on the host — keep it to a single-user / trial host. The
 > prebuilt `cap-web` is **localhost-only** (its `VITE_*` are baked to localhost); for a
-> real domain, follow the local-account steps above instead. WSL2 on a normal PC is amd64,
-> which makes it a good target for this path.
+> real domain, follow the local-account steps above instead.
 
 ## Optional: in-app one-click self-update (`SELF_UPDATE_ENABLED`, default OFF)
 

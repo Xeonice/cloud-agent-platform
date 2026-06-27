@@ -33,7 +33,7 @@ export const zh: SiteContent = {
     title: "一个面向操作者的远端 Agent 运行池。",
     subtitle: "把每一次 CLI 会话变成可接管的工作流。",
     description:
-      "GitHub OAuth 只负责确认身份；仓库导入决定 Agent 能碰什么；任务队列负责调度；实时终端把最后的控制权留给你。",
+      "本地账号决定谁能进入；每账号 forge PAT 决定 Agent 能碰哪些仓库；任务队列负责调度；实时终端把最后的控制权留给你。",
     methodsHeading: "把它跑起来",
     copyLabel: "复制命令",
     copiedLabel: "已复制",
@@ -41,41 +41,45 @@ export const zh: SiteContent = {
       title: "让 Claude Code 帮你装",
       badge: "推荐",
       blurb:
-        "把这段话贴给 Claude Code。它会读安装脚本、检查你的主机、引导你完成 GitHub OAuth，帮你把平台感知的栈跑起来。",
+        "把这段话贴给 Claude Code。它会读发布镜像安装脚本、检查 Docker 与平台参数，并用预构建产物把栈跑起来。",
       prompt:
-        "在这台机器上部署 cloud-agent-platform。先读取 https://{domain}/install.sh 安装脚本，确认 Docker 与可用的 docker.sock 已就绪。然后克隆 https://github.com/{repo}，进入目录运行 `make up`（macOS 默认 BoxLite，Linux 默认 AIO）构建并启动栈。帮我创建 GitHub OAuth 应用并填好 .env，以便用白名单做生产登录；最后告诉我控制台地址和它打印的 Authorization: Bearer 令牌。",
+        "在这台机器上部署 cloud-agent-platform。先读取 https://{domain}/install.sh 和 https://{domain}/quick-deploy.sh，确认 Docker 与可用的 docker.sock 已就绪，然后运行发布镜像安装路径（不要 git clone，不要 make up，不要本地 build）。默认使用最新 Release；如需固定版本设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN、BOXLITE_IMAGE 已设置；Linux 默认 AIO。最后告诉我控制台地址、/version 返回值，以及脚本打印的 Authorization: Bearer 令牌。",
       copyLabel: "复制 Claude Code 提示词",
     },
     install: {
       title: "自己用命令行装",
-      blurb: "源码构建 + GitHub OAuth —— macOS 默认 BoxLite，Linux 默认 AIO。",
+      blurb: "预构建发布镜像 —— 不 clone、不本地 build，macOS 走 BoxLite，Linux 走 AIO。",
       command: "curl -fsSL https://{domain}/install.sh | sh",
       inspectLabel: "查看脚本",
       manual: {
-        summary: "想先读一遍？用同样的流程手动执行：",
+        summary: "想先读一遍？用同样的发布产物流程手动执行：",
         commands: [
-          "git clone https://github.com/{repo}.git",
-          "cd cloud-agent-platform",
-          "make up",
+          "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
+          "# 写一个 .env：CAP_VERSION=vX.Y.Z + AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "# macOS/BoxLite 另写：CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_ENDPOINT/BOXLITE_API_TOKEN/BOXLITE_IMAGE",
+          "# Linux/AIO 另带上：aio-sandbox-image",
+          "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],
-        note: "make up 始终是事实源 —— 一键命令只是对它的封装。可用 CAP_SANDBOX_PROVIDER=aio|boxlite|control-plane 覆盖。api/web 默认监听 0.0.0.0；公网 DNS/TLS/代理仍由你配置。",
+        note: "install.sh 会委托 quick-deploy.sh，事实源是 docker-compose.prod.yml + GHCR 发布镜像。api/web 默认监听 0.0.0.0；公网 DNS/TLS/代理仍由你配置。",
       },
     },
     prebuilt: {
-      title: "只想最快试一下",
-      blurb: "预构建镜像，免 GitHub OAuth —— AIO/amd64 路径，在 WSL2 上最快，适合本地试用。",
+      title: "直接跑 quick-deploy",
+      blurb: "同一条发布镜像路径，显式使用 quick-deploy.sh；适合让 agent 或人工逐步排查。",
       command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
       inspectLabel: "查看脚本",
       caveat:
-        "仅限本地试用：自动生成 legacy 令牌，自带控制台仅限 localhost —— 不是生产路径。amd64/AIO；macOS 请走源码安装以默认使用 BoxLite。",
+        "默认生成 legacy 令牌，自带控制台仅限 localhost。macOS 需要 BoxLite provider 环境变量；Linux 默认 AIO。公网域名、TLS、反代和认证来源仍由你配置。",
       manual: {
         summary: "想先读一遍？用预构建 compose 手动执行：",
         commands: [
           "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
-          "# 写一个 .env：AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
-          "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d",
+          "# 写一个 .env：CAP_VERSION=vX.Y.Z + AUTH_TOKEN_LEGACY_ENABLED=true + AUTH_TOKEN/SESSION_SECRET/CODEX_CRED_ENC_KEY",
+          "# macOS/BoxLite 另写：CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_*",
+          "# Linux/AIO 另带上：aio-sandbox-image",
+          "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],
-        note: "脚本会替你完成 .env 合成（见可读源码）。两个文件都由本站托管 —— 无需 clone。仅限 amd64/AIO。",
+        note: "脚本会替你完成 .env 合成（见可读源码）。两个文件都由本站托管 —— 无需 clone、无需本地 build。",
       },
     },
     secondaryCta: { label: "了解工作流程", href: "#how-it-works" },
@@ -118,30 +122,30 @@ export const zh: SiteContent = {
         body: "任务、命令、Agent 输出与 GitHub 事件均被记录；指标呈现运行池的使用情况。",
       },
       {
-        title: "OAuth + 硬白名单",
-        body: "多用户 GitHub OAuth 依据硬白名单门控访问；没有公开注册入口。",
+        title: "本地账号 + PAT",
+        body: "控制台使用本地账号登录；仓库访问通过每个操作者自己的 forge PAT 单独限定。",
       },
     ],
   },
   howItWorks: {
     eyebrow: "流程",
     title: "从一台干净的主机，到一场你能接管的会话。",
-    description: "五步，无任何定制 provisioning —— 安装器封装的，正是你会手动跑的平台感知 make up 流程。",
+    description: "五步，无需本地源码构建 —— 安装器跑的是你可手动审阅的发布镜像运行包。",
     steps: [
       {
         index: "01",
-        title: "克隆",
-        body: "把公共仓库拉取到一台具备 Docker 与可用 docker.sock 的主机上。",
+        title: "准备主机",
+        body: "准备一台具备 Docker 与可用 docker.sock 的主机；macOS 需要把 CAP 指向你的 BoxLite 控制面。",
       },
       {
         index: "02",
         title: "安装",
-        body: "运行一键命令（或 make up）：macOS 选择 BoxLite，Linux 选择 AIO，并打印一个本地 Bearer 令牌。",
+        body: "运行一键命令；它会拉取已发布镜像，启动 api/postgres/web，并打印本地 Bearer 令牌。",
       },
       {
         index: "03",
         title: "登录",
-        body: "本地用打印出的令牌登录；生产环境则用 GitHub OAuth 依据你的白名单登录。",
+        body: "本地试用用打印出的令牌登录；生产自托管使用本地账号和每账号 forge PAT。",
       },
       {
         index: "04",
@@ -204,8 +208,8 @@ export const zh: SiteContent = {
         body: "后端通过 Docker socket 驱动任务，因此能登录的人实际上就能在主机上以 root 运行。请把控制台访问视为主机 root 权限。",
       },
       {
-        title: "fail-closed 白名单",
-        body: "生产环境 OAuth 优先且 fail-closed：不在白名单上的账号停在拒绝访问状态，绝不触达任何控制台资源。",
+        title: "fail-closed 访问控制",
+        body: "生产鉴权 fail-closed：禁用账号和无效会话会在触达任何控制台资源前被拦下。",
       },
       {
         title: "高风险动作前的写入门",
@@ -213,7 +217,7 @@ export const zh: SiteContent = {
       },
       {
         title: "可审计的安装路径",
-        body: "安装脚本以纯文本提供，运行前即可阅读；等价的手动 git clone && make up 路径始终可用。",
+        body: "安装脚本以纯文本提供，运行前即可阅读；等价的手动发布 compose 路径始终可用。",
       },
     ],
   },

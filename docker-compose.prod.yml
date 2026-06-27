@@ -11,18 +11,20 @@
 #   3. docker compose -f docker-compose.prod.yml pull
 #   4. docker compose -f docker-compose.prod.yml up -d
 #
-# CAP_VERSION defaults to `latest` (the newest published Release) when unset, so a
-# bare `docker compose -f docker-compose.prod.yml up -d` just runs the latest release
-# as a resident stack. PIN an explicit tag (e.g. CAP_VERSION=v0.1.0) for a reproducible
-# / rollback-able deploy. All three cap images share ONE tag so the set stays matched (⑤).
+# CAP_VERSION unset pulls Docker's `latest` tag (the newest published Release) while
+# the image's baked CAP_VERSION still reports the concrete release at /version. PIN an
+# explicit tag (e.g. CAP_VERSION=v0.24.0) for a reproducible / rollback-able deploy.
+# All three cap images share ONE tag so the set stays matched (⑤).
 #
-# REQUIRES AN amd64 / x86_64 HOST. The published images are amd64-only because the
-# per-task AIO sandbox base image (ghcr.io/agent-infra/sandbox) is amd64-only — cap
-# is an amd64 platform. On an arm64 host (e.g. Apple Silicon) the pull fails with
-# "no matching manifest for linux/arm64"; use an x86_64 host (or amd64 emulation).
+# RELEASE IMAGE PLATFORM: cap release images currently default to linux/amd64. The
+# cap services below pin `platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}` so Apple
+# Silicon Docker Desktop / Colima can run the published api/web images via Docker's
+# amd64 emulation instead of falling back to an unversioned local source build. For
+# macOS sandbox execution, use the BoxLite provider env (`CAP_SANDBOX_PROVIDER=boxlite`
+# plus `BOXLITE_*`) and do not stage the AIO-only `aio-sandbox-image` service.
 #
-# SCOPE: the CORE run unit — api + the per-task sandbox image + Postgres, plus the
-# optional in-compose web console (`web` profile) AND an OPT-IN observability stack
+# SCOPE: the CORE run unit — api + Postgres, plus optional web console (`web`
+# profile), AIO image staging when the AIO provider is selected, AND an OPT-IN observability stack
 # (loki + grafana-alloy under the `observability` profile; grafana under `grafana`).
 # Observability config ships INLINE via compose `configs:` (the GENERATED block at the
 # bottom of this file, produced from deploy/observability/* by
@@ -43,6 +45,7 @@ x-logging: &default-logging
 services:
   api:
     image: ghcr.io/xeonice/cap-api:${CAP_VERSION:-latest}
+    platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}
     restart: unless-stopped
     logging: *default-logging
     # DooD: host-root-equivalent docker.sock access (single-user self-host only).
@@ -66,8 +69,10 @@ services:
       # The pulled, version-matched per-task sandbox image (decision ⑤): newly
       # provisioned cap-aio-<taskId> run the SAME release as the api. Pinned tag.
       AIO_SANDBOX_IMAGE: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION:-latest}
-      # The single user-facing version, reported by GET /version on this image.
-      CAP_VERSION: ${CAP_VERSION:-latest}
+      # CAP_VERSION is baked into release images. Do not set a runtime default
+      # here: when the image tag is `latest`, overriding the env with literal
+      # "latest" would hide the concrete release tag from GET /version. Operators
+      # who pin CAP_VERSION in `.env` still pass that same value through env_file.
       MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-}
       TASK_REPO_URL: ${TASK_REPO_URL:-}
       # CLAUDE_CODE_OAUTH_TOKEN (add-claude-code-runtime): the long-lived token a
@@ -98,6 +103,7 @@ services:
   web:
     profiles: ["web"]
     image: ghcr.io/xeonice/cap-web:${CAP_VERSION:-latest}
+    platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}
     restart: unless-stopped
     logging: *default-logging
     depends_on:
@@ -117,6 +123,7 @@ services:
   # it via AIO_SANDBOX_IMAGE above) finds it. Non-runtime: it never starts.
   aio-sandbox-image:
     image: ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION:-latest}
+    platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}
     entrypoint: ["true"]
     restart: "no"
     network_mode: none

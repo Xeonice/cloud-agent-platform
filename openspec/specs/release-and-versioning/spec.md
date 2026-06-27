@@ -46,11 +46,11 @@ The repository SHALL define a CI workflow triggered on `release: published` (and
 The project SHALL provide a way for a self-hoster to run the pinned prebuilt GHCR images instead of building from source, pinning all cap images to the SAME version, in BOTH of these shapes, while the DEFAULT compose path remains build-from-source (additive and opt-in):
 
 1. an OVERLAY (`docker-compose.images.yml`) layered onto the source `docker-compose.yml` (`-f base -f images`), for users who have the source tree and a layer-capable compose runner; and
-2. a SELF-CONTAINED, SOURCE-FREE run package (`docker-compose.prod.yml`) that has NO `build:` blocks and NO source-tree bind-mounts — the cap services run `image: ghcr.io/<owner>/cap-*:${CAP_VERSION}` which DEFAULTS to `latest` (the newest published Release) when unset, so a bare `docker compose up` runs the latest release as a resident stack and never resolves a blank/garbage tag; operators MAY pin an explicit version for a reproducible / rollback-able deploy. Env comes from a local `.env` next to the compose (and is otherwise optional), and the package needs NO `git clone`. This run package splits RUN from BUILD and SHALL be attached to each GitHub Release (alongside an env example) so it is obtainable without the source. It MAY scope to the core run unit (api + the per-task sandbox image + Postgres + an optional web console) and exclude only source-coupled services that bind-mount config from the source tree (the reverse proxy), which operators provide separately; observability is NOT excluded — it ships as an opt-in inline-configured stack (see "The source-free run package offers an opt-in inline-configured observability stack").
+2. a SELF-CONTAINED, SOURCE-FREE run package (`docker-compose.prod.yml`) that has NO `build:` blocks and NO source-tree bind-mounts — the cap services run `image: ghcr.io/<owner>/cap-*:${CAP_VERSION}` which uses Docker's `latest` tag when unset while preserving the image-baked concrete version for `/version`; operators MAY pin an explicit version for a reproducible / rollback-able deploy. Env comes from a local `.env` next to the compose (and is otherwise optional), and the package needs NO `git clone`. This run package splits RUN from BUILD and SHALL be attached to each GitHub Release (alongside an env example) so it is obtainable without the source. It MAY scope to the core run unit (api + Postgres + an optional web console, plus AIO image staging when the AIO provider is selected) and exclude only source-coupled services that bind-mount config from the source tree (the reverse proxy), which operators provide separately; observability is NOT excluded — it ships as an opt-in inline-configured stack (see "The source-free run package offers an opt-in inline-configured observability stack").
 
 The run package SHALL be runnable as a RESIDENT production stack and, when brought up against an existing deployment with the matching compose project name, SHALL reuse that deployment's existing named volumes, network, and env (e.g. an existing `files/api.env`) rather than creating fresh ones — so adopting the run package in place of a prior build-from-source deployment is behavior-neutral (same data, same secrets, same network), with `prisma migrate deploy` a no-op on the already-migrated database.
 
-The published images MAY be single-architecture (amd64); the run package SHALL document any host-architecture requirement so an unsupported host gets a clear reason rather than an opaque pull error. The run package SHALL document the minimum Docker Compose version it requires (Compose Spec >= v2.23.1, for inline `configs.content:`).
+The published images MAY be single-architecture (`linux/amd64`); the run package SHALL pin or document the image platform so supported non-amd64 hosts (macOS BoxLite) run api/web through Docker's platform emulation rather than falling back to a source build. Provider-specific limits SHALL remain honest: explicit AIO staging on non-amd64 hosts may be rejected with BoxLite/control-plane guidance. The run package SHALL document the minimum Docker Compose version it requires (Compose Spec >= v2.23.1, for inline `configs.content:`).
 
 #### Scenario: Opt-in image override runs pinned prebuilt images
 - **WHEN** a self-hoster brings the stack up with the documented image override at a pinned version
@@ -58,15 +58,15 @@ The published images MAY be single-architecture (amd64); the run package SHALL d
 
 #### Scenario: Source-free run package runs without the source tree
 - **WHEN** a runner obtains only the self-contained run package (`docker-compose.prod.yml` + its env example) — e.g. downloaded from a Release — fills the `.env`, and runs `docker compose -f docker-compose.prod.yml up -d`
-- **THEN** the stack pulls and runs the `ghcr.io/<owner>/cap-*` images with NO `git clone` and NO source-tree bind-mounts, resolving an unset `CAP_VERSION` to `latest` (the newest published release, never a blank tag) while allowing an explicit pin
+- **THEN** the stack pulls and runs the `ghcr.io/<owner>/cap-*` images with NO `git clone` and NO source-tree bind-mounts, resolving an unset `CAP_VERSION` to Docker's `latest` tag (never a blank tag) while allowing an explicit pin and preserving the image-baked concrete version for `/version`
 
 #### Scenario: Run package is distributed via Release assets
 - **WHEN** a Release is published
 - **THEN** the self-contained run package and its env example are attached to that Release as downloadable assets
 
-#### Scenario: Host-architecture requirement is documented
-- **WHEN** the published images are single-architecture and a host of another architecture attempts to run the package
-- **THEN** the run package documents the required architecture so the failure is explained rather than opaque
+#### Scenario: Platform/provider requirement is documented
+- **WHEN** the published images are single-architecture and a non-amd64 host runs the package
+- **THEN** the run package documents the `linux/amd64` platform pin, the macOS BoxLite path, and the explicit AIO/non-amd64 rejection so the behavior is explained rather than opaque
 
 #### Scenario: Run package adopted as a resident stack reuses an existing deployment in place
 - **WHEN** the run package is brought up with the project name of an existing deployment (e.g. `docker compose -p <project> -f docker-compose.prod.yml up -d`) whose named volumes, network, and env file already exist
@@ -161,23 +161,22 @@ flow is end-to-end (PR → merge → tag → images → upgrade server → verif
 - **WHEN** the release skill completes the tag + image build
 - **THEN** its flow directs upgrading the server via the force-both upgrade path before the release is considered deployed
 
-### Requirement: Release docs distinguish platform-aware source install from AIO prebuilt package
+### Requirement: Release docs document the platform-aware prebuilt install path
 
-The release and self-host documentation SHALL distinguish the platform-aware source installer from the source-free prebuilt run package. The source installer SHALL document macOS defaulting to BoxLite and Linux defaulting to AIO. The prebuilt run package SHALL continue to document its AIO/amd64 constraints unless a BoxLite-backed source-free package is implemented. Both paths SHALL document that api/web host ports bind to `0.0.0.0` by default while public DNS, TLS, reverse proxy, OAuth callback, cookie scope, and firewall setup remain operator-owned.
+The release and self-host documentation SHALL document the source-free prebuilt run package as the install path. The installer SHALL document macOS defaulting to BoxLite and Linux defaulting to AIO, with explicit AIO on non-amd64 hosts rejected before staging. Source `make up` remains documented as a local development/custom-build path. Both paths SHALL document that api/web host ports bind to `0.0.0.0` by default while public DNS, TLS, reverse proxy, auth callback/cookie scope, and firewall setup remain operator-owned.
 
 #### Scenario: Release run-package caveats remain honest
 
 - **WHEN** a user reads the source-free run-package docs
-- **THEN** the docs state whether the package is AIO/amd64-only or BoxLite-capable for that release
-- **AND** they do not imply macOS BoxLite support for a package that cannot run it
+- **THEN** the docs state that the prebuilt path is BoxLite-capable on macOS and AIO-capable on Linux
+- **AND** they state that explicit AIO staging on non-amd64 hosts is rejected with guidance
 
-#### Scenario: Source install docs show platform defaults
+#### Scenario: Prebuilt install docs show platform defaults
 
-- **WHEN** a user reads the source installer docs
+- **WHEN** a user reads the installer docs
 - **THEN** macOS is documented as defaulting to BoxLite and Linux as defaulting to AIO
 
 #### Scenario: Public exposure is documented as operator configuration
 
 - **WHEN** a user reads install or release docs
 - **THEN** all-interface host binding is documented separately from public DNS/TLS/proxy/OAuth/cookie/firewall configuration
-
