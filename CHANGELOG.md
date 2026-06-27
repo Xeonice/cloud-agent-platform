@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.24.2...v0.25.0) (2026-06-27)
+
+
+### Features
+
+* support runtime same-host web endpoints ([bdd2d5d](https://github.com/Xeonice/cloud-agent-platform/commit/bdd2d5d36d972cf98b56a15ce36dea87256515e9))
+
 ## [0.24.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.24.1...v0.24.2) (2026-06-27)
 
 
