@@ -31,6 +31,12 @@
 > `docker-compose.prod.yml` + `.env` 手动路径。它不会 `git clone`、不会 `make up`、
 > 也不会本地构建镜像。
 >
+> Docker 处理是保守的：如果 Docker CLI、Docker Compose 或 macOS 的 Colima formula
+> 缺失，安装器会走当前主机支持的安装路径，并且只安装缺失的组件。macOS 只有在确实需要安装
+> Docker/Compose 且 Homebrew 也不存在时，才会非交互 bootstrap Homebrew。如果 Docker
+> 已安装且 `docker info` 可用，它不会动 Docker/Homebrew/Colima。如果 Docker 已安装但
+> daemon/socket/context 不可达，它只做有界的安全启动尝试，然后带明确修复步骤失败；不会通过重装或升级 Docker 掩盖坏状态。
+>
 > api/web 主机端口默认监听 `0.0.0.0`。公共 DNS、TLS、反向代理、认证 callback、
 > cookie 域与防火墙仍需由你在公开暴露前自行配置。
 
@@ -72,12 +78,43 @@
 
 ## 前置条件
 
-- 一台装有 **Docker** + Docker Compose 且能访问 `/var/run/docker.sock` 的主机。
+- 一台可以运行 **Docker** + Docker Compose 的主机；如果使用 AIO，api 容器还需要可用的
+  `/var/run/docker.sock`。
 - 为网页控制台和 api 所用域名准备好公共 DNS / TLS
   （在 api 前用 Cloudflare 或 nginx 之类的反向代理终结 HTTPS —— 参见
   `docker-compose.yml` 中可选启用的 `proxy` profile）。Cookie 在跨域时以
   `Secure` 发送，因此生产环境中 api 必须可经 **HTTPS** 访问。
 - 默认管理员的邮箱 / 初始密码规划，以及需要导入私有仓库时对应代码托管平台的 PAT。
+
+### 发布镜像安装路径的依赖模型
+
+一键 `install.sh` / `quick-deploy.sh` 路径按依赖发生的时间拆开处理：
+
+- **安装期必需：** POSIX shell、`curl`、`bash`、`openssl`、`awk`、Docker
+  Engine、Docker Compose v2、访问站点托管安装资产的网络、未设置 `CAP_VERSION`
+  时访问 GitHub Release metadata 的网络，以及从 GHCR 拉取
+  `ghcr.io/xeonice/cap-*:${CAP_VERSION}` 镜像的网络。脚本不会运行 `git clone`、
+  `make up`、`docker build` 或 `docker compose up --build`。
+- **Docker 行为：** Docker 缺失时才通过检测到的支持路径安装；如果只是 Compose plugin
+  缺失，只补 Compose，不重装 Docker Engine；已有且可用的 Docker 保持不动；已安装但不可达的 Docker 被视作 daemon/socket/context 状态问题，在有界安全启动后失败并给出修复步骤。
+- **BoxLite 宿主依赖：** 本机 BoxLite 控制面依赖宿主虚拟化能力，而不只是可安装包。
+  macOS 需要 Apple Silicon、macOS 12.0+，并且 `kern.hv_support=1` 以启用
+  Hypervisor.framework；Linux/WSL2 需要可读写的 `/dev/kvm`。这些能力不能由安装脚本补出来；
+  缺失时脚本会在探测 BoxLite endpoint 前失败。如果 `BOXLITE_ENDPOINT` 指向外部
+  BoxLite 宿主机，安装脚本会跳过本机 Hypervisor/KVM 检查，只验证 endpoint。
+- **所选 provider 就绪：** Linux/AIO 在成功前会 staging
+  `ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}`。macOS/BoxLite 需要
+  `CAP_SANDBOX_PROVIDER=boxlite`、`BOXLITE_ENDPOINT`、`BOXLITE_API_TOKEN`，以及
+  `BOXLITE_IMAGE` 或带 default 的 `BOXLITE_IMAGE_MAP`；默认支持的是原生 BoxLite 协议
+  （`BOXLITE_PROTOCOL_MODE=native`、`BOXLITE_PATH_PREFIX=default`）。就绪检查会验证
+  endpoint/token，不带不兼容的 create-time 字段创建短生命周期 probe sandbox，通过原生
+  BoxLite API 启动它，再确认 image、workspace 与默认发布能力需要的运行时工具
+  （`sh`、`bash`、`git`），然后删除 probe sandbox。
+- **可选任务期依赖：** 导入/clone/push 私有仓库需要 forge PAT；邮箱验证码登录需要
+  SMTP；生产公开需要 DNS/TLS/反代/cookie 作用域；不用内置数据库时需要外部 Postgres；
+  特定 runtime 可能需要 `CLAUDE_CODE_OAUTH_TOKEN`；本地可选的
+  `RUN_GITHUB_VALIDATION=1` 冒烟检查会读取 `GITHUB_VALIDATION_TOKEN` 或被忽略的
+  `.env.github-validation`。
 
 ## 1. 配置本地账号登录
 
@@ -282,8 +319,14 @@ COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgre
 - **平台 / provider：** 发布镜像当前默认 `linux/amd64`，运行包会固定
   `platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}`，因此 Apple Silicon Docker Desktop /
   Colima 会用模拟运行 api/web，而不是退回本地源码构建。macOS 使用
-  `CAP_SANDBOX_PROVIDER=boxlite` + `BOXLITE_*`，不要 staging `aio-sandbox-image`。
-  Linux/AIO 需要 staging `aio-sandbox-image`，确保每任务 sandbox 镜像在创建任务前已存在。
+  `CAP_SANDBOX_PROVIDER=boxlite` + `BOXLITE_ENDPOINT`、`BOXLITE_API_TOKEN`、
+  `BOXLITE_IMAGE` 或 `BOXLITE_IMAGE_MAP`，使用原生协议默认值，不要 staging
+  `aio-sandbox-image`。Linux/AIO 需要 staging `aio-sandbox-image`，确保每任务 sandbox
+  镜像在创建任务前已存在。同机 BoxLite 控制面必须通过上面的宿主虚拟化检查；
+  如果嵌套 macOS VM 返回 `kern.hv_support=0`，它就不是有效的同机 BoxLite 目标。
+  如果 BoxLite 跑在 Docker/Colima 同一台 Mac 宿主机上，
+  API 容器的运行时地址使用 `BOXLITE_ENDPOINT=http://host.docker.internal:7331`，
+  安装期宿主机探针使用 `BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331`。
 - **核心 + 可选的可观测性。** 它运行 api + Postgres（+ 可选的 `web` profile，+ 选择 AIO 时的镜像 staging），并且还附带一套需主动选用的可观测性栈（loki + alloy + grafana），其配置**内联**随附，以保持免源码。只有反向代理被排除（其 nginx 配置与源码耦合）——请用你自己的 TLS / 代理（Cloudflare Tunnel / Caddy / Traefik / nginx）来挡在 api（`:8080`）前面。
 - **启动时启用可观测性**（默认：全都不运行）：
   ```bash
@@ -302,11 +345,15 @@ COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgre
 # 从一个 clone 运行（用仓库的 docker-compose.prod.yml），或在任意位置运行（它会自行抓取）：
 CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost 试用，web 在 :3000
 CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
+CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # 仅 api + postgres
 CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh   # + 预置冒烟测试
+CAP_HEALTH_TIMEOUT_SECONDS=600 scripts/quick-deploy.sh   # 慢速 Docker emulation / 嵌套 VM 启动
 ```
 
-它以 fail-closed 的**关卡（gates）**方式运行：① 平台 / provider（auto 选择 macOS BoxLite、Linux AIO；非 amd64 主机会固定 `CAP_IMAGE_PLATFORM=linux/amd64`；非 amd64 显式 AIO 会失败并提示 BoxLite/control-plane），② 基础工具链，③ **Docker engine 可达**——在 WSL 上带有界自愈（选择一个存活的 context；通过 interop 启动 Docker Desktop），若失败则给出确切的人工步骤（为该发行版启用 Docker Desktop 的 **WSL Integration**，或 `sudo systemctl restart docker`），④ 拉取 `docker-compose.prod.yml`，⑤ 幂等地写出本地账号 `.env`（`ADMIN_EMAIL`、`ADMIN_PASSWORD`、`PASSWORD_AUTH_ENABLED=true`、session secrets 与 provider pins；已存在的 `.env` 会被复用并保持 gitignore），⑥ `pull` + `up`，⑦ 等待 `/health` 并打印管理员邮箱和密码。
+它以 fail-closed 的**关卡（gates）**方式运行：① 平台 / provider（auto 选择 macOS BoxLite、Linux AIO；非 amd64 主机会固定 `CAP_IMAGE_PLATFORM=linux/amd64`；非 amd64 显式 AIO 会失败并提示 BoxLite/control-plane），② 基础工具链，③ **Docker 已安装且可达**——Docker 缺失时走支持的主机安装路径，已有可用 Docker 保持不动，已安装但不可达时只做有界安全启动并给出人工修复步骤（例如 Docker Desktop **WSL Integration**、`sudo systemctl restart docker` 或切到可用 docker context），④ 拉取/刷新带 CAP managed marker 的 `docker-compose.prod.yml`，⑤ 幂等地写出本地账号 `.env`（`ADMIN_EMAIL`、`ADMIN_PASSWORD`、`PASSWORD_AUTH_ENABLED=true`、session secrets、provider pins 与 BoxLite 原生协议默认值；已存在的 `.env` 会被复用并保持 gitignore），⑥ 验证所选 provider（AIO 镜像 staging 或 BoxLite endpoint/runtime probe），⑦ `pull` 然后 `up`，⑧ 等待 `/health` 并打印管理员邮箱和密码。健康等待默认 120 秒；macOS/arm64 跑当前 amd64 release images 时默认放宽到 600 秒，因为 QEMU/Colima emulation 下 Node 启动可能需要数分钟；必要时可用 `CAP_HEALTH_TIMEOUT_SECONDS=<秒>` 覆盖。
+
+设置 `RUN_GITHUB_VALIDATION=1` 会在 pull 前增加 GitHub API 可达/鉴权冒烟检查。它从进程环境或运行包旁边被忽略的 `.env.github-validation` 读取 `GITHUB_VALIDATION_TOKEN`，日志只打印已脱敏的 token 来源；没有 token 时退化为未鉴权可达性检查。
 
 > 这条路径**等同于主机 root**（它挂载主机的 `docker.sock`），所以谁能登录，谁就能在主机上以 root 身份运行——请收紧账号访问。打印的密码是初始管理员凭据，首次登录会要求修改。预构建的 `cap-web` **仅限 localhost**（其 `VITE_*` 烤死为 localhost）；要用真实域名，请按上文配置本地账号、域名和 cookie。
 

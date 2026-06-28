@@ -43,15 +43,15 @@ export const en: SiteContent = {
       title: "Let Claude Code deploy it",
       badge: "Recommended",
       blurb:
-        "Paste this into Claude Code. It reads the release-image installer, checks Docker and platform settings, and brings up the prebuilt stack.",
+        "Paste this into Claude Code. It reads the release-image installer, checks or installs Docker only when absent, and brings up the prebuilt stack.",
       prompt:
-        "Deploy cloud-agent-platform on this machine. First read https://{domain}/install.sh and https://{domain}/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path (do not git clone, do not run make up, do not build locally). It defaults to the latest Release; set CAP_VERSION to pin one. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.",
+        "Deploy cloud-agent-platform on this machine. First read https://{domain}/install.sh and https://{domain}/quick-deploy.sh, run the release-image install path, and ensure Docker is usable: install Docker/Compose only if absent, leave existing usable Docker untouched, and stop with remediation if docker.sock/daemon/context is unreachable. Do not git clone, do not run make up, and do not build locally. It defaults to the latest Release; set CAP_VERSION to pin one. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.",
       copyLabel: "Copy the Claude Code prompt",
     },
     install: {
       title: "Install it yourself",
       blurb:
-        "Prebuilt release images — no clone, no local build. macOS uses BoxLite; Linux uses AIO.",
+        "Prebuilt release images — no clone, no local build. Installs Docker only when absent; macOS uses BoxLite, Linux uses AIO.",
       command: "curl -fsSL https://{domain}/install.sh | sh",
       inspectLabel: "Inspect the script",
       manual: {
@@ -60,6 +60,8 @@ export const en: SiteContent = {
           "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
           "# write .env: CAP_VERSION=vX.Y.Z + ADMIN_EMAIL/ADMIN_PASSWORD + PASSWORD_AUTH_ENABLED=true + SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "# macOS/BoxLite also needs: CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_ENDPOINT/BOXLITE_API_TOKEN/BOXLITE_IMAGE",
+          "# same-host BoxLite: BOXLITE_ENDPOINT=http://host.docker.internal:7331 + BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331",
+          "# Optional BoxLite defaults: BOXLITE_PROTOCOL_MODE=native + BOXLITE_PATH_PREFIX=default",
           "# Linux/AIO also include: aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],
@@ -73,13 +75,14 @@ export const en: SiteContent = {
       command: "curl -fsSL https://{domain}/quick-deploy.sh | bash",
       inspectLabel: "Inspect the script",
       caveat:
-        "It creates or reuses a local admin account and the bundled console stays localhost-only. macOS requires BoxLite provider env; Linux defaults to AIO. Public DNS, TLS, proxy, and auth origins remain yours.",
+        "It creates or reuses a local admin account, validates the selected sandbox provider, and keeps the bundled console local-trial oriented. Public DNS, TLS, proxy, and auth origins remain yours.",
       manual: {
         summary: "Prefer to read it first? Run the prebuilt compose by hand:",
         commands: [
           "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
           "# write .env: CAP_VERSION=vX.Y.Z + ADMIN_EMAIL/ADMIN_PASSWORD + PASSWORD_AUTH_ENABLED=true + SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "# macOS/BoxLite also needs: CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_*",
+          "# Optional smoke: RUN_GITHUB_VALIDATION=1 with GITHUB_VALIDATION_TOKEN or ignored .env.github-validation",
           "# Linux/AIO also include: aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],

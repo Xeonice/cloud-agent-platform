@@ -59,6 +59,11 @@ export interface SelectSandboxProviderCandidateOptions {
    * unknown backend when explicit cloud/local candidates are configured.
    */
   readonly allowLegacyProvider?: boolean;
+  /**
+   * Human-readable provider-family constraint from deployment configuration
+   * (for example CAP_SANDBOX_PROVIDER=boxlite). Used only for actionable errors.
+   */
+  readonly explicitProviderFamily?: string;
 }
 
 export interface SandboxProvisionPlan<TCloneSpec = GitCloneSpec> {
@@ -246,10 +251,13 @@ export function selectSandboxProviderCandidate<
     };
   }
 
+  const family = options.explicitProviderFamily
+    ? ` for explicit provider family "${options.explicitProviderFamily}"`
+    : '';
   throw new Error(
     rejected.length > 0
-      ? `No sandbox provider candidate satisfies required capabilities (${rejected.join('; ')})`
-      : 'No sandbox provider candidates are configured',
+      ? `No sandbox provider candidate${family} satisfies required capabilities (${rejected.join('; ')})`
+      : `No sandbox provider candidates${family} are configured`,
   );
 }
 

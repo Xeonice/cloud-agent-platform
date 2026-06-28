@@ -75,12 +75,18 @@ installer (requires Docker + a host `docker.sock`):
 > ```
 >
 > `CAP_VERSION` may be pinned to a release tag; when unset, the installer resolves
-> the latest Release tag before starting the stack. macOS defaults to the BoxLite
-> sandbox provider, so set `CAP_SANDBOX_PROVIDER=boxlite`
-> plus `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and `BOXLITE_IMAGE` before
-> running. Linux defaults to AIO. The script is served as plain text so you can
-> read it first; the equivalent manual path is `docker-compose.prod.yml` + a
-> local `.env`, not `git clone && make up`. See the public site and the
+> the latest Release tag before starting the stack. It installs only missing
+> Docker components (Docker CLI/Engine, Compose plugin, and macOS Colima when
+> needed), leaves existing usable Docker untouched, and fails with remediation
+> when Docker is installed but the daemon/socket/context is unreachable. On macOS
+> it bootstraps Homebrew non-interactively only when Homebrew is absent and a
+> Docker/Compose install is required. macOS defaults to the BoxLite sandbox
+> provider, so set
+> `CAP_SANDBOX_PROVIDER=boxlite` plus `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`,
+> and `BOXLITE_IMAGE` before running. Linux defaults to AIO. The script is served
+> as plain text so you can read it first; the equivalent manual path is
+> `docker-compose.prod.yml` + a local `.env`, not `git clone && make up`. See the
+> public site and the
 > [Self-hosting guide](docs/self-hosting.md) for details.
 
 > **Let Claude Code deploy it (recommended).** If you have Claude Code, paste the
@@ -88,7 +94,7 @@ installer (requires Docker + a host `docker.sock`):
 > release-image path:
 >
 > ```text
-> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the Authorization: Bearer token it prints.
+> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, run the release-image install path, and ensure Docker is usable: install Docker/Compose only if absent, leave existing usable Docker untouched, and stop with remediation if docker.sock/daemon/context is unreachable. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.
 > ```
 >
 > Claude Code follows the readable scripts and you can take over at any point.
@@ -119,7 +125,10 @@ Notes:
   `cap-aio-<taskId>` sandbox is provisioned per task when you create one.
 - macOS `make up` defaults to BoxLite. Because CAP does not vendor a BoxLite
   daemon yet, set `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and `BOXLITE_IMAGE`
-  for your BoxLite control plane before running it.
+  for your BoxLite control plane before running it. When BoxLite runs on the
+  Docker/Colima host, use the container-facing endpoint
+  `BOXLITE_ENDPOINT=http://host.docker.internal:7331`; the installer uses
+  `BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331` for host-side probes.
 - `api` and optional `web` host ports bind to `0.0.0.0` by default. Configure
   DNS, TLS, reverse proxy, auth callback/cookie scope, and firewall exposure
   yourself before making the stack public.

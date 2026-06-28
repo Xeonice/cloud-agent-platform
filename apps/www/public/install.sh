@@ -4,8 +4,9 @@
 #   curl -fsSL https://__CAP_SITE_DOMAIN__/install.sh | sh
 #
 # This is a THIN WRAPPER around the release-image installer (`quick-deploy.sh`),
-# not a source-build path. It preflights Docker/curl/bash, then executes the
-# site-served quick-deploy script, which downloads `docker-compose.prod.yml`,
+# not a source-build path. It preflights host tools and Docker, installing Docker
+# only when it is absent, then executes the site-served quick-deploy script, which
+# downloads `docker-compose.prod.yml`,
 # resolves the latest Release tag when CAP_VERSION is unset, runs the published
 # `ghcr.io/xeonice/cap-*:${CAP_VERSION}` images, waits for /health, and PRINTS
 # the admin email/password you log in with.
@@ -42,32 +43,55 @@ die()  { printf '%s error:%s %s\n' "$RED" "$R" "$*" >&2; exit 1; }
 info "Cloud Agent Platform installer"
 info "Checking prerequisites…"
 
-command -v docker >/dev/null 2>&1 || die \
-  "Docker is required but was not found on PATH. Install Docker, then re-run this installer."
 command -v curl >/dev/null 2>&1 || die \
   "curl is required but was not found on PATH. Install curl, then re-run this installer."
-command -v bash >/dev/null 2>&1 || die \
-  "bash is required but was not found on PATH. Install bash, then re-run this installer."
 
-# A reachable Docker daemon (the engine that backs docker.sock). `docker info`
-# returns non-zero when the daemon socket is unavailable or permission-denied.
-if ! docker info >/dev/null 2>&1; then
-  die "Docker is installed but the daemon (docker.sock) is not reachable.
-       Start Docker (or your user's access to the docker socket) and re-run.
-       This tool talks to the host docker.sock — see the security note on $SITE_DOMAIN."
+if [ -n "${CAP_INSTALL_BASE:-}" ]; then
+  CAP_INSTALL_BASE="${CAP_INSTALL_BASE%/}"
+  QUICK_DEPLOY_URL="${CAP_INSTALL_BASE}/quick-deploy.sh"
+  PREFLIGHT_LIB_URL="${CAP_INSTALL_BASE}/install-preflight.sh"
+elif [ "$SITE_DOMAIN" = "the install page" ]; then
+  QUICK_DEPLOY_URL="https://raw.githubusercontent.com/Xeonice/cloud-agent-platform/main/scripts/quick-deploy.sh"
+  PREFLIGHT_LIB_URL="https://raw.githubusercontent.com/Xeonice/cloud-agent-platform/main/scripts/install-preflight.sh"
+else
+  QUICK_DEPLOY_URL="https://${SITE_DOMAIN}/quick-deploy.sh"
+  PREFLIGHT_LIB_URL="https://${SITE_DOMAIN}/install-preflight.sh"
+fi
+
+PREFLIGHT_TMP=""
+cleanup_preflight_tmp() {
+  [ -z "$PREFLIGHT_TMP" ] || rm -f "$PREFLIGHT_TMP"
+}
+trap cleanup_preflight_tmp EXIT HUP INT TERM
+
+if [ -n "${CAP_INSTALL_PREFLIGHT_LIB_PATH:-}" ]; then
+  # Test/dev hook: use a local checked-out helper instead of fetching it.
+  # shellcheck disable=SC1090
+  . "$CAP_INSTALL_PREFLIGHT_LIB_PATH"
+else
+  PREFLIGHT_TMP="${TMPDIR:-/tmp}/cap-install-preflight.$$"
+  curl -fsSL "$PREFLIGHT_LIB_URL" -o "$PREFLIGHT_TMP" || die \
+    "could not fetch install preflight helper from $PREFLIGHT_LIB_URL"
+  # shellcheck disable=SC1090
+  . "$PREFLIGHT_TMP"
+fi
+
+cap_print_dependency_report
+cap_require_tools curl bash openssl awk
+cap_ensure_docker
+
+if [ "${CAP_INSTALL_PREFLIGHT_ONLY:-}" = "1" ]; then
+  info "Preflight complete; CAP_INSTALL_PREFLIGHT_ONLY=1 so delegation is skipped."
+  exit 0
 fi
 
 # --- Delegate to the release-image installer -----------------------------------
-if [ "$SITE_DOMAIN" = "the install page" ]; then
-  QUICK_DEPLOY_URL="https://raw.githubusercontent.com/Xeonice/cloud-agent-platform/main/scripts/quick-deploy.sh"
-else
-  QUICK_DEPLOY_URL="https://${SITE_DOMAIN}/quick-deploy.sh"
-fi
-
 info "Running release-image installer: $QUICK_DEPLOY_URL"
 info "Set CAP_VERSION to pin a release; unset resolves the latest Release tag."
 info "On macOS, set BOXLITE_ENDPOINT / BOXLITE_API_TOKEN / BOXLITE_IMAGE for the BoxLite sandbox provider."
-curl -fsSL "$QUICK_DEPLOY_URL" | bash
+info "Same-host BoxLite also requires Apple Silicon macOS 12+ with kern.hv_support=1; Linux/WSL2 same-host BoxLite requires read/write /dev/kvm."
+info "For same-host BoxLite, use BOXLITE_ENDPOINT=http://host.docker.internal:7331 and BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331."
+curl -fsSL "$QUICK_DEPLOY_URL" | CAP_PREFLIGHT_LIB_URL="$PREFLIGHT_LIB_URL" bash
 
 printf '\n%s%s Done.%s Cloud Agent Platform is running from published release images.\n' "$B" "$GRN" "$R"
 printf '%sLog in with the admin email/password printed above; the first login requires changing that initial password.%s\n' "$DIM" "$R"

@@ -13,8 +13,10 @@ export const BOXLITE_SANDBOX_PROVIDER_ID = 'boxlite';
 export const BOXLITE_DEFAULT_WORKSPACE_PATH = '/workspace';
 export const BOXLITE_DEFAULT_SANDBOX_ID_PREFIX = 'cap-boxlite-';
 export const BOXLITE_DEFAULT_TIMEOUT_MS = 30_000;
+export const BOXLITE_DEFAULT_PATH_PREFIX = 'default';
 
 export type BoxLiteClientMode = 'rest';
+export type BoxLiteProtocolMode = 'native' | 'cap-rest';
 export type BoxLiteTerminalMode = 'none' | 'pty';
 
 export interface BoxLiteProviderEnv {
@@ -30,6 +32,8 @@ export interface BoxLiteProviderEnv {
   readonly BOXLITE_SANDBOX_ID_PREFIX?: string;
   readonly BOXLITE_SANDBOX_MODE?: string;
   readonly BOXLITE_CLIENT_MODE?: string;
+  readonly BOXLITE_PROTOCOL_MODE?: string;
+  readonly BOXLITE_PATH_PREFIX?: string;
   readonly BOXLITE_TERMINAL_MODE?: string;
   readonly BOXLITE_TIMEOUT_MS?: string;
 }
@@ -47,6 +51,8 @@ export interface BoxLiteProviderConfig {
   readonly sandboxIdPrefix: string;
   readonly sandboxMode: SandboxExecutionMode;
   readonly clientMode: BoxLiteClientMode;
+  readonly protocolMode: BoxLiteProtocolMode;
+  readonly pathPrefix: string;
   readonly terminalMode: BoxLiteTerminalMode;
   readonly timeoutMs: number;
 }
@@ -103,6 +109,11 @@ export function readBoxLiteProviderConfig(
   const location = parseLocation(env.BOXLITE_PROVIDER_LOCATION, errors);
   const sandboxMode = parseSandboxMode(env.BOXLITE_SANDBOX_MODE, errors);
   const clientMode = parseClientMode(env.BOXLITE_CLIENT_MODE, errors);
+  const protocolMode = parseProtocolMode(env.BOXLITE_PROTOCOL_MODE, errors);
+  const pathPrefix =
+    env.BOXLITE_PATH_PREFIX === undefined
+      ? BOXLITE_DEFAULT_PATH_PREFIX
+      : env.BOXLITE_PATH_PREFIX.trim().replace(/^\/+|\/+$/g, '');
   const terminalMode = parseTerminalMode(env.BOXLITE_TERMINAL_MODE, errors);
   const capabilities = parseCapabilities(env.BOXLITE_CAPABILITIES, errors);
   const workspacePath =
@@ -134,6 +145,8 @@ export function readBoxLiteProviderConfig(
       sandboxIdPrefix,
       sandboxMode,
       clientMode,
+      protocolMode,
+      pathPrefix,
       terminalMode,
       timeoutMs,
     },
@@ -264,6 +277,9 @@ function validateCapabilityCombinations(
   if (has('workspace.git.deliver') && !has('command.exec')) {
     errors.push('BOXLITE_CAPABILITIES workspace.git.deliver requires command.exec');
   }
+  if (has('workspace.git.materialize') && !has('command.exec')) {
+    errors.push('BOXLITE_CAPABILITIES workspace.git.materialize requires command.exec');
+  }
   if (has('workspace.archive.transfer') && !has('command.exec')) {
     errors.push('BOXLITE_CAPABILITIES workspace.archive.transfer requires command.exec');
   }
@@ -301,6 +317,16 @@ function parseClientMode(raw: string | undefined, errors: string[]): BoxLiteClie
   if (value === 'rest') return value;
   errors.push(`BOXLITE_CLIENT_MODE must be rest, received: ${value}`);
   return 'rest';
+}
+
+function parseProtocolMode(
+  raw: string | undefined,
+  errors: string[],
+): BoxLiteProtocolMode {
+  const value = nonEmpty(raw) ?? 'native';
+  if (value === 'native' || value === 'cap-rest') return value;
+  errors.push(`BOXLITE_PROTOCOL_MODE must be native or cap-rest, received: ${value}`);
+  return 'native';
 }
 
 function parseTerminalMode(

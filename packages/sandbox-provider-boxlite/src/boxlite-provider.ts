@@ -80,6 +80,7 @@ export type BoxLiteRuntimePreflight = (
 
 export interface BoxLiteRuntimePreflightOptions {
   readonly requiredTools: readonly string[];
+  readonly workspacePath?: string;
   readonly commandTimeoutMs?: number;
   readonly cache?: Map<string, SandboxPreflightResult>;
   readonly now?: () => Date;
@@ -108,6 +109,8 @@ export class BoxLiteSandboxProvider<
         baseUrl: options.config.endpoint,
         apiToken: options.config.apiToken,
         timeoutMs: options.config.timeoutMs,
+        protocolMode: options.config.protocolMode,
+        pathPrefix: options.config.pathPrefix,
       });
     this.preflight = options.preflight;
     assertClientSupportsCapabilities(this.client, options.config.capabilities);
@@ -146,19 +149,30 @@ export class BoxLiteSandboxProvider<
       },
     });
     const connection = this.connectionForSandbox(ctx.taskId, sandbox);
-    const preflight = await this.runPreflight(ctx.taskId, sandbox, null);
-    if (preflight.status === 'failed') {
+    try {
+      if (ctx.cloneSpec) {
+        await materializeGitWorkspace({
+          executor: this.createCommandExecutor(sandbox.id),
+          workspacePath: this.config.workspacePath,
+          cloneSpec: requireGitCloneSpec(ctx.cloneSpec),
+        });
+      }
+      const preflight = await this.runPreflight(ctx.taskId, sandbox, null);
+      if (preflight.status === 'failed') {
+        throw new Error(preflight.error ?? `BoxLite runtime preflight failed for task ${ctx.taskId}`);
+      }
+      const run: BoxLiteProvisionedRun = {
+        taskId: ctx.taskId,
+        sandbox,
+        connection,
+        preflight,
+      };
+      this.runs.set(ctx.taskId, run);
+      return connection;
+    } catch (err) {
       await this.client.deleteSandbox(sandbox.id).catch(() => undefined);
-      throw new Error(preflight.error ?? `BoxLite runtime preflight failed for task ${ctx.taskId}`);
+      throw err;
     }
-    const run: BoxLiteProvisionedRun = {
-      taskId: ctx.taskId,
-      sandbox,
-      connection,
-      preflight,
-    };
-    this.runs.set(ctx.taskId, run);
-    return connection;
   }
 
   async preflightRuntime(args: {
@@ -248,13 +262,21 @@ export class BoxLiteSandboxProvider<
       return null;
     }
     const run = await this.resolveExistingRun(taskId);
-    if (!run?.sandbox.terminalUrl) return null;
+    if (!run) return null;
+    if (!run.sandbox.terminalUrl && this.config.protocolMode !== 'native') return null;
     return {
       protocol: 'boxlite-v1',
-      wsUrl: run.sandbox.terminalUrl,
+      wsUrl:
+        this.config.protocolMode === 'native'
+          ? this.config.endpoint.replace(/^http/, 'ws')
+          : run.sandbox.terminalUrl,
       metadata: {
         provider: this.config.providerId,
         sandboxId: run.sandbox.id,
+        endpoint: this.config.endpoint,
+        pathPrefix: this.config.pathPrefix,
+        workspacePath: this.config.workspacePath,
+        protocolMode: this.config.protocolMode,
       },
     };
   }
@@ -415,10 +437,16 @@ export class BoxLiteSandboxProvider<
   private connectionForSandbox(taskId: string, sandbox: BoxLiteSandbox): SandboxConnection {
     return {
       taskId,
-      baseUrl: sandbox.baseUrl ?? `${this.config.endpoint}/v1/sandboxes/${encodeURIComponent(sandbox.id)}`,
+      baseUrl:
+        sandbox.baseUrl ??
+        (this.config.protocolMode === 'native'
+          ? `${this.config.endpoint}${nativeBoxPath(this.config.pathPrefix, sandbox.id)}`
+          : `${this.config.endpoint}/v1/sandboxes/${encodeURIComponent(sandbox.id)}`),
       wsUrl:
-        sandbox.terminalUrl ??
-        `${this.config.endpoint.replace(/^http/, 'ws')}/v1/sandboxes/${encodeURIComponent(sandbox.id)}/terminal`,
+        this.config.protocolMode === 'native'
+          ? this.config.endpoint.replace(/^http/, 'ws')
+          : sandbox.terminalUrl ??
+            `${this.config.endpoint.replace(/^http/, 'ws')}/v1/sandboxes/${encodeURIComponent(sandbox.id)}/terminal`,
     };
   }
 
@@ -462,6 +490,19 @@ export function createBoxLiteRuntimePreflight(
     if (cached) return cached;
 
     const probes = [];
+    if (options.workspacePath) {
+      const command = `test -d ${shellQuote(options.workspacePath)}`;
+      const result = await context.executor.exec({
+        command,
+        timeoutMs: options.commandTimeoutMs,
+      });
+      probes.push({
+        name: 'workspace',
+        command,
+        ok: result.exitCode === 0,
+        output: result.output,
+      });
+    }
     for (const tool of tools) {
       const command = `command -v ${shellQuote(tool)}`;
       const result = await context.executor.exec({
@@ -485,11 +526,18 @@ export function createBoxLiteRuntimePreflight(
       error:
         failed.length === 0
           ? undefined
-          : `BoxLite image missing required tools: ${failed.map((probe) => probe.name).join(', ')}`,
+          : boxLitePreflightError(failed.map((probe) => probe.name)),
     };
     cache.set(cacheKey, preflight);
     return preflight;
   };
+}
+
+function boxLitePreflightError(failedNames: readonly string[]): string {
+  const label = failedNames.includes('workspace')
+    ? 'required tools or workspace'
+    : 'required tools';
+  return `BoxLite image missing ${label}: ${failedNames.join(', ')}`;
 }
 
 export function defineBoxLiteSandboxProvider<
@@ -500,7 +548,15 @@ export function defineBoxLiteSandboxProvider<
   options: BoxLiteProviderDescriptorOptions,
 ): SandboxProviderDescriptor<BoxLiteSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>> {
   const provider = new BoxLiteSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>(
-    options,
+    {
+      ...options,
+      preflight:
+        options.preflight ??
+        createBoxLiteRuntimePreflight({
+          requiredTools: requiredToolsForBoxLiteCapabilities(options.config.capabilities),
+          workspacePath: options.config.workspacePath,
+        }),
+    },
   );
   const id = options.id ?? options.config.providerId;
   const args = {
@@ -512,6 +568,25 @@ export function defineBoxLiteSandboxProvider<
   return options.config.location === 'local'
     ? defineLocalSandboxProvider(args)
     : defineCloudSandboxProvider(args);
+}
+
+export function requiredToolsForBoxLiteCapabilities(
+  capabilities: readonly SandboxProviderCapability[],
+): readonly string[] {
+  const out = new Set<string>(['sh']);
+  if (
+    capabilities.includes('terminal.websocket') ||
+    capabilities.includes('terminal.interactive')
+  ) {
+    out.add('bash');
+  }
+  if (
+    capabilities.includes('workspace.git.materialize') ||
+    capabilities.includes('workspace.git.deliver')
+  ) {
+    out.add('git');
+  }
+  return [...out].sort();
 }
 
 export function defineBoxLiteSandboxProviderFromEnv(
@@ -576,8 +651,37 @@ async function deliverGitWorkspaceChanges(args: {
   };
 }
 
+async function materializeGitWorkspace(args: {
+  readonly executor: SandboxCommandExecutor;
+  readonly workspacePath: string;
+  readonly cloneSpec: GitCloneSpec;
+}): Promise<void> {
+  const parent = dirname(args.workspacePath);
+  const clone = await args.executor.exec({
+    command: [
+      `rm -rf ${shellQuote(args.workspacePath)}`,
+      `mkdir -p ${shellQuote(parent)}`,
+      `git ${gitAuthOption(args.cloneSpec.authHeader)} clone --recursive ${shellQuote(args.cloneSpec.url)} ${shellQuote(args.workspacePath)}`,
+    ].join(' && '),
+  });
+  if (clone.exitCode !== 0) {
+    throw new Error(`BoxLite git materialization failed: ${clone.output}`);
+  }
+}
+
 function failure(error: string): SandboxDeliverWorkspaceResult {
   return { hadChanges: false, commitSha: null, error };
+}
+
+function requireGitCloneSpec(raw: unknown): GitCloneSpec {
+  if (!raw || typeof raw !== 'object' || typeof (raw as { url?: unknown }).url !== 'string') {
+    throw new Error('BoxLite git materialization requires a clone spec with a url');
+  }
+  const record = raw as { readonly url: string; readonly authHeader?: unknown };
+  return {
+    url: record.url,
+    authHeader: typeof record.authHeader === 'string' ? record.authHeader : undefined,
+  };
 }
 
 function assertClientSupportsCapabilities(
@@ -602,6 +706,25 @@ function isUsableSandbox(sandbox: BoxLiteSandbox | null): sandbox is BoxLiteSand
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function gitAuthOption(authHeader: string | undefined): string {
+  return authHeader ? `-c http.extraHeader=${shellQuote(authHeader)}` : '';
+}
+
+function dirname(path: string): string {
+  const normalized = path.replace(/\/+$/, '');
+  const idx = normalized.lastIndexOf('/');
+  if (idx <= 0) return '/';
+  return normalized.slice(0, idx);
+}
+
+function nativeApiPath(pathPrefix: string): string {
+  return pathPrefix ? `/v1/${pathPrefix}` : '/v1';
+}
+
+function nativeBoxPath(pathPrefix: string, sandboxId: string): string {
+  return `${nativeApiPath(pathPrefix)}/boxes/${encodeURIComponent(sandboxId)}`;
 }
 
 interface BoxLiteProvisionedRun {
