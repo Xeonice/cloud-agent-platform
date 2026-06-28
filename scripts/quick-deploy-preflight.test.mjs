@@ -70,9 +70,26 @@ COMPOSE
     echo 200
     exit 0
     ;;
+  *"-w %{http_code}"*"/health"*)
+    if [ "$CAP_FAKE_HEALTH_FAIL" = "1" ]; then exit 22; fi
+    echo 200
+    exit 0
+    ;;
   *"/health"*)
     if [ "$CAP_FAKE_HEALTH_FAIL" = "1" ]; then exit 22; fi
     echo '{"status":"ok"}'
+    exit 0
+    ;;
+  *"/v1/sandboxes/"*"/exec"*)
+    if [ "$CAP_FAKE_BOXLITE_READY" = "1" ]; then echo '{"exitCode":0,"output":""}'; else echo '{"exitCode":1,"output":"missing"}'; fi
+    exit 0
+    ;;
+  *"-X DELETE"*"/v1/sandboxes/"*)
+    echo '{}'
+    exit 0
+    ;;
+  *"/v1/sandboxes"*)
+    if [ "$CAP_FAKE_BOXLITE_READY" = "1" ]; then echo '{"id":"cap-quick-deploy-preflight-test"}'; else echo '{}'; fi
     exit 0
     ;;
   *"/v1/default/boxes/probe-box/executions/exec-probe"*)
@@ -342,10 +359,31 @@ console.log('\n=== quick-deploy preflight ===\n');
   const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
   assert(result.status === 0, 'BoxLite legacy protocol alias reaches env gate');
   assert(/BOXLITE_PROTOCOL_MODE=cap-rest/.test(envFile), 'BoxLite legacy protocol alias is normalized for the API');
+  assert(/BOXLITE_RUNTIME_REQUIRED_TOOLS=.*codex/.test(envFile), 'quick-deploy persists BoxLite runtime tool contract');
   assert(/API_HOST_PORT=18080/.test(envFile), 'quick-deploy persists api host port for future compose runs');
   assert(/WEB_HOST_PORT=13000/.test(envFile), 'quick-deploy persists web host port for future compose runs');
   assert(/CAP_PUBLIC_API_PORT=18080/.test(envFile), 'quick-deploy aligns public api port with host port');
   assert(/CAP_PUBLIC_WEB_PORT=13000/.test(envFile), 'quick-deploy aligns public web port with host port');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_BOXLITE_READY: '1',
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_READINESS_PATH: '/health',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_IMAGE: 'cap-boxlite:test',
+    BOXLITE_PROTOCOL_MODE: 'cap-rest',
+  });
+  const log = readLog(tc);
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert(result.status === 0, 'BoxLite cap-rest runtime readiness succeeds before pull/up');
+  assert(/\/v1\/sandboxes/.test(log), 'BoxLite cap-rest readiness creates a probe sandbox');
+  assert(/command -v 'codex'/.test(log), 'BoxLite cap-rest readiness checks the AIO runtime tool contract');
+  assert(/cap-rest runtime image\/workspace\/tools probe passed/.test(combined), 'BoxLite cap-rest readiness reports runtime probe success');
 }
 
 {

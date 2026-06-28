@@ -108,8 +108,10 @@
   `BOXLITE_IMAGE` 或带 default 的 `BOXLITE_IMAGE_MAP`；默认支持的是原生 BoxLite 协议
   （`BOXLITE_PROTOCOL_MODE=native`、`BOXLITE_PATH_PREFIX=default`）。就绪检查会验证
   endpoint/token，不带不兼容的 create-time 字段创建短生命周期 probe sandbox，通过原生
-  BoxLite API 启动它，再确认 image、workspace 与默认发布能力需要的运行时工具
-  （`sh`、`bash`、`git`），然后删除 probe sandbox。
+  BoxLite API 启动它，再确认 image、workspace 与 AIO sandbox runtime 对齐的工具集
+  （默认 `bash`、`claude`、`codex`、`git`、`gzip`、`node`、`openspec`、
+  `sh`、`tar`、`tmux`），然后删除 probe sandbox。只有在明确使用更窄的自定义
+  runtime image 时才覆盖 `BOXLITE_RUNTIME_REQUIRED_TOOLS`。
 - **可选任务期依赖：** 导入/clone/push 私有仓库需要 forge PAT；邮箱验证码登录需要
   SMTP；生产公开需要 DNS/TLS/反代/cookie 作用域；不用内置数据库时需要外部 Postgres；
   特定 runtime 可能需要 `CLAUDE_CODE_OAUTH_TOKEN`；本地可选的

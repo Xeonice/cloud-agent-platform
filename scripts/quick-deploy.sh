@@ -42,6 +42,7 @@ REQUESTED_PROVIDER="${CAP_SANDBOX_PROVIDER:-auto}" # auto|aio|boxlite|control-pl
 CAP_IMAGE_PLATFORM="${CAP_IMAGE_PLATFORM:-}"       # defaulted for non-amd64 release images below
 CAP_HEALTH_TIMEOUT_SECONDS="${CAP_HEALTH_TIMEOUT_SECONDS:-}" # defaulted after platform detection
 GITHUB_RELEASES_REPO="${GITHUB_RELEASES_REPO:-Xeonice/cloud-agent-platform}"
+BOXLITE_DEFAULT_RUNTIME_REQUIRED_TOOLS="bash claude codex git gzip node openspec sh tar tmux"
 # Where to fetch docker-compose.prod.yml when it is not already on disk. The
 # compose-base marker below is replaced at build time by the www injector with the
 # publishing site (so the SITE-SERVED copy fetches the site's own compose asset). The
@@ -499,6 +500,35 @@ json_escape(){
 shell_quote(){
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
+boxlite_runtime_required_tools(){
+  value_or_default BOXLITE_RUNTIME_REQUIRED_TOOLS "$BOXLITE_DEFAULT_RUNTIME_REQUIRED_TOOLS" \
+    | tr ',' ' ' \
+    | awk '
+      {
+        for (i = 1; i <= NF; i++) {
+          if ($i != "" && !seen[$i]++) print $i
+        }
+      }
+    '
+}
+boxlite_required_tools_probe_command(){
+  local tool command
+  command=""
+  for tool in $(boxlite_runtime_required_tools); do
+    case "$tool" in
+      *[!A-Za-z0-9._+-]*|"")
+        die "BOXLITE_RUNTIME_REQUIRED_TOOLS contains invalid tool name: $tool"
+        ;;
+    esac
+    if [ -z "$command" ]; then
+      command="command -v $(shell_quote "$tool")"
+    else
+      command="${command} && command -v $(shell_quote "$tool")"
+    fi
+  done
+  [ -n "$command" ] || die "BOXLITE_RUNTIME_REQUIRED_TOOLS must include at least one tool"
+  printf '%s\n' "$command"
+}
 if [ -f "$ENV_FILE" ]; then
   echo "  $ENV_FILE exists — preserving secrets and updating local-account pins."
 else
@@ -575,6 +605,7 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   set_env_value BOXLITE_IMAGE "$boxlite_image"
   set_env_value BOXLITE_IMAGE_MAP "$boxlite_image_map"
   set_env_value BOXLITE_PROTOCOL_MODE "$boxlite_protocol_mode"
+  set_env_value BOXLITE_RUNTIME_REQUIRED_TOOLS "$(boxlite_runtime_required_tools | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   set_env_value BOXLITE_PATH_PREFIX "$(value_or_default BOXLITE_PATH_PREFIX default)"
   set_env_value BOXLITE_PROVIDER_ID "$(value_or_default BOXLITE_PROVIDER_ID boxlite)"
   set_env_value BOXLITE_PROVIDER_PRIORITY "$(value_or_default BOXLITE_PROVIDER_PRIORITY 100)"
@@ -664,6 +695,10 @@ boxlite_extract_exit_code(){
   sed -n 's/.*"exit_code"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | head -1
 }
 
+boxlite_extract_camel_exit_code(){
+  sed -n 's/.*"exitCode"[[:space:]]*:[[:space:]]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | head -1
+}
+
 validate_boxlite_native_runtime_probe(){
   local endpoint token image api_path sandbox_id probe_box_id workspace create_json start_json exec_json exec_id status_json exit_code probe_command attempts
   [ "$(normalize_boxlite_protocol "$(value_or_default BOXLITE_PROTOCOL_MODE native)")" = "native" ] || return 0
@@ -701,7 +736,7 @@ validate_boxlite_native_runtime_probe(){
     curl -fsS -m 10 -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
     die "BoxLite runtime probe failed: could not start probe sandbox ${probe_box_id}"
   }
-  probe_command="mkdir -p $(shell_quote "$workspace") && test -d $(shell_quote "$workspace") && test -w $(shell_quote "$workspace") && command -v sh && command -v bash && command -v git"
+  probe_command="mkdir -p $(shell_quote "$workspace") && test -d $(shell_quote "$workspace") && test -w $(shell_quote "$workspace") && $(boxlite_required_tools_probe_command)"
   exec_json="$(curl -fsS -m 30 \
     -H "authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
@@ -729,6 +764,43 @@ validate_boxlite_native_runtime_probe(){
   [ "$exit_code" = "0" ] || \
     die "BoxLite runtime probe failed: image/workspace/tools check exited ${exit_code:-unknown}"
   echo "  BoxLite readiness: runtime image/workspace/tools probe passed"
+}
+
+validate_boxlite_cap_rest_runtime_probe(){
+  local endpoint token image sandbox_id create_json exec_json exit_code probe_command workspace
+  [ "$(normalize_boxlite_protocol "$(value_or_default BOXLITE_PROTOCOL_MODE native)")" = "cap-rest" ] || return 0
+  [ "${CAP_BOXLITE_SKIP_RUNTIME_PROBE:-}" = "1" ] && {
+    warn "CAP_BOXLITE_SKIP_RUNTIME_PROBE=1 — BoxLite image/tool runtime probe skipped"
+    return 0
+  }
+  endpoint="$(boxlite_readiness_endpoint_value "$(require_value BOXLITE_ENDPOINT)")"
+  token="$(require_value BOXLITE_API_TOKEN)"
+  image="$(value_for BOXLITE_IMAGE)"
+  [ -n "$image" ] || image="$(value_for BOXLITE_IMAGE_MAP | sed -n 's/.*default=\([^,]*\).*/\1/p')"
+  [ -n "$image" ] || die "BoxLite runtime probe failed: BOXLITE_IMAGE or BOXLITE_IMAGE_MAP default is required"
+  sandbox_id="cap-quick-deploy-preflight-$$"
+  workspace="$(value_or_default BOXLITE_WORKSPACE_PATH /workspace)"
+  echo "  BoxLite readiness: creating cap-rest runtime probe sandbox ${sandbox_id}"
+  create_json="$(curl -fsS -m 60 \
+    -H "authorization: Bearer ${token}" \
+    -H 'content-type: application/json' \
+    -H 'accept: application/json' \
+    -d "{\"taskId\":\"quick-deploy-preflight\",\"sandboxId\":\"$(boxlite_json_string "$sandbox_id")\",\"image\":\"$(boxlite_json_string "$image")\"}" \
+    "${endpoint%/}/v1/sandboxes" 2>/dev/null || true)"
+  printf '%s\n' "$create_json" | grep -Eq '"id"[[:space:]]*:' || \
+    die "BoxLite runtime probe failed: could not create a cap-rest probe sandbox with image ${image}"
+  probe_command="mkdir -p $(shell_quote "$workspace") && test -d $(shell_quote "$workspace") && test -w $(shell_quote "$workspace") && $(boxlite_required_tools_probe_command)"
+  exec_json="$(curl -fsS -m 60 \
+    -H "authorization: Bearer ${token}" \
+    -H 'content-type: application/json' \
+    -H 'accept: application/json' \
+    -d "{\"command\":\"$(boxlite_json_string "$probe_command")\",\"timeoutMs\":30000}" \
+    "${endpoint%/}/v1/sandboxes/${sandbox_id}/exec" 2>/dev/null || true)"
+  exit_code="$(printf '%s\n' "$exec_json" | boxlite_extract_camel_exit_code)"
+  curl -fsS -m 10 -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}/v1/sandboxes/${sandbox_id}" >/dev/null 2>&1 || true
+  [ "$exit_code" = "0" ] || \
+    die "BoxLite runtime probe failed: cap-rest image/workspace/tools check exited ${exit_code:-unknown}"
+  echo "  BoxLite readiness: cap-rest runtime image/workspace/tools probe passed"
 }
 
 validate_boxlite_readiness(){
@@ -761,6 +833,7 @@ validate_boxlite_readiness(){
     *) die "BoxLite readiness failed with HTTP $status at $url" ;;
   esac
   validate_boxlite_native_runtime_probe
+  validate_boxlite_cap_rest_runtime_probe
 }
 
 validate_selected_provider_before_pull(){

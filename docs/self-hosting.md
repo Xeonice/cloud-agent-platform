@@ -139,8 +139,11 @@ when they are needed:
   (`BOXLITE_PROTOCOL_MODE=native`, `BOXLITE_PATH_PREFIX=default`). Readiness
   checks the endpoint/token, creates a short-lived probe sandbox without
   unsupported create-time fields, starts it through the native BoxLite API,
-  verifies the image, workspace, and required runtime tools (`sh`, `bash`, `git`
-  for the default release capabilities), then tears the probe sandbox down.
+  verifies the image, workspace, and required runtime tools aligned with the AIO
+  sandbox runtime (`bash`, `claude`, `codex`, `git`, `gzip`, `node`,
+  `openspec`, `sh`, `tar`, `tmux` by default), then tears the probe sandbox
+  down. Override `BOXLITE_RUNTIME_REQUIRED_TOOLS` only when you intentionally
+  run a narrower custom runtime image.
 - **Optional task-time dependencies:** forge PATs for importing/cloning/pushing
   private repositories, SMTP for email-code login, public DNS/TLS/proxy and
   cookie scope for production exposure, an external Postgres URL if you do not

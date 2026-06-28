@@ -231,7 +231,8 @@ Quick-deploy SHALL verify the selected sandbox provider before reporting the ins
 - **WHEN** quick-deploy runs with `CAP_SANDBOX_PROVIDER=boxlite`
 - **THEN** it verifies the BoxLite endpoint and token before reporting success
 - **AND** it verifies that the configured BoxLite protocol mode is compatible with the CAP provider implementation
-- **AND** native readiness creates a probe box without a future workspace `working_dir`, starts it, then execs the workspace/tool checks
+- **AND** runtime readiness creates a probe sandbox without a future workspace `working_dir` when using native BoxLite, starts it, then execs workspace/tool checks
+- **AND** the required tool set defaults to the AIO sandbox runtime dependency contract (`bash`, `claude`, `codex`, `git`, `gzip`, `node`, `openspec`, `sh`, `tar`, `tmux`) unless `BOXLITE_RUNTIME_REQUIRED_TOOLS` is explicitly overridden
 
 #### Scenario: Local BoxLite host virtualization is verified
 

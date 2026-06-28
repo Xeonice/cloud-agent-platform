@@ -1,10 +1,12 @@
 import { Global, Module } from '@nestjs/common';
 import {
   SandboxProviderRouter,
+  createBoxLiteRuntimePreflight,
   defineHttpCloudSandboxProvider,
   defineBoxLiteSandboxProvider,
   defineLocalSandboxProvider,
   readBoxLiteProviderConfig,
+  requiredToolsForBoxLiteCapabilities,
   type RoutableSandboxProvider,
   type SandboxProviderDescriptor,
 } from '@cap/sandbox';
@@ -56,6 +58,7 @@ import {
   providerFamilyAllowsCloudHttp,
   readConfiguredSandboxProviderFamily,
 } from './sandbox-provider-family';
+import { readBoxLiteRuntimeRequiredTools } from './boxlite-runtime-tools';
 
 /**
  * Sandbox-provider DI wiring (sandbox-provider-port 9.1, integration 9.1b).
@@ -220,6 +223,13 @@ function buildConfiguredSandboxProvider(
     providers.push(
       defineBoxLiteSandboxProvider<CloneSpec, RuntimeId, TranscriptSource>({
         config: boxlite.config,
+        preflight: createBoxLiteRuntimePreflight({
+          requiredTools: mergeToolLists(
+            requiredToolsForBoxLiteCapabilities(boxlite.config.capabilities),
+            readBoxLiteRuntimeRequiredTools(),
+          ),
+          workspacePath: boxlite.config.workspacePath,
+        }),
       }),
     );
   }
@@ -232,4 +242,8 @@ function buildConfiguredSandboxProvider(
       ownerStore,
     },
   );
+}
+
+function mergeToolLists(...lists: readonly (readonly string[])[]): readonly string[] {
+  return [...new Set(lists.flat())].sort();
 }
