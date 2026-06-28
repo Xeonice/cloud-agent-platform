@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.1...v0.25.2) (2026-06-28)
+
+
+### Bug Fixes
+
+* **boxlite:** enforce aio runtime dependency checks ([7e6fc2d](https://github.com/Xeonice/cloud-agent-platform/commit/7e6fc2da7c8e5329d1768838d6e4d99cc6ba61f5))
+
 ## [0.25.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.0...v0.25.1) (2026-06-28)
 
 
