@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.2...v0.25.3) (2026-06-28)
+
+
+### Bug Fixes
+
+* **boxlite:** publish official runtime image ([46d496e](https://github.com/Xeonice/cloud-agent-platform/commit/46d496e1c38f6896a3635da8c7e73851489ee8f9))
+
 ## [0.25.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.1...v0.25.2) (2026-06-28)
 
 
