@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.3...v0.25.4) (2026-06-28)
+
+
+### Bug Fixes
+
+* **boxlite:** reuse base uid for runtime image ([06640a7](https://github.com/Xeonice/cloud-agent-platform/commit/06640a7463f297f2514ecbed4970c07ed9e4ff24))
+
 ## [0.25.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.2...v0.25.3) (2026-06-28)
 
 
