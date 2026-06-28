@@ -117,7 +117,7 @@ set_if_missing BOXLITE_IMAGE "$IMAGE"
 set_if_missing BOXLITE_PROVIDER_ID boxlite
 set_if_missing BOXLITE_PROVIDER_PRIORITY 100
 set_if_missing BOXLITE_PROVIDER_LOCATION local
-set_if_missing BOXLITE_WORKSPACE_PATH /workspace
+set_if_missing BOXLITE_WORKSPACE_PATH /home/gem/workspace
 set_if_missing BOXLITE_SANDBOX_ID_PREFIX cap-boxlite-
 set_if_missing BOXLITE_SANDBOX_MODE workspace-write
 set_if_missing BOXLITE_CLIENT_MODE rest

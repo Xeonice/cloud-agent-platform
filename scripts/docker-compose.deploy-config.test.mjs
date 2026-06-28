@@ -122,7 +122,7 @@ assert(
   '4.2: workspaces mount source is a named volume, not a host bind path',
 );
 
-// ── add-release-upgrade-scripts: force-both + three-image guards ──────────────
+// ── add-release-upgrade-scripts: force-both + release-image guards ────────────
 // The manual upgrade path MUST stage BOTH images together (api + the aio-sandbox
 // stager); a single-service upgrade is the v0.20.0 footgun. Guard the invariant so
 // it can't silently regress. (Mirrors self-update's CAP_SERVICES/PULL_ONLY split.)
@@ -137,12 +137,15 @@ assert(
   'upgrade.sh: pull AND up -d both operate on the full SERVICES set',
 );
 
-// The release tail MUST verify all three images — the sandbox image is the one a
-// manual flow forgets (the same one upgrade.sh forces onto the host).
+// The release tail MUST verify every release image, including both sandbox
+// runtimes, so manual publishing cannot forget the per-task runtime images.
 const releaseSh = readFileSync(join(here, 'release.sh'), 'utf8');
 assert(
-  /cap-api/.test(releaseSh) && /cap-web/.test(releaseSh) && /cap-aio-sandbox/.test(releaseSh),
-  'release.sh: verifies all three images (cap-api, cap-web, cap-aio-sandbox)',
+  /cap-api/.test(releaseSh) &&
+    /cap-web/.test(releaseSh) &&
+    /cap-aio-sandbox/.test(releaseSh) &&
+    /cap-boxlite-sandbox/.test(releaseSh),
+  'release.sh: verifies release images (cap-api, cap-web, cap-aio-sandbox, cap-boxlite-sandbox)',
 );
 
 // The api image's isolated Docker build must build the sandbox facade before

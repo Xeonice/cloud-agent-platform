@@ -10,7 +10,7 @@ import {
 } from '@cap/sandbox-core';
 
 export const BOXLITE_SANDBOX_PROVIDER_ID = 'boxlite';
-export const BOXLITE_DEFAULT_WORKSPACE_PATH = '/workspace';
+export const BOXLITE_DEFAULT_WORKSPACE_PATH = '/home/gem/workspace';
 export const BOXLITE_DEFAULT_SANDBOX_ID_PREFIX = 'cap-boxlite-';
 export const BOXLITE_DEFAULT_TIMEOUT_MS = 30_000;
 export const BOXLITE_DEFAULT_PATH_PREFIX = 'default';

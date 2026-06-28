@@ -333,8 +333,8 @@ this change still interrupts running tasks — see the warning above):
 adds the **version substrate**: the running api self-reports its build at an
 unauthenticated `GET /version`, and cutting a GitHub Release publishes a
 **matched, version-pinned set** of images to GHCR — `ghcr.io/xeonice/cap-api`,
-`cap-web`, and `cap-aio-sandbox`, ALL tagged with the single Release version
-`vX.Y.Z` (decision ⑤) — so a self-hoster can pull a mutually-compatible set
+`cap-web`, `cap-aio-sandbox`, and `cap-boxlite-sandbox`, ALL tagged with the
+single Release version `vX.Y.Z` (decision ⑤) — so a self-hoster can pull a mutually-compatible set
 instead of building (see the prebuilt-image override in
 [`docs/self-hosting.md`](../docs/self-hosting.md)).
 
@@ -345,7 +345,7 @@ published GHCR packages must be **public**.
 
 - The release workflow sets the published packages' visibility to public, OR set
   it once per package by hand: GitHub → your profile → **Packages** → the
-  `cap-api` / `cap-web` / `cap-aio-sandbox` package → **Package settings** →
+  `cap-api` / `cap-web` / `cap-aio-sandbox` / `cap-boxlite-sandbox` package → **Package settings** →
   **Change visibility → Public**.
 - If the source repo itself is still private, decide whether to make it public
   too (the images can be public independently, but a public prebuilt-image path
@@ -359,7 +359,7 @@ image set:
 
 1. Tag the commit and create a GitHub Release whose tag is the cap version,
    `vX.Y.Z` (e.g. `v0.1.0`). The tag name becomes `CAP_VERSION` and the image
-   tag for all three images.
+   tag for all release images.
 2. Publishing the Release fires `release: published`, which runs
    `.github/workflows/release.yml`. It builds and pushes the matched set to GHCR
    at `vX.Y.Z`, injecting `CAP_VERSION` / `GIT_SHA` / `BUILD_TIME` (and the web

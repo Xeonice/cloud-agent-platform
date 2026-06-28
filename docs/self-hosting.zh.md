@@ -104,14 +104,17 @@
   BoxLite 宿主机，安装脚本会跳过本机 Hypervisor/KVM 检查，只验证 endpoint。
 - **所选 provider 就绪：** Linux/AIO 在成功前会 staging
   `ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}`。macOS/BoxLite 需要
-  `CAP_SANDBOX_PROVIDER=boxlite`、`BOXLITE_ENDPOINT`、`BOXLITE_API_TOKEN`，以及
+  `CAP_SANDBOX_PROVIDER=boxlite`、`BOXLITE_ENDPOINT`、`BOXLITE_API_TOKEN`；
+  quick-deploy 默认把 `BOXLITE_IMAGE` 写成同版本的
+  `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}`，除非你显式设置
   `BOXLITE_IMAGE` 或带 default 的 `BOXLITE_IMAGE_MAP`；默认支持的是原生 BoxLite 协议
   （`BOXLITE_PROTOCOL_MODE=native`、`BOXLITE_PATH_PREFIX=default`）。就绪检查会验证
   endpoint/token，不带不兼容的 create-time 字段创建短生命周期 probe sandbox，通过原生
   BoxLite API 启动它，再确认 image、workspace 与 AIO sandbox runtime 对齐的工具集
   （默认 `bash`、`claude`、`codex`、`git`、`gzip`、`node`、`openspec`、
   `sh`、`tar`、`tmux`），然后删除 probe sandbox。只有在明确使用更窄的自定义
-  runtime image 时才覆盖 `BOXLITE_RUNTIME_REQUIRED_TOOLS`。
+  runtime image 时才覆盖 `BOXLITE_RUNTIME_REQUIRED_TOOLS`。官方 BoxLite 镜像使用
+  `/home/gem/workspace`，与 AIO runtime 的启动路径一致。
 - **可选任务期依赖：** 导入/clone/push 私有仓库需要 forge PAT；邮箱验证码登录需要
   SMTP；生产公开需要 DNS/TLS/反代/cookie 作用域；不用内置数据库时需要外部 Postgres；
   特定 runtime 可能需要 `CLAUDE_CODE_OAUTH_TOKEN`；本地可选的
@@ -321,8 +324,8 @@ COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgre
 - **平台 / provider：** 发布镜像当前默认 `linux/amd64`，运行包会固定
   `platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}`，因此 Apple Silicon Docker Desktop /
   Colima 会用模拟运行 api/web，而不是退回本地源码构建。macOS 使用
-  `CAP_SANDBOX_PROVIDER=boxlite` + `BOXLITE_ENDPOINT`、`BOXLITE_API_TOKEN`、
-  `BOXLITE_IMAGE` 或 `BOXLITE_IMAGE_MAP`，使用原生协议默认值，不要 staging
+  `CAP_SANDBOX_PROVIDER=boxlite` + `BOXLITE_ENDPOINT`、`BOXLITE_API_TOKEN`，
+  默认写入同版本官方 BoxLite 镜像，使用原生协议默认值，不要 staging
   `aio-sandbox-image`。Linux/AIO 需要 staging `aio-sandbox-image`，确保每任务 sandbox
   镜像在创建任务前已存在。同机 BoxLite 控制面必须通过上面的宿主虚拟化检查；
   如果嵌套 macOS VM 返回 `kern.hv_support=0`，它就不是有效的同机 BoxLite 目标。
@@ -346,8 +349,8 @@ COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgre
 ```bash
 # 从一个 clone 运行（用仓库的 docker-compose.prod.yml），或在任意位置运行（它会自行抓取）：
 CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost 试用，web 在 :3000
-CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
-CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
+CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
+CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # 仅 api + postgres
 CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh   # + 预置冒烟测试
 CAP_HEALTH_TIMEOUT_SECONDS=600 scripts/quick-deploy.sh   # 慢速 Docker emulation / 嵌套 VM 启动

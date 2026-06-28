@@ -22,7 +22,7 @@
 #
 #   scripts/quick-deploy.sh                 # localhost trial, web on :3000
 #   CAP_VERSION=v0.24.0 scripts/quick-deploy.sh
-#   CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
+#   CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
 #   BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 ...
 #   WITH_WEB=0 scripts/quick-deploy.sh      # api + postgres only (no console)
 #   CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh
@@ -42,7 +42,10 @@ REQUESTED_PROVIDER="${CAP_SANDBOX_PROVIDER:-auto}" # auto|aio|boxlite|control-pl
 CAP_IMAGE_PLATFORM="${CAP_IMAGE_PLATFORM:-}"       # defaulted for non-amd64 release images below
 CAP_HEALTH_TIMEOUT_SECONDS="${CAP_HEALTH_TIMEOUT_SECONDS:-}" # defaulted after platform detection
 GITHUB_RELEASES_REPO="${GITHUB_RELEASES_REPO:-Xeonice/cloud-agent-platform}"
+BOXLITE_DEFAULT_IMAGE_REPO="${BOXLITE_DEFAULT_IMAGE_REPO:-ghcr.io/xeonice/cap-boxlite-sandbox}"
+BOXLITE_DEFAULT_WORKSPACE_PATH="/home/gem/workspace"
 BOXLITE_DEFAULT_RUNTIME_REQUIRED_TOOLS="bash claude codex git gzip node openspec sh tar tmux"
+BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS="${BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS:-600}"
 # Where to fetch docker-compose.prod.yml when it is not already on disk. The
 # compose-base marker below is replaced at build time by the www injector with the
 # publishing site (so the SITE-SERVED copy fetches the site's own compose asset). The
@@ -511,6 +514,9 @@ boxlite_runtime_required_tools(){
       }
     '
 }
+boxlite_default_image(){
+  printf '%s:%s\n' "$BOXLITE_DEFAULT_IMAGE_REPO" "$CAP_VERSION"
+}
 boxlite_required_tools_probe_command(){
   local tool command
   command=""
@@ -593,6 +599,9 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   boxlite_token="$(require_value BOXLITE_API_TOKEN)"
   boxlite_image="$(value_for BOXLITE_IMAGE)"
   boxlite_image_map="$(value_for BOXLITE_IMAGE_MAP)"
+  if [ -z "$boxlite_image" ] && [ -z "$boxlite_image_map" ]; then
+    boxlite_image="$(boxlite_default_image)"
+  fi
   boxlite_protocol_mode="$(value_for BOXLITE_PROTOCOL_MODE)"
   boxlite_protocol_mode="$(normalize_boxlite_protocol "$boxlite_protocol_mode")"
   [ -n "$boxlite_image" ] || [ -n "$boxlite_image_map" ] || \
@@ -610,7 +619,7 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   set_env_value BOXLITE_PROVIDER_ID "$(value_or_default BOXLITE_PROVIDER_ID boxlite)"
   set_env_value BOXLITE_PROVIDER_PRIORITY "$(value_or_default BOXLITE_PROVIDER_PRIORITY 100)"
   set_env_value BOXLITE_PROVIDER_LOCATION "$(value_or_default BOXLITE_PROVIDER_LOCATION local)"
-  set_env_value BOXLITE_WORKSPACE_PATH "$(value_or_default BOXLITE_WORKSPACE_PATH /workspace)"
+  set_env_value BOXLITE_WORKSPACE_PATH "$(value_or_default BOXLITE_WORKSPACE_PATH "$BOXLITE_DEFAULT_WORKSPACE_PATH")"
   set_env_value BOXLITE_SANDBOX_ID_PREFIX "$(value_or_default BOXLITE_SANDBOX_ID_PREFIX cap-boxlite-)"
   set_env_value BOXLITE_SANDBOX_MODE "$(value_or_default BOXLITE_SANDBOX_MODE workspace-write)"
   set_env_value BOXLITE_CLIENT_MODE "$(value_or_default BOXLITE_CLIENT_MODE rest)"
@@ -713,9 +722,9 @@ validate_boxlite_native_runtime_probe(){
   [ -n "$image" ] || die "BoxLite runtime probe failed: BOXLITE_IMAGE or BOXLITE_IMAGE_MAP default is required"
   api_path="$(boxlite_native_api_path)"
   sandbox_id="cap-quick-deploy-preflight-$$"
-  workspace="$(value_or_default BOXLITE_WORKSPACE_PATH /workspace)"
+  workspace="$(value_or_default BOXLITE_WORKSPACE_PATH "$BOXLITE_DEFAULT_WORKSPACE_PATH")"
   echo "  BoxLite readiness: creating runtime probe sandbox ${sandbox_id}"
-  create_json="$(curl -fsS -m 30 \
+  create_json="$(curl -fsS -m "$BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS" \
     -H "authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
     -H 'accept: application/json' \
@@ -779,9 +788,9 @@ validate_boxlite_cap_rest_runtime_probe(){
   [ -n "$image" ] || image="$(value_for BOXLITE_IMAGE_MAP | sed -n 's/.*default=\([^,]*\).*/\1/p')"
   [ -n "$image" ] || die "BoxLite runtime probe failed: BOXLITE_IMAGE or BOXLITE_IMAGE_MAP default is required"
   sandbox_id="cap-quick-deploy-preflight-$$"
-  workspace="$(value_or_default BOXLITE_WORKSPACE_PATH /workspace)"
+  workspace="$(value_or_default BOXLITE_WORKSPACE_PATH "$BOXLITE_DEFAULT_WORKSPACE_PATH")"
   echo "  BoxLite readiness: creating cap-rest runtime probe sandbox ${sandbox_id}"
-  create_json="$(curl -fsS -m 60 \
+  create_json="$(curl -fsS -m "$BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS" \
     -H "authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
     -H 'accept: application/json' \

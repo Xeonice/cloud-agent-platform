@@ -3,7 +3,7 @@
 # release.sh — the post-merge MECHANICAL TAIL of a release (add-release-upgrade-scripts,
 # design D3). Given a target version (arg or the bumped manifest), it: creates the
 # GitHub Release (so release.yml fires), watches the image build to success, and
-# verifies ALL THREE images (cap-api, cap-web, cap-aio-sandbox) are present at the tag.
+# verifies all release images are present at the tag.
 #
 # It does NOT pick changes / bump the version / write the CHANGELOG / open the PR —
 # those need judgment and stay with the `release-pr-bundle` skill. This script only
@@ -71,10 +71,10 @@ gh run watch "$RID" -R "$REPO" --exit-status --interval 30 \
   || { echo "error: release.yml run $RID did not succeed" >&2; exit 1; }
 echo "    release.yml run $RID success ✓"
 
-# Verify ALL THREE images at the tag on GHCR (anonymous pull token; images are public).
+# Verify release images at the tag on GHCR (anonymous pull token; images are public).
 echo "==> verify GHCR images at $VERSION"
 fail=""
-for pkg in cap-api cap-web cap-aio-sandbox; do
+for pkg in cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox; do
   tok="$(curl -fsS "https://ghcr.io/token?scope=repository:${OWNER}/${pkg}:pull" \
     | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
   code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" \
@@ -83,7 +83,7 @@ for pkg in cap-api cap-web cap-aio-sandbox; do
   echo "    $pkg:$VERSION -> HTTP $code"
   [[ "$code" == "200" ]] || fail=1
 done
-[[ -z "$fail" ]] || { echo "error: not all three images are present at $VERSION" >&2; exit 1; }
+[[ -z "$fail" ]] || { echo "error: not all release images are present at $VERSION" >&2; exit 1; }
 
-echo "==> release $VERSION done — all three images present"
+echo "==> release $VERSION done — all release images present"
 echo "    next: on the prod host run  scripts/upgrade.sh $VERSION"

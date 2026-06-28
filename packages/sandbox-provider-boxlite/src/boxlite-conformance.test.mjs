@@ -21,7 +21,7 @@ function fakeConfig(overrides = {}) {
   const result = boxlite.readBoxLiteProviderConfig({
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
     BOXLITE_API_TOKEN: 'token',
-    BOXLITE_IMAGE: 'cap-boxlite:2026-06-27',
+    BOXLITE_IMAGE: 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest',
     BOXLITE_CAPABILITIES: [
       'command.exec',
       'workspace.archive.transfer',

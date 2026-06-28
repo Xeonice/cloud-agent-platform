@@ -45,7 +45,7 @@ export const en: SiteContent = {
       blurb:
         "Paste this into Claude Code. It reads the release-image installer, checks or installs Docker only when absent, and brings up the prebuilt stack.",
       prompt:
-        "Deploy cloud-agent-platform on this machine. First read https://{domain}/install.sh and https://{domain}/quick-deploy.sh, run the release-image install path, and ensure Docker is usable: install Docker/Compose only if absent, leave existing usable Docker untouched, and stop with remediation if docker.sock/daemon/context is unreachable. Do not git clone, do not run make up, and do not build locally. It defaults to the latest Release; set CAP_VERSION to pin one. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.",
+        "Deploy cloud-agent-platform on this machine. First read https://{domain}/install.sh and https://{domain}/quick-deploy.sh, run the release-image install path, and ensure Docker is usable: install Docker/Compose only if absent, leave existing usable Docker untouched, and stop with remediation if docker.sock/daemon/context is unreachable. Do not git clone, do not run make up, and do not build locally. It defaults to the latest Release; set CAP_VERSION to pin one. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT and BOXLITE_API_TOKEN are set; BOXLITE_IMAGE defaults to the matching cap-boxlite-sandbox release image. On Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.",
       copyLabel: "Copy the Claude Code prompt",
     },
     install: {
@@ -59,7 +59,7 @@ export const en: SiteContent = {
         commands: [
           "curl -fsSL https://{domain}/docker-compose.prod.yml -o docker-compose.prod.yml",
           "# write .env: CAP_VERSION=vX.Y.Z + ADMIN_EMAIL/ADMIN_PASSWORD + PASSWORD_AUTH_ENABLED=true + SESSION_SECRET/CODEX_CRED_ENC_KEY",
-          "# macOS/BoxLite also needs: CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_ENDPOINT/BOXLITE_API_TOKEN/BOXLITE_IMAGE",
+          "# macOS/BoxLite also needs: CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_ENDPOINT/BOXLITE_API_TOKEN",
           "# same-host BoxLite: BOXLITE_ENDPOINT=http://host.docker.internal:7331 + BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331",
           "# Optional BoxLite defaults: BOXLITE_PROTOCOL_MODE=native + BOXLITE_PATH_PREFIX=default",
           "# Linux/AIO also include: aio-sandbox-image",

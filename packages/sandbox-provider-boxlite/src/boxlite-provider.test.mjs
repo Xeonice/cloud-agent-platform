@@ -20,7 +20,7 @@ function validEnv(overrides = {}) {
   return {
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
     BOXLITE_API_TOKEN: 'token',
-    BOXLITE_IMAGE: 'cap-boxlite:2026-06-27',
+    BOXLITE_IMAGE: 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest',
     BOXLITE_PROVIDER_ID: 'boxlite-test',
     BOXLITE_PROVIDER_PRIORITY: '25',
     BOXLITE_PROVIDER_LOCATION: 'cloud',
@@ -132,7 +132,7 @@ await test('descriptor factory installs default readiness preflight from capabil
   assert.deepEqual(
     client.execCalls.map((call) => call.command),
     [
-      "test -d '/workspace'",
+      "test -d '/home/gem/workspace'",
       "command -v 'bash'",
       "command -v 'git'",
       "command -v 'sh'",

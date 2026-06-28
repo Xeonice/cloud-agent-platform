@@ -12,15 +12,16 @@ BoxLite configuration fails closed instead of falling back to AIO.
 
 `make up` is platform-aware: macOS resolves `CAP_SANDBOX_PROVIDER=auto` to the
 BoxLite startup path, while Linux resolves it to AIO. CAP does not vendor a
-BoxLite daemon or image yet, so the macOS path validates an operator-supplied
-BoxLite endpoint before reporting the stack ready. The release-image install path
-uses the same provider env and defaults `BOXLITE_PROTOCOL_MODE=native`:
+BoxLite daemon, so the macOS path validates an operator-supplied BoxLite
+endpoint before reporting the stack ready. The release-image install path uses
+the same provider env, defaults `BOXLITE_PROTOCOL_MODE=native`, and publishes a
+version-matched `ghcr.io/xeonice/cap-boxlite-sandbox:<version>` runtime image:
 
 ```sh
 BOXLITE_ENDPOINT=http://host.docker.internal:7331 \
 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 \
 BOXLITE_API_TOKEN=... \
-BOXLITE_IMAGE=cap-boxlite:2026-06-27 \
+BOXLITE_IMAGE=ghcr.io/xeonice/cap-boxlite-sandbox:vX.Y.Z \
 BOXLITE_PROTOCOL_MODE=native \
 make up
 ```
@@ -39,7 +40,8 @@ Use `make up-aio`, `make up-boxlite`, or `make up-cp` to force a mode.
   the daemon from the host while the API container keeps the container-facing
   runtime endpoint.
 - `BOXLITE_API_TOKEN`: required bearer token for the BoxLite REST API.
-- `BOXLITE_IMAGE`: default image used for task sandboxes.
+- `BOXLITE_IMAGE`: default image used for task sandboxes. The release-image
+  install path defaults this to `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}`.
 - `BOXLITE_IMAGE_MAP`: optional runtime-specific image mapping. Accepts JSON
   such as `{"codex":"cap-boxlite-codex:1"}` or comma form
   `codex=cap-boxlite-codex:1,claude-code=cap-boxlite-claude:1`.
@@ -48,7 +50,7 @@ Use `make up-aio`, `make up-boxlite`, or `make up-cp` to force a mode.
 - `BOXLITE_PROVIDER_LOCATION`: `local` or `cloud`, default `cloud`.
 - `BOXLITE_CAPABILITIES`: comma-separated explicit capability list. No
   capabilities are implied.
-- `BOXLITE_WORKSPACE_PATH`: in-sandbox workspace path, default `/workspace`.
+- `BOXLITE_WORKSPACE_PATH`: in-sandbox workspace path, default `/home/gem/workspace`.
 - `BOXLITE_SANDBOX_ID_PREFIX`: task-scoped provider sandbox id prefix, default
   `cap-boxlite-`.
 - `BOXLITE_SANDBOX_MODE`: `read-only`, `workspace-write`, or
@@ -129,7 +131,7 @@ Live integration is opt-in:
 BOXLITE_LIVE_TEST=1 \
 BOXLITE_ENDPOINT=https://boxlite.example.test \
 BOXLITE_API_TOKEN=... \
-BOXLITE_IMAGE=cap-boxlite:2026-06-27 \
+BOXLITE_IMAGE=ghcr.io/xeonice/cap-boxlite-sandbox:vX.Y.Z \
 BOXLITE_PROTOCOL_MODE=native \
 BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readoption \
 pnpm --filter @cap/sandbox-provider-boxlite test

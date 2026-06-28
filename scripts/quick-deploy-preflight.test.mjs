@@ -369,6 +369,26 @@ console.log('\n=== quick-deploy preflight ===\n');
 {
   const tc = makeCase();
   const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'BoxLite env gate defaults the official runtime image when unset');
+  assert(
+    /BOXLITE_IMAGE=ghcr\.io\/xeonice\/cap-boxlite-sandbox:vtest/.test(envFile),
+    'quick-deploy pins default BoxLite image to CAP_VERSION',
+  );
+  assert(
+    /BOXLITE_WORKSPACE_PATH=\/home\/gem\/workspace/.test(envFile),
+    'quick-deploy defaults BoxLite workspace to the AIO launch path',
+  );
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
     CAP_FAKE_BOXLITE_READY: '1',
     CAP_SANDBOX_PROVIDER: 'boxlite',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',

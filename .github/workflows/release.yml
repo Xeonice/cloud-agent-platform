@@ -4,6 +4,7 @@
 #   ghcr.io/xeonice/cap-api
 #   ghcr.io/xeonice/cap-web
 #   ghcr.io/xeonice/cap-aio-sandbox
+#   ghcr.io/xeonice/cap-boxlite-sandbox
 # ALL tagged with the SINGLE release version (`github.event.release.tag_name`,
 # e.g. vX.Y.Z) plus `latest`, so one Release is one mutually-compatible set
 # (design D2 / decision ⑤). Each image is injected with the version build-args
@@ -68,15 +69,24 @@ jobs:
         include:
           - name: cap-api
             dockerfile: apps/api/Dockerfile
+            platforms: linux/amd64
           - name: cap-web
             dockerfile: apps/web/Dockerfile
+            platforms: linux/amd64
           - name: cap-aio-sandbox
             dockerfile: docker/aio-sandbox.Dockerfile
+            platforms: linux/amd64
+          - name: cap-boxlite-sandbox
+            dockerfile: docker/boxlite-sandbox.Dockerfile
+            platforms: linux/amd64,linux/arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # The single user-facing cap version that unifies all three image tags.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # The single user-facing cap version that unifies all release image tags.
       # From the Release tag on a `release: published` run, or the manual input
       # on a `workflow_dispatch` run.
       - name: Resolve release version
@@ -110,6 +120,7 @@ jobs:
           # workspace (packages/contracts + the app), matching docker-compose.yml.
           context: .
           file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
           push: true
           tags: |
             ghcr.io/xeonice/${{ matrix.name }}:${{ steps.version.outputs.version }}
@@ -119,7 +130,7 @@ jobs:
           # VITE_BUILD_ID is consumed by apps/web/Dockerfile; the api/sandbox
           # Dockerfiles consume CAP_VERSION/GIT_SHA/BUILD_TIME. Build-args a
           # given Dockerfile does not declare are simply ignored, so the same
-          # block is safe across all three images. The cap-aio-sandbox triplet
+          # block is safe across release images. The cap-aio-sandbox triplet
           # (AIO base tag + codex + openspec) is left to the pinned defaults in
           # docker/aio-sandbox.Dockerfile (never overridden to :latest here).
           build-args: |

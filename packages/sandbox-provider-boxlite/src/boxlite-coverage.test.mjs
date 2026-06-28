@@ -44,7 +44,7 @@ function validEnv(overrides = {}) {
   return {
     BOXLITE_ENDPOINT: 'https://boxlite.example.test/',
     BOXLITE_API_TOKEN: 'token',
-    BOXLITE_IMAGE: 'cap-boxlite:2026-06-27',
+    BOXLITE_IMAGE: 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest',
     BOXLITE_CAPABILITIES: 'command.exec',
     ...overrides,
   };
@@ -215,7 +215,7 @@ await test('config parser covers defaults, require helper, and invalid modes', (
   assert.equal(defaults.config.endpoint, 'https://boxlite.example.test');
   assert.deepEqual(defaults.config.capabilities, ['command.exec']);
   assert.equal(mod.resolveBoxLiteImage({ config: defaults.config, runtimeId: null }), 'cap-boxlite:default');
-  assert.equal(mod.requireBoxLiteProviderConfig(validEnv()).defaultImage, 'cap-boxlite:2026-06-27');
+  assert.equal(mod.requireBoxLiteProviderConfig(validEnv()).defaultImage, 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest');
   assert.throws(() => mod.requireBoxLiteProviderConfig({}), /BOXLITE_ENDPOINT is not set/);
   assert.throws(
     () => mod.requireBoxLiteProviderConfig({ BOXLITE_ENDPOINT: 'https://boxlite.example.test' }),
@@ -387,7 +387,7 @@ await test('provider covers fallback URLs, stale sandboxes, local descriptors, a
     id: 'cap-boxlite-existing',
     taskId: 'existing',
     state: 'running',
-    image: 'cap-boxlite:2026-06-27',
+    image: 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest',
   });
   const existingProvider = new mod.BoxLiteSandboxProvider({
     config: validConfig({
@@ -406,7 +406,7 @@ await test('provider covers fallback URLs, stale sandboxes, local descriptors, a
   const staleProvider = new mod.BoxLiteSandboxProvider({
     config: validConfig(),
     client: staleClient,
-    preflight: () => ({ status: 'passed', image: 'cap-boxlite:2026-06-27' }),
+    preflight: () => ({ status: 'passed', image: 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest' }),
   });
   await staleProvider.provision({ taskId: 'task-stale-cache', cloneSpec: null });
   const staleSandbox = staleClient.sandboxes.get('cap-boxlite-task-stale-cache');

@@ -88,7 +88,7 @@ fi
 # --- Delegate to the release-image installer -----------------------------------
 info "Running release-image installer: $QUICK_DEPLOY_URL"
 info "Set CAP_VERSION to pin a release; unset resolves the latest Release tag."
-info "On macOS, set BOXLITE_ENDPOINT / BOXLITE_API_TOKEN / BOXLITE_IMAGE for the BoxLite sandbox provider."
+info "On macOS, set BOXLITE_ENDPOINT / BOXLITE_API_TOKEN for the BoxLite sandbox provider; BOXLITE_IMAGE defaults to the matching cap-boxlite-sandbox release image."
 info "Same-host BoxLite also requires Apple Silicon macOS 12+ with kern.hv_support=1; Linux/WSL2 same-host BoxLite requires read/write /dev/kvm."
 info "For same-host BoxLite, use BOXLITE_ENDPOINT=http://host.docker.internal:7331 and BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331."
 curl -fsSL "$QUICK_DEPLOY_URL" | CAP_PREFLIGHT_LIB_URL="$PREFLIGHT_LIB_URL" bash

@@ -40,11 +40,11 @@ env in ~5 min; production self-host is blocked on a handful of gaps:
 
 | # | Decision |
 |---|----------|
-| Distribution | **GHCR prebuilt images**: `ghcr.io/xeonice/cap-api`, `cap-web`, `cap-aio-sandbox` (owner `Xeonice` is a User account; GHCR names are lowercase). Token already has `write:packages` + `workflow`. |
+| Distribution | **GHCR prebuilt images**: `ghcr.io/xeonice/cap-api`, `cap-web`, `cap-aio-sandbox`, `cap-boxlite-sandbox` (owner `Xeonice` is a User account; GHCR names are lowercase). Token already has `write:packages` + `workflow`. |
 | Repo visibility | Repo → **public** (the open-source premise); **GHCR packages must be set public** so self-hosters `docker pull` without auth. |
 | Update UX | **Both**: a notify banner ("vY available" + changelog) AND a one-click **upgrade button** (in-app self-update). |
 | Release line | **Unified release-gated**: even the maintainer's own prod deploys via cut Releases (consuming the same GHCR images) — NOT continuous-on-main. |
-| Versioning | **One user-facing cap version unifies all three image tags** (`:vX.Y.Z`); the `cap-aio-sandbox` image internally bakes the coupled triplet (AIO base tag + codex version + hook protocol). A release ships a matched set; the compose pins all three to the same version, so there is no naive partial upgrade. |
+| Versioning | **One user-facing cap version unifies all release image tags** (`:vX.Y.Z`); the sandbox images internally bake their coupled runtime tool versions. A release ships a matched set; the compose/installer pins the selected runtime image to the same version, so there is no naive partial upgrade. |
 
 ## Four-layer architecture
 

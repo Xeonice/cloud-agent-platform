@@ -133,17 +133,20 @@ when they are needed:
   instead.
 - **Selected provider readiness:** Linux/AIO stages
   `ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}` before success. macOS/BoxLite
-  requires `CAP_SANDBOX_PROVIDER=boxlite`, `BOXLITE_ENDPOINT`,
-  `BOXLITE_API_TOKEN`, and either `BOXLITE_IMAGE` or a default
-  `BOXLITE_IMAGE_MAP`; the default supported protocol is native BoxLite
-  (`BOXLITE_PROTOCOL_MODE=native`, `BOXLITE_PATH_PREFIX=default`). Readiness
+  requires `CAP_SANDBOX_PROVIDER=boxlite`, `BOXLITE_ENDPOINT`, and
+  `BOXLITE_API_TOKEN`; quick-deploy defaults `BOXLITE_IMAGE` to the matching
+  `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}` unless you set
+  `BOXLITE_IMAGE` or a default `BOXLITE_IMAGE_MAP`. The default supported
+  protocol is native BoxLite (`BOXLITE_PROTOCOL_MODE=native`,
+  `BOXLITE_PATH_PREFIX=default`). Readiness
   checks the endpoint/token, creates a short-lived probe sandbox without
   unsupported create-time fields, starts it through the native BoxLite API,
   verifies the image, workspace, and required runtime tools aligned with the AIO
   sandbox runtime (`bash`, `claude`, `codex`, `git`, `gzip`, `node`,
   `openspec`, `sh`, `tar`, `tmux` by default), then tears the probe sandbox
   down. Override `BOXLITE_RUNTIME_REQUIRED_TOOLS` only when you intentionally
-  run a narrower custom runtime image.
+  run a narrower custom runtime image. The official BoxLite image uses
+  `/home/gem/workspace`, matching the AIO runtime launch path.
 - **Optional task-time dependencies:** forge PATs for importing/cloning/pushing
   private repositories, SMTP for email-code login, public DNS/TLS/proxy and
   cookie scope for production exposure, an external Postgres URL if you do not
@@ -366,8 +369,9 @@ The source-build compose flow above builds the `api` / `web` / AIO-sandbox image
 **from source** on your host. For install/private deployment, prefer the
 published release images: each GitHub Release publishes a **matched,
 version-pinned set** of images to GHCR
-(`ghcr.io/xeonice/cap-api`, `cap-web`, `cap-aio-sandbox`, all at the SAME
-`vX.Y.Z`). You can then **pull** that pinned set instead of compiling, using the
+(`ghcr.io/xeonice/cap-api`, `cap-web`, `cap-aio-sandbox`, and
+`cap-boxlite-sandbox`, all at the SAME `vX.Y.Z`). You can then **pull** that
+pinned set instead of compiling, using the
 `docker-compose.images.yml` **override** layered on top of the base compose.
 
 > **You still need Steps 1–5.** The override only changes WHERE the images come
@@ -391,8 +395,8 @@ COMPOSE_PROFILES=web \
   docker compose -f docker-compose.yml -f docker-compose.images.yml up -d
 ```
 
-- **One version for all three.** `${CAP_VERSION}` pins `cap-api`, `cap-web`, AND
-  `cap-aio-sandbox` (the per-task execution image) to the same tag, so you never
+- **One version for all release images.** `${CAP_VERSION}` pins `cap-api`,
+  `cap-web`, `cap-aio-sandbox`, and `cap-boxlite-sandbox` to the same tag, so you never
   run a mismatched set. It is intentionally REQUIRED — leaving `CAP_VERSION` unset
   makes `docker compose config` warn/fail loudly rather than silently resolving a
   blank tag. Always set it to a real published Release tag.
@@ -435,8 +439,8 @@ COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgre
   Silicon Docker Desktop / Colima can run api/web via emulation instead of
   falling back to a local source build. On macOS use
   `CAP_SANDBOX_PROVIDER=boxlite` with `BOXLITE_ENDPOINT`,
-  `BOXLITE_API_TOKEN`, `BOXLITE_IMAGE` or `BOXLITE_IMAGE_MAP`, native protocol
-  defaults, and do not stage `aio-sandbox-image`. On Linux/AIO, stage
+  `BOXLITE_API_TOKEN`, the official version-matched BoxLite image by default,
+  native protocol defaults, and do not stage `aio-sandbox-image`. On Linux/AIO, stage
   `aio-sandbox-image` so the per-task sandbox image is present before tasks run.
   A same-host BoxLite control plane must pass the host virtualization checks
   above; a nested macOS VM reporting `kern.hv_support=0` is not a valid
@@ -477,8 +481,8 @@ For an **agent-drivable** bring-up that needs **no source build**, the repo ship
 ```bash
 # from a clone (uses the repo's docker-compose.prod.yml), or anywhere (it fetches it):
 CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost trial, web on :3000
-CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
-CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
+CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
+CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # api + postgres only
 CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh   # + provision smoke
 CAP_HEALTH_TIMEOUT_SECONDS=600 scripts/quick-deploy.sh   # slow Docker emulation / nested VM startup
