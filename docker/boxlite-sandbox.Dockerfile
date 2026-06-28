@@ -25,7 +25,6 @@ ENV NODE_ENV=production
 ENV CAP_VERSION=${CAP_VERSION}
 ENV GIT_SHA=${GIT_SHA}
 ENV BUILD_TIME=${BUILD_TIME}
-ENV HOME=/home/gem
 ENV CODEX_LAUNCH_ARGV="codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox"
 
 RUN apt-get update \
@@ -51,9 +50,18 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 RUN npm install -g "@fission-ai/openspec@${OPENSPEC_VERSION}" \
   && openspec --version
 
-RUN useradd --create-home --uid 1000 --shell /bin/bash gem \
+RUN if getent passwd 1000 >/dev/null; then \
+      existing_user="$(getent passwd 1000 | cut -d: -f1)"; \
+      if [ "${existing_user}" != "gem" ]; then \
+        usermod --login gem --home /home/gem --shell /bin/bash "${existing_user}"; \
+      fi; \
+    else \
+      useradd --create-home --uid 1000 --user-group --shell /bin/bash gem; \
+    fi \
   && mkdir -p /home/gem/workspace /home/gem/.codex /home/gem/.claude \
-  && chown -R gem:gem /home/gem
+  && chown -R 1000:1000 /home/gem
+
+ENV HOME=/home/gem
 
 USER gem
 WORKDIR /home/gem/workspace
