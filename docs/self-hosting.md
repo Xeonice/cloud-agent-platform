@@ -39,6 +39,16 @@ In-app upgrades are a later phase you do not need to self-host today.
 > equivalent manual `docker-compose.prod.yml` + `.env` path. It does not
 > `git clone`, run `make up`, or build local images.
 >
+> Docker handling is deliberately conservative: if Docker CLI, Docker Compose,
+> or the macOS Colima formula is absent, the installer uses the supported package
+> manager path for the host OS and installs only the missing component(s). On
+> macOS it bootstraps Homebrew non-interactively only when Homebrew is absent and
+> a Docker/Compose install is actually required. If Docker is already installed
+> and `docker info` works, it leaves Docker/Homebrew/Colima alone. If Docker is
+> installed but the daemon/socket/context is unreachable, it performs only
+> bounded safe starts and then stops with the exact remediation; it does not
+> reinstall or upgrade Docker to hide a bad state.
+>
 > The api/web host ports bind to `0.0.0.0` by default. Public DNS, TLS, reverse
 > proxy, auth callback URLs, cookie scope, and firewall rules are still your
 > responsibility before exposing the host publicly.
@@ -89,13 +99,54 @@ single most important — and most error-prone — part of setup. Read
 
 ## Prerequisites
 
-- A host with **Docker** + Docker Compose and access to `/var/run/docker.sock`.
+- A host that can run **Docker** + Docker Compose and, for AIO, expose a usable
+  `/var/run/docker.sock` to the api container.
 - Public DNS / TLS for the domains you will serve the web console and api from
   (a reverse proxy such as Cloudflare or nginx terminating HTTPS in front of the
   api — see the opt-in `proxy` profile in `docker-compose.yml`). Cookies are sent
   `Secure` cross-origin, so the api must be reachable over **HTTPS** in production.
 - An admin email/password plan for the default local account, and PATs for any
   private code-host repositories you want the platform to import.
+
+### Release-image installer dependency model
+
+The one-line `install.sh` / `quick-deploy.sh` path separates dependencies by
+when they are needed:
+
+- **Install-time required:** POSIX shell, `curl`, `bash`, `openssl`, `awk`,
+  Docker Engine, Docker Compose v2, network access to the site-served installer
+  assets, the GitHub Release metadata endpoint when `CAP_VERSION` is unset, and
+  GHCR for the `ghcr.io/xeonice/cap-*:${CAP_VERSION}` images. The scripts never
+  run `git clone`, `make up`, `docker build`, or `docker compose up --build`.
+- **Docker behavior:** absent Docker is installed through the detected supported
+  path; a missing Compose plugin is installed without reinstalling Docker
+  Engine; usable Docker is left untouched; installed-but-unreachable Docker is
+  treated as a daemon/socket/context problem and fails with remediation after
+  bounded safe starts.
+- **BoxLite host dependencies:** a local BoxLite control plane depends on host
+  virtualization, not just installable packages. On macOS it requires Apple
+  Silicon, macOS 12.0+, and `kern.hv_support=1` for Hypervisor.framework. On
+  Linux or WSL2 it requires a read/write `/dev/kvm`. These capabilities cannot
+  be repaired by the installer; when they are missing the script fails before
+  probing BoxLite. If `BOXLITE_ENDPOINT` points at an external BoxLite host, the
+  installer skips the local Hypervisor/KVM check and validates the endpoint
+  instead.
+- **Selected provider readiness:** Linux/AIO stages
+  `ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}` before success. macOS/BoxLite
+  requires `CAP_SANDBOX_PROVIDER=boxlite`, `BOXLITE_ENDPOINT`,
+  `BOXLITE_API_TOKEN`, and either `BOXLITE_IMAGE` or a default
+  `BOXLITE_IMAGE_MAP`; the default supported protocol is native BoxLite
+  (`BOXLITE_PROTOCOL_MODE=native`, `BOXLITE_PATH_PREFIX=default`). Readiness
+  checks the endpoint/token, creates a short-lived probe sandbox without
+  unsupported create-time fields, starts it through the native BoxLite API,
+  verifies the image, workspace, and required runtime tools (`sh`, `bash`, `git`
+  for the default release capabilities), then tears the probe sandbox down.
+- **Optional task-time dependencies:** forge PATs for importing/cloning/pushing
+  private repositories, SMTP for email-code login, public DNS/TLS/proxy and
+  cookie scope for production exposure, an external Postgres URL if you do not
+  use the bundled database, runtime-specific tokens such as
+  `CLAUDE_CODE_OAUTH_TOKEN`, and the local-only `RUN_GITHUB_VALIDATION=1`
+  smoke check with `GITHUB_VALIDATION_TOKEN` or ignored `.env.github-validation`.
 
 ## Step 1 — Configure local account auth
 
@@ -380,9 +431,17 @@ COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgre
   the run package pins `platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}` so Apple
   Silicon Docker Desktop / Colima can run api/web via emulation instead of
   falling back to a local source build. On macOS use
-  `CAP_SANDBOX_PROVIDER=boxlite` with `BOXLITE_*` and do not stage
-  `aio-sandbox-image`. On Linux/AIO, stage `aio-sandbox-image` so the per-task
-  sandbox image is present before tasks run.
+  `CAP_SANDBOX_PROVIDER=boxlite` with `BOXLITE_ENDPOINT`,
+  `BOXLITE_API_TOKEN`, `BOXLITE_IMAGE` or `BOXLITE_IMAGE_MAP`, native protocol
+  defaults, and do not stage `aio-sandbox-image`. On Linux/AIO, stage
+  `aio-sandbox-image` so the per-task sandbox image is present before tasks run.
+  A same-host BoxLite control plane must pass the host virtualization checks
+  above; a nested macOS VM reporting `kern.hv_support=0` is not a valid
+  co-located BoxLite target.
+  When BoxLite runs on the same Mac as Docker/Colima, set the runtime endpoint
+  for api containers to `BOXLITE_ENDPOINT=http://host.docker.internal:7331` and
+  the installer probe endpoint to
+  `BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331`.
 - **Core + opt-in observability.** It runs api + Postgres (+ optional `web`
   profile, + AIO image staging when selected), and ALSO carries an opt-in
   observability stack (loki + alloy + grafana) whose config ships INLINE so it stays source-free.
@@ -416,20 +475,34 @@ For an **agent-drivable** bring-up that needs **no source build**, the repo ship
 # from a clone (uses the repo's docker-compose.prod.yml), or anywhere (it fetches it):
 CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost trial, web on :3000
 CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
+CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 BOXLITE_API_TOKEN=... BOXLITE_IMAGE=... scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # api + postgres only
 CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh   # + provision smoke
+CAP_HEALTH_TIMEOUT_SECONDS=600 scripts/quick-deploy.sh   # slow Docker emulation / nested VM startup
 ```
 
 It runs as fail-closed **gates**: ① platform/provider (auto selects macOS
 BoxLite, Linux AIO; non-amd64 hosts pin `CAP_IMAGE_PLATFORM=linux/amd64`;
 explicit AIO on non-amd64 fails with BoxLite/control-plane guidance), ② base tooling,
-③ **Docker engine reachable** — with bounded self-heal on WSL (select a live context;
-start Docker Desktop via interop) and, if that fails, the exact human step
-(enable Docker Desktop **WSL Integration** for the distro, or `sudo systemctl restart
-docker`), ④ fetch `docker-compose.prod.yml`, ⑤ idempotently write the local-account
-`.env` (`ADMIN_EMAIL`, `ADMIN_PASSWORD`, `PASSWORD_AUTH_ENABLED=true`, session
-secrets, and provider pins; an existing `.env` is reused and stays gitignored),
-⑥ `pull` + `up`, ⑦ wait for `/health` and print the admin email/password.
+③ **Docker installed and reachable** — absent Docker is installed through the
+supported host path, usable Docker is left untouched, and installed-but-dead
+Docker gets only bounded safe starts before a human remediation is printed
+(for example Docker Desktop **WSL Integration**, `sudo systemctl restart docker`,
+or a live docker context), ④ fetch/refresh the managed `docker-compose.prod.yml`,
+⑤ idempotently write the local-account `.env` (`ADMIN_EMAIL`, `ADMIN_PASSWORD`,
+`PASSWORD_AUTH_ENABLED=true`, session secrets, provider pins, and BoxLite native
+defaults; an existing `.env` is reused and stays gitignored), ⑥ validate the
+selected provider (AIO image staging or BoxLite endpoint/runtime probe), ⑦ `pull`
+then `up`, ⑧ wait for `/health` and print the admin email/password. The health
+wait defaults to 120s, but macOS/arm64 hosts running the amd64 release images use
+600s by default because QEMU/Colima emulation can take several minutes to finish
+Node startup; override with `CAP_HEALTH_TIMEOUT_SECONDS=<seconds>` when needed.
+
+Set `RUN_GITHUB_VALIDATION=1` to add a GitHub API reachability/auth smoke before
+the pull. It reads `GITHUB_VALIDATION_TOKEN` from the process environment or an
+ignored `.env.github-validation` next to the run package, and logs only a
+redacted token source. Without a token it performs an unauthenticated
+reachability check.
 
 > This path is **host-root-equivalent** (it mounts the host `docker.sock`), so
 > whoever can log in can run as root on the host — keep account access tight. The

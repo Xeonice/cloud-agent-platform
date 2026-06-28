@@ -93,6 +93,7 @@ class MinimalBoxLiteClient {
 await test('REST client covers missing, failed, and invalid edge responses', async () => {
   const client = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'cap-rest',
     fetch: makeFetch({
       'GET /v1/sandboxes/no-content': response(204, null),
       'GET /v1/sandboxes/fail': response(500, null),
@@ -166,6 +167,7 @@ await test('REST client covers missing, failed, and invalid edge responses', asy
     });
     const globalFetchClient = new mod.BoxLiteRestClient({
       baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'cap-rest',
     });
     assert.equal((await globalFetchClient.getSandbox('global')).id, 'global');
   } finally {
@@ -178,6 +180,7 @@ await test('REST client covers missing, failed, and invalid edge responses', asy
 
   const execShape = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'cap-rest',
     fetch: makeFetch({
       'POST /v1/sandboxes/box/exec': response(200, {
         exitCode: 4,
@@ -277,6 +280,7 @@ await test('provider covers fallback URLs, stale sandboxes, local descriptors, a
     config: validConfig({
       BOXLITE_PROVIDER_LOCATION: 'local',
       BOXLITE_TERMINAL_MODE: 'pty',
+      BOXLITE_PROTOCOL_MODE: 'cap-rest',
       BOXLITE_CAPABILITIES: 'terminal.websocket,terminal.interactive,command.exec',
     }),
     client,
@@ -386,7 +390,10 @@ await test('provider covers fallback URLs, stale sandboxes, local descriptors, a
     image: 'cap-boxlite:2026-06-27',
   });
   const existingProvider = new mod.BoxLiteSandboxProvider({
-    config: validConfig({ BOXLITE_CAPABILITIES: 'command.exec,workspace.git.materialize,workspace.git.deliver' }),
+    config: validConfig({
+      BOXLITE_PROTOCOL_MODE: 'cap-rest',
+      BOXLITE_CAPABILITIES: 'command.exec,workspace.git.materialize,workspace.git.deliver',
+    }),
     client: existingClient,
   });
   const existingRun = await existingProvider.getSelectedSandboxRun('existing');

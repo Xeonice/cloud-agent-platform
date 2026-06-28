@@ -1,3 +1,5 @@
+# cap-managed-run-package: docker-compose.prod.yml
+# cap-managed-run-package-version: 1
 # SELF-CONTAINED, SOURCE-FREE RUN compose — the dedicated "run" unit, split from
 # build (OSS self-update epic, decision ④/⑤).
 #

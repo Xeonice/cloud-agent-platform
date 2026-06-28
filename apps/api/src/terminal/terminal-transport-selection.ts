@@ -4,6 +4,7 @@ import type {
   SelectedSandboxRun,
 } from '@cap/sandbox';
 import { AioTerminalTransport } from './aio-terminal-transport';
+import { BoxLiteTerminalTransport } from './boxlite-terminal-transport';
 import type { TerminalTransportFactory } from './agent-terminal-pty';
 
 type ConnectionWithTerminalDescriptor = SandboxConnection & {
@@ -36,6 +37,10 @@ export function buildTerminalTransportFactory(args: {
         open: () => new AioTerminalTransport(args.taskId, wsUrl),
       };
     }
+    case 'boxlite-v1':
+      return {
+        open: () => new BoxLiteTerminalTransport(args.taskId, descriptor),
+      };
     default:
       throw new Error(
         `unsupported terminal transport protocol "${descriptor.protocol}" for task ${args.taskId}`,

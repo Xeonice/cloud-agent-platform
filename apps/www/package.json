@@ -8,6 +8,7 @@
     "dev": "next dev --turbopack",
     "build": "next build && node scripts/inject-install-sh.mjs",
     "start": "next start",
+    "test:assets": "node scripts/install-assets.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },

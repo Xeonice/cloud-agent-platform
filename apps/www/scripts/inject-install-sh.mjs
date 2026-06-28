@@ -21,7 +21,7 @@ import path from "node:path";
 
 const appRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.join(appRoot, "..", "..");
-const outDir = path.join(appRoot, "out");
+const outDir = process.env.CAP_WWW_OUT_DIR || path.join(appRoot, "out");
 const outFile = path.join(outDir, "install.sh");
 const rootIndex = path.join(outDir, "index.html");
 // The prebuilt one-line installer (surface-quick-deploy-installer-on-www): the repo's
@@ -29,6 +29,8 @@ const rootIndex = path.join(outDir, "index.html");
 // and marker-substituted here, NOT a second hand-maintained copy.
 const quickDeploySrc = path.join(repoRoot, "scripts", "quick-deploy.sh");
 const quickDeployOut = path.join(outDir, "quick-deploy.sh");
+const preflightHelperSrc = path.join(repoRoot, "scripts", "install-preflight.sh");
+const preflightHelperOut = path.join(outDir, "install-preflight.sh");
 // docker-compose.prod.yml is served as a static asset so a site-hosted quick-deploy.sh
 // run is self-contained (no GitHub-branch runtime dependency).
 const composeSrc = path.join(repoRoot, "docker-compose.prod.yml");
@@ -148,6 +150,15 @@ async function stagePrebuiltInstaller(domain) {
   } catch (err) {
     console.warn(
       `[inject-install-sh] could not stage ${composeSrc} → ${composeOut}: ${err.message}`,
+    );
+  }
+
+  try {
+    await copyFile(preflightHelperSrc, preflightHelperOut);
+    console.log(`[inject-install-sh] wrote ${preflightHelperOut} (install preflight helper).`);
+  } catch (err) {
+    console.warn(
+      `[inject-install-sh] could not stage ${preflightHelperSrc} → ${preflightHelperOut}: ${err.message}`,
     );
   }
 

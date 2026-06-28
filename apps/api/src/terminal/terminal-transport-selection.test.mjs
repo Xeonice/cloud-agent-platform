@@ -120,22 +120,40 @@ try {
   });
   assert(typeof factory.open === 'function', 'AIO descriptor builds an API-side transport factory');
 
+  const boxliteFactory = buildTerminalTransportFactory({
+    taskId: 'task-2',
+    connection,
+    selectedRun: {
+      terminal: {
+        protocol: 'boxlite-v1',
+        wsUrl: 'wss://boxlite.example.test',
+        metadata: {
+          endpoint: 'https://boxlite.example.test',
+          sandboxId: 'box-task-2',
+          pathPrefix: 'default',
+          workspacePath: '/workspace',
+        },
+      },
+    },
+  });
+  assert(typeof boxliteFactory.open === 'function', 'BoxLite descriptor builds an API-side transport factory');
+
   let unsupported = false;
   try {
     buildTerminalTransportFactory({
-      taskId: 'task-2',
+      taskId: 'task-3',
       connection,
       selectedRun: {
         terminal: {
-          protocol: 'boxlite-v1',
-          wsUrl: 'wss://boxlite/internal',
+          protocol: 'unknown-provider',
+          wsUrl: 'wss://provider/internal',
         },
       },
     });
   } catch (err) {
     unsupported = /unsupported terminal transport protocol/.test(String(err?.message ?? err));
   }
-  assert(unsupported, 'unsupported provider terminal protocol fails before browser attach');
+  assert(unsupported, 'unknown provider terminal protocol fails before browser attach');
 } finally {
   rmSync(outDir, { recursive: true, force: true });
 }

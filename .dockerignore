@@ -1,0 +1,14 @@
+.git
+.turbo
+.codex
+node_modules
+**/node_modules
+dist
+**/dist
+*.tsbuildinfo
+**/*.tsbuildinfo
+coverage
+**/coverage
+.env
+.env.*
+!.env.example

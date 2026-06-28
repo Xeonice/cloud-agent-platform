@@ -212,6 +212,31 @@ await test('candidate selector skips missing capabilities and reports all reject
   );
 });
 
+await test('candidate selector includes explicit provider family in actionable errors', () => {
+  assert.throws(
+    () =>
+      mod.selectSandboxProviderCandidate(
+        [
+          {
+            id: 'boxlite',
+            provider: provider('boxlite', ['command.exec']),
+            location: 'local',
+          },
+        ],
+        ['terminal.websocket', 'workspace.git.materialize'],
+        { explicitProviderFamily: 'boxlite' },
+      ),
+    /explicit provider family "boxlite".*boxlite: missing terminal\.websocket, workspace\.git\.materialize/,
+  );
+  assert.throws(
+    () =>
+      mod.selectSandboxProviderCandidate([], ['terminal.websocket'], {
+        explicitProviderFamily: 'control-plane',
+      }),
+    /No sandbox provider candidates for explicit provider family "control-plane" are configured/,
+  );
+});
+
 await test('candidate selector handles legacy and empty candidate sets explicitly', () => {
   const legacy = provider('legacy', undefined);
   assert.equal(

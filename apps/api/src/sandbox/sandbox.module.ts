@@ -49,6 +49,13 @@ import {
   RUNTIME_MATERIAL_RESOLVER_REGISTRY,
   createDefaultRuntimeMaterialResolverRegistry,
 } from './runtime-material-resolver';
+import {
+  explicitProviderFamilyLabel,
+  providerFamilyAllowsAio,
+  providerFamilyAllowsBoxLite,
+  providerFamilyAllowsCloudHttp,
+  readConfiguredSandboxProviderFamily,
+} from './sandbox-provider-family';
 
 /**
  * Sandbox-provider DI wiring (sandbox-provider-port 9.1, integration 9.1b).
@@ -169,16 +176,21 @@ function buildConfiguredSandboxProvider(
   aio: AioSandboxProvider,
   ownerStore: SandboxRunOwnerService,
 ): SandboxProvider {
-  const providers: SandboxProviderDescriptor<ApiRoutableSandboxProvider>[] = [
-    defineLocalSandboxProvider({
-      id: 'aio-local',
-      provider: aio,
-      priority: readNumberEnv('CAP_SANDBOX_LOCAL_PRIORITY', 10),
-    }),
-  ];
+  const providerFamily = readConfiguredSandboxProviderFamily();
+  const providers: SandboxProviderDescriptor<ApiRoutableSandboxProvider>[] = [];
+
+  if (providerFamilyAllowsAio(providerFamily)) {
+    providers.push(
+      defineLocalSandboxProvider({
+        id: 'aio-local',
+        provider: aio,
+        priority: readNumberEnv('CAP_SANDBOX_LOCAL_PRIORITY', 10),
+      }),
+    );
+  }
 
   const cloudBaseUrl = readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_BASE_URL');
-  if (cloudBaseUrl) {
+  if (cloudBaseUrl && providerFamilyAllowsCloudHttp(providerFamily)) {
     providers.push(
       defineHttpCloudSandboxProvider<CloneSpec, RuntimeId, TranscriptSource>({
         id: readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_ID') ?? 'cloud-http',
@@ -194,7 +206,17 @@ function buildConfiguredSandboxProvider(
   }
 
   const boxlite = readBoxLiteProviderConfig();
-  if (boxlite.status === 'valid') {
+  if (providerFamily === 'boxlite' && boxlite.status !== 'valid') {
+    throw new Error(
+      boxlite.status === 'disabled'
+        ? `CAP_SANDBOX_PROVIDER=boxlite selected but BoxLite is disabled: ${boxlite.reason}`
+        : `CAP_SANDBOX_PROVIDER=boxlite selected but BoxLite config is invalid: ${boxlite.errors.join('; ')}`,
+    );
+  }
+  if (
+    boxlite.status === 'valid' &&
+    providerFamilyAllowsBoxLite(providerFamily)
+  ) {
     providers.push(
       defineBoxLiteSandboxProvider<CloneSpec, RuntimeId, TranscriptSource>({
         config: boxlite.config,
@@ -206,6 +228,7 @@ function buildConfiguredSandboxProvider(
     providers,
     {
       preferLocation: readSandboxLocationEnv('CAP_SANDBOX_PREFER_LOCATION'),
+      explicitProviderFamily: explicitProviderFamilyLabel(providerFamily),
       ownerStore,
     },
   );

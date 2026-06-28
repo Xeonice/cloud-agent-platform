@@ -56,6 +56,7 @@ await test('config validates endpoint credentials image and capabilities', () =>
     BOXLITE_PROVIDER_LOCATION: 'mars',
     BOXLITE_PROVIDER_PRIORITY: 'high',
     BOXLITE_TIMEOUT_MS: '0',
+    BOXLITE_PROTOCOL_MODE: 'bad',
   });
   assert.equal(result.status, 'invalid');
   assert(result.errors.some((entry) => entry.includes('http or https')));
@@ -65,6 +66,7 @@ await test('config validates endpoint credentials image and capabilities', () =>
   assert(result.errors.some((entry) => entry.includes('terminal.interactive requires terminal.websocket')));
   assert(result.errors.some((entry) => entry.includes('BOXLITE_TERMINAL_MODE must be pty')));
   assert(result.errors.some((entry) => entry.includes('workspace.archive.transfer requires command.exec')));
+  assert(result.errors.some((entry) => entry.includes('BOXLITE_PROTOCOL_MODE must be native or cap-rest')));
 });
 
 await test('config parses image map priority location and explicit capabilities', () => {
@@ -72,6 +74,8 @@ await test('config parses image map priority location and explicit capabilities'
     BOXLITE_IMAGE_MAP: 'codex=cap-boxlite-codex:1,claude=cap-boxlite-claude:1',
     BOXLITE_WORKSPACE_PATH: '/srv/workspace',
     BOXLITE_SANDBOX_ID_PREFIX: 'box-',
+    BOXLITE_PROTOCOL_MODE: 'cap-rest',
+    BOXLITE_PATH_PREFIX: '',
   }));
   assert.equal(result.status, 'valid');
   assert.equal(result.config.providerId, 'boxlite-test');
@@ -79,11 +83,19 @@ await test('config parses image map priority location and explicit capabilities'
   assert.equal(result.config.location, 'cloud');
   assert.equal(result.config.workspacePath, '/srv/workspace');
   assert.equal(result.config.sandboxIdPrefix, 'box-');
+  assert.equal(result.config.protocolMode, 'cap-rest');
+  assert.equal(result.config.pathPrefix, '');
   assert.deepEqual(result.config.imageByRuntime, {
     codex: 'cap-boxlite-codex:1',
     claude: 'cap-boxlite-claude:1',
   });
   assert.equal(mod.resolveBoxLiteImage({ config: result.config, runtimeId: 'claude' }), 'cap-boxlite-claude:1');
+});
+
+await test('config defaults to native protocol with default path prefix', () => {
+  const config = validConfig();
+  assert.equal(config.protocolMode, 'native');
+  assert.equal(config.pathPrefix, 'default');
 });
 
 await test('descriptor factory registers only when env is valid', () => {
@@ -103,6 +115,34 @@ await test('descriptor factory registers only when env is valid', () => {
   assert.equal(descriptorResult.descriptor.id, 'boxlite-test');
   assert.equal(descriptorResult.descriptor.location, 'cloud');
   assert.deepEqual(descriptorResult.descriptor.capabilities, validConfig().capabilities);
+});
+
+await test('descriptor factory installs default readiness preflight from capabilities', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const descriptor = mod.defineBoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_CAPABILITIES: 'terminal.websocket,terminal.interactive,command.exec,workspace.git.materialize,workspace.git.deliver',
+    }),
+    client,
+  });
+  await descriptor.provider.provision({
+    taskId: 'task-default-preflight',
+    cloneSpec: null,
+  });
+  assert.deepEqual(
+    client.execCalls.map((call) => call.command),
+    [
+      "test -d '/workspace'",
+      "command -v 'bash'",
+      "command -v 'git'",
+      "command -v 'sh'",
+    ],
+  );
+  assert.deepEqual(mod.requiredToolsForBoxLiteCapabilities(descriptor.capabilities), [
+    'bash',
+    'git',
+    'sh',
+  ]);
 });
 
 await test('provider provision is task-scoped and idempotent', async () => {
@@ -132,6 +172,7 @@ await test('provider exposes selected-run descriptors and internal BoxLite termi
   assert.equal(run.providerId, 'boxlite-test');
   assert.equal(run.providerSandboxId, 'cap-boxlite-task-2');
   assert.equal(run.terminal.protocol, 'boxlite-v1');
+  assert.equal(run.terminal.wsUrl, 'wss://boxlite.example.test');
   assert.equal(run.command.protocol, 'boxlite-exec-v1');
   assert.equal(run.command.workingDirectory, '/workspace/project');
   assert.equal(run.workspace.mode, 'archive');
@@ -200,6 +241,70 @@ await test('runtime preflight failure tears down the created sandbox and rejects
     /BoxLite image missing required tools: missing-tool/,
   );
   assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-preflight-fail']);
+});
+
+await test('provider materializes git workspace when cloneSpec is present', async () => {
+  const commands = [];
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: (request) => {
+      commands.push(request.command);
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        output: '',
+        timedOut: false,
+      };
+    },
+  });
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_CAPABILITIES: [
+        'terminal.websocket',
+        'terminal.interactive',
+        'command.exec',
+        'workspace.git.materialize',
+      ].join(','),
+    }),
+    client,
+  });
+  await provider.provision({
+    taskId: 'task-materialize',
+    cloneSpec: {
+      url: 'https://example.test/repo.git',
+      authHeader: 'Authorization: Basic token',
+    },
+  });
+  assert(commands.some((command) => command.includes('git -c http.extraHeader=')));
+  assert(commands.some((command) => command.includes('clone --recursive')));
+  assert.equal(client.deletedSandboxIds.length, 0);
+});
+
+await test('provider tears down sandbox when git materialization fails', async () => {
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: () => ({
+      exitCode: 128,
+      stdout: '',
+      stderr: 'clone failed',
+      output: 'clone failed',
+      timedOut: false,
+    }),
+  });
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_CAPABILITIES: 'terminal.websocket,terminal.interactive,command.exec,workspace.git.materialize',
+    }),
+    client,
+  });
+  await assert.rejects(
+    () =>
+      provider.provision({
+        taskId: 'task-materialize-fail',
+        cloneSpec: { url: 'https://example.test/repo.git' },
+      }),
+    /BoxLite git materialization failed: clone failed/,
+  );
+  assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-materialize-fail']);
 });
 
 await test('command executor and archive helpers normalize BoxLite client operations', async () => {

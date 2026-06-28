@@ -72,6 +72,7 @@ await test('REST client creates a sandbox with bearer auth and normalized URL', 
   const client = new mod.BoxLiteRestClient({
     baseUrl: ' https://boxlite.example.test/ ',
     apiToken: 'secret',
+    protocolMode: 'cap-rest',
     fetch,
   });
 
@@ -110,6 +111,7 @@ await test('REST client exec normalizes nested and snake-case responses', async 
   });
   const client = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'cap-rest',
     fetch,
   });
 
@@ -143,6 +145,7 @@ await test('REST client handles get/delete and archive transfer', async () => {
   });
   const client = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'cap-rest',
     fetch,
   });
 
@@ -164,6 +167,7 @@ await test('REST client handles get/delete and archive transfer', async () => {
 await test('REST client fails closed on invalid create and failed exec', async () => {
   const invalid = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'cap-rest',
     fetch: makeFetch({
       'POST /v1/sandboxes': response(200, { data: { state: 'running' } }),
     }).fetch,
@@ -175,6 +179,7 @@ await test('REST client fails closed on invalid create and failed exec', async (
 
   const failed = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'cap-rest',
     fetch: makeFetch({
       'POST /v1/sandboxes/box-task-1/exec': response(503, { error: 'down' }),
     }).fetch,
@@ -183,6 +188,95 @@ await test('REST client fails closed on invalid create and failed exec', async (
     () => failed.exec({ sandboxId: 'box-task-1', command: 'true' }),
     /BoxLite request POST \/v1\/sandboxes\/box-task-1\/exec failed: HTTP 503/,
   );
+});
+
+await test('native REST client uses BoxLite 0.9 routes for boxes exec and files', async () => {
+  const archive = new Uint8Array([5, 4, 3]).buffer;
+  const { fetch, calls } = makeFetch({
+    'POST /v1/default/boxes': response(200, {
+      box_id: 'box-task-1',
+      status: 'configured',
+      image: 'cap-boxlite:1',
+    }),
+    'POST /v1/default/boxes/box-task-1/start': response(200, {
+      box_id: 'box-task-1',
+      status: 'running',
+      image: 'cap-boxlite:1',
+    }),
+    'GET /v1/default/boxes/box-task-1': response(200, {
+      box_id: 'box-task-1',
+      status: 'running',
+    }),
+    'POST /v1/default/boxes/box-task-1/exec': response(200, {
+      execution_id: 'exec-1',
+    }),
+    'GET /v1/default/boxes/box-task-1/executions/exec-1': response(200, {
+      status: 'completed',
+      exit_code: 0,
+      stdout: 'ok',
+    }),
+    'PUT /v1/default/boxes/box-task-1/files?path=%2Fworkspace': response(204, null),
+    'GET /v1/default/boxes/box-task-1/files?path=%2Fworkspace': response(200, null, {
+      arrayBuffer: archive,
+    }),
+    'DELETE /v1/default/boxes/box-task-1': response(204, null),
+  });
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    pathPrefix: 'default',
+    fetch,
+  });
+
+  const sandbox = await client.createSandbox({
+    taskId: 'task-1',
+    sandboxId: 'box-task-1',
+    image: 'cap-boxlite:1',
+    env: { FOO: 'bar' },
+    metadata: { workspacePath: '/workspace' },
+  });
+  assert.equal(sandbox.id, 'box-task-1');
+  assert.equal((await client.getSandbox('box-task-1')).id, 'box-task-1');
+  const exec = await client.exec({
+    sandboxId: 'box-task-1',
+    command: 'command -v git',
+    cwd: '/workspace',
+    timeoutMs: 1000,
+  });
+  assert.equal(exec.exitCode, 0);
+  assert.equal(exec.stdout, 'ok');
+  await client.uploadArchive({
+    sandboxId: 'box-task-1',
+    path: '/workspace',
+    archive: new Uint8Array([1, 2, 3]),
+  });
+  assert.deepEqual([...(await client.downloadArchive({
+    sandboxId: 'box-task-1',
+    path: '/workspace',
+  }))], [5, 4, 3]);
+  await client.deleteSandbox('box-task-1');
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'POST /v1/default/boxes',
+    'POST /v1/default/boxes/box-task-1/start',
+    'GET /v1/default/boxes/box-task-1',
+    'POST /v1/default/boxes/box-task-1/exec',
+    'GET /v1/default/boxes/box-task-1/executions/exec-1',
+    'PUT /v1/default/boxes/box-task-1/files?path=%2Fworkspace',
+    'GET /v1/default/boxes/box-task-1/files?path=%2Fworkspace',
+    'DELETE /v1/default/boxes/box-task-1',
+  ]);
+  assert.deepEqual(calls[0].body, {
+    name: 'box-task-1',
+    image: 'cap-boxlite:1',
+    env: { FOO: 'bar' },
+  });
+  assert.deepEqual(calls[3].body, {
+    command: 'sh',
+    args: ['-lc', 'command -v git'],
+    working_dir: '/workspace',
+    tty: false,
+    timeout_seconds: 1,
+  });
 });
 
 await test('fake client is deterministic and records calls', async () => {
