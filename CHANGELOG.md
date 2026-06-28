@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.0...v0.25.1) (2026-06-28)
+
+
+### Bug Fixes
+
+* harden BoxLite release installs ([21c7911](https://github.com/Xeonice/cloud-agent-platform/commit/21c7911ae6410a6f711e6db917034392bd76c986))
+
 ## [0.25.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.24.2...v0.25.0) (2026-06-27)
 
 
