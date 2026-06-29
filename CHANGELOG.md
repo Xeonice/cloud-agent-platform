@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.5](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.4...v0.25.5) (2026-06-29)
+
+
+### Bug Fixes
+
+* **boxlite:** export terminal TERM for native pty ([f7b8705](https://github.com/Xeonice/cloud-agent-platform/commit/f7b87052bb09ad19c8f02891e0a8bcf2e667a120))
+
 ## [0.25.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.3...v0.25.4) (2026-06-28)
 
 
