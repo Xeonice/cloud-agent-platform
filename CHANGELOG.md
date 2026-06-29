@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.6](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.5...v0.25.6) (2026-06-29)
+
+
+### Bug Fixes
+
+* run runtime setup in BoxLite sandboxes ([8dce371](https://github.com/Xeonice/cloud-agent-platform/commit/8dce371f4c1548ff93fd85c4d184562b2589da00))
+
 ## [0.25.5](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.4...v0.25.5) (2026-06-29)
 
 
