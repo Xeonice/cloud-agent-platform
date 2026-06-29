@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.7](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.6...v0.25.7) (2026-06-29)
+
+
+### Bug Fixes
+
+* **boxlite:** pass sandbox proxy env ([06c8704](https://github.com/Xeonice/cloud-agent-platform/commit/06c8704c195dbf2703c05d4880582d4b5775dea9))
+
 ## [0.25.6](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.5...v0.25.6) (2026-06-29)
 
 
