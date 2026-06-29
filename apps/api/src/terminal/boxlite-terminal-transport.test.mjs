@@ -142,6 +142,9 @@ try {
   await waitFor(() => frames.some((frame) => frame.type === 'ready'));
   await waitFor(() => frames.some((frame) => frame.type === 'output'));
   assert(fetchCalls[0].url.endsWith('/v1/default/boxes/box-task/exec'), 'starts a native BoxLite PTY execution');
+  const execBody = JSON.parse(fetchCalls[0].init.body);
+  assert(execBody.args[1].startsWith('export TERM=xterm-256color &&'), 'PTY shell exports an xterm-compatible TERM before bash');
+  assert(execBody.args[1].includes("cd '/workspace' && exec bash -l"), 'PTY shell enters the workspace before login bash');
   assert(fetchCalls[0].init.headers.authorization === 'Bearer terminal-secret', 'REST exec uses bearer token');
   assert(wsPath === '/v1/default/boxes/box-task/executions/exec-123/attach', 'attaches to execution websocket');
   assert(wsAuth === 'Bearer terminal-secret', 'websocket attach uses bearer token');

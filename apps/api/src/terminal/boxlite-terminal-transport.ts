@@ -137,7 +137,14 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
       },
       body: JSON.stringify({
         command: 'sh',
-        args: ['-lc', `cd ${shellQuote(this.config.workspacePath)} && exec bash -l`],
+        args: [
+          '-lc',
+          [
+            'export TERM=xterm-256color',
+            `cd ${shellQuote(this.config.workspacePath)}`,
+            'exec bash -l',
+          ].join(' && '),
+        ],
         working_dir: this.config.workspacePath,
         tty: true,
       }),
