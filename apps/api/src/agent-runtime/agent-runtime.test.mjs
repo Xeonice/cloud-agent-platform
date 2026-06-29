@@ -213,8 +213,8 @@ async function main() {
     workspaceDir: '/home/gem/workspace',
   });
   assert(
-    codexLine.startsWith('tmux new-session -d -s taskb3ee3f63 '),
-    'codex launches in the detached named tmux session `task<taskId>`',
+    codexLine.startsWith('tmux -u new-session -d -s taskb3ee3f63 '),
+    'codex launches in the UTF-8 detached named tmux session `task<taskId>`',
   );
   assert(
     codexLine.includes('-c /home/gem/workspace'),
@@ -309,8 +309,8 @@ async function main() {
     sessionId: '11111111-2222-3333-4444-555555555555',
   });
   assert(
-    claudeLine.startsWith('tmux new-session -d -s taskabc -c /home/gem/workspace '),
-    'claude launches in the detached named tmux session with the workspace cwd',
+    claudeLine.startsWith('tmux -u new-session -d -s taskabc -c /home/gem/workspace '),
+    'claude launches in the UTF-8 detached named tmux session with the workspace cwd',
   );
   assert(
     claudeLine.includes(

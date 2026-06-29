@@ -57,12 +57,14 @@ export function detachedSessionName(taskId: string): string {
   return `task${taskId}`;
 }
 
+const TMUX_UTF8 = 'tmux -u';
+
 /**
  * Build the launch line that starts codex in a DETACHED, NAMED tmux session
  * (survive-api-redeploy D1). It WRAPS — does not replace — the existing in-shell
  * launch line from {@link buildCodexLaunchLine}:
  *
- *   tmux new-session -d -s task<taskId> -c /home/gem/workspace '<codex launch line>'
+ *   tmux -u new-session -d -s task<taskId> -c /home/gem/workspace '<codex launch line>'
  *
  * Why this shape:
  * - `-d` creates the session DETACHED, so codex becomes a child of the container
@@ -112,7 +114,7 @@ export function wrapInDetachedSession(
   innerLine: string,
   workspaceDir = '/home/gem/workspace',
 ): string {
-  return `tmux new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}'`;
+  return `${TMUX_UTF8} new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}'`;
 }
 
 /**
@@ -140,7 +142,19 @@ export function wrapHeadlessDetachedSession(
   innerLine: string,
   workspaceDir = '/home/gem/workspace',
 ): string {
-  return `tmux new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}; echo $? > ${headlessExitFile(taskId)}'`;
+  return `${TMUX_UTF8} new-session -d -s ${detachedSessionName(taskId)} -c ${workspaceDir} '${innerLine}; echo $? > ${headlessExitFile(taskId)}'`;
+}
+
+export function buildAttachSessionCommand(taskId: string): string {
+  return `${TMUX_UTF8} attach -t ${detachedSessionName(taskId)}`;
+}
+
+export function buildResizeDetachedSessionCommand(
+  taskId: string,
+  cols: number,
+  rows: number,
+): string {
+  return `${TMUX_UTF8} resize-window -t ${detachedSessionName(taskId)} -x ${cols} -y ${rows}`;
 }
 
 /**

@@ -42,8 +42,10 @@ import type {
   TerminalTransportFactory,
 } from './agent-terminal-pty';
 import {
+  buildAttachSessionCommand,
   buildDetachedCodexLaunchLine,
   buildHasSessionCommand,
+  buildResizeDetachedSessionCommand,
   detachedSessionName,
   headlessExitFile,
 } from './codex-launch';
@@ -137,6 +139,7 @@ const DEFAULT_CODEX_LAUNCH_ARGV =
  * TUI is up and idle submits the pre-filled goal with no operator keystroke.
  */
 const CODEX_SUBMIT_KEY = '\r';
+const TMUX_RESIZE_TIMEOUT_MS = 2_000;
 
 /**
  * Output-quiescence window (ms) the prompt auto-submit waits for AFTER codex's
@@ -491,8 +494,8 @@ export class AioPtyClient implements AgentTerminalPty {
    * Launch codex in a DETACHED, NAMED tmux session then ATTACH to it
    * (survive-api-redeploy D1). Sends, as terminal input over `/v1/shell/ws`:
    *
-   *   tmux new-session -d -s task<taskId> -c /home/gem/workspace '<codex line>'
-   *   tmux attach -t task<taskId>
+   *   tmux -u new-session -d -s task<taskId> -c /home/gem/workspace '<codex line>'
+   *   tmux -u attach -t task<taskId>
    *
    * The detached session makes codex a child of the container tmux daemon, so it
    * KEEPS RUNNING when this WS closes (api restart / operator disconnect); the
@@ -541,9 +544,9 @@ export class AioPtyClient implements AgentTerminalPty {
     this.attachSession();
   }
 
-  /** Send the `tmux attach -t <sessionName>` input that joins the live session. */
+  /** Send the `tmux -u attach -t <sessionName>` input that joins the live session. */
   private attachSession(): void {
-    this.sendInput(`tmux attach -t ${this.sessionName}\n`);
+    this.sendInput(`${buildAttachSessionCommand(this.taskId)}\n`);
     this.flushPendingInputSoon();
   }
 
@@ -619,6 +622,26 @@ export class AioPtyClient implements AgentTerminalPty {
    */
   resize(cols: number, rows: number): void {
     this.transport.sendResize(cols, rows);
+    this.resizeDetachedSession(cols, rows);
+  }
+
+  private resizeDetachedSession(cols: number, rows: number): void {
+    const geometry = normalizeTerminalGeometry(cols, rows);
+    if (!geometry) return;
+    const command = buildResizeDetachedSessionCommand(
+      this.taskId,
+      geometry.cols,
+      geometry.rows,
+    );
+    void this.commandExecutor
+      .exec({ command, timeoutMs: TMUX_RESIZE_TIMEOUT_MS })
+      .catch((err) => {
+        this.logger.debug(
+          `task ${this.taskId}: detached tmux resize skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
   }
 
   /**
@@ -1087,6 +1110,17 @@ function coerceExitCode(value: unknown): number | null {
     if (/^-?\d+$/.test(trimmed)) return Number.parseInt(trimmed, 10);
   }
   return null;
+}
+
+function normalizeTerminalGeometry(
+  cols: number,
+  rows: number,
+): { cols: number; rows: number } | null {
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) return null;
+  const normalizedCols = Math.trunc(cols);
+  const normalizedRows = Math.trunc(rows);
+  if (normalizedCols <= 0 || normalizedRows <= 0) return null;
+  return { cols: normalizedCols, rows: normalizedRows };
 }
 
 /**

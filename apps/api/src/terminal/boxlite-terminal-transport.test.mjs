@@ -106,10 +106,19 @@ try {
     socket.on('message', (raw) => {
       wsMessages.push(Buffer.from(raw));
     });
-    socket.send(Buffer.concat([
-      Buffer.from([BOXLITE_TERMINAL_CHANNELS.stdout]),
+    const sendFrame = (channel, payload) => {
+      socket.send(Buffer.concat([Buffer.from([channel]), payload]));
+    };
+    sendFrame(
+      BOXLITE_TERMINAL_CHANNELS.stdout,
       Buffer.from('hello from boxlite', 'utf8'),
-    ]));
+    );
+    const splitStdout = Buffer.from('A中文B', 'utf8');
+    sendFrame(BOXLITE_TERMINAL_CHANNELS.stdout, splitStdout.subarray(0, 2));
+    sendFrame(BOXLITE_TERMINAL_CHANNELS.stdout, splitStdout.subarray(2));
+    const splitStderr = Buffer.from('E错误F', 'utf8');
+    sendFrame(BOXLITE_TERMINAL_CHANNELS.stderr, splitStderr.subarray(0, 2));
+    sendFrame(BOXLITE_TERMINAL_CHANNELS.stderr, splitStderr.subarray(2));
   });
   const port = await listen(server);
   const fetchCalls = [];
@@ -150,6 +159,20 @@ try {
   assert(wsAuth === 'Bearer terminal-secret', 'websocket attach uses bearer token');
   assert(frames.some((frame) => frame.type === 'session_id' && frame.data === 'exec-123'), 'emits session_id frame');
   assert(frames.some((frame) => frame.type === 'output' && frame.data === 'hello from boxlite'), 'stdout channel becomes output frame');
+  await waitFor(() => {
+    const output = frames
+      .filter((frame) => frame.type === 'output')
+      .map((frame) => frame.data)
+      .join('');
+    return output.includes('A中文B') && output.includes('E错误F');
+  });
+  const output = frames
+    .filter((frame) => frame.type === 'output')
+    .map((frame) => frame.data)
+    .join('');
+  assert(output.includes('A中文B'), 'split stdout UTF-8 is reassembled without replacement chars');
+  assert(output.includes('E错误F'), 'split stderr UTF-8 is reassembled without replacement chars');
+  assert(!output.includes('�'), 'split UTF-8 output contains no replacement characters');
 
   assert(transport.sendInput('abc') === true, 'sendInput writes to open websocket');
   assert(transport.sendResize(100, 40) === true, 'sendResize writes to open websocket');
