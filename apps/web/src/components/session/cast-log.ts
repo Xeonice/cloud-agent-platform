@@ -24,6 +24,16 @@ import type { AsciicastEvent } from "@cap/contracts";
 /** Matches the alternate-screen switch: `ESC [ ? (1049|1047|47) (h|l)`. */
 // eslint-disable-next-line no-control-regex
 const ALT_SCREEN_RE = /\x1b\[\?(?:1049|1047|47)[hl]/g;
+/**
+ * tmux clears the normal screen immediately before leaving its alternate screen:
+ * `ESC[H ESC[2J ... ESC[?1049l`. Since we suppress the `?1049l` switch, that
+ * paired clear would otherwise wipe the browser's normal-buffer replay after the
+ * history has just been rebuilt. Remove only that paired teardown clear; ordinary
+ * TUI clears stay byte-intact.
+ */
+const ALT_SCREEN_EXIT_CLEAR_RE =
+  // eslint-disable-next-line no-control-regex
+  /\x1b\[H\x1b\[2J(?=(?:\x1b(?:\[[0-9;?]*[ -/]*[@-~]|[=>]))*\x1b\[\?(?:1049|1047|47)l)/g;
 
 /** Max chars per output chunk — bounds each `handle.write` so the watermark can pace. */
 export const DEFAULT_CAST_CHUNK_SIZE = 64 * 1024;
@@ -47,7 +57,7 @@ export const CAST_TRUNCATION_NOTICE = "⋯ 较早的输出已省略（记录过�
  * byte-intact, because those are exactly what drive the scrollback fill.
  */
 export function stripAltScreen(data: string): string {
-  return data.replace(ALT_SCREEN_RE, "");
+  return data.replace(ALT_SCREEN_EXIT_CLEAR_RE, "").replace(ALT_SCREEN_RE, "");
 }
 
 /**

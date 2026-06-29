@@ -103,8 +103,14 @@ try {
   server.on('connection', (socket, req) => {
     wsPath = req.url ?? '';
     wsAuth = req.headers.authorization ?? '';
-    socket.on('message', (raw) => {
-      wsMessages.push(Buffer.from(raw));
+    socket.on('message', (raw, isBinary) => {
+      wsMessages.push({ raw: Buffer.from(raw), isBinary });
+      if (!isBinary) {
+        const text = Buffer.from(raw).toString('utf8');
+        if (/"type"\s*:\s*"resize"/.test(text)) {
+          socket.send(JSON.stringify({ type: 'exit', exit_code: 0 }));
+        }
+      }
     });
     const sendFrame = (channel, payload) => {
       socket.send(Buffer.concat([Buffer.from([channel]), payload]));
@@ -177,10 +183,15 @@ try {
   assert(transport.sendInput('abc') === true, 'sendInput writes to open websocket');
   assert(transport.sendResize(100, 40) === true, 'sendResize writes to open websocket');
   await waitFor(() => wsMessages.length >= 2);
-  assert(wsMessages[0][0] === BOXLITE_TERMINAL_CHANNELS.stdin, 'stdin uses BoxLite stdin channel');
-  assert(wsMessages[0].subarray(1).toString('utf8') === 'abc', 'stdin payload is raw UTF-8');
-  assert(wsMessages[1][0] === BOXLITE_TERMINAL_CHANNELS.resize, 'resize uses BoxLite resize channel');
-  assert(/"cols":100/.test(wsMessages[1].subarray(1).toString('utf8')), 'resize payload contains cols');
+  assert(wsMessages[0].isBinary === true, 'stdin uses a BoxLite binary frame');
+  assert(wsMessages[0].raw.toString('utf8') === 'abc', 'stdin payload is raw UTF-8');
+  assert(wsMessages[1].isBinary === false, 'resize uses a BoxLite text control frame');
+  const resizeFrame = JSON.parse(wsMessages[1].raw.toString('utf8'));
+  assert(resizeFrame.type === 'resize', 'resize payload declares the resize control type');
+  assert(resizeFrame.cols === 100, 'resize payload contains cols');
+  assert(resizeFrame.rows === 40, 'resize payload contains rows');
+  await waitFor(() => frames.some((frame) => frame.type === 'exit'));
+  assert(frames.some((frame) => frame.type === 'exit' && frame.data === '0'), 'text exit frame is emitted as a terminal exit');
   assert(errors.length === 0, 'no transport errors during happy path');
   transport.close();
   await new Promise((resolveClose) => server.close(resolveClose));

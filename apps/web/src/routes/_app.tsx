@@ -115,16 +115,17 @@ function AppLayout() {
       <AppSidebar pathname={pathname} />
       <SidebarInset
         className={cn(
-          "min-w-0 bg-transparent px-[clamp(18px,3vw,40px)] pt-[18px] pb-[68px] max-[821px]:px-[14px] max-[821px]:pb-[94px]",
+          "min-w-0 bg-transparent pt-[18px]",
+          isSession
+            ? "px-[18px] pb-[18px] max-[821px]:px-[14px] max-[821px]:pb-[94px]"
+            : "px-[clamp(18px,3vw,40px)] pb-[68px] max-[821px]:px-[14px] max-[821px]:pb-[94px]",
           // Session route: pin the inset to the viewport height so the terminal
           // section (`flex-1 min-h-0`, see `$taskId.tsx`) flexes to fill exactly
           // the space below the page header — no fixed `100dvh − Npx` magic number
           // (which mis-estimated the variable-height header and overflowed the
-          // page). `overflow-y-auto` (not `-hidden`): the LIVE terminal shrinks to
-          // fit so the DOCUMENT shows NO scrollbar (the wheel scrolls INSIDE the
-          // xterm), while the read-only REPLAY — whose transcript has a min-height
-          // floor — scrolls the inset instead of being clipped on a short viewport.
-          isSession && "h-dvh overflow-y-auto",
+          // page). The live session owns its scroll inside xterm/replay panes, so
+          // the app shell itself stays fixed-height and non-scrolling.
+          isSession && "h-dvh overflow-hidden",
         )}
       >
         {/* The cockpit session page (`/tasks/:id`) has NO topbar — its `← 任务控制台`

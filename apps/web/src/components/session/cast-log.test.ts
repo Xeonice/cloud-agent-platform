@@ -25,11 +25,17 @@ describe("stripAltScreen", () => {
     expect(stripAltScreen(input)).toBe("XY");
   });
 
+  it("removes tmux's paired exit clear before leaving alternate screen", () => {
+    const input = `before${ESC}[H${ESC}[2J${ESC}[?25h${ESC}[?1000l${ESC}[?1049lafter`;
+    expect(stripAltScreen(input)).toBe(`before${ESC}[?25h${ESC}[?1000lafter`);
+  });
+
   it("leaves all other control sequences byte-intact", () => {
     // DECSTBM scroll region, cursor address, erase line, scroll-up, CR/LF, text.
     const keep =
       `${ESC}[1;18r` + // DECSTBM region (top-anchored — feeds scrollback)
       `${ESC}[12;3H` + // cursor address
+      `${ESC}[H${ESC}[2J` + // ordinary full-screen clear, not paired with alt exit
       `${ESC}[K` + // erase to end of line
       `${ESC}[3S` + // scroll up 3
       `hello\r\n`;
@@ -147,6 +153,11 @@ describe("stripAltScreenBytes", () => {
 
   it("does not corrupt multi-byte UTF-8 alongside the switch", () => {
     expect(dec(stripAltScreenBytes(enc(`${ESC}[?1049h你好世界`)))).toBe("你好世界");
+  });
+
+  it("strips tmux's paired exit clear from a byte chunk", () => {
+    const input = enc(`${ESC}[H${ESC}[2J${ESC}[?25h${ESC}[?1049l你好`);
+    expect(dec(stripAltScreenBytes(input))).toBe(`${ESC}[?25h你好`);
   });
 
   it("preserves raw multi-byte codepoint bytes (no decode split)", () => {

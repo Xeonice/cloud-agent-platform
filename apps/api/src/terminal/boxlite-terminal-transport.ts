@@ -10,13 +10,8 @@ import type {
   TerminalTransportReadyState,
 } from './agent-terminal-pty';
 
-const STDIN_CHANNEL = 0;
 const STDOUT_CHANNEL = 1;
 const STDERR_CHANNEL = 2;
-const EXIT_CHANNEL = 3;
-const RESIZE_CHANNEL = 4;
-const SIGNAL_CHANNEL = 5;
-const CLOSE_CHANNEL = 6;
 
 export class BoxLiteTerminalTransport implements TerminalTransport {
   private readonly logger = new Logger(BoxLiteTerminalTransport.name);
@@ -69,14 +64,11 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
   }
 
   sendInput(data: string): boolean {
-    return this.sendBoxLiteFrame(STDIN_CHANNEL, Buffer.from(data, 'utf8'));
+    return this.sendBinary(Buffer.from(data, 'utf8'));
   }
 
   sendResize(cols: number, rows: number): boolean {
-    return this.sendBoxLiteFrame(
-      RESIZE_CHANNEL,
-      Buffer.from(JSON.stringify({ cols, rows }), 'utf8'),
-    );
+    return this.sendControl({ type: 'resize', cols, rows });
   }
 
   sendPong(_timestamp: number): boolean {
@@ -92,7 +84,7 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
   }
 
   close(): void {
-    this.sendBoxLiteFrame(CLOSE_CHANNEL, Buffer.alloc(0));
+    this.sendControl({ type: 'stdin_eof' });
     try {
       this.socket?.close();
     } catch {
@@ -112,7 +104,7 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
         this.state = 'open';
         this.emitFrame({ type: 'ready' });
       });
-      ws.on('message', (raw) => this.onMessage(raw));
+      ws.on('message', (raw, isBinary) => this.onMessage(raw, isBinary));
       ws.on('close', () => {
         this.flushOutputDecoders();
         this.state = 'closed';
@@ -164,7 +156,12 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
     return executionId;
   }
 
-  private onMessage(raw: WebSocket.RawData): void {
+  private onMessage(raw: WebSocket.RawData, isBinary: boolean): void {
+    if (!isBinary) {
+      this.onControlMessage(rawToBuffer(raw).toString('utf8'));
+      return;
+    }
+
     const buffer = rawToBuffer(raw);
     if (buffer.length === 0) return;
     const channel = buffer[0];
@@ -176,13 +173,39 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
       case STDERR_CHANNEL:
         this.emitDecodedOutput(this.stderrDecoder, payload);
         break;
-      case EXIT_CHANNEL:
-        this.flushOutputDecoders();
-        this.emitFrame({ type: 'exit', data: payload.toString('utf8') });
-        this.close();
-        break;
       default:
         break;
+    }
+  }
+
+  private onControlMessage(text: string): void {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return;
+    }
+    if (!parsed || typeof parsed !== 'object') return;
+    const frame = parsed as { type?: unknown; exit_code?: unknown; message?: unknown };
+    if (frame.type === 'exit') {
+      this.flushOutputDecoders();
+      this.emitFrame({
+        type: 'exit',
+        data:
+          typeof frame.exit_code === 'number'
+            ? String(frame.exit_code)
+            : '',
+      });
+      return;
+    }
+    if (frame.type === 'error') {
+      this.emitError(
+        new Error(
+          typeof frame.message === 'string'
+            ? frame.message
+            : 'BoxLite terminal control error',
+        ),
+      );
     }
   }
 
@@ -204,9 +227,15 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
     }
   }
 
-  private sendBoxLiteFrame(channel: number, payload: Buffer): boolean {
+  private sendBinary(payload: Buffer): boolean {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
-    this.socket.send(Buffer.concat([Buffer.from([channel]), payload]));
+    this.socket.send(payload);
+    return true;
+  }
+
+  private sendControl(frame: unknown): boolean {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(JSON.stringify(frame));
     return true;
   }
 
@@ -310,11 +339,6 @@ function shellQuote(value: string): string {
 }
 
 export const BOXLITE_TERMINAL_CHANNELS = {
-  stdin: STDIN_CHANNEL,
   stdout: STDOUT_CHANNEL,
   stderr: STDERR_CHANNEL,
-  exit: EXIT_CHANNEL,
-  resize: RESIZE_CHANNEL,
-  signal: SIGNAL_CHANNEL,
-  close: CLOSE_CHANNEL,
 } as const;

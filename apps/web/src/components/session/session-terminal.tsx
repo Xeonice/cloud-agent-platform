@@ -106,8 +106,8 @@ const XTERM_READY_TIMEOUT_MS = 15_000;
  * buffer accumulates scrollback but the viewport stays at one screen until
  * `syncScrollArea` fires), so the live terminal can't be scrolled back even though
  * the history is in the buffer (fix-live-terminal-scrollback). After writes settle
- * we trigger a local-only resize nudge once; a short window coalesces the bursty
- * live stream so it is not per-chunk.
+ * we trigger a local viewport sync once; a short window coalesces the bursty live
+ * stream so it is not per-chunk.
  */
 const VIEWPORT_SYNC_DEBOUNCE_MS = 120;
 
@@ -215,11 +215,6 @@ export const SessionTerminal = React.forwardRef<
     writing: false,
     sawFinalTail: false,
   });
-  /** True during a viewport-sync resize nudge so onResize skips sendResize — the
-   *  nudge is a LOCAL-ONLY trigger for xterm's syncScrollArea and must NOT perturb
-   *  the codex PTY (fix-live-terminal-scrollback). */
-  const suppressResizeRef = React.useRef(false);
-
   // Resolved xterm theme (client-only). `null` until the effect resolves it.
   const [theme, setTheme] = React.useState<ITheme | null>(null);
   const [fontSize, setFontSize] = React.useState(13);
@@ -265,12 +260,7 @@ export const SessionTerminal = React.forwardRef<
   const syncViewportNow = React.useCallback(() => {
     const handle = handleRef.current;
     if (!handle) return;
-    suppressResizeRef.current = true;
-    try {
-      handle.syncViewport({ preserveScroll: true });
-    } finally {
-      suppressResizeRef.current = false;
-    }
+    handle.syncViewport({ preserveScroll: true });
   }, []);
 
   const syncViewportSoon = React.useCallback(() => {
@@ -885,9 +875,6 @@ export const SessionTerminal = React.forwardRef<
               pumpReconnectReplayRef.current();
             }}
             onResize={(geometry: TerminalGeometry) => {
-              // Skip the local-only viewport-sync nudge (rows ±1) — it must not
-              // resize the codex PTY (fix-live-terminal-scrollback).
-              if (suppressResizeRef.current) return;
               socketRef.current?.sendResize(geometry.cols, geometry.rows);
             }}
             onData={(data) => {
