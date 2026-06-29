@@ -57,6 +57,8 @@ await test('config validates endpoint credentials image and capabilities', () =>
     BOXLITE_PROVIDER_PRIORITY: 'high',
     BOXLITE_TIMEOUT_MS: '0',
     BOXLITE_PROTOCOL_MODE: 'bad',
+    BOXLITE_SANDBOX_PROXY: 'ftp://proxy.example.test',
+    BOXLITE_SANDBOX_HTTP_PROXY: 'not a url',
   });
   assert.equal(result.status, 'invalid');
   assert(result.errors.some((entry) => entry.includes('http or https')));
@@ -67,6 +69,8 @@ await test('config validates endpoint credentials image and capabilities', () =>
   assert(result.errors.some((entry) => entry.includes('BOXLITE_TERMINAL_MODE must be pty')));
   assert(result.errors.some((entry) => entry.includes('workspace.archive.transfer requires command.exec')));
   assert(result.errors.some((entry) => entry.includes('BOXLITE_PROTOCOL_MODE must be native or cap-rest')));
+  assert(result.errors.some((entry) => entry.includes('BOXLITE_SANDBOX_PROXY must use')));
+  assert(result.errors.some((entry) => entry.includes('BOXLITE_SANDBOX_HTTP_PROXY must be a valid proxy URL')));
 });
 
 await test('config parses image map priority location and explicit capabilities', () => {
@@ -96,6 +100,36 @@ await test('config defaults to native protocol with default path prefix', () => 
   const config = validConfig();
   assert.equal(config.protocolMode, 'native');
   assert.equal(config.pathPrefix, 'default');
+  assert.deepEqual(config.sandboxEnv, {});
+});
+
+await test('config maps sandbox proxy env into uppercase and lowercase variables', () => {
+  const config = validConfig({
+    BOXLITE_SANDBOX_PROXY: 'http://proxy.example.test:7897',
+    BOXLITE_SANDBOX_NO_PROXY: 'localhost,127.0.0.1,::1',
+  });
+  assert.deepEqual(config.sandboxEnv, {
+    HTTP_PROXY: 'http://proxy.example.test:7897',
+    http_proxy: 'http://proxy.example.test:7897',
+    HTTPS_PROXY: 'http://proxy.example.test:7897',
+    https_proxy: 'http://proxy.example.test:7897',
+    NO_PROXY: 'localhost,127.0.0.1,::1',
+    no_proxy: 'localhost,127.0.0.1,::1',
+  });
+});
+
+await test('config lets protocol-specific sandbox proxies override the shared proxy', () => {
+  const config = validConfig({
+    BOXLITE_SANDBOX_PROXY: 'http://proxy.example.test:7897',
+    BOXLITE_SANDBOX_HTTP_PROXY: 'http://http-proxy.example.test:8080',
+    BOXLITE_SANDBOX_HTTPS_PROXY: 'socks5h://socks-proxy.example.test:1080',
+  });
+  assert.deepEqual(config.sandboxEnv, {
+    HTTP_PROXY: 'http://http-proxy.example.test:8080',
+    http_proxy: 'http://http-proxy.example.test:8080',
+    HTTPS_PROXY: 'socks5h://socks-proxy.example.test:1080',
+    https_proxy: 'socks5h://socks-proxy.example.test:1080',
+  });
 });
 
 await test('descriptor factory registers only when env is valid', () => {
@@ -148,7 +182,11 @@ await test('descriptor factory installs default readiness preflight from capabil
 await test('provider provision is task-scoped and idempotent', async () => {
   const client = new mod.FakeBoxLiteClient();
   const provider = new mod.BoxLiteSandboxProvider({
-    config: validConfig({ BOXLITE_SANDBOX_ID_PREFIX: 'box-' }),
+    config: validConfig({
+      BOXLITE_SANDBOX_ID_PREFIX: 'box-',
+      BOXLITE_SANDBOX_PROXY: 'http://proxy.example.test:7897',
+      BOXLITE_SANDBOX_NO_PROXY: 'localhost,127.0.0.1,::1',
+    }),
     client,
   });
 
@@ -157,6 +195,14 @@ await test('provider provision is task-scoped and idempotent', async () => {
   assert.deepEqual(second, first);
   assert.equal(client.createCalls.length, 1);
   assert.equal(client.createCalls[0].sandboxId, 'box-task-1');
+  assert.deepEqual(client.createCalls[0].env, {
+    HTTP_PROXY: 'http://proxy.example.test:7897',
+    http_proxy: 'http://proxy.example.test:7897',
+    HTTPS_PROXY: 'http://proxy.example.test:7897',
+    https_proxy: 'http://proxy.example.test:7897',
+    NO_PROXY: 'localhost,127.0.0.1,::1',
+    no_proxy: 'localhost,127.0.0.1,::1',
+  });
   assert.equal(await provider.sandboxExists('task-1'), true);
   assert.equal((await provider.reattach('task-1')).baseUrl, 'boxlite://box-task-1');
 });

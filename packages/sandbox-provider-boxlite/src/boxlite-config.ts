@@ -30,6 +30,10 @@ export interface BoxLiteProviderEnv {
   readonly BOXLITE_CAPABILITIES?: string;
   readonly BOXLITE_WORKSPACE_PATH?: string;
   readonly BOXLITE_SANDBOX_ID_PREFIX?: string;
+  readonly BOXLITE_SANDBOX_PROXY?: string;
+  readonly BOXLITE_SANDBOX_HTTP_PROXY?: string;
+  readonly BOXLITE_SANDBOX_HTTPS_PROXY?: string;
+  readonly BOXLITE_SANDBOX_NO_PROXY?: string;
   readonly BOXLITE_SANDBOX_MODE?: string;
   readonly BOXLITE_CLIENT_MODE?: string;
   readonly BOXLITE_PROTOCOL_MODE?: string;
@@ -49,6 +53,7 @@ export interface BoxLiteProviderConfig {
   readonly capabilities: readonly SandboxProviderCapability[];
   readonly workspacePath: string;
   readonly sandboxIdPrefix: string;
+  readonly sandboxEnv: Readonly<Record<string, string>>;
   readonly sandboxMode: SandboxExecutionMode;
   readonly clientMode: BoxLiteClientMode;
   readonly protocolMode: BoxLiteProtocolMode;
@@ -120,6 +125,7 @@ export function readBoxLiteProviderConfig(
     nonEmpty(env.BOXLITE_WORKSPACE_PATH) ?? BOXLITE_DEFAULT_WORKSPACE_PATH;
   const sandboxIdPrefix =
     nonEmpty(env.BOXLITE_SANDBOX_ID_PREFIX) ?? BOXLITE_DEFAULT_SANDBOX_ID_PREFIX;
+  const sandboxEnv = parseSandboxEnv(env, errors);
 
   if (!workspacePath.startsWith('/')) {
     errors.push('BOXLITE_WORKSPACE_PATH must be an absolute path');
@@ -143,6 +149,7 @@ export function readBoxLiteProviderConfig(
       capabilities,
       workspacePath,
       sandboxIdPrefix,
+      sandboxEnv,
       sandboxMode,
       clientMode,
       protocolMode,
@@ -234,6 +241,76 @@ function sanitizeStringMap(
     out[key.trim()] = value.trim();
   }
   return out;
+}
+
+function parseSandboxEnv(
+  env: BoxLiteProviderEnv,
+  errors: string[],
+): Readonly<Record<string, string>> {
+  const proxy = parseOptionalProxyUrl(
+    env.BOXLITE_SANDBOX_PROXY,
+    'BOXLITE_SANDBOX_PROXY',
+    errors,
+  );
+  const httpProxy =
+    parseOptionalProxyUrl(
+      env.BOXLITE_SANDBOX_HTTP_PROXY,
+      'BOXLITE_SANDBOX_HTTP_PROXY',
+      errors,
+    ) ?? proxy;
+  const httpsProxy =
+    parseOptionalProxyUrl(
+      env.BOXLITE_SANDBOX_HTTPS_PROXY,
+      'BOXLITE_SANDBOX_HTTPS_PROXY',
+      errors,
+    ) ?? proxy;
+  const noProxy = nonEmpty(env.BOXLITE_SANDBOX_NO_PROXY);
+  const sandboxEnv: Record<string, string> = {};
+  if (httpProxy) {
+    sandboxEnv.HTTP_PROXY = httpProxy;
+    sandboxEnv.http_proxy = httpProxy;
+  }
+  if (httpsProxy) {
+    sandboxEnv.HTTPS_PROXY = httpsProxy;
+    sandboxEnv.https_proxy = httpsProxy;
+  }
+  if (noProxy) {
+    sandboxEnv.NO_PROXY = noProxy;
+    sandboxEnv.no_proxy = noProxy;
+  }
+  return sandboxEnv;
+}
+
+function parseOptionalProxyUrl(
+  raw: string | undefined,
+  label: string,
+  errors: string[],
+): string | undefined {
+  const value = nonEmpty(raw);
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    if (!isSupportedProxyProtocol(url.protocol)) {
+      errors.push(
+        `${label} must use http, https, socks4, socks4a, socks5, or socks5h`,
+      );
+    }
+    return value;
+  } catch {
+    errors.push(`${label} must be a valid proxy URL, received: ${value}`);
+    return value;
+  }
+}
+
+function isSupportedProxyProtocol(protocol: string): boolean {
+  return (
+    protocol === 'http:' ||
+    protocol === 'https:' ||
+    protocol === 'socks4:' ||
+    protocol === 'socks4a:' ||
+    protocol === 'socks5:' ||
+    protocol === 'socks5h:'
+  );
 }
 
 function parseCapabilities(

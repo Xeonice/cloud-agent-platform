@@ -154,6 +154,7 @@ export class BoxLiteSandboxProvider<
       sandboxId,
       image,
       location: this.config.location,
+      env: nonEmptySandboxEnv(this.config.sandboxEnv),
       labels: {
         'cap.taskId': ctx.taskId,
         'cap.provider': this.config.providerId,
@@ -725,6 +726,12 @@ function isUsableSandbox(sandbox: BoxLiteSandbox | null): sandbox is BoxLiteSand
   if (!sandbox) return false;
   const state = sandbox.state?.toLowerCase();
   return state !== 'deleted' && state !== 'terminated' && state !== 'removed';
+}
+
+function nonEmptySandboxEnv(
+  sandboxEnv: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> | undefined {
+  return Object.keys(sandboxEnv).length > 0 ? sandboxEnv : undefined;
 }
 
 function shellQuote(value: string): string {

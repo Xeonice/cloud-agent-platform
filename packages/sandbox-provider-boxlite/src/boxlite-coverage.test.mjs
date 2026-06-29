@@ -24,6 +24,12 @@ function response(status, body, extra = {}) {
       if (extra.throwJson) throw new Error('bad json');
       return body;
     },
+    text: extra.text === undefined && !extra.throwText
+      ? undefined
+      : async () => {
+        if (extra.throwText) throw new Error('bad text');
+        return extra.text;
+      },
     async arrayBuffer() {
       if (extra.noArrayBuffer) return undefined;
       return extra.arrayBuffer ?? new Uint8Array().buffer;
@@ -101,6 +107,8 @@ await test('REST client covers missing, failed, and invalid edge responses', asy
       'DELETE /v1/sandboxes/fail': response(500, { error: 'nope' }),
       'POST /v1/sandboxes': response(200, null),
       'POST /v1/sandboxes/box/exec': response(200, null),
+      'POST /v1/sandboxes/detail/exec': response(503, null, { text: 'server down' }),
+      'POST /v1/sandboxes/text-throws/exec': response(503, null, { throwText: true }),
       'PUT /v1/sandboxes/box/archive?path=%2Fworkspace': response(500, null),
       'GET /v1/sandboxes/box/archive?path=%2Fmissing': response(404, null),
       'GET /v1/sandboxes/box/archive?path=%2Fempty': response(200, null, {
@@ -113,6 +121,8 @@ await test('REST client covers missing, failed, and invalid edge responses', asy
   assert.equal(await client.getSandbox('no-content'), null);
   assert.equal(await client.getSandbox('bad-json'), null);
   await assert.rejects(() => client.getSandbox('fail'), /get sandbox fail failed/);
+  await assert.rejects(() => client.exec({ sandboxId: 'detail', command: 'true' }), /server down/);
+  await assert.rejects(() => client.exec({ sandboxId: 'text-throws', command: 'true' }), /HTTP 503$/);
   await assert.rejects(() => client.deleteSandbox('fail'), /delete sandbox fail failed/);
   await assert.rejects(
     () => client.createSandbox({ taskId: 'task', image: 'img' }),
@@ -204,6 +214,179 @@ await test('REST client covers missing, failed, and invalid edge responses', asy
   assert.equal(await fallbackFake.downloadArchive({ sandboxId: 'missing', path: '/none' }), null);
 });
 
+await test('native REST client covers response fallback shapes and polling edges', async () => {
+  let startCount = 0;
+  let pendingPollCount = 0;
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    fetch: makeFetch({
+      'POST /v1/default/boxes': response(200, {
+        name: 'box-name-fallback',
+        task_id: 'task-native',
+        status: 'configured',
+        metadata: 'ignored',
+      }),
+      'POST /v1/default/boxes/box-name-fallback/start': response(200, {
+        name: 'box-name-fallback',
+        task_id: 'task-native',
+        status: 'running',
+        metadata: 'ignored',
+      }),
+      'POST /v1/default/boxes/box-name-fallback/exec': () => {
+        const startResponses = [
+          { id: 'exec-by-id' },
+          { execution_id: 'exec-by-code' },
+          { execution_id: 'exec-output' },
+          { execution_id: 'exec-completed-no-code' },
+        ];
+        startCount += 1;
+        return response(200, startResponses[startCount - 1]);
+      },
+      'GET /v1/default/boxes/box-name-fallback/executions/exec-by-id': () => {
+        pendingPollCount += 1;
+        return response(200, pendingPollCount === 1
+          ? { status: 'running' }
+          : { state: 'timeout', exitCode: 124, timed_out: true });
+      },
+      'GET /v1/default/boxes/box-name-fallback/executions/exec-by-code': response(200, {
+        state: 'failed',
+        code: 9,
+        stderr: 'bad',
+      }),
+      'GET /v1/default/boxes/box-name-fallback/executions/exec-output': response(200, {
+        exit_code: 0,
+        output: 'native output',
+      }),
+      'GET /v1/default/boxes/box-name-fallback/executions/exec-completed-no-code': response(200, {
+        status: 'completed',
+      }),
+    }),
+  });
+
+  const sandbox = await client.createSandbox({ taskId: 'task-native', image: 'img' });
+  assert.equal(sandbox.id, 'box-name-fallback');
+  assert.equal(sandbox.taskId, 'task-native');
+  assert.equal(sandbox.state, 'running');
+  assert.equal(sandbox.metadata, undefined);
+
+  const timeoutResult = await client.exec({ sandboxId: 'box-name-fallback', command: 'sleeping' });
+  assert.equal(timeoutResult.exitCode, 124);
+  assert.equal(timeoutResult.timedOut, true);
+  assert.equal(pendingPollCount, 2);
+
+  const codeResult = await client.exec({ sandboxId: 'box-name-fallback', command: 'false' });
+  assert.equal(codeResult.exitCode, 9);
+  assert.equal(codeResult.output, 'bad');
+
+  const outputResult = await client.exec({ sandboxId: 'box-name-fallback', command: 'echo ok' });
+  assert.equal(outputResult.exitCode, 0);
+  assert.equal(outputResult.output, 'native output');
+
+  const completedNoCodeResult = await client.exec({ sandboxId: 'box-name-fallback', command: 'true' });
+  assert.equal(completedNoCodeResult.exitCode, 0);
+  assert.equal(completedNoCodeResult.output, '');
+
+  const rootPathClient = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    pathPrefix: '',
+    fetch: makeFetch({
+      'GET /v1/boxes/root-box': response(204, null),
+    }),
+  });
+  assert.equal(await rootPathClient.getSandbox('root-box'), null);
+
+  const invalidStartClient = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    fetch: makeFetch({
+      'POST /v1/default/boxes/box/exec': response(200, null),
+    }),
+  });
+  await assert.rejects(
+    () => invalidStartClient.startExecution({ sandboxId: 'box', command: 'sh' }),
+    /did not include an execution object/,
+  );
+
+  const missingExecutionIdClient = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    fetch: makeFetch({
+      'POST /v1/default/boxes/box/exec': response(200, {}),
+    }),
+  });
+  await assert.rejects(
+    () => missingExecutionIdClient.startExecution({ sandboxId: 'box', command: 'sh' }),
+    /missing execution id/,
+  );
+
+  const invalidResultClient = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    fetch: makeFetch({
+      'POST /v1/default/boxes/box/exec': response(200, { execution_id: 'exec-invalid' }),
+      'GET /v1/default/boxes/box/executions/exec-invalid': response(200, null),
+    }),
+  });
+  const invalidResult = await invalidResultClient.exec({ sandboxId: 'box', command: 'true' });
+  assert.equal(invalidResult.exitCode, 1);
+  assert.equal(invalidResult.output, '');
+
+  const nativeFailureClient = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    fetch: makeFetch({
+      'PUT /v1/default/boxes/box/files?path=%2Fworkspace': response(500, null),
+      'GET /v1/default/boxes/box/files?path=%2Fworkspace': response(500, null),
+      'GET /v1/default/boxes/box/files?path=%2Fmissing': response(404, null),
+      'GET /v1/default/boxes/box/files?path=%2Fempty': response(200, null, {
+        noArrayBuffer: true,
+      }),
+      'POST /v1/default/boxes/box/exec': response(200, { execution_id: 'exec-never-done' }),
+      'GET /v1/default/boxes/box/executions/exec-never-done': response(200, { status: 'running' }),
+      'POST /v1/default/boxes/timeout-box/exec': response(200, { execution_id: 'exec-timeout-no-code' }),
+      'GET /v1/default/boxes/timeout-box/executions/exec-timeout-no-code': response(200, {
+        status: 'timed_out',
+      }),
+    }),
+  });
+  await assert.rejects(
+    () =>
+      nativeFailureClient.uploadArchive({
+        sandboxId: 'box',
+        path: '/workspace',
+        archive: new Uint8Array([1]),
+      }),
+    /file upload/,
+  );
+  await assert.rejects(
+    () => nativeFailureClient.downloadArchive({ sandboxId: 'box', path: '/workspace' }),
+    /file download/,
+  );
+  assert.equal(await nativeFailureClient.downloadArchive({ sandboxId: 'box', path: '/missing' }), null);
+  assert.equal(await nativeFailureClient.downloadArchive({ sandboxId: 'box', path: '/empty' }), null);
+  const timedOut = await nativeFailureClient.exec({
+    sandboxId: 'box',
+    command: 'sleep',
+    timeoutMs: 1,
+  });
+  assert.equal(timedOut.exitCode, 124);
+  assert.equal(timedOut.timedOut, true);
+  const timeoutNoCode = await nativeFailureClient.exec({
+    sandboxId: 'timeout-box',
+    command: 'sleep',
+  });
+  assert.equal(timeoutNoCode.exitCode, 124);
+  assert.equal(timeoutNoCode.timedOut, true);
+
+  const fake = new mod.FakeBoxLiteClient();
+  assert.deepEqual(await fake.startExecution({ sandboxId: 'box', command: 'sh' }), {
+    id: 'exec-1',
+    sandboxId: 'box',
+  });
+});
+
 await test('config parser covers defaults, require helper, and invalid modes', () => {
   const defaults = mod.readBoxLiteProviderConfig({
     BOXLITE_ENDPOINT: 'https://boxlite.example.test/',
@@ -214,6 +397,7 @@ await test('config parser covers defaults, require helper, and invalid modes', (
   assert.equal(defaults.status, 'valid');
   assert.equal(defaults.config.endpoint, 'https://boxlite.example.test');
   assert.deepEqual(defaults.config.capabilities, ['command.exec']);
+  assert.deepEqual(defaults.config.sandboxEnv, {});
   assert.equal(mod.resolveBoxLiteImage({ config: defaults.config, runtimeId: null }), 'cap-boxlite:default');
   assert.equal(mod.requireBoxLiteProviderConfig(validEnv()).defaultImage, 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest');
   assert.throws(() => mod.requireBoxLiteProviderConfig({}), /BOXLITE_ENDPOINT is not set/);
@@ -230,7 +414,9 @@ await test('config parser covers defaults, require helper, and invalid modes', (
     BOXLITE_TERMINAL_MODE: 'stream',
     BOXLITE_PROVIDER_PRIORITY: '1.5',
     BOXLITE_TIMEOUT_MS: '-1',
-    BOXLITE_CAPABILITIES: 'workspace.git.deliver,transcript.retained-source',
+    BOXLITE_SANDBOX_PROXY: 'mailto:proxy@example.test',
+    BOXLITE_SANDBOX_HTTPS_PROXY: 'not a url',
+    BOXLITE_CAPABILITIES: 'workspace.git.materialize,workspace.git.deliver,transcript.retained-source',
   }));
   assert.equal(invalid.status, 'invalid');
   assert(invalid.errors.some((entry) => entry.includes('values must be non-empty')));
@@ -240,6 +426,9 @@ await test('config parser covers defaults, require helper, and invalid modes', (
   assert(invalid.errors.some((entry) => entry.includes('BOXLITE_TERMINAL_MODE')));
   assert(invalid.errors.some((entry) => entry.includes('BOXLITE_PROVIDER_PRIORITY')));
   assert(invalid.errors.some((entry) => entry.includes('BOXLITE_TIMEOUT_MS')));
+  assert(invalid.errors.some((entry) => entry.includes('BOXLITE_SANDBOX_PROXY must use')));
+  assert(invalid.errors.some((entry) => entry.includes('BOXLITE_SANDBOX_HTTPS_PROXY must be a valid proxy URL')));
+  assert(invalid.errors.some((entry) => entry.includes('workspace.git.materialize requires command.exec')));
   assert(invalid.errors.some((entry) => entry.includes('workspace.git.deliver requires command.exec')));
   assert(invalid.errors.some((entry) => entry.includes('transcript.retained-source requires command.exec')));
 
@@ -293,6 +482,53 @@ await test('provider covers fallback URLs, stale sandboxes, local descriptors, a
   assert.equal(descriptor.id, 'boxlite-local');
   assert.equal(descriptor.location, 'local');
 
+  const nativePrefixedProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_PROTOCOL_MODE: 'native',
+      BOXLITE_PATH_PREFIX: 'tenant',
+      BOXLITE_CAPABILITIES: 'command.exec',
+    }),
+    client: new MinimalBoxLiteClient(),
+  });
+  const nativePrefixedConnection = await nativePrefixedProvider.provision({
+    taskId: 'task-native-prefixed',
+    cloneSpec: null,
+  });
+  assert.equal(
+    nativePrefixedConnection.baseUrl,
+    'https://boxlite.example.test/v1/tenant/boxes/cap-boxlite-task-native-prefixed',
+  );
+
+  const nativeRootProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_PROTOCOL_MODE: 'native',
+      BOXLITE_PATH_PREFIX: '',
+      BOXLITE_CAPABILITIES: 'command.exec',
+    }),
+    client: new MinimalBoxLiteClient(),
+  });
+  const nativeRootConnection = await nativeRootProvider.provision({
+    taskId: 'task-native-root',
+    cloneSpec: null,
+  });
+  assert.equal(
+    nativeRootConnection.baseUrl,
+    'https://boxlite.example.test/v1/boxes/cap-boxlite-task-native-root',
+  );
+
+  const invalidCloneSpecProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({ BOXLITE_CAPABILITIES: 'command.exec,workspace.git.materialize' }),
+    client: new MinimalBoxLiteClient(),
+  });
+  await assert.rejects(
+    () => invalidCloneSpecProvider.provision({ taskId: 'task-invalid-clone-string', cloneSpec: 'bad' }),
+    /requires a clone spec with a url/,
+  );
+  await assert.rejects(
+    () => invalidCloneSpecProvider.provision({ taskId: 'task-invalid-clone-object', cloneSpec: {} }),
+    /requires a clone spec with a url/,
+  );
+
   const connection = await provider.provision({ taskId: 'task-fallback', cloneSpec: null });
   assert.equal(connection.baseUrl, 'https://boxlite.example.test/v1/sandboxes/cap-boxlite-task-fallback');
   assert.equal(connection.wsUrl, 'wss://boxlite.example.test/v1/sandboxes/cap-boxlite-task-fallback/terminal');
@@ -301,6 +537,66 @@ await test('provider covers fallback URLs, stale sandboxes, local descriptors, a
   assert.equal(await provider.readRolloutFromContainer('task-fallback'), null);
   assert.deepEqual(await provider.listReadoptable(), ['task-fallback']);
   assert.equal(await provider.reattach('missing'), null);
+
+  const capRestTerminalProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_PROTOCOL_MODE: 'cap-rest',
+      BOXLITE_TERMINAL_MODE: 'pty',
+      BOXLITE_CAPABILITIES: 'terminal.websocket,terminal.interactive,command.exec',
+    }),
+    client: new mod.FakeBoxLiteClient(),
+  });
+  assert.equal(await capRestTerminalProvider.getTerminalDescriptor('missing'), null);
+  await capRestTerminalProvider.provision({ taskId: 'task-cap-rest-terminal', cloneSpec: null });
+  assert.equal(
+    (await capRestTerminalProvider.getTerminalDescriptor('task-cap-rest-terminal')).wsUrl,
+    'boxlite://cap-boxlite-task-cap-rest-terminal/terminal',
+  );
+
+  const workspacePreflight = await mod.createBoxLiteRuntimePreflight({
+    requiredTools: [],
+    workspacePath: '/missing-workspace',
+  })({
+    provider: { getProviderId: () => 'boxlite-test' },
+    sandbox: { id: 'workspace-missing', image: 'img' },
+    executor: {
+      async exec() {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'missing workspace',
+          output: 'missing workspace',
+          timedOut: false,
+        };
+      },
+    },
+  });
+  assert.match(workspacePreflight.error, /required tools or workspace/);
+
+  const rootWorkspaceCommands = [];
+  const rootWorkspaceProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_WORKSPACE_PATH: '/workspace',
+      BOXLITE_CAPABILITIES: 'command.exec,workspace.git.materialize',
+    }),
+    client: new mod.FakeBoxLiteClient({
+      execHandler: (request) => {
+        rootWorkspaceCommands.push(request.command);
+        return {
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          output: '',
+          timedOut: false,
+        };
+      },
+    }),
+  });
+  await rootWorkspaceProvider.provision({
+    taskId: 'task-root-workspace',
+    cloneSpec: { url: 'https://example.test/repo.git' },
+  });
+  assert(rootWorkspaceCommands.some((command) => command.includes("mkdir -p '/'")));
 
   const sparseProvider = new mod.BoxLiteSandboxProvider({
     config: validConfig({ BOXLITE_CAPABILITIES: '' }),
