@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.25.8](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.7...v0.25.8) (2026-06-29)
+
+
+### Bug Fixes
+
+* **api:** preserve terminal utf8 and tmux geometry ([ba1ba68](https://github.com/Xeonice/cloud-agent-platform/commit/ba1ba686c6fef1682260e1f364c5edffe120352d))
+* **api:** preserve terminal utf8 and tmux geometry ([be3e460](https://github.com/Xeonice/cloud-agent-platform/commit/be3e460fd907d08fff2eb2469cb54871b9acc15c))
+
 ## [0.25.7](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.6...v0.25.7) (2026-06-29)
 
 
