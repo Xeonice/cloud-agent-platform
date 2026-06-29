@@ -243,6 +243,64 @@ await test('runtime preflight failure tears down the created sandbox and rejects
   assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-preflight-fail']);
 });
 
+await test('provider runs runtime setup hook after preflight', async () => {
+  const events = [];
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: (request) => {
+      events.push(`exec:${request.command}:${request.cwd ?? ''}`);
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        output: '',
+        timedOut: false,
+      };
+    },
+  });
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    preflight: async ({ executor, taskId }) => {
+      events.push(`preflight:${taskId}`);
+      await executor.exec({ command: 'preflight-check' });
+      return { status: 'passed', checkedAt: '2026-06-29T00:00:00.000Z' };
+    },
+    runtimeSetup: async ({ taskId, sandbox, executor, workspacePath }) => {
+      events.push(`setup:${taskId}:${sandbox.id}:${workspacePath}`);
+      await executor.exec({ command: 'write-runtime-setup', cwd: workspacePath });
+    },
+  });
+
+  const connection = await provider.provision({ taskId: 'task-runtime-setup', cloneSpec: null });
+
+  assert.equal(connection.baseUrl, 'boxlite://cap-boxlite-task-runtime-setup');
+  assert.deepEqual(events, [
+    'preflight:task-runtime-setup',
+    'exec:preflight-check:',
+    'setup:task-runtime-setup:cap-boxlite-task-runtime-setup:/home/gem/workspace',
+    'exec:write-runtime-setup:/home/gem/workspace',
+  ]);
+  assert.deepEqual(client.deletedSandboxIds, []);
+});
+
+await test('runtime setup hook failure tears down the created sandbox and rejects provision', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    preflight: () => ({ status: 'passed', checkedAt: '2026-06-29T00:00:00.000Z' }),
+    runtimeSetup: () => {
+      throw new Error('setup failed');
+    },
+  });
+
+  await assert.rejects(
+    () => provider.provision({ taskId: 'task-runtime-setup-fail', cloneSpec: null }),
+    /setup failed/,
+  );
+  assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-runtime-setup-fail']);
+});
+
 await test('provider materializes git workspace when cloneSpec is present', async () => {
   const commands = [];
   const client = new mod.FakeBoxLiteClient({

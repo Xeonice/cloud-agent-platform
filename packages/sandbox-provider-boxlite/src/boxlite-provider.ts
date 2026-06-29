@@ -41,6 +41,7 @@ export interface BoxLiteProviderOptions {
   readonly config: BoxLiteProviderConfig;
   readonly client?: BoxLiteClient;
   readonly preflight?: BoxLiteRuntimePreflight;
+  readonly runtimeSetup?: BoxLiteRuntimeSetup;
 }
 
 export interface BoxLiteProviderDescriptorOptions extends BoxLiteProviderOptions {
@@ -68,6 +69,7 @@ export type BoxLiteProviderDescriptorFromEnvResult =
     };
 
 export interface BoxLiteRuntimePreflightContext {
+  readonly taskId: string;
   readonly provider: BoxLiteSandboxProvider;
   readonly sandbox: BoxLiteSandbox;
   readonly executor: SandboxCommandExecutor;
@@ -77,6 +79,17 @@ export interface BoxLiteRuntimePreflightContext {
 export type BoxLiteRuntimePreflight = (
   context: BoxLiteRuntimePreflightContext,
 ) => Promise<SandboxPreflightResult> | SandboxPreflightResult;
+
+export interface BoxLiteRuntimeSetupContext {
+  readonly taskId: string;
+  readonly sandbox: BoxLiteSandbox;
+  readonly executor: SandboxCommandExecutor;
+  readonly workspacePath: string;
+}
+
+export type BoxLiteRuntimeSetup = (
+  context: BoxLiteRuntimeSetupContext,
+) => Promise<void> | void;
 
 export interface BoxLiteRuntimePreflightOptions {
   readonly requiredTools: readonly string[];
@@ -99,6 +112,7 @@ export class BoxLiteSandboxProvider<
   private readonly config: BoxLiteProviderConfig;
   private readonly client: BoxLiteClient;
   private readonly preflight?: BoxLiteRuntimePreflight;
+  private readonly runtimeSetup?: BoxLiteRuntimeSetup;
   private readonly runs = new Map<string, BoxLiteProvisionedRun>();
 
   constructor(options: BoxLiteProviderOptions) {
@@ -113,6 +127,7 @@ export class BoxLiteSandboxProvider<
         pathPrefix: options.config.pathPrefix,
       });
     this.preflight = options.preflight;
+    this.runtimeSetup = options.runtimeSetup;
     assertClientSupportsCapabilities(this.client, options.config.capabilities);
   }
 
@@ -149,10 +164,11 @@ export class BoxLiteSandboxProvider<
       },
     });
     const connection = this.connectionForSandbox(ctx.taskId, sandbox);
+    const executor = this.createCommandExecutor(sandbox.id);
     try {
       if (ctx.cloneSpec) {
         await materializeGitWorkspace({
-          executor: this.createCommandExecutor(sandbox.id),
+          executor,
           workspacePath: this.config.workspacePath,
           cloneSpec: requireGitCloneSpec(ctx.cloneSpec),
         });
@@ -161,6 +177,12 @@ export class BoxLiteSandboxProvider<
       if (preflight.status === 'failed') {
         throw new Error(preflight.error ?? `BoxLite runtime preflight failed for task ${ctx.taskId}`);
       }
+      await this.runtimeSetup?.({
+        taskId: ctx.taskId,
+        sandbox,
+        executor,
+        workspacePath: this.config.workspacePath,
+      });
       const run: BoxLiteProvisionedRun = {
         taskId: ctx.taskId,
         sandbox,
@@ -387,6 +409,7 @@ export class BoxLiteSandboxProvider<
       };
     }
     return this.preflight({
+      taskId,
       provider: this as unknown as BoxLiteSandboxProvider,
       sandbox,
       executor: this.createCommandExecutor(sandbox.id),
