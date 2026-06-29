@@ -1,4 +1,4 @@
-import { Global, Module } from '@nestjs/common';
+import { Global, Logger, Module } from '@nestjs/common';
 import {
   SandboxProviderRouter,
   createBoxLiteRuntimePreflight,
@@ -7,7 +7,9 @@ import {
   defineLocalSandboxProvider,
   readBoxLiteProviderConfig,
   requiredToolsForBoxLiteCapabilities,
+  scrubSandboxCommandOutput,
   type RoutableSandboxProvider,
+  type SandboxCommandExecutor,
   type SandboxProviderDescriptor,
 } from '@cap/sandbox';
 import { AioSandboxProvider } from './aio-sandbox.provider';
@@ -16,7 +18,11 @@ import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
 import { PrismaCodexAuthSource } from './prisma-codex-auth-source';
 import { PROVISION_LOOKUP } from './provision-lookup.port';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
-import type { RuntimeId } from '../agent-runtime/agent-runtime.port';
+import type {
+  AgentRuntime,
+  RuntimeId,
+  SandboxSetupCommand,
+} from '../agent-runtime/agent-runtime.port';
 import { ForgeModule } from '../forge/forge.module';
 import type { TranscriptSource } from './transcript-source';
 import type { CloneSpec } from './provision-lookup.port';
@@ -33,6 +39,7 @@ import type { CloneSpec } from './provision-lookup.port';
 import {
   RUNTIME_REGISTRY,
   IntegrationRuntimeRegistry,
+  type RuntimeRegistry,
 } from '../agent-runtime/agent-runtime.integration';
 import {
   CLAUDE_AUTH_SOURCE,
@@ -50,6 +57,7 @@ import { SandboxRunOwnerService } from './sandbox-run-owner.service';
 import {
   RUNTIME_MATERIAL_RESOLVER_REGISTRY,
   createDefaultRuntimeMaterialResolverRegistry,
+  type RuntimeMaterialResolverRegistry,
 } from './runtime-material-resolver';
 import {
   explicitProviderFamilyLabel,
@@ -59,6 +67,7 @@ import {
   readConfiguredSandboxProviderFamily,
 } from './sandbox-provider-family';
 import { readBoxLiteRuntimeRequiredTools } from './boxlite-runtime-tools';
+import type { ProvisionLookup } from './provision-lookup.port';
 
 /**
  * Sandbox-provider DI wiring (sandbox-provider-port 9.1, integration 9.1b).
@@ -106,8 +115,24 @@ import { readBoxLiteRuntimeRequiredTools } from './boxlite-runtime-tools';
       useFactory: (
         aio: AioSandboxProvider,
         ownerStore: SandboxRunOwnerService,
-      ): SandboxProvider => buildConfiguredSandboxProvider(aio, ownerStore),
-      inject: [AioSandboxProvider, SandboxRunOwnerService],
+        runtimes: RuntimeRegistry,
+        materialResolvers: RuntimeMaterialResolverRegistry,
+        lookup: ProvisionLookup,
+      ): SandboxProvider =>
+        buildConfiguredSandboxProvider(
+          aio,
+          ownerStore,
+          runtimes,
+          materialResolvers,
+          lookup,
+        ),
+      inject: [
+        AioSandboxProvider,
+        SandboxRunOwnerService,
+        RUNTIME_REGISTRY,
+        RUNTIME_MATERIAL_RESOLVER_REGISTRY,
+        PROVISION_LOOKUP,
+      ],
     },
     // add-claude-code-runtime Track 2/3 + pixel-restore-console-to-od Track 3 —
     // the Claude OAuth-token source. Now SETTINGS-BACKED (`PrismaClaudeAuthSource`,
@@ -178,6 +203,9 @@ type ApiRoutableSandboxProvider = RoutableSandboxProvider<
 function buildConfiguredSandboxProvider(
   aio: AioSandboxProvider,
   ownerStore: SandboxRunOwnerService,
+  runtimes: RuntimeRegistry,
+  materialResolvers: RuntimeMaterialResolverRegistry,
+  lookup: ProvisionLookup,
 ): SandboxProvider {
   const providerFamily = readConfiguredSandboxProviderFamily();
   const providers: SandboxProviderDescriptor<ApiRoutableSandboxProvider>[] = [];
@@ -230,6 +258,15 @@ function buildConfiguredSandboxProvider(
           ),
           workspacePath: boxlite.config.workspacePath,
         }),
+        runtimeSetup: ({ taskId, executor, workspacePath }) =>
+          runBoxLiteRuntimeSetup({
+            taskId,
+            executor,
+            workspacePath,
+            runtimes,
+            materialResolvers,
+            lookup,
+          }),
       }),
     );
   }
@@ -246,4 +283,73 @@ function buildConfiguredSandboxProvider(
 
 function mergeToolLists(...lists: readonly (readonly string[])[]): readonly string[] {
   return [...new Set(lists.flat())].sort();
+}
+
+const boxLiteRuntimeSetupLogger = new Logger('BoxLiteRuntimeSetup');
+
+interface BoxLiteRuntimeSetupArgs {
+  readonly taskId: string;
+  readonly executor: SandboxCommandExecutor;
+  readonly workspacePath: string;
+  readonly runtimes: RuntimeRegistry;
+  readonly materialResolvers: RuntimeMaterialResolverRegistry;
+  readonly lookup: ProvisionLookup;
+}
+
+async function runBoxLiteRuntimeSetup(args: BoxLiteRuntimeSetupArgs): Promise<void> {
+  const runtime = await resolveBoxLiteRuntime(args.runtimes, args.taskId);
+  const [material, prompt] = await Promise.all([
+    args.materialResolvers.resolve(runtime, { taskId: args.taskId }),
+    args.lookup.getTaskPrompt(args.taskId),
+  ]);
+  const plan = runtime.sandboxSetupCommands(
+    {
+      taskId: args.taskId,
+      workspaceDir: args.workspacePath,
+      prompt: prompt ?? null,
+    },
+    material,
+  );
+  if (!plan.ok) {
+    throw new Error(
+      `runtime "${runtime.id}" setup for task ${args.taskId} failed: ${plan.reason}`,
+    );
+  }
+
+  for (const { command, tolerateUnresolvedExit } of plan.commands) {
+    const { exitCode, output } = await args.executor.exec({ command });
+    if (boxLiteSetupCommandFailed(exitCode, tolerateUnresolvedExit)) {
+      const scrubbed = scrubSandboxCommandOutput(output).trim();
+      throw new Error(
+        `runtime "${runtime.id}" setup for task ${args.taskId} failed: exit_code ${exitCode}` +
+          (scrubbed ? ` — ${scrubbed}` : ''),
+      );
+    }
+  }
+  boxLiteRuntimeSetupLogger.debug(
+    `provisioned BoxLite runtime "${runtime.id}" setup for task ${args.taskId} (${plan.commands.length} command(s))`,
+  );
+}
+
+async function resolveBoxLiteRuntime(
+  runtimes: RuntimeRegistry,
+  taskId: string,
+): Promise<AgentRuntime> {
+  try {
+    return await runtimes.resolveForTask(taskId);
+  } catch (err) {
+    boxLiteRuntimeSetupLogger.warn(
+      `could not resolve AgentRuntime for BoxLite task ${taskId} (defaulting to codex): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return runtimes.resolve(null);
+  }
+}
+
+function boxLiteSetupCommandFailed(
+  exitCode: number,
+  tolerateUnresolvedExit: SandboxSetupCommand['tolerateUnresolvedExit'],
+): boolean {
+  return Number.isNaN(exitCode) ? !tolerateUnresolvedExit : exitCode !== 0;
 }
