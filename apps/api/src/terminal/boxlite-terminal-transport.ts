@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { StringDecoder } from 'node:string_decoder';
 import WebSocket from 'ws';
 import type {
   SandboxTerminalEndpointDescriptor,
@@ -25,6 +26,8 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
   private readonly closeListeners = new Set<() => void>();
   private readonly errorListeners = new Set<(error: Error) => void>();
   private readonly config: BoxLiteTerminalConfig;
+  private readonly stdoutDecoder = new StringDecoder('utf8');
+  private readonly stderrDecoder = new StringDecoder('utf8');
   private socket: WebSocket | null = null;
   private state: TerminalTransportReadyState = 'connecting';
 
@@ -111,6 +114,7 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
       });
       ws.on('message', (raw) => this.onMessage(raw));
       ws.on('close', () => {
+        this.flushOutputDecoders();
         this.state = 'closed';
         for (const listener of this.closeListeners) listener();
       });
@@ -167,15 +171,36 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
     const payload = buffer.subarray(1);
     switch (channel) {
       case STDOUT_CHANNEL:
+        this.emitDecodedOutput(this.stdoutDecoder, payload);
+        break;
       case STDERR_CHANNEL:
-        this.emitFrame({ type: 'output', data: payload.toString('utf8') });
+        this.emitDecodedOutput(this.stderrDecoder, payload);
         break;
       case EXIT_CHANNEL:
+        this.flushOutputDecoders();
         this.emitFrame({ type: 'exit', data: payload.toString('utf8') });
         this.close();
         break;
       default:
         break;
+    }
+  }
+
+  private emitDecodedOutput(decoder: StringDecoder, payload: Buffer): void {
+    const data = decoder.write(payload);
+    if (data.length > 0) {
+      this.emitFrame({ type: 'output', data });
+    }
+  }
+
+  private flushOutputDecoders(): void {
+    const stdout = this.stdoutDecoder.end();
+    if (stdout.length > 0) {
+      this.emitFrame({ type: 'output', data: stdout });
+    }
+    const stderr = this.stderrDecoder.end();
+    if (stderr.length > 0) {
+      this.emitFrame({ type: 'output', data: stderr });
     }
   }
 

@@ -83,7 +83,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
   /**
    * Build the detached-tmux launch line for Claude (task 2.4):
    *
-   *   tmux new-session -d -s task<id> -c <workspace> \
+   *   tmux -u new-session -d -s task<id> -c <workspace> \
    *     'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 CLAUDE_CODE_SANDBOXED=1 \
    *      CLAUDE_CONFIG_DIR=/home/gem/.claude \
    *      . <auth-env-file>; P="$(cat <prompt-file>)"; \
