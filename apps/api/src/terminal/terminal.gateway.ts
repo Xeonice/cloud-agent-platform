@@ -84,7 +84,11 @@ import {
   buildCastEventLine,
   castResizeData,
 } from './cast-writer';
-import { AioPtyClient, type AioExitStatus } from './aio-pty-client';
+import {
+  AioPtyClient,
+  type AioExitStatus,
+  type AioPtyClientMode,
+} from './aio-pty-client';
 import type { AgentTerminalPty } from './agent-terminal-pty';
 import { buildTerminalTransportFactory } from './terminal-transport-selection';
 import { buildSandboxCommandExecutor } from '../sandbox/sandbox-command-executor';
@@ -219,6 +223,11 @@ export interface TerminalSession {
   readonly taskId: string;
   readonly pty: TerminalPty;
   readonly snapshots: SnapshotManager;
+}
+
+export interface OpenTerminalSessionOptions {
+  readonly mode?: AioPtyClientMode;
+  readonly recordExit?: boolean;
 }
 
 /**
@@ -787,6 +796,7 @@ export class TerminalGateway
   openSession(
     connection: SandboxConnection,
     selectedRun?: SelectedSandboxRun | null,
+    options: OpenTerminalSessionOptions = {},
   ): TerminalSession {
     const { taskId, wsUrl, baseUrl } = connection;
     const existing = this.sessions.get(taskId);
@@ -802,14 +812,16 @@ export class TerminalGateway
       taskId,
       wsUrl,
       baseUrl,
-      (status) => this.onSessionExit(taskId, status),
+      options.recordExit === false
+        ? undefined
+        : (status) => this.onSessionExit(taskId, status),
       // Connect-in execution trigger with create-vs-attach (D2 / 2.5): once the
       // AIO shell is ready, probe the detached session `task<taskId>` — ATTACH if
       // it is already alive (re-adopt a still-running codex), else launch a FRESH
       // detached session. provision() has already injected the codex auth.json into
       // the container by the time we get here, so a fresh launch authenticates on
       // startup.
-      'launch-or-attach',
+      options.mode ?? 'launch-or-attach',
       // 3.2 — the runtime resolver: the bridge calls this ONCE on `ready` to resolve
       // the task's selected AgentRuntime (claude-code | codex) and dispatch its
       // launch/autosubmit/exit-detection seams. Best-effort + lazily bound so a

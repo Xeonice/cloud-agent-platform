@@ -24,6 +24,8 @@ export interface BoxLiteProviderEnv {
   readonly BOXLITE_API_TOKEN?: string;
   readonly BOXLITE_IMAGE?: string;
   readonly BOXLITE_IMAGE_MAP?: string;
+  readonly BOXLITE_ROOTFS_PATH?: string;
+  readonly BOXLITE_ROOTFS_PATH_MAP?: string;
   readonly BOXLITE_PROVIDER_ID?: string;
   readonly BOXLITE_PROVIDER_PRIORITY?: string;
   readonly BOXLITE_PROVIDER_LOCATION?: string;
@@ -48,6 +50,8 @@ export interface BoxLiteProviderConfig {
   readonly apiToken: string;
   readonly defaultImage: string;
   readonly imageByRuntime: Readonly<Record<string, string>>;
+  readonly defaultRootfsPath: string;
+  readonly rootfsPathByRuntime: Readonly<Record<string, string>>;
   readonly priority: number;
   readonly location: SandboxProviderLocation;
   readonly capabilities: readonly SandboxProviderCapability[];
@@ -61,6 +65,16 @@ export interface BoxLiteProviderConfig {
   readonly terminalMode: BoxLiteTerminalMode;
   readonly timeoutMs: number;
 }
+
+export type BoxLiteSandboxSource =
+  | {
+      readonly kind: 'image';
+      readonly value: string;
+    }
+  | {
+      readonly kind: 'rootfs';
+      readonly value: string;
+    };
 
 export type BoxLiteProviderConfigResult =
   | {
@@ -91,11 +105,11 @@ export function readBoxLiteProviderConfig(
   const endpoint = parseEndpoint(endpointRaw, errors);
   const apiToken = requireNonEmpty(env.BOXLITE_API_TOKEN, 'BOXLITE_API_TOKEN', errors);
   const imageByRuntime = parseImageMap(env.BOXLITE_IMAGE_MAP, errors);
+  const rootfsPathByRuntime = parsePathMap(env.BOXLITE_ROOTFS_PATH_MAP, 'BOXLITE_ROOTFS_PATH_MAP', errors);
   const defaultImage =
     nonEmpty(env.BOXLITE_IMAGE) ?? imageByRuntime.default ?? '';
-  if (!defaultImage) {
-    errors.push('BOXLITE_IMAGE must be set or BOXLITE_IMAGE_MAP must include a default image');
-  }
+  const defaultRootfsPath =
+    nonEmpty(env.BOXLITE_ROOTFS_PATH) ?? rootfsPathByRuntime.default ?? '';
 
   const providerId =
     nonEmpty(env.BOXLITE_PROVIDER_ID) ?? BOXLITE_SANDBOX_PROVIDER_ID;
@@ -130,6 +144,14 @@ export function readBoxLiteProviderConfig(
   if (!workspacePath.startsWith('/')) {
     errors.push('BOXLITE_WORKSPACE_PATH must be an absolute path');
   }
+  validateSandboxSources({
+    defaultImage,
+    imageByRuntime,
+    defaultRootfsPath,
+    rootfsPathByRuntime,
+    protocolMode,
+    errors,
+  });
   validateCapabilityCombinations(capabilities, terminalMode, errors);
 
   if (errors.length > 0) {
@@ -144,6 +166,8 @@ export function readBoxLiteProviderConfig(
       apiToken,
       defaultImage,
       imageByRuntime,
+      defaultRootfsPath,
+      rootfsPathByRuntime,
       priority,
       location,
       capabilities,
@@ -180,6 +204,38 @@ export function resolveBoxLiteImage(args: {
       ? undefined
       : args.config.imageByRuntime[args.runtimeId];
   return runtimeImage ?? args.config.defaultImage;
+}
+
+export function resolveBoxLiteSandboxSource(args: {
+  readonly config: Pick<
+    BoxLiteProviderConfig,
+    'defaultImage' | 'imageByRuntime' | 'defaultRootfsPath' | 'rootfsPathByRuntime'
+  >;
+  readonly runtimeId?: string | null;
+}): BoxLiteSandboxSource {
+  const runtimeId = args.runtimeId ?? null;
+  const image =
+    runtimeId === null
+      ? undefined
+      : args.config.imageByRuntime[runtimeId];
+  const rootfsPath =
+    runtimeId === null
+      ? undefined
+      : args.config.rootfsPathByRuntime[runtimeId];
+  const resolvedImage = image ?? args.config.defaultImage;
+  const resolvedRootfsPath = rootfsPath ?? args.config.defaultRootfsPath;
+  if (resolvedImage && resolvedRootfsPath) {
+    throw new Error(
+      `BoxLite runtime ${runtimeId ?? 'default'} resolves to both image and rootfs path`,
+    );
+  }
+  if (resolvedRootfsPath) {
+    return { kind: 'rootfs', value: resolvedRootfsPath };
+  }
+  if (resolvedImage) {
+    return { kind: 'image', value: resolvedImage };
+  }
+  throw new Error(`BoxLite runtime ${runtimeId ?? 'default'} has no image or rootfs path`);
 }
 
 function parseEndpoint(raw: string, errors: string[]): string {
@@ -227,6 +283,49 @@ function parseImageMap(
   return out;
 }
 
+function parsePathMap(
+  raw: string | undefined,
+  label: string,
+  errors: string[],
+): Readonly<Record<string, string>> {
+  const parsed = parseStringMap(raw, label, errors);
+  for (const [runtime, value] of Object.entries(parsed)) {
+    if (!value.startsWith('/')) {
+      errors.push(`${label} entry for ${runtime} must be an absolute path`);
+    }
+  }
+  return parsed;
+}
+
+function parseStringMap(
+  raw: string | undefined,
+  label: string,
+  errors: string[],
+): Readonly<Record<string, string>> {
+  const value = raw?.trim();
+  if (!value) return {};
+  if (value.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(value) as Record<string, unknown>;
+      return sanitizeStringMap(parsed, label, errors);
+    } catch {
+      errors.push(`${label} must be valid JSON when it starts with "{"`);
+      return {};
+    }
+  }
+
+  const out: Record<string, string> = {};
+  for (const entry of value.split(',')) {
+    const [runtime, mappedValue, ...rest] = entry.split('=');
+    if (rest.length > 0 || !runtime?.trim() || !mappedValue?.trim()) {
+      errors.push(`${label} entry must be runtime=value, received: ${entry}`);
+      continue;
+    }
+    out[runtime.trim()] = mappedValue.trim();
+  }
+  return out;
+}
+
 function sanitizeStringMap(
   raw: Record<string, unknown>,
   label: string,
@@ -241,6 +340,36 @@ function sanitizeStringMap(
     out[key.trim()] = value.trim();
   }
   return out;
+}
+
+function validateSandboxSources(args: {
+  readonly defaultImage: string;
+  readonly imageByRuntime: Readonly<Record<string, string>>;
+  readonly defaultRootfsPath: string;
+  readonly rootfsPathByRuntime: Readonly<Record<string, string>>;
+  readonly protocolMode: BoxLiteProtocolMode;
+  readonly errors: string[];
+}): void {
+  if (!args.defaultImage && !args.defaultRootfsPath) {
+    args.errors.push(
+      'BOXLITE_IMAGE/BOXLITE_IMAGE_MAP or BOXLITE_ROOTFS_PATH/BOXLITE_ROOTFS_PATH_MAP must provide a default sandbox source',
+    );
+  }
+  if (args.defaultImage && args.defaultRootfsPath) {
+    args.errors.push('BoxLite default sandbox source is ambiguous: set either BOXLITE_IMAGE or BOXLITE_ROOTFS_PATH, not both');
+  }
+  const runtimes = new Set([
+    ...Object.keys(args.imageByRuntime),
+    ...Object.keys(args.rootfsPathByRuntime),
+  ]);
+  for (const runtime of runtimes) {
+    if (args.imageByRuntime[runtime] && args.rootfsPathByRuntime[runtime]) {
+      args.errors.push(`BoxLite runtime ${runtime} has both image and rootfs path configured`);
+    }
+  }
+  if ((args.defaultRootfsPath || Object.keys(args.rootfsPathByRuntime).length > 0) && args.protocolMode !== 'native') {
+    args.errors.push('BOXLITE_ROOTFS_PATH requires BOXLITE_PROTOCOL_MODE=native');
+  }
 }
 
 function parseSandboxEnv(

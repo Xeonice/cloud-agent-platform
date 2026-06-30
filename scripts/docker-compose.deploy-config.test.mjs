@@ -147,6 +147,12 @@ assert(
     /cap-boxlite-sandbox/.test(releaseSh),
   'release.sh: verifies release images (cap-api, cap-web, cap-aio-sandbox, cap-boxlite-sandbox)',
 );
+assert(
+  /cap-image-assets\.json/.test(releaseSh) &&
+    /cap-aio-sandbox-\$\{VERSION\}-linux-amd64\.docker\.tar\.zst/.test(releaseSh) &&
+    /cap-boxlite-sandbox-\$\{VERSION\}-linux-arm64\.oci\.tar\.zst/.test(releaseSh),
+  'release.sh: verifies sandbox image Release assets',
+);
 
 // The api image's isolated Docker build must build the sandbox facade before
 // Nest compiles @cap/api; otherwise TS resolves @cap/sandbox to a missing dist/.

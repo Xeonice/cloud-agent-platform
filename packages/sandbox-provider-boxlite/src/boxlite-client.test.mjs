@@ -98,6 +98,62 @@ await test('REST client creates a sandbox with bearer auth and normalized URL', 
   });
 });
 
+await test('native REST client creates a sandbox from rootfs_path', async () => {
+  const { fetch, calls } = makeFetch({
+    'POST /v1/default/boxes': response(200, {
+      box_id: 'rootfs-box',
+      task_id: 'task-rootfs',
+      status: 'configured',
+      rootfs_path: '/var/lib/cap/rootfs',
+    }),
+    'POST /v1/default/boxes/rootfs-box/start': response(200, {
+      box_id: 'rootfs-box',
+      task_id: 'task-rootfs',
+      status: 'running',
+      rootfs_path: '/var/lib/cap/rootfs',
+    }),
+  });
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    fetch,
+  });
+
+  const sandbox = await client.createSandbox({
+    taskId: 'task-rootfs',
+    sandboxId: 'rootfs-box',
+    rootfsPath: '/var/lib/cap/rootfs',
+  });
+
+  assert.equal(sandbox.id, 'rootfs-box');
+  assert.equal(sandbox.rootfsPath, '/var/lib/cap/rootfs');
+  assert.equal(calls[0].path, '/v1/default/boxes');
+  assert.deepEqual(calls[0].body, {
+    name: 'rootfs-box',
+    rootfs_path: '/var/lib/cap/rootfs',
+  });
+});
+
+await test('rootfsPath is rejected for cap-rest and ambiguous create sources fail', async () => {
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'cap-rest',
+    fetch: makeFetch({}).fetch,
+  });
+  await assert.rejects(
+    () => client.createSandbox({ taskId: 'task', rootfsPath: '/rootfs' }),
+    /only supported with native protocol mode/,
+  );
+  await assert.rejects(
+    () => client.createSandbox({ taskId: 'task', image: 'img', rootfsPath: '/rootfs' }),
+    /either image or rootfsPath, not both/,
+  );
+  await assert.rejects(
+    () => client.createSandbox({ taskId: 'task' }),
+    /requires image or rootfsPath/,
+  );
+});
+
 await test('REST client exec normalizes nested and snake-case responses', async () => {
   const { fetch, calls } = makeFetch({
     'POST /v1/sandboxes/box-task-1/exec': response(200, {

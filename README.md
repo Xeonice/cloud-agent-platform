@@ -83,7 +83,8 @@ installer (requires Docker + a host `docker.sock`):
 > Docker/Compose install is required. macOS defaults to the BoxLite sandbox
 > provider, so set
 > `CAP_SANDBOX_PROVIDER=boxlite` plus `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`,
-> and `BOXLITE_IMAGE` before running. Linux defaults to AIO. The script is served
+> before running; `BOXLITE_IMAGE` is optional because the installer can stage the
+> matching BoxLite rootfs from GitHub Release assets. Linux defaults to AIO. The script is served
 > as plain text so you can read it first; the equivalent manual path is
 > `docker-compose.prod.yml` + a local `.env`, not `git clone && make up`. See the
 > public site and the
@@ -94,7 +95,7 @@ installer (requires Docker + a host `docker.sock`):
 > release-image path:
 >
 > ```text
-> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, run the release-image install path, and ensure Docker is usable: install Docker/Compose only if absent, leave existing usable Docker untouched, and stop with remediation if docker.sock/daemon/context is unreachable. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.
+> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, run the release-image install path, and ensure Docker is usable: install Docker/Compose only if absent, leave existing usable Docker untouched, and stop with remediation if docker.sock/daemon/context is unreachable. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT and BOXLITE_API_TOKEN are set before running; leave BOXLITE_IMAGE unset to use the matching Release-asset rootfs, or set BOXLITE_IMAGE to force registry image mode. On Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.
 > ```
 >
 > Claude Code follows the readable scripts and you can take over at any point.
@@ -124,8 +125,9 @@ Notes:
   (`cap-aio-sandbox:pinned`), which is **build-only** — an actual
   `cap-aio-<taskId>` sandbox is provisioned per task when you create one.
 - macOS `make up` defaults to BoxLite. Because CAP does not vendor a BoxLite
-  daemon yet, set `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and `BOXLITE_IMAGE`
-  for your BoxLite control plane before running it. When BoxLite runs on the
+  daemon yet, set `BOXLITE_ENDPOINT` and `BOXLITE_API_TOKEN` for your BoxLite
+  control plane before running it; set either `BOXLITE_IMAGE` or
+  `BOXLITE_ROOTFS_PATH` as the sandbox source. When BoxLite runs on the
   Docker/Colima host, use the container-facing endpoint
   `BOXLITE_ENDPOINT=http://host.docker.internal:7331`; the installer uses
   `BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331` for host-side probes.

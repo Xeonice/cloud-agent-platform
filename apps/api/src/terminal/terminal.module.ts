@@ -5,11 +5,14 @@ import { WriteLockModule } from '../write-lock/write-lock.module';
 import { TasksModule } from '../tasks/tasks.module';
 import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { AuthModule } from '../auth/auth.module';
+import { SandboxModule } from '../sandbox/sandbox.module';
 import { TERMINAL_GATEWAY_TOKEN } from '../guardrails/guardrails.service';
 import {
   AioApprovalEnforcer,
   type ApprovalRouter,
 } from '../sandbox/aio-approval-enforcer';
+import { ProviderTerminalStoryController } from './provider-terminal-story.controller';
+import { ProviderTerminalStoryService } from './provider-terminal-story.service';
 
 /**
  * DI token for the cap-controlled approval enforcement FALLBACK (6.9). Cap-owned
@@ -63,10 +66,11 @@ export const AIO_APPROVAL_ENFORCER = Symbol('AioApprovalEnforcer');
  * any task stream.
  */
 @Module({
-  imports: [WriteLockModule, TasksModule, GuardrailsModule, AuthModule],
-  controllers: [ApprovalsController],
+  imports: [WriteLockModule, TasksModule, GuardrailsModule, AuthModule, SandboxModule],
+  controllers: [ApprovalsController, ProviderTerminalStoryController],
   providers: [
     TerminalGateway,
+    ProviderTerminalStoryService,
     // Re-provide the gateway under the neutral token GuardrailsService resolves
     // by, so the guardrails->gateway `openSession` seam (4.2) needs no value
     // import of the concrete gateway class.
@@ -86,6 +90,6 @@ export const AIO_APPROVAL_ENFORCER = Symbol('AioApprovalEnforcer');
       inject: [TerminalGateway],
     },
   ],
-  exports: [TerminalGateway, AIO_APPROVAL_ENFORCER],
+  exports: [TerminalGateway, AIO_APPROVAL_ENFORCER, ProviderTerminalStoryService],
 })
 export class TerminalModule {}

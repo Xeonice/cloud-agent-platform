@@ -7,6 +7,7 @@ export interface BoxLiteSandbox {
   readonly taskId?: string;
   readonly state?: string;
   readonly image?: string;
+  readonly rootfsPath?: string;
   readonly baseUrl?: string;
   readonly terminalUrl?: string;
   readonly metadata?: BoxLiteSandboxMetadata;
@@ -15,7 +16,8 @@ export interface BoxLiteSandbox {
 export interface BoxLiteCreateSandboxRequest {
   readonly taskId: string;
   readonly sandboxId?: string;
-  readonly image: string;
+  readonly image?: string;
+  readonly rootfsPath?: string;
   readonly location?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly labels?: Readonly<Record<string, string>>;
@@ -123,13 +125,16 @@ export class BoxLiteRestClient implements BoxLiteClient {
   }
 
   async createSandbox(request: BoxLiteCreateSandboxRequest): Promise<BoxLiteSandbox> {
+    validateSandboxSource(request);
     if (this.protocolMode === 'native') {
       const sandbox = parseSandbox(
         await this.requestJson(this.nativeBoxesPath(), {
           method: 'POST',
           body: {
             name: request.sandboxId ?? request.taskId,
-            image: request.image,
+            ...(request.rootfsPath
+              ? { rootfs_path: request.rootfsPath }
+              : { image: request.image }),
             env: request.env,
           },
         }),
@@ -139,6 +144,9 @@ export class BoxLiteRestClient implements BoxLiteClient {
           method: 'POST',
         }),
       );
+    }
+    if (request.rootfsPath) {
+      throw new Error('BoxLite rootfsPath create is only supported with native protocol mode');
     }
     return parseSandbox(
       await this.requestJson('/v1/sandboxes', {
@@ -393,6 +401,7 @@ export class FakeBoxLiteClient implements BoxLiteClient {
   }
 
   async createSandbox(request: BoxLiteCreateSandboxRequest): Promise<BoxLiteSandbox> {
+    validateSandboxSource(request);
     this.createCalls.push(request);
     const id = request.sandboxId ?? request.taskId;
     const sandbox: BoxLiteSandbox = {
@@ -400,6 +409,7 @@ export class FakeBoxLiteClient implements BoxLiteClient {
       taskId: request.taskId,
       state: 'running',
       image: request.image,
+      rootfsPath: request.rootfsPath,
       baseUrl: `boxlite://${id}`,
       terminalUrl: `boxlite://${id}/terminal`,
       metadata: request.metadata,
@@ -512,6 +522,12 @@ function parseSandbox(raw: unknown): BoxLiteSandbox {
           ? record.status
           : undefined,
     image: typeof record.image === 'string' ? record.image : undefined,
+    rootfsPath:
+      typeof record.rootfsPath === 'string'
+        ? record.rootfsPath
+        : typeof record.rootfs_path === 'string'
+          ? record.rootfs_path
+          : undefined,
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : undefined,
     terminalUrl: typeof record.terminalUrl === 'string' ? record.terminalUrl : undefined,
     metadata:
@@ -519,6 +535,15 @@ function parseSandbox(raw: unknown): BoxLiteSandbox {
         ? (record.metadata as BoxLiteSandboxMetadata)
         : undefined,
   };
+}
+
+function validateSandboxSource(request: BoxLiteCreateSandboxRequest): void {
+  if (request.image && request.rootfsPath) {
+    throw new Error('BoxLite createSandbox requires either image or rootfsPath, not both');
+  }
+  if (!request.image && !request.rootfsPath) {
+    throw new Error('BoxLite createSandbox requires image or rootfsPath');
+  }
 }
 
 function parseStartedExecution(

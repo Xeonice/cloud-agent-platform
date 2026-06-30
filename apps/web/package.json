@@ -11,6 +11,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:visual": "playwright test",
+    "terminal-stories:dev": "vite --config e2e/terminal-stories/vite.config.ts",
+    "test:terminal-stories": "playwright test --config playwright.terminal-stories.config.ts",
+    "provider-terminal-story:dev": "vite --config e2e/provider-terminal-story/vite.config.ts",
+    "test:provider-terminal-story": "playwright test --config playwright.provider-terminal-story.config.ts",
     "lint": "eslint ."
   },
   "dependencies": {

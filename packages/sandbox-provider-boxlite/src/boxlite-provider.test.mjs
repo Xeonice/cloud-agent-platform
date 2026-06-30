@@ -94,6 +94,54 @@ await test('config parses image map priority location and explicit capabilities'
     claude: 'cap-boxlite-claude:1',
   });
   assert.equal(mod.resolveBoxLiteImage({ config: result.config, runtimeId: 'claude' }), 'cap-boxlite-claude:1');
+  assert.deepEqual(mod.resolveBoxLiteSandboxSource({ config: result.config, runtimeId: 'claude' }), {
+    kind: 'image',
+    value: 'cap-boxlite-claude:1',
+  });
+});
+
+await test('config supports rootfs paths and rejects ambiguous sources', () => {
+  const rootfs = mod.readBoxLiteProviderConfig({
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'token',
+    BOXLITE_ROOTFS_PATH: '/var/lib/cap/boxlite/default',
+    BOXLITE_ROOTFS_PATH_MAP: 'codex=/var/lib/cap/boxlite/codex',
+    BOXLITE_CAPABILITIES: 'command.exec',
+  });
+  assert.equal(rootfs.status, 'valid');
+  assert.equal(rootfs.config.defaultImage, '');
+  assert.equal(rootfs.config.defaultRootfsPath, '/var/lib/cap/boxlite/default');
+  assert.deepEqual(rootfs.config.rootfsPathByRuntime, {
+    codex: '/var/lib/cap/boxlite/codex',
+  });
+  assert.deepEqual(mod.resolveBoxLiteSandboxSource({ config: rootfs.config, runtimeId: 'codex' }), {
+    kind: 'rootfs',
+    value: '/var/lib/cap/boxlite/codex',
+  });
+
+  const ambiguous = mod.readBoxLiteProviderConfig({
+    ...validEnv(),
+    BOXLITE_ROOTFS_PATH: '/var/lib/cap/boxlite/default',
+  });
+  assert.equal(ambiguous.status, 'invalid');
+  assert(ambiguous.errors.some((entry) => entry.includes('ambiguous')));
+
+  const capRestRootfs = mod.readBoxLiteProviderConfig({
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'token',
+    BOXLITE_ROOTFS_PATH: '/var/lib/cap/boxlite/default',
+    BOXLITE_PROTOCOL_MODE: 'cap-rest',
+  });
+  assert.equal(capRestRootfs.status, 'invalid');
+  assert(capRestRootfs.errors.some((entry) => entry.includes('BOXLITE_PROTOCOL_MODE=native')));
+
+  const relative = mod.readBoxLiteProviderConfig({
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'token',
+    BOXLITE_ROOTFS_PATH_MAP: 'default=relative',
+  });
+  assert.equal(relative.status, 'invalid');
+  assert(relative.errors.some((entry) => entry.includes('absolute path')));
 });
 
 await test('config defaults to native protocol with default path prefix', () => {
@@ -205,6 +253,26 @@ await test('provider provision is task-scoped and idempotent', async () => {
   });
   assert.equal(await provider.sandboxExists('task-1'), true);
   assert.equal((await provider.reattach('task-1')).baseUrl, 'boxlite://box-task-1');
+});
+
+await test('provider provisions rootfs-backed sandboxes without an image source', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_IMAGE: '',
+      BOXLITE_ROOTFS_PATH: '/var/lib/cap/boxlite/rootfs',
+      BOXLITE_CAPABILITIES: 'command.exec',
+    }),
+    client,
+  });
+
+  const connection = await provider.provision({ taskId: 'task-rootfs', cloneSpec: null });
+  assert.equal(connection.baseUrl, 'boxlite://cap-boxlite-task-rootfs');
+  assert.equal(client.createCalls.length, 1);
+  assert.equal(client.createCalls[0].image, undefined);
+  assert.equal(client.createCalls[0].rootfsPath, '/var/lib/cap/boxlite/rootfs');
+  const run = await provider.getSelectedSandboxRun('task-rootfs');
+  assert.equal(run.preflight.image, '/var/lib/cap/boxlite/rootfs');
 });
 
 await test('provider exposes selected-run descriptors and internal BoxLite terminal only server-side', async () => {

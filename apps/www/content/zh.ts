@@ -43,7 +43,7 @@ export const zh: SiteContent = {
       blurb:
         "把这段话贴给 Claude Code。它会读发布镜像安装脚本，只在 Docker 缺失时安装，并用预构建产物把栈跑起来。",
       prompt:
-        "在这台机器上部署 cloud-agent-platform。先读取 https://{domain}/install.sh 和 https://{domain}/quick-deploy.sh，然后运行发布镜像安装路径，并确保 Docker 可用：只有 Docker/Compose 缺失时才安装，已有可用 Docker 不要动，如果 docker.sock/daemon/context 不可达就停止并给出修复步骤。不要 git clone，不要 make up，不要本地 build。默认使用最新 Release；如需固定版本设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN 已设置；BOXLITE_IMAGE 默认使用同版本 cap-boxlite-sandbox 发布镜像。Linux 默认 AIO。最后告诉我控制台地址、/version 返回值，以及脚本打印的管理员邮箱和密码。",
+        "在这台机器上部署 cloud-agent-platform。先读取 https://{domain}/install.sh 和 https://{domain}/quick-deploy.sh，然后运行发布镜像安装路径，并确保 Docker 可用：只有 Docker/Compose 缺失时才安装，已有可用 Docker 不要动，如果 docker.sock/daemon/context 不可达就停止并给出修复步骤。不要 git clone，不要 make up，不要本地 build。默认使用最新 Release；如需固定版本设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN 已设置；不设置 BOXLITE_IMAGE 时使用匹配版本的 Release-asset rootfs，也可以设置 BOXLITE_IMAGE 强制走 registry 镜像模式。Linux 默认 AIO。最后告诉我控制台地址、/version 返回值，以及脚本打印的管理员邮箱和密码。",
       copyLabel: "复制 Claude Code 提示词",
     },
     install: {
@@ -62,7 +62,7 @@ export const zh: SiteContent = {
           "# Linux/AIO 另带上：aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],
-        note: "install.sh 会委托 quick-deploy.sh，事实源是 docker-compose.prod.yml + GHCR 发布镜像。api/web 默认监听 0.0.0.0；公网 DNS/TLS/代理仍由你配置。",
+        note: "install.sh 会委托 quick-deploy.sh，事实源是 docker-compose.prod.yml + GHCR 发布镜像 + 匹配的 sandbox Release assets。api/web 默认监听 0.0.0.0；公网 DNS/TLS/代理仍由你配置。",
       },
     },
     prebuilt: {

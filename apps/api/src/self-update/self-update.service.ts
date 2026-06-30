@@ -52,6 +52,19 @@ export const CAP_SERVICES: readonly string[] = ['api', 'web', 'aio-sandbox-image
 export const PULL_ONLY_CAP_SERVICES: readonly string[] = ['aio-sandbox-image'];
 export const PULL_ONLY_SERVICES_ENV = 'SELF_UPDATE_PULL_ONLY_SERVICES';
 
+/** Sandbox image delivery mode persisted by quick-deploy / operator env. */
+export const SANDBOX_IMAGE_DELIVERY_ENV = 'CAP_SANDBOX_IMAGE_DELIVERY';
+export const SANDBOX_PROVIDER_ENV = 'CAP_SANDBOX_PROVIDER';
+export const SANDBOX_ASSET_DIR_ENV = 'CAP_SANDBOX_ASSET_DIR';
+export const RELEASES_REPO_ENV = 'GITHUB_RELEASES_REPO';
+export const RELEASE_ASSET_BASE_ENV = 'CAP_RELEASE_ASSET_BASE';
+export const BOXLITE_ROOTFS_PATH_ENV = 'BOXLITE_ROOTFS_PATH';
+export const BOXLITE_ROOTFS_PATH_MAP_ENV = 'BOXLITE_ROOTFS_PATH_MAP';
+export const BOXLITE_IMAGE_ENV = 'BOXLITE_IMAGE';
+export const BOXLITE_IMAGE_MAP_ENV = 'BOXLITE_IMAGE_MAP';
+export const BOXLITE_PROTOCOL_MODE_ENV = 'BOXLITE_PROTOCOL_MODE';
+export const AIO_PULL_ONLY_SERVICE = 'aio-sandbox-image';
+
 /** The `ghcr.io/<owner>/cap-*` namespace that marks a service as a cap unit to upgrade. */
 const CAP_IMAGE_RE = /(^|\/)ghcr\.io\/[^/]+\/cap-[^/:@\s]+/i;
 
@@ -344,7 +357,10 @@ export class SelfUpdateService {
     const projArgs = topo.project ? ['-p', topo.project] : [];
     const fileArgs = topo.composeFiles.flatMap((f) => ['-f', f]);
     const services = [...topo.services];
-    const pullServices = [...topo.pullServices];
+    const assetStaging = this.buildSandboxAssetStaging(target, topo);
+    const pullServices = assetStaging
+      ? topo.pullServices.filter((service) => service !== AIO_PULL_ONLY_SERVICE)
+      : [...topo.pullServices];
     const base = ['docker', 'compose', ...projArgs, ...fileArgs];
     // PULL the full cap pull set (running cap services PLUS the never-starts
     // pull-only sandbox stager, so its image is staged) but `up -d` ONLY the
@@ -366,7 +382,9 @@ export class SelfUpdateService {
     const pin =
       `( grep -v '^${CAP_VERSION_ENV}=' .env 2>/dev/null || true; ` +
       `echo '${CAP_VERSION_ENV}=${target}' ) > .env.captmp && mv .env.captmp .env`;
-    const script = `${ensure} && ${pin} && ${pull} && ${up}`;
+    const script = [ensure, assetStaging, pin, pull, up]
+      .filter((part): part is string => typeof part === 'string' && part.length > 0)
+      .join(' && ');
     return {
       target,
       project: topo.project,
@@ -378,6 +396,183 @@ export class SelfUpdateService {
       script,
     };
   }
+
+  /**
+   * Build the optional Release-asset staging step for deployments that explicitly
+   * opted into `CAP_SANDBOX_IMAGE_DELIVERY=release-assets`. Registry/legacy
+   * deployments intentionally return null so their pull-before-recreate behavior
+   * stays unchanged.
+   */
+  private buildSandboxAssetStaging(target: string, topo: UpdateTopology): string | null {
+    const delivery = normalizeSandboxImageDelivery(this.env[SANDBOX_IMAGE_DELIVERY_ENV]);
+    if (delivery !== 'release-assets') {
+      return null;
+    }
+    const provider = normalizeSandboxProvider(this.env[SANDBOX_PROVIDER_ENV]);
+    if (provider === 'control-plane') {
+      return buildEnvPersistScript({
+        [SANDBOX_IMAGE_DELIVERY_ENV]: 'release-assets',
+      });
+    }
+    const assetDir =
+      nonEmptyEnv(this.env[SANDBOX_ASSET_DIR_ENV]) ??
+      `${topo.workingDir.replace(/\/+$/, '')}/sandbox-assets`;
+    const releasesRepo =
+      nonEmptyEnv(this.env[RELEASES_REPO_ENV]) ?? 'Xeonice/cloud-agent-platform';
+    const releaseAssetBase =
+      nonEmptyEnv(this.env[RELEASE_ASSET_BASE_ENV]) ??
+      `https://github.com/${releasesRepo}/releases/download/${target}`;
+    return provider === 'boxlite'
+      ? buildBoxLiteAssetStagingScript({ target, assetDir, releaseAssetBase })
+      : buildAioAssetStagingScript({ target, assetDir, releaseAssetBase });
+  }
+}
+
+interface SandboxAssetScriptOptions {
+  readonly target: string;
+  readonly assetDir: string;
+  readonly releaseAssetBase: string;
+}
+
+function buildAioAssetStagingScript(options: SandboxAssetScriptOptions): string {
+  const asset = `cap-aio-sandbox-${options.target}-linux-amd64.docker.tar.zst`;
+  const image = `ghcr.io/xeonice/cap-aio-sandbox:${options.target}`;
+  const body = `
+target=${shQuote(options.target)}
+asset_dir=${shQuote(options.assetDir)}
+asset_base=${shQuote(options.releaseAssetBase)}
+asset=${shQuote(asset)}
+image=${shQuote(image)}
+cap_prepare_asset_tools
+cap_fetch_and_verify_asset "$target" "$asset_dir" "$asset_base" "$asset"
+asset_path="$asset_dir/downloads/$target/$asset"
+zstd -dc "$asset_path" | docker load >/dev/null
+docker image inspect "$image" >/dev/null
+cap_set_env_value ${SANDBOX_IMAGE_DELIVERY_ENV} release-assets
+`.trim();
+  return `sh -eu -c ${shQuote(`${commonSandboxAssetShell()}\n${body}`)}`;
+}
+
+function buildBoxLiteAssetStagingScript(options: SandboxAssetScriptOptions): string {
+  const body = `
+target=${shQuote(options.target)}
+asset_dir=${shQuote(options.assetDir)}
+asset_base=${shQuote(options.releaseAssetBase)}
+cap_prepare_asset_tools
+case "$(uname -m 2>/dev/null || echo unknown)" in
+  arm64|aarch64) slug=linux-arm64 ;;
+  *) slug=linux-amd64 ;;
+esac
+asset="cap-boxlite-sandbox-$target-$slug.oci.tar.zst"
+cap_fetch_and_verify_asset "$target" "$asset_dir" "$asset_base" "$asset"
+asset_path="$asset_dir/downloads/$target/$asset"
+rootfs_dir="$asset_dir/boxlite/cap-boxlite-sandbox/$target/$slug/oci"
+tmp_dir="$rootfs_dir.captmp.$$"
+rm -rf "$tmp_dir"
+mkdir -p "$tmp_dir" "$(dirname "$rootfs_dir")"
+zstd -dc "$asset_path" | tar -C "$tmp_dir" -xf -
+rm -rf "$rootfs_dir"
+mv "$tmp_dir" "$rootfs_dir"
+cap_set_env_value ${SANDBOX_IMAGE_DELIVERY_ENV} release-assets
+cap_unset_env_value ${BOXLITE_IMAGE_ENV}
+cap_unset_env_value ${BOXLITE_IMAGE_MAP_ENV}
+cap_unset_env_value ${BOXLITE_ROOTFS_PATH_MAP_ENV}
+cap_set_env_value ${BOXLITE_ROOTFS_PATH_ENV} "$rootfs_dir"
+cap_set_env_value ${BOXLITE_PROTOCOL_MODE_ENV} native
+`.trim();
+  return `sh -eu -c ${shQuote(`${commonSandboxAssetShell()}\n${body}`)}`;
+}
+
+function buildEnvPersistScript(values: Readonly<Record<string, string>>): string {
+  const body = Object.entries(values)
+    .map(([key, value]) => `cap_set_env_value ${key} ${shQuote(value)}`)
+    .join('\n');
+  return `sh -eu -c ${shQuote(`${envFileShell()}\n${body}`)}`;
+}
+
+function commonSandboxAssetShell(): string {
+  return `
+${envFileShell()}
+cap_prepare_asset_tools() {
+  if ! command -v curl >/dev/null 2>&1 || ! command -v zstd >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
+    apk add --no-cache curl zstd tar
+  fi
+  command -v sha256sum >/dev/null 2>&1 || apk add --no-cache coreutils
+}
+cap_download_asset() {
+  name="$1"
+  out="$2"
+  tmp="$out.captmp"
+  mkdir -p "$(dirname "$out")"
+  rm -f "$tmp"
+  curl -fL --retry 3 -o "$tmp" "$asset_base/$name"
+  mv "$tmp" "$out"
+}
+cap_fetch_and_verify_asset() {
+  target="$1"
+  asset_dir="$2"
+  asset_base="\${3%/}"
+  asset="$4"
+  download_dir="$asset_dir/downloads/$target"
+  manifest="$download_dir/cap-image-assets.json"
+  asset_path="$download_dir/$asset"
+  checksum_path="$asset_path.sha256"
+  cap_download_asset cap-image-assets.json "$manifest"
+  grep -q "\\"version\\"[[:space:]]*:[[:space:]]*\\"$target\\"" "$manifest"
+  grep -q "\\"asset\\"[[:space:]]*:[[:space:]]*\\"$asset\\"" "$manifest"
+  cap_download_asset "$asset" "$asset_path"
+  cap_download_asset "$asset.sha256" "$checksum_path"
+  expected="$(awk '{ print $1; exit }' "$checksum_path")"
+  actual="$(sha256sum "$asset_path" | awk '{ print $1; exit }')"
+  [ -n "$expected" ] && [ "$expected" = "$actual" ]
+}
+`.trim();
+}
+
+function envFileShell(): string {
+  return `
+cap_set_env_value() {
+  key="$1"
+  value="$2"
+  tmp=".env.captmp.$key.$$"
+  ( grep -v "^$key=" .env 2>/dev/null || true; printf '%s=%s\\n' "$key" "$value" ) > "$tmp"
+  mv "$tmp" .env
+}
+cap_unset_env_value() {
+  key="$1"
+  tmp=".env.captmp.$key.$$"
+  ( grep -v "^$key=" .env 2>/dev/null || true ) > "$tmp"
+  mv "$tmp" .env
+}
+`.trim();
+}
+
+function normalizeSandboxImageDelivery(value: string | undefined): string {
+  const normalized = value?.trim().toLowerCase();
+  if (
+    normalized === 'registry' ||
+    normalized === 'release-assets' ||
+    normalized === 'auto'
+  ) {
+    return normalized;
+  }
+  return 'registry';
+}
+
+function normalizeSandboxProvider(value: string | undefined): string {
+  const normalized = value?.trim().toLowerCase();
+  if (
+    normalized === 'aio' ||
+    normalized === 'boxlite' ||
+    normalized === 'control-plane'
+  ) {
+    return normalized;
+  }
+  return 'aio';
+}
+
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**

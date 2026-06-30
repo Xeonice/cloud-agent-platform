@@ -44,19 +44,42 @@ case "$1 $2" in
 esac
 if [ "$1" = "context" ]; then exit 0; fi
 if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then exit 0; fi
+if [ "$1" = "load" ]; then cat >/dev/null; exit 0; fi
 if [ "$1" = "compose" ]; then exit 0; fi
+exit 0
+`);
+  makeBin(bin, 'zstd', `
+echo "zstd $*" >> "$CAP_TEST_LOG"
+if [ "$1" = "-dc" ]; then
+  cat "$2"
+  exit 0
+fi
+exit 0
+`);
+  makeBin(bin, 'tar', `
+echo "tar $*" >> "$CAP_TEST_LOG"
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-C" ]; then out="$arg"; fi
+  prev="$arg"
+done
+[ -n "$out" ] || out="$CAP_FAKE_TAR_OUT"
+mkdir -p "$out"
+cat >/dev/null
+echo "oci-layout" > "$out/oci-layout"
 exit 0
 `);
   makeBin(bin, 'curl', `
 echo "curl $*" >> "$CAP_TEST_LOG"
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$arg"; fi
+  prev="$arg"
+done
 case "$*" in
   *docker-compose.prod.yml*)
-    out=""
-    prev=""
-    for arg in "$@"; do
-      if [ "$prev" = "-o" ]; then out="$arg"; fi
-      prev="$arg"
-    done
     [ -n "$out" ] || out="$CAP_FAKE_CURL_OUT"
     cat > "$out" <<'COMPOSE'
 # cap-managed-run-package: docker-compose.prod.yml
@@ -64,6 +87,40 @@ services:
   api:
     image: ghcr.io/xeonice/cap-api:vtest
 COMPOSE
+    exit 0
+    ;;
+  *cap-image-assets.json*)
+    [ -n "$out" ] || out="$CAP_FAKE_CURL_OUT"
+    cat > "$out" <<'JSON'
+{
+  "schemaVersion": 1,
+  "version": "vtest",
+  "assets": [
+    { "asset": "cap-aio-sandbox-vtest-linux-amd64.docker.tar.zst" },
+    { "asset": "cap-boxlite-sandbox-vtest-linux-arm64.oci.tar.zst" },
+    { "asset": "cap-boxlite-sandbox-vtest-linux-amd64.oci.tar.zst" }
+  ]
+}
+JSON
+    exit 0
+    ;;
+  *.tar.zst.sha256*)
+    [ -n "$out" ] || out="$CAP_FAKE_CURL_OUT"
+    content="\${CAP_FAKE_ASSET_CONTENT:-asset-content}"
+    name="$(basename "$out")"
+    name="\${name%.captmp}"
+    name="\${name%.sha256}"
+    if command -v sha256sum >/dev/null 2>&1; then
+      digest="$(printf '%s' "$content" | sha256sum | awk '{ print $1 }')"
+    else
+      digest="$(printf '%s' "$content" | shasum -a 256 | awk '{ print $1 }')"
+    fi
+    printf '%s  %s\\n' "$digest" "$name" > "$out"
+    exit 0
+    ;;
+  *.tar.zst*)
+    [ -n "$out" ] || out="$CAP_FAKE_CURL_OUT"
+    printf '%s' "\${CAP_FAKE_ASSET_CONTENT:-asset-content}" > "$out"
     exit 0
     ;;
   *api.github.com/rate_limit*)
@@ -166,6 +223,15 @@ console.log('\n=== quick-deploy preflight ===\n');
 {
   const tc = makeCase();
   const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_IMAGE_DELIVERY: 'bad',
+  });
+  assert(result.status !== 0, 'invalid sandbox image delivery mode fails early');
+  assert(/invalid CAP_SANDBOX_IMAGE_DELIVERY/.test(result.stderr), 'invalid delivery mode prints accepted values');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
     CAP_RAW_BASE: 'https://assets.example.test',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'run-package',
   }, { stdin: true });
@@ -197,7 +263,44 @@ console.log('\n=== quick-deploy preflight ===\n');
 {
   const tc = makeCase();
   const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'aio',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
+  });
+  const log = readLog(tc);
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert(result.status === 0, 'AIO Release-asset delivery stages sandbox archive before readiness');
+  assert(/cap-image-assets\.json/.test(log), 'AIO asset delivery fetches the manifest');
+  assert(/cap-aio-sandbox-vtest-linux-amd64\.docker\.tar\.zst/.test(log), 'AIO asset delivery fetches the Docker archive');
+  assert(/zstd -dc/.test(log), 'AIO asset delivery decompresses the archive');
+  assert(/docker load/.test(log), 'AIO asset delivery loads the Docker archive');
+  assert(/AIO readiness: staged ghcr\.io\/xeonice\/cap-aio-sandbox:vtest from Release asset/.test(combined), 'AIO asset readiness reports staged image');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'BoxLite Release-asset delivery stages rootfs before env gate');
+  assert(/cap-boxlite-sandbox-vtest-linux-amd64\.oci\.tar\.zst/.test(log), 'BoxLite asset delivery fetches the host platform OCI asset');
+  assert(/tar -C .*boxlite\/cap-boxlite-sandbox\/vtest\/linux-amd64\/oci/.test(log), 'BoxLite asset delivery extracts the OCI asset');
+  assert(/CAP_SANDBOX_IMAGE_DELIVERY=release-assets/.test(envFile), 'quick-deploy persists Release-asset delivery mode');
+  assert(/BOXLITE_ROOTFS_PATH=.*boxlite\/cap-boxlite-sandbox\/vtest\/linux-amd64\/oci/.test(envFile), 'quick-deploy writes BoxLite rootfs path');
+  assert(!/BOXLITE_IMAGE=/.test(envFile), 'quick-deploy does not persist a BoxLite image when rootfs path is staged');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
     BOXLITE_API_TOKEN: 'box-secret-token',
@@ -214,6 +317,7 @@ console.log('\n=== quick-deploy preflight ===\n');
   const result = runQuickDeploy(tc, {
     CAP_FAKE_BOXLITE_READY: '1',
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
     BOXLITE_API_TOKEN: 'box-secret-token',
@@ -224,7 +328,7 @@ console.log('\n=== quick-deploy preflight ===\n');
   assert(result.status === 0, 'BoxLite native runtime readiness succeeds before pull/up');
   assert(/\/v1\/default\/boxes\/probe-box\/start/.test(log), 'BoxLite readiness starts native probe sandbox before exec');
   assert(!/\{"name":"cap-quick-deploy-preflight-[0-9]+","image":"cap-boxlite:test","working_dir"/.test(log), 'BoxLite native create payload omits working_dir');
-  assert(/runtime image\/workspace\/tools probe passed/.test(combined), 'BoxLite readiness runs image/workspace/tools probe');
+  assert(/runtime sandbox source\/workspace\/tools probe passed/.test(combined), 'BoxLite readiness runs sandbox source/workspace/tools probe');
   assert(!combined.includes('box-secret-token'), 'BoxLite runtime probe output redacts token');
 }
 
@@ -236,6 +340,7 @@ console.log('\n=== quick-deploy preflight ===\n');
     CAP_FAKE_BOXLITE_READY: '1',
     CAP_TEST_DEV_KVM_PATH: kvmDevice,
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
     BOXLITE_ENDPOINT: 'http://host.docker.internal:7331',
     BOXLITE_API_TOKEN: 'box-secret-token',
@@ -259,6 +364,7 @@ console.log('\n=== quick-deploy preflight ===\n');
     CAP_TEST_MACOS_VERSION: '14.5',
     CAP_TEST_KERN_HV_SUPPORT: '0',
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
     BOXLITE_ENDPOINT: 'http://127.0.0.1:7331',
     BOXLITE_API_TOKEN: 'box-secret-token',
@@ -280,6 +386,7 @@ console.log('\n=== quick-deploy preflight ===\n');
     CAP_TEST_MACOS_VERSION: '14.5',
     CAP_TEST_KERN_HV_SUPPORT: '1',
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
     BOXLITE_ENDPOINT: 'http://127.0.0.1:7331',
     BOXLITE_API_TOKEN: 'box-secret-token',
@@ -299,6 +406,7 @@ console.log('\n=== quick-deploy preflight ===\n');
     CAP_TEST_MACOS_VERSION: '14.5',
     CAP_TEST_KERN_HV_SUPPORT: '1',
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
     BOXLITE_ENDPOINT: 'http://localhost:7331',
     BOXLITE_API_TOKEN: 'box-secret-token',
@@ -318,6 +426,7 @@ console.log('\n=== quick-deploy preflight ===\n');
     CAP_TEST_MACOS_VERSION: '14.5',
     CAP_TEST_KERN_HV_SUPPORT: '0',
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
     BOXLITE_API_TOKEN: 'box-secret-token',
@@ -334,6 +443,7 @@ console.log('\n=== quick-deploy preflight ===\n');
     CAP_FAKE_BOXLITE_READY: '1',
     CAP_TEST_DEV_KVM_PATH: join(tc.dir, 'missing-kvm'),
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
     BOXLITE_ENDPOINT: 'http://127.0.0.1:7331',
     BOXLITE_API_TOKEN: 'box-secret-token',
@@ -348,6 +458,7 @@ console.log('\n=== quick-deploy preflight ===\n');
   const tc = makeCase();
   const result = runQuickDeploy(tc, {
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
     API_HOST_PORT: '18080',
     WEB_HOST_PORT: '13000',
@@ -370,6 +481,7 @@ console.log('\n=== quick-deploy preflight ===\n');
   const tc = makeCase();
   const result = runQuickDeploy(tc, {
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
     BOXLITE_API_TOKEN: 'box-secret-token',
@@ -391,6 +503,7 @@ console.log('\n=== quick-deploy preflight ===\n');
   const result = runQuickDeploy(tc, {
     CAP_FAKE_BOXLITE_READY: '1',
     CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
     BOXLITE_READINESS_PATH: '/health',

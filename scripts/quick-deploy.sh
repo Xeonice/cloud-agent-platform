@@ -39,6 +39,7 @@ WITH_WEB="${WITH_WEB:-1}"               # 1 = bring up the in-compose console
 RUN_SMOKE="${RUN_SMOKE:-0}"            # 1 = create+stop a throwaway task as a provision smoke
 RUN_GITHUB_VALIDATION="${RUN_GITHUB_VALIDATION:-0}" # 1 = validate GitHub API reachability/auth
 REQUESTED_PROVIDER="${CAP_SANDBOX_PROVIDER:-auto}" # auto|aio|boxlite|control-plane
+REQUESTED_SANDBOX_IMAGE_DELIVERY="${CAP_SANDBOX_IMAGE_DELIVERY:-auto}" # auto|registry|release-assets
 CAP_IMAGE_PLATFORM="${CAP_IMAGE_PLATFORM:-}"       # defaulted for non-amd64 release images below
 CAP_HEALTH_TIMEOUT_SECONDS="${CAP_HEALTH_TIMEOUT_SECONDS:-}" # defaulted after platform detection
 GITHUB_RELEASES_REPO="${GITHUB_RELEASES_REPO:-Xeonice/cloud-agent-platform}"
@@ -46,6 +47,7 @@ BOXLITE_DEFAULT_IMAGE_REPO="${BOXLITE_DEFAULT_IMAGE_REPO:-ghcr.io/xeonice/cap-bo
 BOXLITE_DEFAULT_WORKSPACE_PATH="/home/gem/workspace"
 BOXLITE_DEFAULT_RUNTIME_REQUIRED_TOOLS="bash claude codex git gzip node openspec sh tar tmux"
 BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS="${BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS:-600}"
+CAP_SANDBOX_ASSET_DIR="${CAP_SANDBOX_ASSET_DIR:-$WORKDIR/sandbox-assets}"
 # Where to fetch docker-compose.prod.yml when it is not already on disk. The
 # compose-base marker below is replaced at build time by the www injector with the
 # publishing site (so the SITE-SERVED copy fetches the site's own compose asset). The
@@ -138,6 +140,12 @@ normalize_boxlite_protocol(){
     *) die "invalid BOXLITE_PROTOCOL_MODE: $1 (expected native|cap-rest)" ;;
   esac
 }
+normalize_sandbox_image_delivery(){
+  case "${1:-auto}" in
+    auto|registry|release-assets) printf '%s\n' "${1:-auto}" ;;
+    *) die "invalid CAP_SANDBOX_IMAGE_DELIVERY: $1 (expected auto|registry|release-assets)" ;;
+  esac
+}
 resolve_provider(){
   requested="$(normalize_provider "$1")"
   if [ "$requested" != "auto" ]; then
@@ -193,8 +201,10 @@ step "GATE 1 — platform/provider"
 HOST_OS="$(host_os)"
 HOST_ARCH="$(host_arch)"
 SELECTED_PROVIDER="$(resolve_provider "$REQUESTED_PROVIDER")"
+SANDBOX_IMAGE_DELIVERY="$(normalize_sandbox_image_delivery "$REQUESTED_SANDBOX_IMAGE_DELIVERY")"
 echo "  host: ${HOST_OS}/${HOST_ARCH}"
 echo "  sandbox provider: ${SELECTED_PROVIDER} (requested: ${REQUESTED_PROVIDER})"
+echo "  sandbox image delivery: ${SANDBOX_IMAGE_DELIVERY} (requested: ${REQUESTED_SANDBOX_IMAGE_DELIVERY})"
 
 if ! is_amd64 "$HOST_ARCH"; then
   # The cap release images are published as linux/amd64 today. Docker Desktop and
@@ -391,6 +401,16 @@ set_env_value(){
   mv "$tmp" "$ENV_FILE"
   echo "  set $key in $ENV_FILE"
 }
+unset_env_value(){
+  local key="$1" tmp
+  [ -f "$ENV_FILE" ] || return 0
+  has_env_key "$key" || return 0
+  tmp="${ENV_FILE}.captmp"
+  awk -F= -v k="$key" '$1 != k { print }' "$ENV_FILE" >"$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$ENV_FILE"
+  echo "  unset $key in $ENV_FILE"
+}
 require_value(){
   local key="$1" value
   value="$(value_for "$key")"
@@ -517,6 +537,167 @@ boxlite_runtime_required_tools(){
 boxlite_default_image(){
   printf '%s:%s\n' "$BOXLITE_DEFAULT_IMAGE_REPO" "$CAP_VERSION"
 }
+boxlite_default_map_value(){
+  local raw="$1"
+  case "$raw" in
+    \{*)
+      printf '%s\n' "$raw" | sed -n 's/.*"default"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+      ;;
+    *)
+      printf '%s\n' "$raw" | sed -n 's/.*default=\([^,]*\).*/\1/p' | head -1
+      ;;
+  esac
+}
+boxlite_default_rootfs_path(){
+  local value map_value
+  value="$(value_for BOXLITE_ROOTFS_PATH)"
+  [ -n "$value" ] && { printf '%s\n' "$value"; return 0; }
+  map_value="$(boxlite_default_map_value "$(value_for BOXLITE_ROOTFS_PATH_MAP)")"
+  [ -n "$map_value" ] && { printf '%s\n' "$map_value"; return 0; }
+  return 0
+}
+boxlite_default_image_value(){
+  local value map_value
+  value="$(value_for BOXLITE_IMAGE)"
+  [ -n "$value" ] && { printf '%s\n' "$value"; return 0; }
+  map_value="$(boxlite_default_map_value "$(value_for BOXLITE_IMAGE_MAP)")"
+  [ -n "$map_value" ] && { printf '%s\n' "$map_value"; return 0; }
+  return 0
+}
+release_asset_base(){
+  printf '%s\n' "${CAP_RELEASE_ASSET_BASE:-https://github.com/${GITHUB_RELEASES_REPO}/releases/download/${CAP_VERSION}}"
+}
+release_asset_url(){
+  printf '%s/%s\n' "$(release_asset_base | sed 's:/*$::')" "$1"
+}
+download_release_asset(){
+  local name target tmp url
+  name="$1"
+  target="$2"
+  mkdir -p "$(dirname "$target")"
+  tmp="${target}.captmp"
+  url="$(release_asset_url "$name")"
+  echo "  sandbox asset: downloading ${name}" >&2
+  rm -f "$tmp"
+  curl -fL --retry 3 -o "$tmp" "$url" >/dev/null 2>&1 || {
+    rm -f "$tmp"
+    return 1
+  }
+  [ -f "$tmp" ] || return 1
+  mv "$tmp" "$target"
+}
+sha256_of_file(){
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{ print $1 }'
+  else
+    die "sha256sum or shasum is required to verify sandbox image Release assets"
+  fi
+}
+verify_asset_checksum(){
+  local asset_path checksum_path expected actual
+  asset_path="$1"
+  checksum_path="$2"
+  [ -f "$asset_path" ] || die "sandbox image asset missing after download: $asset_path"
+  [ -f "$checksum_path" ] || die "sandbox image checksum missing after download: $checksum_path"
+  expected="$(awk '{ print $1; exit }' "$checksum_path")"
+  actual="$(sha256_of_file "$asset_path")"
+  [ -n "$expected" ] || die "sandbox image checksum file is empty: $checksum_path"
+  [ "$actual" = "$expected" ] || die "sandbox image asset checksum mismatch for $(basename "$asset_path")"
+  echo "  sandbox asset: checksum verified for $(basename "$asset_path")" >&2
+}
+fetch_asset_manifest(){
+  local manifest_path
+  manifest_path="${CAP_SANDBOX_ASSET_DIR}/downloads/${CAP_VERSION}/cap-image-assets.json"
+  download_release_asset cap-image-assets.json "$manifest_path" || return 1
+  grep -q "\"version\"[[:space:]]*:[[:space:]]*\"${CAP_VERSION}\"" "$manifest_path" || return 1
+  printf '%s\n' "$manifest_path"
+}
+asset_manifest_contains(){
+  local manifest_path="$1" asset_name="$2"
+  grep -q "\"asset\"[[:space:]]*:[[:space:]]*\"${asset_name}\"" "$manifest_path"
+}
+stage_release_asset_pair(){
+  local manifest_path asset_name asset_path checksum_path
+  manifest_path="$1"
+  asset_name="$2"
+  asset_manifest_contains "$manifest_path" "$asset_name" || return 1
+  asset_path="${CAP_SANDBOX_ASSET_DIR}/downloads/${CAP_VERSION}/${asset_name}"
+  checksum_path="${asset_path}.sha256"
+  download_release_asset "$asset_name" "$asset_path" || return 1
+  download_release_asset "${asset_name}.sha256" "$checksum_path" || return 1
+  verify_asset_checksum "$asset_path" "$checksum_path"
+  printf '%s\n' "$asset_path"
+}
+boxlite_asset_platform_slug(){
+  if is_arm64 "$HOST_ARCH"; then
+    printf '%s\n' "linux-arm64"
+  else
+    printf '%s\n' "linux-amd64"
+  fi
+}
+stage_aio_release_asset(){
+  local manifest_path asset_name asset_path image
+  manifest_path="$(fetch_asset_manifest)" || return 1
+  asset_name="cap-aio-sandbox-${CAP_VERSION}-linux-amd64.docker.tar.zst"
+  asset_path="$(stage_release_asset_pair "$manifest_path" "$asset_name")" || return 1
+  command -v zstd >/dev/null 2>&1 || die "zstd is required to load AIO sandbox Release assets"
+  echo "  AIO readiness: loading sandbox Docker archive from Release asset"
+  zstd -dc "$asset_path" | docker load >/dev/null || \
+    die "AIO readiness failed: could not docker load ${asset_name}"
+  image="ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}"
+  docker image inspect "$image" >/dev/null 2>&1 || \
+    die "AIO readiness failed: loaded archive did not provide ${image}"
+  echo "  AIO readiness: staged ${image} from Release asset"
+}
+stage_boxlite_release_asset(){
+  local manifest_path slug asset_name asset_path rootfs_dir tmp_dir parent
+  manifest_path="$(fetch_asset_manifest)" || return 1
+  slug="$(boxlite_asset_platform_slug)"
+  asset_name="cap-boxlite-sandbox-${CAP_VERSION}-${slug}.oci.tar.zst"
+  asset_path="$(stage_release_asset_pair "$manifest_path" "$asset_name")" || return 1
+  command -v zstd >/dev/null 2>&1 || die "zstd is required to extract BoxLite sandbox Release assets"
+  command -v tar >/dev/null 2>&1 || die "tar is required to extract BoxLite sandbox Release assets"
+  rootfs_dir="${CAP_SANDBOX_ASSET_DIR}/boxlite/cap-boxlite-sandbox/${CAP_VERSION}/${slug}/oci"
+  tmp_dir="${rootfs_dir}.captmp.$$"
+  parent="$(dirname "$rootfs_dir")"
+  rm -rf "$tmp_dir"
+  mkdir -p "$tmp_dir" "$parent"
+  echo "  BoxLite readiness: extracting sandbox OCI asset to ${rootfs_dir}" >&2
+  zstd -dc "$asset_path" | tar -C "$tmp_dir" -xf - || {
+    rm -rf "$tmp_dir"
+    die "BoxLite readiness failed: could not extract ${asset_name}"
+  }
+  rm -rf "$rootfs_dir"
+  mv "$tmp_dir" "$rootfs_dir"
+  printf '%s\n' "$rootfs_dir"
+}
+try_stage_boxlite_release_asset(){
+  if [ "$SANDBOX_IMAGE_DELIVERY" = "registry" ]; then
+    return 1
+  fi
+  if rootfs_path="$(stage_boxlite_release_asset)"; then
+    BOXLITE_STAGED_ROOTFS_PATH="$rootfs_path"
+    SANDBOX_IMAGE_DELIVERY_EFFECTIVE="release-assets"
+    return 0
+  fi
+  [ "$SANDBOX_IMAGE_DELIVERY" = "release-assets" ] && \
+    die "BoxLite sandbox Release-asset delivery failed; set CAP_SANDBOX_IMAGE_DELIVERY=registry to use GHCR image pulls"
+  warn "BoxLite sandbox Release asset unavailable; falling back to registry delivery"
+  SANDBOX_IMAGE_DELIVERY_EFFECTIVE="registry"
+  return 1
+}
+maybe_stage_aio_release_asset(){
+  [ "$SELECTED_PROVIDER" = "aio" ] || return 0
+  [ "$SANDBOX_IMAGE_DELIVERY" = "release-assets" ] || {
+    SANDBOX_IMAGE_DELIVERY_EFFECTIVE="registry"
+    return 0
+  }
+  stage_aio_release_asset || \
+    die "AIO sandbox Release-asset delivery failed; set CAP_SANDBOX_IMAGE_DELIVERY=registry to use GHCR image pulls"
+  SANDBOX_IMAGE_DELIVERY_EFFECTIVE="release-assets"
+}
 boxlite_required_tools_probe_command(){
   local tool command
   command=""
@@ -572,6 +753,8 @@ CODEX_CRED_ENC_KEY_VALUE="$(value_for CODEX_CRED_ENC_KEY)"
 
 set_env_value CAP_VERSION "$CAP_VERSION"
 set_env_value CAP_SANDBOX_PROVIDER "$SELECTED_PROVIDER"
+SANDBOX_IMAGE_DELIVERY_EFFECTIVE="$SANDBOX_IMAGE_DELIVERY"
+set_env_value CAP_SANDBOX_IMAGE_DELIVERY "$SANDBOX_IMAGE_DELIVERY_EFFECTIVE"
 [ -n "$CAP_IMAGE_PLATFORM" ] && set_env_value CAP_IMAGE_PLATFORM "$CAP_IMAGE_PLATFORM"
 set_env_value ADMIN_EMAIL "$ADMIN_EMAIL_VALUE"
 set_env_value ADMIN_PASSWORD "$ADMIN_PASSWORD_VALUE"
@@ -599,20 +782,45 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   boxlite_token="$(require_value BOXLITE_API_TOKEN)"
   boxlite_image="$(value_for BOXLITE_IMAGE)"
   boxlite_image_map="$(value_for BOXLITE_IMAGE_MAP)"
-  if [ -z "$boxlite_image" ] && [ -z "$boxlite_image_map" ]; then
+  boxlite_rootfs_path="$(value_for BOXLITE_ROOTFS_PATH)"
+  boxlite_rootfs_path_map="$(value_for BOXLITE_ROOTFS_PATH_MAP)"
+  if [ -n "$boxlite_rootfs_path" ] || [ -n "$boxlite_rootfs_path_map" ]; then
+    SANDBOX_IMAGE_DELIVERY_EFFECTIVE="release-assets"
+  elif try_stage_boxlite_release_asset; then
+    boxlite_rootfs_path="$BOXLITE_STAGED_ROOTFS_PATH"
+    boxlite_image=""
+    boxlite_image_map=""
+  elif [ -z "$boxlite_image" ] && [ -z "$boxlite_image_map" ]; then
     boxlite_image="$(boxlite_default_image)"
   fi
   boxlite_protocol_mode="$(value_for BOXLITE_PROTOCOL_MODE)"
   boxlite_protocol_mode="$(normalize_boxlite_protocol "$boxlite_protocol_mode")"
-  [ -n "$boxlite_image" ] || [ -n "$boxlite_image_map" ] || \
-    die "BOXLITE_IMAGE or BOXLITE_IMAGE_MAP is required for CAP_SANDBOX_PROVIDER=boxlite"
+  if [ -n "$boxlite_rootfs_path" ] || [ -n "$boxlite_rootfs_path_map" ]; then
+    [ "$boxlite_protocol_mode" = "native" ] || \
+      die "BOXLITE_ROOTFS_PATH requires BOXLITE_PROTOCOL_MODE=native"
+  fi
+  [ -n "$boxlite_image" ] || [ -n "$boxlite_image_map" ] || [ -n "$boxlite_rootfs_path" ] || [ -n "$boxlite_rootfs_path_map" ] || \
+    die "BOXLITE_IMAGE/BOXLITE_IMAGE_MAP or BOXLITE_ROOTFS_PATH/BOXLITE_ROOTFS_PATH_MAP is required for CAP_SANDBOX_PROVIDER=boxlite"
+  if { [ -n "$boxlite_image" ] || [ -n "$boxlite_image_map" ]; } && { [ -n "$boxlite_rootfs_path" ] || [ -n "$boxlite_rootfs_path_map" ]; }; then
+    die "BoxLite sandbox source is ambiguous: set image/image map or rootfs path/map, not both"
+  fi
+  set_env_value CAP_SANDBOX_IMAGE_DELIVERY "$SANDBOX_IMAGE_DELIVERY_EFFECTIVE"
   set_env_value BOXLITE_ENDPOINT "$boxlite_endpoint"
   if [ -n "$(value_for BOXLITE_READINESS_ENDPOINT)" ] || [ "$boxlite_readiness_endpoint" != "$boxlite_endpoint" ]; then
     set_env_value BOXLITE_READINESS_ENDPOINT "$boxlite_readiness_endpoint"
   fi
   set_env_value BOXLITE_API_TOKEN "$boxlite_token"
-  set_env_value BOXLITE_IMAGE "$boxlite_image"
-  set_env_value BOXLITE_IMAGE_MAP "$boxlite_image_map"
+  if [ -n "$boxlite_rootfs_path" ] || [ -n "$boxlite_rootfs_path_map" ]; then
+    unset_env_value BOXLITE_IMAGE
+    unset_env_value BOXLITE_IMAGE_MAP
+    set_env_value BOXLITE_ROOTFS_PATH "$boxlite_rootfs_path"
+    set_env_value BOXLITE_ROOTFS_PATH_MAP "$boxlite_rootfs_path_map"
+  else
+    unset_env_value BOXLITE_ROOTFS_PATH
+    unset_env_value BOXLITE_ROOTFS_PATH_MAP
+    set_env_value BOXLITE_IMAGE "$boxlite_image"
+    set_env_value BOXLITE_IMAGE_MAP "$boxlite_image_map"
+  fi
   set_env_value BOXLITE_PROTOCOL_MODE "$boxlite_protocol_mode"
   set_env_value BOXLITE_RUNTIME_REQUIRED_TOOLS "$(boxlite_runtime_required_tools | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   set_env_value BOXLITE_PATH_PREFIX "$(value_or_default BOXLITE_PATH_PREFIX default)"
@@ -631,6 +839,8 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   set_env_value BOXLITE_TERMINAL_MODE "$(value_or_default BOXLITE_TERMINAL_MODE pty)"
   set_env_value BOXLITE_CAPABILITIES "$(value_or_default BOXLITE_CAPABILITIES terminal.websocket,terminal.interactive,command.exec,workspace.git.materialize,workspace.git.deliver,workspace.archive.transfer,lifecycle.readopt,lifecycle.readoption)"
 fi
+maybe_stage_aio_release_asset
+set_env_value CAP_SANDBOX_IMAGE_DELIVERY "$SANDBOX_IMAGE_DELIVERY_EFFECTIVE"
 maybe_stop_after env
 
 github_validation_token(){
@@ -713,29 +923,39 @@ boxlite_extract_camel_exit_code(){
 }
 
 validate_boxlite_native_runtime_probe(){
-  local endpoint token image api_path sandbox_id probe_box_id workspace create_json start_json exec_json exec_id status_json exit_code probe_command attempts
+  local endpoint token image rootfs_path api_path sandbox_id probe_box_id workspace create_json start_json exec_json exec_id status_json exit_code probe_command attempts create_body source_label
   [ "$(normalize_boxlite_protocol "$(value_or_default BOXLITE_PROTOCOL_MODE native)")" = "native" ] || return 0
-  [ "${CAP_BOXLITE_SKIP_RUNTIME_PROBE:-}" = "1" ] && {
+  if [ "${CAP_BOXLITE_SKIP_RUNTIME_PROBE:-}" = "1" ]; then
     warn "CAP_BOXLITE_SKIP_RUNTIME_PROBE=1 — BoxLite image/tool runtime probe skipped"
     return 0
-  }
+  fi
   endpoint="$(boxlite_readiness_endpoint_value "$(require_value BOXLITE_ENDPOINT)")"
   token="$(require_value BOXLITE_API_TOKEN)"
-  image="$(value_for BOXLITE_IMAGE)"
-  [ -n "$image" ] || image="$(value_for BOXLITE_IMAGE_MAP | sed -n 's/.*default=\([^,]*\).*/\1/p')"
-  [ -n "$image" ] || die "BoxLite runtime probe failed: BOXLITE_IMAGE or BOXLITE_IMAGE_MAP default is required"
+  rootfs_path="$(boxlite_default_rootfs_path)"
+  image="$(boxlite_default_image_value)"
+  if [ -n "$rootfs_path" ] && [ -n "$image" ]; then
+    die "BoxLite runtime probe failed: both image and rootfs path are configured"
+  fi
+  [ -n "$rootfs_path" ] || [ -n "$image" ] || die "BoxLite runtime probe failed: image or rootfs path default is required"
   api_path="$(boxlite_native_api_path)"
   sandbox_id="cap-quick-deploy-preflight-$$"
   workspace="$(value_or_default BOXLITE_WORKSPACE_PATH "$BOXLITE_DEFAULT_WORKSPACE_PATH")"
-  echo "  BoxLite readiness: creating runtime probe sandbox ${sandbox_id}"
+  if [ -n "$rootfs_path" ]; then
+    create_body="{\"name\":\"$(boxlite_json_string "$sandbox_id")\",\"rootfs_path\":\"$(boxlite_json_string "$rootfs_path")\"}"
+    source_label="rootfs path ${rootfs_path}"
+  else
+    create_body="{\"name\":\"$(boxlite_json_string "$sandbox_id")\",\"image\":\"$(boxlite_json_string "$image")\"}"
+    source_label="image ${image}"
+  fi
+  echo "  BoxLite readiness: creating runtime probe sandbox ${sandbox_id} from ${source_label}"
   create_json="$(curl -fsS -m "$BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS" \
     -H "authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
     -H 'accept: application/json' \
-    -d "{\"name\":\"$(boxlite_json_string "$sandbox_id")\",\"image\":\"$(boxlite_json_string "$image")\"}" \
+    -d "$create_body" \
     "${endpoint%/}${api_path}/boxes" 2>/dev/null || true)"
   printf '%s\n' "$create_json" | grep -Eq '"(box_id|id|name)"' || \
-    die "BoxLite runtime probe failed: could not create a probe sandbox with image ${image}"
+    die "BoxLite runtime probe failed: could not create a probe sandbox with ${source_label}"
   probe_box_id="$(printf '%s\n' "$create_json" | boxlite_extract_json_string box_id)"
   [ -n "$probe_box_id" ] || probe_box_id="$(printf '%s\n' "$create_json" | boxlite_extract_json_string id)"
   [ -n "$probe_box_id" ] || probe_box_id="$(printf '%s\n' "$create_json" | boxlite_extract_json_string name)"
@@ -775,8 +995,8 @@ validate_boxlite_native_runtime_probe(){
   done
   curl -fsS -m 10 -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
   [ "$exit_code" = "0" ] || \
-    die "BoxLite runtime probe failed: image/workspace/tools check exited ${exit_code:-unknown}"
-  echo "  BoxLite readiness: runtime image/workspace/tools probe passed"
+    die "BoxLite runtime probe failed: sandbox source/workspace/tools check exited ${exit_code:-unknown}"
+  echo "  BoxLite readiness: runtime sandbox source/workspace/tools probe passed"
 }
 
 validate_boxlite_cap_rest_runtime_probe(){
@@ -788,8 +1008,10 @@ validate_boxlite_cap_rest_runtime_probe(){
   }
   endpoint="$(boxlite_readiness_endpoint_value "$(require_value BOXLITE_ENDPOINT)")"
   token="$(require_value BOXLITE_API_TOKEN)"
-  image="$(value_for BOXLITE_IMAGE)"
-  [ -n "$image" ] || image="$(value_for BOXLITE_IMAGE_MAP | sed -n 's/.*default=\([^,]*\).*/\1/p')"
+  if [ -n "$(boxlite_default_rootfs_path)" ]; then
+    die "BoxLite runtime probe failed: BOXLITE_ROOTFS_PATH requires BOXLITE_PROTOCOL_MODE=native"
+  fi
+  image="$(boxlite_default_image_value)"
   [ -n "$image" ] || die "BoxLite runtime probe failed: BOXLITE_IMAGE or BOXLITE_IMAGE_MAP default is required"
   sandbox_id="cap-quick-deploy-preflight-$$"
   workspace="$(value_or_default BOXLITE_WORKSPACE_PATH "$BOXLITE_DEFAULT_WORKSPACE_PATH")"
@@ -818,15 +1040,23 @@ validate_boxlite_cap_rest_runtime_probe(){
 
 validate_boxlite_readiness(){
   [ "$SELECTED_PROVIDER" = "boxlite" ] || return 0
-  local endpoint readiness_endpoint token image image_map protocol url status
+  local endpoint readiness_endpoint token image image_map rootfs_path rootfs_path_map protocol url status
   endpoint="$(require_value BOXLITE_ENDPOINT)"
   readiness_endpoint="$(boxlite_readiness_endpoint_value "$endpoint")"
   token="$(require_value BOXLITE_API_TOKEN)"
   image="$(value_for BOXLITE_IMAGE)"
   image_map="$(value_for BOXLITE_IMAGE_MAP)"
+  rootfs_path="$(value_for BOXLITE_ROOTFS_PATH)"
+  rootfs_path_map="$(value_for BOXLITE_ROOTFS_PATH_MAP)"
   protocol="$(normalize_boxlite_protocol "$(value_or_default BOXLITE_PROTOCOL_MODE native)")"
-  [ -n "$image" ] || [ -n "$image_map" ] || \
-    die "BoxLite readiness failed: BOXLITE_IMAGE or BOXLITE_IMAGE_MAP is required"
+  [ -n "$image" ] || [ -n "$image_map" ] || [ -n "$rootfs_path" ] || [ -n "$rootfs_path_map" ] || \
+    die "BoxLite readiness failed: image/image map or rootfs path/map is required"
+  if { [ -n "$image" ] || [ -n "$image_map" ]; } && { [ -n "$rootfs_path" ] || [ -n "$rootfs_path_map" ]; }; then
+    die "BoxLite readiness failed: image and rootfs path are both configured"
+  fi
+  if { [ -n "$rootfs_path" ] || [ -n "$rootfs_path_map" ]; } && [ "$protocol" != "native" ]; then
+    die "BoxLite readiness failed: BOXLITE_ROOTFS_PATH requires BOXLITE_PROTOCOL_MODE=native"
+  fi
   if [ "$readiness_endpoint" != "$endpoint" ]; then
     echo "  BoxLite runtime endpoint for api containers: ${endpoint}"
     echo "  BoxLite host-side readiness endpoint: ${readiness_endpoint}"
@@ -852,7 +1082,13 @@ validate_boxlite_readiness(){
 validate_selected_provider_before_pull(){
   case "$SELECTED_PROVIDER" in
     boxlite) validate_boxlite_readiness ;;
-    aio) echo "  AIO readiness: matching sandbox image will be staged during docker compose pull" ;;
+    aio)
+      if [ "$SANDBOX_IMAGE_DELIVERY_EFFECTIVE" = "release-assets" ]; then
+        validate_aio_image_staged
+      else
+        echo "  AIO readiness: matching sandbox image will be staged during docker compose pull"
+      fi
+      ;;
     control-plane) echo "  provider readiness: control-plane mode has no local sandbox image to stage" ;;
   esac
 }
@@ -874,7 +1110,7 @@ step "GATE 6 — pull + up (CAP_VERSION=$CAP_VERSION, provider=$SELECTED_PROVIDE
 profiles=""; [ "$WITH_WEB" = "1" ] && profiles="web"
 services=(api postgres)
 [ "$WITH_WEB" = "1" ] && services+=(web)
-[ "$SELECTED_PROVIDER" = "aio" ] && services+=(aio-sandbox-image)
+[ "$SELECTED_PROVIDER" = "aio" ] && [ "$SANDBOX_IMAGE_DELIVERY_EFFECTIVE" != "release-assets" ] && services+=(aio-sandbox-image)
 ( cd "$WORKDIR"
   COMPOSE_PROFILES="$profiles" CAP_VERSION="$CAP_VERSION" CAP_SANDBOX_PROVIDER="$SELECTED_PROVIDER" CAP_IMAGE_PLATFORM="$CAP_IMAGE_PLATFORM" docker compose -f "$COMPOSE" pull "${services[@]}"
   COMPOSE_PROFILES="$profiles" CAP_VERSION="$CAP_VERSION" CAP_SANDBOX_PROVIDER="$SELECTED_PROVIDER" CAP_IMAGE_PLATFORM="$CAP_IMAGE_PLATFORM" validate_aio_image_staged

@@ -56,6 +56,8 @@ assert.match(
 assert.doesNotMatch(quickDeploySh, /__CAP_COMPOSE_BASE__/);
 assert.match(quickDeploySh, /install-preflight\.sh/);
 assert.match(quickDeploySh, /COMPOSE_MANAGED_MARKER="cap-managed-run-package: docker-compose\.prod\.yml"/);
+assert.match(quickDeploySh, /CAP_SANDBOX_IMAGE_DELIVERY/);
+assert.match(quickDeploySh, /cap-image-assets\.json/);
 
 assert.match(preflightSh, /cap_ensure_docker\(\)/);
 assert.match(preflightSh, /cap_docker_state\(\)/);

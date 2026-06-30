@@ -176,6 +176,77 @@ const CLAUDE_WORKSPACE_DIR = '/home/gem/workspace';
 
 /** The resolved exit outcome of a terminated sandbox session. */
 export type AioExitStatus = TerminalExitStatus;
+export type AioPtyClientMode =
+  | 'launch-or-attach'
+  | 'provider-story-fixture'
+  | 'replay-only';
+
+const PROVIDER_STORY_SCRIPT_PATH = '/tmp/cap-provider-terminal-story.sh';
+
+function buildProviderStoryFixtureScript(): string {
+  return [
+    '#!/bin/sh',
+    'export TERM=xterm-256color',
+    'export LC_ALL="${LC_ALL:-C.UTF-8}"',
+    '',
+    'emit() {',
+    '  printf \'%s\\r\\n\' "$1"',
+    '}',
+    '',
+    'resize_marker() {',
+    "  set -- $(stty size 2>/dev/null || printf '0 0')",
+    '  rows="${1:-0}"',
+    '  cols="${2:-0}"',
+    '  emit "PROVIDER_STORY_RESIZE:${cols}x${rows}"',
+    '}',
+    '',
+    'trap resize_marker WINCH',
+    '',
+    'emit "PROVIDER_STORY_BEGIN"',
+    'emit "PROVIDER_STORY_UTF8: 中文渲染正常 汉字边界"',
+    'emit "PROVIDER_STORY_SPLIT_SAFE_MARKER: utf8-boundary"',
+    'emit "PROVIDER_STORY_REPLAY_BULK_BEGIN"',
+    'i=1',
+    'while [ "$i" -le 220 ]; do',
+    "  n=$(printf '%03d' \"$i\")",
+    '  emit "PROVIDER_STORY_SCROLL_${n} 中文 scrollback"',
+    '  i=$((i + 1))',
+    'done',
+    'emit "PROVIDER_STORY_REPLAY_BULK_END"',
+    'resize_marker',
+    'emit "PROVIDER_STORY_READY_FOR_INPUT"',
+    '',
+    '(',
+    '  i=1',
+    '  while [ "$i" -le 60 ]; do',
+    '    sleep 0.25',
+    "    n=$(printf '%03d' \"$i\")",
+    '    emit "PROVIDER_STORY_LIVE_${n} still streaming"',
+    '    i=$((i + 1))',
+    '  done',
+    ') &',
+    'tick_pid=$!',
+    '',
+    'while IFS= read -r line; do',
+    '  emit "PROVIDER_STORY_ECHO:${line}"',
+    '  resize_marker',
+    '  [ "$line" = "exit" ] && break',
+    'done',
+    '',
+    'kill "$tick_pid" 2>/dev/null || true',
+    'emit "PROVIDER_STORY_DONE"',
+    '',
+  ].join('\n');
+}
+
+function buildProviderStoryFixtureInstallCommand(): string {
+  return [
+    `cat > ${PROVIDER_STORY_SCRIPT_PATH} <<'CAP_PROVIDER_TERMINAL_STORY_SCRIPT'`,
+    buildProviderStoryFixtureScript(),
+    'CAP_PROVIDER_TERMINAL_STORY_SCRIPT',
+    `chmod +x ${PROVIDER_STORY_SCRIPT_PATH}`,
+  ].join('\n');
+}
 
 /**
  * `AioPtyClient` opens an OUTBOUND `ws` client into the sandbox terminal and
@@ -250,6 +321,9 @@ export class AioPtyClient implements AgentTerminalPty {
    */
   private readonly sessionName: string;
 
+  /** Prevent duplicate fixture installs if a provider sends repeated ready frames. */
+  private providerStoryFixtureStarted = false;
+
   /**
    * Liveness poller handle (survive-api-redeploy D4). Polls
    * `tmux has-session -t <sessionName>` on {@link CODEX_LIVENESS_POLL_MS}; the
@@ -311,7 +385,7 @@ export class AioPtyClient implements AgentTerminalPty {
     wsUrl: string,
     private readonly baseUrl: string,
     private readonly onExit?: (status: AioExitStatus) => void,
-    private readonly mode: 'launch-or-attach' | 'replay-only' = 'replay-only',
+    private readonly mode: AioPtyClientMode = 'replay-only',
     /**
      * Resolve the task's selected {@link AgentRuntime} (3.2). Called at MOST once,
      * on `ready`, before the launch-or-attach decision. Optional + best-effort: a
@@ -616,12 +690,46 @@ export class AioPtyClient implements AgentTerminalPty {
   }
 
   /**
+   * Dev/test-only provider-backed terminal story fixture. It deliberately does
+   * not launch Codex/Claude; the goal is to exercise the provider PTY transport
+   * and CAP gateway with deterministic output, input echo, resize markers,
+   * scrollback, and reconnect replay.
+   */
+  private async launchProviderStoryFixture(): Promise<void> {
+    if (this.providerStoryFixtureStarted) return;
+    this.providerStoryFixtureStarted = true;
+    try {
+      const result = await this.commandExecutor.exec({
+        command: buildProviderStoryFixtureInstallCommand(),
+        timeoutMs: 5_000,
+      });
+      if (result.exitCode !== 0) {
+        const output = result.output.trim();
+        this.logger.warn(
+          `task ${this.taskId}: provider story fixture install failed: exit_code ${result.exitCode}` +
+            (output ? ` — ${output}` : ''),
+        );
+        return;
+      }
+      this.sendInput(`exec /bin/sh ${PROVIDER_STORY_SCRIPT_PATH}\n`);
+      this.flushPendingInputSoon();
+    } catch (err) {
+      this.logger.warn(
+        `task ${this.taskId}: provider story fixture launch failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
    * Resize the sandbox PTY as an AIO `{type:"resize",data:{cols,rows}}` frame so
    * the sandbox PTY cols/rows stay in sync with the browser, keeping the
    * "identical cols and rows" live-frame parity precondition reachable (VR.8).
    */
   resize(cols: number, rows: number): void {
     this.transport.sendResize(cols, rows);
+    if (this.mode === 'provider-story-fixture') return;
     this.resizeDetachedSession(cols, rows);
   }
 
@@ -717,6 +825,8 @@ export class AioPtyClient implements AgentTerminalPty {
         this.reconnectingForInput = false;
         if (this.mode === 'launch-or-attach') {
           void this.launchOrAttachOnReady();
+        } else if (this.mode === 'provider-story-fixture') {
+          void this.launchProviderStoryFixture();
         }
         break;
       case 'output':

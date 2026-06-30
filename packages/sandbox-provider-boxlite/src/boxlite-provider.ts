@@ -33,7 +33,7 @@ import { BoxLiteRestClient } from './boxlite-client.js';
 import type { BoxLiteProviderConfig } from './boxlite-config.js';
 import {
   readBoxLiteProviderConfig,
-  resolveBoxLiteImage,
+  resolveBoxLiteSandboxSource,
   type BoxLiteProviderEnv,
 } from './boxlite-config.js';
 
@@ -148,11 +148,13 @@ export class BoxLiteSandboxProvider<
     if (existing) return existing.connection;
 
     const sandboxId = this.sandboxIdForTask(ctx.taskId);
-    const image = resolveBoxLiteImage({ config: this.config });
+    const source = resolveBoxLiteSandboxSource({ config: this.config });
     const sandbox = await this.client.createSandbox({
       taskId: ctx.taskId,
       sandboxId,
-      image,
+      ...(source.kind === 'image'
+        ? { image: source.value }
+        : { rootfsPath: source.value }),
       location: this.config.location,
       env: nonEmptySandboxEnv(this.config.sandboxEnv),
       labels: {
@@ -162,6 +164,7 @@ export class BoxLiteSandboxProvider<
       metadata: {
         provider: this.config.providerId,
         workspacePath: this.config.workspacePath,
+        sandboxSourceKind: source.kind,
       },
     });
     const connection = this.connectionForSandbox(ctx.taskId, sandbox);
@@ -405,7 +408,7 @@ export class BoxLiteSandboxProvider<
       return {
         status: 'skipped',
         checkedAt: new Date().toISOString(),
-        image: sandbox.image,
+        image: sandbox.image ?? sandbox.rootfsPath,
         runtimeId: runtimeId ?? undefined,
       };
     }
@@ -451,7 +454,7 @@ export class BoxLiteSandboxProvider<
         {
           status: 'skipped',
           checkedAt: new Date().toISOString(),
-          image: sandbox.image,
+          image: sandbox.image ?? sandbox.rootfsPath,
         },
     };
     this.runs.set(taskId, run);
@@ -506,7 +509,7 @@ export function createBoxLiteRuntimePreflight(
     const tools = [...options.requiredTools].sort();
     const cacheKey = [
       context.provider.getProviderId(),
-      context.sandbox.image ?? 'unknown-image',
+      sandboxSourceLabel(context.sandbox),
       context.runtimeId ?? 'default-runtime',
       tools.join(','),
     ].join('|');
@@ -544,7 +547,7 @@ export function createBoxLiteRuntimePreflight(
     const preflight: SandboxPreflightResult = {
       status: failed.length === 0 ? 'passed' : 'failed',
       checkedAt: now().toISOString(),
-      image: context.sandbox.image,
+      image: context.sandbox.image ?? context.sandbox.rootfsPath,
       runtimeId: context.runtimeId ?? undefined,
       probes,
       error:
@@ -555,6 +558,10 @@ export function createBoxLiteRuntimePreflight(
     cache.set(cacheKey, preflight);
     return preflight;
   };
+}
+
+function sandboxSourceLabel(sandbox: BoxLiteSandbox): string {
+  return sandbox.image ?? sandbox.rootfsPath ?? 'unknown-source';
 }
 
 function boxLitePreflightError(failedNames: readonly string[]): string {

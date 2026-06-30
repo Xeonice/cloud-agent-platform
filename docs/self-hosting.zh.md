@@ -55,7 +55,7 @@
 > `install.sh`/`quick-deploy.sh`、预检 Docker，并运行同一条发布镜像路径：
 >
 > ```text
-> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 和 https://<site-domain>/quick-deploy.sh，确认 Docker 与可用的 docker.sock 已就绪，然后运行发布镜像安装路径。不要 git clone，不要 make up，不要本地 build。默认使用最新 Release；如需固定版本我会设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN、BOXLITE_IMAGE 已设置；Linux 使用默认 AIO 路径。最后告诉我控制台地址、/version 返回值，以及脚本打印的管理员邮箱和密码。
+> 在这台机器上部署 cloud-agent-platform。先读取 https://<site-domain>/install.sh 和 https://<site-domain>/quick-deploy.sh，确认 Docker 与可用的 docker.sock 已就绪，然后运行发布镜像安装路径。不要 git clone，不要 make up，不要本地 build。默认使用最新 Release；如需固定版本我会设置 CAP_VERSION。macOS 使用 CAP_SANDBOX_PROVIDER=boxlite，并在运行前确认 BOXLITE_ENDPOINT、BOXLITE_API_TOKEN 已设置；不设置 BOXLITE_IMAGE 时使用匹配版本的 Release-asset rootfs，也可以设置 BOXLITE_IMAGE 强制走 registry 镜像模式。Linux 使用默认 AIO 路径。最后告诉我控制台地址、/version 返回值，以及脚本打印的管理员邮箱和密码。
 > ```
 >
 > 脚本以纯文本提供、可先读后跑，你全程可接管。
@@ -93,7 +93,8 @@
 - **安装期必需：** POSIX shell、`curl`、`bash`、`openssl`、`awk`、Docker
   Engine、Docker Compose v2、访问站点托管安装资产的网络、未设置 `CAP_VERSION`
   时访问 GitHub Release metadata 的网络，以及从 GHCR 拉取
-  `ghcr.io/xeonice/cap-*:${CAP_VERSION}` 镜像的网络。脚本不会运行 `git clone`、
+  `ghcr.io/xeonice/cap-*:${CAP_VERSION}` 控制面镜像的网络。sandbox runtime
+  镜像可以来自 GHCR，也可以来自 GitHub Release assets。脚本不会运行 `git clone`、
   `make up`、`docker build` 或 `docker compose up --build`。
 - **Docker 行为：** Docker 缺失时才通过检测到的支持路径安装；如果只是 Compose plugin
   缺失，只补 Compose，不重装 Docker Engine；已有且可用的 Docker 保持不动；已安装但不可达的 Docker 被视作 daemon/socket/context 状态问题，在有界安全启动后失败并给出修复步骤。
@@ -104,11 +105,19 @@
   BoxLite 宿主机，安装脚本会跳过本机 Hypervisor/KVM 检查，只验证 endpoint。
 - **所选 provider 就绪：** Linux/AIO 在成功前会 staging
   `ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}`。macOS/BoxLite 需要
-  `CAP_SANDBOX_PROVIDER=boxlite`、`BOXLITE_ENDPOINT`、`BOXLITE_API_TOKEN`；
-  quick-deploy 默认把 `BOXLITE_IMAGE` 写成同版本的
+  `CAP_SANDBOX_PROVIDER=boxlite`、`BOXLITE_ENDPOINT`、`BOXLITE_API_TOKEN`。
+  `CAP_SANDBOX_IMAGE_DELIVERY=auto|registry|release-assets` 控制 sandbox runtime
+  来源。`auto` 下 BoxLite 会先尝试同版本 GitHub Release asset，并写入
+  `BOXLITE_ROOTFS_PATH`；asset 不可用时回落到 `BOXLITE_IMAGE`。AIO 默认走 registry，
+  只有显式 `release-assets` 时才下载并校验
+  `cap-aio-sandbox-<version>-linux-amd64.docker.tar.zst`，然后 `docker load`。BoxLite
+  `release-assets` 会下载并校验
+  `cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst`，解压到
+  `CAP_SANDBOX_ASSET_DIR` 下，写入 `BOXLITE_ROOTFS_PATH`，清空 image env，并要求原生
+  BoxLite 协议（`BOXLITE_PROTOCOL_MODE=native`、`BOXLITE_PATH_PREFIX=default`）。
+  registry 模式才默认把 `BOXLITE_IMAGE` 写成同版本的
   `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}`，除非你显式设置
-  `BOXLITE_IMAGE` 或带 default 的 `BOXLITE_IMAGE_MAP`；默认支持的是原生 BoxLite 协议
-  （`BOXLITE_PROTOCOL_MODE=native`、`BOXLITE_PATH_PREFIX=default`）。就绪检查会验证
+  `BOXLITE_IMAGE` 或带 default 的 `BOXLITE_IMAGE_MAP`。就绪检查会验证
   endpoint/token，不带不兼容的 create-time 字段创建短生命周期 probe sandbox，通过原生
   BoxLite API 启动它，再确认 image、workspace 与 AIO sandbox runtime 对齐的工具集
   （默认 `bash`、`claude`、`codex`、`git`、`gzip`、`node`、`openspec`、
@@ -284,7 +293,7 @@ COMPOSE_PROFILES=web docker compose up --build
 
 ## 运行预构建镜像而非从源码构建
 
-上面的源码 compose 流程会在你的主机上**从源码**构建 `api` / `web` / AIO-sandbox 镜像。安装 / 私有化部署请优先使用发布镜像：每个 GitHub Release 都会向 GHCR 发布一组**匹配的、版本钉死的**镜像（`ghcr.io/xeonice/cap-api`、`cap-web`、`cap-aio-sandbox`，全都在同一个 `vX.Y.Z`）。之后你就可以**拉取**这组钉死的镜像而不必编译，方法是在基础 compose 之上叠加 `docker-compose.images.yml` **override**。
+上面的源码 compose 流程会在你的主机上**从源码**构建 `api` / `web` / AIO-sandbox 镜像。安装 / 私有化部署请优先使用发布镜像：每个 GitHub Release 都会向 GHCR 发布一组**匹配的、版本钉死的**镜像（`ghcr.io/xeonice/cap-api`、`cap-web`、`cap-aio-sandbox`、`cap-boxlite-sandbox`，全都在同一个 `vX.Y.Z`）。同一个 Release 还会附带带 checksum 的 sandbox runtime assets，installer 可以在不走 registry 拉 sandbox 的情况下，从 GitHub Release assets staging AIO 或 BoxLite。之后你就可以**拉取**这组钉死的镜像而不必编译，方法是在基础 compose 之上叠加 `docker-compose.images.yml` **override**。
 
 > **你仍然需要 Steps 1–5。** override 只改变镜像**来自哪里**（拉取 vs. 构建）。你的本地账号鉴权、域名、密钥以及（可选的）外部 DB 与上文完全一样配置——预构建镜像读取的是同一份 `apps/api/.env` 和同一套构建期 `VITE_*`（Release 已把它们烤进发布出来的 `cap-web`）。
 
@@ -302,7 +311,8 @@ COMPOSE_PROFILES=web \
   docker compose -f docker-compose.yml -f docker-compose.images.yml up -d
 ```
 
-- **三者同一个版本。** `${CAP_VERSION}` 把 `cap-api`、`cap-web` 以及 `cap-aio-sandbox`（每任务执行镜像）钉到同一个 tag，让你永远不会跑到不匹配的一组。它被刻意设为**必填**——不设 `CAP_VERSION` 会让 `docker compose config` 大声告警 / 失败，而不是悄悄解析成一个空 tag。请始终把它设为一个真实已发布的 Release tag。
+- **同一个版本。** `${CAP_VERSION}` 把 `cap-api`、`cap-web`、`cap-aio-sandbox`（每任务执行镜像）以及 `cap-boxlite-sandbox` 钉到同一个 tag，让你永远不会跑到不匹配的一组。它被刻意设为**必填**——不设 `CAP_VERSION` 会让 `docker compose config` 大声告警 / 失败，而不是悄悄解析成一个空 tag。请始终把它设为一个真实已发布的 Release tag。
+- **sandbox runtime assets 也匹配版本。** Release 上的 `cap-image-assets.json` 和 AIO/BoxLite `.tar.zst` assets 带同一个版本与 checksum；`quick-deploy.sh` 和 self-update 会校验 checksum 后再 load/extract。
 - **默认行为不变。** 去掉第二个 `-f docker-compose.images.yml`（即纯 `docker compose up --build`），你就回到从源码构建。该 override 纯属附加且需主动选用——它的存在不会改变从源码构建路径的任何方面。
 - **确认你在跑什么。** 已发布的 `cap-api` 会在 `GET /version`（无需鉴权）自报其构建：`curl -s https://<api-origin>/version` 返回 `{ version, gitSha, buildTime }`——`version` 即 Release tag。
 
@@ -351,12 +361,13 @@ COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgre
 CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost 试用，web 在 :3000
 CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
 CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
+CAP_SANDBOX_IMAGE_DELIVERY=release-assets CAP_SANDBOX_PROVIDER=aio scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # 仅 api + postgres
 CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh   # + 预置冒烟测试
 CAP_HEALTH_TIMEOUT_SECONDS=600 scripts/quick-deploy.sh   # 慢速 Docker emulation / 嵌套 VM 启动
 ```
 
-它以 fail-closed 的**关卡（gates）**方式运行：① 平台 / provider（auto 选择 macOS BoxLite、Linux AIO；非 amd64 主机会固定 `CAP_IMAGE_PLATFORM=linux/amd64`；非 amd64 显式 AIO 会失败并提示 BoxLite/control-plane），② 基础工具链，③ **Docker 已安装且可达**——Docker 缺失时走支持的主机安装路径，已有可用 Docker 保持不动，已安装但不可达时只做有界安全启动并给出人工修复步骤（例如 Docker Desktop **WSL Integration**、`sudo systemctl restart docker` 或切到可用 docker context），④ 拉取/刷新带 CAP managed marker 的 `docker-compose.prod.yml`，⑤ 幂等地写出本地账号 `.env`（`ADMIN_EMAIL`、`ADMIN_PASSWORD`、`PASSWORD_AUTH_ENABLED=true`、session secrets、provider pins 与 BoxLite 原生协议默认值；已存在的 `.env` 会被复用并保持 gitignore），⑥ 验证所选 provider（AIO 镜像 staging 或 BoxLite endpoint/runtime probe），⑦ `pull` 然后 `up`，⑧ 等待 `/health` 并打印管理员邮箱和密码。健康等待默认 120 秒；macOS/arm64 跑当前 amd64 release images 时默认放宽到 600 秒，因为 QEMU/Colima emulation 下 Node 启动可能需要数分钟；必要时可用 `CAP_HEALTH_TIMEOUT_SECONDS=<秒>` 覆盖。
+它以 fail-closed 的**关卡（gates）**方式运行：① 平台 / provider（auto 选择 macOS BoxLite、Linux AIO；非 amd64 主机会固定 `CAP_IMAGE_PLATFORM=linux/amd64`；非 amd64 显式 AIO 会失败并提示 BoxLite/control-plane），② 基础工具链，③ **Docker 已安装且可达**——Docker 缺失时走支持的主机安装路径，已有可用 Docker 保持不动，已安装但不可达时只做有界安全启动并给出人工修复步骤（例如 Docker Desktop **WSL Integration**、`sudo systemctl restart docker` 或切到可用 docker context），④ 拉取/刷新带 CAP managed marker 的 `docker-compose.prod.yml`，⑤ 幂等地写出本地账号 `.env`（`ADMIN_EMAIL`、`ADMIN_PASSWORD`、`PASSWORD_AUTH_ENABLED=true`、session secrets、provider pins、sandbox image delivery mode 与 BoxLite 原生/rootfs 默认值；已存在的 `.env` 会被复用并保持 gitignore），⑥ 验证所选 provider（AIO registry/image-asset staging 或 BoxLite endpoint/runtime probe），⑦ `pull` 然后 `up`，⑧ 等待 `/health` 并打印管理员邮箱和密码。健康等待默认 120 秒；macOS/arm64 跑当前 amd64 release images 时默认放宽到 600 秒，因为 QEMU/Colima emulation 下 Node 启动可能需要数分钟；必要时可用 `CAP_HEALTH_TIMEOUT_SECONDS=<秒>` 覆盖。
 
 设置 `RUN_GITHUB_VALIDATION=1` 会在 pull 前增加 GitHub API 可达/鉴权冒烟检查。它从进程环境或运行包旁边被忽略的 `.env.github-validation` 读取 `GITHUB_VALIDATION_TOKEN`，日志只打印已脱敏的 token 来源；没有 token 时退化为未鉴权可达性检查。
 
@@ -364,15 +375,15 @@ CAP_HEALTH_TIMEOUT_SECONDS=600 scripts/quick-deploy.sh   # 慢速 Docker emulati
 
 ## 可选：应用内一键自更新（`SELF_UPDATE_ENABLED`，默认 OFF）
 
-一旦你跑起上面那条钉死-release 的命令，cap 就能**在控制台内**应用一个可用的更新：管理员在更新横幅上按下 **Upgrade** 按钮，api 便拉取那组匹配的、版本钉死的 GHCR 镜像并重建 cap 服务——正在运行的任务能在重建中存活。这是**需主动选用且默认关闭**的；自托管并不需要它。
+一旦你跑起上面那条钉死-release 的命令，cap 就能**在控制台内**应用一个可用的更新：管理员在更新横幅上按下 **Upgrade** 按钮，api 会先 staging 匹配的目标 Release，再重建 cap 服务——正在运行的任务能在重建中存活。控制面镜像仍来自 GHCR；sandbox runtime staging 跟随 `CAP_SANDBOX_IMAGE_DELIVERY`（`registry` 拉 stager 镜像，`release-assets` 在重建前下载并校验 GitHub Release asset）。这是**需主动选用且默认关闭**的；自托管并不需要它。
 
 > **安全提示——这是按钮背后的主机 root。** Upgrade 动作驱动主机的 Docker socket，与任务已经在用的主机 root 权能是同一份。**谁能按它 = 谁能在主机上以 root 运行。** 启用它是一个深思熟虑的决定，而非默认。该功能以**惰性（inert）**出厂：不设 `SELF_UPDATE_ENABLED` 时，`POST /self-update` 会拒绝，按钮也不出现（横幅保持仅通知）。除非你有理由开启它，否则请让它关着。
 
 它能做什么——即便启用——也是刻意**有界**的：
 
 - 它只会升级到与更新检查（`GET /update-status`）所报**最新版相匹配**的目标；任意 / 不匹配的目标会被拒绝。
-- 它**只**拉取 cap 的 GHCR 命名空间（`ghcr.io/xeonice/cap-*:<target>`），并**只**重建 cap 的 compose 服务。没有通往任意镜像、tag 或 shell 命令的路径。
-- 它在重建**之前**拉取，所以一次失败的拉取会让正在运行的栈完好无损。
+- 它只会为 cap 服务拉取 cap 的 GHCR 命名空间（`ghcr.io/xeonice/cap-*:<target>`），并在 Release-asset 模式下只下载同一目标版本的 sandbox assets；它**只**重建 cap 的 compose 服务。没有通往任意镜像、tag 或 shell 命令的路径。
+- 它在重建**之前**完成 staging/pull，所以 sandbox asset 下载、checksum、Docker load、rootfs 解压或镜像拉取失败，都会让正在运行的栈完好无损。
 
 要激活它（在已有 Release 且 prod 跑着钉死-release 命令之后）：
 

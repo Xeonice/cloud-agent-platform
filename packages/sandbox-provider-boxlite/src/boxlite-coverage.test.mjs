@@ -74,6 +74,7 @@ class MinimalBoxLiteClient {
       taskId: request.taskId,
       state: 'running',
       image: request.image,
+      rootfsPath: request.rootfsPath,
     };
     this.sandboxes.set(sandbox.id, sandbox);
     return sandbox;
@@ -399,6 +400,10 @@ await test('config parser covers defaults, require helper, and invalid modes', (
   assert.deepEqual(defaults.config.capabilities, ['command.exec']);
   assert.deepEqual(defaults.config.sandboxEnv, {});
   assert.equal(mod.resolveBoxLiteImage({ config: defaults.config, runtimeId: null }), 'cap-boxlite:default');
+  assert.deepEqual(mod.resolveBoxLiteSandboxSource({ config: defaults.config, runtimeId: null }), {
+    kind: 'image',
+    value: 'cap-boxlite:default',
+  });
   assert.equal(mod.requireBoxLiteProviderConfig(validEnv()).defaultImage, 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest');
   assert.throws(() => mod.requireBoxLiteProviderConfig({}), /BOXLITE_ENDPOINT is not set/);
   assert.throws(
@@ -446,6 +451,14 @@ await test('config parser covers defaults, require helper, and invalid modes', (
   );
   assert.equal(
     mod.readBoxLiteProviderConfig(validEnv({ BOXLITE_IMAGE_MAP: '[]' })).status,
+    'invalid',
+  );
+  assert.equal(
+    mod.readBoxLiteProviderConfig({
+      BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'token',
+      BOXLITE_ROOTFS_PATH_MAP: '{bad json',
+    }).status,
     'invalid',
   );
 });

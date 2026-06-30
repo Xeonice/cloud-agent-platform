@@ -38,6 +38,8 @@ import {
   updaterBindDirs,
   resolveServiceSets,
   PULL_ONLY_SERVICES_ENV,
+  SANDBOX_IMAGE_DELIVERY_ENV,
+  SANDBOX_PROVIDER_ENV,
   type UpdatePlan,
   type UpdaterLauncher,
   type UpdateTopology,
@@ -103,10 +105,12 @@ function makeService(opts: {
   updateAvailable?: boolean;
   launcher: UpdaterLauncher;
   topology?: UpdateTopology | null; // undefined → FAKE_TOPO; null → fallback path
+  env?: NodeJS.ProcessEnv;
 }): SelfUpdateService {
-  const env: NodeJS.ProcessEnv = opts.enabled
-    ? { [SELF_UPDATE_ENABLED_ENV]: 'true' }
-    : {};
+  const env: NodeJS.ProcessEnv = {
+    ...(opts.enabled ? { [SELF_UPDATE_ENABLED_ENV]: 'true' } : {}),
+    ...(opts.env ?? {}),
+  };
   const topo = opts.topology === undefined ? FAKE_TOPO : opts.topology;
   return new SelfUpdateService(
     fakeUpdateStatus({
@@ -265,6 +269,89 @@ test('pull-then-recreate ordering: pull is FIRST, up -d SECOND, joined by &&', a
     'pull precedes up -d (a failed pull leaves the prior version running)',
   );
   assert.ok(plan.script.includes(' && '), 'commands joined by && so up -d only runs on success');
+});
+
+test('release-assets AIO self-update stages the Docker archive before pin/pull/recreate', async () => {
+  const { launcher } = capturingLauncher();
+  const svc = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    env: {
+      [SANDBOX_IMAGE_DELIVERY_ENV]: 'release-assets',
+      [SANDBOX_PROVIDER_ENV]: 'aio',
+    },
+  });
+
+  const plan = await svc.requestUpdate(LATEST);
+
+  assert.deepEqual(plan.pullServices, ['api'], 'release-assets removes the AIO pull-only stager from the pull set');
+  assert.ok(plan.commands[0].endsWith('pull api'), 'compose pull still stages the running cap service image');
+  assert.ok(!plan.commands[0].includes('aio-sandbox-image'), 'compose pull no longer pulls the AIO stager service');
+  assert.ok(plan.script.includes('cap-image-assets.json'), 'the updater fetches the Release asset manifest');
+  assert.ok(
+    plan.script.includes(`cap-aio-sandbox-${LATEST}-linux-amd64.docker.tar.zst`),
+    'the updater downloads the target AIO Docker archive asset',
+  );
+  assert.ok(plan.script.includes('zstd -dc "$asset_path" | docker load'), 'the updater loads the Docker archive');
+  assert.ok(
+    plan.script.includes(`ghcr.io/xeonice/cap-aio-sandbox:${LATEST}`),
+    'the post-load inspect checks the target sandbox image',
+  );
+  assert.ok(
+    plan.script.indexOf('cap-image-assets.json') < plan.script.indexOf(`CAP_VERSION=${LATEST}`),
+    'asset staging runs before the CAP_VERSION pin is persisted',
+  );
+  assert.ok(
+    plan.script.indexOf(`CAP_VERSION=${LATEST}`) < plan.script.indexOf(' pull '),
+    'the target pin still happens before compose pull',
+  );
+});
+
+test('release-assets BoxLite self-update extracts rootfs and persists BOXLITE_ROOTFS_PATH before recreate', async () => {
+  const { launcher } = capturingLauncher();
+  const svc = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    env: {
+      [SANDBOX_IMAGE_DELIVERY_ENV]: 'release-assets',
+      [SANDBOX_PROVIDER_ENV]: 'boxlite',
+    },
+  });
+
+  const plan = await svc.requestUpdate(LATEST);
+
+  assert.deepEqual(plan.pullServices, ['api'], 'BoxLite asset mode does not pull the AIO stager service');
+  assert.ok(plan.script.includes('cap-boxlite-sandbox-$target-$slug.oci.tar.zst'), 'the updater selects a platform BoxLite OCI asset');
+  assert.ok(plan.script.includes('zstd -dc "$asset_path" | tar -C "$tmp_dir" -xf -'), 'the updater extracts the OCI archive locally');
+  assert.ok(plan.script.includes('cap_unset_env_value BOXLITE_IMAGE'), 'BoxLite rootfs mode removes image env');
+  assert.ok(plan.script.includes('cap_unset_env_value BOXLITE_IMAGE_MAP'), 'BoxLite rootfs mode removes image map env');
+  assert.ok(plan.script.includes('cap_set_env_value BOXLITE_ROOTFS_PATH "$rootfs_dir"'), 'BoxLite rootfs mode writes the staged rootfs path');
+  assert.ok(plan.script.includes('cap_set_env_value BOXLITE_PROTOCOL_MODE native'), 'BoxLite rootfs mode persists native protocol');
+  assert.ok(
+    plan.script.indexOf('BOXLITE_ROOTFS_PATH') < plan.script.indexOf(`CAP_VERSION=${LATEST}`),
+    'rootfs env is persisted only after extraction and before the target pin',
+  );
+});
+
+test('registry-backed self-update preserves the existing pull-only stager behavior', async () => {
+  const { launcher } = capturingLauncher();
+  const svc = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    env: {
+      [SANDBOX_IMAGE_DELIVERY_ENV]: 'registry',
+      [SANDBOX_PROVIDER_ENV]: 'aio',
+    },
+  });
+
+  const plan = await svc.requestUpdate(LATEST);
+
+  assert.deepEqual(plan.pullServices, FAKE_TOPO.pullServices, 'registry mode keeps the existing pull set');
+  assert.ok(plan.commands[0].endsWith('pull api aio-sandbox-image'), 'registry mode still pulls the stager service');
+  assert.ok(!plan.script.includes('cap-image-assets.json'), 'registry mode does not fetch Release assets');
 });
 
 test('labels-absent FALLBACK: resolver returns null → documented literals (source overlay)', async () => {

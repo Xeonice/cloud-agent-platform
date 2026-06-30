@@ -3,7 +3,7 @@
 # release.sh — the post-merge MECHANICAL TAIL of a release (add-release-upgrade-scripts,
 # design D3). Given a target version (arg or the bumped manifest), it: creates the
 # GitHub Release (so release.yml fires), watches the image build to success, and
-# verifies all release images are present at the tag.
+# verifies all release images and sandbox image assets are present at the tag.
 #
 # It does NOT pick changes / bump the version / write the CHANGELOG / open the PR —
 # those need judgment and stay with the `release-pr-bundle` skill. This script only
@@ -85,5 +85,26 @@ for pkg in cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox; do
 done
 [[ -z "$fail" ]] || { echo "error: not all release images are present at $VERSION" >&2; exit 1; }
 
-echo "==> release $VERSION done — all release images present"
+echo "==> verify sandbox image Release assets at $VERSION"
+required_assets=(
+  cap-image-assets.json
+  "cap-aio-sandbox-${VERSION}-linux-amd64.docker.tar.zst"
+  "cap-aio-sandbox-${VERSION}-linux-amd64.docker.tar.zst.sha256"
+  "cap-boxlite-sandbox-${VERSION}-linux-arm64.oci.tar.zst"
+  "cap-boxlite-sandbox-${VERSION}-linux-arm64.oci.tar.zst.sha256"
+  "cap-boxlite-sandbox-${VERSION}-linux-amd64.oci.tar.zst"
+  "cap-boxlite-sandbox-${VERSION}-linux-amd64.oci.tar.zst.sha256"
+)
+asset_names="$(gh release view "$VERSION" -R "$REPO" --json assets --jq '.assets[].name')"
+for asset in "${required_assets[@]}"; do
+  if printf '%s\n' "$asset_names" | grep -Fxq "$asset"; then
+    echo "    $asset -> present"
+  else
+    echo "    $asset -> missing" >&2
+    fail=1
+  fi
+done
+[[ -z "$fail" ]] || { echo "error: not all sandbox image Release assets are present at $VERSION" >&2; exit 1; }
+
+echo "==> release $VERSION done — all release images and sandbox image assets present"
 echo "    next: on the prod host run  scripts/upgrade.sh $VERSION"

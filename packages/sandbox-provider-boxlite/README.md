@@ -14,8 +14,9 @@ BoxLite configuration fails closed instead of falling back to AIO.
 BoxLite startup path, while Linux resolves it to AIO. CAP does not vendor a
 BoxLite daemon, so the macOS path validates an operator-supplied BoxLite
 endpoint before reporting the stack ready. The release-image install path uses
-the same provider env, defaults `BOXLITE_PROTOCOL_MODE=native`, and publishes a
-version-matched `ghcr.io/xeonice/cap-boxlite-sandbox:<version>` runtime image:
+the same provider env and defaults `BOXLITE_PROTOCOL_MODE=native`. It can either
+use a version-matched `ghcr.io/xeonice/cap-boxlite-sandbox:<version>` runtime
+image or stage the matching GitHub Release asset as a local rootfs path:
 
 ```sh
 BOXLITE_ENDPOINT=http://host.docker.internal:7331 \
@@ -25,6 +26,11 @@ BOXLITE_IMAGE=ghcr.io/xeonice/cap-boxlite-sandbox:vX.Y.Z \
 BOXLITE_PROTOCOL_MODE=native \
 make up
 ```
+
+For Release-asset delivery, quick-deploy downloads and verifies
+`cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst`, extracts it under
+`CAP_SANDBOX_ASSET_DIR`, writes `BOXLITE_ROOTFS_PATH`, and clears image env. Use
+`CAP_SANDBOX_IMAGE_DELIVERY=registry` to force image mode.
 
 Use `make up-aio`, `make up-boxlite`, or `make up-cp` to force a mode.
 
@@ -40,11 +46,21 @@ Use `make up-aio`, `make up-boxlite`, or `make up-cp` to force a mode.
   the daemon from the host while the API container keeps the container-facing
   runtime endpoint.
 - `BOXLITE_API_TOKEN`: required bearer token for the BoxLite REST API.
-- `BOXLITE_IMAGE`: default image used for task sandboxes. The release-image
-  install path defaults this to `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}`.
+- `BOXLITE_IMAGE`: default image used for task sandboxes in registry mode. The
+  release-image install path defaults this to
+  `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}` only when registry mode is
+  selected or Release-asset staging is unavailable.
 - `BOXLITE_IMAGE_MAP`: optional runtime-specific image mapping. Accepts JSON
   such as `{"codex":"cap-boxlite-codex:1"}` or comma form
   `codex=cap-boxlite-codex:1,claude-code=cap-boxlite-claude:1`.
+- `BOXLITE_ROOTFS_PATH`: default local rootfs/OCI directory used for task
+  sandboxes in native protocol mode. Release-asset delivery writes this value.
+- `BOXLITE_ROOTFS_PATH_MAP`: optional runtime-specific rootfs mapping. Accepts
+  the same JSON or comma `runtime=/absolute/path` forms as `BOXLITE_IMAGE_MAP`.
+- Image and rootfs sources are mutually exclusive per runtime. Set exactly one of
+  `BOXLITE_IMAGE`/`BOXLITE_IMAGE_MAP` or
+  `BOXLITE_ROOTFS_PATH`/`BOXLITE_ROOTFS_PATH_MAP`. Rootfs mode requires
+  `BOXLITE_PROTOCOL_MODE=native`.
 - `BOXLITE_PROVIDER_ID`: provider id, default `boxlite`.
 - `BOXLITE_PROVIDER_PRIORITY`: scheduler priority, default `0`.
 - `BOXLITE_PROVIDER_LOCATION`: `local` or `cloud`, default `cloud`.
@@ -136,3 +152,6 @@ BOXLITE_PROTOCOL_MODE=native \
 BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readoption \
 pnpm --filter @cap/sandbox-provider-boxlite test
 ```
+
+To live-test a rootfs source instead, replace `BOXLITE_IMAGE` with an absolute
+`BOXLITE_ROOTFS_PATH` and keep `BOXLITE_PROTOCOL_MODE=native`.

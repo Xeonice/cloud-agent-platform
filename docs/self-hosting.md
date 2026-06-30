@@ -70,7 +70,7 @@ In-app upgrades are a later phase you do not need to self-host today.
 > same release-image path:
 >
 > ```text
-> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT, BOXLITE_API_TOKEN, and BOXLITE_IMAGE are set before running; on Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.
+> Deploy cloud-agent-platform on this machine. First read https://<site-domain>/install.sh and https://<site-domain>/quick-deploy.sh, confirm Docker with a usable docker.sock is available, then run the release-image install path. Do not git clone, do not run make up, and do not build locally. Use the latest Release unless I set CAP_VERSION. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT and BOXLITE_API_TOKEN are set before running; leave BOXLITE_IMAGE unset to use the matching Release-asset rootfs, or set BOXLITE_IMAGE to force registry image mode. On Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.
 > ```
 >
 > The scripts are served as plain text so you can read them before running, and
@@ -116,8 +116,10 @@ when they are needed:
 - **Install-time required:** POSIX shell, `curl`, `bash`, `openssl`, `awk`,
   Docker Engine, Docker Compose v2, network access to the site-served installer
   assets, the GitHub Release metadata endpoint when `CAP_VERSION` is unset, and
-  GHCR for the `ghcr.io/xeonice/cap-*:${CAP_VERSION}` images. The scripts never
-  run `git clone`, `make up`, `docker build`, or `docker compose up --build`.
+  GHCR for the `ghcr.io/xeonice/cap-*:${CAP_VERSION}` control-plane images. Sandbox
+  runtime images can be delivered either from GHCR or from GitHub Release assets;
+  the scripts never run `git clone`, `make up`, `docker build`, or
+  `docker compose up --build`.
 - **Docker behavior:** absent Docker is installed through the detected supported
   path; a missing Compose plugin is installed without reinstalling Docker
   Engine; usable Docker is left untouched; installed-but-unreachable Docker is
@@ -134,11 +136,19 @@ when they are needed:
 - **Selected provider readiness:** Linux/AIO stages
   `ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}` before success. macOS/BoxLite
   requires `CAP_SANDBOX_PROVIDER=boxlite`, `BOXLITE_ENDPOINT`, and
-  `BOXLITE_API_TOKEN`; quick-deploy defaults `BOXLITE_IMAGE` to the matching
-  `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}` unless you set
-  `BOXLITE_IMAGE` or a default `BOXLITE_IMAGE_MAP`. The default supported
-  protocol is native BoxLite (`BOXLITE_PROTOCOL_MODE=native`,
-  `BOXLITE_PATH_PREFIX=default`). Readiness
+  `BOXLITE_API_TOKEN`. `CAP_SANDBOX_IMAGE_DELIVERY=auto|registry|release-assets`
+  controls the sandbox runtime source. In `auto`, BoxLite first tries the
+  versioned GitHub Release asset and writes `BOXLITE_ROOTFS_PATH`; if the asset is
+  unavailable it falls back to `BOXLITE_IMAGE`. AIO uses registry delivery unless
+  `release-assets` is requested, in which case quick-deploy downloads
+  `cap-aio-sandbox-<version>-linux-amd64.docker.tar.zst`, verifies its checksum,
+  and `docker load`s it. BoxLite `release-assets` downloads
+  `cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst`, verifies it, extracts it
+  under `CAP_SANDBOX_ASSET_DIR`, writes `BOXLITE_ROOTFS_PATH`, clears image env,
+  and requires native BoxLite (`BOXLITE_PROTOCOL_MODE=native`,
+  `BOXLITE_PATH_PREFIX=default`). Registry mode defaults `BOXLITE_IMAGE` to the
+  matching `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}` unless you set
+  `BOXLITE_IMAGE` or a default `BOXLITE_IMAGE_MAP`. Readiness
   checks the endpoint/token, creates a short-lived probe sandbox without
   unsupported create-time fields, starts it through the native BoxLite API,
   verifies the image, workspace, and required runtime tools aligned with the AIO
@@ -373,6 +383,9 @@ version-pinned set** of images to GHCR
 `cap-boxlite-sandbox`, all at the SAME `vX.Y.Z`). You can then **pull** that
 pinned set instead of compiling, using the
 `docker-compose.images.yml` **override** layered on top of the base compose.
+The same Release also attaches checksumed sandbox runtime assets so installers
+can stage AIO or BoxLite from GitHub Release assets when registry pulls are not
+the desired path.
 
 > **You still need Steps 1–5.** The override only changes WHERE the images come
 > from (pull vs. build). Your local auth, domains, secrets, and (optional)
@@ -400,6 +413,10 @@ COMPOSE_PROFILES=web \
   run a mismatched set. It is intentionally REQUIRED — leaving `CAP_VERSION` unset
   makes `docker compose config` warn/fail loudly rather than silently resolving a
   blank tag. Always set it to a real published Release tag.
+- **Sandbox runtime assets are matched too.** `cap-image-assets.json` and the
+  AIO/BoxLite `.tar.zst` assets on the Release carry the same version and
+  checksums. `quick-deploy.sh` and self-update verify those checksums before
+  loading/extracting them.
 - **The default is unchanged.** Drop the second `-f docker-compose.images.yml`
   (i.e. plain `docker compose up --build`) and you are back to building from
   source. The override is purely additive and opt-in — nothing about the
@@ -483,6 +500,7 @@ For an **agent-drivable** bring-up that needs **no source build**, the repo ship
 CAP_VERSION=v0.24.0 scripts/quick-deploy.sh        # Linux/AIO localhost trial, web on :3000
 CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
 CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
+CAP_SANDBOX_IMAGE_DELIVERY=release-assets CAP_SANDBOX_PROVIDER=aio scripts/quick-deploy.sh
 WITH_WEB=0 scripts/quick-deploy.sh                 # api + postgres only
 CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh   # + provision smoke
 CAP_HEALTH_TIMEOUT_SECONDS=600 scripts/quick-deploy.sh   # slow Docker emulation / nested VM startup
@@ -497,9 +515,10 @@ Docker gets only bounded safe starts before a human remediation is printed
 (for example Docker Desktop **WSL Integration**, `sudo systemctl restart docker`,
 or a live docker context), ④ fetch/refresh the managed `docker-compose.prod.yml`,
 ⑤ idempotently write the local-account `.env` (`ADMIN_EMAIL`, `ADMIN_PASSWORD`,
-`PASSWORD_AUTH_ENABLED=true`, session secrets, provider pins, and BoxLite native
-defaults; an existing `.env` is reused and stays gitignored), ⑥ validate the
-selected provider (AIO image staging or BoxLite endpoint/runtime probe), ⑦ `pull`
+`PASSWORD_AUTH_ENABLED=true`, session secrets, provider pins, sandbox image
+delivery mode, and BoxLite native/rootfs defaults; an existing `.env` is reused
+and stays gitignored), ⑥ validate the selected provider (AIO registry/image-asset
+staging or BoxLite endpoint/runtime probe), ⑦ `pull`
 then `up`, ⑧ wait for `/health` and print the admin email/password. The health
 wait defaults to 120s, but macOS/arm64 hosts running the amd64 release images use
 600s by default because QEMU/Colima emulation can take several minutes to finish
@@ -522,9 +541,12 @@ reachability check.
 
 Once you run the pinned-release line above, cap can apply an available update
 **from inside the console**: an admin presses an **Upgrade** button on the update
-banner and the api pulls the matched, version-pinned GHCR image set and recreates
-the cap services — running tasks survive the recreate. This is **opt-in and
-default-off**; you do not need it to self-host.
+banner and the api stages the matched target release, then recreates the cap
+services — running tasks survive the recreate. Control-plane images still come
+from GHCR; sandbox runtime staging follows `CAP_SANDBOX_IMAGE_DELIVERY`
+(`registry` pulls the stager image, `release-assets` downloads and verifies the
+GitHub Release asset before recreate). This is **opt-in and default-off**; you do
+not need it to self-host.
 
 > **Security note — this is host-root behind a button.** The Upgrade action drives
 > the host's Docker socket, the same host-root power tasks already run with. **Who
@@ -537,10 +559,13 @@ What it can do — even when enabled — is deliberately **bounded**:
 
 - It only upgrades to a target that **matches the latest** reported by the
   update check (`GET /update-status`); an arbitrary/mismatched target is rejected.
-- It pulls **only** the cap GHCR namespace (`ghcr.io/xeonice/cap-*:<target>`) and
-  recreates **only** the cap compose services. There is no path to an arbitrary
-  image, tag, or shell command.
-- It pulls **before** recreating, so a failed pull leaves the running stack intact.
+- It pulls **only** the cap GHCR namespace (`ghcr.io/xeonice/cap-*:<target>`) for
+  cap services and, in Release-asset mode, downloads only the named sandbox assets
+  for the same target. It recreates **only** the cap compose services. There is no
+  path to an arbitrary image, tag, or shell command.
+- It stages/pulls **before** recreating, so a failed sandbox asset download,
+  checksum, Docker load, rootfs extraction, or image pull leaves the running stack
+  intact.
 
 To activate it (after a Release exists and prod runs the pinned-release line):
 

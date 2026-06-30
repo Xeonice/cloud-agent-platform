@@ -45,7 +45,7 @@ export const en: SiteContent = {
       blurb:
         "Paste this into Claude Code. It reads the release-image installer, checks or installs Docker only when absent, and brings up the prebuilt stack.",
       prompt:
-        "Deploy cloud-agent-platform on this machine. First read https://{domain}/install.sh and https://{domain}/quick-deploy.sh, run the release-image install path, and ensure Docker is usable: install Docker/Compose only if absent, leave existing usable Docker untouched, and stop with remediation if docker.sock/daemon/context is unreachable. Do not git clone, do not run make up, and do not build locally. It defaults to the latest Release; set CAP_VERSION to pin one. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT and BOXLITE_API_TOKEN are set; BOXLITE_IMAGE defaults to the matching cap-boxlite-sandbox release image. On Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.",
+        "Deploy cloud-agent-platform on this machine. First read https://{domain}/install.sh and https://{domain}/quick-deploy.sh, run the release-image install path, and ensure Docker is usable: install Docker/Compose only if absent, leave existing usable Docker untouched, and stop with remediation if docker.sock/daemon/context is unreachable. Do not git clone, do not run make up, and do not build locally. It defaults to the latest Release; set CAP_VERSION to pin one. On macOS use CAP_SANDBOX_PROVIDER=boxlite and confirm BOXLITE_ENDPOINT and BOXLITE_API_TOKEN are set; leave BOXLITE_IMAGE unset to use the matching Release-asset rootfs, or set BOXLITE_IMAGE to force registry image mode. On Linux use the default AIO path. Report the console URL, the /version response, and the admin email/password it prints.",
       copyLabel: "Copy the Claude Code prompt",
     },
     install: {
@@ -65,7 +65,7 @@ export const en: SiteContent = {
           "# Linux/AIO also include: aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],
-        note: "install.sh delegates to quick-deploy.sh; the source of truth is docker-compose.prod.yml plus the GHCR release images. api/web bind 0.0.0.0 by default; public DNS/TLS/proxy remain yours.",
+        note: "install.sh delegates to quick-deploy.sh; the source of truth is docker-compose.prod.yml plus GHCR release images and matching sandbox Release assets. api/web bind 0.0.0.0 by default; public DNS/TLS/proxy remain yours.",
       },
     },
     prebuilt: {

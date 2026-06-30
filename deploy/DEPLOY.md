@@ -334,8 +334,13 @@ adds the **version substrate**: the running api self-reports its build at an
 unauthenticated `GET /version`, and cutting a GitHub Release publishes a
 **matched, version-pinned set** of images to GHCR — `ghcr.io/xeonice/cap-api`,
 `cap-web`, `cap-aio-sandbox`, and `cap-boxlite-sandbox`, ALL tagged with the
-single Release version `vX.Y.Z` (decision ⑤) — so a self-hoster can pull a mutually-compatible set
-instead of building (see the prebuilt-image override in
+single Release version `vX.Y.Z` (decision ⑤). The release workflow also attaches
+central sandbox image assets to the GitHub Release:
+`cap-image-assets.json`, `cap-aio-sandbox-<version>-linux-amd64.docker.tar.zst`,
+and `cap-boxlite-sandbox-<version>-linux-{amd64,arm64}.oci.tar.zst`, each with a
+`.sha256`. A self-hoster can therefore pull a mutually-compatible set from GHCR
+or stage the matching sandbox runtime from Release assets instead of building
+(see the prebuilt-image override in
 [`docs/self-hosting.md`](../docs/self-hosting.md)).
 
 ### 11.1 Make the repo + GHCR packages public (owner)
@@ -365,8 +370,10 @@ image set:
    at `vX.Y.Z`, injecting `CAP_VERSION` / `GIT_SHA` / `BUILD_TIME` (and the web
    `VITE_BUILD_ID`) so the published images self-report.
 3. Verify: pull `ghcr.io/xeonice/cap-api:vX.Y.Z`, run it, and confirm
-   `curl -s http://<host>/version` reports `version: vX.Y.Z`. (`workflow_dispatch`
-   is available for a manual re-run if a Release build needs to be repeated.)
+   `curl -s http://<host>/version` reports `version: vX.Y.Z`. Also confirm the
+   Release includes `cap-image-assets.json` plus the AIO/BoxLite sandbox asset
+   archives and checksums. (`workflow_dispatch` is available for a manual re-run
+   if a Release build needs to be repeated.)
 
 > This is the true end-to-end of the pipeline and is **verified at the first real
 > Release**, not by committing the change — a Release publishing real images
@@ -423,9 +430,11 @@ two files, fill `.env`, run).
    > at the new tag; pulling only `api` leaves the sandbox image missing and 404s every new
    > task's provision (the v0.20.0 incident). `scripts/upgrade.sh` forces both services +
    > pins `.env` + runs a provision smoke; `scripts/release.sh vX.Y.Z` is the matching tag +
-   > three-image-verify tail. The in-app one-click self-update button (§12) already stages
-   > both images and is for plain-compose self-hosters; on Dokploy you update via Dokploy +
-   > `CAP_VERSION` — but make sure the sandbox image is pulled too.
+   > image-and-asset verify tail. The in-app one-click self-update button (§12) already stages
+   > the selected sandbox runtime: GHCR pull in registry mode, or Release-asset download +
+   > checksum + `docker load`/BoxLite rootfs extraction in `CAP_SANDBOX_IMAGE_DELIVERY=release-assets`.
+   > On Dokploy you update via Dokploy + `CAP_VERSION` — but make sure the sandbox runtime is
+   > staged too.
 
    > ⚠️ **release-please MUST publish the Release under a non-`GITHUB_TOKEN` identity** (a
    > GitHub App token [recommended] or a fine-grained PAT) — a Release created by the built-in
@@ -630,9 +639,11 @@ To turn it on, deliberately — on the RESIDENT stack
 Then verify the true end-to-end (operator-gated — it needs the GHCR image set):
 cut a newer Release → the update banner shows → an admin presses **Upgrade** → the
 detached updater AUTO-DETECTS the resident topology, pulls `ghcr.io/xeonice/cap-*`
-at the target, recreates `api` + `aio-sandbox-image` (never postgres/loki/grafana),
-rewrites `CAP_VERSION` in the resident `.env`, the console reconnects, `GET /version`
-reports the new tag, and a task that was running survived the recreate.
+at the target, or first stages the target sandbox Release asset when
+`CAP_SANDBOX_IMAGE_DELIVERY=release-assets`, recreates `api` (and the AIO pull-only
+stager only in registry mode; never postgres/loki/grafana), rewrites `CAP_VERSION`
+in the resident `.env`, the console reconnects, `GET /version` reports the new
+tag, and a task that was running survived the recreate.
 
 > **Rollback:** the change is additive and default-off. To deactivate, unset
 > `SELF_UPDATE_ENABLED` (endpoint refuses again) and/or set `selfUpdate: false`
