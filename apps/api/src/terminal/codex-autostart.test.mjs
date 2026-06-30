@@ -15,8 +15,8 @@
  *
  *   survive-api-redeploy (detached-session 2.2–2.4):
  *   4. Attach-vs-fresh: when the named session is ALREADY alive on `ready`, the
- *      bridge ATTACHES (`tmux -u attach -t task<id>`) and does NOT launch a fresh
- *      codex (no `tmux -u new-session`, no auto-submit Enter into a running codex).
+ *      bridge hides tmux's status line, ATTACHES, and does NOT launch a fresh codex
+ *      (no `tmux -u new-session`, no auto-submit Enter into a running codex).
  *   5. A WS close while the session is still ALIVE is NON-TERMINAL: it does NOT
  *      resolve an exit (onExit is not called) — codex is left for re-adoption.
  *   6. Session-gone resolves the exit: when liveness polling observes the named
@@ -72,6 +72,13 @@ function assert(condition, label) {
 }
 
 const outDir = mkdtempSync(join(apiRoot, '.aio-autostart-test-'));
+
+function expectedAttach(taskId) {
+  return (
+    `tmux -u set-option -t task${taskId} status off \\; ` +
+    `attach -t task${taskId}`
+  );
+}
 
 function findFile(dir, name) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -274,8 +281,10 @@ async function main() {
       );
     }
     assert(
-      inputData(sandbox.inbound).some((d) => d.startsWith('tmux -u attach -t taskautostart-1')),
-      'after a fresh launch the bridge attaches to the new session',
+      inputData(sandbox.inbound).some((d) =>
+        d.startsWith(expectedAttach('autostart-1')),
+      ),
+      'after a fresh launch the bridge hides tmux status and attaches to the new session',
     );
 
     // No Enter should have been injected before the startup DSR is observed.
@@ -340,7 +349,7 @@ async function main() {
     await delay(120);
 
     const attached = inputData(sandbox.inbound).some((d) =>
-      d.startsWith('tmux -u attach -t taskautostart-3'),
+      d.startsWith(expectedAttach('autostart-3')),
     );
     assert(attached, 'a live named session is RE-ATTACHED on ready (re-adoption)');
     assert(
@@ -525,7 +534,7 @@ async function main() {
     await delay(120); // first socket established + attached
 
     const attachBefore = inputData(sandbox.inbound).filter((d) =>
-      d.startsWith('tmux -u attach -t taskautostart-9'),
+      d.startsWith(expectedAttach('autostart-9')),
     ).length;
     assert(attachBefore === 1, 'initial live session attach happens once');
 
@@ -537,7 +546,7 @@ async function main() {
     await delay(250); // new socket ready, attach, pending-input flush
 
     const attachAfter = inputData(sandbox.inbound).filter((d) =>
-      d.startsWith('tmux -u attach -t taskautostart-9'),
+      d.startsWith(expectedAttach('autostart-9')),
     ).length;
     assert(
       attachAfter === 2,

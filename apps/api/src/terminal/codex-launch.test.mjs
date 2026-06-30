@@ -160,8 +160,9 @@ async function main() {
     'headless detached launch also creates the tmux session in UTF-8 mode',
   );
   assert(
-    buildAttachSessionCommand('b3ee3f63') === 'tmux -u attach -t taskb3ee3f63',
-    'attach command uses tmux UTF-8 mode',
+    buildAttachSessionCommand('b3ee3f63') ===
+      'tmux -u set-option -t taskb3ee3f63 status off \\; attach -t taskb3ee3f63',
+    'attach command uses tmux UTF-8 mode and hides the tmux status line',
   );
   assert(
     buildResizeDetachedSessionCommand('b3ee3f63', 123, 45) ===

@@ -569,7 +569,7 @@ export class AioPtyClient implements AgentTerminalPty {
    * (survive-api-redeploy D1). Sends, as terminal input over `/v1/shell/ws`:
    *
    *   tmux -u new-session -d -s task<taskId> -c /home/gem/workspace '<codex line>'
-   *   tmux -u attach -t task<taskId>
+   *   tmux -u set-option -t task<taskId> status off \; attach -t task<taskId>
    *
    * The detached session makes codex a child of the container tmux daemon, so it
    * KEEPS RUNNING when this WS closes (api restart / operator disconnect); the
@@ -607,18 +607,20 @@ export class AioPtyClient implements AgentTerminalPty {
 
   /**
    * Attach this WS shell to the (already-running) detached named session
-   * `task<taskId>` (survive-api-redeploy D2/2.3). Sends `tmux attach -t task<id>`
-   * so the live codex's output streams over this WS and operator input is injected
-   * into the shared pane — the operator-reconnect / boot-re-adoption path. Does
-   * NOT launch a new agent. The caller is responsible for having verified liveness
-   * (gateway create-vs-attach, 2.5); a stale attach to a dead session simply drops
-   * back to the bash shell, which the liveness poller then observes as gone.
+   * `task<taskId>` (survive-api-redeploy D2/2.3). Sends a tmux command that first
+   * disables tmux's own status line and then attaches, so the live agent output
+   * streams over this WS without leaking `[task<id>:bash*]` chrome or consuming a
+   * terminal row. Operator input is injected into the shared pane — the
+   * operator-reconnect / boot-re-adoption path. Does NOT launch a new agent. The
+   * caller is responsible for having verified liveness (gateway create-vs-attach,
+   * 2.5); a stale attach to a dead session simply drops back to the bash shell,
+   * which the liveness poller then observes as gone.
    */
   attachToNamedSession(): void {
     this.attachSession();
   }
 
-  /** Send the `tmux -u attach -t <sessionName>` input that joins the live session. */
+  /** Send the tmux input that hides its status line and joins the live session. */
   private attachSession(): void {
     this.sendInput(`${buildAttachSessionCommand(this.taskId)}\n`);
     this.flushPendingInputSoon();

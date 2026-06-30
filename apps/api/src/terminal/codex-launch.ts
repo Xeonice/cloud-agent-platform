@@ -73,6 +73,8 @@ const TMUX_UTF8 = 'tmux -u';
  *   KEEP RUNNING — the survive-api-redeploy sidestep, verified by spike #2.
  * - `-s task<taskId>` names the session deterministically so it can be probed
  *   (`tmux has-session`), attached (`tmux attach`), and re-adopted on boot.
+ *   Attach also disables tmux's status line so the implementation detail never
+ *   consumes a row or leaks `[task<id>:bash*]` into the product terminal.
  * - `-c /home/gem/workspace` sets the session's working directory to the cloned
  *   task repo, matching the `-C /home/gem/workspace` the codex argv already used
  *   (the WS shell's own cwd is HOME, not the clone dir).
@@ -146,7 +148,11 @@ export function wrapHeadlessDetachedSession(
 }
 
 export function buildAttachSessionCommand(taskId: string): string {
-  return `${TMUX_UTF8} attach -t ${detachedSessionName(taskId)}`;
+  const sessionName = detachedSessionName(taskId);
+  return (
+    `${TMUX_UTF8} set-option -t ${sessionName} status off \\; ` +
+    `attach -t ${sessionName}`
+  );
 }
 
 export function buildResizeDetachedSessionCommand(
