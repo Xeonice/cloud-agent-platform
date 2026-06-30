@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.26.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.8...v0.26.0) (2026-06-30)
+
+
+### Features
+
+* add sandbox release assets and terminal stories ([3e86daa](https://github.com/Xeonice/cloud-agent-platform/commit/3e86daa7c7653e0c4d23312c5373ab1d2fff6e80))
+
+
+### Bug Fixes
+
+* **terminal:** preserve replay history and viewport ([09ceece](https://github.com/Xeonice/cloud-agent-platform/commit/09ceece89695962826d92034ab0551a7ecaeed5e))
+
 ## [0.25.8](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.7...v0.25.8) (2026-06-29)
 
 
