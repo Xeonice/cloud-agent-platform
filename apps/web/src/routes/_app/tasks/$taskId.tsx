@@ -56,6 +56,7 @@ import { TerminalSkeleton } from "@/components/session/terminal-skeleton";
 import { SessionReplay } from "@/components/session/session-replay";
 import { sessionViewMode } from "@/components/session/session-view-mode";
 import { formatTaskResource } from "@/components/session/format-resource";
+import { SANDBOX_PROVIDER_PENDING_LABEL } from "@/lib/sandbox-provider-label";
 
 /** Statusline / H1 phase label per cockpit state vocabulary (never fabricated). */
 const STATE_LABELS: Record<SessionTaskState, string> = {
@@ -119,7 +120,8 @@ function SessionPage(): React.ReactElement {
   const repo = context?.repo ?? "—";
   const branch = task?.branch ?? context?.branch ?? "main";
   const agent = context?.agent ?? "—";
-  const runtime = context?.runtime ?? "AIO Sandbox";
+  const sandboxProviderLabel =
+    context?.sandboxProviderLabel ?? SANDBOX_PROVIDER_PENDING_LABEL;
   const headLabel = `${agent} · ${repo}#${branch}`;
 
   // Cockpit task-lifecycle state: failed → failed; other terminal → stopped;
@@ -182,7 +184,7 @@ function SessionPage(): React.ReactElement {
         prompt={task?.prompt ?? "正在加载任务目标…"}
         branch={branch}
         agent={agent}
-        runtime={runtime}
+        sandboxProviderLabel={sandboxProviderLabel}
         guardrail={guardrail}
         canStop={canStop}
         stopPending={stopMutation.isPending}

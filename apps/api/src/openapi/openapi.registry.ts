@@ -18,7 +18,7 @@ import {
   // module's doc + `@cap/contracts`'s zod-instance for the ESM/CJS split rationale.
   contractsZod,
   RepoSchema,
-  TaskSchema,
+  TaskResponseSchema,
   // wire-transcript-real-data — the durable session-history read model (turns +
   // per-turn `at`, tool diffstat, audit-sourced system turns, session totals).
   // The /v1 transcript response is documented from THIS exact schema so the doc
@@ -195,7 +195,7 @@ export const V1_ROUTES: readonly V1RouteDefinition[] = [
     response: {
       status: 201,
       description: 'The created task with its initial status.',
-      schema: TaskSchema,
+      schema: TaskResponseSchema,
     },
   },
   {
@@ -222,7 +222,7 @@ export const V1_ROUTES: readonly V1RouteDefinition[] = [
     response: {
       status: 200,
       description: 'The task.',
-      schema: TaskSchema,
+      schema: TaskResponseSchema,
     },
   },
   {
@@ -234,7 +234,7 @@ export const V1_ROUTES: readonly V1RouteDefinition[] = [
     response: {
       status: 200,
       description: 'The task transitioned toward its terminal state.',
-      schema: TaskSchema,
+      schema: TaskResponseSchema,
     },
   },
   {

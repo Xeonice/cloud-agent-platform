@@ -25,6 +25,25 @@ vi.mock("./capabilities", () => ({
 // Stub both implementations with sentinels so we can assert the chosen side.
 vi.mock("./real", () => ({
   listTasks: vi.fn(async () => "REAL_tasks"),
+  getTask: vi.fn(async () => ({
+    id: "task-1",
+    repoId: "repo-1",
+    prompt: "p",
+    status: "running",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    branch: "feature/provider-chip",
+    strategy: "single-pass",
+    runtime: "codex",
+    sandboxProvider: { id: "boxlite", label: "BoxLite Sandbox" },
+  })),
+  listRepos: vi.fn(async () => [
+    {
+      id: "repo-1",
+      name: "repo",
+      gitSource: "git@github.com:owner/repo.git",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    },
+  ]),
   getMetrics: vi.fn(async () => "REAL_metrics"),
   getSessionHistory: vi.fn(async () => "REAL_sessionHistory"),
   listAuditEvents: vi.fn(async () => "REAL_history"),
@@ -35,6 +54,16 @@ vi.mock("./real", () => ({
 
 vi.mock("./mock", () => ({
   mockListTasks: vi.fn(async () => "MOCK_tasks"),
+  mockTaskContext: vi.fn(async () => ({
+    taskId: "task-1",
+    repo: "owner/mock",
+    branch: "main",
+    strategy: "single-pass",
+    agent: "Codex",
+    sandboxProviderLabel: "沙箱待启动",
+    resources: "2 vCPU · 4 GiB",
+    safetyBoundary: "mock",
+  })),
   mockMetrics: vi.fn(async () => "MOCK_metrics"),
   mockSessionHistory: vi.fn(async () => "MOCK_sessionHistory"),
   mockHistory: vi.fn(async () => "MOCK_history"),
@@ -47,6 +76,7 @@ vi.mock("./mock", () => ({
 // declared. `vi.mock` is hoisted, so these resolve to the stubs above.
 import {
   tasksQuery,
+  taskContextQuery,
   metricsQuery,
   sessionHistoryQuery,
   historyEventsQuery,
@@ -162,4 +192,36 @@ describe("query factory real/mock dispatch follows the capability flag", () => {
       expect(c.realFn).not.toHaveBeenCalled();
     });
   }
+});
+
+describe("taskContextQuery sandbox provider label", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(flags)) delete flags[key];
+    vi.clearAllMocks();
+  });
+
+  it("uses the real TaskResponse sandboxProvider label when tasks are capable", async () => {
+    flags.tasks = true;
+
+    const result = (await runQueryFn(() => taskContextQuery("task-1"))) as {
+      repo: string;
+      branch: string;
+      sandboxProviderLabel: string;
+    };
+
+    expect(result.repo).toBe("owner/repo");
+    expect(result.branch).toBe("feature/provider-chip");
+    expect(result.sandboxProviderLabel).toBe("BoxLite Sandbox");
+  });
+
+  it("does not guess AIO when tasks are not capable", async () => {
+    flags.tasks = false;
+
+    const result = (await runQueryFn(() => taskContextQuery("task-1"))) as {
+      sandboxProviderLabel: string;
+    };
+
+    expect(result.sandboxProviderLabel).toBe("沙箱待启动");
+    expect(result.sandboxProviderLabel).not.toBe("AIO Sandbox");
+  });
 });

@@ -462,7 +462,7 @@ The `/tasks/$taskId` page SHALL adopt the COCKPIT layout as a MARKUP/LAYOUT/STYL
 
 The THREE-SEGMENT header SHALL render, in this order:
 - a TASK-STATUS H1 rendered as a dot+text Badge where the state is conveyed by BOTH the dot color AND the text label (never color-alone). The route drives the task LIFECYCLE states 运行中 / 已停止 / 失败 (all static dots) this phase; the Badge primitive also supports an in-flight 等待审批 state (animated pulse), reserved for the follow-up approval change that lifts the pending request;
-- a TAG RAIL folding the deleted context strip into NON-INTERACTIVE chips for 分支 / {agent-runtime} / AIO Sandbox / 守护栏, each rendered with a white background and a 1px ring. The agent chip SHALL render the task's PERSISTED `runtime` as a human-readable label (`codex` → `Codex`, `claude-code` → `Claude Code`, absent/null → `Codex`) via a SINGLE shared runtime-label helper that is also used by the history page, so the agent label cannot drift between the two surfaces; it SHALL NOT be a hardcoded `Codex` literal. The tag rail SHALL NOT render a platform-arch (`linux-amd64`) chip, because no task field backs it (D5.5 — never render an unsent field); the `AIO Sandbox` chip (the truthful sole sandbox provider) and the 守护栏 chip (computed from the task's `idleTimeoutMs`/`deadlineMs`) are unchanged. (the amber 写入前确认 chip is DEFERRED to the follow-up approval change);
+- a TAG RAIL folding the deleted context strip into NON-INTERACTIVE chips for 分支 / {agent-runtime} / {sandbox-provider} / 守护栏, each rendered with a white background and a 1px ring. The agent chip SHALL render the task's PERSISTED `runtime` as a human-readable label (`codex` → `Codex`, `claude-code` → `Claude Code`, absent/null → `Codex`) via a SINGLE shared runtime-label helper that is also used by the history page, so the agent label cannot drift between the two surfaces; it SHALL NOT be a hardcoded `Codex` literal. The sandbox-provider chip SHALL render from the task response's public `sandboxProvider.label` when present (for example `AIO Sandbox` or `BoxLite Sandbox`) and SHALL render an honest pending/unassigned fallback when `sandboxProvider` is null or absent; it SHALL NOT hardcode `AIO Sandbox`, infer the provider from frontend environment variables, or treat AIO as the sole provider. The tag rail SHALL NOT render a platform-arch (`linux-amd64`) chip, because no task field backs it (D5.5 — never render an unsent field); the 守护栏 chip is computed from the task's `idleTimeoutMs`/`deadlineMs`. (the amber 写入前确认 chip is DEFERRED to the follow-up approval change);
 - a SINGLE 停止 action as the only header action, retaining the existing two-step (explicit confirm) stop semantics that POST to `POST /tasks/:taskId/stop`; the former 返回任务 / 复制会话记录 / 暂停输出 buttons SHALL NOT appear in the header (they fold into the terminal ⋯ menu or are dropped).
 
 The permission-request APPROVAL surface SHALL remain INSIDE the terminal `<article>` exactly as it shipped previously (an in-terminal panel offering 允许 / 拒绝, resolved lock-independently). The page-level amber banner restyle + the lift of `pending`/`decide` to the route so deciding flips the page-level H1/statusline are DEFERRED to a follow-up approval change (which also wires the real `permission_request` flow + the diffstat/commits payload).
@@ -487,9 +487,19 @@ The route SHALL preserve its established invariants — it remains the ONLY `ssr
 - **THEN** the dot pulses (animated), and for the 运行中, 已停止, and 失败 states the dot is static with no pulse animation
 
 #### Scenario: Tag rail folds the context strip into non-interactive ring chips
-- **WHEN** the header tag rail renders for a task
-- **THEN** it shows the 分支 / agent-runtime / AIO Sandbox / 守护栏 chips each with a white background and a 1px ring, and clicking any chip performs no navigation or action (the chips are non-interactive)
+- **WHEN** the header tag rail renders for a task with a selected sandbox provider summary
+- **THEN** it shows the 分支 / agent-runtime / sandbox-provider / 守护栏 chips each with a white background and a 1px ring, and clicking any chip performs no navigation or action (the chips are non-interactive)
 - **AND** NO platform-arch (linux-amd64) chip is rendered
+
+#### Scenario: Sandbox provider chip reflects the task response
+- **WHEN** the header tag rail renders for a task whose task response contains `sandboxProvider.label = "BoxLite Sandbox"`
+- **THEN** the sandbox-provider chip reads `BoxLite Sandbox`
+- **AND** the page does not render `AIO Sandbox` for that chip unless the task response selected an AIO provider
+
+#### Scenario: Sandbox provider chip degrades honestly before provider selection
+- **WHEN** the header tag rail renders for a task whose task response has `sandboxProvider = null` or no `sandboxProvider` field during a mixed deploy
+- **THEN** the sandbox-provider chip renders an honest pending/unassigned sandbox label
+- **AND** it does not guess `AIO Sandbox` from frontend constants, deployment env, or mock defaults
 
 #### Scenario: Agent chip reflects the task's persisted runtime
 - **WHEN** the tag rail and the terminal-head `{agent}` label render for a task persisted with `runtime = claude-code`

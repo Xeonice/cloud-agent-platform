@@ -9,7 +9,7 @@
  *      (dot+text, never color-alone);
  *   3. the task PROMPT as a single-line truncated, click-to-expand line
  *      (its "commit-message" slot);
- *   4. a non-interactive TAG RAIL (分支 / agent runtime / AIO Sandbox / 守护栏)
+ *   4. a non-interactive TAG RAIL (分支 / agent runtime / sandbox provider / 守护栏)
  *      of white-bg ring chips. The agent chip reflects the task's persisted
  *      runtime (Codex / Claude Code); there is no platform-arch chip.
  *
@@ -36,8 +36,8 @@ export interface SessionHeaderProps {
   branch: string;
   /** Agent tag (e.g. `Codex`). */
   agent: string;
-  /** Runtime tag (e.g. `AIO Sandbox`). */
-  runtime: string;
+  /** Sandbox provider tag (e.g. `AIO Sandbox` or `BoxLite Sandbox`). */
+  sandboxProviderLabel: string;
   /** Guardrail readout, computed honestly from the task (e.g. `默认守护栏`). */
   guardrail: string;
   /**
@@ -57,7 +57,7 @@ export function SessionHeader({
   prompt,
   branch,
   agent,
-  runtime,
+  sandboxProviderLabel,
   guardrail,
   canStop = false,
   stopPending = false,
@@ -147,7 +147,7 @@ export function SessionHeader({
             {branch}
           </SessionTag>
           <SessionTag>{agent}</SessionTag>
-          <SessionTag>{runtime}</SessionTag>
+          <SessionTag>{sandboxProviderLabel}</SessionTag>
           <SessionTag>{guardrail}</SessionTag>
         </div>
       </div>

@@ -72,6 +72,8 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
       const out = await mockListTasks();
       expect(() => ListTasksResponseSchema.parse(out)).not.toThrow();
       expect(out.length).toBeGreaterThan(0);
+      expect(out.some((task) => task.sandboxProvider?.label === "BoxLite Sandbox")).toBe(true);
+      expect(out.some((task) => task.sandboxProvider === null)).toBe(true);
     },
     TIMEOUT,
   );
@@ -310,7 +312,7 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
       expect(typeof out.branch).toBe("string");
       expect(typeof out.strategy).toBe("string");
       expect(typeof out.agent).toBe("string");
-      expect(typeof out.runtime).toBe("string");
+      expect(typeof out.sandboxProviderLabel).toBe("string");
       expect(typeof out.resources).toBe("string");
       expect(typeof out.safetyBoundary).toBe("string");
     },

@@ -76,7 +76,7 @@ export function delay(ms = 120 + Math.floor(Math.random() * 300)): Promise<void>
 
 /**
  * The session task-context strip ("任务目标 / 运行环境 / 安全边界") shows
- * repo#branch / agent / runtime / safety-boundary metadata the `Task` model
+ * repo#branch / agent / sandbox-provider / safety-boundary metadata the `Task` model
  * does not persist today (D5.5). This local view type extends the persisted
  * task fields with the prototype's mock context; once `branches`/runner
  * metadata land, branch/strategy come from the real task and this collapses.
@@ -92,8 +92,8 @@ export interface TaskContextView {
   strategy: string;
   /** The agent/model label (mock). */
   agent: string;
-  /** Runtime/runner environment label (mock). */
-  runtime: string;
+  /** Public sandbox provider label, or an honest pending label before selection. */
+  sandboxProviderLabel: string;
   /** vCPU / memory sizing line (mock). */
   resources: string;
   /** Safety/write boundary copy shown in the 安全边界 card (mock). */
@@ -138,6 +138,7 @@ const MOCK_TASKS: ListTasksResponse = [
     branch: "aio-execution-hardening",
     strategy: "single-pass",
     executionMode: "interactive-pty",
+    sandboxProvider: { id: "aio-local", label: "AIO Sandbox" },
   },
   {
     id: TASK_IDS.b,
@@ -147,6 +148,7 @@ const MOCK_TASKS: ListTasksResponse = [
     createdAt: minsAgo(21),
     branch: "main",
     strategy: "review-then-apply",
+    sandboxProvider: null,
   },
   {
     id: TASK_IDS.c,
@@ -156,6 +158,7 @@ const MOCK_TASKS: ListTasksResponse = [
     createdAt: minsAgo(94),
     branch: "fix/dialback-reconnect",
     strategy: "single-pass",
+    sandboxProvider: { id: "boxlite", label: "BoxLite Sandbox" },
   },
   {
     id: TASK_IDS.d,
@@ -168,6 +171,7 @@ const MOCK_TASKS: ListTasksResponse = [
     // headless-task-conversation-view: a running headless task exercises the
     // conversation-not-terminal branch in the console.
     executionMode: "headless-exec",
+    sandboxProvider: { id: "boxlite", label: "BoxLite Sandbox" },
   },
   {
     id: TASK_IDS.e,
@@ -177,6 +181,7 @@ const MOCK_TASKS: ListTasksResponse = [
     createdAt: minsAgo(180),
     branch: "main",
     strategy: "review-then-apply",
+    sandboxProvider: null,
   },
 ];
 
@@ -200,6 +205,7 @@ export async function mockGetTask(id: string): Promise<TaskResponse> {
         createdAt: now(),
         branch: "main",
         strategy: "single-pass",
+        sandboxProvider: null,
       };
 }
 
@@ -773,7 +779,7 @@ export async function mockGithubRepos(): Promise<ListAvailableGithubReposRespons
 }
 
 // ---------------------------------------------------------------------------
-// Task contexts — taskId → repo#branch / agent / runtime / safety boundary
+// Task contexts — taskId → repo#branch / agent / sandbox provider / safety boundary
 // ---------------------------------------------------------------------------
 
 const SAFETY =
@@ -786,7 +792,7 @@ const MOCK_TASK_CONTEXTS: Record<string, TaskContextView> = {
     branch: "aio-execution-hardening",
     strategy: "single-pass",
     agent: "Codex (gpt-5-codex)",
-    runtime: "AIO Sandbox",
+    sandboxProviderLabel: "AIO Sandbox",
     resources: "4 vCPU · 8 GiB",
     safetyBoundary: SAFETY,
   },
@@ -796,7 +802,7 @@ const MOCK_TASK_CONTEXTS: Record<string, TaskContextView> = {
     branch: "main",
     strategy: "review-then-apply",
     agent: "Codex (gpt-5-codex)",
-    runtime: "AIO Sandbox",
+    sandboxProviderLabel: "沙箱待启动",
     resources: "2 vCPU · 4 GiB",
     safetyBoundary: SAFETY,
   },
@@ -817,7 +823,7 @@ export async function mockTaskContext(taskId: string): Promise<TaskContextView> 
       branch: "main",
       strategy: "single-pass",
       agent: "Codex (gpt-5-codex)",
-      runtime: "AIO Sandbox",
+      sandboxProviderLabel: "沙箱待启动",
       resources: "2 vCPU · 4 GiB",
       safetyBoundary: SAFETY,
     }

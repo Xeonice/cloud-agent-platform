@@ -43,6 +43,7 @@ import type {
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import { agentLabel } from "../runtime-label";
+import { taskSandboxProviderLabel } from "../sandbox-provider-label";
 import * as real from "./real";
 import * as mock from "./mock";
 import type { TaskContextView } from "./mock";
@@ -437,10 +438,10 @@ export function forgeCredentialsQuery() {
 }
 
 /**
- * The session task-context strip (repo#branch / agent / runtime / safety
- * boundary). Mock until `capabilities.branches` flips; when on, branch/strategy
- * are read back from the real task (the rest of the context view stays mock
- * until runner metadata is persisted).
+ * The session task-context strip (repo#branch / agent / sandbox-provider /
+ * safety boundary). Mock until `capabilities.branches` flips; when on,
+ * branch/strategy, agent, and sandbox provider are read back from the real task
+ * response (remaining runner metadata stays mock until persisted).
  */
 export function taskContextQuery(id: string) {
   return queryOptions<TaskContextView>({
@@ -449,11 +450,12 @@ export function taskContextQuery(id: string) {
       const ctx = await mock.mockTaskContext(id);
       if (!isCapable("tasks")) return ctx;
       // Bind to REAL data: repo name from the task's repoId, branch/strategy and
-      // the agent label from the task. The agent label is DERIVED from the
+      // the agent/sandbox labels from the task. The agent label is DERIVED from the
       // persisted `task.runtime` via the shared `agentLabel` helper (the SAME
       // source the history page uses) — codex/absent → Codex, claude-code →
       // Claude Code — so a claude-code task no longer mislabels as Codex. The
-      // sandbox IS AIO Sandbox (the sole provider), a truthful constant.
+      // sandbox provider label is the API's public `task.sandboxProvider.label`;
+      // absent/null degrades to a pending label instead of guessing a provider.
       // `resources` still has NO backend field, so it stays an honest placeholder
       // (D5.5 — never render an unsent field); the former linux/amd64 arch chip is
       // dropped entirely (no field backs it).
@@ -469,7 +471,7 @@ export function taskContextQuery(id: string) {
         branch: task.branch ?? ctx.branch,
         strategy: task.strategy ?? ctx.strategy,
         agent: agentLabel(task.runtime),
-        runtime: "AIO Sandbox",
+        sandboxProviderLabel: taskSandboxProviderLabel(task),
         resources: "—",
       };
     },

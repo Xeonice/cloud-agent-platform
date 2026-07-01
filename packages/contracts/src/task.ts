@@ -233,6 +233,40 @@ export const TaskSchema = z.object({
 export type Task = z.infer<typeof TaskSchema>;
 
 // ---------------------------------------------------------------------------
+// Task REST response-only sandbox provider summary
+// ---------------------------------------------------------------------------
+
+/**
+ * Public, non-secret sandbox provider summary shown by task read surfaces.
+ *
+ * This is deliberately response-only and much narrower than provider internals:
+ * it exposes the public provider id plus a display label, but never provider
+ * sandbox ids, connection JSON, native URLs, endpoints, tokens, or metadata.
+ */
+export const TaskSandboxProviderSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+});
+export type TaskSandboxProvider = z.infer<typeof TaskSandboxProviderSchema>;
+
+/**
+ * Stable display label for a public sandbox provider id.
+ *
+ * Unknown ids intentionally collapse to a neutral label instead of echoing the id
+ * into the label, so a future/misconfigured provider id cannot accidentally make
+ * endpoint-like data more prominent in the UI.
+ */
+export function sandboxProviderLabel(providerId: string): string {
+  const id = providerId.trim().toLowerCase();
+  if (id === 'aio' || id.startsWith('aio-')) return 'AIO Sandbox';
+  if (id === 'boxlite' || id.startsWith('boxlite-')) return 'BoxLite Sandbox';
+  if (id === 'cloud-http' || id === 'cloud' || id.startsWith('cloud-')) {
+    return 'Cloud Sandbox';
+  }
+  return 'Sandbox Provider';
+}
+
+// ---------------------------------------------------------------------------
 // Repo REST request/response bodies
 // ---------------------------------------------------------------------------
 
@@ -335,12 +369,20 @@ export const createTaskBodySchema = CreateTaskRequestSchema;
 export type CreateTaskBody = CreateTaskRequest;
 
 /** Response body for a single task (create / fetch-by-id). */
-export const TaskResponseSchema = TaskSchema;
+export const TaskResponseSchema = TaskSchema.extend({
+  /**
+   * Public sandbox provider selected for this task, when provisioning has
+   * recorded an owner. Null means no provider has been selected yet. Optional so
+   * mixed deployments with an older api degrade honestly instead of failing task
+   * reads; the current api emits null explicitly when absent.
+   */
+  sandboxProvider: TaskSandboxProviderSchema.nullable().optional(),
+});
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
 
 /** Lower-camel alias of {@link TaskResponseSchema} used by the api tasks service. */
 export const taskResponseSchema = TaskResponseSchema;
 
 /** Response body for `GET /tasks`. */
-export const ListTasksResponseSchema = z.array(TaskSchema);
+export const ListTasksResponseSchema = z.array(TaskResponseSchema);
 export type ListTasksResponse = z.infer<typeof ListTasksResponseSchema>;

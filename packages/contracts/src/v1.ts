@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   CreateTaskRequestSchema,
   RepoSchema,
+  TaskResponseSchema,
   TaskSchema,
 } from './task.js';
 
@@ -92,7 +93,7 @@ const paginatedEnvelope = <T extends z.ZodTypeAny>(item: T) =>
   });
 
 /** Response body for `GET /v1/tasks` — a keyset page of tasks. */
-export const V1ListTasksResponseSchema = paginatedEnvelope(TaskSchema);
+export const V1ListTasksResponseSchema = paginatedEnvelope(TaskResponseSchema);
 export type V1ListTasksResponse = z.infer<typeof V1ListTasksResponseSchema>;
 
 /** Response body for `GET /v1/repos` — a keyset page of repos. */

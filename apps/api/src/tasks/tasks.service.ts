@@ -11,11 +11,13 @@ import {
 import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
+  sandboxProviderLabel,
   taskResponseSchema,
   type CreateTaskBody,
   type Deliver,
   type DeliverStatus,
   type Runtime,
+  type TaskSandboxProvider,
   type TaskResponse,
   type TaskStatus,
 } from '@cap/contracts';
@@ -162,6 +164,14 @@ export const CLAUDE_RUNTIME_READINESS_TOKEN = 'CLAUDE_RUNTIME_READINESS';
  * task NEVER launches an unauthenticated agent (add-claude-code-runtime 4.2).
  */
 export const RUNTIME_NOT_CONFIGURED_REASON = 'runtime not configured';
+
+const LATEST_SANDBOX_PROVIDER_INCLUDE = {
+  sandboxRuns: {
+    orderBy: { createdAt: 'desc' as const },
+    take: 1,
+    select: { providerId: true },
+  },
+} as const;
 
 /**
  * Thrown by `create` when the selected runtime is not configured/ready. A
@@ -694,12 +704,16 @@ export class TasksService implements OnApplicationBootstrap {
   async list(): Promise<TaskResponse[]> {
     const tasks = await this.prisma.task.findMany({
       orderBy: { createdAt: 'asc' },
+      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
     });
     return tasks.map((task) => taskResponseSchema.parse(this.toResponse(task)));
   }
 
   async findById(id: string): Promise<TaskResponse> {
-    const task = await this.prisma.task.findUnique({ where: { id } });
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+    });
     if (!task) {
       throw new NotFoundException(`Task not found: ${id}`);
     }
@@ -730,6 +744,7 @@ export class TasksService implements OnApplicationBootstrap {
     const updated = await this.prisma.task.update({
       where: { id },
       data: { status: next },
+      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
     });
 
     // 6.2 — the status write was ACCEPTED (an illegal edge would have thrown
@@ -772,6 +787,7 @@ export class TasksService implements OnApplicationBootstrap {
     const updated = await this.prisma.task.update({
       where: { id },
       data: { status: next },
+      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
     });
 
     // 6.2 — record the `agent_failed_to_start` terminal (422/error). Best-effort.
@@ -814,7 +830,10 @@ export class TasksService implements OnApplicationBootstrap {
    * is swallowed and the current task returned).
    */
   async stop(id: string, userId?: string): Promise<TaskResponse> {
-    const task = await this.prisma.task.findUnique({ where: { id } });
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+    });
     if (!task) {
       throw new NotFoundException(`Task not found: ${id}`);
     }
@@ -880,6 +899,7 @@ export class TasksService implements OnApplicationBootstrap {
     commitSha?: string | null;
     changeRequestUrl?: string | null;
     changeRequestNumber?: number | null;
+    sandboxRuns?: readonly { providerId: string }[];
   }): TaskResponse {
     return {
       id: task.id,
@@ -920,7 +940,17 @@ export class TasksService implements OnApplicationBootstrap {
       commitSha: task.commitSha ?? null,
       changeRequestUrl: task.changeRequestUrl ?? null,
       changeRequestNumber: task.changeRequestNumber ?? null,
+      sandboxProvider: this.toSandboxProviderSummary(task),
     };
+  }
+
+  private toSandboxProviderSummary(task: {
+    sandboxRuns?: readonly { providerId: string }[];
+  }): TaskSandboxProvider | null {
+    const providerId = task.sandboxRuns?.[0]?.providerId;
+    return providerId
+      ? { id: providerId, label: sandboxProviderLabel(providerId) }
+      : null;
   }
 }
 
