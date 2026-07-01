@@ -143,6 +143,11 @@ export interface SnapshotManagerOptions {
   /** Snapshot cadence in ms (defaults to {@link DEFAULT_SNAPSHOT_INTERVAL_MS}). */
   intervalMs?: number;
   /**
+   * Existing `session.log` byte size when a running task is re-adopted after an
+   * API restart. New snapshots must continue from this durable offset.
+   */
+  initialOffset?: number;
+  /**
    * Max bytes replayed from the end of `session.log` for a fresh connection.
    * Defaults to {@link DEFAULT_FRESH_RECONNECT_REPLAY_BYTES}.
    */
@@ -192,6 +197,7 @@ export class SnapshotManager {
     this.freshReplayBytes =
       options.freshReplayBytes ?? DEFAULT_FRESH_RECONNECT_REPLAY_BYTES;
     this.now = options.now ?? Date.now;
+    this.byteOffset = Math.max(0, options.initialOffset ?? 0);
   }
 
   /** The byte offset the headless terminal has been fed up to. */

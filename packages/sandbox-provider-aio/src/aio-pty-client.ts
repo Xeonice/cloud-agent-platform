@@ -33,6 +33,8 @@
  * sandbox `exec`/`wait` HTTP surfaces) and maps it to guardrails.
  */
 import type {
+  AgentTerminalDataListener,
+  AgentTerminalOutputMeta,
   AgentTerminalPty,
   SandboxCommandExecutor,
   TerminalExitStatus,
@@ -169,6 +171,18 @@ const CODEX_LIVENESS_POLL_MS = Number(
 );
 
 /**
+ * Re-adoption attaches a fresh shell to an already-running tmux session. The
+ * shell echo, duplicate-session fallback output, and initial TUI repaint are
+ * useful to a live viewer but must not become durable history.
+ */
+const ATTACH_BOOTSTRAP_QUIESCE_MS = Number(
+  process.env['CODEX_ATTACH_BOOTSTRAP_QUIESCE_MS'] ?? 300,
+);
+const ATTACH_BOOTSTRAP_MAX_MS = Number(
+  process.env['CODEX_ATTACH_BOOTSTRAP_MAX_MS'] ?? 2_000,
+);
+
+/**
  * The cloned-workspace directory inside the sandbox the detached session runs in
  * (`-c <dir>`), matching the codex `buildDetachedCodexLaunchLine` default. Passed
  * to a non-codex runtime's `buildLaunchLine` as the session cwd so claude runs in
@@ -259,7 +273,7 @@ export class AioPtyClient implements AgentTerminalPty {
   private readonly logger: AioPtyClientLogger = noopLogger;
 
   /** Subscribers to translated raw PTY output (decoded sandbox `output` data). */
-  private readonly dataListeners = new Set<(chunk: string) => void>();
+  private readonly dataListeners = new Set<AgentTerminalDataListener>();
 
   /** The provider terminal transport into the sandbox. */
   private transport: TerminalTransport;
@@ -314,6 +328,15 @@ export class AioPtyClient implements AgentTerminalPty {
 
   /** Debounce timer backing the output-quiescence prompt auto-submit. */
   private autoSubmitTimer?: ReturnType<typeof setTimeout>;
+
+  /** True while re-adoption attach/bootstrap bytes are being observed. */
+  private attachBootstrapActive = false;
+
+  /** Ends the attach-bootstrap window after output goes quiet. */
+  private attachBootstrapQuietTimer?: ReturnType<typeof setTimeout>;
+
+  /** Hard stop so continuous output becomes recordable again. */
+  private attachBootstrapMaxTimer?: ReturnType<typeof setTimeout>;
 
   /**
    * The detached named tmux session this client drives, `task<taskId>`
@@ -429,7 +452,7 @@ export class AioPtyClient implements AgentTerminalPty {
   // -------------------------------------------------------------------------
 
   /** Subscribe to translated raw PTY output; returns an unsubscribe handle. */
-  onData(listener: (chunk: string) => void): { dispose(): void } {
+  onData(listener: AgentTerminalDataListener): { dispose(): void } {
     this.dataListeners.add(listener);
     return { dispose: () => this.dataListeners.delete(listener) };
   }
@@ -603,6 +626,9 @@ export class AioPtyClient implements AgentTerminalPty {
     // `onOutput` can auto-submit the pre-filled goal (codex's positional prompt
     // does not auto-run on its own).
     this.launchedCodex = armAutoSubmit;
+    if (!armAutoSubmit) {
+      this.beginAttachBootstrapWindow();
+    }
     this.sendInput(`${buildDetachedCodexLaunchLine(this.taskId, argv)}\n`);
     this.attachSession();
   }
@@ -619,6 +645,7 @@ export class AioPtyClient implements AgentTerminalPty {
    * which the liveness poller then observes as gone.
    */
   attachToNamedSession(): void {
+    this.beginAttachBootstrapWindow();
     this.attachSession();
   }
 
@@ -677,6 +704,7 @@ export class AioPtyClient implements AgentTerminalPty {
         // the auto-submit: if an agent was actually already running, the duplicate
         // `tmux new-session` is a no-op and the attach rejoins it, so a stray Enter
         // must not be injected.
+        this.beginAttachBootstrapWindow();
         this.launchAgent(false);
       }
     } catch (err) {
@@ -792,6 +820,7 @@ export class AioPtyClient implements AgentTerminalPty {
   close(): void {
     this.exitResolved = true;
     this.stopLivenessPoller();
+    this.endAttachBootstrapWindow();
     if (this.autoSubmitTimer) {
       clearTimeout(this.autoSubmitTimer);
       this.autoSubmitTimer = undefined;
@@ -876,7 +905,60 @@ export class AioPtyClient implements AgentTerminalPty {
 
     // Emit the decoded output into the existing raw pipeline; the gateway
     // base64-encodes it as a `raw` frame for the browser (unchanged protocol).
-    this.emitData(data);
+    const meta = this.outputMeta();
+    this.emitData(data, meta);
+  }
+
+  private beginAttachBootstrapWindow(): void {
+    this.attachBootstrapActive = true;
+    this.clearAttachBootstrapTimers();
+    if (ATTACH_BOOTSTRAP_MAX_MS <= 0) {
+      this.endAttachBootstrapWindow();
+      return;
+    }
+    this.attachBootstrapMaxTimer = setTimeout(() => {
+      this.endAttachBootstrapWindow();
+    }, ATTACH_BOOTSTRAP_MAX_MS);
+    this.attachBootstrapMaxTimer.unref?.();
+    this.armAttachBootstrapQuietTimer();
+  }
+
+  private armAttachBootstrapQuietTimer(): void {
+    if (!this.attachBootstrapActive) return;
+    if (this.attachBootstrapQuietTimer) {
+      clearTimeout(this.attachBootstrapQuietTimer);
+      this.attachBootstrapQuietTimer = undefined;
+    }
+    if (ATTACH_BOOTSTRAP_QUIESCE_MS <= 0) {
+      this.endAttachBootstrapWindow();
+      return;
+    }
+    this.attachBootstrapQuietTimer = setTimeout(() => {
+      this.endAttachBootstrapWindow();
+    }, ATTACH_BOOTSTRAP_QUIESCE_MS);
+    this.attachBootstrapQuietTimer.unref?.();
+  }
+
+  private endAttachBootstrapWindow(): void {
+    this.attachBootstrapActive = false;
+    this.clearAttachBootstrapTimers();
+  }
+
+  private clearAttachBootstrapTimers(): void {
+    if (this.attachBootstrapQuietTimer) {
+      clearTimeout(this.attachBootstrapQuietTimer);
+      this.attachBootstrapQuietTimer = undefined;
+    }
+    if (this.attachBootstrapMaxTimer) {
+      clearTimeout(this.attachBootstrapMaxTimer);
+      this.attachBootstrapMaxTimer = undefined;
+    }
+  }
+
+  private outputMeta(): AgentTerminalOutputMeta | undefined {
+    if (!this.attachBootstrapActive) return undefined;
+    this.armAttachBootstrapQuietTimer();
+    return { recordable: false, source: 'attach-bootstrap' };
   }
 
   /**
@@ -899,9 +981,9 @@ export class AioPtyClient implements AgentTerminalPty {
   }
 
   /** Fan a translated raw output chunk out to every `onData` subscriber. */
-  private emitData(chunk: string): void {
+  private emitData(chunk: string, meta?: AgentTerminalOutputMeta): void {
     for (const listener of this.dataListeners) {
-      listener(chunk);
+      listener(chunk, meta);
     }
   }
 
@@ -929,6 +1011,7 @@ export class AioPtyClient implements AgentTerminalPty {
       clearTimeout(this.autoSubmitTimer);
       this.autoSubmitTimer = undefined;
     }
+    this.endAttachBootstrapWindow();
     // A close before the terminal was ever established means the dial failed: no
     // detached session exists, no liveness poller is running, so resolve the
     // abnormal start here (the only WS-close that still terminates the task).

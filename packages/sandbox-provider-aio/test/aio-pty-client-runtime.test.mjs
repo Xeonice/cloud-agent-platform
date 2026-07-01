@@ -1,5 +1,7 @@
 process.env.CODEX_AUTOSUBMIT_QUIESCE_MS = '15';
 process.env.CODEX_LIVENESS_POLL_MS = '15';
+process.env.CODEX_ATTACH_BOOTSTRAP_QUIESCE_MS = '15';
+process.env.CODEX_ATTACH_BOOTSTRAP_MAX_MS = '50';
 
 import assert from 'node:assert/strict';
 
@@ -596,6 +598,51 @@ await test('transport controls handle stale frames, reconnect, resize, and abnor
   connectingClient.write('queued-on-connecting');
   assert.equal(connectingFactory.transports.length, 1);
   connectingClient.close();
+});
+
+await test('alive-session attach output is visible but marked non-recordable until quiet', async () => {
+  const factory = makeTransportFactory();
+  const executor = makeExecutor((request) =>
+    request.command.includes('__cap_has__')
+      ? { exitCode: 0, output: '__cap_has__0\n' }
+      : { exitCode: 0, output: '' },
+  );
+  const client = new mod.AioPtyClient(
+    'task-attach-bootstrap',
+    'ws://unused',
+    'http://unused',
+    undefined,
+    'launch-or-attach',
+    undefined,
+    undefined,
+    factory,
+    executor,
+  );
+  const observed = [];
+  client.onData((chunk, meta) => {
+    observed.push({ chunk, recordable: meta?.recordable !== false, source: meta?.source });
+  });
+  const transport = factory.transports[0];
+
+  transport.emit({ type: 'session_id', data: 's1' });
+  transport.emit({ type: 'ready' });
+  await waitFor(() => transport.input.some((data) => data.includes('attach')));
+
+  transport.emit({ type: 'output', data: 'duplicate session: task-attach-bootstrap\r\n' });
+  assert.deepEqual(observed.at(-1), {
+    chunk: 'duplicate session: task-attach-bootstrap\r\n',
+    recordable: false,
+    source: 'attach-bootstrap',
+  });
+
+  await delay(25);
+  transport.emit({ type: 'output', data: 'real agent output\r\n' });
+  assert.deepEqual(observed.at(-1), {
+    chunk: 'real agent output\r\n',
+    recordable: true,
+    source: undefined,
+  });
+  client.close();
 });
 
 await test('exit fallback paths resolve wait, echo, abnormal, and helper parsing', async () => {

@@ -77,6 +77,31 @@ test('parseCast: header + events, malformed lines skipped', () => {
   assert.equal(castDurationSeconds(events), 1.0);
 });
 
+test('parseCast stops before legacy mid-file headers', () => {
+  const text = [
+    '{"version":2,"width":80,"height":24,"timestamp":1782894858}',
+    '[13608.181,"o","before restart\\r\\n"]',
+    '{"version":2,"width":80,"height":24,"timestamp":1782910173}',
+    '[0.147,"o","tmux -u new-session ...\\r\\n"]',
+    '[0.2,"o","duplicate session: task12c791c7\\r\\n"]',
+  ].join('\n');
+  const { events } = parseCast(text);
+  assert.equal(events.length, 1);
+  assert.equal(events[0][2], 'before restart\r\n');
+});
+
+test('parseCast stops before legacy time regressions', () => {
+  const text = [
+    '{"version":2,"width":80,"height":24,"timestamp":1782894858}',
+    '[10,"o","first"]',
+    '[11,"o","second"]',
+    '[0.5,"o","regressed bootstrap"]',
+    '[0.6,"o","more bootstrap"]',
+  ].join('\n');
+  const { events } = parseCast(text);
+  assert.deepEqual(events.map((event) => event[2]), ['first', 'second']);
+});
+
 test('parseCast on empty text yields empty', () => {
   const { header, events } = parseCast('');
   assert.equal(header, null);

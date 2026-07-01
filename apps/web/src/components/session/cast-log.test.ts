@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { AsciicastEvent } from "@cap/contracts";
+import { parseCast, type AsciicastEvent } from "@cap/contracts";
 import {
   stripAltScreen,
   stripAltScreenBytes,
@@ -135,6 +135,26 @@ describe("buildCastOps", () => {
     const ops = buildCastOps(events, { maxOutputBytes: 1024 });
     expect(ops).toEqual([{ type: "output", data: "small" }]);
     expect(ops[0]).not.toEqual({ type: "output", data: CAST_TRUNCATION_NOTICE });
+  });
+
+  it("does not render a legacy readoption bootstrap segment as history", () => {
+    const text = [
+      '{"version":2,"width":80,"height":24,"timestamp":1782894858}',
+      '[13608.181,"o","OpenAI Codex before restart\\r\\n"]',
+      '{"version":2,"width":80,"height":24,"timestamp":1782910173}',
+      '[0.147,"o","tmux -u new-session -d -s task12c791c7\\r\\n"]',
+      '[0.2,"o","duplicate session: task12c791c7\\r\\n"]',
+      '[0.3,"o","OpenAI Codex before restart\\r\\n"]',
+    ].join("\n");
+    const { events } = parseCast(text);
+    const output = buildCastOps(events, { maxOutputBytes: 0 })
+      .filter((op) => op.type === "output")
+      .map((op) => op.data)
+      .join("");
+
+    expect(output).toContain("OpenAI Codex before restart");
+    expect(output).not.toContain("duplicate session");
+    expect(output).not.toContain("tmux -u new-session");
   });
 });
 

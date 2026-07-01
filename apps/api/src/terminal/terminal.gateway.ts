@@ -36,7 +36,8 @@
  *     one-shot approval `decision`s are accepted independently of the lease.
  */
 import path from 'node:path';
-import { appendFile, mkdir } from 'node:fs/promises';
+import { statSync } from 'node:fs';
+import { appendFile, mkdir, open } from 'node:fs/promises';
 import { Inject, Logger, Optional } from '@nestjs/common';
 import { Terminal as HeadlessXterm } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
@@ -66,6 +67,8 @@ import {
   type ResizeFrame,
   type ResumeFrame,
   type TakeoverRequestFrame,
+  parseAsciicastEvent,
+  parseAsciicastHeader,
 } from '@cap/contracts';
 import {
   BackpressureController,
@@ -84,7 +87,10 @@ import {
   buildCastEventLine,
   castResizeData,
 } from './cast-writer';
-import type { AgentTerminalPty } from './agent-terminal-pty';
+import type {
+  AgentTerminalOutputMeta,
+  AgentTerminalPty,
+} from './agent-terminal-pty';
 import {
   openSandboxTerminalPty,
   type SandboxTerminalExitStatus,
@@ -186,7 +192,9 @@ class XtermHeadlessTerminal implements HeadlessTerminal {
 /** A node-pty handle: a pausable producer the gateway streams to clients. */
 export interface TerminalPty extends AgentTerminalPty {
   /** Subscribe to raw PTY output; returns an unsubscribe handle. */
-  onData(listener: (chunk: string) => void): { dispose(): void };
+  onData(
+    listener: (chunk: string, meta?: AgentTerminalOutputMeta) => void,
+  ): { dispose(): void };
   /** Forward raw input bytes to the PTY (lock-gated keystroke path, 7.5). */
   write(data: string): void;
   /**
@@ -269,6 +277,21 @@ interface PendingApproval {
   readonly reply?: (frame: DecisionFrame) => void;
 }
 
+interface SessionCastState {
+  readonly castPath: string;
+  tail: Promise<void>;
+  startMs: number;
+}
+
+interface CastResumeState {
+  readonly hasHeader: boolean;
+  readonly hasBytes: boolean;
+  readonly lastTimeSec: number;
+}
+
+const CAST_RESUME_HEAD_BYTES = 4096;
+const CAST_RESUME_TAIL_BYTES = 1024 * 1024;
+
 /**
  * The operator-facing projection of a {@link PendingApproval} returned by
  * {@link TerminalGateway.listPendingApprovals} (6.5). Carries the
@@ -342,7 +365,7 @@ export class TerminalGateway
    */
   private readonly sessionCasts = new Map<
     string,
-    { castPath: string; tail: Promise<void>; startMs: number }
+    SessionCastState
   >();
 
   private nextClientId = 1;
@@ -805,7 +828,9 @@ export class TerminalGateway
     // periodic snapshots carry the actual visible frame (the prior
     // NullHeadlessTerminal serialized to empty, leaving reconnect with nothing).
     const headless = new XtermHeadlessTerminal();
-    const snapshots = new SnapshotManager(headless, workspaceDir);
+    const snapshots = new SnapshotManager(headless, workspaceDir, {
+      initialOffset: readSessionLogSize(workspaceDir),
+    });
     const pty = openSandboxTerminalPty({
       connection,
       selectedRun,
@@ -840,7 +865,7 @@ export class TerminalGateway
     // Feed live PTY output into the SnapshotManager + fan it out to operators
     // who have not yet reconnected/attached (VR.10). Operators that have called
     // attachPty receive the same bytes through their own ptySubscription.
-    pty.onData((chunk) => this.onPtyOutput(taskId, chunk));
+    pty.onData((chunk, meta) => this.onPtyOutput(taskId, chunk, meta));
     snapshots.start();
     this.logger.debug(`task ${taskId}: opened sandbox terminal session`);
     return session;
@@ -1393,13 +1418,10 @@ export class TerminalGateway
     // the timing player re-sizes the replay terminal at the right moment.
     const castEntry = this.sessionCasts.get(state.taskId);
     if (castEntry) {
-      this.appendCastLine(
+      this.appendCastEvent(
         state.taskId,
-        buildCastEventLine(
-          (Date.now() - castEntry.startMs) / 1000,
-          'r',
-          castResizeData(frame.cols, frame.rows),
-        ),
+        'r',
+        castResizeData(frame.cols, frame.rows),
       );
     }
   }
@@ -1425,24 +1447,31 @@ export class TerminalGateway
    * reconnected/attached (operators that have called `attachPty` receive the same
    * bytes through their own `ptySubscription`).
    */
-  private onPtyOutput(taskId: string, chunk: string): void {
+  private onPtyOutput(
+    taskId: string,
+    chunk: string,
+    meta?: AgentTerminalOutputMeta,
+  ): void {
     const session = this.sessions.get(taskId);
+    const recordable = meta?.recordable !== false;
     // Encode ONCE so the bytes written to disk are byte-for-byte the bytes the
     // snapshot offset advances by (UTF-8 char length can differ from byte length).
     const payload = Buffer.from(chunk, 'utf8');
     const byteLen = payload.byteLength;
 
-    // 3.1 — persist the raw PTY output to session.log BEFORE advancing the
-    // snapshot offset, so the file and the offset move together (lockstep).
-    this.appendSessionLog(taskId, payload);
+    if (recordable) {
+      // 3.1 — persist the raw PTY output to session.log BEFORE advancing the
+      // snapshot offset, so the file and the offset move together (lockstep).
+      this.appendSessionLog(taskId, payload);
 
-    // session-terminal-replay — ALSO record to session.cast (asciicast v2),
-    // independent of the lockstep above; best-effort, never blocks streaming.
-    this.appendCast(taskId, chunk);
+      // session-terminal-replay — ALSO record to session.cast (asciicast v2),
+      // independent of the lockstep above; best-effort, never blocks streaming.
+      this.appendCast(taskId, chunk);
 
-    if (session) {
-      // VR.10 — Feed the SnapshotManager so the byte-offset tracks session.log.
-      session.snapshots.feed(chunk, byteLen);
+      if (session) {
+        // VR.10 — Feed the SnapshotManager so the byte-offset tracks session.log.
+        session.snapshots.feed(chunk, byteLen);
+      }
     }
 
     // VR.3 — feed the IdleTracker.
@@ -1544,15 +1573,29 @@ export class TerminalGateway
   ): void {
     if (this.sessionCasts.has(taskId)) return;
     const castPath = path.join(workspaceDir, SESSION_CAST_FILENAME);
-    const entry = { castPath, tail: Promise.resolve(), startMs: Date.now() };
+    const entry: SessionCastState = {
+      castPath,
+      tail: Promise.resolve(),
+      startMs: Date.now(),
+    };
     this.sessionCasts.set(taskId, entry);
     entry.tail = entry.tail.then(async () => {
       try {
         await mkdir(path.dirname(castPath), { recursive: true });
-        await appendFile(
-          castPath,
-          buildCastHeaderLine(cols, rows, Math.floor(Date.now() / 1000)),
-        );
+        const resume = await inspectCastResumeState(castPath);
+        const now = Date.now();
+        if (resume.hasHeader) {
+          entry.startMs = now - resume.lastTimeSec * 1000;
+          return;
+        }
+        entry.startMs = now;
+        if (resume.hasBytes) {
+          this.logger.warn(
+            `task ${taskId}: existing session.cast has no valid header; not appending a second header`,
+          );
+          return;
+        }
+        await appendFile(castPath, buildCastHeaderLine(cols, rows, Math.floor(now / 1000)));
       } catch (err) {
         this.logger.warn(
           `task ${taskId}: session.cast header write failed: ${(err as Error).message}`,
@@ -1565,12 +1608,23 @@ export class TerminalGateway
    * Append one finished asciicast line to the task's `session.cast`, strictly
    * ordered on the cast tail chain and best-effort (logged + swallowed).
    */
-  private appendCastLine(taskId: string, line: string): void {
+  private appendCastEvent(
+    taskId: string,
+    code: 'o' | 'r',
+    data: string,
+  ): void {
     const entry = this.sessionCasts.get(taskId);
     if (!entry) return;
     entry.tail = entry.tail.then(async () => {
       try {
-        await appendFile(entry.castPath, line);
+        await appendFile(
+          entry.castPath,
+          buildCastEventLine(
+            Math.max(0, (Date.now() - entry.startMs) / 1000),
+            code,
+            data,
+          ),
+        );
       } catch (err) {
         this.logger.warn(
           `task ${taskId}: session.cast append failed: ${(err as Error).message}`,
@@ -1586,12 +1640,7 @@ export class TerminalGateway
    * split-multibyte risk at this layer.
    */
   private appendCast(taskId: string, chunk: string): void {
-    const entry = this.sessionCasts.get(taskId);
-    if (!entry) return;
-    this.appendCastLine(
-      taskId,
-      buildCastEventLine((Date.now() - entry.startMs) / 1000, 'o', chunk),
-    );
+    this.appendCastEvent(taskId, 'o', chunk);
   }
 
   // -------------------------------------------------------------------------
@@ -1633,6 +1682,76 @@ export class TerminalGateway
     const value = Array.isArray(header) ? header.join(',') : header;
     return value.split(',').map((p) => p.trim()).filter((p) => p.length > 0);
   }
+}
+
+function readSessionLogSize(workspaceDir: string): number {
+  try {
+    return statSync(path.join(workspaceDir, SESSION_LOG_FILENAME)).size;
+  } catch {
+    return 0;
+  }
+}
+
+async function inspectCastResumeState(
+  castPath: string,
+): Promise<CastResumeState> {
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(castPath, 'r');
+  } catch {
+    return { hasHeader: false, hasBytes: false, lastTimeSec: 0 };
+  }
+
+  try {
+    const { size } = await handle.stat();
+    if (size === 0) {
+      return { hasHeader: false, hasBytes: false, lastTimeSec: 0 };
+    }
+
+    const headLength = Math.min(size, CAST_RESUME_HEAD_BYTES);
+    const head = Buffer.alloc(headLength);
+    await handle.read(head, 0, headLength, 0);
+    const firstLine = firstNonBlankLine(head.toString('utf8'));
+    const hasHeader = firstLine
+      ? parseAsciicastHeader(firstLine) !== null
+      : false;
+    if (!hasHeader) {
+      return { hasHeader: false, hasBytes: true, lastTimeSec: 0 };
+    }
+
+    const tailStart = Math.max(0, size - CAST_RESUME_TAIL_BYTES);
+    const tailLength = size - tailStart;
+    const tail = Buffer.alloc(tailLength);
+    await handle.read(tail, 0, tailLength, tailStart);
+    return {
+      hasHeader: true,
+      hasBytes: true,
+      lastTimeSec: findLastCastEventTime(tail.toString('utf8')),
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+function firstNonBlankLine(text: string): string | null {
+  for (const line of text.split('\n')) {
+    if (line.trim().length > 0) return line;
+  }
+  return null;
+}
+
+function findLastCastEventTime(text: string): number {
+  const lines = text.split('\n');
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (!line || line.trim().length === 0) continue;
+    if (parseAsciicastHeader(line)) continue;
+    const event = parseAsciicastEvent(line);
+    if (event && Number.isFinite(event[0])) {
+      return Math.max(0, event[0]);
+    }
+  }
+  return 0;
 }
 
 /**

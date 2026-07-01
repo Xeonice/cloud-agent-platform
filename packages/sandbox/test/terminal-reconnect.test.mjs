@@ -183,6 +183,22 @@ await test('snapshot manager captures geometry and returns bounded fresh replay 
   });
 });
 
+await test('snapshot manager can rebase to an existing session.log size on re-adoption', async () => {
+  await withTempWorkspace(async (dir) => {
+    await writeFile(path.join(dir, mod.SESSION_LOG_FILENAME), 'existing-log');
+    const { terminal } = makeTerminal();
+    const manager = new mod.SnapshotManager(terminal, dir, {
+      initialOffset: Buffer.byteLength('existing-log'),
+      now: () => 4321,
+    });
+
+    assert.equal(manager.currentOffset, 12);
+    manager.feed(' after');
+    assert.equal(manager.currentOffset, 18);
+    assert.equal(manager.capture().seq, 18);
+  });
+});
+
 await test('snapshot reconnect uses latest snapshot for incremental clients and empty finals when logs are absent', async () => {
   await withTempWorkspace(async (dir) => {
     const { terminal } = makeTerminal();
