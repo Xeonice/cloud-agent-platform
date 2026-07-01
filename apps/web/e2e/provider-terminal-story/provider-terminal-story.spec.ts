@@ -16,6 +16,13 @@ interface StoryProbe {
   readonly clientHeight: number | null;
   readonly compact: boolean;
   readonly mountKey: number;
+  readonly fixtureKind: string | null;
+  readonly descriptor: {
+    readonly terminalProtocol: string;
+    readonly commandProtocol: string;
+    readonly workspaceMode: string;
+    readonly retentionMode: string;
+  } | null;
   readonly error: string | null;
 }
 
@@ -140,6 +147,106 @@ test("session projection contains only CAP story fields", async ({ page }) => {
   await expect(page.locator("body")).not.toContainText("Bearer");
   await expect(page.locator("body")).not.toContainText("sandboxId");
 });
+
+const PROVIDER_FIXTURES = {
+  aio: {
+    sessionId: "provider-fixture-aio-session",
+    terminalProtocol: "aio-json-v1",
+    commandProtocol: "aio-http-exec-v1",
+    workspaceMode: "git",
+    retentionMode: "stop-retain",
+    snapshot: "PROVIDER_FIXTURE_AIO_SNAPSHOT_BEGIN",
+    tail: "PROVIDER_FIXTURE_AIO_TAIL_REPLAY_BEGIN",
+    live: "PROVIDER_FIXTURE_AIO_LIVE_002",
+    leaks: [
+      "aio-private-sandbox-id",
+      "cap-aio-private-fixture",
+      "http://cap-aio-private-fixture:8080",
+      "AIO_SANDBOX_IMAGE",
+    ],
+  },
+  boxlite: {
+    sessionId: "provider-fixture-boxlite-session",
+    terminalProtocol: "boxlite-v1",
+    commandProtocol: "boxlite-exec-v1",
+    workspaceMode: "archive",
+    retentionMode: "provider-native",
+    snapshot: "PROVIDER_FIXTURE_BOXLITE_SNAPSHOT_BEGIN",
+    tail: "PROVIDER_FIXTURE_BOXLITE_TAIL_REPLAY_BEGIN",
+    live: "PROVIDER_FIXTURE_BOXLITE_LIVE_002",
+    leaks: [
+      "boxlite-private-sandbox-id",
+      "boxlite-private.fixture.invalid",
+      "https://boxlite-private.fixture.invalid/v1/boxes/private",
+      "BOXLITE_API_TOKEN",
+    ],
+  },
+} as const;
+
+for (const [fixture, expected] of Object.entries(PROVIDER_FIXTURES)) {
+  test(`fixture ${fixture} renders SessionTerminal reconnect flow without backend`, async ({
+    page,
+  }) => {
+    await page.goto(`/?fixture=${fixture}&autostart=1`, { waitUntil: "load" });
+
+    await expect
+      .poll(async () => (await readProbe(page)).sessionId, { timeout: 15_000 })
+      .toBe(expected.sessionId);
+    await expect
+      .poll(async () => (await readProbe(page)).fixtureKind, { timeout: 15_000 })
+      .toBe(fixture);
+
+    await expect
+      .poll(async () => (await readProbe(page)).descriptor, { timeout: 15_000 })
+      .toEqual({
+        terminalProtocol: expected.terminalProtocol,
+        commandProtocol: expected.commandProtocol,
+        workspaceMode: expected.workspaceMode,
+        retentionMode: expected.retentionMode,
+      });
+
+    await expect
+      .poll(async () => (await readProbe(page)).terminalText, { timeout: 30_000 })
+      .toContain("PROVIDER_FIXTURE_TAIL_FINAL");
+    await expect
+      .poll(async () => (await readProbe(page)).terminalText, { timeout: 30_000 })
+      .toContain(expected.live);
+
+    await page.locator('[data-testid="provider-story-scroll-top"]').click();
+    await expect
+      .poll(async () => (await readProbe(page)).terminalText, { timeout: 15_000 })
+      .toContain(expected.snapshot);
+    await expect
+      .poll(async () => (await readProbe(page)).terminalText, { timeout: 15_000 })
+      .toContain(expected.tail);
+    await page.locator('[data-testid="provider-story-scroll-bottom"]').click();
+
+    await page.locator(".xterm").click();
+    await page.keyboard.type(`fixture-${fixture}`);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(async () => (await readProbe(page)).terminalText, { timeout: 15_000 })
+      .toContain(`PROVIDER_FIXTURE_ECHO:fixture-${fixture}`);
+
+    await page.locator('[data-testid="provider-story-toggle-size"]').click();
+    await expect
+      .poll(async () => (await readProbe(page)).terminalText, { timeout: 15_000 })
+      .toMatch(/PROVIDER_FIXTURE_RESIZE:\d+x\d+/);
+
+    const beforeReconnect = await readProbe(page);
+    await page.locator('[data-testid="provider-story-reconnect"]').click();
+    await expect
+      .poll(async () => (await readProbe(page)).mountKey, { timeout: 15_000 })
+      .toBeGreaterThan(beforeReconnect.mountKey);
+    await expect
+      .poll(async () => (await readProbe(page)).terminalText, { timeout: 30_000 })
+      .toContain("PROVIDER_FIXTURE_TAIL_FINAL");
+
+    for (const leak of expected.leaks) {
+      await expect(page.locator("body")).not.toContainText(leak);
+    }
+  });
+}
 
 test.describe("live provider-backed story", () => {
   test.skip(

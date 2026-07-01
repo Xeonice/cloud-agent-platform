@@ -1,7 +1,15 @@
 import * as React from "react";
 
-import { SessionTerminal } from "../../../src/components/session/session-terminal";
+import {
+  SessionTerminal,
+  type SessionTerminalHandle,
+} from "../../../src/components/session/session-terminal";
 import { apiBaseUrl, operatorToken } from "../../../src/lib/config";
+import {
+  providerFixtureFromQuery,
+  type ProviderTerminalFixture,
+} from "./provider-terminal-fixtures";
+import { installProviderFixtureWebSocket } from "./provider-fixture-websocket";
 
 type RequestedProvider = "auto" | "aio" | "boxlite";
 type SessionStatus = "running" | "tearing_down" | "torn_down";
@@ -39,6 +47,15 @@ interface StoryProbe {
   readonly clientHeight: number | null;
   readonly compact: boolean;
   readonly mountKey: number;
+  readonly fixtureKind: string | null;
+  readonly descriptor:
+    | {
+        readonly terminalProtocol: string;
+        readonly commandProtocol: string;
+        readonly workspaceMode: string;
+        readonly retentionMode: string;
+      }
+    | null;
   readonly error: string | null;
 }
 
@@ -95,6 +112,9 @@ function readViewport(): Pick<
 export function ProviderTerminalStoryApp(): React.ReactElement {
   const [provider] = React.useState<RequestedProvider>(() => currentProvider());
   const [autostart] = React.useState(() => shouldAutostart());
+  const [fixture] = React.useState<ProviderTerminalFixture | null>(() =>
+    providerFixtureFromQuery(),
+  );
   const [readiness, setReadiness] = React.useState<Readiness | null>(null);
   const [session, setSession] = React.useState<StorySession | null>(null);
   const [status, setStatus] = React.useState<StoryProbe["status"]>("idle");
@@ -113,17 +133,37 @@ export function ProviderTerminalStoryApp(): React.ReactElement {
     clientHeight: null,
     compact: false,
     mountKey: 0,
+    fixtureKind: null,
+    descriptor: null,
     error: null,
   });
   const creatingRef = React.useRef(false);
+  const terminalRef = React.useRef<SessionTerminalHandle | null>(null);
 
   const refreshReadiness = React.useCallback(async () => {
+    if (fixture) {
+      const next: Readiness = {
+        enabled: true,
+        ready: true,
+        requestedProvider: fixture.kind,
+        configuredProvider: fixture.providerId,
+        providerId: fixture.providerId,
+        reason: null,
+        capabilities: [
+          "terminal.websocket",
+          "terminal.interactive",
+          "command.exec",
+        ],
+      };
+      setReadiness(next);
+      return next;
+    }
     const next = await requestJson<Readiness>(
       `/terminal-stories/provider?provider=${encodeURIComponent(provider)}`,
     );
     setReadiness(next);
     return next;
-  }, [provider]);
+  }, [fixture, provider]);
 
   const createSession = React.useCallback(async () => {
     if (creatingRef.current) return;
@@ -131,6 +171,21 @@ export function ProviderTerminalStoryApp(): React.ReactElement {
     setStatus("creating");
     setError(null);
     try {
+      if (fixture) {
+        const created: StorySession = {
+          sessionId: fixture.sessionId,
+          status: "running",
+          providerId: fixture.providerId,
+          requestedProvider: fixture.kind,
+          createdAt: "2026-06-30T00:00:00.000Z",
+          expiresAt: "2026-06-30T00:10:00.000Z",
+          terminalPath: "/terminal",
+        };
+        setSession(created);
+        setMountKey((value) => value + 1);
+        setStatus("running");
+        return;
+      }
       const created = await requestJson<StorySession>(
         "/terminal-stories/provider/sessions",
         {
@@ -148,13 +203,18 @@ export function ProviderTerminalStoryApp(): React.ReactElement {
     } finally {
       creatingRef.current = false;
     }
-  }, [provider]);
+  }, [fixture, provider]);
 
   const teardown = React.useCallback(async () => {
     if (!session) return;
     setStatus("tearing_down");
     setError(null);
     try {
+      if (fixture) {
+        setSession({ ...session, status: "torn_down" });
+        setStatus("idle");
+        return;
+      }
       const tornDown = await requestJson<StorySession>(
         `/terminal-stories/provider/sessions/${encodeURIComponent(session.sessionId)}`,
         { method: "DELETE" },
@@ -165,7 +225,7 @@ export function ProviderTerminalStoryApp(): React.ReactElement {
       setStatus("error");
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [session]);
+  }, [fixture, session]);
 
   React.useEffect(() => {
     let cancelled = false;
@@ -197,11 +257,20 @@ export function ProviderTerminalStoryApp(): React.ReactElement {
         ...readViewport(),
         compact,
         mountKey,
+        fixtureKind: fixture?.kind ?? null,
+        descriptor: fixture
+          ? {
+              terminalProtocol: fixture.selectedRun.terminal.protocol,
+              commandProtocol: fixture.selectedRun.command.protocol,
+              workspaceMode: fixture.selectedRun.workspace.mode,
+              retentionMode: fixture.selectedRun.retention.mode,
+            }
+          : null,
         error,
       });
     }, 150);
     return () => window.clearInterval(timer);
-  }, [compact, error, mountKey, readiness, session, status]);
+  }, [compact, error, fixture, mountKey, readiness, session, status]);
 
   const scrollTop = React.useCallback(() => {
     const viewport = document.querySelector(".xterm-viewport") as HTMLElement | null;
@@ -211,6 +280,12 @@ export function ProviderTerminalStoryApp(): React.ReactElement {
   const scrollBottom = React.useCallback(() => {
     const viewport = document.querySelector(".xterm-viewport") as HTMLElement | null;
     if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  }, []);
+
+  const resizeTerminal = React.useCallback(() => {
+    setCompact((value) => !value);
+    window.setTimeout(() => terminalRef.current?.fit(), 80);
+    window.setTimeout(() => terminalRef.current?.fit(), 240);
   }, []);
 
   const liveSession = session?.status === "running" ? session : null;
@@ -256,7 +331,7 @@ export function ProviderTerminalStoryApp(): React.ReactElement {
           <button
             data-testid="provider-story-toggle-size"
             type="button"
-            onClick={() => setCompact((value) => !value)}
+            onClick={resizeTerminal}
           >
             resize
           </button>
@@ -293,9 +368,17 @@ export function ProviderTerminalStoryApp(): React.ReactElement {
         className="provider-story-terminal-slot"
         data-compact={compact ? "true" : "false"}
       >
-        {liveSession ? (
+        {liveSession && fixture ? (
+          <ProviderFixtureSessionTerminal
+            key={`${liveSession.sessionId}:${mountKey}`}
+            fixture={fixture}
+            session={liveSession}
+            terminalRef={terminalRef}
+          />
+        ) : liveSession ? (
           <SessionTerminal
             key={`${liveSession.sessionId}:${mountKey}`}
+            ref={terminalRef}
             taskId={liveSession.sessionId}
             headLabel={`${liveSession.providerId} · ${liveSession.sessionId}`}
             phaseLabel="story"
@@ -325,5 +408,37 @@ export function ProviderTerminalStoryApp(): React.ReactElement {
         {JSON.stringify(probe)}
       </pre>
     </main>
+  );
+}
+
+function ProviderFixtureSessionTerminal({
+  fixture,
+  session,
+  terminalRef,
+}: {
+  fixture: ProviderTerminalFixture;
+  session: StorySession;
+  terminalRef: React.Ref<SessionTerminalHandle>;
+}): React.ReactElement | null {
+  const [installed, setInstalled] = React.useState(false);
+
+  React.useLayoutEffect(() => {
+    const restore = installProviderFixtureWebSocket(fixture);
+    setInstalled(true);
+    return () => {
+      setInstalled(false);
+      restore();
+    };
+  }, [fixture, session.sessionId]);
+
+  if (!installed) return null;
+  return (
+    <SessionTerminal
+      ref={terminalRef}
+      taskId={session.sessionId}
+      headLabel={`${fixture.providerId} · ${session.sessionId}`}
+      phaseLabel="fixture"
+      resourceLabel="provider fixture"
+    />
   );
 }

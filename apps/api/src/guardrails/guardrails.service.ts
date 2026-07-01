@@ -24,7 +24,7 @@ import {
   selectSandboxProvider,
   terminalSettlePlan,
   type SandboxSettlePlan,
-} from '../sandbox/sandbox-scheduler';
+} from '@cap/sandbox';
 import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
 import {
   AUDIT_RECORDER_TOKEN,

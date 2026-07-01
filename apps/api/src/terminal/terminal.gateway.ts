@@ -84,14 +84,12 @@ import {
   buildCastEventLine,
   castResizeData,
 } from './cast-writer';
-import {
-  AioPtyClient,
-  type AioExitStatus,
-  type AioPtyClientMode,
-} from './aio-pty-client';
 import type { AgentTerminalPty } from './agent-terminal-pty';
-import { buildTerminalTransportFactory } from './terminal-transport-selection';
-import { buildSandboxCommandExecutor } from '../sandbox/sandbox-command-executor';
+import {
+  openSandboxTerminalPty,
+  type SandboxTerminalExitStatus,
+  type SandboxTerminalPtyMode,
+} from '@cap/sandbox';
 import type { SelectedSandboxRun } from '@cap/sandbox';
 import type { SandboxConnection } from '../sandbox/sandbox-provider.port';
 // add-claude-code-runtime Track 3 (3.2): the gateway resolves the task's selected
@@ -226,7 +224,7 @@ export interface TerminalSession {
 }
 
 export interface OpenTerminalSessionOptions {
-  readonly mode?: AioPtyClientMode;
+  readonly mode?: SandboxTerminalPtyMode;
   readonly recordExit?: boolean;
 }
 
@@ -798,7 +796,7 @@ export class TerminalGateway
     selectedRun?: SelectedSandboxRun | null,
     options: OpenTerminalSessionOptions = {},
   ): TerminalSession {
-    const { taskId, wsUrl, baseUrl } = connection;
+    const { taskId } = connection;
     const existing = this.sessions.get(taskId);
     if (existing) return existing;
 
@@ -808,33 +806,17 @@ export class TerminalGateway
     // NullHeadlessTerminal serialized to empty, leaving reconnect with nothing).
     const headless = new XtermHeadlessTerminal();
     const snapshots = new SnapshotManager(headless, workspaceDir);
-    const pty = new AioPtyClient(
-      taskId,
-      wsUrl,
-      baseUrl,
-      options.recordExit === false
-        ? undefined
-        : (status) => this.onSessionExit(taskId, status),
-      // Connect-in execution trigger with create-vs-attach (D2 / 2.5): once the
-      // AIO shell is ready, probe the detached session `task<taskId>` — ATTACH if
-      // it is already alive (re-adopt a still-running codex), else launch a FRESH
-      // detached session. provision() has already injected the codex auth.json into
-      // the container by the time we get here, so a fresh launch authenticates on
-      // startup.
-      options.mode ?? 'launch-or-attach',
-      // 3.2 — the runtime resolver: the bridge calls this ONCE on `ready` to resolve
-      // the task's selected AgentRuntime (claude-code | codex) and dispatch its
-      // launch/autosubmit/exit-detection seams. Best-effort + lazily bound so a
-      // missing registry (transport-only context) falls back to the codex path.
-      () => this.resolveRuntimeForTask(taskId),
-      // add-headless-execution-track — resolve the task's execution mode so a
-      // programmatic (headless) task launches the runtime's non-interactive one-shot
-      // instead of the interactive TUI. Best-effort + lazily bound like the runtime
-      // resolver; a console task (or unresolved mode) stays interactive-pty.
-      () => this.resolveExecutionModeForTask(taskId),
-      buildTerminalTransportFactory({ taskId, connection, selectedRun }),
-      buildSandboxCommandExecutor({ connection, selectedRun }),
-    );
+    const pty = openSandboxTerminalPty({
+      connection,
+      selectedRun,
+      onExit:
+        options.recordExit === false
+          ? undefined
+          : (status) => this.onSessionExit(taskId, status),
+      mode: options.mode ?? 'launch-or-attach',
+      resolveRuntime: () => this.resolveRuntimeForTask(taskId),
+      resolveExecutionMode: () => this.resolveExecutionModeForTask(taskId),
+    });
     const session: TerminalSession = { taskId, pty, snapshots };
     this.registerSession(session);
     // 3.1 — register the per-task session.log append target. The path MUST match
@@ -860,9 +842,7 @@ export class TerminalGateway
     // attachPty receive the same bytes through their own ptySubscription.
     pty.onData((chunk) => this.onPtyOutput(taskId, chunk));
     snapshots.start();
-    this.logger.debug(
-      `task ${taskId}: opened AioPtyClient to ${wsUrl} + started snapshot manager`,
-    );
+    this.logger.debug(`task ${taskId}: opened sandbox terminal session`);
     return session;
   }
 
@@ -925,7 +905,10 @@ export class TerminalGateway
    * resolves is structurally compatible with the guardrails `ExitStatus`, so it is
    * passed straight through to `recordExit`, which owns the zero/non-zero rule.
    */
-  protected onSessionExit(taskId: string, status: AioExitStatus): void {
+  protected onSessionExit(
+    taskId: string,
+    status: SandboxTerminalExitStatus,
+  ): void {
     this.logger.debug(
       `task ${taskId}: terminal session exited (code=${status.code}, abnormal=${status.abnormal})`,
     );

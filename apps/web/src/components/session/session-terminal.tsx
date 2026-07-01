@@ -68,6 +68,8 @@ export interface SessionTerminalHandle {
   togglePause(): boolean;
   /** Serialize the current frame to the clipboard; resolves false on failure. */
   copySession(): Promise<boolean>;
+  /** Re-fit the xterm surface to its current container geometry. */
+  fit(): TerminalGeometry | null;
 }
 
 export interface SessionTerminalProps {
@@ -650,6 +652,13 @@ export const SessionTerminal = React.forwardRef<
     return false;
   }, []);
 
+  const fit = React.useCallback((): TerminalGeometry | null => {
+    const geometry =
+      handleRef.current?.fit() ?? handleRef.current?.geometry() ?? null;
+    if (geometry) socketRef.current?.sendResize(geometry.cols, geometry.rows);
+    return geometry;
+  }, []);
+
   // ── Fullscreen the terminal window (the `<article>`, no overlay) ──────────
   const toggleFullscreen = React.useCallback(() => {
     const el = shellRef.current;
@@ -718,8 +727,8 @@ export const SessionTerminal = React.forwardRef<
   // ── Imperative API for the terminal ⋯ menu / page ─────────────────────────
   React.useImperativeHandle(
     ref,
-    () => ({ togglePause, copySession }),
-    [togglePause, copySession],
+    () => ({ togglePause, copySession, fit }),
+    [togglePause, copySession, fit],
   );
 
   const showFallback = xtermFailed;

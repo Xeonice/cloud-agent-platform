@@ -1,1 +1,1 @@
-export * from '@cap/sandbox-workspace-git';
+export * from './workspace/git.js';

@@ -1,5 +1,9 @@
 import type { SandboxConnection } from '@cap/sandbox-core';
 import {
+  normalizeSandboxCommandResult,
+  scrubSandboxCommandOutput,
+} from '@cap/sandbox-core';
+import {
   AIO_SANDBOX_CONTAINER_PREFIX,
   AIO_SANDBOX_SESSION_PROBE_TIMEOUT_MS,
   AIO_SANDBOX_TRIM_TIMEOUT_MS,
@@ -11,12 +15,7 @@ import {
   type AioLocalSandboxContainerConfig,
   type AioLocalSandboxEnv,
   type AioLocalSandboxProvisionSpec,
-} from '@cap/sandbox-aio-local';
-import {
-  parseSandboxExecResult,
-  scrubSandboxExecSecrets,
-  type SandboxExecResult,
-} from '@cap/sandbox-workspace-git';
+} from './aio-local-provider.js';
 import { extractFilesFromTar } from './tar-extract.js';
 
 export type AioFetch = (
@@ -62,6 +61,11 @@ export interface AioProviderControllerLogger {
   debug?(message: string): void;
   log?(message: string): void;
   warn?(message: string): void;
+}
+
+export interface AioSandboxExecResult {
+  readonly exitCode: number;
+  readonly output: string;
 }
 
 export interface AioSandboxContainerControllerOptions<
@@ -219,7 +223,7 @@ export class AioSandboxContainerController<
     return files[files.length - 1]!.content.toString('utf8');
   }
 
-  async runSandboxExec(baseUrl: string, command: string): Promise<SandboxExecResult> {
+  async runSandboxExec(baseUrl: string, command: string): Promise<AioSandboxExecResult> {
     const res = await this.fetchImpl(`${baseUrl}/v1/shell/exec`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -228,7 +232,7 @@ export class AioSandboxContainerController<
     if (!res.ok) {
       return { exitCode: Number.NaN, output: `/v1/shell/exec responded ${res.status}` };
     }
-    return parseSandboxExecResult(await res.json().catch(() => undefined));
+    return parseAioExecResult(await res.json().catch(() => undefined));
   }
 
   async runShellExecBestEffort(args: {
@@ -347,7 +351,7 @@ export class AioSandboxContainerController<
         signal: AbortSignal.timeout(AIO_SANDBOX_SESSION_PROBE_TIMEOUT_MS),
       });
       if (!res.ok) return false;
-      const { exitCode } = parseSandboxExecResult(
+      const { exitCode } = parseAioExecResult(
         await res.json().catch(() => undefined),
       );
       return exitCode === 0;
@@ -358,11 +362,12 @@ export class AioSandboxContainerController<
 }
 
 export function scrubAioExecSecrets(output: string): string {
-  return scrubSandboxExecSecrets(output);
+  return scrubSandboxCommandOutput(output);
 }
 
-export function parseAioExecResult(raw: unknown): SandboxExecResult {
-  return parseSandboxExecResult(raw);
+export function parseAioExecResult(raw: unknown): AioSandboxExecResult {
+  const result = normalizeSandboxCommandResult(raw);
+  return { exitCode: result.exitCode, output: result.output };
 }
 
 export async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {

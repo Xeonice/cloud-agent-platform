@@ -13,7 +13,10 @@
     "typecheck": "turbo typecheck",
     "lint": "turbo lint",
     "verify": "turbo typecheck lint build",
-    "coverage:sandbox": "pnpm --filter @cap/sandbox-core coverage && pnpm --filter @cap/sandbox-scheduler coverage && pnpm --filter @cap/sandbox-lifecycle coverage && pnpm --filter @cap/sandbox-workspace-git coverage && pnpm --filter @cap/sandbox-conformance coverage && pnpm --filter @cap/sandbox-aio-local coverage && pnpm --filter @cap/sandbox-cloud-http coverage && pnpm --filter @cap/sandbox-provider-aio coverage && pnpm --filter @cap/sandbox-provider-boxlite coverage && pnpm --filter @cap/sandbox coverage",
+    "test:sandbox": "pnpm --filter @cap/sandbox-core test && pnpm --filter @cap/sandbox-cloud-http test && pnpm --filter @cap/sandbox-provider-aio test && pnpm --filter @cap/sandbox-provider-boxlite test && pnpm --filter @cap/sandbox test",
+    "test:sandbox:e2e": "pnpm --filter @cap/sandbox-provider-aio test:e2e && pnpm --filter @cap/sandbox-provider-boxlite test:e2e",
+    "test:web:provider-terminal-story": "pnpm --filter @cap/web test:provider-terminal-story",
+    "coverage:sandbox": "pnpm --filter @cap/sandbox-core coverage && pnpm --filter @cap/sandbox-cloud-http coverage && pnpm --filter @cap/sandbox-provider-aio coverage && pnpm --filter @cap/sandbox-provider-boxlite coverage && pnpm --filter @cap/sandbox coverage",
     "prepare": "husky"
   },
   "devDependencies": {

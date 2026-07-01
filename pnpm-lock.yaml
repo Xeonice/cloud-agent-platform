@@ -400,55 +400,21 @@ importers:
 
   packages/sandbox:
     dependencies:
-      '@cap/sandbox-aio-local':
+      '@cap/contracts':
         specifier: workspace:*
-        version: link:../sandbox-aio-local
+        version: link:../contracts
       '@cap/sandbox-cloud-http':
         specifier: workspace:*
         version: link:../sandbox-cloud-http
-      '@cap/sandbox-conformance':
-        specifier: workspace:*
-        version: link:../sandbox-conformance
       '@cap/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
-      '@cap/sandbox-lifecycle':
-        specifier: workspace:*
-        version: link:../sandbox-lifecycle
       '@cap/sandbox-provider-aio':
         specifier: workspace:*
         version: link:../sandbox-provider-aio
       '@cap/sandbox-provider-boxlite':
         specifier: workspace:*
         version: link:../sandbox-provider-boxlite
-      '@cap/sandbox-scheduler':
-        specifier: workspace:*
-        version: link:../sandbox-scheduler
-      '@cap/sandbox-workspace-git':
-        specifier: workspace:*
-        version: link:../sandbox-workspace-git
-    devDependencies:
-      '@cap/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@cap/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
-      '@types/node':
-        specifier: ^20.14.0
-        version: 20.19.41
-      eslint:
-        specifier: ^9.27.0
-        version: 9.39.4(jiti@2.7.0)
-      typescript:
-        specifier: ^5.5.4
-        version: 5.9.3
-
-  packages/sandbox-aio-local:
-    dependencies:
-      '@cap/sandbox-core':
-        specifier: workspace:*
-        version: link:../sandbox-core
     devDependencies:
       '@cap/eslint-config':
         specifier: workspace:*
@@ -496,9 +462,6 @@ importers:
       '@cap/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
-      '@cap/sandbox-scheduler':
-        specifier: workspace:*
-        version: link:../sandbox-scheduler
     devDependencies:
       '@cap/eslint-config':
         specifier: workspace:*
@@ -534,35 +497,17 @@ importers:
         specifier: ^5.5.4
         version: 5.9.3
 
-  packages/sandbox-lifecycle:
-    devDependencies:
-      '@cap/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@cap/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
-      '@types/node':
-        specifier: ^20.14.0
-        version: 20.19.41
-      eslint:
-        specifier: ^9.27.0
-        version: 9.39.4(jiti@2.7.0)
-      typescript:
-        specifier: ^5.5.4
-        version: 5.9.3
-
   packages/sandbox-provider-aio:
     dependencies:
-      '@cap/sandbox-aio-local':
-        specifier: workspace:*
-        version: link:../sandbox-aio-local
       '@cap/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
-      '@cap/sandbox-workspace-git':
-        specifier: workspace:*
-        version: link:../sandbox-workspace-git
+      dockerode:
+        specifier: ^5.0.0
+        version: 5.0.0
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.0
     devDependencies:
       '@cap/eslint-config':
         specifier: workspace:*
@@ -570,9 +515,15 @@ importers:
       '@cap/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@types/dockerode':
+        specifier: ^4.0.1
+        version: 4.0.1
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.41
+      '@types/ws':
+        specifier: ^8.5.12
+        version: 8.18.1
       eslint:
         specifier: ^9.27.0
         version: 9.39.4(jiti@2.7.0)
@@ -585,6 +536,9 @@ importers:
       '@cap/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.0
     devDependencies:
       '@cap/eslint-config':
         specifier: workspace:*
@@ -598,50 +552,9 @@ importers:
       '@types/node':
         specifier: ^20.14.0
         version: 20.19.41
-      eslint:
-        specifier: ^9.27.0
-        version: 9.39.4(jiti@2.7.0)
-      typescript:
-        specifier: ^5.5.4
-        version: 5.9.3
-
-  packages/sandbox-scheduler:
-    dependencies:
-      '@cap/sandbox-core':
-        specifier: workspace:*
-        version: link:../sandbox-core
-    devDependencies:
-      '@cap/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@cap/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
-      '@types/node':
-        specifier: ^20.14.0
-        version: 20.19.41
-      eslint:
-        specifier: ^9.27.0
-        version: 9.39.4(jiti@2.7.0)
-      typescript:
-        specifier: ^5.5.4
-        version: 5.9.3
-
-  packages/sandbox-workspace-git:
-    dependencies:
-      '@cap/sandbox-core':
-        specifier: workspace:*
-        version: link:../sandbox-core
-    devDependencies:
-      '@cap/eslint-config':
-        specifier: workspace:*
-        version: link:../eslint-config
-      '@cap/tsconfig':
-        specifier: workspace:*
-        version: link:../tsconfig
-      '@types/node':
-        specifier: ^20.14.0
-        version: 20.19.41
+      '@types/ws':
+        specifier: ^8.5.12
+        version: 8.18.1
       eslint:
         specifier: ^9.27.0
         version: 9.39.4(jiti@2.7.0)

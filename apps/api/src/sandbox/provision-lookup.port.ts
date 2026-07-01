@@ -2,11 +2,8 @@
  * ProvisionLookup port — the per-task data the provider needs at provision time
  * but should NOT reach into the database for itself.
  *
- * Keeping this behind a port (rather than injecting `PrismaService` into
- * {@link AioSandboxProvider} directly) preserves the provider as a pure consumer
- * of small same-directory ports — which also keeps its focused unit test able to
- * `tsc`-compile the provider in isolation (its only value import stays
- * `dockerode`). The Prisma-backed implementation lives in
+ * Keeping this behind a port keeps provider packages and the API registry wiring
+ * free of direct Prisma access. The Prisma-backed implementation lives in
  * `prisma-provision-lookup.ts`.
  */
 /**

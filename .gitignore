@@ -4,6 +4,7 @@ node_modules/
 # build output / compiled artifacts
 dist/
 .next/
+coverage/
 *.tsbuildinfo
 
 # turborepo cache
@@ -38,6 +39,7 @@ apps/web/playwright-report/
 .claude/worktrees/
 
 # local tooling / debug artifacts (not part of any change)
+.codex/
 .claude/skills/
 .playwright-mcp/
 __pycache__/

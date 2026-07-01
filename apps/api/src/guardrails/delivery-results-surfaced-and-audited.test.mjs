@@ -505,6 +505,39 @@ function assert(condition, label) {
     'T10e: teardown still runs after router-owned delivery');
 }
 
+{
+  console.log('\nT11: dirty workspace delivery error is persisted as failed, not no_changes');
+  const taskId = 'T11';
+  const rows = {
+    [taskId]: { id: taskId, status: 'completed', deliver: 'branch', branch: null },
+  };
+  const prisma = makePrisma(rows);
+  const sandbox = makeSandbox({
+    capabilities: ['workspace.git.deliver'],
+    hadChanges: true,
+    commitSha: 'dirty-sha',
+    error: 'git push failed',
+  });
+  const h = new DeliveryHarness({
+    prisma,
+    sandbox,
+    forgeResolver: makeForgeResolver(),
+    forgeRegistry: makeForgeRegistry(),
+    audit: null,
+  });
+
+  await h.onTerminal(taskId);
+
+  assert(rows[taskId].deliverStatus === 'failed',
+    'T11a: dirty delivery error is persisted as failed');
+  assert(rows[taskId].deliverStatus !== 'no_changes',
+    'T11b: dirty delivery error is never persisted as no_changes');
+  assert(rows[taskId].branchPushed === `cap/task-${taskId}`,
+    'T11c: failed delivery still records the target branch for inspection');
+  assert(sandbox.calls.teardownSandbox.includes(taskId),
+    'T11d: teardown still runs after dirty delivery failure');
+}
+
 // ── summary ───────────────────────────────────────────────────────────────────
 
 console.log(`\n${'─'.repeat(56)}`);

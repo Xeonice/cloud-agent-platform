@@ -17,7 +17,7 @@ import {
 } from '../sandbox/sandbox-provider.port';
 import {
   selectRetainedTranscriptSandboxProvider,
-} from '../sandbox/sandbox-scheduler';
+} from '@cap/sandbox';
 import { parseTranscript } from '../sandbox/parse-transcript';
 import {
   transcriptFormatForRuntime,

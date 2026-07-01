@@ -6,8 +6,8 @@
  *
  *   - MAX_CONCURRENT_TASKS  — read by apps/api/src/guardrails/guardrails.module.ts
  *                             (process.env.MAX_CONCURRENT_TASKS -> semaphore cap).
- *   - TASK_REPO_URL         — read by apps/api/src/sandbox/aio-sandbox.provider.ts
- *                             (process.env.TASK_REPO_URL -> per-task clone URL).
+ *   - TASK_REPO_URL         — read by the API provision lookup and passed into
+ *                             the sandbox provider registry's selected provider.
  *
  * Satisfies multi-target-deploy:
  *   - "Concurrency and repo-URL env are passed through to the api" (4.1)
@@ -154,14 +154,29 @@ assert(
   'release.sh: verifies sandbox image Release assets',
 );
 
-// The api image's isolated Docker build must build the sandbox facade before
-// Nest compiles @cap/api; otherwise TS resolves @cap/sandbox to a missing dist/.
+// The api image's isolated Docker build must build the sandbox provider graph
+// before Nest compiles @cap/api; otherwise TS resolves @cap/sandbox/provider
+// package imports to missing dist/.
 const apiDockerfile = readFileSync(join(here, '..', 'apps/api/Dockerfile'), 'utf8');
+const sandboxCoreBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/sandbox-core build');
+const aioProviderBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/sandbox-provider-aio build');
+const boxLiteProviderBuildIdx = apiDockerfile.indexOf(
+  'pnpm --filter @cap/sandbox-provider-boxlite build',
+);
 const sandboxBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/sandbox build');
 const apiBuildIdx = apiDockerfile.indexOf('pnpm --filter @cap/api build');
 assert(
-  sandboxBuildIdx !== -1 && apiBuildIdx !== -1 && sandboxBuildIdx < apiBuildIdx,
-  'api Dockerfile: builds @cap/sandbox before @cap/api',
+  sandboxCoreBuildIdx !== -1 &&
+    aioProviderBuildIdx !== -1 &&
+    boxLiteProviderBuildIdx !== -1 &&
+    sandboxBuildIdx !== -1 &&
+    apiBuildIdx !== -1 &&
+    sandboxCoreBuildIdx < aioProviderBuildIdx &&
+    sandboxCoreBuildIdx < boxLiteProviderBuildIdx &&
+    aioProviderBuildIdx < sandboxBuildIdx &&
+    boxLiteProviderBuildIdx < sandboxBuildIdx &&
+    sandboxBuildIdx < apiBuildIdx,
+  'api Dockerfile: builds sandbox core/providers before @cap/sandbox, then @cap/api',
 );
 
 console.log(`\n${'─'.repeat(48)}`);

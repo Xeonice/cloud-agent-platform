@@ -8,9 +8,9 @@ import { AuthModule } from '../auth/auth.module';
 import { SandboxModule } from '../sandbox/sandbox.module';
 import { TERMINAL_GATEWAY_TOKEN } from '../guardrails/guardrails.service';
 import {
-  AioApprovalEnforcer,
+  SandboxApprovalEnforcer,
   type ApprovalRouter,
-} from '../sandbox/aio-approval-enforcer';
+} from '../sandbox/sandbox-approval-enforcer';
 import { ProviderTerminalStoryController } from './provider-terminal-story.controller';
 import { ProviderTerminalStoryService } from './provider-terminal-story.service';
 
@@ -21,7 +21,7 @@ import { ProviderTerminalStoryService } from './provider-terminal-story.service'
  * non-firing codex hook (codex#16732) cannot let a gated tool call proceed
  * unapproved.
  */
-export const AIO_APPROVAL_ENFORCER = Symbol('AioApprovalEnforcer');
+export const SANDBOX_APPROVAL_ENFORCER = Symbol('SandboxApprovalEnforcer');
 
 /**
  * Realtime terminal feature module.
@@ -81,15 +81,15 @@ export const AIO_APPROVAL_ENFORCER = Symbol('AioApprovalEnforcer');
     // only the TRIGGER differs (cap-initiated at the exec boundary). Co-located
     // here (not in SandboxModule) so the provider->gateway approval dependency
     // does not re-form a module cycle. Cap-owned `/v1/shell/exec` call sites
-    // inject {@link AIO_APPROVAL_ENFORCER} and `enforceThen(...)` before running
+    // inject {@link SANDBOX_APPROVAL_ENFORCER} and `enforceThen(...)` before running
     // a gated command, so approval never depends solely on codex firing a hook.
     {
-      provide: AIO_APPROVAL_ENFORCER,
-      useFactory: (gateway: ApprovalRouter): AioApprovalEnforcer =>
-        new AioApprovalEnforcer(gateway),
+      provide: SANDBOX_APPROVAL_ENFORCER,
+      useFactory: (gateway: ApprovalRouter): SandboxApprovalEnforcer =>
+        new SandboxApprovalEnforcer(gateway),
       inject: [TerminalGateway],
     },
   ],
-  exports: [TerminalGateway, AIO_APPROVAL_ENFORCER, ProviderTerminalStoryService],
+  exports: [TerminalGateway, SANDBOX_APPROVAL_ENFORCER, ProviderTerminalStoryService],
 })
 export class TerminalModule {}

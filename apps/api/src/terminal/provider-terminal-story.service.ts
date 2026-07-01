@@ -7,8 +7,11 @@ import {
   PreconditionFailedException,
 } from '@nestjs/common';
 import {
-  readBoxLiteProviderConfig,
+  providerMatchesSandboxTerminalStoryRequest,
+  resolveSandboxTerminalStoryReadiness,
   selectSandboxProvider,
+  type SandboxTerminalStoryProvider,
+  type SandboxTerminalStoryReadiness,
   type SandboxProviderCapability,
   type SelectedSandboxRun,
 } from '@cap/sandbox';
@@ -17,23 +20,10 @@ import {
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  readConfiguredSandboxProviderFamily,
-  type ConfiguredSandboxProviderFamily,
-} from '../sandbox/sandbox-provider-family';
 import { TerminalGateway } from './terminal.gateway';
 
-export type ProviderTerminalStoryProvider = 'auto' | 'aio' | 'boxlite';
-
-export interface ProviderTerminalStoryReadiness {
-  readonly enabled: boolean;
-  readonly ready: boolean;
-  readonly requestedProvider: ProviderTerminalStoryProvider;
-  readonly configuredProvider: ConfiguredSandboxProviderFamily;
-  readonly providerId: string | null;
-  readonly reason: string | null;
-  readonly capabilities: readonly SandboxProviderCapability[];
-}
+export type ProviderTerminalStoryProvider = SandboxTerminalStoryProvider;
+export type ProviderTerminalStoryReadiness = SandboxTerminalStoryReadiness;
 
 export interface ProviderTerminalStorySessionView {
   readonly sessionId: string;
@@ -78,35 +68,21 @@ export class ProviderTerminalStoryService {
   ) {}
 
   async readiness(rawProvider?: string): Promise<ProviderTerminalStoryReadiness> {
-    const requestedProvider = readRequestedProvider(rawProvider);
-    const configuredProvider = readConfiguredSandboxProviderFamily();
     const capabilities = this.sandbox.getProviderCapabilities?.() ?? [];
-    if (!storyEnabled()) {
-      return {
-        enabled: false,
-        ready: false,
-        requestedProvider,
-        configuredProvider,
-        providerId: null,
-        reason: `${STORY_ENABLE_ENV}=1 is required to create provider-backed terminal stories`,
+    try {
+      return resolveSandboxTerminalStoryReadiness({
+        enabled: storyEnabled(),
+        rawProvider,
+        envProvider: process.env[STORY_PROVIDER_ENV],
         capabilities,
-      };
+        requiredCapabilities: REQUIRED_CAPABILITIES,
+        enableEnvName: STORY_ENABLE_ENV,
+      });
+    } catch (err) {
+      throw new PreconditionFailedException(
+        err instanceof Error ? err.message : String(err),
+      );
     }
-
-    const providerReadiness = await this.validateProviderReadiness(
-      requestedProvider,
-      configuredProvider,
-      capabilities,
-    );
-    return {
-      enabled: true,
-      ready: providerReadiness.ready,
-      requestedProvider,
-      configuredProvider,
-      providerId: providerReadiness.providerId,
-      reason: providerReadiness.reason,
-      capabilities,
-    };
   }
 
   async createSession(
@@ -140,7 +116,12 @@ export class ProviderTerminalStoryService {
         (await selected.provider.getSelectedSandboxRun?.(sessionId)) ?? null;
       providerId = selectedRun?.providerId ?? providerId;
 
-      if (!providerMatches(readiness.requestedProvider, providerId)) {
+      if (
+        !providerMatchesSandboxTerminalStoryRequest(
+          readiness.requestedProvider,
+          providerId,
+        )
+      ) {
         await selected.provider.teardownSandbox(sessionId).catch(() => undefined);
         throw new PreconditionFailedException(
           `provider-backed terminal story requested ${readiness.requestedProvider}, but selected provider was ${providerId}; refusing fallback`,
@@ -230,97 +211,6 @@ export class ProviderTerminalStoryService {
     );
   }
 
-  private async validateProviderReadiness(
-    requestedProvider: ProviderTerminalStoryProvider,
-    configuredProvider: ConfiguredSandboxProviderFamily,
-    capabilities: readonly SandboxProviderCapability[],
-  ): Promise<{ ready: boolean; providerId: string | null; reason: string | null }> {
-    if (configuredProvider === 'control-plane') {
-      return {
-        ready: false,
-        providerId: null,
-        reason: 'CAP_SANDBOX_PROVIDER=control-plane has no sandbox provider for terminal stories',
-      };
-    }
-    if (!hasAllCapabilities(capabilities, REQUIRED_CAPABILITIES)) {
-      return {
-        ready: false,
-        providerId: null,
-        reason: `configured sandbox provider is missing required capabilities: ${missingCapabilities(
-          capabilities,
-          REQUIRED_CAPABILITIES,
-        ).join(', ')}`,
-      };
-    }
-    if (requestedProvider === 'aio') {
-      if (configuredProvider === 'boxlite') {
-        return {
-          ready: false,
-          providerId: null,
-          reason: 'provider-backed terminal story requested aio, but CAP_SANDBOX_PROVIDER=boxlite is configured',
-        };
-      }
-      return { ready: true, providerId: 'aio-local', reason: null };
-    }
-    if (requestedProvider === 'boxlite') {
-      return this.validateBoxLiteReadiness(configuredProvider);
-    }
-    if (configuredProvider === 'boxlite') {
-      return this.validateBoxLiteReadiness(configuredProvider);
-    }
-    return { ready: true, providerId: null, reason: null };
-  }
-
-  private async validateBoxLiteReadiness(
-    configuredProvider: ConfiguredSandboxProviderFamily,
-  ): Promise<{ ready: boolean; providerId: string | null; reason: string | null }> {
-    if (configuredProvider !== 'boxlite') {
-      return {
-        ready: false,
-        providerId: null,
-        reason: 'BoxLite provider-backed terminal story requires CAP_SANDBOX_PROVIDER=boxlite so setup cannot fall back to AIO',
-      };
-    }
-    const config = readBoxLiteProviderConfig();
-    if (config.status === 'disabled') {
-      return { ready: false, providerId: null, reason: config.reason };
-    }
-    if (config.status === 'invalid') {
-      return {
-        ready: false,
-        providerId: null,
-        reason: `BoxLite config is invalid: ${config.errors.join('; ')}`,
-      };
-    }
-    const missing = missingCapabilities(config.config.capabilities, [
-      'terminal.websocket',
-      'terminal.interactive',
-    ]);
-    if (missing.length > 0) {
-      return {
-        ready: false,
-        providerId: config.config.providerId,
-        reason: `BoxLite interactive terminal capability is required: missing ${missing.join(', ')}`,
-      };
-    }
-    if (config.config.terminalMode !== 'pty') {
-      return {
-        ready: false,
-        providerId: config.config.providerId,
-        reason: 'BOXLITE_TERMINAL_MODE=pty is required for provider-backed terminal stories',
-      };
-    }
-    const endpoint = await probeBoxLiteEndpoint(config.config.apiToken);
-    if (!endpoint.ready) {
-      return {
-        ready: false,
-        providerId: config.config.providerId,
-        reason: endpoint.reason,
-      };
-    }
-    return { ready: true, providerId: config.config.providerId, reason: null };
-  }
-
   private async createBackingTask(sessionId: string): Promise<string> {
     const repo = await this.prisma.repo.create({
       data: {
@@ -348,42 +238,9 @@ function storyEnabled(): boolean {
   return /^(1|true|yes|on)$/i.test(process.env[STORY_ENABLE_ENV] ?? '');
 }
 
-function readRequestedProvider(raw?: string): ProviderTerminalStoryProvider {
-  const value = (raw ?? process.env[STORY_PROVIDER_ENV] ?? 'auto').trim();
-  if (value === 'aio' || value === 'boxlite' || value === 'auto') return value;
-  throw new PreconditionFailedException(
-    `invalid provider-backed terminal story provider: ${value}`,
-  );
-}
-
 function normalizeTtl(raw: number | undefined): number {
   if (raw === undefined || !Number.isFinite(raw)) return STORY_DEFAULT_TTL_MS;
   return Math.min(STORY_MAX_TTL_MS, Math.max(STORY_MIN_TTL_MS, Math.trunc(raw)));
-}
-
-function hasAllCapabilities(
-  capabilities: readonly SandboxProviderCapability[],
-  required: readonly SandboxProviderCapability[],
-): boolean {
-  return missingCapabilities(capabilities, required).length === 0;
-}
-
-function missingCapabilities(
-  capabilities: readonly SandboxProviderCapability[],
-  required: readonly SandboxProviderCapability[],
-): SandboxProviderCapability[] {
-  return required.filter((capability) => !capabilities.includes(capability));
-}
-
-function providerMatches(
-  requested: ProviderTerminalStoryProvider,
-  providerId: string,
-): boolean {
-  if (requested === 'auto') return true;
-  const normalized = providerId.toLowerCase();
-  return requested === 'aio'
-    ? normalized.includes('aio')
-    : normalized.includes('boxlite');
 }
 
 function publicSessionView(
@@ -399,45 +256,4 @@ function publicSessionView(
     terminalPath: '/terminal',
     ...(record.teardownError ? { teardownError: record.teardownError } : {}),
   };
-}
-
-async function probeBoxLiteEndpoint(
-  apiToken: string,
-): Promise<{ ready: true } | { ready: false; reason: string }> {
-  const endpoint = (
-    process.env.BOXLITE_READINESS_ENDPOINT ??
-    process.env.BOXLITE_ENDPOINT ??
-    ''
-  ).replace(/\/+$/, '');
-  const healthPath = process.env.BOXLITE_HEALTH_PATH ?? '/health';
-  const path = healthPath.startsWith('/') ? healthPath : `/${healthPath}`;
-  if (!endpoint) return { ready: false, reason: 'BOXLITE_ENDPOINT is not set' };
-  const url = `${endpoint}${path}`;
-  try {
-    const response = await fetch(url, {
-      headers: {
-        accept: 'application/json',
-        authorization: `Bearer ${apiToken}`,
-      },
-      signal: AbortSignal.timeout(5_000),
-    });
-    if (response.ok) return { ready: true };
-    if (response.status === 401 || response.status === 403) {
-      return {
-        ready: false,
-        reason: `BoxLite readiness failed with HTTP ${response.status}; check BOXLITE_API_TOKEN`,
-      };
-    }
-    return {
-      ready: false,
-      reason: `BoxLite readiness failed with HTTP ${response.status} at ${url}`,
-    };
-  } catch (err) {
-    return {
-      ready: false,
-      reason: `BoxLite endpoint is not reachable at ${url}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    };
-  }
 }

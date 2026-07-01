@@ -106,3 +106,18 @@ export const READOPTION_SANDBOX_FEATURE_CAPABILITIES: readonly SandboxProviderCa
 export const RETAINED_TRANSCRIPT_SANDBOX_FEATURE_CAPABILITIES: readonly SandboxProviderCapability[] = [
   'transcript.retained-source',
 ] as const;
+
+export function missingCapabilities(
+  declared: readonly SandboxProviderCapability[] | undefined,
+  required: readonly SandboxProviderCapability[],
+): SandboxProviderCapability[] {
+  const set = new Set(declared ?? []);
+  return required.filter((capability) => !set.has(capability));
+}
+
+export function hasAllCapabilities(
+  declared: readonly SandboxProviderCapability[] | undefined,
+  required: readonly SandboxProviderCapability[],
+): boolean {
+  return missingCapabilities(declared, required).length === 0;
+}

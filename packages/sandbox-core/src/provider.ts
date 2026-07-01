@@ -1,4 +1,5 @@
 import type { SandboxProviderCapability, SandboxProviderLocation } from './capabilities.js';
+import { SandboxProviderConfigurationError } from './errors.js';
 
 export interface GitCloneSpec {
   readonly url: string;
@@ -267,7 +268,9 @@ export function describeSandboxProvider<TProvider extends SandboxCapabilitySourc
 ): SandboxProviderDescriptor<TProvider> {
   const capabilities = args.capabilities ?? args.provider.getProviderCapabilities?.();
   if (!capabilities) {
-    throw new Error(`Sandbox provider descriptor "${args.id}" requires declared capabilities`);
+    throw new SandboxProviderConfigurationError(
+      `Sandbox provider descriptor "${args.id}" requires declared capabilities`,
+    );
   }
   return {
     id: args.id,

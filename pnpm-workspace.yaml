@@ -5,3 +5,7 @@ packages:
   - "apps/sandbox-hooks"
   - "apps/release-cache-worker"
   - "packages/*"
+  - "!packages/sandbox-aio-local"
+  - "!packages/sandbox-lifecycle"
+  - "!packages/sandbox-scheduler"
+  - "!packages/sandbox-workspace-git"

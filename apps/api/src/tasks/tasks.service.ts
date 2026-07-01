@@ -38,7 +38,7 @@ import {
 } from '../sandbox/sandbox-provider.port';
 import {
   selectReadoptionSandboxProvider,
-} from '../sandbox/sandbox-scheduler';
+} from '@cap/sandbox';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
