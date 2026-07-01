@@ -6,25 +6,24 @@ import {
   type OnModuleDestroy,
 } from '@nestjs/common';
 import { statfs } from 'node:fs/promises';
+import { createConfiguredSandboxRetentionStore } from '@cap/sandbox';
 import { PrismaService } from '../prisma/prisma.service';
 import {
-  DockerSandboxRetentionStore,
   SANDBOX_RETENTION_STORE,
   type RetainedSandbox,
   type SandboxRetentionStore,
 } from './sandbox-retention-store';
 
 /**
- * Retention cleaner for settled, RETAINED sandbox containers
- * (session-sandbox-retention, Track 5).
+ * Retention cleaner for settled, retained sandbox artifacts.
  *
- * With `AutoRemove:false` + stop-only teardown, a finished task's
- * `cap-aio-<taskId>` container is KEPT (stopped) so its codex rollout is
- * readable for history replay. This periodic sweep is the ONLY path that deletes
- * those kept containers, under two policies:
+ * Providers may retain stopped/parked artifacts so transcripts and recovery
+ * metadata remain readable after task settlement. This periodic sweep is the
+ * API-side policy driver; the concrete artifact listing/removal lives behind the
+ * sandbox retention store supplied by `@cap/sandbox`.
  *
- *  - Policy 1 (age): remove a STOPPED `cap-aio-*` container whose time-since-stop
- *    exceeds the retention window. The window reuses the operator-facing
+ *  - Policy 1 (age): remove a stopped retained sandbox artifact whose
+ *    time-since-stop exceeds the retention window. The window reuses the operator-facing
  *    `retention` setting (7/30/90/180 days; default 30). It is stored per
  *    account, so the cleaner — which has no operator context — takes the MAX
  *    across accounts, never reaping earlier than any operator's configured window.
@@ -33,10 +32,9 @@ import {
  *    evict the OLDEST-stopped containers FIRST until free disk recovers — even
  *    ones younger than the window — so a full disk never wedges the host.
  *
- * It NEVER touches a RUNNING container: it lists only non-running ones, and
- * removes with `force:false` so a container that races back to running is
- * refused by the daemon (NOT killed) rather than reaped. Modeled on
- * `CodexDeviceLoginService`'s unref'd `setInterval` sweeper.
+ * It trusts the retention store to return only cleanup-safe stopped artifacts.
+ * Provider-specific running-artifact safety checks belong to the owning provider
+ * package or sandbox harness, not this API policy loop.
  *
  * Single-instance assumption: one orchestrator per docker host (the same
  * assumption the startup orphan-reap relies on), so there is NO distributed
@@ -72,7 +70,7 @@ export class RetentionCleaner implements OnModuleDestroy {
     @Inject(SANDBOX_RETENTION_STORE)
     retentionStore?: SandboxRetentionStore,
   ) {
-    this.retentionStore = retentionStore ?? new DockerSandboxRetentionStore();
+    this.retentionStore = retentionStore ?? createConfiguredSandboxRetentionStore();
     this.diskPath = process.env.CAP_SANDBOX_DISK_PATH || '/';
     const floorGb = Number(process.env.CAP_SANDBOX_DISK_FLOOR_GB);
     this.diskFloorBytes =

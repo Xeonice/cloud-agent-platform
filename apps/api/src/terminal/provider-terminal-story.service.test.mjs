@@ -8,18 +8,11 @@ const dist = path.resolve(here, '../../dist/terminal');
 const { ProviderTerminalStoryService } = await import(
   path.join(dist, 'provider-terminal-story.service.js')
 );
-const { AioPtyClient } = await import(path.join(dist, 'aio-pty-client.js'));
 
 const ENV_KEYS = [
   'CAP_PROVIDER_TERMINAL_STORY',
   'CAP_PROVIDER_TERMINAL_STORY_PROVIDER',
   'CAP_SANDBOX_PROVIDER',
-  'BOXLITE_ENDPOINT',
-  'BOXLITE_READINESS_ENDPOINT',
-  'BOXLITE_API_TOKEN',
-  'BOXLITE_IMAGE',
-  'BOXLITE_TERMINAL_MODE',
-  'BOXLITE_CAPABILITIES',
 ];
 
 async function withEnv(overrides, fn) {
@@ -164,16 +157,38 @@ test('provider terminal story returns only CAP session projection', async () => 
   });
 });
 
-test('explicit BoxLite story setup fails before provisioning when BoxLite env is absent', async () => {
+test('explicit BoxLite story setup relies on sandbox selection, not API-side BoxLite env probing', async () => {
   await withEnv({ CAP_PROVIDER_TERMINAL_STORY: '1', CAP_SANDBOX_PROVIDER: 'boxlite' }, async () => {
-    const provider = makeProvider({ providerId: 'aio-local' });
+    const provider = makeProvider({
+      providerId: 'boxlite',
+      capabilities: ['terminal.websocket', 'terminal.interactive'],
+    });
+    const gateway = makeGateway();
+    const prisma = makePrisma();
+    const service = new ProviderTerminalStoryService(provider, gateway, prisma);
+
+    const session = await service.createSession({ provider: 'boxlite', ttlMs: 10_000 });
+    assert.equal(session.providerId, 'boxlite');
+    assert.equal(provider.calls[0][0], 'provision');
+    assert.equal(gateway.calls[0][0], 'openSession');
+
+    await service.teardownSession(session.sessionId);
+  });
+});
+
+test('explicit BoxLite story setup requires interactive terminal capability', async () => {
+  await withEnv({ CAP_PROVIDER_TERMINAL_STORY: '1', CAP_SANDBOX_PROVIDER: 'boxlite' }, async () => {
+    const provider = makeProvider({
+      providerId: 'boxlite',
+      capabilities: ['terminal.websocket'],
+    });
     const gateway = makeGateway();
     const prisma = makePrisma();
     const service = new ProviderTerminalStoryService(provider, gateway, prisma);
 
     await assert.rejects(
       () => service.createSession({ provider: 'boxlite' }),
-      /BOXLITE_ENDPOINT is not set/,
+      /terminal\.interactive/,
     );
     assert.deepEqual(provider.calls, []);
     assert.deepEqual(gateway.calls, []);
@@ -190,89 +205,10 @@ test('explicit BoxLite story setup does not silently fall back to AIO', async ()
 
     await assert.rejects(
       () => service.createSession({ provider: 'boxlite' }),
-      /requires CAP_SANDBOX_PROVIDER=boxlite/,
+      /requested boxlite, but CAP_SANDBOX_PROVIDER=aio is configured/,
     );
     assert.deepEqual(provider.calls, []);
     assert.deepEqual(gateway.calls, []);
     assert.deepEqual(prisma.calls, []);
   });
-});
-
-class FakeTransport {
-  frameListeners = new Set();
-  closeListeners = new Set();
-  input = [];
-  resizes = [];
-  closed = false;
-  readyState = 'open';
-
-  onFrame(listener) {
-    this.frameListeners.add(listener);
-    return { dispose: () => this.frameListeners.delete(listener) };
-  }
-  onClose(listener) {
-    this.closeListeners.add(listener);
-    return { dispose: () => this.closeListeners.delete(listener) };
-  }
-  onError() {
-    return { dispose() {} };
-  }
-  sendInput(data) {
-    this.input.push(data);
-    return true;
-  }
-  sendResize(cols, rows) {
-    this.resizes.push([cols, rows]);
-    return true;
-  }
-  sendPong() {
-    return true;
-  }
-  pause() {}
-  resume() {}
-  close() {
-    this.closed = true;
-  }
-  emit(frame) {
-    for (const listener of this.frameListeners) listener(frame);
-  }
-}
-
-test('provider story fixture mode launches deterministic shell fixture and routes input/resize/teardown', async () => {
-  const transport = new FakeTransport();
-  const execCalls = [];
-  const client = new AioPtyClient(
-    'terminal-story-test',
-    'ws://unused',
-    'http://unused',
-    undefined,
-    'provider-story-fixture',
-    undefined,
-    undefined,
-    { open: () => transport },
-    {
-      async exec(request) {
-        execCalls.push(request);
-        return { exitCode: 0, output: '', stdout: '', stderr: '', timedOut: false };
-      },
-    },
-  );
-
-  transport.emit({ type: 'session_id', data: 'fake' });
-  transport.emit({ type: 'ready' });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(execCalls.length, 1);
-  assert.match(execCalls[0].command, /PROVIDER_STORY_BEGIN/);
-  assert.match(execCalls[0].command, /PROVIDER_STORY_ECHO/);
-  assert.match(transport.input.join('\n'), /exec \/bin\/sh \/tmp\/cap-provider-terminal-story\.sh/);
-  assert.doesNotMatch(transport.input.join('\n'), /CAP_PROVIDER_TERMINAL_STORY_SCRIPT/);
-
-  client.write('hello-from-test\r');
-  client.resize(132, 43);
-  client.close();
-
-  assert.equal(transport.input.at(-1), 'hello-from-test\r');
-  assert.deepEqual(transport.resizes, [[132, 43]]);
-  assert.equal(execCalls.length, 1, 'fixture mode must not run detached tmux resize commands');
-  assert.equal(transport.closed, true);
 });

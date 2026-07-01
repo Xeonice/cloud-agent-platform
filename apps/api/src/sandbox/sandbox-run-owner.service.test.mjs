@@ -77,6 +77,14 @@ class FakeSandboxRunDelegate {
     return run && args.select?.id ? { id: run.id } : run;
   }
 
+  async findMany(args) {
+    let filtered = this.runs.filter((run) => matchesWhere(run, args.where ?? {}));
+    if (args.orderBy?.createdAt === 'asc') {
+      filtered = [...filtered].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    }
+    return filtered;
+  }
+
   async create({ data }) {
     const now = new Date(1_700_000_000_000 + this.next);
     const run = {
@@ -191,6 +199,27 @@ try {
     assert.equal(await service.getSandboxRunOwner('task-1'), null);
     assert.equal(delegate.runs[0].status, 'removed');
     assert(delegate.runs[0].removedAt instanceof Date);
+  });
+
+  await test('active owner listing returns only resumable provider owners', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+
+    await service.recordSandboxRunOwner({
+      taskId: 'task-running',
+      providerId: 'boxlite',
+      providerSandboxId: 'box-running',
+    });
+    await service.recordSandboxRunOwner({
+      taskId: 'task-removed',
+      providerId: 'boxlite',
+      providerSandboxId: 'box-removed',
+    });
+    await service.markSandboxRunRemoved('task-removed');
+
+    const active = await service.listActiveSandboxRunOwners();
+    assert.deepEqual(active.map((owner) => owner.taskId), ['task-running']);
+    assert.equal(active[0].providerSandboxId, 'box-running');
   });
 
   await test('marking a missing owner is idempotent', async () => {

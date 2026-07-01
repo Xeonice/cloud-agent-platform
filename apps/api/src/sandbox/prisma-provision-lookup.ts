@@ -9,7 +9,7 @@ import type { CloneSpec, ProvisionLookup } from './provision-lookup.port';
  * Prisma-backed {@link ProvisionLookup}: resolves a task's clone spec from its
  * own `repo.gitSource`, attaching the task owner's forge PAT as an Authorization
  * header (NOT in the URL) for private repos. This is where the database access
- * lives so {@link AioSandboxProvider} stays a pure port consumer.
+ * lives so provider hooks consume a small port instead of Prisma directly.
  */
 @Injectable()
 export class PrismaProvisionLookup implements ProvisionLookup {
@@ -52,7 +52,7 @@ export class PrismaProvisionLookup implements ProvisionLookup {
    * The operator-supplied prompt (`task.prompt`) for `taskId`, used by the
    * provider to pre-fill codex's composer with the goal. Returns `null` when the
    * task is missing or its prompt is empty. This is where the DB access lives so
-   * {@link AioSandboxProvider} stays a pure port consumer.
+   * provider hooks consume a small port instead of Prisma directly.
    */
   async getTaskPrompt(taskId: string): Promise<string | null> {
     const task = await this.prisma.task.findUnique({
@@ -66,8 +66,8 @@ export class PrismaProvisionLookup implements ProvisionLookup {
   /**
    * The selected skill ids (`task.skills`) for `taskId`, used by the provider to
    * preinstall those skills into the workspace. Returns an empty array when the
-   * task is missing or selected none. DB access lives here so
-   * {@link AioSandboxProvider} stays a pure port consumer.
+   * task is missing or selected none. DB access lives here so provider hooks
+   * consume a small port instead of Prisma directly.
    */
   async getTaskSkills(taskId: string): Promise<string[]> {
     const task = await this.prisma.task.findUnique({

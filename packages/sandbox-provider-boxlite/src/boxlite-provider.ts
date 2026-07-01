@@ -1,7 +1,6 @@
 import type {
   GitCloneSpec,
   SandboxCommandEndpointDescriptor,
-  SandboxCommandExecutionRequest,
   SandboxCommandExecutor,
   SandboxConnection,
   SandboxDeliverWorkspaceArgs,
@@ -21,7 +20,6 @@ import type {
   SelectedSandboxRun,
 } from '@cap/sandbox-core';
 import {
-  createSandboxCommandExecutor,
   defineCloudSandboxProvider,
   defineLocalSandboxProvider,
 } from '@cap/sandbox-core';
@@ -36,6 +34,23 @@ import {
   resolveBoxLiteSandboxSource,
   type BoxLiteProviderEnv,
 } from './boxlite-config.js';
+import type {
+  BoxLiteRuntimePreflight,
+  BoxLiteRuntimeSetup,
+} from './boxlite-hooks.js';
+import { createBoxLiteCommandExecutor } from './boxlite-command.js';
+import {
+  createBoxLiteRuntimePreflight,
+  requiredToolsForBoxLiteCapabilities,
+} from './boxlite-preflight.js';
+import {
+  deliverGitWorkspaceChanges,
+  materializeGitWorkspace,
+  requireGitCloneSpec,
+} from './boxlite-workspace.js';
+import { buildBoxLiteTerminalDescriptor } from './boxlite-terminal.js';
+import { buildBoxLiteRetentionPolicy } from './boxlite-retention.js';
+import type { BoxLiteProvisionedRun } from './boxlite-types.js';
 
 export interface BoxLiteProviderOptions {
   readonly config: BoxLiteProviderConfig;
@@ -67,37 +82,6 @@ export type BoxLiteProviderDescriptorFromEnvResult =
       readonly status: 'registered';
       readonly descriptor: SandboxProviderDescriptor<BoxLiteSandboxProvider>;
     };
-
-export interface BoxLiteRuntimePreflightContext {
-  readonly taskId: string;
-  readonly provider: BoxLiteSandboxProvider;
-  readonly sandbox: BoxLiteSandbox;
-  readonly executor: SandboxCommandExecutor;
-  readonly runtimeId?: string | null;
-}
-
-export type BoxLiteRuntimePreflight = (
-  context: BoxLiteRuntimePreflightContext,
-) => Promise<SandboxPreflightResult> | SandboxPreflightResult;
-
-export interface BoxLiteRuntimeSetupContext {
-  readonly taskId: string;
-  readonly sandbox: BoxLiteSandbox;
-  readonly executor: SandboxCommandExecutor;
-  readonly workspacePath: string;
-}
-
-export type BoxLiteRuntimeSetup = (
-  context: BoxLiteRuntimeSetupContext,
-) => Promise<void> | void;
-
-export interface BoxLiteRuntimePreflightOptions {
-  readonly requiredTools: readonly string[];
-  readonly workspacePath?: string;
-  readonly commandTimeoutMs?: number;
-  readonly cache?: Map<string, SandboxPreflightResult>;
-  readonly now?: () => Date;
-}
 
 export class BoxLiteSandboxProvider<
     TCloneSpec = GitCloneSpec,
@@ -284,27 +268,9 @@ export class BoxLiteSandboxProvider<
   async getTerminalDescriptor(
     taskId: string,
   ): Promise<SandboxTerminalEndpointDescriptor | null> {
-    if (!this.hasCapability('terminal.interactive') || this.config.terminalMode !== 'pty') {
-      return null;
-    }
     const run = await this.resolveExistingRun(taskId);
     if (!run) return null;
-    if (!run.sandbox.terminalUrl && this.config.protocolMode !== 'native') return null;
-    return {
-      protocol: 'boxlite-v1',
-      wsUrl:
-        this.config.protocolMode === 'native'
-          ? this.config.endpoint.replace(/^http/, 'ws')
-          : run.sandbox.terminalUrl,
-      metadata: {
-        provider: this.config.providerId,
-        sandboxId: run.sandbox.id,
-        endpoint: this.config.endpoint,
-        pathPrefix: this.config.pathPrefix,
-        workspacePath: this.config.workspacePath,
-        protocolMode: this.config.protocolMode,
-      },
-    };
+    return buildBoxLiteTerminalDescriptor({ config: this.config, run });
   }
 
   async getCommandDescriptor(
@@ -347,19 +313,7 @@ export class BoxLiteSandboxProvider<
   async getRetentionPolicy(taskId: string): Promise<SandboxRetentionPolicy | null> {
     const run = await this.resolveExistingRun(taskId);
     if (!run) return null;
-    return {
-      mode: this.hasCapability('lifecycle.snapshot')
-        ? 'snapshot'
-        : this.hasCapability('lifecycle.sleep')
-          ? 'provider-native'
-          : 'none',
-      retainTranscript: this.hasCapability('transcript.retained-source'),
-      cleanupEligible: true,
-      metadata: {
-        provider: this.config.providerId,
-        sandboxId: run.sandbox.id,
-      },
-    };
+    return buildBoxLiteRetentionPolicy({ config: this.config, run });
   }
 
   createCommandExecutor(sandboxId: string): SandboxCommandExecutor {
@@ -486,91 +440,6 @@ export class BoxLiteSandboxProvider<
   }
 }
 
-export function createBoxLiteCommandExecutor(args: {
-  readonly client: BoxLiteClient;
-  readonly sandboxId: string;
-}): SandboxCommandExecutor {
-  return createSandboxCommandExecutor((request: SandboxCommandExecutionRequest) =>
-    args.client.exec({
-      sandboxId: args.sandboxId,
-      command: request.command,
-      cwd: request.cwd,
-      timeoutMs: request.timeoutMs,
-    }),
-  );
-}
-
-export function createBoxLiteRuntimePreflight(
-  options: BoxLiteRuntimePreflightOptions,
-): BoxLiteRuntimePreflight {
-  const cache = options.cache ?? new Map<string, SandboxPreflightResult>();
-  const now = options.now ?? (() => new Date());
-  return async (context) => {
-    const tools = [...options.requiredTools].sort();
-    const cacheKey = [
-      context.provider.getProviderId(),
-      sandboxSourceLabel(context.sandbox),
-      context.runtimeId ?? 'default-runtime',
-      tools.join(','),
-    ].join('|');
-    const cached = cache.get(cacheKey);
-    if (cached) return cached;
-
-    const probes = [];
-    if (options.workspacePath) {
-      const command = `test -d ${shellQuote(options.workspacePath)}`;
-      const result = await context.executor.exec({
-        command,
-        timeoutMs: options.commandTimeoutMs,
-      });
-      probes.push({
-        name: 'workspace',
-        command,
-        ok: result.exitCode === 0,
-        output: result.output,
-      });
-    }
-    for (const tool of tools) {
-      const command = `command -v ${shellQuote(tool)}`;
-      const result = await context.executor.exec({
-        command,
-        timeoutMs: options.commandTimeoutMs,
-      });
-      probes.push({
-        name: tool,
-        command,
-        ok: result.exitCode === 0,
-        output: result.output,
-      });
-    }
-    const failed = probes.filter((probe) => !probe.ok);
-    const preflight: SandboxPreflightResult = {
-      status: failed.length === 0 ? 'passed' : 'failed',
-      checkedAt: now().toISOString(),
-      image: context.sandbox.image ?? context.sandbox.rootfsPath,
-      runtimeId: context.runtimeId ?? undefined,
-      probes,
-      error:
-        failed.length === 0
-          ? undefined
-          : boxLitePreflightError(failed.map((probe) => probe.name)),
-    };
-    cache.set(cacheKey, preflight);
-    return preflight;
-  };
-}
-
-function sandboxSourceLabel(sandbox: BoxLiteSandbox): string {
-  return sandbox.image ?? sandbox.rootfsPath ?? 'unknown-source';
-}
-
-function boxLitePreflightError(failedNames: readonly string[]): string {
-  const label = failedNames.includes('workspace')
-    ? 'required tools or workspace'
-    : 'required tools';
-  return `BoxLite image missing ${label}: ${failedNames.join(', ')}`;
-}
-
 export function defineBoxLiteSandboxProvider<
   TCloneSpec = GitCloneSpec,
   TRuntimeId = string,
@@ -601,25 +470,6 @@ export function defineBoxLiteSandboxProvider<
     : defineCloudSandboxProvider(args);
 }
 
-export function requiredToolsForBoxLiteCapabilities(
-  capabilities: readonly SandboxProviderCapability[],
-): readonly string[] {
-  const out = new Set<string>(['sh']);
-  if (
-    capabilities.includes('terminal.websocket') ||
-    capabilities.includes('terminal.interactive')
-  ) {
-    out.add('bash');
-  }
-  if (
-    capabilities.includes('workspace.git.materialize') ||
-    capabilities.includes('workspace.git.deliver')
-  ) {
-    out.add('git');
-  }
-  return [...out].sort();
-}
-
 export function defineBoxLiteSandboxProviderFromEnv(
   options: BoxLiteProviderDescriptorFromEnvOptions = {},
 ): BoxLiteProviderDescriptorFromEnvResult {
@@ -632,86 +482,6 @@ export function defineBoxLiteSandboxProviderFromEnv(
       client: options.client,
       preflight: options.preflight,
     }),
-  };
-}
-
-async function deliverGitWorkspaceChanges(args: {
-  readonly executor: SandboxCommandExecutor;
-  readonly workspacePath: string;
-  readonly args: SandboxDeliverWorkspaceArgs;
-}): Promise<SandboxDeliverWorkspaceResult> {
-  const status = await args.executor.exec({
-    command: 'git status --porcelain',
-    cwd: args.workspacePath,
-  });
-  if (status.exitCode !== 0) {
-    return failure(`git status failed: ${status.output}`);
-  }
-  if (!status.output.trim()) {
-    return { hadChanges: false, commitSha: null, error: null };
-  }
-
-  const add = await args.executor.exec({
-    command: 'git add -A',
-    cwd: args.workspacePath,
-  });
-  if (add.exitCode !== 0) return failure(`git add failed: ${add.output}`);
-
-  const commit = await args.executor.exec({
-    command: `git commit -m ${shellQuote(args.args.commitMessage)}`,
-    cwd: args.workspacePath,
-  });
-  if (commit.exitCode !== 0) return failure(`git commit failed: ${commit.output}`);
-
-  const sha = await args.executor.exec({
-    command: 'git rev-parse HEAD',
-    cwd: args.workspacePath,
-  });
-  if (sha.exitCode !== 0) return failure(`git rev-parse failed: ${sha.output}`);
-
-  const push = await args.executor.exec({
-    command: `git -c http.extraHeader=${shellQuote(args.args.authHeader)} push origin HEAD:${shellQuote(args.args.branch)}`,
-    cwd: args.workspacePath,
-  });
-  if (push.exitCode !== 0) return failure(`git push failed: ${push.output}`);
-
-  return {
-    hadChanges: true,
-    commitSha: sha.output.trim() || null,
-    error: null,
-  };
-}
-
-async function materializeGitWorkspace(args: {
-  readonly executor: SandboxCommandExecutor;
-  readonly workspacePath: string;
-  readonly cloneSpec: GitCloneSpec;
-}): Promise<void> {
-  const parent = dirname(args.workspacePath);
-  const clone = await args.executor.exec({
-    command: [
-      `rm -rf ${shellQuote(args.workspacePath)}`,
-      `mkdir -p ${shellQuote(parent)}`,
-      `git ${gitAuthOption(args.cloneSpec.authHeader)} clone --recursive ${shellQuote(args.cloneSpec.url)} ${shellQuote(args.workspacePath)}`,
-    ].join(' && '),
-  });
-  if (clone.exitCode !== 0) {
-    throw new Error(`BoxLite git materialization failed: ${clone.output}`);
-  }
-}
-
-function failure(error: string): SandboxDeliverWorkspaceResult {
-  return { hadChanges: false, commitSha: null, error };
-}
-
-function requireGitCloneSpec(raw: unknown): GitCloneSpec {
-  if (!raw || typeof raw !== 'object' || typeof (raw as { url?: unknown }).url !== 'string') {
-    throw new Error('BoxLite git materialization requires a clone spec with a url');
-  }
-  const record = raw as { readonly url: string; readonly authHeader?: unknown };
-  return {
-    url: record.url,
-    authHeader: typeof record.authHeader === 'string' ? record.authHeader : undefined,
   };
 }
 
@@ -741,32 +511,10 @@ function nonEmptySandboxEnv(
   return Object.keys(sandboxEnv).length > 0 ? sandboxEnv : undefined;
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function gitAuthOption(authHeader: string | undefined): string {
-  return authHeader ? `-c http.extraHeader=${shellQuote(authHeader)}` : '';
-}
-
-function dirname(path: string): string {
-  const normalized = path.replace(/\/+$/, '');
-  const idx = normalized.lastIndexOf('/');
-  if (idx <= 0) return '/';
-  return normalized.slice(0, idx);
-}
-
 function nativeApiPath(pathPrefix: string): string {
   return pathPrefix ? `/v1/${pathPrefix}` : '/v1';
 }
 
 function nativeBoxPath(pathPrefix: string, sandboxId: string): string {
   return `${nativeApiPath(pathPrefix)}/boxes/${encodeURIComponent(sandboxId)}`;
-}
-
-interface BoxLiteProvisionedRun {
-  readonly taskId: string;
-  readonly sandbox: BoxLiteSandbox;
-  readonly connection: SandboxConnection;
-  readonly preflight?: SandboxPreflightResult;
 }

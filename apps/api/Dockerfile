@@ -38,6 +38,10 @@ RUN pnpm install --frozen-lockfile
 # Dev deps (the prisma CLI + nest build toolchain) are intentionally kept so
 # `prisma migrate deploy` can run at container start in the runtime stage.
 RUN pnpm --filter @cap/contracts build \
+  && pnpm --filter @cap/sandbox-core build \
+  && pnpm --filter @cap/sandbox-cloud-http build \
+  && pnpm --filter @cap/sandbox-provider-aio build \
+  && pnpm --filter @cap/sandbox-provider-boxlite build \
   && pnpm --filter @cap/sandbox build \
   && pnpm --filter @cap/api build
 

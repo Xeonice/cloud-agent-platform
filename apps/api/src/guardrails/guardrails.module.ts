@@ -12,9 +12,9 @@ import { SessionTranscriptService } from '../tasks/session-transcript.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { RetentionCleaner } from './retention-cleaner';
 import {
-  DockerSandboxRetentionStore,
   SANDBOX_RETENTION_STORE,
 } from './sandbox-retention-store';
+import { createConfiguredSandboxRetentionStore } from '@cap/sandbox';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import { SANDBOX_PROVIDER, type SandboxProvider } from '../sandbox/sandbox-provider.port';
 import { PROVISION_LOOKUP, type ProvisionLookup } from '../sandbox/provision-lookup.port';
@@ -102,14 +102,14 @@ import {
     },
     {
       provide: SANDBOX_RETENTION_STORE,
-      useFactory: () => new DockerSandboxRetentionStore(),
+      useFactory: () => createConfiguredSandboxRetentionStore(),
     },
-    // Retention cleaner (session-sandbox-retention Track 5): a self-starting
-    // unref'd sweeper that removes settled, retained `cap-aio-*` containers past
-    // the retention window or under disk pressure. Lives in the guardrails layer
-    // alongside the teardown chokepoints; PrismaService (for the retention
-    // window) resolves from the @Global PrismaModule, optional so a guardrails
-    // unit context still constructs without a database (window → default).
+    // Retention cleaner: a self-starting unref'd sweeper that applies API
+    // retention windows and disk-pressure policy over provider-reported retained
+    // sandbox artifacts. Concrete artifact listing/removal is supplied by the
+    // sandbox harness. PrismaService (for the retention window) resolves from the
+    // @Global PrismaModule, optional so a guardrails unit context still
+    // constructs without a database (window → default).
     RetentionCleaner,
   ],
   exports: [GuardrailsService],

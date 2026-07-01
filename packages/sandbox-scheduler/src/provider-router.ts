@@ -143,12 +143,15 @@ export class SandboxProviderRouter<
     );
     const connection = await selected.provider.provision(ctx);
     this.owners.set(ctx.taskId, selected.id);
-    await this.options.ownerStore?.recordSandboxRunOwner({
-      taskId: ctx.taskId,
-      providerId: selected.id,
-      providerSandboxId: connection.taskId,
-      connection,
-    });
+    if (this.options.ownerStore) {
+      const providerRun = await this.selectedRunFor(ctx.taskId, selected);
+      await this.options.ownerStore.recordSandboxRunOwner({
+        taskId: ctx.taskId,
+        providerId: selected.id,
+        providerSandboxId: providerRun?.providerSandboxId ?? connection.taskId,
+        connection,
+      });
+    }
     return connection;
   }
 
@@ -249,18 +252,23 @@ export class SandboxProviderRouter<
   > {
     let resolved = await this.ownerWithRecord(taskId);
     if (!resolved) {
-      const reattached = await this.reattachOwner(taskId);
+      const reattached = await this.reattachOwner(taskId, {
+        includeSelectedRun: true,
+      });
       if (!reattached) return null;
       resolved = {
         owner: reattached.owner,
         ownerRecord:
           (await this.options.ownerStore?.getSandboxRunOwner(taskId)) ?? undefined,
         connection: reattached.connection,
+        providerRun: reattached.providerRun,
       };
     }
 
     const providerRun =
-      (await resolved.owner.provider.getSelectedSandboxRun?.(taskId)) ?? null;
+      resolved.providerRun !== undefined
+        ? resolved.providerRun
+        : (await resolved.owner.provider.getSelectedSandboxRun?.(taskId)) ?? null;
     const connection =
       providerRun?.connection ??
       resolved.ownerRecord?.connection ??
@@ -304,11 +312,13 @@ export class SandboxProviderRouter<
 
   private async reattachOwner(
     taskId: string,
+    options: { readonly includeSelectedRun?: boolean } = {},
   ): Promise<{
     readonly owner: SandboxProviderDescriptor<
       RoutableSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>
     >;
     readonly connection: SandboxConnection;
+    readonly providerRun?: SelectedSandboxRun | null;
   } | null> {
     for (const entry of this.registry.list()) {
       if (!this.supports(entry, READOPTION_SANDBOX_REQUIRED_CAPABILITIES)) {
@@ -316,14 +326,18 @@ export class SandboxProviderRouter<
       }
       const connection = await entry.provider.reattach?.(taskId);
       if (connection) {
+        const providerRun =
+          options.includeSelectedRun || this.options.ownerStore
+            ? await this.selectedRunFor(taskId, entry)
+            : null;
         this.owners.set(taskId, entry.id);
         await this.options.ownerStore?.recordSandboxRunOwner({
           taskId,
           providerId: entry.id,
-          providerSandboxId: connection.taskId,
+          providerSandboxId: providerRun?.providerSandboxId ?? connection.taskId,
           connection,
         });
-        return { owner: entry, connection };
+        return { owner: entry, connection, providerRun };
       }
     }
     return null;
@@ -345,6 +359,7 @@ export class SandboxProviderRouter<
     >;
     readonly ownerRecord?: SandboxRunOwnerRecord;
     readonly connection?: SandboxConnection;
+    readonly providerRun?: SelectedSandboxRun | null;
   } | null> {
     const id = this.owners.get(taskId);
     const stored = await this.options.ownerStore?.getSandboxRunOwner(taskId);
@@ -379,5 +394,18 @@ export class SandboxProviderRouter<
     required: readonly SandboxProviderCapability[],
   ): boolean {
     return missingCapabilities(provider.capabilities, required).length === 0;
+  }
+
+  private async selectedRunFor(
+    taskId: string,
+    provider: SandboxProviderDescriptor<
+      RoutableSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>
+    >,
+  ): Promise<SelectedSandboxRun | null> {
+    try {
+      return (await provider.provider.getSelectedSandboxRun?.(taskId)) ?? null;
+    } catch {
+      return null;
+    }
   }
 }

@@ -80,8 +80,7 @@ export type DeliverWorkspaceResult = SandboxDeliverWorkspaceResult;
  * DI token for the {@link SandboxProvider} port (integration 9.1b).
  *
  * Consumers inject the provider by this token (`@Inject(SANDBOX_PROVIDER)`)
- * rather than referencing a concrete class, so the bound implementation can be
- * swapped (`AioSandboxProvider` today, an OS-isolating impl later) with no
- * consumer change.
+ * rather than referencing a concrete class. The bound implementation is the
+ * sandbox provider-center router assembled in `sandbox.module.ts`.
  */
 export const SANDBOX_PROVIDER = Symbol('SandboxProvider');

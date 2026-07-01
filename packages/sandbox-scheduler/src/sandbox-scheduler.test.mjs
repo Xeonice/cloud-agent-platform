@@ -114,6 +114,13 @@ await test('declared single-provider selector succeeds and fails closed on missi
     mod.selectSandboxProvider(declared, ['terminal.websocket']).compatibility,
     'declared',
   );
+  assert.equal(
+    mod.selectSandboxProvider(
+      provider('boxlite-docs', ['lifecycle.readoption']),
+      ['lifecycle.readopt'],
+    ).compatibility,
+    'declared',
+  );
   assert.throws(
     () => mod.selectSandboxProvider(declared, ['workspace.git.materialize']),
     /missing required capabilities: workspace\.git\.materialize/,
@@ -632,6 +639,9 @@ await test('provider router persists and prefers stored task ownership', async (
   });
   const cloud = routableProvider('cloud', core.SANDBOX_PROVIDER_CAPABILITIES, {
     reattachTask: 'task-owned',
+    selectedRun: (taskId) => ({
+      providerSandboxId: `cloud-sandbox-${taskId}`,
+    }),
   });
   const firstRouter = new mod.SandboxProviderRouter(
     [
@@ -643,6 +653,7 @@ await test('provider router persists and prefers stored task ownership', async (
 
   await firstRouter.provision({ taskId: 'task-owned', cloneSpec: null });
   assert.equal(records.get('task-owned').providerId, 'cloud');
+  assert.equal(records.get('task-owned').providerSandboxId, 'cloud-sandbox-task-owned');
 
   const restartedRouter = new mod.SandboxProviderRouter(
     [

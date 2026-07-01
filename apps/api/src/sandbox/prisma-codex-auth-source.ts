@@ -52,8 +52,7 @@ const CODEX_CRED_ENC_KEY_ENV = 'CODEX_CRED_ENC_KEY';
  * unavailable, or the ciphertext fails to decrypt — keeping a deploy that hasn't
  * migrated to the Settings flow working, and keeping official/env-configured
  * deployments unaffected by the compatible path. The DB access lives here so
- * {@link AioSandboxProvider} stays a pure port consumer (mirrors
- * {@link PrismaProvisionLookup}).
+ * provider-package hooks consume a small auth port instead of Prisma directly.
  */
 @Injectable()
 export class PrismaCodexAuthSource implements CodexAuthSource {

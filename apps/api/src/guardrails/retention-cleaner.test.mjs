@@ -1,18 +1,17 @@
 /**
  * Focused unit test for the retention cleaner (session-sandbox-retention,
  * Track 5). Drives the REAL `RetentionCleaner` (compiled with tsc, instantiated
- * directly) against a fake dockerode + stub Prisma, with the free-disk reader
- * overridden per case.
+ * directly) against a provider-neutral fake retention store + stub Prisma, with
+ * the free-disk reader overridden per case.
  *
  * Covers (task 5.5):
  *   - Policy 1 age-trip removal with the DEFAULT 30-day window
  *   - window resolution from persisted settings (and MAX across accounts)
  *   - Policy 2 low-disk OLDEST-first eviction until free recovers
- *   - a RUNNING container is NEVER reaped (defensive guard + force:false)
  *   - the in-process overlap guard skips a re-entrant tick
  *
  * Compiled WITHOUT emitDecoratorMetadata so the type-only PrismaService import
- * elides; dockerode + @nestjs/common resolve from node_modules.
+ * elides; @nestjs/common resolves from node_modules.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -58,44 +57,6 @@ function findFile(dir, name) {
 
 const DAY = 24 * 60 * 60 * 1000;
 const GB = 1024 ** 3;
-const iso = (msAgo) => new Date(Date.now() - msAgo).toISOString();
-
-/**
- * Fake dockerode. `listContainers` returns ALL given containers (ignoring the
- * status filter) so the cleaner's OWN running-guard is what excludes a running
- * one — and records the filter used so the query-level intent is asserted too.
- */
-function makeDocker(containers) {
-  const removed = [];
-  const removeForce = [];
-  let lastFilter;
-  let listCalls = 0;
-  return {
-    removed, removeForce, get lastFilter() { return lastFilter; }, get listCalls() { return listCalls; },
-    async listContainers(opts) {
-      listCalls += 1;
-      lastFilter = opts?.filters;
-      return containers.map((c) => ({ Id: c.Id, Names: ['/' + c.Id], State: c.state }));
-    },
-    getContainer(id) {
-      const c = containers.find((x) => x.Id === id);
-      return {
-        async inspect() {
-          if (!c) throw new Error('no such container');
-          return { State: { FinishedAt: c.finishedAt }, Created: c.created };
-        },
-        async remove(opts) {
-          removeForce.push(opts?.force);
-          // force:false must REFUSE a running container (daemon behavior).
-          if (c && c.state === 'running' && !opts?.force) {
-            throw new Error('cannot remove a running container');
-          }
-          removed.push(id);
-        },
-      };
-    },
-  };
-}
 
 function makeRetentionStore(candidates) {
   const removed = [];
@@ -127,7 +88,6 @@ function makePrisma(retentions /* number[] | null */) {
 async function main() {
   const compiled = compile();
   const { RetentionCleaner } = await import(pathToFileURL(compiled.cleaner).href);
-  const { DockerSandboxRetentionStore } = await import(pathToFileURL(compiled.store).href);
 
   // helper: build a cleaner with a fake docker, prisma, fixed free-disk, high floor
   function buildCleaner(store, prisma, { freeBytes = 1000 * GB, floorGb = 10 } = {}) {
@@ -135,23 +95,6 @@ async function main() {
     c.diskFloorBytes = floorGb * GB;
     c.getFreeDiskBytes = async () => freeBytes;
     return c;
-  }
-
-  // ---- 0) Docker retention store adapter: AIO filter + stopped-only safety ---
-  {
-    const docker = makeDocker([
-      { Id: 'running-old', state: 'running', finishedAt: iso(99 * DAY) },
-      { Id: 'stopped-new', state: 'exited', finishedAt: iso(1 * DAY) },
-      { Id: 'stopped-old', state: 'exited', finishedAt: iso(3 * DAY) },
-    ]);
-    const store = new DockerSandboxRetentionStore(docker, 'cap-aio-');
-    const listed = await store.listStoppedSandboxes();
-    assert(listed.map((c) => c.id).join(',') === 'stopped-old,stopped-new', 'docker store lists stopped sandboxes oldest-first');
-    assert(!listed.some((c) => c.id === 'running-old'), 'docker store excludes running containers defensively');
-    assert(Array.isArray(docker.lastFilter?.status) && docker.lastFilter.status.includes('exited'), 'the list query filters to stopped (exited) containers');
-    assert(Array.isArray(docker.lastFilter?.name) && docker.lastFilter.name.some((n) => n.includes('cap-aio-')), 'the list query filters by the cap-aio- prefix');
-    await store.removeStopped({ id: 'stopped-old', name: 'stopped-old', finishedAtMs: Date.now() });
-    assert(docker.removeForce.every((f) => f === false), 'docker store removal always uses force:false (never kills)');
   }
 
   // ---- 1) Policy 1 age-trip with DEFAULT 30-day window -----------------------

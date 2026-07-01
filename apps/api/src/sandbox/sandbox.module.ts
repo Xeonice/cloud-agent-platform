@@ -1,31 +1,17 @@
 import { Global, Logger, Module } from '@nestjs/common';
-import {
-  SandboxProviderRouter,
-  createBoxLiteRuntimePreflight,
-  defineHttpCloudSandboxProvider,
-  defineBoxLiteSandboxProvider,
-  defineLocalSandboxProvider,
-  readBoxLiteProviderConfig,
-  requiredToolsForBoxLiteCapabilities,
-  scrubSandboxCommandOutput,
-  type RoutableSandboxProvider,
-  type SandboxCommandExecutor,
-  type SandboxProviderDescriptor,
-} from '@cap/sandbox';
-import { AioSandboxProvider } from './aio-sandbox.provider';
+import { createConfiguredSandboxProvider } from '@cap/sandbox';
 import { SANDBOX_PROVIDER, type SandboxProvider } from './sandbox-provider.port';
-import { CODEX_AUTH_SOURCE } from './codex-auth-source.port';
+import { CODEX_AUTH_SOURCE, type CodexAuthSource } from './codex-auth-source.port';
 import { PrismaCodexAuthSource } from './prisma-codex-auth-source';
 import { PROVISION_LOOKUP } from './provision-lookup.port';
 import { PrismaProvisionLookup } from './prisma-provision-lookup';
 import type {
-  AgentRuntime,
+  AuthMaterial,
   RuntimeId,
-  SandboxSetupCommand,
 } from '../agent-runtime/agent-runtime.port';
 import { ForgeModule } from '../forge/forge.module';
 import type { TranscriptSource } from './transcript-source';
-import type { CloneSpec } from './provision-lookup.port';
+import type { CloneSpec, ProvisionLookup } from './provision-lookup.port';
 // add-claude-code-runtime — the cross-track shared wiring file (per the tasks
 // partition note): Track 2 binds the ClaudeAuthSource + the AgentRuntime registry
 // here; Track 3 (this edit) EXPORTS those tokens so the `/runtimes` readiness
@@ -39,6 +25,7 @@ import type { CloneSpec } from './provision-lookup.port';
 import {
   RUNTIME_REGISTRY,
   IntegrationRuntimeRegistry,
+  sessionIdForTask,
   type RuntimeRegistry,
 } from '../agent-runtime/agent-runtime.integration';
 import {
@@ -46,28 +33,15 @@ import {
   type ClaudeAuthSource,
 } from './claude-auth-source.port';
 import { PrismaClaudeAuthSource } from './prisma-claude-auth-source';
-import {
-  DEFAULT_CLOUD_HTTP_CAPABILITIES,
-  readNumberEnv,
-  readOptionalEnv,
-  readSandboxLocationEnv,
-  readSandboxProviderCapabilitiesEnv,
-} from './sandbox-provider-config';
 import { SandboxRunOwnerService } from './sandbox-run-owner.service';
 import {
   RUNTIME_MATERIAL_RESOLVER_REGISTRY,
   createDefaultRuntimeMaterialResolverRegistry,
   type RuntimeMaterialResolverRegistry,
 } from './runtime-material-resolver';
-import {
-  explicitProviderFamilyLabel,
-  providerFamilyAllowsAio,
-  providerFamilyAllowsBoxLite,
-  providerFamilyAllowsCloudHttp,
-  readConfiguredSandboxProviderFamily,
-} from './sandbox-provider-family';
-import { readBoxLiteRuntimeRequiredTools } from './boxlite-runtime-tools';
-import type { ProvisionLookup } from './provision-lookup.port';
+import { resolveSkillInstaller } from './skill-allowlist';
+
+const sandboxHostHarnessLogger = new Logger('SandboxHostHarness');
 
 /**
  * Sandbox-provider DI wiring (sandbox-provider-port 9.1, integration 9.1b).
@@ -79,11 +53,10 @@ import type { ProvisionLookup } from './provision-lookup.port';
  * the port by token, consumes the returned {@link SandboxConnection} handle, and
  * honours whatever `getSandboxMode()` it reports.
  *
- * The exported implementation is a {@link SandboxProviderRouter}: a single
- * provider-shaped facade over local/cloud candidates. Local AIO is always
- * registered; the HTTP cloud provider is registered when
- * `CAP_SANDBOX_CLOUD_HTTP_BASE_URL` is configured. Consumers still inject one
- * port and remain unaware of the chosen backend.
+ * The exported implementation is created by the `@cap/sandbox` host harness:
+ * this module provides API-local ports (lookup/runtime/material/auth/skills), but
+ * provider registration and concrete backend wiring stay inside the sandbox
+ * package.
  *
  * Global so any feature module that provisions execution (terminal-execution /
  * agent-events / guardrails call sites) can inject the port without re-importing
@@ -108,30 +81,41 @@ import type { ProvisionLookup } from './provision-lookup.port';
       provide: PROVISION_LOOKUP,
       useClass: PrismaProvisionLookup,
     },
-    AioSandboxProvider,
     SandboxRunOwnerService,
     {
       provide: SANDBOX_PROVIDER,
       useFactory: (
-        aio: AioSandboxProvider,
         ownerStore: SandboxRunOwnerService,
         runtimes: RuntimeRegistry,
         materialResolvers: RuntimeMaterialResolverRegistry,
         lookup: ProvisionLookup,
+        codexAuthSource: CodexAuthSource,
       ): SandboxProvider =>
-        buildConfiguredSandboxProvider(
-          aio,
+        createConfiguredSandboxProvider<
+          CloneSpec,
+          RuntimeId,
+          TranscriptSource,
+          AuthMaterial
+        >({
           ownerStore,
-          runtimes,
+          runtimeRegistry: runtimes,
           materialResolvers,
-          lookup,
-        ),
+          provisionLookup: lookup,
+          codexAuthSource,
+          skillInstallers: { resolveSkillInstaller },
+          sessionIdForTask,
+          logger: {
+            debug: (message: string) => sandboxHostHarnessLogger.debug(message),
+            log: (message: string) => sandboxHostHarnessLogger.log(message),
+            warn: (message: string) => sandboxHostHarnessLogger.warn(message),
+          },
+        }),
       inject: [
-        AioSandboxProvider,
         SandboxRunOwnerService,
         RUNTIME_REGISTRY,
         RUNTIME_MATERIAL_RESOLVER_REGISTRY,
         PROVISION_LOOKUP,
+        CODEX_AUTH_SOURCE,
       ],
     },
     // add-claude-code-runtime Track 2/3 + pixel-restore-console-to-od Track 3 —
@@ -193,163 +177,3 @@ export type { SandboxProvider };
 export { RUNTIME_REGISTRY };
 export { CLAUDE_AUTH_SOURCE };
 export type { ClaudeAuthSource };
-
-type ApiRoutableSandboxProvider = RoutableSandboxProvider<
-  CloneSpec,
-  RuntimeId,
-  TranscriptSource
->;
-
-function buildConfiguredSandboxProvider(
-  aio: AioSandboxProvider,
-  ownerStore: SandboxRunOwnerService,
-  runtimes: RuntimeRegistry,
-  materialResolvers: RuntimeMaterialResolverRegistry,
-  lookup: ProvisionLookup,
-): SandboxProvider {
-  const providerFamily = readConfiguredSandboxProviderFamily();
-  const providers: SandboxProviderDescriptor<ApiRoutableSandboxProvider>[] = [];
-
-  if (providerFamilyAllowsAio(providerFamily)) {
-    providers.push(
-      defineLocalSandboxProvider({
-        id: 'aio-local',
-        provider: aio,
-        priority: readNumberEnv('CAP_SANDBOX_LOCAL_PRIORITY', 10),
-      }),
-    );
-  }
-
-  const cloudBaseUrl = readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_BASE_URL');
-  if (cloudBaseUrl && providerFamilyAllowsCloudHttp(providerFamily)) {
-    providers.push(
-      defineHttpCloudSandboxProvider<CloneSpec, RuntimeId, TranscriptSource>({
-        id: readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_ID') ?? 'cloud-http',
-        baseUrl: cloudBaseUrl,
-        apiToken: readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_TOKEN'),
-        capabilities: readSandboxProviderCapabilitiesEnv(
-          'CAP_SANDBOX_CLOUD_HTTP_CAPABILITIES',
-          DEFAULT_CLOUD_HTTP_CAPABILITIES,
-        ),
-        priority: readNumberEnv('CAP_SANDBOX_CLOUD_HTTP_PRIORITY', 50),
-      }),
-    );
-  }
-
-  const boxlite = readBoxLiteProviderConfig();
-  if (providerFamily === 'boxlite' && boxlite.status !== 'valid') {
-    throw new Error(
-      boxlite.status === 'disabled'
-        ? `CAP_SANDBOX_PROVIDER=boxlite selected but BoxLite is disabled: ${boxlite.reason}`
-        : `CAP_SANDBOX_PROVIDER=boxlite selected but BoxLite config is invalid: ${boxlite.errors.join('; ')}`,
-    );
-  }
-  if (
-    boxlite.status === 'valid' &&
-    providerFamilyAllowsBoxLite(providerFamily)
-  ) {
-    providers.push(
-      defineBoxLiteSandboxProvider<CloneSpec, RuntimeId, TranscriptSource>({
-        config: boxlite.config,
-        preflight: createBoxLiteRuntimePreflight({
-          requiredTools: mergeToolLists(
-            requiredToolsForBoxLiteCapabilities(boxlite.config.capabilities),
-            readBoxLiteRuntimeRequiredTools(),
-          ),
-          workspacePath: boxlite.config.workspacePath,
-        }),
-        runtimeSetup: ({ taskId, executor, workspacePath }) =>
-          runBoxLiteRuntimeSetup({
-            taskId,
-            executor,
-            workspacePath,
-            runtimes,
-            materialResolvers,
-            lookup,
-          }),
-      }),
-    );
-  }
-
-  return new SandboxProviderRouter<CloneSpec, RuntimeId, TranscriptSource>(
-    providers,
-    {
-      preferLocation: readSandboxLocationEnv('CAP_SANDBOX_PREFER_LOCATION'),
-      explicitProviderFamily: explicitProviderFamilyLabel(providerFamily),
-      ownerStore,
-    },
-  );
-}
-
-function mergeToolLists(...lists: readonly (readonly string[])[]): readonly string[] {
-  return [...new Set(lists.flat())].sort();
-}
-
-const boxLiteRuntimeSetupLogger = new Logger('BoxLiteRuntimeSetup');
-
-interface BoxLiteRuntimeSetupArgs {
-  readonly taskId: string;
-  readonly executor: SandboxCommandExecutor;
-  readonly workspacePath: string;
-  readonly runtimes: RuntimeRegistry;
-  readonly materialResolvers: RuntimeMaterialResolverRegistry;
-  readonly lookup: ProvisionLookup;
-}
-
-async function runBoxLiteRuntimeSetup(args: BoxLiteRuntimeSetupArgs): Promise<void> {
-  const runtime = await resolveBoxLiteRuntime(args.runtimes, args.taskId);
-  const [material, prompt] = await Promise.all([
-    args.materialResolvers.resolve(runtime, { taskId: args.taskId }),
-    args.lookup.getTaskPrompt(args.taskId),
-  ]);
-  const plan = runtime.sandboxSetupCommands(
-    {
-      taskId: args.taskId,
-      workspaceDir: args.workspacePath,
-      prompt: prompt ?? null,
-    },
-    material,
-  );
-  if (!plan.ok) {
-    throw new Error(
-      `runtime "${runtime.id}" setup for task ${args.taskId} failed: ${plan.reason}`,
-    );
-  }
-
-  for (const { command, tolerateUnresolvedExit } of plan.commands) {
-    const { exitCode, output } = await args.executor.exec({ command });
-    if (boxLiteSetupCommandFailed(exitCode, tolerateUnresolvedExit)) {
-      const scrubbed = scrubSandboxCommandOutput(output).trim();
-      throw new Error(
-        `runtime "${runtime.id}" setup for task ${args.taskId} failed: exit_code ${exitCode}` +
-          (scrubbed ? ` — ${scrubbed}` : ''),
-      );
-    }
-  }
-  boxLiteRuntimeSetupLogger.debug(
-    `provisioned BoxLite runtime "${runtime.id}" setup for task ${args.taskId} (${plan.commands.length} command(s))`,
-  );
-}
-
-async function resolveBoxLiteRuntime(
-  runtimes: RuntimeRegistry,
-  taskId: string,
-): Promise<AgentRuntime> {
-  try {
-    return await runtimes.resolveForTask(taskId);
-  } catch (err) {
-    boxLiteRuntimeSetupLogger.warn(
-      `could not resolve AgentRuntime for BoxLite task ${taskId} (defaulting to codex): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
-    return runtimes.resolve(null);
-  }
-}
-
-function boxLiteSetupCommandFailed(
-  exitCode: number,
-  tolerateUnresolvedExit: SandboxSetupCommand['tolerateUnresolvedExit'],
-): boolean {
-  return Number.isNaN(exitCode) ? !tolerateUnresolvedExit : exitCode !== 0;
-}

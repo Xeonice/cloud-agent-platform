@@ -16,8 +16,10 @@ import {
   type SandboxWorkspaceDescriptorPort,
   type SelectedSandboxRun,
 } from '@cap/sandbox-core';
-import type { SandboxProviderCapability } from '@cap/sandbox-core';
-import { missingCapabilities } from '@cap/sandbox-scheduler';
+import {
+  missingCapabilities,
+  type SandboxProviderCapability,
+} from '@cap/sandbox-core';
 
 export interface SandboxProviderConformanceOptions<
   TCloneSpec,

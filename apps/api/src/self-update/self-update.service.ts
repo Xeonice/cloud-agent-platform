@@ -600,9 +600,9 @@ function versionsMatch(a: string, b: string): boolean {
 
 /**
  * Live {@link TopologyResolver}: reads the api's OWN container compose labels over
- * the existing docker.sock (same `new Docker()` idiom as the updater + the
- * AioSandboxProvider) to reconstruct the compose invocation that created the running
- * stack, and derives the cap services as the project's services on `ghcr cap-*`
+ * the existing docker.sock (same `new Docker()` idiom as the updater and
+ * sandbox provider registry wiring) to reconstruct the compose invocation that
+ * created the running stack, and derives the cap services as the project's services on `ghcr cap-*`
  * images. Returns `null` when the api was not run via compose (labels absent).
  */
 export class DockerTopologyResolver implements TopologyResolver {
@@ -660,7 +660,7 @@ export class DockerTopologyResolver implements TopologyResolver {
 
 /**
  * Live {@link UpdaterLauncher}: creates + starts a DETACHED one-shot helper
- * container (same `new Docker()` docker.sock idiom as {@link AioSandboxProvider})
+ * container (same `new Docker()` docker.sock idiom as the sandbox provider registry)
  * that runs the bounded compose script. The container mounts the host docker socket
  * and the deployment's working dir (+ any compose-file dir outside it), runs on the
  * host network (so it can reach the docker daemon + registries while the api goes

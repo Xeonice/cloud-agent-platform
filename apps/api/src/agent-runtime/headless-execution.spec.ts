@@ -18,7 +18,7 @@ import {
   headlessExitFile,
   wrapHeadlessDetachedSession,
 } from '../terminal/codex-launch';
-import { exitCodeFromExecBody } from '../terminal/aio-pty-client';
+import { exitCodeFromExecBody } from '@cap/sandbox';
 
 const CTX: LaunchContext = {
   taskId: 'task-abc',

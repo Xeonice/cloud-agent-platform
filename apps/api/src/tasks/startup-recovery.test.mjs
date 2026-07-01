@@ -109,13 +109,19 @@ function selectSandboxProvider(provider, required) {
   if (!provider) throw new Error('No sandbox provider is configured');
   const declaredCapabilities = provider.getProviderCapabilities?.();
   if (!declaredCapabilities) return { provider, capabilities: [], compatibility: 'legacy-assumed' };
-  const missing = required.filter((capability) => !declaredCapabilities.includes(capability));
+  const missing = required.filter((capability) => !hasCapability(declaredCapabilities, capability));
   if (missing.length > 0) {
     throw new Error(
       `Sandbox provider "${provider.getSandboxMode()}" missing required capabilities: ${missing.join(', ')}`,
     );
   }
   return { provider, capabilities: declaredCapabilities, compatibility: 'declared' };
+}
+
+function hasCapability(declaredCapabilities, required) {
+  return declaredCapabilities.includes(required) ||
+    (required === 'lifecycle.readopt' && declaredCapabilities.includes('lifecycle.readoption')) ||
+    (required === 'lifecycle.readoption' && declaredCapabilities.includes('lifecycle.readopt'));
 }
 
 /**
@@ -189,10 +195,11 @@ class FakeGuardrails {
 // --- inline mirror of tasks.service.ts startup recovery ----------------------
 
 class RecoveryHarness {
-  constructor(prisma, guardrails, sandbox) {
+  constructor(prisma, guardrails, sandbox, sandboxOwners) {
     this.prisma = prisma;
     this.guardrails = guardrails;
     this.sandbox = sandbox;
+    this.sandboxOwners = sandboxOwners;
     this.failed = []; // taskIds reclaimed -> failed (Phase 1)
   }
 
@@ -214,7 +221,7 @@ class RecoveryHarness {
   async readoptSurvivorsOnStartup() {
     const readopted = new Set();
     const sandbox = this.sandbox;
-    if (!sandbox?.listReadoptable || !this.guardrails?.readopt) {
+    if (!sandbox?.reattach || !this.guardrails?.readopt) {
       return readopted;
     }
     let selected;
@@ -223,14 +230,28 @@ class RecoveryHarness {
     } catch {
       return readopted;
     }
-    let candidates;
+    const candidates = new Set();
     try {
-      candidates = await selected.listReadoptable();
+      const ownerRows = await this.sandboxOwners?.listActiveSandboxRunOwners?.() ?? [];
+      for (const owner of ownerRows) candidates.add(owner.taskId);
     } catch {
-      return readopted; // best-effort: none re-adopted
+      // best-effort: fall back to provider listing
+    }
+    try {
+      const providerCandidates = await selected.listReadoptable?.() ?? [];
+      for (const taskId of providerCandidates) candidates.add(taskId);
+    } catch {
+      if (candidates.size === 0) return readopted;
     }
     for (const taskId of candidates) {
       try {
+        const row = await this.prisma.task.findUnique({
+          where: { id: taskId },
+          select: { status: true, deadlineMs: true, idleTimeoutMs: true },
+        });
+        if (!row || (row.status !== 'running' && row.status !== 'awaiting_input')) {
+          continue;
+        }
         const connection = await selected.reattach?.(taskId);
         if (!connection) continue; // raced to gone -> let Phase 1 fail it
         let selectedRun = null;
@@ -239,10 +260,6 @@ class RecoveryHarness {
         } catch {
           selectedRun = null;
         }
-        const row = await this.prisma.task.findUnique({
-          where: { id: taskId },
-          select: { deadlineMs: true, idleTimeoutMs: true },
-        });
         this.guardrails.readopt(
           taskId,
           connection,
@@ -450,6 +467,45 @@ test('a live-session task is re-adopted: kept running (not failed), slot held, t
     'deadline + idle watchers re-armed from the persisted task row',
   );
   assert.ok(guardrails.events.includes('readopt:alive'), 'readopt was driven for the survivor');
+});
+
+test('persisted owner rows drive restart re-adoption when provider listing is empty', async () => {
+  const prisma = new FakePrisma([
+    runningRow('boxlite-alive', 1, { deadlineMs: 45000 }),
+    queuedRow('queued-owner', 2),
+  ]);
+  const guardrails = new FakeGuardrails({ envCeiling: 5 });
+  const sandbox = new FakeSandbox({
+    readoptable: [],
+    capabilities: ['lifecycle.readoption'],
+  });
+  const sandboxOwners = {
+    async listActiveSandboxRunOwners() {
+      return [
+        { taskId: 'boxlite-alive', providerId: 'boxlite', status: 'running' },
+        { taskId: 'queued-owner', providerId: 'boxlite', status: 'running' },
+      ];
+    },
+  };
+  const harness = new RecoveryHarness(prisma, guardrails, sandbox, sandboxOwners);
+
+  await harness.onApplicationBootstrap();
+
+  assert.deepEqual(
+    sandbox.reattached,
+    ['boxlite-alive'],
+    'only in-flight persisted owners are reattach candidates when provider listing is empty',
+  );
+  assert.deepEqual(
+    guardrails.running,
+    ['boxlite-alive', 'queued-owner'],
+    'only the live running owner is readopted before queued re-offer consumes remaining capacity',
+  );
+  assert.deepEqual(harness.failed, [], 'the live BoxLite survivor is not reclaimed');
+  assert.deepEqual(guardrails.armed.get('boxlite-alive'), {
+    deadlineMs: 45000,
+    idleTimeoutMs: undefined,
+  });
 });
 
 test('a declared provider missing lifecycle.readopt is not used for startup re-adoption', async () => {

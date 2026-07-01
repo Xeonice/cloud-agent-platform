@@ -1,29 +1,47 @@
 # @cap/sandbox Testing Strategy
 
-The sandbox area is split into small packages, following Sandbank's separation
-between core provider SDK, workspace helpers, scheduler, adapters, and
-conformance suites. Provider adapters must prove conformance against the shared
-contracts.
+The sandbox area is split around real extension points: core provider contracts,
+the CAP provider center, and concrete provider adapters. Helper-only scheduler,
+lifecycle, workspace-git, and AIO-local packages are no longer active workspace
+packages; their runtime logic lives under `@cap/sandbox` or
+`@cap/sandbox-provider-aio`. Provider adapters must prove conformance against
+the shared contracts.
 
 ## Coverage Gate
 
 Every implementation package has a `coverage` script using `c8 --100`.
 
 - `@cap/sandbox-core`
-- `@cap/sandbox-scheduler`
-- `@cap/sandbox-lifecycle`
-- `@cap/sandbox-workspace-git`
-- `@cap/sandbox-conformance`
-- `@cap/sandbox-aio-local`
 - `@cap/sandbox-cloud-http`
 - `@cap/sandbox-provider-aio`
 - `@cap/sandbox-provider-boxlite`
-- `@cap/sandbox` compatibility aggregate
+- `@cap/sandbox` provider center
 
 Run all sandbox coverage gates with:
 
 ```sh
 pnpm coverage:sandbox
+```
+
+Run the package unit suites without coverage with:
+
+```sh
+pnpm test:sandbox
+```
+
+Real provider e2e suites are owned by provider packages and do not start the CAP
+API backend or production web app:
+
+```sh
+pnpm --filter @cap/sandbox-provider-aio test:e2e
+pnpm --filter @cap/sandbox-provider-boxlite test:e2e
+```
+
+The frontend provider terminal fixture story runs without the CAP API backend or
+live provider resources:
+
+```sh
+pnpm --filter @cap/web test:provider-terminal-story
 ```
 
 ## Unit Tests
@@ -53,9 +71,10 @@ pnpm coverage:sandbox
 - Conformance helpers: provider adapters can run a shared framework-neutral
   scenario list that checks capabilities, provision handles, existence, delivery,
   retained transcripts, readoption surfaces, and teardown shape.
-- Adapter edges: AIO local config tests cover pinned image validation, readiness
+- Adapter edges: AIO provider tests cover pinned image validation, readiness
   timeout parsing, deterministic container naming, no host port bindings,
-  seccomp guard, task-id parsing, and descriptor capability selection. Cloud HTTP
+  seccomp guard, task-id parsing, Docker lifecycle, command execution, terminal
+  transport, retention cleanup store, and descriptor capability selection. Cloud HTTP
   tests cover request bodies, auth headers, default/global fetch behavior,
   invalid responses, 404/204 idempotency, fail-open delivery/transcript/reattach
   reads, and fail-closed provision/teardown errors. AIO provider-controller tests
@@ -94,11 +113,10 @@ Every local or cloud provider adapter should run the same conformance suite:
 - Local provider path: run against the AIO/Docker adapter with no host port
   publishing, network-only control-plane access, runtime preflight, clone,
   terminal connect, delivery, stop-only retention, transcript replay, and
-  startup re-adoption. `@cap/sandbox-aio-local` covers deterministic local
+  startup re-adoption. `@cap/sandbox-provider-aio` covers deterministic local
   adapter config, pinned image checks, container create options, task-id parsing,
-  and descriptor metadata with fast unit tests. `@cap/sandbox-provider-aio`
-  covers the framework-free Docker lifecycle/readoption/transcript mechanisms
-  that the API composes with runtime/auth/task policy.
+  descriptor metadata, and the framework-free Docker lifecycle/readoption/
+  transcript mechanisms that the API consumes through the sandbox host harness.
 - Cloud provider path: run the same conformance suite against a managed provider
   adapter using test credentials, verifying cloud sandbox creation/destruction,
   addressable terminal handles, workspace materialize/sync, and provider-side
