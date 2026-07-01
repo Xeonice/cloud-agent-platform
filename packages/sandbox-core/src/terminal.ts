@@ -15,6 +15,21 @@ export interface PausablePty {
   resume(): void;
 }
 
+export interface AgentTerminalOutputMeta {
+  /**
+   * Whether this chunk should be written to durable history (`session.log` /
+   * `session.cast`) and advance snapshot byte offsets. Defaults to true.
+   */
+  readonly recordable?: boolean;
+  /** Human-readable producer provenance for diagnostics and tests. */
+  readonly source?: 'agent' | 'attach-bootstrap';
+}
+
+export type AgentTerminalDataListener = (
+  chunk: string,
+  meta?: AgentTerminalOutputMeta,
+) => void;
+
 export interface TerminalTransport extends PausablePty {
   readonly readyState: TerminalTransportReadyState;
   onFrame(listener: (frame: TerminalTransportFrame) => void): { dispose(): void };
@@ -36,7 +51,7 @@ export interface TerminalExitStatus {
 }
 
 export interface AgentTerminalPty extends PausablePty {
-  onData(listener: (chunk: string) => void): { dispose(): void };
+  onData(listener: AgentTerminalDataListener): { dispose(): void };
   write(data: string): void;
   resize(cols: number, rows: number): void;
   close?(): void;

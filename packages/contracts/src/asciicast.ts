@@ -92,6 +92,12 @@ export interface ParsedCast {
  * Parse a whole cast text into `{ header, events }`. Blank lines are skipped and
  * malformed event lines are dropped (never throws). The first non-blank line is
  * the header; the rest are events in recorded order.
+ *
+ * Legacy API re-adoption bugs could append a second asciicast header and restart
+ * event times at 0 inside the same file. That is invalid asciicast v2 and would
+ * render attach bootstrap / TUI repaint bytes as ordinary chronological history,
+ * producing duplicated lines. Stop at a mid-file header or time regression; the
+ * raw file is left untouched, but UI consumers get the valid first segment.
  */
 export function parseCast(text: string): ParsedCast {
   const lines = text.split('\n').filter((line) => line.trim().length > 0);
@@ -99,9 +105,14 @@ export function parseCast(text: string): ParsedCast {
   if (first === undefined) return { header: null, events: [] };
   const header = parseAsciicastHeader(first);
   const events: AsciicastEvent[] = [];
+  let lastTime = Number.NEGATIVE_INFINITY;
   for (const line of lines.slice(1)) {
+    if (parseAsciicastHeader(line)) break;
     const event = parseAsciicastEvent(line);
-    if (event) events.push(event);
+    if (!event) continue;
+    if (event[0] < lastTime) break;
+    events.push(event);
+    lastTime = event[0];
   }
   return { header, events };
 }
