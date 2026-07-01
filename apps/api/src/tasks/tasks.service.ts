@@ -39,6 +39,7 @@ import {
 import {
   selectReadoptionSandboxProvider,
 } from '@cap/sandbox';
+import { SandboxRunOwnerService } from '../sandbox/sandbox-run-owner.service';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
@@ -242,6 +243,8 @@ export class TasksService implements OnApplicationBootstrap {
     @Optional()
     @Inject(CLAUDE_RUNTIME_READINESS_TOKEN)
     private readonly claudeReadiness?: IRuntimeReadiness,
+    @Optional()
+    private readonly sandboxOwners?: SandboxRunOwnerService,
   ) {}
 
   /**
@@ -309,7 +312,7 @@ export class TasksService implements OnApplicationBootstrap {
   async readoptSurvivorsOnStartup(): Promise<Set<string>> {
     const readopted = new Set<string>();
     const sandbox = this.sandbox;
-    if (!sandbox?.listReadoptable || !this.guardrails?.readopt) {
+    if (!sandbox?.reattach || !this.guardrails?.readopt) {
       return readopted;
     }
     let selected: ISandboxReadoption;
@@ -323,19 +326,48 @@ export class TasksService implements OnApplicationBootstrap {
       );
       return readopted;
     }
-    let candidates: string[];
+    const candidates = new Set<string>();
     try {
-      candidates = await selected.listReadoptable?.() ?? [];
+      const ownerRows = await this.sandboxOwners?.listActiveSandboxRunOwners?.() ?? [];
+      for (const owner of ownerRows) {
+        candidates.add(owner.taskId);
+      }
     } catch (err) {
       this.logger.warn(
-        `startup re-adopt: could not list re-adoptable sandboxes (none re-adopted): ${
+        `startup re-adopt: could not list persisted sandbox owners (falling back to provider list): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      return readopted;
+    }
+    try {
+      const providerCandidates = await selected.listReadoptable?.() ?? [];
+      for (const taskId of providerCandidates) {
+        candidates.add(taskId);
+      }
+    } catch (err) {
+      if (candidates.size === 0) {
+        this.logger.warn(
+          `startup re-adopt: could not list re-adoptable sandboxes (none re-adopted): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return readopted;
+      }
+      this.logger.warn(
+        `startup re-adopt: could not list provider-discovered sandboxes (using persisted owners): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
     for (const taskId of candidates) {
       try {
+        const row = await this.prisma.task.findUnique({
+          where: { id: taskId },
+          select: { status: true, deadlineMs: true, idleTimeoutMs: true },
+        });
+        if (!row || (row.status !== 'running' && row.status !== 'awaiting_input')) {
+          continue;
+        }
         // Pull the still-valid connection handle (provider re-registers its maps).
         const connection = await selected.reattach?.(taskId);
         if (!connection) {
@@ -354,10 +386,6 @@ export class TasksService implements OnApplicationBootstrap {
         }
         // Restore the persisted per-task guardrail params (null -> undefined, so
         // a re-adopted task arms identically to one admitted before the restart).
-        const row = await this.prisma.task.findUnique({
-          where: { id: taskId },
-          select: { deadlineMs: true, idleTimeoutMs: true },
-        });
         this.guardrails.readopt(
           taskId,
           connection,

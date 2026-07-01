@@ -142,6 +142,7 @@ export interface RecordSandboxRunOwnerArgs {
 
 export interface SandboxRunOwnerStore {
   getSandboxRunOwner(taskId: string): Promise<SandboxRunOwnerRecord | null>;
+  listActiveSandboxRunOwners?(): Promise<readonly SandboxRunOwnerRecord[]>;
   recordSandboxRunOwner(args: RecordSandboxRunOwnerArgs): Promise<void>;
   markSandboxRunOwnerStatus?(
     taskId: string,

@@ -12,6 +12,12 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     return this.records.get(taskId) ?? null;
   }
 
+  async listActiveSandboxRunOwners(): Promise<readonly SandboxRunOwnerRecord[]> {
+    return [...this.records.values()].filter((record) =>
+      record.status === 'provisioning' || record.status === 'running'
+    );
+  }
+
   async recordSandboxRunOwner(args: RecordSandboxRunOwnerArgs): Promise<void> {
     const existing = this.records.get(args.taskId);
     this.records.set(args.taskId, {

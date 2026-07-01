@@ -113,6 +113,14 @@ await test('capability helpers report missing required entries', () => {
     mod.missingCapabilities(undefined, ['terminal.websocket']),
     ['terminal.websocket'],
   );
+  assert.deepEqual(
+    mod.missingCapabilities(['lifecycle.readoption'], ['lifecycle.readopt']),
+    [],
+  );
+  assert.equal(
+    mod.hasAllCapabilities(['lifecycle.readopt'], ['lifecycle.readoption']),
+    true,
+  );
   assert.equal(
     mod.hasAllCapabilities(['terminal.websocket'], ['terminal.websocket']),
     true,

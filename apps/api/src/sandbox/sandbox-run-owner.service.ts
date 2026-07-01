@@ -38,6 +38,16 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
     return run ? SandboxRunOwnerService.toOwnerRecord(run) : null;
   }
 
+  async listActiveSandboxRunOwners(): Promise<readonly SandboxRunOwnerRecord[]> {
+    const runs = await this.prisma.sandboxRun.findMany({
+      where: {
+        status: { in: [...ACTIVE_SANDBOX_RUN_STATUSES] },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    return runs.map((run) => SandboxRunOwnerService.toOwnerRecord(run));
+  }
+
   async recordSandboxRunOwner(args: RecordSandboxRunOwnerArgs): Promise<void> {
     const providerSandboxId = args.providerSandboxId ?? args.connection?.taskId ?? null;
     const existing = await this.prisma.sandboxRun.findFirst({

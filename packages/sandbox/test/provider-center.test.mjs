@@ -374,6 +374,12 @@ await test('selected-run and operation selectors expose helper ports', () => {
     'declared',
   );
   assert.equal(
+    mod.selectReadoptionSandboxProvider(
+      provider('readoption-docs', ['lifecycle.readoption']),
+    ).compatibility,
+    'declared',
+  );
+  assert.equal(
     mod.selectRetainedTranscriptSandboxProvider(
       provider('transcript', ['transcript.retained-read']),
     ).compatibility,
@@ -774,6 +780,9 @@ await test('provider router persists and prefers stored ownership after restart'
   });
   const cloud = routableProvider('cloud', mod.SANDBOX_PROVIDER_CAPABILITIES, {
     reattachTask: 'task-owned',
+    selectedRun: (taskId) => ({
+      providerSandboxId: `cloud-sandbox-${taskId}`,
+    }),
   });
   const firstRouter = new mod.SandboxProviderRouter(
     [
@@ -785,6 +794,10 @@ await test('provider router persists and prefers stored ownership after restart'
 
   await firstRouter.provision({ taskId: 'task-owned', cloneSpec: null });
   assert.equal((await ownerStore.getSandboxRunOwner('task-owned'))?.providerId, 'cloud');
+  assert.equal(
+    (await ownerStore.getSandboxRunOwner('task-owned'))?.providerSandboxId,
+    'cloud-sandbox-task-owned',
+  );
   await ownerStore.recordSandboxRunOwner({
     taskId: 'task-owned',
     providerId: 'cloud',

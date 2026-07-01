@@ -112,7 +112,7 @@ export function missingCapabilities(
   required: readonly SandboxProviderCapability[],
 ): SandboxProviderCapability[] {
   const set = new Set(declared ?? []);
-  return required.filter((capability) => !set.has(capability));
+  return required.filter((capability) => !hasDeclaredCapability(set, capability));
 }
 
 export function hasAllCapabilities(
@@ -120,4 +120,18 @@ export function hasAllCapabilities(
   required: readonly SandboxProviderCapability[],
 ): boolean {
   return missingCapabilities(declared, required).length === 0;
+}
+
+function hasDeclaredCapability(
+  declared: ReadonlySet<SandboxProviderCapability>,
+  required: SandboxProviderCapability,
+): boolean {
+  if (declared.has(required)) return true;
+  if (
+    (required === 'lifecycle.readopt' && declared.has('lifecycle.readoption')) ||
+    (required === 'lifecycle.readoption' && declared.has('lifecycle.readopt'))
+  ) {
+    return true;
+  }
+  return false;
 }

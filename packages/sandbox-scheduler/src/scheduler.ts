@@ -283,7 +283,8 @@ export function missingCapabilities(
   declared: readonly SandboxProviderCapability[],
   required: readonly SandboxProviderCapability[],
 ): readonly SandboxProviderCapability[] {
-  return required.filter((capability) => !declared.includes(capability));
+  const set = new Set(declared);
+  return required.filter((capability) => !hasDeclaredCapability(set, capability));
 }
 
 function assertCapabilities(
@@ -299,4 +300,18 @@ function assertCapabilities(
       )}`,
     );
   }
+}
+
+function hasDeclaredCapability(
+  declared: ReadonlySet<SandboxProviderCapability>,
+  required: SandboxProviderCapability,
+): boolean {
+  if (declared.has(required)) return true;
+  if (
+    (required === 'lifecycle.readopt' && declared.has('lifecycle.readoption')) ||
+    (required === 'lifecycle.readoption' && declared.has('lifecycle.readopt'))
+  ) {
+    return true;
+  }
+  return false;
 }
