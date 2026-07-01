@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.27.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.26.0...v0.27.0) (2026-07-01)
+
+
+### Features
+
+* rework sandbox provider center ([b48f88a](https://github.com/Xeonice/cloud-agent-platform/commit/b48f88a3145fe20da71f5a3eac702a5c8d129dc8))
+
+
+### Bug Fixes
+
+* hide tmux status line in terminal attach ([738e594](https://github.com/Xeonice/cloud-agent-platform/commit/738e594ccf54c6a99c063967528895a566f029c4))
+* **sandbox:** readopt persisted provider owners on startup ([deed398](https://github.com/Xeonice/cloud-agent-platform/commit/deed398496147f37dbfb7b76c4a2b8f704b262e1))
+
 ## [0.26.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.25.8...v0.26.0) (2026-06-30)
 
 
