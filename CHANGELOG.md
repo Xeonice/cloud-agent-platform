@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.0...v0.27.1) (2026-07-01)
+
+
+### Bug Fixes
+
+* surface selected sandbox provider ([86a70bf](https://github.com/Xeonice/cloud-agent-platform/commit/86a70bf19a54207400cde10548ece5b63029531e))
+
 ## [0.27.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.26.0...v0.27.0) (2026-07-01)
 
 
