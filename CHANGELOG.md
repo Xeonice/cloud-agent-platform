@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.27.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.1...v0.27.2) (2026-07-01)
+
+
+### Bug Fixes
+
+* preserve terminal history across readoption ([8eb86c3](https://github.com/Xeonice/cloud-agent-platform/commit/8eb86c329dcf4916f518a213392b89604fbf5ef0))
+* preserve terminal history across readoption ([713da31](https://github.com/Xeonice/cloud-agent-platform/commit/713da31668794d561ad06f895f738aaccaba3d73))
+
 ## [0.27.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.0...v0.27.1) (2026-07-01)
 
 
