@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.3...v0.27.4) (2026-07-02)
+
+
+### Bug Fixes
+
+* restore terminal refresh scrollback ([97e1c82](https://github.com/Xeonice/cloud-agent-platform/commit/97e1c828af27be28bcda911769d0008e6f7e2794))
+
 ## [0.27.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.2...v0.27.3) (2026-07-02)
 
 
