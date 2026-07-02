@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.2...v0.27.3) (2026-07-02)
+
+
+### Bug Fixes
+
+* prevent stale terminal replay after refresh ([ba13f25](https://github.com/Xeonice/cloud-agent-platform/commit/ba13f25d63d48f5583612daf158cae6fcabed411))
+
 ## [0.27.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.1...v0.27.2) (2026-07-01)
 
 
