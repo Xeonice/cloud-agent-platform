@@ -1358,6 +1358,7 @@ export class TerminalGateway
     // reading the log; otherwise a fast reconnect can see live bytes on the old
     // socket and an empty tail on the new socket.
     await this.flushSessionLog(taskId);
+    await this.flushSessionCast(taskId);
 
     const frames: WsControlFrame[] = await session.snapshots.buildReconnectFrames(
       {
@@ -1373,10 +1374,17 @@ export class TerminalGateway
     // The client now holds everything up to the snapshot manager's offset;
     // align its sent counter and rebase backpressure so the un-acknowledged
     // total restarts from zero and subsequent accounting stays monotonic.
-    const last = frames[frames.length - 1];
-    if (last) {
-      state.sentBytes = last.seq;
-      state.backpressure.rebase(last.seq);
+    let lastSeq = 0;
+    let hasSeq = false;
+    for (const f of frames) {
+      if ('seq' in f) {
+        lastSeq = f.seq;
+        hasSeq = true;
+      }
+    }
+    if (hasSeq) {
+      state.sentBytes = lastSeq;
+      state.backpressure.rebase(lastSeq);
     }
     // Begin live streaming for this client from here on.
     this.attachPty(session, client, state);
@@ -1550,6 +1558,20 @@ export class TerminalGateway
     } catch (err) {
       this.logger.warn(
         `task ${taskId}: session.log flush failed before reconnect: ${
+          (err as Error).message
+        }`,
+      );
+    }
+  }
+
+  private async flushSessionCast(taskId: string): Promise<void> {
+    const entry = this.sessionCasts.get(taskId);
+    if (!entry) return;
+    try {
+      await entry.tail;
+    } catch (err) {
+      this.logger.warn(
+        `task ${taskId}: session.cast flush failed before reconnect: ${
           (err as Error).message
         }`,
       );

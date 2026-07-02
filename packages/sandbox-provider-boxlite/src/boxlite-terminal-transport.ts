@@ -147,6 +147,8 @@ export class BoxLiteTerminalTransport implements TerminalTransport {
             '-lc',
             [
               'export TERM=xterm-256color',
+              'export LANG="${LANG:-C.UTF-8}"',
+              'export LC_ALL="${LC_ALL:-C.UTF-8}"',
               `cd ${shellQuote(this.config.workspacePath)}`,
               'exec bash -l',
             ].join(' && '),
