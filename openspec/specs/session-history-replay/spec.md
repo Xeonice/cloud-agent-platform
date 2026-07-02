@@ -521,9 +521,9 @@ requirement.
 - **WHEN** the fixed codex parser runs on a rollout that also exercises diffstat, session totals, and phase-keyed final-answer categorization
 - **THEN** the `apply_patch` diffstat, `totalTokens`/`durationMs` totals, and the final-answer-by-phase categorization are unchanged from the wire-transcript-real-data behavior
 
-### Requirement: A running headless task serves a live, polled transcript
+### Requirement: A running task serves a live, polled transcript
 
-For a RUNNING headless task (`executionMode = headless-exec`), the session-history endpoint SHALL serve
+For a RUNNING task (`executionMode = headless-exec` or `interactive-pty`), the session-history endpoint SHALL serve
 the live transcript by reading the task's SANDBOX rollout (over `/v1/shell/exec`, as the finished
 capture path does) and parsing it with the SAME `rollout-parser` used for a finished task — so the live
 and finished views use one parser and one `session-replay` renderer. Each poll is a STATELESS full
@@ -531,14 +531,15 @@ re-parse (the whole rollout is read and parsed once; tool-call↔output pairing 
 single pass — no byte offset, no cross-poll state), so a `function_call` whose `function_call_output`
 is not yet written yields a tool turn with no output on one poll, and the next poll's full re-parse —
 now seeing the written output — yields ONE completed tool turn (never dropped, never duplicated). The
-console SHALL POLL this
-endpoint while the headless task runs (no WebSocket), render the accumulating turns via `session-replay`
-with a running indicator, and switch to the durable finished transcript on terminal status. Interactive
-(`interactive-pty`) tasks are unaffected.
+console SHALL POLL this endpoint while a headless task runs and render the accumulating turns via
+`session-replay` as its primary live view. For an interactive task, the live xterm remains the primary
+terminal control surface, and the session page SHALL also offer a live 对话记录 view that polls the same
+session-history endpoint for ordered semantic history across refreshes. On terminal status, polling
+switches to the durable finished transcript.
 
-#### Scenario: Running headless task returns a live transcript
+#### Scenario: Running task returns a live transcript
 
-- **WHEN** the console requests session-history for a RUNNING headless task
+- **WHEN** the console requests session-history for a RUNNING headless or interactive task
 - **THEN** the backend reads the live sandbox rollout and returns the parsed transcript (populated, not the not-running empty state), using the same `rollout-parser` / `SessionTurn` contract as a finished task
 
 #### Scenario: A tool call whose output lands on a later poll yields one paired turn
@@ -551,7 +552,8 @@ with a running indicator, and switch to the durable finished transcript on termi
 - **WHEN** a headless task is running
 - **THEN** the console polls session-history on a modest cadence and renders the accumulating turns via `session-replay`; **WHEN** the task reaches a terminal status, polling stops and the durable finished transcript is loaded
 
-#### Scenario: Interactive tasks keep the existing finished-only path
+#### Scenario: Interactive task exposes ordered live conversation history
 
 - **WHEN** an `interactive-pty` task is viewed
-- **THEN** its live view remains the xterm/WS terminal and its session-history remains the finished-task path — unchanged by this requirement
+- **THEN** its live xterm/WS terminal remains available for takeover and raw terminal viewing
+- **AND** the page also offers a live 对话记录 view backed by the polled session-history endpoint, so refreshed ordered history comes from the rollout parser rather than raw xterm replay

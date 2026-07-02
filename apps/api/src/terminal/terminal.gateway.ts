@@ -127,9 +127,13 @@ import { GuardrailsService } from '../guardrails/guardrails.service';
  * empty, so every periodic snapshot was blank and `buildReconnectFrames`
  * replayed nothing). It owns a `@xterm/headless` `Terminal` fed the SAME raw PTY
  * bytes that are appended to `session.log`, with a `SerializeAddon` loaded so
- * `serialize()` returns the ACTUAL visible frame. The recorded `cols`/`rows`
- * track the terminal geometry so a reconnecting client of a different size can
- * reconcile dimensions before applying the snapshot.
+ * `serialize()` returns the ACTUAL visible frame. We intentionally exclude the
+ * headless xterm scrollback from snapshots: Codex inline/no-alt-screen output is
+ * still a TUI repaint stream, so xterm scrollback is physical redraw history, not
+ * a reliable linear transcript. The scrollable semantic history is served from
+ * rollout JSONL via `/session-history`; this snapshot restores the live control
+ * frame. The recorded `cols`/`rows` track the terminal geometry so a reconnecting
+ * client of a different size can reconcile dimensions before applying it.
  *
  * `@xterm/headless`'s `write` is asynchronous internally (it parses on a
  * microtask), but `serialize()` reflects all bytes written before it is called
@@ -179,7 +183,7 @@ class XtermHeadlessTerminal implements HeadlessTerminal {
 
   /** SerializeAddon: the actual current visible frame (non-empty once fed). */
   serialize(): string {
-    return this.serializer.serialize();
+    return this.serializer.serialize({ scrollback: 0 });
   }
 
   resize(cols: number, rows: number): void {
@@ -1260,9 +1264,13 @@ export class TerminalGateway
     chunk: string,
     client: WebSocket,
     state: ClientState,
+    meta?: AgentTerminalOutputMeta,
   ): void {
+    const recordable = meta?.recordable !== false;
     const bytes = Buffer.byteLength(chunk);
-    state.sentBytes += bytes;
+    if (recordable) {
+      state.sentBytes += bytes;
+    }
     const rawFrame: RawFrame = {
       channel: FRAME_CHANNEL.RAW,
       data: Buffer.from(chunk).toString('base64'),
@@ -1276,8 +1284,13 @@ export class TerminalGateway
       this.guardrails.recordActivity(state.taskId);
     }
 
-    const signal = state.backpressure.onSent(state.sentBytes);
-    this.emitFlowSignal(signal, client);
+    // Non-recordable attach/bootstrap bytes are intentionally live-only. They
+    // must not advance the reconnect cursor, otherwise a later reconnect asks for
+    // a byte offset that does not exist in session.log and can skip/reorder replay.
+    if (recordable) {
+      const signal = state.backpressure.onSent(state.sentBytes);
+      this.emitFlowSignal(signal, client);
+    }
   }
 
   /** Translate a {@link FlowSignal} into the matching pause/resume frame. */
@@ -1388,8 +1401,8 @@ export class TerminalGateway
     state.taskId = session.taskId;
     // VR.9 — inject the PTY into the backpressure controller now that we know it.
     state.backpressure.setPty(session.pty);
-    state.ptySubscription = session.pty.onData((chunk) => {
-      this.streamRawChunk(chunk, client, state);
+    state.ptySubscription = session.pty.onData((chunk, meta) => {
+      this.streamRawChunk(chunk, client, state, meta);
     });
   }
 
@@ -1472,6 +1485,13 @@ export class TerminalGateway
         // VR.10 — Feed the SnapshotManager so the byte-offset tracks session.log.
         session.snapshots.feed(chunk, byteLen);
       }
+    } else if (session) {
+      // Attach/bootstrap bytes are live-only and must not move the durable log
+      // cursor, but they still describe the current terminal frame after an API
+      // restart/readoption. Feed the transient headless terminal with a zero
+      // byte delta so snapshots can restore the visible screen without replaying
+      // duplicate bootstrap bytes from session.log.
+      session.snapshots.feed(chunk, 0);
     }
 
     // VR.3 — feed the IdleTracker.
@@ -1489,7 +1509,7 @@ export class TerminalGateway
         s.ptySubscription === null &&
         (s.taskId === null || s.taskId === taskId)
       ) {
-        this.streamRawChunk(chunk, socket, s);
+        this.streamRawChunk(chunk, socket, s, meta);
       }
     }
   }

@@ -26,6 +26,13 @@ interface StoryProbe {
   readonly error: string | null;
 }
 
+type ProviderFixtureWindow = Window &
+  typeof globalThis & {
+    __capProviderFixtureReconnectSeqs?: number[];
+    __capProviderFixtureDriftSeqs?: number[];
+    __capProviderFixtureCloseOpenSockets?: (code?: number) => void;
+  };
+
 const LIVE_ENABLED = process.env.CAP_PROVIDER_TERMINAL_STORY_E2E === "1";
 const LIVE_PROVIDER = process.env.CAP_PROVIDER_TERMINAL_STORY_PROVIDER ?? "auto";
 const LIVE_API =
@@ -36,6 +43,42 @@ async function readProbe(page: Page): Promise<StoryProbe> {
   const text = await page.locator('[data-testid="provider-story-probe"]').textContent();
   if (!text) throw new Error("missing provider story probe");
   return JSON.parse(text) as StoryProbe;
+}
+
+async function expectTerminalRowsVisible(page: Page): Promise<void> {
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const slot = document
+            .querySelector('[data-testid="provider-story-terminal-slot"]')
+            ?.getBoundingClientRect();
+          const rows = document.querySelector(".xterm-rows")?.getBoundingClientRect();
+          if (!slot || !rows) return "missing";
+          const overlap =
+            Math.min(slot.bottom, rows.bottom) - Math.max(slot.top, rows.top);
+          const visible =
+            rows.width > 0 &&
+            rows.height > 0 &&
+            overlap >= Math.min(24, rows.height);
+          if (visible) return "visible";
+          return JSON.stringify({
+            slot: {
+              top: Math.round(slot.top),
+              bottom: Math.round(slot.bottom),
+              height: Math.round(slot.height),
+            },
+            rows: {
+              top: Math.round(rows.top),
+              bottom: Math.round(rows.bottom),
+              height: Math.round(rows.height),
+            },
+            overlap: Math.round(overlap),
+          });
+        }),
+      { timeout: 15_000 },
+    )
+    .toBe("visible");
 }
 
 async function mockReadiness(page: Page, body: unknown): Promise<void> {
@@ -211,6 +254,7 @@ for (const [fixture, expected] of Object.entries(PROVIDER_FIXTURES)) {
     await expect
       .poll(async () => (await readProbe(page)).terminalText, { timeout: 30_000 })
       .toContain(expected.live);
+    await expectTerminalRowsVisible(page);
 
     await page.locator('[data-testid="provider-story-scroll-top"]').click();
     await expect
@@ -241,12 +285,170 @@ for (const [fixture, expected] of Object.entries(PROVIDER_FIXTURES)) {
     await expect
       .poll(async () => (await readProbe(page)).terminalText, { timeout: 30_000 })
       .toContain("PROVIDER_FIXTURE_TAIL_FINAL");
+    await expectTerminalRowsVisible(page);
 
     for (const leak of expected.leaks) {
       await expect(page.locator("body")).not.toContainText(leak);
     }
   });
 }
+
+test("fixture reconnect rebases browser cursor after live-only seq drift", async ({
+  page,
+}) => {
+  await page.goto("/?fixture=boxlite&autostart=1&seqDrift=1", {
+    waitUntil: "load",
+  });
+
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          () =>
+            (window as ProviderFixtureWindow).__capProviderFixtureDriftSeqs
+              ?.length ?? 0,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(1);
+
+  await page.evaluate(() =>
+    (window as ProviderFixtureWindow).__capProviderFixtureCloseOpenSockets?.(1011),
+  );
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          () =>
+            (window as ProviderFixtureWindow).__capProviderFixtureReconnectSeqs
+              ?.length ?? 0,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(2);
+
+  const afterLiveOnlyDrift = await page.evaluate(
+    () =>
+      (window as ProviderFixtureWindow).__capProviderFixtureReconnectSeqs?.[1] ??
+      0,
+  );
+  const driftSeq = await page.evaluate(
+    () => (window as ProviderFixtureWindow).__capProviderFixtureDriftSeqs?.[0] ?? 0,
+  );
+  expect(afterLiveOnlyDrift).toBe(driftSeq);
+
+  await expect
+    .poll(async () => (await readProbe(page)).terminalText, { timeout: 30_000 })
+    .toContain("PROVIDER_FIXTURE_TAIL_FINAL");
+  await expectTerminalRowsVisible(page);
+
+  await page.evaluate(() =>
+    (window as ProviderFixtureWindow).__capProviderFixtureCloseOpenSockets?.(1011),
+  );
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          () =>
+            (window as ProviderFixtureWindow).__capProviderFixtureReconnectSeqs
+              ?.length ?? 0,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(3);
+
+  const reconnectSeqs = await page.evaluate(
+    () =>
+      (window as ProviderFixtureWindow).__capProviderFixtureReconnectSeqs ?? [],
+  );
+  expect(reconnectSeqs[0]).toBe(0);
+  expect(reconnectSeqs[2]).toBeGreaterThan(0);
+  expect(reconnectSeqs[2]).toBeLessThan(driftSeq);
+});
+
+test("fixture browser refresh then retry reconnect keeps durable cursor", async ({
+  page,
+}) => {
+  await page.goto("/?fixture=boxlite&autostart=1&seqDrift=1", {
+    waitUntil: "load",
+  });
+  await expect
+    .poll(async () => (await readProbe(page)).terminalText, { timeout: 30_000 })
+    .toContain("PROVIDER_FIXTURE_TAIL_FINAL");
+  await expectTerminalRowsVisible(page);
+
+  await page.reload({ waitUntil: "load" });
+  await expect
+    .poll(async () => (await readProbe(page)).sessionId, { timeout: 15_000 })
+    .toBe("provider-fixture-boxlite-session");
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          () =>
+            (window as ProviderFixtureWindow).__capProviderFixtureDriftSeqs
+              ?.length ?? 0,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(1);
+  await expect
+    .poll(async () => (await readProbe(page)).terminalText, { timeout: 30_000 })
+    .toContain("PROVIDER_FIXTURE_BOXLITE_LIVE_002");
+  await expectTerminalRowsVisible(page);
+
+  await page.evaluate(() =>
+    (window as ProviderFixtureWindow).__capProviderFixtureCloseOpenSockets?.(1011),
+  );
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          () =>
+            (window as ProviderFixtureWindow).__capProviderFixtureReconnectSeqs
+              ?.length ?? 0,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(2);
+
+  const driftSeq = await page.evaluate(
+    () => (window as ProviderFixtureWindow).__capProviderFixtureDriftSeqs?.[0] ?? 0,
+  );
+  const firstRetrySeq = await page.evaluate(
+    () =>
+      (window as ProviderFixtureWindow).__capProviderFixtureReconnectSeqs?.[1] ??
+      0,
+  );
+  expect(firstRetrySeq).toBe(driftSeq);
+
+  await expect
+    .poll(async () => (await readProbe(page)).terminalText, { timeout: 30_000 })
+    .toContain("PROVIDER_FIXTURE_TAIL_FINAL");
+  await expectTerminalRowsVisible(page);
+  await page.evaluate(() =>
+    (window as ProviderFixtureWindow).__capProviderFixtureCloseOpenSockets?.(1011),
+  );
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(
+          () =>
+            (window as ProviderFixtureWindow).__capProviderFixtureReconnectSeqs
+              ?.length ?? 0,
+        ),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(3);
+
+  const reconnectSeqs = await page.evaluate(
+    () =>
+      (window as ProviderFixtureWindow).__capProviderFixtureReconnectSeqs ?? [],
+  );
+  expect(reconnectSeqs[0]).toBe(0);
+  expect(reconnectSeqs[2]).toBeGreaterThan(0);
+  expect(reconnectSeqs[2]).toBeLessThan(driftSeq);
+});
 
 test.describe("live provider-backed story", () => {
   test.skip(

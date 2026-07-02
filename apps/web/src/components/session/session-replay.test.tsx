@@ -33,6 +33,17 @@ function renderReplay(history: SessionHistory): string {
   );
 }
 
+function renderLiveReplay(history: SessionHistory): string {
+  useQueryMock.mockReturnValue({ data: history, isLoading: false });
+  return renderToStaticMarkup(
+    React.createElement(SessionReplay, {
+      taskId: "task-md",
+      live: true,
+      executionMode: "interactive-pty",
+    }),
+  );
+}
+
 describe("SessionReplay markdown rendering", () => {
   beforeEach(() => {
     useQueryMock.mockReset();
@@ -102,5 +113,24 @@ describe("SessionReplay markdown rendering", () => {
     expect(html).not.toContain("<a ");
     expect(html).not.toContain("<table");
     expect(html).not.toContain("<code");
+  });
+
+  it("uses live polling and hides terminal-record replay for running interactive history", () => {
+    const html = renderLiveReplay(
+      availableHistory([
+        {
+          kind: "assistant",
+          isFinalAnswer: false,
+          text: "正在检查仓库。",
+        },
+      ]),
+    );
+    const queryOptions = useQueryMock.mock.calls[0]?.[0];
+
+    expect(queryOptions).toMatchObject({ refetchInterval: 1500 });
+    expect(html).toContain("运行中 · 实时 · 1 条记录");
+    expect(html).toContain("正在检查仓库。");
+    expect(html).toContain("对话记录");
+    expect(html).not.toContain("终端记录");
   });
 });

@@ -102,11 +102,12 @@ export async function readSessionLogTail(workspaceDir: string): Promise<string> 
 /** Default cadence for capturing a fresh SerializeAddon snapshot, in ms. */
 export const DEFAULT_SNAPSHOT_INTERVAL_MS = 2_000;
 /**
- * Bytes replayed from `session.log` for a fresh browser connection (`fromSeq=0`).
+ * Legacy byte budget for the pre-snapshot fresh reconnect fallback.
  *
- * A SerializeAddon snapshot is intentionally just the current frame, not the
- * scrollback. For a hard refresh we prefer replaying recent log bytes so xterm
- * rebuilds a useful scrollback buffer, while bounding worst-case reconnect cost.
+ * Fresh browser reconnects no longer replay this suffix as terminal history:
+ * Codex's inline/no-alt-screen stream is still a TUI repaint stream, so raw
+ * `session.log` bytes are not a reliable linear transcript. The value is retained
+ * only for option compatibility with older callers/tests.
  */
 export const DEFAULT_FRESH_RECONNECT_REPLAY_BYTES = 16 * 1024 * 1024;
 
@@ -173,7 +174,6 @@ export class SnapshotManager {
   private readonly terminal: HeadlessTerminal;
   private readonly logPath: string;
   private readonly intervalMs: number;
-  private readonly freshReplayBytes: number;
   private readonly now: () => number;
 
   /** Cumulative count of raw bytes fed to the headless terminal == log offset. */
@@ -194,8 +194,6 @@ export class SnapshotManager {
     this.terminal = terminal;
     this.logPath = path.join(workspaceDir, SESSION_LOG_FILENAME);
     this.intervalMs = options.intervalMs ?? DEFAULT_SNAPSHOT_INTERVAL_MS;
-    this.freshReplayBytes =
-      options.freshReplayBytes ?? DEFAULT_FRESH_RECONNECT_REPLAY_BYTES;
     this.now = options.now ?? Date.now;
     this.byteOffset = Math.max(0, options.initialOffset ?? 0);
   }
@@ -282,25 +280,37 @@ export class SnapshotManager {
   /**
    * Build the ordered frames that restore a reconnecting client.
    *
-   * Fresh browser loads (`fromSeq=0`) replay a bounded suffix of `session.log`
-   * without a snapshot so the client xterm rebuilds scrollback. Incremental
-   * reconnects (`fromSeq>0`) keep the faster snapshot + tail path.
+   * Fresh browser loads (`fromSeq=0`) use the latest snapshot when available, then
+   * replay only the durable tail after that snapshot. If no periodic snapshot has
+   * been captured yet, they try to capture the current headless frame immediately.
+   * They deliberately do NOT fall back to replaying `session.log`: for an inline
+   * TUI, the log contains cursor-addressed repaint bytes, and treating those bytes
+   * as scrollback is exactly what causes duplicated/out-of-order old lines after a
+   * hard refresh. Incremental reconnects (`fromSeq>0`) keep the snapshot + tail
+   * path for bytes the same browser has already rendered.
    *
    * Size reconciliation: the snapshot frame carries the cols/rows it was captured
    * at; the reconnecting client compares those to its own geometry (optionally
    * passed as `clientCols`/`clientRows`) and reconciles before applying. A client
    * that already holds bytes up to `fromSeq` receives only the bytes after it.
    *
-   * If no snapshot has been captured yet, the whole of `session.log` is replayed
-   * from `fromSeq` with no preceding snapshot frame.
+   * If no snapshot or current headless frame is available yet, reconnect returns
+   * an empty final tail at the current offset so live streaming can resume without
+   * importing stale TUI repaint history.
    */
   async buildReconnectFrames(opts: ReconnectOptions = {}): Promise<WsControlFrame[]> {
     const frames: WsControlFrame[] = [];
     const fromSeq = opts.fromSeq ?? 0;
 
     if (fromSeq <= 0) {
-      const tailFrom = await this.freshReplayStart();
-      return this.readTailFrames(tailFrom, opts.chunkBytes);
+      const snapshot = this.latest ?? this.capture();
+      frames.push(toSnapshotFrame(snapshot));
+      if (snapshot.seq <= 0) {
+        frames.push(emptyFinalTail(await this.currentLogSize()));
+      } else {
+        frames.push(...(await this.readTailFrames(snapshot.seq, opts.chunkBytes)));
+      }
+      return frames;
     }
 
     const snapshot = this.latest;
@@ -324,13 +334,11 @@ export class SnapshotManager {
     return frames;
   }
 
-  /** Start offset for a fresh reconnect's bounded log replay. */
-  private async freshReplayStart(): Promise<number> {
+  private async currentLogSize(): Promise<number> {
     try {
-      const { size } = await stat(this.logPath);
-      return Math.max(0, size - Math.max(0, this.freshReplayBytes));
+      return (await stat(this.logPath)).size;
     } catch {
-      return 0;
+      return Math.max(0, this.byteOffset);
     }
   }
 

@@ -686,28 +686,38 @@ export class AioPtyClient implements AgentTerminalPty {
    *     throws into the WS message handler.
    */
   private async launchOrAttachOnReady(): Promise<void> {
-    // 3.2 — resolve the task's runtime ONCE before deciding. Best-effort: a missing
-    // resolver / rejected promise / undefined result leaves `this.runtime` undefined
-    // → the DEFAULT codex inline path. Resolved BEFORE the launch branch so the
-    // runtime's `buildLaunchLine` / `autoSubmit` gate the fresh-launch path.
-    await this.ensureRuntimeResolved();
+    // Provider-backed terminals (notably BoxLite) may echo a login shell prompt as
+    // soon as the WS reports ready, before the async tmux liveness probe returns.
+    // Treat that pre-decision shell noise as attach bootstrap so it stays live-only
+    // and never becomes durable task history.
+    this.beginAttachBootstrapWindow();
+    let bootstrapHandedOff = false;
     try {
+      // 3.2 — resolve the task's runtime ONCE before deciding. Best-effort: a missing
+      // resolver / rejected promise / undefined result leaves `this.runtime` undefined
+      // → the DEFAULT codex inline path. Resolved BEFORE the launch branch so the
+      // runtime's `buildLaunchLine` / `autoSubmit` gate the fresh-launch path.
+      await this.ensureRuntimeResolved();
       const alive = await this.hasSession();
       if (alive === true) {
+        bootstrapHandedOff = true;
         this.attachToNamedSession();
       } else if (alive === false) {
         // Definitively GONE → genuine fresh launch; arm the auto-submit (the runtime
         // gates whether an Enter is actually injected — claude's autoSubmit is a no-op).
+        this.endAttachBootstrapWindow();
+        bootstrapHandedOff = true;
         this.launchAgent();
       } else {
         // INCONCLUSIVE → fresh launch as a recoverable fallback, but DO NOT arm
         // the auto-submit: if an agent was actually already running, the duplicate
         // `tmux new-session` is a no-op and the attach rejoins it, so a stray Enter
         // must not be injected.
-        this.beginAttachBootstrapWindow();
+        bootstrapHandedOff = true;
         this.launchAgent(false);
       }
     } catch (err) {
+      if (!bootstrapHandedOff) this.endAttachBootstrapWindow();
       this.logger.warn(
         `task ${this.taskId}: launch-or-attach on ready failed: ${
           err instanceof Error ? err.message : String(err)

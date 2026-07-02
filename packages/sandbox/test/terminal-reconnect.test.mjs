@@ -133,7 +133,7 @@ await test('session log tail sampling strips ANSI/control bytes and degrades for
   });
 });
 
-await test('snapshot manager captures geometry and returns bounded fresh replay frames', async () => {
+await test('snapshot manager captures geometry and never replays raw log for fresh reconnects', async () => {
   await withTempWorkspace(async (dir) => {
     const { terminal, writes } = makeTerminal();
     const manager = new mod.SnapshotManager(terminal, dir, {
@@ -160,19 +160,42 @@ await test('snapshot manager captures geometry and returns bounded fresh replay 
     });
     assert.equal(manager.latestSnapshot.seq, 18);
 
-    await writeFile(path.join(dir, mod.SESSION_LOG_FILENAME), '0123456789');
+    await writeFile(path.join(dir, mod.SESSION_LOG_FILENAME), '0'.repeat(manager.currentOffset));
     const fresh = await manager.buildReconnectFrames({ fromSeq: 0, chunkBytes: 2 });
     assert.deepEqual(
       fresh.map((frame) => [
         frame.type,
-        Buffer.from(frame.data, 'base64').toString('utf8'),
+        frame.type === 'tail_replay'
+          ? Buffer.from(frame.data, 'base64').toString('utf8')
+          : frame.data,
         frame.seq,
         frame.final,
       ]),
       [
-        ['tail_replay', '56', 7, false],
-        ['tail_replay', '78', 9, false],
-        ['tail_replay', '9', 10, true],
+        ['snapshot', 'snapshot:hello|228,184,173|wide', 18, undefined],
+        ['tail_replay', '', 18, true],
+      ],
+    );
+
+    const { terminal: fallbackTerminal } = makeTerminal();
+    const fallback = new mod.SnapshotManager(fallbackTerminal, dir, {
+      now: () => 5678,
+      freshReplayBytes: 5,
+    });
+    await writeFile(path.join(dir, mod.SESSION_LOG_FILENAME), '0123456789');
+    const fallbackFresh = await fallback.buildReconnectFrames({ fromSeq: 0, chunkBytes: 2 });
+    assert.deepEqual(
+      fallbackFresh.map((frame) => [
+        frame.type,
+        frame.type === 'tail_replay'
+          ? Buffer.from(frame.data, 'base64').toString('utf8')
+          : frame.data,
+        frame.seq,
+        frame.final,
+      ]),
+      [
+        ['snapshot', 'snapshot:', 0, undefined],
+        ['tail_replay', '', 10, true],
       ],
     );
 
@@ -204,6 +227,14 @@ await test('snapshot reconnect uses latest snapshot for incremental clients and 
     const { terminal } = makeTerminal();
     const defaultManager = new mod.SnapshotManager(terminal, dir);
     assert.deepEqual(await defaultManager.buildReconnectFrames(), [
+      {
+        channel: 'control',
+        type: 'snapshot',
+        data: 'snapshot:',
+        cols: 80,
+        rows: 24,
+        seq: 0,
+      },
       {
         channel: 'control',
         type: 'tail_replay',

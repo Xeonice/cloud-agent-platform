@@ -216,6 +216,9 @@ export const SessionTerminal = React.forwardRef<
     queue: [] as Array<string | Uint8Array>,
     writing: false,
     sawFinalTail: false,
+    snapshotGeometry: null as TerminalGeometry | null,
+    resetBeforeNextWrite: false,
+    fitAfterReplay: false,
   });
   // Resolved xterm theme (client-only). `null` until the effect resolves it.
   const [theme, setTheme] = React.useState<ITheme | null>(null);
@@ -281,17 +284,25 @@ export const SessionTerminal = React.forwardRef<
 
   const releaseReplayHidden = React.useCallback(() => {
     const state = replayStateRef.current;
+    const handle = handleRef.current;
+    if (state.fitAfterReplay && handle) {
+      const geometry = handle.fit();
+      if (geometry) socketRef.current?.sendResize(geometry.cols, geometry.rows);
+    }
     state.active = false;
     state.queue = [];
     state.writing = false;
     state.sawFinalTail = false;
+    state.snapshotGeometry = null;
+    state.resetBeforeNextWrite = false;
+    state.fitAfterReplay = false;
     if (replayWatchdogRef.current !== null) {
       window.clearTimeout(replayWatchdogRef.current);
       replayWatchdogRef.current = null;
     }
     syncViewportNowRef.current();
-    handleRef.current?.scrollToBottom();
-    handleRef.current?.focus();
+    handle?.scrollToBottom();
+    handle?.focus();
     setReplayHidden(false);
   }, []);
 
@@ -322,6 +333,12 @@ export const SessionTerminal = React.forwardRef<
     if (!handle) {
       state.queue.unshift(next);
       return;
+    }
+    if (state.resetBeforeNextWrite) {
+      const geometry = state.snapshotGeometry;
+      if (geometry) handle.resize(geometry.cols, geometry.rows);
+      handle.clear();
+      state.resetBeforeNextWrite = false;
     }
     state.writing = true;
     handle.write(next, () => {
@@ -409,7 +426,23 @@ export const SessionTerminal = React.forwardRef<
           // alternate buffer and every later onRaw write (even stripped) accrues no
           // scrollback (fix-live-terminal-scrollback-strip). snapshot.data is a string.
           beginReconnectReplay();
-          enqueueReconnectReplay(stripAltScreen(frame.data));
+          replayStateRef.current.snapshotGeometry = {
+            cols: frame.cols,
+            rows: frame.rows,
+          };
+          replayStateRef.current.resetBeforeNextWrite = true;
+          replayStateRef.current.fitAfterReplay = true;
+          if (frame.data.length === 0) {
+            const handle = handleRef.current;
+            if (handle) {
+              handle.resize(frame.cols, frame.rows);
+              handle.clear();
+              replayStateRef.current.resetBeforeNextWrite = false;
+            }
+            maybeFinishReconnectReplay();
+          } else {
+            enqueueReconnectReplay(stripAltScreen(frame.data));
+          }
           lastSeqRef.current = frame.seq;
           break;
         }
@@ -417,7 +450,10 @@ export const SessionTerminal = React.forwardRef<
           // Same alt-screen strip on the reconnect tail (Uint8Array bytes).
           beginReconnectReplay();
           enqueueReconnectReplay(stripAltScreenBytes(decodeTailReplay(frame.data)));
-          lastSeqRef.current = Math.max(lastSeqRef.current, frame.seq);
+          // The server's reconnect response is the authoritative durable
+          // session.log cursor. Assign instead of max() so a previous live-only
+          // bootstrap chunk cannot leave the browser ahead of the durable log.
+          lastSeqRef.current = frame.seq;
           if (frame.final) {
             replayStateRef.current.sawFinalTail = true;
             maybeFinishReconnectReplay();
@@ -480,6 +516,9 @@ export const SessionTerminal = React.forwardRef<
     replayStateRef.current.queue = [];
     replayStateRef.current.writing = false;
     replayStateRef.current.sawFinalTail = false;
+    replayStateRef.current.snapshotGeometry = null;
+    replayStateRef.current.resetBeforeNextWrite = false;
+    replayStateRef.current.fitAfterReplay = false;
     setReplayHidden(false);
     const socket = new TerminalSocket(taskId, {
       onRaw(bytes, seq) {

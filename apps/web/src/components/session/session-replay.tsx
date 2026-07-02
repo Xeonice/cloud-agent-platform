@@ -178,7 +178,7 @@ function AvailableReplay({
       onTab={setTab}
       // headless-task-conversation-view: a headless task has no terminal record,
       // so the 终端记录 tab is hidden for it (conversation is the only surface).
-      showTermTab={executionMode !== "headless-exec"}
+      showTermTab={!live && executionMode !== "headless-exec"}
     >
       {tab === "conv" ? (
         <div className="grid min-h-0 flex-1 grid-cols-[212px_minmax(0,1fr)]">

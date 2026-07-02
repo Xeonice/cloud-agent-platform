@@ -10,10 +10,11 @@
  *   - 3.1: raw PTY output is appended to `workspaces/<id>/session.log` in lockstep
  *          with the byte-offset fed to `snapshots.feed`, so the snapshot boundary
  *          (`seq`) and the replayed tail align.
- *   - reconnect: fresh browser loads replay recent `session.log` bytes so
- *          scrollback rebuilds; incremental reconnects still return a NON-EMPTY
- *          `snapshot` frame followed by the `tail_replay` of bytes appended AFTER
- *          the snapshot.
+ *   - reconnect: fresh browser loads use the current-frame snapshot once it
+ *          exists, then replay only bytes appended AFTER the snapshot. The
+ *          snapshot intentionally excludes xterm scrollback because Codex's
+ *          inline TUI stream contains physical repaint history, not a clean
+ *          semantic transcript.
  *
  * The test drives the compiled `SnapshotManager` from `dist/terminal/snapshot.js`
  * (build with `pnpm --filter @cap/api build` first) plus a real headless xterm
@@ -61,7 +62,7 @@ function makeHeadless(cols = 80, rows = 24) {
       term.write(data);
     },
     serialize() {
-      return serializer.serialize();
+      return serializer.serialize({ scrollback: 0 });
     },
     resize(c, r) {
       term.resize(c, r);
@@ -74,7 +75,7 @@ function flush() {
   return new Promise((resolve) => setTimeout(resolve, 20));
 }
 
-test('reconnect replays session.log for fresh loads and snapshot+tail for incremental reconnects (3.1/3.2/3.3)', async () => {
+test('reconnect uses snapshot plus tail once a snapshot exists (3.1/3.2/3.3)', async () => {
   const workspaceDir = await mkdtemp(path.join(tmpdir(), 'cap-reconnect-'));
   try {
     const headless = makeHeadless();
@@ -115,22 +116,33 @@ test('reconnect replays session.log for fresh loads and snapshot+tail for increm
     await emit('TAIL-AFTER-SNAPSHOT-LINE\r\n');
     await flush();
 
-    // A fresh client (fromSeq 0) reconnecting receives bounded session.log bytes,
-    // not only the visible-frame snapshot, so xterm can rebuild scrollback.
+    // A fresh client (fromSeq 0) uses the visible-frame snapshot once available.
+    // Replaying the whole TUI byte log would expand historical full-screen redraws
+    // into duplicated/out-of-order scrollback after a hard refresh.
     const freshFrames = await mgr.buildReconnectFrames({ fromSeq: 0, clientCols: 80, clientRows: 24 });
-    assert.ok(freshFrames.length >= 1, 'fresh reconnect returns at least one tail frame');
-    for (const f of freshFrames) assert.equal(f.type, 'tail_replay');
-    assert.equal(freshFrames[freshFrames.length - 1].final, true, 'fresh replay final frame is marked final');
-    const freshText = freshFrames
+    assert.ok(freshFrames.length >= 2, 'fresh reconnect returns snapshot + tail');
+    const freshSnapshotFrame = freshFrames[0];
+    assert.equal(freshSnapshotFrame.type, 'snapshot', 'fresh first frame is the snapshot');
+    assert.ok(freshSnapshotFrame.data.length > 0, 'fresh snapshot frame is non-empty');
+    assert.equal(freshSnapshotFrame.cols, 80);
+    assert.equal(freshSnapshotFrame.rows, 24);
+    assert.equal(freshSnapshotFrame.seq, snapshotOffset, 'fresh snapshot frame seq == capture offset');
+    const freshTail = freshFrames.slice(1);
+    for (const f of freshTail) assert.equal(f.type, 'tail_replay');
+    assert.equal(freshTail[freshTail.length - 1].final, true, 'fresh replay final frame is marked final');
+    const freshText = freshTail
       .map((f) => Buffer.from(f.data, 'base64').toString('utf8'))
       .join('');
     assert.ok(
-      freshText.includes('hello from the agent') &&
-        freshText.includes('TAIL-AFTER-SNAPSHOT-LINE'),
-      'fresh reconnect replays session.log bytes from before and after the snapshot',
+      freshText.includes('TAIL-AFTER-SNAPSHOT-LINE'),
+      'fresh reconnect replays bytes appended after the snapshot',
+    );
+    assert.ok(
+      !freshText.includes('hello from the agent'),
+      'fresh reconnect does NOT replay bytes already covered by the snapshot offset',
     );
     assert.equal(
-      freshFrames[freshFrames.length - 1].seq,
+      freshTail[freshTail.length - 1].seq,
       mgr.currentOffset,
       'fresh replay end offset == total fed offset (file/offset lockstep)',
     );
@@ -188,5 +200,24 @@ test('a NullHeadlessTerminal regression would serialize empty — guard the real
   assert.ok(
     headless.serialize().length > 0,
     'the real headless terminal serializes a non-empty frame',
+  );
+});
+
+test('headless snapshot excludes scrollback; history comes from rollout transcript', async () => {
+  const headless = makeHeadless(40, 4);
+  for (let i = 1; i <= 8; i++) {
+    headless.write(`LINE-${String(i).padStart(3, '0')}\r\n`);
+  }
+  await flush();
+
+  const serialized = headless.serialize();
+
+  assert.ok(
+    serialized.includes('LINE-008'),
+    'snapshot keeps the current visible frame',
+  );
+  assert.ok(
+    !serialized.includes('LINE-001'),
+    'snapshot must not carry old xterm scrollback repaint history',
   );
 });

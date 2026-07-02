@@ -645,6 +645,116 @@ await test('alive-session attach output is visible but marked non-recordable unt
   client.close();
 });
 
+await test('pre-decision shell output is non-recordable before attaching an alive session', async () => {
+  const factory = makeTransportFactory();
+  let resolveProbe;
+  const probeReady = new Promise((resolve) => {
+    resolveProbe = resolve;
+  });
+  const executor = makeExecutor(async (request) => {
+    if (request.command.includes('__cap_has__')) {
+      await probeReady;
+      return { exitCode: 0, output: '__cap_has__0\n' };
+    }
+    return { exitCode: 0, output: '' };
+  });
+  const client = new mod.AioPtyClient(
+    'task-predecision-alive',
+    'ws://unused',
+    'http://unused',
+    undefined,
+    'launch-or-attach',
+    undefined,
+    undefined,
+    factory,
+    executor,
+  );
+  const observed = [];
+  client.onData((chunk, meta) => {
+    observed.push({ chunk, recordable: meta?.recordable !== false, source: meta?.source });
+  });
+  const transport = factory.transports[0];
+
+  transport.emit({ type: 'session_id', data: 's1' });
+  transport.emit({ type: 'ready' });
+  await waitFor(() => executor.calls.some((call) => call.command.includes('__cap_has__')));
+  transport.emit({ type: 'output', data: 'gem@boxlite:~/workspace$ ' });
+  assert.deepEqual(observed.at(-1), {
+    chunk: 'gem@boxlite:~/workspace$ ',
+    recordable: false,
+    source: 'attach-bootstrap',
+  });
+
+  resolveProbe();
+  await waitFor(() => transport.input.some((data) => data.includes('attach')));
+  transport.emit({ type: 'output', data: 'duplicate attach redraw\r\n' });
+  assert.deepEqual(observed.at(-1), {
+    chunk: 'duplicate attach redraw\r\n',
+    recordable: false,
+    source: 'attach-bootstrap',
+  });
+
+  await delay(25);
+  transport.emit({ type: 'output', data: 'real agent output\r\n' });
+  assert.deepEqual(observed.at(-1), {
+    chunk: 'real agent output\r\n',
+    recordable: true,
+    source: undefined,
+  });
+  client.close();
+});
+
+await test('pre-decision shell output is non-recordable but fresh launch output is recordable', async () => {
+  const factory = makeTransportFactory();
+  let resolveProbe;
+  const probeReady = new Promise((resolve) => {
+    resolveProbe = resolve;
+  });
+  const executor = makeExecutor(async (request) => {
+    if (request.command.includes('__cap_has__')) {
+      await probeReady;
+      return { exitCode: 0, output: '__cap_has__1\n' };
+    }
+    return { exitCode: 0, output: '' };
+  });
+  const client = new mod.AioPtyClient(
+    'task-predecision-fresh',
+    'ws://unused',
+    'http://unused',
+    undefined,
+    'launch-or-attach',
+    undefined,
+    undefined,
+    factory,
+    executor,
+  );
+  const observed = [];
+  client.onData((chunk, meta) => {
+    observed.push({ chunk, recordable: meta?.recordable !== false, source: meta?.source });
+  });
+  const transport = factory.transports[0];
+
+  transport.emit({ type: 'session_id', data: 's1' });
+  transport.emit({ type: 'ready' });
+  await waitFor(() => executor.calls.some((call) => call.command.includes('__cap_has__')));
+  transport.emit({ type: 'output', data: 'gem@boxlite:~/workspace$ ' });
+  assert.deepEqual(observed.at(-1), {
+    chunk: 'gem@boxlite:~/workspace$ ',
+    recordable: false,
+    source: 'attach-bootstrap',
+  });
+
+  resolveProbe();
+  await waitFor(() => transport.input.some((data) => data.includes('new-session')));
+  transport.emit({ type: 'output', data: 'codex banner\r\n' });
+  assert.deepEqual(observed.at(-1), {
+    chunk: 'codex banner\r\n',
+    recordable: true,
+    source: undefined,
+  });
+  client.close();
+});
+
 await test('exit fallback paths resolve wait, echo, abnormal, and helper parsing', async () => {
   assert.equal(
     await mod.probeSessionLiveness(
