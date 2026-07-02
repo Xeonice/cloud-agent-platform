@@ -2,24 +2,30 @@
 
 ### Requirement: Snapshot plus tail-replay reconnect
 
-On client reconnect the orchestrator SHALL restore terminal state by replaying persisted terminal bytes in a way that matches the reconnect type. For an incremental reconnect (`fromSeq > 0`), the orchestrator SHALL first deliver a periodic headless SerializeAddon snapshot when usable, then replay the `session.log` tail appended after that snapshot or after the client's acknowledged offset. For a fresh browser load (`fromSeq <= 0`), the orchestrator SHALL replay a bounded suffix of `session.log` rather than relying on a SerializeAddon snapshot alone, because a snapshot restores the visible frame but not scrollback. The browser SHALL write reconnect replay data through xterm flush callbacks and SHALL NOT reveal intermediate replay-fill frames; it SHALL reveal the terminal only after the replay queue has flushed, the viewport has been synced, and the terminal has been scrolled to the latest frame.
+On client reconnect the orchestrator SHALL restore terminal state according to the reconnect type. For an incremental reconnect (`fromSeq > 0`), the orchestrator SHALL first deliver a periodic headless SerializeAddon snapshot when usable, then replay only the `session.log` tail appended after that snapshot or after the client's acknowledged offset. For a fresh browser load (`fromSeq <= 0`), the orchestrator SHALL send the latest headless SerializeAddon visible-frame snapshot, or capture one immediately when no periodic snapshot exists, and SHALL NOT replay historical raw `session.log` bytes to rebuild semantic scrollback. Raw TUI logs contain cursor-addressed redraws and status repaint history, so treating them as ordered conversation history can duplicate or misorder old lines after refresh. The browser SHALL resize and clear the xterm before applying a fresh snapshot, write reconnect replay data through xterm flush callbacks, and SHALL NOT reveal intermediate replay-fill frames; it SHALL reveal the terminal only after the replay queue has flushed and the viewport has been synced. Ordered conversation history for refreshed running tasks SHALL come from the structured session-history rollout path, not from raw terminal byte replay.
 
-#### Scenario: Fresh browser refresh rebuilds scrollback from session.log
+#### Scenario: Fresh browser refresh restores the current visible frame
 
 - **WHEN** an operator hard-refreshes a running task terminal with no prior acknowledged seq
-- **THEN** reconnect replay uses a bounded suffix of `session.log`
-- **AND** the browser xterm rebuilds useful scrollback from those bytes instead of receiving only the latest SerializeAddon visible frame
+- **THEN** reconnect replay sends the latest usable SerializeAddon visible-frame snapshot, or captures one immediately
+- **AND** it does not replay historical raw `session.log` bytes as terminal scrollback
 
 #### Scenario: Incremental reconnect keeps snapshot plus tail
 
 - **WHEN** an operator reconnects with a positive acknowledged seq
-- **THEN** the orchestrator uses the latest usable SerializeAddon snapshot followed by the `session.log` tail after the snapshot or client offset
+- **THEN** the orchestrator uses the latest usable SerializeAddon snapshot followed only by the `session.log` tail after the snapshot or client offset
 
 #### Scenario: Reconnect reveal skips intermediate replay flashes
 
 - **WHEN** reconnect replay contains a large snapshot or tail
 - **THEN** the browser queues replay writes and keeps the terminal hidden until the final replay chunk has flushed
-- **AND** the revealed terminal is synced and positioned at the latest frame rather than visibly flashing through older replay frames
+- **AND** the revealed terminal is synced rather than visibly flashing through older replay frames
+
+#### Scenario: Raw terminal history is not used as ordered conversation history
+
+- **WHEN** a refreshed running task needs an ordered record of what the agent said and ran
+- **THEN** the console uses the structured session-history rollout path
+- **AND** the xterm reconnect path does not synthesize old conversation history by replaying raw TUI bytes
 
 ### Requirement: The live terminal preserves a scrollable history
 

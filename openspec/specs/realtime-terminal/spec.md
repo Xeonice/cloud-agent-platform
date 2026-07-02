@@ -66,32 +66,32 @@ The browser client SHALL coalesce incoming raw bytes and flush them to `term.wri
 - **THEN** the client issues at most one `term.write()` call for that animation frame containing the concatenated bytes
 
 ### Requirement: Snapshot plus tail-replay reconnect
-On client reconnect the orchestrator SHALL restore terminal state by first writing a periodic headless SerializeAddon snapshot that records the cols and rows it was taken at, then replaying the tail of `session.log` appended after the snapshot, reconciling any size difference between the snapshot and the current terminal. This SHALL hold under the connect-in AIO execution model: the orchestrator bridge (`AioPtyClient`/gateway) SHALL persist the raw PTY output to `workspaces/<id>/session.log` (there is no in-sandbox runner producer), and the `SnapshotManager` SHALL be backed by a REAL xterm headless terminal whose `serialize()` returns the actual visible frame — NOT a `NullHeadlessTerminal` whose `serialize()` is empty — so that a periodic snapshot is non-empty and `buildReconnectFrames` replays prior output to a reconnecting operator.
+On client reconnect the orchestrator SHALL restore the live terminal according to the client's acknowledged byte offset. For a fresh browser load (`fromSeq <= 0`), the orchestrator SHALL send the latest headless SerializeAddon snapshot of the current visible frame, or capture one immediately when no periodic snapshot exists, and SHALL NOT replay historical raw `session.log` bytes to rebuild semantic scrollback. Raw TUI logs contain cursor-addressed redraws and status repaint history, so treating them as ordered conversation history can duplicate or misorder old lines after refresh. For an incremental reconnect (`fromSeq > 0`), the orchestrator SHALL first deliver a usable snapshot when needed, then replay only the `session.log` tail appended after that snapshot or after the client's acknowledged offset. The browser SHALL resize and clear the xterm before applying a fresh snapshot, write reconnect data through xterm flush callbacks, and reveal the terminal only after the replay queue has flushed and the viewport has been synced.
 
-This reconnect replay SHALL be VERIFIED END-TO-END on a live compose stack (not merely unit-tested), as a fossilized black-box regression scenario in the compose e2e suite (`apps/api/test/aio-e2e.mjs` + `scripts/aio-e2e.sh`): after a task running under the connect-in AIO model has produced terminal output, a reconnecting operator SHALL be observed to replay that prior output from the REAL `@xterm/headless` `SerializeAddon` snapshot followed by the tail of the persisted `workspaces/<id>/session.log`, and the suite SHALL assert the replayed frames are non-empty rather than nothing.
+The orchestrator bridge (`AioPtyClient`/gateway) SHALL continue to persist raw PTY output to `workspaces/<id>/session.log` for incremental tail replay and terminal audit sources. The `SnapshotManager` SHALL be backed by a REAL xterm headless terminal whose `serialize()` returns the actual visible frame, not a `NullHeadlessTerminal` whose `serialize()` is empty. Ordered conversation history for refreshed running tasks SHALL come from the structured session-history rollout path, not from raw terminal byte replay.
 
-#### Scenario: Reconnect restores from snapshot then tail
-- **WHEN** a client reconnects to an active task
-- **THEN** the orchestrator first delivers the most recent SerializeAddon snapshot
-- **AND** then replays the `session.log` bytes appended after that snapshot was taken
+#### Scenario: Fresh browser refresh restores the current visible frame
+- **WHEN** an operator hard-refreshes a running task terminal with no prior acknowledged seq
+- **THEN** reconnect replay sends the latest usable SerializeAddon visible-frame snapshot, or captures one immediately
+- **AND** it does not replay historical raw `session.log` bytes as terminal scrollback
 
 #### Scenario: Snapshot records its dimensions for size reconciliation
 - **WHEN** a SerializeAddon snapshot is produced
 - **THEN** it records the cols and rows it was captured at so a reconnecting client of a different size can reconcile the dimensions before applying it
 
-#### Scenario: Reconnect replays prior output under connect-in
-- **WHEN** an operator reconnects to a task that has been running under the connect-in AIO model and has already produced terminal output
-- **THEN** the orchestrator delivers a NON-EMPTY snapshot from the real headless terminal followed by the tail of the persisted `workspaces/<id>/session.log`
-- **AND** `buildReconnectFrames` returns the prior output rather than nothing
+#### Scenario: Incremental reconnect restores snapshot plus tail
+- **WHEN** a client reconnects with a positive acknowledged seq
+- **THEN** the orchestrator delivers the latest usable SerializeAddon snapshot when needed
+- **AND** then replays only the `session.log` bytes appended after the snapshot or acknowledged offset
 
 #### Scenario: session.log is persisted by the orchestrator, not the sandbox
 - **WHEN** raw PTY output flows through the orchestrator bridge for an AIO-executed task
-- **THEN** the orchestrator appends that output to `workspaces/<id>/session.log` so reconnect tail-replay has a durable source even though no in-sandbox runner producer writes it
+- **THEN** the orchestrator appends that output to `workspaces/<id>/session.log` so incremental tail replay and terminal audit sources remain durable even though no in-sandbox runner producer writes it
 
-#### Scenario: Reconnect replay is verified end-to-end on a live compose stack
-- **WHEN** the compose e2e suite (`apps/api/test/aio-e2e.mjs` + `scripts/aio-e2e.sh`) runs a task under the connect-in AIO model on a live stack, lets it produce terminal output, and reconnects an operator
-- **THEN** the reconnecting operator replays the prior output sourced from the real `@xterm/headless` `SerializeAddon` snapshot plus the tail of `workspaces/<id>/session.log`
-- **AND** the suite asserts the replayed reconnect frames are non-empty rather than nothing
+#### Scenario: Raw terminal history is not used as ordered conversation history
+- **WHEN** a refreshed running task needs an ordered record of what the agent said and ran
+- **THEN** the console uses the structured session-history rollout path
+- **AND** the xterm reconnect path does not synthesize old conversation history by replaying raw TUI bytes
 
 ### Requirement: Terminal geometry synced to the sandbox PTY on connect
 The orchestrator SHALL size the sandbox PTY, the authoritative detached tmux session, and the snapshot headless terminal to the operator's browser terminal geometry on every connect AND reconnect, so codex renders at the client's cols/rows rather than the AIO sandbox or tmux default (80×24). The browser SHALL send its current geometry once the terminal WebSocket is OPEN — NOT only from the xterm resize event, which fires at mount and races the socket open and is silently dropped when the socket is not yet OPEN. On receiving a (re)connecting client's geometry, the orchestrator SHALL resize the sandbox PTY, best-effort resize the detached tmux window, and resize the snapshot headless terminal to that geometry. This makes the "identical cols and rows" live-frame parity precondition reachable at runtime; without it the authoritative tmux session can stay at 80×24 while the browser auto-fits wider, so codex's cursor-addressed full-screen redraws and scrollback history misalign in the wider browser grid.
@@ -368,4 +368,3 @@ replay offset and SHALL NOT be returned as `tail_replay` history.
 - **THEN** the terminal restores prior recordable history from `session.log`
 - **AND** the live terminal resumes receiving new output from the still-running session
 - **AND** the restored terminal does not show a duplicated attach bootstrap segment
-

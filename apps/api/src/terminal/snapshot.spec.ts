@@ -39,7 +39,7 @@ function decodeTail(frames: Awaited<ReturnType<SnapshotManager['buildReconnectFr
     .join('');
 }
 
-test('fresh reconnect replays session.log instead of snapshot so scrollback can rebuild', async () => {
+test('fresh reconnect uses latest snapshot when available to avoid replaying TUI redraw history', async () => {
   await withWorkspace(async (dir) => {
     const log = 'line-1\nline-2\nline-3\n';
     await writeFile(path.join(dir, SESSION_LOG_FILENAME), log);
@@ -52,16 +52,18 @@ test('fresh reconnect replays session.log instead of snapshot so scrollback can 
 
     const frames = await manager.buildReconnectFrames({ fromSeq: 0, chunkBytes: 8 });
 
-    assert.equal(frames[0]?.type, 'tail_replay');
-    assert.equal(decodeTail(frames), log);
+    assert.equal(frames[0]?.type, 'snapshot');
+    assert.equal(frames[0]?.data, `SNAP:${log}`);
+    assert.equal(decodeTail(frames), '');
     const last = frames.at(-1);
     assert.equal(last?.type, 'tail_replay');
     if (last?.type !== 'tail_replay') assert.fail('expected final tail_replay');
     assert.equal(last.final, true);
+    assert.equal(last.seq, Buffer.byteLength(log));
   });
 });
 
-test('fresh reconnect bounds log replay to the configured byte budget', async () => {
+test('fresh reconnect without a snapshot does not replay raw TUI log history', async () => {
   await withWorkspace(async (dir) => {
     await writeFile(path.join(dir, SESSION_LOG_FILENAME), '0123456789');
 
@@ -71,8 +73,26 @@ test('fresh reconnect bounds log replay to the configured byte budget', async ()
 
     const frames = await manager.buildReconnectFrames({ fromSeq: 0, chunkBytes: 8 });
 
-    assert.equal(decodeTail(frames), '6789');
+    assert.equal(frames[0]?.type, 'snapshot');
+    assert.equal(decodeTail(frames), '');
     assert.equal(frames.at(-1)?.seq, 10);
+  });
+});
+
+test('fresh reconnect captures the current headless frame immediately before the periodic snapshot', async () => {
+  await withWorkspace(async (dir) => {
+    const before = 'visible current frame\n';
+    await writeFile(path.join(dir, SESSION_LOG_FILENAME), before);
+
+    const manager = new SnapshotManager(new FakeTerminal(), dir);
+    manager.feed(before, Buffer.byteLength(before));
+
+    const frames = await manager.buildReconnectFrames({ fromSeq: 0 });
+
+    assert.equal(frames[0]?.type, 'snapshot');
+    assert.equal(frames[0]?.data, `SNAP:${before}`);
+    assert.equal(decodeTail(frames), '');
+    assert.equal(frames.at(-1)?.seq, Buffer.byteLength(before));
   });
 });
 

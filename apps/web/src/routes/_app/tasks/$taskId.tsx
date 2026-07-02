@@ -111,6 +111,13 @@ function SessionPage(): React.ReactElement {
     !(TERMINAL_TASK_STATUSES as readonly string[]).includes(task.status);
 
   const terminalRef = React.useRef<SessionTerminalHandle | null>(null);
+  const [livePane, setLivePane] = React.useState<"terminal" | "conversation">(
+    "terminal",
+  );
+
+  React.useEffect(() => {
+    setLivePane("terminal");
+  }, [taskId]);
 
   const shortId = shortTaskId(taskId);
 
@@ -228,19 +235,69 @@ function SessionPage(): React.ReactElement {
             );
           }
           return (
-            <SessionTerminal
-              ref={terminalRef}
-              taskId={taskId}
-              headLabel={headLabel}
-              phaseLabel={STATE_LABELS[taskState]}
-              phasePending={false}
-              resourceLabel={resourceBody}
-              onConnectionChange={handleConnectionChange}
-            />
+            <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-2">
+              <div className="inline-flex w-fit rounded-lg bg-secondary p-[3px]">
+                <LivePaneButton
+                  active={livePane === "terminal"}
+                  onClick={() => setLivePane("terminal")}
+                >
+                  实时终端
+                </LivePaneButton>
+                <LivePaneButton
+                  active={livePane === "conversation"}
+                  onClick={() => setLivePane("conversation")}
+                >
+                  对话记录
+                </LivePaneButton>
+              </div>
+              <div className="min-h-0">
+                {livePane === "terminal" ? (
+                  <SessionTerminal
+                    ref={terminalRef}
+                    taskId={taskId}
+                    headLabel={headLabel}
+                    phaseLabel={STATE_LABELS[taskState]}
+                    phasePending={false}
+                    resourceLabel={resourceBody}
+                    onConnectionChange={handleConnectionChange}
+                  />
+                ) : (
+                  <SessionReplay
+                    taskId={taskId}
+                    live
+                    executionMode={task?.executionMode ?? undefined}
+                  />
+                )}
+              </div>
+            </div>
           );
         })()}
       </section>
     </>
+  );
+}
+
+function LivePaneButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`min-h-[30px] rounded-md px-3 text-sm transition-colors ${
+        active
+          ? "bg-background text-foreground shadow-sm"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

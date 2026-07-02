@@ -50,6 +50,42 @@ function makeSnapshots() {
   };
 }
 
+function makeClient() {
+  const frames = [];
+  return {
+    frames,
+    socket: {
+      readyState: 1,
+      OPEN: 1,
+      send: (text) => frames.push(JSON.parse(text)),
+    },
+  };
+}
+
+function makeClientState(taskId) {
+  const sent = [];
+  return {
+    sent,
+    state: {
+      clientId: 'client-readoption-meta',
+      kind: 'operator',
+      authenticated: true,
+      taskId,
+      ptySubscription: null,
+      sentBytes: 0,
+      backpressure: {
+        onSent: (seq) => {
+          sent.push(seq);
+          return undefined;
+        },
+        onAck: () => undefined,
+        rebase() {},
+        setPty() {},
+      },
+    },
+  };
+}
+
 async function flushLog(gateway, taskId) {
   const entry = gateway.sessionLogs.get(taskId);
   if (entry) await entry.tail;
@@ -60,7 +96,7 @@ async function flushCast(gateway, taskId) {
   if (entry) await entry.tail;
 }
 
-test('non-recordable re-adoption output is streamed-only, not written to log/cast/snapshot offset', async () => {
+test('non-recordable re-adoption output is streamed-only and does not advance durable history', async () => {
   const workspaceDir = await mkdtemp(path.join(tmpdir(), 'cap-readoption-history-'));
   const taskId = 'task-readoption-meta';
   try {
@@ -77,6 +113,9 @@ test('non-recordable re-adoption output is streamed-only, not written to log/cas
       tail: Promise.resolve(),
       ensured: false,
     });
+    const { frames, socket } = makeClient();
+    const { sent, state } = makeClientState(taskId);
+    gateway.clients.set(socket, state);
     gateway.armCast(taskId, workspaceDir, 80, 24);
     await flushCast(gateway, taskId);
 
@@ -90,7 +129,13 @@ test('non-recordable re-adoption output is streamed-only, not written to log/cas
     assert.equal(existsSync(logPath), false);
     let cast = await readFile(path.join(workspaceDir, SESSION_CAST_FILENAME), 'utf8');
     assert.equal(parseCast(cast).events.length, 0);
-    assert.equal(feeds.length, 0);
+    assert.deepEqual(feeds, [
+      { chunk: 'duplicate session\r\n', byteLen: 0 },
+    ]);
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0].seq, 0);
+    assert.equal(Buffer.from(frames[0].data, 'base64').toString('utf8'), 'duplicate session\r\n');
+    assert.deepEqual(sent, []);
 
     gateway.onPtyOutput(taskId, 'real output\r\n');
     await flushLog(gateway, taskId);
@@ -102,8 +147,13 @@ test('non-recordable re-adoption output is streamed-only, not written to log/cas
       'real output\r\n',
     ]);
     assert.deepEqual(feeds, [
+      { chunk: 'duplicate session\r\n', byteLen: 0 },
       { chunk: 'real output\r\n', byteLen: Buffer.byteLength('real output\r\n') },
     ]);
+    assert.equal(frames.length, 2);
+    assert.equal(frames[1].seq, Buffer.byteLength('real output\r\n'));
+    assert.equal(Buffer.from(frames[1].data, 'base64').toString('utf8'), 'real output\r\n');
+    assert.deepEqual(sent, [Buffer.byteLength('real output\r\n')]);
   } finally {
     await rm(workspaceDir, { recursive: true, force: true });
   }

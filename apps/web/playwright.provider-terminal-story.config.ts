@@ -31,7 +31,7 @@ export default defineConfig({
   webServer: {
     command: `pnpm provider-terminal-story:dev --host 127.0.0.1 --port ${STORY_PORT} --strictPort`,
     url: `http://127.0.0.1:${STORY_PORT}/`,
-    reuseExistingServer: false,
+    reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
 });

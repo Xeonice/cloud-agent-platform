@@ -270,15 +270,16 @@ async function main() {
     assert(tCalls.readDurable === 0 && tCalls.backfill === 0, 'running headless (no rollout): never reads/backfills durable');
   }
 
-  // ---- running INTERACTIVE → the headless live branch is NOT taken (unchanged path) ----
+  // ---- running INTERACTIVE → LIVE read from the sandbox (terminal history uses transcript) ----
   {
     const { provider, calls } = makeProvider({ rollout: ROLLOUT });
     const { transcripts, calls: tCalls } = makeTranscripts({ durable: ROLLOUT });
     const ctrl = new SessionHistoryController(makeTasks('running', 'interactive-pty'), provider, transcripts, makeAudit());
     const res = await ctrl.get(TASK_ID);
-    assert(res.status === 'available', 'running interactive → available (existing durable-first path, unchanged)');
-    assert(tCalls.readDurable === 1, 'running interactive: durable-first IS consulted (the headless live branch is not taken)');
-    assert(calls.readRollout === 0, 'running interactive: no live container read (durable hit wins)');
+    assert(res.status === 'available', 'running interactive → available parsed from the LIVE sandbox rollout');
+    assert(tCalls.readDurable === 0, 'running interactive: durable-first is SKIPPED (live read wins — no stale archive)');
+    assert(tCalls.backfill === 0, 'running interactive: the in-flight rollout is NOT backfilled (no freezing incomplete as durable)');
+    assert(calls.readRollout === 1, 'running interactive: the live sandbox rollout IS read');
   }
 
   // ---- agent_failed_to_start → 'empty' (no archive/container read at all) -----
