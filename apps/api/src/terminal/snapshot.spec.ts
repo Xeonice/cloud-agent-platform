@@ -39,7 +39,17 @@ function decodeTail(frames: Awaited<ReturnType<SnapshotManager['buildReconnectFr
     .join('');
 }
 
-test('fresh reconnect uses latest snapshot when available to avoid replaying TUI redraw history', async () => {
+function lastSeq(
+  frames: Awaited<ReturnType<SnapshotManager['buildReconnectFrames']>>,
+): number | undefined {
+  let seq: number | undefined;
+  for (const frame of frames) {
+    if ('seq' in frame) seq = frame.seq;
+  }
+  return seq;
+}
+
+test('fresh reconnect without a cast uses latest snapshot instead of raw TUI log history', async () => {
   await withWorkspace(async (dir) => {
     const log = 'line-1\nline-2\nline-3\n';
     await writeFile(path.join(dir, SESSION_LOG_FILENAME), log);
@@ -63,7 +73,7 @@ test('fresh reconnect uses latest snapshot when available to avoid replaying TUI
   });
 });
 
-test('fresh reconnect without a snapshot does not replay raw TUI log history', async () => {
+test('fresh reconnect without a cast or snapshot does not replay raw TUI log history', async () => {
   await withWorkspace(async (dir) => {
     await writeFile(path.join(dir, SESSION_LOG_FILENAME), '0123456789');
 
@@ -75,7 +85,7 @@ test('fresh reconnect without a snapshot does not replay raw TUI log history', a
 
     assert.equal(frames[0]?.type, 'snapshot');
     assert.equal(decodeTail(frames), '');
-    assert.equal(frames.at(-1)?.seq, 10);
+    assert.equal(lastSeq(frames), 10);
   });
 });
 
@@ -92,7 +102,7 @@ test('fresh reconnect captures the current headless frame immediately before the
     assert.equal(frames[0]?.type, 'snapshot');
     assert.equal(frames[0]?.data, `SNAP:${before}`);
     assert.equal(decodeTail(frames), '');
-    assert.equal(frames.at(-1)?.seq, Buffer.byteLength(before));
+    assert.equal(lastSeq(frames), Buffer.byteLength(before));
   });
 });
 

@@ -133,7 +133,7 @@ await test('session log tail sampling strips ANSI/control bytes and degrades for
   });
 });
 
-await test('snapshot manager captures geometry and never replays raw log for fresh reconnects', async () => {
+await test('snapshot manager falls back to snapshots and never raw logs when cast is absent', async () => {
   await withTempWorkspace(async (dir) => {
     const { terminal, writes } = makeTerminal();
     const manager = new mod.SnapshotManager(terminal, dir, {
@@ -203,6 +203,58 @@ await test('snapshot manager captures geometry and never replays raw log for fre
     manager.start();
     manager.stop();
     manager.stop();
+  });
+});
+
+await test('fresh reconnect reconstructs scrollback from session.cast with resize ordering', async () => {
+  await withTempWorkspace(async (dir) => {
+    const first = 'first\r\n\x1b[?1049hsecond\r\n';
+    const second = '\x1b[H\x1b[2J\x1b[?1049lwide\r\n';
+    const log = first + second;
+    await writeFile(path.join(dir, mod.SESSION_LOG_FILENAME), log);
+    await writeFile(
+      path.join(dir, mod.SESSION_CAST_FILENAME),
+      [
+        JSON.stringify({ version: 2, width: 80, height: 24, timestamp: 1 }),
+        JSON.stringify([0, 'o', first]),
+        JSON.stringify([1, 'r', '120x40']),
+        JSON.stringify([2, 'o', second]),
+        '',
+      ].join('\n'),
+    );
+
+    const { terminal } = makeTerminal();
+    const manager = new mod.SnapshotManager(terminal, dir);
+    manager.feed(log, Buffer.byteLength(log));
+    manager.capture();
+
+    const frames = await manager.buildReconnectFrames({ fromSeq: 0, chunkBytes: 1024 });
+
+    assert.deepEqual(
+      frames.map((frame) => frame.type),
+      ['snapshot', 'tail_replay', 'resize', 'tail_replay', 'tail_replay'],
+    );
+    assert.deepEqual(frames[0], {
+      channel: 'control',
+      type: 'snapshot',
+      data: '',
+      cols: 80,
+      rows: 24,
+      seq: 0,
+    });
+    assert.deepEqual(frames[2], {
+      channel: 'control',
+      type: 'resize',
+      cols: 120,
+      rows: 40,
+    });
+    const replayText = frames
+      .filter((frame) => frame.type === 'tail_replay')
+      .map((frame) => Buffer.from(frame.data, 'base64').toString('utf8'))
+      .join('');
+    assert.equal(replayText, 'first\r\nsecond\r\nwide\r\n');
+    assert.equal(frames.at(-1).seq, Buffer.byteLength(log));
+    assert.equal(frames.at(-1).final, true);
   });
 });
 

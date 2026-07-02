@@ -116,6 +116,18 @@ const VIEWPORT_SYNC_DEBOUNCE_MS = 120;
 /** Large enough for long-running live sessions and the 20k-line reconnect case. */
 const LIVE_TERMINAL_SCROLLBACK = 100_000;
 
+type ReconnectReplayQueueItem =
+  | {
+      readonly type: "write";
+      readonly data: string | Uint8Array;
+      /** Durable replay cursor applied only after xterm has flushed this item. */
+      readonly seq?: number;
+      /** Live raw cursor ACKed only after xterm has flushed this item. */
+      readonly ackSeq?: number;
+    }
+  | { readonly type: "resize"; readonly cols: number; readonly rows: number }
+  | { readonly type: "mark"; readonly seq?: number; readonly ackSeq?: number };
+
 /** The honest fallback notice lines per connection state (no fake output). */
 function fallbackLines(state: ConnectionState): FallbackLine[] {
   const base: FallbackLine[] = [
@@ -213,7 +225,7 @@ export const SessionTerminal = React.forwardRef<
    *  terminal hidden and its viewport scroll-area unsynced. */
   const replayStateRef = React.useRef({
     active: false,
-    queue: [] as Array<string | Uint8Array>,
+    queue: [] as ReconnectReplayQueueItem[],
     writing: false,
     sawFinalTail: false,
     snapshotGeometry: null as TerminalGeometry | null,
@@ -340,8 +352,40 @@ export const SessionTerminal = React.forwardRef<
       handle.clear();
       state.resetBeforeNextWrite = false;
     }
+    if (next.type === "resize") {
+      handle.resize(next.cols, next.rows);
+      // A Codex fullscreen resize is followed by a full TUI repaint. During
+      // reconnect replay we keep the terminal in the normal buffer for scrollback,
+      // so clear only the current screen before that repaint; otherwise the
+      // pre-resize frame is pushed into history as duplicate/out-of-order rows.
+      state.writing = true;
+      handle.write("\x1b[H\x1b[2J", () => {
+        state.writing = false;
+        syncViewportSoonRef.current();
+        pumpReconnectReplayRef.current();
+      });
+      return;
+    }
+    if (next.type === "mark") {
+      if (typeof next.seq === "number") {
+        lastSeqRef.current = next.seq;
+      }
+      if (typeof next.ackSeq === "number") {
+        lastSeqRef.current = Math.max(lastSeqRef.current, next.ackSeq);
+        socketRef.current?.sendAck(next.ackSeq);
+      }
+      pumpReconnectReplayRef.current();
+      return;
+    }
     state.writing = true;
-    handle.write(next, () => {
+    handle.write(next.data, () => {
+      if (typeof next.seq === "number") {
+        lastSeqRef.current = next.seq;
+      }
+      if (typeof next.ackSeq === "number") {
+        lastSeqRef.current = Math.max(lastSeqRef.current, next.ackSeq);
+        socketRef.current?.sendAck(next.ackSeq);
+      }
       state.writing = false;
       syncViewportSoonRef.current();
       pumpReconnectReplayRef.current();
@@ -373,16 +417,35 @@ export const SessionTerminal = React.forwardRef<
   }, []);
 
   const enqueueReconnectReplay = React.useCallback(
-    (data: string | Uint8Array): void => {
+    (
+      data: string | Uint8Array,
+      cursor?: { readonly seq?: number; readonly ackSeq?: number },
+    ): void => {
       const byteLength = typeof data === "string" ? data.length : data.byteLength;
       if (byteLength === 0) {
+        if (
+          typeof cursor?.seq === "number" ||
+          typeof cursor?.ackSeq === "number"
+        ) {
+          replayStateRef.current.queue.push({ type: "mark", ...cursor });
+          pumpReconnectReplayRef.current();
+        }
         maybeFinishReconnectReplay();
         return;
       }
-      replayStateRef.current.queue.push(data);
+      replayStateRef.current.queue.push({ type: "write", data, ...cursor });
       pumpReconnectReplayRef.current();
     },
     [maybeFinishReconnectReplay],
+  );
+
+  const enqueueReconnectResize = React.useCallback(
+    (cols: number, rows: number): void => {
+      if (cols <= 0 || rows <= 0) return;
+      replayStateRef.current.queue.push({ type: "resize", cols, rows });
+      pumpReconnectReplayRef.current();
+    },
+    [],
   );
 
   // ── Resolve the terminal theme from CSS vars (CLIENT-ONLY) ────────────────
@@ -439,24 +502,31 @@ export const SessionTerminal = React.forwardRef<
               handle.clear();
               replayStateRef.current.resetBeforeNextWrite = false;
             }
+            lastSeqRef.current = frame.seq;
             maybeFinishReconnectReplay();
           } else {
-            enqueueReconnectReplay(stripAltScreen(frame.data));
+            enqueueReconnectReplay(stripAltScreen(frame.data), { seq: frame.seq });
           }
-          lastSeqRef.current = frame.seq;
           break;
         }
         case "tail_replay": {
           // Same alt-screen strip on the reconnect tail (Uint8Array bytes).
           beginReconnectReplay();
-          enqueueReconnectReplay(stripAltScreenBytes(decodeTailReplay(frame.data)));
+          enqueueReconnectReplay(stripAltScreenBytes(decodeTailReplay(frame.data)), {
+            seq: frame.seq,
+          });
           // The server's reconnect response is the authoritative durable
-          // session.log cursor. Assign instead of max() so a previous live-only
-          // bootstrap chunk cannot leave the browser ahead of the durable log.
-          lastSeqRef.current = frame.seq;
+          // session.log cursor. The queue applies it only after xterm flushes
+          // this replay item, so a mid-replay reconnect does not skip bytes.
           if (frame.final) {
             replayStateRef.current.sawFinalTail = true;
             maybeFinishReconnectReplay();
+          }
+          break;
+        }
+        case "resize": {
+          if (replayStateRef.current.active) {
+            enqueueReconnectResize(frame.cols, frame.rows);
           }
           break;
         }
@@ -498,14 +568,20 @@ export const SessionTerminal = React.forwardRef<
         }
         default:
           // Other control frames (ack/decision/heartbeat/dialback/connect_auth/
-          // post_tool_use_report/reconnect/resize/takeover_request) are not
+          // post_tool_use_report/reconnect/takeover_request) are not
           // consumed by the browser session view.
           break;
       }
     },
     // `taskId` is read in the lease_state guard, so the closure must track it
     // (the route can swap params without remounting this component).
-    [beginReconnectReplay, enqueueReconnectReplay, maybeFinishReconnectReplay, taskId],
+    [
+      beginReconnectReplay,
+      enqueueReconnectReplay,
+      enqueueReconnectResize,
+      maybeFinishReconnectReplay,
+      taskId,
+    ],
   );
   const handleControlRef = React.useRef(handleControl);
   handleControlRef.current = handleControl;
@@ -529,6 +605,11 @@ export const SessionTerminal = React.forwardRef<
         // backpressure (pause the PTY) AND so a later reconnect still replays
         // this un-rendered window.
         if (pausedRef.current) return;
+        const renderBytes = stripAltScreenBytes(bytes);
+        if (replayStateRef.current.active) {
+          enqueueReconnectReplay(renderBytes, { ackSeq: seq });
+          return;
+        }
         // Write straight to the terminal (raw bytes bypass Query, D5.4). Advance
         // the reconnect high-water mark and ACK ONLY after xterm has flushed the
         // chunk — `lastSeq` must track only bytes the client actually rendered,
@@ -536,7 +617,7 @@ export const SessionTerminal = React.forwardRef<
         // before xterm mounted. Strip the alt-screen switch first (the tmux attach
         // client's own — tmux options can't suppress it) so the live stream lands
         // in the NORMAL buffer and accrues scrollback (fix-live-terminal-scrollback-strip).
-        handle.write(stripAltScreenBytes(bytes), () => {
+        handle.write(renderBytes, () => {
           lastSeqRef.current = Math.max(lastSeqRef.current, seq);
           socketRef.current?.sendAck(seq);
           // Keep the viewport scrollable as live output accrues (debounced).
@@ -602,7 +683,7 @@ export const SessionTerminal = React.forwardRef<
         replayWatchdogRef.current = null;
       }
     };
-  }, [taskId, setConnectionState]);
+  }, [enqueueReconnectReplay, taskId, setConnectionState]);
 
   // ── Lease heartbeat: renew the write lease by CONNECTION identity ──────────
   // The server keys the lease by the socket's own clientId and IGNORES the

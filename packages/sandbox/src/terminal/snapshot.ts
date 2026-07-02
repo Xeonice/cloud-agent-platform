@@ -17,12 +17,15 @@
  * tail read that fills the gap since the snapshot.
  */
 import { createReadStream } from 'node:fs';
-import { open, stat } from 'node:fs/promises';
+import { open, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import {
   type SnapshotFrame,
+  type ResizeFrame,
   type TailReplayFrame,
   FRAME_CHANNEL,
+  parseAsciicastEvent,
+  parseAsciicastHeader,
 } from '@cap/contracts';
 
 /** The fixed session-log file name within each task workspace (matches Track 4). */
@@ -34,6 +37,9 @@ export const SESSION_LOG_FILENAME = 'session.log';
  * volume; the terminal-replay timing player streams it back.
  */
 export const SESSION_CAST_FILENAME = 'session.cast';
+
+/** Max fresh-reconnect cast output kept in-memory before reconnecting. */
+const FRESH_CAST_REPLAY_MAX_BYTES = 24 * 1024 * 1024;
 
 /** Bytes read from the END of `session.log` when sampling a failure tail. */
 const SESSION_LOG_TAIL_BYTES = 4096;
@@ -280,10 +286,11 @@ export class SnapshotManager {
   /**
    * Build the ordered frames that restore a reconnecting client.
    *
-   * Fresh browser loads (`fromSeq=0`) use the latest snapshot when available, then
-   * replay only the durable tail after that snapshot. If no periodic snapshot has
-   * been captured yet, they try to capture the current headless frame immediately.
-   * They deliberately do NOT fall back to replaying `session.log`: for an inline
+   * Fresh browser loads (`fromSeq=0`) first prefer `session.cast`: it is the only
+   * durable source that preserves ordered output plus resize events, so the web
+   * client can rebuild scrollback without treating every fullscreen resize as raw
+   * line history. If no usable cast exists, they use the latest/current snapshot
+   * and deliberately do NOT fall back to replaying `session.log`: for an inline
    * TUI, the log contains cursor-addressed repaint bytes, and treating those bytes
    * as scrollback is exactly what causes duplicated/out-of-order old lines after a
    * hard refresh. Incremental reconnects (`fromSeq>0`) keep the snapshot + tail
@@ -303,6 +310,9 @@ export class SnapshotManager {
     const fromSeq = opts.fromSeq ?? 0;
 
     if (fromSeq <= 0) {
+      const castFrames = await this.buildFreshCastReplayFrames(opts.chunkBytes);
+      if (castFrames.length > 0) return castFrames;
+
       const snapshot = this.latest ?? this.capture();
       frames.push(toSnapshotFrame(snapshot));
       if (snapshot.seq <= 0) {
@@ -331,6 +341,61 @@ export class SnapshotManager {
     //    snapshot offset against the log's actual current size.
     const tailFrames = await this.readTailFrames(tailFrom, opts.chunkBytes);
     frames.push(...tailFrames);
+    return frames;
+  }
+
+  private async buildFreshCastReplayFrames(
+    chunkBytes = 64 * 1024,
+  ): Promise<WsControlFrame[]> {
+    const castPath = path.join(path.dirname(this.logPath), SESSION_CAST_FILENAME);
+    let text: string;
+    try {
+      text = await readFile(castPath, 'utf8');
+    } catch {
+      return [];
+    }
+    const replay = buildCastReplayOps(text, chunkBytes);
+    if (!replay) return [];
+
+    const logSize = await this.currentLogSize();
+    if (replay.ops.length === 0 && logSize > 0) return [];
+    const frames: WsControlFrame[] = [
+      {
+        channel: FRAME_CHANNEL.CONTROL,
+        type: 'snapshot',
+        data: '',
+        cols: replay.cols,
+        rows: replay.rows,
+        seq: 0,
+      },
+    ];
+
+    let emitted = 0;
+    for (const op of replay.ops) {
+      if (op.type === 'resize') {
+        frames.push({
+          channel: FRAME_CHANNEL.CONTROL,
+          type: 'resize',
+          cols: op.cols,
+          rows: op.rows,
+        });
+        continue;
+      }
+      const data = Buffer.from(op.data, 'utf8');
+      emitted += data.byteLength;
+      frames.push({
+        channel: FRAME_CHANNEL.CONTROL,
+        type: 'tail_replay',
+        data: data.toString('base64'),
+        seq:
+          replay.outputBytes > 0
+            ? Math.min(logSize, Math.floor((emitted / replay.outputBytes) * logSize))
+            : logSize,
+        final: false,
+      });
+    }
+
+    frames.push(emptyFinalTail(logSize));
     return frames;
   }
 
@@ -413,7 +478,7 @@ export interface ReconnectOptions {
 }
 
 /** The control frames this module emits on reconnect. */
-export type WsControlFrame = SnapshotFrame | TailReplayFrame;
+export type WsControlFrame = SnapshotFrame | TailReplayFrame | ResizeFrame;
 
 /** Convert a captured snapshot into the contracts `SnapshotFrame`. */
 export function toSnapshotFrame(snapshot: CapturedSnapshot): SnapshotFrame {
@@ -436,4 +501,137 @@ function emptyFinalTail(seq: number): TailReplayFrame {
     seq,
     final: true,
   };
+}
+
+interface CastOutputOp {
+  readonly type: 'output';
+  readonly data: string;
+}
+
+interface CastResizeOp {
+  readonly type: 'resize';
+  readonly cols: number;
+  readonly rows: number;
+}
+
+type CastReplayOp = CastOutputOp | CastResizeOp;
+
+interface CastReplay {
+  readonly cols: number;
+  readonly rows: number;
+  readonly ops: CastReplayOp[];
+  readonly outputBytes: number;
+}
+
+function buildCastReplayOps(text: string, chunkBytes: number): CastReplay | null {
+  const lines = text.split('\n').filter((line) => line.trim().length > 0);
+  if (lines.length === 0) return null;
+  const header = parseAsciicastHeader(lines[0] ?? '');
+  if (!header) return null;
+
+  const ops: CastReplayOp[] = [];
+  let pending = '';
+  const flush = (): void => {
+    if (pending.length === 0) return;
+    const stripped = stripAltScreen(pending);
+    pending = '';
+    for (const chunk of splitByUtf8Bytes(stripped, chunkBytes)) {
+      if (chunk.length > 0) ops.push({ type: 'output', data: chunk });
+    }
+  };
+
+  let lastTime = Number.NEGATIVE_INFINITY;
+  for (const line of lines.slice(1)) {
+    if (parseAsciicastHeader(line)) break;
+    const event = parseAsciicastEvent(line);
+    if (!event) continue;
+    const [time, code, data] = event;
+    if (time < lastTime) break;
+    lastTime = time;
+    if (code === 'o') {
+      pending += data;
+    } else if (code === 'r') {
+      flush();
+      const resize = parseResizeData(data);
+      if (resize) ops.push({ type: 'resize', ...resize });
+    }
+  }
+  flush();
+
+  const capped = capCastReplayOps(ops, FRESH_CAST_REPLAY_MAX_BYTES);
+  const outputBytes = capped.reduce(
+    (sum, op) => sum + (op.type === 'output' ? Buffer.byteLength(op.data, 'utf8') : 0),
+    0,
+  );
+  return { cols: header.width, rows: header.height, ops: capped, outputBytes };
+}
+
+/** Matches the alternate-screen switch: `ESC [ ? (1049|1047|47) (h|l)`. */
+// eslint-disable-next-line no-control-regex
+const ALT_SCREEN_RE = /\x1b\[\?(?:1049|1047|47)[hl]/g;
+const ALT_SCREEN_EXIT_CLEAR_RE =
+  // eslint-disable-next-line no-control-regex
+  /\x1b\[H\x1b\[2J(?=(?:\x1b(?:\[[0-9;?]*[ -/]*[@-~]|[=>]))*\x1b\[\?(?:1049|1047|47)l)/g;
+
+function stripAltScreen(data: string): string {
+  return data.replace(ALT_SCREEN_EXIT_CLEAR_RE, '').replace(ALT_SCREEN_RE, '');
+}
+
+function parseResizeData(data: string): { cols: number; rows: number } | null {
+  const match = /^(\d+)x(\d+)$/.exec(data.trim());
+  if (!match) return null;
+  const cols = Number(match[1]);
+  const rows = Number(match[2]);
+  if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) {
+    return null;
+  }
+  return { cols, rows };
+}
+
+function splitByUtf8Bytes(value: string, maxBytes: number): string[] {
+  if (value.length === 0) return [];
+  const limit = Math.max(1, maxBytes);
+  const chunks: string[] = [];
+  let current = '';
+  let currentBytes = 0;
+  for (const char of value) {
+    const charBytes = Buffer.byteLength(char, 'utf8');
+    if (current.length > 0 && currentBytes + charBytes > limit) {
+      chunks.push(current);
+      current = '';
+      currentBytes = 0;
+    }
+    current += char;
+    currentBytes += charBytes;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
+function capCastReplayOps(
+  ops: readonly CastReplayOp[],
+  maxOutputBytes: number,
+): CastReplayOp[] {
+  let total = 0;
+  for (const op of ops) {
+    if (op.type === 'output') total += Buffer.byteLength(op.data, 'utf8');
+  }
+  if (total <= maxOutputBytes) return [...ops];
+
+  const keptReversed: CastReplayOp[] = [];
+  let acc = 0;
+  for (let index = ops.length - 1; index >= 0; index -= 1) {
+    const op = ops[index];
+    if (!op) continue;
+    if (op.type === 'output') {
+      if (acc >= maxOutputBytes) continue;
+      acc += Buffer.byteLength(op.data, 'utf8');
+    }
+    keptReversed.push(op);
+  }
+  keptReversed.reverse();
+  return [
+    { type: 'output', data: '⋯ 较早的终端输出已省略（记录过大）\r\n' },
+    ...keptReversed,
+  ];
 }
