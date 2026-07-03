@@ -287,14 +287,34 @@ interface SessionCastState {
   startMs: number;
 }
 
+interface ResizeRepaintSuppressionState {
+  quietTimer?: ReturnType<typeof setTimeout>;
+  maxTimer?: ReturnType<typeof setTimeout>;
+}
+
 interface CastResumeState {
   readonly hasHeader: boolean;
   readonly hasBytes: boolean;
   readonly lastTimeSec: number;
 }
 
+const RESIZE_REPAINT_QUIESCE_MS = readDurationEnv(
+  'CAP_TERMINAL_RESIZE_REPAINT_QUIESCE_MS',
+  300,
+);
+const RESIZE_REPAINT_MAX_MS = readDurationEnv(
+  'CAP_TERMINAL_RESIZE_REPAINT_MAX_MS',
+  2_000,
+);
 const CAST_RESUME_HEAD_BYTES = 4096;
 const CAST_RESUME_TAIL_BYTES = 1024 * 1024;
+
+function readDurationEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
 
 /**
  * The operator-facing projection of a {@link PendingApproval} returned by
@@ -372,6 +392,15 @@ export class TerminalGateway
     SessionCastState
   >();
 
+  /**
+   * Resize-triggered terminal repaints are current-screen redraws, not new agent
+   * output. Keep them live-only so durable history remains a linear transcript.
+   */
+  private readonly resizeRepaintSuppressions = new Map<
+    string,
+    ResizeRepaintSuppressionState
+  >();
+
   private nextClientId = 1;
 
   /**
@@ -435,6 +464,7 @@ export class TerminalGateway
     // session-terminal-replay — drop the cast append state too (the session.cast
     // file persists on the volume for replay, like session.log).
     this.sessionCasts.delete(taskId);
+    this.endResizeRepaintSuppression(taskId);
     // An unregistered task will never legitimately reclaim its old lease, so drop
     // its last-writer record too (bounds the map to live tasks; harmless either
     // way since a stale id can never match a future monotonic clientId).
@@ -971,6 +1001,12 @@ export class TerminalGateway
     const session = this.sessions.get(frame.sessionId);
     if (!session) return;
     const input = Buffer.from(frame.data, 'base64').toString('utf8');
+    // A real operator keystroke is a hard boundary after a resize repaint: any
+    // subsequent PTY output is user/agent activity and must re-enter durable
+    // history so a refresh/reconnect cannot skip it.
+    if (input.length > 0) {
+      this.endResizeRepaintSuppression(frame.sessionId);
+    }
     session.pty.write(input);
     // VR.3 — operator input is activity: reset the idle window so an operator
     // actively driving codex keeps the task alive even between codex outputs.
@@ -1266,7 +1302,7 @@ export class TerminalGateway
     state: ClientState,
     meta?: AgentTerminalOutputMeta,
   ): void {
-    const recordable = meta?.recordable !== false;
+    const recordable = this.isPtyOutputRecordable(state.taskId, meta);
     const bytes = Buffer.byteLength(chunk);
     if (recordable) {
       state.sentBytes += bytes;
@@ -1310,6 +1346,72 @@ export class TerminalGateway
     }
   }
 
+  private isPtyOutputRecordable(
+    taskId: string | null,
+    meta?: AgentTerminalOutputMeta,
+  ): boolean {
+    if (meta?.recordable === false) return false;
+    if (!taskId) return true;
+    const suppression = this.resizeRepaintSuppressions.get(taskId);
+    if (!suppression) return true;
+    this.armResizeRepaintQuietTimer(taskId, suppression);
+    return false;
+  }
+
+  private beginResizeRepaintSuppression(taskId: string): void {
+    if (RESIZE_REPAINT_MAX_MS <= 0) return;
+    let suppression = this.resizeRepaintSuppressions.get(taskId);
+    if (!suppression) {
+      suppression = {};
+      this.resizeRepaintSuppressions.set(taskId, suppression);
+    }
+    this.clearResizeRepaintTimers(suppression);
+    suppression.maxTimer = setTimeout(() => {
+      this.endResizeRepaintSuppression(taskId);
+    }, RESIZE_REPAINT_MAX_MS);
+    suppression.maxTimer.unref?.();
+    this.armResizeRepaintQuietTimer(taskId, suppression);
+  }
+
+  private armResizeRepaintQuietTimer(
+    taskId: string,
+    suppression = this.resizeRepaintSuppressions.get(taskId),
+  ): void {
+    if (!suppression) return;
+    if (suppression.quietTimer) {
+      clearTimeout(suppression.quietTimer);
+      suppression.quietTimer = undefined;
+    }
+    if (RESIZE_REPAINT_QUIESCE_MS <= 0) {
+      this.endResizeRepaintSuppression(taskId);
+      return;
+    }
+    suppression.quietTimer = setTimeout(() => {
+      this.endResizeRepaintSuppression(taskId);
+    }, RESIZE_REPAINT_QUIESCE_MS);
+    suppression.quietTimer.unref?.();
+  }
+
+  private endResizeRepaintSuppression(taskId: string): void {
+    const suppression = this.resizeRepaintSuppressions.get(taskId);
+    if (!suppression) return;
+    this.clearResizeRepaintTimers(suppression);
+    this.resizeRepaintSuppressions.delete(taskId);
+  }
+
+  private clearResizeRepaintTimers(
+    suppression: ResizeRepaintSuppressionState,
+  ): void {
+    if (suppression.quietTimer) {
+      clearTimeout(suppression.quietTimer);
+      suppression.quietTimer = undefined;
+    }
+    if (suppression.maxTimer) {
+      clearTimeout(suppression.maxTimer);
+      suppression.maxTimer = undefined;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Reconnect: snapshot + tail-replay (5.4)
   // -------------------------------------------------------------------------
@@ -1348,6 +1450,7 @@ export class TerminalGateway
       typeof frame.cols === 'number' &&
       typeof frame.rows === 'number'
     ) {
+      this.beginResizeRepaintSuppression(taskId);
       session.pty.resize(frame.cols, frame.rows);
       session.snapshots.resizeHeadless(frame.cols, frame.rows);
     }
@@ -1433,6 +1536,7 @@ export class TerminalGateway
     // so cols/rows stay in sync with the browser (VR.8). Also update the
     // SnapshotManager's headless terminal so subsequent snapshots record the
     // updated geometry.
+    this.beginResizeRepaintSuppression(state.taskId);
     session.pty.resize(frame.cols, frame.rows);
     session.snapshots.resizeHeadless(frame.cols, frame.rows);
     // session-terminal-replay — record the resize as an asciicast `r` event so
@@ -1474,7 +1578,7 @@ export class TerminalGateway
     meta?: AgentTerminalOutputMeta,
   ): void {
     const session = this.sessions.get(taskId);
-    const recordable = meta?.recordable !== false;
+    const recordable = this.isPtyOutputRecordable(taskId, meta);
     // Encode ONCE so the bytes written to disk are byte-for-byte the bytes the
     // snapshot offset advances by (UTF-8 char length can differ from byte length).
     const payload = Buffer.from(chunk, 'utf8');
