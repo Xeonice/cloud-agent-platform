@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.5](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.4...v0.27.5) (2026-07-03)
+
+
+### Bug Fixes
+
+* **terminal:** keep resize repaints out of replay history ([b0165e0](https://github.com/Xeonice/cloud-agent-platform/commit/b0165e00ecd772c8df03c051846c1f0bf09aecf6))
+
 ## [0.27.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.3...v0.27.4) (2026-07-02)
 
 
