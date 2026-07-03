@@ -9,28 +9,38 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ReposService } from './repos.service';
+import { normalizeRepoGitSource, ReposService } from './repos.service';
 import type { PrismaService } from '../prisma/prisma.service';
 
-function service() {
-  let captured: { forge: string | null } | undefined;
+function repoRow(overrides: Partial<{
+  id: string;
+  name: string;
+  gitSource: string;
+  forge: string | null;
+}> = {}) {
+  return {
+    id: overrides.id ?? '11111111-1111-4111-8111-111111111111',
+    name: overrides.name ?? 'repo',
+    gitSource: overrides.gitSource ?? 'https://gitlab.com/g/p.git',
+    createdAt: new Date(0),
+    description: null,
+    defaultBranch: null,
+    branchCount: null,
+    updatedAt: null,
+    githubId: null,
+    isDefault: false,
+    forge: overrides.forge ?? null,
+  };
+}
+
+function service(existing: ReturnType<typeof repoRow> | null = null) {
+  let captured: { name: string; gitSource: string; forge: string | null } | undefined;
   const prisma = {
     repo: {
+      findFirst: async () => existing,
       create: async (args: { data: { name: string; gitSource: string; forge: string | null } }) => {
-        captured = { forge: args.data.forge };
-        return {
-          id: '11111111-1111-4111-8111-111111111111',
-          name: args.data.name,
-          gitSource: args.data.gitSource,
-          createdAt: new Date(0),
-          description: null,
-          defaultBranch: null,
-          branchCount: null,
-          updatedAt: null,
-          githubId: null,
-          isDefault: false,
-          forge: args.data.forge,
-        };
+        captured = args.data;
+        return repoRow(args.data);
       },
     },
   } as unknown as PrismaService;
@@ -58,10 +68,11 @@ test('explicit forge wins over host inference', async () => {
   const { svc, captured } = service();
   const res = await svc.create({
     name: 'app',
-    gitSource: 'https://git.corp.com/team/app.git',
+    gitSource: 'https://git.corp.com/team/app.git/',
     forge: 'gitlab',
   });
   assert.equal(captured()?.forge, 'gitlab');
+  assert.equal(captured()?.gitSource, 'https://git.corp.com/team/app.git');
   assert.equal(res.forge, 'gitlab');
 });
 
@@ -70,4 +81,43 @@ test('self-hosted host with no explicit forge → null', async () => {
   const res = await svc.create({ name: 'app', gitSource: 'https://git.corp.com/team/app.git' });
   assert.equal(captured()?.forge, null);
   assert.equal(res.forge ?? null, null);
+});
+
+test('normalizes http clone URLs and strips query/hash/trailing slash', async () => {
+  assert.equal(
+    normalizeRepoGitSource(' HTTPS://GITEE.COM/team/app.git/?utm=1#readme '),
+    'https://gitee.com/team/app.git',
+  );
+});
+
+test('rejects credential-bearing clone URLs', async () => {
+  try {
+    normalizeRepoGitSource('https://token:gitee-secret@gitee.com/team/app.git');
+    assert.fail('expected credential-bearing URL to throw');
+  } catch (err) {
+    const response = (err as { getResponse?: () => unknown }).getResponse?.();
+    assert.equal(
+      (response as { error?: string }).error,
+      'repo_git_source_credentials_forbidden',
+    );
+  }
+});
+
+test('duplicate normalized gitSource returns existing repo instead of creating', async () => {
+  const existing = repoRow({
+    id: '22222222-2222-4222-8222-222222222222',
+    name: 'already',
+    gitSource: 'https://gitee.com/team/app.git',
+    forge: 'gitee',
+  });
+  const { svc, captured } = service(existing);
+  const res = await svc.create({
+    name: 'new name',
+    gitSource: 'https://gitee.com/team/app.git/',
+    forge: 'gitee',
+  });
+  assert.equal(captured(), undefined);
+  assert.equal(res.id, existing.id);
+  assert.equal(res.name, 'already');
+  assert.equal(res.gitSource, 'https://gitee.com/team/app.git');
 });

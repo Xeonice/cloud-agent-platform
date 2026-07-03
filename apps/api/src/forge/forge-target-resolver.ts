@@ -4,6 +4,18 @@ import { decryptStored } from '../settings/secret-storage';
 import { DefaultForgeRegistry } from './forge-registry';
 import type { ForgeKind, ForgeTarget } from './forge.port';
 
+function legacyHostFilters(host: string): Array<
+  { host: string } | { host: { startsWith: string } }
+> {
+  return [
+    { host },
+    { host: `https://${host}` },
+    { host: `http://${host}` },
+    { host: { startsWith: `https://${host}/` } },
+    { host: { startsWith: `http://${host}/` } },
+  ];
+}
+
 /**
  * Resolves a task to a fully-credentialed {@link ForgeTarget} for push-back
  * (add-multi-forge-task-delivery). Detection (registry) + OWNER-SCOPED credential:
@@ -65,9 +77,15 @@ export class ForgeTargetResolver {
     host: string,
     env: NodeJS.ProcessEnv,
   ): Promise<string | null> {
-    const row = await this.prisma.forgeCredential.findUnique({
+    const exact = await this.prisma.forgeCredential.findUnique({
       where: { userId_kind_host: { userId, kind, host } },
     });
+    const row =
+      exact ??
+      (await this.prisma.forgeCredential.findFirst({
+        where: { userId, kind, OR: legacyHostFilters(host) },
+        orderBy: { updatedAt: 'desc' },
+      }));
     return decryptStored(row?.tokenCiphertext, env);
   }
 

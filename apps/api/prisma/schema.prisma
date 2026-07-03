@@ -790,6 +790,11 @@ model ForgeCredential {
   /// Connection state: `connected` | `not_connected`.
   state String
 
+  /// API/listing validation status: `verified` | `unverified`. `unverified`
+  /// credentials are still connected for git clone/push; only repo-list/API use
+  /// is not proven.
+  apiAccess String @default("verified") @map("api_access")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

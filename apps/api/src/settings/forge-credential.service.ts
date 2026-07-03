@@ -7,6 +7,7 @@ import {
 import type {
   ConnectForgeCredentialRequest,
   ForgeConnection,
+  ForgeCredentialApiAccess,
   ForgeCredential,
   ForgeCredentialState,
   ForgeKind,
@@ -15,7 +16,11 @@ import type {
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import { DefaultForgeRegistry } from '../forge/forge-registry';
-import type { AvailableRepo, ForgeTarget } from '../forge/forge.port';
+import {
+  ForgeHttpError,
+  type AvailableRepo,
+  type ForgeTarget,
+} from '../forge/forge.port';
 import { maskApiKeySuffix } from './settings-crypto';
 import {
   assertEncryptionKeyValidIfConfigured,
@@ -46,6 +51,47 @@ const API_SUFFIX: Record<ForgeKind, string> = {
 
 /** Timeout for the connect-time token validation probe. */
 const VALIDATE_TIMEOUT_MS = 10_000;
+
+type StoredForgeCredential = {
+  token: string;
+  apiAccess: ForgeCredentialApiAccess;
+};
+
+function legacyHostFilters(host: string): Array<
+  { host: string } | { host: { startsWith: string } }
+> {
+  return [
+    { host },
+    { host: `https://${host}` },
+    { host: `http://${host}` },
+    { host: { startsWith: `https://${host}/` } },
+    { host: { startsWith: `http://${host}/` } },
+  ];
+}
+
+/**
+ * Normalize user-facing host input into the canonical persisted forge host.
+ *
+ * Operators often paste `https://git.example.com/` from a browser address bar.
+ * Persisting that verbatim breaks `(kind, host)` lookup against repo clone URLs,
+ * which naturally resolve to just `git.example.com`.
+ */
+export function normalizeForgeHostInput(input: string | null | undefined, fallback: string): string {
+  const raw = (input?.trim() || fallback).trim();
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    return new URL(candidate).host.toLowerCase();
+  } catch {
+    return raw
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+      .replace(/\/.*$/, '')
+      .toLowerCase();
+  }
+}
+
+function normalizeApiAccess(value: unknown): ForgeCredentialApiAccess {
+  return value === 'unverified' ? 'unverified' : 'verified';
+}
 
 /**
  * Stores + manages forge (code-hosting) push-back credentials (add-forge-credentials).
@@ -78,9 +124,9 @@ export class ForgeCredentialService implements OnModuleInit {
     host?: string,
   ): Promise<AvailableRepo[]> {
     const userId = await this.requireUserId(operator);
-    const resolvedHost = (host?.trim() || PUBLIC_HOST[kind]).toLowerCase();
-    const token = await this.getForgeCredential(userId, kind, resolvedHost);
-    if (!token) {
+    const resolvedHost = normalizeForgeHostInput(host, PUBLIC_HOST[kind]);
+    const credential = await this.getStoredForgeCredential(userId, kind, resolvedHost);
+    if (!credential) {
       throw new BadRequestException({
         error: 'forge_not_connected',
         message: `No connected ${kind} credential to list repositories from.`,
@@ -91,14 +137,24 @@ export class ForgeCredentialService implements OnModuleInit {
     const target: ForgeTarget = {
       kind,
       apiBaseUrl,
-      token,
+      token: credential.token,
       cloneUrl: '',
       repoId:
         kind === 'gitlab'
           ? { style: 'project', idOrPath: '' }
           : { style: 'owner-repo', owner: '', repo: '' },
     };
-    return this.registry.forKind(kind).listRepos(target);
+    try {
+      return await this.registry.forKind(kind).listRepos(target);
+    } catch (err) {
+      throw new BadRequestException({
+        error: 'forge_list_unavailable',
+        reason: this.listUnavailableReason(credential.apiAccess, err),
+        message:
+          'The connected forge credential was saved for git operations, but ' +
+          'the repository list API is unavailable. Import by repository URL instead.',
+      });
+    }
   }
 
   /**
@@ -118,29 +174,30 @@ export class ForgeCredentialService implements OnModuleInit {
   ): Promise<ForgeCredential> {
     const userId = await this.requireUserId(operator);
     const kind = request.kind;
-    const host = (request.host?.trim() || PUBLIC_HOST[kind]).toLowerCase();
+    const host = normalizeForgeHostInput(request.host, PUBLIC_HOST[kind]);
     const apiBase = await this.resolveApiBase(kind, host);
 
     const valid = await this.validateToken(kind, apiBase, request.token);
-    if (!valid) {
-      throw new BadRequestException({
-        error: 'forge_token_invalid',
-        message:
-          'The forge token could not be validated (revoked, insufficient ' +
-          'scope, or the forge was unreachable). Nothing was stored.',
-      });
-    }
+    const apiAccess: ForgeCredentialApiAccess = valid ? 'verified' : 'unverified';
 
     const tokenCiphertext = encryptToStored(request.token, env);
     const tokenLast4 = maskApiKeySuffix(request.token);
 
     await this.prisma.forgeCredential.upsert({
       where: { userId_kind_host: { userId, kind, host } },
-      create: { userId, kind, host, tokenCiphertext, tokenLast4, state: 'connected' },
-      update: { tokenCiphertext, tokenLast4, state: 'connected' },
+      create: {
+        userId,
+        kind,
+        host,
+        tokenCiphertext,
+        tokenLast4,
+        state: 'connected',
+        apiAccess,
+      },
+      update: { tokenCiphertext, tokenLast4, state: 'connected', apiAccess },
     });
 
-    return { kind, host, state: 'connected', last4: tokenLast4 };
+    return { kind, host, state: 'connected', apiAccess, last4: tokenLast4 };
   }
 
   /** Secret-free list of the operator's connected forges. */
@@ -154,6 +211,7 @@ export class ForgeCredentialService implements OnModuleInit {
       kind: r.kind as ForgeKind,
       host: r.host,
       state: r.state as ForgeCredentialState,
+      apiAccess: normalizeApiAccess((r as { apiAccess?: unknown }).apiAccess),
       last4: r.tokenLast4,
     }));
   }
@@ -165,8 +223,9 @@ export class ForgeCredentialService implements OnModuleInit {
     host: string,
   ): Promise<void> {
     const userId = await this.requireUserId(operator);
+    const normalizedHost = normalizeForgeHostInput(host, PUBLIC_HOST[kind]);
     await this.prisma.forgeCredential.deleteMany({
-      where: { userId, kind, host: host.toLowerCase() },
+      where: { userId, kind, OR: legacyHostFilters(normalizedHost) },
     });
   }
 
@@ -181,9 +240,7 @@ export class ForgeCredentialService implements OnModuleInit {
     host: string,
     env: NodeJS.ProcessEnv = process.env,
   ): Promise<string | null> {
-    const row = await this.prisma.forgeCredential.findUnique({
-      where: { userId_kind_host: { userId, kind, host: host.toLowerCase() } },
-    });
+    const row = await this.findForgeCredentialRow(userId, kind, host);
     return decryptStored(row?.tokenCiphertext, env);
   }
 
@@ -191,8 +248,8 @@ export class ForgeCredentialService implements OnModuleInit {
   async registerConnection(
     request: RegisterForgeConnectionRequest,
   ): Promise<ForgeConnection> {
-    const host = request.host.trim().toLowerCase();
     const kind = request.kind;
+    const host = normalizeForgeHostInput(request.host, request.host);
     const apiBaseUrl = request.apiBaseUrl?.trim() || `https://${host}${API_SUFFIX[kind]}`;
     const row = await this.prisma.forgeConnection.upsert({
       where: { host },
@@ -222,14 +279,65 @@ export class ForgeCredentialService implements OnModuleInit {
 
   /** Resolve the forge API base for a host (public inference or the registry). */
   private async resolveApiBase(kind: ForgeKind, host: string): Promise<string> {
-    if (host === PUBLIC_HOST[kind]) {
+    const resolvedHost = normalizeForgeHostInput(host, PUBLIC_HOST[kind]);
+    if (resolvedHost === PUBLIC_HOST[kind]) {
       return PUBLIC_API_BASE[kind];
     }
-    const conn = await this.prisma.forgeConnection.findUnique({ where: { host } });
+    const conn = await this.prisma.forgeConnection.findUnique({
+      where: { host: resolvedHost },
+    });
     if (conn?.apiBaseUrl) {
       return conn.apiBaseUrl;
     }
-    return `https://${host}${API_SUFFIX[kind]}`;
+    return `https://${resolvedHost}${API_SUFFIX[kind]}`;
+  }
+
+  private async getStoredForgeCredential(
+    userId: string,
+    kind: ForgeKind,
+    host: string,
+    env: NodeJS.ProcessEnv = process.env,
+  ): Promise<StoredForgeCredential | null> {
+    const row = await this.findForgeCredentialRow(userId, kind, host);
+    const token = decryptStored(row?.tokenCiphertext, env);
+    if (!token) {
+      return null;
+    }
+    return {
+      token,
+      apiAccess: normalizeApiAccess((row as { apiAccess?: unknown } | null)?.apiAccess),
+    };
+  }
+
+  private async findForgeCredentialRow(
+    userId: string,
+    kind: ForgeKind,
+    host: string,
+  ) {
+    const resolvedHost = normalizeForgeHostInput(host, PUBLIC_HOST[kind]);
+    const exact = await this.prisma.forgeCredential.findUnique({
+      where: { userId_kind_host: { userId, kind, host: resolvedHost } },
+    });
+    if (exact) {
+      return exact;
+    }
+    return this.prisma.forgeCredential.findFirst({
+      where: { userId, kind, OR: legacyHostFilters(resolvedHost) },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  private listUnavailableReason(
+    apiAccess: ForgeCredentialApiAccess,
+    err: unknown,
+  ): string {
+    if (apiAccess === 'unverified') {
+      return 'api_unverified';
+    }
+    if (err instanceof ForgeHttpError && (err.status === 401 || err.status === 403)) {
+      return 'permission_denied';
+    }
+    return 'forge_unavailable';
   }
 
   /**

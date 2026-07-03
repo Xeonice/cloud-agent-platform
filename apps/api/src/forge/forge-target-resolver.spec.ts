@@ -31,7 +31,10 @@ function resolver(opts: {
   const prisma = {
     task: { findUnique: async () => ({ repo: { gitSource: 'https://gitlab.com/g/p.git' } }) },
     auditEvent: { findFirst: async () => (opts.ownerId ? { userId: opts.ownerId } : null) },
-    forgeCredential: { findUnique: async () => opts.forgeCredential ?? null },
+    forgeCredential: {
+      findUnique: async () => opts.forgeCredential ?? null,
+      findFirst: async () => null,
+    },
   } as unknown as PrismaService;
   const registry = {
     detect: async () => (opts.location === undefined ? GITLAB_LOC : opts.location),
@@ -76,4 +79,30 @@ test('github public-host with no forge PAT resolves to null', async () => {
   });
   const target = await r.getForgeTarget('t1', ENV);
   assert.equal(target, null);
+});
+
+test('legacy scheme-prefixed credential host resolves for URL-imported repos', async () => {
+  const stored = encryptToStored('gitee-legacy-host-secret', ENV);
+  const giteeLoc: ForgeLocation = {
+    kind: 'gitee',
+    apiBaseUrl: 'https://gitee.internal/api/v5',
+    cloneUrl: 'https://gitee.internal/team/app.git',
+    repoId: { style: 'owner-repo', owner: 'team', repo: 'app' },
+  };
+  const prisma = {
+    task: {
+      findUnique: async () => ({ repo: { gitSource: 'https://gitee.internal/team/app.git' } }),
+    },
+    auditEvent: { findFirst: async () => ({ userId: 'u1' }) },
+    forgeCredential: {
+      findUnique: async () => null,
+      findFirst: async () => ({ tokenCiphertext: stored }),
+    },
+  } as unknown as PrismaService;
+  const registry = {
+    detect: async () => giteeLoc,
+  } as unknown as DefaultForgeRegistry;
+  const target = await new ForgeTargetResolver(prisma, registry).getForgeTarget('t1', ENV);
+  assert.equal(target?.token, 'gitee-legacy-host-secret');
+  assert.equal(target?.cloneUrl, 'https://gitee.internal/team/app.git');
 });

@@ -493,9 +493,23 @@ export const ForgeCredentialStateSchema = z.enum(['not_connected', 'connected'])
 export type ForgeCredentialState = z.infer<typeof ForgeCredentialStateSchema>;
 
 /**
+ * Whether the saved token has been proven usable for forge API reads.
+ *
+ * `unverified` still means the git credential is connected and may be used for
+ * clone/push. It only says the API probe/listing path could not be proven (common
+ * for internal Gitee tokens that grant git clone/push but deny repo-list APIs).
+ */
+export const ForgeCredentialApiAccessSchema = z.enum(['verified', 'unverified']);
+export type ForgeCredentialApiAccess = z.infer<
+  typeof ForgeCredentialApiAccessSchema
+>;
+
+/**
  * Forge credential READ shape (secret-free). The token is NEVER returned: only
  * `kind`, the forge `host`, the connection `state`, and an optional masked
- * `last4` suffix for display. There is intentionally NO plaintext token field.
+ * `last4` suffix for display. `apiAccess` is non-secret status describing the
+ * repo-list/API probe only; `unverified` credentials remain connected for git
+ * clone/push. There is intentionally NO plaintext token field.
  */
 export const ForgeCredentialSchema = z.object({
   /** Forge kind. */
@@ -504,6 +518,8 @@ export const ForgeCredentialSchema = z.object({
   host: z.string().min(1),
   /** Connection state. */
   state: ForgeCredentialStateSchema,
+  /** API/listing validation status. Optional for backward-compatible reads. */
+  apiAccess: ForgeCredentialApiAccessSchema.optional(),
   /** Optional masked suffix of the stored token for display only. */
   last4: z.string().min(1).nullable().optional(),
 });
