@@ -1,5 +1,7 @@
 把任务在沙箱里的改动**推回你的仓库并自动开 PR / MR**，需要一个有「读写仓库 + 创建 PR/MR」权限的访问令牌（Personal Access Token）。令牌按账户 AES‑256‑GCM 加密存储，仅在任务推送 / 开 PR 时由服务端解密；保存后界面只展示后 4 位。
 
+有些内网 Gitee 只给 clone / push 权限，不允许读取仓库列表 API。这种令牌仍可保存为 git 操作凭据；导入仓库时直接粘贴仓库 HTTP(S) URL，不需要先同步仓库列表。
+
 下面每个平台都给两种方式：**网页版**（给人，一键打开已预填的创建页）和 **终端版（Agent）**（给沙箱里的 agent，命令优先）。
 
 ## GitHub
@@ -47,7 +49,7 @@ glab auth status
 
 ## Gitee
 
-**所需 scope：`projects` + `pull_requests`**。同样**需要实例地址**（默认 `gitee.com`）。
+**完整功能 scope：`projects` + `pull_requests`**。如果你的内网 Gitee token 只有 git clone / push 权限，仍可连接并通过 URL 导入仓库，但仓库列表和自动开 PR 可能不可用。同样**需要实例地址**（默认 `gitee.com`）。
 
 ### 网页版
 
@@ -55,7 +57,7 @@ glab auth status
 
   公有版示例：[https://gitee.com/profile/personal_access_tokens](https://gitee.com/profile/personal_access_tokens)
 
-  **生成新令牌 → 手动勾选 `projects` 和 `pull_requests` → 提交**（可能二次输入登录密码）→ 复制令牌 → 回控制台「Gitee → 连接」粘贴。
+  **生成新令牌 → 手动勾选 `projects` 和 `pull_requests` → 提交**（可能二次输入登录密码）→ 复制令牌 → 回控制台「Gitee → 连接」粘贴。若实例策略只允许 git 权限，保存后在「添加仓库」中使用 URL 导入。
 - ⚠️ Gitee **没有** scope 预填参数（不同于 GitHub / GitLab），scope 只能在页面里手动勾。
 
 ### 终端版（Agent）

@@ -379,6 +379,8 @@ The four standalone pages SHALL faithfully reproduce the design revision's desig
 ### Requirement: Repositories import page
 The `/repositories` page SHALL render a screen-header (添加仓库 button), 4 stat-tiles (the DEFAULT tile bound to `selectedRepo`), an imported-repos panel (Card list with column headers and an imported-count Badge sourced from the repos query), and an import Dialog with a pending-empty → loading → filterable-list flow (the candidate list from the GitHub import query, the imported list from the repos query). Importing SHALL add to `importedRepos`, set the default, and toast; the page SHALL provide `setAsDefault`. The Dialog SHALL be accessible (`role`/`aria-modal`/`aria-labelledby`, `Escape`, backdrop dismiss, focus management).
 
+The `/repositories` import dialog SHALL provide a URL import path for forge repositories in addition to the existing list-based picker. For GitLab, Gitee, GitHub, and self-hosted forge sources, an operator SHALL be able to paste an HTTP(S) git URL, select or confirm the forge kind when it cannot be inferred, and submit the repo through the create-repo mutation without first syncing the repository list. The URL form SHALL reject credential-bearing URLs and SHALL explain that credentials are managed through the code-hosting connection settings. When the list-based sync for a selected forge fails because the token cannot list repositories or the forge API is unavailable, the dialog SHALL keep the URL import path visible and present the failure as "listing unavailable" rather than "not connected" or "no repositories". The dialog SHALL continue to show the list picker when listing succeeds.
+
 #### Scenario: Import flow proceeds through its states
 - **WHEN** the operator opens the import Dialog
 - **THEN** it shows the pending-empty state, then a loading state, then a filterable candidate list, and selecting a repo imports it (adding to `importedRepos`, setting it default, and toasting)
@@ -390,6 +392,23 @@ The `/repositories` page SHALL render a screen-header (添加仓库 button), 4 s
 #### Scenario: Import Dialog is accessible
 - **WHEN** the import Dialog is open
 - **THEN** it exposes `role="dialog"`/`aria-modal`/`aria-labelledby`, traps focus, and closes on `Escape` or backdrop click
+
+#### Scenario: Import by URL without syncing the list
+- **WHEN** an operator opens the repository import dialog, selects Gitee, and pastes `https://gitee.internal/team/app.git`
+- **THEN** the dialog can submit `POST /repos` with the pasted `gitSource` and `forge='gitee'` without first calling the repository list API
+
+#### Scenario: Listing failure keeps URL import available
+- **WHEN** the operator's connected Gitee credential cannot call the repository listing API
+- **THEN** the dialog shows a list-unavailable message and keeps the URL import controls usable
+- **AND** it does not render the state as an empty repository list
+
+#### Scenario: Credential-bearing URL is rejected in the browser
+- **WHEN** an operator pastes a URL that includes username/password/token userinfo
+- **THEN** the dialog blocks submission and tells the operator to store the token in code-hosting settings instead
+
+#### Scenario: API-unverified forge credential is described honestly
+- **WHEN** settings or import UI shows a connected forge credential whose API access is unverified
+- **THEN** the UI indicates that clone/push may work but repository listing and PR/MR creation may require broader API permissions
 
 ### Requirement: Settings page with account, GitHub, and Codex sections
 The `/settings` page SHALL render a left secondary anchor navigation grouping account/github/codex/safety, a system-strip of 3 cards, and a settings grid: an identity card (Avatar) and an access-and-defaults form (`allowedAccount`, default repo from the repos query, `retention`, `writeConfirm`, and a task slot ceiling numeric control bound to the system-level `maxConcurrentTasks` setting, client-validated as an integer in the range 1–20 with default 5), plus a Codex login section (status card + Tabs: 官方 Codex / 兼容提供方). The slot ceiling control SHALL be presented as a system-wide value shared by all allowlisted operators (not a per-account preference), and a value outside 1–20 (or a non-integer) SHALL NOT be submitted. The Codex section SHALL provide two dialogs — a direct authorize dialog (scope list + connect/connected states) and an api-key dialog (Base URL + API Key as a password field + fetch-available-models → model-picker → select default model → save/test). The credential status (未连接/未保存/已连接) SHALL stay synchronized across the status card, the tab subtitle, and the provider pill; a saved API key SHALL NOT be re-displayed in plaintext. Saving SHALL run `saveSettingsMutation` (write store + invalidate the settings query, ADDITIONALLY invalidating the metrics query on success so a changed slot ceiling is reflected on the dashboard capacity surfaces before the next 5-second poll); a reset action SHALL restore defaults (including the slot ceiling default of 5). The page SHALL keep GitHub OAuth (who may enter the console) and Codex credentials (which model runs tasks) as two distinct concepts and SHALL NOT conflate Codex credentials with console login.

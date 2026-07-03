@@ -98,6 +98,74 @@ export function isAlreadyImported(
   );
 }
 
+export type ImportGitUrlParseResult =
+  | { ok: true; gitSource: string; name: string }
+  | { ok: false; message: string };
+
+export function parseImportGitUrl(value: string): ImportGitUrlParseResult {
+  const raw = value.trim();
+  if (raw.length === 0) {
+    return { ok: false, message: "请填写仓库 URL。" };
+  }
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { ok: false, message: "仓库 URL 格式不正确。" };
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return { ok: false, message: "仓库 URL 仅支持 HTTP(S)。" };
+  }
+  if (url.username || url.password) {
+    return { ok: false, message: "仓库 URL 不能包含用户名、密码或令牌。" };
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  if (path === "") {
+    return { ok: false, message: "仓库 URL 需要包含项目路径。" };
+  }
+  url.protocol = url.protocol.toLowerCase();
+  url.hostname = url.hostname.toLowerCase();
+  url.pathname = path;
+  url.search = "";
+  url.hash = "";
+  const segment = path.split("/").filter(Boolean).at(-1) ?? "repository";
+  let decodedSegment = segment;
+  try {
+    decodedSegment = decodeURIComponent(segment);
+  } catch {
+    decodedSegment = segment;
+  }
+  const name = decodedSegment.replace(/\.git$/i, "") || "repository";
+  return { ok: true, gitSource: url.toString(), name };
+}
+
+export function forgeListErrorCopy(
+  errorMessage: string,
+  source: ForgeKind,
+): { pill: string; variant: "danger" | "warn"; message: string } {
+  if (errorMessage.includes("forge_not_connected")) {
+    return {
+      pill: "未连接",
+      variant: "danger",
+      message: `请先在「设置 · 代码托管连接」中连接 ${
+        source === "gitlab" ? "GitLab" : "Gitee"
+      }，再拉取仓库列表。`,
+    };
+  }
+  if (errorMessage.includes("forge_list_unavailable")) {
+    return {
+      pill: "列表不可用",
+      variant: "warn",
+      message: "当前连接无法读取仓库列表，可直接使用上方 URL 导入。",
+    };
+  }
+  return {
+    pill: "列表不可用",
+    variant: "warn",
+    message: "暂时无法读取仓库列表，可直接使用上方 URL 导入或稍后重试。",
+  };
+}
+
 /** The 仓库导入 dialog. */
 export function ImportDialog({
   open,
@@ -116,6 +184,10 @@ export function ImportDialog({
   // add-multi-forge-task-delivery: the selected import source (the picker switch).
   const [source, setSource] = React.useState<ForgeKind>("github");
   const [importingPath, setImportingPath] = React.useState<string | null>(null);
+  const [urlValue, setUrlValue] = React.useState("");
+  const [urlName, setUrlName] = React.useState("");
+  const [urlError, setUrlError] = React.useState<string | null>(null);
+  const [importingUrl, setImportingUrl] = React.useState(false);
 
   const githubRepos = useQuery({ ...githubReposQuery(), enabled: armed });
   const importMutation = useMutation(importRepoMutation(queryClient));
@@ -135,6 +207,10 @@ export function ImportDialog({
     setImportingId(null);
     setSource("github");
     setImportingPath(null);
+    setUrlValue("");
+    setUrlName("");
+    setUrlError(null);
+    setImportingUrl(false);
   }, [open]);
 
   const candidates = githubRepos.data ?? [];
@@ -178,7 +254,13 @@ export function ImportDialog({
   // --- forge (gitlab/gitee) picker source ---------------------------------
   const forgeCandidates = forgeRepos.data ?? [];
   const importedGitSources = React.useMemo(
-    () => new Set(importedRepos.map((r) => r.gitSource)),
+    () =>
+      new Set(
+        importedRepos.map((r) => {
+          const parsed = parseImportGitUrl(r.gitSource);
+          return parsed.ok ? parsed.gitSource : r.gitSource.trim();
+        }),
+      ),
     [importedRepos],
   );
   const visibleForge = React.useMemo(() => {
@@ -210,6 +292,32 @@ export function ImportDialog({
     );
   }
 
+  function handleImportUrl() {
+    const parsed = parseImportGitUrl(urlValue);
+    if (!parsed.ok) {
+      setUrlError(parsed.message);
+      return;
+    }
+    setUrlError(null);
+    const displayName = urlName.trim() || parsed.name;
+    setImportingUrl(true);
+    createMutation.mutate(
+      { name: displayName, gitSource: parsed.gitSource, forge: source },
+      {
+        onSuccess: (repo) => {
+          toast.success(`已导入 ${repo.name}`);
+          setImportingUrl(false);
+          setUrlValue("");
+          setUrlName("");
+        },
+        onError: (error) => {
+          setImportingUrl(false);
+          toast.error(`导入失败：${error.message}`);
+        },
+      },
+    );
+  }
+
   // Distinguish the failure modes honestly (task 14.2). A PAT signal (401/403)
   // prompts a settings-side token refresh; everything else is a transient/unknown
   // listing error. An empty-but-successful list is NOT an error.
@@ -229,6 +337,8 @@ export function ImportDialog({
 
   // forge (gitlab/gitee) source states.
   const forgeError = forgeRepos.error;
+  const forgeErrorCopy =
+    forgeError instanceof Error ? forgeListErrorCopy(forgeError.message, source) : null;
   const showForgeLoading = armed && !isGithub && forgeRepos.isLoading;
   const showForgeError = armed && !isGithub && !forgeRepos.isLoading && forgeError != null;
   const showForgeList =
@@ -262,7 +372,7 @@ export function ImportDialog({
               添加仓库
             </DialogTitle>
             <DialogDescription className="max-w-[620px] text-[13px] leading-[1.55] text-muted-foreground">
-              使用设置中的 GitHub PAT 拉取可访问仓库，只把明确选择的项目加入远端调度池。
+              同步可访问仓库，或直接粘贴 HTTP(S) 仓库 URL 加入远端调度池。
             </DialogDescription>
           </div>
           <button
@@ -292,6 +402,7 @@ export function ImportDialog({
                 onClick={() => {
                   setSource(s.kind);
                   setSearch("");
+                  setUrlError(null);
                 }}
                 className={`inline-flex h-8 items-center rounded-md px-3 text-[13px] font-medium ${
                   source === s.kind
@@ -302,6 +413,51 @@ export function ImportDialog({
                 {s.label}
               </button>
             ))}
+          </div>
+
+          <div className="grid gap-3 rounded-lg bg-secondary/40 p-3.5 shadow-ring">
+            <div className="grid gap-1">
+              <h3 className="m-0 text-[14px] font-semibold text-ink">通过 URL 导入</h3>
+              <p className="m-0 text-xs leading-[1.5] text-muted-foreground">
+                适用于只具备 git clone / push 权限、无法读取仓库列表的内网实例。
+              </p>
+            </div>
+            <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_auto] md:items-end">
+              <label className="grid min-w-0 gap-2">
+                <span className="text-[13px] font-semibold text-ink">仓库 URL</span>
+                <input
+                  value={urlValue}
+                  onChange={(e) => {
+                    setUrlValue(e.target.value);
+                    setUrlError(null);
+                  }}
+                  placeholder={`https://${source === "github" ? "github.com" : source === "gitlab" ? "gitlab.com" : "gitee.com"}/team/repo.git`}
+                  className="min-h-10 w-full min-w-0 rounded-md bg-card px-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none placeholder:text-muted-foreground focus-visible:shadow-[inset_0_0_0_1px_var(--foreground),0_0_0_3px_rgba(10,114,239,0.12)]"
+                />
+              </label>
+              <label className="grid min-w-0 gap-2">
+                <span className="text-[13px] font-semibold text-ink">显示名称</span>
+                <input
+                  value={urlName}
+                  onChange={(e) => setUrlName(e.target.value)}
+                  placeholder="自动推断"
+                  className="min-h-10 w-full min-w-0 rounded-md bg-card px-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none placeholder:text-muted-foreground focus-visible:shadow-[inset_0_0_0_1px_var(--foreground),0_0_0_3px_rgba(10,114,239,0.12)]"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={createMutation.isPending || urlValue.trim().length === 0}
+                onClick={handleImportUrl}
+                className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-60"
+              >
+                {importingUrl ? "导入中…" : "导入 URL"}
+              </button>
+            </div>
+            {urlError ? (
+              <p role="alert" className="m-0 text-[13px] text-danger">
+                {urlError}
+              </p>
+            ) : null}
           </div>
 
           {/* State 1: 待拉取 (empty) */}
@@ -475,12 +631,15 @@ export function ImportDialog({
               role="alert"
               className="grid gap-3 rounded-lg bg-[#fff1f0] p-[18px] shadow-ring"
             >
-              <StatusPill variant="danger" className="justify-self-start">
-                未连接
+              <StatusPill
+                variant={forgeErrorCopy?.variant ?? "warn"}
+                className="justify-self-start"
+              >
+                {forgeErrorCopy?.pill ?? "列表不可用"}
               </StatusPill>
               <p className="m-0 text-[13px] leading-[1.55] text-foreground">
-                请先在「设置 · 代码托管连接」中连接{" "}
-                {source === "gitlab" ? "GitLab" : "Gitee"}，再拉取仓库列表。
+                {forgeErrorCopy?.message ??
+                  "暂时无法读取仓库列表，可直接使用上方 URL 导入或稍后重试。"}
               </p>
             </div>
           ) : null}
@@ -525,7 +684,11 @@ export function ImportDialog({
               ) : (
                 <div data-available-repo-list>
                   {visibleForge.map((candidate) => {
-                    const imported = importedGitSources.has(candidate.gitSource);
+                    const parsed = parseImportGitUrl(candidate.gitSource);
+                    const normalizedGitSource = parsed.ok
+                      ? parsed.gitSource
+                      : candidate.gitSource;
+                    const imported = importedGitSources.has(normalizedGitSource);
                     const importing = importingPath === candidate.gitSource;
                     return (
                       <RepoRow

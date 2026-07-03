@@ -35,8 +35,21 @@ const PUBLIC_HOST: Record<ForgeKind, string> = {
 const ROWS: ReadonlyArray<{ kind: ForgeKind; label: string; hint: string }> = [
   { kind: "github", label: "GitHub", hint: "需 repo 范围的 PAT" },
   { kind: "gitlab", label: "GitLab", hint: "需 api 范围的 Personal Access Token" },
-  { kind: "gitee", label: "Gitee", hint: "需 projects + pull_requests 范围的私人令牌" },
+  {
+    kind: "gitee",
+    label: "Gitee",
+    hint: "git clone / push 可用；列表和 PR 需要 API 权限",
+  },
 ];
+
+export function forgeCredentialStatus(apiAccess: string | null | undefined): {
+  label: string;
+  variant: "green" | "warn";
+} {
+  return apiAccess === "unverified"
+    ? { label: "Git 已保存", variant: "warn" }
+    : { label: "已连接", variant: "green" };
+}
 
 export function ForgeCredentialsCard() {
   const queryClient = useQueryClient();
@@ -62,8 +75,12 @@ export function ForgeCredentialsCard() {
     connect.mutate(
       { kind: dialogKind, host: host.trim() || undefined, token: token.trim() },
       {
-        onSuccess: () => {
-          toast.success(`已连接 ${dialogKind}`);
+        onSuccess: (cred) => {
+          toast.success(
+            cred.apiAccess === "unverified"
+              ? `已保存 ${dialogKind} git 凭据；仓库列表 API 未验证`
+              : `已连接 ${dialogKind}`,
+          );
           setDialogKind(null);
         },
         onError: (error) => toast.error(`连接失败：${error.message}`),
@@ -87,13 +104,14 @@ export function ForgeCredentialsCard() {
         <h2 className="m-0 text-[16px] font-semibold text-ink">代码托管连接</h2>
         <p className="m-0 text-[13px] leading-[1.55] text-muted-foreground">
           连接 GitHub / GitLab / Gitee 后，任务完成可把沙箱里的改动推回对应仓库并自动开
-          PR / MR。粘贴对应平台的访问令牌（自托管填写实例地址）；保存后仅展示令牌后缀。
+          PR / MR。仅有 git clone / push 权限的令牌也可保存，仓库列表不可用时使用 URL 导入。
         </p>
       </div>
 
       <div className="grid gap-3">
         {ROWS.map((row) => {
           const cred = byKind(row.kind);
+          const status = forgeCredentialStatus(cred?.apiAccess);
           return (
             <div
               key={row.kind}
@@ -115,8 +133,8 @@ export function ForgeCredentialsCard() {
               </div>
               {cred ? (
                 <div className="flex shrink-0 items-center gap-2">
-                  <StatusPill variant="green">
-                    已连接 {cred.host}
+                  <StatusPill variant={status.variant}>
+                    {status.label} {cred.host}
                     {cred.last4 ? ` ••${cred.last4}` : ""}
                   </StatusPill>
                   <button
@@ -161,7 +179,7 @@ export function ForgeCredentialsCard() {
                 连接 {dialogKind ? ROWS.find((r) => r.kind === dialogKind)?.label : ""}
               </DialogTitle>
               <DialogDescription className="text-[13px] leading-[1.55] text-muted-foreground">
-                在对应平台创建一个访问令牌并粘贴；自托管请填写实例地址。保存后仅展示后缀。
+                在对应平台创建一个访问令牌并粘贴；自托管请填写实例 host。保存后仅展示后缀。
               </DialogDescription>
               <Link
                 to="/help/forge-tokens"
@@ -177,12 +195,12 @@ export function ForgeCredentialsCard() {
             <DialogBody className="grid gap-3.5">
               <label className="grid gap-2">
                 <span className="text-[13px] font-semibold text-ink">
-                  实例地址（自托管，可选）
+                  实例 host（自托管，可选）
                 </span>
                 <input
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
-                  placeholder={dialogKind ? `https://${PUBLIC_HOST[dialogKind]}` : ""}
+                  placeholder={dialogKind ? PUBLIC_HOST[dialogKind] : ""}
                   className="min-h-10 w-full rounded-md bg-card px-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none placeholder:text-muted-foreground"
                 />
               </label>

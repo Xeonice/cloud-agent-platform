@@ -2,8 +2,9 @@
  * add-forge-credentials — ForgeCredentialService DI behavior.
  *
  * Against the REAL service with a fake Prisma + a stubbed global fetch:
- *   - connect: a VALIDATED token is stored encrypted + returned secret-free; an
- *     INVALID token (probe not ok) is rejected and NOTHING is stored.
+ *   - connect: a VALIDATED token is stored encrypted + returned secret-free; a
+ *     token whose API probe fails is still stored for git operations as
+ *     `apiAccess: "unverified"`.
  *   - list: secret-free (kind/host/state/last4 only — never the token).
  *   - getForgeCredential: decrypts the owner-scoped token for change C.
  *   - registerConnection: derives the per-kind apiBase when omitted; private/LAN
@@ -39,6 +40,7 @@ function makePrisma(overrides: Record<string, unknown> = {}) {
       },
       findMany: async () => [],
       findUnique: async () => null,
+      findFirst: async () => null,
       deleteMany: async (args: unknown) => {
         calls.deletes.push(args);
         return { count: 1 };
@@ -76,10 +78,14 @@ test('connect stores an encrypted credential and returns it secret-free', async 
       kind: 'gitlab',
       host: 'git.corp.com',
       state: 'connected',
+      apiAccess: 'verified',
       last4: 'alue',
     });
     assert.equal(calls.upserts.length, 1, 'one upsert');
-    const args = calls.upserts[0] as { create: { tokenCiphertext: string } };
+    const args = calls.upserts[0] as {
+      create: { apiAccess: string; tokenCiphertext: string };
+    };
+    assert.equal(args.create.apiAccess, 'verified');
     assert.ok(!args.create.tokenCiphertext.includes('glpat-supersecret'), 'token encrypted');
     assert.equal(args.create.tokenCiphertext.split('.').length, 3, 'envelope stored');
   } finally {
@@ -87,16 +93,22 @@ test('connect stores an encrypted credential and returns it secret-free', async 
   }
 });
 
-test('connect rejects an invalid token and stores nothing', async () => {
+test('connect stores a probe-failed token as api-unverified for git operations', async () => {
   const { prisma, calls } = makePrisma();
   const svc = new ForgeCredentialService(prisma, REGISTRY);
   const restore = stubFetch(false);
   try {
-    await assert.rejects(
-      () => svc.connect(OPERATOR, { kind: 'github', token: 'ghp_bad' }, ENV),
-      /could not be validated/,
-    );
-    assert.equal(calls.upserts.length, 0, 'no row stored on invalid token');
+    const result = await svc.connect(OPERATOR, { kind: 'github', token: 'ghp_git_only' }, ENV);
+    assert.deepEqual(result, {
+      kind: 'github',
+      host: 'github.com',
+      state: 'connected',
+      apiAccess: 'unverified',
+      last4: 'only',
+    });
+    assert.equal(calls.upserts.length, 1, 'one row stored');
+    const args = calls.upserts[0] as { create: { apiAccess: string } };
+    assert.equal(args.create.apiAccess, 'unverified');
   } finally {
     restore();
   }
@@ -120,14 +132,27 @@ test('list returns secret-free shapes only', async () => {
   const { prisma } = makePrisma({
     forgeCredential: {
       findMany: async () => [
-        { kind: 'github', host: 'github.com', state: 'connected', tokenLast4: 'a91f', tokenCiphertext: 'c.i.t' },
+        {
+          kind: 'github',
+          host: 'github.com',
+          state: 'connected',
+          apiAccess: 'unverified',
+          tokenLast4: 'a91f',
+          tokenCiphertext: 'c.i.t',
+        },
       ],
     },
   });
   const svc = new ForgeCredentialService(prisma, REGISTRY);
   const list = await svc.list(OPERATOR);
   assert.deepEqual(list, [
-    { kind: 'github', host: 'github.com', state: 'connected', last4: 'a91f' },
+    {
+      kind: 'github',
+      host: 'github.com',
+      state: 'connected',
+      apiAccess: 'unverified',
+      last4: 'a91f',
+    },
   ]);
   assert.ok(!JSON.stringify(list).includes('tokenCiphertext'), 'never leaks the ciphertext');
 });
@@ -135,7 +160,10 @@ test('list returns secret-free shapes only', async () => {
 test('getForgeCredential decrypts the owner-scoped token', async () => {
   const stored = encryptToStored('glpat-owner-scoped-secret', ENV);
   const { prisma } = makePrisma({
-    forgeCredential: { findUnique: async () => ({ tokenCiphertext: stored }) },
+    forgeCredential: {
+      findUnique: async () => ({ tokenCiphertext: stored }),
+      findFirst: async () => null,
+    },
   });
   const svc = new ForgeCredentialService(prisma, REGISTRY);
   assert.equal(
@@ -144,10 +172,79 @@ test('getForgeCredential decrypts the owner-scoped token', async () => {
   );
 });
 
+test('getForgeCredential falls back to legacy scheme-prefixed host rows', async () => {
+  const stored = encryptToStored('gitee-owner-scoped-secret', ENV);
+  const { prisma } = makePrisma({
+    forgeCredential: {
+      findUnique: async () => null,
+      findFirst: async () => ({ tokenCiphertext: stored }),
+    },
+  });
+  const svc = new ForgeCredentialService(prisma, REGISTRY);
+  assert.equal(
+    await svc.getForgeCredential('u1', 'gitee', 'gitee.internal', ENV),
+    'gitee-owner-scoped-secret',
+  );
+});
+
 test('registerConnection derives the per-kind apiBase for a private host', async () => {
   const { prisma } = makePrisma();
   const svc = new ForgeCredentialService(prisma, REGISTRY);
-  const conn = await svc.registerConnection({ host: 'git.corp.com', kind: 'gitlab' });
+  const conn = await svc.registerConnection({ host: 'https://git.corp.com/', kind: 'gitlab' });
   assert.equal(conn.apiBaseUrl, 'https://git.corp.com/api/v4');
   assert.equal(conn.host, 'git.corp.com');
+});
+
+test('connect normalizes browser-style hosts before persisting', async () => {
+  const { prisma, calls } = makePrisma();
+  const svc = new ForgeCredentialService(prisma, REGISTRY);
+  const restore = stubFetch(true);
+  try {
+    const result = await svc.connect(
+      OPERATOR,
+      { kind: 'gitee', host: 'https://GITEE.INTERNAL/team', token: 'gitee_tok' },
+      ENV,
+    );
+    assert.equal(result.host, 'gitee.internal');
+    const args = calls.upserts[0] as { create: { host: string } };
+    assert.equal(args.create.host, 'gitee.internal');
+  } finally {
+    restore();
+  }
+});
+
+test('listAvailableRepos reports api-unverified credentials as list unavailable', async () => {
+  const stored = encryptToStored('git-only-token', ENV);
+  const { prisma } = makePrisma({
+    forgeCredential: {
+      findUnique: async () => ({
+        tokenCiphertext: stored,
+        apiAccess: 'unverified',
+      }),
+    },
+  });
+  const registry = {
+    forKind: () => ({
+      listRepos: async () => {
+        throw new Error('denied');
+      },
+    }),
+  } as unknown as DefaultForgeRegistry;
+  const svc = new ForgeCredentialService(prisma, registry);
+  const previousKey = process.env.CODEX_CRED_ENC_KEY;
+  process.env.CODEX_CRED_ENC_KEY = KEY;
+  try {
+    await assert.rejects(
+      () => svc.listAvailableRepos(OPERATOR, 'gitee', 'https://gitee.internal/'),
+      (err) =>
+        JSON.stringify(err).includes('forge_list_unavailable') &&
+        JSON.stringify(err).includes('api_unverified'),
+    );
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.CODEX_CRED_ENC_KEY;
+    } else {
+      process.env.CODEX_CRED_ENC_KEY = previousKey;
+    }
+  }
 });

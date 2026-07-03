@@ -63,6 +63,10 @@ function buildResolver(opts: {
         queriedUserIds.push(uid);
         return opts.credentialsByUserId[uid] ?? null;
       },
+      findFirst: async ({ where }: { where: { userId: string } }) => {
+        queriedUserIds.push(where.userId);
+        return opts.credentialsByUserId[where.userId] ?? null;
+      },
     },
   } as unknown as PrismaService;
 

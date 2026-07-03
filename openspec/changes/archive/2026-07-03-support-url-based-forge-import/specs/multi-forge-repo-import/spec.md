@@ -1,8 +1,5 @@
-# multi-forge-repo-import Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change add-multi-forge-task-delivery. Update Purpose after archive.
-## Requirements
 ### Requirement: Importable repos are listed per connected forge for the picker
 The system SHALL list, for each connected forge whose stored credential has API listing access, the repositories the stored credential can access so the operator can pick which to import — GitHub via its existing import flow, GitLab via `GET /projects?membership=true` (or `owned`/`min_access_level`), and Gitee via `GET /v5/user/repos` — each a paginated platform-process `fetch` to the operator's connected forge, returning entries with at least full path, visibility, and default branch. These calls are ordinary trusted forge calls (the forge is operator-connected) and are NOT routed through `assertSafeProviderUrl`.
 

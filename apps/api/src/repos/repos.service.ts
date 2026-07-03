@@ -1,6 +1,44 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { repoResponseSchema, type CreateRepoBody, type RepoResponse } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
+
+export function normalizeRepoGitSource(gitSource: string): string {
+  const raw = gitSource.trim();
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new BadRequestException({
+      error: 'repo_git_source_invalid',
+      message: 'Repository URL must be a valid HTTP(S) clone URL.',
+    });
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new BadRequestException({
+      error: 'repo_git_source_invalid',
+      message: 'Repository URL must use http or https.',
+    });
+  }
+  if (url.username || url.password) {
+    throw new BadRequestException({
+      error: 'repo_git_source_credentials_forbidden',
+      message: 'Repository URL must not include credentials.',
+    });
+  }
+  const path = url.pathname.replace(/\/+$/, '');
+  if (path === '') {
+    throw new BadRequestException({
+      error: 'repo_git_source_invalid',
+      message: 'Repository URL must include an owner/project path.',
+    });
+  }
+  url.protocol = url.protocol.toLowerCase();
+  url.hostname = url.hostname.toLowerCase();
+  url.pathname = path;
+  url.search = '';
+  url.hash = '';
+  return url.toString();
+}
 
 /**
  * Repository persistence + read service. Every value returned to a controller is
@@ -13,13 +51,21 @@ export class ReposService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(body: CreateRepoBody): Promise<RepoResponse> {
+    const gitSource = normalizeRepoGitSource(body.gitSource);
+    const existing = await this.prisma.repo.findFirst({
+      where: { gitSource },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (existing) {
+      return repoResponseSchema.parse(this.toResponse(existing));
+    }
     // add-multi-forge-task-delivery: record the source forge (explicit, or
     // inferred from the gitSource public host). Self-hosted hosts must supply it.
-    const forge = body.forge ?? ReposService.inferForge(body.gitSource);
+    const forge = body.forge ?? ReposService.inferForge(gitSource);
     const repo = await this.prisma.repo.create({
       data: {
-        name: body.name,
-        gitSource: body.gitSource,
+        name: body.name.trim(),
+        gitSource,
         forge,
       },
     });
