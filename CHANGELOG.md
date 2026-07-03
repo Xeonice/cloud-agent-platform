@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.28.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.5...v0.28.0) (2026-07-03)
+
+
+### Features
+
+* support URL-based forge imports ([86f1359](https://github.com/Xeonice/cloud-agent-platform/commit/86f1359d125cfe4888639b5f514756bea14631e5))
+* support URL-based forge imports ([16f7f96](https://github.com/Xeonice/cloud-agent-platform/commit/16f7f961dbd1ca67576b74eb8364e8fd2c786e87))
+
 ## [0.27.5](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.4...v0.27.5) (2026-07-03)
 
 
