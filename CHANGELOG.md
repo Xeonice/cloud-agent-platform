@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.29.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.28.0...v0.29.0) (2026-07-06)
+
+
+### Features
+
+* **sandbox:** add managed sandbox environments ([89d3e9f](https://github.com/Xeonice/cloud-agent-platform/commit/89d3e9f5d7b69a9985c8749a7db9c2987798e0fa))
+* **sandbox:** add managed sandbox environments ([08972b6](https://github.com/Xeonice/cloud-agent-platform/commit/08972b6d25698d6bb8621df53ade7048f571b8ea))
+
 ## [0.28.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.27.5...v0.28.0) (2026-07-03)
 
 
