@@ -1,4 +1,5 @@
 export * from '@cap/sandbox-core';
+export * from '@cap/sandbox-environment';
 export * from './provider-center/index.js';
 export * from './host-harness/index.js';
 export * from './terminal/backpressure.js';

@@ -43,6 +43,13 @@ import type {
   AdminAccountListResponse,
   AdminCreateAccountRequest,
   Role,
+  ListSandboxEnvironmentsResponse,
+  ValidateSandboxEnvironmentResponse,
+  SandboxEnvironment,
+  SandboxEnvironmentResponse,
+  SandboxEnvironmentValidation,
+  ListSandboxEnvironmentValidationsResponse,
+  CreateSandboxEnvironmentRequest,
 } from "@cap/contracts";
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
@@ -729,6 +736,157 @@ export async function mockClaudeCredential(): Promise<ClaudeCredential> {
   await delay();
   const { claudeCredential } = getState();
   return { ...claudeCredential };
+}
+
+let mockSandboxEnvironmentSeq = 2;
+let mockSandboxEnvironments: SandboxEnvironment[] = [
+  {
+    id: "00000000-0000-4000-a000-000000000501",
+    name: "AIO base image",
+    status: "ready",
+    source: { kind: "aio-docker-image", image: "cap-aio-sandbox:0.1.0" },
+    compatibility: { providerFamilies: ["aio"], runtimeIds: ["codex"] },
+    isDefault: true,
+    lastValidationId: "00000000-0000-4000-a000-000000000601",
+    lastValidatedAt: new Date("2026-07-01T00:00:00.000Z"),
+    contractVersion: "sandbox-environment-v1",
+    createdAt: new Date("2026-07-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-07-01T00:00:00.000Z"),
+  },
+];
+let mockSandboxValidations: SandboxEnvironmentValidation[] = [
+  {
+    id: "00000000-0000-4000-a000-000000000601",
+    environmentId: "00000000-0000-4000-a000-000000000501",
+    status: "passed",
+    providerFamily: "aio",
+    runtimeId: "codex",
+    sourceKind: "aio-docker-image",
+    resolvedDigest: null,
+    resolvedChecksum: null,
+    probes: [{ name: "source-descriptor", ok: true, output: "mock validated" }],
+    error: null,
+    contractVersion: "sandbox-environment-v1",
+    checkedAt: new Date("2026-07-01T00:00:00.000Z"),
+  },
+];
+
+function providerFamiliesForSource(
+  source: CreateSandboxEnvironmentRequest["source"],
+): SandboxEnvironment["compatibility"]["providerFamilies"] {
+  if (source.kind === "aio-docker-image" || source.kind === "aio-loaded-docker-image") {
+    return ["aio"];
+  }
+  if (source.kind === "boxlite-image" || source.kind === "boxlite-rootfs") {
+    return ["boxlite"];
+  }
+  return [source.providerFamily];
+}
+
+export async function mockListSandboxEnvironments(): Promise<ListSandboxEnvironmentsResponse> {
+  await delay();
+  return { environments: mockSandboxEnvironments.map((env) => ({ ...env })) };
+}
+
+export async function mockCreateSandboxEnvironment(
+  body: CreateSandboxEnvironmentRequest,
+): Promise<SandboxEnvironmentResponse> {
+  await delay();
+  if (body.isDefault) {
+    mockSandboxEnvironments = mockSandboxEnvironments.map((env) => ({
+      ...env,
+      isDefault: false,
+    }));
+  }
+  const now = new Date();
+  const env: SandboxEnvironment = {
+    id: `00000000-0000-4000-a000-${String(500 + mockSandboxEnvironmentSeq).padStart(12, "0")}`,
+    name: body.name,
+    status: "draft",
+    source: body.source,
+    compatibility: {
+      providerFamilies: providerFamiliesForSource(body.source),
+      runtimeIds: body.runtimeIds,
+    },
+    isDefault: body.isDefault ?? false,
+    lastValidationId: null,
+    lastValidatedAt: null,
+    contractVersion: "sandbox-environment-v1",
+    createdAt: now,
+    updatedAt: now,
+  };
+  mockSandboxEnvironmentSeq += 1;
+  mockSandboxEnvironments = [...mockSandboxEnvironments, env];
+  return { ...env };
+}
+
+export async function mockValidateSandboxEnvironment(
+  id: string,
+): Promise<ValidateSandboxEnvironmentResponse> {
+  await delay();
+  const env = mockSandboxEnvironments.find((candidate) => candidate.id === id);
+  if (!env) throw new Error(`mock sandbox environment not found: ${id}`);
+  const now = new Date();
+  const validation: SandboxEnvironmentValidation = {
+    id: `00000000-0000-4000-a000-${String(700 + mockSandboxValidations.length).padStart(12, "0")}`,
+    environmentId: id,
+    status: "passed",
+    providerFamily: env.compatibility.providerFamilies[0] ?? "aio",
+    runtimeId: env.compatibility.runtimeIds?.[0] ?? null,
+    sourceKind: env.source.kind,
+    resolvedDigest:
+      "digest" in env.source && typeof env.source.digest === "string"
+        ? env.source.digest
+        : null,
+    resolvedChecksum:
+      "checksum" in env.source && typeof env.source.checksum === "string"
+        ? env.source.checksum
+        : null,
+    probes: [{ name: "mock-provider-probe", ok: true, output: "mock passed" }],
+    error: null,
+    contractVersion: "sandbox-environment-v1",
+    checkedAt: now,
+  };
+  mockSandboxValidations = [validation, ...mockSandboxValidations];
+  mockSandboxEnvironments = mockSandboxEnvironments.map((candidate) =>
+    candidate.id === id
+      ? {
+          ...candidate,
+          status: "ready",
+          lastValidationId: validation.id,
+          lastValidatedAt: now,
+          updatedAt: now,
+        }
+      : candidate,
+  );
+  return {
+    environment: mockSandboxEnvironments.find((candidate) => candidate.id === id)!,
+    validation,
+  };
+}
+
+export async function mockSetDefaultSandboxEnvironment(
+  id: string,
+): Promise<SandboxEnvironmentResponse> {
+  await delay();
+  mockSandboxEnvironments = mockSandboxEnvironments.map((env) => ({
+    ...env,
+    isDefault: env.id === id,
+  }));
+  const env = mockSandboxEnvironments.find((candidate) => candidate.id === id);
+  if (!env) throw new Error(`mock sandbox environment not found: ${id}`);
+  return { ...env };
+}
+
+export async function mockListSandboxEnvironmentValidations(
+  id: string,
+): Promise<ListSandboxEnvironmentValidationsResponse> {
+  await delay();
+  return {
+    validations: mockSandboxValidations.filter(
+      (validation) => validation.environmentId === id,
+    ),
+  };
 }
 
 // ---------------------------------------------------------------------------

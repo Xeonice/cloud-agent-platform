@@ -36,7 +36,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import type { CreateTaskRequest, Repo } from "@cap/contracts";
-import { metricsQuery, reposQuery, runtimesQuery } from "@/lib/api/queries";
+import {
+  metricsQuery,
+  reposQuery,
+  runtimesQuery,
+  sandboxEnvironmentsQuery,
+} from "@/lib/api/queries";
 import type { RuntimeId } from "@/lib/api/real";
 import { createTaskMutation } from "@/lib/api/mutations";
 import { setState } from "@/lib/store";
@@ -49,6 +54,7 @@ import {
   DEADLINE_OPTIONS,
   guardrailSelectValue,
   parseGuardrailSelectValue,
+  environmentCompatibleWithRuntime,
 } from "@/components/dashboard/new-task-dialog";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { Panel, PanelHead } from "@/components/settings/panel";
@@ -78,6 +84,8 @@ const STRATEGIES = [
   "允许直接修改，但提交前停止",
   "只读审查，不写入文件",
 ] as const;
+
+const ENVIRONMENT_DEFAULT = "__default__";
 
 /** Resolve a repo's display full-name (`owner/name` slug from gitSource, or name). */
 function repoFullName(repo: Repo): string {
@@ -178,12 +186,15 @@ function NewTaskPage() {
   // is shown disabled with a configure hint, never selectable-and-failing-at-launch.
   const [runtime, setRuntime] = React.useState<RuntimeId>(DEFAULT_RUNTIME);
   const runtimesReadiness = useQuery(runtimesQuery());
+  const sandboxEnvironments = useQuery(sandboxEnvironmentsQuery());
   const readyById = React.useMemo(() => {
     const map = new Map<RuntimeId, boolean>();
     for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
     return map;
   }, [runtimesReadiness.data]);
   const isRuntimeReady = (id: RuntimeId): boolean => readyById.get(id) === true;
+  const [sandboxEnvironmentId, setSandboxEnvironmentId] =
+    React.useState(ENVIRONMENT_DEFAULT);
   // Guardrails are OPT-IN, default off/none (task-guardrail-controls).
   const [idleTimeoutMs, setIdleTimeoutMs] = React.useState<number | null>(null);
   const [deadlineMs, setDeadlineMs] = React.useState<number | null>(null);
@@ -201,6 +212,25 @@ function NewTaskPage() {
   React.useEffect(() => {
     setBranch(defaultBranch);
   }, [defaultBranch]);
+
+  const readyEnvironments = React.useMemo(
+    () =>
+      (sandboxEnvironments.data?.environments ?? []).filter((environment) =>
+        environmentCompatibleWithRuntime(environment, runtime),
+      ),
+    [sandboxEnvironments.data?.environments, runtime],
+  );
+  const selectedEnvironment =
+    readyEnvironments.find((environment) => environment.id === sandboxEnvironmentId) ??
+    null;
+
+  React.useEffect(() => {
+    if (sandboxEnvironmentId === ENVIRONMENT_DEFAULT) return;
+    if (readyEnvironments.some((environment) => environment.id === sandboxEnvironmentId)) {
+      return;
+    }
+    setSandboxEnvironmentId(ENVIRONMENT_DEFAULT);
+  }, [readyEnvironments, sandboxEnvironmentId]);
 
   const branchOptions = React.useMemo(() => {
     const set = new Set<string>([defaultBranch]);
@@ -220,6 +250,7 @@ function NewTaskPage() {
     skills,
     idleTimeoutMs,
     deadlineMs,
+    sandboxEnvironmentName: selectedEnvironment?.name ?? null,
   });
 
   // Free remote slots, when the (mock-today) metrics resolve; else keep the
@@ -238,6 +269,7 @@ function NewTaskPage() {
     const body: CreateTaskRequest = { prompt: prompt.trim() };
     // Only send a non-default runtime; omitted ⇒ codex (server default).
     if (runtime !== DEFAULT_RUNTIME) body.runtime = runtime;
+    if (selectedEnvironment) body.sandboxEnvironmentId = selectedEnvironment.id;
     if (branch) body.branch = branch;
     if (strategy) body.strategy = strategy;
     if (skills.length > 0) body.skills = skills;
@@ -333,6 +365,39 @@ function NewTaskPage() {
             </Select>
             <small className="text-xs text-muted-foreground">
               选择派发到哪个 Agent；未配置凭据的运行时会被禁用，请先在设置中连接。
+            </small>
+          </div>
+
+          <div className="grid gap-2">
+            <label htmlFor="environment" className="text-[13px] font-semibold text-ink">
+              沙箱运行环境
+            </label>
+            <Select
+              value={sandboxEnvironmentId}
+              onValueChange={setSandboxEnvironmentId}
+            >
+              <SelectTrigger id="environment" className="w-full">
+                <SelectValue placeholder="使用默认环境" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ENVIRONMENT_DEFAULT}>
+                  使用服务端默认
+                  <small className="ml-1.5 text-xs text-muted-foreground">
+                    无托管默认时沿用部署配置
+                  </small>
+                </SelectItem>
+                {readyEnvironments.map((environment) => (
+                  <SelectItem key={environment.id} value={environment.id}>
+                    {environment.name}
+                    <small className="ml-1.5 text-xs text-muted-foreground">
+                      {environment.source.kind}
+                    </small>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <small className="text-xs text-muted-foreground">
+              仅展示已验证且兼容当前 Agent 运行时的环境。
             </small>
           </div>
 

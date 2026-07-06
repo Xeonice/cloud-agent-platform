@@ -5,9 +5,11 @@
  * (no line unless chosen) and the OFF sentinel round-trips to null.
  */
 import { describe, it, expect } from "vitest";
+import type { SandboxEnvironment } from "@cap/contracts";
 
 import {
   buildCommandPreview,
+  environmentCompatibleWithRuntime,
   guardrailSelectValue,
   parseGuardrailSelectValue,
   GUARDRAIL_OFF,
@@ -24,6 +26,25 @@ const base = {
   prompt: "do the thing",
   stopOnWrite: false,
 };
+
+function sandboxEnvironment(
+  overrides: Partial<SandboxEnvironment>,
+): SandboxEnvironment {
+  return {
+    id: "00000000-0000-4000-a000-000000000501",
+    name: "AIO base image",
+    status: "ready",
+    source: { kind: "aio-docker-image", image: "cap-aio-sandbox:0.1.0" },
+    compatibility: { providerFamilies: ["aio"], runtimeIds: ["codex"] },
+    isDefault: false,
+    lastValidationId: null,
+    lastValidatedAt: null,
+    contractVersion: "sandbox-environment-v1",
+    createdAt: new Date("2026-07-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-07-01T00:00:00.000Z"),
+    ...overrides,
+  };
+}
 
 describe("buildCommandPreview guardrail lines", () => {
   it("omits idle/deadline lines when null or absent (opt-in)", () => {
@@ -95,12 +116,74 @@ describe("runtime selector + command-preview reflection (add-claude-code-runtime
     expect(lines.some((l) => l.includes("# 沙箱内启动 codex"))).toBe(false);
   });
 
+  it("selected sandbox environment is reflected in the preview", () => {
+    const lines = buildCommandPreview({
+      ...base,
+      sandboxEnvironmentName: "AIO base image",
+    });
+    expect(
+      lines.some((l) => l.includes('--sandbox-environment "AIO base image"')),
+    ).toBe(true);
+  });
+
+  it("default sandbox environment path emits no explicit environment flag", () => {
+    const lines = buildCommandPreview({
+      ...base,
+      sandboxEnvironmentName: null,
+    });
+    expect(lines.some((l) => l.includes("--sandbox-environment"))).toBe(false);
+  });
+
   it("stopOnWrite never emits the --confirm-before-write line (gate removed)", () => {
     // The dialog now passes stopOnWrite=false always; even if a caller forced it
     // true the preview is the only place it surfaces — assert the dialog's wiring
     // keeps it false-by-construction by checking the false path is line-free.
     const lines = buildCommandPreview({ ...base, stopOnWrite: false });
     expect(lines.some((l) => l.includes("--confirm-before-write"))).toBe(false);
+  });
+});
+
+describe("sandbox environment runtime filtering", () => {
+  it("allows ready environments with matching runtime", () => {
+    expect(
+      environmentCompatibleWithRuntime(
+        sandboxEnvironment({
+          compatibility: { providerFamilies: ["aio"], runtimeIds: ["codex"] },
+        }),
+        "codex",
+      ),
+    ).toBe(true);
+  });
+
+  it("allows ready environments with no runtime restriction", () => {
+    expect(
+      environmentCompatibleWithRuntime(
+        sandboxEnvironment({
+          compatibility: { providerFamilies: ["boxlite"] },
+        }),
+        "claude-code",
+      ),
+    ).toBe(true);
+  });
+
+  it("filters incompatible or non-ready environments", () => {
+    expect(
+      environmentCompatibleWithRuntime(
+        sandboxEnvironment({
+          compatibility: { providerFamilies: ["aio"], runtimeIds: ["codex"] },
+        }),
+        "claude-code",
+      ),
+    ).toBe(false);
+    expect(
+      environmentCompatibleWithRuntime(
+        sandboxEnvironment({
+          status: "stale",
+          compatibility: { providerFamilies: ["aio"], runtimeIds: ["codex"] },
+        }),
+        "codex",
+      ),
+    ).toBe(false);
   });
 });
 

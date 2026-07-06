@@ -35,6 +35,7 @@ import { AccountsModule } from './accounts/accounts.module';
 import { AdminSeedModule } from './admin-seed/admin-seed.module';
 import { PasswordModule } from './auth-password/password.module';
 import { SmtpEnvMigrationModule } from './mail/smtp-env-migration.module';
+import { SandboxEnvironmentsModule } from './sandbox-environments/sandbox-environments.module';
 
 /**
  * Root application module.
@@ -114,6 +115,7 @@ import { SmtpEnvMigrationModule } from './mail/smtp-env-migration.module';
     PrismaModule,
     CredsModule,
     SandboxModule,
+    SandboxEnvironmentsModule,
     HealthModule,
     ReposModule,
     TasksModule,

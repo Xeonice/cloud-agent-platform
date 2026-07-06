@@ -21,6 +21,7 @@ import { RUNTIME_REGISTRY, CLAUDE_AUTH_SOURCE } from '../sandbox/sandbox.module'
 import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 import { SessionTranscriptService } from './session-transcript.service';
+import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-environments.module';
 
 /**
  * Feature module bundling the tasks REST controller, the tasks service, and the
@@ -44,7 +45,7 @@ import { SessionTranscriptService } from './session-transcript.service';
  * via `ModuleRef` under their own `TRANSCRIPT_SERVICE_TOKEN`.
  */
 @Module({
-  imports: [forwardRef(() => GuardrailsModule)],
+  imports: [forwardRef(() => GuardrailsModule), SandboxEnvironmentsModule],
   // SessionHistoryController is a standalone read-only REST surface; it injects
   // the global SANDBOX_PROVIDER port (no extra module import needed) + TasksService
   // + the durable TRANSCRIPT_STORE bound below.

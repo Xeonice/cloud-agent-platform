@@ -33,6 +33,10 @@ import {
   UpdateStatusSchema,
   AdminAccountListResponseSchema,
   AdminAccountListItemSchema,
+  ListSandboxEnvironmentsResponseSchema,
+  SandboxEnvironmentResponseSchema,
+  ValidateSandboxEnvironmentResponseSchema,
+  ListSandboxEnvironmentValidationsResponseSchema,
 } from "@cap/contracts";
 import {
   mockListTasks,
@@ -51,6 +55,10 @@ import {
   mockListAdminAccounts,
   mockCreateAdminAccount,
   mockSetAdminAccountEnabled,
+  mockListSandboxEnvironments,
+  mockCreateSandboxEnvironment,
+  mockValidateSandboxEnvironment,
+  mockListSandboxEnvironmentValidations,
 } from "./mock";
 import { setState, resetState } from "../store";
 
@@ -295,6 +303,34 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
         ListAvailableGithubReposResponseSchema.parse(out),
       ).not.toThrow();
       expect(out.length).toBeGreaterThan(0);
+    },
+    TIMEOUT,
+  );
+
+  it(
+    "sandbox environment mocks -> contract responses",
+    async () => {
+      const list = await mockListSandboxEnvironments();
+      expect(() => ListSandboxEnvironmentsResponseSchema.parse(list)).not.toThrow();
+      expect(list.environments.length).toBeGreaterThan(0);
+
+      const created = await mockCreateSandboxEnvironment({
+        name: "BoxLite rootfs",
+        source: { kind: "boxlite-rootfs", rootfsPath: "/var/lib/cap/rootfs/custom" },
+        runtimeIds: ["codex"],
+      });
+      expect(() => SandboxEnvironmentResponseSchema.parse(created)).not.toThrow();
+      expect(created.status).toBe("draft");
+
+      const validated = await mockValidateSandboxEnvironment(created.id);
+      expect(() => ValidateSandboxEnvironmentResponseSchema.parse(validated)).not.toThrow();
+      expect(validated.environment.status).toBe("ready");
+
+      const history = await mockListSandboxEnvironmentValidations(created.id);
+      expect(() =>
+        ListSandboxEnvironmentValidationsResponseSchema.parse(history),
+      ).not.toThrow();
+      expect(history.validations[0]?.environmentId).toBe(created.id);
     },
     TIMEOUT,
   );

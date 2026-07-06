@@ -275,6 +275,152 @@ await test('provider provisions rootfs-backed sandboxes without an image source'
   assert.equal(run.preflight.image, '/var/lib/cap/boxlite/rootfs');
 });
 
+await test('provider preserves configured BoxLite defaults when no managed environment resolves', async () => {
+  const imageClient = new mod.FakeBoxLiteClient();
+  const imageProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client: imageClient,
+    resolveEnvironment: async () => null,
+  });
+
+  await imageProvider.provision({ taskId: 'task-default-image', cloneSpec: null });
+  assert.equal(imageClient.createCalls[0].image, 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest');
+  assert.equal(imageClient.createCalls[0].rootfsPath, undefined);
+
+  const rootfsClient = new mod.FakeBoxLiteClient();
+  const rootfsProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_IMAGE: '',
+      BOXLITE_ROOTFS_PATH: '/var/lib/cap/boxlite/default-rootfs',
+      BOXLITE_CAPABILITIES: 'command.exec',
+    }),
+    client: rootfsClient,
+    resolveEnvironment: async () => null,
+  });
+
+  await rootfsProvider.provision({ taskId: 'task-default-rootfs', cloneSpec: null });
+  assert.equal(rootfsClient.createCalls[0].image, undefined);
+  assert.equal(rootfsClient.createCalls[0].rootfsPath, '/var/lib/cap/boxlite/default-rootfs');
+});
+
+await test('provider uses selected BoxLite image and rootfs environments before config defaults', async () => {
+  const imageClient = new mod.FakeBoxLiteClient();
+  const imageProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client: imageClient,
+    resolveEnvironment: async () => ({
+      environmentId: 'env-boxlite-image',
+      name: 'BoxLite image',
+      sourceKind: 'boxlite-image',
+      sourceRef: 'cap-boxlite-custom:v1',
+      providerFamily: 'boxlite',
+      contractVersion: 'sandbox-environment-v1',
+    }),
+  });
+  await imageProvider.provision({ taskId: 'task-env-image', cloneSpec: null });
+  assert.equal(imageClient.createCalls[0].image, 'cap-boxlite-custom:v1');
+  assert.equal(imageClient.createCalls[0].rootfsPath, undefined);
+  assert.equal(
+    imageClient.createCalls[0].metadata.sandboxEnvironmentId,
+    'env-boxlite-image',
+  );
+  const imageRun = await imageProvider.getSelectedSandboxRun('task-env-image');
+  assert.equal(imageRun.environment.environmentId, 'env-boxlite-image');
+  assert.equal(imageRun.preflight.environment.environmentId, 'env-boxlite-image');
+
+  const rootfsClient = new mod.FakeBoxLiteClient();
+  const rootfsProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client: rootfsClient,
+    resolveEnvironment: async () => ({
+      environmentId: 'env-boxlite-rootfs',
+      sourceKind: 'boxlite-rootfs',
+      sourceRef: '/var/lib/cap/rootfs/custom',
+      providerFamily: 'boxlite',
+    }),
+  });
+  await rootfsProvider.provision({ taskId: 'task-env-rootfs', cloneSpec: null });
+  assert.equal(rootfsClient.createCalls[0].image, undefined);
+  assert.equal(rootfsClient.createCalls[0].rootfsPath, '/var/lib/cap/rootfs/custom');
+});
+
+await test('provider rejects incompatible selected environments without falling back', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    resolveEnvironment: async () => ({
+      environmentId: 'env-aio',
+      sourceKind: 'aio-docker-image',
+      sourceRef: 'cap-aio:v1',
+      providerFamily: 'aio',
+    }),
+  });
+
+  await assert.rejects(
+    () => provider.provision({ taskId: 'task-incompatible-env', cloneSpec: null }),
+    /not compatible with BoxLite/,
+  );
+  assert.equal(client.createCalls.length, 0);
+});
+
+await test('validates BoxLite environments with create start exec delete probes', async () => {
+  const client = new mod.FakeBoxLiteClient();
+
+  const result = await mod.validateBoxLiteEnvironment({
+    taskId: 'task-boxlite-probe',
+    client,
+    workspacePath: '/workspace',
+    environment: {
+      environmentId: 'env-boxlite',
+      sourceKind: 'boxlite-rootfs',
+      sourceRef: '/var/lib/cap/rootfs/custom',
+      checksum: 'sha256:rootfs',
+    },
+  });
+
+  assert.equal(result.status, 'passed');
+  assert.equal(result.resolvedChecksum, 'sha256:rootfs');
+  assert.deepEqual(
+    result.probes.map((probe) => [probe.name, probe.ok]),
+    [
+      ['create-sandbox', true],
+      ['start-execution', true],
+      ['exec-probe', true],
+    ],
+  );
+  assert.equal(client.createCalls[0].rootfsPath, '/var/lib/cap/rootfs/custom');
+  assert.equal(client.startExecutionCalls[0].command, 'true');
+  assert.equal(client.execCalls[0].command, 'true');
+  assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-probe']);
+});
+
+await test('BoxLite environment validation fails closed and still deletes probe sandboxes', async () => {
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: () => ({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'missing',
+      output: 'missing',
+      timedOut: false,
+    }),
+  });
+
+  const result = await mod.validateBoxLiteEnvironment({
+    taskId: 'task-boxlite-probe-fail',
+    client,
+    environment: {
+      environmentId: 'env-boxlite',
+      sourceKind: 'boxlite-image',
+      sourceRef: 'cap-boxlite-custom:v1',
+    },
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.match(result.error, /exec probe failed/);
+  assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-probe-fail']);
+});
+
 await test('provider exposes selected-run descriptors and internal BoxLite terminal only server-side', async () => {
   const provider = new mod.BoxLiteSandboxProvider({
     config: validConfig({ BOXLITE_WORKSPACE_PATH: '/workspace/project' }),

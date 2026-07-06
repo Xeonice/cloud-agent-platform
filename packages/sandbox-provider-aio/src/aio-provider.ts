@@ -14,6 +14,7 @@ import type {
   SandboxProvisionContext,
   SandboxReadoptionPort,
   SandboxRetentionPolicy,
+  SandboxResolvedEnvironmentMetadata,
   SandboxSelectedRunPort,
   SandboxTerminalEndpointDescriptor,
   SandboxTranscriptSourceBase,
@@ -47,6 +48,10 @@ export interface AioProvisionLookupHook<TCloneSpec, TRuntimeId> {
   getCloneSpec?(taskId: string): MaybePromise<TCloneSpec | null>;
   getRuntimeId?(taskId: string): MaybePromise<TRuntimeId | null | undefined>;
   getTaskPrompt?(taskId: string): MaybePromise<string | null | undefined>;
+  getResolvedEnvironment?(
+    taskId: string,
+    runtimeId?: TRuntimeId | null,
+  ): MaybePromise<SandboxResolvedEnvironmentMetadata | null | undefined>;
 }
 
 export interface AioProviderExecutionContext<TRuntimeId = string> {
@@ -58,6 +63,7 @@ export interface AioProviderExecutionContext<TRuntimeId = string> {
   readonly providerSandboxId: string;
   readonly containerName: string;
   readonly controller: AioSandboxContainerController;
+  readonly environment?: SandboxResolvedEnvironmentMetadata | null;
 }
 
 export interface AioPromptAuthInjectionContext<TRuntimeId = string>
@@ -170,6 +176,7 @@ interface AioProvisionedRun<TRuntimeId> {
   readonly connection: SandboxConnection;
   readonly runtimeId?: TRuntimeId | null;
   readonly preflight?: SandboxPreflightResult;
+  readonly environment?: SandboxResolvedEnvironmentMetadata | null;
 }
 
 export class AioSandboxProvider<
@@ -230,9 +237,11 @@ export class AioSandboxProvider<
 
     let connection: SandboxConnection | null = null;
     let runtimeId: TRuntimeId | null | undefined;
+    let environment: SandboxResolvedEnvironmentMetadata | null | undefined;
 
     try {
-      const provisioned = await this.controller.createAndStart(ctx.taskId);
+      environment = await this.resolveEnvironment(ctx, null);
+      const provisioned = await this.controller.createAndStart(ctx.taskId, environment);
       const { spec } = provisioned;
       connection = provisioned.connection;
       runtimeId = await this.resolveRuntimeId(ctx.taskId);
@@ -246,6 +255,7 @@ export class AioSandboxProvider<
         providerSandboxId: connection.taskId,
         containerName: spec.containerName,
         controller: this.controller,
+        environment,
       };
       await this.controller.waitForReadiness({
         baseUrl: connection.baseUrl,
@@ -269,7 +279,8 @@ export class AioSandboxProvider<
         taskId: ctx.taskId,
         connection,
         runtimeId,
-        preflight,
+        preflight: this.withEnvironment(preflight, environment),
+        environment,
       });
     } catch (err) {
       this.runs.delete(ctx.taskId);
@@ -392,6 +403,7 @@ export class AioSandboxProvider<
       workspace: this.getWorkspaceDescriptor(taskId),
       retention: this.getRetentionPolicy(taskId),
       preflight: this.runs.get(taskId)?.preflight,
+      environment: this.runs.get(taskId)?.environment ?? undefined,
     };
   }
 
@@ -457,6 +469,19 @@ export class AioSandboxProvider<
     return (await this.hooks.provisionLookup?.getRuntimeId?.(taskId)) ?? null;
   }
 
+  private async resolveEnvironment(
+    ctx: SandboxProvisionContext<TCloneSpec>,
+    runtimeId: TRuntimeId | null | undefined,
+  ): Promise<SandboxResolvedEnvironmentMetadata | null> {
+    if (ctx.environment !== undefined) return ctx.environment ?? null;
+    return (
+      (await this.hooks.provisionLookup?.getResolvedEnvironment?.(
+        ctx.taskId,
+        runtimeId,
+      )) ?? null
+    );
+  }
+
   private async resolveCloneSpec(
     ctx: SandboxProvisionContext<TCloneSpec>,
   ): Promise<TCloneSpec | null> {
@@ -488,6 +513,15 @@ export class AioSandboxProvider<
       (await this.hooks.runtimePreflight?.(context)) ??
       this.skippedPreflight(context.runtimeId ?? null)
     );
+  }
+
+  private withEnvironment(
+    preflight: SandboxPreflightResult,
+    environment: SandboxResolvedEnvironmentMetadata | null | undefined,
+  ): SandboxPreflightResult {
+    return environment && !preflight.environment
+      ? { ...preflight, environment }
+      : preflight;
   }
 
   private skippedPreflight(runtimeId: TRuntimeId | null): SandboxPreflightResult {

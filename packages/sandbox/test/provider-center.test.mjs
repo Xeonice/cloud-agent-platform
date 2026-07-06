@@ -695,6 +695,49 @@ await test('provider router aggregates selected-run descriptors when provider ru
   assert.equal(run.retention.mode, 'stop-retain');
 });
 
+await test('provider router records and returns resolved environment metadata', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const environment = {
+    environmentId: 'env-aio',
+    name: 'AIO custom',
+    sourceKind: 'aio-docker-image',
+    sourceRef: 'cap-aio-custom:1.0.0',
+    providerFamily: 'aio',
+    contractVersion: 'sandbox-environment-v1',
+  };
+  const provider = routableProvider('environment-aware', ['terminal.websocket'], {
+    selectedRun: (taskId) => ({
+      taskId,
+      providerId: 'environment-aware',
+      providerSandboxId: `sandbox-${taskId}`,
+      connection: {
+        taskId,
+        baseUrl: `http://environment-aware/${taskId}`,
+        wsUrl: `ws://environment-aware/${taskId}`,
+      },
+      environment,
+    }),
+  });
+  const router = new mod.SandboxProviderRouter(
+    [
+      mod.defineLocalSandboxProvider({
+        id: 'environment-aware',
+        provider,
+        capabilities: ['terminal.websocket'],
+      }),
+    ],
+    { ownerStore },
+  );
+
+  await router.provision({ taskId: 'task-env-owner', cloneSpec: null });
+  const owner = await ownerStore.getSandboxRunOwner('task-env-owner');
+  const run = await router.getSelectedSandboxRun('task-env-owner');
+
+  assert.deepEqual(owner.environment, environment);
+  assert.deepEqual(run.environment, environment);
+  assert.deepEqual(run.owner.environment, environment);
+});
+
 await test('provider router selected-run returns null for unresolved ownership records', async () => {
   const ownerStore = new mod.InMemorySandboxRunOwnerStore();
   await ownerStore.recordSandboxRunOwner({

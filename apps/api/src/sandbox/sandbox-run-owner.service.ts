@@ -3,6 +3,7 @@ import type {
   RecordSandboxRunOwnerArgs,
   SandboxConnection,
   SandboxDescriptorMetadata,
+  SandboxResolvedEnvironmentMetadata,
   SandboxRunOwnerRecord,
   SandboxRunOwnerStatus,
   SandboxRunOwnerStore,
@@ -60,11 +61,15 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
       orderBy: { createdAt: 'desc' },
       select: { id: true },
     });
+    const metadata = SandboxRunOwnerService.mergeEnvironmentMetadata(
+      args.metadata,
+      args.environment,
+    );
     const data = {
       providerSandboxId,
       status: 'running',
       connectionJson: SandboxRunOwnerService.toJsonObject(args.connection),
-      metadata: SandboxRunOwnerService.toJsonObject(args.metadata),
+      metadata: SandboxRunOwnerService.toJsonObject(metadata),
       terminalAt: null,
       removedAt: null,
     } satisfies Prisma.SandboxRunUpdateInput;
@@ -126,13 +131,15 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
     connectionJson: Prisma.JsonValue | null;
     metadata: Prisma.JsonValue | null;
   }): SandboxRunOwnerRecord {
+    const metadata = SandboxRunOwnerService.toMetadata(run.metadata);
     return {
       taskId: run.taskId,
       providerId: run.providerId,
       providerSandboxId: run.providerSandboxId ?? undefined,
       status: SandboxRunOwnerService.toOwnerStatus(run.status),
       connection: SandboxRunOwnerService.toConnection(run.connectionJson),
-      metadata: SandboxRunOwnerService.toMetadata(run.metadata),
+      environment: SandboxRunOwnerService.toResolvedEnvironment(metadata?.environment),
+      metadata,
     };
   }
 
@@ -166,6 +173,51 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
   private static toMetadata(raw: Prisma.JsonValue | null): SandboxDescriptorMetadata | undefined {
     return raw && typeof raw === 'object' && !Array.isArray(raw)
       ? (raw as SandboxDescriptorMetadata)
+      : undefined;
+  }
+
+  private static mergeEnvironmentMetadata(
+    metadata: SandboxDescriptorMetadata | undefined,
+    environment: SandboxResolvedEnvironmentMetadata | undefined,
+  ): SandboxDescriptorMetadata | undefined {
+    if (!environment) return metadata;
+    return {
+      ...(metadata ?? {}),
+      environment,
+    };
+  }
+
+  private static toResolvedEnvironment(
+    raw: unknown,
+  ): SandboxResolvedEnvironmentMetadata | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const candidate = raw as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of [
+      'id',
+      'environmentId',
+      'name',
+      'providerFamily',
+      'runtimeId',
+      'sourceKind',
+      'sourceRef',
+      'digest',
+      'checksum',
+      'validationId',
+      'validationVersion',
+      'contractVersion',
+    ]) {
+      if (typeof candidate[key] === 'string') out[key] = candidate[key];
+    }
+    if (
+      candidate.metadata &&
+      typeof candidate.metadata === 'object' &&
+      !Array.isArray(candidate.metadata)
+    ) {
+      out.metadata = candidate.metadata;
+    }
+    return Object.keys(out).length > 0
+      ? (out as SandboxResolvedEnvironmentMetadata)
       : undefined;
   }
 

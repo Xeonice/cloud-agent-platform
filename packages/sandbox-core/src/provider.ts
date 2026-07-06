@@ -107,11 +107,42 @@ export interface SandboxPreflightProbeResult {
   readonly output?: string;
 }
 
+export type SandboxEnvironmentProviderFamily =
+  | 'aio'
+  | 'boxlite'
+  | 'cloud-http'
+  | (string & {});
+
+export type SandboxEnvironmentSourceKind =
+  | 'aio-docker-image'
+  | 'aio-loaded-docker-image'
+  | 'boxlite-image'
+  | 'boxlite-rootfs'
+  | 'provider-template'
+  | (string & {});
+
+export interface SandboxResolvedEnvironmentMetadata {
+  readonly id?: string;
+  readonly environmentId?: string;
+  readonly name?: string;
+  readonly providerFamily?: SandboxEnvironmentProviderFamily;
+  readonly runtimeId?: string;
+  readonly sourceKind?: SandboxEnvironmentSourceKind;
+  readonly sourceRef?: string;
+  readonly digest?: string;
+  readonly checksum?: string;
+  readonly validationId?: string;
+  readonly validationVersion?: string;
+  readonly contractVersion?: string;
+  readonly metadata?: SandboxDescriptorMetadata;
+}
+
 export interface SandboxPreflightResult {
   readonly status: 'skipped' | 'passed' | 'failed';
   readonly checkedAt?: string;
   readonly image?: string;
   readonly runtimeId?: string;
+  readonly environment?: SandboxResolvedEnvironmentMetadata;
   readonly probes?: readonly SandboxPreflightProbeResult[];
   readonly error?: string;
 }
@@ -129,6 +160,7 @@ export interface SandboxRunOwnerRecord {
   readonly providerSandboxId?: string;
   readonly status: SandboxRunOwnerStatus;
   readonly connection?: SandboxConnection;
+  readonly environment?: SandboxResolvedEnvironmentMetadata;
   readonly metadata?: SandboxDescriptorMetadata;
 }
 
@@ -137,6 +169,7 @@ export interface RecordSandboxRunOwnerArgs {
   readonly providerId: string;
   readonly providerSandboxId?: string;
   readonly connection?: SandboxConnection;
+  readonly environment?: SandboxResolvedEnvironmentMetadata;
   readonly metadata?: SandboxDescriptorMetadata;
 }
 
@@ -162,11 +195,13 @@ export interface SelectedSandboxRun<TProvider extends SandboxCapabilitySource = 
   readonly workspace?: SandboxWorkspaceDescriptor;
   readonly retention?: SandboxRetentionPolicy;
   readonly preflight?: SandboxPreflightResult;
+  readonly environment?: SandboxResolvedEnvironmentMetadata;
   readonly owner?: SandboxRunOwnerRecord;
 }
 
 export interface SandboxProvisionContext<TCloneSpec = GitCloneSpec> {
   readonly taskId: string;
+  readonly environment?: SandboxResolvedEnvironmentMetadata | null;
   /**
    * `undefined`: caller did not pre-resolve workspace materialization.
    * `null`: caller resolved the task and no repository should be materialized.

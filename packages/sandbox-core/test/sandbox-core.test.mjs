@@ -251,6 +251,53 @@ await test('provider descriptor rejects undeclared adapters without explicit cap
   );
 });
 
+await test('provider-neutral environment metadata is carried by provision-shaped values', () => {
+  const environment = {
+    id: 'env-1',
+    environmentId: 'env-1',
+    name: 'internal tools',
+    providerFamily: 'aio',
+    runtimeId: 'codex',
+    sourceKind: 'aio-docker-image',
+    sourceRef: 'ghcr.io/example/cap-aio-sandbox:v1.2.3',
+    digest: 'sha256:example',
+    validationId: 'validation-1',
+    validationVersion: '1',
+    contractVersion: 'sandbox-contract-v1',
+  };
+  const context = {
+    taskId: 'task-1',
+    environment,
+    cloneSpec: null,
+  };
+  const run = {
+    taskId: 'task-1',
+    providerId: 'aio-local',
+    provider: provider('aio-local', ['terminal.websocket']),
+    capabilities: ['terminal.websocket'],
+    connection: {
+      taskId: 'task-1',
+      baseUrl: 'http://cap-aio-task-1:8080',
+      wsUrl: 'ws://cap-aio-task-1:8080/v1/shell/ws',
+    },
+    environment,
+    preflight: {
+      status: 'passed',
+      environment,
+    },
+    owner: {
+      taskId: 'task-1',
+      providerId: 'aio-local',
+      status: 'running',
+      environment,
+    },
+  };
+  assert.equal(context.environment, environment);
+  assert.equal(run.environment, environment);
+  assert.equal(run.preflight.environment, environment);
+  assert.equal(run.owner.environment, environment);
+});
+
 await test('provider-neutral error types expose stable codes', () => {
   const config = new mod.SandboxProviderConfigurationError('bad config');
   assert.equal(config.name, 'SandboxProviderConfigurationError');

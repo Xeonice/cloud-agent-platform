@@ -1,4 +1,5 @@
 export * from './aio-local-provider.js';
+export * from './aio-environment-validation.js';
 export * from './aio-provider.js';
 export * from './aio-provider-controller.js';
 export * from './aio-pty-client.js';
