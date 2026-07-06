@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.29.0...v0.30.0) (2026-07-06)
+
+
+### Features
+
+* **settings:** add user default sandbox image ([35a9c55](https://github.com/Xeonice/cloud-agent-platform/commit/35a9c552f7422ac4b7c2aaf260449b0ad4bc273e))
+
 ## [0.29.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.28.0...v0.29.0) (2026-07-06)
 
 
