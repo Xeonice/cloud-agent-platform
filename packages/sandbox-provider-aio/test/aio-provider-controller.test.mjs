@@ -157,6 +157,51 @@ await test('creates, starts, registers, and resolves provisioned AIO connections
   assert.equal(controller.resolveBaseUrl('task-missing'), 'http://cap-aio-task-missing:8080');
 });
 
+await test('validates AIO environments with transient container probes and cleanup', async () => {
+  const docker = makeDocker();
+  const { fetch } = makeFetch({
+    'GET /v1/docs': response(200),
+    'POST /v1/shell/exec': response(200, {
+      data: { exit_code: 0, output: 'node v20' },
+    }),
+  });
+  const controller = new mod.AioSandboxContainerController({
+    docker,
+    fetch,
+    env: {
+      AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:0.1.0',
+    },
+  });
+
+  const result = await mod.validateAioEnvironment({
+    taskId: 'task-env-probe',
+    controller,
+    environment: {
+      environmentId: 'env-aio',
+      sourceKind: 'aio-docker-image',
+      sourceRef: 'cap-aio-custom:1.0.0',
+      digest: 'sha256:abc',
+    },
+    requiredCommands: [{ name: 'node', command: 'node --version' }],
+  });
+
+  assert.equal(result.status, 'passed');
+  assert.equal(result.resolvedDigest, 'sha256:abc');
+  assert.deepEqual(
+    result.probes.map((probe) => [probe.name, probe.ok]),
+    [
+      ['create-container', true],
+      ['http-ready', true],
+      ['node', true],
+    ],
+  );
+  assert.equal(docker.created[0].options.Image, 'cap-aio-custom:1.0.0');
+  assert.deepEqual(docker.byName.get('cap-aio-task-env-probe').calls.at(-1), [
+    'remove',
+    { force: true },
+  ]);
+});
+
 await test('default fetch and delay implementations are usable from the controller', async () => {
   const originalFetch = globalThis.fetch;
   let docsAttempts = 0;

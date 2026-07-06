@@ -1,3 +1,8 @@
+import type {
+  SandboxEnvironmentProviderFamily,
+  SandboxResolvedEnvironmentMetadata,
+} from '@cap/sandbox';
+
 /**
  * ProvisionLookup port — the per-task data the provider needs at provision time
  * but should NOT reach into the database for itself.
@@ -74,6 +79,17 @@ export interface ProvisionLookup {
    * console behavior). Behind the port like {@link getTaskRuntime}.
    */
   getTaskExecutionMode(taskId: string): Promise<string | null>;
+
+  /**
+   * Resolve the task's managed sandbox environment for a concrete provider
+   * family. Returns null when the task has no explicit environment and no
+   * compatible managed default exists, preserving deployment-level env fallbacks.
+   */
+  getResolvedEnvironment?(
+    taskId: string,
+    providerFamily: SandboxEnvironmentProviderFamily,
+    runtimeId?: string | null,
+  ): Promise<SandboxResolvedEnvironmentMetadata | null>;
 }
 
 /**

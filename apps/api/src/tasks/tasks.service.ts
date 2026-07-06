@@ -18,6 +18,7 @@ import {
   type DeliverStatus,
   type Runtime,
   type TaskSandboxProvider,
+  type TaskSandboxEnvironmentSummary,
   type TaskResponse,
   type TaskStatus,
 } from '@cap/contracts';
@@ -42,6 +43,7 @@ import {
   selectReadoptionSandboxProvider,
 } from '@cap/sandbox';
 import { SandboxRunOwnerService } from '../sandbox/sandbox-run-owner.service';
+import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
@@ -171,6 +173,16 @@ const LATEST_SANDBOX_PROVIDER_INCLUDE = {
     take: 1,
     select: { providerId: true },
   },
+  sandboxEnvironment: {
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      providerFamilies: true,
+      runtimeIds: true,
+      source: true,
+    },
+  },
 } as const;
 
 /**
@@ -255,6 +267,8 @@ export class TasksService implements OnApplicationBootstrap {
     private readonly claudeReadiness?: IRuntimeReadiness,
     @Optional()
     private readonly sandboxOwners?: SandboxRunOwnerService,
+    @Optional()
+    private readonly sandboxEnvironments?: SandboxEnvironmentsService,
   ) {}
 
   /**
@@ -607,6 +621,11 @@ export class TasksService implements OnApplicationBootstrap {
       }
     }
 
+    const resolvedEnvironment = await this.resolveTaskEnvironment({
+      requestedEnvironmentId: body.sandboxEnvironmentId ?? null,
+      runtime,
+    });
+
     const task = await client.task.create({
       data: {
         repoId,
@@ -617,6 +636,7 @@ export class TasksService implements OnApplicationBootstrap {
         // (omitted) to `null`; a null column reads back as the default `codex`
         // (repo-and-task-management: a prior task with no runtime reads as codex).
         runtime: body.runtime ?? null,
+        sandboxEnvironmentId: resolvedEnvironment?.environmentId ?? null,
         // add-headless-execution-track (5.1/5.2): persist the consumer-derived execution
         // mode. Store null for the interactive default (console — reads back as
         // interactive-pty), and `headless-exec` for programmatic (MCP / `/v1`) tasks.
@@ -892,6 +912,7 @@ export class TasksService implements OnApplicationBootstrap {
     idleTimeoutMs: number | null;
     deadlineMs: number | null;
     runtime?: string | null;
+    sandboxEnvironmentId?: string | null;
     executionMode?: string | null;
     deliver?: string | null;
     deliverStatus?: string | null;
@@ -900,6 +921,14 @@ export class TasksService implements OnApplicationBootstrap {
     changeRequestUrl?: string | null;
     changeRequestNumber?: number | null;
     sandboxRuns?: readonly { providerId: string }[];
+    sandboxEnvironment?: {
+      id: string;
+      name: string;
+      status: string;
+      providerFamilies: string[];
+      runtimeIds: string[];
+      source: unknown;
+    } | null;
   }): TaskResponse {
     return {
       id: task.id,
@@ -926,6 +955,7 @@ export class TasksService implements OnApplicationBootstrap {
       // pre-runtime row or an omitted request) reads back as the default `codex`
       // — never stale/fabricated (sent value == readable value).
       runtime: (task.runtime ?? DEFAULT_TASK_RUNTIME) as Runtime,
+      sandboxEnvironmentId: task.sandboxEnvironmentId ?? null,
       // headless-task-conversation-view: echo the persisted execution mode on
       // every read path so the console can branch the session view (terminal vs
       // polled conversation). A null column reads back as `interactive-pty` (the
@@ -941,7 +971,27 @@ export class TasksService implements OnApplicationBootstrap {
       changeRequestUrl: task.changeRequestUrl ?? null,
       changeRequestNumber: task.changeRequestNumber ?? null,
       sandboxProvider: this.toSandboxProviderSummary(task),
+      sandboxEnvironment: this.toSandboxEnvironmentSummary(task.sandboxEnvironment),
     };
+  }
+
+  private async resolveTaskEnvironment(args: {
+    requestedEnvironmentId: string | null;
+    runtime: Runtime;
+  }) {
+    if (!this.sandboxEnvironments) {
+      if (args.requestedEnvironmentId) {
+        throw new BadRequestException({
+          error: 'sandbox_environment_unavailable',
+          message: 'Sandbox environment resolution is not available.',
+        });
+      }
+      return null;
+    }
+    return this.sandboxEnvironments.resolveForTask({
+      requestedEnvironmentId: args.requestedEnvironmentId,
+      runtimeId: args.runtime,
+    });
   }
 
   private toSandboxProviderSummary(task: {
@@ -950,6 +1000,35 @@ export class TasksService implements OnApplicationBootstrap {
     const providerId = task.sandboxRuns?.[0]?.providerId;
     return providerId
       ? { id: providerId, label: sandboxProviderLabel(providerId) }
+      : null;
+  }
+
+  private toSandboxEnvironmentSummary(
+    environment:
+      | {
+          id: string;
+          name: string;
+          status: string;
+          providerFamilies: string[];
+          runtimeIds: string[];
+          source: unknown;
+        }
+      | null
+      | undefined,
+  ): TaskSandboxEnvironmentSummary | null {
+    if (!environment || typeof environment.source !== 'object' || environment.source === null) {
+      return null;
+    }
+    const source = environment.source as { kind?: unknown };
+    return typeof source.kind === 'string'
+      ? {
+          id: environment.id,
+          name: environment.name,
+          status: environment.status as never,
+          providerFamily: (environment.providerFamilies[0] ?? null) as never,
+          sourceKind: source.kind as never,
+          runtimeIds: environment.runtimeIds,
+        }
       : null;
   }
 }

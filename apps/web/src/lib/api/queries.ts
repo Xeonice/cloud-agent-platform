@@ -40,6 +40,8 @@ import type {
   UpdateStatus,
   ApiKeyListResponse,
   AdminAccountListResponse,
+  ListSandboxEnvironmentsResponse,
+  ListSandboxEnvironmentValidationsResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import { agentLabel } from "../runtime-label";
@@ -110,6 +112,11 @@ export const queryKeys = {
   mcpServerEnabled: ["settings", "mcp-server"] as const,
   /** The admin-only masked SMTP config (`GET /settings/smtp`, add-smtp-config-ui). */
   smtpConfig: ["settings", "smtp"] as const,
+  /** Sandbox environment registry (`GET /sandbox-environments`). */
+  sandboxEnvironments: ["sandbox-environments"] as const,
+  /** Validation history for one sandbox environment. */
+  sandboxEnvironmentValidations: (id: string) =>
+    ["sandbox-environments", id, "validations"] as const,
   /** The admin account-administration list (`GET /accounts`, account-administration). */
   adminAccounts: ["accounts"] as const,
   /**
@@ -327,6 +334,30 @@ export function settingsQuery() {
   return queryOptions<AccountSettings>({
     queryKey: queryKeys.settings,
     queryFn: () => (isCapable("settings") ? real.getSettings() : mock.mockSettings()),
+  });
+}
+
+/** Sandbox environment registry. Mutations remain admin-only on the API. */
+export function sandboxEnvironmentsQuery() {
+  return queryOptions<ListSandboxEnvironmentsResponse>({
+    queryKey: queryKeys.sandboxEnvironments,
+    queryFn: () =>
+      isCapable("settings")
+        ? real.listSandboxEnvironments()
+        : mock.mockListSandboxEnvironments(),
+    refetchOnWindowFocus: true,
+  });
+}
+
+/** Validation history for one sandbox environment. */
+export function sandboxEnvironmentValidationsQuery(id: string) {
+  return queryOptions<ListSandboxEnvironmentValidationsResponse>({
+    queryKey: queryKeys.sandboxEnvironmentValidations(id),
+    queryFn: () =>
+      isCapable("settings")
+        ? real.listSandboxEnvironmentValidations(id)
+        : mock.mockListSandboxEnvironmentValidations(id),
+    refetchOnWindowFocus: true,
   });
 }
 

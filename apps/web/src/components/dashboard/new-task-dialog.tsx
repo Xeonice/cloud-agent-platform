@@ -36,9 +36,9 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 
-import type { Repo } from "@cap/contracts";
+import type { Repo, SandboxEnvironment } from "@cap/contracts";
 import { createTaskMutation } from "@/lib/api/mutations";
-import { runtimesQuery } from "@/lib/api/queries";
+import { runtimesQuery, sandboxEnvironmentsQuery } from "@/lib/api/queries";
 import type { CreateTaskBody, RuntimeId } from "@/lib/api/real";
 import { setState } from "@/lib/store";
 import { cn } from "@/utils";
@@ -127,6 +127,8 @@ export const DEADLINE_OPTIONS: ReadonlyArray<{ label: string; ms: number | null 
   { label: "4 小时", ms: 4 * HOUR },
 ];
 
+const ENVIRONMENT_DEFAULT = "__default__";
+
 /** The Select value (string) for a guardrail ms, or the OFF sentinel for null. */
 export function guardrailSelectValue(ms: number | null): string {
   return ms == null ? GUARDRAIL_OFF : String(ms);
@@ -189,6 +191,7 @@ export function buildCommandPreview(input: {
   idleTimeoutMs?: number | null;
   deadlineMs?: number | null;
   runtime?: RuntimeId;
+  sandboxEnvironmentName?: string | null;
 }): string[] {
   const runtime = input.runtime ?? DEFAULT_RUNTIME;
   // Lead with a comment naming the underlying CLI the sandbox launches for the
@@ -208,6 +211,9 @@ export function buildCommandPreview(input: {
   // never chose); claude-code surfaces the `--runtime claude-code` line so the
   // operator sees the claude invocation that will launch.
   if (runtime !== DEFAULT_RUNTIME) lines.push(`  --runtime ${runtime} \\`);
+  if (input.sandboxEnvironmentName) {
+    lines.push(`  --sandbox-environment "${input.sandboxEnvironmentName}" \\`);
+  }
   if (input.strategy) lines.push(`  --strategy "${input.strategy}" \\`);
   if (input.skills && input.skills.length > 0)
     lines.push(`  --skills ${input.skills.join(",")} \\`);
@@ -279,6 +285,17 @@ function repoFullName(repo: Repo): string {
   return match?.[1] ?? repo.name;
 }
 
+export function environmentCompatibleWithRuntime(
+  environment: SandboxEnvironment,
+  runtime: RuntimeId,
+): boolean {
+  const runtimeIds = environment.compatibility.runtimeIds;
+  return (
+    environment.status === "ready" &&
+    (!runtimeIds || runtimeIds.length === 0 || runtimeIds.includes(runtime))
+  );
+}
+
 /** The new-task dialog. */
 export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps) {
   const queryClient = useQueryClient();
@@ -290,6 +307,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   // runtime as NOT ready so the selector never offers a runtime the api has not
   // vouched for (the default `codex` is corrected back if it ever reports un-ready).
   const runtimesReadiness = useQuery(runtimesQuery());
+  const sandboxEnvironments = useQuery(sandboxEnvironmentsQuery());
   const readyById = React.useMemo(() => {
     const map = new Map<RuntimeId, boolean>();
     for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
@@ -318,6 +336,8 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   // Agent runtime selection (add-claude-code-runtime), DEFAULT codex. Gated on the
   // readiness read below so an unconfigured runtime can't be selected.
   const [runtime, setRuntime] = React.useState<RuntimeId>(DEFAULT_RUNTIME);
+  const [sandboxEnvironmentId, setSandboxEnvironmentId] =
+    React.useState(ENVIRONMENT_DEFAULT);
   // stopOnWrite is RETAINED as a preview-only/advisory note, never an enforced
   // gate: the control is unwired at every layer for both runtimes (the agent runs
   // ungated inside the sandbox, which is the trust boundary) — see design D8. It
@@ -340,6 +360,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     setPrompt("");
     setSkills([]);
     setRuntime(DEFAULT_RUNTIME);
+    setSandboxEnvironmentId(ENVIRONMENT_DEFAULT);
     setIdleTimeoutMs(null);
     setDeadlineMs(null);
     resetMutation();
@@ -357,6 +378,25 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     // isRuntimeReady is derived from readyById, itself memoized on
     // runtimesReadiness.data, so depending on the data + runtime is sufficient.
   }, [runtimesReadiness.data, runtime]);
+
+  const readyEnvironments = React.useMemo(
+    () =>
+      (sandboxEnvironments.data?.environments ?? []).filter((environment) =>
+        environmentCompatibleWithRuntime(environment, runtime),
+      ),
+    [sandboxEnvironments.data?.environments, runtime],
+  );
+  const selectedEnvironment =
+    readyEnvironments.find((environment) => environment.id === sandboxEnvironmentId) ??
+    null;
+
+  React.useEffect(() => {
+    if (sandboxEnvironmentId === ENVIRONMENT_DEFAULT) return;
+    if (readyEnvironments.some((environment) => environment.id === sandboxEnvironmentId)) {
+      return;
+    }
+    setSandboxEnvironmentId(ENVIRONMENT_DEFAULT);
+  }, [readyEnvironments, sandboxEnvironmentId]);
 
   // When the selected repo changes, reset the branch to that repo's default.
   React.useEffect(() => {
@@ -379,6 +419,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     idleTimeoutMs,
     deadlineMs,
     runtime,
+    sandboxEnvironmentName: selectedEnvironment?.name ?? null,
   });
 
   const createdTask = mutation.data;
@@ -403,6 +444,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     // default (`codex`) so the codex create body is byte-identical to before; a
     // claude-code selection adds `runtime: "claude-code"`.
     if (runtime !== DEFAULT_RUNTIME) body.runtime = runtime;
+    if (selectedEnvironment) body.sandboxEnvironmentId = selectedEnvironment.id;
     // Opt-in guardrails: only send when the operator chose a value.
     if (idleTimeoutMs != null) body.idleTimeoutMs = idleTimeoutMs;
     if (deadlineMs != null) body.deadlineMs = deadlineMs;
@@ -572,6 +614,39 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
               </Select>
               <small className="text-xs text-muted-foreground">
                 选择执行本任务的 Agent CLI；未配置凭据的运行时不可选。
+              </small>
+            </div>
+
+            <div className="grid gap-2">
+              <label htmlFor="modalEnvironment" className="text-[13px] font-medium text-foreground">
+                沙箱运行环境
+              </label>
+              <Select
+                value={sandboxEnvironmentId}
+                onValueChange={setSandboxEnvironmentId}
+              >
+                <SelectTrigger id="modalEnvironment" className="w-full">
+                  <SelectValue placeholder="使用默认环境" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ENVIRONMENT_DEFAULT}>
+                    使用服务端默认
+                    <small className="ml-1.5 text-xs text-muted-foreground">
+                      无托管默认时沿用部署配置
+                    </small>
+                  </SelectItem>
+                  {readyEnvironments.map((environment) => (
+                    <SelectItem key={environment.id} value={environment.id}>
+                      {environment.name}
+                      <small className="ml-1.5 text-xs text-muted-foreground">
+                        {environment.source.kind}
+                      </small>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <small className="text-xs text-muted-foreground">
+                仅展示已验证且兼容当前 Agent 运行时的环境。
               </small>
             </div>
 

@@ -1,4 +1,7 @@
-import type { SandboxConnection } from '@cap/sandbox-core';
+import type {
+  SandboxConnection,
+  SandboxResolvedEnvironmentMetadata,
+} from '@cap/sandbox-core';
 import {
   normalizeSandboxCommandResult,
   scrubSandboxCommandOutput,
@@ -123,8 +126,15 @@ export class AioSandboxContainerController<
     return this.connections.get(taskId)?.baseUrl ?? buildAioSandboxBaseUrl(taskId);
   }
 
-  async createAndStart(taskId: string): Promise<AioProvisionedContainer<TContainer>> {
-    const spec = buildAioLocalSandboxProvisionSpec({ taskId, env: this.env });
+  async createAndStart(
+    taskId: string,
+    environment?: SandboxResolvedEnvironmentMetadata | null,
+  ): Promise<AioProvisionedContainer<TContainer>> {
+    const spec = buildAioLocalSandboxProvisionSpec({
+      taskId,
+      env: this.env,
+      environment,
+    });
     const container = await this.docker.createContainer(spec.containerConfig);
     this.containers.set(taskId, container);
     await container.start();

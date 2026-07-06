@@ -39,6 +39,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type {
+  AuthSession,
   ClaudeCredentialMode,
   CodexCredentialMode,
 } from "@cap/contracts";
@@ -74,6 +75,7 @@ import { ApiKeysCard } from "@/components/settings/api-keys-card";
 import { McpServerCard } from "@/components/settings/mcp-server-card";
 import { ForgeCredentialsCard } from "@/components/settings/forge-credentials-card";
 import { SmtpConfigCard } from "@/components/settings/smtp-config-card";
+import { SandboxEnvironmentsCard } from "@/components/settings/sandbox-environments-card";
 import { isAdminSession } from "@/components/shell/update-banner";
 
 export const Route = createFileRoute("/_app/settings")({
@@ -108,7 +110,7 @@ function SettingsPage() {
   // The SMTP section is admin-only (UX gate; the api re-enforces admin on every
   // SMTP endpoint regardless). Read the session for `isAdminSession`.
   const { data: session } = useQuery(authSessionQuery());
-  const isAdmin = isAdminSession(session ?? undefined);
+  const isAdmin = shouldShowAdminSettingsSections(session ?? undefined);
 
   const saveSettings = useMutation(saveSettingsMutation(queryClient));
   const saveCredential = useMutation(saveCodexCredentialMutation(queryClient));
@@ -190,6 +192,12 @@ function SettingsPage() {
         <section id="forges" className="grid scroll-mt-24 gap-3">
           <ForgeCredentialsCard />
         </section>
+
+        {isAdmin ? (
+          <section id="sandbox-environments" className="grid scroll-mt-24 gap-3">
+            <SandboxEnvironmentsCard />
+          </section>
+        ) : null}
 
         {/* #api-keys: machine-identity credentials (mint show-once / list / revoke) */}
         <section id="api-keys" className="grid scroll-mt-24 gap-3">
@@ -282,4 +290,10 @@ function SettingsPage() {
       />
     </>
   );
+}
+
+export function shouldShowAdminSettingsSections(
+  session: AuthSession | undefined,
+): boolean {
+  return isAdminSession(session);
 }

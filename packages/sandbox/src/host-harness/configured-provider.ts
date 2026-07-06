@@ -118,6 +118,12 @@ export function createConfiguredSandboxProvider<
             workspacePath,
             host,
           }),
+        resolveEnvironment: async ({ taskId, runtimeId }) =>
+          (await host.provisionLookup.getResolvedEnvironment?.(
+            taskId,
+            'boxlite',
+            runtimeId ?? null,
+          )) ?? null,
       }),
     );
   }
@@ -169,6 +175,12 @@ function createAioProviderDescriptor<
           provisionRuntimes.set(taskId, runtime);
           return runtime.id as TRuntimeId;
         },
+        getResolvedEnvironment: (taskId, runtimeId) =>
+          host.provisionLookup.getResolvedEnvironment?.(
+            taskId,
+            'aio',
+            runtimeId === null || runtimeId === undefined ? null : String(runtimeId),
+          ) ?? null,
       },
       runtimePreflight: async ({ taskId, executor, runtimeId }) => {
         const runtime = resolveProvisionHookRuntime({

@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-environments.module';
+import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
 import { UpdateStatusService } from '../update-status/update-status.service';
 import { SelfUpdateController } from './self-update.controller';
 import { SelfUpdateService } from './self-update.service';
@@ -24,6 +26,7 @@ import { SelfUpdateService } from './self-update.service';
  * the controller/service, so this module adds no guard of its own.
  */
 @Module({
+  imports: [SandboxEnvironmentsModule],
   controllers: [SelfUpdateController],
   providers: [
     {
@@ -32,9 +35,18 @@ import { SelfUpdateService } from './self-update.service';
     },
     {
       provide: SelfUpdateService,
-      useFactory: (updateStatus: UpdateStatusService) =>
-        new SelfUpdateService(updateStatus),
-      inject: [UpdateStatusService],
+      useFactory: (
+        updateStatus: UpdateStatusService,
+        sandboxEnvironments: SandboxEnvironmentsService,
+      ) =>
+        new SelfUpdateService(
+          updateStatus,
+          undefined,
+          process.env,
+          undefined,
+          sandboxEnvironments,
+        ),
+      inject: [UpdateStatusService, SandboxEnvironmentsService],
     },
   ],
 })

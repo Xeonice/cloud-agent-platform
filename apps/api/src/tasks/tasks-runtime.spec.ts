@@ -24,6 +24,7 @@ import {
 } from './tasks.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { Runtime } from '@cap/contracts';
+import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,9 +115,10 @@ function buildService(opts: {
   prisma: PrismaService;
   registry?: IAgentRuntimeRegistry;
   claudeReadiness?: IRuntimeReadiness;
+  sandboxEnvironments?: SandboxEnvironmentsService;
 }): TasksService {
   // TasksService constructor signature (positional DI):
-  //   (prisma, guardrails?, audit?, sandbox?, runtimes?, claudeReadiness?)
+  //   (prisma, guardrails?, audit?, sandbox?, runtimes?, claudeReadiness?, sandboxOwners?, sandboxEnvironments?)
   return new TasksService(
     opts.prisma,
     undefined,       // guardrails (optional)
@@ -124,6 +126,8 @@ function buildService(opts: {
     undefined,       // sandbox (optional)
     opts.registry,
     opts.claudeReadiness,
+    undefined,       // sandboxOwners (optional)
+    opts.sandboxEnvironments,
   );
 }
 
@@ -239,6 +243,7 @@ function makeCapturingPrisma(): {
           idleTimeoutMs: null,
           deadlineMs: null,
           runtime: data.runtime ?? null,
+          sandboxEnvironmentId: data.sandboxEnvironmentId ?? null,
         };
       },
     },
@@ -279,6 +284,44 @@ test('headless create on a runtime without headless-exec fails closed (BadReques
     () => svc.createTaskRow(REPO_ID, { prompt: 'go' }, prisma, 'headless-exec'),
     (err: unknown) => err instanceof BadRequestException,
   );
+});
+
+test('create with sandboxEnvironmentId resolves and persists the selected environment', async () => {
+  const { prisma, box } = makeCapturingPrisma();
+  const calls: Array<{
+    requestedEnvironmentId?: string | null;
+    runtimeId: string;
+  }> = [];
+  const sandboxEnvironmentId = '00000000-0000-4000-a000-000000000777';
+  const sandboxEnvironments = {
+    async resolveForTask(args: { requestedEnvironmentId?: string | null; runtimeId: string }) {
+      calls.push(args);
+      return {
+        environmentId: args.requestedEnvironmentId,
+        sourceKind: 'aio-docker-image',
+        sourceRef: 'cap/aio:latest',
+        providerFamily: 'aio',
+      };
+    },
+  } as unknown as SandboxEnvironmentsService;
+  const svc = buildService({
+    prisma,
+    registry: makeFakeRegistry().registry,
+    sandboxEnvironments,
+  });
+
+  const response = await svc.createTaskRow(
+    REPO_ID,
+    {
+      prompt: 'go',
+      sandboxEnvironmentId,
+    },
+    prisma,
+  );
+
+  assert.deepEqual(calls, [{ requestedEnvironmentId: sandboxEnvironmentId, runtimeId: 'codex' }]);
+  assert.equal(box.value?.sandboxEnvironmentId, sandboxEnvironmentId);
+  assert.equal(response.sandboxEnvironmentId, sandboxEnvironmentId);
 });
 
 // ---------------------------------------------------------------------------

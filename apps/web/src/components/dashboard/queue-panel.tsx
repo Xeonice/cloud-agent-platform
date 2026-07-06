@@ -35,7 +35,7 @@
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 
-import type { Task } from "@cap/contracts";
+import type { TaskResponse as Task } from "@cap/contracts";
 import { cn } from "@/utils";
 import { StatusPill, type StatusPillVariant } from "@/components/status-pill";
 import { SegmentedControl } from "@/components/segmented-control";
@@ -132,6 +132,7 @@ export function filterQueue(
       task.prompt,
       repoName,
       task.branch ?? "",
+      task.sandboxEnvironment?.name ?? "",
       shortTaskId(task.id),
       present.label,
     ]
@@ -170,6 +171,7 @@ function QueueRow({
 }) {
   const present = presentTaskStatus(task.status);
   const id = shortTaskId(task.id);
+  const environmentName = task.sandboxEnvironment?.name ?? null;
 
   return (
     <article
@@ -238,6 +240,11 @@ function QueueRow({
           <span className="font-mono text-[11px] leading-[1.25] min-[821px]:truncate min-[821px]:leading-[1.22]">
             {task.branch ?? "—"}
           </span>
+          {environmentName ? (
+            <span className="font-mono text-[11px] leading-[1.25] min-[821px]:truncate min-[821px]:leading-[1.22]">
+              env:{environmentName}
+            </span>
+          ) : null}
         </div>
 
         {/* Action — derived solely from the status mapping; always a real link */}

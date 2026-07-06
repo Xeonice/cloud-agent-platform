@@ -40,6 +40,7 @@ import {
   type RuntimeMaterialResolverRegistry,
 } from './runtime-material-resolver';
 import { resolveSkillInstaller } from './skill-allowlist';
+import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-environments.module';
 
 const sandboxHostHarnessLogger = new Logger('SandboxHostHarness');
 
@@ -64,7 +65,7 @@ const sandboxHostHarnessLogger = new Logger('SandboxHostHarness');
  */
 @Global()
 @Module({
-  imports: [ForgeModule],
+  imports: [ForgeModule, SandboxEnvironmentsModule],
   providers: [
     // Settings-backed codex auth source the provider injects into each sandbox:
     // resolves the OFFICIAL ChatGPT login the operator connected via the Settings

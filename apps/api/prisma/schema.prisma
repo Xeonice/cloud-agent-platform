@@ -135,6 +135,12 @@ model Task {
   /// values (add-claude-code-runtime).
   runtime String? @map("runtime")
 
+  /// Optional managed sandbox runtime environment selected for this task. Null
+  /// means the task used the compatible managed default or the deployment-level
+  /// fallback at provisioning time.
+  sandboxEnvironmentId String?             @map("sandbox_environment_id")
+  sandboxEnvironment   SandboxEnvironment? @relation(fields: [sandboxEnvironmentId], references: [id], onDelete: SetNull)
+
   /// The execution mode this task runs under (add-headless-execution-track):
   /// `interactive-pty` (console live terminal + operator takeover) or `headless-exec`
   /// (a programmatic one-shot that exits on turn completion). Additive + NULLABLE:
@@ -174,7 +180,59 @@ model Task {
   sandboxRuns SandboxRun[]
 
   @@index([repoId])
+  @@index([sandboxEnvironmentId])
   @@map("tasks")
+}
+
+/// Admin-managed sandbox runtime environment. Source descriptors are non-secret
+/// JSON (image/rootfs/template references only); provider credentials remain in
+/// provider settings/env and are never stored here.
+model SandboxEnvironment {
+  id String @id @default(uuid())
+
+  name   String
+  source Json
+  status String @default("draft")
+
+  providerFamilies String[] @default([]) @map("provider_families")
+  runtimeIds       String[] @default([]) @map("runtime_ids")
+  isDefault        Boolean  @default(false) @map("is_default")
+
+  lastValidationId String? @map("last_validation_id")
+  contractVersion  String? @map("contract_version")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tasks       Task[]
+  validations SandboxEnvironmentValidation[]
+
+  @@index([status, isDefault])
+  @@map("sandbox_environments")
+}
+
+/// Validation/probe history for a sandbox environment. Records non-secret probe
+/// metadata only; raw provider credentials and task secrets are never stored.
+model SandboxEnvironmentValidation {
+  id String @id @default(uuid())
+
+  environmentId String             @map("environment_id")
+  environment   SandboxEnvironment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+
+  status           String
+  providerFamily   String  @map("provider_family")
+  runtimeId        String? @map("runtime_id")
+  sourceKind       String  @map("source_kind")
+  resolvedDigest   String? @map("resolved_digest")
+  resolvedChecksum String? @map("resolved_checksum")
+  probes           Json?   @map("probes")
+  error            String?
+  contractVersion  String? @map("contract_version")
+
+  checkedAt DateTime @default(now()) @map("checked_at")
+
+  @@index([environmentId, checkedAt])
+  @@map("sandbox_environment_validations")
 }
 
 /// Provider-owned sandbox run metadata for a task provision attempt.

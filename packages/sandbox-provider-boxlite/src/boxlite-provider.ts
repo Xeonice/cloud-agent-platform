@@ -13,6 +13,7 @@ import type {
   SandboxProvisionContext,
   SandboxReadoptionPort,
   SandboxRetentionPolicy,
+  SandboxResolvedEnvironmentMetadata,
   SandboxSelectedRunPort,
   SandboxTerminalEndpointDescriptor,
   SandboxTranscriptSourceBase,
@@ -57,6 +58,10 @@ export interface BoxLiteProviderOptions {
   readonly client?: BoxLiteClient;
   readonly preflight?: BoxLiteRuntimePreflight;
   readonly runtimeSetup?: BoxLiteRuntimeSetup;
+  readonly resolveEnvironment?: (args: {
+    readonly taskId: string;
+    readonly runtimeId?: string | null;
+  }) => Promise<SandboxResolvedEnvironmentMetadata | null | undefined>;
 }
 
 export interface BoxLiteProviderDescriptorOptions extends BoxLiteProviderOptions {
@@ -97,6 +102,7 @@ export class BoxLiteSandboxProvider<
   private readonly client: BoxLiteClient;
   private readonly preflight?: BoxLiteRuntimePreflight;
   private readonly runtimeSetup?: BoxLiteRuntimeSetup;
+  private readonly resolveEnvironmentHook?: BoxLiteProviderOptions['resolveEnvironment'];
   private readonly runs = new Map<string, BoxLiteProvisionedRun>();
 
   constructor(options: BoxLiteProviderOptions) {
@@ -112,6 +118,7 @@ export class BoxLiteSandboxProvider<
       });
     this.preflight = options.preflight;
     this.runtimeSetup = options.runtimeSetup;
+    this.resolveEnvironmentHook = options.resolveEnvironment;
     assertClientSupportsCapabilities(this.client, options.config.capabilities);
   }
 
@@ -132,7 +139,8 @@ export class BoxLiteSandboxProvider<
     if (existing) return existing.connection;
 
     const sandboxId = this.sandboxIdForTask(ctx.taskId);
-    const source = resolveBoxLiteSandboxSource({ config: this.config });
+    const environment = await this.resolveEnvironment(ctx);
+    const source = this.resolveSandboxSource(environment);
     const sandbox = await this.client.createSandbox({
       taskId: ctx.taskId,
       sandboxId,
@@ -149,6 +157,10 @@ export class BoxLiteSandboxProvider<
         provider: this.config.providerId,
         workspacePath: this.config.workspacePath,
         sandboxSourceKind: source.kind,
+        sandboxEnvironmentId: environment?.environmentId ?? environment?.id,
+        sandboxEnvironmentName: environment?.name,
+        sandboxEnvironmentSourceKind: environment?.sourceKind,
+        sandboxEnvironmentContractVersion: environment?.contractVersion,
       },
     });
     const connection = this.connectionForSandbox(ctx.taskId, sandbox);
@@ -161,7 +173,7 @@ export class BoxLiteSandboxProvider<
           cloneSpec: requireGitCloneSpec(ctx.cloneSpec),
         });
       }
-      const preflight = await this.runPreflight(ctx.taskId, sandbox, null);
+      const preflight = await this.runPreflight(ctx.taskId, sandbox, null, environment);
       if (preflight.status === 'failed') {
         throw new Error(preflight.error ?? `BoxLite runtime preflight failed for task ${ctx.taskId}`);
       }
@@ -176,6 +188,7 @@ export class BoxLiteSandboxProvider<
         sandbox,
         connection,
         preflight,
+        environment,
       };
       this.runs.set(ctx.taskId, run);
       return connection;
@@ -262,6 +275,7 @@ export class BoxLiteSandboxProvider<
       workspace: (await this.getWorkspaceDescriptor(taskId)) ?? undefined,
       retention: (await this.getRetentionPolicy(taskId)) ?? undefined,
       preflight: run.preflight,
+      environment: run.environment ?? undefined,
     };
   }
 
@@ -357,6 +371,7 @@ export class BoxLiteSandboxProvider<
     taskId: string,
     sandbox: BoxLiteSandbox,
     runtimeId: string | null,
+    environment?: SandboxResolvedEnvironmentMetadata | null,
   ): Promise<SandboxPreflightResult> {
     if (!this.preflight) {
       return {
@@ -364,15 +379,19 @@ export class BoxLiteSandboxProvider<
         checkedAt: new Date().toISOString(),
         image: sandbox.image ?? sandbox.rootfsPath,
         runtimeId: runtimeId ?? undefined,
+        environment: environment ?? undefined,
       };
     }
-    return this.preflight({
+    const preflight = await this.preflight({
       taskId,
       provider: this as unknown as BoxLiteSandboxProvider,
       sandbox,
       executor: this.createCommandExecutor(sandbox.id),
       runtimeId,
     });
+    return environment && !preflight.environment
+      ? { ...preflight, environment }
+      : preflight;
   }
 
   private async requireRun(taskId: string): Promise<BoxLiteProvisionedRun> {
@@ -403,12 +422,14 @@ export class BoxLiteSandboxProvider<
       taskId,
       sandbox,
       connection,
+      environment: cached?.environment,
       preflight:
         cached?.preflight ??
         {
           status: 'skipped',
           checkedAt: new Date().toISOString(),
           image: sandbox.image ?? sandbox.rootfsPath,
+          environment: cached?.environment ?? undefined,
         },
     };
     this.runs.set(taskId, run);
@@ -433,6 +454,28 @@ export class BoxLiteSandboxProvider<
 
   private sandboxIdForTask(taskId: string): string {
     return `${this.config.sandboxIdPrefix}${taskId}`;
+  }
+
+  private async resolveEnvironment(
+    ctx: SandboxProvisionContext<TCloneSpec>,
+  ): Promise<SandboxResolvedEnvironmentMetadata | null> {
+    if (ctx.environment !== undefined) return ctx.environment ?? null;
+    return (await this.resolveEnvironmentHook?.({ taskId: ctx.taskId })) ?? null;
+  }
+
+  private resolveSandboxSource(
+    environment: SandboxResolvedEnvironmentMetadata | null,
+  ): { kind: 'image' | 'rootfs'; value: string } {
+    if (!environment) return resolveBoxLiteSandboxSource({ config: this.config });
+    if (environment.sourceKind === 'boxlite-image' && environment.sourceRef) {
+      return { kind: 'image', value: environment.sourceRef };
+    }
+    if (environment.sourceKind === 'boxlite-rootfs' && environment.sourceRef) {
+      return { kind: 'rootfs', value: environment.sourceRef };
+    }
+    throw new Error(
+      `Sandbox environment ${environment.environmentId ?? environment.id ?? 'unknown'} source ${environment.sourceKind ?? 'unknown'} is not compatible with BoxLite`,
+    );
   }
 
   private hasCapability(capability: SandboxProviderCapability): boolean {

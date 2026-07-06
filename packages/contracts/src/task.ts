@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ForgeKindSchema } from './settings.js';
+import { TaskSandboxEnvironmentSummarySchema } from './sandbox-environment.js';
 
 /**
  * Task lifecycle status (repo-and-task-management spec).
@@ -206,6 +207,11 @@ export const TaskSchema = z.object({
    */
   runtime: RuntimeSchema.nullable().optional(),
   /**
+   * Optional sandbox runtime environment selected for this task. Null/absent
+   * means the platform resolves the managed or deployment default.
+   */
+  sandboxEnvironmentId: z.string().uuid().nullable().optional(),
+  /**
    * The execution mode this task runs under (add-headless-execution-track),
    * exposed so the console can branch the session view (headless-task-conversation-view):
    * `interactive-pty` (console live terminal) or `headless-exec` (programmatic
@@ -351,6 +357,11 @@ export const CreateTaskRequestSchema = z.object({
    */
   runtime: RuntimeSchema.optional(),
   /**
+   * Optional managed sandbox runtime environment. When omitted, the server uses
+   * the compatible managed default or the deployment-level fallback.
+   */
+  sandboxEnvironmentId: z.string().uuid().optional(),
+  /**
    * Optional opt-in delivery selector (`none|branch|pr`) — where a completed
    * task's edits land (add-multi-forge-task-delivery). Default `none` (no
    * commit/branch/push/CR); `branch` pushes `cap/task-<id>`; `pr` also opens a
@@ -377,6 +388,7 @@ export const TaskResponseSchema = TaskSchema.extend({
    * reads; the current api emits null explicitly when absent.
    */
   sandboxProvider: TaskSandboxProviderSchema.nullable().optional(),
+  sandboxEnvironment: TaskSandboxEnvironmentSummarySchema.nullable().optional(),
 });
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
 

@@ -1,5 +1,7 @@
 import type {
+  SandboxEnvironmentProviderFamily,
   SandboxRunOwnerStore,
+  SandboxResolvedEnvironmentMetadata,
   SandboxTranscriptSourceBase,
 } from '@cap/sandbox-core';
 
@@ -13,6 +15,11 @@ export interface SandboxHostProvisionLookup<TCloneSpec> {
   getCloneSpec(taskId: string): Promise<TCloneSpec | null>;
   getTaskPrompt(taskId: string): Promise<string | null | undefined>;
   getTaskSkills?(taskId: string): Promise<readonly string[]>;
+  getResolvedEnvironment?(
+    taskId: string,
+    providerFamily: SandboxEnvironmentProviderFamily,
+    runtimeId?: string | null,
+  ): Promise<SandboxResolvedEnvironmentMetadata | null | undefined>;
 }
 
 export interface SandboxHostRuntimePreflightProbe {

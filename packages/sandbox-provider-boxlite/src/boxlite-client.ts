@@ -1,3 +1,6 @@
+import { StringDecoder } from 'node:string_decoder';
+import WebSocket from 'ws';
+
 export interface BoxLiteSandboxMetadata {
   readonly [key: string]: unknown;
 }
@@ -99,6 +102,7 @@ export interface BoxLiteRestClientOptions {
   readonly protocolMode?: 'native' | 'cap-rest';
   readonly pathPrefix?: string;
   readonly fetch?: BoxLiteFetch;
+  readonly nativeAttachOutput?: boolean;
 }
 
 export class BoxLiteRestClient implements BoxLiteClient {
@@ -108,6 +112,7 @@ export class BoxLiteRestClient implements BoxLiteClient {
   private readonly protocolMode: 'native' | 'cap-rest';
   private readonly pathPrefix: string;
   private readonly fetchImpl: BoxLiteFetch;
+  private readonly nativeAttachOutput: boolean;
 
   constructor(options: BoxLiteRestClientOptions) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl);
@@ -115,6 +120,7 @@ export class BoxLiteRestClient implements BoxLiteClient {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.protocolMode = options.protocolMode ?? 'native';
     this.pathPrefix = normalizePathPrefix(options.pathPrefix ?? 'default');
+    this.nativeAttachOutput = options.nativeAttachOutput ?? options.fetch === undefined;
     this.fetchImpl =
       options.fetch ??
       ((input, init) => {
@@ -186,7 +192,20 @@ export class BoxLiteRestClient implements BoxLiteClient {
         tty: false,
         timeoutMs: request.timeoutMs,
       });
-      return this.waitForNativeExecution(started.sandboxId, started.id, request.timeoutMs);
+      const outputPromise = this.nativeAttachOutput
+        ? this.collectNativeExecutionOutput(
+            started.sandboxId,
+            started.id,
+            request.timeoutMs,
+          ).catch(() => null)
+        : Promise.resolve(null);
+      const polled = await this.waitForNativeExecution(
+        started.sandboxId,
+        started.id,
+        request.timeoutMs,
+      );
+      const attached = await outputPromise;
+      return mergeExecOutput(polled, attached);
     }
     return parseExecResult(
       await this.requestJson(
@@ -330,7 +349,7 @@ export class BoxLiteRestClient implements BoxLiteClient {
       body = JSON.stringify(init.body);
     }
     if (this.apiToken) {
-      headers.authorization = `Bearer ${this.apiToken}`;
+      Object.assign(headers, this.authHeaders());
     }
     return this.fetchImpl(`${this.baseUrl}${path}`, {
       method: init.method,
@@ -380,6 +399,69 @@ export class BoxLiteRestClient implements BoxLiteClient {
       output: '',
       timedOut: true,
     };
+  }
+
+  private collectNativeExecutionOutput(
+    sandboxId: string,
+    executionId: string,
+    timeoutMs: number | undefined,
+  ): Promise<Pick<BoxLiteExecResult, 'stdout' | 'stderr' | 'output'> | null> {
+    return new Promise((resolve) => {
+      const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      let socket: WebSocket | null = null;
+      const timeout = setTimeout(() => finish(), timeoutMs ?? this.timeoutMs);
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        stdout += stdoutDecoder.end();
+        stderr += stderrDecoder.end();
+        try {
+          socket?.close();
+        } catch {
+          // Best-effort; closed sockets may throw.
+        }
+        resolve(stdout || stderr ? { stdout, stderr, output: `${stdout}${stderr}` } : null);
+      };
+
+      try {
+        socket = new WebSocket(
+          `${this.baseUrl.replace(/^http/, 'ws')}${this.nativeExecutionPath(sandboxId, executionId)}/attach`,
+          { headers: this.authHeaders() },
+        );
+      } catch {
+        finish();
+        return;
+      }
+
+      socket.on('message', (raw, isBinary) => {
+        if (!isBinary) {
+          const text = rawToBuffer(raw).toString('utf8');
+          const frame = parseControlFrame(text);
+          if (frame?.type === 'exit') finish();
+          return;
+        }
+        const buffer = rawToBuffer(raw);
+        if (buffer.length === 0) return;
+        const channel = buffer[0];
+        const payload = buffer.subarray(1);
+        if (channel === 1) {
+          stdout += stdoutDecoder.write(payload);
+        } else if (channel === 2) {
+          stderr += stderrDecoder.write(payload);
+        }
+      });
+      socket.on('close', finish);
+      socket.on('error', finish);
+    });
+  }
+
+  private authHeaders(): Record<string, string> {
+    return this.apiToken ? { authorization: `Bearer ${this.apiToken}` } : {};
   }
 }
 
@@ -612,6 +694,40 @@ function parseNativeExecutionResult(raw: unknown): {
       timedOut: status === 'timed_out' || status === 'timeout' || record.timed_out === true,
     },
   };
+}
+
+function mergeExecOutput(
+  polled: BoxLiteExecResult,
+  attached: Pick<BoxLiteExecResult, 'stdout' | 'stderr' | 'output'> | null,
+): BoxLiteExecResult {
+  if (!attached) return polled;
+  const stdout = attached.stdout || polled.stdout;
+  const stderr = attached.stderr || polled.stderr;
+  const output = attached.output || polled.output || `${stdout}${stderr}`;
+  return {
+    ...polled,
+    stdout,
+    stderr,
+    output,
+  };
+}
+
+function rawToBuffer(raw: WebSocket.RawData): Buffer {
+  if (Buffer.isBuffer(raw)) return raw;
+  if (raw instanceof ArrayBuffer) return Buffer.from(raw);
+  if (Array.isArray(raw)) return Buffer.concat(raw);
+  return Buffer.from(raw);
+}
+
+function parseControlFrame(text: string): { readonly type?: unknown } | null {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object'
+      ? (parsed as { readonly type?: unknown })
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseExecResult(raw: unknown): BoxLiteExecResult {

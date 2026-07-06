@@ -7,6 +7,7 @@ import type {
   SandboxProviderCapability,
   SandboxProviderDescriptor,
   SandboxProviderPort,
+  SandboxProvisionContext,
   SandboxReadoptionPort,
   SandboxRunOwnerRecord,
   SandboxSelectedRunPort,
@@ -131,10 +132,7 @@ export class SandboxProviderRouter<
     return [...capabilities];
   }
 
-  async provision(ctx: {
-    readonly taskId: string;
-    readonly cloneSpec?: TCloneSpec | null;
-  }): Promise<SandboxConnection> {
+  async provision(ctx: SandboxProvisionContext<TCloneSpec>): Promise<SandboxConnection> {
     const selected = this.registry.select(
       provisionSandboxRequiredCapabilities({
         materializeGitWorkspace: ctx.cloneSpec !== null && ctx.cloneSpec !== undefined,
@@ -145,11 +143,13 @@ export class SandboxProviderRouter<
     this.owners.set(ctx.taskId, selected.id);
     if (this.options.ownerStore) {
       const providerRun = await this.selectedRunFor(ctx.taskId, selected);
+      const environment = providerRun?.environment ?? ctx.environment ?? undefined;
       await this.options.ownerStore.recordSandboxRunOwner({
         taskId: ctx.taskId,
         providerId: selected.id,
         providerSandboxId: providerRun?.providerSandboxId ?? connection.taskId,
         connection,
+        environment,
       });
     }
     return connection;
@@ -306,6 +306,7 @@ export class SandboxProviderRouter<
       workspace,
       retention,
       preflight: providerRun?.preflight,
+      environment: providerRun?.environment ?? resolved.ownerRecord?.environment,
       owner: resolved.ownerRecord,
     };
   }
@@ -336,6 +337,7 @@ export class SandboxProviderRouter<
           providerId: entry.id,
           providerSandboxId: providerRun?.providerSandboxId ?? connection.taskId,
           connection,
+          environment: providerRun?.environment,
         });
         return { owner: entry, connection, providerRun };
       }

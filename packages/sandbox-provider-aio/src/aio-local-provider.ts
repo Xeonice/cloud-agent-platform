@@ -3,6 +3,7 @@ import type {
   SandboxConnection,
   SandboxProviderCapability,
   SandboxProviderDescriptor,
+  SandboxResolvedEnvironmentMetadata,
 } from '@cap/sandbox-core';
 import {
   SANDBOX_PROVIDER_CAPABILITIES,
@@ -118,8 +119,13 @@ export function buildAioLocalSandboxProvisionSpec(args: {
   readonly taskId: string;
   readonly config?: AioLocalSandboxConfig;
   readonly env?: AioLocalSandboxEnv;
+  readonly environment?: SandboxResolvedEnvironmentMetadata | null;
 }): AioLocalSandboxProvisionSpec {
   const config = args.config ?? readAioLocalSandboxConfig(args.env);
+  const image = resolveAioSandboxImage({
+    configImage: config.image,
+    environment: args.environment,
+  });
   const containerName = buildAioSandboxContainerName(args.taskId);
   const connection = buildAioSandboxConnection(args.taskId);
   const securityOpt = [AIO_SANDBOX_SECCOMP_UNCONFINED];
@@ -128,12 +134,12 @@ export function buildAioLocalSandboxProvisionSpec(args: {
     taskId: args.taskId,
     containerName,
     connection,
-    image: config.image,
+    image,
     network: config.network,
     readinessTimeoutMs: config.readinessTimeoutMs,
     workspaceDir: AIO_SANDBOX_WORKSPACE_DIR,
     containerConfig: {
-      Image: config.image,
+      Image: image,
       name: containerName,
       Env: buildAioSandboxEnv({
         taskId: args.taskId,
@@ -151,6 +157,22 @@ export function buildAioLocalSandboxProvisionSpec(args: {
       },
     },
   };
+}
+
+function resolveAioSandboxImage(args: {
+  readonly configImage: string;
+  readonly environment?: SandboxResolvedEnvironmentMetadata | null;
+}): string {
+  if (!args.environment) return args.configImage;
+  if (
+    args.environment.sourceKind !== 'aio-docker-image' &&
+    args.environment.sourceKind !== 'aio-loaded-docker-image'
+  ) {
+    throw new Error(
+      `Sandbox environment ${args.environment.environmentId ?? args.environment.id ?? 'unknown'} source ${args.environment.sourceKind ?? 'unknown'} is not compatible with AIO`,
+    );
+  }
+  return requirePinnedAioSandboxImage(args.environment.sourceRef);
 }
 
 export function requirePinnedAioSandboxImage(image: string | undefined): string {

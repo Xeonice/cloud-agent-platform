@@ -3,6 +3,10 @@ import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import Docker from 'dockerode';
 
 import { UpdateStatusService } from '../update-status/update-status.service';
+import {
+  SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+  type SandboxEnvironmentsService,
+} from '../sandbox-environments/sandbox-environments.service';
 
 /**
  * The env var that HARD-GATES self-update (self-update-action, design D1).
@@ -64,6 +68,16 @@ export const BOXLITE_IMAGE_ENV = 'BOXLITE_IMAGE';
 export const BOXLITE_IMAGE_MAP_ENV = 'BOXLITE_IMAGE_MAP';
 export const BOXLITE_PROTOCOL_MODE_ENV = 'BOXLITE_PROTOCOL_MODE';
 export const AIO_PULL_ONLY_SERVICE = 'aio-sandbox-image';
+
+/**
+ * Optional override for the sandbox environment contract expected by the target
+ * release. Normal releases use the code-owned
+ * {@link SANDBOX_ENVIRONMENT_CONTRACT_VERSION}; tests and future release metadata
+ * plumbing can set this to simulate a target that requires a newer validation
+ * contract before the new api container starts.
+ */
+export const SANDBOX_ENVIRONMENT_TARGET_CONTRACT_ENV =
+  'CAP_SANDBOX_ENVIRONMENT_CONTRACT_VERSION';
 
 /** The `ghcr.io/<owner>/cap-*` namespace that marks a service as a cap unit to upgrade. */
 const CAP_IMAGE_RE = /(^|\/)ghcr\.io\/[^/]+\/cap-[^/:@\s]+/i;
@@ -230,6 +244,11 @@ export class SelfUpdateService {
     @Optional() @Inject(UPDATER_LAUNCHER) private readonly launcher?: UpdaterLauncher,
     env: NodeJS.ProcessEnv = process.env,
     @Optional() @Inject(TOPOLOGY_RESOLVER) topologyResolver?: TopologyResolver,
+    @Optional()
+    private readonly sandboxEnvironments?: Pick<
+      SandboxEnvironmentsService,
+      'markCustomEnvironmentsStale'
+    >,
   ) {
     this.env = env;
     this.topologyResolver = topologyResolver ?? new DockerTopologyResolver(env);
@@ -316,14 +335,35 @@ export class SelfUpdateService {
   async requestUpdate(target: string): Promise<UpdatePlan> {
     const plan = await this.planUpdate(target);
     const launcher = this.launcher ?? new DockerUpdaterLauncher(this.env);
+    const staleCount = await this.markStaleSandboxEnvironmentsForTarget();
     this.log.warn(
       `self-update: launching DETACHED updater to ${plan.target} in ${plan.workingDir} ` +
         `(pull cap services [${plan.pullServices.join(', ')}] then up -d [${plan.services.join(', ')}] ` +
         `of project ${plan.project || '(default)'}) — the api will be recreated; running tasks survive ` +
         `via survive-api-redeploy`,
     );
+    if (staleCount > 0) {
+      this.log.warn(
+        `self-update: marked ${staleCount} custom sandbox environment(s) stale ` +
+          `for contract ${this.targetSandboxEnvironmentContractVersion()}`,
+      );
+    }
     await launcher.launch(plan);
     return plan;
+  }
+
+  private async markStaleSandboxEnvironmentsForTarget(): Promise<number> {
+    if (!this.sandboxEnvironments) return 0;
+    return this.sandboxEnvironments.markCustomEnvironmentsStale(
+      this.targetSandboxEnvironmentContractVersion(),
+    );
+  }
+
+  private targetSandboxEnvironmentContractVersion(): string {
+    return (
+      nonEmptyEnv(this.env[SANDBOX_ENVIRONMENT_TARGET_CONTRACT_ENV]) ??
+      SANDBOX_ENVIRONMENT_CONTRACT_VERSION
+    );
   }
 
   /**

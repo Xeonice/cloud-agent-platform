@@ -1,6 +1,7 @@
 export * from './boxlite-client.js';
 export * from './boxlite-command.js';
 export * from './boxlite-config.js';
+export * from './boxlite-environment-validation.js';
 export * from './boxlite-hooks.js';
 export * from './boxlite-preflight.js';
 export * from './boxlite-provider.js';

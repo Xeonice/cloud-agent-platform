@@ -119,16 +119,24 @@ test('the document is built from the SAME schemas used for request validation', 
   const validCreate = {
     repoId: '00000000-0000-0000-0000-000000000000',
     prompt: 'do the thing',
+    sandboxEnvironmentId: '00000000-0000-4000-a000-000000000902',
   };
   assert.doesNotThrow(
     () => V1CreateTaskRequestSchema.parse(validCreate),
-    'the exported create schema accepts a valid body',
+    'the exported create schema accepts a valid body with sandboxEnvironmentId',
   );
   // repoId is the /v1-only addition — a body without it is rejected by the SAME
   // schema the document is generated from.
   assert.throws(
     () => V1CreateTaskRequestSchema.parse({ prompt: 'no repo' }),
     'the exported create schema requires repoId (the /v1 addition)',
+  );
+
+  const docJson = JSON.stringify(doc);
+  assert.match(
+    docJson,
+    /"sandboxEnvironmentId"/,
+    'the OpenAPI document exposes the create-task sandboxEnvironmentId field',
   );
 
   // The list envelopes the document generates are the SAME `{ items, nextCursor }`

@@ -41,6 +41,10 @@ import {
   DefaultRepoResponseSchema,
   UpdateStatusSchema,
   DiscoverModelsResponseSchema,
+  ListSandboxEnvironmentsResponseSchema,
+  ValidateSandboxEnvironmentResponseSchema,
+  SandboxEnvironmentResponseSchema,
+  ListSandboxEnvironmentValidationsResponseSchema,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
   type UpdateStatus,
@@ -68,6 +72,11 @@ import {
   type RepoResponse,
   type SetDefaultRepoRequest,
   type DefaultRepoResponse,
+  type ListSandboxEnvironmentsResponse,
+  type ValidateSandboxEnvironmentResponse,
+  type SandboxEnvironmentResponse,
+  type ListSandboxEnvironmentValidationsResponse,
+  type CreateSandboxEnvironmentRequest,
 } from "@cap/contracts";
 import { RepoResponseSchema } from "@cap/contracts";
 import {
@@ -798,6 +807,57 @@ export async function setDefaultRepo(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
+  );
+}
+
+/** `GET /sandbox-environments` — admin managed sandbox environments. */
+export async function listSandboxEnvironments(): Promise<ListSandboxEnvironmentsResponse> {
+  return ListSandboxEnvironmentsResponseSchema.parse(
+    await request("/sandbox-environments"),
+  );
+}
+
+/** `POST /sandbox-environments` — create/import an environment descriptor. */
+export async function createSandboxEnvironment(
+  body: CreateSandboxEnvironmentRequest,
+): Promise<SandboxEnvironmentResponse> {
+  return SandboxEnvironmentResponseSchema.parse(
+    await request("/sandbox-environments", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** `POST /sandbox-environments/:id/validate` — run provider validation. */
+export async function validateSandboxEnvironment(
+  id: string,
+): Promise<ValidateSandboxEnvironmentResponse> {
+  return ValidateSandboxEnvironmentResponseSchema.parse(
+    await request(`/sandbox-environments/${encodeURIComponent(id)}/validate`, {
+      method: "POST",
+    }),
+  );
+}
+
+/** `PATCH /sandbox-environments/:id/default` — set a ready environment as default. */
+export async function setDefaultSandboxEnvironment(
+  id: string,
+): Promise<SandboxEnvironmentResponse> {
+  return SandboxEnvironmentResponseSchema.parse(
+    await request(`/sandbox-environments/${encodeURIComponent(id)}/default`, {
+      method: "PATCH",
+    }),
+  );
+}
+
+/** `GET /sandbox-environments/:id/validations` — validation history. */
+export async function listSandboxEnvironmentValidations(
+  id: string,
+): Promise<ListSandboxEnvironmentValidationsResponse> {
+  return ListSandboxEnvironmentValidationsResponseSchema.parse(
+    await request(`/sandbox-environments/${encodeURIComponent(id)}/validations`),
   );
 }
 

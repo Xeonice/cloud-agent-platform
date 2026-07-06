@@ -129,6 +129,7 @@ function SessionPage(): React.ReactElement {
   const agent = context?.agent ?? "—";
   const sandboxProviderLabel =
     context?.sandboxProviderLabel ?? SANDBOX_PROVIDER_PENDING_LABEL;
+  const sandboxEnvironmentName = task?.sandboxEnvironment?.name ?? null;
   const headLabel = `${agent} · ${repo}#${branch}`;
 
   // Cockpit task-lifecycle state: failed → failed; other terminal → stopped;
@@ -192,6 +193,7 @@ function SessionPage(): React.ReactElement {
         branch={branch}
         agent={agent}
         sandboxProviderLabel={sandboxProviderLabel}
+        sandboxEnvironmentName={sandboxEnvironmentName}
         guardrail={guardrail}
         canStop={canStop}
         stopPending={stopMutation.isPending}

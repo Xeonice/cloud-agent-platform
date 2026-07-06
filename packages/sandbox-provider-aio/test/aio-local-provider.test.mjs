@@ -99,6 +99,8 @@ await test('builds provision specs, names, env, and validation helpers', async (
   });
 
   assert.equal(spec.containerName, 'cap-aio-task-helpers');
+  assert.equal(spec.image, 'cap-aio-sandbox:0.1.0');
+  assert.equal(spec.containerConfig.Image, 'cap-aio-sandbox:0.1.0');
   assert.equal(spec.connection.baseUrl, 'http://cap-aio-task-helpers:8080');
   assert.equal(spec.connection.wsUrl, 'ws://cap-aio-task-helpers:8080/v1/shell/ws');
   assert.equal(spec.containerConfig.HostConfig.SecurityOpt[0], 'seccomp=unconfined');
@@ -106,6 +108,41 @@ await test('builds provision specs, names, env, and validation helpers', async (
     'TASK_ID=task-helpers',
     'ORCHESTRATOR_APPROVALS_URL=http://api:8080/v1/approvals',
   ]);
+
+  const custom = mod.buildAioLocalSandboxProvisionSpec({
+    taskId: 'task-custom-env',
+    config: {
+      image: 'cap-aio-sandbox:0.1.0',
+      network: 'cap-net-test',
+      readinessTimeoutMs: 456,
+      approvalsBase: 'http://api:8080',
+    },
+    environment: {
+      environmentId: 'env-aio',
+      sourceKind: 'aio-docker-image',
+      sourceRef: 'cap-aio-custom:1.0.0',
+    },
+  });
+  assert.equal(custom.image, 'cap-aio-custom:1.0.0');
+  assert.equal(custom.containerConfig.Image, 'cap-aio-custom:1.0.0');
+  assert.throws(
+    () =>
+      mod.buildAioLocalSandboxProvisionSpec({
+        taskId: 'task-wrong-env',
+        config: {
+          image: 'cap-aio-sandbox:0.1.0',
+          network: 'cap-net-test',
+          readinessTimeoutMs: 456,
+          approvalsBase: 'http://api:8080',
+        },
+        environment: {
+          environmentId: 'env-boxlite',
+          sourceKind: 'boxlite-rootfs',
+          sourceRef: '/var/lib/rootfs',
+        },
+      }),
+    /not compatible with AIO/,
+  );
 
   assert.equal(
     mod.parseAioTaskIdFromContainerNames(['/other', '/cap-aio-task-helpers']),

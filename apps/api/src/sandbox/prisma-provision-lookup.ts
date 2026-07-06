@@ -1,8 +1,14 @@
 import { Injectable, Optional } from '@nestjs/common';
 
+import { DEFAULT_TASK_RUNTIME } from '@cap/contracts';
+import type {
+  SandboxEnvironmentProviderFamily,
+  SandboxResolvedEnvironmentMetadata,
+} from '@cap/sandbox';
 import { PrismaService } from '../prisma/prisma.service';
 import { ForgeTargetResolver } from '../forge/forge-target-resolver';
 import { DefaultForgeRegistry } from '../forge/forge-registry';
+import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
 import type { CloneSpec, ProvisionLookup } from './provision-lookup.port';
 
 /**
@@ -17,6 +23,7 @@ export class PrismaProvisionLookup implements ProvisionLookup {
     private readonly prisma: PrismaService,
     @Optional() private readonly forgeResolver?: ForgeTargetResolver,
     @Optional() private readonly forgeRegistry?: DefaultForgeRegistry,
+    @Optional() private readonly sandboxEnvironments?: SandboxEnvironmentsService,
   ) {}
 
   async getCloneSpec(taskId: string): Promise<CloneSpec | null> {
@@ -99,4 +106,24 @@ export class PrismaProvisionLookup implements ProvisionLookup {
     return task?.executionMode ?? null;
   }
 
+  async getResolvedEnvironment(
+    taskId: string,
+    providerFamily: SandboxEnvironmentProviderFamily,
+    runtimeId?: string | null,
+  ): Promise<SandboxResolvedEnvironmentMetadata | null> {
+    if (!this.sandboxEnvironments) return null;
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: {
+        runtime: true,
+        sandboxEnvironmentId: true,
+      },
+    });
+    if (!task) return null;
+    return this.sandboxEnvironments.resolveForTask({
+      requestedEnvironmentId: task.sandboxEnvironmentId ?? null,
+      runtimeId: runtimeId ?? task.runtime ?? DEFAULT_TASK_RUNTIME,
+      providerFamily,
+    });
+  }
 }

@@ -30,7 +30,10 @@ test(
 
       const selected = await provider.getSelectedSandboxRun(taskId);
       assert.equal(selected.providerId, config.providerId);
-      assert.equal(selected.providerSandboxId, `${config.sandboxIdPrefix}${taskId}`);
+      assert.ok(
+        selected.providerSandboxId,
+        'BoxLite should return a provider sandbox id after native create/start',
+      );
       assert.equal(selected.command.protocol, 'boxlite-exec-v1');
       assert.equal(selected.workspace.path, config.workspacePath);
       assert.equal(selected.retention.cleanupEligible, true);
@@ -56,20 +59,20 @@ test(
       assert.equal(exec.output.trim(), marker);
 
       if (config.capabilities.includes('workspace.archive.transfer')) {
-        const archivePath = `${config.workspacePath}/provider-e2e-archive.txt`;
-        const payload = new TextEncoder().encode(`boxlite-archive-${randomUUID()}`);
+        const archiveName = `provider-e2e-archive-${randomUUID()}.txt`;
+        const payload = `boxlite-archive-${randomUUID()}`;
         await provider.uploadWorkspaceArchive({
           taskId,
-          path: archivePath,
-          archive: payload,
+          path: config.workspacePath,
+          archive: tar([{ name: archiveName, content: payload }]),
         });
         const downloaded = await provider.downloadWorkspaceArchive({
           taskId,
-          path: archivePath,
+          path: config.workspacePath,
         });
-        assert.deepEqual(
-          downloaded ? [...downloaded] : null,
-          [...payload],
+        assert.equal(
+          downloaded ? readTarEntry(downloaded, archiveName) : null,
+          payload,
           'BoxLite advertised workspace.archive.transfer but upload/download did not round-trip',
         );
       }
@@ -117,4 +120,61 @@ function requireLiveBoxLiteConfig() {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+const TAR_BLOCK = 512;
+
+function tar(entries) {
+  return Buffer.concat([
+    ...entries.map((entry) => tarEntry(entry.name, entry.content)),
+    Buffer.alloc(TAR_BLOCK * 2),
+  ]);
+}
+
+function tarEntry(name, content) {
+  const body = Buffer.from(content);
+  const header = Buffer.alloc(TAR_BLOCK);
+  writeTarString(header, 0, 100, name);
+  writeTarString(header, 100, 8, '0000644\0');
+  writeTarString(header, 108, 8, '0000000\0');
+  writeTarString(header, 116, 8, '0000000\0');
+  writeTarString(header, 124, 12, tarOctal(body.length, 12));
+  writeTarString(header, 136, 12, '00000000000\0');
+  header.fill(0x20, 148, 156);
+  writeTarString(header, 156, 1, '0');
+  writeTarString(header, 257, 6, 'ustar\0');
+  let sum = 0;
+  for (const byte of header) sum += byte;
+  writeTarString(header, 148, 8, tarOctal(sum, 8));
+  const padding = Buffer.alloc(Math.ceil(body.length / TAR_BLOCK) * TAR_BLOCK - body.length);
+  return Buffer.concat([header, body, padding]);
+}
+
+function readTarEntry(archive, expectedName) {
+  const buffer = Buffer.from(archive);
+  for (let offset = 0; offset + TAR_BLOCK <= buffer.length;) {
+    const name = buffer.subarray(offset, offset + 100).toString('utf8').replace(/\0.*$/, '');
+    if (!name) return null;
+    const sizeText = buffer
+      .subarray(offset + 124, offset + 136)
+      .toString('utf8')
+      .replace(/\0.*$/, '')
+      .trim();
+    const size = parseInt(sizeText || '0', 8);
+    const contentStart = offset + TAR_BLOCK;
+    const contentEnd = contentStart + size;
+    if (name === expectedName || name.endsWith(`/${expectedName}`)) {
+      return buffer.subarray(contentStart, contentEnd).toString('utf8');
+    }
+    offset = contentStart + Math.ceil(size / TAR_BLOCK) * TAR_BLOCK;
+  }
+  return null;
+}
+
+function tarOctal(value, length) {
+  return `${value.toString(8).padStart(length - 1, '0')}\0`;
+}
+
+function writeTarString(buffer, offset, length, value) {
+  buffer.write(value.slice(0, length), offset, length, 'utf8');
 }

@@ -40,11 +40,13 @@ import {
   PULL_ONLY_SERVICES_ENV,
   SANDBOX_IMAGE_DELIVERY_ENV,
   SANDBOX_PROVIDER_ENV,
+  SANDBOX_ENVIRONMENT_TARGET_CONTRACT_ENV,
   type UpdatePlan,
   type UpdaterLauncher,
   type UpdateTopology,
   type TopologyResolver,
 } from './self-update.service';
+import { SANDBOX_ENVIRONMENT_CONTRACT_VERSION } from '../sandbox-environments/sandbox-environments.service';
 import { UpdateStatusService } from '../update-status/update-status.service';
 import type { OperatorPrincipal } from '../auth/operator-principal';
 
@@ -106,6 +108,7 @@ function makeService(opts: {
   launcher: UpdaterLauncher;
   topology?: UpdateTopology | null; // undefined → FAKE_TOPO; null → fallback path
   env?: NodeJS.ProcessEnv;
+  sandboxEnvironments?: { markCustomEnvironmentsStale(contractVersion: string): Promise<number> };
 }): SelfUpdateService {
   const env: NodeJS.ProcessEnv = {
     ...(opts.enabled ? { [SELF_UPDATE_ENABLED_ENV]: 'true' } : {}),
@@ -120,6 +123,7 @@ function makeService(opts: {
     opts.launcher,
     env,
     fakeResolver(topo),
+    opts.sandboxEnvironments,
   );
 }
 
@@ -252,6 +256,52 @@ test('the upgrade persists the CAP_VERSION pin into the deployment .env', async 
   // And it ensures the compose plugin is present first (no-op when already bundled).
   assert.ok(plan.script.includes('docker compose version') && plan.script.includes('apk add'),
     'the script idempotently ensures the compose plugin before acting');
+});
+
+test('accepted self-update marks custom sandbox environments stale by contract version without replacing sources', async () => {
+  const { launcher, launched } = capturingLauncher();
+  const staleContracts: string[] = [];
+  const svc = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    sandboxEnvironments: {
+      async markCustomEnvironmentsStale(contractVersion: string) {
+        staleContracts.push(contractVersion);
+        return 2;
+      },
+    },
+  });
+
+  await svc.requestUpdate(LATEST);
+
+  assert.deepEqual(
+    staleContracts,
+    [SANDBOX_ENVIRONMENT_CONTRACT_VERSION],
+    'self-update uses the sandbox environment contract metadata for stale gating',
+  );
+  assert.equal(launched().length, 1, 'the accepted update still launches');
+});
+
+test('target sandbox contract metadata can mark custom environments stale before a newer release starts', async () => {
+  const { launcher } = capturingLauncher();
+  const staleContracts: string[] = [];
+  const svc = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    env: { [SANDBOX_ENVIRONMENT_TARGET_CONTRACT_ENV]: 'sandbox-environment-v2' },
+    sandboxEnvironments: {
+      async markCustomEnvironmentsStale(contractVersion: string) {
+        staleContracts.push(contractVersion);
+        return 1;
+      },
+    },
+  });
+
+  await svc.requestUpdate(LATEST);
+
+  assert.deepEqual(staleContracts, ['sandbox-environment-v2']);
 });
 
 test('pull-then-recreate ordering: pull is FIRST, up -d SECOND, joined by &&', async () => {

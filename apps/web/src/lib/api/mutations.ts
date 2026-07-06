@@ -40,6 +40,9 @@ import type {
   AdminAccountListItem,
   AdminCreateAccountRequest,
   Role,
+  CreateSandboxEnvironmentRequest,
+  SandboxEnvironmentResponse,
+  ValidateSandboxEnvironmentResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
@@ -308,6 +311,55 @@ export function saveSettingsMutation(
       // Refresh capacity surfaces (slot meter, RUNNERS tile) before the next
       // 5s metrics poll so a changed slot ceiling shows up immediately.
       void queryClient.invalidateQueries({ queryKey: queryKeys.metrics });
+    },
+  };
+}
+
+export function createSandboxEnvironmentMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<
+  SandboxEnvironmentResponse,
+  Error,
+  CreateSandboxEnvironmentRequest
+> {
+  return {
+    mutationFn: (body) =>
+      isCapable("settings")
+        ? real.createSandboxEnvironment(body)
+        : mock.mockCreateSandboxEnvironment(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sandboxEnvironments });
+    },
+  };
+}
+
+export function validateSandboxEnvironmentMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<ValidateSandboxEnvironmentResponse, Error, string> {
+  return {
+    mutationFn: (id) =>
+      isCapable("settings")
+        ? real.validateSandboxEnvironment(id)
+        : mock.mockValidateSandboxEnvironment(id),
+    onSuccess: (_result, id) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sandboxEnvironments });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sandboxEnvironmentValidations(id),
+      });
+    },
+  };
+}
+
+export function setDefaultSandboxEnvironmentMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<SandboxEnvironmentResponse, Error, string> {
+  return {
+    mutationFn: (id) =>
+      isCapable("settings")
+        ? real.setDefaultSandboxEnvironment(id)
+        : mock.mockSetDefaultSandboxEnvironment(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sandboxEnvironments });
     },
   };
 }

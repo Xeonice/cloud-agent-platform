@@ -38,6 +38,8 @@ export interface SessionHeaderProps {
   agent: string;
   /** Sandbox provider tag (e.g. `AIO Sandbox` or `BoxLite Sandbox`). */
   sandboxProviderLabel: string;
+  /** Optional managed sandbox environment display name. */
+  sandboxEnvironmentName?: string | null;
   /** Guardrail readout, computed honestly from the task (e.g. `默认守护栏`). */
   guardrail: string;
   /**
@@ -58,6 +60,7 @@ export function SessionHeader({
   branch,
   agent,
   sandboxProviderLabel,
+  sandboxEnvironmentName = null,
   guardrail,
   canStop = false,
   stopPending = false,
@@ -148,6 +151,9 @@ export function SessionHeader({
           </SessionTag>
           <SessionTag>{agent}</SessionTag>
           <SessionTag>{sandboxProviderLabel}</SessionTag>
+          {sandboxEnvironmentName ? (
+            <SessionTag>{sandboxEnvironmentName}</SessionTag>
+          ) : null}
           <SessionTag>{guardrail}</SessionTag>
         </div>
       </div>
