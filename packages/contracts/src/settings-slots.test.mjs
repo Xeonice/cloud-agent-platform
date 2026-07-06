@@ -63,6 +63,11 @@ test('AccountSettings read shape defaults an absent ceiling to 5 (optional on th
   assert.equal(parsed.maxConcurrentTasks, 5);
 });
 
+test('AccountSettings read shape defaults an absent default image to null', () => {
+  const parsed = AccountSettingsSchema.parse(baseSettings);
+  assert.equal(parsed.defaultSandboxEnvironmentId, null);
+});
+
 test('AccountSettings read shape echoes an in-range ceiling exactly', () => {
   for (const n of [1, 8, 20]) {
     const parsed = AccountSettingsSchema.parse({ ...baseSettings, maxConcurrentTasks: n });
@@ -86,6 +91,20 @@ test('UpdateSettingsRequest accepts an in-range ceiling and preserves it', () =>
 test('UpdateSettingsRequest without the ceiling stays undefined (omit = no change, never fabricated)', () => {
   const parsed = UpdateSettingsRequestSchema.parse({ writeConfirm: false });
   assert.equal(parsed.maxConcurrentTasks, undefined);
+});
+
+test('UpdateSettingsRequest accepts setting and clearing the user default image', () => {
+  const id = '00000000-0000-4000-a000-000000000777';
+  assert.equal(
+    UpdateSettingsRequestSchema.parse({ defaultSandboxEnvironmentId: id })
+      .defaultSandboxEnvironmentId,
+    id,
+  );
+  assert.equal(
+    UpdateSettingsRequestSchema.parse({ defaultSandboxEnvironmentId: null })
+      .defaultSandboxEnvironmentId,
+    null,
+  );
 });
 
 test('UpdateSettingsRequest rejects 0, 21, negatives, and non-integers', () => {

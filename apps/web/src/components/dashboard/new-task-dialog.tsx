@@ -38,7 +38,11 @@ import { Link, useNavigate } from "@tanstack/react-router";
 
 import type { Repo, SandboxEnvironment } from "@cap/contracts";
 import { createTaskMutation } from "@/lib/api/mutations";
-import { runtimesQuery, sandboxEnvironmentsQuery } from "@/lib/api/queries";
+import {
+  runtimesQuery,
+  sandboxEnvironmentsQuery,
+  settingsQuery,
+} from "@/lib/api/queries";
 import type { CreateTaskBody, RuntimeId } from "@/lib/api/real";
 import { setState } from "@/lib/store";
 import { cn } from "@/utils";
@@ -128,6 +132,7 @@ export const DEADLINE_OPTIONS: ReadonlyArray<{ label: string; ms: number | null 
 ];
 
 const ENVIRONMENT_DEFAULT = "__default__";
+const ENVIRONMENT_SERVER_DEFAULT = "__server_default__";
 
 /** The Select value (string) for a guardrail ms, or the OFF sentinel for null. */
 export function guardrailSelectValue(ms: number | null): string {
@@ -308,6 +313,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   // vouched for (the default `codex` is corrected back if it ever reports un-ready).
   const runtimesReadiness = useQuery(runtimesQuery());
   const sandboxEnvironments = useQuery(sandboxEnvironmentsQuery());
+  const settings = useQuery(settingsQuery());
   const readyById = React.useMemo(() => {
     const map = new Map<RuntimeId, boolean>();
     for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
@@ -389,9 +395,32 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   const selectedEnvironment =
     readyEnvironments.find((environment) => environment.id === sandboxEnvironmentId) ??
     null;
+  const accountDefaultEnvironmentId =
+    settings.data?.defaultSandboxEnvironmentId ?? null;
+  const accountDefaultEnvironment =
+    accountDefaultEnvironmentId === null
+      ? null
+      : readyEnvironments.find(
+          (environment) => environment.id === accountDefaultEnvironmentId,
+        ) ?? null;
+  const accountDefaultUnavailable =
+    sandboxEnvironmentId === ENVIRONMENT_DEFAULT &&
+    accountDefaultEnvironmentId !== null &&
+    sandboxEnvironments.isSuccess &&
+    !accountDefaultEnvironment;
+  const previewEnvironment =
+    selectedEnvironment ??
+    (sandboxEnvironmentId === ENVIRONMENT_DEFAULT
+      ? accountDefaultEnvironment
+      : null);
 
   React.useEffect(() => {
-    if (sandboxEnvironmentId === ENVIRONMENT_DEFAULT) return;
+    if (
+      sandboxEnvironmentId === ENVIRONMENT_DEFAULT ||
+      sandboxEnvironmentId === ENVIRONMENT_SERVER_DEFAULT
+    ) {
+      return;
+    }
     if (readyEnvironments.some((environment) => environment.id === sandboxEnvironmentId)) {
       return;
     }
@@ -419,7 +448,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     idleTimeoutMs,
     deadlineMs,
     runtime,
-    sandboxEnvironmentName: selectedEnvironment?.name ?? null,
+    sandboxEnvironmentName: previewEnvironment?.name ?? null,
   });
 
   const createdTask = mutation.data;
@@ -445,6 +474,10 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     // claude-code selection adds `runtime: "claude-code"`.
     if (runtime !== DEFAULT_RUNTIME) body.runtime = runtime;
     if (selectedEnvironment) body.sandboxEnvironmentId = selectedEnvironment.id;
+    if (sandboxEnvironmentId === ENVIRONMENT_SERVER_DEFAULT) {
+      body.sandboxEnvironmentId = null;
+    }
+    if (accountDefaultUnavailable) return;
     // Opt-in guardrails: only send when the operator chose a value.
     if (idleTimeoutMs != null) body.idleTimeoutMs = idleTimeoutMs;
     if (deadlineMs != null) body.deadlineMs = deadlineMs;
@@ -630,9 +663,15 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={ENVIRONMENT_DEFAULT}>
+                    使用我的默认镜像
+                    <small className="ml-1.5 text-xs text-muted-foreground">
+                      未设置时沿用服务端默认
+                    </small>
+                  </SelectItem>
+                  <SelectItem value={ENVIRONMENT_SERVER_DEFAULT}>
                     使用服务端默认
                     <small className="ml-1.5 text-xs text-muted-foreground">
-                      无托管默认时沿用部署配置
+                      本次任务不跟随账号默认
                     </small>
                   </SelectItem>
                   {readyEnvironments.map((environment) => (
@@ -646,7 +685,11 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
                 </SelectContent>
               </Select>
               <small className="text-xs text-muted-foreground">
-                仅展示已验证且兼容当前 Agent 运行时的环境。
+                {accountDefaultUnavailable
+                  ? "当前账号默认镜像不兼容此运行时，请选择其他镜像或服务端默认。"
+                  : accountDefaultEnvironment
+                    ? `当前账号默认：${accountDefaultEnvironment.name}`
+                    : "未设置账号默认时，会沿用服务端部署默认。"}
               </small>
             </div>
 
@@ -818,7 +861,11 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
           <button
             type="submit"
             form="new-task-form"
-            disabled={mutation.isPending || prompt.trim().length === 0}
+            disabled={
+              mutation.isPending ||
+              prompt.trim().length === 0 ||
+              accountDefaultUnavailable
+            }
             className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
           >
             {mutation.isPending ? "创建中…" : "创建任务"}

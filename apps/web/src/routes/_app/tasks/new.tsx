@@ -41,6 +41,7 @@ import {
   reposQuery,
   runtimesQuery,
   sandboxEnvironmentsQuery,
+  settingsQuery,
 } from "@/lib/api/queries";
 import type { RuntimeId } from "@/lib/api/real";
 import { createTaskMutation } from "@/lib/api/mutations";
@@ -86,6 +87,7 @@ const STRATEGIES = [
 ] as const;
 
 const ENVIRONMENT_DEFAULT = "__default__";
+const ENVIRONMENT_SERVER_DEFAULT = "__server_default__";
 
 /** Resolve a repo's display full-name (`owner/name` slug from gitSource, or name). */
 function repoFullName(repo: Repo): string {
@@ -187,6 +189,7 @@ function NewTaskPage() {
   const [runtime, setRuntime] = React.useState<RuntimeId>(DEFAULT_RUNTIME);
   const runtimesReadiness = useQuery(runtimesQuery());
   const sandboxEnvironments = useQuery(sandboxEnvironmentsQuery());
+  const settings = useQuery(settingsQuery());
   const readyById = React.useMemo(() => {
     const map = new Map<RuntimeId, boolean>();
     for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
@@ -223,9 +226,32 @@ function NewTaskPage() {
   const selectedEnvironment =
     readyEnvironments.find((environment) => environment.id === sandboxEnvironmentId) ??
     null;
+  const accountDefaultEnvironmentId =
+    settings.data?.defaultSandboxEnvironmentId ?? null;
+  const accountDefaultEnvironment =
+    accountDefaultEnvironmentId === null
+      ? null
+      : readyEnvironments.find(
+          (environment) => environment.id === accountDefaultEnvironmentId,
+        ) ?? null;
+  const accountDefaultUnavailable =
+    sandboxEnvironmentId === ENVIRONMENT_DEFAULT &&
+    accountDefaultEnvironmentId !== null &&
+    sandboxEnvironments.isSuccess &&
+    !accountDefaultEnvironment;
+  const previewEnvironment =
+    selectedEnvironment ??
+    (sandboxEnvironmentId === ENVIRONMENT_DEFAULT
+      ? accountDefaultEnvironment
+      : null);
 
   React.useEffect(() => {
-    if (sandboxEnvironmentId === ENVIRONMENT_DEFAULT) return;
+    if (
+      sandboxEnvironmentId === ENVIRONMENT_DEFAULT ||
+      sandboxEnvironmentId === ENVIRONMENT_SERVER_DEFAULT
+    ) {
+      return;
+    }
     if (readyEnvironments.some((environment) => environment.id === sandboxEnvironmentId)) {
       return;
     }
@@ -250,7 +276,7 @@ function NewTaskPage() {
     skills,
     idleTimeoutMs,
     deadlineMs,
-    sandboxEnvironmentName: selectedEnvironment?.name ?? null,
+    sandboxEnvironmentName: previewEnvironment?.name ?? null,
   });
 
   // Free remote slots, when the (mock-today) metrics resolve; else keep the
@@ -270,6 +296,10 @@ function NewTaskPage() {
     // Only send a non-default runtime; omitted ⇒ codex (server default).
     if (runtime !== DEFAULT_RUNTIME) body.runtime = runtime;
     if (selectedEnvironment) body.sandboxEnvironmentId = selectedEnvironment.id;
+    if (sandboxEnvironmentId === ENVIRONMENT_SERVER_DEFAULT) {
+      body.sandboxEnvironmentId = null;
+    }
+    if (accountDefaultUnavailable) return;
     if (branch) body.branch = branch;
     if (strategy) body.strategy = strategy;
     if (skills.length > 0) body.skills = skills;
@@ -293,7 +323,8 @@ function NewTaskPage() {
     );
   }
 
-  const submitDisabled = mutation.isPending || prompt.trim().length === 0;
+  const submitDisabled =
+    mutation.isPending || prompt.trim().length === 0 || accountDefaultUnavailable;
 
   return (
     <>
@@ -381,9 +412,15 @@ function NewTaskPage() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={ENVIRONMENT_DEFAULT}>
+                  使用我的默认镜像
+                  <small className="ml-1.5 text-xs text-muted-foreground">
+                    未设置时沿用服务端默认
+                  </small>
+                </SelectItem>
+                <SelectItem value={ENVIRONMENT_SERVER_DEFAULT}>
                   使用服务端默认
                   <small className="ml-1.5 text-xs text-muted-foreground">
-                    无托管默认时沿用部署配置
+                    本次任务不跟随账号默认
                   </small>
                 </SelectItem>
                 {readyEnvironments.map((environment) => (
@@ -397,7 +434,11 @@ function NewTaskPage() {
               </SelectContent>
             </Select>
             <small className="text-xs text-muted-foreground">
-              仅展示已验证且兼容当前 Agent 运行时的环境。
+              {accountDefaultUnavailable
+                ? "当前账号默认镜像不兼容此运行时，请选择其他镜像或服务端默认。"
+                : accountDefaultEnvironment
+                  ? `当前账号默认：${accountDefaultEnvironment.name}`
+                  : "未设置账号默认时，会沿用服务端部署默认。"}
             </small>
           </div>
 

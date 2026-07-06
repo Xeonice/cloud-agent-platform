@@ -1,6 +1,6 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, ChevronDown, Play, Plus } from "lucide-react";
+import { AlertTriangle, ChevronDown, Play, Plus } from "lucide-react";
 
 import type {
   CreateSandboxEnvironmentRequest,
@@ -18,14 +18,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   sandboxEnvironmentValidationsQuery,
   sandboxEnvironmentsQuery,
 } from "@/lib/api/queries";
 import {
   createSandboxEnvironmentMutation,
-  setDefaultSandboxEnvironmentMutation,
   validateSandboxEnvironmentMutation,
 } from "@/lib/api/mutations";
 
@@ -61,17 +59,15 @@ export function SandboxEnvironmentsCard() {
   const { data } = useQuery(sandboxEnvironmentsQuery());
   const createEnv = useMutation(createSandboxEnvironmentMutation(queryClient));
   const validateEnv = useMutation(validateSandboxEnvironmentMutation(queryClient));
-  const setDefault = useMutation(setDefaultSandboxEnvironmentMutation(queryClient));
   const environments = data?.environments ?? [];
-  const operationError =
-    createEnv.error?.message ?? validateEnv.error?.message ?? setDefault.error?.message;
+  const operationError = createEnv.error?.message ?? validateEnv.error?.message;
 
   const [name, setName] = React.useState("");
   const [kind, setKind] =
     React.useState<SandboxEnvironmentSourceKind>("aio-docker-image");
   const [reference, setReference] = React.useState("");
   const [runtimeIds, setRuntimeIds] = React.useState("");
-  const [makeDefault, setMakeDefault] = React.useState(false);
+  const [showCreate, setShowCreate] = React.useState(false);
   const selectedKind = SOURCE_KINDS.find((source) => source.value === kind)!;
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -85,14 +81,13 @@ export function SandboxEnvironmentsCard() {
         .split(",")
         .map((entry) => entry.trim())
         .filter(Boolean),
-      isDefault: makeDefault,
     };
     createEnv.mutate(body, {
       onSuccess: () => {
         setName("");
         setReference("");
         setRuntimeIds("");
-        setMakeDefault(false);
+        setShowCreate(false);
       },
     });
   }
@@ -101,63 +96,72 @@ export function SandboxEnvironmentsCard() {
     <Panel id="sandbox-environments">
       <PanelHead>
         <div className="font-mono text-[11px] uppercase text-muted-foreground">
-          Sandbox
+          Image library
         </div>
-        <h2 className="text-sm font-semibold text-foreground">运行环境</h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          管理可选的 AIO / BoxLite 沙箱环境，验证通过后可作为新任务默认环境。
-        </p>
-      </PanelHead>
-
-      <form onSubmit={submit} className="mt-4 grid gap-3">
-        <div className="grid gap-2 sm:grid-cols-[1fr_180px]">
-          <Input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="环境名称"
-          />
-          <Select
-            value={kind}
-            onValueChange={(value) => setKind(value as SandboxEnvironmentSourceKind)}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-foreground">镜像库</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              管理可选的 AIO / BoxLite 任务基础镜像。验证通过后会出现在设置页默认镜像下拉里。
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowCreate((value) => !value)}
+            className="gap-2"
           >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {SOURCE_KINDS.map((source) => (
-                <SelectItem key={source.value} value={source.value}>
-                  {source.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid gap-2 sm:grid-cols-[1fr_180px]">
-          <Input
-            value={reference}
-            onChange={(event) => setReference(event.target.value)}
-            placeholder={selectedKind.placeholder}
-          />
-          <Input
-            value={runtimeIds}
-            onChange={(event) => setRuntimeIds(event.target.value)}
-            placeholder="runtime: codex"
-          />
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Checkbox
-              checked={makeDefault}
-              onCheckedChange={(checked) => setMakeDefault(checked === true)}
-            />
-            设为默认候选
-          </label>
-          <Button type="submit" disabled={createEnv.isPending} className="gap-2">
             <Plus className="size-4" />
-            添加环境
+            添加镜像
           </Button>
         </div>
-      </form>
+      </PanelHead>
+
+      {showCreate ? (
+        <form onSubmit={submit} className="mt-4 grid gap-3 rounded-md border border-border bg-muted/20 p-3">
+          <div className="grid gap-2 sm:grid-cols-[1fr_180px]">
+            <Input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="镜像名称"
+            />
+            <Select
+              value={kind}
+              onValueChange={(value) => setKind(value as SandboxEnvironmentSourceKind)}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SOURCE_KINDS.map((source) => (
+                  <SelectItem key={source.value} value={source.value}>
+                    {source.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid gap-2 sm:grid-cols-[1fr_180px]">
+            <Input
+              value={reference}
+              onChange={(event) => setReference(event.target.value)}
+              placeholder={selectedKind.placeholder}
+            />
+            <Input
+              value={runtimeIds}
+              onChange={(event) => setRuntimeIds(event.target.value)}
+              placeholder="runtime: codex"
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button type="submit" disabled={createEnv.isPending} className="gap-2">
+              <Plus className="size-4" />
+              保存镜像
+            </Button>
+          </div>
+        </form>
+      ) : null}
 
       {operationError ? (
         <p role="alert" className="mt-3 text-xs text-danger">
@@ -168,7 +172,7 @@ export function SandboxEnvironmentsCard() {
       <div className="mt-5 grid gap-2">
         {environments.length === 0 ? (
           <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">
-            暂无运行环境。
+            暂无任务镜像。
           </div>
         ) : (
           environments.map((environment) => (
@@ -176,11 +180,7 @@ export function SandboxEnvironmentsCard() {
               key={environment.id}
               environment={environment}
               validating={validateEnv.isPending && validateEnv.variables === environment.id}
-              settingDefault={
-                setDefault.isPending && setDefault.variables === environment.id
-              }
               onValidate={() => validateEnv.mutate(environment.id)}
-              onSetDefault={() => setDefault.mutate(environment.id)}
             />
           ))
         )}
@@ -192,15 +192,11 @@ export function SandboxEnvironmentsCard() {
 function EnvironmentRow({
   environment,
   validating,
-  settingDefault,
   onValidate,
-  onSetDefault,
 }: {
   environment: SandboxEnvironment;
   validating: boolean;
-  settingDefault: boolean;
   onValidate: () => void;
-  onSetDefault: () => void;
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const validationQuery = useQuery({
@@ -218,12 +214,6 @@ function EnvironmentRow({
           <Badge variant={environment.status === "ready" ? "default" : "secondary"}>
             {environment.status}
           </Badge>
-          {environment.isDefault ? (
-            <Badge variant="outline" className="gap-1">
-              <CheckCircle2 className="size-3" />
-              默认
-            </Badge>
-          ) : null}
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
           {environment.source.kind} · {provider} · {runtimes}
@@ -243,15 +233,6 @@ function EnvironmentRow({
         >
           <Play className="size-3.5" />
           验证
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          onClick={onSetDefault}
-          disabled={settingDefault || environment.status !== "ready"}
-        >
-          设默认
         </Button>
         <Button
           type="button"

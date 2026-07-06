@@ -52,6 +52,7 @@ export const DEFAULT_WRITE_CONFIRM = true;
  */
 export interface StoredAccountPrefs {
   readonly defaultRepoId: string | null;
+  readonly defaultSandboxEnvironmentId: string | null;
   readonly retention: RetentionDays;
   readonly writeConfirm: boolean;
 }
@@ -78,6 +79,7 @@ export function resolveAccountSettings(
   return {
     allowedAccount: displayAccount,
     defaultRepoId: stored?.defaultRepoId ?? null,
+    defaultSandboxEnvironmentId: stored?.defaultSandboxEnvironmentId ?? null,
     retention: stored?.retention ?? DEFAULT_RETENTION_DAYS,
     writeConfirm: stored?.writeConfirm ?? DEFAULT_WRITE_CONFIRM,
     maxConcurrentTasks,
@@ -153,6 +155,11 @@ export type DefaultRepoValidation =
   | { readonly ok: true; readonly defaultRepoId: string | null }
   | { readonly ok: false; readonly reason: 'not_imported' };
 
+/** Outcome of validating a requested user default sandbox environment. */
+export type DefaultSandboxEnvironmentValidation =
+  | { readonly ok: true; readonly defaultSandboxEnvironmentId: string | null }
+  | { readonly ok: false; readonly reason: 'not_selectable' };
+
 /**
  * Validates a requested default-repo selection against the set of repo ids the
  * account has imported / can see (7.3).
@@ -189,6 +196,39 @@ export function validateDefaultRepoSelection(
 }
 
 /**
+ * Validates a requested per-account default sandbox environment.
+ *
+ *   - `undefined` (key omitted) ⇒ leave the existing selection unchanged.
+ *   - `null` ⇒ explicitly clear the selection.
+ *   - a string id ⇒ accepted ONLY when it is in `selectableEnvironmentIds`
+ *     (the service supplies ready environments). Unknown, failed, stale, or
+ *     deleted environments are rejected without mutating stored preferences.
+ */
+export function validateDefaultSandboxEnvironmentSelection(
+  requested: string | null | undefined,
+  selectableEnvironmentIds: ReadonlySet<string> | readonly string[],
+  currentDefaultSandboxEnvironmentId: string | null,
+): DefaultSandboxEnvironmentValidation {
+  if (requested === undefined) {
+    return {
+      ok: true,
+      defaultSandboxEnvironmentId: currentDefaultSandboxEnvironmentId,
+    };
+  }
+  if (requested === null) {
+    return { ok: true, defaultSandboxEnvironmentId: null };
+  }
+  const selectable =
+    selectableEnvironmentIds instanceof Set
+      ? selectableEnvironmentIds
+      : new Set(selectableEnvironmentIds as readonly string[]);
+  if (!selectable.has(requested)) {
+    return { ok: false, reason: 'not_selectable' };
+  }
+  return { ok: true, defaultSandboxEnvironmentId: requested };
+}
+
+/**
  * Applies a validated {@link UpdateSettingsRequest} onto the current stored
  * prefs, producing the next persisted preference row (7.3). The `allowedAccount`
  * identity is intentionally absent from both the request and the result here:
@@ -201,9 +241,11 @@ export function applySettingsUpdate(
   current: StoredAccountPrefs,
   patch: UpdateSettingsRequest,
   resolvedDefaultRepoId: string | null,
+  resolvedDefaultSandboxEnvironmentId: string | null,
 ): StoredAccountPrefs {
   return {
     defaultRepoId: resolvedDefaultRepoId,
+    defaultSandboxEnvironmentId: resolvedDefaultSandboxEnvironmentId,
     retention: patch.retention ?? current.retention,
     writeConfirm: patch.writeConfirm ?? current.writeConfirm,
   };

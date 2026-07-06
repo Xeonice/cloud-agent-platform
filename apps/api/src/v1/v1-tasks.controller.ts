@@ -124,7 +124,13 @@ export class V1TasksController {
       // leave a committed task without its dedup row (and so never double-admits).
       // add-headless-execution-track: `/v1` is a programmatic consumer → headless-exec.
       admit: (tx) =>
-        this.tasksService.createTaskRow(repoId, createBody, tx, 'headless-exec'),
+        this.tasksService.createTaskRow(
+          repoId,
+          createBody,
+          tx,
+          'headless-exec',
+          userId,
+        ),
       loadTask: (taskId) => this.tasksService.findById(taskId),
     });
     // Provision ONLY a newly-created task — a dedup hit was already admitted by the

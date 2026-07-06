@@ -973,31 +973,52 @@ It SHALL document, in order: verifying a sending domain, creating an API Key, fi
 - **WHEN** the help page renders
 - **THEN** it shows the app-authored markdown via the trusted renderer (GFM, no raw HTML execution)
 
-### Requirement: Settings manages sandbox runtime environments
+### Requirement: Console exposes sandbox image management
 
-The console settings area SHALL expose an admin-only `运行环境` management section.
-It SHALL list sandbox environments with name, provider family/source kind,
-runtime compatibility, readiness status, default marker, and last validation
-time. Admins SHALL be able to create/import an environment source, run
-validation, inspect validation errors, and choose the default environment.
+The console SHALL expose a left-sidebar `镜像管理` product navigation entry that
+opens an authenticated `/images` page for task startup image/default management.
+The `/settings` access/defaults form SHALL render a user-scoped default image
+selector as a plain dropdown backed by account settings; the saved value SHALL
+follow the current user and SHALL be used for new task creation when no
+per-task override is supplied. The `/images` page SHALL be dedicated to the
+admin-only image library. Image-library controls SHALL be separate from the user
+default selector and SHALL be hidden behind an explicit add/import action rather
+than occupying the settings form. The image library SHALL list sandbox
+environments with name, provider family/source kind, runtime compatibility,
+readiness status, and last validation time. Admins SHALL be able to
+create/import an environment source, run validation, and inspect validation
+errors. The settings area SHALL NOT surface image-library management controls.
 
-#### Scenario: Admin sees environment list
+#### Scenario: Admin opens image management from the sidebar
 
-- **WHEN** an admin opens settings
-- **THEN** the `运行环境` section lists configured environments with readiness and
+- **WHEN** an admin opens the console sidebar
+- **THEN** the sidebar includes `镜像管理`
+- **WHEN** the admin opens `/images`
+- **THEN** the page shows the admin image library with configured environments, readiness, and
   compatibility information
 - **AND** validation details are available without crowding the main list
 
+#### Scenario: Operator chooses their own default image
+
+- **WHEN** an authenticated operator opens `/settings`
+- **THEN** the access/defaults form shows a plain default-image dropdown
+- **WHEN** the operator selects a ready image and saves
+- **THEN** the account settings response stores that image id as
+  `defaultSandboxEnvironmentId`
+- **AND** a later task created without an explicit sandbox environment uses that
+  user's saved image
+
 #### Scenario: Non-admin cannot edit environments
 
-- **WHEN** a non-admin operator opens settings
-- **THEN** environment management actions are absent or disabled
+- **WHEN** a non-admin operator opens image management or settings
+- **THEN** the operator can still set their own default image
+- **AND** environment management actions are absent or disabled
 - **AND** direct API attempts to mutate environments are rejected by the backend
 
 #### Scenario: Validation failure is visible
 
 - **WHEN** an environment validation fails
-- **THEN** the settings detail view shows the latest failure reason and probe
+- **THEN** the image-library detail view shows the latest failure reason and probe
   summary
 - **AND** the environment is shown as not selectable for new tasks
 
@@ -1005,8 +1026,11 @@ validation, inspect validation errors, and choose the default environment.
 
 The create-task dialog and full create-task page SHALL provide a compact
 `运行环境` selector. The selector SHALL be filtered by the selected agent runtime
-and SHALL only allow ready compatible environments. It SHALL include a default
-choice when the task will use the managed or deployment default.
+and SHALL only allow ready compatible environments. It SHALL include a
+`使用我的默认镜像` choice that omits `sandboxEnvironmentId` so the backend resolves
+the current user's `defaultSandboxEnvironmentId`, and it MAY include a separate
+`使用服务端默认` choice that sends `sandboxEnvironmentId: null` to bypass the
+user default for that task.
 
 #### Scenario: Selector filters by runtime
 
@@ -1026,6 +1050,6 @@ choice when the task will use the managed or deployment default.
 #### Scenario: No ready custom environment still allows default
 
 - **WHEN** no ready managed environment exists for the selected runtime
-- **THEN** the selector offers the default deployment environment path when the
-  backend reports it usable
-- **AND** the operator can still create a task with existing default behavior
+- **THEN** the selector still offers the current user's default-image path
+- **AND** the operator can explicitly choose the service default path for this
+  task when they do not want to follow their account default

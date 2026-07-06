@@ -221,13 +221,20 @@ test('create with claude-code and unconfigured readiness throws RuntimeNotConfig
 // ---------------------------------------------------------------------------
 
 /** A fake Prisma whose `task.create` CAPTURES the persisted `data` for assertion. */
-function makeCapturingPrisma(): {
+function makeCapturingPrisma(options: {
+  defaultSandboxEnvironmentId?: string | null;
+} = {}): {
   prisma: PrismaService;
   box: { value: Record<string, unknown> | null };
 } {
   const box: { value: Record<string, unknown> | null } = { value: null };
   const prisma = {
     repo: { findUnique: async () => ({ id: REPO_ID }) },
+    accountSettings: {
+      findUnique: async () => ({
+        defaultSandboxEnvironmentId: options.defaultSandboxEnvironmentId ?? null,
+      }),
+    },
     task: {
       create: async ({ data }: { data: Record<string, unknown> }) => {
         box.value = data;
@@ -322,6 +329,78 @@ test('create with sandboxEnvironmentId resolves and persists the selected enviro
   assert.deepEqual(calls, [{ requestedEnvironmentId: sandboxEnvironmentId, runtimeId: 'codex' }]);
   assert.equal(box.value?.sandboxEnvironmentId, sandboxEnvironmentId);
   assert.equal(response.sandboxEnvironmentId, sandboxEnvironmentId);
+});
+
+test('create without sandboxEnvironmentId resolves the current user default image', async () => {
+  const defaultSandboxEnvironmentId = '00000000-0000-4000-a000-000000000778';
+  const { prisma, box } = makeCapturingPrisma({ defaultSandboxEnvironmentId });
+  const calls: Array<{
+    requestedEnvironmentId?: string | null;
+    runtimeId: string;
+  }> = [];
+  const sandboxEnvironments = {
+    async resolveForTask(args: { requestedEnvironmentId?: string | null; runtimeId: string }) {
+      calls.push(args);
+      return {
+        environmentId: args.requestedEnvironmentId,
+        sourceKind: 'aio-docker-image',
+        sourceRef: 'cap/aio:latest',
+        providerFamily: 'aio',
+      };
+    },
+  } as unknown as SandboxEnvironmentsService;
+  const svc = buildService({
+    prisma,
+    registry: makeFakeRegistry().registry,
+    sandboxEnvironments,
+  });
+
+  const response = await svc.createTaskRow(
+    REPO_ID,
+    { prompt: 'go' },
+    prisma,
+    'interactive-pty',
+    'user-1',
+  );
+
+  assert.deepEqual(calls, [
+    { requestedEnvironmentId: defaultSandboxEnvironmentId, runtimeId: 'codex' },
+  ]);
+  assert.equal(box.value?.sandboxEnvironmentId, defaultSandboxEnvironmentId);
+  assert.equal(response.sandboxEnvironmentId, defaultSandboxEnvironmentId);
+});
+
+test('create with sandboxEnvironmentId=null bypasses the current user default image', async () => {
+  const { prisma, box } = makeCapturingPrisma({
+    defaultSandboxEnvironmentId: '00000000-0000-4000-a000-000000000779',
+  });
+  const calls: Array<{
+    requestedEnvironmentId?: string | null;
+    runtimeId: string;
+  }> = [];
+  const sandboxEnvironments = {
+    async resolveForTask(args: { requestedEnvironmentId?: string | null; runtimeId: string }) {
+      calls.push(args);
+      return null;
+    },
+  } as unknown as SandboxEnvironmentsService;
+  const svc = buildService({
+    prisma,
+    registry: makeFakeRegistry().registry,
+    sandboxEnvironments,
+  });
+
+  const response = await svc.createTaskRow(
+    REPO_ID,
+    { prompt: 'go', sandboxEnvironmentId: null },
+    prisma,
+    'interactive-pty',
+    'user-1',
+  );
+
+  assert.deepEqual(calls, [{ requestedEnvironmentId: null, runtimeId: 'codex' }]);
+  assert.equal(box.value?.sandboxEnvironmentId, null);
+  assert.equal(response.sandboxEnvironmentId, null);
 });
 
 // ---------------------------------------------------------------------------
