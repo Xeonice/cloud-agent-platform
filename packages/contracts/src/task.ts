@@ -358,9 +358,10 @@ export const CreateTaskRequestSchema = z.object({
   runtime: RuntimeSchema.optional(),
   /**
    * Optional managed sandbox runtime environment. When omitted, the server uses
-   * the compatible managed default or the deployment-level fallback.
+   * the current account's default image; explicit null bypasses the account
+   * default and falls back to the deployment-level default.
    */
-  sandboxEnvironmentId: z.string().uuid().optional(),
+  sandboxEnvironmentId: z.string().uuid().nullable().optional(),
   /**
    * Optional opt-in delivery selector (`none|branch|pr`) — where a completed
    * task's edits land (add-multi-forge-task-delivery). Default `none` (no

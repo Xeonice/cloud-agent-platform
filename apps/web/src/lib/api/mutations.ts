@@ -299,6 +299,10 @@ export function saveSettingsMutation(
             body.defaultRepoId !== undefined
               ? body.defaultRepoId
               : prev.settings.defaultRepoId,
+          defaultSandboxEnvironmentId:
+            body.defaultSandboxEnvironmentId !== undefined
+              ? body.defaultSandboxEnvironmentId
+              : prev.settings.defaultSandboxEnvironmentId,
           retention: body.retention ?? prev.settings.retention,
           writeConfirm: body.writeConfirm ?? prev.settings.writeConfirm,
           maxConcurrentTasks: ceiling ?? prev.settings.maxConcurrentTasks,

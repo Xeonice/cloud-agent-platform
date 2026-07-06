@@ -717,6 +717,7 @@ export async function mockSettings(): Promise<AccountSettings> {
   const result = {
     allowedAccount: ALLOWED_ACCOUNT,
     defaultRepoId: settings.defaultRepoId,
+    defaultSandboxEnvironmentId: settings.defaultSandboxEnvironmentId,
     retention: settings.retention,
     writeConfirm: settings.writeConfirm,
     maxConcurrentTasks: settings.maxConcurrentTasks,

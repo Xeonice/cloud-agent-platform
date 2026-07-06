@@ -34,6 +34,7 @@ import {
   projectCredentialSave,
   resolveAccountSettings,
   resolveMaxConcurrentTasks,
+  validateDefaultSandboxEnvironmentSelection,
   validateDefaultRepoSelection,
   type StoredAccountPrefs,
   type StoredCredentialFacts,
@@ -116,6 +117,7 @@ export class SettingsService {
     const stored: StoredAccountPrefs | null = row
       ? {
           defaultRepoId: row.defaultRepoId,
+          defaultSandboxEnvironmentId: row.defaultSandboxEnvironmentId,
           retention: this.coerceRetention(row.retention),
           writeConfirm: row.writeConfirm,
         }
@@ -167,11 +169,13 @@ export class SettingsService {
     const current: StoredAccountPrefs = existing
       ? {
           defaultRepoId: existing.defaultRepoId,
+          defaultSandboxEnvironmentId: existing.defaultSandboxEnvironmentId,
           retention: this.coerceRetention(existing.retention),
           writeConfirm: existing.writeConfirm,
         }
       : {
           defaultRepoId: null,
+          defaultSandboxEnvironmentId: null,
           retention: DEFAULT_RETENTION_DAYS,
           writeConfirm: DEFAULT_WRITE_CONFIRM,
         };
@@ -193,17 +197,38 @@ export class SettingsService {
       });
     }
 
-    const next = applySettingsUpdate(current, patch, decision.defaultRepoId);
+    const environmentDecision = validateDefaultSandboxEnvironmentSelection(
+      patch.defaultSandboxEnvironmentId,
+      await this.loadReadySandboxEnvironmentIds(),
+      current.defaultSandboxEnvironmentId,
+    );
+    if (!environmentDecision.ok) {
+      throw new BadRequestException({
+        error: 'sandbox_environment_not_selectable',
+        message:
+          'defaultSandboxEnvironmentId must reference a ready sandbox environment; ' +
+          'the supplied environment is missing, failed, stale, or not selectable.',
+      });
+    }
+
+    const next = applySettingsUpdate(
+      current,
+      patch,
+      decision.defaultRepoId,
+      environmentDecision.defaultSandboxEnvironmentId,
+    );
     await this.prisma.accountSettings.upsert({
       where: { userId },
       create: {
         userId,
         defaultRepoId: next.defaultRepoId,
+        defaultSandboxEnvironmentId: next.defaultSandboxEnvironmentId,
         retention: next.retention,
         writeConfirm: next.writeConfirm,
       },
       update: {
         defaultRepoId: next.defaultRepoId,
+        defaultSandboxEnvironmentId: next.defaultSandboxEnvironmentId,
         retention: next.retention,
         writeConfirm: next.writeConfirm,
       },
@@ -769,6 +794,15 @@ export class SettingsService {
   private async loadImportedRepoIds(): Promise<Set<string>> {
     const rows = await this.prisma.repo.findMany({
       where: { githubId: { not: null } },
+      select: { id: true },
+    });
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /** Loads ready sandbox environment ids selectable as a user default image. */
+  private async loadReadySandboxEnvironmentIds(): Promise<Set<string>> {
+    const rows = await this.prisma.sandboxEnvironment.findMany({
+      where: { status: 'ready' },
       select: { id: true },
     });
     return new Set(rows.map((r) => r.id));

@@ -627,6 +627,11 @@ model AccountSettings {
   /// the service layer, not enforced as a DB foreign key.
   defaultRepoId String? @map("default_repo_id")
 
+  /// User-scoped default sandbox image/environment for new tasks, or null when
+  /// unset. Validated in the service layer, not enforced as a DB foreign key so
+  /// deleting an environment can degrade to the deployment fallback on read.
+  defaultSandboxEnvironmentId String? @map("default_sandbox_environment_id")
+
   /// History/audit retention window in days (contracts constrains to 7/30/90/180).
   retention Int
 

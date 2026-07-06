@@ -9,16 +9,17 @@
  *      has no `allowedAccount` field).
  *   2. 默认仓库 — a `Select` whose options are the imported repos
  *      (`reposQuery`); saving validates the choice references an imported repo.
- *   3. 会话记录保留 — a `Select` over the allowed retention windows (30/7/90 天,
+ *   3. 默认镜像 — a `Select` over ready sandbox images/environments.
+ *   4. 会话记录保留 — a `Select` over the allowed retention windows (30/7/90 天,
  *      the prototype order), value mirrored from `settingsQuery().retention`.
- *   4. 任务槽位上限 — the SYSTEM-WIDE `maxConcurrentTasks` slot ceiling
+ *   5. 任务槽位上限 — the SYSTEM-WIDE `maxConcurrentTasks` slot ceiling
  *      (configurable-task-slots): a numeric control client-validated as an
  *      integer in 1–20; an invalid value blocks the submit so it is never sent.
  *      This is one shared value for all console operators, NOT a per-account
  *      preference.
- *   5. 写入前必须确认 — the `#safety` destructive-write gate checkbox.
+ *   6. 写入前必须确认 — the `#safety` destructive-write gate checkbox.
  * 保存设置 runs `saveSettingsMutation`; 恢复默认 restores the contract defaults
- * (default repo cleared, retention 30, slot ceiling 5, write-confirm on)
+ * (default repo/image cleared, retention 30, slot ceiling 5, write-confirm on)
  * WITHOUT auto-saving — matching the prototype's local reset.
  *
  * SECURITY/CONCEPT split: the editable preferences here NEVER touch the console
@@ -39,6 +40,7 @@ import type {
   AccountSettings,
   Repo,
   RetentionDays,
+  SandboxEnvironment,
   UpdateSettingsRequest,
 } from "@cap/contracts";
 import { StatusPill } from "@/components/status-pill";
@@ -68,6 +70,7 @@ const SLOT_CEILING_DEFAULT = 5;
 /** The contract defaults restored by 恢复默认 (matches `DEFAULT_STATE.settings`). */
 const DEFAULTS = {
   defaultRepoId: null as string | null,
+  defaultSandboxEnvironmentId: null as string | null,
   retention: 30 as RetentionDays,
   writeConfirm: true,
   maxConcurrentTasks: SLOT_CEILING_DEFAULT,
@@ -99,6 +102,8 @@ export interface SettingsFormProps {
   settings: AccountSettings;
   /** The imported repos for the 默认仓库 picker (from `reposQuery`). */
   repos: readonly Repo[];
+  /** Ready sandbox images/environments available for the 当前账号默认镜像 picker. */
+  sandboxEnvironments: readonly SandboxEnvironment[];
   /** Whether a save is in flight (disables the submit button). */
   saving?: boolean;
   /** Persist the supplied writable preferences (`saveSettingsMutation`). */
@@ -117,6 +122,7 @@ const fieldControl =
 export function SettingsForm({
   settings,
   repos,
+  sandboxEnvironments,
   saving = false,
   onSave,
 }: SettingsFormProps) {
@@ -127,6 +133,8 @@ export function SettingsForm({
   const [retention, setRetention] = React.useState<RetentionDays>(
     settings.retention,
   );
+  const [defaultSandboxEnvironmentId, setDefaultSandboxEnvironmentId] =
+    React.useState<string | null>(settings.defaultSandboxEnvironmentId ?? null);
   const [writeConfirm, setWriteConfirm] = React.useState<boolean>(
     settings.writeConfirm,
   );
@@ -141,11 +149,13 @@ export function SettingsForm({
   // Re-seed if the hydrated settings change underneath (e.g. after a save).
   React.useEffect(() => {
     setDefaultRepoId(settings.defaultRepoId);
+    setDefaultSandboxEnvironmentId(settings.defaultSandboxEnvironmentId ?? null);
     setRetention(settings.retention);
     setWriteConfirm(settings.writeConfirm);
     setSlotCeiling(String(seededSlotCeiling));
   }, [
     settings.defaultRepoId,
+    settings.defaultSandboxEnvironmentId,
     settings.retention,
     settings.writeConfirm,
     seededSlotCeiling,
@@ -155,12 +165,23 @@ export function SettingsForm({
     () => new Set(repos.map((r) => r.id)),
     [repos],
   );
+  const selectableSandboxEnvironmentIds = React.useMemo(
+    () => new Set(sandboxEnvironments.map((environment) => environment.id)),
+    [sandboxEnvironments],
+  );
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     // A chosen default MUST reference an imported repo (else clear is required).
     if (defaultRepoId !== null && !importedIds.has(defaultRepoId)) {
       setError("默认仓库必须是已导入的仓库；请重新选择或清除默认值。");
+      return;
+    }
+    if (
+      defaultSandboxEnvironmentId !== null &&
+      !selectableSandboxEnvironmentIds.has(defaultSandboxEnvironmentId)
+    ) {
+      setError("默认镜像必须是可选镜像；请重新选择或清除默认值。");
       return;
     }
     // The slot ceiling MUST be an integer in 1–20; an invalid value blocks the
@@ -180,6 +201,7 @@ export function SettingsForm({
     // `maxConcurrentTasks` rides the request alongside the per-account keys.
     const body = {
       defaultRepoId,
+      defaultSandboxEnvironmentId,
       retention,
       writeConfirm,
       maxConcurrentTasks: ceiling,
@@ -190,6 +212,7 @@ export function SettingsForm({
   function handleReset() {
     setError(null);
     setDefaultRepoId(DEFAULTS.defaultRepoId);
+    setDefaultSandboxEnvironmentId(DEFAULTS.defaultSandboxEnvironmentId);
     setRetention(DEFAULTS.retention);
     setWriteConfirm(DEFAULTS.writeConfirm);
     setSlotCeiling(String(DEFAULTS.maxConcurrentTasks));
@@ -261,6 +284,37 @@ export function SettingsForm({
         </Select>
         <small className={fieldHint}>
           新建任务时优先选中这个仓库；仓库列表由“仓库导入”页面维护。
+        </small>
+      </div>
+
+      {/* 默认镜像 — Select over ready sandbox images. */}
+      <div className="mb-3.5 grid gap-2">
+        <label htmlFor="defaultSandboxEnvironment" className={fieldLabel}>
+          默认镜像
+        </label>
+        <Select
+          value={defaultSandboxEnvironmentId ?? NO_DEFAULT}
+          onValueChange={(v) =>
+            setDefaultSandboxEnvironmentId(v === NO_DEFAULT ? null : v)
+          }
+        >
+          <SelectTrigger
+            id="defaultSandboxEnvironment"
+            className="min-h-10 w-full"
+          >
+            <SelectValue placeholder="选择默认镜像" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={NO_DEFAULT}>使用服务端默认</SelectItem>
+            {sandboxEnvironments.map((environment) => (
+              <SelectItem key={environment.id} value={environment.id}>
+                {environment.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <small className={fieldHint}>
+          当前账号的新任务默认使用这个镜像；未设置时沿用服务端部署默认。
         </small>
       </div>
 

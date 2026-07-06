@@ -38,6 +38,7 @@ function resolveAccountSettings(displayAccount, stored) {
   return {
     allowedAccount: displayAccount,
     defaultRepoId: stored?.defaultRepoId ?? null,
+    defaultSandboxEnvironmentId: stored?.defaultSandboxEnvironmentId ?? null,
     retention: stored?.retention ?? DEFAULT_RETENTION_DAYS,
     writeConfirm: stored?.writeConfirm ?? DEFAULT_WRITE_CONFIRM,
   };
@@ -51,9 +52,23 @@ function validateDefaultRepoSelection(requested, importedRepoIds, currentDefault
   return { ok: true, defaultRepoId: requested };
 }
 
-function applySettingsUpdate(current, patch, resolvedDefaultRepoId) {
+function validateDefaultSandboxEnvironmentSelection(requested, selectableEnvironmentIds, currentDefaultSandboxEnvironmentId) {
+  if (requested === undefined) {
+    return { ok: true, defaultSandboxEnvironmentId: currentDefaultSandboxEnvironmentId };
+  }
+  if (requested === null) return { ok: true, defaultSandboxEnvironmentId: null };
+  const selectable =
+    selectableEnvironmentIds instanceof Set
+      ? selectableEnvironmentIds
+      : new Set(selectableEnvironmentIds);
+  if (!selectable.has(requested)) return { ok: false, reason: 'not_selectable' };
+  return { ok: true, defaultSandboxEnvironmentId: requested };
+}
+
+function applySettingsUpdate(current, patch, resolvedDefaultRepoId, resolvedDefaultSandboxEnvironmentId) {
   return {
     defaultRepoId: resolvedDefaultRepoId,
+    defaultSandboxEnvironmentId: resolvedDefaultSandboxEnvironmentId,
     retention: patch.retention ?? current.retention,
     writeConfirm: patch.writeConfirm ?? current.writeConfirm,
   };
@@ -106,29 +121,54 @@ function projectCredentialSave(request, previous) {
 // 1. defaults + read-only identity + scoping
 test('resolveAccountSettings returns defaults when nothing is saved', () => {
   const s = resolveAccountSettings('tanghehui', null);
-  assert.deepEqual(s, { allowedAccount: 'tanghehui', defaultRepoId: null, retention: 30, writeConfirm: true });
+  assert.deepEqual(s, {
+    allowedAccount: 'tanghehui',
+    defaultRepoId: null,
+    defaultSandboxEnvironmentId: null,
+    retention: 30,
+    writeConfirm: true,
+  });
 });
 
 test('resolveAccountSettings surfaces the saved row and the read-only identity', () => {
-  const s = resolveAccountSettings('tanghehui', { defaultRepoId: 'r1', retention: 90, writeConfirm: false });
+  const s = resolveAccountSettings('tanghehui', {
+    defaultRepoId: 'r1',
+    defaultSandboxEnvironmentId: 'env1',
+    retention: 90,
+    writeConfirm: false,
+  });
   assert.equal(s.allowedAccount, 'tanghehui');
   assert.equal(s.defaultRepoId, 'r1');
+  assert.equal(s.defaultSandboxEnvironmentId, 'env1');
   assert.equal(s.retention, 90);
   assert.equal(s.writeConfirm, false);
 });
 
 test('per-account scoping: each account sees only its own passed-in row', () => {
-  const a = resolveAccountSettings('alice', { defaultRepoId: 'rA', retention: 7, writeConfirm: true });
+  const a = resolveAccountSettings('alice', {
+    defaultRepoId: 'rA',
+    defaultSandboxEnvironmentId: 'envA',
+    retention: 7,
+    writeConfirm: true,
+  });
   const b = resolveAccountSettings('bob', null);
   assert.equal(a.allowedAccount, 'alice');
   assert.equal(a.defaultRepoId, 'rA');
+  assert.equal(a.defaultSandboxEnvironmentId, 'envA');
   assert.equal(b.allowedAccount, 'bob');
   assert.equal(b.defaultRepoId, null); // bob never sees alice's repo
+  assert.equal(b.defaultSandboxEnvironmentId, null); // nor alice's default image
 });
 
 test('allowedAccount always tracks the session identity, never a stored value', () => {
   // even if a (hypothetical) stored object carried allowedAccount, it is ignored
-  const stored = { defaultRepoId: null, retention: 30, writeConfirm: true, allowedAccount: 'EVIL' };
+  const stored = {
+    defaultRepoId: null,
+    defaultSandboxEnvironmentId: null,
+    retention: 30,
+    writeConfirm: true,
+    allowedAccount: 'EVIL',
+  };
   const s = resolveAccountSettings('realuser', stored);
   assert.equal(s.allowedAccount, 'realuser');
 });
@@ -154,10 +194,40 @@ test('validateDefaultRepoSelection: an un-imported id is rejected without mutati
   assert.deepEqual(r, { ok: false, reason: 'not_imported' });
 });
 
+test('validateDefaultSandboxEnvironmentSelection: undefined leaves the current default image', () => {
+  const r = validateDefaultSandboxEnvironmentSelection(undefined, ['env1'], 'env9');
+  assert.deepEqual(r, { ok: true, defaultSandboxEnvironmentId: 'env9' });
+});
+
+test('validateDefaultSandboxEnvironmentSelection: null clears the default image', () => {
+  const r = validateDefaultSandboxEnvironmentSelection(null, ['env1'], 'env9');
+  assert.deepEqual(r, { ok: true, defaultSandboxEnvironmentId: null });
+});
+
+test('validateDefaultSandboxEnvironmentSelection: a selectable image is accepted', () => {
+  const r = validateDefaultSandboxEnvironmentSelection('env1', new Set(['env1', 'env2']), null);
+  assert.deepEqual(r, { ok: true, defaultSandboxEnvironmentId: 'env1' });
+});
+
+test('validateDefaultSandboxEnvironmentSelection: an unknown image is rejected without mutating', () => {
+  const r = validateDefaultSandboxEnvironmentSelection('ghost', ['env1', 'env2'], 'env1');
+  assert.deepEqual(r, { ok: false, reason: 'not_selectable' });
+});
+
 test('applySettingsUpdate only mutates supplied keys', () => {
-  const current = { defaultRepoId: 'r1', retention: 30, writeConfirm: true };
-  const next = applySettingsUpdate(current, { writeConfirm: false }, 'r1');
-  assert.deepEqual(next, { defaultRepoId: 'r1', retention: 30, writeConfirm: false });
+  const current = {
+    defaultRepoId: 'r1',
+    defaultSandboxEnvironmentId: 'env1',
+    retention: 30,
+    writeConfirm: true,
+  };
+  const next = applySettingsUpdate(current, { writeConfirm: false }, 'r1', 'env1');
+  assert.deepEqual(next, {
+    defaultRepoId: 'r1',
+    defaultSandboxEnvironmentId: 'env1',
+    retention: 30,
+    writeConfirm: false,
+  });
 });
 
 // 3. mode mutual-exclusivity

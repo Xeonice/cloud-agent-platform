@@ -150,9 +150,10 @@ function makePrisma() {
     forgeCredential,
     // resolveApiBase reads this for a self-hosted host; none registered → inferred.
     forgeConnection: { findUnique: async () => null },
-    // Slot ceiling + default-repo validation read these; empty is fine.
+    // Slot ceiling + default repo/image validation read these; empty is fine.
     systemSettings: { findUnique: async () => null },
     repo: { findMany: async () => [] },
+    sandboxEnvironment: { findMany: async () => [] },
   };
   return { prisma: prisma as unknown as PrismaService, accountSettings, codexCredential, forgeCredential };
 }

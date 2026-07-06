@@ -34,15 +34,15 @@ import {
 import { AccountMenu } from "@/components/shell/account-menu";
 
 /** The product-nav keys; one of these is highlighted per route (task 11.5). */
-export type NavKey = "dashboard" | "repositories" | "history" | "api";
+export type NavKey = "dashboard" | "repositories" | "images" | "history" | "api";
 
 /**
  * Map the current pathname to the nav key that should be highlighted.
  *
  * Pure + total so it is trivially unit-testable. The dashboard item owns the
  * task surfaces too: `/dashboard`, `/tasks/new`, and `/tasks/:id` all light
- * 任务控制台. `/repositories` → 仓库导入, `/history` → 历史日志. Any other path
- * (e.g. `/settings`) highlights nothing.
+ * 任务控制台. `/repositories` → 仓库导入, `/images` → 镜像管理,
+ * `/history` → 历史日志. Any other path (e.g. `/settings`) highlights nothing.
  */
 export function activeNavKey(pathname: string): NavKey | null {
   if (
@@ -54,6 +54,9 @@ export function activeNavKey(pathname: string): NavKey | null {
   }
   if (pathname === "/repositories" || pathname.startsWith("/repositories/")) {
     return "repositories";
+  }
+  if (pathname === "/images" || pathname.startsWith("/images/")) {
+    return "images";
   }
   if (pathname === "/history" || pathname.startsWith("/history/")) {
     return "history";
@@ -67,7 +70,7 @@ export function activeNavKey(pathname: string): NavKey | null {
 /** A single product-nav entry. */
 interface NavEntry {
   key: NavKey;
-  to: "/dashboard" | "/repositories" | "/history" | "/api";
+  to: "/dashboard" | "/repositories" | "/images" | "/history" | "/api";
   label: string;
   shortcut: string;
 }
@@ -75,8 +78,9 @@ interface NavEntry {
 const NAV_ENTRIES: readonly NavEntry[] = [
   { key: "dashboard", to: "/dashboard", label: "任务控制台", shortcut: "⌘1" },
   { key: "repositories", to: "/repositories", label: "仓库导入", shortcut: "⌘2" },
-  { key: "history", to: "/history", label: "历史日志", shortcut: "⌘3" },
-  { key: "api", to: "/api", label: "API 调试", shortcut: "⌘4" },
+  { key: "images", to: "/images", label: "镜像管理", shortcut: "⌘3" },
+  { key: "history", to: "/history", label: "历史日志", shortcut: "⌘4" },
+  { key: "api", to: "/api", label: "API 调试", shortcut: "⌘5" },
 ];
 
 export interface AppSidebarProps {

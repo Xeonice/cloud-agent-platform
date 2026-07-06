@@ -53,6 +53,7 @@ import {
   mcpTokensQuery,
   queryKeys,
   reposQuery,
+  sandboxEnvironmentsQuery,
   settingsQuery,
   smtpConfigQuery,
 } from "@/lib/api/queries";
@@ -75,7 +76,6 @@ import { ApiKeysCard } from "@/components/settings/api-keys-card";
 import { McpServerCard } from "@/components/settings/mcp-server-card";
 import { ForgeCredentialsCard } from "@/components/settings/forge-credentials-card";
 import { SmtpConfigCard } from "@/components/settings/smtp-config-card";
-import { SandboxEnvironmentsCard } from "@/components/settings/sandbox-environments-card";
 import { isAdminSession } from "@/components/shell/update-banner";
 
 export const Route = createFileRoute("/_app/settings")({
@@ -85,6 +85,7 @@ export const Route = createFileRoute("/_app/settings")({
     await Promise.all([
       context.queryClient.ensureQueryData(settingsQuery()),
       context.queryClient.ensureQueryData(reposQuery()),
+      context.queryClient.ensureQueryData(sandboxEnvironmentsQuery()),
       context.queryClient.ensureQueryData(codexCredentialQuery()),
       context.queryClient.ensureQueryData(claudeCredentialQuery()),
       context.queryClient.ensureQueryData(apiKeysQuery()),
@@ -104,6 +105,7 @@ function SettingsPage() {
   const queryClient = useQueryClient();
   const { data: settings } = useQuery(settingsQuery());
   const { data: repos } = useQuery(reposQuery());
+  const { data: sandboxEnvironments } = useQuery(sandboxEnvironmentsQuery());
   const { data: cred } = useQuery(codexCredentialQuery());
   const { data: claudeCred } = useQuery(claudeCredentialQuery());
   const { data: apiKeys } = useQuery(apiKeysQuery());
@@ -132,6 +134,9 @@ function SettingsPage() {
   if (!settings || !cred) return null;
 
   const repoList = repos ?? [];
+  const readySandboxEnvironments = (
+    sandboxEnvironments?.environments ?? []
+  ).filter((environment) => environment.status === "ready");
   const login = settings.allowedAccount;
 
   function handleConfigure(mode: CodexCredentialMode) {
@@ -150,7 +155,7 @@ function SettingsPage() {
             账户与模型凭据
           </h1>
           <p className="mt-[7px] max-w-[820px] text-sm leading-[1.58] text-muted-foreground">
-            把访问身份、仓库默认值、会话保留和 Agent 模型凭据放在同一个安全面板里管理。
+            把访问身份、仓库与镜像默认值、会话保留和 Agent 模型凭据放在同一个安全面板里管理。
           </p>
         </div>
         <StatusPill variant="green">单用户模式</StatusPill>
@@ -166,6 +171,7 @@ function SettingsPage() {
           <SettingsForm
             settings={settings}
             repos={repoList}
+            sandboxEnvironments={readySandboxEnvironments}
             saving={saveSettings.isPending}
             onSave={(body) => saveSettings.mutate(body)}
           />
@@ -192,12 +198,6 @@ function SettingsPage() {
         <section id="forges" className="grid scroll-mt-24 gap-3">
           <ForgeCredentialsCard />
         </section>
-
-        {isAdmin ? (
-          <section id="sandbox-environments" className="grid scroll-mt-24 gap-3">
-            <SandboxEnvironmentsCard />
-          </section>
-        ) : null}
 
         {/* #api-keys: machine-identity credentials (mint show-once / list / revoke) */}
         <section id="api-keys" className="grid scroll-mt-24 gap-3">

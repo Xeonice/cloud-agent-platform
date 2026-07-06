@@ -53,6 +53,8 @@ export interface ImportedRepo {
 export interface SettingsDraft {
   /** Selected default repo id (FK into `importedRepos`), or null when unset. */
   defaultRepoId: string | null;
+  /** User-scoped default task startup image/environment id, or null when unset. */
+  defaultSandboxEnvironmentId: string | null;
   /** Audit/history retention window in days. */
   retention: RetentionDays;
   /** Destructive-write gate ("破坏性写入前停止"). */
@@ -87,6 +89,7 @@ export const DEFAULT_STATE: PersistedState = {
   selectedRepo: null,
   settings: {
     defaultRepoId: null,
+    defaultSandboxEnvironmentId: null,
     retention: 30,
     writeConfirm: true,
     maxConcurrentTasks: 5,
@@ -180,6 +183,10 @@ export function normalizeState(raw: unknown): PersistedState {
     seen.has(settingsRaw.defaultRepoId)
       ? settingsRaw.defaultRepoId
       : null;
+  const settingsDefaultSandboxEnvironmentId =
+    typeof settingsRaw.defaultSandboxEnvironmentId === "string"
+      ? settingsRaw.defaultSandboxEnvironmentId
+      : null;
 
   const credRaw =
     typeof r.codexCredential === "object" && r.codexCredential !== null
@@ -210,6 +217,7 @@ export function normalizeState(raw: unknown): PersistedState {
     selectedRepo,
     settings: {
       defaultRepoId: settingsDefaultRepoId,
+      defaultSandboxEnvironmentId: settingsDefaultSandboxEnvironmentId,
       retention: normalizeRetention(settingsRaw.retention),
       writeConfirm: settingsRaw.writeConfirm !== false,
       maxConcurrentTasks: normalizeSlotCeiling(settingsRaw.maxConcurrentTasks),

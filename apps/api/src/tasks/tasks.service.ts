@@ -547,6 +547,7 @@ export class TasksService implements OnApplicationBootstrap {
       body,
       this.prisma,
       executionMode,
+      userId,
     );
     await this.admitCreatedTask(response.id, body, userId);
     return response;
@@ -567,6 +568,7 @@ export class TasksService implements OnApplicationBootstrap {
     body: CreateTaskBody,
     client: PrismaService = this.prisma,
     executionMode: ExecutionMode = 'interactive-pty',
+    userId?: string,
   ): Promise<TaskResponse> {
     const repo = await client.repo.findUnique({ where: { id: repoId } });
     if (!repo) {
@@ -621,8 +623,13 @@ export class TasksService implements OnApplicationBootstrap {
       }
     }
 
+    const requestedEnvironmentId =
+      body.sandboxEnvironmentId === undefined
+        ? await this.loadUserDefaultSandboxEnvironmentId(userId, client)
+        : body.sandboxEnvironmentId;
+
     const resolvedEnvironment = await this.resolveTaskEnvironment({
-      requestedEnvironmentId: body.sandboxEnvironmentId ?? null,
+      requestedEnvironmentId,
       runtime,
     });
 
@@ -992,6 +999,18 @@ export class TasksService implements OnApplicationBootstrap {
       requestedEnvironmentId: args.requestedEnvironmentId,
       runtimeId: args.runtime,
     });
+  }
+
+  private async loadUserDefaultSandboxEnvironmentId(
+    userId: string | undefined,
+    client: Pick<PrismaService, 'accountSettings'>,
+  ): Promise<string | null> {
+    if (!userId) return null;
+    const row = await client.accountSettings.findUnique({
+      where: { userId },
+      select: { defaultSandboxEnvironmentId: true },
+    });
+    return row?.defaultSandboxEnvironmentId ?? null;
   }
 
   private toSandboxProviderSummary(task: {

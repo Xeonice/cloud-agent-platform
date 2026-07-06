@@ -62,14 +62,18 @@ export type MaxConcurrentTasks = z.infer<typeof MaxConcurrentTasksSchema>;
  * governed by account administration, not by editable preferences.
  *
  * `defaultRepoId` references an imported repo by id and is NULLABLE (no default
- * selected). `retention` is the audit retention window in days. `writeConfirm`
- * is the destructive-action gate toggle ("破坏性写入前停止").
+ * selected). `defaultSandboxEnvironmentId` references the user's preferred task
+ * startup image/environment and is NULLABLE (fall back to deployment default).
+ * `retention` is the audit retention window in days. `writeConfirm` is the
+ * destructive-action gate toggle ("破坏性写入前停止").
  */
 export const AccountSettingsSchema = z.object({
   /** Read-only console account display identity, sourced from the session. */
   allowedAccount: z.string().min(1),
   /** Selected default repository (FK to an imported repo), or null when unset. */
   defaultRepoId: z.string().uuid().nullable(),
+  /** User-scoped default task startup image/environment, or null when unset. */
+  defaultSandboxEnvironmentId: z.string().uuid().nullable().default(null),
   /** History/audit retention window in days. */
   retention: RetentionDaysSchema,
   /** Destructive-action gate toggle ("破坏性写入前停止" / write-confirm). */
@@ -159,6 +163,8 @@ export type CodexCredential = z.infer<typeof CodexCredentialSchema>;
 export const UpdateSettingsRequestSchema = z.object({
   /** New default repository selection, or null to clear it. */
   defaultRepoId: z.string().uuid().nullable().optional(),
+  /** New user-scoped default task startup image/environment, or null to clear it. */
+  defaultSandboxEnvironmentId: z.string().uuid().nullable().optional(),
   /** New audit retention window in days (constrained to the allowed set). */
   retention: RetentionDaysSchema.optional(),
   /** New destructive-action gate toggle value. */
