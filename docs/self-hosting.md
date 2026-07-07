@@ -16,6 +16,10 @@ This guide is Phase 0 of the [OSS self-update epic](./oss-self-update-epic.md)
 stack. The recommended install path runs published release images. Source builds
 are still documented for development or custom image work, but the one-line
 installer and agent path should not clone the repo or run `make up`.
+
+For custom task base images, see
+[`docs/sandbox-images.md`](sandbox-images.md).
+
 In-app upgrades are a later phase you do not need to self-host today.
 
 > **Trying it on a fresh local host?** The public marketing site hosts a

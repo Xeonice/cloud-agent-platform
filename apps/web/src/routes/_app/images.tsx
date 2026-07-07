@@ -10,6 +10,7 @@
  */
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { BookOpen, Plus } from "lucide-react";
 
 import {
   authSessionQuery,
@@ -48,9 +49,20 @@ function ImagesPage() {
             管理可选的 AIO / BoxLite 任务基础镜像；用户默认镜像在设置页选择。
           </p>
         </div>
-        <Button asChild variant="outline" className="justify-self-start min-[821px]:justify-self-end">
-          <Link to="/tasks/new">新建任务</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2 justify-self-start min-[821px]:justify-self-end">
+          <Button asChild variant="outline" className="gap-2">
+            <Link to="/help/sandbox-images">
+              <BookOpen className="size-4" />
+              查看文档
+            </Link>
+          </Button>
+          <Button asChild variant="outline" className="gap-2">
+            <Link to="/tasks/new">
+              <Plus className="size-4" />
+              新建任务
+            </Link>
+          </Button>
+        </div>
       </section>
 
       <div className="grid max-w-[760px] gap-6">
