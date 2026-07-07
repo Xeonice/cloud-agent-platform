@@ -164,10 +164,7 @@ function resolveAioSandboxImage(args: {
   readonly environment?: SandboxResolvedEnvironmentMetadata | null;
 }): string {
   if (!args.environment) return args.configImage;
-  if (
-    args.environment.sourceKind !== 'aio-docker-image' &&
-    args.environment.sourceKind !== 'aio-loaded-docker-image'
-  ) {
+  if (args.environment.sourceKind !== 'aio-docker-image') {
     throw new Error(
       `Sandbox environment ${args.environment.environmentId ?? args.environment.id ?? 'unknown'} source ${args.environment.sourceKind ?? 'unknown'} is not compatible with AIO`,
     );

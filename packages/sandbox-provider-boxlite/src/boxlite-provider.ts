@@ -470,9 +470,6 @@ export class BoxLiteSandboxProvider<
     if (environment.sourceKind === 'boxlite-image' && environment.sourceRef) {
       return { kind: 'image', value: environment.sourceRef };
     }
-    if (environment.sourceKind === 'boxlite-rootfs' && environment.sourceRef) {
-      return { kind: 'rootfs', value: environment.sourceRef };
-    }
     throw new Error(
       `Sandbox environment ${environment.environmentId ?? environment.id ?? 'unknown'} source ${environment.sourceKind ?? 'unknown'} is not compatible with BoxLite`,
     );

@@ -19,6 +19,7 @@ export async function validateBoxLiteEnvironment(args: {
   readonly environment: SandboxResolvedEnvironmentMetadata;
   readonly client: BoxLiteClient;
   readonly workspacePath?: string;
+  readonly requiredCommands?: readonly BoxLiteEnvironmentValidationCommand[];
 }): Promise<BoxLiteEnvironmentValidationResult> {
   const taskId = args.taskId ?? `env-probe-${Date.now()}`;
   const sandboxId = `probe-${taskId}`;
@@ -26,13 +27,11 @@ export async function validateBoxLiteEnvironment(args: {
   const sourceKind = args.environment.sourceKind;
 
   try {
-    const source = resolveBoxLiteValidationSource(args.environment);
+    const image = resolveBoxLiteValidationImage(args.environment);
     const sandbox = await args.client.createSandbox({
       taskId,
       sandboxId,
-      ...(source.kind === 'image'
-        ? { image: source.value }
-        : { rootfsPath: source.value }),
+      image,
       metadata: {
         provider: 'boxlite',
         sandboxEnvironmentId: args.environment.environmentId ?? args.environment.id,
@@ -42,7 +41,7 @@ export async function validateBoxLiteEnvironment(args: {
     probes.push({
       name: 'create-sandbox',
       ok: true,
-      output: sandbox.image ?? sandbox.rootfsPath,
+      output: sandbox.image ?? image,
     });
 
     if (args.client.startExecution) {
@@ -68,6 +67,26 @@ export async function validateBoxLiteEnvironment(args: {
     });
     if (!ok) {
       throw new Error(`BoxLite environment exec probe failed with exit_code ${exec.exitCode}`);
+    }
+
+    for (const probe of args.requiredCommands ?? []) {
+      const result = await args.client.exec({
+        sandboxId: sandbox.id,
+        command: probe.command,
+        cwd: args.workspacePath,
+      });
+      const probeOk = result.exitCode === 0;
+      probes.push({
+        name: probe.name,
+        command: probe.command,
+        ok: probeOk,
+        output: result.output,
+      });
+      if (!probeOk) {
+        throw new Error(
+          `BoxLite environment probe ${probe.name} failed with exit_code ${result.exitCode}`,
+        );
+      }
     }
 
     return {
@@ -97,14 +116,16 @@ export async function validateBoxLiteEnvironment(args: {
   }
 }
 
-function resolveBoxLiteValidationSource(
+export interface BoxLiteEnvironmentValidationCommand {
+  readonly name: string;
+  readonly command: string;
+}
+
+function resolveBoxLiteValidationImage(
   environment: SandboxResolvedEnvironmentMetadata,
-): { kind: 'image' | 'rootfs'; value: string } {
+): string {
   if (environment.sourceKind === 'boxlite-image' && environment.sourceRef) {
-    return { kind: 'image', value: environment.sourceRef };
-  }
-  if (environment.sourceKind === 'boxlite-rootfs' && environment.sourceRef) {
-    return { kind: 'rootfs', value: environment.sourceRef };
+    return environment.sourceRef;
   }
   throw new Error(
     `BoxLite cannot validate environment source ${environment.sourceKind ?? 'unknown'}`,

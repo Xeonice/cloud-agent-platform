@@ -1,7 +1,9 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   SandboxEnvironmentResponseSchema,
@@ -24,12 +26,23 @@ import {
 } from '@cap/sandbox';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  DefaultSandboxEnvironmentValidationRunner,
+  SANDBOX_ENVIRONMENT_VALIDATION_RUNNER,
+  type SandboxEnvironmentValidationOutcome,
+  type SandboxEnvironmentValidationRunner,
+} from './sandbox-environments.validator';
 
 export const SANDBOX_ENVIRONMENT_CONTRACT_VERSION = 'sandbox-environment-v1';
 
 @Injectable()
 export class SandboxEnvironmentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional()
+    @Inject(SANDBOX_ENVIRONMENT_VALIDATION_RUNNER)
+    private readonly validationRunner: SandboxEnvironmentValidationRunner = new DefaultSandboxEnvironmentValidationRunner(),
+  ) {}
 
   async list(): Promise<SandboxEnvironment[]> {
     const rows = await this.prisma.sandboxEnvironment.findMany({
@@ -103,29 +116,36 @@ export class SandboxEnvironmentsService {
       });
     }
 
+    await this.prisma.sandboxEnvironment.update({
+      where: { id },
+      data: { status: 'validating' },
+    });
+    const outcome = await this.runProviderValidation({
+      id: row.id,
+      name: row.name,
+      source,
+      providerFamily,
+      runtimeId: row.runtimeIds[0] ?? null,
+      contractVersion: row.contractVersion,
+    });
     const validation = await this.prisma.sandboxEnvironmentValidation.create({
       data: {
         environmentId: id,
-        status: 'passed',
-        providerFamily,
-        runtimeId: row.runtimeIds[0] ?? null,
-        sourceKind: source.kind,
-        resolvedDigest: sourceDigest(source) ?? null,
-        resolvedChecksum: sourceChecksum(source) ?? null,
-        probes: [
-          {
-            name: 'source-descriptor',
-            ok: true,
-            output: 'source descriptor accepted; provider probe pending',
-          },
-        ] as Prisma.InputJsonValue,
+        status: outcome.status,
+        providerFamily: outcome.providerFamily,
+        runtimeId: outcome.runtimeId ?? null,
+        sourceKind: outcome.sourceKind,
+        resolvedDigest: outcome.resolvedDigest ?? null,
+        resolvedChecksum: outcome.resolvedChecksum ?? null,
+        probes: (outcome.probes ?? []) as unknown as Prisma.InputJsonValue,
+        error: outcome.error ?? null,
         contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
       },
     });
     const updated = await this.prisma.sandboxEnvironment.update({
       where: { id },
       data: {
-        status: 'ready',
+        status: outcome.status === 'passed' ? 'ready' : 'failed',
         lastValidationId: validation.id,
         contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
       },
@@ -258,6 +278,31 @@ export class SandboxEnvironmentsService {
       throw new NotFoundException(`Sandbox environment not found: ${id}`);
     }
     return row;
+  }
+
+  private async runProviderValidation(args: {
+    readonly id: string;
+    readonly name: string;
+    readonly source: SandboxEnvironmentSource;
+    readonly providerFamily: SandboxEnvironmentProviderFamily;
+    readonly runtimeId?: string | null;
+    readonly contractVersion?: string | null;
+  }): Promise<SandboxEnvironmentValidationOutcome> {
+    try {
+      return await this.validationRunner.validate(args);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        status: 'failed',
+        providerFamily: args.providerFamily,
+        runtimeId: args.runtimeId ?? null,
+        sourceKind: args.source.kind,
+        resolvedDigest: sourceDigest(args.source) ?? null,
+        resolvedChecksum: sourceChecksum(args.source) ?? null,
+        probes: [{ name: 'validation-error', ok: false, output: message }],
+        error: message,
+      };
+    }
   }
 
   private toEnvironment(row: {

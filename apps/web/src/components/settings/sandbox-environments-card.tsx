@@ -1,11 +1,10 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, Play, Plus } from "lucide-react";
+import { AlertTriangle, ChevronDown, Copy, Play, Plus } from "lucide-react";
 
 import type {
   CreateSandboxEnvironmentRequest,
   SandboxEnvironment,
-  SandboxEnvironmentSourceKind,
 } from "@cap/contracts";
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { Badge } from "@/components/ui/badge";
@@ -27,30 +26,50 @@ import {
   validateSandboxEnvironmentMutation,
 } from "@/lib/api/mutations";
 
-const SOURCE_KINDS: Array<{
-  value: SandboxEnvironmentSourceKind;
+type SandboxImageProvider = "aio" | "boxlite";
+
+const IMAGE_PROVIDERS: Array<{
+  value: SandboxImageProvider;
   label: string;
   placeholder: string;
+  templatePath: string;
+  template: string;
 }> = [
   {
-    value: "aio-docker-image",
-    label: "AIO Docker image",
-    placeholder: "cap-aio-sandbox:0.1.0",
+    value: "aio",
+    label: "AIO",
+    placeholder: "ghcr.io/xeonice/cap-aio-sandbox:0.1.0",
+    templatePath: "examples/sandbox-images/aio/Dockerfile",
+    template: [
+      "ARG CAP_VERSION",
+      "FROM ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}",
+      "",
+      "USER root",
+      "RUN apt-get update \\",
+      "  && apt-get install -y --no-install-recommends jq ripgrep \\",
+      "  && rm -rf /var/lib/apt/lists/*",
+      "",
+      "USER gem",
+      "WORKDIR /home/gem/workspace",
+    ].join("\n"),
   },
   {
-    value: "aio-loaded-docker-image",
-    label: "AIO loaded image",
-    placeholder: "cap-aio-custom:1.0.0",
-  },
-  {
-    value: "boxlite-image",
-    label: "BoxLite image",
-    placeholder: "cap-boxlite-custom:v1",
-  },
-  {
-    value: "boxlite-rootfs",
-    label: "BoxLite rootfs",
-    placeholder: "/var/lib/cap/rootfs/custom",
+    value: "boxlite",
+    label: "BoxLite",
+    placeholder: "ghcr.io/xeonice/cap-boxlite-sandbox:0.1.0",
+    templatePath: "examples/sandbox-images/boxlite/Dockerfile",
+    template: [
+      "ARG CAP_VERSION",
+      "FROM ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}",
+      "",
+      "USER root",
+      "RUN apt-get update \\",
+      "  && apt-get install -y --no-install-recommends jq ripgrep \\",
+      "  && rm -rf /var/lib/apt/lists/*",
+      "",
+      "USER gem",
+      "WORKDIR /home/gem/workspace",
+    ].join("\n"),
   },
 ];
 
@@ -63,16 +82,27 @@ export function SandboxEnvironmentsCard() {
   const operationError = createEnv.error?.message ?? validateEnv.error?.message;
 
   const [name, setName] = React.useState("");
-  const [kind, setKind] =
-    React.useState<SandboxEnvironmentSourceKind>("aio-docker-image");
+  const [provider, setProvider] = React.useState<SandboxImageProvider>("aio");
   const [reference, setReference] = React.useState("");
   const [runtimeIds, setRuntimeIds] = React.useState("");
   const [showCreate, setShowCreate] = React.useState(false);
-  const selectedKind = SOURCE_KINDS.find((source) => source.value === kind)!;
+  const [copiedProvider, setCopiedProvider] =
+    React.useState<SandboxImageProvider | null>(null);
+  const selectedProvider = IMAGE_PROVIDERS.find((item) => item.value === provider)!;
+
+  async function copyTemplate() {
+    if (!navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(selectedProvider.template);
+      setCopiedProvider(provider);
+    } catch {
+      setCopiedProvider(null);
+    }
+  }
 
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const source = buildSource(kind, reference.trim());
+    const source = buildSource(provider, reference.trim());
     if (!name.trim() || !source) return;
     const body: CreateSandboxEnvironmentRequest = {
       name: name.trim(),
@@ -127,16 +157,16 @@ export function SandboxEnvironmentsCard() {
               placeholder="镜像名称"
             />
             <Select
-              value={kind}
-              onValueChange={(value) => setKind(value as SandboxEnvironmentSourceKind)}
+              value={provider}
+              onValueChange={(value) => setProvider(value as SandboxImageProvider)}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {SOURCE_KINDS.map((source) => (
-                  <SelectItem key={source.value} value={source.value}>
-                    {source.label}
+                {IMAGE_PROVIDERS.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -146,7 +176,7 @@ export function SandboxEnvironmentsCard() {
             <Input
               value={reference}
               onChange={(event) => setReference(event.target.value)}
-              placeholder={selectedKind.placeholder}
+              placeholder={selectedProvider.placeholder}
             />
             <Input
               value={runtimeIds}
@@ -159,6 +189,31 @@ export function SandboxEnvironmentsCard() {
               <Plus className="size-4" />
               保存镜像
             </Button>
+          </div>
+          <div className="rounded-md border border-border bg-background p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-mono text-[11px] uppercase text-muted-foreground">
+                  Extension template
+                </p>
+                <p className="mt-1 break-all text-xs text-muted-foreground">
+                  {selectedProvider.templatePath}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={copyTemplate}
+                className="gap-2"
+              >
+                <Copy className="size-3.5" />
+                {copiedProvider === provider ? "已复制" : "复制模板"}
+              </Button>
+            </div>
+            <pre className="mt-3 max-h-48 overflow-auto rounded-md bg-muted/50 p-3 text-xs leading-5 text-muted-foreground">
+              {selectedProvider.template}
+            </pre>
           </div>
         </form>
       ) : null}
@@ -216,7 +271,7 @@ function EnvironmentRow({
           </Badge>
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          {environment.source.kind} · {provider} · {runtimes}
+          {sourceLabel(environment.source.kind)} · {provider} · {runtimes}
         </p>
         <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
           {sourceReference(environment)}
@@ -302,23 +357,21 @@ function EnvironmentRow({
 }
 
 function buildSource(
-  kind: SandboxEnvironmentSourceKind,
+  provider: SandboxImageProvider,
   reference: string,
 ): CreateSandboxEnvironmentRequest["source"] | null {
   if (!reference) return null;
-  if (kind === "boxlite-rootfs") return { kind, rootfsPath: reference };
-  if (kind === "provider-template") {
-    return { kind, providerFamily: "aio", templateId: reference };
-  }
-  return { kind, image: reference };
+  return provider === "aio"
+    ? { kind: "aio-docker-image", image: reference }
+    : { kind: "boxlite-image", image: reference };
 }
 
 function sourceReference(environment: SandboxEnvironment): string {
-  const source = environment.source;
-  if ("image" in source) return source.image;
-  if ("rootfsPath" in source) return source.rootfsPath;
-  if ("templateId" in source) return source.templateId;
-  return "";
+  return environment.source.image;
+}
+
+function sourceLabel(kind: SandboxEnvironment["source"]["kind"]): string {
+  return kind === "aio-docker-image" ? "AIO image" : "BoxLite image";
 }
 
 function formatDate(value: Date | string): string {

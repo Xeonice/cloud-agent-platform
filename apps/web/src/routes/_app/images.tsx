@@ -3,7 +3,7 @@
  *
  * This is the product-nav entry for the sandbox base image/environment registry.
  * The underlying API still calls the domain `sandbox-environments` because it
- * can point to AIO images, BoxLite images, or BoxLite rootfs paths; the operator
+ * can point to AIO images or BoxLite images; the operator
  * surface names the workflow "镜像管理" so admins can maintain the selectable
  * task base-image library from the left navigation. User-scoped default image
  * selection lives in `/settings`.

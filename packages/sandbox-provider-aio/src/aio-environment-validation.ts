@@ -29,7 +29,7 @@ export async function validateAioEnvironment(args: {
   const sourceKind = args.environment.sourceKind;
 
   try {
-    if (sourceKind !== 'aio-docker-image' && sourceKind !== 'aio-loaded-docker-image') {
+    if (sourceKind !== 'aio-docker-image') {
       throw new Error(`AIO cannot validate environment source ${sourceKind ?? 'unknown'}`);
     }
     const provisioned = await args.controller.createAndStart(taskId, args.environment);

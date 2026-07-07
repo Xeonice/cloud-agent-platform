@@ -137,8 +137,8 @@ await test('builds provision specs, names, env, and validation helpers', async (
         },
         environment: {
           environmentId: 'env-boxlite',
-          sourceKind: 'boxlite-rootfs',
-          sourceRef: '/var/lib/rootfs',
+          sourceKind: 'boxlite-image',
+          sourceRef: 'cap-boxlite:1.0.0',
         },
       }),
     /not compatible with AIO/,

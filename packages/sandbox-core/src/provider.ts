@@ -115,10 +115,7 @@ export type SandboxEnvironmentProviderFamily =
 
 export type SandboxEnvironmentSourceKind =
   | 'aio-docker-image'
-  | 'aio-loaded-docker-image'
   | 'boxlite-image'
-  | 'boxlite-rootfs'
-  | 'provider-template'
   | (string & {});
 
 export interface SandboxResolvedEnvironmentMetadata {

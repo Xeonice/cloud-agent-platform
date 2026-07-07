@@ -97,6 +97,15 @@ function repoFullName(repo: Repo): string {
   return match?.[1] ?? repo.name;
 }
 
+export function sandboxEnvironmentDefaultOptions(
+  sandboxEnvironments: readonly SandboxEnvironment[],
+): Array<{ id: string; label: string }> {
+  return sandboxEnvironments.map((environment) => ({
+    id: environment.id,
+    label: environment.name,
+  }));
+}
+
 export interface SettingsFormProps {
   /** The server-hydrated account settings (read-only identity + the draft seed). */
   settings: AccountSettings;
@@ -306,9 +315,9 @@ export function SettingsForm({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={NO_DEFAULT}>使用服务端默认</SelectItem>
-            {sandboxEnvironments.map((environment) => (
-              <SelectItem key={environment.id} value={environment.id}>
-                {environment.name}
+            {sandboxEnvironmentDefaultOptions(sandboxEnvironments).map((option) => (
+              <SelectItem key={option.id} value={option.id}>
+                {option.label}
               </SelectItem>
             ))}
           </SelectContent>
