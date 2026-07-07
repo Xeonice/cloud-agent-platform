@@ -765,7 +765,7 @@ let mockSandboxValidations: SandboxEnvironmentValidation[] = [
     sourceKind: "aio-docker-image",
     resolvedDigest: null,
     resolvedChecksum: null,
-    probes: [{ name: "source-descriptor", ok: true, output: "mock validated" }],
+    probes: [{ name: "mock-provider-probe", ok: true, output: "mock passed" }],
     error: null,
     contractVersion: "sandbox-environment-v1",
     checkedAt: new Date("2026-07-01T00:00:00.000Z"),
@@ -775,13 +775,13 @@ let mockSandboxValidations: SandboxEnvironmentValidation[] = [
 function providerFamiliesForSource(
   source: CreateSandboxEnvironmentRequest["source"],
 ): SandboxEnvironment["compatibility"]["providerFamilies"] {
-  if (source.kind === "aio-docker-image" || source.kind === "aio-loaded-docker-image") {
+  if (source.kind === "aio-docker-image") {
     return ["aio"];
   }
-  if (source.kind === "boxlite-image" || source.kind === "boxlite-rootfs") {
+  if (source.kind === "boxlite-image") {
     return ["boxlite"];
   }
-  return [source.providerFamily];
+  return [];
 }
 
 export async function mockListSandboxEnvironments(): Promise<ListSandboxEnvironmentsResponse> {

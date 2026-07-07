@@ -23,10 +23,7 @@ export type SandboxEnvironmentProviderFamily = z.infer<
 
 export const SandboxEnvironmentSourceKindSchema = z.enum([
   'aio-docker-image',
-  'aio-loaded-docker-image',
   'boxlite-image',
-  'boxlite-rootfs',
-  'provider-template',
 ]);
 export type SandboxEnvironmentSourceKind = z.infer<
   typeof SandboxEnvironmentSourceKindSchema
@@ -40,29 +37,10 @@ export const SandboxEnvironmentSourceSchema = z.discriminatedUnion('kind', [
     digest: z.string().min(1).optional(),
   }),
   z.object({
-    kind: z.literal('aio-loaded-docker-image'),
-    label: z.string().min(1).optional(),
-    image: z.string().min(1),
-    imageId: z.string().min(1).optional(),
-    digest: z.string().min(1).optional(),
-  }),
-  z.object({
     kind: z.literal('boxlite-image'),
     label: z.string().min(1).optional(),
     image: z.string().min(1),
     digest: z.string().min(1).optional(),
-  }),
-  z.object({
-    kind: z.literal('boxlite-rootfs'),
-    label: z.string().min(1).optional(),
-    rootfsPath: z.string().min(1),
-    checksum: z.string().min(1).optional(),
-  }),
-  z.object({
-    kind: z.literal('provider-template'),
-    label: z.string().min(1).optional(),
-    providerFamily: SandboxEnvironmentProviderFamilySchema,
-    templateId: z.string().min(1),
   }),
 ]);
 export type SandboxEnvironmentSource = z.infer<

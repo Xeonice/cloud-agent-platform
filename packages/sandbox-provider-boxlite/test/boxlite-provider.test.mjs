@@ -303,7 +303,7 @@ await test('provider preserves configured BoxLite defaults when no managed envir
   assert.equal(rootfsClient.createCalls[0].rootfsPath, '/var/lib/cap/boxlite/default-rootfs');
 });
 
-await test('provider uses selected BoxLite image and rootfs environments before config defaults', async () => {
+await test('provider uses selected BoxLite image environments before config defaults', async () => {
   const imageClient = new mod.FakeBoxLiteClient();
   const imageProvider = new mod.BoxLiteSandboxProvider({
     config: validConfig(),
@@ -327,21 +327,6 @@ await test('provider uses selected BoxLite image and rootfs environments before 
   const imageRun = await imageProvider.getSelectedSandboxRun('task-env-image');
   assert.equal(imageRun.environment.environmentId, 'env-boxlite-image');
   assert.equal(imageRun.preflight.environment.environmentId, 'env-boxlite-image');
-
-  const rootfsClient = new mod.FakeBoxLiteClient();
-  const rootfsProvider = new mod.BoxLiteSandboxProvider({
-    config: validConfig(),
-    client: rootfsClient,
-    resolveEnvironment: async () => ({
-      environmentId: 'env-boxlite-rootfs',
-      sourceKind: 'boxlite-rootfs',
-      sourceRef: '/var/lib/cap/rootfs/custom',
-      providerFamily: 'boxlite',
-    }),
-  });
-  await rootfsProvider.provision({ taskId: 'task-env-rootfs', cloneSpec: null });
-  assert.equal(rootfsClient.createCalls[0].image, undefined);
-  assert.equal(rootfsClient.createCalls[0].rootfsPath, '/var/lib/cap/rootfs/custom');
 });
 
 await test('provider rejects incompatible selected environments without falling back', async () => {
@@ -373,25 +358,29 @@ await test('validates BoxLite environments with create start exec delete probes'
     workspacePath: '/workspace',
     environment: {
       environmentId: 'env-boxlite',
-      sourceKind: 'boxlite-rootfs',
-      sourceRef: '/var/lib/cap/rootfs/custom',
-      checksum: 'sha256:rootfs',
+      sourceKind: 'boxlite-image',
+      sourceRef: 'cap-boxlite-custom:v1',
+      digest: 'sha256:boxlite',
     },
+    requiredCommands: [{ name: 'git', command: 'command -v git' }],
   });
 
   assert.equal(result.status, 'passed');
-  assert.equal(result.resolvedChecksum, 'sha256:rootfs');
+  assert.equal(result.resolvedDigest, 'sha256:boxlite');
   assert.deepEqual(
     result.probes.map((probe) => [probe.name, probe.ok]),
     [
       ['create-sandbox', true],
       ['start-execution', true],
       ['exec-probe', true],
+      ['git', true],
     ],
   );
-  assert.equal(client.createCalls[0].rootfsPath, '/var/lib/cap/rootfs/custom');
+  assert.equal(client.createCalls[0].image, 'cap-boxlite-custom:v1');
+  assert.equal(client.createCalls[0].rootfsPath, undefined);
   assert.equal(client.startExecutionCalls[0].command, 'true');
   assert.equal(client.execCalls[0].command, 'true');
+  assert.equal(client.execCalls[1].command, 'command -v git');
   assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-probe']);
 });
 

@@ -315,8 +315,8 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
       expect(list.environments.length).toBeGreaterThan(0);
 
       const created = await mockCreateSandboxEnvironment({
-        name: "BoxLite rootfs",
-        source: { kind: "boxlite-rootfs", rootfsPath: "/var/lib/cap/rootfs/custom" },
+        name: "BoxLite image",
+        source: { kind: "boxlite-image", image: "cap-boxlite-custom:v1" },
         runtimeIds: ["codex"],
       });
       expect(() => SandboxEnvironmentResponseSchema.parse(created)).not.toThrow();

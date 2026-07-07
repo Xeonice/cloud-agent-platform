@@ -7,6 +7,7 @@ import {
   SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
   SandboxEnvironmentsService,
 } from './sandbox-environments.service';
+import type { SandboxEnvironmentValidationRunner } from './sandbox-environments.validator';
 
 const ENV_A = '00000000-0000-4000-a000-000000000301';
 const ENV_B = '00000000-0000-4000-a000-000000000302';
@@ -58,7 +59,10 @@ function makeEnvironment(overrides: Partial<FakeEnvironmentRow>): FakeEnvironmen
   };
 }
 
-function buildService(initialRows: FakeEnvironmentRow[] = []): {
+function buildService(
+  initialRows: FakeEnvironmentRow[] = [],
+  validationRunner: SandboxEnvironmentValidationRunner = createPassingValidationRunner(),
+): {
   service: SandboxEnvironmentsService;
   rows: FakeEnvironmentRow[];
   validations: FakeValidationRow[];
@@ -187,9 +191,30 @@ function buildService(initialRows: FakeEnvironmentRow[] = []): {
   };
 
   return {
-    service: new SandboxEnvironmentsService(prisma),
+    service: new SandboxEnvironmentsService(prisma, validationRunner),
     rows,
     validations,
+  };
+}
+
+function createPassingValidationRunner(): SandboxEnvironmentValidationRunner {
+  return {
+    async validate(target) {
+      const source = target.source as {
+        readonly kind: string;
+        readonly digest?: string;
+      };
+      return {
+        status: 'passed',
+        providerFamily: target.providerFamily,
+        runtimeId: target.runtimeId ?? null,
+        sourceKind: source.kind,
+        resolvedDigest: source.digest ?? null,
+        resolvedChecksum: null,
+        probes: [{ name: 'provider-probe', ok: true, output: 'ok' }],
+        error: null,
+      };
+    },
   };
 }
 
@@ -215,6 +240,22 @@ test('create derives provider compatibility from source and moves the default po
   assert.equal(rows.find((row) => row.id === ENV_A)?.isDefault, false);
 });
 
+test('create rejects removed source kinds instead of applying compatibility shims', async () => {
+  const { service } = buildService();
+
+  await assert.rejects(
+    () =>
+      service.create({
+        name: 'Legacy rootfs',
+        source: {
+          kind: 'boxlite-rootfs',
+          rootfsPath: '/var/lib/cap/rootfs/custom',
+        },
+      } as unknown as Parameters<SandboxEnvironmentsService['create']>[0]),
+    /Invalid discriminator value/,
+  );
+});
+
 test('validate records a provider-specific validation and marks the environment ready', async () => {
   const { service, validations } = buildService([
     makeEnvironment({
@@ -234,6 +275,65 @@ test('validate records a provider-specific validation and marks the environment 
   assert.equal(result.validation.sourceKind, 'aio-docker-image');
   assert.equal(result.validation.resolvedDigest, 'sha256:abc');
   assert.equal(validations.length, 1);
+});
+
+test('validate records failed provider probes and marks the environment failed', async () => {
+  const { service, validations } = buildService(
+    [
+      makeEnvironment({
+        id: ENV_A,
+        source: { kind: 'boxlite-image', image: 'cap/boxlite:latest' },
+        providerFamilies: ['boxlite'],
+      }),
+    ],
+    {
+      async validate(target) {
+        return {
+          status: 'failed',
+          providerFamily: target.providerFamily,
+          runtimeId: target.runtimeId ?? null,
+          sourceKind: target.source.kind,
+          resolvedDigest: null,
+          resolvedChecksum: null,
+          probes: [{ name: 'create-sandbox', ok: false, output: 'No such image' }],
+          error: 'No such image',
+        };
+      },
+    },
+  );
+
+  const result = await service.validate(ENV_A);
+
+  assert.equal(result.environment.status, 'failed');
+  assert.equal(result.validation.status, 'failed');
+  assert.equal(result.validation.error, 'No such image');
+  assert.equal(validations.length, 1);
+});
+
+test('validate catches validator exceptions and stores a failed validation', async () => {
+  const { service } = buildService(
+    [
+      makeEnvironment({
+        id: ENV_A,
+        source: { kind: 'aio-docker-image', image: 'cap/aio:latest' },
+        providerFamilies: ['aio'],
+      }),
+    ],
+    {
+      async validate() {
+        throw new Error('docker unavailable');
+      },
+    },
+  );
+
+  const result = await service.validate(ENV_A);
+
+  assert.equal(result.environment.status, 'failed');
+  assert.equal(result.validation.status, 'failed');
+  assert.equal(result.validation.error, 'docker unavailable');
+  assert.deepEqual(result.validation.probes, [
+    { name: 'validation-error', ok: false, output: 'docker unavailable' },
+  ]);
 });
 
 test('resolveForTask returns a compatible ready default and ignores incompatible defaults', async () => {

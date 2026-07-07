@@ -40,37 +40,15 @@ export interface AioDockerImageEnvironmentSource extends SandboxEnvironmentBaseS
   readonly digest?: string;
 }
 
-export interface AioLoadedDockerImageEnvironmentSource extends SandboxEnvironmentBaseSource {
-  readonly kind: 'aio-loaded-docker-image';
-  readonly image: string;
-  readonly imageId?: string;
-  readonly digest?: string;
-}
-
 export interface BoxLiteImageEnvironmentSource extends SandboxEnvironmentBaseSource {
   readonly kind: 'boxlite-image';
   readonly image: string;
   readonly digest?: string;
 }
 
-export interface BoxLiteRootfsEnvironmentSource extends SandboxEnvironmentBaseSource {
-  readonly kind: 'boxlite-rootfs';
-  readonly rootfsPath: string;
-  readonly checksum?: string;
-}
-
-export interface ProviderTemplateEnvironmentSource extends SandboxEnvironmentBaseSource {
-  readonly kind: 'provider-template';
-  readonly providerFamily: SandboxEnvironmentProviderFamily;
-  readonly templateId: string;
-}
-
 export type SandboxEnvironmentSourceDescriptor =
   | AioDockerImageEnvironmentSource
-  | AioLoadedDockerImageEnvironmentSource
-  | BoxLiteImageEnvironmentSource
-  | BoxLiteRootfsEnvironmentSource
-  | ProviderTemplateEnvironmentSource;
+  | BoxLiteImageEnvironmentSource;
 
 export interface SandboxEnvironmentRecord {
   readonly id: string;
@@ -157,45 +135,33 @@ export function providerFamiliesForEnvironmentSource(
 ): readonly SandboxEnvironmentProviderFamily[] {
   switch (source.kind) {
     case 'aio-docker-image':
-    case 'aio-loaded-docker-image':
       return ['aio'];
     case 'boxlite-image':
-    case 'boxlite-rootfs':
       return ['boxlite'];
-    case 'provider-template':
-      return [source.providerFamily];
   }
 }
 
 export function sourceReference(source: SandboxEnvironmentSourceDescriptor): string {
   switch (source.kind) {
     case 'aio-docker-image':
-    case 'aio-loaded-docker-image':
     case 'boxlite-image':
       return source.image;
-    case 'boxlite-rootfs':
-      return source.rootfsPath;
-    case 'provider-template':
-      return source.templateId;
   }
 }
 
 export function sourceDigest(source: SandboxEnvironmentSourceDescriptor): string | undefined {
   switch (source.kind) {
     case 'aio-docker-image':
-    case 'aio-loaded-docker-image':
     case 'boxlite-image':
       return source.digest;
-    case 'boxlite-rootfs':
-    case 'provider-template':
-      return undefined;
   }
 }
 
 export function sourceChecksum(
   source: SandboxEnvironmentSourceDescriptor,
 ): string | undefined {
-  return source.kind === 'boxlite-rootfs' ? source.checksum : undefined;
+  void source;
+  return undefined;
 }
 
 export function isEnvironmentStatusSelectable(

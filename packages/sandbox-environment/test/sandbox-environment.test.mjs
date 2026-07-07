@@ -28,44 +28,29 @@ const boxliteImage = {
   digest: 'sha256:boxlite',
 };
 
-const boxliteRootfs = {
-  kind: 'boxlite-rootfs',
-  rootfsPath: '/var/lib/cap/rootfs/v1.2.3',
-  checksum: 'sha256:rootfs',
-};
-
 await test('source descriptors map to provider families and references', () => {
   assert.deepEqual(mod.providerFamiliesForEnvironmentSource(aioImage), ['aio']);
   assert.deepEqual(mod.providerFamiliesForEnvironmentSource(boxliteImage), ['boxlite']);
-  assert.deepEqual(mod.providerFamiliesForEnvironmentSource(boxliteRootfs), ['boxlite']);
-  assert.deepEqual(
-    mod.providerFamiliesForEnvironmentSource({
-      kind: 'provider-template',
-      providerFamily: 'cloud-http',
-      templateId: 'template-a',
-    }),
-    ['cloud-http'],
-  );
   assert.equal(mod.sourceReference(aioImage), aioImage.image);
-  assert.equal(mod.sourceReference(boxliteRootfs), boxliteRootfs.rootfsPath);
+  assert.equal(mod.sourceReference(boxliteImage), boxliteImage.image);
   assert.equal(mod.sourceDigest(boxliteImage), 'sha256:boxlite');
-  assert.equal(mod.sourceChecksum(boxliteRootfs), 'sha256:rootfs');
+  assert.equal(mod.sourceChecksum(boxliteImage), undefined);
 });
 
 await test('selects exactly one source for provider family', () => {
   assert.equal(
     mod.selectEnvironmentSourceForProvider({
-      sources: [aioImage, boxliteRootfs],
+      sources: [aioImage, boxliteImage],
       providerFamily: 'aio',
     }),
     aioImage,
   );
   assert.equal(
     mod.selectEnvironmentSourceForProvider({
-      sources: [aioImage, boxliteRootfs],
+      sources: [aioImage, boxliteImage],
       providerFamily: 'boxlite',
     }),
-    boxliteRootfs,
+    boxliteImage,
   );
 });
 
@@ -73,8 +58,8 @@ await test('source ambiguity fails closed', () => {
   assert.throws(
     () =>
       mod.selectEnvironmentSourceForProvider({
-        sources: [boxliteImage, boxliteRootfs],
-        providerFamily: 'boxlite',
+        sources: [aioImage, { ...aioImage, image: 'ghcr.io/example/aio:other' }],
+        providerFamily: 'aio',
       }),
     (err) =>
       err?.name === 'SandboxEnvironmentSourceError' &&
@@ -84,7 +69,7 @@ await test('source ambiguity fails closed', () => {
   assert.throws(
     () =>
       mod.selectEnvironmentSourceForProvider({
-        sources: [boxliteRootfs],
+        sources: [boxliteImage],
         providerFamily: 'aio',
       }),
     (err) =>
