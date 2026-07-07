@@ -131,6 +131,9 @@ Notes:
   Docker/Colima host, use the container-facing endpoint
   `BOXLITE_ENDPOINT=http://host.docker.internal:7331`; the installer uses
   `BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331` for host-side probes.
+- Custom task images should extend the matching official AIO or BoxLite release
+  image and then be registered through Image Management. See
+  [`docs/sandbox-images.md`](docs/sandbox-images.md).
 - `api` and optional `web` host ports bind to `0.0.0.0` by default. Configure
   DNS, TLS, reverse proxy, auth callback/cookie scope, and firewall exposure
   yourself before making the stack public.

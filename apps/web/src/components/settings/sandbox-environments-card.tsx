@@ -1,6 +1,7 @@
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ChevronDown, Copy, Play, Plus } from "lucide-react";
+import { AlertTriangle, BookOpen, ChevronDown, Copy, Play, Plus } from "lucide-react";
 
 import type {
   CreateSandboxEnvironmentRequest,
@@ -135,16 +136,24 @@ export function SandboxEnvironmentsCard() {
               管理可选的 AIO / BoxLite 任务基础镜像。验证通过后会出现在设置页默认镜像下拉里。
             </p>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() => setShowCreate((value) => !value)}
-            className="gap-2"
-          >
-            <Plus className="size-4" />
-            添加镜像
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button asChild type="button" variant="outline" size="sm" className="gap-2">
+              <Link to="/help/sandbox-images">
+                <BookOpen className="size-4" />
+                查看文档
+              </Link>
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setShowCreate((value) => !value)}
+              className="gap-2"
+            >
+              <Plus className="size-4" />
+              添加镜像
+            </Button>
+          </div>
         </div>
       </PanelHead>
 
@@ -200,16 +209,24 @@ export function SandboxEnvironmentsCard() {
                   {selectedProvider.templatePath}
                 </p>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={copyTemplate}
-                className="gap-2"
-              >
-                <Copy className="size-3.5" />
-                {copiedProvider === provider ? "已复制" : "复制模板"}
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button asChild type="button" variant="outline" size="sm" className="gap-2">
+                  <Link to="/help/sandbox-images">
+                    <BookOpen className="size-3.5" />
+                    创建指南
+                  </Link>
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={copyTemplate}
+                  className="gap-2"
+                >
+                  <Copy className="size-3.5" />
+                  {copiedProvider === provider ? "已复制" : "复制模板"}
+                </Button>
+              </div>
             </div>
             <pre className="mt-3 max-h-48 overflow-auto rounded-md bg-muted/50 p-3 text-xs leading-5 text-muted-foreground">
               {selectedProvider.template}
