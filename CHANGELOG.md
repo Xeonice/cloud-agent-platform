@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.31.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.30.0...v0.31.0) (2026-07-07)
+
+
+### Features
+
+* **sandbox:** simplify custom image sources ([61f6b52](https://github.com/Xeonice/cloud-agent-platform/commit/61f6b52020481d0d095bfff6c9045383c29ed182))
+* **sandbox:** simplify custom image sources ([5a5a618](https://github.com/Xeonice/cloud-agent-platform/commit/5a5a6180803cdf68b6e29ed74f956c4cb5496a5c))
+
 ## [0.30.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.29.0...v0.30.0) (2026-07-06)
 
 
