@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.32.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.31.0...v0.32.0) (2026-07-07)
+
+
+### Features
+
+* **web:** add custom sandbox image help ([f01444e](https://github.com/Xeonice/cloud-agent-platform/commit/f01444e64f6ea3f1648ffb7c3d3ec160fbc374a0))
+* **web:** add custom sandbox image help ([310d902](https://github.com/Xeonice/cloud-agent-platform/commit/310d9028339fa1655e2b6e187d72ce8326d93a51))
+
 ## [0.31.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.30.0...v0.31.0) (2026-07-07)
 
 
