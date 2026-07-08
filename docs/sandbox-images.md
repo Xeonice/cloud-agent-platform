@@ -14,6 +14,10 @@ The product model is intentionally small:
 - Image Management accepts registry image references. Deployment internals such
   as "loaded image" and "rootfs" are not user-facing image source types.
 
+CAP is the control plane, not an image builder, uploader, publisher, or registry
+host. Build and publish the image in your own Docker / CI / registry workflow,
+then register the published registry image reference in CAP.
+
 Chinese version: [`docs/sandbox-images.zh.md`](sandbox-images.zh.md).
 
 In the web console, the same guide is available from `镜像管理` via
@@ -110,7 +114,8 @@ Registry operations stay outside CAP:
   If an internal registry is HTTP-only or uses a private CA, configure BoxLite or
   the host registry stack for that insecure registry or CA before validation.
 - CAP stores the non-secret image reference and validation result; it does not
-  upload images, store registry tokens, or make a private registry reachable.
+  build, upload, host, publish, store registry tokens, or make a private
+  registry reachable.
 
 ## Advanced: BoxLite Deployment-Default Rootfs
 
@@ -159,12 +164,13 @@ image library, still validate each registry image from `镜像管理`.
 In the web console:
 
 1. Open `镜像管理`.
-2. Click `添加镜像`.
+2. Click `注册镜像`.
 3. Choose `AIO` or `BoxLite`.
-4. Enter the pushed image reference.
+4. Enter the image reference that has already been published to a registry and
+   is pullable by the provider host.
 5. Optionally enter runtime ids such as `codex` or `claude-code`. Leave it empty
    only when the image supports every runtime you expose.
-6. Save, then click `验证`.
+6. Click `保存引用`, then click `验证`.
 7. When the status is `ready`, users can select the image in the task creation
    form or in `设置` as their default image.
 

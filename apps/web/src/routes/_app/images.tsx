@@ -46,7 +46,7 @@ function ImagesPage() {
             镜像管理
           </h1>
           <p className="mt-[7px] max-w-[820px] text-sm leading-[1.58] text-muted-foreground">
-            管理可选的 AIO / BoxLite 任务基础镜像；用户默认镜像在设置页选择。
+            注册和验证已发布的 AIO / BoxLite 任务基础镜像引用；用户默认镜像在设置页选择。
           </p>
         </div>
         <div className="flex flex-wrap gap-2 justify-self-start min-[821px]:justify-self-end">
@@ -81,7 +81,7 @@ function ImagesAdminRequired() {
         </div>
         <h2 className="text-sm font-semibold text-foreground">需要管理员权限</h2>
         <p className="mt-1 text-xs text-muted-foreground">
-          创建、验证和维护镜像库需要管理员账号；当前账号的默认镜像请在设置页选择。
+          注册、验证和维护镜像库需要管理员账号；当前账号的默认镜像请在设置页选择。
         </p>
       </PanelHead>
     </Panel>

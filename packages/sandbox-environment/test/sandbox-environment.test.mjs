@@ -33,6 +33,7 @@ await test('source descriptors map to provider families and references', () => {
   assert.deepEqual(mod.providerFamiliesForEnvironmentSource(boxliteImage), ['boxlite']);
   assert.equal(mod.sourceReference(aioImage), aioImage.image);
   assert.equal(mod.sourceReference(boxliteImage), boxliteImage.image);
+  assert.match(mod.sourceReference(aioImage), /^ghcr\.io\/example\//);
   assert.equal(mod.sourceDigest(boxliteImage), 'sha256:boxlite');
   assert.equal(mod.sourceChecksum(boxliteImage), undefined);
 });
@@ -180,6 +181,8 @@ await test('normalizes immutable resolved environment metadata', () => {
     source: aioImage,
   });
   assert(!('checksum' in metadata));
+  assert(!('rootfsPath' in metadata));
+  assert(!('loadedImage' in metadata));
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

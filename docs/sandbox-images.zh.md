@@ -8,6 +8,8 @@
 - BoxLite 镜像：从 `ghcr.io/xeonice/cap-boxlite-sandbox:<cap-version>` 扩展。
 - 镜像管理只注册 registry image reference。AIO loaded image、BoxLite rootfs 这类概念属于部署实现细节，不是用户创建镜像时需要理解或选择的来源类型。
 
+CAP 是控制面，不是镜像构建、上传、发布或 registry 托管平台。管理员需要先在自己的 Docker / CI / registry 流程里构建并发布镜像，然后在 CAP 中注册这个已发布的 registry image reference。
+
 在控制台里也可以从左侧 `镜像管理` 进入，点击 `查看文档` 打开同一份指南。
 
 ## 选择基镜像
@@ -89,7 +91,7 @@ registry 相关操作由运维侧自己保证：
 - 如果使用 GHCR，发布镜像的 token 需要 `write:packages`，并且要给实际 pull 镜像的 Docker host 或 BoxLite host 配置 package 读取权限。
 - 如果使用私有 registry，需要先在 provider host 上配置凭据，例如 `docker login`、节点本地 credential helper，或 BoxLite 支持的 registry 配置。
 - BoxLite 必须能从 BoxLite host 访问 registry。优先使用 HTTPS；如果内网 registry 只能走 HTTP 或使用私有 CA，需要先在 BoxLite 或宿主机 registry 配置里允许 insecure registry 或信任该 CA。
-- CAP 只保存非密的镜像地址和验证结果；不会上传镜像、保存 registry token，或者替用户打通私有 registry 网络。
+- CAP 只保存非密的镜像地址和验证结果；不会构建、上传、托管、发布镜像，保存 registry token，或者替用户打通私有 registry 网络。
 
 ## 高级：BoxLite 部署默认 rootfs
 
@@ -129,11 +131,11 @@ BOXLITE_ROOTFS_PATH=/Users/zlyan/WorkProject/cap-release/assets/boxlite/cap-boxl
 管理员在控制台操作：
 
 1. 打开左侧 `镜像管理`。
-2. 点击 `添加镜像`。
+2. 点击 `注册镜像`。
 3. 选择 `AIO` 或 `BoxLite`。
-4. 填入已经 push 的镜像地址。
+4. 填入已经发布到 registry、并且 provider host 可以拉取的镜像地址。
 5. 可选填写 runtime id，例如 `codex` 或 `claude-code`。如果留空，表示这个镜像可用于所有当前暴露的 runtime。
-6. 保存后点击 `验证`。
+6. 点击 `保存引用`，再点击 `验证`。
 7. 验证通过后状态变为 `ready`，该镜像才会出现在创建任务和用户 `设置` 的默认镜像下拉框里。
 
 API 也使用同一套模型：

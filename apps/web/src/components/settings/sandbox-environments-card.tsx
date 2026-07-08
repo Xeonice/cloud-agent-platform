@@ -36,9 +36,19 @@ import {
   validateSandboxEnvironmentMutation,
 } from "@/lib/api/mutations";
 
-type SandboxImageProvider = "aio" | "boxlite";
+export type SandboxImageProvider = "aio" | "boxlite";
 
-const IMAGE_PROVIDERS: Array<{
+export const SANDBOX_IMAGE_REGISTRATION_COPY = {
+  kicker: "Image references",
+  title: "镜像库",
+  description:
+    "注册已发布的 AIO / BoxLite 任务基础镜像引用。验证通过后会出现在设置页默认镜像下拉里。",
+  action: "注册镜像",
+  submit: "保存引用",
+  guide: "扩展指南",
+} as const;
+
+export const IMAGE_PROVIDERS: Array<{
   value: SandboxImageProvider;
   label: string;
   placeholder: string;
@@ -48,7 +58,7 @@ const IMAGE_PROVIDERS: Array<{
   {
     value: "aio",
     label: "AIO",
-    placeholder: "ghcr.io/xeonice/cap-aio-sandbox:0.1.0",
+    placeholder: "已发布的 AIO 镜像地址，例如 registry.example.com/cap-aio:v1",
     templatePath: "examples/sandbox-images/aio/Dockerfile",
     template: [
       "ARG CAP_VERSION",
@@ -66,7 +76,7 @@ const IMAGE_PROVIDERS: Array<{
   {
     value: "boxlite",
     label: "BoxLite",
-    placeholder: "ghcr.io/xeonice/cap-boxlite-sandbox:0.1.0",
+    placeholder: "已发布的 BoxLite 镜像地址，例如 registry.example.com/cap-boxlite:v1",
     templatePath: "examples/sandbox-images/boxlite/Dockerfile",
     template: [
       "ARG CAP_VERSION",
@@ -138,13 +148,15 @@ export function SandboxEnvironmentsCard() {
     <Panel id="sandbox-environments">
       <PanelHead>
         <div className="font-mono text-[11px] uppercase text-muted-foreground">
-          Image library
+          {SANDBOX_IMAGE_REGISTRATION_COPY.kicker}
         </div>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold text-foreground">镜像库</h2>
+            <h2 className="text-sm font-semibold text-foreground">
+              {SANDBOX_IMAGE_REGISTRATION_COPY.title}
+            </h2>
             <p className="mt-1 text-xs text-muted-foreground">
-              管理可选的 AIO / BoxLite 任务基础镜像。验证通过后会出现在设置页默认镜像下拉里。
+              {SANDBOX_IMAGE_REGISTRATION_COPY.description}
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -162,7 +174,7 @@ export function SandboxEnvironmentsCard() {
               className="gap-2"
             >
               <Plus className="size-4" />
-              添加镜像
+              {SANDBOX_IMAGE_REGISTRATION_COPY.action}
             </Button>
           </div>
         </div>
@@ -207,7 +219,7 @@ export function SandboxEnvironmentsCard() {
           <div className="flex justify-end">
             <Button type="submit" disabled={createEnv.isPending} className="gap-2">
               <Plus className="size-4" />
-              保存镜像
+              {SANDBOX_IMAGE_REGISTRATION_COPY.submit}
             </Button>
           </div>
           <div className="rounded-md border border-border bg-background p-3">
@@ -224,7 +236,7 @@ export function SandboxEnvironmentsCard() {
                 <Button asChild type="button" variant="outline" size="sm" className="gap-2">
                   <Link to="/help/sandbox-images">
                     <BookOpen className="size-3.5" />
-                    创建指南
+                    {SANDBOX_IMAGE_REGISTRATION_COPY.guide}
                   </Link>
                 </Button>
                 <Button
