@@ -284,23 +284,25 @@ When the provider-backed terminal story is configured to use BoxLite, the system
 ### Requirement: BoxLite provisions from a resolved environment source
 
 The BoxLite provider SHALL provision a task sandbox from the resolved sandbox
-environment when the environment source is compatible with BoxLite image or
-rootfs execution. If task creation omits an environment and no managed default
+environment when the managed environment source is a compatible BoxLite registry
+image reference. If task creation omits an environment and no managed default
 exists, BoxLite SHALL continue to use the existing deployment-level image/rootfs
-configuration and runtime maps.
+configuration and runtime maps. Managed BoxLite environment selection SHALL NOT
+accept rootfs paths, loaded-image handles, uploaded artifacts, or local
+provider-specific source descriptors.
 
 #### Scenario: Selected BoxLite image environment is used
 
 - **WHEN** a task selects a ready BoxLite image environment
-- **THEN** BoxLite creates the sandbox with that resolved image source
+- **THEN** BoxLite creates the sandbox with that resolved registry image source
 - **AND** it does not use `BOXLITE_IMAGE` or `BOXLITE_IMAGE_MAP` for that task
 
-#### Scenario: Selected BoxLite rootfs environment is used
+#### Scenario: Managed BoxLite rootfs environment is rejected
 
-- **WHEN** a task selects a ready BoxLite rootfs-path environment
-- **THEN** BoxLite creates the sandbox with `rootfs_path` from that resolved
-  environment
-- **AND** it does not send a registry image value for the sandbox source
+- **WHEN** a task or environment record attempts to select a BoxLite rootfs-path
+  environment as a managed image-library source
+- **THEN** BoxLite provisioning is not attempted
+- **AND** CAP returns an unsupported environment source error
 
 #### Scenario: Omitted environment preserves current BoxLite default
 

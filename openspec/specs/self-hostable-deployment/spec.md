@@ -103,10 +103,19 @@ credential / repo available) it SHALL be skipped with a loud warning rather than
 The project SHALL document how operators build, tag, push, register, validate,
 and maintain custom AIO and BoxLite sandbox images using pinned image
 references. The documentation SHALL make registry responsibilities explicit:
-CAP does not store registry credentials, and the Docker host or BoxLite host
-must be able to pull the image before CAP validation can pass. The documentation
+CAP does not build images, upload image artifacts, host a registry, publish
+images, or store registry credentials, and the Docker host or BoxLite host must
+be able to pull the image before CAP validation can pass. The documentation
 SHALL call out GHCR package write permissions and private package visibility
 when GHCR is used.
+
+#### Scenario: External build and push chain is documented
+
+- **WHEN** an operator follows the custom image guide
+- **THEN** the guide tells them to extend the official AIO or BoxLite base image
+  for the running CAP version
+- **AND** it tells them to build and push the resulting image outside CAP before
+  registering the image reference in CAP
 
 #### Scenario: GHCR package permission requirements are documented
 
@@ -132,7 +141,8 @@ extend the official BoxLite sandbox image for the running CAP version, export a
 Linux OCI rootfs layout for the BoxLite host architecture, configure
 `BOXLITE_ROOTFS_PATH`, restart the API, and run a create/start/exec/delete probe.
 The documentation SHALL state that this rootfs path is a deployment-level
-default, not a managed image-library source.
+default, not a managed image-library source, not a user default-image option, and
+not a per-task image override.
 
 #### Scenario: Operator configures a BoxLite rootfs deployment default
 
@@ -149,6 +159,7 @@ default, not a managed image-library source.
 - **THEN** it states that rootfs is not registered in `/images`
 - **AND** managed image-library customization remains based on pinned registry
   image references
+- **AND** rootfs does not appear in user default-image or task image selection
 
 ### Requirement: Custom sandbox image templates build without avoidable warnings
 

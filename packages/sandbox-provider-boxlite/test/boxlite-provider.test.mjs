@@ -349,6 +349,30 @@ await test('provider rejects incompatible selected environments without falling 
   assert.equal(client.createCalls.length, 0);
 });
 
+await test('provider rejects managed BoxLite rootfs environments without falling back', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_IMAGE: '',
+      BOXLITE_ROOTFS_PATH: '/var/lib/cap/boxlite/default-rootfs',
+      BOXLITE_CAPABILITIES: 'command.exec',
+    }),
+    client,
+    resolveEnvironment: async () => ({
+      environmentId: 'env-rootfs',
+      sourceKind: 'boxlite-rootfs',
+      sourceRef: '/var/lib/cap/boxlite/managed-rootfs',
+      providerFamily: 'boxlite',
+    }),
+  });
+
+  await assert.rejects(
+    () => provider.provision({ taskId: 'task-managed-rootfs-env', cloneSpec: null }),
+    /not compatible with BoxLite/,
+  );
+  assert.equal(client.createCalls.length, 0);
+});
+
 await test('validates BoxLite environments with create start exec delete probes', async () => {
   const client = new mod.FakeBoxLiteClient();
 

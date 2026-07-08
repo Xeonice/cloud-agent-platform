@@ -185,7 +185,7 @@ model Task {
 }
 
 /// Admin-managed sandbox runtime environment. Source descriptors are non-secret
-/// JSON (image/rootfs/template references only); provider credentials remain in
+/// registry image references only; provider and registry credentials remain in
 /// provider settings/env and are never stored here.
 model SandboxEnvironment {
   id String @id @default(uuid())

@@ -67,6 +67,10 @@ test('source schema rejects removed delivery-specific source kinds', () => {
       providerFamily: 'cloud-http',
       templateId: 'template-a',
     },
+    {
+      kind: 'oci-upload',
+      uploadId: 'upload-a',
+    },
   ]) {
     assert.throws(
       () => SandboxEnvironmentSourceSchema.parse(source),

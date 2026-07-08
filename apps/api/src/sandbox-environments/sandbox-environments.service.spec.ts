@@ -218,7 +218,21 @@ function createPassingValidationRunner(): SandboxEnvironmentValidationRunner {
   };
 }
 
-test('create derives provider compatibility from source and moves the default pointer', async () => {
+test('create accepts registry image references and derives provider compatibility', async () => {
+  const { service, rows } = buildService();
+
+  const created = await service.create({
+    name: 'AIO base',
+    source: { kind: 'aio-docker-image', image: 'cap/aio:latest' },
+  });
+
+  assert.equal(created.id, ENV_B);
+  assert.deepEqual(created.compatibility.providerFamilies, ['aio']);
+  assert.equal(rows[0]?.source.kind, 'aio-docker-image');
+  assert.equal(rows[0]?.source.image, 'cap/aio:latest');
+});
+
+test('create derives provider compatibility from BoxLite image and moves the default pointer', async () => {
   const existing = makeEnvironment({
     id: ENV_A,
     status: 'ready',
@@ -243,17 +257,29 @@ test('create derives provider compatibility from source and moves the default po
 test('create rejects removed source kinds instead of applying compatibility shims', async () => {
   const { service } = buildService();
 
-  await assert.rejects(
-    () =>
-      service.create({
-        name: 'Legacy rootfs',
-        source: {
-          kind: 'boxlite-rootfs',
-          rootfsPath: '/var/lib/cap/rootfs/custom',
-        },
-      } as unknown as Parameters<SandboxEnvironmentsService['create']>[0]),
-    /Invalid discriminator value/,
-  );
+  for (const source of [
+    {
+      kind: 'aio-loaded-docker-image',
+      image: 'cap-aio-custom:v1',
+    },
+    {
+      kind: 'boxlite-rootfs',
+      rootfsPath: '/var/lib/cap/rootfs/custom',
+    },
+    {
+      kind: 'oci-upload',
+      uploadId: 'upload-1',
+    },
+  ]) {
+    await assert.rejects(
+      () =>
+        service.create({
+          name: `Legacy ${source.kind}`,
+          source,
+        } as unknown as Parameters<SandboxEnvironmentsService['create']>[0]),
+      /Invalid discriminator value/,
+    );
+  }
 });
 
 test('validate records a provider-specific validation and marks the environment ready', async () => {
