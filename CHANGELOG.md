@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.32.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.32.0...v0.32.1) (2026-07-08)
+
+
+### Bug Fixes
+
+* **sandbox:** harden custom image operations ([270d2b1](https://github.com/Xeonice/cloud-agent-platform/commit/270d2b16cf0c9505e6067b9ac38672185c7ce8a2))
+* **sandbox:** harden custom image operations ([9237f01](https://github.com/Xeonice/cloud-agent-platform/commit/9237f010a1ff52c337dffed25f66b369d650abe0))
+
 ## [0.32.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.31.0...v0.32.0) (2026-07-07)
 
 
