@@ -58,6 +58,7 @@ import {
   mockListSandboxEnvironments,
   mockCreateSandboxEnvironment,
   mockValidateSandboxEnvironment,
+  mockRetireSandboxEnvironment,
   mockListSandboxEnvironmentValidations,
 } from "./mock";
 import { setState, resetState } from "../store";
@@ -325,6 +326,11 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
       const validated = await mockValidateSandboxEnvironment(created.id);
       expect(() => ValidateSandboxEnvironmentResponseSchema.parse(validated)).not.toThrow();
       expect(validated.environment.status).toBe("ready");
+
+      const retired = await mockRetireSandboxEnvironment(created.id);
+      expect(() => SandboxEnvironmentResponseSchema.parse(retired)).not.toThrow();
+      expect(retired.status).toBe("disabled");
+      expect(retired.isDefault).toBe(false);
 
       const history = await mockListSandboxEnvironmentValidations(created.id);
       expect(() =>

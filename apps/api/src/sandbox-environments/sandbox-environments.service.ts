@@ -102,6 +102,19 @@ export class SandboxEnvironmentsService {
     });
   }
 
+  async retire(id: string): Promise<SandboxEnvironment> {
+    await this.requireEnvironmentRow(id);
+    const updated = await this.prisma.sandboxEnvironment.update({
+      where: { id },
+      data: {
+        status: 'disabled',
+        isDefault: false,
+      },
+      include: latestValidationInclude(),
+    });
+    return this.toEnvironment(updated);
+  }
+
   async validate(id: string): Promise<{
     environment: SandboxEnvironment;
     validation: SandboxEnvironmentValidation;

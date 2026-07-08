@@ -879,6 +879,26 @@ export async function mockSetDefaultSandboxEnvironment(
   return { ...env };
 }
 
+export async function mockRetireSandboxEnvironment(
+  id: string,
+): Promise<SandboxEnvironmentResponse> {
+  await delay();
+  const now = new Date();
+  const index = mockSandboxEnvironments.findIndex((env) => env.id === id);
+  if (index < 0) throw new Error(`mock sandbox environment not found: ${id}`);
+  const existing = mockSandboxEnvironments[index]!;
+  const retired: SandboxEnvironment = {
+    ...existing,
+    status: "disabled",
+    isDefault: false,
+    updatedAt: now,
+  };
+  mockSandboxEnvironments = mockSandboxEnvironments.map((env) => {
+    return env.id === id ? retired : env;
+  });
+  return { ...retired };
+}
+
 export async function mockListSandboxEnvironmentValidations(
   id: string,
 ): Promise<ListSandboxEnvironmentValidationsResponse> {

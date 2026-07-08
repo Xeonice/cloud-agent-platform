@@ -21,14 +21,16 @@ CAP_VERSION="$(curl -fsS http://<api-host>:<api-port>/version | jq -r .version)"
 AIO Dockerfile 从 AIO 官方镜像开始：
 
 ```dockerfile
-ARG CAP_VERSION
+# 构建时必须覆盖为正在运行的 CAP 版本。
+ARG CAP_VERSION=v0.0.0
 FROM ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}
 ```
 
 BoxLite Dockerfile 从 BoxLite 官方镜像开始：
 
 ```dockerfile
-ARG CAP_VERSION
+# 构建时必须覆盖为正在运行的 CAP 版本。
+ARG CAP_VERSION=v0.0.0
 FROM ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}
 ```
 
@@ -81,6 +83,46 @@ docker buildx build \
 ```
 
 如果使用私有 registry，CAP 不负责分发 registry 凭据。需要确保 Docker host 或 BoxLite host 自己能 pull 这个镜像，例如提前完成 `docker login` 或在 BoxLite 侧配置 registry 访问能力。
+
+registry 相关操作由运维侧自己保证：
+
+- 如果使用 GHCR，发布镜像的 token 需要 `write:packages`，并且要给实际 pull 镜像的 Docker host 或 BoxLite host 配置 package 读取权限。
+- 如果使用私有 registry，需要先在 provider host 上配置凭据，例如 `docker login`、节点本地 credential helper，或 BoxLite 支持的 registry 配置。
+- BoxLite 必须能从 BoxLite host 访问 registry。优先使用 HTTPS；如果内网 registry 只能走 HTTP 或使用私有 CA，需要先在 BoxLite 或宿主机 registry 配置里允许 insecure registry 或信任该 CA。
+- CAP 只保存非密的镜像地址和验证结果；不会上传镜像、保存 registry token，或者替用户打通私有 registry 网络。
+
+## 高级：BoxLite 部署默认 rootfs
+
+大多数 BoxLite 部署应该使用上面的 `boxlite-image` 路径：把镜像 push 到 registry，在 `镜像管理` 注册并验证，然后让用户选择。local rootfs 只适合运维明确想在整个部署层面修改 BoxLite 默认启动层的场景。
+
+这个 rootfs 路径不是 `/images` 里的镜像记录，不会出现在用户镜像下拉框里，也不是按用户或按任务选择自定义镜像的替代品。只有当整个部署都应该在没有用户级覆盖时从同一份本地 rootfs 启动 BoxLite 任务，才使用它。
+
+示例 OCI 导出流程：
+
+```bash
+export CAP_VERSION=v0.31.0
+export ROOTFS=/Users/zlyan/WorkProject/cap-release/assets/boxlite/cap-boxlite-sandbox-custom/${CAP_VERSION}-1/linux-arm64/oci
+
+docker buildx create --name cap-oci-builder --driver docker-container --use
+
+docker buildx build \
+  --builder cap-oci-builder \
+  --platform linux/arm64 \
+  --build-arg CAP_VERSION="$CAP_VERSION" \
+  --output type=oci,dest=/tmp/cap-boxlite-custom.oci.tar \
+  ./examples/sandbox-images/boxlite
+
+mkdir -p "$ROOTFS"
+tar -C "$ROOTFS" -xf /tmp/cap-boxlite-custom.oci.tar
+```
+
+然后设置部署环境变量并重启 API/web 栈：
+
+```bash
+BOXLITE_ROOTFS_PATH=/Users/zlyan/WorkProject/cap-release/assets/boxlite/cap-boxlite-sandbox-custom/v0.31.0-1/linux-arm64/oci
+```
+
+重启后需要直接验证 provider 路径：创建一个短生命周期 sandbox，启动后执行 `sh -lc 'pwd && command -v git && command -v codex'`，最后删除 sandbox。如果同时在镜像库暴露 registry 镜像，仍然要在 `镜像管理` 里逐个验证。
 
 ## 在 CAP 中注册
 
@@ -145,6 +187,7 @@ docker run --rm "$IMAGE" sh -lc '
 - 定期重建以获取系统包安全更新。先发布新 tag，注册并验证，再切换默认镜像。
 - 不要直接删除仍被用户设为默认的镜像。先添加替代镜像、验证、切换默认值，再下线旧 tag。
 - 私有 registry 的可达性由运维侧保证。CAP 只记录非密的镜像地址和验证结果，不保存 registry token。
+- 如果验证错误提示 registry authorization，通常是 package 私有、GHCR 权限不足，或 provider host 没有读取权限。transport 类错误通常是 BoxLite host 无法使用 HTTPS 访问 registry、不信任私有 CA，或 HTTP-only registry 没有配置为 insecure registry。
 
 ## 常见失败原因
 
@@ -154,11 +197,14 @@ docker run --rm "$IMAGE" sh -lc '
 - Dockerfile 覆盖了官方 entrypoint，导致 sandbox service 没起来。
 - `/home/gem/workspace` 不存在或不可写。
 - 把 runtime id 限制错了，例如给 `claude-code` 任务选择了只含 `codex` 的镜像。
+- GHCR package 没给 provider host 读取权限，或者发布 token 没有 `write:packages`。
+- 内网 registry 是 HTTP-only 或私有 CA，但 BoxLite host 没有配置 insecure registry 或 CA 信任。
 
 ## 最小模板
 
 ```dockerfile
-ARG CAP_VERSION
+# 构建时必须覆盖为正在运行的 CAP 版本。
+ARG CAP_VERSION=v0.0.0
 FROM ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}
 
 USER root

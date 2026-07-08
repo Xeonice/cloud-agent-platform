@@ -1,7 +1,15 @@
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, BookOpen, ChevronDown, Copy, Play, Plus } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  BookOpen,
+  ChevronDown,
+  Copy,
+  Play,
+  Plus,
+} from "lucide-react";
 
 import type {
   CreateSandboxEnvironmentRequest,
@@ -24,6 +32,7 @@ import {
 } from "@/lib/api/queries";
 import {
   createSandboxEnvironmentMutation,
+  retireSandboxEnvironmentMutation,
   validateSandboxEnvironmentMutation,
 } from "@/lib/api/mutations";
 
@@ -79,8 +88,10 @@ export function SandboxEnvironmentsCard() {
   const { data } = useQuery(sandboxEnvironmentsQuery());
   const createEnv = useMutation(createSandboxEnvironmentMutation(queryClient));
   const validateEnv = useMutation(validateSandboxEnvironmentMutation(queryClient));
-  const environments = data?.environments ?? [];
-  const operationError = createEnv.error?.message ?? validateEnv.error?.message;
+  const retireEnv = useMutation(retireSandboxEnvironmentMutation(queryClient));
+  const environments = visibleSandboxEnvironments(data?.environments ?? []);
+  const operationError =
+    createEnv.error?.message ?? validateEnv.error?.message ?? retireEnv.error?.message;
 
   const [name, setName] = React.useState("");
   const [provider, setProvider] = React.useState<SandboxImageProvider>("aio");
@@ -253,6 +264,13 @@ export function SandboxEnvironmentsCard() {
               environment={environment}
               validating={validateEnv.isPending && validateEnv.variables === environment.id}
               onValidate={() => validateEnv.mutate(environment.id)}
+              retiring={retireEnv.isPending && retireEnv.variables === environment.id}
+              onRetire={() => {
+                const ok = window.confirm(
+                  `停用镜像「${environment.name}」？这只会让 CAP 不再选择该镜像，不会删除 registry 或 BoxLite 上的镜像内容。`,
+                );
+                if (ok) retireEnv.mutate(environment.id);
+              }}
             />
           ))
         )}
@@ -264,11 +282,15 @@ export function SandboxEnvironmentsCard() {
 function EnvironmentRow({
   environment,
   validating,
+  retiring,
   onValidate,
+  onRetire,
 }: {
   environment: SandboxEnvironment;
   validating: boolean;
+  retiring: boolean;
   onValidate: () => void;
+  onRetire: () => void;
 }) {
   const [expanded, setExpanded] = React.useState(false);
   const validationQuery = useQuery({
@@ -300,11 +322,22 @@ function EnvironmentRow({
           variant="outline"
           size="sm"
           onClick={onValidate}
-          disabled={validating}
+          disabled={validating || retiring}
           className="gap-2"
         >
           <Play className="size-3.5" />
           验证
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onRetire}
+          disabled={retiring}
+          className="gap-2 text-muted-foreground"
+        >
+          <Archive className="size-3.5" />
+          停用
         </Button>
         <Button
           type="button"
@@ -341,7 +374,7 @@ function EnvironmentRow({
               {latestValidation.error ? (
                 <p role="alert" className="flex items-start gap-1.5 text-danger">
                   <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-                  {latestValidation.error}
+                  <span>{formatValidationError(latestValidation.error)}</span>
                 </p>
               ) : null}
               {latestValidation.probes && latestValidation.probes.length > 0 ? (
@@ -356,7 +389,7 @@ function EnvironmentRow({
                       </span>
                       {probe.output ? (
                         <span className="break-words font-mono text-muted-foreground">
-                          {probe.output}
+                          {formatValidationError(probe.output)}
                         </span>
                       ) : null}
                     </div>
@@ -398,4 +431,26 @@ function formatDate(value: Date | string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+export function visibleSandboxEnvironments(
+  environments: readonly SandboxEnvironment[],
+): readonly SandboxEnvironment[] {
+  return environments.filter((environment) => environment.status !== "disabled");
+}
+
+export function formatValidationError(value: string): string {
+  if (/registry authorization/i.test(value)) {
+    return `${value}。请确认 provider host 已登录私有 registry，GHCR token 具备 read:packages / package 可见性。`;
+  }
+  if (/registry transport|registry unreachable|registry pull/i.test(value)) {
+    return `${value}。请确认镜像 registry 可由 Docker/BoxLite host 访问；BoxLite registry 引用通常需要可用的 HTTPS registry。`;
+  }
+  if (/architecture|runtime mismatch/i.test(value)) {
+    return `${value}。请确认镜像平台与 sandbox host 匹配，例如 macOS BoxLite 常用 linux/arm64。`;
+  }
+  if (/command -v|missing|required runtime|tool/i.test(value)) {
+    return `${value}。请确认镜像保留官方 entrypoint、gem 用户、/home/gem/workspace，并安装所选 runtime 需要的 CLI。`;
+  }
+  return value;
 }

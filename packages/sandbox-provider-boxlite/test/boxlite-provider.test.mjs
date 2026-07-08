@@ -384,6 +384,32 @@ await test('validates BoxLite environments with create start exec delete probes'
   assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-probe']);
 });
 
+await test('BoxLite environment validation cleans up returned provider ids', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const originalCreate = client.createSandbox.bind(client);
+  client.createSandbox = async (request) => {
+    const sandbox = await originalCreate(request);
+    client.sandboxes.delete(sandbox.id);
+    const generated = { ...sandbox, id: 'generated-box-id' };
+    client.sandboxes.set(generated.id, generated);
+    return generated;
+  };
+
+  const result = await mod.validateBoxLiteEnvironment({
+    taskId: 'task-boxlite-generated-id',
+    client,
+    environment: {
+      environmentId: 'env-boxlite',
+      sourceKind: 'boxlite-image',
+      sourceRef: 'cap-boxlite-custom:v1',
+    },
+  });
+
+  assert.equal(result.status, 'passed');
+  assert.deepEqual(client.deletedSandboxIds, ['generated-box-id']);
+  assert.equal(client.execCalls[0].sandboxId, 'generated-box-id');
+});
+
 await test('BoxLite environment validation fails closed and still deletes probe sandboxes', async () => {
   const client = new mod.FakeBoxLiteClient({
     execHandler: () => ({
@@ -408,6 +434,82 @@ await test('BoxLite environment validation fails closed and still deletes probe 
   assert.equal(result.status, 'failed');
   assert.match(result.error, /exec probe failed/);
   assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-probe-fail']);
+});
+
+await test('BoxLite environment validation keeps original failure when cleanup fails', async () => {
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: () => ({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'missing',
+      output: 'missing',
+      timedOut: false,
+    }),
+  });
+  client.deleteSandbox = async (id) => {
+    client.deletedSandboxIds.push(id);
+    throw new Error('delete failed');
+  };
+
+  const result = await mod.validateBoxLiteEnvironment({
+    taskId: 'task-boxlite-cleanup-fail',
+    client,
+    environment: {
+      environmentId: 'env-boxlite',
+      sourceKind: 'boxlite-image',
+      sourceRef: 'cap-boxlite-custom:v1',
+    },
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.match(result.error, /exec probe failed/);
+  assert.doesNotMatch(result.error, /delete failed/);
+  assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-cleanup-fail']);
+});
+
+await test('BoxLite environment validation classifies registry pull failures', async () => {
+  const cases = [
+    {
+      message:
+        "Failed to pull image '127.0.0.1:5000/cap:v1': error sending request for url (https://127.0.0.1:5000/v2/cap/manifests/v1)",
+      expected: /registry unreachable|registry transport|registry pull/,
+    },
+    {
+      message: 'denied: permission_denied: token does not match expected scopes',
+      expected: /registry authorization failed/,
+    },
+    {
+      message: 'server gave HTTP response to HTTPS client',
+      expected: /registry transport failed/,
+    },
+    {
+      message: 'no matching manifest for linux/arm64 in manifest list entries',
+      expected: /architecture or runtime mismatch/,
+    },
+  ];
+
+  for (const [index, item] of cases.entries()) {
+    const client = new mod.FakeBoxLiteClient();
+    client.createSandbox = async () => {
+      throw new Error(item.message);
+    };
+    const taskId = `task-boxlite-${index}`;
+
+    const result = await mod.validateBoxLiteEnvironment({
+      taskId,
+      client,
+      environment: {
+        environmentId: 'env-boxlite',
+        sourceKind: 'boxlite-image',
+        sourceRef: 'cap-boxlite-custom:v1',
+      },
+    });
+
+    assert.equal(result.status, 'failed');
+    assert.match(result.error, item.expected);
+    assert.match(result.probes.at(-1).output, item.expected);
+    assert.deepEqual(client.deletedSandboxIds, [`probe-${taskId}`]);
+  }
 });
 
 await test('provider exposes selected-run descriptors and internal BoxLite terminal only server-side', async () => {

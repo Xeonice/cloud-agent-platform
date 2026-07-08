@@ -852,6 +852,17 @@ export async function setDefaultSandboxEnvironment(
   );
 }
 
+/** `PATCH /sandbox-environments/:id/retire` — retire an environment from selection. */
+export async function retireSandboxEnvironment(
+  id: string,
+): Promise<SandboxEnvironmentResponse> {
+  return SandboxEnvironmentResponseSchema.parse(
+    await request(`/sandbox-environments/${encodeURIComponent(id)}/retire`, {
+      method: "PATCH",
+    }),
+  );
+}
+
 /** `GET /sandbox-environments/:id/validations` — validation history. */
 export async function listSandboxEnvironmentValidations(
   id: string,

@@ -398,6 +398,69 @@ test('resolveForTask rejects an explicit environment that is not ready or compat
   );
 });
 
+test('retire disables an environment, clears default, and preserves validation history', async () => {
+  const { service, rows, validations } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'failed',
+      isDefault: true,
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+  validations.push({
+    id: VALIDATION_A,
+    environmentId: ENV_A,
+    status: 'failed',
+    providerFamily: 'aio',
+    runtimeId: null,
+    sourceKind: 'aio-docker-image',
+    resolvedDigest: null,
+    resolvedChecksum: null,
+    probes: [{ name: 'create-sandbox', ok: false, output: 'No such image' }],
+    error: 'No such image',
+    contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    checkedAt: new Date('2026-07-01T04:00:00.000Z'),
+  });
+
+  const retired = await service.retire(ENV_A);
+
+  assert.equal(retired.status, 'disabled');
+  assert.equal(retired.isDefault, false);
+  assert.equal(retired.lastValidationId, VALIDATION_A);
+  assert.equal(retired.lastValidatedAt?.toISOString(), '2026-07-01T04:00:00.000Z');
+  assert.equal(rows.find((row) => row.id === ENV_A)?.status, 'disabled');
+  assert.equal(validations.length, 1);
+});
+
+test('retired environments are not resolved explicitly or as defaults', async () => {
+  const { service } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'disabled',
+      isDefault: true,
+      providerFamilies: ['aio'],
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+
+  const implicit = await service.resolveForTask({
+    requestedEnvironmentId: null,
+    runtimeId: 'codex',
+    providerFamily: 'aio',
+  });
+  assert.equal(implicit, null);
+
+  await assert.rejects(
+    () =>
+      service.resolveForTask({
+        requestedEnvironmentId: ENV_A,
+        runtimeId: 'codex',
+        providerFamily: 'aio',
+      }),
+    (err: unknown) => err instanceof BadRequestException,
+  );
+});
+
 test('markCustomEnvironmentsStale only marks ready rows with an old contract version', async () => {
   const { service, rows } = buildService([
     makeEnvironment({
