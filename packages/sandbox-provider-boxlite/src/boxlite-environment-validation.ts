@@ -25,6 +25,7 @@ export async function validateBoxLiteEnvironment(args: {
   const sandboxId = `probe-${taskId}`;
   const probes: SandboxPreflightProbeResult[] = [];
   const sourceKind = args.environment.sourceKind;
+  let cleanupSandboxId = sandboxId;
 
   try {
     const image = resolveBoxLiteValidationImage(args.environment);
@@ -38,6 +39,7 @@ export async function validateBoxLiteEnvironment(args: {
         sandboxEnvironmentSourceKind: args.environment.sourceKind,
       },
     });
+    cleanupSandboxId = sandbox.id;
     probes.push({
       name: 'create-sandbox',
       ok: true,
@@ -98,7 +100,9 @@ export async function validateBoxLiteEnvironment(args: {
       probes,
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = classifyBoxLiteValidationError(
+      err instanceof Error ? err.message : String(err),
+    );
     if (probes.length === 0 || probes.at(-1)?.ok !== false) {
       probes.push({ name: 'validation-error', ok: false, output: message });
     }
@@ -112,7 +116,7 @@ export async function validateBoxLiteEnvironment(args: {
       error: message,
     };
   } finally {
-    await args.client.deleteSandbox(sandboxId).catch(() => undefined);
+    await args.client.deleteSandbox(cleanupSandboxId).catch(() => undefined);
   }
 }
 
@@ -130,4 +134,73 @@ function resolveBoxLiteValidationImage(
   throw new Error(
     `BoxLite cannot validate environment source ${environment.sourceKind ?? 'unknown'}`,
   );
+}
+
+function classifyBoxLiteValidationError(message: string): string {
+  const safeMessage = redactSensitiveText(message);
+  const lower = safeMessage.toLowerCase();
+  if (
+    lower.includes('unauthorized') ||
+    lower.includes('authentication required') ||
+    lower.includes('permission_denied') ||
+    lower.includes('permission denied') ||
+    lower.includes('denied:') ||
+    lower.includes('http 401') ||
+    lower.includes('http 403')
+  ) {
+    return `BoxLite image registry authorization failed: ${safeMessage}`;
+  }
+  if (
+    lower.includes('server gave http response to https client') ||
+    lower.includes('http response to https') ||
+    (lower.includes('https://') && lower.includes('http://')) ||
+    lower.includes('tls') ||
+    lower.includes('certificate')
+  ) {
+    return `BoxLite image registry transport failed: ${safeMessage}`;
+  }
+  if (
+    lower.includes('no such image') ||
+    lower.includes('manifest unknown') ||
+    lower.includes('not found') ||
+    lower.includes('name unknown')
+  ) {
+    return `BoxLite image not found or inaccessible: ${safeMessage}`;
+  }
+  if (
+    lower.includes('no matching manifest') ||
+    lower.includes('platform') ||
+    lower.includes('architecture') ||
+    lower.includes('exec format error')
+  ) {
+    return `BoxLite image architecture or runtime mismatch: ${safeMessage}`;
+  }
+  if (
+    lower.includes('failed to pull image') ||
+    lower.includes('pull access denied') ||
+    lower.includes('error pulling image')
+  ) {
+    return `BoxLite image registry pull failed: ${safeMessage}`;
+  }
+  if (
+    lower.includes('connection refused') ||
+    lower.includes('timed out') ||
+    lower.includes('timeout') ||
+    lower.includes('network is unreachable') ||
+    lower.includes('no route to host') ||
+    lower.includes('lookup ') ||
+    lower.includes('dns') ||
+    lower.includes('error sending request')
+  ) {
+    return `BoxLite image registry unreachable: ${safeMessage}`;
+  }
+  return safeMessage;
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/(authorization:\s*bearer\s+)[^\s"']+/gi, '$1<redacted>')
+    .replace(/(bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, '$1<redacted>')
+    .replace(/(token=)[^&\s"']+/gi, '$1<redacted>')
+    .replace(/(password=)[^&\s"']+/gi, '$1<redacted>');
 }

@@ -368,6 +368,23 @@ export function setDefaultSandboxEnvironmentMutation(
   };
 }
 
+export function retireSandboxEnvironmentMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<SandboxEnvironmentResponse, Error, string> {
+  return {
+    mutationFn: (id) =>
+      isCapable("settings")
+        ? real.retireSandboxEnvironment(id)
+        : mock.mockRetireSandboxEnvironment(id),
+    onSuccess: (_result, id) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sandboxEnvironments });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.sandboxEnvironmentValidations(id),
+      });
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Save Codex credential (store-write today; real PUT once settings flips)
 // ---------------------------------------------------------------------------

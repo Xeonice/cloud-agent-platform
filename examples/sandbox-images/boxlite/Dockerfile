@@ -1,4 +1,6 @@
-ARG CAP_VERSION
+# Override this with the running CAP version, for example:
+#   --build-arg CAP_VERSION=v0.31.0
+ARG CAP_VERSION=v0.0.0
 FROM ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}
 
 USER root

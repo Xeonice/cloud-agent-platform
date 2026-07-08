@@ -32,11 +32,12 @@ function requestFor(userId: string | null): AuthenticatedRequest {
 
 function buildController(): {
   controller: SandboxEnvironmentsController;
-  calls: { create: CreateSandboxEnvironmentRequest[]; list: number };
+  calls: { create: CreateSandboxEnvironmentRequest[]; list: number; retire: string[] };
 } {
   const calls = {
     create: [] as CreateSandboxEnvironmentRequest[],
     list: 0,
+    retire: [] as string[],
   };
   const environments = {
     async list() {
@@ -50,6 +51,22 @@ function buildController(): {
         name: input.name,
         status: 'draft',
         source: input.source,
+        compatibility: { providerFamilies: ['aio'] },
+        isDefault: false,
+        lastValidationId: null,
+        lastValidatedAt: null,
+        contractVersion: 'sandbox-environment-v1',
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-07-01T00:00:00.000Z'),
+      };
+    },
+    async retire(id: string) {
+      calls.retire.push(id);
+      return {
+        id,
+        name: 'Retired image',
+        status: 'disabled',
+        source: { kind: 'aio-docker-image', image: 'cap/aio:latest' },
         compatibility: { providerFamilies: ['aio'] },
         isDefault: false,
         lastValidationId: null,
@@ -100,6 +117,11 @@ test('non-admin sessions are rejected before sandbox environment mutations', asy
     (err: unknown) => err instanceof ForbiddenException,
   );
   assert.equal(calls.create.length, 0);
+  await assert.rejects(
+    () => controller.retire(requestFor(MEMBER_USER_ID), 'env-1'),
+    (err: unknown) => err instanceof ForbiddenException,
+  );
+  assert.deepEqual(calls.retire, []);
 });
 
 test('admin sessions can create sandbox environments', async () => {
@@ -113,4 +135,13 @@ test('admin sessions can create sandbox environments', async () => {
 
   assert.equal(response.name, 'AIO image');
   assert.deepEqual(calls.create, [body]);
+});
+
+test('admin sessions can retire sandbox environments', async () => {
+  const { controller, calls } = buildController();
+
+  const response = await controller.retire(requestFor(ADMIN_USER_ID), 'env-1');
+
+  assert.equal(response.status, 'disabled');
+  assert.deepEqual(calls.retire, ['env-1']);
 });

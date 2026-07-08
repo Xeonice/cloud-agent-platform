@@ -22,6 +22,7 @@ vi.mock("./real", () => ({
     validation: { id: "validation-real" },
   })),
   setDefaultSandboxEnvironment: vi.fn(async (id) => ({ id, isDefault: true })),
+  retireSandboxEnvironment: vi.fn(async (id) => ({ id, status: "disabled" })),
 }));
 
 vi.mock("./mock", () => ({
@@ -41,6 +42,10 @@ vi.mock("./mock", () => ({
     id,
     isDefault: true,
   })),
+  mockRetireSandboxEnvironment: vi.fn(async (id) => ({
+    id,
+    status: "disabled",
+  })),
 }));
 
 import {
@@ -50,6 +55,7 @@ import {
 } from "./queries";
 import {
   createSandboxEnvironmentMutation,
+  retireSandboxEnvironmentMutation,
   setDefaultSandboxEnvironmentMutation,
   validateSandboxEnvironmentMutation,
 } from "./mutations";
@@ -164,6 +170,24 @@ describe("sandbox environment api seam", () => {
     });
     expect(client.invalidateQueries).toHaveBeenNthCalledWith(3, {
       queryKey: queryKeys.sandboxEnvironments,
+    });
+  });
+
+  it("retire mutation refreshes environment list and validation history", async () => {
+    flags.settings = true;
+    const client = queryClientStub();
+    const options = retireSandboxEnvironmentMutation(client);
+
+    await options.mutationFn!("env-1", {} as never);
+    options.onSuccess?.({} as never, "env-1", undefined, {} as never);
+
+    expect(real.retireSandboxEnvironment).toHaveBeenCalledWith("env-1");
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(1, {
+      queryKey: queryKeys.sandboxEnvironments,
+    });
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(2, {
+      queryKey: queryKeys.sandboxEnvironmentValidations("env-1"),
     });
   });
 });

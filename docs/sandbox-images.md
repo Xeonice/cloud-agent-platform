@@ -30,14 +30,16 @@ CAP_VERSION="$(curl -fsS http://<api-host>:<api-port>/version | jq -r .version)"
 For AIO:
 
 ```dockerfile
-ARG CAP_VERSION
+# Always override CAP_VERSION with the running CAP version when building.
+ARG CAP_VERSION=v0.0.0
 FROM ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}
 ```
 
 For BoxLite:
 
 ```dockerfile
-ARG CAP_VERSION
+# Always override CAP_VERSION with the running CAP version when building.
+ARG CAP_VERSION=v0.0.0
 FROM ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}
 ```
 
@@ -96,6 +98,61 @@ docker buildx build \
 
 For private registries, CAP does not broker registry credentials. Ensure the
 Docker host or BoxLite host can pull the image before registering it.
+
+Registry operations stay outside CAP:
+
+- For GHCR, publish with a token that has `write:packages`; grant read access to
+  the package for the Docker or BoxLite host that will pull it.
+- For private registries, configure credentials on the provider host
+  (`docker login`, node-local credential helper, or BoxLite registry config)
+  before validating the image in CAP.
+- BoxLite must be able to reach the registry from the BoxLite host. Prefer HTTPS.
+  If an internal registry is HTTP-only or uses a private CA, configure BoxLite or
+  the host registry stack for that insecure registry or CA before validation.
+- CAP stores the non-secret image reference and validation result; it does not
+  upload images, store registry tokens, or make a private registry reachable.
+
+## Advanced: BoxLite Deployment-Default Rootfs
+
+Most BoxLite deployments should use the managed `boxlite-image` path above:
+publish a registry image, register it in `镜像管理`, validate it, and let users
+choose it. A local rootfs is only a deployment-level server default for operators
+who intentionally manage BoxLite rootfs assets outside the image library.
+
+The rootfs path is not registered in `/images`, does not appear in the user image
+selectors, and is not a replacement for per-user or per-task custom images. Use
+it only when the whole deployment should boot BoxLite tasks from the same local
+rootfs before any user-level override is selected.
+
+Example OCI export flow:
+
+```bash
+export CAP_VERSION=v0.31.0
+export ROOTFS=/Users/zlyan/WorkProject/cap-release/assets/boxlite/cap-boxlite-sandbox-custom/${CAP_VERSION}-1/linux-arm64/oci
+
+docker buildx create --name cap-oci-builder --driver docker-container --use
+
+docker buildx build \
+  --builder cap-oci-builder \
+  --platform linux/arm64 \
+  --build-arg CAP_VERSION="$CAP_VERSION" \
+  --output type=oci,dest=/tmp/cap-boxlite-custom.oci.tar \
+  ./examples/sandbox-images/boxlite
+
+mkdir -p "$ROOTFS"
+tar -C "$ROOTFS" -xf /tmp/cap-boxlite-custom.oci.tar
+```
+
+Then set the deployment environment and restart the API/web stack:
+
+```bash
+BOXLITE_ROOTFS_PATH=/Users/zlyan/WorkProject/cap-release/assets/boxlite/cap-boxlite-sandbox-custom/v0.31.0-1/linux-arm64/oci
+```
+
+After restart, verify the provider path directly by creating a short task,
+starting it, running `sh -lc 'pwd && command -v git && command -v codex'`, and
+deleting the sandbox. If the deployment also exposes custom images through the
+image library, still validate each registry image from `镜像管理`.
 
 ## Register In CAP
 
@@ -166,11 +223,16 @@ Only `ready` images are selectable for new tasks and default-image settings.
   Common causes are an unreachable private registry, missing `git`, missing
   `codex`/`claude`, an overridden entrypoint, or an image built for the wrong
   architecture.
+- Validation errors that mention registry authorization usually mean the
+  package is private or the provider host lacks read permission. Transport errors
+  usually mean the BoxLite host cannot negotiate HTTPS, does not trust the
+  registry CA, or has not been configured for an HTTP-only insecure registry.
 
 ## Template Example
 
 ```dockerfile
-ARG CAP_VERSION
+# Always override CAP_VERSION with the running CAP version when building.
+ARG CAP_VERSION=v0.0.0
 FROM ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}
 
 USER root

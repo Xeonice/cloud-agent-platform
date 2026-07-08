@@ -67,6 +67,16 @@ export class SandboxEnvironmentsController {
     return this.environments.setDefault(id);
   }
 
+  @Patch(':id/retire')
+  @HttpCode(HttpStatus.OK)
+  async retire(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+  ): Promise<SandboxEnvironmentResponse> {
+    await this.requireAdmin(req);
+    return this.environments.retire(id);
+  }
+
   @Get(':id/validations')
   async validations(
     @Req() req: AuthenticatedRequest,
