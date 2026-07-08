@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.32.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.32.1...v0.32.2) (2026-07-08)
+
+
+### Bug Fixes
+
+* **sandbox:** clarify admin image registration ([944e67a](https://github.com/Xeonice/cloud-agent-platform/commit/944e67aeb1e9fbdd6d2bed3b5cb63a5fcdb2b9ba))
+* **sandbox:** clarify admin image registration ([93ac18f](https://github.com/Xeonice/cloud-agent-platform/commit/93ac18f6ce52b20de5d7c4792752515d6f09be2f))
+
 ## [0.32.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.32.0...v0.32.1) (2026-07-08)
 
 
