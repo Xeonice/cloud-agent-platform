@@ -8,16 +8,25 @@ import {
   SandboxEnvironmentsService,
 } from './sandbox-environments.service';
 import type { SandboxEnvironmentValidationRunner } from './sandbox-environments.validator';
+import { decryptStored, encryptToStored } from '../settings/secret-storage';
 
 const ENV_A = '00000000-0000-4000-a000-000000000301';
 const ENV_B = '00000000-0000-4000-a000-000000000302';
 const VALIDATION_A = '00000000-0000-4000-a000-000000000401';
+const TEST_ENV: NodeJS.ProcessEnv = { CODEX_CRED_ENC_KEY: '0'.repeat(64) };
+process.env.CODEX_CRED_ENC_KEY = TEST_ENV.CODEX_CRED_ENC_KEY;
+
+function encryptForTest(value: string): string {
+  return encryptToStored(value, TEST_ENV);
+}
 
 interface FakeEnvironmentRow {
   id: string;
   name: string;
   source: Record<string, unknown>;
   status: string;
+  envVars: Record<string, unknown>;
+  secretEnvVars: Record<string, unknown>;
   providerFamilies: string[];
   runtimeIds: string[];
   isDefault: boolean;
@@ -49,6 +58,8 @@ function makeEnvironment(overrides: Partial<FakeEnvironmentRow>): FakeEnvironmen
     name: overrides.name ?? 'Base image',
     source: overrides.source ?? { kind: 'aio-docker-image', image: 'cap/base:latest' },
     status: overrides.status ?? 'draft',
+    envVars: overrides.envVars ?? {},
+    secretEnvVars: overrides.secretEnvVars ?? {},
     providerFamilies: overrides.providerFamilies ?? ['aio'],
     runtimeIds: overrides.runtimeIds ?? [],
     isDefault: overrides.isDefault ?? false,
@@ -118,6 +129,8 @@ function buildService(
           name: string;
           source: Record<string, unknown>;
           status: string;
+          envVars?: Record<string, unknown>;
+          secretEnvVars?: Record<string, unknown>;
           providerFamilies: string[];
           runtimeIds: string[];
           isDefault: boolean;
@@ -130,6 +143,8 @@ function buildService(
           name: args.data.name,
           source: args.data.source,
           status: args.data.status,
+          envVars: args.data.envVars ?? {},
+          secretEnvVars: args.data.secretEnvVars ?? {},
           providerFamilies: args.data.providerFamilies,
           runtimeIds: args.data.runtimeIds,
           isDefault: args.data.isDefault,
@@ -230,6 +245,47 @@ test('create accepts registry image references and derives provider compatibilit
   assert.deepEqual(created.compatibility.providerFamilies, ['aio']);
   assert.equal(rows[0]?.source.kind, 'aio-docker-image');
   assert.equal(rows[0]?.source.image, 'cap/aio:latest');
+});
+
+test('create stores image parameters and redacts secret values on reads', async () => {
+  const { service, rows } = buildService();
+
+  const created = await service.create({
+    name: 'BoxLite gcode',
+    source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+    parameters: [
+      { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v5' },
+      { name: 'GCODE_TOKEN', value: 'gcode-secret', secret: true },
+    ],
+  });
+
+  assert.deepEqual(created.parameters, [
+    { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v5', secret: false },
+    { name: 'GCODE_TOKEN', secret: true },
+  ]);
+  assert.equal(rows[0]?.envVars.GCODE_API_BASE_URL, 'https://code.example/api/v5');
+  assert.notEqual(rows[0]?.secretEnvVars.GCODE_TOKEN, 'gcode-secret');
+  assert.equal(
+    decryptStored(String(rows[0]?.secretEnvVars.GCODE_TOKEN), TEST_ENV),
+    'gcode-secret',
+  );
+});
+
+test('create rejects duplicate image parameter names', async () => {
+  const { service } = buildService();
+
+  await assert.rejects(
+    () =>
+      service.create({
+        name: 'bad params',
+        source: { kind: 'aio-docker-image', image: 'cap/aio:latest' },
+        parameters: [
+          { name: 'TOKEN', value: 'a' },
+          { name: 'TOKEN', value: 'b', secret: true },
+        ],
+      }),
+    (err: unknown) => err instanceof BadRequestException,
+  );
 });
 
 test('create derives provider compatibility from BoxLite image and moves the default pointer', async () => {
@@ -390,6 +446,47 @@ test('resolveForTask returns a compatible ready default and ignores incompatible
     providerFamily: 'boxlite',
   });
   assert.equal(missing, null);
+});
+
+test('resolveImageParameterProfileForTask returns selected image params without exposing them in metadata', async () => {
+  const { service } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      isDefault: true,
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+      providerFamilies: ['boxlite'],
+      runtimeIds: ['codex'],
+      envVars: { GCODE_API_BASE_URL: 'https://code.example/api/v5' },
+      secretEnvVars: { GCODE_TOKEN: encryptForTest('gcode-secret') },
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+
+  const resolved = await service.resolveForTask({
+    requestedEnvironmentId: null,
+    runtimeId: 'codex',
+    providerFamily: 'boxlite',
+  });
+  assert.equal(JSON.stringify(resolved).includes('gcode-secret'), false);
+
+  assert.deepEqual(
+    await service.resolveImageParameterProfileForTask({
+      requestedEnvironmentId: null,
+      runtimeId: 'codex',
+      providerFamily: 'boxlite',
+    }),
+    {
+      parameters: [
+        {
+          name: 'GCODE_API_BASE_URL',
+          value: 'https://code.example/api/v5',
+          secret: false,
+        },
+        { name: 'GCODE_TOKEN', value: 'gcode-secret', secret: true },
+      ],
+    },
+  );
 });
 
 test('resolveForTask returns null when no managed environment is selected or defaulted', async () => {

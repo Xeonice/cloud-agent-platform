@@ -36,6 +36,7 @@ import {
   type BoxLiteProviderEnv,
 } from './boxlite-config.js';
 import type {
+  BoxLitePreStopCleanup,
   BoxLiteRuntimePreflight,
   BoxLiteRuntimeSetup,
 } from './boxlite-hooks.js';
@@ -58,6 +59,7 @@ export interface BoxLiteProviderOptions {
   readonly client?: BoxLiteClient;
   readonly preflight?: BoxLiteRuntimePreflight;
   readonly runtimeSetup?: BoxLiteRuntimeSetup;
+  readonly preStopCleanup?: BoxLitePreStopCleanup;
   readonly resolveEnvironment?: (args: {
     readonly taskId: string;
     readonly runtimeId?: string | null;
@@ -102,6 +104,7 @@ export class BoxLiteSandboxProvider<
   private readonly client: BoxLiteClient;
   private readonly preflight?: BoxLiteRuntimePreflight;
   private readonly runtimeSetup?: BoxLiteRuntimeSetup;
+  private readonly preStopCleanup?: BoxLitePreStopCleanup;
   private readonly resolveEnvironmentHook?: BoxLiteProviderOptions['resolveEnvironment'];
   private readonly runs = new Map<string, BoxLiteProvisionedRun>();
 
@@ -118,6 +121,7 @@ export class BoxLiteSandboxProvider<
       });
     this.preflight = options.preflight;
     this.runtimeSetup = options.runtimeSetup;
+    this.preStopCleanup = options.preStopCleanup;
     this.resolveEnvironmentHook = options.resolveEnvironment;
     assertClientSupportsCapabilities(this.client, options.config.capabilities);
   }
@@ -213,7 +217,22 @@ export class BoxLiteSandboxProvider<
   }
 
   async teardownSandbox(taskId: string): Promise<void> {
-    const sandboxId = this.runs.get(taskId)?.sandbox.id ?? this.sandboxIdForTask(taskId);
+    const run =
+      this.runs.get(taskId) ??
+      (await this.resolveExistingRun(taskId).catch(() => null));
+    const sandboxId = run?.sandbox.id ?? this.sandboxIdForTask(taskId);
+    if (run && this.preStopCleanup) {
+      try {
+        await this.preStopCleanup({
+          taskId,
+          sandbox: run.sandbox,
+          executor: this.createCommandExecutor(run.sandbox.id),
+          workspacePath: this.config.workspacePath,
+        });
+      } catch {
+        // Cleanup is best-effort; deletion must still proceed.
+      }
+    }
     await this.client.deleteSandbox(sandboxId);
     this.runs.delete(taskId);
   }

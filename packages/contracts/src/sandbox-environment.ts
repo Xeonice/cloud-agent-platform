@@ -55,6 +55,29 @@ export type SandboxEnvironmentCompatibility = z.infer<
   typeof SandboxEnvironmentCompatibilitySchema
 >;
 
+export const SandboxEnvironmentParameterNameSchema = z
+  .string()
+  .min(1)
+  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, 'must be a valid environment variable name');
+
+export const SandboxEnvironmentParameterInputSchema = z.object({
+  name: SandboxEnvironmentParameterNameSchema,
+  value: z.string(),
+  secret: z.boolean().optional(),
+});
+export type SandboxEnvironmentParameterInput = z.infer<
+  typeof SandboxEnvironmentParameterInputSchema
+>;
+
+export const SandboxEnvironmentParameterSchema = z.object({
+  name: SandboxEnvironmentParameterNameSchema,
+  value: z.string().optional(),
+  secret: z.boolean(),
+});
+export type SandboxEnvironmentParameter = z.infer<
+  typeof SandboxEnvironmentParameterSchema
+>;
+
 export const SandboxEnvironmentValidationProbeSchema = z.object({
   name: z.string().min(1),
   ok: z.boolean(),
@@ -89,6 +112,7 @@ export const SandboxEnvironmentSchema = z.object({
   status: SandboxEnvironmentStatusSchema,
   source: SandboxEnvironmentSourceSchema,
   compatibility: SandboxEnvironmentCompatibilitySchema,
+  parameters: z.array(SandboxEnvironmentParameterSchema).optional(),
   isDefault: z.boolean(),
   lastValidationId: z.string().uuid().nullable().optional(),
   lastValidatedAt: z.coerce.date().nullable().optional(),
@@ -114,6 +138,7 @@ export const CreateSandboxEnvironmentRequestSchema = z.object({
   name: z.string().min(1),
   source: SandboxEnvironmentSourceSchema,
   runtimeIds: z.array(z.string().min(1)).optional(),
+  parameters: z.array(SandboxEnvironmentParameterInputSchema).optional(),
   isDefault: z.boolean().optional(),
 });
 export type CreateSandboxEnvironmentRequest = z.infer<

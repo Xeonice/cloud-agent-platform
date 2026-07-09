@@ -4,6 +4,7 @@ import type {
   SandboxResolvedEnvironmentMetadata,
   SandboxTranscriptSourceBase,
 } from '@cap/sandbox-core';
+import type { SandboxHostImageParameterProfile } from './image-parameters.js';
 
 export interface SandboxHostLogger {
   debug?(message: string): void;
@@ -15,6 +16,11 @@ export interface SandboxHostProvisionLookup<TCloneSpec> {
   getCloneSpec(taskId: string): Promise<TCloneSpec | null>;
   getTaskPrompt(taskId: string): Promise<string | null | undefined>;
   getTaskSkills?(taskId: string): Promise<readonly string[]>;
+  getTaskImageParameterProfile?(
+    taskId: string,
+    providerFamily: SandboxEnvironmentProviderFamily,
+    runtimeId?: string | null,
+  ): Promise<SandboxHostImageParameterProfile | null | undefined>;
   getResolvedEnvironment?(
     taskId: string,
     providerFamily: SandboxEnvironmentProviderFamily,

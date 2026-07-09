@@ -31,6 +31,10 @@ export type BoxLiteRuntimeSetup = (
   context: BoxLiteRuntimeSetupContext,
 ) => Promise<void> | void;
 
+export type BoxLitePreStopCleanup = (
+  context: BoxLiteRuntimeSetupContext,
+) => Promise<void> | void;
+
 export interface BoxLiteRuntimePreflightOptions {
   readonly requiredTools: readonly string[];
   readonly workspacePath?: string;

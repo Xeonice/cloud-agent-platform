@@ -14,6 +14,11 @@ For GHCR, publish with `write:packages` and grant the provider host read access.
 For internal HTTP-only registries or private CAs, configure the Docker or
 BoxLite host before CAP validation.
 
+Do not bake user, forge, or service tokens into these images. If a preinstalled
+CLI needs task-time parameters, configure them on the image record in CAP Image
+Management and wrap the CLI so it sources `/home/gem/.cap/image-env` when the
+file exists.
+
 ```bash
 export CAP_VERSION=v0.27.1
 
@@ -27,11 +32,6 @@ docker push registry.example.com/cap-aio-sandbox-custom:"$CAP_VERSION"
 
 Use `./examples/sandbox-images/boxlite` for BoxLite images and replace the tag
 with your registry, namespace, and CAP version.
-
-These templates are for registry image references registered in CAP Image
-Management. BoxLite local rootfs assets are a deployment-level default configured
-with `BOXLITE_ROOTFS_PATH`; they are not image-library records and are documented
-in the full guide.
 
 For the full build, validation, rollout, and maintenance workflow, see
 [`docs/sandbox-images.md`](../../docs/sandbox-images.md) or

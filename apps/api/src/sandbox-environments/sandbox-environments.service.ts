@@ -11,6 +11,8 @@ import {
   SandboxEnvironmentValidationSchema,
   type CreateSandboxEnvironmentRequest,
   type SandboxEnvironment,
+  type SandboxEnvironmentParameter,
+  type SandboxEnvironmentParameterInput,
   type SandboxEnvironmentSource,
   type SandboxEnvironmentValidation,
 } from '@cap/contracts';
@@ -22,10 +24,12 @@ import {
   sourceChecksum,
   sourceDigest,
   type ResolvedSandboxEnvironment,
+  type SandboxHostImageParameterProfile,
   type SandboxEnvironmentProviderFamily,
 } from '@cap/sandbox';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { decryptStored, encryptToStored } from '../settings/secret-storage';
 import {
   DefaultSandboxEnvironmentValidationRunner,
   SANDBOX_ENVIRONMENT_VALIDATION_RUNNER,
@@ -56,6 +60,7 @@ export class SandboxEnvironmentsService {
     const source = SandboxEnvironmentSourceSchema.parse(input.source);
     const providerFamilies = [...providerFamiliesForEnvironmentSource(source)];
     const runtimeIds = input.runtimeIds ?? [];
+    const parameters = this.encodeParameters(input.parameters ?? []);
 
     return this.prisma.$transaction(async (tx) => {
       if (input.isDefault) {
@@ -69,6 +74,8 @@ export class SandboxEnvironmentsService {
           name: input.name,
           source: source as unknown as Prisma.InputJsonObject,
           status: 'draft',
+          envVars: parameters.plain as unknown as Prisma.InputJsonObject,
+          secretEnvVars: parameters.secret as unknown as Prisma.InputJsonObject,
           providerFamilies,
           runtimeIds,
           isDefault: input.isDefault ?? false,
@@ -247,6 +254,53 @@ export class SandboxEnvironmentsService {
     });
   }
 
+  async resolveImageParameterProfileForTask(args: {
+    readonly requestedEnvironmentId?: string | null;
+    readonly runtimeId: string;
+    readonly providerFamily: SandboxEnvironmentProviderFamily;
+  }): Promise<SandboxHostImageParameterProfile | null> {
+    const row = args.requestedEnvironmentId
+      ? await this.prisma.sandboxEnvironment.findUnique({
+          where: { id: args.requestedEnvironmentId },
+        })
+      : await this.findDefaultEnvironment(args);
+    if (!row) return null;
+
+    try {
+      assertEnvironmentSelectable({
+        environment: {
+          id: row.id,
+          status: row.status as never,
+          compatibility: {
+            providerFamilies: row.providerFamilies as SandboxEnvironmentProviderFamily[],
+            runtimeIds: row.runtimeIds.length > 0 ? row.runtimeIds : undefined,
+          },
+        },
+        providerFamily: args.providerFamily,
+        runtimeId: args.runtimeId,
+      });
+    } catch {
+      return null;
+    }
+
+    const plain = readStringRecord(row.envVars);
+    const secretStored = readStringRecord(row.secretEnvVars);
+    const parameters = [
+      ...Object.entries(plain).map(([name, value]) => ({
+        name,
+        value,
+        secret: false,
+      })),
+      ...Object.entries(secretStored)
+        .map(([name, stored]) => {
+          const value = decryptStored(stored);
+          return value === null ? null : { name, value, secret: true };
+        })
+        .filter((entry): entry is { name: string; value: string; secret: true } => entry !== null),
+    ].sort((a, b) => a.name.localeCompare(b.name));
+    return parameters.length > 0 ? { parameters } : null;
+  }
+
   async markCustomEnvironmentsStale(contractVersion: string): Promise<number> {
     const result = await this.prisma.sandboxEnvironment.updateMany({
       where: {
@@ -331,6 +385,8 @@ export class SandboxEnvironmentsService {
     createdAt: Date;
     updatedAt: Date;
     validations?: readonly { checkedAt: Date }[];
+    envVars?: Prisma.JsonValue;
+    secretEnvVars?: Prisma.JsonValue;
   }): SandboxEnvironment {
     return SandboxEnvironmentResponseSchema.parse({
       id: row.id,
@@ -341,6 +397,7 @@ export class SandboxEnvironmentsService {
         providerFamilies: row.providerFamilies,
         runtimeIds: row.runtimeIds.length > 0 ? row.runtimeIds : undefined,
       },
+      parameters: this.toParameterDescriptors(row.envVars, row.secretEnvVars),
       isDefault: row.isDefault,
       lastValidationId: row.lastValidationId,
       lastValidatedAt: row.validations?.[0]?.checkedAt ?? null,
@@ -383,6 +440,56 @@ export class SandboxEnvironmentsService {
   private parseSource(raw: Prisma.JsonValue): SandboxEnvironmentSource {
     return SandboxEnvironmentSourceSchema.parse(raw);
   }
+
+  private encodeParameters(
+    parameters: readonly SandboxEnvironmentParameterInput[],
+  ): { plain: Record<string, string>; secret: Record<string, string> } {
+    const plain: Record<string, string> = {};
+    const secret: Record<string, string> = {};
+    const seen = new Set<string>();
+    for (const parameter of parameters) {
+      if (seen.has(parameter.name)) {
+        throw new BadRequestException({
+          error: 'sandbox_environment_duplicate_parameter',
+          message: `Duplicate image parameter: ${parameter.name}`,
+        });
+      }
+      seen.add(parameter.name);
+      if (parameter.secret) {
+        secret[parameter.name] = encryptToStored(parameter.value);
+      } else {
+        plain[parameter.name] = parameter.value;
+      }
+    }
+    return { plain, secret };
+  }
+
+  private toParameterDescriptors(
+    plainRaw: Prisma.JsonValue | undefined,
+    secretRaw: Prisma.JsonValue | undefined,
+  ): SandboxEnvironmentParameter[] {
+    const plain = readStringRecord(plainRaw);
+    const secret = readStringRecord(secretRaw);
+    return [
+      ...Object.entries(plain).map(([name, value]) => ({
+        name,
+        value,
+        secret: false,
+      })),
+      ...Object.keys(secret).map((name) => ({
+        name,
+        secret: true,
+      })),
+    ].sort((a, b) => a.name.localeCompare(b.name));
+  }
+}
+
+function readStringRecord(raw: Prisma.JsonValue | undefined): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const entries = Object.entries(raw).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string',
+  );
+  return Object.fromEntries(entries);
 }
 
 function latestValidationInclude() {

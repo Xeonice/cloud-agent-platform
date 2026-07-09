@@ -3,6 +3,7 @@ import { Injectable, Optional } from '@nestjs/common';
 import { DEFAULT_TASK_RUNTIME } from '@cap/contracts';
 import type {
   SandboxEnvironmentProviderFamily,
+  SandboxHostImageParameterProfile,
   SandboxResolvedEnvironmentMetadata,
 } from '@cap/sandbox';
 import { PrismaService } from '../prisma/prisma.service';
@@ -104,6 +105,27 @@ export class PrismaProvisionLookup implements ProvisionLookup {
       select: { executionMode: true },
     });
     return task?.executionMode ?? null;
+  }
+
+  async getTaskImageParameterProfile(
+    taskId: string,
+    providerFamily: SandboxEnvironmentProviderFamily,
+    runtimeId?: string | null,
+  ): Promise<SandboxHostImageParameterProfile | null> {
+    if (!this.sandboxEnvironments) return null;
+    const task = await this.prisma.task.findUnique({
+      where: { id: taskId },
+      select: {
+        runtime: true,
+        sandboxEnvironmentId: true,
+      },
+    });
+    if (!task) return null;
+    return this.sandboxEnvironments.resolveImageParameterProfileForTask({
+      requestedEnvironmentId: task.sandboxEnvironmentId ?? null,
+      runtimeId: runtimeId ?? task.runtime ?? DEFAULT_TASK_RUNTIME,
+      providerFamily,
+    });
   }
 
   async getResolvedEnvironment(
