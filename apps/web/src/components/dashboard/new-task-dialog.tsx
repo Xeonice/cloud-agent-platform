@@ -36,8 +36,12 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 
-import type { Repo, SandboxEnvironment } from "@cap/contracts";
-import { createScheduleMutation, createTaskMutation } from "@/lib/api/mutations";
+import type { Repo, SandboxEnvironment, ScheduleResponse } from "@cap/contracts";
+import {
+  createScheduleMutation,
+  createTaskMutation,
+  updateScheduleMutation,
+} from "@/lib/api/mutations";
 import {
   runtimesQuery,
   sandboxEnvironmentsQuery,
@@ -51,6 +55,7 @@ import {
   DEFAULT_RECURRENCE_TIMEZONE,
   ENVIRONMENT_DEFAULT,
   ENVIRONMENT_SERVER_DEFAULT,
+  scheduleFormFromSchedule,
   type RecurrenceFormKind,
   type ScheduleFormState,
   type TaskTemplateFormState,
@@ -301,6 +306,10 @@ export interface NewTaskDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Importable/known repos (the form is restricted to these). */
   repos: readonly Repo[];
+  /** Existing schedule to edit. Omit for normal create-task/create-schedule mode. */
+  scheduleToEdit?: ScheduleResponse | null;
+  /** Called after an existing schedule is saved. */
+  onScheduleSaved?: (schedule: ScheduleResponse) => void;
 }
 
 /** Resolve a repo's display full-name (`owner/name` slug from gitSource, or name). */
@@ -321,11 +330,19 @@ export function environmentCompatibleWithRuntime(
 }
 
 /** The new-task dialog. */
-export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps) {
+export function NewTaskDialog({
+  open,
+  onOpenChange,
+  repos,
+  scheduleToEdit = null,
+  onScheduleSaved,
+}: NewTaskDialogProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const mutation = useMutation(createTaskMutation(queryClient));
   const scheduleMutation = useMutation(createScheduleMutation(queryClient));
+  const updateMutation = useMutation(updateScheduleMutation(queryClient));
+  const isEditingSchedule = scheduleToEdit !== null;
 
   // Per-runtime readiness (add-claude-code-runtime). Booleans only — never a
   // secret. While the read is in flight `data` is undefined; we treat an UNKNOWN
@@ -376,7 +393,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   const [mode, setMode] = React.useState<"once" | "repeated">("once");
   const [scheduleName, setScheduleName] = React.useState("");
   const [recurrenceKind, setRecurrenceKind] =
-    React.useState<Exclude<RecurrenceFormKind, "custom">>("weekdays");
+    React.useState<RecurrenceFormKind>("weekdays");
   const [recurrenceTime, setRecurrenceTime] = React.useState(DEFAULT_RECURRENCE_TIME);
   const [timezone, setTimezone] = React.useState(DEFAULT_RECURRENCE_TIMEZONE);
   const [weekday, setWeekday] = React.useState(1);
@@ -391,9 +408,34 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   // `mutation.reset` is reference-stable across renders (TanStack Query v5).
   const resetMutation = mutation.reset;
   const resetScheduleMutation = scheduleMutation.reset;
+  const resetUpdateMutation = updateMutation.reset;
   React.useEffect(() => {
     if (!open) return;
     setCreatedTaskId(null);
+    resetMutation();
+    resetScheduleMutation();
+    resetUpdateMutation();
+    if (scheduleToEdit) {
+      const form = scheduleFormFromSchedule(scheduleToEdit, DEFAULT_RUNTIME);
+      setRepoId(form.repoId);
+      setBranch(form.branch || "main");
+      setStrategy(form.strategy || STRATEGIES[0]);
+      setSkills(form.skills);
+      setPrompt(form.prompt);
+      setRuntime(form.runtime as RuntimeId);
+      setSandboxEnvironmentId(form.sandboxEnvironmentId);
+      setIdleTimeoutMs(form.idleTimeoutMs);
+      setDeadlineMs(form.deadlineMs);
+      setMode("repeated");
+      setScheduleName(form.name);
+      setRecurrenceKind(form.recurrenceKind);
+      setRecurrenceTime(form.recurrenceTime);
+      setTimezone(form.timezone);
+      setWeekday(form.weekday);
+      setDayOfMonth(form.dayOfMonth);
+      setOverlapPolicy(form.overlapPolicy);
+      return;
+    }
     setPrompt("");
     setSkills([]);
     setRuntime(DEFAULT_RUNTIME);
@@ -408,9 +450,13 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     setWeekday(1);
     setDayOfMonth(1);
     setOverlapPolicy("skip");
-    resetMutation();
-    resetScheduleMutation();
-  }, [open, resetMutation, resetScheduleMutation]);
+  }, [
+    open,
+    resetMutation,
+    resetScheduleMutation,
+    resetUpdateMutation,
+    scheduleToEdit,
+  ]);
 
   // Keep the selection on a READY runtime: if the currently-selected runtime
   // reports un-ready once readiness resolves (e.g. the Claude token was removed),
@@ -469,13 +515,15 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
 
   // When the selected repo changes, reset the branch to that repo's default.
   React.useEffect(() => {
+    if (isEditingSchedule) return;
     setBranch(defaultBranch);
-  }, [defaultBranch]);
+  }, [defaultBranch, isEditingSchedule]);
 
   const branchOptions = React.useMemo(() => {
     const set = new Set<string>([defaultBranch]);
+    if (branch) set.add(branch);
     return [...set];
-  }, [defaultBranch]);
+  }, [defaultBranch, branch]);
 
   const charCount = [...prompt.trim()].length;
   const commandLines = buildCommandPreview({
@@ -492,11 +540,18 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   });
 
   const createdTask = mutation.data;
+  const showScheduleFields = isEditingSchedule || mode === "repeated";
 
   function toggleSkill(id: string) {
     setSkills((cur) =>
       cur.includes(id) ? cur.filter((s) => s !== id) : [...cur, id],
     );
+  }
+
+  function handleRepoChange(nextRepoId: string) {
+    setRepoId(nextRepoId);
+    const nextRepo = repos.find((repo) => repo.id === nextRepoId);
+    if (nextRepo) setBranch(nextRepo.defaultBranch ?? "main");
   }
 
   function currentTaskForm(): TaskTemplateFormState {
@@ -523,6 +578,35 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     if (accountDefaultUnavailable) return;
     const taskForm = currentTaskForm();
     const body: CreateTaskBody = buildTaskRequest(taskForm);
+    if (isEditingSchedule && scheduleToEdit) {
+      updateMutation.mutate(
+        {
+          id: scheduleToEdit.id,
+          body: buildSchedulePayload(
+            {
+              ...taskForm,
+              id: scheduleToEdit.id,
+              name: scheduleName,
+              recurrenceKind,
+              recurrenceTime,
+              timezone,
+              weekday,
+              dayOfMonth,
+              overlapPolicy,
+            },
+            scheduleToEdit,
+          ),
+        },
+        {
+          onSuccess: (schedule) => {
+            setState({ selectedRepo: repoId });
+            onScheduleSaved?.(schedule);
+            onOpenChange(false);
+          },
+        },
+      );
+      return;
+    }
     if (mode === "repeated") {
       scheduleMutation.mutate(
         buildSchedulePayload({
@@ -591,21 +675,23 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
         <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border bg-card p-5">
           <div>
             <span className="font-mono text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              新建任务
+              {isEditingSchedule ? "定时任务" : "新建任务"}
             </span>
             <DialogTitle
               id="new-task-title"
               className="mt-1 mb-1.5 text-xl font-semibold tracking-[-0.5px] text-ink"
             >
-              派发远端 Agent
+              {isEditingSchedule ? "编辑定时任务" : "派发远端 Agent"}
             </DialogTitle>
             <DialogDescription className="max-w-[620px] text-[13px] leading-[1.55] text-muted-foreground">
-              选择已导入仓库，写清任务意图，创建后从任务行进入实时 CLI。
+              {isEditingSchedule
+                ? "调整定时任务的仓库、重复规则和任务内容。"
+                : "选择已导入仓库，写清任务意图，创建后从任务行进入实时 CLI。"}
             </DialogDescription>
           </div>
           <button
             type="button"
-            aria-label="关闭新建任务"
+            aria-label={isEditingSchedule ? "关闭编辑定时任务" : "关闭新建任务"}
             onClick={() => onOpenChange(false)}
             className="grid size-8 place-items-center rounded-md bg-transparent text-2xl leading-none text-muted-foreground hover:bg-secondary hover:text-foreground"
           >
@@ -621,37 +707,39 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
         >
           {/* Left: form */}
           <div className="grid content-start gap-3.5">
-            <div className="grid gap-2">
-              <span className="text-[13px] font-medium text-foreground">执行方式</span>
-              <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card p-1">
-                <button
-                  type="button"
-                  onClick={() => setMode("once")}
-                  className={cn(
-                    "h-8 rounded-sm text-sm font-medium",
-                    mode === "once"
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-                  )}
-                >
-                  立即运行
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("repeated")}
-                  className={cn(
-                    "h-8 rounded-sm text-sm font-medium",
-                    mode === "repeated"
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-                  )}
-                >
-                  重复运行
-                </button>
+            {!isEditingSchedule ? (
+              <div className="grid gap-2">
+                <span className="text-[13px] font-medium text-foreground">执行方式</span>
+                <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card p-1">
+                  <button
+                    type="button"
+                    onClick={() => setMode("once")}
+                    className={cn(
+                      "h-8 rounded-sm text-sm font-medium",
+                      mode === "once"
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                    )}
+                  >
+                    立即运行
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode("repeated")}
+                    className={cn(
+                      "h-8 rounded-sm text-sm font-medium",
+                      mode === "repeated"
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                    )}
+                  >
+                    重复运行
+                  </button>
+                </div>
               </div>
-            </div>
+            ) : null}
 
-            {mode === "repeated" ? (
+            {showScheduleFields ? (
               <div className="grid gap-3 rounded-md border border-border bg-[#fafafa] p-3">
                 <div className="grid gap-2">
                   <label
@@ -678,13 +766,16 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
                     <Select
                       value={recurrenceKind}
                       onValueChange={(value) =>
-                        setRecurrenceKind(value as Exclude<RecurrenceFormKind, "custom">)
+                        setRecurrenceKind(value as RecurrenceFormKind)
                       }
                     >
                       <SelectTrigger id="modalRecurrenceKind" className="w-full">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
+                        {recurrenceKind === "custom" ? (
+                          <SelectItem value="custom">沿用当前重复规则</SelectItem>
+                        ) : null}
                         <SelectItem value="daily">每天</SelectItem>
                         <SelectItem value="weekdays">工作日</SelectItem>
                         <SelectItem value="weekly">每周</SelectItem>
@@ -692,20 +783,22 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid gap-2">
-                    <label
-                      htmlFor="modalRecurrenceTime"
-                      className="text-[13px] font-medium text-foreground"
-                    >
-                      触发时间
-                    </label>
-                    <Input
-                      id="modalRecurrenceTime"
-                      type="time"
-                      value={recurrenceTime}
-                      onChange={(event) => setRecurrenceTime(event.target.value)}
-                    />
-                  </div>
+                  {recurrenceKind !== "custom" ? (
+                    <div className="grid gap-2">
+                      <label
+                        htmlFor="modalRecurrenceTime"
+                        className="text-[13px] font-medium text-foreground"
+                      >
+                        触发时间
+                      </label>
+                      <Input
+                        id="modalRecurrenceTime"
+                        type="time"
+                        value={recurrenceTime}
+                        onChange={(event) => setRecurrenceTime(event.target.value)}
+                      />
+                    </div>
+                  ) : null}
                 </div>
                 {recurrenceKind === "weekly" ? (
                   <div className="grid gap-2">
@@ -760,20 +853,22 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
                   </div>
                 ) : null}
                 <div className="grid gap-3 min-[821px]:grid-cols-2">
-                  <div className="grid gap-2">
-                    <label
-                      htmlFor="modalTimezone"
-                      className="text-[13px] font-medium text-foreground"
-                    >
-                      时区
-                    </label>
-                    <Input
-                      id="modalTimezone"
-                      value={timezone}
-                      onChange={(event) => setTimezone(event.target.value)}
-                      placeholder="UTC"
-                    />
-                  </div>
+                  {recurrenceKind !== "custom" ? (
+                    <div className="grid gap-2">
+                      <label
+                        htmlFor="modalTimezone"
+                        className="text-[13px] font-medium text-foreground"
+                      >
+                        时区
+                      </label>
+                      <Input
+                        id="modalTimezone"
+                        value={timezone}
+                        onChange={(event) => setTimezone(event.target.value)}
+                        placeholder="UTC"
+                      />
+                    </div>
+                  ) : null}
                   <div className="grid gap-2">
                     <label
                       htmlFor="modalOverlapPolicy"
@@ -804,7 +899,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
               <label htmlFor="modalRepo" className="text-[13px] font-medium text-foreground">
                 仓库
               </label>
-              <Select value={repoId} onValueChange={setRepoId}>
+              <Select value={repoId} onValueChange={handleRepoChange}>
                 <SelectTrigger id="modalRepo" className="w-full">
                   <SelectValue placeholder="选择仓库" />
                 </SelectTrigger>
@@ -1081,9 +1176,12 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
               />
             ) : null}
 
-            {mutation.isError || scheduleMutation.isError ? (
+            {mutation.isError || scheduleMutation.isError || updateMutation.isError ? (
               <p className="text-xs text-danger" role="alert">
-                创建失败：{mutation.error?.message ?? scheduleMutation.error?.message}
+                {isEditingSchedule ? "保存失败" : "创建失败"}：
+                {mutation.error?.message ??
+                  scheduleMutation.error?.message ??
+                  updateMutation.error?.message}
               </p>
             ) : null}
 
@@ -1108,14 +1206,19 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
             disabled={
               mutation.isPending ||
               scheduleMutation.isPending ||
+              updateMutation.isPending ||
               prompt.trim().length === 0 ||
               accountDefaultUnavailable
             }
             className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
           >
-            {mutation.isPending || scheduleMutation.isPending
-              ? "创建中…"
-              : mode === "repeated"
+            {mutation.isPending || scheduleMutation.isPending || updateMutation.isPending
+              ? isEditingSchedule
+                ? "保存中…"
+                : "创建中…"
+              : isEditingSchedule
+                ? "保存定时任务"
+                : mode === "repeated"
                 ? "创建定时任务"
                 : "创建任务"}
           </button>

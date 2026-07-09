@@ -93,6 +93,7 @@ test('the spec covers EVERY /v1 route and nothing else (route↔registration dif
     '/v1/schedules/{id}',
     '/v1/schedules/{id}/pause',
     '/v1/schedules/{id}/resume',
+    '/v1/schedules/{id}/dispatch',
     '/v1/schedules/{id}/runs',
   ]) {
     assert.ok(paths.includes(expected), `document includes ${expected}`);

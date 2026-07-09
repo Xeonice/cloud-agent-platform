@@ -82,7 +82,7 @@ interface TaskScheduleUpdateManyArgs {
     id?: string;
     enabled?: boolean;
     claimToken?: string | null;
-    nextRunAt?: Date;
+    nextRunAt?: Date | null;
     OR?: ClaimUntilPredicate[];
   };
   data: Partial<ScheduleRow>;
@@ -171,7 +171,13 @@ class FakePrisma {
         if (where.id && row.id !== where.id) return false;
         if (where.enabled !== undefined && row.enabled !== where.enabled) return false;
         if (where.claimToken !== undefined && row.claimToken !== where.claimToken) return false;
-        if (where.nextRunAt && row.nextRunAt?.getTime() !== where.nextRunAt.getTime()) return false;
+        if (where.nextRunAt !== undefined) {
+          if (where.nextRunAt === null) {
+            if (row.nextRunAt !== null) return false;
+          } else if (row.nextRunAt?.getTime() !== where.nextRunAt.getTime()) {
+            return false;
+          }
+        }
         if (where.OR?.some((part) => part.claimUntil !== undefined)) {
           const cutoff = where.OR.find((part) => part.claimUntil?.lt)?.claimUntil?.lt;
           return cutoff
@@ -544,6 +550,29 @@ test('raced scheduler ticks claim one occurrence and advance nextRunAt', async (
   assert.equal(prisma.runs.length, 1);
   assert.equal(prisma.runs[0].status, 'created');
   assert.ok(schedule.nextRunAt && schedule.nextRunAt > now);
+});
+
+test('dispatchNow creates the current-cycle task and advances nextRunAt', async () => {
+  const { prisma, service, rowCalls, admitCalls } = buildHarness();
+  const schedule = addDueSchedule(prisma, {
+    cron: '0 * * * *',
+    nextRunAt: new Date('2026-07-09T09:00:00.000Z'),
+  });
+
+  const updated = await service.dispatchNow(
+    USER_A,
+    schedule.id,
+    new Date('2026-07-09T08:00:00.000Z'),
+  );
+
+  assert.equal(rowCalls.length, 1);
+  assert.equal(admitCalls.length, 1);
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(prisma.runs[0].status, 'created');
+  assert.equal(prisma.runs[0].scheduledFor.toISOString(), '2026-07-09T09:00:00.000Z');
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T10:00:00.000Z');
+  assert.equal(updated.nextRunAt?.toISOString(), '2026-07-09T10:00:00.000Z');
+  assert.equal(updated.latestRun?.taskId, prisma.tasks[0].id);
 });
 
 test('overlapPolicy=skip records a skipped run without fabricating a task', async () => {

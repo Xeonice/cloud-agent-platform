@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
@@ -273,6 +274,45 @@ export class ScheduledTasksService
       include: SCHEDULE_INCLUDE,
     });
     return this.toScheduleResponse(updated);
+  }
+
+  async dispatchNow(
+    ownerUserId: string,
+    id: string,
+    now = new Date(),
+  ): Promise<ScheduleResponse> {
+    const schedule = await this.requireOwnedSchedule(ownerUserId, id);
+    const scheduledFor = schedule.nextRunAt ?? now;
+    const advanceAfter = scheduledFor > now ? scheduledFor : now;
+    const nextRunAt = schedule.enabled
+      ? computeNextScheduleRunAt({
+          cronExpression: schedule.cron,
+          timezone: schedule.timezone,
+          after: advanceAfter,
+        })
+      : null;
+    const token = randomUUID();
+    const claimLeaseMs = positiveIntFromEnv(
+      process.env.SCHEDULED_TASKS_CLAIM_LEASE_MS,
+      DEFAULT_CLAIM_LEASE_MS,
+    );
+    const claimed = await this.prisma.taskSchedule.updateMany({
+      where: {
+        id: schedule.id,
+        nextRunAt: schedule.nextRunAt,
+        OR: [{ claimUntil: null }, { claimUntil: { lt: now } }],
+      },
+      data: {
+        nextRunAt,
+        claimToken: token,
+        claimUntil: new Date(now.getTime() + claimLeaseMs),
+      },
+    });
+    if (claimed.count !== 1) {
+      throw new ConflictException('Schedule is already dispatching');
+    }
+    await this.executeClaim(schedule, scheduledFor, token);
+    return this.get(ownerUserId, id);
   }
 
   async delete(ownerUserId: string, id: string): Promise<void> {

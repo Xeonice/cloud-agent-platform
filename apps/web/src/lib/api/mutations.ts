@@ -210,6 +210,21 @@ export function resumeScheduleMutation(
   };
 }
 
+export function dispatchScheduleMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<ScheduleResponse, Error, string> {
+  return {
+    mutationFn: (id) => real.dispatchSchedule(id),
+    onSuccess: (schedule) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.scheduleRuns(schedule.id),
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+    },
+  };
+}
+
 export function deleteScheduleMutation(
   queryClient: QueryClient,
 ): UseMutationOptions<void, Error, string> {

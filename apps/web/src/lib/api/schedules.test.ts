@@ -18,6 +18,7 @@ vi.mock("./real", () => ({
   ),
   pauseSchedule: vi.fn(async (id) => scheduleFixture(id, { enabled: false })),
   resumeSchedule: vi.fn(async (id) => scheduleFixture(id, { enabled: true })),
+  dispatchSchedule: vi.fn(async (id) => scheduleFixture(id)),
   deleteSchedule: vi.fn(async () => undefined),
   listScheduleRuns: vi.fn(async (id) => [runFixture("run-a", id)]),
 }));
@@ -27,6 +28,7 @@ vi.mock("./mock", () => ({}));
 import {
   createScheduleMutation,
   deleteScheduleMutation,
+  dispatchScheduleMutation,
   pauseScheduleMutation,
   resumeScheduleMutation,
   updateScheduleMutation,
@@ -187,7 +189,7 @@ describe("schedule mutations", () => {
     });
   });
 
-  it("update, pause, resume, and delete refresh list plus the affected run ledger", async () => {
+  it("update, pause, resume, dispatch, and delete refresh affected schedule reads", async () => {
     const client = queryClientStub();
     const scheduleId = uuid(1);
 
@@ -221,6 +223,15 @@ describe("schedule mutations", () => {
       {} as never,
     );
 
+    const dispatchOptions = dispatchScheduleMutation(client);
+    await dispatchOptions.mutationFn!(scheduleId, {} as never);
+    dispatchOptions.onSuccess?.(
+      scheduleFixture(scheduleId, { id: scheduleId }),
+      scheduleId,
+      undefined,
+      {} as never,
+    );
+
     const deleteOptions = deleteScheduleMutation(client);
     await deleteOptions.mutationFn!(scheduleId, {} as never);
     deleteOptions.onSuccess?.(undefined, scheduleId, undefined, {} as never);
@@ -228,10 +239,11 @@ describe("schedule mutations", () => {
     expect(real.updateSchedule).toHaveBeenCalledWith(scheduleId, { name: "updated" });
     expect(real.pauseSchedule).toHaveBeenCalledWith(scheduleId);
     expect(real.resumeSchedule).toHaveBeenCalledWith(scheduleId);
+    expect(real.dispatchSchedule).toHaveBeenCalledWith(scheduleId);
     expect(real.deleteSchedule).toHaveBeenCalledWith(scheduleId);
 
-    expect(client.invalidateQueries).toHaveBeenCalledTimes(8);
-    for (let index = 1; index <= 8; index += 2) {
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(11);
+    for (let index = 1; index <= 6; index += 2) {
       expect(client.invalidateQueries).toHaveBeenNthCalledWith(index, {
         queryKey: queryKeys.schedules,
       });
@@ -239,5 +251,20 @@ describe("schedule mutations", () => {
         queryKey: queryKeys.scheduleRuns(scheduleId),
       });
     }
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(7, {
+      queryKey: queryKeys.schedules,
+    });
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(8, {
+      queryKey: queryKeys.scheduleRuns(scheduleId),
+    });
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(9, {
+      queryKey: queryKeys.tasks,
+    });
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(10, {
+      queryKey: queryKeys.schedules,
+    });
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(11, {
+      queryKey: queryKeys.scheduleRuns(scheduleId),
+    });
   });
 });
