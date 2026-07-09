@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.35.0...v0.36.0) (2026-07-09)
+
+
+### Features
+
+* **schedules:** edit and dispatch schedules ([1ee37f0](https://github.com/Xeonice/cloud-agent-platform/commit/1ee37f050ba097df5ee135caa3f26ac4cf8ee03b))
+* **schedules:** edit and dispatch schedules ([f11e473](https://github.com/Xeonice/cloud-agent-platform/commit/f11e473dcbe52285fe67cfc5a0c9247c5f679f24))
+
 ## [0.35.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.34.0...v0.35.0) (2026-07-09)
 
 
