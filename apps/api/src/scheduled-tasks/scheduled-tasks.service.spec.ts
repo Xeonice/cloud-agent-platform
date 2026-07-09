@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import type { CreateTaskBody } from '@cap/contracts';
+import {
+  CreateScheduleRequestSchema,
+  UpdateScheduleRequestSchema,
+  type CreateTaskBody,
+} from '@cap/contracts';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { TasksService } from '../tasks/tasks.service';
 import { ScheduledTasksService } from './scheduled-tasks.service';
@@ -403,10 +407,108 @@ test('create normalizes the task template and scopes schedule reads to the owner
   });
   assert.equal(created.ownerUserId, USER_A);
   assert.equal(created.taskTemplate.sandboxEnvironmentId, ENV_ID);
+  assert.equal(created.recurrence.kind, 'daily');
+  assert.equal(created.recurrence.label, '每天 09:00');
   assert.deepEqual(normalizeCalls, [{ repoId: REPO_ID, userId: USER_A }]);
   assert.equal((await service.list(USER_A)).length, 1);
   assert.equal((await service.list(USER_B)).length, 0);
   await assert.rejects(() => service.get(USER_B, created.id), NotFoundException);
+});
+
+test('create accepts recurrence descriptors and keeps cron compatibility for custom summaries', async () => {
+  const { prisma, service } = buildHarness();
+  const created = await service.create(
+    USER_A,
+    CreateScheduleRequestSchema.parse({
+      name: 'weekday check',
+      recurrence: {
+        kind: 'weekdays',
+        time: '09:30',
+        timezone: 'Asia/Shanghai',
+      },
+      taskTemplate: { repoId: REPO_ID, prompt: 'weekday check' },
+    }),
+    new Date('2026-07-09T00:00:00.000Z'),
+  );
+  assert.equal(prisma.schedules[0].cron, '30 9 * * 1-5');
+  assert.equal(prisma.schedules[0].timezone, 'Asia/Shanghai');
+  assert.equal(created.recurrence.kind, 'weekdays');
+  assert.equal(created.recurrence.label, '工作日 09:30');
+  assert.equal(created.nextRunAt?.toISOString(), '2026-07-09T01:30:00.000Z');
+
+  const custom = await service.create(
+    USER_A,
+    CreateScheduleRequestSchema.parse({
+      cronExpression: '*/5 * * * *',
+      timezone: 'UTC',
+      taskTemplate: { repoId: REPO_ID, prompt: 'legacy cron' },
+    }),
+  );
+  assert.equal(custom.cronExpression, '*/5 * * * *');
+  assert.equal(custom.recurrence.kind, 'custom');
+  assert.equal(custom.recurrence.label, '自定义重复');
+});
+
+test('update changes only future schedule definition and leaves existing runs/tasks untouched', async () => {
+  const { prisma, service } = buildHarness();
+  const schedule = addDueSchedule(prisma, {
+    cron: '0 9 * * *',
+    nextRunAt: new Date('2026-07-10T09:00:00.000Z'),
+  });
+  prisma.tasks.push({
+    id: '55555555-5555-4555-8555-000000000001',
+    repoId: REPO_ID,
+    prompt: 'already created',
+    status: 'running',
+    createdAt: new Date('2026-07-09T00:00:00.000Z'),
+    branch: null,
+    strategy: null,
+    skills: [],
+    idleTimeoutMs: null,
+    deadlineMs: null,
+    runtime: 'codex',
+    sandboxEnvironmentId: ENV_ID,
+    deliver: 'none',
+  });
+  prisma.runs.push({
+    id: '66666666-6666-4666-8666-000000000001',
+    scheduleId: schedule.id,
+    scheduledFor: new Date('2026-07-09T09:00:00.000Z'),
+    status: 'created',
+    taskId: prisma.tasks[0].id,
+    error: null,
+    createdAt: new Date('2026-07-09T09:00:00.000Z'),
+    updatedAt: new Date('2026-07-09T09:00:00.000Z'),
+  });
+
+  const updated = await service.update(
+    USER_A,
+    schedule.id,
+    UpdateScheduleRequestSchema.parse({
+      name: 'weekly check',
+      recurrence: {
+        kind: 'weekly',
+        weekday: 1,
+        time: '10:15',
+        timezone: 'Europe/London',
+      },
+    }),
+    new Date('2026-07-09T00:00:00.000Z'),
+  );
+
+  assert.equal(schedule.name, 'weekly check');
+  assert.equal(schedule.cron, '15 10 * * 1');
+  assert.equal(schedule.timezone, 'Europe/London');
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-13T09:15:00.000Z');
+  assert.equal(updated.recurrence.kind, 'weekly');
+  assert.equal(updated.recurrence.label, '每周一 10:15');
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(prisma.runs[0].taskId, prisma.tasks[0].id);
+  assert.equal(prisma.tasks[0].status, 'running');
+  await assert.rejects(
+    () => service.update(USER_B, schedule.id, { name: 'wrong owner' }),
+    NotFoundException,
+  );
 });
 
 test('ownerless create is rejected with the shared owner-required shape', async () => {

@@ -27,6 +27,7 @@ import {
   V1TaskListResponseSchema,
   V1RepoListResponseSchema,
   V1ListQuerySchema,
+  V1ScheduleCreateRequestSchema,
 } from './openapi.registry';
 
 /**
@@ -142,6 +143,41 @@ test('the document is built from the SAME schemas used for request validation', 
     docJson,
     /"sandboxEnvironmentId"/,
     'the OpenAPI document exposes the create-task sandboxEnvironmentId field',
+  );
+  assert.match(
+    docJson,
+    /"recurrence"/,
+    'the OpenAPI document exposes the recurrence-first schedule field',
+  );
+  assert.match(
+    docJson,
+    /"cronExpression"/,
+    'the OpenAPI document keeps cronExpression for schedule compatibility clients',
+  );
+
+  const validScheduleCreate = V1ScheduleCreateRequestSchema.parse({
+    recurrence: {
+      kind: 'weekdays',
+      time: '09:30',
+      timezone: 'Asia/Shanghai',
+    },
+    taskTemplate: {
+      repoId: '00000000-0000-4000-a000-000000000101',
+      prompt: 'weekday check',
+    },
+  });
+  assert.equal(validScheduleCreate.cronExpression, '30 9 * * 1-5');
+  assert.throws(
+    () =>
+      V1ScheduleCreateRequestSchema.parse({
+        recurrence: { kind: 'daily', time: '09:00', timezone: 'UTC' },
+        cronExpression: '0 9 * * *',
+        taskTemplate: {
+          repoId: '00000000-0000-4000-a000-000000000101',
+          prompt: 'ambiguous',
+        },
+      }),
+    'schedule create rejects recurrence and cronExpression together',
   );
 
   // The list envelopes the document generates are the SAME `{ items, nextCursor }`

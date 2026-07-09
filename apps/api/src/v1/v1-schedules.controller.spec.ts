@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  CreateScheduleRequestSchema,
+  type ScheduleResponse,
+} from '@cap/contracts';
 import type {
-  ScheduleResponse,
   ScheduleRunResponse,
   V1ListScheduleRunsResponse,
   V1ListSchedulesResponse,
@@ -56,6 +59,12 @@ function scheduleResponse(): ScheduleResponse {
     name: 'daily',
     cronExpression: '0 9 * * *',
     timezone: 'UTC',
+    recurrence: {
+      kind: 'daily',
+      time: '09:00',
+      timezone: 'UTC',
+      label: '每天 09:00',
+    },
     enabled: true,
     nextRunAt: new Date('2026-07-10T09:00:00.000Z'),
     overlapPolicy: 'skip',
@@ -139,6 +148,33 @@ test('ownerless principal reaches create as ownerless so service returns shared 
       err instanceof BadRequestException &&
       (err.getResponse() as { error?: string }).error === 'schedule_owner_required',
   );
+});
+
+test('write key can create with a recurrence-first payload', async () => {
+  const seen: Array<{ ownerUserId: string | undefined; cronExpression: string }> = [];
+  const controller = new V1SchedulesController({
+    async create(ownerUserId: string | undefined, body: { cronExpression: string }) {
+      seen.push({ ownerUserId, cronExpression: body.cronExpression });
+      return scheduleResponse();
+    },
+  } as unknown as ScheduledTasksService);
+
+  const result = await controller.create(
+    CreateScheduleRequestSchema.parse({
+      recurrence: {
+        kind: 'weekdays',
+        time: '09:30',
+        timezone: 'Asia/Shanghai',
+      },
+      overlapPolicy: 'skip',
+      misfirePolicy: 'fire-once',
+      taskTemplate: { repoId: REPO_ID, prompt: 'weekday check' },
+    }),
+    reqWith(WRITE_KEY),
+  );
+
+  assert.equal(result.id, SCHEDULE_ID);
+  assert.deepEqual(seen, [{ ownerUserId: USER_A, cronExpression: '30 9 * * 1-5' }]);
 });
 
 test('list is owner-scoped and forwards pagination', async () => {

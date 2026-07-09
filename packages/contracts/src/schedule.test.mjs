@@ -10,13 +10,17 @@ const contracts = require(path.join(here, '..', 'dist', 'index.js'));
 
 const {
   CreateScheduleRequestSchema,
+  ScheduleRecurrenceSchema,
   ScheduleOwnerRequiredErrorSchema,
   ScheduleResponseSchema,
   ScheduleRunResponseSchema,
   ScheduleTaskTemplateSchema,
+  UpdateScheduleRequestSchema,
   V1ListScheduleRunsResponseSchema,
   V1ListSchedulesResponseSchema,
   computeNextScheduleRunAt,
+  recurrenceResponseFromCron,
+  recurrenceToScheduleTiming,
 } = contracts;
 
 const repoId = '11111111-1111-4111-8111-111111111111';
@@ -54,6 +58,97 @@ test('schedule create validates five-field cron and IANA timezone', () => {
       taskTemplate: { repoId, prompt: 'bad tz' },
     }),
   );
+});
+
+test('schedule recurrence validates product presets and normalizes to cron', () => {
+  const recurrence = ScheduleRecurrenceSchema.parse({
+    kind: 'weekdays',
+    time: '09:00',
+    timezone: 'Asia/Shanghai',
+  });
+  assert.deepEqual(recurrenceToScheduleTiming(recurrence), {
+    cronExpression: '0 9 * * 1-5',
+    timezone: 'Asia/Shanghai',
+  });
+
+  const parsed = CreateScheduleRequestSchema.parse({
+    recurrence,
+    taskTemplate: { repoId, prompt: 'weekday check' },
+  });
+  assert.equal(parsed.cronExpression, '0 9 * * 1-5');
+  assert.equal(parsed.timezone, 'Asia/Shanghai');
+  assert.equal(parsed.recurrence.kind, 'weekdays');
+
+  const weekly = CreateScheduleRequestSchema.parse({
+    recurrence: {
+      kind: 'weekly',
+      weekday: 1,
+      time: '10:30',
+      timezone: 'Europe/London',
+    },
+    taskTemplate: { repoId, prompt: 'weekly check' },
+  });
+  assert.equal(weekly.cronExpression, '30 10 * * 1');
+
+  assert.throws(() =>
+    CreateScheduleRequestSchema.parse({
+      recurrence: { kind: 'daily', time: '25:00', timezone: 'UTC' },
+      taskTemplate: { repoId, prompt: 'bad time' },
+    }),
+  );
+  assert.throws(() =>
+    CreateScheduleRequestSchema.parse({
+      recurrence: { kind: 'monthly', dayOfMonth: 31, time: '09:00', timezone: 'UTC' },
+      taskTemplate: { repoId, prompt: 'bad monthly day' },
+    }),
+  );
+  assert.throws(() =>
+    CreateScheduleRequestSchema.parse({
+      recurrence,
+      cronExpression: '0 9 * * 1-5',
+      taskTemplate: { repoId, prompt: 'ambiguous' },
+    }),
+  );
+});
+
+test('schedule update accepts recurrence and keeps cron compatibility', () => {
+  const recurrenceUpdate = UpdateScheduleRequestSchema.parse({
+    recurrence: {
+      kind: 'monthly',
+      dayOfMonth: 12,
+      time: '08:15',
+      timezone: 'Asia/Shanghai',
+    },
+  });
+  assert.equal(recurrenceUpdate.cronExpression, '15 8 12 * *');
+  assert.equal(recurrenceUpdate.timezone, 'Asia/Shanghai');
+
+  const cronUpdate = UpdateScheduleRequestSchema.parse({
+    cronExpression: '45 17 * * *',
+    timezone: 'UTC',
+  });
+  assert.equal(cronUpdate.cronExpression, '45 17 * * *');
+
+  assert.throws(() =>
+    UpdateScheduleRequestSchema.parse({
+      recurrence: { kind: 'daily', time: '09:00', timezone: 'UTC' },
+      timezone: 'UTC',
+    }),
+  );
+});
+
+test('recurrence response derives supported descriptors and custom summaries', () => {
+  const weekdays = recurrenceResponseFromCron('0 9 * * 1-5', 'Asia/Shanghai');
+  assert.equal(weekdays.kind, 'weekdays');
+  assert.equal(weekdays.label, '工作日 09:00');
+
+  const custom = recurrenceResponseFromCron('7 13 */2 * *', 'UTC');
+  assert.equal(custom.kind, 'custom');
+  assert.equal(custom.label, '自定义重复');
+
+  const interval = recurrenceResponseFromCron('*/5 * * * *', 'UTC');
+  assert.equal(interval.kind, 'custom');
+  assert.equal(interval.label, '自定义重复');
 });
 
 test('next-fire helper respects timezone and DST gaps', () => {
@@ -110,6 +205,12 @@ test('schedule response redacts claim internals and run envelopes parse', () => 
     name: 'weekday check',
     cronExpression: '0 9 * * 1-5',
     timezone: 'UTC',
+    recurrence: {
+      kind: 'weekdays',
+      time: '09:00',
+      timezone: 'UTC',
+      label: '工作日 09:00',
+    },
     enabled: true,
     nextRunAt: new Date('2026-07-10T09:00:00.000Z'),
     overlapPolicy: 'skip',
