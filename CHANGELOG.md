@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.34.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.33.0...v0.34.0) (2026-07-09)
+
+
+### Features
+
+* **schedules:** add scheduled task automation ([4ad6780](https://github.com/Xeonice/cloud-agent-platform/commit/4ad678001e3744262f4f32d08d9c7cfdaf406a2f))
+* **schedules:** add scheduled task automation ([e25c8a4](https://github.com/Xeonice/cloud-agent-platform/commit/e25c8a48b29f75791b5f1859be24be1b2d729499))
+
 ## [0.33.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.32.2...v0.33.0) (2026-07-09)
 
 
