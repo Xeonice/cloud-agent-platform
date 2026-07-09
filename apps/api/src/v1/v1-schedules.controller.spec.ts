@@ -213,6 +213,10 @@ test('mutating routes pass the principal account id', async () => {
       calls.push(`resume:${ownerUserId}`);
       return scheduleResponse();
     },
+    async dispatchNow(ownerUserId: string) {
+      calls.push(`dispatch:${ownerUserId}`);
+      return scheduleResponse();
+    },
     async delete(ownerUserId: string) {
       calls.push(`delete:${ownerUserId}`);
     },
@@ -225,11 +229,13 @@ test('mutating routes pass the principal account id', async () => {
   );
   await controller.pause(SCHEDULE_ID, reqWith(WRITE_KEY));
   await controller.resume(SCHEDULE_ID, reqWith(WRITE_KEY));
+  await controller.dispatch(SCHEDULE_ID, reqWith(WRITE_KEY));
   await controller.delete(SCHEDULE_ID, reqWith(WRITE_KEY));
   assert.deepEqual(calls, [
     `update:${USER_A}`,
     `pause:${USER_A}`,
     `resume:${USER_A}`,
+    `dispatch:${USER_A}`,
     `delete:${USER_A}`,
   ]);
 });

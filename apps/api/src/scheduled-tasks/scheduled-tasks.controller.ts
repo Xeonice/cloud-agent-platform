@@ -88,6 +88,16 @@ export class ScheduledTasksController {
     return this.schedules.resume(ScheduledTasksController.accountId(req), id);
   }
 
+  @Post(':id/dispatch')
+  @HttpCode(HttpStatus.OK)
+  async dispatch(
+    @Param('id') id: string,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<ScheduleResponse> {
+    ScheduledTasksController.requireScope(req, 'tasks:write');
+    return this.schedules.dispatchNow(ScheduledTasksController.accountId(req), id);
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(

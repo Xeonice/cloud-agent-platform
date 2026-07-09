@@ -50,6 +50,15 @@ settlement.
 - **AND** guardrails admits or queues the task through the same semaphore used by
   `/v1` and MCP task creation
 
+#### Scenario: Operator dispatches the current cycle immediately
+- **WHEN** an operator manually dispatches a schedule before its next normal fire
+  time
+- **THEN** the system creates one task from the stored template through the same
+  headless admission path
+- **AND** the current scheduled cycle is recorded as handled
+- **AND** `nextRunAt` advances beyond the consumed cycle before the normal
+  scheduler can claim it again
+
 #### Scenario: Schedule fire preserves owner attribution
 - **WHEN** a schedule owned by account `U` fires
 - **THEN** the created task's `task.created` audit event is attributed to `U`
@@ -126,7 +135,7 @@ another task and leaving guardrails to queue it if capacity is exhausted.
   immediately or remains queued
 
 ### Requirement: Schedule management is owner-scoped
-Schedule create, read, update, pause, resume, and delete operations SHALL be
+Schedule create, read, update, pause, resume, dispatch, and delete operations SHALL be
 scoped to the owning account. A principal without an account owner SHALL NOT
 create schedules. API keys SHALL manage schedules for their owning account.
 Schedule reads SHALL NOT expose schedules owned by a different account through

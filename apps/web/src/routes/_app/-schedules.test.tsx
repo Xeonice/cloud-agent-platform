@@ -207,20 +207,24 @@ describe("schedule page payload", () => {
 });
 
 describe("schedule run history rendering", () => {
-  it("shows custom recurrence summaries and edit route without exposing raw cron", () => {
+  it("shows custom recurrence summaries and edit/dispatch actions without exposing raw cron", () => {
     const schedule = scheduleFixture();
     const html = renderToStaticMarkup(
       React.createElement(ScheduleDetail, {
         schedule,
         repos: [],
+        onEdit: () => undefined,
+        onDispatch: () => undefined,
         onPauseResume: () => undefined,
         onDelete: () => undefined,
       }),
     );
 
     expect(html).toContain("自定义重复");
-    expect(html).toContain(`/tasks/new?scheduleId=${schedule.id}`);
+    expect(html).toContain("立即派发");
+    expect(html).toContain("编辑");
     expect(html).toContain("删除");
+    expect(html).not.toContain("/tasks/new");
     expect(html).not.toContain("*/5 * * * *");
   });
 

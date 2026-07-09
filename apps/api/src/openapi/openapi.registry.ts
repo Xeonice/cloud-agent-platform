@@ -392,6 +392,20 @@ export const V1_ROUTES: readonly V1RouteDefinition[] = [
     },
   },
   {
+    method: 'post',
+    path: '/v1/schedules/{id}/dispatch',
+    summary: 'Dispatch a schedule immediately',
+    description:
+      'Create a task from the schedule template immediately and mark the current ' +
+      'cycle as completed by advancing nextRunAt before the normal scheduler tick.',
+    params: IdParamSchema,
+    response: {
+      status: 200,
+      description: 'The schedule after the immediate dispatch.',
+      schema: V1ScheduleResponseSchema,
+    },
+  },
+  {
     method: 'delete',
     path: '/v1/schedules/{id}',
     summary: 'Delete a schedule',

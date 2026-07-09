@@ -101,6 +101,16 @@ export class V1SchedulesController {
     return this.schedules.resume(this.accountId(principal), id);
   }
 
+  @Post(':id/dispatch')
+  @HttpCode(HttpStatus.OK)
+  async dispatch(
+    @Param('id') id: string,
+    @Req() req: AuthenticatedRequest,
+  ): Promise<ScheduleResponse> {
+    const principal = this.requireScope(req, 'tasks:write');
+    return this.schedules.dispatchNow(this.accountId(principal), id);
+  }
+
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(

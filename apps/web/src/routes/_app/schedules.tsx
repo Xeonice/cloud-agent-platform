@@ -1,17 +1,19 @@
 import * as React from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Pause, Pencil, Play, Trash2 } from "lucide-react";
+import { ExternalLink, Pause, Pencil, Play, Send, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import type { Repo, ScheduleResponse, ScheduleRunResponse } from "@cap/contracts";
 import { reposQuery, scheduleRunsQuery, schedulesQuery } from "@/lib/api/queries";
 import {
   deleteScheduleMutation,
+  dispatchScheduleMutation,
   pauseScheduleMutation,
   resumeScheduleMutation,
 } from "@/lib/api/mutations";
 import { recurrenceSummary } from "@/lib/task-form";
+import { NewTaskDialog } from "@/components/dashboard/new-task-dialog";
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { StatusPill } from "@/components/status-pill";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +47,8 @@ function SchedulesPage() {
   const scheduleList = schedules.data ?? [];
   const repoList = repos.data ?? [];
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [editingSchedule, setEditingSchedule] =
+    React.useState<ScheduleResponse | null>(null);
   const selectedSchedule =
     scheduleList.find((schedule) => schedule.id === selectedId) ??
     scheduleList[0] ??
@@ -56,7 +60,22 @@ function SchedulesPage() {
 
   const pauseMutation = useMutation(pauseScheduleMutation(queryClient));
   const resumeMutation = useMutation(resumeScheduleMutation(queryClient));
+  const dispatchMutation = useMutation(dispatchScheduleMutation(queryClient));
   const deleteMutation = useMutation(deleteScheduleMutation(queryClient));
+
+  function editSchedule(schedule: ScheduleResponse) {
+    setSelectedId(schedule.id);
+    setEditingSchedule(schedule);
+  }
+
+  function dispatchSchedule(schedule: ScheduleResponse) {
+    dispatchMutation.mutate(schedule.id, {
+      onSuccess: (updated) => {
+        setSelectedId(updated.id);
+        toast.success("已立即派发，本周期已完成");
+      },
+    });
+  }
 
   function pauseOrResume(schedule: ScheduleResponse) {
     if (schedule.enabled) {
@@ -164,16 +183,26 @@ function SchedulesPage() {
                           type="button"
                           variant="ghost"
                           size="icon"
-                          aria-label="编辑"
-                          asChild
-                          onClick={(event) => event.stopPropagation()}
+                          aria-label="立即派发"
+                          disabled={dispatchMutation.isPending}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            dispatchSchedule(schedule);
+                          }}
                         >
-                          <Link
-                            to="/tasks/new"
-                            search={{ scheduleId: schedule.id }}
-                          >
-                            <Pencil className="size-4" />
-                          </Link>
+                          <Send className="size-4" />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          aria-label="编辑"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            editSchedule(schedule);
+                          }}
+                        >
+                          <Pencil className="size-4" />
                         </Button>
                         <Button
                           type="button"
@@ -223,8 +252,11 @@ function SchedulesPage() {
               <ScheduleDetail
                 schedule={selectedSchedule}
                 repos={repoList}
+                onEdit={() => editSchedule(selectedSchedule)}
+                onDispatch={() => dispatchSchedule(selectedSchedule)}
                 onPauseResume={() => pauseOrResume(selectedSchedule)}
                 onDelete={() => deleteSchedule(selectedSchedule)}
+                dispatchPending={dispatchMutation.isPending}
               />
             ) : (
               <p className="text-sm text-muted-foreground">暂无定时任务</p>
@@ -247,6 +279,18 @@ function SchedulesPage() {
           </Panel>
         </div>
       </section>
+      <NewTaskDialog
+        open={editingSchedule !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditingSchedule(null);
+        }}
+        repos={repoList}
+        scheduleToEdit={editingSchedule}
+        onScheduleSaved={(schedule) => {
+          setSelectedId(schedule.id);
+          toast.success("定时任务已更新");
+        }}
+      />
     </>
   );
 }
@@ -254,13 +298,19 @@ function SchedulesPage() {
 export function ScheduleDetail({
   schedule,
   repos,
+  onEdit,
+  onDispatch,
   onPauseResume,
   onDelete,
+  dispatchPending = false,
 }: {
   schedule: ScheduleResponse;
   repos: readonly Repo[];
+  onEdit: () => void;
+  onDispatch: () => void;
   onPauseResume: () => void;
   onDelete: () => void;
+  dispatchPending?: boolean;
 }) {
   return (
     <div className="grid gap-3">
@@ -274,11 +324,18 @@ export function ScheduleDetail({
         <DetailRow label="重叠策略" value={overlapLabel(schedule.overlapPolicy)} />
       </div>
       <div className="flex flex-wrap gap-2">
-        <Button asChild className="gap-2">
-          <Link to="/tasks/new" search={{ scheduleId: schedule.id }}>
-            <Pencil className="size-4" />
-            编辑
-          </Link>
+        <Button
+          type="button"
+          className="gap-2"
+          onClick={onDispatch}
+          disabled={dispatchPending}
+        >
+          <Send className="size-4" />
+          立即派发
+        </Button>
+        <Button type="button" variant="secondary" className="gap-2" onClick={onEdit}>
+          <Pencil className="size-4" />
+          编辑
         </Button>
         <Button type="button" variant="secondary" className="gap-2" onClick={onPauseResume}>
           {schedule.enabled ? <Pause className="size-4" /> : <Play className="size-4" />}

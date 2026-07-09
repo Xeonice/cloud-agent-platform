@@ -526,6 +526,15 @@ export async function resumeSchedule(id: string): Promise<ScheduleResponse> {
   );
 }
 
+/** `POST /schedules/:id/dispatch` — dispatch now and complete the current cycle. */
+export async function dispatchSchedule(id: string): Promise<ScheduleResponse> {
+  return ScheduleResponseSchema.parse(
+    await request(`/schedules/${encodeURIComponent(id)}/dispatch`, {
+      method: "POST",
+    }),
+  );
+}
+
 /** `DELETE /schedules/:id` — delete a schedule. */
 export async function deleteSchedule(id: string): Promise<void> {
   await request(`/schedules/${encodeURIComponent(id)}`, { method: "DELETE" });
