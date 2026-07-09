@@ -183,6 +183,12 @@ const LATEST_SANDBOX_PROVIDER_INCLUDE = {
       source: true,
     },
   },
+  scheduleRun: {
+    select: {
+      scheduleId: true,
+      scheduledFor: true,
+    },
+  },
 } as const;
 
 /**
@@ -570,68 +576,13 @@ export class TasksService implements OnApplicationBootstrap {
     executionMode: ExecutionMode = 'interactive-pty',
     userId?: string,
   ): Promise<TaskResponse> {
-    const repo = await client.repo.findUnique({ where: { id: repoId } });
-    if (!repo) {
-      throw new NotFoundException(`Repo not found: ${repoId}`);
-    }
-
-    // add-claude-code-runtime (4.1): the runtime this create dispatches to. The
-    // contract pipe has already rejected any value outside the allowed set with
-    // 400 before the body reaches here, so this is either a valid runtime or
-    // omitted; omitted resolves the default (`codex`) so existing clients are
-    // unchanged.
-    const runtime: Runtime = body.runtime ?? DEFAULT_TASK_RUNTIME;
-
-    // add-claude-code-runtime (4.1): RESOLVE the selected runtime so admission
-    // dispatches to the right agent. An unknown id throws (a wiring bug, not a
-    // valid create), which we fail closed rather than admitting a task that
-    // resolves no runtime. When the registry is not wired the persisted `runtime`
-    // column the provider reads is the dispatch source of truth.
-    if (this.runtimes) {
-      try {
-        this.runtimes.resolve(runtime);
-      } catch {
-        throw new RuntimeNotConfiguredException(runtime);
-      }
-    }
-
-    // add-headless-execution-track (5.4): a programmatic (headless-exec) task whose
-    // resolved runtime does not support headless-exec is rejected with a distinct reason
-    // — never silently fall back to the interactive launch for a fire-and-forget
-    // consumer. (Both shipped runtimes support headless; this guards a future one.)
-    if (
-      executionMode === 'headless-exec' &&
-      this.runtimes &&
-      !this.runtimes.resolve(runtime).executionModes.has('headless-exec')
-    ) {
-      throw new BadRequestException(
-        `runtime "${runtime}" does not support headless execution`,
-      );
-    }
-
-    // add-claude-code-runtime (4.2): FAIL CLOSED before any task row is created
-    // when a `claude-code` create selects an unconfigured runtime — never launch
-    // an unauthenticated agent. Distinct reason (`runtime not configured`) so the
-    // console can tell this apart from a generic failure. Codex degrades to
-    // unauthenticated (its prior behavior) and is NOT gated here. When the
-    // readiness source is not wired the gate is skipped and the provision-time
-    // `injectAuth` remains the fail-closed backstop.
-    if (runtime === 'claude-code' && this.claudeReadiness) {
-      const ready = await this.claudeReadiness.configured();
-      if (!ready) {
-        throw new RuntimeNotConfiguredException(runtime);
-      }
-    }
-
-    const requestedEnvironmentId =
-      body.sandboxEnvironmentId === undefined
-        ? await this.loadUserDefaultSandboxEnvironmentId(userId, client)
-        : body.sandboxEnvironmentId;
-
-    const resolvedEnvironment = await this.resolveTaskEnvironment({
-      requestedEnvironmentId,
-      runtime,
-    });
+    const { resolvedEnvironment } = await this.resolveCreateTaskParameters(
+      repoId,
+      body,
+      client,
+      executionMode,
+      userId,
+    );
 
     const task = await client.task.create({
       data: {
@@ -643,7 +594,8 @@ export class TasksService implements OnApplicationBootstrap {
         // (omitted) to `null`; a null column reads back as the default `codex`
         // (repo-and-task-management: a prior task with no runtime reads as codex).
         runtime: body.runtime ?? null,
-        sandboxEnvironmentId: resolvedEnvironment?.environmentId ?? null,
+        sandboxEnvironmentId:
+          resolvedEnvironment?.environmentId ?? resolvedEnvironment?.id ?? null,
         // add-headless-execution-track (5.1/5.2): persist the consumer-derived execution
         // mode. Store null for the interactive default (console — reads back as
         // interactive-pty), and `headless-exec` for programmatic (MCP / `/v1`) tasks.
@@ -681,6 +633,29 @@ export class TasksService implements OnApplicationBootstrap {
     // the dial-back verifier were removed with the runner, migrate-aio 7.4).
 
     return taskResponseSchema.parse(this.toResponse(task));
+  }
+
+  async normalizeTaskTemplateForSchedule(
+    repoId: string,
+    body: CreateTaskBody,
+    userId: string,
+    client: PrismaService = this.prisma,
+  ): Promise<CreateTaskBody & { repoId: string; runtime: Runtime; sandboxEnvironmentId: string | null; deliver: Deliver }> {
+    const { runtime, resolvedEnvironment } = await this.resolveCreateTaskParameters(
+      repoId,
+      body,
+      client,
+      'headless-exec',
+      userId,
+    );
+    return {
+      ...body,
+      repoId,
+      runtime,
+      sandboxEnvironmentId:
+        resolvedEnvironment?.environmentId ?? resolvedEnvironment?.id ?? null,
+      deliver: body.deliver ?? 'none',
+    };
   }
 
   /**
@@ -936,6 +911,10 @@ export class TasksService implements OnApplicationBootstrap {
       runtimeIds: string[];
       source: unknown;
     } | null;
+    scheduleRun?: {
+      scheduleId: string;
+      scheduledFor: Date;
+    } | null;
   }): TaskResponse {
     return {
       id: task.id,
@@ -977,8 +956,95 @@ export class TasksService implements OnApplicationBootstrap {
       commitSha: task.commitSha ?? null,
       changeRequestUrl: task.changeRequestUrl ?? null,
       changeRequestNumber: task.changeRequestNumber ?? null,
+      scheduleProvenance: task.scheduleRun
+        ? {
+            scheduleId: task.scheduleRun.scheduleId,
+            scheduledFor: task.scheduleRun.scheduledFor,
+          }
+        : null,
       sandboxProvider: this.toSandboxProviderSummary(task),
       sandboxEnvironment: this.toSandboxEnvironmentSummary(task.sandboxEnvironment),
+    };
+  }
+
+  private async resolveCreateTaskParameters(
+    repoId: string,
+    body: CreateTaskBody,
+    client: PrismaService,
+    executionMode: ExecutionMode,
+    userId?: string,
+  ): Promise<{
+    runtime: Runtime;
+    resolvedEnvironment: { environmentId?: string; id?: string } | null;
+  }> {
+    const repo = await client.repo.findUnique({ where: { id: repoId } });
+    if (!repo) {
+      throw new NotFoundException(`Repo not found: ${repoId}`);
+    }
+
+    // add-claude-code-runtime (4.1): the runtime this create dispatches to. The
+    // contract pipe has already rejected any value outside the allowed set with
+    // 400 before the body reaches here, so this is either a valid runtime or
+    // omitted; omitted resolves the default (`codex`) so existing clients are
+    // unchanged.
+    const runtime: Runtime = body.runtime ?? DEFAULT_TASK_RUNTIME;
+
+    // add-claude-code-runtime (4.1): RESOLVE the selected runtime so admission
+    // dispatches to the right agent. An unknown id throws (a wiring bug, not a
+    // valid create), which we fail closed rather than admitting a task that
+    // resolves no runtime. When the registry is not wired the persisted `runtime`
+    // column the provider reads is the dispatch source of truth.
+    if (this.runtimes) {
+      try {
+        this.runtimes.resolve(runtime);
+      } catch {
+        throw new RuntimeNotConfiguredException(runtime);
+      }
+    }
+
+    // add-headless-execution-track (5.4): a programmatic (headless-exec) task whose
+    // resolved runtime does not support headless-exec is rejected with a distinct reason
+    // — never silently fall back to the interactive launch for a fire-and-forget
+    // consumer. (Both shipped runtimes support headless; this guards a future one.)
+    if (
+      executionMode === 'headless-exec' &&
+      this.runtimes &&
+      !this.runtimes.resolve(runtime).executionModes.has('headless-exec')
+    ) {
+      throw new BadRequestException(
+        `runtime "${runtime}" does not support headless execution`,
+      );
+    }
+
+    // add-claude-code-runtime (4.2): FAIL CLOSED before any task row is created
+    // when a `claude-code` create selects an unconfigured runtime — never launch
+    // an unauthenticated agent. Distinct reason (`runtime not configured`) so the
+    // console can tell this apart from a generic failure. Codex degrades to
+    // unauthenticated (its prior behavior) and is NOT gated here. When the
+    // readiness source is not wired the gate is skipped and the provision-time
+    // `injectAuth` remains the fail-closed backstop.
+    if (runtime === 'claude-code' && this.claudeReadiness) {
+      const ready = await this.claudeReadiness.configured();
+      if (!ready) {
+        throw new RuntimeNotConfiguredException(runtime);
+      }
+    }
+
+    const requestedEnvironmentId =
+      body.sandboxEnvironmentId === undefined
+        ? await this.loadUserDefaultSandboxEnvironmentId(userId, client)
+        : body.sandboxEnvironmentId;
+
+    const resolvedEnvironment = await this.resolveTaskEnvironment({
+      requestedEnvironmentId,
+      runtime,
+    });
+
+    return {
+      runtime,
+      resolvedEnvironment: resolvedEnvironment
+        ? { environmentId: resolvedEnvironment.environmentId, id: resolvedEnvironment.id }
+        : null,
     };
   }
 

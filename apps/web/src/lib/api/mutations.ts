@@ -43,6 +43,9 @@ import type {
   CreateSandboxEnvironmentRequest,
   SandboxEnvironmentResponse,
   ValidateSandboxEnvironmentResponse,
+  CreateScheduleRequest,
+  UpdateScheduleRequest,
+  ScheduleResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
@@ -146,6 +149,75 @@ export function stopTaskMutation(
     onSuccess: (task) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.task(task.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+    },
+  };
+}
+
+export function createScheduleMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<ScheduleResponse, Error, CreateScheduleRequest> {
+  return {
+    mutationFn: (body) => real.createSchedule(body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
+    },
+  };
+}
+
+export function updateScheduleMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<
+  ScheduleResponse,
+  Error,
+  { id: string; body: UpdateScheduleRequest }
+> {
+  return {
+    mutationFn: ({ id, body }) => real.updateSchedule(id, body),
+    onSuccess: (schedule) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.scheduleRuns(schedule.id),
+      });
+    },
+  };
+}
+
+export function pauseScheduleMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<ScheduleResponse, Error, string> {
+  return {
+    mutationFn: (id) => real.pauseSchedule(id),
+    onSuccess: (schedule) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.scheduleRuns(schedule.id),
+      });
+    },
+  };
+}
+
+export function resumeScheduleMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<ScheduleResponse, Error, string> {
+  return {
+    mutationFn: (id) => real.resumeSchedule(id),
+    onSuccess: (schedule) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.scheduleRuns(schedule.id),
+      });
+    },
+  };
+}
+
+export function deleteScheduleMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<void, Error, string> {
+  return {
+    mutationFn: (id) => real.deleteSchedule(id),
+    onSuccess: (_result, id) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.scheduleRuns(id) });
     },
   };
 }

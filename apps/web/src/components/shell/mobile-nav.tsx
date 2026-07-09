@@ -25,12 +25,19 @@ import { activeNavKey, type NavKey } from "@/components/shell/app-sidebar";
 
 interface MobileNavEntry {
   key: NavKey;
-  to: "/dashboard" | "/repositories" | "/images" | "/history" | "/api";
+  to:
+    | "/dashboard"
+    | "/schedules"
+    | "/repositories"
+    | "/images"
+    | "/history"
+    | "/api";
   label: string;
 }
 
 const MOBILE_ENTRIES: readonly MobileNavEntry[] = [
   { key: "dashboard", to: "/dashboard", label: "控制台" },
+  { key: "schedules", to: "/schedules", label: "定时" },
   { key: "repositories", to: "/repositories", label: "仓库" },
   { key: "images", to: "/images", label: "镜像" },
   { key: "history", to: "/history", label: "历史" },
@@ -49,7 +56,7 @@ export function MobileNav({ pathname }: MobileNavProps) {
     <nav
       aria-label="移动端导航"
       className={cn(
-        "fixed inset-x-3 bottom-3 z-30 hidden grid-cols-6 gap-1 p-1.5 max-[821px]:grid",
+        "fixed inset-x-3 bottom-3 z-30 hidden grid-cols-7 gap-1 p-1.5 max-[821px]:grid",
         "rounded-[18px] bg-[rgba(255,255,255,0.92)] backdrop-blur-md",
         "shadow-[0_0_0_1px_rgba(0,0,0,0.08),0_18px_48px_-28px_rgba(0,0,0,0.14)]",
       )}

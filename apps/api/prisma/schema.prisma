@@ -84,7 +84,8 @@ model Repo {
   /// for non-gitlab / uncached.
   gitlabProjectId String? @map("gitlab_project_id")
 
-  tasks Task[]
+  tasks     Task[]
+  schedules TaskSchedule[]
 
   @@map("repos")
 }
@@ -178,10 +179,73 @@ model Task {
   /// multi-provider readoption/delivery/teardown; one task may accumulate
   /// multiple attempts over time.
   sandboxRuns SandboxRun[]
+  /// Nullable provenance relation for a task created by a schedule occurrence.
+  /// Direct tasks have no row here; schedule-created tasks link through the
+  /// one schedule-run record for their occurrence.
+  scheduleRun TaskScheduleRun?
 
   @@index([repoId])
   @@index([sandboxEnvironmentId])
   @@map("tasks")
+}
+
+/// Durable recurring task definition. A schedule is an intent to create future
+/// ordinary Task rows; it is deliberately separate from TaskStatus.
+model TaskSchedule {
+  id String @id @default(uuid())
+
+  ownerUserId String @map("owner_user_id")
+  owner       User   @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  repoId String @map("repo_id")
+  repo   Repo   @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  name         String?
+  taskTemplate Json      @map("task_template")
+  cron         String    @map("cron")
+  timezone     String    @map("timezone")
+  enabled      Boolean   @default(true)
+  nextRunAt    DateTime? @map("next_run_at")
+
+  overlapPolicy String @default("skip") @map("overlap_policy")
+  misfirePolicy String @default("fire-once") @map("misfire_policy")
+
+  claimToken String?   @map("claim_token")
+  claimUntil DateTime? @map("claim_until")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  runs TaskScheduleRun[]
+
+  @@index([ownerUserId, createdAt, id])
+  @@index([enabled, nextRunAt])
+  @@index([claimUntil])
+  @@map("task_schedules")
+}
+
+/// Per-occurrence ledger for a claimed schedule fire. The unique
+/// (scheduleId, scheduledFor) key is the durable de-duplication boundary for
+/// multiple API processes or restart races.
+model TaskScheduleRun {
+  id String @id @default(uuid())
+
+  scheduleId String       @map("schedule_id")
+  schedule   TaskSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  scheduledFor DateTime @map("scheduled_for")
+  status       String
+  taskId       String?  @unique @map("task_id")
+  task         Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  error        String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([scheduleId, scheduledFor])
+  @@index([scheduleId, scheduledFor, id])
+  @@index([status])
+  @@map("task_schedule_runs")
 }
 
 /// Admin-managed sandbox runtime environment. Source descriptors are non-secret
@@ -355,6 +419,8 @@ model User {
   /// Per-account forge push-back credentials (add-forge-credentials) — one per
   /// (kind, host), encrypted, cascade-deleted with the owning user.
   forgeCredentials ForgeCredential[]
+  /// Durable task schedules owned by this account.
+  taskSchedules    TaskSchedule[]
 
   @@map("users")
 }

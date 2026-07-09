@@ -13,7 +13,9 @@ import { V1TasksController } from './v1-tasks.controller';
 import { V1ReposController } from './v1-repos.controller';
 import { V1TranscriptController } from './v1-transcript.controller';
 import { V1EventsController } from './v1-events.controller';
+import { V1SchedulesController } from './v1-schedules.controller';
 import { IdempotencyService } from './idempotency.service';
+import { ScheduledTasksModule } from '../scheduled-tasks/scheduled-tasks.module';
 
 /**
  * The public `/v1` feature module (public-v1-api, Integration task 3.6).
@@ -55,12 +57,13 @@ import { IdempotencyService } from './idempotency.service';
  * re-declares.
  */
 @Module({
-  imports: [TasksModule, ReposModule],
+  imports: [TasksModule, ReposModule, ScheduledTasksModule],
   controllers: [
     V1TasksController,
     V1ReposController,
     V1TranscriptController,
     V1EventsController,
+    V1SchedulesController,
   ],
   providers: [
     IdempotencyService,

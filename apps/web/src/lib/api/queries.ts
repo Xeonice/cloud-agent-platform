@@ -42,6 +42,8 @@ import type {
   AdminAccountListResponse,
   ListSandboxEnvironmentsResponse,
   ListSandboxEnvironmentValidationsResponse,
+  ListSchedulesResponse,
+  ListScheduleRunsResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import { agentLabel } from "../runtime-label";
@@ -119,6 +121,10 @@ export const queryKeys = {
     ["sandbox-environments", id, "validations"] as const,
   /** The admin account-administration list (`GET /accounts`, account-administration). */
   adminAccounts: ["accounts"] as const,
+  /** Owner-scoped recurring task schedules (`GET /schedules`). */
+  schedules: ["schedules"] as const,
+  /** Recent run ledger for one schedule. */
+  scheduleRuns: (id: string) => ["schedules", id, "runs"] as const,
   /**
    * The self-update action (self-update-action). There is no self-update READ —
    * the upgrade is a one-shot `POST /self-update` whose target comes from
@@ -147,6 +153,22 @@ export function taskQuery(id: string) {
   return queryOptions<TaskResponse>({
     queryKey: queryKeys.task(id),
     queryFn: () => (isCapable("tasks") ? real.getTask(id) : mock.mockGetTask(id)),
+  });
+}
+
+export function schedulesQuery() {
+  return queryOptions<ListSchedulesResponse>({
+    queryKey: queryKeys.schedules,
+    queryFn: () => real.listSchedules(),
+    refetchInterval: 5000,
+  });
+}
+
+export function scheduleRunsQuery(id: string) {
+  return queryOptions<ListScheduleRunsResponse>({
+    queryKey: queryKeys.scheduleRuns(id),
+    queryFn: () => real.listScheduleRuns(id),
+    refetchInterval: 5000,
   });
 }
 

@@ -45,6 +45,9 @@ import {
   ValidateSandboxEnvironmentResponseSchema,
   SandboxEnvironmentResponseSchema,
   ListSandboxEnvironmentValidationsResponseSchema,
+  ListSchedulesResponseSchema,
+  ListScheduleRunsResponseSchema,
+  ScheduleResponseSchema,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
   type UpdateStatus,
@@ -77,6 +80,11 @@ import {
   type SandboxEnvironmentResponse,
   type ListSandboxEnvironmentValidationsResponse,
   type CreateSandboxEnvironmentRequest,
+  type CreateScheduleRequest,
+  type UpdateScheduleRequest,
+  type ListSchedulesResponse,
+  type ListScheduleRunsResponse,
+  type ScheduleResponse,
 } from "@cap/contracts";
 import { RepoResponseSchema } from "@cap/contracts";
 import {
@@ -466,6 +474,70 @@ export async function stopTask(taskId: string): Promise<TaskResponse> {
     method: "POST",
   });
   return TaskResponseSchema.parse(stopped);
+}
+
+/** `GET /schedules` — owner-scoped recurring task schedules. */
+export async function listSchedules(): Promise<ListSchedulesResponse> {
+  return ListSchedulesResponseSchema.parse(await request("/schedules"));
+}
+
+/** `POST /schedules` — create an owner-scoped recurring task schedule. */
+export async function createSchedule(
+  body: CreateScheduleRequest,
+): Promise<ScheduleResponse> {
+  return ScheduleResponseSchema.parse(
+    await request("/schedules", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** `PATCH /schedules/:id` — update recurrence, policy, or task template. */
+export async function updateSchedule(
+  id: string,
+  body: UpdateScheduleRequest,
+): Promise<ScheduleResponse> {
+  return ScheduleResponseSchema.parse(
+    await request(`/schedules/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+/** `POST /schedules/:id/pause` — pause future fires. */
+export async function pauseSchedule(id: string): Promise<ScheduleResponse> {
+  return ScheduleResponseSchema.parse(
+    await request(`/schedules/${encodeURIComponent(id)}/pause`, {
+      method: "POST",
+    }),
+  );
+}
+
+/** `POST /schedules/:id/resume` — resume and compute a future next run. */
+export async function resumeSchedule(id: string): Promise<ScheduleResponse> {
+  return ScheduleResponseSchema.parse(
+    await request(`/schedules/${encodeURIComponent(id)}/resume`, {
+      method: "POST",
+    }),
+  );
+}
+
+/** `DELETE /schedules/:id` — delete a schedule. */
+export async function deleteSchedule(id: string): Promise<void> {
+  await request(`/schedules/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** `GET /schedules/:id/runs` — recent run ledger for one schedule. */
+export async function listScheduleRuns(
+  id: string,
+): Promise<ListScheduleRunsResponse> {
+  return ListScheduleRunsResponseSchema.parse(
+    await request(`/schedules/${encodeURIComponent(id)}/runs`),
+  );
 }
 
 // ---------------------------------------------------------------------------
