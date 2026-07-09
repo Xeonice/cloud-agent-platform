@@ -1122,20 +1122,45 @@ images as image-library source types.
 - **AND** it does not describe rootfs as a user-selectable image-library option
 
 ### Requirement: Console manages scheduled tasks
-The authenticated console SHALL provide schedule management for the current
-account. Operators SHALL be able to list schedules, create a schedule from the
-same task-template fields used by task creation, pause and resume a schedule,
-delete a schedule after confirmation, and inspect recent schedule runs. The
-console SHALL present schedules as recurring automation definitions, not as task
-statuses.
+The authenticated console SHALL provide recurring task management for the
+current account. Operators SHALL create recurring work from the same task
+creation surfaces used for immediate task dispatch by choosing a "run once" or
+"run repeatedly" mode. The `/schedules` route SHALL be an overview and
+management surface for existing recurring automation definitions: operators can
+list schedules, inspect recent schedule runs, open linked tasks, pause and
+resume schedules when those controls are available, edit future schedule
+settings through the task creation form, and delete a schedule after
+confirmation. The console SHALL present schedules as recurring automation
+definitions, not as task statuses, and SHALL NOT expose cron expressions to
+ordinary operators.
 
-#### Scenario: Operator creates a schedule from task fields
-- **WHEN** the operator submits the schedule form with repo, prompt, recurrence,
-  timezone, runtime, environment, delivery, skills, idle timeout, and deadline
-  selections
+#### Scenario: Operator creates a recurring task from task fields
+- **WHEN** the operator selects "run repeatedly" while submitting the task
+  creation form with repo, prompt, recurrence, timezone, runtime, environment,
+  delivery, skills, idle timeout, and deadline selections
 - **THEN** the console calls the schedule create API with those fields
-- **AND** the created schedule appears in the schedule list without creating an
-  immediate task unless the recurrence is due
+- **AND** the created schedule appears in the schedule overview without creating
+  an immediate task unless the recurrence is due
+
+#### Scenario: Operator creates an immediate task from the same surface
+- **WHEN** the operator selects "run once" while submitting the task creation
+  form
+- **THEN** the console calls the existing task create API
+- **AND** no schedule definition is created
+
+#### Scenario: Schedules overview does not create schedules
+- **WHEN** the operator opens `/schedules`
+- **THEN** the page shows existing recurring task definitions and their recent
+  run state
+- **AND** it does not render a standalone schedule creation form or a "new
+  schedule" action
+
+#### Scenario: Operator edits future schedule settings
+- **WHEN** the operator chooses to edit a schedule from `/schedules`
+- **THEN** the console opens the task creation form in edit-recurring mode with
+  the schedule's task template and recurrence prefilled
+- **AND** saving updates the existing schedule for future fires without creating
+  an immediate task
 
 #### Scenario: Operator pauses and resumes a schedule
 - **WHEN** the operator pauses an enabled schedule
@@ -1170,17 +1195,45 @@ the run history with non-secret reasons returned by the API.
 
 ### Requirement: Schedule list reflects next fire and enabled state
 The schedule list SHALL show each schedule's name or prompt summary, repo,
-runtime, enabled/paused state, cron expression, timezone, next run time, overlap
-policy, and last run outcome when available. The list SHALL refresh on the same
-kind of lightweight polling used by task/dashboard surfaces so operators can see
-recent fires without a manual reload.
+runtime, enabled/paused state, human-readable recurrence summary, timezone, next
+run time, overlap policy, and last run outcome when available. The list SHALL
+refresh on the same kind of lightweight polling used by task/dashboard surfaces
+so operators can see recent fires without a manual reload. The list SHALL NOT
+display raw cron expressions.
 
 #### Scenario: Schedule list shows next run
 - **WHEN** the operator opens the schedule management view
 - **THEN** each schedule row shows its next run time, timezone, enabled state,
-  and latest run outcome when present
+  recurrence summary, and latest run outcome when present
+- **AND** the row does not show a cron expression
+
+#### Scenario: Custom recurrence does not expose cron
+- **WHEN** a schedule was created from a cron expression that cannot be mapped
+  to the console's supported recurrence presets
+- **THEN** the schedule row shows an opaque custom recurrence summary and the
+  next run time
+- **AND** it does not show the raw cron expression
 
 #### Scenario: Schedule list refreshes after a fire
 - **WHEN** a schedule fires while the management view is open
 - **THEN** the list refreshes and shows the updated next run time and latest run
   outcome
+
+### Requirement: Task creation surfaces support recurring mode
+The task creation dialog and the full-page advanced task creation route SHALL
+let operators choose whether the submitted task runs once or repeatedly. The
+repeated mode SHALL reuse the same task-template controls as immediate task
+creation and SHALL add recurrence controls that do not require cron syntax.
+
+#### Scenario: Recurrence controls use human choices
+- **WHEN** the operator configures repeated execution
+- **THEN** the console offers supported human-readable recurrence choices such
+  as daily, weekdays, weekly, or monthly at a local time
+- **AND** it submits recurrence fields rather than a user-entered cron string
+
+#### Scenario: Existing task template controls are shared
+- **WHEN** the operator switches between run-once and run-repeatedly modes
+- **THEN** repo, prompt, runtime, sandbox environment, delivery, skills, idle
+  timeout, and deadline selections remain in one shared task-template form
+- **AND** the selected mode only changes the submit target and recurrence
+  controls

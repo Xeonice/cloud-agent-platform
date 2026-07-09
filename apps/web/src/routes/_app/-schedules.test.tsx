@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as React from "react";
-import type { ScheduleRunResponse } from "@cap/contracts";
+import type { ScheduleResponse, ScheduleRunResponse } from "@cap/contracts";
 
 vi.mock("@tanstack/react-router", async () => {
   const ReactModule = await import("react");
@@ -10,29 +10,42 @@ vi.mock("@tanstack/react-router", async () => {
     Link: ({
       to,
       params,
+      search,
       children,
     }: {
       to: string;
       params?: Record<string, string>;
+      search?: Record<string, string | undefined>;
       children: React.ReactNode;
     }) =>
-      ReactModule.createElement(
-        "a",
-        {
-          href: params?.taskId
-            ? to.replace("$taskId", encodeURIComponent(params.taskId))
-            : to,
-        },
-        children,
-      ),
+      ReactModule.createElement("a", {
+        href: linkHref(to, params, search),
+      }, children),
   };
 });
 
 import {
   buildSchedulePayload,
+  ScheduleDetail,
   RunList,
   type ScheduleFormState,
 } from "./schedules";
+
+function linkHref(
+  to: string,
+  params?: Record<string, string>,
+  search?: Record<string, string | undefined>,
+): string {
+  const path = params?.taskId
+    ? to.replace("$taskId", encodeURIComponent(params.taskId))
+    : to;
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(search ?? {})) {
+    if (value !== undefined) searchParams.set(key, value);
+  }
+  const query = searchParams.toString();
+  return query ? `${path}?${query}` : path;
+}
 
 function uuid(n: number): string {
   return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -42,8 +55,11 @@ function baseForm(overrides: Partial<ScheduleFormState> = {}): ScheduleFormState
   return {
     id: null,
     name: " Workday review ",
-    cronExpression: " 30 8 * * 1-5 ",
-    timezone: " Asia/Shanghai ",
+    recurrenceKind: "weekdays",
+    recurrenceTime: "08:30",
+    timezone: "Asia/Shanghai",
+    weekday: 1,
+    dayOfMonth: 1,
     overlapPolicy: "enqueue",
     repoId: uuid(1),
     runtime: "claude-code",
@@ -76,14 +92,50 @@ function runFixture(
   };
 }
 
+function scheduleFixture(
+  overrides: Partial<ScheduleResponse> = {},
+): ScheduleResponse {
+  return {
+    id: uuid(40),
+    ownerUserId: "user-1",
+    repoId: uuid(1),
+    name: "legacy interval",
+    cronExpression: "*/5 * * * *",
+    timezone: "UTC",
+    recurrence: {
+      kind: "custom",
+      timezone: "UTC",
+      label: "自定义重复",
+    },
+    enabled: true,
+    nextRunAt: new Date("2026-07-10T00:35:00.000Z"),
+    overlapPolicy: "skip",
+    misfirePolicy: "fire-once",
+    taskTemplate: {
+      repoId: uuid(1),
+      prompt: "check drift",
+      runtime: "codex",
+      sandboxEnvironmentId: null,
+      deliver: "none",
+    },
+    latestRun: null,
+    createdAt: new Date("2026-07-09T00:00:00.000Z"),
+    updatedAt: new Date("2026-07-09T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
 describe("schedule page payload", () => {
-  it("submits cron, policy, delivery, guardrails, skills, and task-template fields", () => {
+  it("submits recurrence, policy, delivery, guardrails, skills, and task-template fields", () => {
     const payload = buildSchedulePayload(baseForm());
 
     expect(payload).toEqual({
       name: "Workday review",
-      cronExpression: "30 8 * * 1-5",
-      timezone: "Asia/Shanghai",
+      recurrence: {
+        kind: "weekdays",
+        time: "08:30",
+        timezone: "Asia/Shanghai",
+      },
       overlapPolicy: "enqueue",
       misfirePolicy: "fire-once",
       taskTemplate: {
@@ -106,6 +158,7 @@ describe("schedule page payload", () => {
       baseForm({
         name: "  ",
         timezone: "  ",
+        recurrenceTime: "",
         runtime: "codex",
         sandboxEnvironmentId: "__server_default__",
         deliver: "none",
@@ -118,16 +171,59 @@ describe("schedule page payload", () => {
     );
 
     expect(payload.name).toBeNull();
-    expect(payload.timezone).toBe("UTC");
+    expect(payload.recurrence).toEqual({
+      kind: "weekdays",
+      time: "09:00",
+      timezone: "UTC",
+    });
     expect(payload.taskTemplate).toEqual({
       repoId: uuid(1),
       prompt: "check nightly drift",
       sandboxEnvironmentId: null,
     });
   });
+
+  it("preserves custom existing timing while editing task fields", () => {
+    const payload = buildSchedulePayload(
+      baseForm({
+        id: uuid(9),
+        recurrenceKind: "custom",
+      }),
+      {
+        cronExpression: "*/5 * * * *",
+        timezone: "UTC",
+      },
+    );
+
+    expect(payload).toMatchObject({
+      cronExpression: "*/5 * * * *",
+      timezone: "UTC",
+      taskTemplate: {
+        prompt: "check nightly drift",
+      },
+    });
+    expect("recurrence" in payload).toBe(false);
+  });
 });
 
 describe("schedule run history rendering", () => {
+  it("shows custom recurrence summaries and edit route without exposing raw cron", () => {
+    const schedule = scheduleFixture();
+    const html = renderToStaticMarkup(
+      React.createElement(ScheduleDetail, {
+        schedule,
+        repos: [],
+        onPauseResume: () => undefined,
+        onDelete: () => undefined,
+      }),
+    );
+
+    expect(html).toContain("自定义重复");
+    expect(html).toContain(`/tasks/new?scheduleId=${schedule.id}`);
+    expect(html).toContain("删除");
+    expect(html).not.toContain("*/5 * * * *");
+  });
+
   it("links successful fires to the ordinary task route", () => {
     const taskId = uuid(20);
     const html = renderToStaticMarkup(

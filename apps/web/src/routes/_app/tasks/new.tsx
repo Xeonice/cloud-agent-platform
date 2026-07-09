@@ -35,16 +35,21 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import type { CreateTaskRequest, Repo } from "@cap/contracts";
+import type { Repo } from "@cap/contracts";
 import {
   metricsQuery,
   reposQuery,
   runtimesQuery,
   sandboxEnvironmentsQuery,
+  schedulesQuery,
   settingsQuery,
 } from "@/lib/api/queries";
 import type { RuntimeId } from "@/lib/api/real";
-import { createTaskMutation } from "@/lib/api/mutations";
+import {
+  createScheduleMutation,
+  createTaskMutation,
+  updateScheduleMutation,
+} from "@/lib/api/mutations";
 import { setState } from "@/lib/store";
 import {
   buildCommandPreview,
@@ -57,6 +62,18 @@ import {
   parseGuardrailSelectValue,
   environmentCompatibleWithRuntime,
 } from "@/components/dashboard/new-task-dialog";
+import {
+  buildSchedulePayload,
+  buildTaskRequest,
+  DEFAULT_RECURRENCE_TIME,
+  DEFAULT_RECURRENCE_TIMEZONE,
+  ENVIRONMENT_DEFAULT,
+  ENVIRONMENT_SERVER_DEFAULT,
+  scheduleFormFromSchedule,
+  type RecurrenceFormKind,
+  type ScheduleFormState,
+  type TaskTemplateFormState,
+} from "@/lib/task-form";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { StatusPill } from "@/components/status-pill";
@@ -69,12 +86,22 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { cn } from "@/utils";
 
 export const Route = createFileRoute("/_app/tasks/new")({
+  validateSearch: (search: Record<string, unknown>) => ({
+    scheduleId:
+      typeof search.scheduleId === "string" && search.scheduleId.length > 0
+        ? search.scheduleId
+        : undefined,
+  }),
   loader: async ({ context }) => {
     // The repo list scopes the form to the imported set; ensure it before render
     // so the repo select is hydrated (no waterfall on the create form).
-    await context.queryClient.ensureQueryData(reposQuery());
+    await Promise.all([
+      context.queryClient.ensureQueryData(reposQuery()),
+      context.queryClient.ensureQueryData(schedulesQuery()),
+    ]);
   },
   component: NewTaskPage,
 });
@@ -86,8 +113,15 @@ const STRATEGIES = [
   "只读审查，不写入文件",
 ] as const;
 
-const ENVIRONMENT_DEFAULT = "__default__";
-const ENVIRONMENT_SERVER_DEFAULT = "__server_default__";
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: "周一" },
+  { value: 2, label: "周二" },
+  { value: 3, label: "周三" },
+  { value: 4, label: "周四" },
+  { value: 5, label: "周五" },
+  { value: 6, label: "周六" },
+  { value: 0, label: "周日" },
+] as const;
 
 /** Resolve a repo's display full-name (`owner/name` slug from gitSource, or name). */
 function repoFullName(repo: Repo): string {
@@ -153,11 +187,22 @@ function ConfigRow({ label, value }: { label: string; value: string }) {
 function NewTaskPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const { scheduleId } = Route.useSearch();
   const { data: repos } = useQuery(reposQuery());
   const { data: metrics } = useQuery(metricsQuery());
+  const schedules = useQuery({
+    ...schedulesQuery(),
+    enabled: Boolean(scheduleId),
+  });
   const mutation = useMutation(createTaskMutation(queryClient));
+  const createSchedule = useMutation(createScheduleMutation(queryClient));
+  const updateSchedule = useMutation(updateScheduleMutation(queryClient));
 
   const repoList = repos ?? [];
+  const editingSchedule =
+    scheduleId && schedules.data
+      ? schedules.data.find((schedule) => schedule.id === scheduleId) ?? null
+      : null;
 
   const firstRepoId = repoList[0]?.id ?? "";
   const [repoId, setRepoId] = React.useState(firstRepoId);
@@ -202,6 +247,19 @@ function NewTaskPage() {
   const [idleTimeoutMs, setIdleTimeoutMs] = React.useState<number | null>(null);
   const [deadlineMs, setDeadlineMs] = React.useState<number | null>(null);
   const [createdTaskId, setCreatedTaskId] = React.useState<string | null>(null);
+  const [mode, setMode] = React.useState<"once" | "repeated">(
+    scheduleId ? "repeated" : "once",
+  );
+  const [loadedScheduleId, setLoadedScheduleId] = React.useState<string | null>(null);
+  const [scheduleName, setScheduleName] = React.useState("");
+  const [recurrenceKind, setRecurrenceKind] =
+    React.useState<RecurrenceFormKind>("weekdays");
+  const [recurrenceTime, setRecurrenceTime] = React.useState(DEFAULT_RECURRENCE_TIME);
+  const [timezone, setTimezone] = React.useState(DEFAULT_RECURRENCE_TIMEZONE);
+  const [weekday, setWeekday] = React.useState(1);
+  const [dayOfMonth, setDayOfMonth] = React.useState(1);
+  const [overlapPolicy, setOverlapPolicy] =
+    React.useState<ScheduleFormState["overlapPolicy"]>("skip");
 
   function toggleSkill(id: string) {
     setSkills((cur) =>
@@ -213,8 +271,9 @@ function NewTaskPage() {
   // (the contract exposes no branch list — the runner gets a clean workspace
   // for the repo default, mirroring the dashboard dialog).
   React.useEffect(() => {
+    if (scheduleId) return;
     setBranch(defaultBranch);
-  }, [defaultBranch]);
+  }, [defaultBranch, scheduleId]);
 
   const readyEnvironments = React.useMemo(
     () =>
@@ -258,10 +317,34 @@ function NewTaskPage() {
     setSandboxEnvironmentId(ENVIRONMENT_DEFAULT);
   }, [readyEnvironments, sandboxEnvironmentId]);
 
+  React.useEffect(() => {
+    if (!editingSchedule || loadedScheduleId === editingSchedule.id) return;
+    const form = scheduleFormFromSchedule(editingSchedule, DEFAULT_RUNTIME);
+    setMode("repeated");
+    setLoadedScheduleId(editingSchedule.id);
+    setRepoId(form.repoId);
+    setRuntime(form.runtime);
+    setSandboxEnvironmentId(form.sandboxEnvironmentId);
+    setBranch(form.branch);
+    setStrategy(form.strategy);
+    setSkills(form.skills);
+    setIdleTimeoutMs(form.idleTimeoutMs);
+    setDeadlineMs(form.deadlineMs);
+    setPrompt(form.prompt);
+    setScheduleName(form.name);
+    setRecurrenceKind(form.recurrenceKind);
+    setRecurrenceTime(form.recurrenceTime);
+    setTimezone(form.timezone);
+    setWeekday(form.weekday);
+    setDayOfMonth(form.dayOfMonth);
+    setOverlapPolicy(form.overlapPolicy);
+  }, [editingSchedule, loadedScheduleId]);
+
   const branchOptions = React.useMemo(() => {
     const set = new Set<string>([defaultBranch]);
+    if (branch) set.add(branch);
     return [...set];
-  }, [defaultBranch]);
+  }, [branch, defaultBranch]);
 
   // CJK-aware character count over the spread code points (prototype cadence).
   const charCount = [...prompt.trim()].length;
@@ -292,20 +375,55 @@ function NewTaskPage() {
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!repoId || prompt.trim().length === 0) return;
-    const body: CreateTaskRequest = { prompt: prompt.trim() };
-    // Only send a non-default runtime; omitted ⇒ codex (server default).
-    if (runtime !== DEFAULT_RUNTIME) body.runtime = runtime;
-    if (selectedEnvironment) body.sandboxEnvironmentId = selectedEnvironment.id;
-    if (sandboxEnvironmentId === ENVIRONMENT_SERVER_DEFAULT) {
-      body.sandboxEnvironmentId = null;
-    }
     if (accountDefaultUnavailable) return;
-    if (branch) body.branch = branch;
-    if (strategy) body.strategy = strategy;
-    if (skills.length > 0) body.skills = skills;
-    // Opt-in guardrails: only send when the operator chose a value.
-    if (idleTimeoutMs != null) body.idleTimeoutMs = idleTimeoutMs;
-    if (deadlineMs != null) body.deadlineMs = deadlineMs;
+    const taskForm: TaskTemplateFormState = {
+      repoId,
+      runtime,
+      sandboxEnvironmentId,
+      deliver: "none",
+      branch,
+      strategy,
+      skills,
+      idleTimeoutMs,
+      deadlineMs,
+      prompt,
+    };
+    if (mode === "repeated") {
+      const scheduleForm: ScheduleFormState = {
+        ...taskForm,
+        id: editingSchedule?.id ?? null,
+        name: scheduleName,
+        recurrenceKind,
+        recurrenceTime,
+        timezone,
+        weekday,
+        dayOfMonth,
+        overlapPolicy,
+      };
+      const body = buildSchedulePayload(scheduleForm, editingSchedule ?? undefined);
+      if (editingSchedule) {
+        updateSchedule.mutate(
+          { id: editingSchedule.id, body },
+          {
+            onSuccess: () => {
+              setState({ selectedRepo: repoId });
+              toast.success("定时任务已更新");
+              void navigate({ to: "/schedules" });
+            },
+          },
+        );
+        return;
+      }
+      createSchedule.mutate(body, {
+        onSuccess: () => {
+          setState({ selectedRepo: repoId });
+          toast.success("定时任务已创建");
+          void navigate({ to: "/schedules" });
+        },
+      });
+      return;
+    }
+    const body = buildTaskRequest(taskForm);
     mutation.mutate(
       { repoId, body },
       {
@@ -324,7 +442,14 @@ function NewTaskPage() {
   }
 
   const submitDisabled =
-    mutation.isPending || prompt.trim().length === 0 || accountDefaultUnavailable;
+    mutation.isPending ||
+    createSchedule.isPending ||
+    updateSchedule.isPending ||
+    prompt.trim().length === 0 ||
+    accountDefaultUnavailable ||
+    (mode === "repeated" && recurrenceKind === "custom" && !editingSchedule);
+  const submitting =
+    mutation.isPending || createSchedule.isPending || updateSchedule.isPending;
 
   return (
     <>
@@ -372,6 +497,185 @@ function NewTaskPage() {
           onSubmit={handleSubmit}
           className="grid content-start gap-3.5 rounded-md bg-card p-5 shadow-card"
         >
+          <div className="grid gap-2">
+            <span className="text-[13px] font-semibold text-ink">执行方式</span>
+            <div className="grid grid-cols-2 overflow-hidden rounded-md border border-line bg-card p-1">
+              <button
+                type="button"
+                onClick={() => setMode("once")}
+                disabled={Boolean(editingSchedule)}
+                className={cn(
+                  "h-8 rounded-sm text-sm font-medium disabled:pointer-events-none disabled:opacity-50",
+                  mode === "once"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                )}
+              >
+                立即运行
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("repeated")}
+                className={cn(
+                  "h-8 rounded-sm text-sm font-medium",
+                  mode === "repeated"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                )}
+              >
+                重复运行
+              </button>
+            </div>
+          </div>
+
+          {mode === "repeated" ? (
+            <div className="grid gap-3 rounded-md border border-line bg-[#fafafa] p-3">
+              <div className="grid gap-2">
+                <label htmlFor="scheduleName" className="text-[13px] font-semibold text-ink">
+                  计划名称
+                </label>
+                <input
+                  id="scheduleName"
+                  value={scheduleName}
+                  onChange={(event) => setScheduleName(event.target.value)}
+                  placeholder="工作日检查"
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                />
+              </div>
+              <div className="grid gap-3 min-[821px]:grid-cols-2">
+                <div className="grid gap-2">
+                  <label
+                    htmlFor="recurrenceKind"
+                    className="text-[13px] font-semibold text-ink"
+                  >
+                    重复频率
+                  </label>
+                  <Select
+                    value={recurrenceKind}
+                    onValueChange={(value) =>
+                      setRecurrenceKind(value as RecurrenceFormKind)
+                    }
+                  >
+                    <SelectTrigger id="recurrenceKind" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {recurrenceKind === "custom" ? (
+                        <SelectItem value="custom">自定义重复（保留）</SelectItem>
+                      ) : null}
+                      <SelectItem value="daily">每天</SelectItem>
+                      <SelectItem value="weekdays">工作日</SelectItem>
+                      <SelectItem value="weekly">每周</SelectItem>
+                      <SelectItem value="monthly">每月</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <label
+                    htmlFor="recurrenceTime"
+                    className="text-[13px] font-semibold text-ink"
+                  >
+                    触发时间
+                  </label>
+                  <input
+                    id="recurrenceTime"
+                    type="time"
+                    value={recurrenceTime}
+                    onChange={(event) => setRecurrenceTime(event.target.value)}
+                    disabled={recurrenceKind === "custom"}
+                    className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  />
+                </div>
+              </div>
+              {recurrenceKind === "weekly" ? (
+                <div className="grid gap-2">
+                  <label htmlFor="weekday" className="text-[13px] font-semibold text-ink">
+                    每周哪一天
+                  </label>
+                  <Select
+                    value={String(weekday)}
+                    onValueChange={(value) => setWeekday(Number(value))}
+                  >
+                    <SelectTrigger id="weekday" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {WEEKDAY_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={String(option.value)}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+              {recurrenceKind === "monthly" ? (
+                <div className="grid gap-2">
+                  <label
+                    htmlFor="dayOfMonth"
+                    className="text-[13px] font-semibold text-ink"
+                  >
+                    每月哪一天
+                  </label>
+                  <Select
+                    value={String(dayOfMonth)}
+                    onValueChange={(value) => setDayOfMonth(Number(value))}
+                  >
+                    <SelectTrigger id="dayOfMonth" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Array.from({ length: 28 }, (_, index) => index + 1).map(
+                        (day) => (
+                          <SelectItem key={day} value={String(day)}>
+                            {day} 日
+                          </SelectItem>
+                        ),
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
+              <div className="grid gap-3 min-[821px]:grid-cols-2">
+                <div className="grid gap-2">
+                  <label htmlFor="timezone" className="text-[13px] font-semibold text-ink">
+                    时区
+                  </label>
+                  <input
+                    id="timezone"
+                    value={timezone}
+                    onChange={(event) => setTimezone(event.target.value)}
+                    disabled={recurrenceKind === "custom"}
+                    placeholder="UTC"
+                    className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <label
+                    htmlFor="overlapPolicy"
+                    className="text-[13px] font-semibold text-ink"
+                  >
+                    上次未结束时
+                  </label>
+                  <Select
+                    value={overlapPolicy}
+                    onValueChange={(value) =>
+                      setOverlapPolicy(value as ScheduleFormState["overlapPolicy"])
+                    }
+                  >
+                    <SelectTrigger id="overlapPolicy" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="skip">跳过本次</SelectItem>
+                      <SelectItem value="enqueue">继续排队</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <div className="grid gap-2">
             <label htmlFor="runtime" className="text-[13px] font-semibold text-ink">
               运行时
@@ -619,7 +923,13 @@ function NewTaskPage() {
               disabled={submitDisabled}
               className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
             >
-              {mutation.isPending ? "创建中…" : "创建任务"}
+              {submitting
+                ? "保存中…"
+                : editingSchedule
+                  ? "保存定时任务"
+                  : mode === "repeated"
+                    ? "创建定时任务"
+                    : "创建任务"}
             </button>
             <Link
               to="/dashboard"
@@ -629,9 +939,12 @@ function NewTaskPage() {
             </Link>
           </div>
 
-          {mutation.isError ? (
+          {mutation.isError || createSchedule.isError || updateSchedule.isError ? (
             <p className="text-xs text-danger" role="alert">
-              创建失败：{mutation.error.message}
+              创建失败：
+              {mutation.error?.message ??
+                createSchedule.error?.message ??
+                updateSchedule.error?.message}
             </p>
           ) : null}
 

@@ -61,6 +61,12 @@ function scheduleFixture(
     name: "Daily check",
     cronExpression: "0 9 * * 1-5",
     timezone: "UTC",
+    recurrence: {
+      kind: "weekdays",
+      time: "09:00",
+      timezone: "UTC",
+      label: "工作日 09:00",
+    },
     enabled: true,
     nextRunAt: new Date("2026-07-10T09:00:00.000Z"),
     overlapPolicy: "skip",
@@ -143,10 +149,13 @@ describe("schedule mutations", () => {
 
   it("create sends the schedule payload and invalidates the schedule list", async () => {
     const client = queryClientStub();
-    const body: CreateScheduleRequest = {
+    const body = {
       name: "Workday review",
-      cronExpression: "30 8 * * 1-5",
-      timezone: "Asia/Shanghai",
+      recurrence: {
+        kind: "weekdays",
+        time: "08:30",
+        timezone: "Asia/Shanghai",
+      },
       overlapPolicy: "enqueue",
       misfirePolicy: "fire-once",
       taskTemplate: {
@@ -159,7 +168,7 @@ describe("schedule mutations", () => {
         idleTimeoutMs: 900_000,
         deadlineMs: 3_600_000,
       },
-    };
+    } as unknown as CreateScheduleRequest;
     const options = createScheduleMutation(client);
 
     await options.mutationFn!(body, {} as never);

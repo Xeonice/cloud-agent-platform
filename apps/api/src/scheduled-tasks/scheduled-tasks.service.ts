@@ -12,6 +12,8 @@ import {
   ScheduleRunResponseSchema,
   ScheduleTaskTemplateSchema,
   computeNextScheduleRunAt,
+  normalizeScheduleTiming,
+  recurrenceResponseFromCron,
   type CreateScheduleRequest,
   type CreateTaskBody,
   type ScheduleResponse,
@@ -110,6 +112,7 @@ export class ScheduledTasksService
       ownerId,
       body.taskTemplate,
     );
+    const timing = normalizeScheduleTiming(body);
     const enabled = body.enabled ?? true;
     const created = await this.prisma.taskSchedule.create({
       data: {
@@ -117,13 +120,13 @@ export class ScheduledTasksService
         repoId: normalizedTemplate.repoId,
         name: body.name ?? null,
         taskTemplate: normalizedTemplate as unknown as Prisma.InputJsonObject,
-        cron: body.cronExpression,
-        timezone: body.timezone,
+        cron: timing.cronExpression,
+        timezone: timing.timezone,
         enabled,
         nextRunAt: enabled
           ? computeNextScheduleRunAt({
-              cronExpression: body.cronExpression,
-              timezone: body.timezone,
+              cronExpression: timing.cronExpression,
+              timezone: timing.timezone,
               after: now,
             })
           : null,
@@ -178,13 +181,19 @@ export class ScheduledTasksService
   ): Promise<ScheduleResponse> {
     const current = await this.requireOwnedSchedule(ownerUserId, id);
 
-    const cronExpression = body.cronExpression ?? current.cron;
-    const timezone = body.timezone ?? current.timezone;
-    const enabled = body.enabled ?? current.enabled;
-    const recurrenceChanged =
+    const timingChanged =
+      body.recurrence !== undefined ||
       body.cronExpression !== undefined ||
-      body.timezone !== undefined ||
-      body.enabled !== undefined;
+      body.timezone !== undefined;
+    const timing = timingChanged
+      ? normalizeScheduleTiming({
+          recurrence: body.recurrence,
+          cronExpression: body.cronExpression ?? current.cron,
+          timezone: body.timezone ?? current.timezone,
+        })
+      : { cronExpression: current.cron, timezone: current.timezone };
+    const enabled = body.enabled ?? current.enabled;
+    const recurrenceChanged = timingChanged || body.enabled !== undefined;
     const normalizedTemplate = body.taskTemplate
       ? await this.normalizeTemplate(ownerUserId, body.taskTemplate)
       : null;
@@ -199,8 +208,9 @@ export class ScheduledTasksService
               taskTemplate: normalizedTemplate as unknown as Prisma.InputJsonObject,
             }
           : {}),
-        ...(body.cronExpression !== undefined ? { cron: cronExpression } : {}),
-        ...(body.timezone !== undefined ? { timezone } : {}),
+        ...(timingChanged
+          ? { cron: timing.cronExpression, timezone: timing.timezone }
+          : {}),
         ...(body.enabled !== undefined ? { enabled } : {}),
         ...(body.overlapPolicy !== undefined
           ? { overlapPolicy: body.overlapPolicy }
@@ -212,8 +222,8 @@ export class ScheduledTasksService
           ? {
               nextRunAt: enabled
                 ? computeNextScheduleRunAt({
-                    cronExpression,
-                    timezone,
+                    cronExpression: timing.cronExpression,
+                    timezone: timing.timezone,
                     after: now,
                   })
                 : null,
@@ -573,6 +583,7 @@ export class ScheduledTasksService
       name: row.name,
       cronExpression: row.cron,
       timezone: row.timezone,
+      recurrence: recurrenceResponseFromCron(row.cron, row.timezone),
       enabled: row.enabled,
       nextRunAt: row.nextRunAt,
       overlapPolicy: row.overlapPolicy,

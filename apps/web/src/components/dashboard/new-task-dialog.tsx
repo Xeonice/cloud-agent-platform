@@ -37,13 +37,24 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 
 import type { Repo, SandboxEnvironment } from "@cap/contracts";
-import { createTaskMutation } from "@/lib/api/mutations";
+import { createScheduleMutation, createTaskMutation } from "@/lib/api/mutations";
 import {
   runtimesQuery,
   sandboxEnvironmentsQuery,
   settingsQuery,
 } from "@/lib/api/queries";
 import type { CreateTaskBody, RuntimeId } from "@/lib/api/real";
+import {
+  buildSchedulePayload,
+  buildTaskRequest,
+  DEFAULT_RECURRENCE_TIME,
+  DEFAULT_RECURRENCE_TIMEZONE,
+  ENVIRONMENT_DEFAULT,
+  ENVIRONMENT_SERVER_DEFAULT,
+  type RecurrenceFormKind,
+  type ScheduleFormState,
+  type TaskTemplateFormState,
+} from "@/lib/task-form";
 import { setState } from "@/lib/store";
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
@@ -63,6 +74,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 
 /** The 3 prototype execution strategies (verbatim copy; the value == the label). */
 const STRATEGIES = [
@@ -131,8 +143,15 @@ export const DEADLINE_OPTIONS: ReadonlyArray<{ label: string; ms: number | null 
   { label: "4 小时", ms: 4 * HOUR },
 ];
 
-const ENVIRONMENT_DEFAULT = "__default__";
-const ENVIRONMENT_SERVER_DEFAULT = "__server_default__";
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: "周一" },
+  { value: 2, label: "周二" },
+  { value: 3, label: "周三" },
+  { value: 4, label: "周四" },
+  { value: 5, label: "周五" },
+  { value: 6, label: "周六" },
+  { value: 0, label: "周日" },
+] as const;
 
 /** The Select value (string) for a guardrail ms, or the OFF sentinel for null. */
 export function guardrailSelectValue(ms: number | null): string {
@@ -306,6 +325,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const mutation = useMutation(createTaskMutation(queryClient));
+  const scheduleMutation = useMutation(createScheduleMutation(queryClient));
 
   // Per-runtime readiness (add-claude-code-runtime). Booleans only — never a
   // secret. While the read is in flight `data` is undefined; we treat an UNKNOWN
@@ -353,6 +373,16 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   const [idleTimeoutMs, setIdleTimeoutMs] = React.useState<number | null>(null);
   const [deadlineMs, setDeadlineMs] = React.useState<number | null>(null);
   const [createdTaskId, setCreatedTaskId] = React.useState<string | null>(null);
+  const [mode, setMode] = React.useState<"once" | "repeated">("once");
+  const [scheduleName, setScheduleName] = React.useState("");
+  const [recurrenceKind, setRecurrenceKind] =
+    React.useState<Exclude<RecurrenceFormKind, "custom">>("weekdays");
+  const [recurrenceTime, setRecurrenceTime] = React.useState(DEFAULT_RECURRENCE_TIME);
+  const [timezone, setTimezone] = React.useState(DEFAULT_RECURRENCE_TIMEZONE);
+  const [weekday, setWeekday] = React.useState(1);
+  const [dayOfMonth, setDayOfMonth] = React.useState(1);
+  const [overlapPolicy, setOverlapPolicy] =
+    React.useState<ScheduleFormState["overlapPolicy"]>("skip");
 
   // Reset the create + prompt state whenever the dialog (re)opens, so a reopened
   // dialog always starts a FRESH dispatch instead of showing the prior run's
@@ -360,6 +390,7 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
   // wrapper (not in the Radix-unmounted content), so it must be cleared on open.
   // `mutation.reset` is reference-stable across renders (TanStack Query v5).
   const resetMutation = mutation.reset;
+  const resetScheduleMutation = scheduleMutation.reset;
   React.useEffect(() => {
     if (!open) return;
     setCreatedTaskId(null);
@@ -369,8 +400,17 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     setSandboxEnvironmentId(ENVIRONMENT_DEFAULT);
     setIdleTimeoutMs(null);
     setDeadlineMs(null);
+    setMode("once");
+    setScheduleName("");
+    setRecurrenceKind("weekdays");
+    setRecurrenceTime(DEFAULT_RECURRENCE_TIME);
+    setTimezone(DEFAULT_RECURRENCE_TIMEZONE);
+    setWeekday(1);
+    setDayOfMonth(1);
+    setOverlapPolicy("skip");
     resetMutation();
-  }, [open, resetMutation]);
+    resetScheduleMutation();
+  }, [open, resetMutation, resetScheduleMutation]);
 
   // Keep the selection on a READY runtime: if the currently-selected runtime
   // reports un-ready once readiness resolves (e.g. the Claude token was removed),
@@ -459,28 +499,53 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
     );
   }
 
+  function currentTaskForm(): TaskTemplateFormState {
+    return {
+      repoId,
+      runtime,
+      sandboxEnvironmentId,
+      deliver: "none",
+      branch,
+      strategy,
+      skills,
+      idleTimeoutMs,
+      deadlineMs,
+      prompt,
+    };
+  }
+
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!repoId || prompt.trim().length === 0) return;
     // Don't submit a runtime the readiness read says is not configured — the api
     // would fail-closed; the UI already disables the option, this is the guard.
     if (!isRuntimeReady(runtime)) return;
-    const body: CreateTaskBody = { prompt: prompt.trim() };
-    if (branch) body.branch = branch;
-    if (strategy) body.strategy = strategy;
-    if (skills.length > 0) body.skills = skills;
-    // Carry the selected runtime. Sent only when it diverges from the server
-    // default (`codex`) so the codex create body is byte-identical to before; a
-    // claude-code selection adds `runtime: "claude-code"`.
-    if (runtime !== DEFAULT_RUNTIME) body.runtime = runtime;
-    if (selectedEnvironment) body.sandboxEnvironmentId = selectedEnvironment.id;
-    if (sandboxEnvironmentId === ENVIRONMENT_SERVER_DEFAULT) {
-      body.sandboxEnvironmentId = null;
-    }
     if (accountDefaultUnavailable) return;
-    // Opt-in guardrails: only send when the operator chose a value.
-    if (idleTimeoutMs != null) body.idleTimeoutMs = idleTimeoutMs;
-    if (deadlineMs != null) body.deadlineMs = deadlineMs;
+    const taskForm = currentTaskForm();
+    const body: CreateTaskBody = buildTaskRequest(taskForm);
+    if (mode === "repeated") {
+      scheduleMutation.mutate(
+        buildSchedulePayload({
+          ...taskForm,
+          id: null,
+          name: scheduleName,
+          recurrenceKind,
+          recurrenceTime,
+          timezone,
+          weekday,
+          dayOfMonth,
+          overlapPolicy,
+        }),
+        {
+          onSuccess: () => {
+            setState({ selectedRepo: repoId });
+            onOpenChange(false);
+            void navigate({ to: "/schedules" });
+          },
+        },
+      );
+      return;
+    }
     mutation.mutate(
       { repoId, body },
       {
@@ -556,6 +621,185 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
         >
           {/* Left: form */}
           <div className="grid content-start gap-3.5">
+            <div className="grid gap-2">
+              <span className="text-[13px] font-medium text-foreground">执行方式</span>
+              <div className="grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card p-1">
+                <button
+                  type="button"
+                  onClick={() => setMode("once")}
+                  className={cn(
+                    "h-8 rounded-sm text-sm font-medium",
+                    mode === "once"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                  )}
+                >
+                  立即运行
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("repeated")}
+                  className={cn(
+                    "h-8 rounded-sm text-sm font-medium",
+                    mode === "repeated"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                  )}
+                >
+                  重复运行
+                </button>
+              </div>
+            </div>
+
+            {mode === "repeated" ? (
+              <div className="grid gap-3 rounded-md border border-border bg-[#fafafa] p-3">
+                <div className="grid gap-2">
+                  <label
+                    htmlFor="modalScheduleName"
+                    className="text-[13px] font-medium text-foreground"
+                  >
+                    计划名称
+                  </label>
+                  <Input
+                    id="modalScheduleName"
+                    value={scheduleName}
+                    onChange={(event) => setScheduleName(event.target.value)}
+                    placeholder="工作日检查"
+                  />
+                </div>
+                <div className="grid gap-3 min-[821px]:grid-cols-2">
+                  <div className="grid gap-2">
+                    <label
+                      htmlFor="modalRecurrenceKind"
+                      className="text-[13px] font-medium text-foreground"
+                    >
+                      重复频率
+                    </label>
+                    <Select
+                      value={recurrenceKind}
+                      onValueChange={(value) =>
+                        setRecurrenceKind(value as Exclude<RecurrenceFormKind, "custom">)
+                      }
+                    >
+                      <SelectTrigger id="modalRecurrenceKind" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="daily">每天</SelectItem>
+                        <SelectItem value="weekdays">工作日</SelectItem>
+                        <SelectItem value="weekly">每周</SelectItem>
+                        <SelectItem value="monthly">每月</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-2">
+                    <label
+                      htmlFor="modalRecurrenceTime"
+                      className="text-[13px] font-medium text-foreground"
+                    >
+                      触发时间
+                    </label>
+                    <Input
+                      id="modalRecurrenceTime"
+                      type="time"
+                      value={recurrenceTime}
+                      onChange={(event) => setRecurrenceTime(event.target.value)}
+                    />
+                  </div>
+                </div>
+                {recurrenceKind === "weekly" ? (
+                  <div className="grid gap-2">
+                    <label
+                      htmlFor="modalWeekday"
+                      className="text-[13px] font-medium text-foreground"
+                    >
+                      每周哪一天
+                    </label>
+                    <Select
+                      value={String(weekday)}
+                      onValueChange={(value) => setWeekday(Number(value))}
+                    >
+                      <SelectTrigger id="modalWeekday" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {WEEKDAY_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={String(option.value)}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
+                {recurrenceKind === "monthly" ? (
+                  <div className="grid gap-2">
+                    <label
+                      htmlFor="modalDayOfMonth"
+                      className="text-[13px] font-medium text-foreground"
+                    >
+                      每月哪一天
+                    </label>
+                    <Select
+                      value={String(dayOfMonth)}
+                      onValueChange={(value) => setDayOfMonth(Number(value))}
+                    >
+                      <SelectTrigger id="modalDayOfMonth" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Array.from({ length: 28 }, (_, index) => index + 1).map(
+                          (day) => (
+                            <SelectItem key={day} value={String(day)}>
+                              {day} 日
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
+                <div className="grid gap-3 min-[821px]:grid-cols-2">
+                  <div className="grid gap-2">
+                    <label
+                      htmlFor="modalTimezone"
+                      className="text-[13px] font-medium text-foreground"
+                    >
+                      时区
+                    </label>
+                    <Input
+                      id="modalTimezone"
+                      value={timezone}
+                      onChange={(event) => setTimezone(event.target.value)}
+                      placeholder="UTC"
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <label
+                      htmlFor="modalOverlapPolicy"
+                      className="text-[13px] font-medium text-foreground"
+                    >
+                      上次未结束时
+                    </label>
+                    <Select
+                      value={overlapPolicy}
+                      onValueChange={(value) =>
+                        setOverlapPolicy(value as ScheduleFormState["overlapPolicy"])
+                      }
+                    >
+                      <SelectTrigger id="modalOverlapPolicy" className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="skip">跳过本次</SelectItem>
+                        <SelectItem value="enqueue">继续排队</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             <div className="grid gap-2">
               <label htmlFor="modalRepo" className="text-[13px] font-medium text-foreground">
                 仓库
@@ -837,9 +1081,9 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
               />
             ) : null}
 
-            {mutation.isError ? (
+            {mutation.isError || scheduleMutation.isError ? (
               <p className="text-xs text-danger" role="alert">
-                创建失败：{mutation.error.message}
+                创建失败：{mutation.error?.message ?? scheduleMutation.error?.message}
               </p>
             ) : null}
 
@@ -863,12 +1107,17 @@ export function NewTaskDialog({ open, onOpenChange, repos }: NewTaskDialogProps)
             form="new-task-form"
             disabled={
               mutation.isPending ||
+              scheduleMutation.isPending ||
               prompt.trim().length === 0 ||
               accountDefaultUnavailable
             }
             className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
           >
-            {mutation.isPending ? "创建中…" : "创建任务"}
+            {mutation.isPending || scheduleMutation.isPending
+              ? "创建中…"
+              : mode === "repeated"
+                ? "创建定时任务"
+                : "创建任务"}
           </button>
         </footer>
       </DialogContent>

@@ -329,8 +329,10 @@ export const V1_ROUTES: readonly V1RouteDefinition[] = [
     path: '/v1/schedules',
     summary: 'Create a schedule',
     description:
-      'Create an owner-scoped recurring task schedule. The task template is ' +
-      'validated and normalized through the same task creation rules.',
+      'Create an owner-scoped recurring task schedule. Prefer recurrence ' +
+      'descriptors such as daily, weekdays, weekly, or monthly; cronExpression ' +
+      'and timezone remain accepted for compatibility clients. The task ' +
+      'template is validated and normalized through the same task creation rules.',
     requestBody: V1ScheduleCreateRequestSchema,
     response: {
       status: 201,
@@ -354,7 +356,9 @@ export const V1_ROUTES: readonly V1RouteDefinition[] = [
     method: 'patch',
     path: '/v1/schedules/{id}',
     summary: 'Update a schedule',
-    description: 'Update recurrence, policies, enabled state, or task template.',
+    description:
+      'Update recurrence, policies, enabled state, or task template. Prefer ' +
+      'recurrence descriptors; cronExpression and timezone remain compatibility fields.',
     params: IdParamSchema,
     requestBody: V1ScheduleUpdateRequestSchema,
     response: {

@@ -57,7 +57,7 @@ function ImagesPage() {
             </Link>
           </Button>
           <Button asChild variant="outline" className="gap-2">
-            <Link to="/tasks/new">
+            <Link to="/tasks/new" search={{ scheduleId: undefined }}>
               <Plus className="size-4" />
               新建任务
             </Link>
