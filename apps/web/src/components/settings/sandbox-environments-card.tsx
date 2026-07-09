@@ -9,6 +9,7 @@ import {
   Copy,
   Play,
   Plus,
+  Trash2,
 } from "lucide-react";
 
 import type {
@@ -18,6 +19,7 @@ import type {
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -37,6 +39,12 @@ import {
 } from "@/lib/api/mutations";
 
 export type SandboxImageProvider = "aio" | "boxlite";
+
+type ImageParameterDraft = {
+  readonly name: string;
+  readonly value: string;
+  readonly secret: boolean;
+};
 
 export const SANDBOX_IMAGE_REGISTRATION_COPY = {
   kicker: "Image references",
@@ -107,6 +115,9 @@ export function SandboxEnvironmentsCard() {
   const [provider, setProvider] = React.useState<SandboxImageProvider>("aio");
   const [reference, setReference] = React.useState("");
   const [runtimeIds, setRuntimeIds] = React.useState("");
+  const [parameters, setParameters] = React.useState<ImageParameterDraft[]>([
+    { name: "", value: "", secret: false },
+  ]);
   const [showCreate, setShowCreate] = React.useState(false);
   const [copiedProvider, setCopiedProvider] =
     React.useState<SandboxImageProvider | null>(null);
@@ -133,12 +144,20 @@ export function SandboxEnvironmentsCard() {
         .split(",")
         .map((entry) => entry.trim())
         .filter(Boolean),
+      parameters: parameters
+        .map((parameter) => ({
+          name: parameter.name.trim(),
+          value: parameter.value,
+          secret: parameter.secret || undefined,
+        }))
+        .filter((parameter) => parameter.name.length > 0),
     };
     createEnv.mutate(body, {
       onSuccess: () => {
         setName("");
         setReference("");
         setRuntimeIds("");
+        setParameters([{ name: "", value: "", secret: false }]);
         setShowCreate(false);
       },
     });
@@ -215,6 +234,95 @@ export function SandboxEnvironmentsCard() {
               onChange={(event) => setRuntimeIds(event.target.value)}
               placeholder="runtime: codex"
             />
+          </div>
+          <div className="rounded-md border border-border bg-background p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-medium text-foreground">镜像参数</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  写入 /home/gem/.cap/image-env；密钥值保存后不再回显。
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setParameters((items) => [
+                    ...items,
+                    { name: "", value: "", secret: false },
+                  ])
+                }
+                className="gap-2"
+              >
+                <Plus className="size-3.5" />
+                添加参数
+              </Button>
+            </div>
+            <div className="mt-3 grid gap-2">
+              {parameters.map((parameter, index) => (
+                <div
+                  key={index}
+                  className="grid gap-2 sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)_auto_auto]"
+                >
+                  <Input
+                    value={parameter.name}
+                    onChange={(event) =>
+                      setParameters((items) =>
+                        replaceParameter(items, index, {
+                          ...parameter,
+                          name: event.target.value,
+                        }),
+                      )
+                    }
+                    placeholder="GCODE_TOKEN"
+                  />
+                  <Input
+                    value={parameter.value}
+                    onChange={(event) =>
+                      setParameters((items) =>
+                        replaceParameter(items, index, {
+                          ...parameter,
+                          value: event.target.value,
+                        }),
+                      )
+                    }
+                    type={parameter.secret ? "password" : "text"}
+                    placeholder="参数值"
+                  />
+                  <label className="flex h-10 items-center gap-2 rounded-md border border-border px-3 text-xs text-muted-foreground">
+                    <Checkbox
+                      checked={parameter.secret}
+                      onCheckedChange={(checked) =>
+                        setParameters((items) =>
+                          replaceParameter(items, index, {
+                            ...parameter,
+                            secret: checked === true,
+                          }),
+                        )
+                      }
+                    />
+                    密钥
+                  </label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      setParameters((items) =>
+                        items.length <= 1
+                          ? [{ name: "", value: "", secret: false }]
+                          : items.filter((_, itemIndex) => itemIndex !== index),
+                      )
+                    }
+                    className="gap-2 text-muted-foreground"
+                  >
+                    <Trash2 className="size-3.5" />
+                    删除
+                  </Button>
+                </div>
+              ))}
+            </div>
           </div>
           <div className="flex justify-end">
             <Button type="submit" disabled={createEnv.isPending} className="gap-2">
@@ -327,6 +435,11 @@ function EnvironmentRow({
         <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
           {sourceReference(environment)}
         </p>
+        {environment.parameters && environment.parameters.length > 0 ? (
+          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+            参数：{formatParameters(environment.parameters)}
+          </p>
+        ) : null}
       </div>
       <div className="flex flex-wrap gap-2 sm:justify-end">
         <Button
@@ -434,6 +547,26 @@ function sourceReference(environment: SandboxEnvironment): string {
 
 function sourceLabel(kind: SandboxEnvironment["source"]["kind"]): string {
   return kind === "aio-docker-image" ? "AIO image" : "BoxLite image";
+}
+
+function replaceParameter(
+  items: ImageParameterDraft[],
+  index: number,
+  next: ImageParameterDraft,
+): ImageParameterDraft[] {
+  return items.map((item, itemIndex) => (itemIndex === index ? next : item));
+}
+
+function formatParameters(
+  parameters: NonNullable<SandboxEnvironment["parameters"]>,
+): string {
+  return parameters
+    .map((parameter) =>
+      parameter.secret
+        ? `${parameter.name}=******`
+        : `${parameter.name}=${parameter.value ?? ""}`,
+    )
+    .join(", ");
 }
 
 function formatDate(value: Date | string): string {

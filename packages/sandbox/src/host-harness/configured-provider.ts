@@ -23,6 +23,12 @@ import {
   requiredToolsForBoxLiteCapabilities,
 } from '@cap/sandbox-provider-boxlite';
 import {
+  buildSandboxImageParameterSetupCommands,
+  removeSandboxImageParameterFileBestEffort,
+  scrubSandboxImageParameterSecrets,
+  type SandboxHostImageParameterProfile,
+} from './image-parameters.js';
+import {
   SandboxProviderRouter,
   type RoutableSandboxProvider,
 } from '../provider-center/router.js';
@@ -117,6 +123,12 @@ export function createConfiguredSandboxProvider<
             executor,
             workspacePath,
             host,
+          }),
+        preStopCleanup: ({ taskId, executor }) =>
+          removeSandboxImageParameterFileBestEffort({
+            executor,
+            taskId,
+            warn: (message) => host.logger?.warn?.(message),
           }),
         resolveEnvironment: async ({ taskId, runtimeId }) =>
           (await host.provisionLookup.getResolvedEnvironment?.(
@@ -213,6 +225,16 @@ function createAioProviderDescriptor<
             runtimeId,
             providerLabel: 'AIO',
           });
+          await runImageParameterSetup({
+            executor,
+            taskId,
+            host,
+            logger: host.logger,
+            providerLabel: 'AIO',
+            providerFamily: 'aio',
+            runtimeId: runtime.id,
+            scrubOutput: scrubAioExecSecrets,
+          });
           await runRuntimeSetup({
             executor,
             taskId,
@@ -241,6 +263,11 @@ function createAioProviderDescriptor<
           host,
           executor,
           taskId,
+        });
+        await removeSandboxImageParameterFileBestEffort({
+          executor,
+          taskId,
+          warn: (message) => host.logger?.warn?.(message),
         });
         await trimRuntimeHomeBeforeStop({
           host,
@@ -355,6 +382,91 @@ function resolveProvisionHookRuntime<
       providerLabel: args.providerLabel,
     })
   );
+}
+
+async function runImageParameterSetup<
+  TCloneSpec,
+  TRuntimeId,
+  TTranscriptSource extends SandboxTranscriptSourceBase,
+  TAuthMaterial,
+>(args: {
+  readonly executor: SandboxCommandExecutor;
+  readonly taskId: string;
+  readonly host: SandboxHostHarness<
+    TCloneSpec,
+    TRuntimeId,
+    TTranscriptSource,
+    TAuthMaterial
+  >;
+  readonly logger?: SandboxHostLogger;
+  readonly providerLabel: string;
+  readonly providerFamily: 'aio' | 'boxlite';
+  readonly runtimeId?: string | null;
+  readonly scrubOutput: (output: string) => string;
+}): Promise<void> {
+  const profile = await resolveImageParameterProfile({
+    host: args.host,
+    taskId: args.taskId,
+    providerFamily: args.providerFamily,
+    runtimeId: args.runtimeId,
+    logger: args.logger,
+  });
+  const commands = buildSandboxImageParameterSetupCommands(profile);
+  if (commands.length === 0) return;
+
+  for (const { command, tolerateUnresolvedExit } of commands) {
+    const { exitCode, output } = await runSandboxCommand(args.executor, command);
+    if (setupCommandFailed(exitCode, tolerateUnresolvedExit)) {
+      const scrubbed = scrubSandboxImageParameterSecrets(
+        args.scrubOutput(output),
+        profile,
+      ).trim();
+      throw new Error(
+        `image parameter setup for ${args.providerLabel} task ${args.taskId} failed: exit_code ${exitCode}` +
+          (scrubbed ? ` - ${scrubbed}` : ''),
+      );
+    }
+  }
+  args.logger?.debug?.(
+    `provisioned ${args.providerLabel} image parameters for task ${args.taskId} (${commands.length} command(s))`,
+  );
+}
+
+async function resolveImageParameterProfile<
+  TCloneSpec,
+  TRuntimeId,
+  TTranscriptSource extends SandboxTranscriptSourceBase,
+  TAuthMaterial,
+>(args: {
+  readonly host: SandboxHostHarness<
+    TCloneSpec,
+    TRuntimeId,
+    TTranscriptSource,
+    TAuthMaterial
+  >;
+  readonly taskId: string;
+  readonly providerFamily: 'aio' | 'boxlite';
+  readonly runtimeId?: string | null;
+  readonly logger?: SandboxHostLogger;
+}): Promise<SandboxHostImageParameterProfile | null> {
+  if (!args.host.provisionLookup.getTaskImageParameterProfile) return null;
+  try {
+    return (
+      (await args.host.provisionLookup.getTaskImageParameterProfile(
+        args.taskId,
+        args.providerFamily,
+        args.runtimeId ?? null,
+      )) ??
+      null
+    );
+  } catch (err) {
+    args.logger?.warn?.(
+      `task ${args.taskId}: could not resolve image parameters (skipping): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return null;
+  }
 }
 
 async function runRuntimePreflight<TAuthMaterial>(args: {
@@ -701,6 +813,16 @@ async function runBoxLiteRuntimeSetup<
     host: args.host,
     taskId: args.taskId,
     providerLabel: 'BoxLite',
+  });
+  await runImageParameterSetup({
+    executor: args.executor,
+    taskId: args.taskId,
+    host: args.host,
+    logger: args.host.logger,
+    providerLabel: 'BoxLite',
+    providerFamily: 'boxlite',
+    runtimeId: runtime.id,
+    scrubOutput: scrubSandboxCommandOutput,
   });
   await runRuntimeSetup({
     executor: args.executor,

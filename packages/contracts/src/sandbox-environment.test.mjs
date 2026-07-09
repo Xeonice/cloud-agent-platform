@@ -15,6 +15,7 @@ const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const {
   CreateSandboxEnvironmentRequestSchema,
+  SandboxEnvironmentSchema,
   SandboxEnvironmentSourceKindSchema,
   SandboxEnvironmentSourceSchema,
 } = require(path.join(here, '..', 'dist', 'sandbox-environment.js'));
@@ -89,4 +90,47 @@ test('create request rejects removed delivery-specific source kinds', () => {
       },
     }),
   );
+});
+
+test('create request accepts image parameters and validates env names', () => {
+  assert.deepEqual(
+    CreateSandboxEnvironmentRequestSchema.parse({
+      name: 'BoxLite gcode',
+      source: { kind: 'boxlite-image', image: 'registry.example/cap-boxlite:gcode' },
+      parameters: [
+        { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v5' },
+        { name: 'GCODE_TOKEN', value: 'secret', secret: true },
+      ],
+    }).parameters,
+    [
+      { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v5' },
+      { name: 'GCODE_TOKEN', value: 'secret', secret: true },
+    ],
+  );
+
+  assert.throws(() =>
+    CreateSandboxEnvironmentRequestSchema.parse({
+      name: 'bad',
+      source: { kind: 'aio-docker-image', image: 'cap/aio:v1' },
+      parameters: [{ name: 'bad-name', value: 'x' }],
+    }),
+  );
+});
+
+test('environment response can expose secret parameter keys without values', () => {
+  const parsed = SandboxEnvironmentSchema.parse({
+    id: '00000000-0000-4000-a000-000000000001',
+    name: 'BoxLite gcode',
+    status: 'ready',
+    source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+    compatibility: { providerFamilies: ['boxlite'] },
+    parameters: [
+      { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v5', secret: false },
+      { name: 'GCODE_TOKEN', secret: true },
+    ],
+    isDefault: false,
+    createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-07-01T00:00:00.000Z'),
+  });
+  assert.equal(parsed.parameters[1].value, undefined);
 });

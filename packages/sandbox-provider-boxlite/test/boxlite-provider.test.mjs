@@ -805,5 +805,75 @@ await test('provider teardown is idempotent and clears existence', async () => {
   assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-4', 'cap-boxlite-task-4']);
 });
 
+await test('provider runs pre-stop cleanup before teardown and keeps deletion best-effort', async () => {
+  const events = [];
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: (request) => {
+      events.push(`exec:${request.command}`);
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        output: '',
+        timedOut: false,
+      };
+    },
+  });
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    preStopCleanup: async ({ taskId, sandbox, executor }) => {
+      events.push(`cleanup:${taskId}:${sandbox.id}`);
+      await executor.exec({ command: 'rm -rf secret-profile' });
+      throw new Error('cleanup failure is non-fatal');
+    },
+  });
+  await provider.provision({ taskId: 'task-cleanup', cloneSpec: null });
+  await provider.teardownSandbox('task-cleanup');
+
+  assert.deepEqual(events, [
+    'cleanup:task-cleanup:cap-boxlite-task-cleanup',
+    'exec:rm -rf secret-profile',
+  ]);
+  assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-cleanup']);
+});
+
+await test('provider runs pre-stop cleanup for readoptable BoxLite sandboxes', async () => {
+  const events = [];
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: (request) => {
+      events.push(`exec:${request.sandboxId}:${request.command}`);
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        output: '',
+        timedOut: false,
+      };
+    },
+  });
+  const firstProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+  await firstProvider.provision({ taskId: 'task-readopt-cleanup', cloneSpec: null });
+
+  const restartedProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    preStopCleanup: async ({ taskId, sandbox, executor }) => {
+      events.push(`cleanup:${taskId}:${sandbox.id}`);
+      await executor.exec({ command: 'rm -rf cap-profile' });
+    },
+  });
+  await restartedProvider.teardownSandbox('task-readopt-cleanup');
+
+  assert.deepEqual(events, [
+    'cleanup:task-readopt-cleanup:cap-boxlite-task-readopt-cleanup',
+    'exec:cap-boxlite-task-readopt-cleanup:rm -rf cap-profile',
+  ]);
+  assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-readopt-cleanup']);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

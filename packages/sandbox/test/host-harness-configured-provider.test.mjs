@@ -139,6 +139,12 @@ function makeHost(options = {}) {
           options.prompts?.has(taskId)
             ? options.prompts.get(taskId)
             : `prompt:${taskId}`,
+        ...(options.getTaskImageParameterProfile
+          ? {
+              getTaskImageParameterProfile:
+                options.getTaskImageParameterProfile,
+            }
+          : {}),
         ...(options.getTaskSkills
           ? { getTaskSkills: options.getTaskSkills }
           : {}),
@@ -215,6 +221,15 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
       taskRuntime: runtime,
       prompts: new Map([['task-1', 'fix task']]),
       getTaskSkills: async () => ['skill-ok', 'skill-missing', 'skill-bad', 'skill-throw'],
+      getTaskImageParameterProfile: async () => ({
+        parameters: [
+          {
+            name: 'GCODE_TOKEN',
+            value: 'tool-secret',
+            secret: true,
+          },
+        ],
+      }),
       skillInstallers: {
         resolveSkillInstaller(id) {
           if (id === 'skill-missing') return undefined;
@@ -296,11 +311,20 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
 
     assert.deepEqual(persistedAuth, [['task-1', '{"token":"secret"}']]);
     assert(calls.some((call) => call.command === 'node --version'));
+    const toolSetupIndex = calls.findIndex((call) =>
+      call.command.includes('/home/gem/.cap/image-env'),
+    );
+    assert(toolSetupIndex >= 0, 'AIO writes the CAP image parameter env file');
+    assert(
+      toolSetupIndex < calls.findIndex((call) => call.command === 'setup-ok'),
+      'AIO writes image parameters before runtime setup',
+    );
     assert(calls.some((call) => call.command === 'setup-ok'));
     assert(calls.some((call) => call.command === 'setup-nan-ok'));
     assert(calls.some((call) => call.command === 'install-skill-ok < /dev/null'));
     assert(logs.debug.some((line) => line.includes('preflight passed')));
     assert(logs.debug.some((line) => line.includes('preinstalled skill "skill-ok"')));
+    assert(logs.debug.some((line) => line.includes('provisioned AIO image parameters')));
     assert(logs.warn.some((line) => line.includes('skill "skill-missing" is not allowlisted')));
     assert(logs.warn.some((line) => line.includes('installer exit_code 7')));
     assert(logs.warn.some((line) => line.includes('installer timeout')));
@@ -758,6 +782,15 @@ await test('configured BoxLite provider delegates runtime setup through the same
         defaultRuntime: runtime,
         taskRuntime: runtime,
         prompts: new Map([['box-task', 'box prompt']]),
+        getTaskImageParameterProfile: async () => ({
+          parameters: [
+            {
+              name: 'GCODE_TOKEN',
+              value: 'box-tool-secret',
+              secret: true,
+            },
+          ],
+        }),
       });
       const { calls, executor } = makeExecutor();
       const router = mod.createConfiguredSandboxProvider(host);
@@ -773,9 +806,16 @@ await test('configured BoxLite provider delegates runtime setup through the same
         workspacePath: '/workspace',
       });
 
-      assert.deepEqual(calls.map((call) => call.command), ['boxlite-setup']);
+      const commands = calls.map((call) => call.command);
+      const toolSetupIndex = commands.findIndex((command) =>
+        command.includes('/home/gem/.cap/image-env'),
+      );
+      assert(toolSetupIndex >= 0, 'BoxLite writes the CAP image parameter env file');
+      assert.equal(commands.at(-1), 'boxlite-setup');
+      assert(toolSetupIndex < commands.indexOf('boxlite-setup'));
       assert(events.some((event) => event[0] === 'plan' && event[2] === '/workspace'));
       assert(logs.debug.some((line) => line.includes('provisioned BoxLite runtime "codex" setup')));
+      assert(logs.debug.some((line) => line.includes('provisioned BoxLite image parameters')));
     },
   );
 });

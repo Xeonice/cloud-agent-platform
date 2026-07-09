@@ -29,6 +29,12 @@ export interface SandboxEnvironmentCompatibility {
   readonly runtimeIds?: readonly SandboxEnvironmentRuntimeId[];
 }
 
+export interface SandboxEnvironmentParameter {
+  readonly name: string;
+  readonly value?: string;
+  readonly secret: boolean;
+}
+
 export interface SandboxEnvironmentBaseSource {
   readonly kind: SandboxEnvironmentSourceKind;
   readonly label?: string;
@@ -56,6 +62,7 @@ export interface SandboxEnvironmentRecord {
   readonly status: SandboxEnvironmentStatus;
   readonly source: SandboxEnvironmentSourceDescriptor;
   readonly compatibility: SandboxEnvironmentCompatibility;
+  readonly parameters?: readonly SandboxEnvironmentParameter[];
   readonly isDefault?: boolean;
   readonly lastValidationId?: string | null;
   readonly lastValidatedAt?: string | null;

@@ -11,8 +11,7 @@ The product model is intentionally small:
   `ghcr.io/xeonice/cap-aio-sandbox:<cap-version>`.
 - BoxLite uses one BoxLite-compatible image derived from
   `ghcr.io/xeonice/cap-boxlite-sandbox:<cap-version>`.
-- Image Management accepts registry image references. Deployment internals such
-  as "loaded image" and "rootfs" are not user-facing image source types.
+- Image Management accepts registry image references only.
 
 CAP is the control plane, not an image builder, uploader, publisher, or registry
 host. Build and publish the image in your own Docker / CI / registry workflow,
@@ -67,6 +66,45 @@ becomes selectable:
 - Do not overwrite the official sandbox entrypoint, ports, service user, or
   workspace path unless you also own the provider integration change.
 
+## Image Parameters
+
+Custom images may install tools such as `gcode`, but tokens must not be baked
+into Dockerfiles, image layers, build logs, or registries. Admins configure the
+runtime parameters a custom image needs in Image Management:
+
+- plain parameters such as `GCODE_API_BASE_URL`.
+- secret parameters such as `GCODE_TOKEN`, which are write-only after saving.
+
+When a task uses that image, CAP writes the selected image parameters before
+the agent starts:
+
+- `/home/gem/.cap/image-env`
+
+Images should provide a small wrapper that sources this env file before calling
+the real binary:
+
+```sh
+#!/usr/bin/env sh
+set -eu
+
+if [ -r /home/gem/.cap/image-env ]; then
+  . /home/gem/.cap/image-env
+fi
+
+exec /opt/gcode/gcode "$@"
+```
+
+If your `gcode` version requires initialization, run `gcode init` inside the
+wrapper using non-interactive flags or config that reads those environment
+variables. Do not run token-bearing init commands in Docker `RUN` layers, and
+do not copy initialized account state into the image.
+
+CAP writes the env file after workspace materialization and before agent runtime
+setup/launch. It removes `/home/gem/.cap/image-env` best-effort before sandbox
+stop or teardown. If the image has no parameters, the file is absent; if a token
+lacks external permissions, the tool fails on its own. This is separate from
+image validation.
+
 ## Build And Push
 
 AIO currently runs on Linux/amd64 Docker hosts in the supported local provider
@@ -116,48 +154,6 @@ Registry operations stay outside CAP:
 - CAP stores the non-secret image reference and validation result; it does not
   build, upload, host, publish, store registry tokens, or make a private
   registry reachable.
-
-## Advanced: BoxLite Deployment-Default Rootfs
-
-Most BoxLite deployments should use the managed `boxlite-image` path above:
-publish a registry image, register it in `镜像管理`, validate it, and let users
-choose it. A local rootfs is only a deployment-level server default for operators
-who intentionally manage BoxLite rootfs assets outside the image library.
-
-The rootfs path is not registered in `/images`, does not appear in the user image
-selectors, and is not a replacement for per-user or per-task custom images. Use
-it only when the whole deployment should boot BoxLite tasks from the same local
-rootfs before any user-level override is selected.
-
-Example OCI export flow:
-
-```bash
-export CAP_VERSION=v0.31.0
-export ROOTFS=/Users/zlyan/WorkProject/cap-release/assets/boxlite/cap-boxlite-sandbox-custom/${CAP_VERSION}-1/linux-arm64/oci
-
-docker buildx create --name cap-oci-builder --driver docker-container --use
-
-docker buildx build \
-  --builder cap-oci-builder \
-  --platform linux/arm64 \
-  --build-arg CAP_VERSION="$CAP_VERSION" \
-  --output type=oci,dest=/tmp/cap-boxlite-custom.oci.tar \
-  ./examples/sandbox-images/boxlite
-
-mkdir -p "$ROOTFS"
-tar -C "$ROOTFS" -xf /tmp/cap-boxlite-custom.oci.tar
-```
-
-Then set the deployment environment and restart the API/web stack:
-
-```bash
-BOXLITE_ROOTFS_PATH=/Users/zlyan/WorkProject/cap-release/assets/boxlite/cap-boxlite-sandbox-custom/v0.31.0-1/linux-arm64/oci
-```
-
-After restart, verify the provider path directly by creating a short task,
-starting it, running `sh -lc 'pwd && command -v git && command -v codex'`, and
-deleting the sandbox. If the deployment also exposes custom images through the
-image library, still validate each registry image from `镜像管理`.
 
 ## Register In CAP
 

@@ -194,6 +194,12 @@ model SandboxEnvironment {
   source Json
   status String @default("draft")
 
+  /// Admin-managed image runtime parameters. `envVars` stores readable plain
+  /// values. `secretEnvVars` stores encrypted values and must never be returned
+  /// on API read paths.
+  envVars       Json @default("{}") @map("env_vars")
+  secretEnvVars Json @default("{}") @map("secret_env_vars")
+
   providerFamilies String[] @default([]) @map("provider_families")
   runtimeIds       String[] @default([]) @map("runtime_ids")
   isDefault        Boolean  @default(false) @map("is_default")

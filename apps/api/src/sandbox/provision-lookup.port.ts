@@ -1,5 +1,6 @@
 import type {
   SandboxEnvironmentProviderFamily,
+  SandboxHostImageParameterProfile,
   SandboxResolvedEnvironmentMetadata,
 } from '@cap/sandbox';
 
@@ -79,6 +80,17 @@ export interface ProvisionLookup {
    * console behavior). Behind the port like {@link getTaskRuntime}.
    */
   getTaskExecutionMode(taskId: string): Promise<string | null>;
+
+  /**
+   * Resolve selected-image parameters that sandbox tools may consume at runtime.
+   * Secret values are write-only for sandbox setup and must never be exposed
+   * through selected-run/read APIs.
+   */
+  getTaskImageParameterProfile?(
+    taskId: string,
+    providerFamily: SandboxEnvironmentProviderFamily,
+    runtimeId?: string | null,
+  ): Promise<SandboxHostImageParameterProfile | null>;
 
   /**
    * Resolve the task's managed sandbox environment for a concrete provider

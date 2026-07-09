@@ -31,7 +31,7 @@ test('sandbox image docs link the template directories', () => {
   assert.match(readme, /examples\/sandbox-images\/boxlite/);
 });
 
-test('sandbox image docs cover registry operations and BoxLite rootfs boundaries', () => {
+test('sandbox image docs cover registry operations and avoid local source types', () => {
   const docs = [
     readFile('docs/sandbox-images.md'),
     readFile('docs/sandbox-images.zh.md'),
@@ -42,10 +42,11 @@ test('sandbox image docs cover registry operations and BoxLite rootfs boundaries
     assert.match(doc, /write:packages/);
     assert.match(doc, /HTTPS/);
     assert.match(doc, /insecure registry/);
-    assert.match(doc, /BOXLITE_ROOTFS_PATH/);
-    assert.match(doc, /\/images/);
+    assert.match(doc, /Image Management|镜像管理/);
     assert.match(doc, /registry token/);
     assert.match(doc, /CAP_VERSION=v0\.0\.0/);
+    assert.doesNotMatch(doc, /loaded image/i);
+    assert.doesNotMatch(doc, /rootfs/i);
   }
 });
 

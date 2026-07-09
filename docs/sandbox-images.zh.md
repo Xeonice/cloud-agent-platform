@@ -6,7 +6,7 @@
 
 - AIO 镜像：从 `ghcr.io/xeonice/cap-aio-sandbox:<cap-version>` 扩展。
 - BoxLite 镜像：从 `ghcr.io/xeonice/cap-boxlite-sandbox:<cap-version>` 扩展。
-- 镜像管理只注册 registry image reference。AIO loaded image、BoxLite rootfs 这类概念属于部署实现细节，不是用户创建镜像时需要理解或选择的来源类型。
+- 镜像管理只注册 registry image reference。
 
 CAP 是控制面，不是镜像构建、上传、发布或 registry 托管平台。管理员需要先在自己的 Docker / CI / registry 流程里构建并发布镜像，然后在 CAP 中注册这个已发布的 registry image reference。
 
@@ -54,6 +54,30 @@ CAP 在镜像进入可选状态前会做真实 provider 验证。自定义镜像
 - 不要把操作员 token、SSH key、PAT、模型账号凭据写进镜像。凭据应通过 CAP 账号设置、provider 环境变量、registry 登录或不会留在最终 layer 的 build secret 提供。
 - 不要把镜像做成一次性任务镜像。它应该是可复用的基础层，任务目标和仓库内容仍由 CAP 在创建任务时注入。
 
+## 镜像参数
+
+自定义镜像可以预装 `gcode` 这类第三方 CLI，但 token 不应该进入镜像 layer、Dockerfile、构建日志或 registry。管理员在 `镜像管理` 注册镜像时配置这个镜像需要的运行参数：
+
+- 普通参数：例如 `GCODE_API_BASE_URL`
+- 密钥参数：例如 `GCODE_TOKEN`，保存后不再回显
+
+任务使用该镜像时，CAP 会在 agent 启动前写入 `/home/gem/.cap/image-env`。镜像里应该放一个轻量 wrapper，在调用真实二进制前读取这个文件：
+
+```sh
+#!/usr/bin/env sh
+set -eu
+
+if [ -r /home/gem/.cap/image-env ]; then
+  . /home/gem/.cap/image-env
+fi
+
+exec /opt/gcode/gcode "$@"
+```
+
+如果所用 `gcode` 版本要求先初始化，把 `gcode init` 放在 wrapper 里，以非交互参数或配置文件读取上述环境变量。不要在 `RUN` layer 里执行带 token 的 init，也不要把 init 生成的账号状态复制进镜像。
+
+CAP 写参数文件的顺序是：仓库 workspace materialize 完成之后，agent runtime setup / launch 之前。任务停止或 sandbox 清理前会 best-effort 删除 `/home/gem/.cap/image-env`。如果镜像没有配置参数，文件会缺省；如果 token 权限不足，工具调用自己失败，这应该和镜像验证失败区分开。
+
 ## 构建并推送
 
 AIO 本地 provider 的受支持路径通常是 Linux/amd64 Docker host：
@@ -92,39 +116,6 @@ registry 相关操作由运维侧自己保证：
 - 如果使用私有 registry，需要先在 provider host 上配置凭据，例如 `docker login`、节点本地 credential helper，或 BoxLite 支持的 registry 配置。
 - BoxLite 必须能从 BoxLite host 访问 registry。优先使用 HTTPS；如果内网 registry 只能走 HTTP 或使用私有 CA，需要先在 BoxLite 或宿主机 registry 配置里允许 insecure registry 或信任该 CA。
 - CAP 只保存非密的镜像地址和验证结果；不会构建、上传、托管、发布镜像，保存 registry token，或者替用户打通私有 registry 网络。
-
-## 高级：BoxLite 部署默认 rootfs
-
-大多数 BoxLite 部署应该使用上面的 `boxlite-image` 路径：把镜像 push 到 registry，在 `镜像管理` 注册并验证，然后让用户选择。local rootfs 只适合运维明确想在整个部署层面修改 BoxLite 默认启动层的场景。
-
-这个 rootfs 路径不是 `/images` 里的镜像记录，不会出现在用户镜像下拉框里，也不是按用户或按任务选择自定义镜像的替代品。只有当整个部署都应该在没有用户级覆盖时从同一份本地 rootfs 启动 BoxLite 任务，才使用它。
-
-示例 OCI 导出流程：
-
-```bash
-export CAP_VERSION=v0.31.0
-export ROOTFS=/Users/zlyan/WorkProject/cap-release/assets/boxlite/cap-boxlite-sandbox-custom/${CAP_VERSION}-1/linux-arm64/oci
-
-docker buildx create --name cap-oci-builder --driver docker-container --use
-
-docker buildx build \
-  --builder cap-oci-builder \
-  --platform linux/arm64 \
-  --build-arg CAP_VERSION="$CAP_VERSION" \
-  --output type=oci,dest=/tmp/cap-boxlite-custom.oci.tar \
-  ./examples/sandbox-images/boxlite
-
-mkdir -p "$ROOTFS"
-tar -C "$ROOTFS" -xf /tmp/cap-boxlite-custom.oci.tar
-```
-
-然后设置部署环境变量并重启 API/web 栈：
-
-```bash
-BOXLITE_ROOTFS_PATH=/Users/zlyan/WorkProject/cap-release/assets/boxlite/cap-boxlite-sandbox-custom/v0.31.0-1/linux-arm64/oci
-```
-
-重启后需要直接验证 provider 路径：创建一个短生命周期 sandbox，启动后执行 `sh -lc 'pwd && command -v git && command -v codex'`，最后删除 sandbox。如果同时在镜像库暴露 registry 镜像，仍然要在 `镜像管理` 里逐个验证。
 
 ## 在 CAP 中注册
 
