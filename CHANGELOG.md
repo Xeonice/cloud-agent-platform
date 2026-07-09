@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.35.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.34.0...v0.35.0) (2026-07-09)
+
+
+### Features
+
+* **schedules:** simplify scheduled task creation ([de73bf7](https://github.com/Xeonice/cloud-agent-platform/commit/de73bf78f0d4ae5ddc4df4f79edddf5b65cf632c))
+* **schedules:** simplify scheduled task creation ([c5e16ab](https://github.com/Xeonice/cloud-agent-platform/commit/c5e16ab547cb9cafa38d07b43882eb0cda43fec4))
+
 ## [0.34.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.33.0...v0.34.0) (2026-07-09)
 
 
