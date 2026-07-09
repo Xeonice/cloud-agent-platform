@@ -35,10 +35,18 @@ import {
   V1ListTasksResponseSchema,
   V1ListReposResponseSchema,
   V1TaskEventSchema,
+  CreateScheduleRequestSchema,
+  UpdateScheduleRequestSchema,
+  ScheduleResponseSchema,
+  V1ListSchedulesResponseSchema,
+  V1ListScheduleRunsResponseSchema,
+  V1ScheduleListQuerySchema,
   type V1CreateTaskRequest,
   type V1ListQuery,
   type V1ListTasksResponse,
   type V1ListReposResponse,
+  type V1ListSchedulesResponse,
+  type V1ListScheduleRunsResponse,
 } from '@cap/contracts';
 
 /**
@@ -137,6 +145,15 @@ export type V1RepoListResponse = V1ListReposResponse;
 export const V1LifecycleEventSchema = V1TaskEventSchema;
 export type V1LifecycleEvent = z.infer<typeof V1LifecycleEventSchema>;
 
+export const V1ScheduleCreateRequestSchema = CreateScheduleRequestSchema;
+export const V1ScheduleUpdateRequestSchema = UpdateScheduleRequestSchema;
+export const V1ScheduleResponseSchema = ScheduleResponseSchema;
+export const V1ScheduleListResponseSchema = V1ListSchedulesResponseSchema;
+export const V1ScheduleRunListResponseSchema = V1ListScheduleRunsResponseSchema;
+export const V1ScheduleRunListQuerySchema = V1ScheduleListQuerySchema;
+export type V1ScheduleListResponse = V1ListSchedulesResponse;
+export type V1ScheduleRunListResponse = V1ListScheduleRunsResponse;
+
 // ---------------------------------------------------------------------------
 // Route table — the single declarative list of every `/v1` route. The registry
 // builder iterates it, and the route↔schema diff test (4.4) asserts the served
@@ -144,7 +161,7 @@ export type V1LifecycleEvent = z.infer<typeof V1LifecycleEventSchema>;
 // ---------------------------------------------------------------------------
 
 /** An HTTP method the `/v1` surface uses. */
-type V1Method = 'get' | 'post';
+type V1Method = 'get' | 'post' | 'patch' | 'delete';
 
 /** One registered `/v1` route, expressed in terms of `@cap/contracts` schemas. */
 interface V1RouteDefinition {
@@ -293,6 +310,107 @@ export const V1_ROUTES: readonly V1RouteDefinition[] = [
       status: 200,
       description: 'The repo.',
       schema: RepoSchema,
+    },
+  },
+  {
+    method: 'get',
+    path: '/v1/schedules',
+    summary: 'List schedules',
+    description: 'Owner-scoped keyset-paginated list of task schedules.',
+    query: V1ScheduleRunListQuerySchema,
+    response: {
+      status: 200,
+      description: 'A page of schedules plus the next-page cursor.',
+      schema: V1ScheduleListResponseSchema,
+    },
+  },
+  {
+    method: 'post',
+    path: '/v1/schedules',
+    summary: 'Create a schedule',
+    description:
+      'Create an owner-scoped recurring task schedule. The task template is ' +
+      'validated and normalized through the same task creation rules.',
+    requestBody: V1ScheduleCreateRequestSchema,
+    response: {
+      status: 201,
+      description: 'The created schedule.',
+      schema: V1ScheduleResponseSchema,
+    },
+  },
+  {
+    method: 'get',
+    path: '/v1/schedules/{id}',
+    summary: 'Get a schedule',
+    description: 'Fetch an owner-scoped schedule by id.',
+    params: IdParamSchema,
+    response: {
+      status: 200,
+      description: 'The schedule.',
+      schema: V1ScheduleResponseSchema,
+    },
+  },
+  {
+    method: 'patch',
+    path: '/v1/schedules/{id}',
+    summary: 'Update a schedule',
+    description: 'Update recurrence, policies, enabled state, or task template.',
+    params: IdParamSchema,
+    requestBody: V1ScheduleUpdateRequestSchema,
+    response: {
+      status: 200,
+      description: 'The updated schedule.',
+      schema: V1ScheduleResponseSchema,
+    },
+  },
+  {
+    method: 'post',
+    path: '/v1/schedules/{id}/pause',
+    summary: 'Pause a schedule',
+    description: 'Disable future fires for an owner-scoped schedule.',
+    params: IdParamSchema,
+    response: {
+      status: 200,
+      description: 'The paused schedule.',
+      schema: V1ScheduleResponseSchema,
+    },
+  },
+  {
+    method: 'post',
+    path: '/v1/schedules/{id}/resume',
+    summary: 'Resume a schedule',
+    description: 'Enable a schedule and compute its next future fire time.',
+    params: IdParamSchema,
+    response: {
+      status: 200,
+      description: 'The resumed schedule.',
+      schema: V1ScheduleResponseSchema,
+    },
+  },
+  {
+    method: 'delete',
+    path: '/v1/schedules/{id}',
+    summary: 'Delete a schedule',
+    description: 'Delete an owner-scoped schedule and its run ledger.',
+    params: IdParamSchema,
+    response: {
+      status: 204,
+      description: 'The schedule was deleted.',
+      schema: null,
+    },
+  },
+  {
+    method: 'get',
+    path: '/v1/schedules/{id}/runs',
+    summary: "List a schedule's runs",
+    description:
+      'Owner-scoped keyset-paginated run ledger ordered by scheduled fire time.',
+    params: IdParamSchema,
+    query: V1ScheduleRunListQuerySchema,
+    response: {
+      status: 200,
+      description: 'A page of schedule runs plus the next-page cursor.',
+      schema: V1ScheduleRunListResponseSchema,
     },
   },
 ];

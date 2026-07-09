@@ -91,6 +91,9 @@ export * from './asciicast.js';
 // + list query + SSE lifecycle-event shape (additive; never mutate console schemas)
 export * from './v1.js';
 
+// Scheduled task DTOs + cron/timezone next-fire helper.
+export * from './schedule.js';
+
 // The exact zod instance every contracts schema is built on. Re-exported so a
 // CJS consumer (the api) can run `extendZodWithOpenApi` on the SAME class realm
 // the schemas inherit from — see ./zod-instance.ts for the ESM/CJS realm split.

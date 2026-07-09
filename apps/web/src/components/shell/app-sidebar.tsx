@@ -34,14 +34,20 @@ import {
 import { AccountMenu } from "@/components/shell/account-menu";
 
 /** The product-nav keys; one of these is highlighted per route (task 11.5). */
-export type NavKey = "dashboard" | "repositories" | "images" | "history" | "api";
+export type NavKey =
+  | "dashboard"
+  | "schedules"
+  | "repositories"
+  | "images"
+  | "history"
+  | "api";
 
 /**
  * Map the current pathname to the nav key that should be highlighted.
  *
  * Pure + total so it is trivially unit-testable. The dashboard item owns the
  * task surfaces too: `/dashboard`, `/tasks/new`, and `/tasks/:id` all light
- * 任务控制台. `/repositories` → 仓库导入, `/images` → 镜像管理,
+ * 任务控制台. `/schedules` → 定时任务. `/repositories` → 仓库导入, `/images` → 镜像管理,
  * `/history` → 历史日志. Any other path (e.g. `/settings`) highlights nothing.
  */
 export function activeNavKey(pathname: string): NavKey | null {
@@ -51,6 +57,9 @@ export function activeNavKey(pathname: string): NavKey | null {
     pathname.startsWith("/tasks/")
   ) {
     return "dashboard";
+  }
+  if (pathname === "/schedules" || pathname.startsWith("/schedules/")) {
+    return "schedules";
   }
   if (pathname === "/repositories" || pathname.startsWith("/repositories/")) {
     return "repositories";
@@ -70,17 +79,24 @@ export function activeNavKey(pathname: string): NavKey | null {
 /** A single product-nav entry. */
 interface NavEntry {
   key: NavKey;
-  to: "/dashboard" | "/repositories" | "/images" | "/history" | "/api";
+  to:
+    | "/dashboard"
+    | "/schedules"
+    | "/repositories"
+    | "/images"
+    | "/history"
+    | "/api";
   label: string;
   shortcut: string;
 }
 
 const NAV_ENTRIES: readonly NavEntry[] = [
   { key: "dashboard", to: "/dashboard", label: "任务控制台", shortcut: "⌘1" },
-  { key: "repositories", to: "/repositories", label: "仓库导入", shortcut: "⌘2" },
-  { key: "images", to: "/images", label: "镜像管理", shortcut: "⌘3" },
-  { key: "history", to: "/history", label: "历史日志", shortcut: "⌘4" },
-  { key: "api", to: "/api", label: "API 调试", shortcut: "⌘5" },
+  { key: "schedules", to: "/schedules", label: "定时任务", shortcut: "⌘2" },
+  { key: "repositories", to: "/repositories", label: "仓库导入", shortcut: "⌘3" },
+  { key: "images", to: "/images", label: "镜像管理", shortcut: "⌘4" },
+  { key: "history", to: "/history", label: "历史日志", shortcut: "⌘5" },
+  { key: "api", to: "/api", label: "API 调试", shortcut: "⌘6" },
 ];
 
 export interface AppSidebarProps {

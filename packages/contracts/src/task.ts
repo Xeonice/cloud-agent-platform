@@ -148,6 +148,12 @@ export type DeliverStatus = z.infer<typeof DeliverStatusSchema>;
 // Task domain schema
 // ---------------------------------------------------------------------------
 
+export const TaskScheduleProvenanceSchema = z.object({
+  scheduleId: z.string().uuid(),
+  scheduledFor: z.coerce.date(),
+});
+export type TaskScheduleProvenance = z.infer<typeof TaskScheduleProvenanceSchema>;
+
 /**
  * A single agent run scoped to a repo.
  */
@@ -235,6 +241,12 @@ export const TaskSchema = z.object({
   changeRequestUrl: z.string().url().nullable().optional(),
   /** The change-request number/iid. Null when none. */
   changeRequestNumber: z.number().int().positive().nullable().optional(),
+  /**
+   * Nullable provenance for tasks created by a durable schedule. Direct tasks
+   * read back as null/absent; scheduler internals and owner credentials are never
+   * exposed through this response field.
+   */
+  scheduleProvenance: TaskScheduleProvenanceSchema.nullable().optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
 
