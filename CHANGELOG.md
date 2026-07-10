@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.36.1...v0.37.0) (2026-07-10)
+
+
+### Features
+
+* **sandbox:** expose sandbox toolchain versions ([161a54e](https://github.com/Xeonice/cloud-agent-platform/commit/161a54ee298266f5cda6eb3f9ac0c3f5f572c9a8))
+
 ## [0.36.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.36.0...v0.36.1) (2026-07-10)
 
 
