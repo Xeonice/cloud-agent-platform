@@ -93,6 +93,9 @@ describe("mock outputs validate against their @cap/contracts schema", () => {
       const known = await mockListTasks();
       const byKnownId = await mockGetTask(known[0]!.id);
       expect(() => TaskResponseSchema.parse(byKnownId)).not.toThrow();
+      expect(byKnownId.sandboxMetadata?.dependencies["repo-tool"]).toBe(
+        "2026.07.10-enterprise-build",
+      );
 
       // An unknown id is synthesized (the route still renders on mock); it must
       // also be a valid TaskResponse.

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BadRequestException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -12,6 +13,8 @@ import { decryptStored, encryptToStored } from '../settings/secret-storage';
 
 const ENV_A = '00000000-0000-4000-a000-000000000301';
 const ENV_B = '00000000-0000-4000-a000-000000000302';
+const ENV_C = '00000000-0000-4000-a000-000000000303';
+const ENV_D = '00000000-0000-4000-a000-000000000304';
 const VALIDATION_A = '00000000-0000-4000-a000-000000000401';
 const TEST_ENV: NodeJS.ProcessEnv = { CODEX_CRED_ENC_KEY: '0'.repeat(64) };
 process.env.CODEX_CRED_ENC_KEY = TEST_ENV.CODEX_CRED_ENC_KEY;
@@ -45,10 +48,18 @@ interface FakeValidationRow {
   sourceKind: string;
   resolvedDigest: string | null;
   resolvedChecksum: string | null;
+  sandboxMetadata: unknown;
   probes: unknown;
   error: string | null;
   contractVersion: string | null;
   checkedAt: Date;
+}
+
+interface FakeEnvironmentWhere {
+  isDefault?: boolean;
+  status?: string;
+  contractVersion?: string | null | { not?: string };
+  OR?: FakeEnvironmentWhere[];
 }
 
 function makeEnvironment(overrides: Partial<FakeEnvironmentRow>): FakeEnvironmentRow {
@@ -64,7 +75,9 @@ function makeEnvironment(overrides: Partial<FakeEnvironmentRow>): FakeEnvironmen
     runtimeIds: overrides.runtimeIds ?? [],
     isDefault: overrides.isDefault ?? false,
     lastValidationId: overrides.lastValidationId ?? null,
-    contractVersion: overrides.contractVersion ?? SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    contractVersion: Object.prototype.hasOwnProperty.call(overrides, 'contractVersion')
+      ? (overrides.contractVersion ?? null)
+      : SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
     createdAt,
     updatedAt: overrides.updatedAt ?? createdAt,
   };
@@ -77,19 +90,39 @@ function buildService(
   service: SandboxEnvironmentsService;
   rows: FakeEnvironmentRow[];
   validations: FakeValidationRow[];
+  validationWrites: { sandboxMetadata: unknown }[];
 } {
   const rows = [...initialRows];
   const validations: FakeValidationRow[] = [];
+  const validationWrites: { sandboxMetadata: unknown }[] = [];
+
+  function matchesWhere(row: FakeEnvironmentRow, where?: FakeEnvironmentWhere): boolean {
+    if (!where) return true;
+    if (where.isDefault !== undefined && row.isDefault !== where.isDefault) return false;
+    if (where.status !== undefined && row.status !== where.status) return false;
+    if (where.contractVersion === null || typeof where.contractVersion === 'string') {
+      if (row.contractVersion !== where.contractVersion) return false;
+    } else if (
+      where.contractVersion?.not !== undefined &&
+      (row.contractVersion === null || row.contractVersion === where.contractVersion.not)
+    ) {
+      return false;
+    }
+    if (where.OR && !where.OR.some((candidate) => matchesWhere(row, candidate))) return false;
+    return true;
+  }
 
   function attachLatestValidation(row: FakeEnvironmentRow): FakeEnvironmentRow & {
-    validations: { checkedAt: Date }[];
+    validations: { checkedAt: Date; sandboxMetadata: unknown }[];
   } {
     const latest = validations
       .filter((validation) => validation.environmentId === row.id)
       .sort((a, b) => b.checkedAt.getTime() - a.checkedAt.getTime())[0];
     return {
       ...row,
-      validations: latest ? [{ checkedAt: latest.checkedAt }] : [],
+      validations: latest
+        ? [{ checkedAt: latest.checkedAt, sandboxMetadata: latest.sandboxMetadata }]
+        : [],
     };
   }
 
@@ -97,25 +130,10 @@ function buildService(
     $transaction: async <T>(fn: (tx: unknown) => Promise<T>) => fn(prisma),
     sandboxEnvironment: {
       findMany: async (args?: {
-        where?: {
-          isDefault?: boolean;
-          status?: string;
-          contractVersion?: { not?: string };
-        };
+        where?: FakeEnvironmentWhere;
         include?: unknown;
       }) => {
-        let result = [...rows];
-        if (args?.where?.isDefault !== undefined) {
-          result = result.filter((row) => row.isDefault === args.where?.isDefault);
-        }
-        if (args?.where?.status !== undefined) {
-          result = result.filter((row) => row.status === args.where?.status);
-        }
-        if (args?.where?.contractVersion?.not !== undefined) {
-          result = result.filter(
-            (row) => row.contractVersion !== args.where?.contractVersion?.not,
-          );
-        }
+        const result = rows.filter((row) => matchesWhere(row, args?.where));
         result.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
         return args?.include ? result.map(attachLatestValidation) : result;
       },
@@ -165,11 +183,7 @@ function buildService(
         return args.include ? attachLatestValidation(row) : row;
       },
       updateMany: async (args: {
-        where?: {
-          isDefault?: boolean;
-          status?: string;
-          contractVersion?: { not?: string };
-        };
+        where?: FakeEnvironmentWhere;
         data: Partial<FakeEnvironmentRow>;
       }) => {
         const targets = await prisma.sandboxEnvironment.findMany({ where: args.where });
@@ -185,11 +199,17 @@ function buildService(
           error?: string | null;
         };
       }) => {
+        validationWrites.push({ sandboxMetadata: args.data.sandboxMetadata });
         const validation: FakeValidationRow = {
           id: VALIDATION_A,
           checkedAt: new Date('2026-07-01T04:00:00.000Z'),
           error: null,
           ...args.data,
+          sandboxMetadata:
+            args.data.sandboxMetadata === Prisma.DbNull ||
+            args.data.sandboxMetadata === Prisma.JsonNull
+              ? null
+              : args.data.sandboxMetadata,
         };
         validations.push(validation);
         return validation;
@@ -209,6 +229,7 @@ function buildService(
     service: new SandboxEnvironmentsService(prisma, validationRunner),
     rows,
     validations,
+    validationWrites,
   };
 }
 
@@ -226,12 +247,63 @@ function createPassingValidationRunner(): SandboxEnvironmentValidationRunner {
         sourceKind: source.kind,
         resolvedDigest: source.digest ?? null,
         resolvedChecksum: null,
+        sandboxMetadata: {
+          schemaVersion: 1,
+          sandboxVersion: 'v1.2.3',
+          dependencies: { codex: '0.132.0', 'company-cli': '4.5.6' },
+        },
         probes: [{ name: 'provider-probe', ok: true, output: 'ok' }],
         error: null,
       };
     },
   };
 }
+
+test('validation persists and exposes only builder-declared sandbox metadata', async () => {
+  const environment = makeEnvironment({
+    id: ENV_A,
+    source: { kind: 'aio-docker-image', image: 'cap/aio:v1.2.3' },
+    runtimeIds: ['codex'],
+  });
+  const { service } = buildService([environment]);
+
+  const result = await service.validate(ENV_A);
+
+  assert.deepEqual(result.validation.sandboxMetadata, {
+    schemaVersion: 1,
+    sandboxVersion: 'v1.2.3',
+    dependencies: { codex: '0.132.0', 'company-cli': '4.5.6' },
+  });
+  assert.deepEqual(result.environment.sandboxMetadata, result.validation.sandboxMetadata);
+});
+
+test('failed validation persists absent sandbox metadata as database null', async () => {
+  const environment = makeEnvironment({
+    id: ENV_A,
+    source: { kind: 'aio-docker-image', image: 'cap/aio:missing' },
+    runtimeIds: ['codex'],
+  });
+  const failingRunner: SandboxEnvironmentValidationRunner = {
+    async validate() {
+      throw new Error('image probe failed');
+    },
+  };
+  const { service, rows, validations, validationWrites } = buildService(
+    [environment],
+    failingRunner,
+  );
+
+  const result = await service.validate(ENV_A);
+
+  assert.equal(validationWrites[0]?.sandboxMetadata, Prisma.DbNull);
+  assert.equal(validations.length, 1);
+  assert.equal(validations[0]?.sandboxMetadata, null);
+  assert.equal(result.validation.status, 'failed');
+  assert.equal(result.validation.sandboxMetadata, null);
+  assert.equal(result.environment.status, 'failed');
+  assert.equal(result.environment.sandboxMetadata, null);
+  assert.equal(rows[0]?.lastValidationId, VALIDATION_A);
+});
 
 test('create accepts registry image references and derives provider compatibility', async () => {
   const { service, rows } = buildService();
@@ -429,6 +501,17 @@ test('resolveForTask returns a compatible ready default and ignores incompatible
       runtimeIds: ['codex'],
       lastValidationId: VALIDATION_A,
     }),
+    makeEnvironment({
+      id: ENV_B,
+      status: 'ready',
+      isDefault: true,
+      contractVersion: null,
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:no-contract' },
+      providerFamilies: ['boxlite'],
+      runtimeIds: ['codex'],
+      envVars: { LEGACY_VALUE: 'must-also-not-be-used' },
+      lastValidationId: VALIDATION_A,
+    }),
   ]);
 
   const resolved = await service.resolveForTask({
@@ -489,6 +572,78 @@ test('resolveImageParameterProfileForTask returns selected image params without 
   );
 });
 
+test('task selection and image parameter lookup reject non-current contracts', async () => {
+  const { service } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      isDefault: true,
+      contractVersion: 'sandbox-environment-v1',
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:legacy' },
+      providerFamilies: ['boxlite'],
+      runtimeIds: ['codex'],
+      envVars: { LEGACY_VALUE: 'must-not-be-used' },
+      lastValidationId: VALIDATION_A,
+    }),
+    makeEnvironment({
+      id: ENV_B,
+      status: 'ready',
+      isDefault: true,
+      contractVersion: null,
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:no-contract' },
+      providerFamilies: ['boxlite'],
+      runtimeIds: ['codex'],
+      envVars: { LEGACY_VALUE: 'must-also-not-be-used' },
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+
+  assert.equal(
+    await service.resolveForTask({
+      requestedEnvironmentId: null,
+      runtimeId: 'codex',
+      providerFamily: 'boxlite',
+    }),
+    null,
+  );
+  assert.equal(
+    await service.resolveImageParameterProfileForTask({
+      requestedEnvironmentId: null,
+      runtimeId: 'codex',
+      providerFamily: 'boxlite',
+    }),
+    null,
+  );
+
+  for (const environmentId of [ENV_A, ENV_B]) {
+    for (const resolve of [
+      () =>
+        service.resolveForTask({
+          requestedEnvironmentId: environmentId,
+          runtimeId: 'codex',
+          providerFamily: 'boxlite',
+        }),
+      () =>
+        service.resolveImageParameterProfileForTask({
+          requestedEnvironmentId: environmentId,
+          runtimeId: 'codex',
+          providerFamily: 'boxlite',
+        }),
+    ]) {
+      await assert.rejects(resolve, (error: unknown) => {
+        if (!(error instanceof BadRequestException)) return false;
+        const response = error.getResponse();
+        return (
+          typeof response === 'object' &&
+          response !== null &&
+          'error' in response &&
+          response.error === 'sandbox_environment_contract_stale'
+        );
+      });
+    }
+  }
+});
+
 test('resolveForTask returns null when no managed environment is selected or defaulted', async () => {
   const { service } = buildService();
 
@@ -539,6 +694,7 @@ test('retire disables an environment, clears default, and preserves validation h
     sourceKind: 'aio-docker-image',
     resolvedDigest: null,
     resolvedChecksum: null,
+    sandboxMetadata: null,
     probes: [{ name: 'create-sandbox', ok: false, output: 'No such image' }],
     error: 'No such image',
     contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
@@ -584,17 +740,28 @@ test('retired environments are not resolved explicitly or as defaults', async ()
   );
 });
 
-test('markCustomEnvironmentsStale only marks ready rows with an old contract version', async () => {
+test('v2 contract marks v1 ready environments stale and preserves current or draft rows', async () => {
+  assert.equal(SANDBOX_ENVIRONMENT_CONTRACT_VERSION, 'sandbox-environment-v2');
   const { service, rows } = buildService([
     makeEnvironment({
       id: ENV_A,
       status: 'ready',
-      contractVersion: 'old-version',
+      contractVersion: 'sandbox-environment-v1',
     }),
     makeEnvironment({
       id: ENV_B,
+      status: 'ready',
+      contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    }),
+    makeEnvironment({
+      id: ENV_C,
+      status: 'ready',
+      contractVersion: null,
+    }),
+    makeEnvironment({
+      id: ENV_D,
       status: 'draft',
-      contractVersion: 'old-version',
+      contractVersion: 'sandbox-environment-v1',
     }),
   ]);
 
@@ -602,7 +769,9 @@ test('markCustomEnvironmentsStale only marks ready rows with an old contract ver
     SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
   );
 
-  assert.equal(count, 1);
+  assert.equal(count, 2);
   assert.equal(rows.find((row) => row.id === ENV_A)?.status, 'stale');
-  assert.equal(rows.find((row) => row.id === ENV_B)?.status, 'draft');
+  assert.equal(rows.find((row) => row.id === ENV_B)?.status, 'ready');
+  assert.equal(rows.find((row) => row.id === ENV_C)?.status, 'stale');
+  assert.equal(rows.find((row) => row.id === ENV_D)?.status, 'draft');
 });

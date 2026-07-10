@@ -33,6 +33,9 @@ export * from './sandbox.js';
 // Admin-managed sandbox runtime environments and task environment summaries
 export * from './sandbox-environment.js';
 
+// Required metadata baked into every supported sandbox image.
+export * from './sandbox-metadata.js';
+
 // Operator-auth shapes: WS connect-auth frame + shared AUTH_TOKEN config contract
 export * from './auth.js';
 

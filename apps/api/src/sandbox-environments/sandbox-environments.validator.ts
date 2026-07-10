@@ -2,8 +2,13 @@ import { randomUUID } from 'node:crypto';
 import Docker from 'dockerode';
 import { Injectable } from '@nestjs/common';
 import type {
+  SandboxMetadata,
   SandboxEnvironmentSource,
   SandboxEnvironmentValidation,
+} from '@cap/contracts';
+import {
+  SANDBOX_METADATA_PATH,
+  parseSandboxMetadataText,
 } from '@cap/contracts';
 import {
   AIO_SANDBOX_WORKSPACE_DIR,
@@ -43,6 +48,7 @@ export interface SandboxEnvironmentValidationOutcome {
   readonly sourceKind: string;
   readonly resolvedDigest?: string | null;
   readonly resolvedChecksum?: string | null;
+  readonly sandboxMetadata?: SandboxMetadata | null;
   readonly probes?: readonly SandboxPreflightProbeResult[];
   readonly error?: string | null;
 }
@@ -120,6 +126,34 @@ function normalizeProviderOutcome(
     readonly error?: string;
   },
 ): SandboxEnvironmentValidationOutcome {
+  if (result.status === 'passed') {
+    try {
+      const sandboxMetadata = metadataFromProbes(result.probes ?? []);
+      assertRuntimeDeclared(target.runtimeId, sandboxMetadata);
+      return {
+        status: result.status,
+        providerFamily: result.providerFamily,
+        runtimeId: target.runtimeId ?? null,
+        sourceKind: result.sourceKind ?? target.source.kind,
+        resolvedDigest: result.resolvedDigest ?? sourceDigest(target.source) ?? null,
+        resolvedChecksum: result.resolvedChecksum ?? sourceChecksum(target.source) ?? null,
+        sandboxMetadata,
+        probes: result.probes,
+        error: null,
+      };
+    } catch (error) {
+      const message = `sandbox metadata validation failed: ${error instanceof Error ? error.message : String(error)}`;
+      return {
+        ...failedOutcome(target, message),
+        resolvedDigest: result.resolvedDigest ?? sourceDigest(target.source) ?? null,
+        resolvedChecksum: result.resolvedChecksum ?? sourceChecksum(target.source) ?? null,
+        probes: [
+          ...(result.probes ?? []),
+          { name: 'sandbox-metadata-validation', ok: false, output: message },
+        ],
+      };
+    }
+  }
   return {
     status: result.status,
     providerFamily: result.providerFamily,
@@ -127,9 +161,30 @@ function normalizeProviderOutcome(
     sourceKind: result.sourceKind ?? target.source.kind,
     resolvedDigest: result.resolvedDigest ?? sourceDigest(target.source) ?? null,
     resolvedChecksum: result.resolvedChecksum ?? sourceChecksum(target.source) ?? null,
+    sandboxMetadata: null,
     probes: result.probes,
     error: result.error ?? null,
   };
+}
+
+export function metadataFromProbes(
+  probes: readonly SandboxPreflightProbeResult[],
+): SandboxMetadata {
+  const probe = probes.find((candidate) => candidate.name === 'sandbox-metadata');
+  if (!probe?.ok || !probe.output) {
+    throw new Error(`${SANDBOX_METADATA_PATH} is missing or unreadable`);
+  }
+  return parseSandboxMetadataText(probe.output.trim());
+}
+
+export function assertRuntimeDeclared(
+  runtimeId: string | null | undefined,
+  metadata: SandboxMetadata,
+) {
+  const key = runtimeId === 'claude' ? 'claude-code' : runtimeId;
+  if ((key === 'codex' || key === 'claude-code') && !metadata.dependencies[key]) {
+    throw new Error(`selected runtime dependency ${key} is not declared`);
+  }
 }
 
 function toResolvedEnvironment(
@@ -160,6 +215,7 @@ function failedOutcome(
     sourceKind: target.source.kind,
     resolvedDigest: sourceDigest(target.source) ?? null,
     resolvedChecksum: sourceChecksum(target.source) ?? null,
+    sandboxMetadata: null,
     probes: [{ name: 'validation-error', ok: false, output: error }],
     error,
   };
@@ -169,6 +225,7 @@ function requiredAioCommands(
   runtimeId: string | null | undefined,
 ): readonly AioEnvironmentValidationCommand[] {
   return [
+    { name: 'sandbox-metadata', command: `cat ${SANDBOX_METADATA_PATH}` },
     { name: 'workspace-path', command: `test -d ${AIO_SANDBOX_WORKSPACE_DIR}` },
     { name: 'shell', command: 'command -v sh' },
     { name: 'git', command: 'command -v git' },
@@ -181,6 +238,7 @@ function requiredBoxLiteCommands(args: {
   readonly workspacePath: string;
 }): readonly BoxLiteEnvironmentValidationCommand[] {
   return [
+    { name: 'sandbox-metadata', command: `cat ${SANDBOX_METADATA_PATH}` },
     { name: 'workspace-path', command: `test -d ${args.workspacePath}` },
     { name: 'shell', command: 'command -v sh' },
     { name: 'git', command: 'command -v git' },

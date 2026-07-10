@@ -60,6 +60,9 @@ export interface BoxLiteProviderOptions {
   readonly preflight?: BoxLiteRuntimePreflight;
   readonly runtimeSetup?: BoxLiteRuntimeSetup;
   readonly preStopCleanup?: BoxLitePreStopCleanup;
+  readonly resolveRuntimeId?: (
+    taskId: string,
+  ) => Promise<string | null | undefined> | string | null | undefined;
   readonly resolveEnvironment?: (args: {
     readonly taskId: string;
     readonly runtimeId?: string | null;
@@ -105,6 +108,7 @@ export class BoxLiteSandboxProvider<
   private readonly preflight?: BoxLiteRuntimePreflight;
   private readonly runtimeSetup?: BoxLiteRuntimeSetup;
   private readonly preStopCleanup?: BoxLitePreStopCleanup;
+  private readonly resolveRuntimeIdHook?: BoxLiteProviderOptions['resolveRuntimeId'];
   private readonly resolveEnvironmentHook?: BoxLiteProviderOptions['resolveEnvironment'];
   private readonly runs = new Map<string, BoxLiteProvisionedRun>();
 
@@ -122,6 +126,7 @@ export class BoxLiteSandboxProvider<
     this.preflight = options.preflight;
     this.runtimeSetup = options.runtimeSetup;
     this.preStopCleanup = options.preStopCleanup;
+    this.resolveRuntimeIdHook = options.resolveRuntimeId;
     this.resolveEnvironmentHook = options.resolveEnvironment;
     assertClientSupportsCapabilities(this.client, options.config.capabilities);
   }
@@ -143,8 +148,9 @@ export class BoxLiteSandboxProvider<
     if (existing) return existing.connection;
 
     const sandboxId = this.sandboxIdForTask(ctx.taskId);
-    const environment = await this.resolveEnvironment(ctx);
-    const source = this.resolveSandboxSource(environment);
+    const runtimeId = await this.resolveRuntimeId(ctx.taskId);
+    const environment = await this.resolveEnvironment(ctx, runtimeId);
+    const source = this.resolveSandboxSource(environment, runtimeId);
     const sandbox = await this.client.createSandbox({
       taskId: ctx.taskId,
       sandboxId,
@@ -170,6 +176,15 @@ export class BoxLiteSandboxProvider<
     const connection = this.connectionForSandbox(ctx.taskId, sandbox);
     const executor = this.createCommandExecutor(sandbox.id);
     try {
+      const preflight = await this.runPreflight(
+        ctx.taskId,
+        sandbox,
+        runtimeId,
+        environment,
+      );
+      if (preflight.status === 'failed') {
+        throw new Error(preflight.error ?? `BoxLite runtime preflight failed for task ${ctx.taskId}`);
+      }
       if (ctx.cloneSpec) {
         await materializeGitWorkspace({
           executor,
@@ -177,15 +192,12 @@ export class BoxLiteSandboxProvider<
           cloneSpec: requireGitCloneSpec(ctx.cloneSpec),
         });
       }
-      const preflight = await this.runPreflight(ctx.taskId, sandbox, null, environment);
-      if (preflight.status === 'failed') {
-        throw new Error(preflight.error ?? `BoxLite runtime preflight failed for task ${ctx.taskId}`);
-      }
       await this.runtimeSetup?.({
         taskId: ctx.taskId,
         sandbox,
         executor,
         workspacePath: this.config.workspacePath,
+        runtimeId,
       });
       const run: BoxLiteProvisionedRun = {
         taskId: ctx.taskId,
@@ -477,15 +489,28 @@ export class BoxLiteSandboxProvider<
 
   private async resolveEnvironment(
     ctx: SandboxProvisionContext<TCloneSpec>,
+    runtimeId: string | null,
   ): Promise<SandboxResolvedEnvironmentMetadata | null> {
     if (ctx.environment !== undefined) return ctx.environment ?? null;
-    return (await this.resolveEnvironmentHook?.({ taskId: ctx.taskId })) ?? null;
+    return (
+      (await this.resolveEnvironmentHook?.({
+        taskId: ctx.taskId,
+        runtimeId,
+      })) ?? null
+    );
+  }
+
+  private async resolveRuntimeId(taskId: string): Promise<string | null> {
+    return (await this.resolveRuntimeIdHook?.(taskId)) ?? null;
   }
 
   private resolveSandboxSource(
     environment: SandboxResolvedEnvironmentMetadata | null,
+    runtimeId: string | null,
   ): { kind: 'image' | 'rootfs'; value: string } {
-    if (!environment) return resolveBoxLiteSandboxSource({ config: this.config });
+    if (!environment) {
+      return resolveBoxLiteSandboxSource({ config: this.config, runtimeId });
+    }
     if (environment.sourceKind === 'boxlite-image' && environment.sourceRef) {
       return { kind: 'image', value: environment.sourceRef };
     }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SandboxMetadataSchema } from './sandbox-metadata.js';
 
 export const SandboxEnvironmentStatusSchema = z.enum([
   'draft',
@@ -97,6 +98,7 @@ export const SandboxEnvironmentValidationSchema = z.object({
   sourceKind: SandboxEnvironmentSourceKindSchema,
   resolvedDigest: z.string().min(1).nullable().optional(),
   resolvedChecksum: z.string().min(1).nullable().optional(),
+  sandboxMetadata: SandboxMetadataSchema.nullable().optional(),
   probes: z.array(SandboxEnvironmentValidationProbeSchema).nullable().optional(),
   error: z.string().nullable().optional(),
   contractVersion: z.string().min(1).nullable().optional(),
@@ -117,6 +119,7 @@ export const SandboxEnvironmentSchema = z.object({
   lastValidationId: z.string().uuid().nullable().optional(),
   lastValidatedAt: z.coerce.date().nullable().optional(),
   contractVersion: z.string().min(1).nullable().optional(),
+  sandboxMetadata: SandboxMetadataSchema.nullable().optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });

@@ -25,6 +25,7 @@ export interface BoxLiteRuntimeSetupContext {
   readonly sandbox: BoxLiteSandbox;
   readonly executor: SandboxCommandExecutor;
   readonly workspacePath: string;
+  readonly runtimeId?: string | null;
 }
 
 export type BoxLiteRuntimeSetup = (

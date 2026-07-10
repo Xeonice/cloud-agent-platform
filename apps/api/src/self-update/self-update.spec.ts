@@ -290,7 +290,7 @@ test('target sandbox contract metadata can mark custom environments stale before
     enabled: true,
     latestVersion: LATEST,
     launcher,
-    env: { [SANDBOX_ENVIRONMENT_TARGET_CONTRACT_ENV]: 'sandbox-environment-v2' },
+    env: { [SANDBOX_ENVIRONMENT_TARGET_CONTRACT_ENV]: 'sandbox-environment-v3' },
     sandboxEnvironments: {
       async markCustomEnvironmentsStale(contractVersion: string) {
         staleContracts.push(contractVersion);
@@ -301,7 +301,7 @@ test('target sandbox contract metadata can mark custom environments stale before
 
   await svc.requestUpdate(LATEST);
 
-  assert.deepEqual(staleContracts, ['sandbox-environment-v2']);
+  assert.deepEqual(staleContracts, ['sandbox-environment-v3']);
 });
 
 test('pull-then-recreate ordering: pull is FIRST, up -d SECOND, joined by &&', async () => {

@@ -12,5 +12,10 @@ RUN apt-get update \
     ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
-USER gem
+RUN node /usr/local/bin/write-sandbox-metadata.mjs \
+  --from /etc/cap/sandbox-metadata.json \
+  --dependency "jq=$(jq --version)" \
+  --dependency "ripgrep=$(rg --version | head -1 | awk '{print $2}')" \
+  --output /etc/cap/sandbox-metadata.json
+
 WORKDIR /home/gem/workspace

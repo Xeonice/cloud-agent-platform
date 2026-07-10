@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ForgeKindSchema } from './settings.js';
 import { TaskSandboxEnvironmentSummarySchema } from './sandbox-environment.js';
+import { SandboxMetadataSchema } from './sandbox-metadata.js';
 
 /**
  * Task lifecycle status (repo-and-task-management spec).
@@ -402,6 +403,7 @@ export const TaskResponseSchema = TaskSchema.extend({
    */
   sandboxProvider: TaskSandboxProviderSchema.nullable().optional(),
   sandboxEnvironment: TaskSandboxEnvironmentSummarySchema.nullable().optional(),
+  sandboxMetadata: SandboxMetadataSchema.nullable().optional(),
 });
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
 

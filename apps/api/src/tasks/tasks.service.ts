@@ -11,6 +11,7 @@ import {
 import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
+  SandboxMetadataSchema,
   sandboxProviderLabel,
   taskResponseSchema,
   type CreateTaskBody,
@@ -171,7 +172,7 @@ const LATEST_SANDBOX_PROVIDER_INCLUDE = {
   sandboxRuns: {
     orderBy: { createdAt: 'desc' as const },
     take: 1,
-    select: { providerId: true },
+    select: { providerId: true, metadata: true },
   },
   sandboxEnvironment: {
     select: {
@@ -902,7 +903,7 @@ export class TasksService implements OnApplicationBootstrap {
     commitSha?: string | null;
     changeRequestUrl?: string | null;
     changeRequestNumber?: number | null;
-    sandboxRuns?: readonly { providerId: string }[];
+    sandboxRuns?: readonly { providerId: string; metadata?: unknown }[];
     sandboxEnvironment?: {
       id: string;
       name: string;
@@ -964,6 +965,7 @@ export class TasksService implements OnApplicationBootstrap {
         : null,
       sandboxProvider: this.toSandboxProviderSummary(task),
       sandboxEnvironment: this.toSandboxEnvironmentSummary(task.sandboxEnvironment),
+      sandboxMetadata: this.toSandboxMetadata(task.sandboxRuns?.[0]?.metadata),
     };
   }
 
@@ -1086,6 +1088,13 @@ export class TasksService implements OnApplicationBootstrap {
     return providerId
       ? { id: providerId, label: sandboxProviderLabel(providerId) }
       : null;
+  }
+
+  private toSandboxMetadata(raw: unknown): TaskResponse['sandboxMetadata'] {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const metadata = (raw as Record<string, unknown>).sandboxMetadata;
+    const parsed = SandboxMetadataSchema.safeParse(metadata);
+    return parsed.success ? parsed.data : null;
   }
 
   private toSandboxEnvironmentSummary(

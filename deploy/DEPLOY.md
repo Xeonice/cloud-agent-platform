@@ -85,14 +85,14 @@ unless you explicitly force `make up-aio`.
 docker build \
   -f docker/aio-sandbox.Dockerfile \
   --build-arg AIO_SANDBOX_TAG=1.0.0.125 \
-  --build-arg CODEX_VERSION=0.131 \
+  --build-arg CODEX_VERSION=0.144.1 \
   -t cap-aio-sandbox:pinned \
   .
 ```
 
 - `AIO_SANDBOX_TAG=1.0.0.125` — the pinned `ghcr.io/agent-infra/sandbox` base tag
   the derived image is `FROM` (default in the Dockerfile; pulling it needs network).
-- `CODEX_VERSION=0.131` — the pinned Codex CLI baked in (default in the Dockerfile;
+- `CODEX_VERSION=0.144.1` — the pinned Codex CLI baked in (default in the Dockerfile;
   the release verified against the in-use model — bump deliberately, never `latest`).
 
 Verify the built image (static + dynamic guards):

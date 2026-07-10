@@ -37,7 +37,7 @@ import {
   type SandboxEnvironmentValidationRunner,
 } from './sandbox-environments.validator';
 
-export const SANDBOX_ENVIRONMENT_CONTRACT_VERSION = 'sandbox-environment-v1';
+export const SANDBOX_ENVIRONMENT_CONTRACT_VERSION = 'sandbox-environment-v2';
 
 @Injectable()
 export class SandboxEnvironmentsService {
@@ -157,6 +157,10 @@ export class SandboxEnvironmentsService {
         sourceKind: outcome.sourceKind,
         resolvedDigest: outcome.resolvedDigest ?? null,
         resolvedChecksum: outcome.resolvedChecksum ?? null,
+        sandboxMetadata:
+          outcome.sandboxMetadata == null
+            ? Prisma.DbNull
+            : (outcome.sandboxMetadata as unknown as Prisma.InputJsonValue),
         probes: (outcome.probes ?? []) as unknown as Prisma.InputJsonValue,
         error: outcome.error ?? null,
         contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
@@ -206,6 +210,7 @@ export class SandboxEnvironmentsService {
       }
       return null;
     }
+    this.assertCurrentContract(row);
 
     const providerFamily =
       args.providerFamily ??
@@ -265,6 +270,7 @@ export class SandboxEnvironmentsService {
         })
       : await this.findDefaultEnvironment(args);
     if (!row) return null;
+    this.assertCurrentContract(row);
 
     try {
       assertEnvironmentSelectable({
@@ -305,7 +311,10 @@ export class SandboxEnvironmentsService {
     const result = await this.prisma.sandboxEnvironment.updateMany({
       where: {
         status: 'ready',
-        contractVersion: { not: contractVersion },
+        OR: [
+          { contractVersion: { not: contractVersion } },
+          { contractVersion: null },
+        ],
       },
       data: { status: 'stale' },
     });
@@ -320,6 +329,7 @@ export class SandboxEnvironmentsService {
       where: {
         isDefault: true,
         status: 'ready',
+        contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
       },
       orderBy: { createdAt: 'asc' },
     });
@@ -345,6 +355,17 @@ export class SandboxEnvironmentsService {
       throw new NotFoundException(`Sandbox environment not found: ${id}`);
     }
     return row;
+  }
+
+  private assertCurrentContract(row: { id: string; contractVersion: string | null }): void {
+    if (row.contractVersion === SANDBOX_ENVIRONMENT_CONTRACT_VERSION) return;
+    throw new BadRequestException({
+      error: 'sandbox_environment_contract_stale',
+      message:
+        `Sandbox environment ${row.id} was validated against ` +
+        `${row.contractVersion ?? 'no contract'}; revalidate it against ` +
+        `${SANDBOX_ENVIRONMENT_CONTRACT_VERSION}.`,
+    });
   }
 
   private async runProviderValidation(args: {
@@ -384,7 +405,7 @@ export class SandboxEnvironmentsService {
     contractVersion: string | null;
     createdAt: Date;
     updatedAt: Date;
-    validations?: readonly { checkedAt: Date }[];
+    validations?: readonly { checkedAt: Date; sandboxMetadata: Prisma.JsonValue | null }[];
     envVars?: Prisma.JsonValue;
     secretEnvVars?: Prisma.JsonValue;
   }): SandboxEnvironment {
@@ -402,6 +423,7 @@ export class SandboxEnvironmentsService {
       lastValidationId: row.lastValidationId,
       lastValidatedAt: row.validations?.[0]?.checkedAt ?? null,
       contractVersion: row.contractVersion,
+      sandboxMetadata: row.validations?.[0]?.sandboxMetadata ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     });
@@ -416,6 +438,7 @@ export class SandboxEnvironmentsService {
     sourceKind: string;
     resolvedDigest: string | null;
     resolvedChecksum: string | null;
+    sandboxMetadata: Prisma.JsonValue | null;
     probes: Prisma.JsonValue | null;
     error: string | null;
     contractVersion: string | null;
@@ -430,6 +453,7 @@ export class SandboxEnvironmentsService {
       sourceKind: row.sourceKind,
       resolvedDigest: row.resolvedDigest,
       resolvedChecksum: row.resolvedChecksum,
+      sandboxMetadata: row.sandboxMetadata,
       probes: row.probes,
       error: row.error,
       contractVersion: row.contractVersion,
@@ -497,7 +521,7 @@ function latestValidationInclude() {
     validations: {
       orderBy: { checkedAt: 'desc' as const },
       take: 1,
-      select: { checkedAt: true },
+      select: { checkedAt: true, sandboxMetadata: true },
     },
   } as const;
 }

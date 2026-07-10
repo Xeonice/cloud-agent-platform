@@ -705,6 +705,11 @@ await test('provider router records and returns resolved environment metadata', 
     providerFamily: 'aio',
     contractVersion: 'sandbox-environment-v1',
   };
+  const sandboxMetadata = {
+    schemaVersion: 1,
+    sandboxVersion: 'v1.2.3',
+    dependencies: { codex: '0.132.0', 'custom-cli': '4.5.6' },
+  };
   const provider = routableProvider('environment-aware', ['terminal.websocket'], {
     selectedRun: (taskId) => ({
       taskId,
@@ -716,6 +721,13 @@ await test('provider router records and returns resolved environment metadata', 
         wsUrl: `ws://environment-aware/${taskId}`,
       },
       environment,
+      preflight: {
+        status: 'passed',
+        checkedAt: '2026-07-10T00:00:00.000Z',
+        runtimeId: 'codex',
+        probes: [],
+        metadata: { sandboxMetadata },
+      },
     }),
   });
   const router = new mod.SandboxProviderRouter(
@@ -734,6 +746,7 @@ await test('provider router records and returns resolved environment metadata', 
   const run = await router.getSelectedSandboxRun('task-env-owner');
 
   assert.deepEqual(owner.environment, environment);
+  assert.deepEqual(owner.metadata, { sandboxMetadata });
   assert.deepEqual(run.environment, environment);
   assert.deepEqual(run.owner.environment, environment);
 });

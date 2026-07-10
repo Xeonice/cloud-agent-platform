@@ -41,6 +41,11 @@ permissions:
   contents: read
   packages: write
 
+env:
+  CODEX_VERSION: "0.144.1"
+  CLAUDE_CODE_VERSION: "2.1.206"
+  OPENSPEC_VERSION: "1.4.1"
+
 jobs:
   # Gate: the source-free run package's INLINE observability configs must match their
   # canonical source (deploy/observability/*) and be `$`-escaped, so a Release never ships a
@@ -138,6 +143,9 @@ jobs:
             GIT_SHA=${{ github.sha }}
             BUILD_TIME=${{ steps.version.outputs.build_time }}
             VITE_BUILD_ID=${{ steps.version.outputs.version }}
+            CODEX_VERSION=${{ env.CODEX_VERSION }}
+            CLAUDE_CODE_VERSION=${{ env.CLAUDE_CODE_VERSION }}
+            OPENSPEC_VERSION=${{ env.OPENSPEC_VERSION }}
 
       # Make the published package publicly pullable so self-hosters
       # `docker pull` without auth (design D3 / decision: GHCR packages public).

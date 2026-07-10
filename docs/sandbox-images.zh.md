@@ -53,6 +53,9 @@ CAP 在镜像进入可选状态前会做真实 provider 验证。自定义镜像
 - 如果镜像只给 `claude-code` 或 `claude` runtime 使用，需要 `claude` CLI 可用。
 - 不要把操作员 token、SSH key、PAT、模型账号凭据写进镜像。凭据应通过 CAP 账号设置、provider 环境变量、registry 登录或不会留在最终 layer 的 build secret 提供。
 - 不要把镜像做成一次性任务镜像。它应该是可复用的基础层，任务目标和仓库内容仍由 CAP 在创建任务时注入。
+- 保留 `/etc/cap/sandbox-metadata.json`，并使用官方基镜像继承的
+  `/usr/local/bin/write-sandbox-metadata.mjs --from` helper，只追加操作员关心的
+  自定义依赖精确版本。CAP 不扫描未声明的软件包，记录值不能使用 `latest`。
 
 ## 镜像参数
 
@@ -209,8 +212,7 @@ RUN apt-get update \
     ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
-USER gem
 WORKDIR /home/gem/workspace
 ```
 
-BoxLite 只需要把 `FROM` 改成 `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}`。核心原则不变：扩展官方基镜像，只放非密的基础能力，推到 provider 能访问的 registry，然后在 CAP 里验证通过后再给用户选择。
+AIO 必须保留官方镜像的 root 服务入口；不要添加 `USER gem`。BoxLite 模板把 `FROM` 改成 `ghcr.io/xeonice/cap-boxlite-sandbox:${CAP_VERSION}` 后，可以恢复为 `USER gem`。核心原则不变：扩展官方基镜像，只放非密的基础能力，推到 provider 能访问的 registry，然后在 CAP 里验证通过后再给用户选择。
