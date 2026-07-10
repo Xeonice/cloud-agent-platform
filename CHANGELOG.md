@@ -5,7 +5,6 @@
 
 ### Features
 
-* **sandbox:** expose sandbox toolchain versions ([21c4c3f](https://github.com/Xeonice/cloud-agent-platform/commit/21c4c3f5434e5fde3721816cf9adb6bfffea2e27))
 * **sandbox:** expose sandbox toolchain versions ([161a54e](https://github.com/Xeonice/cloud-agent-platform/commit/161a54ee298266f5cda6eb3f9ac0c3f5f572c9a8))
 
 ## [0.36.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.36.0...v0.36.1) (2026-07-10)
