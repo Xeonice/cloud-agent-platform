@@ -18,6 +18,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { PUBLIC_V1_OPERATIONS } from '@cap/contracts';
 
 import {
   buildV1OpenApiDocument,
@@ -68,7 +69,7 @@ test('the generated spec is a valid OpenAPI 3.1 document', () => {
   assert.ok(doc.paths && typeof doc.paths === 'object', 'has a paths object');
 });
 
-test('the spec covers EVERY /v1 route and nothing else (route↔registration diff)', () => {
+test('the spec covers every canonical manifest operation and nothing else', () => {
   const doc = buildV1OpenApiDocument();
 
   // The OpenAPI document uses `{id}`-style path templates — the same form the
@@ -79,7 +80,7 @@ test('the spec covers EVERY /v1 route and nothing else (route↔registration dif
     'every served /v1 route is in the document and the document has no extra routes',
   );
 
-  // Sanity: the seven core `/v1` REST routes are all present by path.
+  // Sanity: every current task/repo/schedule path is present.
   const paths = Object.keys(asLoose(doc).paths ?? {});
   for (const expected of [
     '/v1/tasks',
@@ -98,6 +99,111 @@ test('the spec covers EVERY /v1 route and nothing else (route↔registration dif
   ]) {
     assert.ok(paths.includes(expected), `document includes ${expected}`);
   }
+});
+
+test('every operation documents supported auth, required scope, and standard failures', () => {
+  const doc = asLoose(buildV1OpenApiDocument());
+  const components = (doc as LooseDoc & {
+    components?: {
+      securitySchemes?: Record<string, { type?: string; scheme?: string }>;
+    };
+  }).components;
+  assert.deepEqual(components?.securitySchemes?.bearerAuth, {
+    type: 'http',
+    scheme: 'bearer',
+    bearerFormat: 'CAP API key, MCP token, or optional legacy operator token',
+    description:
+      'Send a `cap_sk_` API key, `mcp_` token, or an unprefixed legacy ' +
+      '`AUTH_TOKEN` (only when legacy auth is enabled) as ' +
+      '`Authorization: Bearer <token>`.',
+  });
+  assert.deepEqual(components?.securitySchemes?.sessionCookie, {
+    type: 'apiKey',
+    in: 'cookie',
+    name: 'cap_session',
+    description: 'Opaque operator session cookie issued by the login flow.',
+  });
+
+  for (const operation of PUBLIC_V1_OPERATIONS) {
+    const documented = doc.paths?.[operation.path]?.[operation.method] as
+      | {
+          operationId?: string;
+          security?: Array<Record<string, string[]>>;
+          responses?: Record<string, { description?: string }>;
+          'x-cap-required-scope'?: string;
+        }
+      | undefined;
+    assert.ok(documented, `${operation.id} is present in OpenAPI`);
+    assert.equal(documented.operationId, operation.id);
+    assert.deepEqual(documented.security, [
+      { bearerAuth: [] },
+      { sessionCookie: [] },
+    ]);
+    assert.equal(documented['x-cap-required-scope'], operation.scope);
+    assert.match(documented.responses?.['400']?.description ?? '', /Bad Request/);
+    assert.match(documented.responses?.['401']?.description ?? '', /Unauthorized/);
+    assert.match(documented.responses?.['403']?.description ?? '', /Forbidden/);
+    assert.ok(
+      documented.responses?.['403']?.description?.includes(operation.scope),
+      `${operation.id} 403 description names ${operation.scope}`,
+    );
+  }
+});
+
+test('operation-specific 404, 409, and 429 responses are documented', () => {
+  const doc = asLoose(buildV1OpenApiDocument());
+  const responses = (path: string, method: string) =>
+    (doc.paths?.[path]?.[method] as
+      | { responses?: Record<string, { description?: string }> }
+      | undefined)?.responses ?? {};
+
+  const createTask = responses('/v1/tasks', 'post');
+  assert.match(createTask['404']?.description ?? '', /Not Found/);
+  assert.match(createTask['409']?.description ?? '', /Conflict/);
+  assert.match(createTask['429']?.description ?? '', /Too Many Requests/);
+
+  const dispatch = responses('/v1/schedules/{id}/dispatch', 'post');
+  assert.match(dispatch['404']?.description ?? '', /Not Found/);
+  assert.match(dispatch['409']?.description ?? '', /Conflict/);
+  assert.equal(responses('/v1/tasks', 'get')['409'], undefined);
+});
+
+test('task create and lifecycle events document their protocol headers', () => {
+  const doc = asLoose(buildV1OpenApiDocument());
+  const parameterNames = (path: string, method: string): string[] => {
+    const operation = doc.paths?.[path]?.[method] as
+      | { parameters?: Array<{ in?: string; name?: string }> }
+      | undefined;
+    return (operation?.parameters ?? [])
+      .filter((parameter) => parameter.in === 'header')
+      .map((parameter) => parameter.name ?? '');
+  };
+
+  assert.deepEqual(parameterNames('/v1/tasks', 'post'), ['Idempotency-Key']);
+  assert.deepEqual(parameterNames('/v1/tasks/{id}/events', 'get'), [
+    'Last-Event-ID',
+  ]);
+});
+
+test('SSE is documented as framed text with a separate data payload schema', () => {
+  const doc = buildV1OpenApiDocument() as unknown as {
+    paths?: Record<string, Record<string, {
+      responses?: Record<string, {
+        content?: Record<string, { schema?: { type?: string } }>;
+      }>;
+      'x-cap-sse-data-schema'?: { $ref?: string };
+    }>>;
+    components?: { schemas?: Record<string, unknown> };
+  };
+  const events = doc.paths?.['/v1/tasks/{id}/events']?.get;
+  assert.equal(
+    events?.responses?.['200']?.content?.['text/event-stream']?.schema?.type,
+    'string',
+  );
+  assert.deepEqual(events?.['x-cap-sse-data-schema'], {
+    $ref: '#/components/schemas/StreamEvent_tasks_events',
+  });
+  assert.ok(doc.components?.schemas?.StreamEvent_tasks_events);
 });
 
 test('every route in the table is registered in the document (no silent drop)', () => {

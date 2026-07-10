@@ -241,6 +241,19 @@ describe("schedule run history rendering", () => {
     expect(html).toContain("任务");
   });
 
+  it("shows the actual run time instead of the planned schedule occurrence", () => {
+    const createdAt = new Date("2026-07-10T00:31:00.000Z");
+    const scheduledFor = new Date("2026-07-12T12:45:00.000Z");
+    const html = renderToStaticMarkup(
+      React.createElement(RunList, {
+        runs: [runFixture(uuid(33), { createdAt, scheduledFor })],
+      }),
+    );
+
+    expect(html).toContain(formatRenderedDate(createdAt));
+    expect(html).not.toContain(formatRenderedDate(scheduledFor));
+  });
+
   it("shows skipped and failed outcomes with reasons but without fabricated task links", () => {
     const html = renderToStaticMarkup(
       React.createElement(RunList, {
@@ -266,3 +279,12 @@ describe("schedule run history rendering", () => {
     expect(html).not.toContain('href="/tasks/');
   });
 });
+
+function formatRenderedDate(value: Date): string {
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(value);
+}

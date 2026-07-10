@@ -373,9 +373,12 @@ export function RunList({ runs }: { runs: readonly ScheduleRunResponse[] }) {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               {runBadge(run)}
-              <span className="font-mono text-xs text-muted-foreground">
-                {formatDate(run.scheduledFor)}
-              </span>
+              <time
+                dateTime={run.createdAt.toISOString()}
+                className="font-mono text-xs text-muted-foreground"
+              >
+                {formatDate(run.createdAt)}
+              </time>
             </div>
             {run.error ? (
               <p className="mt-1 text-xs text-muted-foreground">{run.error}</p>

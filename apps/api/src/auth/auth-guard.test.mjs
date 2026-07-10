@@ -39,9 +39,19 @@ const ALLOWED_USER = { githubId: 12345, login: 'op', name: 'Operator', avatarUrl
 
 /** Session service whose resolver admits ONLY `liveToken` (everything else -> null). */
 function sessionServiceFor(liveToken) {
-  return { resolveSession: async (token) => (token === liveToken ? ALLOWED_USER : null) };
+  return {
+    resolveSession: async (token) => (token === liveToken ? ALLOWED_USER : null),
+    resolveApiKey: async () => null,
+    resolveMcpToken: async () => null,
+    requiresPasswordChange: async () => false,
+  };
 }
-const denyAllSessions = { resolveSession: async () => null };
+const denyAllSessions = {
+  resolveSession: async () => null,
+  resolveApiKey: async () => null,
+  resolveMcpToken: async () => null,
+  requiresPasswordChange: async () => false,
+};
 
 /**
  * Build a fake Nest ExecutionContext around a plain Express-like request.
@@ -171,6 +181,7 @@ const run = async () => {
       '/auth/password',
       '/auth/otp/request',
       '/auth/otp/verify',
+      '/internal/sandbox/approvals',
       '/Auth/Session?x=1',   // case + query normalised
       '/health/',            // trailing slash normalised
     ]) {
@@ -182,6 +193,9 @@ const run = async () => {
     // A non-exempt protected path with no credentials is still 401.
     const r = await activate(guard, ctx({ path: '/tasks' }));
     assert(r.threw === true && r.status === 401, 'T6 gated: unknown protected path -> 401');
+    const oldApproval = await activate(guard, ctx({ path: '/v1/approvals' }));
+    assert(oldApproval.threw === true && oldApproval.status === 401,
+      'T6 gated: retired /v1/approvals path is no longer exempt');
   }
 
   // cleanup env we mutated

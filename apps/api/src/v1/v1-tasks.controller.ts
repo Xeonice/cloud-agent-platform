@@ -14,9 +14,10 @@ import {
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
+  PublicV1IdempotencyHeadersSchema,
+  PublicV1IdParamsSchema,
   V1CreateTaskRequestSchema,
   V1ListQuerySchema,
-  taskResponseSchema,
   type V1CreateTaskRequest,
   type V1ListQuery,
   type V1ListTasksResponse,
@@ -29,15 +30,14 @@ import {
   type OperatorPrincipal,
 } from '../auth/operator-principal';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
-import { IdempotencyService } from './idempotency.service';
 import {
-  buildPage,
-  cursorWhere,
-  decodeCursor,
-  KEYSET_ORDER_BY,
-  resolveLimit,
-} from './keyset-pagination';
+  parseZodValue,
+  ZodValidationPipe,
+  zodParam,
+  zodQuery,
+} from '../repos/zod-validation.pipe';
+import { IdempotencyService } from './idempotency.service';
+import { listTaskPage } from './public-list-pages';
 
 /**
  * Stricter per-principal create cap on `POST /v1/tasks` (D7 / task 3.5).
@@ -111,9 +111,13 @@ export class V1TasksController {
     // `undefined` only for a truly identity-less machine/legacy principal.
     const userId = principal.user?.id ?? undefined;
     const { repoId, ...createBody } = body;
+    const normalizedIdempotencyKey = parseZodValue(
+      PublicV1IdempotencyHeadersSchema.shape['Idempotency-Key'],
+      idempotencyKey,
+    );
 
     const { task, created } = await this.idempotency.run({
-      key: idempotencyKey ?? null,
+      key: normalizedIdempotencyKey ?? null,
       // Per-principal dedup scope: the api-key owner / session user identity (D5).
       // A scopeless legacy/session principal with no githubId still dedups under a
       // stable per-kind sentinel so its retries are not cross-aliased.
@@ -150,24 +154,11 @@ export class V1TasksController {
    */
   @Get()
   async list(
-    @Query(new ZodValidationPipe(V1ListQuerySchema)) query: V1ListQuery,
+    @Query(zodQuery(V1ListQuerySchema)) query: V1ListQuery,
     @Req() req: AuthenticatedRequest,
   ): Promise<V1ListTasksResponse> {
     this.requireScope(req, 'tasks:read');
-    const limit = resolveLimit(query.limit);
-    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
-
-    const rows = await this.prisma.task.findMany({
-      where: cursorWhere(cursor),
-      orderBy: KEYSET_ORDER_BY,
-      take: limit + 1,
-    });
-
-    const page = buildPage(rows, limit);
-    return {
-      items: page.items.map((row) => taskResponseSchema.parse(row)),
-      nextCursor: page.nextCursor,
-    };
+    return listTaskPage(this.prisma, query);
   }
 
   /**
@@ -177,7 +168,7 @@ export class V1TasksController {
    */
   @Get(':id')
   async findById(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<TaskResponse> {
     this.requireScope(req, 'tasks:read');
@@ -192,7 +183,7 @@ export class V1TasksController {
   @Post(':id/stop')
   @HttpCode(HttpStatus.OK)
   async stop(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<TaskResponse> {
     const principal = this.requireScope(req, 'tasks:write');

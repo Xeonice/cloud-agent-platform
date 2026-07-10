@@ -11,12 +11,18 @@ The system SHALL expose a version-prefixed `/v1` REST surface as additive
 versioning, and it SHALL NOT change or remove any existing unversioned
 (console) endpoint, so the `apps/web` contract stays byte-identical. The `/v1`
 surface SHALL be: `POST /v1/tasks`, `GET /v1/tasks`, `GET /v1/tasks/:id`,
-`POST /v1/tasks/:id/stop`, `GET /v1/repos`, `GET /v1/repos/:id`,
-`GET /v1/tasks/:id/transcript`, `GET /v1/schedules`,
+`POST /v1/tasks/:id/stop`, `GET /v1/tasks/:id/transcript`,
+`GET /v1/tasks/:id/events`, `GET /v1/repos`, `GET /v1/repos/:id`,
+`GET /v1/schedules`,
 `POST /v1/schedules`, `GET /v1/schedules/:id`,
 `PATCH /v1/schedules/:id`, `POST /v1/schedules/:id/pause`,
-`POST /v1/schedules/:id/resume`, `DELETE /v1/schedules/:id`, and
-`GET /v1/schedules/:id/runs`. A `/v1` task write SHALL go through the SAME
+`POST /v1/schedules/:id/resume`, `POST /v1/schedules/:id/dispatch`,
+`DELETE /v1/schedules/:id`, and `GET /v1/schedules/:id/runs`. These 17 public
+data operations SHALL be declared by one shared contract manifest consumed by
+OpenAPI, the API playground, MCP parity checks, and a reflection test over the
+real Nest controllers. Metadata routes (`/v1/openapi.json`, `/v1/docs`) and the
+internal sandbox callback (`/internal/sandbox/approvals`) SHALL remain outside
+that public data-operation manifest. A `/v1` task write SHALL go through the SAME
 admission/guardrails path as the console create, so there is exactly one
 task-admission code path. A `/v1` schedule fire SHALL also create tasks through
 that same service path.
@@ -63,6 +69,12 @@ The system SHALL serve an OpenAPI 3.1 document at `GET /v1/openapi.json`, genera
 - **WHEN** a `/v1` route's request/response schema changes
 - **THEN** the generated spec reflects it because both derive from the one `@cap/contracts` schema (asserted by a generation test that every `/v1` route's schema is registered)
 
+#### Scenario: Documented failures match runtime behavior
+
+- **WHEN** a client inspects an operation in `GET /v1/openapi.json`
+- **THEN** it sees validation/auth/not-found responses plus operation-specific
+  conflict and rate-limit responses that the real controller can return
+
 ### Requirement: Keyset pagination on /v1 list endpoints
 
 The `/v1` list endpoints (`GET /v1/tasks`, `GET /v1/repos`) SHALL accept `?limit=` and `?cursor=` and return a stable `{ items, nextCursor }` envelope. Ordering SHALL be by a unique tuple `(createdAt, id)` so no row is dropped or duplicated at a page boundary; `limit` SHALL have a sane default and maximum; `nextCursor` SHALL be null on the last page.
@@ -88,7 +100,7 @@ The `/v1` list endpoints (`GET /v1/tasks`, `GET /v1/repos`) SHALL accept `?limit
 
 ### Requirement: SSE lifecycle observation over a guaranteed polling floor
 
-External callers (who cannot use the cookie WebSocket) SHALL be able to observe a task's lifecycle to a terminal state. Polling `GET /v1/tasks/:id` SHALL be the GUARANTEED floor — every status transition is durably persisted before the response. Additionally, `GET /v1/tasks/:id/events` SHALL stream lifecycle events as `text/event-stream`, sourced from the append-only `AuditEvent` tail (NOT the live PTY/WebSocket stream), each event carrying an id for `Last-Event-ID` resume, with a keep-alive heartbeat emitted at least every 90 seconds, and SHALL close after a terminal event. The stream SHALL set the headers required to defeat proxy buffering (`text/event-stream`, `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`). The SSE path's end-to-end behavior through the Cloudflare tunnel SHALL be verified by a live probe before it is relied upon; the polling floor does not depend on that verification.
+External callers (who cannot use the cookie WebSocket) SHALL be able to observe a task's lifecycle to a terminal state. Polling `GET /v1/tasks/:id` SHALL be the GUARANTEED floor — every status transition is durably persisted before the response. Additionally, `GET /v1/tasks/:id/events` SHALL stream lifecycle events as `text/event-stream`, sourced from the append-only `AuditEvent` tail (NOT the live PTY/WebSocket stream), each event carrying an id for `Last-Event-ID` resume, with a keep-alive heartbeat emitted at least every 90 seconds, and SHALL close after a terminal event. The OpenAPI response SHALL describe the complete HTTP body as framed `text/event-stream` text, while exposing the JSON schema carried by each `data:` field separately; it SHALL NOT describe the whole response as one JSON event. The stream SHALL set the headers required to defeat proxy buffering (`text/event-stream`, `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`). The SSE path's end-to-end behavior through the Cloudflare tunnel SHALL be verified by a live probe before it is relied upon; the polling floor does not depend on that verification.
 
 #### Scenario: Polling observes every status transition
 
@@ -245,4 +257,3 @@ non-secret custom recurrence summary and next run time.
   schedule timezone
 - **AND** the response does not require product clients to display the raw cron
   expression to ordinary users
-

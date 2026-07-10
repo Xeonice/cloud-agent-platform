@@ -94,6 +94,10 @@ export * from './v1.js';
 // Scheduled task DTOs + cron/timezone next-fire helper.
 export * from './schedule.js';
 
+// Canonical public /v1 operation inventory projected by OpenAPI, API Playground,
+// and MCP capability parity tests.
+export * from './public-v1-operations.js';
+
 // The exact zod instance every contracts schema is built on. Re-exported so a
 // CJS consumer (the api) can run `extendZodWithOpenApi` on the SAME class realm
 // the schemas inherit from — see ./zod-instance.ts for the ESM/CJS realm split.

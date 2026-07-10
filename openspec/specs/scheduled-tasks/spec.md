@@ -50,14 +50,16 @@ settlement.
 - **AND** guardrails admits or queues the task through the same semaphore used by
   `/v1` and MCP task creation
 
-#### Scenario: Operator dispatches the current cycle immediately
+#### Scenario: Operator dispatches a schedule immediately
 - **WHEN** an operator manually dispatches a schedule before its next normal fire
   time
 - **THEN** the system creates one task from the stored template through the same
   headless admission path
-- **AND** the current scheduled cycle is recorded as handled
-- **AND** `nextRunAt` advances beyond the consumed cycle before the normal
-  scheduler can claim it again
+- **AND** the run is recorded at the actual manual dispatch time
+- **AND** a future `nextRunAt` remains unchanged so the normal scheduled occurrence
+  can still fire
+- **AND** when `nextRunAt` is already due, it advances to the next future occurrence
+  so the same due cycle is not claimed again
 
 #### Scenario: Schedule fire preserves owner attribution
 - **WHEN** a schedule owned by account `U` fires
@@ -105,6 +107,13 @@ exactly once.
 - **THEN** startup recovery detects the created schedule run
 - **AND** it calls the existing task admission path for the linked task exactly
   once
+
+#### Scenario: Startup immediately checks overdue schedules
+- **WHEN** the API process starts with one or more overdue enabled schedules
+- **THEN** the scheduler registers its recurring poller and immediately runs a due
+  scan without waiting for the first polling interval
+- **AND** a recovery or due-scan error is logged without preventing application
+  startup or later polling
 
 ### Requirement: Missed fires and overlaps use explicit policies
 Schedules SHALL support a missed-fire policy and an overlap policy. The default

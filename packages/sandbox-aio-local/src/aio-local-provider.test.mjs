@@ -119,7 +119,7 @@ await test('builds Docker-compatible container config without host port bindings
   assert.equal(spec.containerConfig.name, 'cap-aio-task-1');
   assert.deepEqual(spec.containerConfig.Env, [
     'TASK_ID=task-1',
-    'ORCHESTRATOR_APPROVALS_URL=http://api:9090/v1/approvals',
+    'ORCHESTRATOR_APPROVALS_URL=http://api:9090/internal/sandbox/approvals',
   ]);
   assert.equal(spec.containerConfig.HostConfig.AutoRemove, false);
   assert.equal(spec.containerConfig.HostConfig.NetworkMode, 'cap-private');

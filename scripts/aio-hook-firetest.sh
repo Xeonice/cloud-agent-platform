@@ -22,7 +22,7 @@
 #      (the CODEX_LAUNCH_ARGV launch contract; --full-auto KEEPS hooks).
 #   4. Drives codex to attempt a GATED tool call (a shell command).
 #   5. ASSERTS the orchestrator received a `permission_request` callback at
-#      /v1/approvals — i.e. the PreToolUse hook ACTUALLY FIRED — within a timeout.
+#      /internal/sandbox/approvals — i.e. the PreToolUse hook ACTUALLY FIRED — within a timeout.
 #
 # OUTCOME SEMANTICS (the gate):
 #   exit 0  -> the hook FIRED for a gated tool call. The codex-hook approval

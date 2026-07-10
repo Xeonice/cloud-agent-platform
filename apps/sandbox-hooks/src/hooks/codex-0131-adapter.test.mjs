@@ -6,7 +6,7 @@
  * "Hook adapter speaks the codex 0.131 stdin/stdout protocol"):
  *   Given a codex `0.131` stdin payload, the adapter parses it (INCLUDING
  *   `tool_name` and `tool_input`), translates it to cap's `permission_request`
- *   frame for the EXISTING `POST /v1/approvals` round-trip, and emits the codex
+ *   frame for the internal sandbox approval round-trip, and emits the codex
  *   `0.131` decision form (`{hookSpecificOutput:{hookEventName,
  *   permissionDecision:"allow"|"deny", permissionDecisionReason?}}`, or exit `0`
  *   allow / exit `2` + stderr deny). This proves the adapter CONTRACT independent

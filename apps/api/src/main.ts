@@ -147,7 +147,15 @@ async function bootstrap(): Promise<void> {
         (allowedOrigins.length > 0 ? allowedOrigins : false),
       credentials: true,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+      allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        // Public task-create retry key. Without this entry a browser client is
+        // blocked by the CORS preflight even though POST /v1/tasks accepts it.
+        'Idempotency-Key',
+        // Explicit for non-EventSource SSE clients that resume with this header.
+        'Last-Event-ID',
+      ],
     });
   });
 

@@ -215,7 +215,7 @@ export function buildAioSandboxEnv(args: {
 }): string[] {
   return [
     `TASK_ID=${args.taskId}`,
-    `ORCHESTRATOR_APPROVALS_URL=${normalizeUrlBase(args.approvalsBase)}/v1/approvals`,
+    `ORCHESTRATOR_APPROVALS_URL=${normalizeUrlBase(args.approvalsBase)}/internal/sandbox/approvals`,
   ];
 }
 

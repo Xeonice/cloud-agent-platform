@@ -7,8 +7,8 @@ import {
   Req,
 } from '@nestjs/common';
 import {
+  PublicV1IdParamsSchema,
   V1ListQuerySchema,
-  repoResponseSchema,
   type V1ListQuery,
   type V1ListReposResponse,
   type RepoResponse,
@@ -20,14 +20,8 @@ import {
   type OperatorPrincipal,
 } from '../auth/operator-principal';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
-import {
-  buildPage,
-  cursorWhere,
-  decodeCursor,
-  KEYSET_ORDER_BY,
-  resolveLimit,
-} from './keyset-pagination';
+import { zodParam, zodQuery } from '../repos/zod-validation.pipe';
+import { listRepoPage } from './public-list-pages';
 
 /**
  * `/v1` repo READ surface (public-v1-api, D1) — additive `@Controller('v1/...')`
@@ -57,30 +51,17 @@ export class V1ReposController {
    */
   @Get()
   async list(
-    @Query(new ZodValidationPipe(V1ListQuerySchema)) query: V1ListQuery,
+    @Query(zodQuery(V1ListQuerySchema)) query: V1ListQuery,
     @Req() req: AuthenticatedRequest,
   ): Promise<V1ListReposResponse> {
     this.requireScope(req, 'repos:read');
-    const limit = resolveLimit(query.limit);
-    const cursor = query.cursor ? decodeCursor(query.cursor) : undefined;
-
-    const rows = await this.prisma.repo.findMany({
-      where: cursorWhere(cursor),
-      orderBy: KEYSET_ORDER_BY,
-      take: limit + 1,
-    });
-
-    const page = buildPage(rows, limit);
-    return {
-      items: page.items.map((row) => repoResponseSchema.parse(row)),
-      nextCursor: page.nextCursor,
-    };
+    return listRepoPage(this.prisma, query);
   }
 
   /** `GET /v1/repos/:id` — fetch by id. 404 (NotFoundException) when unknown. */
   @Get(':id')
   async findById(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<RepoResponse> {
     this.requireScope(req, 'repos:read');

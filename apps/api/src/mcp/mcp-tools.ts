@@ -1,7 +1,7 @@
 /**
  * MCP tool definitions (remote-mcp-server, Track `mcp-endpoint-tools`, task 4.2).
  *
- * The SIX tools the `/mcp` server advertises, each delegating to the EXISTING
+ * The tools the `/mcp` server advertises, each delegating to the EXISTING
  * console services (one admission path, design D4) with a per-tool scope gate:
  *
  *   - `create_task`    (`tasks:write`) — returns a handle (id + status) IMMEDIATELY,
@@ -10,7 +10,9 @@
  *   - `list_tasks`     (`tasks:read`)  — list the shared pool.
  *   - `stop_task`      (`tasks:write`) — operator stop (terminal `cancelled`).
  *   - `get_transcript` (`tasks:read`)  — the DURABLE session-history read.
- *   - `list_repos`     (`repos:read`)  — the repo read surface.
+ *   - `list_repos` / `get_repo` (`repos:read`) — the repo read surface.
+ *   - schedule tools   (`tasks:read` / `tasks:write`) — owner-scoped schedule
+ *                                               management and immediate dispatch.
  *
  * SCOPE GATING. Every `/mcp` request is first validated by the SDK
  * `requireBearerAuth` → `resolveMcpToken` (registered in `main.ts`, Track 7), which
@@ -36,11 +38,41 @@ import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { z } from 'zod';
 import type { Scope } from '@cap/contracts';
-import type {
-  CreateTaskBody,
-  RepoResponse,
-  SessionHistory,
-  TaskResponse,
+import {
+  CreateScheduleRequestSchema,
+  CreateTaskRequestSchema,
+  RepoResponseSchema,
+  ScheduleCronExpressionSchema,
+  ScheduleMisfirePolicySchema,
+  ScheduleOverlapPolicySchema,
+  ScheduleRecurrenceSchema,
+  ScheduleResponseSchema,
+  ScheduleTimezoneSchema,
+  SessionHistoryEmptyReasonSchema,
+  SessionHistoryMetaSchema,
+  SessionTurnSchema,
+  TaskResponseSchema,
+  UpdateScheduleRequestSchema,
+  V1CreateTaskRequestSchema,
+  V1ListQuerySchema,
+  V1ListReposResponseSchema,
+  V1ListSchedulesResponseSchema,
+  V1ListScheduleRunsResponseSchema,
+  V1ListTasksResponseSchema,
+  V1ScheduleListQuerySchema,
+  type CreateScheduleRequest,
+  type CreateTaskBody,
+  type RepoResponse,
+  type ScheduleResponse,
+  type SessionHistory,
+  type TaskResponse,
+  type UpdateScheduleRequest,
+  type V1ListQuery,
+  type V1ListReposResponse,
+  type V1ListSchedulesResponse,
+  type V1ListScheduleRunsResponse,
+  type V1ListTasksResponse,
+  type V1ScheduleListQuery,
 } from '@cap/contracts';
 
 /**
@@ -61,6 +93,7 @@ export interface ToolRegistrar {
       title?: string;
       description?: string;
       inputSchema?: z.ZodRawShape;
+      outputSchema?: z.ZodRawShape | z.ZodTypeAny;
     },
     cb: (...args: never[]) => unknown,
   ): unknown;
@@ -76,7 +109,7 @@ export interface ToolRegistrar {
  *   - `getTask` / `listTasks` / `stopTask` → `TasksService.findById|list|stop`;
  *   - `getTranscript` → the durable session-history read (durable-first, container
  *     fallback) the `/v1` transcript + console session-history surfaces share;
- *   - `listRepos` → `ReposService.list`.
+ *   - `listRepos` / `getRepo` → the same repo reads and keyset page as `/v1`.
  *
  * Modelling the deps as this port (rather than the concrete Nest services) keeps
  * the registration pure and unit-testable; `McpServerFactory` binds it to the
@@ -89,10 +122,34 @@ export interface McpToolDeps {
     userId?: string,
   ): Promise<TaskResponse>;
   getTask(id: string): Promise<TaskResponse>;
-  listTasks(): Promise<TaskResponse[]>;
+  listTasks(query: V1ListQuery): Promise<V1ListTasksResponse>;
   stopTask(id: string, userId?: string): Promise<TaskResponse>;
   getTranscript(id: string): Promise<SessionHistory>;
-  listRepos(): Promise<RepoResponse[]>;
+  listRepos(query: V1ListQuery): Promise<V1ListReposResponse>;
+  getRepo(id: string): Promise<RepoResponse>;
+  createSchedule(
+    ownerUserId: string,
+    body: CreateScheduleRequest,
+  ): Promise<ScheduleResponse>;
+  listSchedules(
+    ownerUserId: string,
+    query: V1ScheduleListQuery,
+  ): Promise<V1ListSchedulesResponse>;
+  getSchedule(ownerUserId: string, id: string): Promise<ScheduleResponse>;
+  updateSchedule(
+    ownerUserId: string,
+    id: string,
+    body: UpdateScheduleRequest,
+  ): Promise<ScheduleResponse>;
+  pauseSchedule(ownerUserId: string, id: string): Promise<ScheduleResponse>;
+  resumeSchedule(ownerUserId: string, id: string): Promise<ScheduleResponse>;
+  dispatchSchedule(ownerUserId: string, id: string): Promise<ScheduleResponse>;
+  deleteSchedule(ownerUserId: string, id: string): Promise<void>;
+  listScheduleRuns(
+    ownerUserId: string,
+    id: string,
+    query: V1ScheduleListQuery,
+  ): Promise<V1ListScheduleRunsResponse>;
 }
 
 /**
@@ -102,6 +159,12 @@ export interface McpToolDeps {
  */
 export interface ToolExtra {
   readonly authInfo?: AuthInfo;
+}
+
+/** Resolve the MCP token owner's account primary key from SDK request metadata. */
+export function userIdFromExtra(extra: ToolExtra): string | undefined {
+  const raw = (extra.authInfo?.extra as { userId?: unknown } | undefined)?.userId;
+  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
 }
 
 /**
@@ -134,8 +197,24 @@ export function scopeError(required: Scope): McpError {
   );
 }
 
+/** Schedule definitions always execute with the MCP token owner's account. */
+function requireOwner(
+  extra: ToolExtra,
+  userIdOf: (extra: ToolExtra) => string | undefined,
+): string {
+  const userId = userIdOf(extra);
+  if (userId) return userId;
+  throw new McpError(
+    ErrorCode.InvalidParams,
+    'Schedule tools require an authenticated account owner (403)',
+  );
+}
+
 /** Wrap a value as the MCP tool text result the clients render. */
-function jsonResult(value: unknown) {
+function jsonResult(
+  value: unknown,
+  structuredValue: unknown = value,
+) {
   return {
     content: [
       {
@@ -143,13 +222,65 @@ function jsonResult(value: unknown) {
         text: JSON.stringify(value, null, 2),
       },
     ],
+    structuredContent: jsonObject(structuredValue),
   };
 }
 
+/** MCP structured content must be a JSON object; normalize Dates and omit undefined. */
+function jsonObject(value: unknown): Record<string, unknown> {
+  const normalized: unknown = JSON.parse(JSON.stringify(value));
+  if (normalized === null || Array.isArray(normalized) || typeof normalized !== 'object') {
+    throw new TypeError('MCP structured content must be a JSON object');
+  }
+  return normalized as Record<string, unknown>;
+}
+
+const scheduleIdSchema = ScheduleResponseSchema.shape.id.describe('The schedule id.');
+const taskIdSchema = TaskResponseSchema.shape.id.describe('The task id.');
+const repoIdSchema = RepoResponseSchema.shape.id.describe('The repo id.');
+const scheduleTaskTemplateInputSchema = CreateTaskRequestSchema.extend({
+  repoId: z.string().uuid().describe('The repo id the scheduled task runs against.'),
+});
+
+const createScheduleInputSchema = {
+  name: z.string().trim().min(1).max(120).nullable().optional(),
+  recurrence: ScheduleRecurrenceSchema.optional(),
+  cronExpression: ScheduleCronExpressionSchema.optional(),
+  timezone: ScheduleTimezoneSchema.optional(),
+  taskTemplate: scheduleTaskTemplateInputSchema,
+  enabled: z.boolean().optional(),
+  overlapPolicy: ScheduleOverlapPolicySchema.optional(),
+  misfirePolicy: ScheduleMisfirePolicySchema.optional(),
+} satisfies z.ZodRawShape;
+
+const updateScheduleInputSchema = {
+  id: scheduleIdSchema,
+  name: z.string().trim().min(1).max(120).nullable().optional(),
+  recurrence: ScheduleRecurrenceSchema.optional(),
+  cronExpression: ScheduleCronExpressionSchema.optional(),
+  timezone: ScheduleTimezoneSchema.optional(),
+  taskTemplate: scheduleTaskTemplateInputSchema.optional(),
+  enabled: z.boolean().optional(),
+  overlapPolicy: ScheduleOverlapPolicySchema.optional(),
+  misfirePolicy: ScheduleMisfirePolicySchema.optional(),
+} satisfies z.ZodRawShape;
+
+const transcriptOutputSchema = z.object({
+  status: z.enum(['available', 'empty', 'expired']),
+  turns: z.array(SessionTurnSchema).optional(),
+  meta: SessionHistoryMetaSchema.optional(),
+  isInterrupted: z.boolean().optional(),
+  reason: SessionHistoryEmptyReasonSchema.optional(),
+});
+const deleteScheduleOutputSchema = z.object({
+  id: ScheduleResponseSchema.shape.id,
+  deleted: z.literal(true),
+});
+
 /**
- * Register the six tools on `server`, delegating to `deps` with per-tool scope
- * gates. Called ONCE per `McpServer` (the server is built once and reused across
- * stateless transports, task 4.1).
+ * Register the tools on `server`, delegating to `deps` with per-tool scope
+ * gates. Called once for each request-scoped `McpServer`; the SDK server itself
+ * owns exactly one transport, so stateless concurrent requests must not share it.
  *
  * `userIdOf(extra)` resolves the acting operator's ACCOUNT primary key (`users.id`)
  * from the resolved token (for audit attribution on create/stop, and so the
@@ -162,7 +293,7 @@ function jsonResult(value: unknown) {
 export function registerMcpTools(
   server: ToolRegistrar,
   deps: McpToolDeps,
-  userIdOf: (extra: ToolExtra) => string | undefined = () => undefined,
+  userIdOf: (extra: ToolExtra) => string | undefined = userIdFromExtra,
 ): void {
   // --- create_task (tasks:write) — IMMEDIATE handle, never blocks (D4) ---------
   server.registerTool(
@@ -173,26 +304,15 @@ export function registerMcpTools(
         'Create a sandbox task on a repo. Returns the task handle (id + status) ' +
         'immediately; provisioning proceeds asynchronously through the same ' +
         'admission the console uses. Poll get_task to a terminal status, then ' +
-        'read get_transcript. Requires the tasks:write scope.',
-      inputSchema: {
-        repoId: z.string().min(1).describe('The repo id to run the task against.'),
-        prompt: z.string().min(1).describe('The task prompt for the agent.'),
-        branch: z.string().min(1).optional(),
-        strategy: z.string().min(1).optional(),
-        runtime: z.enum(['claude-code', 'codex']).optional(),
-        deliver: z
-          .enum(['none', 'branch', 'pr'])
-          .optional()
-          .describe(
-            'Where the completed task delivers its edits: none (default), branch (push cap/task-<id>), or pr (push + open a PR/MR on the repo forge).',
-          ),
-      },
+        'read get_transcript. Each MCP call is a distinct create: the REST-only ' +
+        'Idempotency-Key header is not mapped to a tool argument. Requires the ' +
+        'tasks:write scope.',
+      inputSchema: V1CreateTaskRequestSchema.shape,
+      outputSchema: TaskResponseSchema,
     },
-    async (
-      { repoId, ...body }: { repoId: string; prompt: string } & Partial<CreateTaskBody>,
-      extra: ToolExtra,
-    ) => {
+    async (args: unknown, extra: ToolExtra) => {
       requireScope(extra, 'tasks:write');
+      const { repoId, ...body } = V1CreateTaskRequestSchema.parse(args);
       // Delegate to the SAME admission path the console uses. `create` persists
       // the row then OFFERS the task to the guardrails semaphore and returns the
       // handle — it does NOT await the (minutes-long) run, so the tool call never
@@ -200,10 +320,12 @@ export function registerMcpTools(
       // blocking").
       const task = await deps.createTask(
         repoId,
-        body as CreateTaskBody,
+        body,
         userIdOf(extra),
       );
-      return jsonResult({ id: task.id, status: task.status, task });
+      // Keep the historical text handle for clients that render `content`, while
+      // the machine-readable result matches POST /v1/tasks exactly.
+      return jsonResult({ id: task.id, status: task.status, task }, task);
     },
   );
 
@@ -216,8 +338,9 @@ export function registerMcpTools(
         'Fetch one task by id (the polling floor — every status transition is ' +
         'durably persisted before the response). Requires the tasks:read scope.',
       inputSchema: {
-        id: z.string().min(1).describe('The task id.'),
+        id: taskIdSchema,
       },
+      outputSchema: TaskResponseSchema,
     },
     async ({ id }: { id: string }, extra: ToolExtra) => {
       requireScope(extra, 'tasks:read');
@@ -226,19 +349,20 @@ export function registerMcpTools(
   );
 
   // --- list_tasks (tasks:read) -------------------------------------------------
-  // A zero-argument tool: omit `inputSchema` entirely so the SDK types the
-  // callback as `(extra)` (an empty `inputSchema: {}` would instead make it
-  // `(args, extra)`).
   server.registerTool(
     'list_tasks',
     {
       title: 'List tasks',
       description:
-        'List tasks in the shared pool. Requires the tasks:read scope.',
+        'List tasks in the shared pool using the same keyset pagination as /v1. ' +
+        'Requires the tasks:read scope.',
+      inputSchema: V1ListQuerySchema.shape,
+      outputSchema: V1ListTasksResponseSchema,
     },
-    async (extra: ToolExtra) => {
+    async (args: unknown, extra: ToolExtra) => {
       requireScope(extra, 'tasks:read');
-      return jsonResult(await deps.listTasks());
+      const query = V1ListQuerySchema.parse(args);
+      return jsonResult(await deps.listTasks(query));
     },
   );
 
@@ -251,8 +375,9 @@ export function registerMcpTools(
         'Stop a running task (terminal cancelled + teardown). Idempotent for an ' +
         'already-terminal task. Requires the tasks:write scope.',
       inputSchema: {
-        id: z.string().min(1).describe('The task id to stop.'),
+        id: taskIdSchema.describe('The task id to stop.'),
       },
+      outputSchema: TaskResponseSchema,
     },
     async ({ id }: { id: string }, extra: ToolExtra) => {
       requireScope(extra, 'tasks:write');
@@ -270,28 +395,218 @@ export function registerMcpTools(
         'container fallback). Never exposes the live PTY/WebSocket stream. ' +
         'Requires the tasks:read scope.',
       inputSchema: {
-        id: z.string().min(1).describe('The task id whose transcript to read.'),
+        id: taskIdSchema.describe('The task id whose transcript to read.'),
       },
+      outputSchema: transcriptOutputSchema,
     },
     async ({ id }: { id: string }, extra: ToolExtra) => {
       requireScope(extra, 'tasks:read');
-      return jsonResult(await deps.getTranscript(id));
+      const transcript = await deps.getTranscript(id);
+      return jsonResult(transcript);
     },
   );
 
   // --- list_repos (repos:read) -------------------------------------------------
-  // Zero-argument tool: omit `inputSchema` so the callback is typed `(extra)`.
   server.registerTool(
     'list_repos',
     {
       title: 'List repos',
       description:
-        'List the configured repos a task can run against. Requires the ' +
-        'repos:read scope.',
+        'List the configured repos a task can run against using the same keyset ' +
+        'pagination as /v1. Requires the repos:read scope.',
+      inputSchema: V1ListQuerySchema.shape,
+      outputSchema: V1ListReposResponseSchema,
     },
-    async (extra: ToolExtra) => {
+    async (args: unknown, extra: ToolExtra) => {
       requireScope(extra, 'repos:read');
-      return jsonResult(await deps.listRepos());
+      const query = V1ListQuerySchema.parse(args);
+      return jsonResult(await deps.listRepos(query));
+    },
+  );
+
+  // --- get_repo (repos:read) ---------------------------------------------------
+  server.registerTool(
+    'get_repo',
+    {
+      title: 'Get a repo',
+      description: 'Fetch one configured repo by id. Requires the repos:read scope.',
+      inputSchema: { id: repoIdSchema },
+      outputSchema: RepoResponseSchema,
+    },
+    async ({ id }: { id: string }, extra: ToolExtra) => {
+      requireScope(extra, 'repos:read');
+      return jsonResult(await deps.getRepo(id));
+    },
+  );
+
+  // --- owner-scoped scheduled tasks -------------------------------------------
+  server.registerTool(
+    'create_schedule',
+    {
+      title: 'Create a recurring task schedule',
+      description:
+        'Create an owner-scoped recurring task schedule. Accepts either a ' +
+        'recurrence descriptor or a five-field cron expression. Requires the ' +
+        'tasks:write scope.',
+      inputSchema: createScheduleInputSchema,
+      outputSchema: ScheduleResponseSchema,
+    },
+    async (args: unknown, extra: ToolExtra) => {
+      requireScope(extra, 'tasks:write');
+      const ownerUserId = requireOwner(extra, userIdOf);
+      const body = CreateScheduleRequestSchema.parse(args);
+      return jsonResult(await deps.createSchedule(ownerUserId, body));
+    },
+  );
+
+  server.registerTool(
+    'list_schedules',
+    {
+      title: 'List recurring task schedules',
+      description:
+        'List recurring task schedules owned by the MCP token account using the ' +
+        'same keyset pagination as /v1. Requires the tasks:read scope.',
+      inputSchema: V1ScheduleListQuerySchema.shape,
+      outputSchema: V1ListSchedulesResponseSchema,
+    },
+    async (args: unknown, extra: ToolExtra) => {
+      requireScope(extra, 'tasks:read');
+      const ownerUserId = requireOwner(extra, userIdOf);
+      const query = V1ScheduleListQuerySchema.parse(args);
+      return jsonResult(await deps.listSchedules(ownerUserId, query));
+    },
+  );
+
+  server.registerTool(
+    'get_schedule',
+    {
+      title: 'Get a recurring task schedule',
+      description:
+        'Fetch one recurring task schedule owned by the MCP token account. ' +
+        'Requires the tasks:read scope.',
+      inputSchema: { id: scheduleIdSchema },
+      outputSchema: ScheduleResponseSchema,
+    },
+    async ({ id }: { id: string }, extra: ToolExtra) => {
+      requireScope(extra, 'tasks:read');
+      const ownerUserId = requireOwner(extra, userIdOf);
+      return jsonResult(await deps.getSchedule(ownerUserId, id));
+    },
+  );
+
+  server.registerTool(
+    'update_schedule',
+    {
+      title: 'Update a recurring task schedule',
+      description:
+        'Update future occurrences of an owner-scoped recurring task schedule. ' +
+        'Requires the tasks:write scope.',
+      inputSchema: updateScheduleInputSchema,
+      outputSchema: ScheduleResponseSchema,
+    },
+    async (
+      { id, ...input }: { id: string } & Record<string, unknown>,
+      extra: ToolExtra,
+    ) => {
+      requireScope(extra, 'tasks:write');
+      const ownerUserId = requireOwner(extra, userIdOf);
+      const body = UpdateScheduleRequestSchema.parse(input);
+      return jsonResult(await deps.updateSchedule(ownerUserId, id, body));
+    },
+  );
+
+  server.registerTool(
+    'pause_schedule',
+    {
+      title: 'Pause a recurring task schedule',
+      description:
+        'Disable future fires for an owner-scoped recurring task schedule. ' +
+        'Requires the tasks:write scope.',
+      inputSchema: { id: scheduleIdSchema },
+      outputSchema: ScheduleResponseSchema,
+    },
+    async ({ id }: { id: string }, extra: ToolExtra) => {
+      requireScope(extra, 'tasks:write');
+      const ownerUserId = requireOwner(extra, userIdOf);
+      return jsonResult(await deps.pauseSchedule(ownerUserId, id));
+    },
+  );
+
+  server.registerTool(
+    'resume_schedule',
+    {
+      title: 'Resume a recurring task schedule',
+      description:
+        'Enable an owner-scoped recurring task schedule and compute its next ' +
+        'future fire time. Requires the tasks:write scope.',
+      inputSchema: { id: scheduleIdSchema },
+      outputSchema: ScheduleResponseSchema,
+    },
+    async ({ id }: { id: string }, extra: ToolExtra) => {
+      requireScope(extra, 'tasks:write');
+      const ownerUserId = requireOwner(extra, userIdOf);
+      return jsonResult(await deps.resumeSchedule(ownerUserId, id));
+    },
+  );
+
+  server.registerTool(
+    'dispatch_schedule',
+    {
+      title: 'Run a recurring task schedule now',
+      description:
+        'Dispatch an owner-scoped recurring task schedule immediately through ' +
+        'the same scheduled-task service used by the console. Requires the ' +
+        'tasks:write scope.',
+      inputSchema: { id: scheduleIdSchema },
+      outputSchema: ScheduleResponseSchema,
+    },
+    async ({ id }: { id: string }, extra: ToolExtra) => {
+      requireScope(extra, 'tasks:write');
+      const ownerUserId = requireOwner(extra, userIdOf);
+      return jsonResult(await deps.dispatchSchedule(ownerUserId, id));
+    },
+  );
+
+  server.registerTool(
+    'delete_schedule',
+    {
+      title: 'Delete a recurring task schedule',
+      description:
+        'Delete an owner-scoped recurring task schedule. Existing tasks and run ' +
+        'history follow the scheduled-task service semantics. Requires the ' +
+        'tasks:write scope.',
+      inputSchema: { id: scheduleIdSchema },
+      outputSchema: deleteScheduleOutputSchema,
+    },
+    async ({ id }: { id: string }, extra: ToolExtra) => {
+      requireScope(extra, 'tasks:write');
+      const ownerUserId = requireOwner(extra, userIdOf);
+      await deps.deleteSchedule(ownerUserId, id);
+      return jsonResult({ id, deleted: true });
+    },
+  );
+
+  server.registerTool(
+    'list_schedule_runs',
+    {
+      title: 'List runs for a recurring task schedule',
+      description:
+        'List recent occurrence records for an owner-scoped recurring task ' +
+        'schedule. Requires the tasks:read scope.',
+      inputSchema: {
+        id: scheduleIdSchema,
+        ...V1ScheduleListQuerySchema.shape,
+      },
+      outputSchema: V1ListScheduleRunsResponseSchema,
+    },
+    async (
+      { id, ...rawQuery }: { id: string } & Record<string, unknown>,
+      extra: ToolExtra,
+    ) => {
+      requireScope(extra, 'tasks:read');
+      const ownerUserId = requireOwner(extra, userIdOf);
+      const query = V1ScheduleListQuerySchema.parse(rawQuery);
+      return jsonResult(await deps.listScheduleRuns(ownerUserId, id, query));
     },
   );
 }

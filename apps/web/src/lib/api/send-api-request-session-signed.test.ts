@@ -6,9 +6,8 @@
  * The spec mandates:
  *   1. The send executes against the running api via `credentials: "include"` so
  *      the session cookie rides cross-origin automatically (no pasted token).
- *   2. The operator bearer token — the existing console-session credential — is
- *      auto-injected via the Authorization header (the same discipline used by
- *      every other REST call in `real.ts`).
+ *   2. The optional configured legacy operator bearer is auto-injected via the
+ *      Authorization header; normal browser sessions authenticate by cookie.
  *   3. The result carries status + timing + headers + body for inspection (NOT a
  *      fabricated 200 and NOT an exception on a non-2xx — the playground surfaces
  *      whatever the api returned).
@@ -17,6 +16,8 @@
  *      path-agnostic but always prepends `apiBaseUrl()`.
  *   5. A transport failure resolves to a `kind: "error"` result (the page never
  *      throws / never crashes) — "a failed send surfaces an error, not a crash".
+ *   6. SSE uses the same credentials and can send `Last-Event-ID`, while parsing
+ *      framed events even when a frame is split across network chunks.
  *
  * Pure node-env unit test: `fetch`, `../config`, and `../server-cookie` are
  * stubbed so `sendApiRequest` runs its REAL code path (not a tautology — a
@@ -33,7 +34,7 @@ vi.mock("../server-cookie", () => ({
   getIncomingCookieHeader: async () => "",
 }));
 
-import { sendApiRequest } from "./real";
+import { sendApiRequest, streamApiEvents } from "./real";
 
 /** Capture the fetch call and return a synthetic Response. */
 function stubFetch(response: Response): ReturnType<typeof vi.fn> {
@@ -79,6 +80,31 @@ describe("sendApiRequest — session-signed transport", () => {
     const [, init] = spy.mock.calls[0] as [string, RequestInit];
     const headers = init.headers as Record<string, string>;
     expect(headers["Authorization"]).toBe("Bearer tok-operator-session");
+  });
+
+  it("preserves an operation-specific Idempotency-Key header", async () => {
+    const spy = stubFetch(
+      new Response(JSON.stringify({ id: "t1" }), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await sendApiRequest({
+      method: "POST",
+      path: "/v1/tasks",
+      headers: { "Idempotency-Key": "retry-1" },
+      body: {
+        repoId: "00000000-0000-4000-a000-000000000101",
+        prompt: "check",
+      },
+    });
+
+    const [, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(init.headers).toMatchObject({
+      Authorization: "Bearer tok-operator-session",
+      "Idempotency-Key": "retry-1",
+    });
   });
 
   it("targets the api base URL (not an arbitrary host — no open SSRF box)", async () => {
@@ -156,5 +182,60 @@ describe("sendApiRequest — session-signed transport", () => {
     if (result.kind !== "error") return;
     expect(result.message).toMatch(/Failed to fetch/i);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe("streamApiEvents — public SSE transport", () => {
+  it("sends Last-Event-ID and parses framed events across chunks", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("id: event-2\ndata: {\"status\":\"run"));
+        controller.enqueue(encoder.encode("ning\"}\n\n: heartbeat\n\n"));
+        controller.close();
+      },
+    });
+    const spy = stubFetch(
+      new Response(body, {
+        status: 200,
+        headers: { "content-type": "text/event-stream; charset=utf-8" },
+      }),
+    );
+    const events: Array<{ id?: string; data: string }> = [];
+    const onOpen = vi.fn();
+
+    await streamApiEvents({
+      path: "/v1/tasks/00000000-0000-4000-a000-000000000101/events",
+      lastEventId: " event-1 ",
+      onOpen,
+      onEvent: (event) => events.push(event),
+    });
+
+    const [, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(init.credentials).toBe("include");
+    expect(init.headers).toMatchObject({
+      Authorization: "Bearer tok-operator-session",
+      "Last-Event-ID": "event-1",
+    });
+    expect(onOpen).toHaveBeenCalledOnce();
+    expect(events).toEqual([
+      { id: "event-2", event: undefined, data: '{"status":"running"}' },
+    ]);
+  });
+
+  it("rejects a non-SSE response instead of parsing it as events", async () => {
+    stubFetch(
+      new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    await expect(
+      streamApiEvents({
+        path: "/v1/tasks/00000000-0000-4000-a000-000000000101/events",
+        onEvent: () => undefined,
+      }),
+    ).rejects.toThrow(/Expected text\/event-stream/);
   });
 });

@@ -87,6 +87,7 @@ import {
   type ScheduleResponse,
 } from "@cap/contracts";
 import { RepoResponseSchema } from "@cap/contracts";
+import { createParser } from "eventsource-parser";
 import {
   ListAvailableForgeReposResponseSchema,
   ListForgeCredentialsResponseSchema,
@@ -298,6 +299,82 @@ export interface SendApiErrorResult {
 
 /** The discriminated outcome of {@link sendApiRequest} — a response or a transport error. */
 export type SendApiResult = SendApiResponseResult | SendApiErrorResult;
+
+export interface ApiSseEvent {
+  id?: string;
+  event?: string;
+  data: string;
+}
+
+export interface StreamApiEventsInput {
+  /** Curated SSE path with all path parameters already resolved. */
+  path: string;
+  /** Optional public resume cursor sent as the `Last-Event-ID` header. */
+  lastEventId?: string;
+  signal?: AbortSignal;
+  onOpen?: () => void;
+  onEvent: (event: ApiSseEvent) => void;
+}
+
+/**
+ * Open a session-authenticated public SSE stream with full header control.
+ * Native EventSource cannot set `Last-Event-ID`, so the playground uses fetch
+ * plus the standards-compliant eventsource-parser and exposes the real resume
+ * contract instead of silently omitting it.
+ */
+export async function streamApiEvents(
+  input: StreamApiEventsInput,
+): Promise<void> {
+  const headers = authHeaders();
+  const lastEventId = input.lastEventId?.trim();
+  if (lastEventId) headers["Last-Event-ID"] = lastEventId;
+  const incomingCookie = await getIncomingCookieHeader();
+  if (incomingCookie) headers["Cookie"] = incomingCookie;
+
+  const response = await fetch(`${apiBaseUrl()}${input.path}`, {
+    method: "GET",
+    credentials: "include",
+    headers,
+    signal: input.signal,
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => response.statusText);
+    throw new ApiError(response.status, detail || response.statusText);
+  }
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.startsWith("text/event-stream")) {
+    throw new Error(`Expected text/event-stream, received ${contentType || "no content type"}`);
+  }
+  if (!response.body) {
+    throw new Error("SSE response body is unavailable");
+  }
+
+  let parseFailure: Error | null = null;
+  const parser = createParser({
+    maxBufferSize: 1024 * 1024,
+    onEvent: (event) => input.onEvent(event),
+    onError: (error) => {
+      parseFailure = error;
+    },
+  });
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  input.onOpen?.();
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parser.feed(decoder.decode(value, { stream: true }));
+      if (parseFailure) throw parseFailure;
+    }
+    parser.feed(decoder.decode());
+    parser.reset({ consume: true });
+    if (parseFailure) throw parseFailure;
+  } finally {
+    reader.releaseLock();
+  }
+}
 
 /** Build a query string from a params map, skipping blank/undefined values. */
 function buildQueryString(query?: Record<string, string | undefined>): string {
@@ -526,7 +603,7 @@ export async function resumeSchedule(id: string): Promise<ScheduleResponse> {
   );
 }
 
-/** `POST /schedules/:id/dispatch` — dispatch now and complete the current cycle. */
+/** `POST /schedules/:id/dispatch` — dispatch now without consuming a future cycle. */
 export async function dispatchSchedule(id: string): Promise<ScheduleResponse> {
   return ScheduleResponseSchema.parse(
     await request(`/schedules/${encodeURIComponent(id)}/dispatch`, {

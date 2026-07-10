@@ -160,12 +160,13 @@ The derived image SHALL be SLIMMED: instead of COPYing the whole built `/repo` w
 - **AND** the hook executes successfully
 
 ### Requirement: Blocking approval hooks re-homed via outbound HTTP callback
-The blocking approval hooks (`permission_request` and `post_tool_use`) SHALL be re-homed to make an OUTBOUND HTTP callback from the sandbox to a NEW orchestrator approvals endpoint reachable over `cap-net`, reusing the EXISTING `onPermissionRequest`/`onDecision` approval routing so that only the transport changes. The approval semantics and routing above the transport SHALL remain unchanged. The in-sandbox hook adapter SHALL speak the codex `0.131` hook protocol: it SHALL read the `0.131` stdin schema (`{session_id, transcript_path, cwd, hook_event_name, model, permission_mode, turn_id, tool_name, tool_use_id, tool_input}`), translate it to cap's `permission_request` frame for the existing `POST /v1/approvals` routing, and emit the `0.131` decision form (`{hookSpecificOutput:{hookEventName, permissionDecision:"allow"|"deny", permissionDecisionReason?}}`, or exit `0` for allow / exit `2` + stderr for deny).
+The blocking approval hooks (`permission_request` and `post_tool_use`) SHALL make an OUTBOUND HTTP callback from the sandbox to `POST /internal/sandbox/approvals` over `cap-net`, reusing the EXISTING `onPermissionRequest`/`onDecision` routing so only the transport changes. This unauthenticated internal callback SHALL accept only a direct loopback, RFC1918, link-local, or IPv6 ULA peer and SHALL reject any request carrying `Forwarded`, `X-Forwarded-For`, or `X-Real-IP`. The public HTTP and HTTPS reverse-proxy servers SHALL return 404 for the exact internal path. The in-sandbox hook adapter SHALL speak the codex `0.131` hook protocol: it SHALL read the `0.131` stdin schema (`{session_id, transcript_path, cwd, hook_event_name, model, permission_mode, turn_id, tool_name, tool_use_id, tool_input}`), translate it to cap's `permission_request` frame, and emit the `0.131` decision form (`{hookSpecificOutput:{hookEventName, permissionDecision:"allow"|"deny", permissionDecisionReason?}}`, or exit `0` for allow / exit `2` + stderr for deny).
 
 #### Scenario: Approval request travels over HTTP callback to the orchestrator
 - **WHEN** a hook inside the sandbox fires a `permission_request` or `post_tool_use`
-- **THEN** the sandbox makes an outbound HTTP call to the orchestrator approvals endpoint over `cap-net`
+- **THEN** the sandbox makes an outbound HTTP call to `POST /internal/sandbox/approvals` over `cap-net`
 - **AND** the orchestrator handles it through the existing `onPermissionRequest`/`onDecision` routing
+- **AND** a public or proxy-forwarded caller is rejected before that routing is entered
 
 #### Scenario: Approval routing is unchanged above the transport
 - **WHEN** an approval decision is produced for a re-homed hook
@@ -173,7 +174,7 @@ The blocking approval hooks (`permission_request` and `post_tool_use`) SHALL be 
 
 #### Scenario: Hook adapter speaks the codex 0.131 stdin/stdout protocol
 - **WHEN** the codex `0.131` hook fires and writes its `0.131` stdin payload to the in-sandbox hook adapter
-- **THEN** the adapter parses the `0.131` stdin schema (including `tool_name` and `tool_input`), translates it to cap's `permission_request` frame, and performs the existing `POST /v1/approvals` round-trip
+- **THEN** the adapter parses the `0.131` stdin schema (including `tool_name` and `tool_input`), translates it to cap's `permission_request` frame, and performs the internal `POST /internal/sandbox/approvals` round-trip
 - **AND** it returns the decision in the codex `0.131` form (`{hookSpecificOutput:{permissionDecision}}`, or exit `0` allow / exit `2` deny)
 
 ### Requirement: Exit detection mapped to guardrails
@@ -483,4 +484,3 @@ The AIO sandbox provisioning path SHALL run the provider-neutral image parameter
 - **WHEN** AIO image parameter setup fails
 - **THEN** logged setup output is scrubbed or bounded so plaintext secret parameters are not emitted
 - **AND** the failure message contains non-secret task/provider context only
-

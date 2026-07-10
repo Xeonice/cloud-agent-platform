@@ -19,9 +19,8 @@
  *      returns a clear disabled response and connects no transport, so no `mcp_`
  *      token can drive a usable session here.
  *   2. When ON, build a FRESH stateless transport (`sessionIdGenerator: undefined`,
- *      `enableJsonResponse: true`) — a transport per request — connect it to the
- *      ONE shared {@link McpServer} (tools registered once at factory
- *      construction), and hand the pre-parsed `req.body` to
+ *      `enableJsonResponse: true`) and a fresh {@link McpServer} per request, then
+ *      hand the pre-parsed `req.body` to
  *      `transport.handleRequest(req, res, req.body)` so the SDK owns the JSON-RPC
  *      response on the raw `res`.
  *
@@ -92,8 +91,7 @@ export class McpController {
 
   /**
    * The shared per-request handler: gate on the enable flag, then (when on) build
-   * a fresh stateless transport, connect the shared server, and let the SDK own
-   * the response. A transport per request; one `McpServer`.
+   * a fresh stateless server/transport pair and let the SDK own the response.
    */
   private async handle(req: Request, res: Response): Promise<void> {
     // (task 4.3) Gate the WHOLE surface on the enable flag. When off the endpoint
@@ -119,14 +117,14 @@ export class McpController {
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
+    const server = this.mcp.createServer();
 
-    // Release the transport (not the long-lived server) when the response closes.
+    // The request-scoped server owns its transport; closing it releases both.
     res.on('close', () => {
-      void transport.close();
+      void server.close();
     });
 
-    // Connect the ONE shared, tools-registered server to this request's transport.
-    await this.mcp.getServer().connect(transport);
+    await server.connect(transport);
 
     // Hand the PRE-PARSED body (the global JSON parser already ran) to the SDK,
     // which writes the JSON-RPC response onto the raw `res`. `req.auth` (set by the

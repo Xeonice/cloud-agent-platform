@@ -106,7 +106,7 @@ await test('builds provision specs, names, env, and validation helpers', async (
   assert.equal(spec.containerConfig.HostConfig.SecurityOpt[0], 'seccomp=unconfined');
   assert.deepEqual(spec.containerConfig.Env, [
     'TASK_ID=task-helpers',
-    'ORCHESTRATOR_APPROVALS_URL=http://api:8080/v1/approvals',
+    'ORCHESTRATOR_APPROVALS_URL=http://api:8080/internal/sandbox/approvals',
   ]);
 
   const custom = mod.buildAioLocalSandboxProvisionSpec({

@@ -9,7 +9,7 @@
  * (design D1 / spec "No manual token entry"); then a tabbed card with:
  *  - Body — a JSON editor (`<textarea>`) + a 格式化 action (write endpoints),
  *  - 参数 — the query params (e.g. `limit`/`cursor`) as labeled inputs,
- *  - Headers — the READ-ONLY auto-injected `Authorization` (masked) +
+ *  - Headers — the READ-ONLY browser session cookie / optional legacy bearer +
  *    `Content-Type` (api-playground spec "Request editor with Body / Params /
  *    Headers").
  *
@@ -24,7 +24,9 @@
  * Editor state (path params, query values, body, active tab) is LOCAL `useState`
  * re-seeded whenever the selected endpoint changes (a `useEffect` keyed on the
  * endpoint id), so switching endpoints in the rail loads a fresh editor while a
- * given endpoint's edits persist as long as it stays selected.
+ * given endpoint's edits persist as long as it stays selected. A real request is
+ * emitted only after all path params are filled and a body-bearing operation has
+ * valid JSON; the parsed JSON value is passed to the runner exactly once.
  *
  * SSR-safe: pure render seeded deterministically from the endpoint (the default
  * endpoint's sample body renders identically server + client for the pixel
@@ -58,9 +60,15 @@ export interface ApiResolvedRequest {
   path: string;
   /** Non-empty query params, as a key→value record (omitted when none). */
   query: Record<string, string>;
-  /** The JSON request body text for write endpoints, or `undefined` for reads. */
-  body?: string;
+  /** Optional operation-specific headers; auth headers remain auto-injected. */
+  headers: Record<string, string>;
+  /** The parsed JSON request body for body-bearing writes, or `undefined`. */
+  body?: unknown;
 }
+
+export type ApiRequestDraftValidation =
+  | { ok: true; body?: unknown }
+  | { ok: false; message: string };
 
 /** The three request tabs, in display order. */
 type RequestTab = "body" | "params" | "headers";
@@ -88,6 +96,12 @@ function seedQuery(endpoint: ApiEndpoint): Record<string, string> {
   return seed;
 }
 
+function seedHeaders(endpoint: ApiEndpoint): Record<string, string> {
+  return Object.fromEntries(
+    endpoint.headerParams.map((param) => [param.name, param.defaultValue]),
+  );
+}
+
 /** Collapse a query map to its non-empty entries (trimmed). */
 function nonEmptyQuery(values: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -96,6 +110,28 @@ function nonEmptyQuery(values: Record<string, string>): Record<string, string> {
     if (trimmed) out[key] = trimmed;
   }
   return out;
+}
+
+/** Validate the local editor before it can emit a real request. */
+export function validateApiRequestDraft(
+  endpoint: ApiEndpoint,
+  pathParams: Record<string, string>,
+  body: string,
+): ApiRequestDraftValidation {
+  const missing = endpoint.pathParams.find(
+    (param) => !(pathParams[param.name] ?? "").trim(),
+  );
+  if (missing) {
+    return { ok: false, message: `请填写${missing.label}。` };
+  }
+
+  if (endpoint.sampleBody === null) return { ok: true };
+
+  try {
+    return { ok: true, body: JSON.parse(body) as unknown };
+  } catch {
+    return { ok: false, message: "请求体必须是合法 JSON。" };
+  }
 }
 
 /** The request editor (request bar + auth line + Body/参数/Headers tabs). */
@@ -108,6 +144,7 @@ export function ApiRequestPanel({
   const [tab, setTab] = React.useState<RequestTab>(hasBody ? "body" : "params");
   const [pathParams, setPathParams] = React.useState(() => seedPathParams(endpoint));
   const [query, setQuery] = React.useState(() => seedQuery(endpoint));
+  const [headers, setHeaders] = React.useState(() => seedHeaders(endpoint));
   const [body, setBody] = React.useState(() => endpoint.sampleBody ?? "");
   // A destructive send awaiting the inline confirm (cleared on confirm/cancel).
   const [confirming, setConfirming] = React.useState(false);
@@ -116,21 +153,25 @@ export function ApiRequestPanel({
   React.useEffect(() => {
     setPathParams(seedPathParams(endpoint));
     setQuery(seedQuery(endpoint));
+    setHeaders(seedHeaders(endpoint));
     setBody(endpoint.sampleBody ?? "");
     setTab(endpoint.sampleBody !== null ? "body" : "params");
     setConfirming(false);
   }, [endpoint]);
 
   const resolvedPath = resolvePath(endpoint, pathParams);
+  const validation = validateApiRequestDraft(endpoint, pathParams, body);
 
   function emit() {
+    if (!validation.ok) return;
     setConfirming(false);
     onSend({
       endpoint,
       method: endpoint.method,
       path: resolvedPath,
       query: nonEmptyQuery(query),
-      body: hasBody ? body : undefined,
+      headers: nonEmptyQuery(headers),
+      body: validation.body,
     });
   }
 
@@ -183,13 +224,19 @@ export function ApiRequestPanel({
         <button
           type="button"
           data-api-send
-          disabled={pending}
+          disabled={pending || !validation.ok}
           onClick={handleSend}
           className="inline-flex min-h-10 flex-none items-center justify-center rounded-md bg-primary px-[18px] text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
         >
           {pending ? "发送中…" : "发送"}
         </button>
       </div>
+
+      {!validation.ok && (
+        <p role="alert" className="m-0 text-xs text-danger">
+          {validation.message}
+        </p>
+      )}
 
       {/* Path-param inputs (only for `:id`-style templates). */}
       {endpoint.pathParams.length > 0 && (
@@ -218,7 +265,7 @@ export function ApiRequestPanel({
       <div className="flex flex-wrap items-center gap-2.5">
         <StatusPill variant="green">会话已签名 · 自动注入</StatusPill>
         <span className="text-xs text-muted-foreground">
-          凭据来自当前操作者会话，请求以 Bearer 形式签名
+          自动携带会话 Cookie；配置 legacy token 时同时附带 Bearer
         </span>
       </div>
 
@@ -334,19 +381,41 @@ export function ApiRequestPanel({
           </div>
         )}
 
-        {/* Headers (read-only, auto-injected) */}
+        {/* Authentication is read-only; operation-specific protocol headers are editable. */}
         {tab === "headers" && (
-          <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5 text-xs">
+          <div className="grid gap-3 text-xs">
+            {endpoint.headerParams.map((param) => (
+              <label
+                key={param.name}
+                className="grid grid-cols-[160px_minmax(0,1fr)] items-center gap-3 max-[560px]:grid-cols-1 max-[560px]:gap-1"
+              >
+                <span className="font-mono text-foreground">{param.name}</span>
+                <input
+                  type="text"
+                  value={headers[param.name] ?? ""}
+                  placeholder={param.hint}
+                  onChange={(event) =>
+                    setHeaders((previous) => ({
+                      ...previous,
+                      [param.name]: event.target.value,
+                    }))
+                  }
+                  className="min-h-9 rounded-md border-0 bg-card px-3 font-mono text-[13px] text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none focus:shadow-[inset_0_0_0_1px_var(--foreground)]"
+                />
+              </label>
+            ))}
+            <div className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1.5">
             {hasBody && (
               <>
                 <span className="font-mono">Content-Type</span>
                 <span className="font-mono text-muted-foreground">application/json</span>
               </>
             )}
-            <span className="font-mono">Authorization</span>
+            <span className="font-mono">Cookie / Authorization</span>
             <span className="font-mono text-muted-foreground">
-              Bearer ••••（会话自动注入）
+              会话 Cookie / 可选 legacy Bearer 自动注入
             </span>
+            </div>
           </div>
         )}
       </section>

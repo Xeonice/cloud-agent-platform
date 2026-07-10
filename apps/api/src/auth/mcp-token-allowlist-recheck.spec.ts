@@ -24,6 +24,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import type { SessionUser } from '@cap/contracts';
 
 import { AuthSessionService, MCP_RESOURCE_URI } from './auth-session.service';
 
@@ -42,14 +43,7 @@ interface FakeMcpTokenRow {
   scopes: string[];
   revokedAt: Date | null;
   expiresAt: Date | null;
-  user: {
-    id: string;
-    githubId: number | null;
-    login: string;
-    name: string;
-    avatarUrl: string;
-    allowed: boolean;
-  };
+  user: SessionUser;
 }
 
 /**
@@ -97,6 +91,8 @@ function tokenRow(
       name: 'Octo Cat',
       avatarUrl: 'https://example.test/a.png',
       allowed,
+      role: 'member',
+      mustChangePassword: false,
     },
   };
 }
@@ -121,6 +117,7 @@ test('resolveMcpToken: an allowed owner resolves to a FULL AuthInfo (all fields 
   assert.ok(info.expiresAt > Math.floor(Date.now() / 1000), 'expiresAt is in the future (far-future fallback for no-expiry token)');
   assert.equal(info.resource, MCP_RESOURCE_URI, 'AuthInfo.resource is the canonical MCP resource URI');
   assert.equal(info.ownerGithubId, 99999, 'AuthInfo.ownerGithubId carries the owner github id');
+  assert.deepEqual(info.owner, tokenRow(true).user, 'AuthInfo.owner carries the full account');
   assert.equal(
     info.ownerId,
     'acct-owner-001',
@@ -172,6 +169,7 @@ test('resolveMcpToken: local-account owner (githubId null, allowed true) still r
 
   assert.ok(info !== null, 'local-account token resolves when owner.allowed is true');
   assert.equal(info.ownerGithubId, null, 'ownerGithubId is null for a local-account owner (nullable, best-effort attribution only)');
+  assert.equal(info.owner.id, 'acct-owner-001', 'full owner is available to REST principals');
   // fix-local-account-task-attribution: even with NO github id, the account id is
   // present — this is what the task-attribution chain threads so a local account's
   // MCP task is owner-attributed and its stored Codex credential resolves.

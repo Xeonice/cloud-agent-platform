@@ -5,7 +5,7 @@
  *
  * Requirement ("Blocking approval hooks re-homed via outbound HTTP callback",
  * orchestrator side): the sandbox's `permission_request` arrives at the NEW
- * `/v1/approvals` endpoint over HTTP; the endpoint routes it through the EXISTING
+ * `/internal/sandbox/approvals` endpoint over HTTP; it routes through the EXISTING
  * `onPermissionRequest` -> operator decision -> `onDecision` logic; and the
  * resolved decision is returned to the hook over HTTP. Only the transport
  * changed — the approval semantics above it are unchanged.
@@ -53,7 +53,10 @@ const TASK = '11111111-1111-1111-1111-111111111111';
 function startEndpoint(controller) {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
-      if (req.method !== 'POST' || !req.url.startsWith('/v1/approvals')) {
+      if (
+        req.method !== 'POST' ||
+        !req.url.startsWith('/internal/sandbox/approvals')
+      ) {
         res.writeHead(404).end();
         return;
       }
@@ -68,7 +71,7 @@ function startEndpoint(controller) {
           return;
         }
         try {
-          const result = await controller.handle(body);
+          const result = await controller.handle(body, req);
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(result === undefined ? '' : JSON.stringify(result));
         } catch (err) {
@@ -80,7 +83,7 @@ function startEndpoint(controller) {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address();
       resolve({
-        url: `http://127.0.0.1:${port}/v1/approvals`,
+        url: `http://127.0.0.1:${port}/internal/sandbox/approvals`,
         close: () => new Promise((r) => server.close(r)),
       });
     });
@@ -99,7 +102,7 @@ function permissionFrame(overrides = {}) {
   };
 }
 
-console.log('\n=== orchestrator /v1/approvals endpoint round-trip ===\n');
+console.log('\n=== orchestrator internal sandbox approvals round-trip ===\n');
 
 // ---- T1: blocking permission_request resolves to an operator decision ----
 {
@@ -190,6 +193,30 @@ console.log('\n=== orchestrator /v1/approvals endpoint round-trip ===\n');
     body: JSON.stringify({ not: 'a frame' }),
   });
   assert(res.status === 400, 'T4a: unrecognized callback body rejected with 400');
+  await endpoint.close();
+}
+
+// ---- T5: a proxy-forwarded request is rejected before gateway routing ----
+{
+  const gateway = new TerminalGateway();
+  const controller = new ApprovalsController(gateway);
+  const endpoint = await startEndpoint(controller);
+
+  const res = await fetch(endpoint.url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': '203.0.113.10',
+    },
+    body: JSON.stringify({
+      channel: 'control',
+      type: 'post_tool_use_report',
+      taskId: TASK,
+      edits: [],
+    }),
+  });
+  assert(res.status === 403, 'T5: proxy-forwarded callback rejected with 403');
+  assert(gateway.listPendingApprovals().length === 0, 'T5b: gateway remains untouched');
   await endpoint.close();
 }
 

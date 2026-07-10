@@ -32,15 +32,15 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  * change occurs on a denial.
  *
  * Connect-in sandbox callback exemption (migrate-execution-to-aio-sandbox, 5.5):
- * the `/v1/approvals` callback endpoint is ALSO exempt — but NOT because it is an
+ * `/internal/sandbox/approvals` is ALSO exempt — but NOT because it is an
  * identity entry point. Under the connect-in model the per-task AIO sandbox's
  * baked Codex hook POSTs its approval/report callback IN to the orchestrator over
  * the private `cap-net` network. The sandbox is NOT a human operator and holds no
  * operator credential (neither a session nor the legacy `AUTH_TOKEN`);
- * its security boundary is network isolation (reachable only by sibling sandbox
- * containers by container name on `cap-net`, which publish no host port), NOT an
- * operator principal. Gating it with this guard would 401 every hook callback and
- * deadlock the approval round-trip. See {@link ApprovalsController}.
+ * its security boundary is network isolation plus the controller's direct-private
+ * peer check (the public reverse proxy blocks the exact path), NOT an operator
+ * principal. Gating it with this guard would 401 every hook callback and deadlock
+ * the approval round-trip. See {@link ApprovalsController}.
  *
  * Trust-domain boundary (task 2.8): the legacy `AUTH_TOKEN` is a DISTINCT domain
  * from the runner `TASK_TOKEN` (which authenticates a sandbox dialling back, not
@@ -55,7 +55,8 @@ import { SESSION_COOKIE_NAME, readCookie } from './session-token';
  *     return 401 on their own when there is no session;
  *   - the local password/OTP login and first-login password-change endpoints.
  *
- * Plus the network-isolation exemption (NOT an identity probe): `/v1/approvals`,
+ * Plus the network-isolation exemption (NOT an identity probe):
+ * `/internal/sandbox/approvals`,
  * the connect-in sandbox hook callback described above.
  *
  * Configuration is read at CHECK time, not module load, so the fail-closed
@@ -98,13 +99,16 @@ export class AuthGuard implements CanActivate {
   /**
    * Paths exempt because the caller is a connect-in AIO sandbox dialling back IN
    * over `cap-net`, NOT a human operator (migrate-execution-to-aio-sandbox, 5.5):
-   *   - `/v1/approvals` — the baked Codex hook POSTs its approval/report callback
+   *   - `/internal/sandbox/approvals` — the baked Codex hook POSTs its callback
    *     to the orchestrator by container name on `cap-net`. The sandbox holds no
-   *     operator credential; its security boundary is network isolation (no host
-   *     port), so requiring an operator principal here would 401 every callback
-   *     and deadlock the approval round-trip. See {@link ApprovalsController}.
+   *     operator credential; its security boundary is network isolation plus the
+   *     controller's direct-private peer check, so requiring an operator principal
+   *     here would 401 every callback and deadlock the approval round-trip. See
+   *     {@link ApprovalsController}.
    */
-  private static readonly SANDBOX_EXEMPT_PATHS: readonly string[] = ['/v1/approvals'];
+  private static readonly SANDBOX_EXEMPT_PATHS: readonly string[] = [
+    '/internal/sandbox/approvals',
+  ];
 
   /**
    * The change-password endpoint path (add-private-account-identity, task 2.7 /
@@ -185,17 +189,21 @@ export class AuthGuard implements CanActivate {
         resolveApiKey: (raw) => this.authSession.resolveApiKey(raw),
         // Bind the reserved `mcp_` slot (remote-mcp-server, task 3.3): an `mcp_`
         // bearer presented to a NON-`/mcp` route resolves (hash → DB allowed
-        // re-check) to an `mcp` MACHINE principal carrying the token's scopes —
-        // never tried as a session/legacy/api-key credential. `/mcp` itself is
-        // exempt above and gated by `requireBearerAuth`; this binding makes an
-        // `mcp_` token a recognised (but session-rejected) principal everywhere
-        // else rather than a fail-closed denial.
+        // re-check) to an `mcp` MACHINE principal carrying the token's scopes and
+        // owner — never tried as a session/legacy/api-key credential. `/mcp`
+        // itself is exempt above and gated by `requireBearerAuth`; this binding
+        // makes an `mcp_` token a recognised principal on owner-scoped REST routes
+        // while kind-gated session-only routes still reject it.
         resolveMcp: async (raw) => {
           const authInfo = await this.authSession.resolveMcpToken(raw);
           if (authInfo === null) {
             return null;
           }
-          return { kind: 'mcp', user: null, scopes: authInfo.scopes as Scope[] };
+          return {
+            kind: 'mcp',
+            user: authInfo.owner,
+            scopes: authInfo.scopes as Scope[],
+          };
         },
       },
     );
@@ -249,8 +257,9 @@ export class AuthGuard implements CanActivate {
 
   /**
    * True when the request targets a connect-in AIO sandbox callback endpoint
-   * (e.g. `/v1/approvals`), whose security boundary is `cap-net` network
-   * isolation rather than an operator principal. See {@link SANDBOX_EXEMPT_PATHS}.
+   * (`/internal/sandbox/approvals`), whose controller independently enforces a
+   * direct private peer with no forwarding headers. See
+   * {@link SANDBOX_EXEMPT_PATHS}.
    */
   private static isSandboxCallback(request: Request): boolean {
     return AuthGuard.SANDBOX_EXEMPT_PATHS.includes(AuthGuard.normalizePath(request));

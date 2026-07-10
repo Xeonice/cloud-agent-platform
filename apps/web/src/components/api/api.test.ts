@@ -31,6 +31,7 @@ import {
   resolvePath,
   type ApiEndpoint,
 } from "@/components/api/catalog";
+import { validateApiRequestDraft } from "@/components/api/api-request-panel";
 
 /** The request panel seeds its editor from an endpoint; mirror that derivation. */
 function seededEditor(endpoint: ApiEndpoint) {
@@ -39,6 +40,7 @@ function seededEditor(endpoint: ApiEndpoint) {
     pathTemplate: endpoint.pathTemplate,
     body: endpoint.sampleBody ?? "",
     queryKeys: endpoint.queryParams.map((q) => q.name),
+    headerKeys: endpoint.headerParams.map((header) => header.name),
     pathParamNames: endpoint.pathParams.map((p) => p.name),
   };
 }
@@ -74,7 +76,7 @@ describe("API Playground — selection loads the request editor", () => {
 
 describe("API Playground — a path param substitutes into the path", () => {
   it("substitutes a supplied :id into the curated path", () => {
-    const getTask = findEndpoint("get-task")!;
+    const getTask = findEndpoint("tasks.get")!;
     expect(getTask.pathTemplate).toBe("/v1/tasks/:id");
     const resolved = resolvePath(getTask, { id: "task_f8a2" });
     expect(resolved).toBe("/v1/tasks/task_f8a2");
@@ -82,7 +84,7 @@ describe("API Playground — a path param substitutes into the path", () => {
   });
 
   it("URL-encodes the id so it can never inject extra path/query segments", () => {
-    const getTask = findEndpoint("get-task")!;
+    const getTask = findEndpoint("tasks.get")!;
     const resolved = resolvePath(getTask, { id: "a/b?c=d" });
     // The slash/query chars are encoded — the curated path stays one segment.
     expect(resolved).toBe(`/v1/tasks/${encodeURIComponent("a/b?c=d")}`);
@@ -90,8 +92,58 @@ describe("API Playground — a path param substitutes into the path", () => {
   });
 
   it("leaves the :id placeholder visible when no value is supplied", () => {
-    const getTask = findEndpoint("get-task")!;
+    const getTask = findEndpoint("tasks.get")!;
     expect(resolvePath(getTask, {})).toBe("/v1/tasks/:id");
+  });
+});
+
+describe("API Playground — invalid drafts cannot be sent", () => {
+  it("rejects a request until every path parameter is filled", () => {
+    const endpoint = findEndpoint("tasks.get")!;
+    expect(validateApiRequestDraft(endpoint, {}, "")).toEqual({
+      ok: false,
+      message: "请填写任务 ID。",
+    });
+  });
+
+  it("rejects malformed JSON instead of converting it to a JSON string", () => {
+    const endpoint = findEndpoint("tasks.create")!;
+    expect(validateApiRequestDraft(endpoint, {}, "{")).toEqual({
+      ok: false,
+      message: "请求体必须是合法 JSON。",
+    });
+  });
+
+  it("returns the parsed JSON value for a valid body-bearing request", () => {
+    const endpoint = findEndpoint("tasks.create")!;
+    const validation = validateApiRequestDraft(
+      endpoint,
+      {},
+      '{"repoId":"00000000-0000-4000-a000-000000000101","prompt":"check"}',
+    );
+    expect(validation).toEqual({
+      ok: true,
+      body: {
+        repoId: "00000000-0000-4000-a000-000000000101",
+        prompt: "check",
+      },
+    });
+  });
+});
+
+describe("API Playground — public protocol headers", () => {
+  it("exposes Idempotency-Key for task-create retries", () => {
+    const endpoint = findEndpoint("tasks.create")!;
+    expect(endpoint.headerParams.map((header) => header.name)).toEqual([
+      "Idempotency-Key",
+    ]);
+  });
+
+  it("exposes Last-Event-ID for SSE resume", () => {
+    const endpoint = findEndpoint("tasks.events")!;
+    expect(endpoint.headerParams.map((header) => header.name)).toEqual([
+      "Last-Event-ID",
+    ]);
   });
 });
 
@@ -198,7 +250,7 @@ describe("API Playground — no free-form URL field (only catalog paths)", () =>
   it("resolving a path with an unknown param key cannot escape the template", () => {
     // Even a stray param map can only fill DECLARED `:name` slots; an undeclared
     // key is ignored, so the resolved path stays within the curated template.
-    const listTasks = findEndpoint("list-tasks")!;
+    const listTasks = findEndpoint("tasks.list")!;
     const resolved = resolvePath(listTasks, { evil: "://attacker" });
     expect(resolved).toBe("/v1/tasks");
   });

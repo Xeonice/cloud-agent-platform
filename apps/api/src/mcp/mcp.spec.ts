@@ -24,22 +24,45 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import {
   registerMcpTools,
   type McpToolDeps,
   type ToolExtra,
+  type ToolRegistrar,
 } from './mcp-tools';
 import { McpController } from './mcp.controller';
 import { McpServerFactory } from './mcp.server';
 import { PrismaService } from '../prisma/prisma.service';
-import type { TaskResponse, RepoResponse, SessionHistory } from '@cap/contracts';
+import {
+  PUBLIC_V1_OPERATIONS,
+  SessionHistorySchema,
+  TaskResponseSchema,
+  V1CreateTaskRequestSchema,
+  V1ListScheduleRunsResponseSchema,
+  V1ListSchedulesResponseSchema,
+  V1ListTasksResponseSchema,
+  V1ListReposResponseSchema,
+  type CreateTaskBody,
+  type RepoResponse,
+  type ScheduleResponse,
+  type ScheduleRunResponse,
+  type SessionHistory,
+  type TaskResponse,
+} from '@cap/contracts';
 
 // ---------------------------------------------------------------------------
 // Fakes: a server that captures (name -> callback), and recording deps.
 // ---------------------------------------------------------------------------
 
 type ToolCb = (args: Record<string, unknown>, extra: ToolExtra) => Promise<unknown>;
+type ToolConfig = {
+  inputSchema?: Record<string, unknown>;
+  outputSchema?: unknown;
+};
 
 /**
  * A minimal stand-in for `McpServer.registerTool(name, config, cb)` that captures
@@ -51,10 +74,12 @@ type ToolCb = (args: Record<string, unknown>, extra: ToolExtra) => Promise<unkno
 function captureServer(): {
   server: { registerTool: (...a: unknown[]) => void };
   tools: Map<string, ToolCb>;
+  configs: Map<string, ToolConfig>;
 } {
   const tools = new Map<string, ToolCb>();
+  const configs = new Map<string, ToolConfig>();
   const server = {
-    registerTool(name: unknown, _config: unknown, cb: unknown) {
+    registerTool(name: unknown, config: unknown, cb: unknown) {
       const fn = cb as (...a: unknown[]) => Promise<unknown>;
       // A zero-arg tool's callback is `(extra)`; an arg tool's is `(args, extra)`.
       const wrapped: ToolCb =
@@ -62,9 +87,10 @@ function captureServer(): {
           ? (_args, extra) => fn(extra)
           : (args, extra) => fn(args, extra);
       tools.set(name as string, wrapped);
+      configs.set(name as string, config as ToolConfig);
     },
   };
-  return { server, tools };
+  return { server, tools, configs };
 }
 
 const TASK: TaskResponse = {
@@ -84,9 +110,59 @@ const TASK: TaskResponse = {
 const REPO: RepoResponse = {
   id: '00000000-0000-4000-b000-0000000000ff',
   name: 'demo',
-} as RepoResponse;
+  gitSource: 'https://github.com/example/demo',
+  createdAt: new Date('2026-07-10T00:00:00.000Z'),
+};
 
-const TRANSCRIPT: SessionHistory = { status: 'expired' } as SessionHistory;
+const TRANSCRIPT: SessionHistory = {
+  status: 'available',
+  turns: [],
+  meta: { taskId: TASK.id },
+  isInterrupted: false,
+};
+
+const SCHEDULE_ID = '00000000-0000-4000-a000-000000000002';
+const SCHEDULE_RUN_ID = '00000000-0000-4000-a000-000000000003';
+
+const SCHEDULE: ScheduleResponse = {
+  id: SCHEDULE_ID,
+  ownerUserId: 'local-acct-1',
+  repoId: TASK.repoId,
+  name: 'daily check',
+  cronExpression: '0 9 * * *',
+  timezone: 'UTC',
+  recurrence: {
+    kind: 'daily',
+    time: '09:00',
+    timezone: 'UTC',
+    label: '每天 09:00',
+  },
+  enabled: true,
+  nextRunAt: new Date('2026-07-11T09:00:00.000Z'),
+  overlapPolicy: 'skip',
+  misfirePolicy: 'fire-once',
+  taskTemplate: {
+    repoId: TASK.repoId,
+    prompt: 'daily check',
+    runtime: 'codex',
+    sandboxEnvironmentId: null,
+    deliver: 'none',
+  },
+  latestRun: null,
+  createdAt: new Date('2026-07-10T00:00:00.000Z'),
+  updatedAt: new Date('2026-07-10T00:00:00.000Z'),
+};
+
+const SCHEDULE_RUN: ScheduleRunResponse = {
+  id: SCHEDULE_RUN_ID,
+  scheduleId: SCHEDULE_ID,
+  scheduledFor: new Date('2026-07-10T09:00:00.000Z'),
+  status: 'created',
+  taskId: TASK.id,
+  error: null,
+  createdAt: new Date('2026-07-10T09:00:00.000Z'),
+  updatedAt: new Date('2026-07-10T09:00:01.000Z'),
+};
 
 /** Recording deps so a test can assert exactly which service method ran. */
 function recordingDeps(): { deps: McpToolDeps; calls: string[] } {
@@ -100,9 +176,9 @@ function recordingDeps(): { deps: McpToolDeps; calls: string[] } {
       calls.push(`getTask:${id}`);
       return TASK;
     },
-    async listTasks() {
-      calls.push('listTasks');
-      return [TASK];
+    async listTasks(query) {
+      calls.push(`listTasks:${query.limit}:${query.cursor ?? '-'}`);
+      return { items: [TASK], nextCursor: null };
     },
     async stopTask(id, userId) {
       calls.push(`stopTask:${id}:${userId ?? '-'}`);
@@ -112,9 +188,54 @@ function recordingDeps(): { deps: McpToolDeps; calls: string[] } {
       calls.push(`getTranscript:${id}`);
       return TRANSCRIPT;
     },
-    async listRepos() {
-      calls.push('listRepos');
-      return [REPO];
+    async listRepos(query) {
+      calls.push(`listRepos:${query.limit}:${query.cursor ?? '-'}`);
+      return { items: [REPO], nextCursor: null };
+    },
+    async getRepo(id) {
+      calls.push(`getRepo:${id}`);
+      return REPO;
+    },
+    async createSchedule(ownerUserId, body) {
+      calls.push(
+        `createSchedule:${ownerUserId}:${body.taskTemplate.repoId}:${body.taskTemplate.prompt}`,
+      );
+      return SCHEDULE;
+    },
+    async listSchedules(ownerUserId, query) {
+      calls.push(
+        `listSchedules:${ownerUserId}:${query.limit}:${query.cursor ?? '-'}`,
+      );
+      return { items: [SCHEDULE], nextCursor: null };
+    },
+    async getSchedule(ownerUserId, id) {
+      calls.push(`getSchedule:${ownerUserId}:${id}`);
+      return SCHEDULE;
+    },
+    async updateSchedule(ownerUserId, id, body) {
+      calls.push(`updateSchedule:${ownerUserId}:${id}:${body.name ?? '-'}`);
+      return SCHEDULE;
+    },
+    async pauseSchedule(ownerUserId, id) {
+      calls.push(`pauseSchedule:${ownerUserId}:${id}`);
+      return { ...SCHEDULE, enabled: false, nextRunAt: null };
+    },
+    async resumeSchedule(ownerUserId, id) {
+      calls.push(`resumeSchedule:${ownerUserId}:${id}`);
+      return SCHEDULE;
+    },
+    async dispatchSchedule(ownerUserId, id) {
+      calls.push(`dispatchSchedule:${ownerUserId}:${id}`);
+      return SCHEDULE;
+    },
+    async deleteSchedule(ownerUserId, id) {
+      calls.push(`deleteSchedule:${ownerUserId}:${id}`);
+    },
+    async listScheduleRuns(ownerUserId, id, query) {
+      calls.push(
+        `listScheduleRuns:${ownerUserId}:${id}:${query.limit}:${query.cursor ?? '-'}`,
+      );
+      return { items: [SCHEDULE_RUN], nextCursor: null };
     },
   };
   return { deps, calls };
@@ -126,6 +247,16 @@ const extraWith = (scopes: string[]): ToolExtra => ({
     clientId: 'settings',
     scopes,
     expiresAt: Math.floor(Date.now() / 1000) + 3600,
+  },
+});
+
+const extraWithOwner = (scopes: string[], userId = 'local-acct-1'): ToolExtra => ({
+  authInfo: {
+    token: 'mcp_owner',
+    clientId: 'settings',
+    scopes,
+    expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    extra: { userId },
   },
 });
 
@@ -141,7 +272,7 @@ test('a tasks:read-only mcp principal is DENIED create_task and stop_task', asyn
   const readOnly = extraWith(['tasks:read', 'repos:read']);
 
   await assert.rejects(
-    () => tools.get('create_task')!({ repoId: 'r1', prompt: 'go' }, readOnly),
+    () => tools.get('create_task')!({ repoId: TASK.repoId, prompt: 'go' }, readOnly),
     (err: unknown) =>
       err instanceof McpError &&
       /tasks:write required \(403\)/.test((err as McpError).message),
@@ -167,10 +298,13 @@ test('a tasks:write token passes create_task and stop_task', async () => {
   registerMcpTools(server as never, deps);
 
   const writer = extraWith(['tasks:read', 'tasks:write']);
-  await tools.get('create_task')!({ repoId: 'r1', prompt: 'go' }, writer);
+  await tools.get('create_task')!({ repoId: TASK.repoId, prompt: 'go' }, writer);
   await tools.get('stop_task')!({ id: 't1' }, writer);
 
-  assert.deepEqual(calls, ['createTask:r1:go:-', 'stopTask:t1:-']);
+  assert.deepEqual(calls, [
+    `createTask:${TASK.repoId}:go:-`,
+    'stopTask:t1:-',
+  ]);
 });
 
 test('create_task/stop_task thread the token owner ACCOUNT id (local account attribution)', async () => {
@@ -198,12 +332,18 @@ test('create_task/stop_task thread the token owner ACCOUNT id (local account att
     },
   } as unknown as ToolExtra;
 
-  await tools.get('create_task')!({ repoId: 'r1', prompt: 'go' }, localOwner);
+  await tools.get('create_task')!(
+    { repoId: TASK.repoId, prompt: 'go' },
+    localOwner,
+  );
   await tools.get('stop_task')!({ id: 't1' }, localOwner);
 
   assert.deepEqual(
     calls,
-    ['createTask:r1:go:local-acct-1', 'stopTask:t1:local-acct-1'],
+    [
+      `createTask:${TASK.repoId}:go:local-acct-1`,
+      'stopTask:t1:local-acct-1',
+    ],
     'the local account id is threaded into create/stop (not collapsed to undefined)',
   );
 });
@@ -213,9 +353,15 @@ test('the read tools gate on their read scopes', async () => {
   const { server, tools } = captureServer();
   registerMcpTools(server as never, deps);
 
-  // tasks:read gates get_task / list_tasks / get_transcript; repos:read gates list_repos.
+  // tasks:read gates task reads; repos:read gates both repo reads.
   const noScopes = extraWith([]);
-  for (const name of ['get_task', 'list_tasks', 'get_transcript', 'list_repos']) {
+  for (const name of [
+    'get_task',
+    'list_tasks',
+    'get_transcript',
+    'list_repos',
+    'get_repo',
+  ]) {
     await assert.rejects(
       () => tools.get(name)!({ id: 'x' }, noScopes),
       (err: unknown) => err instanceof McpError,
@@ -231,6 +377,270 @@ test('the read tools gate on their read scopes', async () => {
   );
 });
 
+test('the MCP server registers the complete task, repo, and schedule tool surface', () => {
+  const { deps } = recordingDeps();
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+
+  assert.deepEqual([...tools.keys()], [
+    'create_task',
+    'get_task',
+    'list_tasks',
+    'stop_task',
+    'get_transcript',
+    'list_repos',
+    'get_repo',
+    'create_schedule',
+    'list_schedules',
+    'get_schedule',
+    'update_schedule',
+    'pause_schedule',
+    'resume_schedule',
+    'dispatch_schedule',
+    'delete_schedule',
+    'list_schedule_runs',
+  ]);
+});
+
+test('the MCP tool inventory stays in parity with the canonical public /v1 manifest', () => {
+  const { deps } = recordingDeps();
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+
+  const manifestTools = PUBLIC_V1_OPERATIONS.flatMap((operation) =>
+    'tool' in operation.mcp ? [operation.mcp.tool] : [],
+  ).sort();
+  assert.deepEqual([...tools.keys()].sort(), manifestTools);
+  assert.deepEqual(
+    PUBLIC_V1_OPERATIONS.filter((operation) => 'excluded' in operation.mcp).map(
+      (operation) => operation.id,
+    ),
+    ['tasks.events'],
+    'SSE is the only explicit MCP transport exclusion',
+  );
+});
+
+test('the REST-only task idempotency header is an explicit MCP protocol difference', () => {
+  const mappedOperationsWithHeaders = PUBLIC_V1_OPERATIONS.filter(
+    (operation) => 'tool' in operation.mcp && operation.headersSchema,
+  ).map((operation) => ({
+    operation: operation.id,
+    headers: Object.keys(operation.headersSchema?.shape ?? {}).sort(),
+  }));
+
+  assert.deepEqual(mappedOperationsWithHeaders, [
+    { operation: 'tasks.create', headers: ['Idempotency-Key'] },
+  ]);
+});
+
+test('every MCP tool advertises structured output and create_task reuses the /v1 input shape', () => {
+  const { deps } = recordingDeps();
+  const { server, configs } = captureServer();
+  registerMcpTools(server as never, deps);
+
+  assert.deepEqual(
+    Object.keys(configs.get('create_task')?.inputSchema ?? {}).sort(),
+    Object.keys(V1CreateTaskRequestSchema.shape).sort(),
+  );
+  for (const [name, config] of configs) {
+    assert.ok(config.outputSchema, `${name} advertises outputSchema`);
+  }
+  assert.equal(
+    configs.get('create_task')?.outputSchema,
+    TaskResponseSchema,
+    'create_task structured output uses the canonical /v1 task response schema',
+  );
+});
+
+test('the real MCP SDK advertises and validates structured list output', async () => {
+  const { deps } = recordingDeps();
+  const server = new McpServer({ name: 'mcp-parity-test', version: '1.0.0' });
+  registerMcpTools(server as unknown as ToolRegistrar, deps);
+  const client = new Client({ name: 'mcp-parity-client', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const send = clientTransport.send.bind(clientTransport);
+  clientTransport.send = (message, options) =>
+    send(message, {
+      ...options,
+      authInfo: {
+        token: 'mcp_test',
+        clientId: 'settings',
+        scopes: ['tasks:read', 'tasks:write'],
+        expiresAt: Math.floor(Date.now() / 1000) + 3_600,
+        extra: { userId: 'local-acct-1' },
+      },
+    });
+
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const advertised = await client.listTools();
+    const listTool = advertised.tools.find((tool) => tool.name === 'list_tasks');
+    assert.ok(listTool?.outputSchema, 'tools/list includes the structured output schema');
+
+    const result = await client.callTool({
+      name: 'list_tasks',
+      arguments: { limit: 1 },
+    });
+    assert.doesNotThrow(() =>
+      V1ListTasksResponseSchema.parse(result.structuredContent),
+    );
+    const content = result.content as Array<{ type?: unknown }>;
+    assert.equal(content[0]?.type, 'text', 'legacy text content is preserved');
+
+    const transcript = await client.callTool({
+      name: 'get_transcript',
+      arguments: { id: TASK.id },
+    });
+    assert.doesNotThrow(() =>
+      SessionHistorySchema.parse(transcript.structuredContent),
+    );
+
+    const created = await client.callTool({
+      name: 'create_task',
+      arguments: { repoId: TASK.repoId, prompt: 'go' },
+    });
+    assert.doesNotThrow(() =>
+      TaskResponseSchema.parse(created.structuredContent),
+    );
+    const legacyText = JSON.parse(
+      (created.content as Array<{ type: string; text: string }>)[0]!.text,
+    ) as { id: string; status: string; task: typeof TASK };
+    assert.equal(legacyText.id, TASK.id);
+    assert.equal(legacyText.status, TASK.status);
+    assert.deepEqual(legacyText.task, JSON.parse(JSON.stringify(TASK)));
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('schedule tools reject missing scopes before calling the schedule service', async () => {
+  const { deps, calls } = recordingDeps();
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+
+  const readOnly = extraWithOwner(['tasks:read']);
+  const noScopes = extraWithOwner([]);
+  for (const name of [
+    'create_schedule',
+    'update_schedule',
+    'pause_schedule',
+    'resume_schedule',
+    'dispatch_schedule',
+    'delete_schedule',
+  ]) {
+    await assert.rejects(
+      () => tools.get(name)!({ id: SCHEDULE_ID }, readOnly),
+      (err: unknown) =>
+        err instanceof McpError && /tasks:write required \(403\)/.test(err.message),
+    );
+  }
+  for (const name of ['list_schedules', 'get_schedule', 'list_schedule_runs']) {
+    await assert.rejects(
+      () => tools.get(name)!({ id: SCHEDULE_ID }, noScopes),
+      (err: unknown) =>
+        err instanceof McpError && /tasks:read required \(403\)/.test(err.message),
+    );
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('every schedule tool requires authInfo.extra.userId before calling the service', async () => {
+  const { deps, calls } = recordingDeps();
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+
+  for (const name of ['list_schedules', 'get_schedule', 'list_schedule_runs']) {
+    await assert.rejects(
+      () => tools.get(name)!({ id: SCHEDULE_ID }, extraWith(['tasks:read'])),
+      (err: unknown) =>
+        err instanceof McpError && /account owner \(403\)/.test(err.message),
+    );
+  }
+  for (const name of [
+    'create_schedule',
+    'update_schedule',
+    'pause_schedule',
+    'resume_schedule',
+    'dispatch_schedule',
+    'delete_schedule',
+  ]) {
+    await assert.rejects(
+      () => tools.get(name)!({ id: SCHEDULE_ID }, extraWith(['tasks:write'])),
+      (err: unknown) =>
+        err instanceof McpError && /account owner \(403\)/.test(err.message),
+    );
+  }
+  assert.deepEqual(calls, []);
+});
+
+test('schedule tools pass the token owner and delegate to ScheduledTasksService methods', async () => {
+  const { deps, calls } = recordingDeps();
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+  const owner = extraWithOwner(['tasks:read', 'tasks:write']);
+
+  await tools.get('create_schedule')!(
+    {
+      recurrence: { kind: 'daily', time: '09:00', timezone: 'UTC' },
+      taskTemplate: { repoId: TASK.repoId, prompt: 'daily check' },
+    },
+    owner,
+  );
+  await tools.get('list_schedules')!({ limit: 25, cursor: 'schedule-next' }, owner);
+  await tools.get('get_schedule')!({ id: SCHEDULE_ID }, owner);
+  await tools.get('update_schedule')!(
+    { id: SCHEDULE_ID, name: 'renamed' },
+    owner,
+  );
+  await tools.get('pause_schedule')!({ id: SCHEDULE_ID }, owner);
+  await tools.get('resume_schedule')!({ id: SCHEDULE_ID }, owner);
+  await tools.get('dispatch_schedule')!({ id: SCHEDULE_ID }, owner);
+  await tools.get('delete_schedule')!({ id: SCHEDULE_ID }, owner);
+  await tools.get('list_schedule_runs')!(
+    { id: SCHEDULE_ID, limit: 10, cursor: 'run-next' },
+    owner,
+  );
+
+  assert.deepEqual(calls, [
+    `createSchedule:local-acct-1:${TASK.repoId}:daily check`,
+    'listSchedules:local-acct-1:25:schedule-next',
+    `getSchedule:local-acct-1:${SCHEDULE_ID}`,
+    `updateSchedule:local-acct-1:${SCHEDULE_ID}:renamed`,
+    `pauseSchedule:local-acct-1:${SCHEDULE_ID}`,
+    `resumeSchedule:local-acct-1:${SCHEDULE_ID}`,
+    `dispatchSchedule:local-acct-1:${SCHEDULE_ID}`,
+    `deleteSchedule:local-acct-1:${SCHEDULE_ID}`,
+    `listScheduleRuns:local-acct-1:${SCHEDULE_ID}:10:run-next`,
+  ]);
+});
+
+test('schedule tools reuse contract cross-field validation before delegation', async () => {
+  const { deps, calls } = recordingDeps();
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+  const owner = extraWithOwner(['tasks:write']);
+
+  await assert.rejects(
+    () =>
+      tools.get('create_schedule')!(
+        {
+          recurrence: { kind: 'daily', time: '09:00', timezone: 'UTC' },
+          cronExpression: '0 9 * * *',
+          taskTemplate: { repoId: TASK.repoId, prompt: 'daily check' },
+        },
+        owner,
+      ),
+    /Provide recurrence or cronExpression, not both/,
+  );
+  await assert.rejects(
+    () => tools.get('update_schedule')!({ id: SCHEDULE_ID }, owner),
+    /At least one schedule field must be provided/,
+  );
+  assert.deepEqual(calls, []);
+});
+
 // ---------------------------------------------------------------------------
 // 2 + 3. One admission path + immediate handle (task 4.4).
 // ---------------------------------------------------------------------------
@@ -242,15 +652,17 @@ test('tools dispatch to the same service surface the console uses', async () => 
 
   const full = extraWith(['tasks:read', 'tasks:write', 'repos:read']);
   await tools.get('get_task')!({ id: 't1' }, full);
-  await tools.get('list_tasks')!({}, full);
+  await tools.get('list_tasks')!({ limit: 20, cursor: 'task-next' }, full);
   await tools.get('get_transcript')!({ id: 't1' }, full);
-  await tools.get('list_repos')!({}, full);
+  await tools.get('list_repos')!({ limit: 30, cursor: 'repo-next' }, full);
+  await tools.get('get_repo')!({ id: REPO.id }, full);
 
   assert.deepEqual(calls, [
     'getTask:t1',
-    'listTasks',
+    'listTasks:20:task-next',
     'getTranscript:t1',
-    'listRepos',
+    'listRepos:30:repo-next',
+    `getRepo:${REPO.id}`,
   ]);
 });
 
@@ -277,34 +689,138 @@ test('create_task returns a handle WITHOUT blocking on the run', async () => {
   registerMcpTools(server as never, deps);
 
   const result = (await tools.get('create_task')!(
-    { repoId: 'r1', prompt: 'go' },
+    { repoId: TASK.repoId, prompt: 'go' },
     extraWith(['tasks:write']),
-  )) as { content: Array<{ text: string }> };
+  )) as {
+    content: Array<{ text: string }>;
+    structuredContent: Record<string, unknown>;
+  };
 
   const payload = JSON.parse(result.content[0].text) as {
     id: string;
     status: string;
+    task: typeof TASK;
   };
   assert.equal(payload.id, TASK.id, 'returns the task id immediately');
   assert.equal(payload.status, 'pending', 'returns the handle status immediately');
+  assert.doesNotThrow(() => TaskResponseSchema.parse(result.structuredContent));
+  assert.deepEqual(
+    result.structuredContent,
+    JSON.parse(JSON.stringify(TASK)),
+    'structuredContent matches the canonical /v1 task response',
+  );
+  assert.deepEqual(
+    payload.task,
+    JSON.parse(JSON.stringify(TASK)),
+    'legacy text keeps the historical wrapper',
+  );
   assert.equal(runResolved, false, 'did NOT wait for the run to complete');
 });
 
-test('create_task accepts + forwards the deliver selector (opt-in)', async () => {
-  let capturedBody: { deliver?: string } | undefined;
+test('create_task rejects a non-UUID repo id through the shared /v1 schema', async () => {
+  let called = false;
+  const deps = {
+    async createTask() {
+      called = true;
+      return TASK;
+    },
+  } as unknown as McpToolDeps;
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+
+  await assert.rejects(
+    () =>
+      tools.get('create_task')!(
+        { repoId: 'repo-not-a-uuid', prompt: 'go' },
+        extraWith(['tasks:write']),
+      ),
+    /uuid/i,
+  );
+  assert.equal(called, false);
+});
+
+test('create_task reuses the full /v1 body and forwards every execution field', async () => {
+  let capturedBody: Record<string, unknown> | undefined;
   const deps: McpToolDeps = {
-    async createTask(_repoId: string, body: { deliver?: string }) {
-      capturedBody = body;
+    async createTask(_repoId: string, body: CreateTaskBody) {
+      capturedBody = body as unknown as Record<string, unknown>;
       return TASK;
     },
   } as unknown as McpToolDeps;
   const { server, tools } = captureServer();
   registerMcpTools(server as never, deps);
   await tools.get('create_task')!(
-    { repoId: 'r1', prompt: 'go', deliver: 'pr' },
+    {
+      repoId: TASK.repoId,
+      prompt: 'go',
+      branch: 'main',
+      strategy: 'careful',
+      skills: ['openspec'],
+      deadlineMs: 120_000,
+      idleTimeoutMs: 60_000,
+      runtime: 'codex',
+      sandboxEnvironmentId: '00000000-0000-4000-a000-000000000099',
+      deliver: 'pr',
+    },
     extraWith(['tasks:write']),
   );
-  assert.equal(capturedBody?.deliver, 'pr', 'forwards deliver to createTask');
+  assert.deepEqual(capturedBody, {
+    prompt: 'go',
+    branch: 'main',
+    strategy: 'careful',
+    skills: ['openspec'],
+    deadlineMs: 120_000,
+    idleTimeoutMs: 60_000,
+    runtime: 'codex',
+    sandboxEnvironmentId: '00000000-0000-4000-a000-000000000099',
+    deliver: 'pr',
+  });
+});
+
+test('list tools enforce the /v1 limit bound and return paginated structured envelopes', async () => {
+  const { deps } = recordingDeps();
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+  const full = extraWithOwner(['tasks:read', 'repos:read']);
+
+  for (const name of ['list_tasks', 'list_repos', 'list_schedules']) {
+    await assert.rejects(
+      () => tools.get(name)!({ limit: 201 }, full),
+      /less than or equal to 200/i,
+    );
+  }
+  await assert.rejects(
+    () => tools.get('list_schedule_runs')!({ id: SCHEDULE_ID, limit: 201 }, full),
+    /less than or equal to 200/i,
+  );
+
+  const taskResult = (await tools.get('list_tasks')!({ limit: 200 }, full)) as {
+    structuredContent: Record<string, unknown>;
+  };
+  const repoResult = (await tools.get('list_repos')!({ limit: 200 }, full)) as {
+    structuredContent: Record<string, unknown>;
+  };
+  const scheduleResult = (await tools.get('list_schedules')!(
+    { limit: 200 },
+    full,
+  )) as { structuredContent: Record<string, unknown> };
+  const runResult = (await tools.get('list_schedule_runs')!(
+    { id: SCHEDULE_ID, limit: 200 },
+    full,
+  )) as { structuredContent: Record<string, unknown> };
+
+  assert.doesNotThrow(() =>
+    V1ListTasksResponseSchema.parse(taskResult.structuredContent),
+  );
+  assert.doesNotThrow(() =>
+    V1ListReposResponseSchema.parse(repoResult.structuredContent),
+  );
+  assert.doesNotThrow(() =>
+    V1ListSchedulesResponseSchema.parse(scheduleResult.structuredContent),
+  );
+  assert.doesNotThrow(() =>
+    V1ListScheduleRunsResponseSchema.parse(runResult.structuredContent),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -350,7 +866,7 @@ function fakeRes(): {
 test('with mcpServerEnabled=false the /mcp endpoint is INERT (no transport)', async () => {
   let serverTouched = false;
   const factory = {
-    getServer() {
+    createServer() {
       serverTouched = true;
       throw new Error('server must not be connected when the toggle is off');
     },
@@ -382,7 +898,7 @@ test('with mcpServerEnabled=false the /mcp endpoint is INERT (no transport)', as
 
 test('with no SystemSettings row the POST /mcp endpoint defaults to INERT (off)', async () => {
   const factory = {
-    getServer() {
+    createServer() {
       throw new Error('must not connect when the row is absent (default off)');
     },
   } as unknown as McpServerFactory;
@@ -417,7 +933,7 @@ test('with no SystemSettings row the POST /mcp endpoint defaults to INERT (off)'
 test('GET /mcp returns 405 without opening a transport or reading the toggle', () => {
   let serverTouched = false;
   const factory = {
-    getServer() {
+    createServer() {
       serverTouched = true;
       throw new Error('GET must not connect a transport');
     },
@@ -452,7 +968,7 @@ test('GET /mcp returns 405 without opening a transport or reading the toggle', (
 test('DELETE /mcp returns 405 (same method-layer verdict as GET)', () => {
   let serverTouched = false;
   const factory = {
-    getServer() {
+    createServer() {
       serverTouched = true;
       throw new Error('DELETE must not connect a transport');
     },

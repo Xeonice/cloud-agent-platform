@@ -25,6 +25,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { SessionUser } from '@cap/contracts';
 
 import { AuthGuard, type AuthenticatedRequest } from './auth.guard';
 import {
@@ -33,6 +34,7 @@ import {
   type McpAuthInfo,
 } from './auth-session.service';
 import { McpTokensController } from '../mcp-tokens/mcp-tokens.controller';
+import { V1SchedulesController } from '../v1/v1-schedules.controller';
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -40,6 +42,16 @@ import { McpTokensController } from '../mcp-tokens/mcp-tokens.controller';
 
 const OWNER_GITHUB_ID = 12345;
 const OWNER_ID = 'acct-owner-12345';
+const OWNER: SessionUser = {
+  id: OWNER_ID,
+  githubId: OWNER_GITHUB_ID,
+  login: 'op',
+  name: 'Operator',
+  avatarUrl: null,
+  allowed: true,
+  role: 'member',
+  mustChangePassword: false,
+};
 
 /** A stored MCP-token row shape, as `resolveMcpToken` reads it (with owner). */
 interface FakeMcpTokenRow {
@@ -52,7 +64,7 @@ interface FakeMcpTokenRow {
   // for `ownerGithubId` attribution; it is NULLABLE (a local-account owner has no
   // github identity). `id` is the account primary key carried for `ownerId`
   // task-owner attribution (fix-local-account-task-attribution).
-  user: { id: string; githubId: number | null; allowed: boolean };
+  user: SessionUser;
 }
 
 /**
@@ -139,7 +151,7 @@ test('resolveMcpToken: a valid non-expired token -> a full AuthInfo (G1: expires
     scopes: ['tasks:read', 'tasks:write'],
     expiresAt,
     revokedAt: null,
-    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
+    user: OWNER,
   });
   const svc = serviceOver(prisma);
 
@@ -152,6 +164,7 @@ test('resolveMcpToken: a valid non-expired token -> a full AuthInfo (G1: expires
   assert.equal(info!.expiresAt, Math.floor(expiresAt.getTime() / 1000));
   assert.equal(info!.resource, MCP_RESOURCE_URI);
   assert.equal(info!.ownerGithubId, OWNER_GITHUB_ID);
+  assert.deepEqual(info!.owner, OWNER);
 });
 
 test('resolveMcpToken: a never-expiring token still gets a populated (far-future) expiresAt (G1)', async () => {
@@ -160,7 +173,7 @@ test('resolveMcpToken: a never-expiring token still gets a populated (far-future
     scopes: ['repos:read'],
     expiresAt: null,
     revokedAt: null,
-    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
+    user: OWNER,
   });
   const info = await serviceOver(prisma).resolveMcpToken('mcp_noexp');
   assert.ok(info, 'a never-expiring token still resolves');
@@ -175,7 +188,7 @@ test('resolveMcpToken: a revoked token resolves to null', async () => {
     scopes: ['tasks:read'],
     expiresAt: null,
     revokedAt: new Date(Date.now() - 1000),
-    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
+    user: OWNER,
   });
   assert.equal(
     await serviceOver(prisma).resolveMcpToken('mcp_revoked'),
@@ -189,7 +202,7 @@ test('resolveMcpToken: an expired token resolves to null', async () => {
     scopes: ['tasks:read'],
     expiresAt: new Date(Date.now() - 1000),
     revokedAt: null,
-    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
+    user: OWNER,
   });
   assert.equal(
     await serviceOver(prisma).resolveMcpToken('mcp_expired'),
@@ -208,14 +221,14 @@ test('resolveMcpToken: a disabled OWNER is rejected on the next call (allowed re
     scopes: ['tasks:read'],
     expiresAt: null,
     revokedAt: null,
-    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: true },
+    user: OWNER,
   });
   const revoked = makePrisma({
     id: 'tok-5',
     scopes: ['tasks:read'],
     expiresAt: null,
     revokedAt: null,
-    user: { id: OWNER_ID, githubId: OWNER_GITHUB_ID, allowed: false },
+    user: { ...OWNER, allowed: false },
   });
   assert.ok(await serviceOver(allowed).resolveMcpToken('mcp_x'));
   assert.equal(await serviceOver(revoked).resolveMcpToken('mcp_x'), null);
@@ -239,24 +252,35 @@ const VALID_AUTHINFO: McpAuthInfo = {
   scopes: ['tasks:read'],
   expiresAt: Math.floor(Date.now() / 1000) + 3600,
   resource: MCP_RESOURCE_URI,
+  owner: OWNER,
   ownerGithubId: OWNER_GITHUB_ID,
   ownerId: OWNER_ID,
 };
 
-test('guard: an mcp_ bearer presented to a non-/mcp route resolves to an `mcp` machine principal carrying scopes (prefix-routed, never session)', async () => {
+test('guard: an mcp_ bearer on REST retains machine kind, scopes, and its owner account', async () => {
   const guard = guardWith({ liveMcp: 'mcp_live', authInfo: VALID_AUTHINFO });
   const c = ctx({ path: '/v1/tasks', authorization: 'Bearer mcp_live' });
   const r = await activate(guard, c);
   assert.equal(r.ok, true);
   // remote-mcp-server task 3.3: the `mcp_` bearer is prefix-ROUTED through the
   // `resolveMcp` slot of `resolveOperatorPrincipal` to an `operatorPrincipal` of
-  // kind `'mcp'` (a MACHINE principal, `user === null`) carrying the token's
-  // scopes — never tried as a session/legacy/api-key credential. A session-only
-  // endpoint rejects it on `kind !== 'session'`.
+  // kind `'mcp'` carrying the token's scopes and owner — never tried as a
+  // session/legacy/api-key credential. Session-only endpoints still reject it on
+  // `kind !== 'session'`; owner-scoped REST routes can use the account id.
   const principal = c.request.operatorPrincipal;
   assert.equal(principal?.kind, 'mcp');
-  assert.equal(principal?.user, null);
+  assert.equal(principal?.user?.id, OWNER_ID);
   assert.deepEqual(principal?.scopes, ['tasks:read']);
+
+  let scheduleOwner: string | null = null;
+  const schedules = new V1SchedulesController({
+    async listPage(ownerId: string) {
+      scheduleOwner = ownerId;
+      return { items: [], nextCursor: null };
+    },
+  } as never);
+  await schedules.list({ limit: 50 }, c.request);
+  assert.equal(scheduleOwner, OWNER_ID, '/v1 schedules receives the MCP owner id');
 });
 
 test('guard: an invalid mcp_ bearer is 401 (fail-closed, no principal attached)', async () => {
@@ -287,6 +311,23 @@ test('guard: a /v1 data route without a bearer stays 401 while /mcp is exempt (G
   assert.equal(sibling.status, 401);
 });
 
+test('guard: only the exact internal sandbox callback path is exempt', async () => {
+  const guard = guardWith({ liveSession: 'live' });
+  const internal = ctx({ path: '/internal/sandbox/approvals' });
+  const admitted = await activate(guard, internal);
+  assert.equal(admitted.ok, true);
+  assert.equal(internal.request.operatorPrincipal, undefined);
+
+  for (const path of [
+    '/v1/approvals',
+    '/internal/sandbox/approvals/extra',
+    '/internal/sandbox/other',
+  ]) {
+    const result = await activate(guard, ctx({ path }));
+    assert.equal(result.status, 401, `${path} is not exempt`);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 3.7 — the MCP-token CRUD rejects a machine principal (no escalation)
 // ---------------------------------------------------------------------------
@@ -311,7 +352,11 @@ test('CRUD: an mcp machine principal is 403 on mint/list/revoke (no escalation, 
   // to an `operatorPrincipal` of kind `'mcp'`; the CRUD requires a `'session'`
   // operator, so a non-session principal is refused outright (`kind !== 'session'`).
   const req = reqWith({
-    operatorPrincipal: { kind: 'mcp', user: null, scopes: ['tasks:read'] } as never,
+    operatorPrincipal: {
+      kind: 'mcp',
+      user: OWNER,
+      scopes: ['tasks:read'],
+    } as never,
   });
 
   for (const call of [

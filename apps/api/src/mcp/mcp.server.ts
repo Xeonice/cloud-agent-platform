@@ -1,12 +1,10 @@
 /**
- * The single shared `McpServer` factory (remote-mcp-server, Track
+ * The request-scoped `McpServer` factory (remote-mcp-server, Track
  * `mcp-endpoint-tools`, tasks 4.1 / 4.2).
  *
- * Builds ONE {@link McpServer} with the six tools registered ONCE (task 4.1: "one
- * `McpServer` (tools registered once), transport per request"). The controller
- * connects a fresh stateless `StreamableHTTPServerTransport` to THIS server on
- * every request, so the heavy tool wiring is done a single time at construction
- * and reused.
+ * Builds a fresh {@link McpServer} for each stateless HTTP request. The SDK
+ * protocol object owns exactly one transport and rejects a second concurrent
+ * `connect`, so the server and transport share the same request lifetime.
  *
  * It implements the {@link McpToolDeps} port by delegating to the EXISTING console
  * services injected by Nest — exactly the services `/v1` and the console use, so
@@ -14,11 +12,11 @@
  *   - {@link TasksService} for create/get/list/stop (the console admission path:
  *     `create` persists the row then offers it to the guardrails semaphore and
  *     returns the handle, never awaiting the run);
- *   - the durable session-history read (durable-first → container fallback →
- *     read-through backfill), byte-identical to {@link V1TranscriptController}, so
- *     the raw PTY/WebSocket stream is NEVER exposed — only archived transcript
- *     text;
- *   - {@link ReposService} for the repo read surface.
+ *   - the canonical task transcript reader shared with Console and `/v1`, including
+ *     live running-task reads, durable fallback, and audit-derived system turns;
+ *   - {@link ReposService} for the repo read surface and shared `/v1` page helpers.
+ *   - {@link ScheduledTasksService} for owner-scoped schedule management and
+ *     immediate dispatch.
  *
  * The acting operator's account id (for audit attribution on create/stop) is read
  * from the resolved token's `AuthInfo.extra.userId` when `resolveMcpToken`
@@ -27,34 +25,28 @@
  */
 import { Inject, Injectable } from '@nestjs/common';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import {
-  SessionHistorySchema,
-  type SessionHistory,
-} from '@cap/contracts';
+import type { SessionHistory } from '@cap/contracts';
 import { TasksService } from '../tasks/tasks.service';
 import { ReposService } from '../repos/repos.service';
+import { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { listRepoPage, listTaskPage } from '../v1/public-list-pages';
 import {
+  AUDIT_TIMELINE_READER,
   TRANSCRIPT_STORE,
+  readTaskTranscript,
+  type AuditTimelineReader,
   type TranscriptStore,
-} from '../tasks/session-history.controller';
+} from '../tasks/task-transcript-reader';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
 import {
-  selectRetainedTranscriptSandboxProvider,
-} from '@cap/sandbox';
-import { parseTranscript } from '../sandbox/parse-transcript';
-import {
-  transcriptFormatForRuntime,
-  type RuntimeId,
-  type TranscriptFormat,
-} from '../agent-runtime/agent-runtime.port';
-import {
   registerMcpTools,
   type McpToolDeps,
-  type ToolExtra,
   type ToolRegistrar,
+  userIdFromExtra,
 } from './mcp-tools';
 
 /**
@@ -69,31 +61,25 @@ const MCP_SERVER_INFO = {
 
 @Injectable()
 export class McpServerFactory implements McpToolDeps {
-  /** Built once; reused across every per-request stateless transport. */
-  private readonly server: McpServer;
-
   constructor(
     private readonly tasks: TasksService,
     private readonly repos: ReposService,
+    private readonly schedules: ScheduledTasksService,
+    private readonly prisma: PrismaService,
     @Inject(TRANSCRIPT_STORE) private readonly transcripts: TranscriptStore,
+    @Inject(AUDIT_TIMELINE_READER) private readonly audit: AuditTimelineReader,
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
-  ) {
-    this.server = new McpServer(MCP_SERVER_INFO);
-    // Register the six tools ONCE against this factory (which is the McpToolDeps
-    // surface). The transport is per-request; the server + its tools are not. The
-    // real `McpServer` is passed through the narrow `ToolRegistrar` port (see its
-    // doc in mcp-tools.ts) — structurally compatible, sidestepping the SDK
-    // `registerTool` deep-generic instantiation.
+  ) {}
+
+  /** Create one tools-registered SDK server for one stateless HTTP request. */
+  createServer(): McpServer {
+    const server = new McpServer(MCP_SERVER_INFO);
     registerMcpTools(
-      this.server as unknown as ToolRegistrar,
+      server as unknown as ToolRegistrar,
       this,
       userIdFromExtra,
     );
-  }
-
-  /** The shared, tools-registered server the controller connects per request. */
-  getServer(): McpServer {
-    return this.server;
+    return server;
   }
 
   // --- McpToolDeps — delegate to the existing console services ----------------
@@ -115,107 +101,82 @@ export class McpServerFactory implements McpToolDeps {
     return this.tasks.findById(id);
   }
 
-  listTasks() {
-    return this.tasks.list();
+  listTasks(query: Parameters<McpToolDeps['listTasks']>[0]) {
+    return listTaskPage(this.prisma, query);
   }
 
   stopTask(id: string, userId?: string) {
     return this.tasks.stop(id, userId);
   }
 
-  listRepos() {
-    return this.repos.list();
+  listRepos(query: Parameters<McpToolDeps['listRepos']>[0]) {
+    return listRepoPage(this.prisma, query);
   }
 
-  /**
-   * The durable session-history read — durable-first, container fallback,
-   * read-through backfill — IDENTICAL to {@link V1TranscriptController.get} and
-   * the console `GET /tasks/:id/session-history`. Never reads the live PTY/WS
-   * stream; only archived transcript text. 404 (NotFoundException from
-   * `findById`) bubbles to the tool as an MCP error when the task is unknown.
-   */
-  async getTranscript(id: string): Promise<SessionHistory> {
-    const task = await this.tasks.findById(id);
-
-    // The agent never started → no transcript ever existed (honest empty state).
-    if (task.status === 'agent_failed_to_start') {
-      return SessionHistorySchema.parse({
-        status: 'empty',
-        reason: 'agent-failed-to-start',
-      });
-    }
-
-    // The task's runtime decides where its transcript lands + how it parses
-    // (add-headless-execution-track).
-    const runtime = task.runtime as RuntimeId | null;
-    const format = transcriptFormatForRuntime(runtime);
-
-    // (1) DURABLE-FIRST: the persisted archive outlives the container.
-    const durable = await this.transcripts.readDurable(id);
-    if (durable !== null) {
-      return toAvailable(id, durable, task.status, format);
-    }
-
-    // (2) FALLBACK: read the rollout out of the retained sandbox (null = none). The
-    // provider returns the runtime-tagged TranscriptSource (unify-transcript-parsers
-    // D3); we consume its RAW `jsonl` so the durable archive stays byte-for-byte the
-    // same raw text and the parse facade keeps its stable `(jsonl, format)` signature.
-    const selected = this.selectRetainedTranscriptSandbox();
-    if (selected) {
-      const source = await selected.readRolloutFromContainer(id, runtime);
-      if (source !== null) {
-        // Read-through backfill so the NEXT read is a durable hit. Best-effort.
-        await this.transcripts.backfill(id, source.jsonl);
-        return toAvailable(id, source.jsonl, task.status, format);
-      }
-
-      // (3) Neither source yields a rollout: distinguish a reaped session
-      // (`expired`) from a present-but-transcriptless sandbox (`empty`).
-      const exists = await selected.sandboxExists(id);
-      return SessionHistorySchema.parse(
-        exists ? { status: 'empty', reason: 'no-rollout' } : { status: 'expired' },
-      );
-    }
-
-    return SessionHistorySchema.parse({ status: 'expired' });
+  getRepo(id: string) {
+    return this.repos.findById(id);
   }
 
-  private selectRetainedTranscriptSandbox(): SandboxProvider | null {
-    try {
-      return selectRetainedTranscriptSandboxProvider(this.sandbox).provider;
-    } catch {
-      return null;
-    }
+  createSchedule(
+    ownerUserId: string,
+    body: Parameters<ScheduledTasksService['create']>[1],
+  ) {
+    return this.schedules.create(ownerUserId, body);
   }
-}
 
-/** Parse a raw rollout (durable or container source) into the available state. */
-function toAvailable(
-  id: string,
-  jsonl: string,
-  status: string,
-  format: TranscriptFormat,
-): SessionHistory {
-  const { turns, meta } = parseTranscript(jsonl, format);
-  return SessionHistorySchema.parse({
-    status: 'available',
-    turns,
-    meta: { taskId: id, ...meta },
-    isInterrupted: status === 'cancelled',
-  });
-}
+  listSchedules(
+    ownerUserId: string,
+    query: Parameters<McpToolDeps['listSchedules']>[1],
+  ) {
+    return this.schedules.listPage(ownerUserId, query);
+  }
 
-/**
- * Best-effort ACCOUNT-id attribution from the resolved token
- * (fix-local-account-task-attribution). `resolveMcpToken` attaches the token
- * owner's account primary key (`users.id`) under `AuthInfo.extra.userId` — present
- * for BOTH local and GitHub accounts, so a local-account token's MCP task is
- * owner-attributed and its stored Codex credential resolves at run time. A
- * non-string/absent value attributes the action to no id (like a scopeless legacy
- * principal on the REST path).
- */
-function userIdFromExtra(extra: ToolExtra): string | undefined {
-  const raw = (extra.authInfo?.extra as { userId?: unknown } | undefined)
-    ?.userId;
-  return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
+  getSchedule(ownerUserId: string, id: string) {
+    return this.schedules.get(ownerUserId, id);
+  }
+
+  updateSchedule(
+    ownerUserId: string,
+    id: string,
+    body: Parameters<ScheduledTasksService['update']>[2],
+  ) {
+    return this.schedules.update(ownerUserId, id, body);
+  }
+
+  pauseSchedule(ownerUserId: string, id: string) {
+    return this.schedules.pause(ownerUserId, id);
+  }
+
+  resumeSchedule(ownerUserId: string, id: string) {
+    return this.schedules.resume(ownerUserId, id);
+  }
+
+  dispatchSchedule(ownerUserId: string, id: string) {
+    return this.schedules.dispatchNow(ownerUserId, id);
+  }
+
+  deleteSchedule(ownerUserId: string, id: string) {
+    return this.schedules.delete(ownerUserId, id);
+  }
+
+  listScheduleRuns(
+    ownerUserId: string,
+    id: string,
+    query: Parameters<McpToolDeps['listScheduleRuns']>[2],
+  ) {
+    return this.schedules.listRunsPage(ownerUserId, id, query);
+  }
+
+  /** Canonical Console/`/v1`/MCP transcript read, including live and audit turns. */
+  getTranscript(id: string): Promise<SessionHistory> {
+    return readTaskTranscript(
+      {
+        tasks: this.tasks,
+        sandbox: this.sandbox,
+        transcripts: this.transcripts,
+        audit: this.audit,
+      },
+      id,
+    );
+  }
 }
