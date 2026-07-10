@@ -74,7 +74,13 @@ export class ScheduledTasksService
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    await this.recoverPendingAdmissions();
+    try {
+      await this.recoverPendingAdmissions();
+    } catch (err) {
+      this.logger.warn(
+        `scheduled task recovery failed: ${errorMessage(err)}`,
+      );
+    }
     if (process.env.SCHEDULED_TASKS_DISABLED === '1') {
       return;
     }
@@ -83,15 +89,10 @@ export class ScheduledTasksService
       DEFAULT_POLL_MS,
     );
     this.timer = setInterval(() => {
-      void this.tick().catch((err) => {
-        this.logger.warn(
-          `scheduled task tick failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
+      void this.runTickSafely();
     }, pollMs);
     this.timer.unref?.();
+    await this.runTickSafely();
   }
 
   onModuleDestroy(): void {
@@ -282,15 +283,15 @@ export class ScheduledTasksService
     now = new Date(),
   ): Promise<ScheduleResponse> {
     const schedule = await this.requireOwnedSchedule(ownerUserId, id);
-    const scheduledFor = schedule.nextRunAt ?? now;
-    const advanceAfter = scheduledFor > now ? scheduledFor : now;
-    const nextRunAt = schedule.enabled
+    const scheduledFor = now;
+    const nextRunAt =
+      schedule.enabled && schedule.nextRunAt && schedule.nextRunAt <= now
       ? computeNextScheduleRunAt({
           cronExpression: schedule.cron,
           timezone: schedule.timezone,
-          after: advanceAfter,
+          after: now,
         })
-      : null;
+      : schedule.nextRunAt;
     const token = randomUUID();
     const claimLeaseMs = positiveIntFromEnv(
       process.env.SCHEDULED_TASKS_CLAIM_LEASE_MS,
@@ -313,6 +314,14 @@ export class ScheduledTasksService
     }
     await this.executeClaim(schedule, scheduledFor, token);
     return this.get(ownerUserId, id);
+  }
+
+  private async runTickSafely(): Promise<void> {
+    try {
+      await this.tick();
+    } catch (err) {
+      this.logger.warn(`scheduled task tick failed: ${errorMessage(err)}`);
+    }
   }
 
   async delete(ownerUserId: string, id: string): Promise<void> {

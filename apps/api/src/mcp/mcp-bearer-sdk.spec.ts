@@ -5,12 +5,19 @@
  * Two scenarios exercised:
  *   A) Official SDK mount — StreamableHTTPServerTransport from
  *      @modelcontextprotocol/sdk (NOT @rekog/mcp-nest) is constructed per-request
- *      and connected to the shared McpServer when the toggle is ON.
+ *      and connected to a request-scoped McpServer when the toggle is ON.
  *   B) Bearer protection — an absent/invalid Authorization header yields 401 from
  *      the SDK requireBearerAuth middleware BEFORE the controller is reached.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer as createHttpServer } from 'node:http';
+import { once } from 'node:events';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import { McpController } from './mcp.controller';
+import { McpServerFactory } from './mcp.server';
 
 // ---------------------------------------------------------------------------
 // A) Official SDK: StreamableHTTPServerTransport is from the official package
@@ -53,118 +60,87 @@ test('the controller source imports StreamableHTTPServerTransport from @modelcon
   );
 });
 
-test('McpController instantiates a fresh StreamableHTTPServerTransport per request when the toggle is ON', async () => {
-  // Drive the controller with the toggle ON and verify that:
-  //   (a) the McpServer is connected (SDK transport wired to the server), and
-  //   (b) a fresh transport is constructed per call (stateless mode: no session id).
-  // We fake the MCP server + prisma to avoid a Nest DI container or real DB.
-
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { StreamableHTTPServerTransport } = require(
-    '@modelcontextprotocol/sdk/server/streamableHttp.js',
-  ) as { StreamableHTTPServerTransport: new (opts: unknown) => unknown & { handleRequest(...a: unknown[]): Promise<void>; close(): Promise<void>; connect(server: unknown): Promise<void> } };
-
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { McpController } = require('./mcp.controller') as {
-    McpController: new (factory: unknown, prisma: unknown) => {
-      handlePost(req: unknown, res: unknown): Promise<void>;
-    };
-  };
-
-  let serverConnected = false;
-  let constructedTransports = 0;
-  let handleRequestCalled = false;
-
-  // Patch the transport constructor for this test to intercept construction + calls.
-  const OrigTransport = StreamableHTTPServerTransport;
-  const transportInstances: Array<{ opts: unknown }> = [];
-
-  // We replace the import binding at the module level via the cache. Since the
-  // controller already imported StreamableHTTPServerTransport in its CJS require
-  // cache, we track calls through the shared McpServer connect.
-  const fakeServer = {
-    connect(transport: unknown) {
-      serverConnected = true;
-      // Verify the transport is a StreamableHTTPServerTransport instance.
-      assert.ok(
-        transport instanceof OrigTransport,
-        'controller must connect an official StreamableHTTPServerTransport instance to the McpServer',
-      );
-      constructedTransports++;
-      return Promise.resolve();
-    },
-  };
-
-  const factory = {
-    getServer() {
-      return fakeServer;
-    },
-  };
-
+test('two real Streamable HTTP clients can initialize and list tools concurrently', async () => {
   const prisma = {
     systemSettings: {
       findUnique: async () => ({ mcpServerEnabled: true }),
     },
   };
-
-  // Fake res that records close handlers and provides the response surface.
-  const closeHandlers: Array<() => void> = [];
-  const fakeRes = {
-    status(code: number) {
-      void code;
-      return this;
-    },
-    json(body: unknown) {
-      void body;
-      return this;
-    },
-    on(event: string, handler: () => void) {
-      if (event === 'close') closeHandlers.push(handler);
-      return this;
-    },
-    // Absorb any transport writes (status lines, headers, body).
-    setHeader() { return this; },
-    write() { return true; },
-    end() { return this; },
-    writableEnded: false,
-    headersSent: false,
-    statusCode: 200,
+  const factory = new McpServerFactory(
+    {} as never,
+    {} as never,
+    {} as never,
+    prisma as never,
+    {} as never,
+    {} as never,
+    {} as never,
+  );
+  const controller = new McpController(factory, prisma as never);
+  const authInfo: AuthInfo = {
+    token: 'mcp_concurrency_test',
+    clientId: 'settings',
+    scopes: ['tasks:read'],
+    expiresAt: Math.floor(Date.now() / 1_000) + 3_600,
+    extra: { userId: 'local-acct-1' },
   };
+  const handlerErrors: Error[] = [];
+  const httpServer = createHttpServer(async (req, res) => {
+    try {
+      if (req.method !== 'POST') {
+        res.statusCode = 405;
+        res.setHeader('Allow', 'POST');
+        res.end();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+      Object.assign(req, { body, auth: authInfo });
+      await controller.handlePost(req as never, res as never);
+    } catch (error) {
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      handlerErrors.push(normalized);
+      if (!res.headersSent) {
+        res.statusCode = 500;
+        res.end(normalized.message);
+      } else {
+        res.destroy(normalized);
+      }
+    }
+  });
 
-  // Intercept transport.handleRequest via monkey-patch on the prototype, reset after.
-  const proto = Object.getPrototypeOf(new OrigTransport({ sessionIdGenerator: undefined }));
-  const originalHandleRequest = proto.handleRequest as (...a: unknown[]) => Promise<void>;
-  proto.handleRequest = async function (...args: unknown[]) {
-    handleRequestCalled = true;
-    // Don't actually run the full SDK HTTP handling (no real HTTP request) — just
-    // confirm it was called and return.
-    void args;
-  };
+  httpServer.listen(0, '127.0.0.1');
+  await once(httpServer, 'listening');
+  const address = httpServer.address();
+  assert.ok(address && typeof address === 'object');
+  const endpoint = new URL(`http://127.0.0.1:${address.port}/mcp`);
+  const clients = [
+    new Client({ name: 'parallel-a', version: '1.0.0' }),
+    new Client({ name: 'parallel-b', version: '1.0.0' }),
+  ];
+  const transports = [
+    new StreamableHTTPClientTransport(endpoint),
+    new StreamableHTTPClientTransport(endpoint),
+  ];
 
   try {
-    const controller = new McpController(factory, prisma);
-    await controller.handlePost(
-      { body: { jsonrpc: '2.0', method: 'tools/list', id: 1 } },
-      fakeRes,
+    await Promise.all(
+      clients.map((client, index) => client.connect(transports[index]!)),
     );
-
-    assert.equal(serverConnected, true, 'McpServer.connect was called — SDK transport is wired to the shared server');
-    assert.equal(constructedTransports, 1, 'exactly one transport constructed for this request (stateless per-request transport)');
-    assert.equal(handleRequestCalled, true, 'transport.handleRequest was called — the SDK owns the response');
-
-    // A second request constructs a SECOND (fresh) transport — per-request stateless.
-    serverConnected = false;
-    constructedTransports = 0;
-    handleRequestCalled = false;
-    await controller.handlePost(
-      { body: { jsonrpc: '2.0', method: 'tools/list', id: 2 } },
-      { ...fakeRes, on(e: string, h: () => void) { if (e === 'close') closeHandlers.push(h); return this; } },
+    const inventories = await Promise.all(clients.map((client) => client.listTools()));
+    assert.deepEqual(
+      inventories.map((inventory) => inventory.tools.length),
+      [16, 16],
     );
-    assert.equal(constructedTransports, 1, 'a fresh transport per request (not reused across requests)');
+    assert.deepEqual(handlerErrors, []);
   } finally {
-    proto.handleRequest = originalHandleRequest;
+    await Promise.allSettled(clients.map((client) => client.close()));
+    await new Promise<void>((resolve, reject) =>
+      httpServer.close((error) => (error ? reject(error) : resolve())),
+    );
   }
-  void transportInstances;
 });
 
 // ---------------------------------------------------------------------------

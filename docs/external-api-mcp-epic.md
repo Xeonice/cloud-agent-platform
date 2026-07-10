@@ -212,27 +212,29 @@ PRM+401+AS metadata(0.5d) → DCR `/register`(0.5d) → `/authorize`+consent(1d)
 
 ## 12. T0 深化：公开面划界 + /v1 + OpenAPI
 
-**公开子集（仅这 ~7 个，其余全 console 内部）**。分类依据：是否安全（无密钥/无部署态）+ 是否需要 GitHub-identity 操作员（legacy/api-key principal 的 `user===null` 会被现有 `requireOperator`/`requireGithubId` 拒）。
+**公开子集由 `PUBLIC_V1_OPERATIONS` 固定为 17 个数据操作**。OpenAPI、API
+Playground、MCP parity test 和真实 Nest controller reflection test 共用这一份
+清单；新增或删除公开操作时，任一侧遗漏都会让测试失败。
 
 | 端点 | 桶 | /v1 改造 |
 |------|----|---------|
 | `POST /v1/tasks` | 公开（需改造） | repoId 从 path 移入 body + 接 `Idempotency-Key` 头 |
 | `GET /v1/tasks` | 公开（需改造） | cursor 分页 + `{items,nextCursor}` 信封；共享池=返回全部 |
-| `GET /v1/tasks/:id` | 公开 | 原样（TaskSchema 已无密钥） |
-| `POST /v1/tasks/:id/stop` | 公开 | 原样；共享池=可停任何人的（D2 接受） |
+| `GET /v1/tasks/:id` · `POST /v1/tasks/:id/stop` | 公开 | 轮询状态 / 停止任务；共享池语义不变 |
+| `GET /v1/tasks/:id/transcript` · `GET /v1/tasks/:id/events` | 公开 | 统一 transcript reader；SSE 生命周期流支持 `Last-Event-ID` |
 | `GET /v1/repos` · `GET /v1/repos/:id` | 公开（列表需分页） | RepoSchema 无 OAuth token |
-| `GET /v1/tasks/:id/transcript` | 公开 | = session-history 别名，容器无关只读 |
+| `/v1/schedules` 的 list/create/get/update/pause/resume/dispatch/delete/runs | 公开 | 9 个 owner-scoped 定时任务操作；读写复用 ScheduledTasksService |
 | `GET /v1/openapi.json` + `/v1/docs` | 公开-免鉴权 | 建议加入豁免（像 /version） |
 
-console 内部（**绝不上外部面**）：oauth/* · settings(+codex 凭证) · audit · metrics · /tasks/:id/metrics · runtimes 就绪 · github-import(需 githubAccessToken) · self-update · update-status · /v1/approvals(沙箱回调,已豁免) · WS /terminal。
+console 内部（**绝不上外部面**）：oauth/* · settings(+codex 凭证) · audit · metrics · /tasks/:id/metrics · runtimes 就绪 · github-import(需 githubAccessToken) · self-update · update-status · `/internal/sandbox/approvals`（沙箱回调，仅允许直接私网来源且被公网反代明确屏蔽）· WS /terminal。
 
-**版本化 = 加新 `@Controller('v1/...')` 委托同一 service**（`TasksService`/`ReposService`/`TRANSCRIPT_STORE`），console 控制器与 apps/web 契约**零改动**。**不调 `app.enableVersioning()`**（会把版本号强加全表、风险 console 契约）；纯路径前缀控制器与已在产的 `/v1/approvals` 一致。**这正是端点版本演进的基础**：将来对外端点要做不兼容修改时，新增 `@Controller('v2/...')` 控制器，`/v1` 消费者不受影响、可并存、按弃用周期下线——对外端点天然版本化（用户 2026-06-19 确认为优先项，故对外 API 一律走 `/v1` 而非未版本化的 console 内部路径）。AuthGuard **零改动即自动保护**（新 /v1 路径不在任何豁免表）。
+**版本化 = 加新 `@Controller('v1/...')` 委托同一 service**（`TasksService`/`ReposService`/共享 transcript reader），console 控制器与 apps/web 契约**零改动**。**不调 `app.enableVersioning()`**（会把版本号强加全表、风险 console 契约）；使用显式路径前缀。**这正是端点版本演进的基础**：将来对外端点要做不兼容修改时，新增 `@Controller('v2/...')` 控制器，`/v1` 消费者不受影响、可并存、按弃用周期下线。公开数据路由由 AuthGuard 保护，内部沙箱回调使用独立的 `/internal/...` 命名与来源校验。
 
 **新 /v1-only 契约**（`CreateTaskRequestSchema.extend({repoId})`、分页信封、Idempotency-Key）**绝不改** console 的 `CreateTaskRequestSchema/ListTasks/ListRepos`——apps/web `real.ts` 直接 import 它们。task-create/分页/幂等是**净新契约工作，非纯委托**。
 
-**OpenAPI = `@asteasolutions/zod-to-openapi` 钉 v7（zod-3 线）**：实测 zod 解析到 **3.25.76**（非 3.23.8），树里另有 zod 4.4.3（仅 TanStack 前端工具链拉，api/contracts 不碰）→ v8 是 zod-4 线会错。`extendZodWithOpenApi(z)` 是对**共享 z 的一次性全局副作用**，放 contracts 外、同一 z 实例。契约只用 `z.object/enum/literal/array/discriminatedUnion/nullable/optional`（无 `.transform/.lazy/.brand/.pipe/superRefine`），逐 schema 映射干净。
+**OpenAPI = `@asteasolutions/zod-to-openapi` 钉 v7（zod-3 线）**：实测 zod 解析到 **3.25.76**（非 3.23.8），树里另有 zod 4.4.3（仅 TanStack 前端工具链拉，api/contracts 不碰）→ v8 是 zod-4 线会错。`extendZodWithOpenApi(z)` 是对**共享 z 的一次性全局副作用**，放 contracts 外、同一 z 实例。公开 query/path/header/body 不仅用于生成文档，也由真实 Nest pipe 执行；SSE 完整响应描述为 framed text，单个 `data:` JSON schema 单独暴露。
 
-**风险**：豁免必须 **exact-match**——若有人改成 `startsWith('/v1/')` 整个外部 API 静默裸奔（`/v1/approvals` 是 exempt）。加测试钉 `/v1/tasks` 非豁免。
+**风险**：豁免必须 **exact-match**。`/internal/sandbox/approvals` 是唯一沙箱回调豁免，并由 controller 的直接私网来源校验和 nginx exact-path 404 双重约束；测试同时钉住 `/v1/tasks` 与旧 `/v1/approvals` 不豁免。
 
 ## 13. T1 深化：API Key + 四凭证消歧
 
@@ -267,7 +269,8 @@ else null
 
 - **轮询 `GET /v1/tasks/:id` = v1 地板**：`transition()` 是唯一状态写入点，findById 直读 row，状态完全可观测。
 - **SSE 干净 seam = `AuditEvent` 表尾**（`transition()` 已 fan-out 到 append-only `AuditEvent`，`@@index[taskId,timestamp]`，天然游标序），**不是** PTY 流。`GET /v1/tasks/:id/events` 尾随 AuditEvent（~1.5s 轮询 `timestamp>lastSeen`，`id:`=event id 支持 Last-Event-ID，`:ka` 心跳，终态自关）。可选在 transition 加 rxjs Subject 推送（免轮询），DB 尾作多副本/audit-未绑兜底。
-- `get_transcript` 复用 session-history（durable-first `readDurable`，容器无关，已 Bearer-ready）。
+- `get_transcript` 复用统一 session-history reader：运行中读 live rollout，终态
+  durable-first，缺失时才从 retained sandbox 回填。
 
 ⚠️ **G7 CF 流式只验证了文档、未验证线**：CF 命名隧道有 **~100–120s idle 超时**（非企业不可调，本隧道历史上 524 过无心跳的 WS）→ **<90s 心跳是硬要求，非"缓解"**；cloudflared #1449 让 **GET-SSE 一直缓冲到关闭**（headers 救不了）→ **server-push 走 POST，别把 GET /events 作主路**；`text/event-stream` + `Cache-Control:no-cache,no-transform` + `X-Accel-Buffering:no` + `Content-Encoding:identity` 让 cloudflared 切 flush。**上线前用 `curl -N` 跑一次 2 分钟心跳流实测 cap-api.douglasdong.com**（唯一真未知；之前隧道流式成功全是 WS 非 HTTP SSE）。
 
@@ -285,8 +288,9 @@ else null
   @Post('mcp') @Get('mcp') @Delete('mcp')
   async handle(@Req() req, @Res() res) {
     const t = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-    res.on('close', () => t.close());
-    await this.mcpServer.connect(t);              // 一个 McpServer(工具注册一次), transport per request
+    const server = this.mcp.createServer();       // server + transport 都是 request-scoped
+    res.on('close', () => server.close());
+    await server.connect(t);                      // SDK server 只连接一个 transport
     await t.handleRequest(req, res, req.body);    // req.body = Nest 默认 json() 已解析
   }
 }
@@ -294,23 +298,28 @@ else null
 
 stateless 模式（无 session 亲和，友好 CF/横扩）。`requireBearerAuth({verifier:{verifyAccessToken: resolveMcpToken}})` 作 Express 中间件挂 /mcp 前，401 带 `WWW-Authenticate: Bearer resource_metadata=...`（发现握手 §6.3 ①）。
 
-**全局 guard 短路**（mirror /v1/approvals + /auth/*）：⚠️ **G8** 豁免 `/mcp` + 全部发现/AS 路径（含 RFC 路径插入变体 `/.well-known/oauth-protected-resource/mcp`、`/.well-known/oauth-authorization-server/mcp` + `/register /authorize /callback /token /revoke`），**但 `/mcp` 仍受 requireBearerAuth 保护非裸奔**。exact-match 枚举；加测试钉 `/mcp` 无 bearer 仍 401、各发现路径豁免。
+**全局 guard 短路**（与 `/internal/sandbox/approvals`、`/auth/*` 同样使用 exact-match）：⚠️ **G8** `/mcp` 虽从 session guard 豁免，仍受 `requireBearerAuth` 保护，绝非裸奔；测试钉住无 bearer 仍 401，任何 `/mcp/*` 邻接路径不继承豁免。
 
 - **WS 共存**：WsAdapter 只截 /terminal upgrade，/mcp 是 HTTP，无冲突。
 - **DNS-rebinding**：SDK transport 校验 Host/Origin，CF→nginx→:8080 上游 Host 可能不匹配 → 配 `allowedHosts=cap-api.douglasdong.com` 或 disable（靠 bearer+audience 兜）。
 - **body limit**：Nest json() 默认 100kb，大 prompt 可能 413，按需抬高 /mcp。
 - ⚠️ **G13 CORS**：/mcp + .well-known 要 route-scoped **bearer-only 非凭证** CORS（别把 claude.ai 加进 console 的 `credentials:true` origin 列，否则该浏览器源会带 cap_session）。
 
-**工具表**（name | input | service | scope）：
-- `create_task` `{repoId,prompt,branch?,strategy?,runtime?,skills?,deadlineMs?,idleTimeoutMs?}` → `TasksService.create(repoId,body)` | tasks:write
-- `get_task` `{taskId}` → `findById` | tasks:read
-- `list_tasks` `{}`（共享池）→ `list` | tasks:read
-- `stop_task` `{taskId}` → `stop` | tasks:write
-- `get_transcript` `{taskId}` → session-history 逻辑 | tasks:read
-- `list_repos` `{}` → `ReposService.list` | repos:read
+**工具表（16 个）**：
+- task：`create_task`、`get_task`、`list_tasks`、`stop_task`、`get_transcript`
+- repo：`list_repos`、`get_repo`
+- schedule：`list_schedules`、`create_schedule`、`get_schedule`、
+  `update_schedule`、`pause_schedule`、`resume_schedule`、`dispatch_schedule`、
+  `delete_schedule`、`list_schedule_runs`
+
+所有非 SSE 的 manifest 操作必须恰好映射一个工具；分页 input/envelope、UUID、
+scope、请求 schema 和 structured output 复用公开契约。SSE 是唯一显式 REST-only
+操作；REST `Idempotency-Key` 是 header-only，MCP 每次 `create_task` 独立创建。
 - **`start_sandbox` 不作独立工具**：无独立 provision 路径（provision 由 guardrails admit 驱动）→ 是 `create_task` 别名，或不出（独立暴露会开一条绕过 FIFO 信号量的未管控 provision 路径）。
 
-**异步**：`create_task` 立即返回 `{taskId,status}`（create 从不 await 完成），client 轮询 `get_task` 到终态再 `get_transcript` → 无工具阻塞，不撞 MCP 调用超时。
+**异步**：`create_task` 的 structuredContent 是完整 `TaskResponseSchema`，立即返回
+且不等待任务完成；legacy text 继续保留旧 wrapper。client 轮询 `get_task` 到终态
+再 `get_transcript`，不会占住 MCP 调用超时。
 **scope 在工具边界查**（requireBearerAuth 只验 token、不查 scope-vs-tool）：缺 scope → `McpError` → 403 语义。
 
 ## 16. 跨轨硬约束 + 必落测试/探针（万无一失闸门）
@@ -348,9 +357,13 @@ stateless 模式（无 session 亲和，友好 CF/横扩）。`requireBearerAuth
 参考 OD 项目 `680d21c4`（linkedDir=本仓库）的 `index.html`（简化首页）+ `screens/api.html`（API 调试页）设计稿，拆两个独立前端 change，其中 API 页与 epic 的 T0 强相关：
 
 - **change `simplify-landing-homepage`（独立，已 propose 完成 4/4 valid）**：把营销落地页 `/` 简化为 nav→hero→footer，砍掉 proof-tiles / `#workflow` process-rail / `#security` boundary-ledger，保留 session-aware + SSR-safe + runner-capsule 预览；MODIFY `frontend-console` 的 Landing-family 需求 + 刷 `/` 像素基线。不碰后端/console。
-- **API Playground（`add-api-playground`，B，待规划）**：控制台内 Postman 式 API 测试页（`routes/_app/api.tsx`），左接口集合 + 右请求/响应，**真实执行**，auth 用**当前会话自动签名**（OAuth 注入，登录用户无需填 token）。新能力 `api-playground` + MODIFY `frontend-console`（路由树 +1 页、侧栏加「API 调试」入口、像素基线）。
+- **API Playground（`add-api-playground`，已落地）**：控制台内 API 测试页从
+  manifest 生成 17 个数据操作，另列 OpenAPI/Docs；真实请求默认携带
+  `cap_session` Cookie，只有配置 legacy token 时才附加 Bearer，无手填 token。
+  JSON/path/query/header 在发送前校验，`Idempotency-Key` 和 SSE
+  `Last-Event-ID` 可编辑，SSE 用 fetch + 标准 parser 展示真实 framing。
   - **关键决策（2026-06-19，因版本化成优先项而从"调现有端点"翻转）**：**Playground 调版本化的 `/v1`，故依赖 T0；先完整建 T0（公开 /v1 面 + OpenAPI/分页/幂等）再做 B**。理由：Playground 是「对外版本化 API 的 UI」，让它测未版本化、即将被 /v1 取代的 console 内部端点会误导用户且 T0 后整目录要改路径。
   - 故 B 的目录直接用设计稿的 `/v1/*`（tasks/repos/sessions transcript/version 等）；session-cookie transport 已具备（web `request()` 的 `credentials:include`）。
-  - B **未开 change**（空脚手架已删），待 T0 的 /v1 契约定稿后再 propose。
+  - Playground 与 MCP 的 surface parity 已纳入 required tests。
 
 **排序**：`simplify-landing-homepage`（独立，可随时 apply） ‖ 〔T0 公开 /v1 面〕→ `add-api-playground`。

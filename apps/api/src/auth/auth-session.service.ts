@@ -46,6 +46,8 @@ export interface McpAuthInfo {
   readonly expiresAt: number;
   /** The canonical `/mcp` resource URI this token is valid for. */
   readonly resource: string;
+  /** Full enabled account identity, used when the MCP token calls REST routes. */
+  readonly owner: SessionUser;
   /**
    * The owning operator's immutable GitHub numeric id (for the `mcp` principal).
    * NULLABLE (add-private-account-identity): a token owned by a LOCAL account
@@ -304,8 +306,8 @@ export class AuthSessionService {
    *   3. RE-CONFIRM the owner's pure-DB `allowed` gate on EVERY call — never
    *      cached — so disabling the owner denies the token on its very next request
    *      (task 2.5 / D2; replaces the prior env-based gate);
-   *   4. return a FULL `AuthInfo`: `{ token, clientId, scopes, expiresAt,
-   *      resource }` plus the owner's GitHub id for the `mcp` principal.
+   *   4. return a FULL `AuthInfo` plus the owner's complete SessionUser identity
+   *      so the same token retains owner scope when it calls REST routes.
    *
    * G1 — `expiresAt` is MANDATORY and seconds-since-epoch: the SDK
    * `requireBearerAuth` rejects an `AuthInfo` with an unset `expiresAt`, which
@@ -370,6 +372,16 @@ export class AuthSessionService {
         ? Math.floor(record.expiresAt.getTime() / 1000)
         : MCP_NON_EXPIRING_AUTHINFO_EXPIRES_AT,
       resource: MCP_RESOURCE_URI,
+      owner: {
+        id: record.user.id,
+        githubId: record.user.githubId,
+        login: record.user.login,
+        name: record.user.name,
+        avatarUrl: record.user.avatarUrl,
+        allowed: true,
+        role: record.user.role,
+        mustChangePassword: record.user.mustChangePassword,
+      },
       ownerGithubId: record.user.githubId,
       // The account primary key — present for local + GitHub accounts — threaded
       // for owner-attribution (fix-local-account-task-attribution).

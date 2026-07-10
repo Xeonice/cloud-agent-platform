@@ -8,10 +8,18 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
-import type { AuditEvent } from '@cap/contracts';
+import {
+  PublicV1EventHeadersSchema,
+  PublicV1IdParamsSchema,
+  V1TaskEventSchema,
+  type AuditEvent,
+  type V1TaskEvent,
+} from '@cap/contracts';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
 import { hasScope } from '../auth/operator-principal';
+import { TasksService } from '../tasks/tasks.service';
+import { parseZodValue, zodParam } from '../repos/zod-validation.pipe';
 
 /**
  * `/v1` SSE lifecycle-observation surface (public-v1-api, Track sse-observation,
@@ -93,7 +101,10 @@ export class V1EventsController {
     30_000,
   );
 
-  constructor(private readonly audit: AuditService) {}
+  constructor(
+    private readonly audit: AuditService,
+    private readonly tasksService: TasksService,
+  ) {}
 
   /**
    * Open the SSE lifecycle stream for `id`. Writes the proxy-safe headers, replays
@@ -106,7 +117,7 @@ export class V1EventsController {
    */
   @Get(':id/events')
   async events(
-    @Param('id') taskId: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) taskId: string,
     @Res({ passthrough: false }) res: Response,
     @Req() req: AuthenticatedRequest,
     @Headers('last-event-id') lastEventIdHeader?: string,
@@ -124,9 +135,16 @@ export class V1EventsController {
     if (!hasScope(principal, 'tasks:read')) {
       throw new ForbiddenException('Insufficient scope: tasks:read required');
     }
+    const lastEventId = parseZodValue(
+      PublicV1EventHeadersSchema.shape['Last-Event-ID'],
+      lastEventIdHeader,
+    );
+    // Resolve before writing the SSE headers/open comment. An unknown task stays
+    // an ordinary 404 response rather than a misleading 200 stream of heartbeats.
+    await this.tasksService.findById(taskId);
     await this.streamEvents(res, {
       taskId,
-      lastEventId: lastEventIdHeader,
+      lastEventId,
       heartbeatMs: this.heartbeatMs,
       pollMs: this.pollMs,
     });
@@ -214,8 +232,14 @@ export class V1EventsController {
 
           const fresh = eventsAfter(events, lastSeenId);
           for (const event of fresh) {
-            res.write(serializeSseEvent(event));
+            // The audit timeline also contains operational detail rows (for
+            // example `task.exited`) that are not task status transitions. The
+            // public stream is deliberately the lifecycle projection only.
+            const lifecycleEvent = auditEventToV1TaskEvent(event);
             lastSeenId = event.id;
+            if (lifecycleEvent === null) continue;
+
+            res.write(serializeSseEvent(lifecycleEvent));
             if (isTerminalAuditType(event.type)) {
               // Auto-close on the terminal lifecycle event (task 5.1): the task
               // has settled, nothing more will be appended.
@@ -282,26 +306,67 @@ export function isTerminalAuditType(type: string): boolean {
 }
 
 /**
- * Serialize one {@link AuditEvent} to an SSE frame: an `id:` line (for
+ * Project an audit row into the public lifecycle-event contract. Audit rows that
+ * do not represent a task status transition are intentionally omitted from the
+ * public SSE stream.
+ */
+export function auditEventToV1TaskEvent(event: AuditEvent): V1TaskEvent | null {
+  const status = statusFromAuditType(event.type);
+  if (status === null) return null;
+
+  return V1TaskEventSchema.parse({
+    id: event.id,
+    taskId: event.taskId,
+    type: event.type,
+    status,
+    title: event.title,
+    description: event.description,
+    timestamp: event.timestamp,
+  });
+}
+
+/** Map the persisted audit kind to the task status transition it represents. */
+function statusFromAuditType(eventType: string): V1TaskEvent['status'] | null {
+  switch (eventType) {
+    case 'task.created':
+      return 'pending';
+    case 'task.queued':
+      return 'queued';
+    case 'task.running':
+      return 'running';
+    case 'task.awaiting_input':
+      return 'awaiting_input';
+    case 'task.completed':
+      return 'completed';
+    case 'task.failed':
+      return 'failed';
+    case 'task.cancelled':
+      return 'cancelled';
+    case 'agent_failed_to_start':
+      return 'agent_failed_to_start';
+    default:
+      return eventType.startsWith('force_failed:') ? 'failed' : null;
+  }
+}
+
+/**
+ * Serialize one validated {@link V1TaskEvent} to an SSE frame: an `id:` line (for
  * `Last-Event-ID` resume) followed by a single JSON `data:` line and the
  * frame-terminating blank line. The `timestamp` is emitted as an ISO string so
  * the wire stays JSON (the contracts shape carries a `Date`).
  */
-export function serializeSseEvent(event: AuditEvent): string {
+export function serializeSseEvent(event: V1TaskEvent): string {
   const payload = {
     id: event.id,
     taskId: event.taskId,
-    userId: event.userId,
     type: event.type,
-    level: event.level,
+    status: event.status,
     title: event.title,
     description: event.description,
     timestamp:
       event.timestamp instanceof Date
         ? event.timestamp.toISOString()
         : event.timestamp,
-    ...(event.resultCode !== undefined ? { resultCode: event.resultCode } : {}),
-    ...(event.runId !== undefined ? { runId: event.runId } : {}),
   };
   return `id: ${event.id}\ndata: ${JSON.stringify(payload)}\n\n`;
 }

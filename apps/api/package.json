@@ -19,6 +19,8 @@
     "test:terminal-src": "node --test --test-force-exit \"src/terminal/cast-writer.test.mjs\" \"src/terminal/codex-launch.test.mjs\" \"src/terminal/provider-terminal-story.service.test.mjs\" \"src/terminal/reconnect-replay.test.mjs\" \"src/terminal/concurrent-attach-single-writer.test.mjs\" \"src/terminal/readoption-history.test.mjs\"",
     "test:e2e": "node --env-file=../../.env --test --test-force-exit test/api-e2e.mjs",
     "pretest:e2e": "pnpm -w exec turbo run build --filter=@cap/api",
+    "test:e2e:schedules": "node --env-file-if-exists=.env --env-file-if-exists=../../.env --test --test-force-exit test/scheduled-tasks-e2e.mjs",
+    "pretest:e2e:schedules": "pnpm -w exec turbo run build --filter=@cap/api",
     "test:e2e:aio": "bash ../../scripts/aio-e2e.sh"
   },
   "prisma": {

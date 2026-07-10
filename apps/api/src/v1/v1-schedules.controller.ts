@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import {
   CreateScheduleRequestSchema,
+  PublicV1IdParamsSchema,
   UpdateScheduleRequestSchema,
   V1ScheduleListQuerySchema,
   type CreateScheduleRequest,
@@ -29,7 +30,11 @@ import {
   hasScope,
   type OperatorPrincipal,
 } from '../auth/operator-principal';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
+import {
+  ZodValidationPipe,
+  zodParam,
+  zodQuery,
+} from '../repos/zod-validation.pipe';
 import { resolveLimit } from './keyset-pagination';
 import { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.service';
 
@@ -39,7 +44,7 @@ export class V1SchedulesController {
 
   @Get()
   async list(
-    @Query(new ZodValidationPipe(V1ScheduleListQuerySchema))
+    @Query(zodQuery(V1ScheduleListQuerySchema))
     query: V1ScheduleListQuery,
     @Req() req: AuthenticatedRequest,
   ): Promise<V1ListSchedulesResponse> {
@@ -63,7 +68,7 @@ export class V1SchedulesController {
 
   @Get(':id')
   async get(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
     const principal = this.requireScope(req, 'tasks:read');
@@ -73,7 +78,7 @@ export class V1SchedulesController {
   @Patch(':id')
   @UsePipes(new ZodValidationPipe(UpdateScheduleRequestSchema))
   async update(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Body() body: UpdateScheduleRequest,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
@@ -84,7 +89,7 @@ export class V1SchedulesController {
   @Post(':id/pause')
   @HttpCode(HttpStatus.OK)
   async pause(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
     const principal = this.requireScope(req, 'tasks:write');
@@ -94,7 +99,7 @@ export class V1SchedulesController {
   @Post(':id/resume')
   @HttpCode(HttpStatus.OK)
   async resume(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
     const principal = this.requireScope(req, 'tasks:write');
@@ -104,7 +109,7 @@ export class V1SchedulesController {
   @Post(':id/dispatch')
   @HttpCode(HttpStatus.OK)
   async dispatch(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
     const principal = this.requireScope(req, 'tasks:write');
@@ -114,7 +119,7 @@ export class V1SchedulesController {
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
   async delete(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<void> {
     const principal = this.requireScope(req, 'tasks:write');
@@ -123,8 +128,8 @@ export class V1SchedulesController {
 
   @Get(':id/runs')
   async listRuns(
-    @Param('id') id: string,
-    @Query(new ZodValidationPipe(V1ScheduleListQuerySchema))
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @Query(zodQuery(V1ScheduleListQuerySchema))
     query: V1ScheduleListQuery,
     @Req() req: AuthenticatedRequest,
   ): Promise<V1ListScheduleRunsResponse> {

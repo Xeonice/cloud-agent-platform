@@ -7,50 +7,32 @@ import {
   Req,
 } from '@nestjs/common';
 import {
-  SessionHistorySchema,
+  PublicV1IdParamsSchema,
   type SessionHistory,
-  type SessionTurn,
 } from '@cap/contracts';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
 } from '../sandbox/sandbox-provider.port';
-import {
-  selectRetainedTranscriptSandboxProvider,
-} from '@cap/sandbox';
-import { parseTranscript } from '../sandbox/parse-transcript';
-import {
-  transcriptFormatForRuntime,
-  type RuntimeId,
-  type TranscriptFormat,
-} from '../agent-runtime/agent-runtime.port';
 import { TasksService } from '../tasks/tasks.service';
 import {
   TRANSCRIPT_STORE,
   type TranscriptStore,
   AUDIT_TIMELINE_READER,
   type AuditTimelineReader,
-  auditToSystemTurn,
-  mergeSystemTurns,
 } from '../tasks/session-history.controller';
+import { readTaskTranscript } from '../tasks/task-transcript-reader';
 import { hasScope } from '../auth/operator-principal';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
+import { zodParam } from '../repos/zod-validation.pipe';
 
 /**
  * `/v1` transcript surface (public-v1-api, D1) — `GET /v1/tasks/:id/transcript`,
- * the durable session-history read exposed under the versioned prefix for machine
- * callers. It delegates to the SAME durable {@link TranscriptStore} +
- * {@link SandboxProvider} the console's `GET /tasks/:id/session-history` uses
- * (durable-first, container fallback, read-through backfill) — no new read path,
- * no live PTY/WebSocket exposure.
- *
- * Resolution (mirrors `SessionHistoryController`, design D4 of
- * persist-session-transcripts):
- *   1. `transcripts.readDurable(id)` hit → parse + return (never touches the
- *      container; survives container reaping).
- *   2. miss → `sandbox.readRolloutFromContainer(id)`; on success read-through
- *      `backfill(...)` so the next read is a durable hit, then return.
- *   3. neither → the honest `empty`/`expired` state (never a fabricated transcript).
+ * the structured session-history read exposed under the versioned prefix for
+ * machine callers. It delegates to the SAME canonical reader as the console and
+ * MCP: active tasks use the live sandbox rollout; terminal tasks use the durable
+ * archive with retained-sandbox fallback. It never exposes live PTY/WebSocket
+ * bytes or raw rollout JSONL.
  *
  * Auth: behind the global auth guard (401 unauthenticated); gated by `tasks:read`
  * on the guard-attached principal (a scopeless session/legacy principal is
@@ -68,94 +50,19 @@ export class V1TranscriptController {
 
   @Get(':id/transcript')
   async get(
-    @Param('id') id: string,
+    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<SessionHistory> {
     this.requireReadScope(req);
-
-    // 404 (NotFoundException) when the task does not exist — same as GET /v1/tasks/:id.
-    const task = await this.tasksService.findById(id);
-
-    // The agent never started → no transcript ever existed. Honest empty state,
-    // surfaced WITHOUT reading any archive or container.
-    if (task.status === 'agent_failed_to_start') {
-      return SessionHistorySchema.parse({
-        status: 'empty',
-        reason: 'agent-failed-to-start',
-      });
-    }
-
-    // The task's runtime decides where its transcript lands + how it parses
-    // (add-headless-execution-track).
-    const runtime = task.runtime as RuntimeId | null;
-    const format = transcriptFormatForRuntime(runtime);
-
-    // (1) DURABLE-FIRST: the persisted archive outlives the container.
-    const durable = await this.transcripts.readDurable(id);
-    if (durable !== null) {
-      return this.toAvailable(id, durable, task.status, format);
-    }
-
-    // (2) FALLBACK: read the rollout out of the retained sandbox (null = none). The
-    // provider now returns the runtime-tagged TranscriptSource (unify-transcript-parsers
-    // D3); we consume its RAW `jsonl` so the durable archive stays byte-for-byte the same
-    // raw text and the parse facade keeps its stable `(jsonl, format)` signature.
-    const selected = this.selectRetainedTranscriptSandbox();
-    if (selected) {
-      const source = await selected.readRolloutFromContainer(id, runtime);
-      if (source !== null) {
-        // Read-through backfill so the NEXT read is a durable hit. Best-effort.
-        await this.transcripts.backfill(id, source.jsonl);
-        return this.toAvailable(id, source.jsonl, task.status, format);
-      }
-
-      // (3) Neither source yields a rollout: distinguish a truly aged-out/reaped
-      // session (`expired`) from a present-but-transcriptless sandbox (`empty`).
-      const exists = await selected.sandboxExists(id);
-      return SessionHistorySchema.parse(
-        exists ? { status: 'empty', reason: 'no-rollout' } : { status: 'expired' },
-      );
-    }
-
-    return SessionHistorySchema.parse({ status: 'expired' });
-  }
-
-  private selectRetainedTranscriptSandbox(): SandboxProvider | null {
-    try {
-      return selectRetainedTranscriptSandboxProvider(this.sandbox).provider;
-    } catch {
-      return null;
-    }
-  }
-
-  /** Parse a raw rollout (durable or container source) into the available state. */
-  private async toAvailable(
-    id: string,
-    jsonl: string,
-    status: string,
-    format: TranscriptFormat,
-  ): Promise<SessionHistory> {
-    const { turns, meta } = parseTranscript(jsonl, format);
-    // Merge audit-sourced system milestone turns by timestamp, mirroring the
-    // console's SessionHistoryController (wire-transcript-real-data D3). Same
-    // shared schema → the /v1 response carries the system turns + per-turn `at` +
-    // diffstat + totals. Best-effort: an audit read failure falls back to the
-    // rollout-only turns rather than failing the read.
-    let merged: SessionTurn[] = [...turns];
-    try {
-      const events = await this.audit.queryTask(id);
-      if (events.length > 0) {
-        merged = mergeSystemTurns(turns, events.map(auditToSystemTurn));
-      }
-    } catch {
-      // keep the rollout-only turns
-    }
-    return SessionHistorySchema.parse({
-      status: 'available',
-      turns: merged,
-      meta: { taskId: id, ...meta },
-      isInterrupted: status === 'cancelled',
-    });
+    return readTaskTranscript(
+      {
+        tasks: this.tasksService,
+        sandbox: this.sandbox,
+        transcripts: this.transcripts,
+        audit: this.audit,
+      },
+      id,
+    );
   }
 
   /**

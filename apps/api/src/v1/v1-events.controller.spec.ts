@@ -25,11 +25,16 @@ import assert from 'node:assert/strict';
 import { ForbiddenException } from '@nestjs/common';
 import type { Response } from 'express';
 
-import type { AuditEvent, SessionUser } from '@cap/contracts';
+import {
+  V1TaskEventSchema,
+  type AuditEvent,
+  type SessionUser,
+} from '@cap/contracts';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
 import type { OperatorPrincipal } from '../auth/operator-principal';
 import {
   V1EventsController,
+  auditEventToV1TaskEvent,
   type SseResponse,
   isTerminalAuditType,
   serializeSseEvent,
@@ -130,8 +135,13 @@ class FakeResponse implements SseResponse {
 }
 
 function makeController(audit: FakeAuditService): V1EventsController {
-  // The controller only ever calls `audit.queryTask`; the fake satisfies that.
-  return new V1EventsController(audit as unknown as never);
+  // Route-level existence checks use the task read seam; stream-only tests never
+  // call it, while handler tests treat this fixture task as present.
+  const tasks = { async findById() { return {}; } };
+  return new V1EventsController(
+    audit as unknown as never,
+    tasks as unknown as never,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +207,23 @@ test('events handler passes the gate for a tasks:read api-key and for a scopeles
     undefined,
   );
   assert.equal(res2.status, 200, 'scopeless session passes the gate (allow-all)');
+});
+
+test('events handler trims Last-Event-ID through the public header contract', async () => {
+  const controller = makeController(new FakeAuditService());
+  let capturedLastEventId: string | undefined;
+  controller.streamEvents = async (_res, options) => {
+    capturedLastEventId = options.lastEventId;
+  };
+
+  await controller.events(
+    TASK_ID,
+    new FakeResponse() as unknown as Response,
+    reqWith({ kind: 'session', user: USER }),
+    '  event-123  ',
+  );
+
+  assert.equal(capturedLastEventId, 'event-123');
 });
 
 // ---------------------------------------------------------------------------
@@ -292,15 +319,19 @@ test('does NOT expose the raw PTY/WebSocket stream — only AuditEvent frames', 
     pollMs: 5,
   });
 
-  // Every data frame is a structured AuditEvent (has id/taskId/type/level), NOT a
-  // raw terminal chunk. There is no PTY payload / asciicast / WS frame on the wire.
+  // Every data frame is a structured public lifecycle event, NOT a raw terminal
+  // chunk. There is no PTY payload / asciicast / WS frame on the wire.
   const frames = res.dataFrames();
   assert.ok(frames.length > 0);
   for (const frame of frames) {
     assert.equal(typeof frame.id, 'string');
     assert.equal(frame.taskId, TASK_ID);
     assert.equal(typeof frame.type, 'string');
-    assert.ok('level' in frame, 'frame is an AuditEvent shape, not a raw stream chunk');
+    assert.equal(typeof frame.status, 'string');
+    assert.doesNotThrow(
+      () => V1TaskEventSchema.parse(frame),
+      'frame satisfies the public lifecycle-event contract',
+    );
   }
   // Defensive: no marker of a terminal/PTY stream leaked into the bytes.
   assert.ok(!res.body().includes('['), 'no ANSI/PTY escape sequences on the wire');
@@ -384,20 +415,57 @@ test('isTerminalAuditType recognizes terminal lifecycle kinds only', () => {
 });
 
 test('serializeSseEvent emits id + JSON data lines with an ISO timestamp', () => {
-  const frame = serializeSseEvent(
+  const lifecycleEvent = auditEventToV1TaskEvent(
     makeEvent({
       id: 'ffffffff-0000-0000-0000-000000000001',
       type: 'task.running',
       timestamp: new Date('2026-06-19T12:34:56.000Z'),
     }),
   );
+  assert.ok(lifecycleEvent, 'task.running maps to a public lifecycle event');
+  const frame = serializeSseEvent(lifecycleEvent);
   assert.ok(frame.startsWith('id: ffffffff-0000-0000-0000-000000000001\n'));
   assert.ok(frame.endsWith('\n\n'), 'frame ends with the SSE blank line');
   const dataLine = frame.split('\n').find((l) => l.startsWith('data: '))!;
   const parsed = JSON.parse(dataLine.slice('data: '.length));
   assert.equal(parsed.id, 'ffffffff-0000-0000-0000-000000000001');
   assert.equal(parsed.type, 'task.running');
+  assert.equal(parsed.status, 'running');
   assert.equal(parsed.timestamp, '2026-06-19T12:34:56.000Z');
+  assert.doesNotThrow(
+    () => V1TaskEventSchema.parse(parsed),
+    'every serialized data payload satisfies the public contract',
+  );
+});
+
+test('auditEventToV1TaskEvent filters detail rows and maps all lifecycle statuses', () => {
+  const cases = [
+    ['task.created', 'pending'],
+    ['task.queued', 'queued'],
+    ['task.running', 'running'],
+    ['task.awaiting_input', 'awaiting_input'],
+    ['task.completed', 'completed'],
+    ['task.failed', 'failed'],
+    ['task.cancelled', 'cancelled'],
+    ['agent_failed_to_start', 'agent_failed_to_start'],
+    ['force_failed:deadline', 'failed'],
+  ] as const;
+  for (const [type, status] of cases) {
+    const event = makeEvent({
+      id: 'ffffffff-0000-0000-0000-000000000002',
+      type,
+    });
+    assert.equal(auditEventToV1TaskEvent(event)?.status, status);
+  }
+  assert.equal(
+    auditEventToV1TaskEvent(
+      makeEvent({
+        id: 'ffffffff-0000-0000-0000-000000000003',
+        type: 'task.exited',
+      }),
+    ),
+    null,
+  );
 });
 
 test('eventsAfter returns only events strictly after the resume id', () => {

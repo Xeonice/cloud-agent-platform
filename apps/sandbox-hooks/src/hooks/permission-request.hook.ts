@@ -58,7 +58,7 @@ export interface ApprovalTransport {
  * sandbox to the orchestrator's approvals endpoint. Because the sandbox has no
  * inbound host port, network isolation on `cap-net` is the boundary; the
  * orchestrator is addressed by container name (e.g.
- * `http://<orchestrator>:<port>/v1/approvals`). This implements the EXISTING
+ * `http://<orchestrator>:<port>/internal/sandbox/approvals`). This implements the
  * {@link ApprovalTransport} contract verbatim, so ONLY the transport layer
  * changes — `runPermissionRequestHook`'s forwarding/any-deny-wins/fail-closed
  * routing above it is untouched.
@@ -235,7 +235,7 @@ export interface Codex0131Decision {
 
 /**
  * Translate a codex `0.131` stdin payload into cap's existing
- * `permission_request` frame so the EXISTING `POST /v1/approvals` round-trip and
+ * `permission_request` frame for the internal sandbox approval round-trip and
  * any-deny-wins/fail-closed routing above the transport are unchanged.
  *
  * Field mapping (codex 0.131 -> cap frame):

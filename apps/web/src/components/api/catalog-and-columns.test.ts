@@ -19,9 +19,15 @@
  *     `_app` shell server-side without crashing).
  */
 import { describe, it, expect } from "vitest";
+import {
+  PUBLIC_V1_OPERATIONS,
+  type PublicV1Operation,
+} from "@cap/contracts";
+import { z } from "zod";
 
 import {
   API_CATALOG,
+  DATA_API_CATALOG,
   API_DOMAINS,
   DEFAULT_ENDPOINT_ID,
   findEndpoint,
@@ -59,7 +65,7 @@ describe("Catalog column — catalog exists and is non-empty", () => {
 
 describe("Catalog column — rail domain groups", () => {
   it("API_DOMAINS lists the displayed group headers in order", () => {
-    expect(API_DOMAINS).toEqual(["任务", "仓库", "文档"]);
+    expect(API_DOMAINS).toEqual(["任务", "仓库", "定时任务", "文档"]);
   });
 
   it("every domain group has at least one catalog entry", () => {
@@ -99,11 +105,88 @@ describe("Request column — default-selected endpoint seeds the request panel",
   });
 
   it("resolvePath substitutes a path param for an endpoint that has one", () => {
-    const getTask = findEndpoint("get-task")!;
+    const getTask = findEndpoint("tasks.get")!;
     expect(getTask).toBeDefined();
     const resolved = resolvePath(getTask, { id: "task_abc" });
     expect(resolved).toBe("/v1/tasks/task_abc");
     expect(resolved).not.toContain(":id");
+  });
+});
+
+describe("Catalog column — shared public /v1 manifest alignment", () => {
+  it("contains exactly the 17 public data operations from the shared manifest", () => {
+    const catalogKeys = DATA_API_CATALOG.map((endpoint) =>
+      `${endpoint.method} ${endpoint.pathTemplate.replace(/:([^/]+)/g, "{$1}")}`,
+    ).sort();
+    const manifestKeys = PUBLIC_V1_OPERATIONS.map(
+      (operation) => `${operation.method.toUpperCase()} ${operation.path}`,
+    ).sort();
+
+    expect(DATA_API_CATALOG).toHaveLength(17);
+    expect(catalogKeys).toEqual(manifestKeys);
+    expect(DATA_API_CATALOG.map((entry) => entry.operationId).sort()).toEqual(
+      PUBLIC_V1_OPERATIONS.map((operation) => operation.id).sort(),
+    );
+  });
+
+  it("keeps documentation endpoints outside the data-operation drift set", () => {
+    const docs = API_CATALOG.filter((endpoint) => endpoint.kind === "documentation");
+    expect(docs.map((endpoint) => endpoint.pathTemplate)).toEqual([
+      "/v1/openapi.json",
+      "/v1/docs",
+    ]);
+    expect(docs.every((endpoint) => endpoint.operationId === null)).toBe(true);
+  });
+
+  it("never exposes the internal sandbox callback through the manifest or catalog", () => {
+    const internalPath = "/internal/sandbox/approvals";
+    expect(PUBLIC_V1_OPERATIONS.some((operation) => operation.path === internalPath)).toBe(
+      false,
+    );
+    expect(API_CATALOG.some((endpoint) => endpoint.pathTemplate === internalPath)).toBe(
+      false,
+    );
+  });
+
+  it("parses every sample body with the operation's shared request schema", () => {
+    const byId = new Map<string, PublicV1Operation>(
+      PUBLIC_V1_OPERATIONS.map((operation) => [operation.id, operation]),
+    );
+
+    for (const endpoint of DATA_API_CATALOG) {
+      const operation = byId.get(endpoint.operationId!);
+      expect(operation, endpoint.id).toBeDefined();
+      const requestSchema = operation?.requestSchema;
+      if (!requestSchema) {
+        expect(endpoint.sampleBody, endpoint.id).toBeNull();
+        continue;
+      }
+
+      expect(typeof endpoint.sampleBody, endpoint.id).toBe("string");
+      const parsed = requestSchema.safeParse(JSON.parse(endpoint.sampleBody!));
+      expect(parsed.success, endpoint.id).toBe(true);
+    }
+  });
+
+  it("uses UUID examples for every id path parameter", () => {
+    const uuid = z.string().uuid();
+    for (const endpoint of DATA_API_CATALOG) {
+      for (const param of endpoint.pathParams) {
+        expect(uuid.safeParse(param.placeholder).success, endpoint.id).toBe(true);
+      }
+    }
+  });
+
+  it("exposes every operation header declared by the manifest", () => {
+    for (const operation of PUBLIC_V1_OPERATIONS) {
+      const endpoint = DATA_API_CATALOG.find(
+        (candidate) => candidate.operationId === operation.id,
+      )!;
+      expect(
+        endpoint.headerParams.map((header) => header.name),
+        operation.id,
+      ).toEqual(Object.keys(operation.headersSchema?.shape ?? {}));
+    }
   });
 });
 

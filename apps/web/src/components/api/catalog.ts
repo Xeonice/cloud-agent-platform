@@ -2,13 +2,11 @@
  * `catalog.ts` — the curated `/v1` endpoint catalog for the in-console API
  * Playground (`/api`, add-api-playground Track 2; epic Track B).
  *
- * This is the SINGLE source of truth the rail + request + response panels render
- * against. Per the api-playground spec ("The catalog is the curated, real /v1
- * surface") and design D2, the playground exposes ONLY these fixed, real `/v1`
- * paths — there is deliberately NO free-form URL field, so the page can never be
- * turned into an SSRF-style arbitrary-request tool. Path params (`:id`) get a
- * dedicated input that is substituted into the path before sending; the runner
- * (Track 1's `sendApiRequest`) never receives an operator-typed host/path.
+ * The shared `PUBLIC_V1_OPERATIONS` manifest owns the data-operation method/path
+ * surface; this module adds only console labels, examples, and editor hints. The
+ * playground exposes ONLY those fixed data paths plus the two public docs paths —
+ * there is deliberately NO free-form URL field. Path params (`:id`) get a
+ * dedicated input and must be filled before the runner receives a request.
  *
  * The catalog is data-only (no React / no window access) so it is trivially
  * SSR-safe and can seed a deterministic default-selected endpoint for the
@@ -19,8 +17,13 @@
  * single request/response model (design D5).
  */
 
+import { PUBLIC_V1_OPERATIONS } from "@cap/contracts";
+
 /** An HTTP method a catalog endpoint can use. */
 export type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE";
+
+type PublicV1Operation = (typeof PUBLIC_V1_OPERATIONS)[number];
+export type PublicV1OperationId = PublicV1Operation["id"];
 
 /** A path parameter (e.g. `:id`) that must be filled before the path resolves. */
 export interface ApiPathParam {
@@ -42,13 +45,24 @@ export interface ApiQueryParam {
   hint: string;
 }
 
+/** An optional request header exposed by the curated request editor. */
+export interface ApiHeaderParam {
+  name: string;
+  defaultValue: string;
+  hint: string;
+}
+
 /** The domain groups, in display order, that the rail buckets endpoints under. */
-export type ApiDomain = "任务" | "仓库" | "文档";
+export type ApiDomain = "任务" | "仓库" | "定时任务" | "文档";
 
 /** One curated `/v1` endpoint the playground can call. */
 export interface ApiEndpoint {
   /** A stable id (also the default-selection key + React list key). */
   id: string;
+  /** The shared public-operation id, absent only for documentation endpoints. */
+  operationId: PublicV1OperationId | null;
+  /** Data operations are drift-checked against the shared manifest. */
+  kind: "data" | "documentation";
   /** The domain group this endpoint is listed under in the rail. */
   domain: ApiDomain;
   /** The HTTP method. */
@@ -65,8 +79,10 @@ export interface ApiEndpoint {
   pathParams: readonly ApiPathParam[];
   /** Default query params offered on the Params tab; empty when none apply. */
   queryParams: readonly ApiQueryParam[];
+  /** Optional protocol headers the operator may set for this operation. */
+  headerParams: readonly ApiHeaderParam[];
   /**
-   * A pretty-printed JSON sample body for write endpoints, or `null` for reads.
+   * A pretty-printed JSON sample for body-bearing writes, or `null` otherwise.
    * Seeds the Body tab so a write endpoint renders a deterministic editor (the
    * mock-mode pixel baseline, design D6).
    */
@@ -116,145 +132,283 @@ export interface ApiSendResult {
 }
 
 /**
- * The curated catalog, grouped by domain in display order. This is the EXACT
- * applied `/v1` surface the spec enumerates (tasks lifecycle + transcript +
- * repos read + openapi.json + the SSE events stream) — nothing more.
+ * Console-only metadata layered over every shared public data operation.
  */
-export const API_CATALOG: readonly ApiEndpoint[] = [
-  // ---- 任务 ----------------------------------------------------------------
+interface ApiEndpointOverlay {
+  readonly domain: ApiDomain;
+  readonly title: string;
+  readonly pathParams: readonly ApiPathParam[];
+  readonly queryParams: readonly ApiQueryParam[];
+  readonly headerParams?: readonly ApiHeaderParam[];
+  readonly sampleBody: string | null;
+}
+
+const TASK_ID = "00000000-0000-4000-a000-000000000201";
+const REPO_ID = "00000000-0000-4000-a000-000000000101";
+const SCHEDULE_ID = "00000000-0000-4000-a000-000000000301";
+
+const TASK_ID_PARAM: readonly ApiPathParam[] = [
+  { name: "id", label: "任务 ID", placeholder: TASK_ID },
+];
+const REPO_ID_PARAM: readonly ApiPathParam[] = [
+  { name: "id", label: "仓库 ID", placeholder: REPO_ID },
+];
+const SCHEDULE_ID_PARAM: readonly ApiPathParam[] = [
+  { name: "id", label: "定时任务 ID", placeholder: SCHEDULE_ID },
+];
+const PAGE_QUERY: readonly ApiQueryParam[] = [
+  { name: "limit", defaultValue: "50", hint: "每页数量（默认 50，最大 200）" },
+  { name: "cursor", defaultValue: "", hint: "分页游标（上一页响应返回）" },
+];
+
+const CREATE_TASK_SAMPLE = JSON.stringify(
   {
-    id: "create-task",
+    repoId: REPO_ID,
+    branch: "main",
+    runtime: "codex",
+    prompt: "为 /metrics 增加 docker-stats 采样",
+  },
+  null,
+  2,
+);
+
+const CREATE_SCHEDULE_SAMPLE = JSON.stringify(
+  {
+    name: "工作日巡检",
+    recurrence: {
+      kind: "weekdays",
+      time: "09:30",
+      timezone: "Asia/Shanghai",
+    },
+    taskTemplate: {
+      repoId: REPO_ID,
+      runtime: "codex",
+      prompt: "执行工作日仓库巡检",
+    },
+    enabled: true,
+    overlapPolicy: "skip",
+    misfirePolicy: "fire-once",
+  },
+  null,
+  2,
+);
+
+const UPDATE_SCHEDULE_SAMPLE = JSON.stringify(
+  {
+    name: "工作日巡检（更新）",
+    recurrence: {
+      kind: "weekdays",
+      time: "10:00",
+      timezone: "Asia/Shanghai",
+    },
+    enabled: true,
+  },
+  null,
+  2,
+);
+
+const ENDPOINT_OVERLAYS = {
+  "tasks.create": {
     domain: "任务",
-    method: "POST",
-    pathTemplate: "/v1/tasks",
     title: "创建任务",
     pathParams: [],
     queryParams: [],
-    sampleBody: [
-      "{",
-      '  "repo": "tanghehui/cloud-agent-platform",',
-      '  "branch": "main",',
-      '  "runtime": "codex",',
-      '  "prompt": "为 /metrics 增加 docker-stats 采样"',
-      "}",
-    ].join("\n"),
-    destructive: true,
-    streaming: false,
+    headerParams: [
+      {
+        name: "Idempotency-Key",
+        defaultValue: "",
+        hint: "可选；同一调用方重试时复用",
+      },
+    ],
+    sampleBody: CREATE_TASK_SAMPLE,
   },
-  {
-    id: "list-tasks",
+  "tasks.list": {
     domain: "任务",
-    method: "GET",
-    pathTemplate: "/v1/tasks",
     title: "任务列表",
     pathParams: [],
-    queryParams: [
-      { name: "limit", defaultValue: "20", hint: "每页数量（默认 20）" },
-      { name: "cursor", defaultValue: "", hint: "分页游标（上一页响应返回）" },
-    ],
+    queryParams: PAGE_QUERY,
     sampleBody: null,
-    destructive: false,
-    streaming: false,
   },
-  {
-    id: "get-task",
+  "tasks.get": {
     domain: "任务",
-    method: "GET",
-    pathTemplate: "/v1/tasks/:id",
     title: "任务详情",
-    pathParams: [
-      { name: "id", label: "任务 ID", placeholder: "task_f8a2" },
-    ],
+    pathParams: TASK_ID_PARAM,
     queryParams: [],
     sampleBody: null,
-    destructive: false,
-    streaming: false,
   },
-  {
-    id: "stop-task",
+  "tasks.stop": {
     domain: "任务",
-    method: "POST",
-    pathTemplate: "/v1/tasks/:id/stop",
     title: "停止任务",
-    pathParams: [
-      { name: "id", label: "任务 ID", placeholder: "task_f8a2" },
-    ],
+    pathParams: TASK_ID_PARAM,
     queryParams: [],
     sampleBody: null,
-    destructive: true,
-    streaming: false,
   },
-  {
-    id: "task-transcript",
+  "tasks.transcript": {
     domain: "任务",
-    method: "GET",
-    pathTemplate: "/v1/tasks/:id/transcript",
     title: "任务记录",
-    pathParams: [
-      { name: "id", label: "任务 ID", placeholder: "task_f8a2" },
-    ],
+    pathParams: TASK_ID_PARAM,
     queryParams: [],
     sampleBody: null,
-    destructive: false,
-    streaming: false,
   },
-  {
-    id: "task-events",
+  "tasks.events": {
     domain: "任务",
-    method: "GET",
-    pathTemplate: "/v1/tasks/:id/events",
     title: "事件流 (SSE)",
-    pathParams: [
-      { name: "id", label: "任务 ID", placeholder: "task_f8a2" },
-    ],
+    pathParams: TASK_ID_PARAM,
     queryParams: [],
+    headerParams: [
+      {
+        name: "Last-Event-ID",
+        defaultValue: "",
+        hint: "可选；从该事件之后恢复",
+      },
+    ],
     sampleBody: null,
-    destructive: false,
-    streaming: true,
   },
-  // ---- 仓库 ----------------------------------------------------------------
-  {
-    id: "list-repos",
+  "repos.list": {
     domain: "仓库",
-    method: "GET",
-    pathTemplate: "/v1/repos",
     title: "仓库列表",
     pathParams: [],
-    queryParams: [
-      { name: "limit", defaultValue: "20", hint: "每页数量（默认 20）" },
-      { name: "cursor", defaultValue: "", hint: "分页游标（上一页响应返回）" },
-    ],
+    queryParams: PAGE_QUERY,
     sampleBody: null,
-    destructive: false,
-    streaming: false,
   },
-  {
-    id: "get-repo",
+  "repos.get": {
     domain: "仓库",
-    method: "GET",
-    pathTemplate: "/v1/repos/:id",
     title: "仓库详情",
-    pathParams: [
-      { name: "id", label: "仓库 ID", placeholder: "repo_3c1d" },
-    ],
+    pathParams: REPO_ID_PARAM,
     queryParams: [],
     sampleBody: null,
-    destructive: false,
-    streaming: false,
   },
-  // ---- 文档 ----------------------------------------------------------------
+  "schedules.list": {
+    domain: "定时任务",
+    title: "定时任务列表",
+    pathParams: [],
+    queryParams: PAGE_QUERY,
+    sampleBody: null,
+  },
+  "schedules.create": {
+    domain: "定时任务",
+    title: "创建定时任务",
+    pathParams: [],
+    queryParams: [],
+    sampleBody: CREATE_SCHEDULE_SAMPLE,
+  },
+  "schedules.get": {
+    domain: "定时任务",
+    title: "定时任务详情",
+    pathParams: SCHEDULE_ID_PARAM,
+    queryParams: [],
+    sampleBody: null,
+  },
+  "schedules.update": {
+    domain: "定时任务",
+    title: "更新定时任务",
+    pathParams: SCHEDULE_ID_PARAM,
+    queryParams: [],
+    sampleBody: UPDATE_SCHEDULE_SAMPLE,
+  },
+  "schedules.pause": {
+    domain: "定时任务",
+    title: "暂停定时任务",
+    pathParams: SCHEDULE_ID_PARAM,
+    queryParams: [],
+    sampleBody: null,
+  },
+  "schedules.resume": {
+    domain: "定时任务",
+    title: "恢复定时任务",
+    pathParams: SCHEDULE_ID_PARAM,
+    queryParams: [],
+    sampleBody: null,
+  },
+  "schedules.dispatch": {
+    domain: "定时任务",
+    title: "立即执行",
+    pathParams: SCHEDULE_ID_PARAM,
+    queryParams: [],
+    sampleBody: null,
+  },
+  "schedules.delete": {
+    domain: "定时任务",
+    title: "删除定时任务",
+    pathParams: SCHEDULE_ID_PARAM,
+    queryParams: [],
+    sampleBody: null,
+  },
+  "schedules.runs": {
+    domain: "定时任务",
+    title: "运行记录",
+    pathParams: SCHEDULE_ID_PARAM,
+    queryParams: PAGE_QUERY,
+    sampleBody: null,
+  },
+} as const satisfies Record<PublicV1OperationId, ApiEndpointOverlay>;
+
+function toApiMethod(method: PublicV1Operation["method"]): ApiMethod {
+  return method.toUpperCase() as ApiMethod;
+}
+
+function toCatalogPath(path: string): string {
+  return path.replace(/\{([^}]+)\}/g, ":$1");
+}
+
+/** Data operations are generated from the shared public `/v1` manifest. */
+export const DATA_API_CATALOG: readonly ApiEndpoint[] = PUBLIC_V1_OPERATIONS.map(
+  (operation) => {
+    const overlay = ENDPOINT_OVERLAYS[operation.id];
+    return {
+      id: operation.id,
+      operationId: operation.id,
+      kind: "data" as const,
+      domain: overlay.domain,
+      method: toApiMethod(operation.method),
+      pathTemplate: toCatalogPath(operation.path),
+      title: overlay.title,
+      pathParams: overlay.pathParams,
+      queryParams: overlay.queryParams,
+      headerParams: "headerParams" in overlay ? overlay.headerParams : [],
+      sampleBody: overlay.sampleBody,
+      destructive: operation.destructive,
+      streaming: operation.streaming,
+    };
+  },
+);
+
+const DOCUMENTATION_CATALOG: readonly ApiEndpoint[] = [
   {
-    id: "openapi",
+    id: "docs.openapi",
+    operationId: null,
+    kind: "documentation",
     domain: "文档",
     method: "GET",
     pathTemplate: "/v1/openapi.json",
     title: "OpenAPI 规范",
     pathParams: [],
     queryParams: [],
+    headerParams: [],
     sampleBody: null,
     destructive: false,
     streaming: false,
   },
+  {
+    id: "docs.swagger",
+    operationId: null,
+    kind: "documentation",
+    domain: "文档",
+    method: "GET",
+    pathTemplate: "/v1/docs",
+    title: "Swagger UI",
+    pathParams: [],
+    queryParams: [],
+    headerParams: [],
+    sampleBody: null,
+    destructive: false,
+    streaming: false,
+  },
+];
+
+export const API_CATALOG: readonly ApiEndpoint[] = [
+  ...DATA_API_CATALOG,
+  ...DOCUMENTATION_CATALOG,
 ];
 
 /**
@@ -265,7 +419,7 @@ export const API_CATALOG: readonly ApiEndpoint[] = [
 export const DEFAULT_ENDPOINT_ID: string = API_CATALOG[0]!.id;
 
 /** The domain groups in display order (drives the rail's grouping). */
-export const API_DOMAINS: readonly ApiDomain[] = ["任务", "仓库", "文档"];
+export const API_DOMAINS: readonly ApiDomain[] = ["任务", "仓库", "定时任务", "文档"];
 
 /** Look up a catalog endpoint by its stable id, or `undefined` if unknown. */
 export function findEndpoint(id: string): ApiEndpoint | undefined {

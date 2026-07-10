@@ -3,37 +3,34 @@
  * (`GET /v1/tasks/:id/events`, add-api-playground Track 3, task 3.2; design D5).
  *
  * Unlike the single request/response endpoints (which run through
- * `runApiRequest`), the events endpoint is a STREAM: sending it opens an
- * `EventSource` and APPENDS each received `text/event-stream` event to a live
- * tail, with a control to STOP/close the stream (api-playground spec "The SSE
+ * `runApiRequest`), the events endpoint is a STREAM: sending it opens a
+ * credentialed fetch stream and APPENDS each parsed SSE event to a live
+ * tail, with a control to STOP/abort the stream (api-playground spec "The SSE
  * events endpoint has a streaming view" → "a live tail … with a control to
  * stop/close the stream … visually + behaviorally distinct").
  *
- * Auth (design D5): an `EventSource` CANNOT set an `Authorization` header, so the
- * stream rides the operator's SESSION COOKIE cross-origin via
- * `{ withCredentials: true }` — the api must allow credentialed CORS for the
- * events route. The events view therefore relies on the cookie-session, NOT the
- * bearer the REST runner attaches; this is surfaced inline so the operator knows
- * the auth model differs from the request/response endpoints.
+ * Transport (design D5): native `EventSource` cannot set `Last-Event-ID`, so the
+ * stream uses the shared fetch transport plus a standards-compliant SSE parser.
+ * This preserves credentialed cookie auth, the optional legacy bearer, and the
+ * public resume header instead of presenting a reduced browser-only contract.
  *
  * No free-form URL (design D2): the stream URL is built from the CURATED catalog
  * template (`endpoint.pathTemplate`) + the dedicated `:id` input, URL-encoded via
  * `resolvePath` — never an operator-typed host/path.
  *
- * SSR-safe: the `EventSource` is constructed only inside the connect handler (a
- * client event) and torn down on unmount / 停止 / a new connect, so the module
- * imports + the first render have NO `window`/`EventSource` access. The id input
- * + the appended events are plain `useState`.
+ * SSR-safe: fetch is called only inside the connect handler (a client event) and
+ * aborted on unmount / 停止 / a new connect, so module import and first render
+ * have no browser API access. The id input and appended events are plain state.
  */
 import * as React from "react";
 
 import { cn } from "@/utils";
-import { apiBaseUrl } from "@/lib/config";
+import { streamApiEvents } from "@/lib/api/real";
 import { StatusPill } from "@/components/status-pill";
 import { resolvePath, type ApiEndpoint } from "@/components/api/catalog";
 
 /** The connection lifecycle of the SSE tail. */
-type StreamPhase = "idle" | "open" | "closed" | "error";
+type StreamPhase = "idle" | "connecting" | "open" | "closed" | "error";
 
 /** One appended tail line (a received SSE event or a lifecycle note). */
 interface StreamLine {
@@ -56,6 +53,7 @@ const PHASE_META: Record<
   { tone: "neutral" | "blue" | "green" | "danger"; label: string }
 > = {
   idle: { tone: "neutral", label: "未连接" },
+  connecting: { tone: "blue", label: "连接中…" },
   open: { tone: "green", label: "正在接收事件…" },
   closed: { tone: "neutral", label: "已停止" },
   error: { tone: "danger", label: "连接中断" },
@@ -64,20 +62,30 @@ const PHASE_META: Record<
 /** The live SSE tail view for the events endpoint. */
 export function ApiStreamPanel({ endpoint }: ApiStreamPanelProps) {
   const [params, setParams] = React.useState<Record<string, string>>({});
+  const [headers, setHeaders] = React.useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      endpoint.headerParams.map((header) => [header.name, header.defaultValue]),
+    ),
+  );
   const [phase, setPhase] = React.useState<StreamPhase>("idle");
   const [lines, setLines] = React.useState<StreamLine[]>([]);
-  const sourceRef = React.useRef<EventSource | null>(null);
+  const controllerRef = React.useRef<AbortController | null>(null);
   const seqRef = React.useRef(0);
 
   // Re-seed (and tear down any open stream) when the selected endpoint changes.
   React.useEffect(() => {
     closeStream();
     setParams({});
+    setHeaders(
+      Object.fromEntries(
+        endpoint.headerParams.map((header) => [header.name, header.defaultValue]),
+      ),
+    );
     setPhase("idle");
     setLines([]);
   }, [endpoint]);
 
-  // Always close the stream on unmount (no leaked EventSource).
+  // Always abort the stream on unmount.
   React.useEffect(() => closeStream, []);
 
   const resolvedPath = resolvePath(endpoint, params);
@@ -90,12 +98,12 @@ export function ApiStreamPanel({ endpoint }: ApiStreamPanelProps) {
   }
 
   function closeStream() {
-    sourceRef.current?.close();
-    sourceRef.current = null;
+    controllerRef.current?.abort();
+    controllerRef.current = null;
   }
 
   function handleStop() {
-    if (!sourceRef.current) return;
+    if (!controllerRef.current) return;
     closeStream();
     setPhase("closed");
     appendLine("note", "— 已停止 —");
@@ -106,39 +114,47 @@ export function ApiStreamPanel({ endpoint }: ApiStreamPanelProps) {
     // Close any prior stream before opening a fresh one.
     closeStream();
     setLines([]);
-    setPhase("idle");
+    setPhase("connecting");
 
-    let source: EventSource;
-    try {
-      const url = `${apiBaseUrl()}${resolvedPath}`;
-      // withCredentials: the session COOKIE rides cross-origin (design D5) —
-      // EventSource cannot carry the bearer the REST runner uses.
-      source = new EventSource(url, { withCredentials: true });
-    } catch (err) {
-      setPhase("error");
-      appendLine("note", err instanceof Error ? err.message : String(err));
-      return;
-    }
-    sourceRef.current = source;
-
-    source.onopen = () => {
-      setPhase("open");
-      appendLine("note", "— 连接已建立 —");
-    };
-    source.onmessage = (event: MessageEvent<string>) => {
-      appendLine("event", event.data);
-    };
-    source.onerror = () => {
-      // EventSource auto-reconnects unless we close it; for a playground tail we
-      // close on error and let the operator reconnect explicitly.
-      closeStream();
-      setPhase("error");
-      appendLine("note", "— 连接中断（会话 Cookie 是否有效？）—");
-    };
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    void streamApiEvents({
+      path: resolvedPath,
+      lastEventId: headers["Last-Event-ID"],
+      signal: controller.signal,
+      onOpen: () => {
+        if (controllerRef.current !== controller) return;
+        setPhase("open");
+        appendLine("note", "— 连接已建立 —");
+      },
+      onEvent: (event) => {
+        if (controllerRef.current !== controller) return;
+        if (event.id) {
+          setHeaders((current) => ({
+            ...current,
+            "Last-Event-ID": event.id!,
+          }));
+        }
+        appendLine("event", event.data);
+      },
+    }).then(
+      () => {
+        if (controllerRef.current !== controller) return;
+        controllerRef.current = null;
+        setPhase("closed");
+        appendLine("note", "— 服务端已关闭事件流 —");
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted) return;
+        if (controllerRef.current === controller) controllerRef.current = null;
+        setPhase("error");
+        appendLine("note", error instanceof Error ? error.message : String(error));
+      },
+    );
   }
 
   const meta = PHASE_META[phase];
-  const streaming = phase === "open";
+  const streaming = phase === "connecting" || phase === "open";
 
   return (
     <div className="grid min-w-0 gap-3">
@@ -186,11 +202,35 @@ export function ApiStreamPanel({ endpoint }: ApiStreamPanelProps) {
         </div>
       )}
 
-      {/* Cookie-session auth note (distinct from the REST bearer, design D5). */}
+      {endpoint.headerParams.length > 0 && (
+        <div className="grid gap-2 rounded-lg bg-[#fafafa] p-3 shadow-[inset_0_0_0_1px_var(--border)]">
+          {endpoint.headerParams.map((header) => (
+            <label key={header.name} className="grid gap-1">
+              <span className="font-mono text-[11px] font-medium text-muted-foreground">
+                {header.name}
+              </span>
+              <input
+                type="text"
+                value={headers[header.name] ?? ""}
+                placeholder={header.hint}
+                onChange={(event) =>
+                  setHeaders((current) => ({
+                    ...current,
+                    [header.name]: event.target.value,
+                  }))
+                }
+                className="min-h-9 rounded-md border-0 bg-card px-3 font-mono text-[13px] text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none focus:shadow-[inset_0_0_0_1px_var(--foreground)]"
+              />
+            </label>
+          ))}
+        </div>
+      )}
+
+      {/* Same credential transport as request/response calls. */}
       <div className="flex flex-wrap items-center gap-2.5">
-        <StatusPill variant="blue">SSE · 依赖会话 Cookie</StatusPill>
+        <StatusPill variant="blue">SSE · 会话已签名</StatusPill>
         <span className="text-xs text-muted-foreground">
-          浏览器 EventSource 无法携带 Bearer 头，事件流凭当前会话 Cookie 跨域签名
+          自动携带会话 Cookie；配置 legacy token 时同时附带 Bearer
         </span>
       </div>
 

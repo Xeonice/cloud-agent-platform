@@ -44,7 +44,8 @@ export const SANDBOX_APPROVAL_ENFORCER = Symbol('SandboxApprovalEnforcer');
  * shares with the rest of the app.
  *
  * 5.5: {@link ApprovalsController} is registered here so the sandbox's Codex
- * hooks can call BACK IN over `cap-net` (an OUTBOUND HTTP POST to `/v1/approvals`)
+ * hooks can call BACK IN over `cap-net` (an OUTBOUND HTTP POST to
+ * `/internal/sandbox/approvals`)
  * and have the approval round-trip routed through the gateway's existing
  * `onPermissionRequest` -> operator decision -> `onDecision` logic (transport-only
  * change; approval semantics unchanged).

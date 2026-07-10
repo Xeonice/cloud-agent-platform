@@ -4,9 +4,8 @@ name: CI
 # guard-runtime-selection-regression). The release/build workflows only transpile
 # (Docker/vite), so strict `tsc` errors could land on main undetected; this enforces
 # the monorepo-foundation `turbo typecheck lint build` contract on changes, AND now
-# runs the @cap/api unit suite so a behavioral regression (e.g. the v0.6.0 runtime-
-# selection DOA, where claude-code tasks silently ran codex) fails CI instead of
-# shipping silently.
+# runs the API and Web unit suites so behavioral regressions (for example runtime
+# selection or schedule-history rendering) fail CI instead of shipping silently.
 #
 # boot-smoke gate (api-key-machine-identity, design D6 / monorepo-foundation spec
 # "CI boots the built application and probes liveness", gap G5): a SEPARATE job
@@ -70,6 +69,11 @@ jobs:
       # selection regression spec (and the rest of the api specs) gate in.
       - name: Test (api unit suite)
         run: pnpm --filter @cap/api test
+
+      # Vitest is a separate package script rather than a turbo task. Keep it in
+      # the required lane so console behavior cannot pass locally but skip CI.
+      - name: Test (web unit suite)
+        run: pnpm --filter @cap/web test
 
   # Boots the BUILT @cap/api orchestrator against a throwaway Postgres and probes
   # the unauthenticated `/health` liveness endpoint, failing the pipeline on any
@@ -148,3 +152,8 @@ jobs:
       # liveness failure — the signal this job gates on.
       - name: Boot smoke (/health)
         run: bash scripts/boot-smoke.sh
+
+      # Real Postgres + the actual polling timer. This guards the manual-dispatch
+      # and future-fire interaction that service fakes alone cannot prove.
+      - name: Scheduled tasks integration
+        run: pnpm --filter @cap/api test:e2e:schedules

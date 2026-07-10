@@ -135,7 +135,8 @@ function ApiPlaygroundPage() {
       method: request.method,
       path: request.path,
       query: request.query,
-      body: request.body !== undefined ? safeParseBody(request.body) : undefined,
+      headers: request.headers,
+      body: request.body,
     });
     // Drop a stale resolution (the operator moved on before this resolved).
     if (seq !== sendSeq.current) return;
@@ -184,20 +185,4 @@ function ApiPlaygroundPage() {
       </section>
     </>
   );
-}
-
-/**
- * Parse the editor's JSON body text into a value for the runner (which
- * JSON-encodes it). A non-JSON / malformed body is passed through as the RAW
- * STRING so the api still receives exactly what the operator typed (and can
- * report its own 400) rather than the page swallowing the send.
- */
-function safeParseBody(text: string): unknown {
-  const trimmed = text.trim();
-  if (!trimmed) return undefined;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return text;
-  }
 }

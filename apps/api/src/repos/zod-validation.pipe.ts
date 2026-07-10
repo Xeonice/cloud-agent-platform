@@ -1,6 +1,8 @@
 import { BadRequestException, type ArgumentMetadata, type PipeTransform } from '@nestjs/common';
 import type { ZodSchema } from 'zod';
 
+type ZodValidationSource = ArgumentMetadata['type'];
+
 /**
  * NestJS pipe that validates an incoming value against a zod schema and returns
  * the parsed (and narrowed) value. On failure it throws a `BadRequestException`,
@@ -8,23 +10,40 @@ import type { ZodSchema } from 'zod';
  * with 400 and nothing is created" contract for the REST endpoints.
  */
 export class ZodValidationPipe<T> implements PipeTransform<unknown, T> {
-  constructor(private readonly schema: ZodSchema<T>) {}
+  constructor(
+    private readonly schema: ZodSchema<T>,
+    private readonly source: ZodValidationSource = 'body',
+  ) {}
 
   transform(value: unknown, metadata: ArgumentMetadata): T {
-    // Validate the request BODY only. Method-scoped `@UsePipes` runs the pipe on
-    // EVERY argument (including `@Param`/`@Query`), so without this guard a body
-    // schema is wrongly applied to path params like `:repoId`, failing with
-    // "Expected object, received string". Non-body args pass through untouched.
-    if (metadata.type !== 'body') {
+    // Method-scoped `@UsePipes` runs a pipe on EVERY argument. Match the declared
+    // source so a body schema does not accidentally parse a path/query argument,
+    // while parameter-scoped query/param pipes still validate their real values.
+    if (metadata.type !== this.source) {
       return value as T;
     }
-    const result = this.schema.safeParse(value);
-    if (!result.success) {
-      throw new BadRequestException({
-        message: 'Validation failed',
-        issues: result.error.issues,
-      });
-    }
-    return result.data;
+    return parseZodValue(this.schema, value);
   }
+}
+
+/** Parameter-scoped query validator using the same error contract as body pipes. */
+export function zodQuery<T>(schema: ZodSchema<T>): ZodValidationPipe<T> {
+  return new ZodValidationPipe(schema, 'query');
+}
+
+/** Parameter-scoped path validator using the same error contract as body pipes. */
+export function zodParam<T>(schema: ZodSchema<T>): ZodValidationPipe<T> {
+  return new ZodValidationPipe(schema, 'param');
+}
+
+/** Parse a non-decorator value, such as an extracted HTTP header, through Zod. */
+export function parseZodValue<T>(schema: ZodSchema<T>, value: unknown): T {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    throw new BadRequestException({
+      message: 'Validation failed',
+      issues: result.error.issues,
+    });
+  }
+  return result.data;
 }

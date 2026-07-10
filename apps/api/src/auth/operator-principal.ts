@@ -63,9 +63,8 @@ export type PrincipalKind = 'session' | 'legacy-token' | 'api-key' | 'mcp';
 export interface OperatorPrincipal {
   readonly kind: PrincipalKind;
   /**
-   * The resolved user for a `'session'` or `'api-key'` principal (the session
-   * user, resp. the API key's owner); `null` for the legacy shared-token operator
-   * (which has no account identity attached).
+   * The resolved owner for a session, API key, or MCP token; `null` only for the
+   * legacy shared-token operator, which has no account identity attached.
    */
   readonly user: SessionUser | null;
   /**

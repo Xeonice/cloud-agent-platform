@@ -61,6 +61,9 @@ function makeHeadless(cols = 80, rows = 24) {
     write(data) {
       term.write(data);
     },
+    drain() {
+      return new Promise((resolve) => term.write('', resolve));
+    },
     serialize() {
       return serializer.serialize({ scrollback: 0 });
     },
@@ -70,9 +73,9 @@ function makeHeadless(cols = 80, rows = 24) {
   };
 }
 
-/** Wait for xterm's async parser to drain so serialize() reflects the writes. */
-function flush() {
-  return new Promise((resolve) => setTimeout(resolve, 20));
+/** Wait for xterm's parser callback so serialize() deterministically sees every write. */
+function flush(headless) {
+  return headless.drain();
 }
 
 test('reconnect uses snapshot plus tail once a snapshot exists (3.1/3.2/3.3)', async () => {
@@ -94,7 +97,7 @@ test('reconnect uses snapshot plus tail once a snapshot exists (3.1/3.2/3.3)', a
     // Output produced BEFORE the snapshot boundary (lands in the visible frame).
     await emit('hello from the agent\r\n');
     await emit('building project...\r\n');
-    await flush();
+    await flush(headless);
 
     // Capture the periodic snapshot at the current offset.
     const snap = mgr.capture();
@@ -114,7 +117,7 @@ test('reconnect uses snapshot plus tail once a snapshot exists (3.1/3.2/3.3)', a
 
     // Output produced AFTER the snapshot — this is what the tail must replay.
     await emit('TAIL-AFTER-SNAPSHOT-LINE\r\n');
-    await flush();
+    await flush(headless);
 
     // A fresh client (fromSeq 0) uses the visible-frame snapshot once available.
     // Replaying the whole TUI byte log would expand historical full-screen redraws
@@ -196,7 +199,7 @@ test('a NullHeadlessTerminal regression would serialize empty — guard the real
   // after being fed visible output (the prior Null impl returned '').
   const headless = makeHeadless();
   headless.write('visible output line');
-  await flush();
+  await flush(headless);
   assert.ok(
     headless.serialize().length > 0,
     'the real headless terminal serializes a non-empty frame',
@@ -208,7 +211,7 @@ test('headless snapshot excludes scrollback; history comes from rollout transcri
   for (let i = 1; i <= 8; i++) {
     headless.write(`LINE-${String(i).padStart(3, '0')}\r\n`);
   }
-  await flush();
+  await flush(headless);
 
   const serialized = headless.serialize();
 

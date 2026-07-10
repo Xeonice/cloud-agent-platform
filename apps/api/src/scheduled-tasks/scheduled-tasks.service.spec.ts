@@ -552,7 +552,7 @@ test('raced scheduler ticks claim one occurrence and advance nextRunAt', async (
   assert.ok(schedule.nextRunAt && schedule.nextRunAt > now);
 });
 
-test('dispatchNow creates the current-cycle task and advances nextRunAt', async () => {
+test('dispatchNow records the manual time without consuming a future scheduled fire', async () => {
   const { prisma, service, rowCalls, admitCalls } = buildHarness();
   const schedule = addDueSchedule(prisma, {
     cron: '0 * * * *',
@@ -569,10 +569,107 @@ test('dispatchNow creates the current-cycle task and advances nextRunAt', async 
   assert.equal(admitCalls.length, 1);
   assert.equal(prisma.runs.length, 1);
   assert.equal(prisma.runs[0].status, 'created');
-  assert.equal(prisma.runs[0].scheduledFor.toISOString(), '2026-07-09T09:00:00.000Z');
-  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T10:00:00.000Z');
-  assert.equal(updated.nextRunAt?.toISOString(), '2026-07-09T10:00:00.000Z');
+  assert.equal(prisma.runs[0].scheduledFor.toISOString(), '2026-07-09T08:00:00.000Z');
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T09:00:00.000Z');
+  assert.equal(updated.nextRunAt?.toISOString(), '2026-07-09T09:00:00.000Z');
   assert.equal(updated.latestRun?.taskId, prisma.tasks[0].id);
+
+  prisma.tasks[0].status = 'completed';
+  assert.equal(await service.tick(new Date('2026-07-09T09:00:00.000Z')), 1);
+  assert.equal(rowCalls.length, 2);
+  assert.equal(admitCalls.length, 2);
+  assert.equal(prisma.runs.length, 2);
+  assert.equal(prisma.runs[1].scheduledFor.toISOString(), '2026-07-09T09:00:00.000Z');
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T10:00:00.000Z');
+});
+
+test('dispatchNow advances an already-due occurrence to avoid a duplicate scheduled fire', async () => {
+  const { prisma, service } = buildHarness();
+  const schedule = addDueSchedule(prisma, {
+    cron: '0 * * * *',
+    nextRunAt: new Date('2026-07-09T08:00:00.000Z'),
+  });
+
+  await service.dispatchNow(
+    USER_A,
+    schedule.id,
+    new Date('2026-07-09T08:05:00.000Z'),
+  );
+
+  assert.equal(prisma.runs[0].scheduledFor.toISOString(), '2026-07-09T08:05:00.000Z');
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T09:00:00.000Z');
+  assert.equal(await service.tick(new Date('2026-07-09T08:05:00.000Z')), 0);
+});
+
+test('application bootstrap immediately processes overdue schedules before the first interval', async () => {
+  const previousDisabled = process.env.SCHEDULED_TASKS_DISABLED;
+  delete process.env.SCHEDULED_TASKS_DISABLED;
+  const { prisma, service, rowCalls, admitCalls } = buildHarness();
+  addDueSchedule(prisma, {
+    nextRunAt: new Date('2020-01-01T00:00:00.000Z'),
+  });
+
+  try {
+    await service.onApplicationBootstrap();
+    assert.equal(rowCalls.length, 1);
+    assert.equal(admitCalls.length, 1);
+    assert.equal(prisma.runs.length, 1);
+    assert.equal(prisma.runs[0].scheduledFor.toISOString(), '2020-01-01T00:00:00.000Z');
+  } finally {
+    service.onModuleDestroy();
+    if (previousDisabled === undefined) {
+      delete process.env.SCHEDULED_TASKS_DISABLED;
+    } else {
+      process.env.SCHEDULED_TASKS_DISABLED = previousDisabled;
+    }
+  }
+});
+
+test('application bootstrap keeps polling when the immediate tick fails', async () => {
+  const previousDisabled = process.env.SCHEDULED_TASKS_DISABLED;
+  const previousPollMs = process.env.SCHEDULED_TASKS_POLL_MS;
+  delete process.env.SCHEDULED_TASKS_DISABLED;
+  process.env.SCHEDULED_TASKS_POLL_MS = '5';
+  const { service } = buildHarness();
+  let tickCalls = 0;
+  let resolvePolled: (() => void) | undefined;
+  const polled = new Promise<void>((resolve) => {
+    resolvePolled = resolve;
+  });
+  let retryTimeout: NodeJS.Timeout | undefined;
+  service.tick = async () => {
+    tickCalls += 1;
+    if (tickCalls === 1) throw new Error('temporary database failure');
+    resolvePolled?.();
+    return 0;
+  };
+
+  try {
+    await assert.doesNotReject(() => service.onApplicationBootstrap());
+    await Promise.race([
+      polled,
+      new Promise<never>((_resolve, reject) => {
+        retryTimeout = setTimeout(
+          () => reject(new Error('scheduled poller did not retry')),
+          500,
+        );
+      }),
+    ]);
+    assert.ok(tickCalls >= 2);
+  } finally {
+    if (retryTimeout) clearTimeout(retryTimeout);
+    service.onModuleDestroy();
+    if (previousDisabled === undefined) {
+      delete process.env.SCHEDULED_TASKS_DISABLED;
+    } else {
+      process.env.SCHEDULED_TASKS_DISABLED = previousDisabled;
+    }
+    if (previousPollMs === undefined) {
+      delete process.env.SCHEDULED_TASKS_POLL_MS;
+    } else {
+      process.env.SCHEDULED_TASKS_POLL_MS = previousPollMs;
+    }
+  }
 });
 
 test('overlapPolicy=skip records a skipped run without fabricating a task', async () => {

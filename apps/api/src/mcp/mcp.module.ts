@@ -1,28 +1,35 @@
 import { Module } from '@nestjs/common';
 import { TasksModule } from '../tasks/tasks.module';
 import { ReposModule } from '../repos/repos.module';
+import { ScheduledTasksModule } from '../scheduled-tasks/scheduled-tasks.module';
 import { SessionTranscriptService } from '../tasks/session-transcript.service';
-import { TRANSCRIPT_STORE } from '../tasks/session-history.controller';
+import { AuditService } from '../audit/audit.service';
+import {
+  AUDIT_TIMELINE_READER,
+  TRANSCRIPT_STORE,
+} from '../tasks/task-transcript-reader';
 import { McpController } from './mcp.controller';
 import { McpServerFactory } from './mcp.server';
 
 /**
  * The `/mcp` feature module (remote-mcp-server, Track `mcp-endpoint-tools`).
  *
- * Assembles the remote MCP surface — the SDK transport controller + the single
- * shared, tools-registered server — from the EXISTING console services, adding NO
+ * Assembles the remote MCP surface — the SDK transport controller + a factory for
+ * request-scoped, tools-registered servers — from the EXISTING console services, adding NO
  * second admission path (design D1/D4):
  *   - {@link TasksModule} (imported) exports `TasksService` (create/get/list/stop
  *     — the same admission the console uses) AND the durable
  *     {@link SessionTranscriptService} backing `get_transcript`.
- *   - {@link ReposModule} (imported) exports `ReposService` for `list_repos`.
+ *   - {@link ReposModule} (imported) exports `ReposService` for repo reads.
+ *   - {@link ScheduledTasksModule} (imported) exports `ScheduledTasksService` for
+ *     the owner-scoped schedule tools.
  *   - `PrismaService` (the `@Global() PrismaModule`) backs the
  *     `SystemSettings.mcpServerEnabled` gate read in {@link McpController} (task
  *     4.3) — read DIRECTLY here, NOT via `settings.service.ts`, so Track 5 stays
  *     disjoint.
- *   - the `SANDBOX_PROVIDER` port (the `@Global() SandboxModule`) backs the
- *     transcript container-fallback read.
- * Because the last two live in `@Global()` modules they need no explicit import.
+ *   - the `SANDBOX_PROVIDER` port (the `@Global() SandboxModule`) and global
+ *     `AuditService` back the canonical shared transcript read.
+ * Because these global providers need no explicit module import.
  *
  * `TRANSCRIPT_STORE` is RE-BOUND here (to the `SessionTranscriptService` that
  * `TasksModule` exports) rather than exported from `TasksModule`, so this track
@@ -37,7 +44,7 @@ import { McpServerFactory } from './mcp.server';
  * `app.module.ts` edit).
  */
 @Module({
-  imports: [TasksModule, ReposModule],
+  imports: [TasksModule, ReposModule, ScheduledTasksModule],
   controllers: [McpController],
   providers: [
     McpServerFactory,
@@ -47,6 +54,10 @@ import { McpServerFactory } from './mcp.server';
     {
       provide: TRANSCRIPT_STORE,
       useExisting: SessionTranscriptService,
+    },
+    {
+      provide: AUDIT_TIMELINE_READER,
+      useExisting: AuditService,
     },
   ],
 })
