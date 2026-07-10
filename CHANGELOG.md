@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.36.0...v0.36.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **schedules:** align scheduler MCP and public API ([632429b](https://github.com/Xeonice/cloud-agent-platform/commit/632429b1e78da2b8a2d6659312d240b0ab9a549f))
+* **schedules:** align scheduler, MCP, and public API ([c7dfe00](https://github.com/Xeonice/cloud-agent-platform/commit/c7dfe00a35d0c4a944c4324e12eed037461477cd))
+
 ## [0.36.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.35.0...v0.36.0) (2026-07-09)
 
 
