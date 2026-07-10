@@ -150,6 +150,7 @@ export class SandboxProviderRouter<
         providerSandboxId: providerRun?.providerSandboxId ?? connection.taskId,
         connection,
         environment,
+        metadata: providerRun?.preflight?.metadata,
       });
     }
     return connection;

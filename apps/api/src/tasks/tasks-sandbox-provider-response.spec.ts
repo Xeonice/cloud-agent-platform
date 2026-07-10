@@ -80,7 +80,7 @@ function projectTask(row: FakeTaskRow, args: Record<string, unknown> = {}) {
         sandboxRuns?: {
           orderBy?: { createdAt?: 'asc' | 'desc' };
           take?: number;
-          select?: { providerId?: boolean };
+          select?: { providerId?: boolean; metadata?: boolean };
         };
       }
     | undefined;
@@ -96,7 +96,10 @@ function projectTask(row: FakeTaskRow, args: Record<string, unknown> = {}) {
     ...task,
     sandboxRuns: sortedRuns.slice(0, take).map((run) => {
       if (include.sandboxRuns?.select?.providerId) {
-        return { providerId: run.providerId };
+        return {
+          providerId: run.providerId,
+          ...(include.sandboxRuns.select.metadata ? { metadata: run.metadata } : {}),
+        };
       }
       return run;
     }),
@@ -152,7 +155,7 @@ function assertProviderInclude(args: unknown): void {
   };
   assert.equal(include.sandboxRuns?.orderBy?.createdAt, 'desc');
   assert.equal(include.sandboxRuns?.take, 1);
-  assert.deepEqual(include.sandboxRuns?.select, { providerId: true });
+  assert.deepEqual(include.sandboxRuns?.select, { providerId: true, metadata: true });
 }
 
 function assertNoPrivateProviderFields(row: Record<string, unknown>): void {
@@ -208,8 +211,32 @@ test('list exposes latest BoxLite/AIO provider summaries without per-row sandbox
     id: 'boxlite',
     label: 'BoxLite Sandbox',
   });
+  assert.equal(listed[1].sandboxMetadata, null);
   assertNoPrivateProviderFields(listed[1] as unknown as Record<string, unknown>);
   assertProviderInclude(calls.findMany[0]);
+});
+
+test('task response exposes only the parsed effective sandbox metadata snapshot', async () => {
+  const taskId = '00000000-0000-4000-a000-000000000205';
+  const snapshot = {
+    schemaVersion: 1 as const,
+    sandboxVersion: 'v1.2.3',
+    dependencies: { codex: '0.132.0', 'company-cli': '4.5.6' },
+  };
+  const { service } = buildService([
+    makeTask(taskId, [
+      {
+        providerId: 'aio-local',
+        createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        metadata: { sandboxMetadata: snapshot, privateField: 'not-public' },
+      },
+    ]),
+  ]);
+
+  const fetched = await service.findById(taskId);
+
+  assert.deepEqual(fetched.sandboxMetadata, snapshot);
+  assertNoPrivateProviderFields(fetched as unknown as Record<string, unknown>);
 });
 
 test('findById returns null sandboxProvider when no provider has been recorded', async () => {

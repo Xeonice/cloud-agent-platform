@@ -295,6 +295,7 @@ model SandboxEnvironmentValidation {
   sourceKind       String  @map("source_kind")
   resolvedDigest   String? @map("resolved_digest")
   resolvedChecksum String? @map("resolved_checksum")
+  sandboxMetadata  Json?   @map("sandbox_metadata")
   probes           Json?   @map("probes")
   error            String?
   contractVersion  String? @map("contract_version")

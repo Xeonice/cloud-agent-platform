@@ -80,13 +80,26 @@ function makeRuntime(id, options = {}) {
   };
 }
 
-function makeExecutor(handler) {
+function makeExecutor(handler, metadataHandler) {
   const calls = [];
   return {
     calls,
     executor: {
       async exec(request) {
         calls.push(request);
+        if (request.command === 'cat /etc/cap/sandbox-metadata.json') {
+          return (await metadataHandler?.(request)) ?? {
+            exitCode: 0,
+            output: JSON.stringify({
+              schemaVersion: 1,
+              sandboxVersion: 'v1.2.3',
+              dependencies: { codex: '0.132.0', 'claude-code': '2.1.181' },
+            }),
+            stdout: '',
+            stderr: '',
+            timedOut: false,
+          };
+        }
         return (
           (await handler?.(request)) ?? {
             exitCode: 0,
@@ -287,6 +300,7 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
     assert.equal(preflight.status, 'passed');
     assert.match(preflight.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(preflight.runtimeId, 'codex');
+    assert.equal(preflight.metadata.sandboxMetadata.dependencies.codex, '0.132.0');
     await hooks.runtimeSetup({ taskId: 'task-1', executor, runtimeId: 'codex' });
     await hooks.skillPreinstall({ taskId: 'task-1', executor });
     const transcript = await hooks.transcriptRead({
@@ -311,6 +325,11 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
 
     assert.deepEqual(persistedAuth, [['task-1', '{"token":"secret"}']]);
     assert(calls.some((call) => call.command === 'node --version'));
+    assert(
+      calls.findIndex((call) => call.command === 'cat /etc/cap/sandbox-metadata.json') <
+        calls.findIndex((call) => call.command === 'node --version'),
+      'sandbox metadata is read before runtime probes',
+    );
     const toolSetupIndex = calls.findIndex((call) =>
       call.command.includes('/home/gem/.cap/image-env'),
     );
@@ -331,6 +350,60 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
     assert(logs.warn.some((line) => line.includes('pre-stop HOME trim for task task-1 exited 9')));
     assert(logs.warn.some((line) => line.includes('trim timeout')));
     assert(events.some((event) => event[0] === 'artifact' && event[3] === 'session-task-1'));
+  });
+});
+
+await test('configured AIO runtime preflight fails closed for unavailable metadata', async () => {
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const runtime = makeRuntime('codex', {
+      probes: [{ name: 'codex', command: 'codex --version' }],
+    });
+    const { host } = makeHost({ defaultRuntime: runtime, taskRuntime: runtime });
+    const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
+    const { calls, executor } = makeExecutor(undefined, async () => ({
+      exitCode: 1,
+      output: 'metadata missing',
+      stdout: '',
+      stderr: 'metadata missing',
+      timedOut: false,
+    }));
+
+    await assert.rejects(
+      hooks.runtimePreflight({ taskId: 'task-missing-metadata', executor, runtimeId: 'codex' }),
+      /sandbox metadata preflight for AIO task task-missing-metadata failed:.*exit_code 1/,
+    );
+    assert.deepEqual(calls.map((call) => call.command), [
+      'cat /etc/cap/sandbox-metadata.json',
+    ]);
+  });
+});
+
+await test('configured AIO runtime preflight requires the selected official runtime dependency', async () => {
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const runtime = makeRuntime('codex', {
+      probes: [{ name: 'codex', command: 'codex --version' }],
+    });
+    const { host } = makeHost({ defaultRuntime: runtime, taskRuntime: runtime });
+    const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
+    const { calls, executor } = makeExecutor(undefined, async () => ({
+      exitCode: 0,
+      output: JSON.stringify({
+        schemaVersion: 1,
+        sandboxVersion: 'v1.2.3',
+        dependencies: { 'claude-code': '2.1.181' },
+      }),
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+    }));
+
+    await assert.rejects(
+      hooks.runtimePreflight({ taskId: 'task-runtime-omitted', executor, runtimeId: 'codex' }),
+      /selected runtime dependency codex is not declared/,
+    );
+    assert.deepEqual(calls.map((call) => call.command), [
+      'cat /etc/cap/sandbox-metadata.json',
+    ]);
   });
 });
 
@@ -816,6 +889,59 @@ await test('configured BoxLite provider delegates runtime setup through the same
       assert(events.some((event) => event[0] === 'plan' && event[2] === '/workspace'));
       assert(logs.debug.some((line) => line.includes('provisioned BoxLite runtime "codex" setup')));
       assert(logs.debug.some((line) => line.includes('provisioned BoxLite image parameters')));
+    },
+  );
+});
+
+await test('configured BoxLite provision validates metadata against the task-selected runtime', async () => {
+  await withEnv(
+    {
+      CAP_SANDBOX_PROVIDER: 'boxlite',
+      BOXLITE_ENDPOINT: 'http://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'token',
+      BOXLITE_IMAGE: 'boxlite-image:v1',
+      BOXLITE_CAPABILITIES: 'command.exec,lifecycle.readopt',
+      BOXLITE_WORKSPACE_PATH: '/home/gem/workspace',
+    },
+    async () => {
+      const defaultRuntime = makeRuntime('codex');
+      const taskRuntime = makeRuntime('claude-code');
+      const { host } = makeHost({ defaultRuntime, taskRuntime });
+      const provider = onlyProvider(mod.createConfiguredSandboxProvider(host));
+      const client = new mod.FakeBoxLiteClient({
+        execHandler: (request) => ({
+          exitCode: 0,
+          output:
+            request.command === 'cat /etc/cap/sandbox-metadata.json'
+              ? JSON.stringify({
+                  schemaVersion: 1,
+                  sandboxVersion: 'v1.2.3',
+                  dependencies: { codex: '0.132.0' },
+                })
+              : '',
+          stdout: '',
+          stderr: '',
+          timedOut: false,
+        }),
+      });
+      provider.client = client;
+
+      await assert.rejects(
+        () =>
+          provider.provision({
+            taskId: 'box-task-claude-metadata',
+            cloneSpec: null,
+          }),
+        /selected runtime dependency claude-code is not declared/,
+      );
+
+      assert.deepEqual(
+        client.execCalls.map((call) => call.command),
+        ['cat /etc/cap/sandbox-metadata.json'],
+      );
+      assert.deepEqual(client.deletedSandboxIds, [
+        'cap-boxlite-box-task-claude-metadata',
+      ]);
     },
   );
 });

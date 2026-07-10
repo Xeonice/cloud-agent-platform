@@ -36,6 +36,7 @@ import {
   TERMINAL_TASK_STATUSES,
   isReplayableStatus,
   replayPresentationState,
+  type SandboxMetadata,
 } from "@cap/contracts";
 import {
   taskQuery,
@@ -200,6 +201,8 @@ function SessionPage(): React.ReactElement {
         onStop={handleStop}
       />
 
+      <SandboxVersionRegion metadata={task?.sandboxMetadata} />
+
       {/* The terminal slot FILLS the space below the SessionHeader: `flex-1
           min-h-0` absorbs the inset's remaining height (the inset is pinned to
           the viewport on the session route, see `_app.tsx`), and the single
@@ -276,6 +279,56 @@ function SessionPage(): React.ReactElement {
         })()}
       </section>
     </>
+  );
+}
+
+const OFFICIAL_DEPENDENCY_LABELS: Record<string, string> = {
+  codex: "Codex",
+  "claude-code": "Claude Code",
+  openspec: "OpenSpec",
+};
+
+/** Effective immutable image snapshot; absent while sandbox preflight is pending. */
+export function SandboxVersionRegion({
+  metadata,
+}: {
+  metadata?: SandboxMetadata | null;
+}): React.ReactElement | null {
+  if (!metadata) return null;
+  const dependencies = Object.entries(metadata.dependencies).sort(([left], [right]) => {
+    const order = ["codex", "claude-code", "openspec"];
+    const leftIndex = order.indexOf(left);
+    const rightIndex = order.indexOf(right);
+    if (leftIndex >= 0 || rightIndex >= 0) {
+      return (leftIndex < 0 ? order.length : leftIndex) -
+        (rightIndex < 0 ? order.length : rightIndex);
+    }
+    return left.localeCompare(right);
+  });
+
+  return (
+    <section
+      aria-label="沙箱版本"
+      className="flex flex-none flex-wrap items-center gap-x-4 gap-y-1 border-b border-border bg-muted/35 px-3 py-2 text-xs"
+    >
+      <VersionItem label="Sandbox" version={metadata.sandboxVersion} />
+      {dependencies.map(([id, version]) => (
+        <VersionItem
+          key={id}
+          label={OFFICIAL_DEPENDENCY_LABELS[id] ?? id}
+          version={version}
+        />
+      ))}
+    </section>
+  );
+}
+
+function VersionItem({ label, version }: { label: string; version: string }) {
+  return (
+    <span className="inline-flex min-w-0 max-w-full items-baseline gap-1.5">
+      <span className="whitespace-nowrap text-muted-foreground">{label}</span>
+      <span className="min-w-0 break-all font-mono text-foreground">{version}</span>
+    </span>
   );
 }
 

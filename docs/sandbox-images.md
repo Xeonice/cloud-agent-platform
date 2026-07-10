@@ -65,6 +65,10 @@ becomes selectable:
   secrets that do not remain in final layers.
 - Do not overwrite the official sandbox entrypoint, ports, service user, or
   workspace path unless you also own the provider integration change.
+- Preserve `/etc/cap/sandbox-metadata.json` and use the inherited
+  `/usr/local/bin/write-sandbox-metadata.mjs --from` helper to append exact
+  versions for only the custom dependencies operators need to see. CAP does not
+  scan undeclared packages, and `latest` is not a valid recorded version.
 
 ## Image Parameters
 
@@ -246,10 +250,10 @@ RUN apt-get update \
     ripgrep \
   && rm -rf /var/lib/apt/lists/*
 
-USER gem
 WORKDIR /home/gem/workspace
 ```
 
-Use the BoxLite base image for BoxLite, but keep the same principles: extend the
-official base, add only non-secret baseline tooling, and let CAP validation prove
-the image works before users select it.
+Keep the official root service entrypoint for AIO; do not add `USER gem`. For a
+BoxLite image, switch to the BoxLite base and restore `USER gem` after the root
+install/metadata steps. In both cases, add only non-secret baseline tooling and
+let CAP validation prove the image works before users select it.

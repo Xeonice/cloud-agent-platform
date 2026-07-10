@@ -142,6 +142,7 @@ export interface SandboxPreflightResult {
   readonly environment?: SandboxResolvedEnvironmentMetadata;
   readonly probes?: readonly SandboxPreflightProbeResult[];
   readonly error?: string;
+  readonly metadata?: SandboxDescriptorMetadata;
 }
 
 export type SandboxRunOwnerStatus =

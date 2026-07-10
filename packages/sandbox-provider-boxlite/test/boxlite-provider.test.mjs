@@ -618,6 +618,82 @@ await test('runtime preflight failure tears down the created sandbox and rejects
   assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-preflight-fail']);
 });
 
+await test('provider resolves the task runtime before environment selection and preflight', async () => {
+  const events = [];
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_IMAGE_MAP:
+        'codex=cap-boxlite-codex:1,claude-code=cap-boxlite-claude:1',
+    }),
+    client,
+    resolveRuntimeId: async (taskId) => {
+      events.push(`runtime:${taskId}`);
+      return 'claude-code';
+    },
+    resolveEnvironment: async ({ taskId, runtimeId }) => {
+      events.push(`environment:${taskId}:${runtimeId}`);
+      return null;
+    },
+    preflight: async ({ taskId, runtimeId }) => {
+      events.push(`preflight:${taskId}:${runtimeId}`);
+      return { status: 'passed', checkedAt: '2026-07-11T00:00:00.000Z' };
+    },
+    runtimeSetup: async ({ taskId, runtimeId }) => {
+      events.push(`setup:${taskId}:${runtimeId}`);
+    },
+  });
+
+  await provider.provision({ taskId: 'task-claude-runtime', cloneSpec: null });
+
+  assert.equal(client.createCalls[0].image, 'cap-boxlite-claude:1');
+  assert.deepEqual(events, [
+    'runtime:task-claude-runtime',
+    'environment:task-claude-runtime:claude-code',
+    'preflight:task-claude-runtime:claude-code',
+    'setup:task-claude-runtime:claude-code',
+  ]);
+});
+
+await test('metadata preflight failure blocks git materialization and credential injection', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({
+      BOXLITE_CAPABILITIES:
+        'terminal.websocket,terminal.interactive,command.exec,workspace.git.materialize',
+    }),
+    client,
+    preflight: async ({ executor }) => {
+      await executor.exec({ command: 'cat /etc/cap/sandbox-metadata.json' });
+      return {
+        status: 'failed',
+        checkedAt: '2026-07-11T00:00:00.000Z',
+        error: 'sandbox metadata invalid',
+      };
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      provider.provision({
+        taskId: 'task-metadata-before-clone',
+        cloneSpec: {
+          url: 'https://example.test/private.git',
+          authHeader: 'Authorization: Basic secret',
+        },
+      }),
+    /sandbox metadata invalid/,
+  );
+
+  assert.deepEqual(
+    client.execCalls.map((call) => call.command),
+    ['cat /etc/cap/sandbox-metadata.json'],
+  );
+  assert.deepEqual(client.deletedSandboxIds, [
+    'cap-boxlite-task-metadata-before-clone',
+  ]);
+});
+
 await test('provider runs runtime setup hook after preflight', async () => {
   const events = [];
   const client = new mod.FakeBoxLiteClient({

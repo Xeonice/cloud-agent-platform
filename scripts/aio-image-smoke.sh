@@ -149,6 +149,11 @@ if [ "$can_dynamic" != 1 ]; then
   exit "$fail"
 fi
 
+# AIO is released as linux/amd64. On arm64 Docker Desktop, omitting --platform
+# emits a warning on stderr; the ownership checks below intentionally capture
+# stderr, so that warning would corrupt an otherwise-correct `1000:1000` value.
+IMAGE_PLATFORM="linux/$(docker image inspect --format '{{.Architecture}}' "$IMAGE")"
+
 # ---------------------------------------------------------------------------
 # DYNAMIC — 6.3: zod + @cap/contracts resolve from the compiled dist/hooks.
 # ---------------------------------------------------------------------------
@@ -158,7 +163,7 @@ log "6.3 DYNAMIC: import 'zod' and '@cap/contracts' resolve from /opt/cap/dist/h
 # codex invokes it (/opt/cap/dist/hooks/*.js). A successful import proves the
 # /repo COPY + /opt/cap/dist symlink farm resolves zod + @cap/contracts with no
 # ERR_MODULE_NOT_FOUND. We import the permission hook entry (which imports both).
-res3="$(docker run --rm --entrypoint node "$IMAGE" -e '
+res3="$(docker run --rm --platform "$IMAGE_PLATFORM" --entrypoint node "$IMAGE" -e '
   import("/opt/cap/dist/hooks/permission-request.hook.js")
     .then(() => { console.log("RESOLVE_OK"); })
     .catch((e) => { console.error("RESOLVE_FAIL " + (e && e.code ? e.code : e)); process.exit(3); });
@@ -178,7 +183,7 @@ fi
 # ---------------------------------------------------------------------------
 log "6.4 DYNAMIC: /home/gem/.codex/hooks.json present and owned 1000:1000"
 
-owner="$(docker run --rm --entrypoint sh "$IMAGE" -c \
+owner="$(docker run --rm --platform "$IMAGE_PLATFORM" --entrypoint sh "$IMAGE" -c \
   'stat -c "%u:%g" /home/gem/.codex/hooks.json 2>/dev/null || echo MISSING' 2>&1 || true)"
 if [ "$owner" = "1000:1000" ]; then
   pass "hooks.json present at /home/gem/.codex and owned 1000:1000 (gem)"
@@ -189,7 +194,7 @@ else
 fi
 
 # Also assert it is the 0.131-format file (matcher/hooks), not the old form.
-fmt="$(docker run --rm --entrypoint sh "$IMAGE" -c \
+fmt="$(docker run --rm --platform "$IMAGE_PLATFORM" --entrypoint sh "$IMAGE" -c \
   'cat /home/gem/.codex/hooks.json 2>/dev/null' 2>&1 || true)"
 if printf '%s' "$fmt" | grep -q '"matcher"'; then
   pass "baked hooks.json is in the codex 0.131 format (has a matcher)"

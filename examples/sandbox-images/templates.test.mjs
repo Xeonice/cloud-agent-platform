@@ -19,6 +19,12 @@ test('sandbox image templates derive from official CAP release images', () => {
   );
   assert.match(aio, /WORKDIR \/home\/gem\/workspace/);
   assert.match(boxlite, /WORKDIR \/home\/gem\/workspace/);
+  for (const dockerfile of [aio, boxlite]) {
+    assert.match(dockerfile, /write-sandbox-metadata\.mjs/);
+    assert.match(dockerfile, /--from \/etc\/cap\/sandbox-metadata\.json/);
+    assert.match(dockerfile, /--dependency "jq=/);
+    assert.match(dockerfile, /--dependency "ripgrep=/);
+  }
 });
 
 test('sandbox image docs link the template directories', () => {
@@ -45,6 +51,7 @@ test('sandbox image docs cover registry operations and avoid local source types'
     assert.match(doc, /Image Management|镜像管理/);
     assert.match(doc, /registry token/);
     assert.match(doc, /CAP_VERSION=v0\.0\.0/);
+    assert.match(doc, /sandbox-metadata\.json/);
     assert.doesNotMatch(doc, /loaded image/i);
     assert.doesNotMatch(doc, /rootfs/i);
   }

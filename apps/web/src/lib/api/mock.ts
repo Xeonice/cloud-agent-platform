@@ -146,6 +146,16 @@ const MOCK_TASKS: ListTasksResponse = [
     strategy: "single-pass",
     executionMode: "interactive-pty",
     sandboxProvider: { id: "aio-local", label: "AIO Sandbox" },
+    sandboxMetadata: {
+      schemaVersion: 1,
+      sandboxVersion: "v0.36.1",
+      dependencies: {
+        codex: "0.144.1",
+        "claude-code": "2.1.206",
+        openspec: "1.4.1",
+        "repo-tool": "2026.07.10-enterprise-build",
+      },
+    },
   },
   {
     id: TASK_IDS.b,

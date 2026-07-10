@@ -8,6 +8,11 @@ import type {
 } from '@cap/sandbox-core';
 import { scrubSandboxCommandOutput } from '@cap/sandbox-core';
 import {
+  SANDBOX_METADATA_PATH,
+  parseSandboxMetadataText,
+  type SandboxMetadata,
+} from '@cap/contracts';
+import {
   AIO_SANDBOX_SKILL_INSTALL_TIMEOUT_MS,
   AIO_SANDBOX_TRIM_TIMEOUT_MS,
   AIO_SANDBOX_WORKSPACE_DIR,
@@ -107,21 +112,44 @@ export function createConfiguredSandboxProvider<
     boxlite.status === 'valid' &&
     providerFamilyAllowsBoxLite(providerFamily)
   ) {
+    const baseBoxLitePreflight = createBoxLiteRuntimePreflight({
+      requiredTools: mergeToolLists(
+        requiredToolsForBoxLiteCapabilities(boxlite.config.capabilities),
+        readBoxLiteRuntimeRequiredTools(),
+      ),
+      workspacePath: boxlite.config.workspacePath,
+    });
     providers.push(
       defineBoxLiteSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>({
         config: boxlite.config,
-        preflight: createBoxLiteRuntimePreflight({
-          requiredTools: mergeToolLists(
-            requiredToolsForBoxLiteCapabilities(boxlite.config.capabilities),
-            readBoxLiteRuntimeRequiredTools(),
-          ),
-          workspacePath: boxlite.config.workspacePath,
-        }),
-        runtimeSetup: ({ taskId, executor, workspacePath }) =>
+        preflight: async (context) => {
+          const sandboxMetadata = await readSandboxMetadata({
+            executor: context.executor,
+            taskId: context.taskId,
+            runtimeId: context.runtimeId ?? null,
+            providerLabel: 'BoxLite',
+            scrubOutput: scrubSandboxCommandOutput,
+          });
+          const result = await baseBoxLitePreflight(context);
+          return {
+            ...result,
+            metadata: { ...(result.metadata ?? {}), sandboxMetadata },
+          };
+        },
+        resolveRuntimeId: async (taskId) =>
+          (
+            await resolveProvisionRuntime({
+              host,
+              taskId,
+              providerLabel: 'BoxLite',
+            })
+          ).id,
+        runtimeSetup: ({ taskId, executor, workspacePath, runtimeId }) =>
           runBoxLiteRuntimeSetup({
             taskId,
             executor,
             workspacePath,
+            runtimeId,
             host,
           }),
         preStopCleanup: ({ taskId, executor }) =>
@@ -202,7 +230,7 @@ function createAioProviderDescriptor<
           runtimeId,
           providerLabel: 'AIO',
         });
-        await runRuntimePreflight({
+        const sandboxMetadata = await runRuntimePreflight({
           executor,
           taskId,
           runtime,
@@ -214,6 +242,7 @@ function createAioProviderDescriptor<
           status: 'passed',
           checkedAt: new Date().toISOString(),
           runtimeId: runtime.id,
+          metadata: { sandboxMetadata },
         };
       },
       runtimeSetup: async ({ taskId, executor, runtimeId }) => {
@@ -476,10 +505,15 @@ async function runRuntimePreflight<TAuthMaterial>(args: {
   readonly logger?: SandboxHostLogger;
   readonly providerLabel: string;
   readonly scrubOutput: (output: string) => string;
-}): Promise<void> {
+}): Promise<SandboxMetadata> {
+  const sandboxMetadata = await readSandboxMetadata({
+    executor: args.executor,
+    taskId: args.taskId,
+    runtimeId: args.runtime.id,
+    providerLabel: args.providerLabel,
+    scrubOutput: args.scrubOutput,
+  });
   const probes = args.runtime.preflightProbes();
-  if (probes.length === 0) return;
-
   for (const probe of probes) {
     const { exitCode, output } = await runSandboxCommand(
       args.executor,
@@ -497,6 +531,43 @@ async function runRuntimePreflight<TAuthMaterial>(args: {
   args.logger?.debug?.(
     `runtime "${args.runtime.id}" ${args.providerLabel} preflight passed for task ${args.taskId} (${probes.length} probe(s))`,
   );
+  return sandboxMetadata;
+}
+
+async function readSandboxMetadata(args: {
+  readonly executor: SandboxCommandExecutor;
+  readonly taskId: string;
+  readonly runtimeId: string | null;
+  readonly providerLabel: string;
+  readonly scrubOutput: (output: string) => string;
+}): Promise<SandboxMetadata> {
+  const { exitCode, output } = await runSandboxCommand(
+    args.executor,
+    `cat ${SANDBOX_METADATA_PATH}`,
+  );
+  if (exitCode !== 0) {
+    throw new Error(
+      `sandbox metadata preflight for ${args.providerLabel} task ${args.taskId} failed: ` +
+        `${SANDBOX_METADATA_PATH} exit_code ${exitCode}`,
+    );
+  }
+  let metadata: SandboxMetadata;
+  try {
+    metadata = parseSandboxMetadataText(output.trim());
+  } catch (error) {
+    throw new Error(
+      `sandbox metadata preflight for ${args.providerLabel} task ${args.taskId} failed: ` +
+        args.scrubOutput(error instanceof Error ? error.message : String(error)),
+    );
+  }
+  const key = args.runtimeId === 'claude' ? 'claude-code' : args.runtimeId;
+  if ((key === 'codex' || key === 'claude-code') && !metadata.dependencies[key]) {
+    throw new Error(
+      `sandbox metadata preflight for ${args.providerLabel} task ${args.taskId} failed: ` +
+        `selected runtime dependency ${key} is not declared`,
+    );
+  }
+  return metadata;
 }
 
 async function runRuntimeSetup<
@@ -802,6 +873,7 @@ async function runBoxLiteRuntimeSetup<
   readonly taskId: string;
   readonly executor: SandboxCommandExecutor;
   readonly workspacePath: string;
+  readonly runtimeId?: string | null;
   readonly host: SandboxHostHarness<
     TCloneSpec,
     TRuntimeId,
@@ -809,11 +881,17 @@ async function runBoxLiteRuntimeSetup<
     TAuthMaterial
   >;
 }): Promise<void> {
-  const runtime = await resolveProvisionRuntime({
-    host: args.host,
-    taskId: args.taskId,
-    providerLabel: 'BoxLite',
-  });
+  const runtime = args.runtimeId
+    ? resolveRuntimeFromId({
+        host: args.host,
+        runtimeId: args.runtimeId as TRuntimeId,
+        providerLabel: 'BoxLite',
+      })
+    : await resolveProvisionRuntime({
+        host: args.host,
+        taskId: args.taskId,
+        providerLabel: 'BoxLite',
+      });
   await runImageParameterSetup({
     executor: args.executor,
     taskId: args.taskId,

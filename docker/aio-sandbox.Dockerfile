@@ -23,7 +23,7 @@
 # interactive channel (task 5.2).
 # ---------------------------------------------------------------------------
 
-ARG NODE_VERSION=20
+ARG NODE_VERSION=22
 # PINNED, known-good AIO Sandbox base image tag. Bump deliberately, never to
 # "latest" (design risk: "Pin the AIO image (avoid `:latest`)"). The
 # orchestrator provider reads the derived tag from env; this ARG pins the BASE
@@ -31,8 +31,9 @@ ARG NODE_VERSION=20
 ARG AIO_SANDBOX_TAG=1.0.0.125
 # PINNED, known-good Codex CLI version, set from a documented build-arg and
 # OVERRIDABLE at build time (`docker build --build-arg CODEX_VERSION=<x.y.z>`).
-# Default `0.131` is the release verified compatible with the in-use ChatGPT
-# account model `gpt-5.5` (see the codex-version compatibility matrix below).
+# Default `0.144.1` is the exact latest registry release selected for the
+# 2026-07-10 official image rebuild. Account-model compatibility history stays
+# recorded in the matrix below.
 # The prior hard-coded `0.42.0` pin is replaced because it 400s on
 # gpt-5/gpt-5-codex/o4-mini and is rejected by gpt-5.5. Bump deliberately,
 # never to "latest".
@@ -48,9 +49,10 @@ ARG AIO_SANDBOX_TAG=1.0.0.125
 #   codex 0.42.0  + o4-mini      -> 400 (rejected)
 #   codex 0.42.0  + gpt-5.5      -> rejected (unusable)
 #   codex 0.131.0 + gpt-5.5      -> VERIFIED WORKING
+#   codex 0.144.1                 -> current official image pin (2026-07-10)
 #
 # Override at build time for a different account model, e.g.
-#   docker build --build-arg CODEX_VERSION=0.131.0 ...
+#   docker build --build-arg CODEX_VERSION=0.144.1 ...
 #
 # BREAKING (acknowledged): codex `0.131` changes the live frame-stream / hook
 # protocol relative to `0.42.0` — the `0.131` PreToolUse stdin/stdout hook
@@ -60,7 +62,7 @@ ARG AIO_SANDBOX_TAG=1.0.0.125
 # hooks-0131-adapter track). Do not treat byte-identity against `0.42.0` frames
 # as valid after this bump.
 # ---------------------------------------------------------------------------
-ARG CODEX_VERSION=0.131
+ARG CODEX_VERSION=0.144.1
 
 # PINNED, known-good Claude Code CLI version, set from a documented build-arg and
 # OVERRIDABLE at build time (`docker build --build-arg CLAUDE_CODE_VERSION=<x.y.z>`).
@@ -72,10 +74,10 @@ ARG CODEX_VERSION=0.131
 # are UNDOCUMENTED binary internals. An unpinned bump could flip the TUI from
 # inline back to alt-screen (breaking the asciicast capture/replay) or change the
 # trust/onboarding gate (re-introducing a blocking prompt with no interactive
-# operator to answer it). Default `2.1.181` is the release verified by the
-# hands-on spike (see research-brief.md / design.md). Bump DELIBERATELY, after
+# operator to answer it). Default `2.1.206` is the exact latest registry release
+# selected for the 2026-07-10 official image rebuild. Bump DELIBERATELY, after
 # re-verifying inline-render + onboarding-suppression on the new version.
-ARG CLAUDE_CODE_VERSION=2.1.181
+ARG CLAUDE_CODE_VERSION=2.1.206
 
 # PINNED OpenSpec CLI version (task-preinstall-skills). The `openspec` skill the
 # operator can select drops `.codex/skills/*/SKILL.md` whose steps shell out to
@@ -137,9 +139,23 @@ FROM ghcr.io/agent-infra/sandbox:${AIO_SANDBOX_TAG} AS sandbox
 ARG CODEX_VERSION
 ARG CLAUDE_CODE_VERSION
 ARG OPENSPEC_VERSION
+ARG CAP_VERSION=unknown
+
+# The upstream AIO image currently carries Node 20, while current Claude Code
+# requires Node >=22. Reuse the exact Node toolchain from the build stage so the
+# runtime satisfies the CLI engine contract without replacing other AIO files.
+COPY --from=hooks-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=hooks-build /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+
+RUN ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+  && ln -sfn ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+  && node --version \
+  && npm --version
+
+COPY scripts/write-sandbox-metadata.mjs scripts/sandbox-version-selector.mjs /usr/local/bin/
 
 # Install the Codex CLI at the version pinned by the CODEX_VERSION build-arg
-# (default 0.131; overridable per the matrix above; never an unpinned latest).
+# (default 0.144.1; overridable per the matrix above; never an unpinned latest).
 # The AIO base already ships Node; if `npm` is unavailable on the base this
 # layer is the correct place to fail loudly during image build rather than at
 # task runtime. `codex --version` asserts the derived image actually bakes the
@@ -148,7 +164,7 @@ RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
   && codex --version
 
 # Bake the Claude Code CLI at the version pinned by the CLAUDE_CODE_VERSION
-# build-arg (default 2.1.181; overridable; NEVER an unpinned latest — design D7).
+# build-arg (default 2.1.206; overridable; NEVER an unpinned latest — design D7).
 # A `claude-code` task is launched IN-SHELL over /v1/shell/ws by the orchestrator
 # bridge (exactly like codex), so the binary MUST be present in the image; there
 # is no per-task install step (the gem user, uid 1000, cannot `npm i -g` to the
@@ -166,6 +182,13 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 # not hard-depend on a `bmad` CLI at runtime. `openspec --version` asserts the bake.
 RUN npm install -g "@fission-ai/openspec@${OPENSPEC_VERSION}" \
   && openspec --version
+
+RUN node /usr/local/bin/write-sandbox-metadata.mjs \
+  --sandbox-version "${CAP_VERSION}" \
+  --dependency "codex=${CODEX_VERSION}" \
+  --dependency "claude-code=${CLAUDE_CODE_VERSION}" \
+  --dependency "openspec=${OPENSPEC_VERSION}" \
+  --output /etc/cap/sandbox-metadata.json
 
 # --- tmux build-time guarantee (survive-api-redeploy, image-guarantee) ------
 # The detached-session sidestep this image enables (codex launched in a detached
@@ -204,7 +227,7 @@ COPY --from=hooks-build /repo/apps/sandbox-hooks/dist /opt/cap/dist
 # `chown gem:gem` here; we chown to the numeric 1000:1000 that gem resolves to at
 # runtime. mkdir creates /home/gem ahead of the entrypoint's useradd, which keeps
 # the existing home (and our hooks.json) rather than clobbering it.
-RUN mkdir -p /home/gem/.codex
+RUN mkdir -p /home/gem/.codex /home/gem/workspace
 COPY apps/sandbox-hooks/hooks.json /home/gem/.codex/hooks.json
 
 # --- 6.1/6.3 codex launch path: YOLO-style bypass -------------------------

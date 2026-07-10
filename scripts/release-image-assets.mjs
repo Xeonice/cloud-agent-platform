@@ -1,18 +1,28 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 import {
+  closeSync,
   existsSync,
+  mkdtempSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { normalizeExactSandboxVersionValue } from './sandbox-version-selector.mjs';
 
 export const IMAGE_ASSET_MANIFEST = 'cap-image-assets.json';
+
+const SANDBOX_METADATA_RELATIVE_PATH = 'etc/cap/sandbox-metadata.json';
+const SANDBOX_DEPENDENCY_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+const REQUIRED_OFFICIAL_DEPENDENCIES = ['codex', 'claude-code', 'openspec'];
 
 export const SANDBOX_IMAGE_ASSET_DEFINITIONS = [
   {
@@ -73,8 +83,49 @@ export function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-export function buildManifest({ version, owner = 'xeonice', outDir = '.', generatedAt = new Date().toISOString() }) {
+export function validateSandboxReleaseMetadata(metadata, { version } = {}) {
+  if (!metadata || typeof metadata !== 'object' || metadata.schemaVersion !== 1) {
+    throw new Error('sandbox metadata must use schemaVersion 1');
+  }
+  const sandboxVersion = validateExactMetadataValue(metadata.sandboxVersion, 'sandboxVersion');
+  if (version !== undefined && sandboxVersion !== normalizeVersion(version)) {
+    throw new Error(`sandbox metadata version ${sandboxVersion} does not match ${normalizeVersion(version)}`);
+  }
+  if (!metadata.dependencies || typeof metadata.dependencies !== 'object' || Array.isArray(metadata.dependencies)) {
+    throw new Error('sandbox metadata dependencies must be an object');
+  }
+  const dependencyEntries = Object.entries(metadata.dependencies);
+  if (dependencyEntries.length === 0) {
+    throw new Error('sandbox metadata dependencies must not be empty');
+  }
+  const dependencies = {};
+  for (const [id, value] of dependencyEntries.sort(([left], [right]) => left.localeCompare(right))) {
+    if (id.length > 64 || !SANDBOX_DEPENDENCY_ID_PATTERN.test(id)) {
+      throw new Error(`sandbox metadata invalid dependency id: ${id}`);
+    }
+    dependencies[id] = validateExactMetadataValue(value, `dependency ${id}`);
+  }
+  for (const id of REQUIRED_OFFICIAL_DEPENDENCIES) {
+    if (!(id in dependencies)) throw new Error(`sandbox metadata missing exact ${id} version`);
+  }
+  return { schemaVersion: 1, sandboxVersion, dependencies };
+}
+
+function validateExactMetadataValue(value, label) {
+  return normalizeExactSandboxVersionValue(value, `sandbox metadata ${label}`);
+}
+
+function assertSandboxMetadataEqual(actual, expected, label) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${label}: sandbox toolchain metadata drift`);
+  }
+}
+
+export function buildManifest({ version, owner = 'xeonice', outDir = '.', generatedAt = new Date().toISOString(), sandboxMetadata }) {
   const tag = normalizeVersion(version);
+  const metadata = sandboxMetadata
+    ? validateSandboxReleaseMetadata(sandboxMetadata, { version: tag })
+    : undefined;
   const resolvedOutDir = resolve(outDir);
   const assets = SANDBOX_IMAGE_ASSET_DEFINITIONS.map((definition) => {
     const asset = assetFileName(definition, tag);
@@ -89,6 +140,7 @@ export function buildManifest({ version, owner = 'xeonice', outDir = '.', genera
       kind: definition.kind,
       asset,
       checksumAsset,
+      ...(metadata ? { sandboxMetadata: metadata } : {}),
     };
     if (definition.kind === 'docker-archive') {
       entry.loadedTag = entry.image;
@@ -108,6 +160,7 @@ export function buildManifest({ version, owner = 'xeonice', outDir = '.', genera
     version: tag,
     owner,
     generatedAt,
+    ...(metadata ? { sandboxMetadata: metadata } : {}),
     assets,
   };
 }
@@ -125,6 +178,9 @@ export function validateManifest(manifest, { version } = {}) {
   if (!Array.isArray(manifest.assets)) {
     throw new Error('asset manifest assets must be an array');
   }
+  const manifestMetadata = validateSandboxReleaseMetadata(manifest.sandboxMetadata, {
+    version: manifest.version,
+  });
   const ids = new Set();
   for (const entry of manifest.assets) {
     if (!entry || typeof entry !== 'object') {
@@ -145,6 +201,10 @@ export function validateManifest(manifest, { version } = {}) {
     if (entry.kind === 'oci-layout' && typeof entry.rootfsPathRelative !== 'string') {
       throw new Error(`oci layout asset ${entry.id} must include rootfsPathRelative`);
     }
+    const entryMetadata = validateSandboxReleaseMetadata(entry.sandboxMetadata, {
+      version: manifest.version,
+    });
+    assertSandboxMetadataEqual(entryMetadata, manifestMetadata, `asset ${entry.id}`);
   }
   const requiredIds = new Set(SANDBOX_IMAGE_ASSET_DEFINITIONS.map((definition) => definition.id));
   for (const id of requiredIds) {
@@ -152,15 +212,15 @@ export function validateManifest(manifest, { version } = {}) {
   }
 }
 
-export function writeManifest({ version, owner, outDir }) {
+export function writeManifest({ version, owner, outDir, sandboxMetadata }) {
   mkdirSync(outDir, { recursive: true });
-  const manifest = buildManifest({ version, owner, outDir });
+  const manifest = buildManifest({ version, owner, outDir, sandboxMetadata });
   validateManifest(manifest, { version });
   writeFileSync(join(outDir, IMAGE_ASSET_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   return manifest;
 }
 
-export function verifyLocalAssetSet({ version, outDir }) {
+export function verifyLocalAssetSet({ version, outDir, decompressAsset }) {
   const manifestPath = join(outDir, IMAGE_ASSET_MANIFEST);
   if (!existsSync(manifestPath)) {
     throw new Error(`missing ${IMAGE_ASSET_MANIFEST}`);
@@ -181,6 +241,14 @@ export function verifyLocalAssetSet({ version, outDir }) {
     if (entry.sha256 && entry.sha256 !== actual) {
       throw new Error(`manifest checksum mismatch for ${entry.asset}: expected ${entry.sha256}, got ${actual}`);
     }
+    const packagedMetadata = inspectPackagedAssetMetadata(entry, assetPath, {
+      version: manifest.version,
+      decompressAsset,
+    });
+    const entryMetadata = validateSandboxReleaseMetadata(entry.sandboxMetadata, {
+      version: manifest.version,
+    });
+    assertSandboxMetadataEqual(packagedMetadata, entryMetadata, `packaged asset ${entry.id}`);
   }
 }
 
@@ -198,6 +266,244 @@ function runCapture(command, args) {
   const result = spawnSync(command, args, { encoding: 'utf8' });
   if (result.status !== 0) return null;
   return result.stdout.trim();
+}
+
+function runToFile(command, args, outputPath) {
+  const output = openSync(outputPath, 'w');
+  try {
+    const result = spawnSync(command, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', output, 'pipe'],
+    });
+    if (result.status !== 0) {
+      const detail = result.stderr?.trim();
+      throw new Error(`${command} ${args.join(' ')} failed with exit ${result.status}${detail ? `: ${detail}` : ''}`);
+    }
+  } finally {
+    closeSync(output);
+  }
+}
+
+function decompressZstdAsset(source, target) {
+  run('zstd', ['-d', '-q', '-f', source, '-o', target]);
+}
+
+function normalizedTarMember(member) {
+  let normalized = member;
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  normalized = normalized.replace(/\/+$/, '');
+  if (!normalized || normalized.startsWith('/') || normalized.split('/').includes('..')) return null;
+  return normalized;
+}
+
+function tarMemberIndex(archivePath) {
+  const result = spawnSync('tar', ['-tf', archivePath], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new Error(`could not list tar archive ${basename(archivePath)}: ${result.stderr?.trim() ?? ''}`);
+  }
+  const members = new Map();
+  for (const raw of result.stdout.split('\n')) {
+    const normalized = normalizedTarMember(raw);
+    if (normalized) members.set(normalized, raw);
+  }
+  return members;
+}
+
+function requireTarMember(members, path, label) {
+  const member = members.get(path);
+  if (!member) throw new Error(`${label} missing ${path}`);
+  return member;
+}
+
+function extractTarMemberToFile(archivePath, member, outputPath) {
+  runToFile('tar', ['-xOf', archivePath, member], outputPath);
+}
+
+function extractTarMemberText(archivePath, member, label) {
+  const result = spawnSync('tar', ['-xOf', archivePath, member], {
+    encoding: 'utf8',
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (result.status !== 0) {
+    throw new Error(`${label} could not read ${member}: ${result.stderr?.trim() ?? ''}`);
+  }
+  return result.stdout;
+}
+
+function parseJsonText(text, label) {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${label} contains invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function fileCompression(path, mediaType) {
+  if (mediaType?.endsWith('+gzip')) return 'gzip';
+  if (mediaType?.endsWith('+zstd')) return 'zstd';
+  const header = Buffer.alloc(4);
+  const input = openSync(path, 'r');
+  let bytesRead;
+  try {
+    bytesRead = readSync(input, header, 0, header.length, 0);
+  } finally {
+    closeSync(input);
+  }
+  if (bytesRead >= 2 && header[0] === 0x1f && header[1] === 0x8b) return 'gzip';
+  if (bytesRead === 4 && header.equals(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]))) return 'zstd';
+  return 'none';
+}
+
+function materializeLayerTar(blobPath, mediaType, targetPath) {
+  const compression = fileCompression(blobPath, mediaType);
+  if (compression === 'gzip') {
+    runToFile('gzip', ['-dc', blobPath], targetPath);
+    return targetPath;
+  }
+  if (compression === 'zstd') {
+    run('zstd', ['-d', '-q', '-f', blobPath, '-o', targetPath]);
+    return targetPath;
+  }
+  return blobPath;
+}
+
+function layerRemovesSandboxMetadata(members) {
+  return [
+    'etc/cap/.wh.sandbox-metadata.json',
+    'etc/cap/.wh..wh..opq',
+    'etc/.wh.cap',
+    'etc/.wh..wh..opq',
+    '.wh.etc',
+    '.wh..wh..opq',
+  ].some((path) => members.has(path));
+}
+
+function readMetadataFromLayers(layers, extractLayer, { version, tempDir, label }) {
+  for (let index = layers.length - 1; index >= 0; index -= 1) {
+    const blobPath = join(tempDir, `layer-${index}.blob`);
+    const tarPath = join(tempDir, `layer-${index}.tar`);
+    try {
+      extractLayer(layers[index], blobPath);
+      const effectiveTarPath = materializeLayerTar(blobPath, layers[index].mediaType, tarPath);
+      const members = tarMemberIndex(effectiveTarPath);
+      const metadataMember = members.get(SANDBOX_METADATA_RELATIVE_PATH);
+      if (metadataMember) {
+        const metadata = parseJsonText(
+          extractTarMemberText(effectiveTarPath, metadataMember, label),
+          `${label} sandbox metadata`,
+        );
+        return validateSandboxReleaseMetadata(metadata, { version });
+      }
+      if (layerRemovesSandboxMetadata(members)) {
+        throw new Error(`${label} removes /${SANDBOX_METADATA_RELATIVE_PATH}`);
+      }
+    } finally {
+      rmSync(blobPath, { force: true });
+      rmSync(tarPath, { force: true });
+    }
+  }
+  throw new Error(`${label} missing /${SANDBOX_METADATA_RELATIVE_PATH}`);
+}
+
+function readDockerArchiveMetadata(archivePath, { version, tempDir, label }) {
+  const members = tarMemberIndex(archivePath);
+  const manifestMember = requireTarMember(members, 'manifest.json', label);
+  const manifest = parseJsonText(
+    extractTarMemberText(archivePath, manifestMember, label),
+    `${label} manifest.json`,
+  );
+  if (!Array.isArray(manifest) || manifest.length !== 1 || !Array.isArray(manifest[0]?.Layers)) {
+    throw new Error(`${label} must contain exactly one Docker image manifest`);
+  }
+  const layers = manifest[0].Layers.map((path) => ({
+    member: requireTarMember(members, normalizedTarMember(path), label),
+  }));
+  return readMetadataFromLayers(
+    layers,
+    (layer, outputPath) => extractTarMemberToFile(archivePath, layer.member, outputPath),
+    { version, tempDir, label },
+  );
+}
+
+function ociBlobPath(digest, label) {
+  const match = /^sha256:([0-9a-f]{64})$/.exec(digest ?? '');
+  if (!match) throw new Error(`${label} contains unsupported OCI digest ${JSON.stringify(digest)}`);
+  return `blobs/sha256/${match[1]}`;
+}
+
+function readOciArchiveMetadata(archivePath, { version, tempDir, label }) {
+  const members = tarMemberIndex(archivePath);
+  const indexMember = requireTarMember(members, 'index.json', label);
+  const index = parseJsonText(
+    extractTarMemberText(archivePath, indexMember, label),
+    `${label} index.json`,
+  );
+  if (!Array.isArray(index?.manifests) || index.manifests.length !== 1) {
+    throw new Error(`${label} must contain exactly one OCI image manifest`);
+  }
+  const manifestPath = ociBlobPath(index.manifests[0].digest, label);
+  const manifestMember = requireTarMember(members, manifestPath, label);
+  const manifest = parseJsonText(
+    extractTarMemberText(archivePath, manifestMember, label),
+    `${label} OCI manifest`,
+  );
+  if (!Array.isArray(manifest?.layers) || manifest.layers.length === 0) {
+    throw new Error(`${label} OCI manifest must contain layers`);
+  }
+  const layers = manifest.layers.map((layer) => ({
+    member: requireTarMember(members, ociBlobPath(layer.digest, label), label),
+    mediaType: layer.mediaType,
+  }));
+  return readMetadataFromLayers(
+    layers,
+    (layer, outputPath) => extractTarMemberToFile(archivePath, layer.member, outputPath),
+    { version, tempDir, label },
+  );
+}
+
+export function inspectPackagedAssetMetadata(
+  definition,
+  assetPath,
+  { version, decompressAsset = decompressZstdAsset } = {},
+) {
+  const tempDir = mkdtempSync(join(tmpdir(), 'cap-sandbox-asset-metadata-'));
+  const archivePath = join(tempDir, 'asset.tar');
+  const label = `${definition.id ?? definition.kind} packaged asset`;
+  try {
+    decompressAsset(assetPath, archivePath);
+    if (definition.kind === 'docker-archive') {
+      return readDockerArchiveMetadata(archivePath, { version, tempDir, label });
+    }
+    if (definition.kind === 'oci-layout') {
+      return readOciArchiveMetadata(archivePath, { version, tempDir, label });
+    }
+    throw new Error(`unsupported asset kind: ${definition.kind}`);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function inspectImageMetadata(definition, { version, owner }) {
+  const image = `ghcr.io/${owner}/${definition.packageName}:${version}`;
+  run('docker', ['pull', '--platform', definition.platform, image]);
+  const containerId = runCapture('docker', [
+    'create', '--platform', definition.platform, image,
+  ]);
+  if (!containerId) throw new Error(`could not create ${definition.id} for metadata inspection`);
+  const tempDir = mkdtempSync(join(tmpdir(), 'cap-sandbox-metadata-'));
+  const metadataPath = join(tempDir, 'sandbox-metadata.json');
+  try {
+    run('docker', ['cp', `${containerId}:/etc/cap/sandbox-metadata.json`, metadataPath]);
+    return validateSandboxReleaseMetadata(JSON.parse(readFileSync(metadataPath, 'utf8')), {
+      version,
+    });
+  } finally {
+    run('docker', ['rm', '-f', containerId]);
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 function requireTool(name) {
@@ -261,7 +567,13 @@ export function packageAssets({ version, owner = 'xeonice', outDir }) {
   requireTool('skopeo');
   requireTool('tar');
   requireTool('zstd');
+  let officialMetadata;
   for (const definition of SANDBOX_IMAGE_ASSET_DEFINITIONS) {
+    const imageMetadata = inspectImageMetadata(definition, { version: tag, owner });
+    if (officialMetadata) {
+      assertSandboxMetadataEqual(imageMetadata, officialMetadata, `registry image ${definition.id}`);
+    }
+    officialMetadata ??= imageMetadata;
     if (definition.kind === 'docker-archive') {
       packageDockerArchive(definition, { version: tag, owner, outDir });
     } else if (definition.kind === 'oci-layout') {
@@ -270,7 +582,7 @@ export function packageAssets({ version, owner = 'xeonice', outDir }) {
       throw new Error(`unsupported asset kind: ${definition.kind}`);
     }
   }
-  writeManifest({ version: tag, owner, outDir });
+  writeManifest({ version: tag, owner, outDir, sandboxMetadata: officialMetadata });
   verifyLocalAssetSet({ version: tag, outDir });
 }
 
@@ -298,7 +610,7 @@ function usage() {
   return [
     'usage:',
     '  node scripts/release-image-assets.mjs package --version vX.Y.Z --out <dir> [--owner xeonice]',
-    '  node scripts/release-image-assets.mjs manifest --version vX.Y.Z --out <dir> [--owner xeonice]',
+    '  node scripts/release-image-assets.mjs manifest --version vX.Y.Z --out <dir> --metadata <sandbox-metadata.json> [--owner xeonice]',
     '  node scripts/release-image-assets.mjs verify --version vX.Y.Z --out <dir>',
   ].join('\n');
 }
@@ -318,7 +630,9 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (command === 'manifest') {
-    writeManifest({ version, owner: args.owner ?? 'xeonice', outDir });
+    if (!args.metadata) throw new Error(`manifest requires --metadata <sandbox-metadata.json>\n${usage()}`);
+    const sandboxMetadata = JSON.parse(readFileSync(resolve(args.metadata), 'utf8'));
+    writeManifest({ version, owner: args.owner ?? 'xeonice', outDir, sandboxMetadata });
     return;
   }
   if (command === 'verify') {

@@ -10,16 +10,18 @@
 # the canonical /home/gem/workspace layout used by the agent launch code.
 # ---------------------------------------------------------------------------
 
-ARG NODE_VERSION=20
+ARG NODE_VERSION=22
 
 FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 
-ARG CODEX_VERSION=0.131
-ARG CLAUDE_CODE_VERSION=2.1.181
+ARG CODEX_VERSION=0.144.1
+ARG CLAUDE_CODE_VERSION=2.1.206
 ARG OPENSPEC_VERSION=1.4.1
 ARG CAP_VERSION=unknown
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
+
+COPY scripts/write-sandbox-metadata.mjs scripts/sandbox-version-selector.mjs /usr/local/bin/
 
 ENV NODE_ENV=production
 ENV CAP_VERSION=${CAP_VERSION}
@@ -49,6 +51,13 @@ RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
 
 RUN npm install -g "@fission-ai/openspec@${OPENSPEC_VERSION}" \
   && openspec --version
+
+RUN node /usr/local/bin/write-sandbox-metadata.mjs \
+  --sandbox-version "${CAP_VERSION}" \
+  --dependency "codex=${CODEX_VERSION}" \
+  --dependency "claude-code=${CLAUDE_CODE_VERSION}" \
+  --dependency "openspec=${OPENSPEC_VERSION}" \
+  --output /etc/cap/sandbox-metadata.json
 
 RUN if getent passwd 1000 >/dev/null; then \
       existing_user="$(getent passwd 1000 | cut -d: -f1)"; \

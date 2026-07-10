@@ -19,6 +19,10 @@ CLI needs task-time parameters, configure them on the image record in CAP Image
 Management and wrap the CLI so it sources `/home/gem/.cap/image-env` when the
 file exists.
 
+Every custom image must retain `/etc/cap/sandbox-metadata.json`. The templates
+use the helper inherited from the official base to add only the custom tools the
+builder wants CAP to display; undeclared packages are intentionally ignored.
+
 ```bash
 export CAP_VERSION=v0.27.1
 
