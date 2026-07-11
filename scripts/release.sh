@@ -62,7 +62,8 @@ fi
 # Watch the release.yml run to success.
 echo "==> waiting for release.yml build..."
 sleep 6
-RID="$(gh run list -R "$REPO" --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+RID="$(gh run list -R "$REPO" --workflow release.yml --branch "$VERSION" --event release \
+  --limit 1 --json databaseId --jq '.[0].databaseId')"
 if [[ -z "$RID" ]]; then
   echo "error: could not find a release.yml run — did the Release publish?" >&2
   exit 1
@@ -87,15 +88,12 @@ done
 
 echo "==> verify sandbox image Release assets at $VERSION"
 required_assets=(
+  docker-compose.prod.yml
+  docker-compose.prod.env.example
   cap-image-assets.json
-  "cap-aio-sandbox-${VERSION}-linux-amd64.docker.tar.zst"
-  "cap-aio-sandbox-${VERSION}-linux-amd64.docker.tar.zst.sha256"
-  "cap-boxlite-sandbox-${VERSION}-linux-arm64.oci.tar.zst"
-  "cap-boxlite-sandbox-${VERSION}-linux-arm64.oci.tar.zst.sha256"
-  "cap-boxlite-sandbox-${VERSION}-linux-amd64.oci.tar.zst"
-  "cap-boxlite-sandbox-${VERSION}-linux-amd64.oci.tar.zst.sha256"
 )
-asset_names="$(gh release view "$VERSION" -R "$REPO" --json assets --jq '.assets[].name')"
+release_assets_json="$(gh release view "$VERSION" -R "$REPO" --json assets)"
+asset_names="$(jq -r '.assets[].name' <<< "$release_assets_json")"
 for asset in "${required_assets[@]}"; do
   if printf '%s\n' "$asset_names" | grep -Fxq "$asset"; then
     echo "    $asset -> present"
@@ -104,6 +102,51 @@ for asset in "${required_assets[@]}"; do
     fail=1
   fi
 done
+
+manifest_dir="$(mktemp -d "${TMPDIR:-/tmp}/cap-release-manifest.XXXXXX")"
+trap 'rm -rf "$manifest_dir"' EXIT
+gh release download "$VERSION" -R "$REPO" \
+  --pattern cap-image-assets.json --dir "$manifest_dir" --clobber >/dev/null
+manifest_path="$manifest_dir/cap-image-assets.json"
+manifest_assets="$(node scripts/release-image-assets.mjs list \
+  --version "$VERSION" --manifest "$manifest_path")" || {
+  echo "error: invalid cap-image-assets.json for $VERSION" >&2
+  exit 1
+}
+while IFS= read -r asset; do
+  [[ -n "$asset" ]] || continue
+  if printf '%s\n' "$asset_names" | grep -Fxq "$asset"; then
+    echo "    $asset -> present"
+  else
+    echo "    $asset -> missing" >&2
+    fail=1
+  fi
+done <<< "$manifest_assets"
+
+manifest_data_assets="$(jq -er '
+  .assets[] |
+    (if ((.parts // []) | length) > 0 then
+      .parts[]
+    else
+      { asset: .asset, sha256: .sha256, sizeBytes: .sizeBytes }
+    end) |
+    [.asset, .sha256, (.sizeBytes | tostring)] | @tsv
+' "$manifest_path")" || {
+  echo "error: cap-image-assets.json does not contain physical asset digests" >&2
+  exit 1
+}
+while IFS=$'\t' read -r asset expected_digest expected_size; do
+  remote="$(jq -r --arg name "$asset" \
+    '.assets[] | select(.name == $name) | [.digest, (.size | tostring)] | @tsv' \
+    <<< "$release_assets_json" | head -1)"
+  IFS=$'\t' read -r remote_digest remote_size <<< "$remote"
+  if [[ "$remote_digest" == "sha256:${expected_digest}" && "$remote_size" == "$expected_size" ]]; then
+    echo "    $asset -> digest and size verified"
+  else
+    echo "    $asset -> digest/size mismatch" >&2
+    fail=1
+  fi
+done <<< "$manifest_data_assets"
 [[ -z "$fail" ]] || { echo "error: not all sandbox image Release assets are present at $VERSION" >&2; exit 1; }
 
 echo "==> release $VERSION done — all release images and sandbox image assets present"

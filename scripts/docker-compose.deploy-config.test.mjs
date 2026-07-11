@@ -149,9 +149,9 @@ assert(
 );
 assert(
   /cap-image-assets\.json/.test(releaseSh) &&
-    /cap-aio-sandbox-\$\{VERSION\}-linux-amd64\.docker\.tar\.zst/.test(releaseSh) &&
-    /cap-boxlite-sandbox-\$\{VERSION\}-linux-arm64\.oci\.tar\.zst/.test(releaseSh),
-  'release.sh: verifies sandbox image Release assets',
+    /release-image-assets\.mjs list/.test(releaseSh) &&
+    /manifest_assets/.test(releaseSh),
+  'release.sh: verifies manifest-driven direct or split sandbox image Release assets',
 );
 
 // The api image's isolated Docker build must build the sandbox provider graph

@@ -226,7 +226,8 @@ runtime readiness, and task-time package/repository dependencies.
 
 - **WHEN** the installer runs with Release-asset sandbox image delivery
 - **THEN** its preflight or progress output identifies the release image asset
-  manifest, selected sandbox asset, checksum validation, and local staging path
+  manifest, selected logical sandbox asset or its ordered parts, per-part and
+  combined checksum validation, and local staging path
   as install-time dependencies
 - **AND** it keeps task-time dependencies such as repository access, agent auth,
   and package registries separate

@@ -405,8 +405,8 @@ export class SelfUpdateService {
     // PULL the full cap pull set (running cap services PLUS the never-starts
     // pull-only sandbox stager, so its image is staged) but `up -d` ONLY the
     // running cap services (a never-starts service is staged, not recreated).
-    const pull = [...base, 'pull', ...pullServices].join(' ');
-    const up = [...base, 'up', '-d', ...services].join(' ');
+    const pull = shellJoin([...base, 'pull', ...pullServices]);
+    const up = shellJoin([...base, 'up', '-d', ...services]);
     // Ensure compose is present (official docker:*-cli bundles it; this is a no-op
     // fallback that installs it from alpine repos otherwise — the updater has host net).
     // `||`/`&&` are left-associative in POSIX sh, so `A || B && pin && pull && up`
@@ -484,9 +484,8 @@ asset_base=${shQuote(options.releaseAssetBase)}
 asset=${shQuote(asset)}
 image=${shQuote(image)}
 cap_prepare_asset_tools
-cap_fetch_and_verify_asset "$target" "$asset_dir" "$asset_base" "$asset"
-asset_path="$asset_dir/downloads/$target/$asset"
-zstd -dc "$asset_path" | docker load >/dev/null
+asset_source="$(cap_fetch_and_verify_asset "$target" "$asset_dir" "$asset_base" "$asset")" || exit 1
+cap_stream_asset "$asset_source" | zstd -dc | docker load >/dev/null
 docker image inspect "$image" >/dev/null
 cap_set_env_value ${SANDBOX_IMAGE_DELIVERY_ENV} release-assets
 `.trim();
@@ -504,13 +503,12 @@ case "$(uname -m 2>/dev/null || echo unknown)" in
   *) slug=linux-amd64 ;;
 esac
 asset="cap-boxlite-sandbox-$target-$slug.oci.tar.zst"
-cap_fetch_and_verify_asset "$target" "$asset_dir" "$asset_base" "$asset"
-asset_path="$asset_dir/downloads/$target/$asset"
+asset_source="$(cap_fetch_and_verify_asset "$target" "$asset_dir" "$asset_base" "$asset")" || exit 1
 rootfs_dir="$asset_dir/boxlite/cap-boxlite-sandbox/$target/$slug/oci"
 tmp_dir="$rootfs_dir.captmp.$$"
 rm -rf "$tmp_dir"
 mkdir -p "$tmp_dir" "$(dirname "$rootfs_dir")"
-zstd -dc "$asset_path" | tar -C "$tmp_dir" -xf -
+cap_stream_asset "$asset_source" | zstd -dc | tar -C "$tmp_dir" -xf -
 rm -rf "$rootfs_dir"
 mv "$tmp_dir" "$rootfs_dir"
 cap_set_env_value ${SANDBOX_IMAGE_DELIVERY_ENV} release-assets
@@ -532,6 +530,7 @@ function buildEnvPersistScript(values: Readonly<Record<string, string>>): string
 
 function commonSandboxAssetShell(): string {
   return `
+set -o pipefail
 ${envFileShell()}
 cap_prepare_asset_tools() {
   if ! command -v curl >/dev/null 2>&1 || ! command -v zstd >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then
@@ -545,8 +544,35 @@ cap_download_asset() {
   tmp="$out.captmp"
   mkdir -p "$(dirname "$out")"
   rm -f "$tmp"
-  curl -fL --retry 3 -o "$tmp" "$asset_base/$name"
-  mv "$tmp" "$out"
+  curl -fL --retry 3 -o "$tmp" "$asset_base/$name" || {
+    rm -f "$tmp"
+    return 1
+  }
+  mv "$tmp" "$out" || return 1
+}
+cap_manifest_has_asset() {
+  manifest="$1"
+  name="$2"
+  grep -F '"asset"' "$manifest" | grep -Fq "\\"$name\\""
+}
+cap_verify_file() {
+  path="$1"
+  checksum="$2"
+  expected="$(awk '{ print $1; exit }' "$checksum")"
+  actual="$(sha256sum "$path" | awk '{ print $1; exit }')"
+  [ -n "$expected" ] && [ "$expected" = "$actual" ]
+}
+cap_stream_asset() {
+  source="$1"
+  case "$source" in
+    *.parts)
+      while IFS= read -r part; do
+        [ -f "$part" ]
+        cat "$part"
+      done < "$source"
+      ;;
+    *) cat "$source" ;;
+  esac
 }
 cap_fetch_and_verify_asset() {
   target="$1"
@@ -557,14 +583,40 @@ cap_fetch_and_verify_asset() {
   manifest="$download_dir/cap-image-assets.json"
   asset_path="$download_dir/$asset"
   checksum_path="$asset_path.sha256"
-  cap_download_asset cap-image-assets.json "$manifest"
-  grep -q "\\"version\\"[[:space:]]*:[[:space:]]*\\"$target\\"" "$manifest"
-  grep -q "\\"asset\\"[[:space:]]*:[[:space:]]*\\"$asset\\"" "$manifest"
-  cap_download_asset "$asset" "$asset_path"
-  cap_download_asset "$asset.sha256" "$checksum_path"
-  expected="$(awk '{ print $1; exit }' "$checksum_path")"
-  actual="$(sha256sum "$asset_path" | awk '{ print $1; exit }')"
-  [ -n "$expected" ] && [ "$expected" = "$actual" ]
+  cap_download_asset cap-image-assets.json "$manifest" || return 1
+  grep -q "\\"version\\"[[:space:]]*:[[:space:]]*\\"$target\\"" "$manifest" || return 1
+  cap_manifest_has_asset "$manifest" "$asset" || return 1
+  first_part="$asset.part-0001"
+  if cap_manifest_has_asset "$manifest" "$first_part"; then
+    descriptor="$asset_path.parts"
+    descriptor_tmp="$descriptor.captmp"
+    rm -f "$descriptor" "$descriptor_tmp"
+    : > "$descriptor_tmp"
+    index=1
+    while :; do
+      part="$asset.part-$(printf '%04d' "$index")"
+      cap_manifest_has_asset "$manifest" "$part" || break
+      part_path="$download_dir/$part"
+      part_checksum="$part_path.sha256"
+      cap_download_asset "$part" "$part_path" || return 1
+      cap_download_asset "$part.sha256" "$part_checksum" || return 1
+      cap_verify_file "$part_path" "$part_checksum" || return 1
+      printf '%s\n' "$part_path" >> "$descriptor_tmp" || return 1
+      index=$((index + 1))
+    done
+    [ "$index" -gt 1 ] || return 1
+    cap_download_asset "$asset.sha256" "$checksum_path" || return 1
+    mv "$descriptor_tmp" "$descriptor" || return 1
+    expected="$(awk '{ print $1; exit }' "$checksum_path")"
+    actual="$(cap_stream_asset "$descriptor" | sha256sum | awk '{ print $1; exit }')" || return 1
+    [ -n "$expected" ] && [ "$expected" = "$actual" ] || return 1
+    printf '%s\n' "$descriptor"
+    return
+  fi
+  cap_download_asset "$asset" "$asset_path" || return 1
+  cap_download_asset "$asset.sha256" "$checksum_path" || return 1
+  cap_verify_file "$asset_path" "$checksum_path" || return 1
+  printf '%s\n' "$asset_path"
 }
 `.trim();
 }
@@ -613,6 +665,12 @@ function normalizeSandboxProvider(value: string | undefined): string {
 
 function shQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function shellJoin(argv: readonly string[]): string {
+  return argv
+    .map((value) => (/^[A-Za-z0-9_./:@+-]+$/.test(value) ? value : shQuote(value)))
+    .join(' ');
 }
 
 /**

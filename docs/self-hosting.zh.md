@@ -114,9 +114,11 @@
   来源。`auto` 下 BoxLite 会先尝试同版本 GitHub Release asset，并写入
   `BOXLITE_ROOTFS_PATH`；asset 不可用时回落到 `BOXLITE_IMAGE`。AIO 默认走 registry，
   只有显式 `release-assets` 时才下载并校验
-  `cap-aio-sandbox-<version>-linux-amd64.docker.tar.zst`，然后 `docker load`。BoxLite
+  `cap-aio-sandbox-<version>-linux-amd64.docker.tar.zst`；如果 manifest 把该逻辑资产
+  列成 `.part-0001`、`.part-0002` 等有序分片，则逐片及整体校验后流式送入
+  `docker load`，不会再落一份完整拼接文件。BoxLite
   `release-assets` 会下载并校验
-  `cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst`，解压到
+  `cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst`（或其有序分片），解压到
   `CAP_SANDBOX_ASSET_DIR` 下，写入 `BOXLITE_ROOTFS_PATH`，清空 image env，并要求原生
   BoxLite 协议（`BOXLITE_PROTOCOL_MODE=native`、`BOXLITE_PATH_PREFIX=default`）。
   registry 模式才默认把 `BOXLITE_IMAGE` 写成同版本的
@@ -128,6 +130,10 @@
   `sh`、`tar`、`tmux`），然后删除 probe sandbox。只有在明确使用更窄的自定义
   runtime image 时才覆盖 `BOXLITE_RUNTIME_REQUIRED_TOOLS`。官方 BoxLite 镜像使用
   `/home/gem/workspace`，与 AIO runtime 的启动路径一致。
+  `v0.37.1` 之前的 API 不认识 AIO 分片资产。已有 AIO 部署如果显式使用
+  `release-assets`，跨过该版本边界前需要先重跑最新版 quick-deploy，或者先切到
+  `registry` 并重建 API，再使用控制台自更新。默认走 registry 的 AIO 部署以及仍为
+  单文件的 BoxLite 资产不受影响。
 - **可选任务期依赖：** 导入/clone/push 私有仓库需要 forge PAT；邮箱验证码登录需要
   SMTP；生产公开需要 DNS/TLS/反代/cookie 作用域；不用内置数据库时需要外部 Postgres；
   特定 runtime 可能需要 `CLAUDE_CODE_OAUTH_TOKEN`；本地可选的
@@ -316,7 +322,7 @@ COMPOSE_PROFILES=web \
 ```
 
 - **同一个版本。** `${CAP_VERSION}` 把 `cap-api`、`cap-web`、`cap-aio-sandbox`（每任务执行镜像）以及 `cap-boxlite-sandbox` 钉到同一个 tag，让你永远不会跑到不匹配的一组。它被刻意设为**必填**——不设 `CAP_VERSION` 会让 `docker compose config` 大声告警 / 失败，而不是悄悄解析成一个空 tag。请始终把它设为一个真实已发布的 Release tag。
-- **sandbox runtime assets 也匹配版本。** Release 上的 `cap-image-assets.json` 和 AIO/BoxLite `.tar.zst` assets 带同一个版本与 checksum；`quick-deploy.sh` 和 self-update 会校验 checksum 后再 load/extract。
+- **sandbox runtime assets 也匹配版本。** Release 上的 `cap-image-assets.json` 和 AIO/BoxLite `.tar.zst` assets 带同一个版本与 checksum；大逻辑资产可按 GitHub 单文件限制发布成 `.part-0001`、`.part-0002` 等有序分片。`quick-deploy.sh` 和 self-update 会先校验每片及整体 checksum，再流式 load/extract。
 - **默认行为不变。** 去掉第二个 `-f docker-compose.images.yml`（即纯 `docker compose up --build`），你就回到从源码构建。该 override 纯属附加且需主动选用——它的存在不会改变从源码构建路径的任何方面。
 - **确认你在跑什么。** 已发布的 `cap-api` 会在 `GET /version`（无需鉴权）自报其构建：`curl -s https://<api-origin>/version` 返回 `{ version, gitSha, buildTime }`——`version` 即 Release tag。
 

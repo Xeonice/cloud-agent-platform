@@ -105,7 +105,10 @@ runtime delivery mode for the target version before it recreates CAP services.
 Registry-backed deployments SHALL keep the existing pull-before-recreate
 behavior. Release-asset-backed deployments SHALL download, verify, and stage the
 target version's sandbox runtime asset before the API is recreated or the
-deployment is reported upgraded.
+deployment is reported upgraded. A target manifest MAY represent a logical asset
+as ordered parts; the updater SHALL verify each part and the combined logical
+checksum, then stream the ordered content into the same load/extract path without
+requiring a second assembled copy on disk.
 
 #### Scenario: Asset-backed AIO upgrade loads the target archive before recreate
 
@@ -167,4 +170,3 @@ creation can use them.
 - **WHEN** self-update stages the target release's default sandbox runtime asset
 - **THEN** the staged release default remains available as the deployment fallback
 - **AND** custom environments are preserved as separate managed choices
-

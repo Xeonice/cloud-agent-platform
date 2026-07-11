@@ -340,8 +340,10 @@ to registry delivery only with explicit output that identifies the fallback.
 - **THEN** it downloads the release image asset manifest for `CAP_VERSION`
 - **AND** it downloads the selected asset and checksum with resumable or
   temporary-file semantics
-- **AND** it verifies the checksum before loading, extracting, or reporting
-  provider readiness
+- **AND** when the manifest lists ordered parts, it downloads and verifies every
+  part and verifies their combined stream against the logical asset checksum
+- **AND** it verifies all applicable checksums before streaming the direct asset
+  or ordered parts into loading/extraction or reporting provider readiness
 
 #### Scenario: AIO asset delivery loads a Docker archive
 

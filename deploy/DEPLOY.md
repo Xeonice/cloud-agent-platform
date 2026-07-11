@@ -338,7 +338,10 @@ single Release version `vX.Y.Z` (decision ⑤). The release workflow also attach
 central sandbox image assets to the GitHub Release:
 `cap-image-assets.json`, `cap-aio-sandbox-<version>-linux-amd64.docker.tar.zst`,
 and `cap-boxlite-sandbox-<version>-linux-{amd64,arm64}.oci.tar.zst`, each with a
-`.sha256`. A self-hoster can therefore pull a mutually-compatible set from GHCR
+`.sha256`. When a logical archive exceeds GitHub's per-file limit, the manifest
+maps it to ordered `.part-0001`, `.part-0002`, ... assets with per-part and
+combined checksums instead of uploading the oversized logical file. A self-hoster
+can therefore pull a mutually-compatible set from GHCR
 or stage the matching sandbox runtime from Release assets instead of building
 (see the prebuilt-image override in
 [`docs/self-hosting.md`](../docs/self-hosting.md)).
