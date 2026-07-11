@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.37.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.0...v0.37.1) (2026-07-11)
+
+
+### Bug Fixes
+
+* **release:** split oversized sandbox image assets ([87ce4bf](https://github.com/Xeonice/cloud-agent-platform/commit/87ce4bfd07cfb44ab066ab728f829b9c046d8053))
+* **release:** split oversized sandbox image assets ([f0fa810](https://github.com/Xeonice/cloud-agent-platform/commit/f0fa8101abb8f1a67f5bfab60ccfa02c6555fd7c))
+
 ## [0.37.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.36.1...v0.37.0) (2026-07-10)
 
 
