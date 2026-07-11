@@ -3,6 +3,7 @@ import {
   test,
   type APIRequestContext,
   type Page,
+  type Request,
   type Response,
   type TestInfo,
 } from "@playwright/test";
@@ -191,7 +192,17 @@ test("owner consumes one manual period and a separate real poller schedule fires
   expect(normalNextRunAt.getTime()).toBeGreaterThan(Date.now());
   expect(manualSchedule.currentPeriod.run).toBeNull();
 
+  const scheduleIds = new Set([manualSchedule.id, automaticSchedule.id]);
+  const schedulesClientReady = page.waitForResponse((response) => {
+    if (response.request().method() !== "GET") return false;
+    const match = new URL(response.url()).pathname.match(
+      /^\/schedules\/([^/]+)\/runs$/,
+    );
+    return match !== null && scheduleIds.has(decodeURIComponent(match[1]!));
+  });
   await page.goto("/schedules", { waitUntil: "domcontentloaded" });
+  const clientReadyResponse = await schedulesClientReady;
+  expect(clientReadyResponse.status()).toBeLessThan(400);
   await expect(page.getByRole("heading", { name: "定时任务" })).toBeVisible();
   const manualScheduleRow = page
     .getByRole("row")
@@ -206,6 +217,17 @@ test("owner consumes one manual period and a separate real poller schedule fires
   ).toBeVisible();
   await expect(manualScheduleRow).toContainText("本周期未执行");
 
+  let manualDispatchRequestCount = 0;
+  const countManualDispatchRequest = (request: Request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/schedules/${manualSchedule.id}/dispatch`
+    ) {
+      manualDispatchRequestCount += 1;
+    }
+  };
+  page.on("request", countManualDispatchRequest);
   const clickedAt = Date.now();
   const dispatchResponsePromise = page.waitForResponse(
     (response) =>
@@ -215,7 +237,9 @@ test("owner consumes one manual period and a separate real poller schedule fires
   );
   await manualScheduleRow.getByRole("button", { name: "立即执行" }).click();
   const dispatchResponse = await dispatchResponsePromise;
+  page.off("request", countManualDispatchRequest);
   const dispatchReturnedAt = Date.now();
+  expect(manualDispatchRequestCount).toBe(1);
   expect(dispatchResponse.ok(), await responseFailure(dispatchResponse)).toBe(true);
   expect(dispatchResponse.request().postDataJSON()).toEqual({
     expectedPeriodKey: manualSchedule.currentPeriod.key,
