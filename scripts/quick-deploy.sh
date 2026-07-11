@@ -751,6 +751,30 @@ boxlite_asset_platform_slug(){
     printf '%s\n' "linux-amd64"
   fi
 }
+boxlite_managed_rootfs_path(){
+  printf '%s/boxlite/cap-boxlite-sandbox/%s/%s/oci\n' \
+    "${CAP_SANDBOX_ASSET_DIR%/}" "$CAP_VERSION" "$(boxlite_asset_platform_slug)"
+}
+boxlite_rootfs_path_is_managed(){
+  local path="$1" prefix remainder version suffix
+  [ -n "$path" ] || return 1
+  prefix="${CAP_SANDBOX_ASSET_DIR%/}/boxlite/cap-boxlite-sandbox/"
+  case "$path" in
+    "$prefix"*) ;;
+    *) return 1 ;;
+  esac
+  remainder="${path#"$prefix"}"
+  version="${remainder%%/*}"
+  [ -n "$version" ] && [ "$remainder" != "$version" ] || return 1
+  suffix="${remainder#*/}"
+  case "$suffix" in
+    linux-amd64/oci|linux-arm64/oci) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+boxlite_managed_rootfs_is_complete(){
+  [ -f "$1/oci-layout" ]
+}
 stage_aio_release_asset(){
   local manifest_path asset_name asset_source image
   manifest_path="$(fetch_asset_manifest)" || return 1
@@ -773,7 +797,7 @@ stage_boxlite_release_asset(){
   asset_source="$(stage_release_asset_source "$manifest_path" "$asset_name")" || return 1
   command -v zstd >/dev/null 2>&1 || die "zstd is required to extract BoxLite sandbox Release assets"
   command -v tar >/dev/null 2>&1 || die "tar is required to extract BoxLite sandbox Release assets"
-  rootfs_dir="${CAP_SANDBOX_ASSET_DIR}/boxlite/cap-boxlite-sandbox/${CAP_VERSION}/${slug}/oci"
+  rootfs_dir="$(boxlite_managed_rootfs_path)"
   tmp_dir="${rootfs_dir}.captmp.$$"
   parent="$(dirname "$rootfs_dir")"
   rm -rf "$tmp_dir"
@@ -894,10 +918,31 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   boxlite_endpoint="$(require_value BOXLITE_ENDPOINT)"
   boxlite_readiness_endpoint="$(boxlite_readiness_endpoint_value "$boxlite_endpoint")"
   boxlite_token="$(require_value BOXLITE_API_TOKEN)"
+  boxlite_rootfs_process_override="${BOXLITE_ROOTFS_PATH:-}"
+  boxlite_rootfs_map_process_override="${BOXLITE_ROOTFS_PATH_MAP:-}"
   boxlite_image="$(value_for BOXLITE_IMAGE)"
   boxlite_image_map="$(value_for BOXLITE_IMAGE_MAP)"
   boxlite_rootfs_path="$(value_for BOXLITE_ROOTFS_PATH)"
   boxlite_rootfs_path_map="$(value_for BOXLITE_ROOTFS_PATH_MAP)"
+  if [ -n "$boxlite_rootfs_process_override" ] && [ -z "$boxlite_rootfs_map_process_override" ]; then
+    boxlite_rootfs_path_map=""
+  elif [ -n "$boxlite_rootfs_map_process_override" ] && [ -z "$boxlite_rootfs_process_override" ]; then
+    boxlite_rootfs_path=""
+  fi
+  if [ -z "$boxlite_rootfs_process_override" ] && \
+    [ -z "$boxlite_rootfs_map_process_override" ] && \
+    boxlite_rootfs_path_is_managed "$boxlite_rootfs_path"; then
+    if [ "$SANDBOX_IMAGE_DELIVERY" = "registry" ]; then
+      echo "  replacing managed BoxLite rootfs with registry delivery"
+      boxlite_rootfs_path=""
+    elif [ "$boxlite_rootfs_path" != "$(boxlite_managed_rootfs_path)" ]; then
+      echo "  replacing stale managed BoxLite rootfs for CAP_VERSION=${CAP_VERSION}"
+      boxlite_rootfs_path=""
+    elif ! boxlite_managed_rootfs_is_complete "$boxlite_rootfs_path"; then
+      echo "  restaging incomplete managed BoxLite rootfs for CAP_VERSION=${CAP_VERSION}"
+      boxlite_rootfs_path=""
+    fi
+  fi
   if [ -n "$boxlite_rootfs_path" ] || [ -n "$boxlite_rootfs_path_map" ]; then
     SANDBOX_IMAGE_DELIVERY_EFFECTIVE="release-assets"
   elif try_stage_boxlite_release_asset; then
@@ -927,8 +972,13 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   if [ -n "$boxlite_rootfs_path" ] || [ -n "$boxlite_rootfs_path_map" ]; then
     unset_env_value BOXLITE_IMAGE
     unset_env_value BOXLITE_IMAGE_MAP
-    set_env_value BOXLITE_ROOTFS_PATH "$boxlite_rootfs_path"
-    set_env_value BOXLITE_ROOTFS_PATH_MAP "$boxlite_rootfs_path_map"
+    if [ -n "$boxlite_rootfs_path" ]; then
+      unset_env_value BOXLITE_ROOTFS_PATH_MAP
+      set_env_value BOXLITE_ROOTFS_PATH "$boxlite_rootfs_path"
+    else
+      unset_env_value BOXLITE_ROOTFS_PATH
+      set_env_value BOXLITE_ROOTFS_PATH_MAP "$boxlite_rootfs_path_map"
+    fi
   else
     unset_env_value BOXLITE_ROOTFS_PATH
     unset_env_value BOXLITE_ROOTFS_PATH_MAP
