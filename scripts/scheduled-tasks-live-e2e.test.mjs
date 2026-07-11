@@ -29,7 +29,7 @@ test('scheduled-task runner is valid shell and allocates isolated resources', ()
   assert.doesNotMatch(runner, /(?:^|\s)(?:3000|5432|8080):(?:3000|5432|8080)(?:\s|$)/m);
 });
 
-test('API build and Prisma commands run without loading application env files', async () => {
+test('API and web dependency builds run without loading application env files', async () => {
   assert.equal((runner.match(/env -i \\/g) ?? []).length >= 6, true);
   assert.doesNotMatch(runner, /--env-file/);
   assert.match(runner, /E2E_EMPTY_ENV_DIR="\$EMPTY_ENV_DIR"/);
@@ -50,12 +50,30 @@ test('API build and Prisma commands run without loading application env files', 
     /node "\$ROOT_DIR\/apps\/api\/node_modules\/prisma\/build\/index\.js"[\s\S]*?migrate deploy --schema "\$PRISMA_WORK_DIR\/prisma\/schema\.prisma"/,
   );
   assert.match(runner, /node node_modules\/@nestjs\/cli\/bin\/nest\.js build/);
+  assert.match(runner, /pnpm --filter @cap\/ui build/);
+  assert.match(
+    runner,
+    /\[\[ -f packages\/ui\/dist\/index\.js \]\] \|\| die "packages\/ui\/dist\/index\.js is missing; build @cap\/ui first"/,
+  );
+  const uiBuildIndex = runner.indexOf('pnpm --filter @cap/ui build');
+  const uiDistCheckIndex = runner.indexOf('[[ -f packages/ui/dist/index.js ]]');
+  const viteStartIndex = runner.indexOf('node node_modules/vite/bin/vite.js');
+  assert.equal(uiBuildIndex < uiDistCheckIndex, true);
+  assert.equal(uiDistCheckIndex < viteStartIndex, true);
   assert.doesNotMatch(runner, /turbo build --filter=@cap\/api/);
   assert.doesNotMatch(runner, /--filter @cap\/api exec prisma/);
 
   const apiPackage = JSON.parse(
     await readFile(join(root, 'apps/api/package.json'), 'utf8'),
   );
+  const uiPackage = JSON.parse(
+    await readFile(join(root, 'packages/ui/package.json'), 'utf8'),
+  );
+  const webPackage = JSON.parse(
+    await readFile(join(root, 'apps/web/package.json'), 'utf8'),
+  );
+  assert.equal(webPackage.dependencies['@cap/ui'], 'workspace:*');
+  assert.equal(uiPackage.exports['.'].import, './dist/index.js');
   assert.doesNotMatch(apiPackage.scripts['test:integration:schedules'], /env-file/);
 });
 
