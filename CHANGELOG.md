@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.37.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.1...v0.37.2) (2026-07-11)
+
+
+### Bug Fixes
+
+* **ci:** build web dependencies for schedule e2e ([df8408f](https://github.com/Xeonice/cloud-agent-platform/commit/df8408f36d58b9c615580464c8ffab4ee4e1e08c))
+* **deploy:** rotate managed boxlite assets ([76f455c](https://github.com/Xeonice/cloud-agent-platform/commit/76f455ce691988d6e751f425f388d62d5efb2cbb))
+* **schedules:** harden period dispatch and visibility ([a6adfda](https://github.com/Xeonice/cloud-agent-platform/commit/a6adfda9fc2c55aff6f50d3bc6191bad253ce058))
+* **schedules:** harden period dispatch and visibility ([13fe697](https://github.com/Xeonice/cloud-agent-platform/commit/13fe697af8a823dface0bec884bb2064cd112f5e))
+
 ## [0.37.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.0...v0.37.1) (2026-07-11)
 
 > [!IMPORTANT]
