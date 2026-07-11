@@ -108,9 +108,13 @@ function projectTask(row: FakeTaskRow, args: Record<string, unknown> = {}) {
 
 function buildService(rows: FakeTaskRow[]): {
   service: TasksService;
-  calls: { findMany: unknown[]; findUnique: unknown[]; update: unknown[] };
+  calls: { findMany: unknown[]; findUnique: unknown[]; updateMany: unknown[] };
 } {
-  const calls = { findMany: [] as unknown[], findUnique: [] as unknown[], update: [] as unknown[] };
+  const calls = {
+    findMany: [] as unknown[],
+    findUnique: [] as unknown[],
+    updateMany: [] as unknown[],
+  };
   const prisma = {
     task: {
       findMany: async (args: Record<string, unknown>) => {
@@ -124,12 +128,15 @@ function buildService(rows: FakeTaskRow[]): {
         const row = rows.find((candidate) => candidate.id === args.where.id);
         return row ? projectTask(row, args) : null;
       },
-      update: async (args: { where: { id: string }; data: { status?: string } }) => {
-        calls.update.push(args);
+      updateMany: async (args: {
+        where: { id: string; status: string };
+        data: { status?: string };
+      }) => {
+        calls.updateMany.push(args);
         const row = rows.find((candidate) => candidate.id === args.where.id);
-        if (!row) return null;
+        if (!row || row.status !== args.where.status) return { count: 0 };
         if (args.data.status) row.status = args.data.status;
-        return projectTask(row, args);
+        return { count: 1 };
       },
     },
     sandboxRun: {
@@ -267,7 +274,11 @@ test('transition response includes the selected provider summary', async () => {
     id: 'boxlite',
     label: 'BoxLite Sandbox',
   });
-  assertProviderInclude(calls.update[0]);
+  assertProviderInclude(calls.findUnique[calls.findUnique.length - 1]);
+  assert.deepEqual(calls.updateMany[0], {
+    where: { id: taskId, status: 'running' },
+    data: { status: 'completed' },
+  });
 });
 
 test('unknown provider ids use the neutral public label', async () => {

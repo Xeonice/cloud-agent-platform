@@ -177,6 +177,11 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
     }
   });
 
+  it("does not fabricate a current-period identity in the debugger sample", () => {
+    const dispatch = findEndpoint("schedules.dispatch")!;
+    expect(JSON.parse(dispatch.sampleBody!)).toEqual({});
+  });
+
   it("exposes every operation header declared by the manifest", () => {
     for (const operation of PUBLIC_V1_OPERATIONS) {
       const endpoint = DATA_API_CATALOG.find(

@@ -305,6 +305,19 @@ test('the document is built from the SAME schemas used for request validation', 
   );
 });
 
+test('request-body required flags match the shared validation schemas', () => {
+  const doc = asLoose(buildV1OpenApiDocument());
+  const createTask = doc.paths?.['/v1/tasks']?.post as
+    | { requestBody?: { required?: boolean } }
+    | undefined;
+  const dispatchSchedule = doc.paths?.['/v1/schedules/{id}/dispatch']?.post as
+    | { requestBody?: { required?: boolean } }
+    | undefined;
+
+  assert.equal(createTask?.requestBody?.required, true);
+  assert.equal(dispatchSchedule?.requestBody?.required, false);
+});
+
 test('the list paths document the paginated {items,nextCursor} envelope', () => {
   const doc = buildV1OpenApiDocument();
   const loose = asLoose(doc);

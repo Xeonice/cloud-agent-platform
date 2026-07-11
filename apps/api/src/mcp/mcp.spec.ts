@@ -38,6 +38,7 @@ import { McpController } from './mcp.controller';
 import { McpServerFactory } from './mcp.server';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  DispatchScheduleRequestSchema,
   PUBLIC_V1_OPERATIONS,
   SessionHistorySchema,
   TaskResponseSchema,
@@ -159,6 +160,7 @@ const SCHEDULE_RUN: ScheduleRunResponse = {
   scheduledFor: new Date('2026-07-10T09:00:00.000Z'),
   status: 'created',
   taskId: TASK.id,
+  taskStatus: TASK.status,
   error: null,
   createdAt: new Date('2026-07-10T09:00:00.000Z'),
   updatedAt: new Date('2026-07-10T09:00:01.000Z'),
@@ -224,8 +226,10 @@ function recordingDeps(): { deps: McpToolDeps; calls: string[] } {
       calls.push(`resumeSchedule:${ownerUserId}:${id}`);
       return SCHEDULE;
     },
-    async dispatchSchedule(ownerUserId, id) {
-      calls.push(`dispatchSchedule:${ownerUserId}:${id}`);
+    async dispatchSchedule(ownerUserId, id, body) {
+      calls.push(
+        `dispatchSchedule:${ownerUserId}:${id}:${body.expectedPeriodKey ?? '-'}`,
+      );
       return SCHEDULE;
     },
     async deleteSchedule(ownerUserId, id) {
@@ -450,6 +454,11 @@ test('every MCP tool advertises structured output and create_task reuses the /v1
     TaskResponseSchema,
     'create_task structured output uses the canonical /v1 task response schema',
   );
+  assert.deepEqual(
+    Object.keys(configs.get('dispatch_schedule')?.inputSchema ?? {}).sort(),
+    ['expectedPeriodKey', 'id'],
+    'dispatch_schedule advertises the canonical optional period key',
+  );
 });
 
 test('the real MCP SDK advertises and validates structured list output', async () => {
@@ -596,7 +605,10 @@ test('schedule tools pass the token owner and delegate to ScheduledTasksService 
   );
   await tools.get('pause_schedule')!({ id: SCHEDULE_ID }, owner);
   await tools.get('resume_schedule')!({ id: SCHEDULE_ID }, owner);
-  await tools.get('dispatch_schedule')!({ id: SCHEDULE_ID }, owner);
+  await tools.get('dispatch_schedule')!(
+    { id: SCHEDULE_ID, expectedPeriodKey: 'day:2026-07-11' },
+    owner,
+  );
   await tools.get('delete_schedule')!({ id: SCHEDULE_ID }, owner);
   await tools.get('list_schedule_runs')!(
     { id: SCHEDULE_ID, limit: 10, cursor: 'run-next' },
@@ -610,7 +622,7 @@ test('schedule tools pass the token owner and delegate to ScheduledTasksService 
     `updateSchedule:local-acct-1:${SCHEDULE_ID}:renamed`,
     `pauseSchedule:local-acct-1:${SCHEDULE_ID}`,
     `resumeSchedule:local-acct-1:${SCHEDULE_ID}`,
-    `dispatchSchedule:local-acct-1:${SCHEDULE_ID}`,
+    `dispatchSchedule:local-acct-1:${SCHEDULE_ID}:day:2026-07-11`,
     `deleteSchedule:local-acct-1:${SCHEDULE_ID}`,
     `listScheduleRuns:local-acct-1:${SCHEDULE_ID}:10:run-next`,
   ]);
@@ -638,6 +650,15 @@ test('schedule tools reuse contract cross-field validation before delegation', a
     () => tools.get('update_schedule')!({ id: SCHEDULE_ID }, owner),
     /At least one schedule field must be provided/,
   );
+  await assert.rejects(
+    () =>
+      tools.get('dispatch_schedule')!(
+        { id: SCHEDULE_ID, expectedPeriodKey: '' },
+        owner,
+      ),
+    /Invalid schedule period identity/,
+  );
+  assert.deepEqual(DispatchScheduleRequestSchema.parse({}), {});
   assert.deepEqual(calls, []);
 });
 

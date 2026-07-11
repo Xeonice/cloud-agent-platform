@@ -40,9 +40,16 @@ function buildService(scheduleRun: { scheduleId: string; scheduledFor: Date } | 
   const prisma = {
     task: {
       findUnique: async () => row,
-      update: async ({ data }: { data: { status: string } }) => {
+      updateMany: async ({
+        where,
+        data,
+      }: {
+        where: { status: string };
+        data: { status: string };
+      }) => {
+        if (row.status !== where.status) return { count: 0 };
         row = { ...row, status: data.status };
-        return row;
+        return { count: 1 };
       },
     },
   } as unknown as PrismaService;

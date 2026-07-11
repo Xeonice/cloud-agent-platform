@@ -5,7 +5,7 @@
  *
  * Verifies two orthogonal claims:
  * 1. OWNER-SCOPED: the ForgeCredential queried is keyed to the task owner's
- *    userId (from the `task.created` audit event), never to a different user.
+ *    userId (from the durable Task owner), never to a different user.
  *    Concretely, when user A owns a task, the resolver must pass userId='A'
  *    when looking up the ForgeCredential — not the currently-logged-in user
  *    or any other value.
@@ -51,6 +51,7 @@ function buildResolver(opts: {
   const prisma = {
     task: {
       findUnique: async () => ({
+        ownerUserId: opts.taskOwnerId,
         repo: { gitSource: opts.location?.cloneUrl ?? GITHUB_LOC.cloneUrl },
       }),
     },

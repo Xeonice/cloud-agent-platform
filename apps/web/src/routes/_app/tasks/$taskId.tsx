@@ -55,7 +55,10 @@ import {
 } from "@/components/session/session-terminal";
 import { TerminalSkeleton } from "@/components/session/terminal-skeleton";
 import { SessionReplay } from "@/components/session/session-replay";
-import { sessionViewMode } from "@/components/session/session-view-mode";
+import {
+  sessionTaskState,
+  sessionViewMode,
+} from "@/components/session/session-view-mode";
 import { formatTaskResource } from "@/components/session/format-resource";
 import { SANDBOX_PROVIDER_PENDING_LABEL } from "@/lib/sandbox-provider-label";
 
@@ -137,13 +140,7 @@ function SessionPage(): React.ReactElement {
   // else running. Drives the H1 Badge and the statusline phase (mirrored, never
   // a fabricated phase). The `gate`/等待审批 state lands with the follow-up
   // approval change that lifts the pending request to the page.
-  const taskState: SessionTaskState =
-    task?.status === "failed"
-      ? "failed"
-      : task != null &&
-          (TERMINAL_TASK_STATUSES as readonly string[]).includes(task.status)
-        ? "stopped"
-        : "running";
+  const taskState: SessionTaskState = sessionTaskState(task?.status);
 
   // Per-task live resource line: codex's OWN process CPU/memory as the PRIMARY
   // figure, labeled by the reading's `scope`, degrading honestly to "未运行/未采样"

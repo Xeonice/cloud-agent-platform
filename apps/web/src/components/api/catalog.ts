@@ -207,6 +207,12 @@ const UPDATE_SCHEDULE_SAMPLE = JSON.stringify(
   2,
 );
 
+const DISPATCH_SCHEDULE_SAMPLE = JSON.stringify(
+  {},
+  null,
+  2,
+);
+
 const ENDPOINT_OVERLAYS = {
   "tasks.create": {
     domain: "任务",
@@ -325,7 +331,7 @@ const ENDPOINT_OVERLAYS = {
     title: "立即执行",
     pathParams: SCHEDULE_ID_PARAM,
     queryParams: [],
-    sampleBody: null,
+    sampleBody: DISPATCH_SCHEDULE_SAMPLE,
   },
   "schedules.delete": {
     domain: "定时任务",

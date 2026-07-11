@@ -15,6 +15,8 @@
     "verify": "turbo typecheck lint build",
     "test:sandbox": "pnpm --filter @cap/sandbox-core test && pnpm --filter @cap/sandbox-cloud-http test && pnpm --filter @cap/sandbox-provider-aio test && pnpm --filter @cap/sandbox-provider-boxlite test && pnpm --filter @cap/sandbox test",
     "test:sandbox:e2e": "pnpm --filter @cap/sandbox-provider-aio test:e2e && pnpm --filter @cap/sandbox-provider-boxlite test:e2e",
+    "test:integration:schedules": "pnpm --filter @cap/api test:integration:schedules",
+    "test:e2e:schedules:local": "bash scripts/scheduled-tasks-live-e2e.sh",
     "test:web:provider-terminal-story": "pnpm --filter @cap/web test:provider-terminal-story",
     "coverage:sandbox": "pnpm --filter @cap/sandbox-core coverage && pnpm --filter @cap/sandbox-cloud-http coverage && pnpm --filter @cap/sandbox-provider-aio coverage && pnpm --filter @cap/sandbox-provider-boxlite coverage && pnpm --filter @cap/sandbox coverage",
     "prepare": "husky"

@@ -44,6 +44,7 @@ import type {
   SandboxEnvironmentResponse,
   ValidateSandboxEnvironmentResponse,
   CreateScheduleRequest,
+  DispatchScheduleRequest,
   UpdateScheduleRequest,
   ScheduleResponse,
 } from "@cap/contracts";
@@ -212,15 +213,38 @@ export function resumeScheduleMutation(
 
 export function dispatchScheduleMutation(
   queryClient: QueryClient,
-): UseMutationOptions<ScheduleResponse, Error, string> {
+): UseMutationOptions<
+  ScheduleResponse,
+  Error,
+  { id: string; expectedPeriodKey?: DispatchScheduleRequest["expectedPeriodKey"] }
+> {
   return {
-    mutationFn: (id) => real.dispatchSchedule(id),
+    mutationFn: ({ id, expectedPeriodKey }) =>
+      real.dispatchSchedule(id, expectedPeriodKey),
     onSuccess: (schedule) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
+      queryClient.setQueryData<ScheduleResponse[]>(queryKeys.schedules, (current) =>
+        current?.map((item) => (item.id === schedule.id ? schedule : item)),
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.schedules,
+        exact: true,
+      });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.scheduleRuns(schedule.id),
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+    },
+    onError: async (error, { id }) => {
+      if (!(error instanceof real.ApiError) || error.status !== 409) return;
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.schedules,
+          exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.scheduleRuns(id),
+        }),
+      ]);
     },
   };
 }

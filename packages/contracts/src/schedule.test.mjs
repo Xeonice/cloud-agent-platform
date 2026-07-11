@@ -10,6 +10,7 @@ const contracts = require(path.join(here, '..', 'dist', 'index.js'));
 
 const {
   CreateScheduleRequestSchema,
+  DispatchScheduleRequestSchema,
   ScheduleRecurrenceSchema,
   ScheduleOwnerRequiredErrorSchema,
   ScheduleResponseSchema,
@@ -18,7 +19,9 @@ const {
   UpdateScheduleRequestSchema,
   V1ListScheduleRunsResponseSchema,
   V1ListSchedulesResponseSchema,
+  computeCurrentSchedulePeriod,
   computeNextScheduleRunAt,
+  computeSchedulePeriodForOccurrence,
   recurrenceResponseFromCron,
   recurrenceToScheduleTiming,
 } = contracts;
@@ -167,6 +170,94 @@ test('next-fire helper respects timezone and DST gaps', () => {
   assert.equal(londonDstGap.toISOString(), '2026-03-29T01:30:00.000Z');
 });
 
+test('current periods use the schedule timezone calendar for product recurrences', () => {
+  const shanghaiDaily = computeCurrentSchedulePeriod({
+    cronExpression: '0 9 * * *',
+    timezone: 'Asia/Shanghai',
+    at: new Date('2026-07-10T16:30:00.000Z'),
+  });
+  assert.equal(shanghaiDaily.key, 'day:2026-07-11');
+  assert.equal(shanghaiDaily.scheduledFor?.toISOString(), '2026-07-11T01:00:00.000Z');
+
+  const londonWeekly = computeCurrentSchedulePeriod({
+    cronExpression: '0 9 * * 0',
+    timezone: 'Europe/London',
+    at: new Date('2026-07-12T08:30:00.000Z'),
+  });
+  assert.equal(londonWeekly.key, 'week:2026-07-06');
+  assert.equal(londonWeekly.scheduledFor?.toISOString(), '2026-07-12T08:00:00.000Z');
+
+  const monthly = computeCurrentSchedulePeriod({
+    cronExpression: '15 8 12 * *',
+    timezone: 'Asia/Shanghai',
+    at: new Date('2026-07-20T04:00:00.000Z'),
+  });
+  assert.equal(monthly.key, 'month:2026-07');
+  assert.equal(monthly.scheduledFor?.toISOString(), '2026-07-12T00:15:00.000Z');
+});
+
+test('weekday weekends retain a day period without fabricating a nominal fire', () => {
+  const saturday = computeCurrentSchedulePeriod({
+    cronExpression: '0 9 * * 1-5',
+    timezone: 'Asia/Shanghai',
+    at: new Date('2026-07-11T04:00:00.000Z'),
+    nextRunAt: new Date('2026-07-13T01:00:00.000Z'),
+  });
+  assert.deepEqual(saturday, {
+    key: 'day:2026-07-11',
+    scheduledFor: null,
+  });
+});
+
+test('custom cron uses the next nominal occurrence and preserves an overdue nextRunAt', () => {
+  const next = computeCurrentSchedulePeriod({
+    cronExpression: '*/5 * * * *',
+    timezone: 'UTC',
+    at: new Date('2026-07-11T10:02:00.000Z'),
+  });
+  assert.equal(next.key, 'cron:2026-07-11T10:05:00.000Z');
+  assert.equal(next.scheduledFor?.toISOString(), '2026-07-11T10:05:00.000Z');
+
+  const overdue = computeCurrentSchedulePeriod({
+    cronExpression: '*/5 * * * *',
+    timezone: 'UTC',
+    at: new Date('2026-07-11T10:02:00.000Z'),
+    nextRunAt: new Date('2026-07-11T09:55:00.000Z'),
+  });
+  assert.equal(overdue.key, 'cron:2026-07-11T09:55:00.000Z');
+  assert.equal(overdue.scheduledFor?.toISOString(), '2026-07-11T09:55:00.000Z');
+});
+
+test('automatic occurrence period keys honor calendar presets and DST resolution', () => {
+  assert.equal(
+    computeSchedulePeriodForOccurrence({
+      cronExpression: '30 2 * * *',
+      timezone: 'Europe/London',
+      scheduledFor: new Date('2026-03-29T01:30:00.000Z'),
+    }),
+    'day:2026-03-29',
+  );
+  assert.equal(
+    computeSchedulePeriodForOccurrence({
+      cronExpression: '*/5 * * * *',
+      timezone: 'UTC',
+      scheduledFor: new Date('2026-07-11T10:05:00.000Z'),
+    }),
+    'cron:2026-07-11T10:05:00.000Z',
+  );
+});
+
+test('dispatch request accepts an optional expected period identity', () => {
+  assert.deepEqual(DispatchScheduleRequestSchema.parse(undefined), {});
+  assert.deepEqual(
+    DispatchScheduleRequestSchema.parse({ expectedPeriodKey: 'day:2026-07-11' }),
+    { expectedPeriodKey: 'day:2026-07-11' },
+  );
+  assert.throws(() =>
+    DispatchScheduleRequestSchema.parse({ expectedPeriodKey: 'today', extra: true }),
+  );
+});
+
 test('ownerless schedule create rejection shape is shared', () => {
   const parsed = ScheduleOwnerRequiredErrorSchema.parse({
     error: 'schedule_owner_required',
@@ -227,9 +318,19 @@ test('schedule response redacts claim internals and run envelopes parse', () => 
     latestRun: {
       id: runId,
       scheduledFor: new Date('2026-07-09T09:00:00.000Z'),
+      periodKey: 'day:2026-07-09',
+      triggerSource: 'automatic',
+      triggeredAt: new Date('2026-07-09T09:00:01.000Z'),
       status: 'created',
       taskId,
+      taskStatus: 'failed',
       error: null,
+      createdAt: new Date('2026-07-09T09:00:01.000Z'),
+    },
+    currentPeriod: {
+      key: 'day:2026-07-10',
+      scheduledFor: new Date('2026-07-10T09:00:00.000Z'),
+      run: null,
     },
     createdAt: new Date('2026-07-01T00:00:00.000Z'),
     updatedAt: new Date('2026-07-01T00:00:00.000Z'),
@@ -241,14 +342,25 @@ test('schedule response redacts claim internals and run envelopes parse', () => 
     id: runId,
     scheduleId,
     scheduledFor: new Date('2026-07-09T09:00:00.000Z'),
+    periodKey: 'day:2026-07-09',
+    triggerSource: 'automatic',
+    triggeredAt: new Date('2026-07-09T09:00:00.000Z'),
     status: 'skipped',
     taskId: null,
+    taskStatus: null,
     error: 'overlap: prior scheduled task still active',
     createdAt: new Date('2026-07-09T09:00:00.000Z'),
     updatedAt: new Date('2026-07-09T09:00:00.000Z'),
   });
   assert.equal(run.status, 'skipped');
   assert.equal(run.taskId, null);
+  assert.equal(run.periodKey, 'day:2026-07-09');
+  assert.equal(schedule.currentPeriod?.key, 'day:2026-07-10');
+  assert.equal(schedule.latestRun?.taskStatus, 'failed');
+  assert.equal(
+    schedule.latestRun?.createdAt.toISOString(),
+    '2026-07-09T09:00:01.000Z',
+  );
 
   assert.doesNotThrow(() =>
     V1ListSchedulesResponseSchema.parse({ items: [schedule], nextCursor: null }),

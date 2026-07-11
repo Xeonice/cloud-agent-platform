@@ -81,6 +81,7 @@ import {
   type ListSandboxEnvironmentValidationsResponse,
   type CreateSandboxEnvironmentRequest,
   type CreateScheduleRequest,
+  type DispatchScheduleRequest,
   type UpdateScheduleRequest,
   type ListSchedulesResponse,
   type ListScheduleRunsResponse,
@@ -603,11 +604,20 @@ export async function resumeSchedule(id: string): Promise<ScheduleResponse> {
   );
 }
 
-/** `POST /schedules/:id/dispatch` — dispatch now without consuming a future cycle. */
-export async function dispatchSchedule(id: string): Promise<ScheduleResponse> {
+/** `POST /schedules/:id/dispatch` — consume the expected current schedule period. */
+export async function dispatchSchedule(
+  id: string,
+  expectedPeriodKey?: DispatchScheduleRequest["expectedPeriodKey"],
+): Promise<ScheduleResponse> {
   return ScheduleResponseSchema.parse(
     await request(`/schedules/${encodeURIComponent(id)}/dispatch`, {
       method: "POST",
+      ...(expectedPeriodKey
+        ? {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ expectedPeriodKey }),
+          }
+        : {}),
     }),
   );
 }

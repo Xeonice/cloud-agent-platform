@@ -76,7 +76,35 @@ export class AuditService {
    * logged and swallowed.
    */
   async recordTaskCreated(taskId: string, userId?: string): Promise<void> {
-    await this.record('task.created', taskId, { userId });
+    try {
+      const descriptor = AUDIT_KIND_DESCRIPTORS['task.created'];
+      const validated = assertResultCodeLevelConsistent(
+        descriptor.level,
+        descriptor.resultCode,
+      );
+      const resolvedUserId =
+        userId !== undefined ? await this.resolveUserId(userId) : null;
+      await this.prisma.auditEvent.upsert({
+        where: { dedupeKey: `task.created:${taskId}` },
+        update: {},
+        create: {
+          taskId,
+          userId: resolvedUserId,
+          type: 'task.created',
+          level: validated.level,
+          resultCode: validated.resultCode ?? null,
+          title: descriptor.title,
+          description: descriptor.title,
+          dedupeKey: `task.created:${taskId}`,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `audit record (task.created) for task ${taskId} failed (swallowed): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /**

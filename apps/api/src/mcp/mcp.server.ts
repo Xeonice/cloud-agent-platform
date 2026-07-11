@@ -151,8 +151,12 @@ export class McpServerFactory implements McpToolDeps {
     return this.schedules.resume(ownerUserId, id);
   }
 
-  dispatchSchedule(ownerUserId: string, id: string) {
-    return this.schedules.dispatchNow(ownerUserId, id);
+  dispatchSchedule(
+    ownerUserId: string,
+    id: string,
+    body: Parameters<McpToolDeps['dispatchSchedule']>[2],
+  ) {
+    return this.schedules.dispatchNow(ownerUserId, id, body);
   }
 
   deleteSchedule(ownerUserId: string, id: string) {

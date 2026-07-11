@@ -97,11 +97,22 @@ model Task {
   repoId String @map("repo_id")
   repo   Repo   @relation(fields: [repoId], references: [id], onDelete: Cascade)
 
+  /// Durable account owner for credential, recovery, and audit attribution.
+  /// Nullable only for legacy/system tasks with no authenticated account.
+  ownerUserId String? @map("owner_user_id")
+  owner       User?   @relation("TaskOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+
   /// The operator-supplied prompt/instruction driving the agent.
   prompt String
 
   /// Current lifecycle state; defaults to `pending` on creation.
   status TaskStatus @default(pending)
+
+  /// Durable winners of the two admission CAS transitions. Keeping the token for
+  /// each edge lets a worker resolve an ambiguous database acknowledgement even
+  /// when a later worker has already advanced queued -> running.
+  queuedAdmissionToken  String? @map("queued_admission_token")
+  runningAdmissionToken String? @map("running_admission_token")
 
   /// Optional run parameter echoed back from the create body: the git branch the
   /// runner checks out. Inert with respect to the lifecycle; null when omitted.
@@ -185,6 +196,7 @@ model Task {
   scheduleRun TaskScheduleRun?
 
   @@index([repoId])
+  @@index([ownerUserId])
   @@index([sandboxEnvironmentId])
   @@map("tasks")
 }
@@ -234,17 +246,32 @@ model TaskScheduleRun {
   schedule   TaskSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
 
   scheduledFor DateTime @map("scheduled_for")
+  /// Stable schedule-period identity. Null only for legacy rows created before
+  /// period-aware dispatch; new manual and automatic runs always populate it.
+  periodKey     String?  @map("period_key")
+  /// Dispatch origin for period-aware runs (`manual` or `automatic`).
+  triggerSource String?  @map("trigger_source")
+  /// Request/tick time that initiated the run, distinct from its nominal fire.
+  triggeredAt   DateTime? @map("triggered_at")
   status       String
   taskId       String?  @unique @map("task_id")
   task         Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
   error        String?
 
+  /// Per-occurrence post-commit admission lease. Schedule-level claims protect
+  /// cadence CAS; these fields prevent one interrupted run from blocking later
+  /// occurrences of the same schedule.
+  admissionClaimToken String?   @map("admission_claim_token")
+  admissionClaimUntil DateTime? @map("admission_claim_until")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@unique([scheduleId, scheduledFor])
+  @@unique([scheduleId, periodKey])
   @@index([scheduleId, scheduledFor, id])
   @@index([status])
+  @@index([status, admissionClaimUntil])
   @@map("task_schedule_runs")
 }
 
@@ -422,6 +449,7 @@ model User {
   forgeCredentials ForgeCredential[]
   /// Durable task schedules owned by this account.
   taskSchedules    TaskSchedule[]
+  ownedTasks       Task[]             @relation("TaskOwner")
 
   @@map("users")
 }
@@ -675,6 +703,10 @@ model AuditEvent {
   /// the console deep-link the event's task to its live session route. Null when
   /// the event has no associated run.
   runId String? @map("run_id")
+
+  /// Optional idempotency key for lifecycle events that have one durable
+  /// identity. Null keeps ordinary transition/detail events append-only.
+  dedupeKey String? @unique @map("dedupe_key")
 
   @@index([taskId, timestamp])
   @@index([timestamp])
