@@ -284,6 +284,42 @@ step "GATE 4 — run package in $WORKDIR"
 mkdir -p "$WORKDIR"
 COMPOSE="$WORKDIR/docker-compose.prod.yml"
 COMPOSE_MANAGED_MARKER="cap-managed-run-package: docker-compose.prod.yml"
+QUICK_DEPLOY_ROLLBACK_DIR="$(mktemp -d "${WORKDIR}/.cap-quick-deploy-rollback.XXXXXX")"
+QUICK_DEPLOY_TRANSACTION_ACTIVE=1
+QUICK_DEPLOY_COMPOSE_EXISTED=0
+QUICK_DEPLOY_ENV_SNAPSHOT_READY=0
+QUICK_DEPLOY_ENV_EXISTED=0
+if [ -f "$COMPOSE" ]; then
+  cp -p "$COMPOSE" "$QUICK_DEPLOY_ROLLBACK_DIR/docker-compose.prod.yml"
+  QUICK_DEPLOY_COMPOSE_EXISTED=1
+fi
+finish_quick_deploy_transaction(){
+  local status="$?"
+  trap - EXIT
+  if [ "$QUICK_DEPLOY_TRANSACTION_ACTIVE" = "1" ] && [ "$status" -ne 0 ]; then
+    if [ "$QUICK_DEPLOY_COMPOSE_EXISTED" = "1" ]; then
+      cp -p "$QUICK_DEPLOY_ROLLBACK_DIR/docker-compose.prod.yml" "$COMPOSE"
+    else
+      rm -f "$COMPOSE"
+    fi
+    if [ "$QUICK_DEPLOY_ENV_SNAPSHOT_READY" = "1" ]; then
+      if [ "$QUICK_DEPLOY_ENV_EXISTED" = "1" ]; then
+        cp -p "$QUICK_DEPLOY_ROLLBACK_DIR/env" "$ENV_FILE"
+      else
+        rm -f "$ENV_FILE"
+      fi
+    fi
+    warn "restored compose/.env after a failed pre-deploy gate"
+  fi
+  rm -rf "$QUICK_DEPLOY_ROLLBACK_DIR"
+  exit "$status"
+}
+commit_quick_deploy_transaction(){
+  QUICK_DEPLOY_TRANSACTION_ACTIVE=0
+  rm -rf "$QUICK_DEPLOY_ROLLBACK_DIR"
+  trap - EXIT
+}
+trap finish_quick_deploy_transaction EXIT
 compose_is_managed(){
   [ -f "$1" ] && grep -q "$COMPOSE_MANAGED_MARKER" "$1"
 }
@@ -348,6 +384,11 @@ maybe_stop_after run-package
 # /version cannot remain unknown.
 step "GATE 5 — local-account .env"
 ENV_FILE="$WORKDIR/.env"
+if [ -f "$ENV_FILE" ]; then
+  cp -p "$ENV_FILE" "$QUICK_DEPLOY_ROLLBACK_DIR/env"
+  QUICK_DEPLOY_ENV_EXISTED=1
+fi
+QUICK_DEPLOY_ENV_SNAPSHOT_READY=1
 env_file_value(){
   local key="$1"
   [ -f "$ENV_FILE" ] || return 0
@@ -595,6 +636,15 @@ sha256_of_file(){
     die "sha256sum or shasum is required to verify sandbox image Release assets"
   fi
 }
+sha256_of_stream(){
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{ print $1 }'
+  else
+    die "sha256sum or shasum is required to verify sandbox image Release assets"
+  fi
+}
 verify_asset_checksum(){
   local asset_path checksum_path expected actual
   asset_path="$1"
@@ -616,7 +666,7 @@ fetch_asset_manifest(){
 }
 asset_manifest_contains(){
   local manifest_path="$1" asset_name="$2"
-  grep -q "\"asset\"[[:space:]]*:[[:space:]]*\"${asset_name}\"" "$manifest_path"
+  grep -F '"asset"' "$manifest_path" | grep -Fq "\"${asset_name}\""
 }
 stage_release_asset_pair(){
   local manifest_path asset_name asset_path checksum_path
@@ -630,6 +680,70 @@ stage_release_asset_pair(){
   verify_asset_checksum "$asset_path" "$checksum_path"
   printf '%s\n' "$asset_path"
 }
+stream_release_asset(){
+  local source="$1" part
+  case "$source" in
+    *.parts)
+      while IFS= read -r part; do
+        [ -f "$part" ] || return 1
+        cat "$part" || return 1
+      done < "$source"
+      ;;
+    *)
+      cat "$source"
+      ;;
+  esac
+}
+stage_release_asset_source(){
+  local manifest_path asset_name download_dir part_name part_path descriptor descriptor_tmp
+  local checksum_path expected actual index
+  manifest_path="$1"
+  asset_name="$2"
+  download_dir="${CAP_SANDBOX_ASSET_DIR}/downloads/${CAP_VERSION}"
+  part_name="${asset_name}.part-0001"
+
+  if ! asset_manifest_contains "$manifest_path" "$part_name"; then
+    stage_release_asset_pair "$manifest_path" "$asset_name"
+    return
+  fi
+
+  descriptor="${download_dir}/${asset_name}.parts"
+  descriptor_tmp="${descriptor}.captmp"
+  checksum_path="${download_dir}/${asset_name}.sha256"
+  rm -f "$descriptor" "$descriptor_tmp"
+  : > "$descriptor_tmp"
+  index=1
+  while :; do
+    part_name="${asset_name}.part-$(printf '%04d' "$index")"
+    asset_manifest_contains "$manifest_path" "$part_name" || break
+    part_path="$(stage_release_asset_pair "$manifest_path" "$part_name")" || {
+      rm -f "$descriptor_tmp"
+      return 1
+    }
+    printf '%s\n' "$part_path" >> "$descriptor_tmp"
+    index=$((index + 1))
+  done
+  [ "$index" -gt 1 ] || {
+    rm -f "$descriptor_tmp"
+    return 1
+  }
+  download_release_asset "${asset_name}.sha256" "$checksum_path" || {
+    rm -f "$descriptor_tmp"
+    return 1
+  }
+  mv "$descriptor_tmp" "$descriptor"
+  expected="$(awk '{ print $1; exit }' "$checksum_path")"
+  actual="$(stream_release_asset "$descriptor" | sha256_of_stream)" || {
+    rm -f "$descriptor"
+    return 1
+  }
+  [ -n "$expected" ] && [ "$actual" = "$expected" ] || {
+    rm -f "$descriptor"
+    die "sandbox image asset checksum mismatch for ${asset_name} parts"
+  }
+  echo "  sandbox asset: combined checksum verified for ${asset_name} parts" >&2
+  printf '%s\n' "$descriptor"
+}
 boxlite_asset_platform_slug(){
   if is_arm64 "$HOST_ARCH"; then
     printf '%s\n' "linux-arm64"
@@ -638,13 +752,13 @@ boxlite_asset_platform_slug(){
   fi
 }
 stage_aio_release_asset(){
-  local manifest_path asset_name asset_path image
+  local manifest_path asset_name asset_source image
   manifest_path="$(fetch_asset_manifest)" || return 1
   asset_name="cap-aio-sandbox-${CAP_VERSION}-linux-amd64.docker.tar.zst"
-  asset_path="$(stage_release_asset_pair "$manifest_path" "$asset_name")" || return 1
+  asset_source="$(stage_release_asset_source "$manifest_path" "$asset_name")" || return 1
   command -v zstd >/dev/null 2>&1 || die "zstd is required to load AIO sandbox Release assets"
   echo "  AIO readiness: loading sandbox Docker archive from Release asset"
-  zstd -dc "$asset_path" | docker load >/dev/null || \
+  stream_release_asset "$asset_source" | zstd -dc | docker load >/dev/null || \
     die "AIO readiness failed: could not docker load ${asset_name}"
   image="ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}"
   docker image inspect "$image" >/dev/null 2>&1 || \
@@ -652,11 +766,11 @@ stage_aio_release_asset(){
   echo "  AIO readiness: staged ${image} from Release asset"
 }
 stage_boxlite_release_asset(){
-  local manifest_path slug asset_name asset_path rootfs_dir tmp_dir parent
+  local manifest_path slug asset_name asset_source rootfs_dir tmp_dir parent
   manifest_path="$(fetch_asset_manifest)" || return 1
   slug="$(boxlite_asset_platform_slug)"
   asset_name="cap-boxlite-sandbox-${CAP_VERSION}-${slug}.oci.tar.zst"
-  asset_path="$(stage_release_asset_pair "$manifest_path" "$asset_name")" || return 1
+  asset_source="$(stage_release_asset_source "$manifest_path" "$asset_name")" || return 1
   command -v zstd >/dev/null 2>&1 || die "zstd is required to extract BoxLite sandbox Release assets"
   command -v tar >/dev/null 2>&1 || die "tar is required to extract BoxLite sandbox Release assets"
   rootfs_dir="${CAP_SANDBOX_ASSET_DIR}/boxlite/cap-boxlite-sandbox/${CAP_VERSION}/${slug}/oci"
@@ -665,7 +779,7 @@ stage_boxlite_release_asset(){
   rm -rf "$tmp_dir"
   mkdir -p "$tmp_dir" "$parent"
   echo "  BoxLite readiness: extracting sandbox OCI asset to ${rootfs_dir}" >&2
-  zstd -dc "$asset_path" | tar -C "$tmp_dir" -xf - || {
+  stream_release_asset "$asset_source" | zstd -dc | tar -C "$tmp_dir" -xf - || {
     rm -rf "$tmp_dir"
     die "BoxLite readiness failed: could not extract ${asset_name}"
   }
@@ -1103,6 +1217,7 @@ validate_aio_image_staged(){
 
 validate_github_dependency
 validate_selected_provider_before_pull
+commit_quick_deploy_transaction
 maybe_stop_after provider-readiness
 
 # ── GATE 6 — pull + up (prebuilt images; no --build) ───────────────────────────

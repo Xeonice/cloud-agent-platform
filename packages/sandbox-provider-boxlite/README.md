@@ -28,8 +28,9 @@ make up
 ```
 
 For Release-asset delivery, quick-deploy downloads and verifies
-`cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst`, extracts it under
-`CAP_SANDBOX_ASSET_DIR`, writes `BOXLITE_ROOTFS_PATH`, and clears image env. Use
+`cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst` or its ordered manifest
+parts, verifies each part and the combined checksum, streams it into extraction
+under `CAP_SANDBOX_ASSET_DIR`, writes `BOXLITE_ROOTFS_PATH`, and clears image env. Use
 `CAP_SANDBOX_IMAGE_DELIVERY=registry` to force image mode.
 
 Use `make up-aio`, `make up-boxlite`, or `make up-cp` to force a mode.

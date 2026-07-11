@@ -151,7 +151,7 @@ const MOCK_TASKS: ListTasksResponse = [
       sandboxVersion: "v0.36.1",
       dependencies: {
         codex: "0.144.1",
-        "claude-code": "2.1.206",
+        "claude-code": "2.1.207",
         openspec: "1.4.1",
         "repo-tool": "2026.07.10-enterprise-build",
       },

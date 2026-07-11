@@ -246,7 +246,15 @@ checksum files, and provider-specific sandbox image artifacts for the release.
 The assets SHALL be source-free and SHALL be usable by the release-image install
 path without cloning the repository, running `make up`, or building sandbox
 images locally. The asset manifest SHALL bind each asset to the release version,
-provider, platform, artifact kind, checksum, and the local staging contract.
+provider, platform, artifact kind, checksum, and the local staging contract. When
+a compressed logical artifact would reach the GitHub Release per-file limit, the
+workflow SHALL publish it as ordered parts smaller than that limit. The manifest
+SHALL retain the logical artifact checksum and size and SHALL list every part's
+name, checksum, and size so consumers can verify both each part and the ordered
+combined stream without publishing the oversized logical file.
+Manifests carrying toolchain metadata or ordered parts SHALL use schema version 2;
+consumers SHALL continue to accept schema-version-1 manifests as legacy
+single-file manifests without toolchain metadata.
 
 #### Scenario: Release includes a sandbox image asset manifest
 
@@ -276,6 +284,16 @@ provider, platform, artifact kind, checksum, and the local staging contract.
 - **WHEN** a release verification step inspects `vX.Y.Z`
 - **THEN** it fails if the manifest is missing, a listed asset is missing, or a
   listed checksum does not match the uploaded asset
+
+#### Scenario: Oversized sandbox asset is published as verified parts
+
+- **WHEN** a compressed sandbox artifact is too large for one GitHub Release asset
+- **THEN** the release publishes deterministic ordered parts, each below the
+  platform limit and carrying its own checksum
+- **AND** the manifest records the logical artifact checksum and size plus every
+  part's checksum and size
+- **AND** release verification fails on a missing, reordered, truncated, or
+  checksum-mismatched part
 
 ### Requirement: Release image assets remain coupled to the GHCR image set
 

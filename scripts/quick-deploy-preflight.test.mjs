@@ -51,7 +51,7 @@ exit 0
   makeBin(bin, 'zstd', `
 echo "zstd $*" >> "$CAP_TEST_LOG"
 if [ "$1" = "-dc" ]; then
-  cat "$2"
+  if [ -n "$2" ]; then cat "$2"; else cat; fi
   exit 0
 fi
 exit 0
@@ -91,7 +91,38 @@ COMPOSE
     ;;
   *cap-image-assets.json*)
     [ -n "$out" ] || out="$CAP_FAKE_CURL_OUT"
-    cat > "$out" <<'JSON'
+    if [ "$CAP_FAKE_SPLIT_ASSET" = "1" ]; then
+      cat > "$out" <<'JSON'
+{
+  "schemaVersion": 2,
+  "version": "vtest",
+  "assets": [
+    {
+      "asset": "cap-aio-sandbox-vtest-linux-amd64.docker.tar.zst",
+      "parts": [
+        { "asset": "cap-aio-sandbox-vtest-linux-amd64.docker.tar.zst.part-0001" },
+        { "asset": "cap-aio-sandbox-vtest-linux-amd64.docker.tar.zst.part-0002" }
+      ]
+    },
+    {
+      "asset": "cap-boxlite-sandbox-vtest-linux-arm64.oci.tar.zst",
+      "parts": [
+        { "asset": "cap-boxlite-sandbox-vtest-linux-arm64.oci.tar.zst.part-0001" },
+        { "asset": "cap-boxlite-sandbox-vtest-linux-arm64.oci.tar.zst.part-0002" }
+      ]
+    },
+    {
+      "asset": "cap-boxlite-sandbox-vtest-linux-amd64.oci.tar.zst",
+      "parts": [
+        { "asset": "cap-boxlite-sandbox-vtest-linux-amd64.oci.tar.zst.part-0001" },
+        { "asset": "cap-boxlite-sandbox-vtest-linux-amd64.oci.tar.zst.part-0002" }
+      ]
+    }
+  ]
+}
+JSON
+    else
+      cat > "$out" <<'JSON'
 {
   "schemaVersion": 1,
   "version": "vtest",
@@ -102,14 +133,19 @@ COMPOSE
   ]
 }
 JSON
+    fi
     exit 0
     ;;
-  *.tar.zst.sha256*)
+  *.sha256*)
     [ -n "$out" ] || out="$CAP_FAKE_CURL_OUT"
-    content="\${CAP_FAKE_ASSET_CONTENT:-asset-content}"
     name="$(basename "$out")"
     name="\${name%.captmp}"
     name="\${name%.sha256}"
+    case "$name" in
+      *.part-0001) content="asset-" ;;
+      *.part-0002) content="content" ;;
+      *) content="\${CAP_FAKE_ASSET_CONTENT:-asset-content}" ;;
+    esac
     if command -v sha256sum >/dev/null 2>&1; then
       digest="$(printf '%s' "$content" | sha256sum | awk '{ print $1 }')"
     else
@@ -120,7 +156,14 @@ JSON
     ;;
   *.tar.zst*)
     [ -n "$out" ] || out="$CAP_FAKE_CURL_OUT"
-    printf '%s' "\${CAP_FAKE_ASSET_CONTENT:-asset-content}" > "$out"
+    case "$*" in
+      *.part-0001*) content="asset-" ;;
+      *.part-0002*)
+        if [ "$CAP_FAKE_CORRUPT_PART" = "1" ]; then content="corrupt"; else content="content"; fi
+        ;;
+      *) content="\${CAP_FAKE_ASSET_CONTENT:-asset-content}" ;;
+    esac
+    printf '%s' "$content" > "$out"
     exit 0
     ;;
   *api.github.com/rate_limit*)
@@ -280,6 +323,49 @@ console.log('\n=== quick-deploy preflight ===\n');
 {
   const tc = makeCase();
   const result = runQuickDeploy(tc, {
+    CAP_FAKE_SPLIT_ASSET: '1',
+    CAP_SANDBOX_PROVIDER: 'aio',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
+  });
+  const log = readLog(tc);
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert(result.status === 0, 'AIO split Release asset is downloaded, verified, and streamed');
+  assert(/\.docker\.tar\.zst\.part-0001/.test(log), 'AIO split delivery downloads part 0001');
+  assert(/\.docker\.tar\.zst\.part-0002/.test(log), 'AIO split delivery downloads part 0002');
+  assert(/combined checksum verified/.test(combined), 'AIO split delivery verifies the logical whole-asset checksum');
+  assert(/docker load/.test(log), 'AIO split delivery streams the verified parts into docker load');
+}
+
+{
+  const tc = makeCase();
+  const previousCompose = '# cap-managed-run-package: docker-compose.prod.yml\nservices: {}\n';
+  const previousEnv = 'CAP_VERSION=vprevious\nEXISTING_SECRET=keep-me\n';
+  writeFileSync(join(tc.workdir, 'docker-compose.prod.yml'), previousCompose, 'utf8');
+  writeFileSync(join(tc.workdir, '.env'), previousEnv, 'utf8');
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_SPLIT_ASSET: '1',
+    CAP_FAKE_CORRUPT_PART: '1',
+    CAP_SANDBOX_PROVIDER: 'aio',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
+  });
+  const log = readLog(tc);
+  assert(result.status !== 0, 'a corrupt AIO asset part blocks provider readiness');
+  assert(!/docker load/.test(log), 'a corrupt split asset is rejected before docker load');
+  assert(
+    readFileSync(join(tc.workdir, '.env'), 'utf8') === previousEnv,
+    'a corrupt split asset restores the previous env file byte-for-byte',
+  );
+  assert(
+    readFileSync(join(tc.workdir, 'docker-compose.prod.yml'), 'utf8') === previousCompose,
+    'a corrupt split asset restores the previous compose file byte-for-byte',
+  );
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
     CAP_SANDBOX_PROVIDER: 'boxlite',
     CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
@@ -294,6 +380,23 @@ console.log('\n=== quick-deploy preflight ===\n');
   assert(/CAP_SANDBOX_IMAGE_DELIVERY=release-assets/.test(envFile), 'quick-deploy persists Release-asset delivery mode');
   assert(/BOXLITE_ROOTFS_PATH=.*boxlite\/cap-boxlite-sandbox\/vtest\/linux-amd64\/oci/.test(envFile), 'quick-deploy writes BoxLite rootfs path');
   assert(!/BOXLITE_IMAGE=/.test(envFile), 'quick-deploy does not persist a BoxLite image when rootfs path is staged');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_SPLIT_ASSET: '1',
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const log = readLog(tc);
+  assert(result.status === 0, 'BoxLite split Release asset is verified and streamed into extraction');
+  assert(/linux-amd64\.oci\.tar\.zst\.part-0001/.test(log), 'BoxLite split delivery downloads part 0001');
+  assert(/linux-amd64\.oci\.tar\.zst\.part-0002/.test(log), 'BoxLite split delivery downloads part 0002');
+  assert(/tar -C .*boxlite\/cap-boxlite-sandbox\/vtest\/linux-amd64\/oci/.test(log), 'BoxLite split delivery extracts the ordered stream');
 }
 
 {

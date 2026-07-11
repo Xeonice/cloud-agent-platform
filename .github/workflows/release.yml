@@ -43,7 +43,7 @@ permissions:
 
 env:
   CODEX_VERSION: "0.144.1"
-  CLAUDE_CODE_VERSION: "2.1.206"
+  CLAUDE_CODE_VERSION: "2.1.207"
   OPENSPEC_VERSION: "1.4.1"
 
 jobs:
@@ -209,7 +209,8 @@ jobs:
           node scripts/release-image-assets.mjs package \
             --version "${{ github.event.release.tag_name }}" \
             --owner xeonice \
-            --out dist/release-image-assets
+            --out dist/release-image-assets \
+            --cleanup-images
       - name: Attach sandbox image assets to the Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

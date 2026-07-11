@@ -145,9 +145,11 @@ when they are needed:
   versioned GitHub Release asset and writes `BOXLITE_ROOTFS_PATH`; if the asset is
   unavailable it falls back to `BOXLITE_IMAGE`. AIO uses registry delivery unless
   `release-assets` is requested, in which case quick-deploy downloads
-  `cap-aio-sandbox-<version>-linux-amd64.docker.tar.zst`, verifies its checksum,
-  and `docker load`s it. BoxLite `release-assets` downloads
-  `cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst`, verifies it, extracts it
+  `cap-aio-sandbox-<version>-linux-amd64.docker.tar.zst`, or the ordered
+  `.part-0001`, `.part-0002`, ... files listed for that logical asset, verifies
+  every part and the combined checksum, and streams it into `docker load`.
+  BoxLite `release-assets` handles its
+  `cap-boxlite-sandbox-<version>-<platform>.oci.tar.zst` the same way and extracts it
   under `CAP_SANDBOX_ASSET_DIR`, writes `BOXLITE_ROOTFS_PATH`, clears image env,
   and requires native BoxLite (`BOXLITE_PROTOCOL_MODE=native`,
   `BOXLITE_PATH_PREFIX=default`). Registry mode defaults `BOXLITE_IMAGE` to the
@@ -161,6 +163,11 @@ when they are needed:
   down. Override `BOXLITE_RUNTIME_REQUIRED_TOOLS` only when you intentionally
   run a narrower custom runtime image. The official BoxLite image uses
   `/home/gem/workspace`, matching the AIO runtime launch path.
+  API versions before `v0.37.1` do not understand split AIO assets. An existing
+  AIO deployment explicitly using `release-assets` must first rerun the current
+  quick-deploy path, or switch to `registry` and recreate the API, before using
+  the in-console self-update to cross that boundary. Default AIO registry
+  deployments and the still-single-file BoxLite assets are unaffected.
 - **Optional task-time dependencies:** forge PATs for importing/cloning/pushing
   private repositories, SMTP for email-code login, public DNS/TLS/proxy and
   cookie scope for production exposure, an external Postgres URL if you do not
@@ -420,7 +427,10 @@ COMPOSE_PROFILES=web \
 - **Sandbox runtime assets are matched too.** `cap-image-assets.json` and the
   AIO/BoxLite `.tar.zst` assets on the Release carry the same version and
   checksums. `quick-deploy.sh` and self-update verify those checksums before
-  loading/extracting them.
+  loading/extracting them. A large logical asset may be published as ordered
+  `.part-0001`, `.part-0002`, ... files below GitHub's per-file limit; consumers
+  verify each part plus the combined checksum and stream them without writing a
+  second assembled archive.
 - **The default is unchanged.** Drop the second `-f docker-compose.images.yml`
   (i.e. plain `docker compose up --build`) and you are back to building from
   source. The override is purely additive and opt-in — nothing about the

@@ -74,10 +74,10 @@ ARG CODEX_VERSION=0.144.1
 # are UNDOCUMENTED binary internals. An unpinned bump could flip the TUI from
 # inline back to alt-screen (breaking the asciicast capture/replay) or change the
 # trust/onboarding gate (re-introducing a blocking prompt with no interactive
-# operator to answer it). Default `2.1.206` is the exact latest registry release
+# operator to answer it). Default `2.1.207` is the exact latest registry release
 # selected for the 2026-07-10 official image rebuild. Bump DELIBERATELY, after
 # re-verifying inline-render + onboarding-suppression on the new version.
-ARG CLAUDE_CODE_VERSION=2.1.206
+ARG CLAUDE_CODE_VERSION=2.1.207
 
 # PINNED OpenSpec CLI version (task-preinstall-skills). The `openspec` skill the
 # operator can select drops `.codex/skills/*/SKILL.md` whose steps shell out to
@@ -164,7 +164,7 @@ RUN npm install -g "@openai/codex@${CODEX_VERSION}" \
   && codex --version
 
 # Bake the Claude Code CLI at the version pinned by the CLAUDE_CODE_VERSION
-# build-arg (default 2.1.206; overridable; NEVER an unpinned latest — design D7).
+# build-arg (default 2.1.207; overridable; NEVER an unpinned latest — design D7).
 # A `claude-code` task is launched IN-SHELL over /v1/shell/ws by the orchestrator
 # bridge (exactly like codex), so the binary MUST be present in the image; there
 # is no per-task install step (the gem user, uid 1000, cannot `npm i -g` to the

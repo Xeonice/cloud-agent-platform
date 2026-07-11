@@ -15,6 +15,11 @@
  */
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { Test } from '@nestjs/testing';
 import { APP_GUARD } from '@nestjs/core';
@@ -41,6 +46,8 @@ import {
   SANDBOX_IMAGE_DELIVERY_ENV,
   SANDBOX_PROVIDER_ENV,
   SANDBOX_ENVIRONMENT_TARGET_CONTRACT_ENV,
+  SANDBOX_ASSET_DIR_ENV,
+  RELEASE_ASSET_BASE_ENV,
   type UpdatePlan,
   type UpdaterLauncher,
   type UpdateTopology,
@@ -125,6 +132,121 @@ function makeService(opts: {
     fakeResolver(topo),
     opts.sandboxEnvironments,
   );
+}
+
+function writeTestCommand(binDir: string, name: string, lines: string[]): void {
+  const path = join(binDir, name);
+  writeFileSync(path, `#!/bin/sh\n${lines.join('\n')}\n`, 'utf8');
+  chmodSync(path, 0o755);
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+async function runSplitAssetUpdate(
+  corruptSecondPart: boolean,
+  failZstd = false,
+): Promise<{
+  readonly status: number | null;
+  readonly log: string;
+  readonly envFile: string;
+}> {
+  const root = mkdtempSync(join(tmpdir(), 'cap-self-update-parts-'));
+  const binDir = join(root, 'bin');
+  const releaseDir = join(root, 'release');
+  const assetDir = join(root, 'sandbox-assets');
+  const logPath = join(root, 'commands.log');
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(releaseDir, { recursive: true });
+  writeFileSync(join(root, '.env'), 'EXISTING=value\n', 'utf8');
+
+  const asset = `cap-aio-sandbox-${LATEST}-linux-amd64.docker.tar.zst`;
+  const firstPart = `${asset}.part-0001`;
+  const secondPart = `${asset}.part-0002`;
+  const firstContent = 'first-';
+  const secondContent = 'second';
+  writeFileSync(join(releaseDir, firstPart), firstContent, 'utf8');
+  writeFileSync(
+    join(releaseDir, secondPart),
+    corruptSecondPart ? 'corrupt' : secondContent,
+    'utf8',
+  );
+  writeFileSync(join(releaseDir, `${firstPart}.sha256`), `${sha256(firstContent)}  ${firstPart}\n`, 'utf8');
+  writeFileSync(join(releaseDir, `${secondPart}.sha256`), `${sha256(secondContent)}  ${secondPart}\n`, 'utf8');
+  writeFileSync(
+    join(releaseDir, `${asset}.sha256`),
+    `${sha256(firstContent + secondContent)}  ${asset}\n`,
+    'utf8',
+  );
+  writeFileSync(
+    join(releaseDir, 'cap-image-assets.json'),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      version: LATEST,
+      assets: [{ asset, parts: [{ asset: firstPart }, { asset: secondPart }] }],
+    }, null, 2)}\n`,
+    'utf8',
+  );
+
+  writeTestCommand(binDir, 'curl', [
+    'out=""',
+    'url=""',
+    'prev=""',
+    'for arg in "$@"; do',
+    '  if [ "$prev" = "-o" ]; then out="$arg"; fi',
+    '  prev="$arg"',
+    '  url="$arg"',
+    'done',
+    'name="${url##*/}"',
+    'echo "curl $name" >> "$CAP_TEST_LOG"',
+    'cp "$CAP_FAKE_RELEASE_DIR/$name" "$out"',
+  ]);
+  writeTestCommand(binDir, 'zstd', [
+    'echo "zstd $*" >> "$CAP_TEST_LOG"',
+    'if [ "$CAP_FAKE_ZSTD_FAIL" = "1" ]; then exit 7; fi',
+    'if [ "$1" = "-dc" ]; then cat; exit 0; fi',
+    'exit 1',
+  ]);
+  writeTestCommand(binDir, 'sh', ['exec /bin/bash "$@"']);
+  writeTestCommand(binDir, 'sha256sum', ['exec shasum -a 256 "$@"']);
+  writeTestCommand(binDir, 'docker', [
+    'echo "docker $*" >> "$CAP_TEST_LOG"',
+    'if [ "$1" = "load" ]; then cat >/dev/null; exit 0; fi',
+    'if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then exit 0; fi',
+    'if [ "$1" = "compose" ]; then exit 0; fi',
+    'exit 0',
+  ]);
+
+  const { launcher } = capturingLauncher();
+  const service = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    env: {
+      [SANDBOX_IMAGE_DELIVERY_ENV]: 'release-assets',
+      [SANDBOX_PROVIDER_ENV]: 'aio',
+      [SANDBOX_ASSET_DIR_ENV]: assetDir,
+      [RELEASE_ASSET_BASE_ENV]: 'https://release.example.test',
+    },
+  });
+  const plan = await service.requestUpdate(LATEST);
+  const result = spawnSync('sh', ['-c', plan.script], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      CAP_TEST_LOG: logPath,
+      CAP_FAKE_RELEASE_DIR: releaseDir,
+      CAP_FAKE_ZSTD_FAIL: failZstd ? '1' : '0',
+    },
+    encoding: 'utf8',
+  });
+  return {
+    status: result.status,
+    log: readFileSync(logPath, 'utf8'),
+    envFile: readFileSync(join(root, '.env'), 'utf8'),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +443,25 @@ test('pull-then-recreate ordering: pull is FIRST, up -d SECOND, joined by &&', a
   assert.ok(plan.script.includes(' && '), 'commands joined by && so up -d only runs on success');
 });
 
+test('compose arguments derived from topology labels remain shell-safe when paths contain spaces', async () => {
+  const { launcher } = capturingLauncher();
+  const svc = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    topology: {
+      ...FAKE_TOPO,
+      composeFiles: ['/etc/cap/resident config/docker compose.yml'],
+      workingDir: '/etc/cap/resident config',
+    },
+  });
+
+  const plan = await svc.requestUpdate(LATEST);
+
+  assert.match(plan.commands[0], /-f '\/etc\/cap\/resident config\/docker compose\.yml'/);
+  assert.match(plan.commands[1], /-f '\/etc\/cap\/resident config\/docker compose\.yml'/);
+});
+
 test('release-assets AIO self-update stages the Docker archive before pin/pull/recreate', async () => {
   const { launcher } = capturingLauncher();
   const svc = makeService({
@@ -343,7 +484,17 @@ test('release-assets AIO self-update stages the Docker archive before pin/pull/r
     plan.script.includes(`cap-aio-sandbox-${LATEST}-linux-amd64.docker.tar.zst`),
     'the updater downloads the target AIO Docker archive asset',
   );
-  assert.ok(plan.script.includes('zstd -dc "$asset_path" | docker load'), 'the updater loads the Docker archive');
+  assert.ok(
+    plan.script.includes('cap_stream_asset "$asset_source" | zstd -dc | docker load'),
+    'the updater streams either a direct or split Docker archive',
+  );
+  assert.ok(plan.script.includes('first_part="$asset.part-0001"'), 'the updater detects split assets');
+  assert.ok(plan.script.includes('set -o pipefail'), 'stream/decompress failures propagate through the updater pipeline');
+  assert.ok(plan.script.includes('cap_verify_file "$part_path" "$part_checksum"'), 'every part is checksum verified');
+  assert.ok(
+    plan.script.includes('actual="$(cap_stream_asset "$descriptor" | sha256sum'),
+    'the ordered parts are verified against the whole-asset checksum',
+  );
   assert.ok(
     plan.script.includes(`ghcr.io/xeonice/cap-aio-sandbox:${LATEST}`),
     'the post-load inspect checks the target sandbox image',
@@ -356,6 +507,35 @@ test('release-assets AIO self-update stages the Docker archive before pin/pull/r
     plan.script.indexOf(`CAP_VERSION=${LATEST}`) < plan.script.indexOf(' pull '),
     'the target pin still happens before compose pull',
   );
+});
+
+test('release-assets AIO self-update executes the ordered-parts path before compose mutation', async () => {
+  const result = await runSplitAssetUpdate(false);
+
+  assert.equal(result.status, 0);
+  assert.match(result.log, /curl .*\.part-0001/);
+  assert.match(result.log, /curl .*\.part-0002/);
+  assert.match(result.log, /docker load/);
+  assert.match(result.log, /docker compose .* pull api/);
+  assert.match(result.envFile, new RegExp(`^CAP_VERSION=${LATEST}$`, 'm'));
+});
+
+test('release-assets AIO self-update rejects a corrupt part before pin or recreate', async () => {
+  const result = await runSplitAssetUpdate(true);
+
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.log, /docker load/);
+  assert.doesNotMatch(result.log, /docker compose .* (?:pull|up)/);
+  assert.doesNotMatch(result.envFile, /^CAP_VERSION=/m);
+});
+
+test('release-assets AIO self-update propagates a decompressor failure before pin or recreate', async () => {
+  const result = await runSplitAssetUpdate(false, true);
+
+  assert.notEqual(result.status, 0);
+  assert.doesNotMatch(result.log, /docker image inspect/);
+  assert.doesNotMatch(result.log, /docker compose .* (?:pull|up)/);
+  assert.doesNotMatch(result.envFile, /^CAP_VERSION=/m);
 });
 
 test('release-assets BoxLite self-update extracts rootfs and persists BOXLITE_ROOTFS_PATH before recreate', async () => {
@@ -374,7 +554,10 @@ test('release-assets BoxLite self-update extracts rootfs and persists BOXLITE_RO
 
   assert.deepEqual(plan.pullServices, ['api'], 'BoxLite asset mode does not pull the AIO stager service');
   assert.ok(plan.script.includes('cap-boxlite-sandbox-$target-$slug.oci.tar.zst'), 'the updater selects a platform BoxLite OCI asset');
-  assert.ok(plan.script.includes('zstd -dc "$asset_path" | tar -C "$tmp_dir" -xf -'), 'the updater extracts the OCI archive locally');
+  assert.ok(
+    plan.script.includes('cap_stream_asset "$asset_source" | zstd -dc | tar -C "$tmp_dir" -xf -'),
+    'the updater streams either a direct or split OCI archive locally',
+  );
   assert.ok(plan.script.includes('cap_unset_env_value BOXLITE_IMAGE'), 'BoxLite rootfs mode removes image env');
   assert.ok(plan.script.includes('cap_unset_env_value BOXLITE_IMAGE_MAP'), 'BoxLite rootfs mode removes image map env');
   assert.ok(plan.script.includes('cap_set_env_value BOXLITE_ROOTFS_PATH "$rootfs_dir"'), 'BoxLite rootfs mode writes the staged rootfs path');

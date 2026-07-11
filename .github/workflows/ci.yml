@@ -75,6 +75,17 @@ jobs:
       - name: Test (web unit suite)
         run: pnpm --filter @cap/web test
 
+      # These release/install contract suites live at the repository root rather
+      # than inside a workspace package. Keep them in the required lane: the
+      # Release-asset packager and its quick-deploy consumer must change together.
+      - name: Test (release and install contracts)
+        run: |
+          bash -n scripts/release.sh scripts/quick-deploy.sh
+          node scripts/release-image-assets.test.mjs
+          node scripts/release-tail.test.mjs
+          node scripts/quick-deploy-preflight.test.mjs
+          node scripts/docker-compose.deploy-config.test.mjs
+
   # Boots the BUILT @cap/api orchestrator against a throwaway Postgres and probes
   # the unauthenticated `/health` liveness endpoint, failing the pipeline on any
   # bootstrap / DI error. A SEPARATE job (runs independently of typecheck+lint) so
