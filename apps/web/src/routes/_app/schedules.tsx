@@ -1,11 +1,30 @@
 import * as React from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Pause, Pencil, Play, Send, Trash2 } from "lucide-react";
+import {
+  Check,
+  ExternalLink,
+  LoaderCircle,
+  Pause,
+  Pencil,
+  Play,
+  Send,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 
-import type { Repo, ScheduleResponse, ScheduleRunResponse } from "@cap/contracts";
-import { reposQuery, scheduleRunsQuery, schedulesQuery } from "@/lib/api/queries";
+import type {
+  Repo,
+  ScheduleResponse,
+  ScheduleRunResponse,
+  TaskStatus,
+} from "@cap/contracts";
+import {
+  reposQuery,
+  scheduleRunsQuery,
+  schedulesQuery,
+} from "@/lib/api/queries";
+import { ApiError } from "@/lib/api/real";
 import {
   deleteScheduleMutation,
   dispatchScheduleMutation,
@@ -30,6 +49,34 @@ import { cn } from "@/utils";
 
 export { buildSchedulePayload, type ScheduleFormState } from "@/lib/task-form";
 
+export function immediateDispatchSuccessMessage(
+  previous: ScheduleResponse,
+  updated: ScheduleResponse,
+): string {
+  const periodRun = updated.currentPeriod?.run;
+  if (periodRun) {
+    const periodResult =
+      periodRun.status === "created"
+        ? "本周期已执行"
+        : periodRun.status === "failed"
+          ? "本周期派发失败"
+          : periodRun.status === "skipped"
+            ? "本周期已处理（已跳过）"
+            : "本周期正在处理";
+    if (!updated.nextRunAt) return `${periodResult}，定时任务仍为暂停状态`;
+    return `${periodResult}；下次定时运行 ${formatDate(
+      updated.nextRunAt,
+      updated.timezone,
+    )}`;
+  }
+  if (!updated.nextRunAt) return "已立即派发，定时任务仍为暂停状态";
+  const nextRun = formatDate(updated.nextRunAt, updated.timezone);
+  if (previous.nextRunAt?.getTime() === updated.nextRunAt.getTime()) {
+    return `已立即派发，下次定时运行保持 ${nextRun}`;
+  }
+  return `已立即派发，逾期周期已处理；下次定时运行已更新为 ${nextRun}`;
+}
+
 export const Route = createFileRoute("/_app/schedules")({
   loader: async ({ context }) => {
     await Promise.all([
@@ -47,6 +94,9 @@ function SchedulesPage() {
   const scheduleList = schedules.data ?? [];
   const repoList = repos.data ?? [];
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [dispatchingScheduleId, setDispatchingScheduleId] =
+    React.useState<string | null>(null);
+  const dispatchInFlightRef = React.useRef(false);
   const [editingSchedule, setEditingSchedule] =
     React.useState<ScheduleResponse | null>(null);
   const selectedSchedule =
@@ -62,19 +112,35 @@ function SchedulesPage() {
   const resumeMutation = useMutation(resumeScheduleMutation(queryClient));
   const dispatchMutation = useMutation(dispatchScheduleMutation(queryClient));
   const deleteMutation = useMutation(deleteScheduleMutation(queryClient));
+  const dispatchInFlight =
+    dispatchingScheduleId !== null || dispatchMutation.isPending;
 
   function editSchedule(schedule: ScheduleResponse) {
     setSelectedId(schedule.id);
     setEditingSchedule(schedule);
   }
 
-  function dispatchSchedule(schedule: ScheduleResponse) {
-    dispatchMutation.mutate(schedule.id, {
-      onSuccess: (updated) => {
-        setSelectedId(updated.id);
-        toast.success("已立即派发，本周期已完成");
-      },
-    });
+  async function dispatchSchedule(schedule: ScheduleResponse) {
+    if (schedule.currentPeriod?.run || dispatchInFlightRef.current) return;
+    dispatchInFlightRef.current = true;
+    setDispatchingScheduleId(schedule.id);
+    try {
+      const updated = await dispatchMutation.mutateAsync({
+        id: schedule.id,
+        expectedPeriodKey: schedule.currentPeriod?.key,
+      });
+      setSelectedId(updated.id);
+      toast.success(immediateDispatchSuccessMessage(schedule, updated));
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        toast.info("本周期已变化，已刷新最新状态");
+      } else {
+        toast.error("立即执行失败，请稍后重试");
+      }
+    } finally {
+      dispatchInFlightRef.current = false;
+      setDispatchingScheduleId(null);
+    }
   }
 
   function pauseOrResume(schedule: ScheduleResponse) {
@@ -129,15 +195,16 @@ function SchedulesPage() {
                 <TableHead>名称</TableHead>
                 <TableHead>仓库</TableHead>
                 <TableHead>重复</TableHead>
-                <TableHead>下次运行</TableHead>
-                <TableHead>最近结果</TableHead>
+                <TableHead>本周期</TableHead>
+                <TableHead>下次定时运行</TableHead>
+                <TableHead>最近运行</TableHead>
                 <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {scheduleList.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
+                  <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
                     暂无定时任务
                   </TableCell>
                 </TableRow>
@@ -175,22 +242,51 @@ function SchedulesPage() {
                         {schedule.timezone}
                       </div>
                     </TableCell>
-                    <TableCell>{formatDate(schedule.nextRunAt)}</TableCell>
-                    <TableCell>{runBadge(schedule.latestRun ?? null)}</TableCell>
+                    <TableCell>
+                      <CurrentPeriodSummary
+                        period={schedule.currentPeriod}
+                        timeZone={schedule.timezone}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <ScheduleDate
+                        value={schedule.nextRunAt}
+                        label="下次定时运行"
+                        timeZone={schedule.timezone}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <LatestRunSummary
+                        run={schedule.latestRun ?? null}
+                        timeZone={schedule.timezone}
+                      />
+                    </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-1.5">
                         <Button
                           type="button"
                           variant="ghost"
                           size="icon"
-                          aria-label="立即派发"
-                          disabled={dispatchMutation.isPending}
+                          aria-label={currentPeriodActionLabel(
+                            schedule,
+                            dispatchingScheduleId === schedule.id,
+                          )}
+                          disabled={
+                            Boolean(schedule.currentPeriod?.run) ||
+                            dispatchInFlight
+                          }
                           onClick={(event) => {
                             event.stopPropagation();
                             dispatchSchedule(schedule);
                           }}
                         >
-                          <Send className="size-4" />
+                          {schedule.currentPeriod?.run ? (
+                            <Check className="size-4" />
+                          ) : dispatchingScheduleId === schedule.id ? (
+                            <LoaderCircle className="size-4 animate-spin" />
+                          ) : (
+                            <Send className="size-4" />
+                          )}
                         </Button>
                         <Button
                           type="button"
@@ -256,7 +352,10 @@ function SchedulesPage() {
                 onDispatch={() => dispatchSchedule(selectedSchedule)}
                 onPauseResume={() => pauseOrResume(selectedSchedule)}
                 onDelete={() => deleteSchedule(selectedSchedule)}
-                dispatchPending={dispatchMutation.isPending}
+                dispatchPending={
+                  dispatchingScheduleId === selectedSchedule.id
+                }
+                dispatchDisabled={dispatchInFlight}
               />
             ) : (
               <p className="text-sm text-muted-foreground">暂无定时任务</p>
@@ -266,13 +365,18 @@ function SchedulesPage() {
           <Panel>
             <PanelHead
               right={
-                selectedSchedule ? runBadge(selectedSchedule.latestRun ?? null) : null
+                selectedSchedule ? (
+                  <RunResultBadges run={selectedSchedule.latestRun ?? null} />
+                ) : null
               }
             >
               <h2 className="text-[15px] font-semibold text-foreground">最近运行</h2>
             </PanelHead>
             {selectedSchedule ? (
-              <RunList runs={runs.data ?? []} />
+              <RunList
+                runs={runs.data ?? []}
+                timeZone={selectedSchedule.timezone}
+              />
             ) : (
               <p className="text-sm text-muted-foreground">暂无运行记录</p>
             )}
@@ -303,6 +407,7 @@ export function ScheduleDetail({
   onPauseResume,
   onDelete,
   dispatchPending = false,
+  dispatchDisabled = false,
 }: {
   schedule: ScheduleResponse;
   repos: readonly Repo[];
@@ -311,7 +416,13 @@ export function ScheduleDetail({
   onPauseResume: () => void;
   onDelete: () => void;
   dispatchPending?: boolean;
+  dispatchDisabled?: boolean;
 }) {
+  const latestActualAt = actualRunAt(schedule.latestRun ?? null);
+  const latestActualLabel =
+    schedule.latestRun?.status === "created"
+      ? "最近实际执行"
+      : "最近实际处理";
   return (
     <div className="grid gap-3">
       <div className="grid overflow-hidden rounded-md border border-border">
@@ -320,7 +431,49 @@ export function ScheduleDetail({
         <DetailRow label="运行时" value={runtimeLabel(schedule)} />
         <DetailRow label="重复" value={recurrenceSummary(schedule)} />
         <DetailRow label="时区" value={schedule.timezone} />
-        <DetailRow label="下次运行" value={formatDate(schedule.nextRunAt)} />
+        <DetailRow
+          label="本周期"
+          value={
+            <CurrentPeriodSummary
+              period={schedule.currentPeriod}
+              timeZone={schedule.timezone}
+            />
+          }
+        />
+        <DetailRow
+          label={latestActualLabel}
+          value={
+            latestActualAt ? (
+              <time dateTime={latestActualAt.toISOString()}>
+                {formatDate(latestActualAt, schedule.timezone)}
+              </time>
+            ) : schedule.latestRun ? (
+              "时间不可用"
+            ) : (
+              "无记录"
+            )
+          }
+        />
+        <DetailRow
+          label="最近任务状态"
+          value={
+            schedule.latestRun ? (
+              <RunResultBadges run={schedule.latestRun} />
+            ) : (
+              "无记录"
+            )
+          }
+        />
+        <DetailRow
+          label="下次定时运行"
+          value={
+            <ScheduleDate
+              value={schedule.nextRunAt}
+              label="下次定时运行"
+              timeZone={schedule.timezone}
+            />
+          }
+        />
         <DetailRow label="重叠策略" value={overlapLabel(schedule.overlapPolicy)} />
       </div>
       <div className="flex flex-wrap gap-2">
@@ -328,10 +481,20 @@ export function ScheduleDetail({
           type="button"
           className="gap-2"
           onClick={onDispatch}
-          disabled={dispatchPending}
+          disabled={
+            dispatchDisabled ||
+            dispatchPending ||
+            Boolean(schedule.currentPeriod?.run)
+          }
         >
-          <Send className="size-4" />
-          立即派发
+          {schedule.currentPeriod?.run ? (
+            <Check className="size-4" />
+          ) : dispatchPending ? (
+            <LoaderCircle className="size-4 animate-spin" />
+          ) : (
+            <Send className="size-4" />
+          )}
+          {currentPeriodActionLabel(schedule, dispatchPending)}
         </Button>
         <Button type="button" variant="secondary" className="gap-2" onClick={onEdit}>
           <Pencil className="size-4" />
@@ -359,25 +522,108 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
   );
 }
 
-export function RunList({ runs }: { runs: readonly ScheduleRunResponse[] }) {
+export function CurrentPeriodSummary({
+  period,
+  timeZone,
+}: {
+  period: ScheduleResponse["currentPeriod"];
+  timeZone: string;
+}) {
+  if (!period) {
+    return <Badge variant="outline">状态不可用</Badge>;
+  }
+  const status = period.run
+    ? period.run.status === "created"
+      ? "本周期已执行"
+      : period.run.status === "claimed"
+        ? "本周期处理中"
+        : "本周期已处理"
+    : "本周期未执行";
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <Badge variant={period.run ? "secondary" : "outline"}>{status}</Badge>
+      {period.run ? <RunResultBadges run={period.run} /> : null}
+      {period.scheduledFor ? (
+        <time
+          dateTime={period.scheduledFor.toISOString()}
+          aria-label={`周期计划时间 ${formatDate(
+            period.scheduledFor,
+            timeZone,
+          )} ${timeZone}`}
+          className="font-mono text-xs text-muted-foreground"
+        >
+          {formatDate(period.scheduledFor, timeZone)}
+        </time>
+      ) : null}
+    </span>
+  );
+}
+
+function ScheduleDate({
+  value,
+  label,
+  timeZone,
+}: {
+  value: Date | null;
+  label: string;
+  timeZone: string;
+}) {
+  if (!value) return <>暂停</>;
+  const formatted = formatDate(value, timeZone);
+  return (
+    <time
+      dateTime={value.toISOString()}
+      aria-label={`${label} ${formatted} ${timeZone}`}
+    >
+      {formatted}
+    </time>
+  );
+}
+
+export function RunList({
+  runs,
+  timeZone,
+}: {
+  runs: readonly ScheduleRunResponse[];
+  timeZone: string;
+}) {
   if (runs.length === 0) {
     return <p className="text-sm text-muted-foreground">暂无运行记录</p>;
   }
   return (
     <div className="grid gap-2">
       {runs.map((run) => (
-        <div
+        <article
           key={run.id}
           className="grid gap-2 rounded-md border border-border px-3 py-2 text-sm min-[821px]:grid-cols-[minmax(0,1fr)_auto]"
         >
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              {runBadge(run)}
+              <RunResultBadges run={run} />
+              <span className="text-xs text-muted-foreground">
+                {run.status === "created" ? "实际执行" : "实际处理"}
+              </span>
               <time
-                dateTime={run.createdAt.toISOString()}
+                dateTime={actualRunAt(run)!.toISOString()}
+                aria-label={`${
+                  run.status === "created" ? "实际执行时间" : "实际处理时间"
+                } ${formatDate(actualRunAt(run), timeZone)} ${timeZone}`}
                 className="font-mono text-xs text-muted-foreground"
               >
-                {formatDate(run.createdAt)}
+                {formatDate(actualRunAt(run), timeZone)}
+              </time>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>周期计划时间</span>
+              <time
+                dateTime={run.scheduledFor.toISOString()}
+                aria-label={`周期计划时间 ${formatDate(
+                  run.scheduledFor,
+                  timeZone,
+                )} ${timeZone}`}
+                className="font-mono"
+              >
+                {formatDate(run.scheduledFor, timeZone)}
               </time>
             </div>
             {run.error ? (
@@ -392,18 +638,97 @@ export function RunList({ runs }: { runs: readonly ScheduleRunResponse[] }) {
               </Link>
             </Button>
           ) : null}
-        </div>
+        </article>
       ))}
     </div>
   );
 }
 
-function runBadge(run: ScheduleRunResponse | ScheduleResponse["latestRun"] | null) {
+export function LatestRunSummary({
+  run,
+  timeZone,
+}: {
+  run: ScheduleResponse["latestRun"] | null;
+  timeZone: string;
+}) {
+  if (!run) return <RunResultBadges run={null} />;
+  const actualAt = actualRunAt(run);
+  const actualLabel = run.status === "created" ? "最近实际执行" : "最近实际处理";
+  return (
+    <div className="grid gap-1">
+      <RunResultBadges run={run} />
+      {actualAt ? (
+        <time
+          dateTime={actualAt.toISOString()}
+          aria-label={`${actualLabel} ${formatDate(actualAt, timeZone)} ${timeZone}`}
+          className="font-mono text-xs text-muted-foreground"
+        >
+          {formatDate(actualAt, timeZone)}
+        </time>
+      ) : (
+        <span className="text-xs text-muted-foreground">时间不可用</span>
+      )}
+    </div>
+  );
+}
+
+export function RunResultBadges({
+  run,
+}: {
+  run: ScheduleRunResponse | ScheduleResponse["latestRun"] | null;
+}) {
   if (!run) return <Badge variant="outline">无记录</Badge>;
-  if (run.status === "created") return <Badge className="bg-success text-white">已创建</Badge>;
-  if (run.status === "skipped") return <Badge variant="secondary">已跳过</Badge>;
-  if (run.status === "failed") return <Badge variant="destructive">失败</Badge>;
-  return <Badge variant="outline">处理中</Badge>;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {dispatchBadge(run.status)}
+      {taskStatusBadge(run.taskStatus ?? null)}
+    </span>
+  );
+}
+
+function dispatchBadge(status: ScheduleRunResponse["status"]) {
+  if (status === "created") {
+    return <Badge className="bg-success text-white">派发成功</Badge>;
+  }
+  if (status === "skipped") return <Badge variant="secondary">已跳过</Badge>;
+  if (status === "failed") return <Badge variant="destructive">派发失败</Badge>;
+  return <Badge variant="outline">派发处理中</Badge>;
+}
+
+function taskStatusBadge(status: TaskStatus | null) {
+  if (!status) return null;
+  if (status === "completed") {
+    return <Badge className="bg-success text-white">任务已完成</Badge>;
+  }
+  if (status === "failed") return <Badge variant="destructive">任务失败</Badge>;
+  if (status === "agent_failed_to_start") {
+    return <Badge variant="destructive">任务启动失败</Badge>;
+  }
+  if (status === "cancelled") return <Badge variant="secondary">任务已停止</Badge>;
+  if (status === "running") return <Badge variant="outline">任务运行中</Badge>;
+  if (status === "awaiting_input") {
+    return <Badge variant="secondary">任务等待输入</Badge>;
+  }
+  if (status === "queued") return <Badge variant="secondary">任务排队中</Badge>;
+  return <Badge variant="outline">任务待接入</Badge>;
+}
+
+function actualRunAt(
+  run: ScheduleRunResponse | ScheduleResponse["latestRun"] | null,
+): Date | null {
+  return run?.triggeredAt ?? run?.createdAt ?? null;
+}
+
+function currentPeriodActionLabel(
+  schedule: ScheduleResponse,
+  dispatchPending = false,
+): string {
+  if (dispatchPending) return "正在执行";
+  const run = schedule.currentPeriod?.run;
+  if (!run) return "立即执行";
+  if (run.status === "created") return "本周期已执行";
+  if (run.status === "claimed") return "本周期处理中";
+  return "本周期已处理";
 }
 
 function enabledPill(enabled: boolean) {
@@ -430,11 +755,15 @@ function overlapLabel(value: ScheduleResponse["overlapPolicy"]): string {
   return value === "enqueue" ? "继续排队" : "跳过重叠";
 }
 
-function formatDate(value: Date | string | null | undefined): string {
+function formatDate(
+  value: Date | string | null | undefined,
+  timeZone?: string,
+): string {
   if (!value) return "暂停";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "未知";
   return new Intl.DateTimeFormat("zh-CN", {
+    ...(timeZone ? { timeZone } : {}),
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",

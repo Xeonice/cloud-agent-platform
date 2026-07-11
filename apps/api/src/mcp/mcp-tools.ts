@@ -41,6 +41,7 @@ import type { Scope } from '@cap/contracts';
 import {
   CreateScheduleRequestSchema,
   CreateTaskRequestSchema,
+  DispatchScheduleRequestSchema,
   RepoResponseSchema,
   ScheduleCronExpressionSchema,
   ScheduleMisfirePolicySchema,
@@ -62,6 +63,7 @@ import {
   V1ScheduleListQuerySchema,
   type CreateScheduleRequest,
   type CreateTaskBody,
+  type DispatchScheduleRequest,
   type RepoResponse,
   type ScheduleResponse,
   type SessionHistory,
@@ -143,7 +145,11 @@ export interface McpToolDeps {
   ): Promise<ScheduleResponse>;
   pauseSchedule(ownerUserId: string, id: string): Promise<ScheduleResponse>;
   resumeSchedule(ownerUserId: string, id: string): Promise<ScheduleResponse>;
-  dispatchSchedule(ownerUserId: string, id: string): Promise<ScheduleResponse>;
+  dispatchSchedule(
+    ownerUserId: string,
+    id: string,
+    body: DispatchScheduleRequest,
+  ): Promise<ScheduleResponse>;
   deleteSchedule(ownerUserId: string, id: string): Promise<void>;
   listScheduleRuns(
     ownerUserId: string,
@@ -554,16 +560,23 @@ export function registerMcpTools(
     {
       title: 'Run a recurring task schedule now',
       description:
-        'Dispatch an owner-scoped recurring task schedule immediately through ' +
-        'the same scheduled-task service used by the console. Requires the ' +
-        'tasks:write scope.',
-      inputSchema: { id: scheduleIdSchema },
+        'Consume the current period of an owner-scoped recurring task schedule ' +
+        'immediately and advance its next period. expectedPeriodKey can bind a ' +
+        'retry to the period observed by the caller. Requires the tasks:write scope.',
+      inputSchema: {
+        id: scheduleIdSchema,
+        ...DispatchScheduleRequestSchema.removeDefault().shape,
+      },
       outputSchema: ScheduleResponseSchema,
     },
-    async ({ id }: { id: string }, extra: ToolExtra) => {
+    async (
+      { id, ...rawBody }: { id: string; expectedPeriodKey?: string },
+      extra: ToolExtra,
+    ) => {
       requireScope(extra, 'tasks:write');
       const ownerUserId = requireOwner(extra, userIdOf);
-      return jsonResult(await deps.dispatchSchedule(ownerUserId, id));
+      const body = DispatchScheduleRequestSchema.parse(rawBody);
+      return jsonResult(await deps.dispatchSchedule(ownerUserId, id, body));
     },
   );
 

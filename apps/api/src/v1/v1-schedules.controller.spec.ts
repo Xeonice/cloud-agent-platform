@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import {
   CreateScheduleRequestSchema,
+  type DispatchScheduleRequest,
   type ScheduleResponse,
 } from '@cap/contracts';
 import type {
@@ -89,6 +90,7 @@ function runResponse(): ScheduleRunResponse {
     scheduledFor: new Date('2026-07-09T09:00:00.000Z'),
     status: 'skipped',
     taskId: null,
+    taskStatus: null,
     error: 'overlap: prior scheduled task still active',
     createdAt: new Date('2026-07-09T09:00:00.000Z'),
     updatedAt: new Date('2026-07-09T09:00:00.000Z'),
@@ -213,8 +215,12 @@ test('mutating routes pass the principal account id', async () => {
       calls.push(`resume:${ownerUserId}`);
       return scheduleResponse();
     },
-    async dispatchNow(ownerUserId: string) {
-      calls.push(`dispatch:${ownerUserId}`);
+    async dispatchNow(
+      ownerUserId: string,
+      _id: string,
+      body: DispatchScheduleRequest,
+    ) {
+      calls.push(`dispatch:${ownerUserId}:${body.expectedPeriodKey ?? '-'}`);
       return scheduleResponse();
     },
     async delete(ownerUserId: string) {
@@ -229,18 +235,22 @@ test('mutating routes pass the principal account id', async () => {
   );
   await controller.pause(SCHEDULE_ID, reqWith(WRITE_KEY));
   await controller.resume(SCHEDULE_ID, reqWith(WRITE_KEY));
-  await controller.dispatch(SCHEDULE_ID, reqWith(WRITE_KEY));
+  await controller.dispatch(
+    SCHEDULE_ID,
+    { expectedPeriodKey: 'day:2026-07-11' },
+    reqWith(WRITE_KEY),
+  );
   await controller.delete(SCHEDULE_ID, reqWith(WRITE_KEY));
   assert.deepEqual(calls, [
     `update:${USER_A}`,
     `pause:${USER_A}`,
     `resume:${USER_A}`,
-    `dispatch:${USER_A}`,
+    `dispatch:${USER_A}:day:2026-07-11`,
     `delete:${USER_A}`,
   ]);
 });
 
-test('run listing returns paginated skipped/failed rows without task links', async () => {
+test('run listing preserves dispatch status and exposes the linked task status', async () => {
   const controller = new V1SchedulesController({
     async listRunsPage(
       ownerUserId: string,
@@ -251,7 +261,17 @@ test('run listing returns paginated skipped/failed rows without task links', asy
       assert.equal(scheduleId, SCHEDULE_ID);
       assert.deepEqual(args, { limit: 10, cursor: undefined });
       return {
-        items: [runResponse(), { ...runResponse(), id: TASK_ID, status: 'failed', error: 'repo not found' }],
+        items: [
+          runResponse(),
+          {
+            ...runResponse(),
+            id: TASK_ID,
+            status: 'created',
+            taskId: TASK_ID,
+            taskStatus: 'failed',
+            error: null,
+          },
+        ],
         nextCursor: null,
       } satisfies V1ListScheduleRunsResponse;
     },
@@ -264,6 +284,7 @@ test('run listing returns paginated skipped/failed rows without task links', asy
   );
   assert.equal(result.items[0].status, 'skipped');
   assert.equal(result.items[0].taskId, null);
-  assert.equal(result.items[1].status, 'failed');
-  assert.equal(result.items[1].error, 'repo not found');
+  assert.equal(result.items[1].status, 'created');
+  assert.equal(result.items[1].taskId, TASK_ID);
+  assert.equal(result.items[1].taskStatus, 'failed');
 });

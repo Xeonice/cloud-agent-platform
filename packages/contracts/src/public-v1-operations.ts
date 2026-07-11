@@ -3,6 +3,7 @@ import { z, type AnyZodObject, type ZodTypeAny } from 'zod';
 import { SessionHistorySchema } from './session-history.js';
 import {
   CreateScheduleRequestSchema,
+  DispatchScheduleRequestSchema,
   ScheduleResponseSchema,
   UpdateScheduleRequestSchema,
   V1ListScheduleRunsResponseSchema,
@@ -356,13 +357,14 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     path: '/v1/schedules/{id}/dispatch',
     summary: 'Dispatch a schedule immediately',
     description:
-      'Create a task from the schedule template at the current time without ' +
-      'consuming a future nextRunAt. An already-due nextRunAt advances to avoid ' +
-      'claiming the same occurrence twice.',
+      'Consume the current schedule period immediately and advance nextRunAt to ' +
+      'the next period. expectedPeriodKey can bind a retry to the period observed ' +
+      'by the caller.',
     scope: 'tasks:write',
     streaming: false,
     destructive: true,
     paramsSchema: PublicV1IdParamsSchema,
+    requestSchema: DispatchScheduleRequestSchema,
     successStatus: 200,
     responseDescription: 'The schedule after the immediate dispatch.',
     responseSchema: ScheduleResponseSchema,

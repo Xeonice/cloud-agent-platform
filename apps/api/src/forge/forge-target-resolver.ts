@@ -20,8 +20,8 @@ function legacyHostFilters(host: string): Array<
  * Resolves a task to a fully-credentialed {@link ForgeTarget} for push-back
  * (add-multi-forge-task-delivery). Detection (registry) + OWNER-SCOPED credential:
  * the token is the task owner's `ForgeCredential` for the resolved (kind, host)
- * — the owner is the `task.created` audit-event userId, exactly the
- * `PrismaCodexAuthSource` discipline. An unattributed task, or one with no usable
+ * — the owner is the task's durable owner FK, with the earliest attributed
+ * `task.created` audit event retained as a legacy fallback. An unattributed task, or one with no usable
  * forge PAT credential, resolves to null → push-back is skipped (fail-open).
  *
  * Reads `forgeCredential` directly + decrypts via the shared pure helpers (no
@@ -54,7 +54,8 @@ export class ForgeTargetResolver {
     if (!location) {
       return null;
     }
-    const ownerId = await this.resolveTaskOwnerId(taskId);
+    const ownerId =
+      task?.ownerUserId ?? (await this.resolveLegacyTaskOwnerId(taskId));
     if (!ownerId) {
       return null; // unattributed task → skip push-back
     }
@@ -89,8 +90,8 @@ export class ForgeTargetResolver {
     return decryptStored(row?.tokenCiphertext, env);
   }
 
-  /** The task owner's userId (the `task.created` audit event), or null. */
-  private async resolveTaskOwnerId(taskId: string): Promise<string | null> {
+  /** Legacy owner fallback for tasks created before the durable owner column. */
+  private async resolveLegacyTaskOwnerId(taskId: string): Promise<string | null> {
     const created = await this.prisma.auditEvent.findFirst({
       where: { taskId, type: 'task.created', userId: { not: null } },
       orderBy: { timestamp: 'asc' },

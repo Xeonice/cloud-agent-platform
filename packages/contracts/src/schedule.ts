@@ -5,6 +5,7 @@ import {
   DEFAULT_TASK_RUNTIME,
   DeliverSchema,
   RuntimeSchema,
+  TaskStatusSchema,
 } from './task.js';
 import {
   V1_LIST_DEFAULT_LIMIT,
@@ -19,6 +20,19 @@ export type ScheduleMisfirePolicy = z.infer<typeof ScheduleMisfirePolicySchema>;
 
 export const ScheduleRunStatusSchema = z.enum(['claimed', 'created', 'skipped', 'failed']);
 export type ScheduleRunStatus = z.infer<typeof ScheduleRunStatusSchema>;
+
+export const ScheduleTriggerSourceSchema = z.enum(['manual', 'automatic']);
+export type ScheduleTriggerSource = z.infer<typeof ScheduleTriggerSourceSchema>;
+
+/**
+ * Stable schedule-period identity. Calendar presets use the schedule's local
+ * calendar, while custom cron expressions use their nominal UTC occurrence.
+ */
+export const SchedulePeriodIdentitySchema = z.string().regex(
+  /^(?:day:\d{4}-\d{2}-\d{2}|week:\d{4}-\d{2}-\d{2}|month:\d{4}-\d{2}|cron:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)$/,
+  'Invalid schedule period identity',
+);
+export type SchedulePeriodIdentity = z.infer<typeof SchedulePeriodIdentitySchema>;
 
 const CRON_FIELD_COUNT = 5;
 
@@ -217,14 +231,34 @@ export const UpdateScheduleRequestSchema = z
   }));
 export type UpdateScheduleRequest = z.infer<typeof UpdateScheduleRequestSchema>;
 
+export const DispatchScheduleRequestSchema = z
+  .object({
+    expectedPeriodKey: SchedulePeriodIdentitySchema.optional(),
+  })
+  .strict()
+  .default({});
+export type DispatchScheduleRequest = z.infer<typeof DispatchScheduleRequestSchema>;
+
 export const ScheduleLatestRunSchema = z.object({
   id: z.string().uuid(),
   scheduledFor: z.coerce.date(),
+  periodKey: SchedulePeriodIdentitySchema.nullable().optional(),
+  triggerSource: ScheduleTriggerSourceSchema.nullable().optional(),
+  triggeredAt: z.coerce.date().nullable().optional(),
   status: ScheduleRunStatusSchema,
   taskId: z.string().uuid().nullable(),
+  taskStatus: TaskStatusSchema.nullable().optional(),
   error: z.string().nullable(),
+  createdAt: z.coerce.date().optional(),
 });
 export type ScheduleLatestRun = z.infer<typeof ScheduleLatestRunSchema>;
+
+export const ScheduleCurrentPeriodSchema = z.object({
+  key: SchedulePeriodIdentitySchema,
+  scheduledFor: z.coerce.date().nullable(),
+  run: ScheduleLatestRunSchema.nullable(),
+});
+export type ScheduleCurrentPeriod = z.infer<typeof ScheduleCurrentPeriodSchema>;
 
 export const ScheduleResponseSchema = z.object({
   id: z.string().uuid(),
@@ -240,6 +274,7 @@ export const ScheduleResponseSchema = z.object({
   misfirePolicy: ScheduleMisfirePolicySchema,
   taskTemplate: ScheduleTaskTemplateSchema,
   latestRun: ScheduleLatestRunSchema.nullable().optional(),
+  currentPeriod: ScheduleCurrentPeriodSchema.optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
@@ -249,8 +284,12 @@ export const ScheduleRunResponseSchema = z.object({
   id: z.string().uuid(),
   scheduleId: z.string().uuid(),
   scheduledFor: z.coerce.date(),
+  periodKey: SchedulePeriodIdentitySchema.nullable().optional(),
+  triggerSource: ScheduleTriggerSourceSchema.nullable().optional(),
+  triggeredAt: z.coerce.date().nullable().optional(),
   status: ScheduleRunStatusSchema,
   taskId: z.string().uuid().nullable(),
+  taskStatus: TaskStatusSchema.nullable().optional(),
   error: z.string().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
@@ -302,6 +341,193 @@ export function computeNextScheduleRunAt(
     tz: timezone,
   });
   return interval.next().toDate();
+}
+
+export interface ComputeCurrentSchedulePeriodInput {
+  readonly cronExpression: string;
+  readonly timezone: string;
+  readonly at: Date;
+  readonly nextRunAt?: Date | null;
+}
+
+export interface ComputedSchedulePeriod {
+  readonly key: SchedulePeriodIdentity;
+  readonly scheduledFor: Date | null;
+}
+
+export interface ComputeSchedulePeriodForOccurrenceInput {
+  readonly cronExpression: string;
+  readonly timezone: string;
+  readonly scheduledFor: Date;
+}
+
+/**
+ * Resolves the period containing `at` in the schedule's timezone. Product
+ * recurrence presets use calendar identities; custom cron uses its next nominal
+ * occurrence, retaining an overdue persisted `nextRunAt` as the missed period.
+ */
+export function computeCurrentSchedulePeriod(
+  input: ComputeCurrentSchedulePeriodInput,
+): ComputedSchedulePeriod {
+  const cronExpression = ScheduleCronExpressionSchema.parse(input.cronExpression);
+  const timezone = ScheduleTimezoneSchema.parse(input.timezone);
+  const at = validDate(input.at, 'at');
+  const nextRunAt =
+    input.nextRunAt == null ? null : validDate(input.nextRunAt, 'nextRunAt');
+  const recurrence = recurrenceResponseFromCron(cronExpression, timezone);
+
+  if (recurrence.kind === 'custom') {
+    const scheduledFor =
+      nextRunAt && nextRunAt.getTime() <= at.getTime()
+        ? nextRunAt
+        : nextScheduleOccurrenceAtOrAfter(cronExpression, timezone, at);
+    return {
+      key: customPeriodKey(scheduledFor),
+      scheduledFor,
+    };
+  }
+
+  const key = calendarPeriodKey(recurrence.kind, timezone, at);
+  if (recurrence.kind === 'weekdays' && isWeekend(timezone, at)) {
+    return { key, scheduledFor: null };
+  }
+
+  const candidates = [
+    nextRunAt,
+    nextScheduleOccurrenceAtOrAfter(cronExpression, timezone, at),
+    previousScheduleOccurrenceAtOrBefore(cronExpression, timezone, at),
+  ];
+  const scheduledFor =
+    candidates.find(
+      (candidate): candidate is Date =>
+        candidate !== null &&
+        computeSchedulePeriodForOccurrence({
+          cronExpression,
+          timezone,
+          scheduledFor: candidate,
+        }) === key,
+    ) ?? null;
+
+  return { key, scheduledFor };
+}
+
+/** Returns the canonical period key for an automatic nominal occurrence. */
+export function computeSchedulePeriodForOccurrence(
+  input: ComputeSchedulePeriodForOccurrenceInput,
+): SchedulePeriodIdentity {
+  const cronExpression = ScheduleCronExpressionSchema.parse(input.cronExpression);
+  const timezone = ScheduleTimezoneSchema.parse(input.timezone);
+  const scheduledFor = validDate(input.scheduledFor, 'scheduledFor');
+  const recurrence = recurrenceResponseFromCron(cronExpression, timezone);
+  return recurrence.kind === 'custom'
+    ? customPeriodKey(scheduledFor)
+    : calendarPeriodKey(recurrence.kind, timezone, scheduledFor);
+}
+
+function nextScheduleOccurrenceAtOrAfter(
+  cronExpression: string,
+  timezone: string,
+  at: Date,
+): Date {
+  return computeNextScheduleRunAt({
+    cronExpression,
+    timezone,
+    after: new Date(at.getTime() - 1),
+  });
+}
+
+function previousScheduleOccurrenceAtOrBefore(
+  cronExpression: string,
+  timezone: string,
+  at: Date,
+): Date {
+  const interval = CronExpressionParser.parse(cronExpression, {
+    currentDate: new Date(at.getTime() + 1),
+    tz: timezone,
+  });
+  return interval.prev().toDate();
+}
+
+type CalendarPeriodKind = Exclude<ScheduleRecurrenceResponse['kind'], 'custom'>;
+
+function calendarPeriodKey(
+  kind: CalendarPeriodKind,
+  timezone: string,
+  instant: Date,
+): SchedulePeriodIdentity {
+  const local = localDateParts(timezone, instant);
+  switch (kind) {
+    case 'daily':
+    case 'weekdays':
+      return SchedulePeriodIdentitySchema.parse(`day:${formatLocalDate(local)}`);
+    case 'weekly':
+      return SchedulePeriodIdentitySchema.parse(
+        `week:${formatLocalDate(isoWeekStart(local))}`,
+      );
+    case 'monthly':
+      return SchedulePeriodIdentitySchema.parse(
+        `month:${local.year.toString().padStart(4, '0')}-${local.month
+          .toString()
+          .padStart(2, '0')}`,
+      );
+  }
+}
+
+function customPeriodKey(scheduledFor: Date): SchedulePeriodIdentity {
+  return SchedulePeriodIdentitySchema.parse(`cron:${scheduledFor.toISOString()}`);
+}
+
+interface LocalDateParts {
+  readonly year: number;
+  readonly month: number;
+  readonly day: number;
+}
+
+function localDateParts(timezone: string, instant: Date): LocalDateParts {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    calendar: 'iso8601',
+    numberingSystem: 'latn',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(instant);
+  const part = (type: Intl.DateTimeFormatPartTypes): number => {
+    const value = parts.find((candidate) => candidate.type === type)?.value;
+    if (!value) throw new Error(`Unable to resolve local schedule ${type}`);
+    return Number(value);
+  };
+  return { year: part('year'), month: part('month'), day: part('day') };
+}
+
+function formatLocalDate(parts: LocalDateParts): string {
+  return `${parts.year.toString().padStart(4, '0')}-${parts.month
+    .toString()
+    .padStart(2, '0')}-${parts.day.toString().padStart(2, '0')}`;
+}
+
+function isoWeekStart(parts: LocalDateParts): LocalDateParts {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  const daysSinceMonday = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - daysSinceMonday);
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+  };
+}
+
+function isWeekend(timezone: string, instant: Date): boolean {
+  const local = localDateParts(timezone, instant);
+  const weekday = new Date(Date.UTC(local.year, local.month - 1, local.day)).getUTCDay();
+  return weekday === 0 || weekday === 6;
+}
+
+function validDate(value: Date, field: string): Date {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw new TypeError(`${field} must be a valid Date`);
+  }
+  return value;
 }
 
 export interface NormalizeScheduleTimingInput {

@@ -12,11 +12,15 @@ import {
   ScheduleResponseSchema,
   ScheduleRunResponseSchema,
   ScheduleTaskTemplateSchema,
+  computeCurrentSchedulePeriod,
   computeNextScheduleRunAt,
+  computeSchedulePeriodForOccurrence,
   normalizeScheduleTiming,
   recurrenceResponseFromCron,
   type CreateScheduleRequest,
   type CreateTaskBody,
+  type DispatchScheduleRequest,
+  type SchedulePeriodIdentity,
   type ScheduleResponse,
   type ScheduleRunResponse,
   type ScheduleTaskTemplate,
@@ -37,23 +41,50 @@ const ACTIVE_TASK_STATUSES = [
 const DEFAULT_POLL_MS = 60_000;
 const DEFAULT_CLAIM_LEASE_MS = 5 * 60_000;
 const DEFAULT_DUE_LIMIT = 10;
+const SCHEDULE_MUTATION_CAS_ATTEMPTS = 3;
 
 type ScheduleRow = Prisma.TaskScheduleGetPayload<{
   include: typeof SCHEDULE_INCLUDE;
 }>;
 
+type PeriodRunRow = Prisma.TaskScheduleRunGetPayload<{
+  include: typeof RUN_TASK_STATUS_INCLUDE;
+}>;
+
+interface ScheduleSummaryRunSource {
+  readonly id: string;
+  readonly scheduledFor: Date;
+  readonly periodKey: string | null;
+  readonly triggerSource: string | null;
+  readonly triggeredAt: Date | null;
+  readonly status: string;
+  readonly taskId: string | null;
+  readonly task: { status: string } | null;
+  readonly error: string | null;
+  readonly createdAt: Date;
+}
+
 const SCHEDULE_INCLUDE = {
   runs: {
-    orderBy: { scheduledFor: 'desc' as const },
+    orderBy: { createdAt: 'desc' as const },
     take: 1,
     select: {
       id: true,
       scheduledFor: true,
+      periodKey: true,
+      triggerSource: true,
+      triggeredAt: true,
       status: true,
       taskId: true,
+      task: { select: { status: true } },
       error: true,
+      createdAt: true,
     },
   },
+} as const;
+
+const RUN_TASK_STATUS_INCLUDE = {
+  task: { select: { status: true } },
 } as const;
 
 interface KeysetCursor {
@@ -61,12 +92,36 @@ interface KeysetCursor {
   readonly id: string;
 }
 
+interface OccurrenceDispatch {
+  readonly schedule: ScheduleRow;
+  readonly scheduledFor: Date;
+  readonly periodKey: SchedulePeriodIdentity;
+  readonly triggerSource: 'manual' | 'automatic';
+  readonly triggeredAt: Date;
+  readonly nextRunAt: Date | null;
+  readonly claimedAt: Date;
+  readonly token: string;
+  readonly automatic: boolean;
+}
+
+type CommittedOccurrence =
+  | {
+      readonly kind: 'created';
+      readonly runId: string;
+      readonly taskId: string;
+      readonly taskBody: CreateTaskBody;
+    }
+  | { readonly kind: 'skipped' };
+
+class ScheduleClaimConflictError extends Error {}
+
 @Injectable()
 export class ScheduledTasksService
   implements OnApplicationBootstrap, OnModuleDestroy
 {
   private readonly logger = new Logger(ScheduledTasksService.name);
   private timer: NodeJS.Timeout | null = null;
+  private pollInFlight = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -74,14 +129,8 @@ export class ScheduledTasksService
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
-    try {
-      await this.recoverPendingAdmissions();
-    } catch (err) {
-      this.logger.warn(
-        `scheduled task recovery failed: ${errorMessage(err)}`,
-      );
-    }
     if (process.env.SCHEDULED_TASKS_DISABLED === '1') {
+      await this.runRecoverySafely();
       return;
     }
     const pollMs = positiveIntFromEnv(
@@ -137,7 +186,7 @@ export class ScheduledTasksService
       },
       include: SCHEDULE_INCLUDE,
     });
-    return this.toScheduleResponse(created);
+    return this.toScheduleResponse(created, now);
   }
 
   async list(ownerUserId: string, limit?: number): Promise<ScheduleResponse[]> {
@@ -147,7 +196,7 @@ export class ScheduledTasksService
       take: limit,
       include: SCHEDULE_INCLUDE,
     });
-    return rows.map((row) => this.toScheduleResponse(row));
+    return this.toScheduleResponses(rows);
   }
 
   async listPage(
@@ -166,13 +215,20 @@ export class ScheduledTasksService
     });
     const page = pageRows(rows, args.limit, (row) => row.createdAt);
     return {
-      items: page.items.map((row) => this.toScheduleResponse(row)),
+      items: await this.toScheduleResponses(page.items),
       nextCursor: page.nextCursor,
     };
   }
 
-  async get(ownerUserId: string, id: string): Promise<ScheduleResponse> {
-    return this.toScheduleResponse(await this.requireOwnedSchedule(ownerUserId, id));
+  async get(
+    ownerUserId: string,
+    id: string,
+    now = new Date(),
+  ): Promise<ScheduleResponse> {
+    return this.toScheduleResponse(
+      await this.requireOwnedSchedule(ownerUserId, id),
+      now,
+    );
   }
 
   async update(
@@ -181,62 +237,77 @@ export class ScheduledTasksService
     body: UpdateScheduleRequest,
     now = new Date(),
   ): Promise<ScheduleResponse> {
-    const current = await this.requireOwnedSchedule(ownerUserId, id);
-
-    const timingChanged =
-      body.recurrence !== undefined ||
-      body.cronExpression !== undefined ||
-      body.timezone !== undefined;
-    const timing = timingChanged
-      ? normalizeScheduleTiming({
-          recurrence: body.recurrence,
-          cronExpression: body.cronExpression ?? current.cron,
-          timezone: body.timezone ?? current.timezone,
-        })
-      : { cronExpression: current.cron, timezone: current.timezone };
-    const enabled = body.enabled ?? current.enabled;
-    const recurrenceChanged = timingChanged || body.enabled !== undefined;
     const normalizedTemplate = body.taskTemplate
       ? await this.normalizeTemplate(ownerUserId, body.taskTemplate)
       : null;
-
-    const updated = await this.prisma.taskSchedule.update({
-      where: { id },
-      data: {
-        ...(body.name !== undefined ? { name: body.name } : {}),
-        ...(normalizedTemplate
-          ? {
-              repoId: normalizedTemplate.repoId,
-              taskTemplate: normalizedTemplate as unknown as Prisma.InputJsonObject,
-            }
-          : {}),
-        ...(timingChanged
-          ? { cron: timing.cronExpression, timezone: timing.timezone }
-          : {}),
-        ...(body.enabled !== undefined ? { enabled } : {}),
-        ...(body.overlapPolicy !== undefined
-          ? { overlapPolicy: body.overlapPolicy }
-          : {}),
-        ...(body.misfirePolicy !== undefined
-          ? { misfirePolicy: body.misfirePolicy }
-          : {}),
-        ...(recurrenceChanged
-          ? {
-              nextRunAt: enabled
-                ? computeNextScheduleRunAt({
-                    cronExpression: timing.cronExpression,
-                    timezone: timing.timezone,
-                    after: now,
-                  })
-                : null,
-              claimToken: null,
-              claimUntil: null,
-            }
-          : {}),
-      },
-      include: SCHEDULE_INCLUDE,
-    });
-    return this.toScheduleResponse(updated);
+    for (let attempt = 0; attempt < SCHEDULE_MUTATION_CAS_ATTEMPTS; attempt += 1) {
+      const current = await this.requireOwnedSchedule(ownerUserId, id);
+      const timingChanged =
+        body.recurrence !== undefined ||
+        body.cronExpression !== undefined ||
+        body.timezone !== undefined;
+      const timing = timingChanged
+        ? normalizeScheduleTiming({
+            recurrence: body.recurrence,
+            cronExpression: body.cronExpression ?? current.cron,
+            timezone: body.timezone ?? current.timezone,
+          })
+        : { cronExpression: current.cron, timezone: current.timezone };
+      const enabled = body.enabled ?? current.enabled;
+      const recurrenceChanged = timingChanged || body.enabled !== undefined;
+      const nextRunAt = recurrenceChanged
+        ? enabled
+          ? await this.advancePastConsumedPeriods(
+              {
+                id: current.id,
+                cron: timing.cronExpression,
+                timezone: timing.timezone,
+              },
+              computeNextScheduleRunAt({
+                cronExpression: timing.cronExpression,
+                timezone: timing.timezone,
+                after: now,
+              }),
+            )
+          : null
+        : undefined;
+      const updated = await this.prisma.taskSchedule.updateMany({
+        where: {
+          id,
+          ownerUserId,
+          updatedAt: current.updatedAt,
+          nextRunAt: current.nextRunAt,
+        },
+        data: {
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          ...(normalizedTemplate
+            ? {
+                repoId: normalizedTemplate.repoId,
+                taskTemplate:
+                  normalizedTemplate as unknown as Prisma.InputJsonObject,
+              }
+            : {}),
+          ...(timingChanged
+            ? { cron: timing.cronExpression, timezone: timing.timezone }
+            : {}),
+          ...(body.enabled !== undefined ? { enabled } : {}),
+          ...(body.overlapPolicy !== undefined
+            ? { overlapPolicy: body.overlapPolicy }
+            : {}),
+          ...(body.misfirePolicy !== undefined
+            ? { misfirePolicy: body.misfirePolicy }
+            : {}),
+          ...(recurrenceChanged ? { nextRunAt } : {}),
+        },
+      });
+      if (updated.count === 1) {
+        return this.toScheduleResponse(
+          await this.requireOwnedSchedule(ownerUserId, id),
+          now,
+        );
+      }
+    }
+    throw scheduleMutationConflict(id);
   }
 
   async pause(ownerUserId: string, id: string): Promise<ScheduleResponse> {
@@ -246,8 +317,6 @@ export class ScheduledTasksService
       data: {
         enabled: false,
         nextRunAt: null,
-        claimToken: null,
-        claimUntil: null,
       },
       include: SCHEDULE_INCLUDE,
     });
@@ -259,78 +328,159 @@ export class ScheduledTasksService
     id: string,
     now = new Date(),
   ): Promise<ScheduleResponse> {
-    const current = await this.requireOwnedSchedule(ownerUserId, id);
-    const updated = await this.prisma.taskSchedule.update({
-      where: { id },
-      data: {
-        enabled: true,
-        nextRunAt: computeNextScheduleRunAt({
+    for (let attempt = 0; attempt < SCHEDULE_MUTATION_CAS_ATTEMPTS; attempt += 1) {
+      const current = await this.requireOwnedSchedule(ownerUserId, id);
+      const nextRunAt = await this.advancePastConsumedPeriods(
+        current,
+        computeNextScheduleRunAt({
           cronExpression: current.cron,
           timezone: current.timezone,
           after: now,
         }),
-        claimToken: null,
-        claimUntil: null,
-      },
-      include: SCHEDULE_INCLUDE,
-    });
-    return this.toScheduleResponse(updated);
+      );
+      const updated = await this.prisma.taskSchedule.updateMany({
+        where: {
+          id,
+          ownerUserId,
+          updatedAt: current.updatedAt,
+          nextRunAt: current.nextRunAt,
+        },
+        data: { enabled: true, nextRunAt },
+      });
+      if (updated.count === 1) {
+        return this.toScheduleResponse(
+          await this.requireOwnedSchedule(ownerUserId, id),
+          now,
+        );
+      }
+    }
+    throw scheduleMutationConflict(id);
   }
 
   async dispatchNow(
     ownerUserId: string,
     id: string,
-    now = new Date(),
+    bodyOrNow: DispatchScheduleRequest | Date = {},
+    requestNow = new Date(),
   ): Promise<ScheduleResponse> {
+    const body = bodyOrNow instanceof Date ? {} : bodyOrNow;
+    const now = bodyOrNow instanceof Date ? bodyOrNow : requestNow;
     const schedule = await this.requireOwnedSchedule(ownerUserId, id);
-    const scheduledFor = now;
-    const nextRunAt =
-      schedule.enabled && schedule.nextRunAt && schedule.nextRunAt <= now
-      ? computeNextScheduleRunAt({
-          cronExpression: schedule.cron,
-          timezone: schedule.timezone,
-          after: now,
-        })
-      : schedule.nextRunAt;
-    const token = randomUUID();
-    const claimLeaseMs = positiveIntFromEnv(
-      process.env.SCHEDULED_TASKS_CLAIM_LEASE_MS,
-      DEFAULT_CLAIM_LEASE_MS,
-    );
-    const claimed = await this.prisma.taskSchedule.updateMany({
-      where: {
-        id: schedule.id,
-        nextRunAt: schedule.nextRunAt,
-        OR: [{ claimUntil: null }, { claimUntil: { lt: now } }],
-      },
-      data: {
-        nextRunAt,
-        claimToken: token,
-        claimUntil: new Date(now.getTime() + claimLeaseMs),
-      },
+    const period = computeCurrentSchedulePeriod({
+      cronExpression: schedule.cron,
+      timezone: schedule.timezone,
+      at: now,
+      nextRunAt: schedule.nextRunAt,
     });
-    if (claimed.count !== 1) {
-      throw new ConflictException('Schedule is already dispatching');
+    if (body.expectedPeriodKey && body.expectedPeriodKey !== period.key) {
+      throw new ConflictException({
+        error: 'schedule_period_changed',
+        message: 'The schedule moved to another recurrence period.',
+        expectedPeriodKey: body.expectedPeriodKey,
+        currentPeriodKey: period.key,
+      });
     }
-    await this.executeClaim(schedule, scheduledFor, token);
-    return this.get(ownerUserId, id);
+
+    if (await this.periodRunExists(schedule, period.key)) {
+      const repairedNextRunAt = await this.nextRunAtAfterManualPeriod(
+        schedule,
+        period.key,
+        now,
+      );
+      if (
+        repairedNextRunAt &&
+        schedule.nextRunAt &&
+        repairedNextRunAt.getTime() !== schedule.nextRunAt.getTime()
+      ) {
+        await this.advanceConsumedSchedule(schedule, repairedNextRunAt, now);
+      }
+      return this.toScheduleResponse(
+        await this.requireOwnedSchedule(ownerUserId, id),
+        now,
+      );
+    }
+
+    const nextRunAt = await this.nextRunAtAfterManualPeriod(
+      schedule,
+      period.key,
+      now,
+    );
+    const dispatched = await this.dispatchOccurrence({
+      schedule,
+      scheduledFor: period.scheduledFor ?? now,
+      periodKey: period.key,
+      triggerSource: 'manual',
+      triggeredAt: now,
+      nextRunAt,
+      claimedAt: now,
+      token: randomUUID(),
+      automatic: false,
+    });
+    if (!dispatched) {
+      if (await this.periodRunExists(schedule, period.key)) {
+        return this.toScheduleResponse(
+          await this.requireOwnedSchedule(ownerUserId, id),
+          now,
+        );
+      }
+      throw new ConflictException({
+        error: 'schedule_dispatch_conflict',
+        message: 'Schedule is already dispatching or has changed.',
+        currentPeriodKey: period.key,
+      });
+    }
+    return this.toScheduleResponse(
+      await this.requireOwnedSchedule(ownerUserId, id),
+      now,
+    );
   }
 
   private async runTickSafely(): Promise<void> {
+    if (this.pollInFlight) return;
+    this.pollInFlight = true;
     try {
-      await this.tick();
+      await this.runRecoverySafely();
+      try {
+        await this.tick();
+      } catch (err) {
+        this.logger.warn(`scheduled task tick failed: ${errorMessage(err)}`);
+      }
+    } finally {
+      this.pollInFlight = false;
+    }
+  }
+
+  private async runRecoverySafely(): Promise<void> {
+    try {
+      await this.recoverPendingAdmissions();
     } catch (err) {
-      this.logger.warn(`scheduled task tick failed: ${errorMessage(err)}`);
+      this.logger.warn(`scheduled task recovery failed: ${errorMessage(err)}`);
     }
   }
 
   async delete(ownerUserId: string, id: string): Promise<void> {
     const deleted = await this.prisma.taskSchedule.deleteMany({
-      where: { id, ownerUserId },
+      where: {
+        id,
+        ownerUserId,
+        runs: {
+          none: {
+            status: 'created',
+            task: { status: 'pending' },
+          },
+        },
+      },
     });
-    if (deleted.count === 0) {
-      throw new NotFoundException(`Schedule not found: ${id}`);
-    }
+    if (deleted.count === 1) return;
+
+    const existing = await this.prisma.taskSchedule.findFirst({
+      where: { id, ownerUserId },
+      select: { id: true },
+    });
+    if (!existing) throw new NotFoundException(`Schedule not found: ${id}`);
+    throw new ConflictException(
+      'Schedule has a pending task that must finish admission before deletion',
+    );
   }
 
   async listRuns(
@@ -343,8 +493,9 @@ export class ScheduledTasksService
       where: { scheduleId },
       orderBy: [{ scheduledFor: 'desc' }, { id: 'desc' }],
       take: limit,
+      include: RUN_TASK_STATUS_INCLUDE,
     });
-    return rows.map((row) => ScheduleRunResponseSchema.parse(row));
+    return rows.map((row) => this.toRunResponse(row));
   }
 
   async listRunsPage(
@@ -361,10 +512,11 @@ export class ScheduledTasksService
       },
       orderBy: [{ scheduledFor: 'desc' }, { id: 'desc' }],
       take: args.limit + 1,
+      include: RUN_TASK_STATUS_INCLUDE,
     });
     const page = pageRows(rows, args.limit, (row) => row.scheduledFor);
     return {
-      items: page.items.map((row) => ScheduleRunResponseSchema.parse(row)),
+      items: page.items.map((row) => this.toRunResponse(row)),
       nextCursor: page.nextCursor,
     };
   }
@@ -383,38 +535,105 @@ export class ScheduledTasksService
 
     let fired = 0;
     for (const row of rows) {
-      const claimed = await this.claim(row, now);
-      if (!claimed) continue;
-      fired += 1;
-      await this.executeClaim(claimed.schedule, claimed.scheduledFor, claimed.token);
+      if (!row.nextRunAt) continue;
+      const periodKey = computeSchedulePeriodForOccurrence({
+        cronExpression: row.cron,
+        timezone: row.timezone,
+        scheduledFor: row.nextRunAt,
+      });
+      const nextRunAt = computeNextRunAfterPeriod({
+        cronExpression: row.cron,
+        timezone: row.timezone,
+        after: now,
+        consumedPeriodKey: periodKey,
+      });
+      if (await this.periodRunExists(row, periodKey)) {
+        await this.advanceConsumedSchedule(row, nextRunAt, now);
+        continue;
+      }
+      const dispatched = await this.dispatchOccurrence({
+        schedule: row,
+        scheduledFor: row.nextRunAt,
+        periodKey,
+        triggerSource: 'automatic',
+        triggeredAt: now,
+        nextRunAt,
+        claimedAt: now,
+        token: randomUUID(),
+        automatic: true,
+      });
+      if (dispatched) fired += 1;
     }
     return fired;
   }
 
   async recoverPendingAdmissions(limit = 100): Promise<number> {
-    const rows = await this.prisma.taskScheduleRun.findMany({
-      where: {
-        status: 'created',
-        taskId: { not: null },
-        task: { status: 'pending' },
-      },
-      take: limit,
-      orderBy: { createdAt: 'asc' },
-      include: {
-        schedule: { select: { ownerUserId: true } },
-        task: true,
-      },
-    });
-
+    const requestedBatchSize = Number.isFinite(limit) ? Math.floor(limit) : 100;
+    const batchSize = Math.max(1, Math.min(requestedBatchSize, 1_000));
     let recovered = 0;
-    for (const row of rows) {
-      if (!row.task) continue;
-      await this.tasks.admitCreatedTask(
-        row.task.id,
-        taskBodyFromRow(row.task),
-        row.schedule.ownerUserId,
-      );
-      recovered += 1;
+    while (true) {
+      const claimedAt = new Date();
+      const rows = await this.prisma.taskScheduleRun.findMany({
+        where: {
+          status: 'created',
+          taskId: { not: null },
+          task: { status: 'pending' },
+          OR: [
+            { admissionClaimUntil: null },
+            { admissionClaimUntil: { lt: claimedAt } },
+          ],
+        },
+        take: batchSize,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        include: {
+          schedule: { select: { ownerUserId: true } },
+          task: true,
+        },
+      });
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        if (!row.task) continue;
+        const token = randomUUID();
+        const claimed = await this.claimPendingAdmission({
+          runId: row.id,
+          taskId: row.task.id,
+          claimedAt: new Date(),
+          token,
+        });
+        if (!claimed) continue;
+
+        let release = false;
+        try {
+          await this.tasks.admitCreatedTask(
+            row.task.id,
+            taskBodyFromRow(row.task),
+            row.schedule.ownerUserId,
+          );
+          const current = await this.prisma.task.findUnique({
+            where: { id: row.task.id },
+            select: { status: true },
+          });
+          release = current === null || current.status !== 'pending';
+          if (release && current !== null) {
+            recovered += 1;
+          } else if (current !== null) {
+            this.logger.warn(
+              `scheduled task recovery left ${row.task.id} pending; retry is deferred until the claim lease expires`,
+            );
+          }
+        } catch (err) {
+          this.logger.warn(
+            `scheduled task recovery admission failed for ${row.task.id}: ${errorMessage(err)}`,
+          );
+        } finally {
+          if (release) {
+            await this.releaseAdmissionClaim(row.id, token);
+          }
+        }
+      }
+
+      if (rows.length < batchSize) break;
     }
     if (recovered > 0) {
       this.logger.log(
@@ -424,85 +643,175 @@ export class ScheduledTasksService
     return recovered;
   }
 
-  private async claim(
-    schedule: ScheduleRow,
-    now: Date,
-  ): Promise<{ schedule: ScheduleRow; scheduledFor: Date; token: string } | null> {
-    if (!schedule.nextRunAt) return null;
-    const scheduledFor = schedule.nextRunAt;
-    const token = randomUUID();
+  private async claimPendingAdmission(args: {
+    readonly runId: string;
+    readonly taskId: string;
+    readonly claimedAt: Date;
+    readonly token: string;
+  }): Promise<boolean> {
     const claimLeaseMs = positiveIntFromEnv(
       process.env.SCHEDULED_TASKS_CLAIM_LEASE_MS,
       DEFAULT_CLAIM_LEASE_MS,
     );
-    const nextRunAt = computeNextScheduleRunAt({
-      cronExpression: schedule.cron,
-      timezone: schedule.timezone,
-      after: now,
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.taskScheduleRun.updateMany({
+        where: {
+          id: args.runId,
+          taskId: args.taskId,
+          status: 'created',
+          OR: [
+            { admissionClaimUntil: null },
+            { admissionClaimUntil: { lt: args.claimedAt } },
+          ],
+        },
+        data: {
+          admissionClaimToken: args.token,
+          admissionClaimUntil: new Date(args.claimedAt.getTime() + claimLeaseMs),
+        },
+      });
+      if (claimed.count !== 1) return false;
+
+      const task = await tx.task.findUnique({
+        where: { id: args.taskId },
+        select: { status: true },
+      });
+      if (task?.status === 'pending') return true;
+
+      await tx.taskScheduleRun.updateMany({
+        where: { id: args.runId, admissionClaimToken: args.token },
+        data: { admissionClaimToken: null, admissionClaimUntil: null },
+      });
+      return false;
     });
-    const claimed = await this.prisma.taskSchedule.updateMany({
-      where: {
-        id: schedule.id,
-        enabled: true,
-        nextRunAt: scheduledFor,
-        OR: [{ claimUntil: null }, { claimUntil: { lt: now } }],
-      },
-      data: {
-        nextRunAt,
-        claimToken: token,
-        claimUntil: new Date(now.getTime() + claimLeaseMs),
-      },
-    });
-    return claimed.count === 1 ? { schedule, scheduledFor, token } : null;
   }
 
-  private async executeClaim(
-    schedule: ScheduleRow,
-    scheduledFor: Date,
-    token: string,
-  ): Promise<void> {
+  private async dispatchOccurrence(
+    dispatch: OccurrenceDispatch,
+  ): Promise<boolean> {
+    let committed: CommittedOccurrence;
     try {
-      await this.assertOwnerAvailable(schedule.ownerUserId);
-      const template = ScheduleTaskTemplateSchema.parse(schedule.taskTemplate);
-      if (schedule.overlapPolicy === 'skip') {
-        const active = await this.prisma.taskScheduleRun.findFirst({
+      committed = await this.persistOccurrence(dispatch);
+    } catch (err) {
+      if (err instanceof ScheduleClaimConflictError || isUniqueViolation(err)) {
+        return false;
+      }
+      const failed = await this.persistFailedOccurrence(
+        dispatch,
+        errorMessage(err),
+      );
+      if (!failed) return false;
+      await this.releaseClaim(dispatch);
+      return true;
+    }
+
+    if (committed.kind === 'created') {
+      let admissionFailed = false;
+      try {
+        await this.tasks.admitCreatedTask(
+          committed.taskId,
+          committed.taskBody,
+          dispatch.schedule.ownerUserId,
+        );
+      } catch (err) {
+        admissionFailed = true;
+        // The task row and run ledger are already committed. Leave the task
+        // pending so startup recovery can retry admission without duplicating it.
+        this.logger.warn(
+          `scheduled task admission failed for ${committed.taskId}: ${errorMessage(err)}`,
+        );
+      }
+      if (!admissionFailed) {
+        try {
+          const current = await this.prisma.task.findUnique({
+            where: { id: committed.taskId },
+            select: { status: true },
+          });
+          if (current?.status === 'pending') {
+            this.logger.warn(
+              `scheduled task admission left ${committed.taskId} pending; retry is deferred until the claim lease expires`,
+            );
+            await this.releaseClaim(dispatch);
+            return true;
+          }
+        } catch (err) {
+          this.logger.warn(
+            `scheduled task admission status check failed for ${committed.taskId}: ${errorMessage(err)}`,
+          );
+          await this.releaseClaim(dispatch);
+          return true;
+        }
+      }
+      if (!admissionFailed) {
+        await this.releaseAdmissionClaim(committed.runId, dispatch.token);
+      }
+    }
+    await this.releaseClaim(dispatch);
+    return true;
+  }
+
+  private async persistOccurrence(
+    dispatch: OccurrenceDispatch,
+  ): Promise<CommittedOccurrence> {
+    const claimLeaseMs = positiveIntFromEnv(
+      process.env.SCHEDULED_TASKS_CLAIM_LEASE_MS,
+      DEFAULT_CLAIM_LEASE_MS,
+    );
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.taskSchedule.updateMany({
+        where: {
+          id: dispatch.schedule.id,
+          updatedAt: dispatch.schedule.updatedAt,
+          nextRunAt: dispatch.schedule.nextRunAt,
+          ...(dispatch.automatic ? { enabled: true } : {}),
+          OR: [
+            { claimUntil: null },
+            { claimUntil: { lt: dispatch.claimedAt } },
+          ],
+        },
+        data: {
+          nextRunAt: dispatch.nextRunAt,
+          claimToken: dispatch.token,
+          claimUntil: new Date(dispatch.claimedAt.getTime() + claimLeaseMs),
+        },
+      });
+      if (claimed.count !== 1) throw new ScheduleClaimConflictError();
+
+      await this.assertOwnerAvailable(dispatch.schedule.ownerUserId, tx);
+      const template = ScheduleTaskTemplateSchema.parse(
+        dispatch.schedule.taskTemplate,
+      );
+      if (dispatch.schedule.overlapPolicy === 'skip') {
+        const active = await tx.taskScheduleRun.findFirst({
           where: {
-            scheduleId: schedule.id,
+            scheduleId: dispatch.schedule.id,
             task: { status: { in: [...ACTIVE_TASK_STATUSES] } },
           },
           select: { id: true },
         });
         if (active) {
-          await this.recordSkippedRun(
-            schedule.id,
-            scheduledFor,
-            'overlap: prior scheduled task still active',
-          );
-          return;
+          await tx.taskScheduleRun.create({
+            data: {
+              scheduleId: dispatch.schedule.id,
+              scheduledFor: dispatch.scheduledFor,
+              periodKey: dispatch.periodKey,
+              triggerSource: dispatch.triggerSource,
+              triggeredAt: dispatch.triggeredAt,
+              status: 'skipped',
+              error: 'overlap: prior scheduled task still active',
+            },
+          });
+          return { kind: 'skipped' };
         }
       }
-      await this.createTaskForRun(schedule, scheduledFor, template);
-    } catch (err) {
-      await this.recordFailedRun(schedule.id, scheduledFor, errorMessage(err));
-    } finally {
-      await this.prisma.taskSchedule.updateMany({
-        where: { id: schedule.id, claimToken: token },
-        data: { claimToken: null, claimUntil: null },
-      });
-    }
-  }
 
-  private async createTaskForRun(
-    schedule: ScheduleRow,
-    scheduledFor: Date,
-    template: ScheduleTaskTemplate,
-  ): Promise<void> {
-    const { repoId, ...taskBody } = template;
-    const created = await this.prisma.$transaction(async (tx) => {
+      const { repoId, ...taskBody } = template;
       await tx.taskScheduleRun.create({
         data: {
-          scheduleId: schedule.id,
-          scheduledFor,
+          scheduleId: dispatch.schedule.id,
+          scheduledFor: dispatch.scheduledFor,
+          periodKey: dispatch.periodKey,
+          triggerSource: dispatch.triggerSource,
+          triggeredAt: dispatch.triggeredAt,
           status: 'claimed',
         },
       });
@@ -511,66 +820,226 @@ export class ScheduledTasksService
         taskBody,
         tx as unknown as PrismaService,
         'headless-exec',
-        schedule.ownerUserId,
+        dispatch.schedule.ownerUserId,
       );
-      await tx.taskScheduleRun.update({
+      const run = await tx.taskScheduleRun.update({
         where: {
           scheduleId_scheduledFor: {
-            scheduleId: schedule.id,
-            scheduledFor,
+            scheduleId: dispatch.schedule.id,
+            scheduledFor: dispatch.scheduledFor,
           },
         },
         data: {
           status: 'created',
           taskId: task.id,
+          admissionClaimToken: dispatch.token,
+          admissionClaimUntil: new Date(
+            dispatch.claimedAt.getTime() + claimLeaseMs,
+          ),
         },
       });
-      return { task, taskBody };
+      return { kind: 'created', runId: run.id, taskId: task.id, taskBody };
     });
-    await this.tasks.admitCreatedTask(
-      created.task.id,
-      created.taskBody,
-      schedule.ownerUserId,
+  }
+
+  private async persistFailedOccurrence(
+    dispatch: OccurrenceDispatch,
+    error: string,
+  ): Promise<boolean> {
+    const claimLeaseMs = positiveIntFromEnv(
+      process.env.SCHEDULED_TASKS_CLAIM_LEASE_MS,
+      DEFAULT_CLAIM_LEASE_MS,
+    );
+    try {
+      await this.prisma.$transaction(async (tx) => {
+        const claimed = await tx.taskSchedule.updateMany({
+          where: {
+            id: dispatch.schedule.id,
+            updatedAt: dispatch.schedule.updatedAt,
+            nextRunAt: dispatch.schedule.nextRunAt,
+            ...(dispatch.automatic ? { enabled: true } : {}),
+            OR: [
+              { claimUntil: null },
+              { claimUntil: { lt: dispatch.claimedAt } },
+            ],
+          },
+          data: {
+            nextRunAt: dispatch.nextRunAt,
+            claimToken: dispatch.token,
+            claimUntil: new Date(dispatch.claimedAt.getTime() + claimLeaseMs),
+          },
+        });
+        if (claimed.count !== 1) throw new ScheduleClaimConflictError();
+        await tx.taskScheduleRun.create({
+          data: {
+            scheduleId: dispatch.schedule.id,
+            scheduledFor: dispatch.scheduledFor,
+            periodKey: dispatch.periodKey,
+            triggerSource: dispatch.triggerSource,
+            triggeredAt: dispatch.triggeredAt,
+            status: 'failed',
+            error,
+          },
+        });
+      });
+      return true;
+    } catch (err) {
+      if (err instanceof ScheduleClaimConflictError || isUniqueViolation(err)) {
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  private async releaseClaim(dispatch: OccurrenceDispatch): Promise<void> {
+    await this.releaseScheduleClaim(dispatch.schedule.id, dispatch.token);
+  }
+
+  private async periodRunExists(
+    schedule: Pick<ScheduleRow, 'id' | 'cron' | 'timezone'>,
+    periodKey: SchedulePeriodIdentity,
+  ): Promise<boolean> {
+    return (await this.findPeriodRun(schedule, periodKey)) !== null;
+  }
+
+  private async findPeriodRun(
+    schedule: Pick<ScheduleRow, 'id' | 'cron' | 'timezone'>,
+    periodKey: SchedulePeriodIdentity,
+  ): Promise<PeriodRunRow | null> {
+    const keyed = await this.prisma.taskScheduleRun.findFirst({
+      where: { scheduleId: schedule.id, periodKey },
+      include: RUN_TASK_STATUS_INCLUDE,
+    });
+    if (keyed) return keyed;
+
+    const legacy = await this.prisma.taskScheduleRun.findFirst({
+      where: {
+        scheduleId: schedule.id,
+        periodKey: null,
+        scheduledFor: legacyPeriodCandidateWindow(periodKey),
+      },
+      orderBy: { createdAt: 'desc' },
+      include: RUN_TASK_STATUS_INCLUDE,
+    });
+    if (
+      legacy &&
+      effectivePeriodKey(schedule, legacy) === periodKey
+    ) {
+      return legacy;
+    }
+
+    const otherCandidates = await this.prisma.taskScheduleRun.findMany({
+      where: {
+        scheduleId: schedule.id,
+        periodKey: null,
+        scheduledFor: legacyPeriodCandidateWindow(periodKey),
+      },
+      orderBy: { createdAt: 'desc' },
+      include: RUN_TASK_STATUS_INCLUDE,
+    });
+    return (
+      otherCandidates.find(
+        (candidate) => effectivePeriodKey(schedule, candidate) === periodKey,
+      ) ?? null
     );
   }
 
-  private async recordSkippedRun(
-    scheduleId: string,
-    scheduledFor: Date,
-    error: string,
+  private async nextRunAtAfterManualPeriod(
+    schedule: ScheduleRow,
+    periodKey: SchedulePeriodIdentity,
+    now: Date,
+  ): Promise<Date | null> {
+    if (!schedule.enabled || !schedule.nextRunAt) return schedule.nextRunAt;
+    const nextRunPeriodKey = computeSchedulePeriodForOccurrence({
+      cronExpression: schedule.cron,
+      timezone: schedule.timezone,
+      scheduledFor: schedule.nextRunAt,
+    });
+    const shouldAdvance =
+      schedule.nextRunAt.getTime() <= now.getTime() ||
+      nextRunPeriodKey === periodKey;
+    const candidate = shouldAdvance
+      ? computeNextRunAfterPeriod({
+          cronExpression: schedule.cron,
+          timezone: schedule.timezone,
+          after: new Date(
+            Math.max(now.getTime(), schedule.nextRunAt.getTime()),
+          ),
+          consumedPeriodKey: periodKey,
+        })
+      : schedule.nextRunAt;
+    return this.advancePastConsumedPeriods(schedule, candidate);
+  }
+
+  private async advancePastConsumedPeriods(
+    schedule: Pick<ScheduleRow, 'id' | 'cron' | 'timezone'>,
+    initialNextRunAt: Date,
+  ): Promise<Date> {
+    let nextRunAt = initialNextRunAt;
+    while (true) {
+      const periodKey = computeSchedulePeriodForOccurrence({
+        cronExpression: schedule.cron,
+        timezone: schedule.timezone,
+        scheduledFor: nextRunAt,
+      });
+      if (!(await this.periodRunExists(schedule, periodKey))) return nextRunAt;
+      nextRunAt = computeNextRunAfterPeriod({
+        cronExpression: schedule.cron,
+        timezone: schedule.timezone,
+        after: nextRunAt,
+        consumedPeriodKey: periodKey,
+      });
+    }
+  }
+
+  private async advanceConsumedSchedule(
+    schedule: ScheduleRow,
+    nextRunAt: Date,
+    now: Date,
   ): Promise<void> {
-    await this.createRunOnce({
-      scheduleId,
-      scheduledFor,
-      status: 'skipped',
-      error,
+    await this.prisma.taskSchedule.updateMany({
+      where: {
+        id: schedule.id,
+        updatedAt: schedule.updatedAt,
+        nextRunAt: schedule.nextRunAt,
+        enabled: true,
+        OR: [{ claimUntil: null }, { claimUntil: { lt: now } }],
+      },
+      data: { nextRunAt, claimToken: null, claimUntil: null },
     });
   }
 
-  private async recordFailedRun(
+  private async releaseScheduleClaim(
     scheduleId: string,
-    scheduledFor: Date,
-    error: string,
+    token: string,
   ): Promise<void> {
-    await this.createRunOnce({
-      scheduleId,
-      scheduledFor,
-      status: 'failed',
-      error,
-    });
-  }
-
-  private async createRunOnce(data: {
-    scheduleId: string;
-    scheduledFor: Date;
-    status: 'skipped' | 'failed';
-    error: string;
-  }): Promise<void> {
     try {
-      await this.prisma.taskScheduleRun.create({ data });
+      await this.prisma.taskSchedule.updateMany({
+        where: { id: scheduleId, claimToken: token },
+        data: { claimToken: null, claimUntil: null },
+      });
     } catch (err) {
-      if (isUniqueViolation(err)) return;
-      throw err;
+      // A committed occurrence must not look failed merely because best-effort
+      // lease cleanup failed. The token remains bounded by claimUntil.
+      this.logger.warn(
+        `scheduled task claim cleanup failed for ${scheduleId}: ${errorMessage(err)}`,
+      );
+    }
+  }
+
+  private async releaseAdmissionClaim(
+    runId: string,
+    token: string,
+  ): Promise<void> {
+    try {
+      await this.prisma.taskScheduleRun.updateMany({
+        where: { id: runId, admissionClaimToken: token },
+        data: { admissionClaimToken: null, admissionClaimUntil: null },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `scheduled task admission claim cleanup failed for ${runId}: ${errorMessage(err)}`,
+      );
     }
   }
 
@@ -597,8 +1066,11 @@ export class ScheduledTasksService
     );
   }
 
-  private async assertOwnerAvailable(ownerUserId: string): Promise<void> {
-    const owner = await this.prisma.user.findUnique({
+  private async assertOwnerAvailable(
+    ownerUserId: string,
+    client: PrismaService | Prisma.TransactionClient = this.prisma,
+  ): Promise<void> {
+    const owner = await client.user.findUnique({
       where: { id: ownerUserId },
       select: { allowed: true },
     });
@@ -624,25 +1096,202 @@ export class ScheduledTasksService
     return row;
   }
 
-  private toScheduleResponse(row: ScheduleRow): ScheduleResponse {
-    return ScheduleResponseSchema.parse({
-      id: row.id,
-      ownerUserId: row.ownerUserId,
-      repoId: row.repoId,
-      name: row.name,
-      cronExpression: row.cron,
-      timezone: row.timezone,
-      recurrence: recurrenceResponseFromCron(row.cron, row.timezone),
-      enabled: row.enabled,
-      nextRunAt: row.nextRunAt,
-      overlapPolicy: row.overlapPolicy,
-      misfirePolicy: row.misfirePolicy,
-      taskTemplate: row.taskTemplate,
-      latestRun: row.runs[0] ?? null,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
+  private async toScheduleResponse(
+    row: ScheduleRow,
+    now = new Date(),
+  ): Promise<ScheduleResponse> {
+    const [response] = await this.toScheduleResponses([row], now);
+    if (!response) throw new Error('Schedule response projection is empty.');
+    return response;
+  }
+
+  private async toScheduleResponses(
+    rows: readonly ScheduleRow[],
+    now = new Date(),
+  ): Promise<ScheduleResponse[]> {
+    const contexts = rows.map((row) => {
+      const currentPeriod = computeCurrentSchedulePeriod({
+        cronExpression: row.cron,
+        timezone: row.timezone,
+        at: now,
+        nextRunAt: row.nextRunAt,
+      });
+      const latest = row.runs[0] ?? null;
+      return { row, currentPeriod, latest };
+    });
+    const currentRuns = new Map<string, ScheduleSummaryRunSource>();
+    const unresolved = contexts.filter(({ row, currentPeriod, latest }) => {
+      if (!latest) return false;
+      if (effectivePeriodKey(row, latest) !== currentPeriod.key) return true;
+      currentRuns.set(row.id, latest);
+      return false;
+    });
+
+    if (unresolved.length > 0) {
+      const keyedRuns = await this.prisma.taskScheduleRun.findMany({
+        where: {
+          OR: unresolved.map(({ row, currentPeriod }) => ({
+            scheduleId: row.id,
+            periodKey: currentPeriod.key,
+          })),
+        },
+        include: RUN_TASK_STATUS_INCLUDE,
+      });
+      const expectedPeriodBySchedule = new Map(
+        unresolved.map(({ row, currentPeriod }) => [
+          row.id,
+          currentPeriod.key,
+        ]),
+      );
+      for (const run of keyedRuns) {
+        if (run.periodKey === expectedPeriodBySchedule.get(run.scheduleId)) {
+          currentRuns.set(run.scheduleId, run);
+        }
+      }
+
+      const legacyContexts = unresolved.filter(
+        ({ row }) => !currentRuns.has(row.id),
+      );
+      if (legacyContexts.length > 0) {
+        const legacyRuns = await this.prisma.taskScheduleRun.findMany({
+          where: {
+            OR: legacyContexts.map(({ row, currentPeriod }) => ({
+              scheduleId: row.id,
+              periodKey: null,
+              scheduledFor: legacyPeriodCandidateWindow(currentPeriod.key),
+            })),
+          },
+          orderBy: { createdAt: 'desc' },
+          include: RUN_TASK_STATUS_INCLUDE,
+        });
+        const contextBySchedule = new Map(
+          legacyContexts.map((context) => [context.row.id, context]),
+        );
+        for (const run of legacyRuns) {
+          if (run.periodKey !== null || currentRuns.has(run.scheduleId)) continue;
+          const context = contextBySchedule.get(run.scheduleId);
+          if (
+            context &&
+            effectivePeriodKey(context.row, run) === context.currentPeriod.key
+          ) {
+            currentRuns.set(run.scheduleId, run);
+          }
+        }
+      }
+    }
+
+    return contexts.map(({ row, currentPeriod, latest }) => {
+      const latestRun = scheduleRunSummary(latest);
+      const currentRun = scheduleRunSummary(currentRuns.get(row.id) ?? null);
+      return ScheduleResponseSchema.parse({
+        id: row.id,
+        ownerUserId: row.ownerUserId,
+        repoId: row.repoId,
+        name: row.name,
+        cronExpression: row.cron,
+        timezone: row.timezone,
+        recurrence: recurrenceResponseFromCron(row.cron, row.timezone),
+        enabled: row.enabled,
+        nextRunAt: row.nextRunAt,
+        overlapPolicy: row.overlapPolicy,
+        misfirePolicy: row.misfirePolicy,
+        taskTemplate: row.taskTemplate,
+        latestRun,
+        currentPeriod: {
+          ...currentPeriod,
+          scheduledFor: currentRun?.scheduledFor ?? currentPeriod.scheduledFor,
+          run: currentRun,
+        },
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+      });
     });
   }
+
+  private toRunResponse(row: {
+    id: string;
+    scheduleId: string;
+    scheduledFor: Date;
+    periodKey: string | null;
+    triggerSource: string | null;
+    triggeredAt: Date | null;
+    status: string;
+    taskId: string | null;
+    task: { status: string } | null;
+    error: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }): ScheduleRunResponse {
+    return ScheduleRunResponseSchema.parse({
+      ...row,
+      taskStatus: row.task?.status ?? null,
+    });
+  }
+}
+
+function scheduleRunSummary(run: ScheduleSummaryRunSource | null) {
+  return run
+    ? {
+        ...run,
+        taskStatus: run.task?.status ?? null,
+      }
+    : null;
+}
+
+function effectivePeriodKey(
+  schedule: Pick<ScheduleRow, 'cron' | 'timezone'>,
+  run: { periodKey: string | null; scheduledFor: Date },
+): SchedulePeriodIdentity {
+  return (
+    run.periodKey ??
+    computeSchedulePeriodForOccurrence({
+      cronExpression: schedule.cron,
+      timezone: schedule.timezone,
+      scheduledFor: run.scheduledFor,
+    })
+  );
+}
+
+function legacyPeriodCandidateWindow(
+  periodKey: SchedulePeriodIdentity,
+): { gte: Date; lt: Date } {
+  const separator = periodKey.indexOf(':');
+  const kind = periodKey.slice(0, separator);
+  const value = periodKey.slice(separator + 1);
+  if (!value) throw new Error(`Invalid schedule period key: ${periodKey}`);
+  if (kind === 'cron') {
+    const at = new Date(value);
+    return { gte: at, lt: new Date(at.getTime() + 1) };
+  }
+  if (kind === 'day' || kind === 'week') {
+    const start = new Date(`${value}T00:00:00.000Z`);
+    const beforeDays = 2;
+    const afterDays = kind === 'day' ? 3 : 9;
+    return {
+      gte: new Date(start.getTime() - beforeDays * 24 * 60 * 60_000),
+      lt: new Date(start.getTime() + afterDays * 24 * 60 * 60_000),
+    };
+  }
+  if (kind === 'month') {
+    const [yearText, monthText] = value.split('-');
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const start = new Date(Date.UTC(year, month - 1, 1));
+    const next = new Date(Date.UTC(year, month, 1));
+    return {
+      gte: new Date(start.getTime() - 2 * 24 * 60 * 60_000),
+      lt: new Date(next.getTime() + 2 * 24 * 60 * 60_000),
+    };
+  }
+  throw new Error(`Unsupported schedule period key: ${periodKey}`);
+}
+
+function scheduleMutationConflict(scheduleId: string): ConflictException {
+  return new ConflictException({
+    error: 'schedule_mutation_conflict',
+    message: 'Schedule changed while the update was being applied.',
+    scheduleId,
+  });
 }
 
 function taskBodyFromRow(task: {
@@ -682,6 +1331,29 @@ function errorMessage(err: unknown): string {
 
 function isUniqueViolation(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002';
+}
+
+function computeNextRunAfterPeriod(input: {
+  cronExpression: string;
+  timezone: string;
+  after: Date;
+  consumedPeriodKey: SchedulePeriodIdentity;
+}): Date {
+  let candidate = computeNextScheduleRunAt(input);
+  while (
+    computeSchedulePeriodForOccurrence({
+      cronExpression: input.cronExpression,
+      timezone: input.timezone,
+      scheduledFor: candidate,
+    }) === input.consumedPeriodKey
+  ) {
+    candidate = computeNextScheduleRunAt({
+      cronExpression: input.cronExpression,
+      timezone: input.timezone,
+      after: candidate,
+    });
+  }
+  return candidate;
 }
 
 function encodeCursor(cursor: KeysetCursor): string {

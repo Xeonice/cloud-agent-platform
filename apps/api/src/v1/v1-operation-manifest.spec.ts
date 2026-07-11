@@ -9,7 +9,10 @@ import {
   MODULE_METADATA,
   PATH_METADATA,
 } from '@nestjs/common/constants';
-import { PUBLIC_V1_OPERATIONS } from '@cap/contracts';
+import {
+  DispatchScheduleRequestSchema,
+  PUBLIC_V1_OPERATIONS,
+} from '@cap/contracts';
 
 import { V1Module } from './v1.module';
 
@@ -119,4 +122,16 @@ test('PUBLIC_V1_OPERATIONS exactly matches the real V1Module controller decorato
       `${internalRoute} is internal and must not enter PUBLIC_V1_OPERATIONS`,
     );
   }
+});
+
+test('schedule dispatch declares the same period-consumption request contract as its controller and MCP tool', () => {
+  const operation = PUBLIC_V1_OPERATIONS.find(
+    (candidate) => candidate.id === 'schedules.dispatch',
+  );
+
+  assert.ok(operation);
+  assert.equal(operation.requestSchema, DispatchScheduleRequestSchema);
+  assert.match(operation.description, /consume the current schedule period/i);
+  assert.ok('tool' in operation.mcp);
+  assert.equal(operation.mcp.tool, 'dispatch_schedule');
 });

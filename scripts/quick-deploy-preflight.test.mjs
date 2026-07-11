@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -261,6 +261,40 @@ function readLog(testCase) {
   }
 }
 
+function managedBoxliteRootfs(testCase, version, platform = 'linux-amd64') {
+  return join(
+    testCase.workdir,
+    'sandbox-assets',
+    'boxlite',
+    'cap-boxlite-sandbox',
+    version,
+    platform,
+    'oci',
+  );
+}
+
+function materializeManagedBoxliteRootfs(rootfsPath) {
+  mkdirSync(rootfsPath, { recursive: true });
+  writeFileSync(
+    join(rootfsPath, 'oci-layout'),
+    '{"imageLayoutVersion":"1.0.0"}\n',
+    'utf8',
+  );
+}
+
+function seedBoxliteRootfsEnv(testCase, rootfsPath) {
+  const content = [
+    'CAP_VERSION=v0.37.1',
+    'CAP_SANDBOX_PROVIDER=boxlite',
+    'CAP_SANDBOX_IMAGE_DELIVERY=release-assets',
+    `BOXLITE_ROOTFS_PATH=${rootfsPath}`,
+    'EXISTING_SECRET=keep-me',
+    '',
+  ].join('\n');
+  writeFileSync(join(testCase.workdir, '.env'), content, 'utf8');
+  return content;
+}
+
 console.log('\n=== quick-deploy preflight ===\n');
 
 {
@@ -380,6 +414,190 @@ console.log('\n=== quick-deploy preflight ===\n');
   assert(/CAP_SANDBOX_IMAGE_DELIVERY=release-assets/.test(envFile), 'quick-deploy persists Release-asset delivery mode');
   assert(/BOXLITE_ROOTFS_PATH=.*boxlite\/cap-boxlite-sandbox\/vtest\/linux-amd64\/oci/.test(envFile), 'quick-deploy writes BoxLite rootfs path');
   assert(!/BOXLITE_IMAGE=/.test(envFile), 'quick-deploy does not persist a BoxLite image when rootfs path is staged');
+}
+
+{
+  const tc = makeCase();
+  const previousRootfs = managedBoxliteRootfs(tc, 'v0.37.1');
+  const currentRootfs = managedBoxliteRootfs(tc, 'vtest');
+  seedBoxliteRootfsEnv(tc, previousRootfs);
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'a stale managed BoxLite rootfs is upgraded with CAP_VERSION');
+  assert(/cap-image-assets\.json/.test(log), 'a managed rootfs upgrade fetches the current asset manifest');
+  assert(/cap-boxlite-sandbox-vtest-linux-amd64\.oci\.tar\.zst/.test(log), 'a managed rootfs upgrade fetches the current OCI asset');
+  assert(envFile.includes(`BOXLITE_ROOTFS_PATH=${currentRootfs}`), 'a managed rootfs upgrade persists the current release path');
+  assert(!envFile.includes(previousRootfs), 'a managed rootfs upgrade removes the stale release path');
+}
+
+{
+  const tc = makeCase();
+  const customRootfs = join(tc.dir, 'user-managed', 'boxlite-rootfs');
+  seedBoxliteRootfsEnv(tc, customRootfs);
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'a user-managed BoxLite rootfs survives a CAP upgrade');
+  assert(!/cap-image-assets\.json/.test(log), 'a user-managed rootfs does not trigger Release-asset staging');
+  assert(envFile.includes(`BOXLITE_ROOTFS_PATH=${customRootfs}`), 'a user-managed rootfs path is preserved');
+}
+
+{
+  const tc = makeCase();
+  const previousRootfs = managedBoxliteRootfs(tc, 'v0.37.1');
+  const explicitRootfs = managedBoxliteRootfs(tc, 'v0.36.0');
+  seedBoxliteRootfsEnv(tc, previousRootfs);
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_ROOTFS_PATH: explicitRootfs,
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'an explicit BoxLite rootfs process override wins during upgrade');
+  assert(!/cap-image-assets\.json/.test(log), 'an explicit rootfs override does not trigger Release-asset staging');
+  assert(envFile.includes(`BOXLITE_ROOTFS_PATH=${explicitRootfs}`), 'an explicit managed-looking rootfs override is preserved');
+}
+
+{
+  const tc = makeCase();
+  const previousRootfs = managedBoxliteRootfs(tc, 'v0.37.1');
+  const explicitRootfsMap = 'default=/srv/user-managed/boxlite-rootfs';
+  seedBoxliteRootfsEnv(tc, previousRootfs);
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_ROOTFS_PATH: '',
+    BOXLITE_ROOTFS_PATH_MAP: explicitRootfsMap,
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'an explicit BoxLite rootfs map overrides a stale managed scalar');
+  assert(!/cap-image-assets\.json/.test(log), 'an explicit rootfs map does not trigger Release-asset staging');
+  assert(!/^BOXLITE_ROOTFS_PATH=/m.test(envFile), 'an explicit rootfs map removes the stale scalar key');
+  assert(envFile.includes(`BOXLITE_ROOTFS_PATH_MAP=${explicitRootfsMap}`), 'an explicit rootfs map is persisted without scalar ambiguity');
+}
+
+{
+  const tc = makeCase();
+  const currentRootfs = managedBoxliteRootfs(tc, 'vtest');
+  materializeManagedBoxliteRootfs(currentRootfs);
+  seedBoxliteRootfsEnv(tc, currentRootfs);
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'a current managed BoxLite rootfs is reusable');
+  assert(!/cap-image-assets\.json/.test(log), 'a current managed rootfs is not staged again');
+  assert(envFile.includes(`BOXLITE_ROOTFS_PATH=${currentRootfs}`), 'a current managed rootfs path remains unchanged');
+}
+
+{
+  const tc = makeCase();
+  const currentRootfs = managedBoxliteRootfs(tc, 'vtest');
+  mkdirSync(currentRootfs, { recursive: true });
+  writeFileSync(join(currentRootfs, 'incomplete'), 'missing oci-layout\n', 'utf8');
+  seedBoxliteRootfsEnv(tc, currentRootfs);
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'an incomplete current managed BoxLite rootfs is staged again');
+  assert(/cap-image-assets\.json/.test(log), 'an incomplete current rootfs fetches the current asset manifest');
+  assert(/tar -C .*boxlite\/cap-boxlite-sandbox\/vtest\/linux-amd64\/oci/.test(log), 'an incomplete current rootfs is replaced from the OCI asset');
+  assert(existsSync(join(currentRootfs, 'oci-layout')), 'restaging restores the managed OCI layout marker');
+  assert(envFile.includes(`BOXLITE_ROOTFS_PATH=${currentRootfs}`), 'restaging keeps the canonical current rootfs path');
+}
+
+{
+  const tc = makeCase();
+  const previousRootfs = managedBoxliteRootfs(tc, 'v0.37.1');
+  seedBoxliteRootfsEnv(tc, previousRootfs);
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'registry delivery replaces a stale managed BoxLite rootfs');
+  assert(!/cap-image-assets\.json/.test(log), 'registry delivery does not fetch BoxLite Release assets');
+  assert(!/BOXLITE_ROOTFS_PATH=/.test(envFile), 'registry delivery removes the stale managed rootfs path');
+  assert(/BOXLITE_IMAGE=ghcr\.io\/xeonice\/cap-boxlite-sandbox:vtest/.test(envFile), 'registry delivery pins the current BoxLite image');
+  assert(/CAP_SANDBOX_IMAGE_DELIVERY=registry/.test(envFile), 'registry delivery remains explicit in the env file');
+}
+
+{
+  const tc = makeCase();
+  const currentRootfs = managedBoxliteRootfs(tc, 'vtest');
+  materializeManagedBoxliteRootfs(currentRootfs);
+  seedBoxliteRootfsEnv(tc, currentRootfs);
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'registry delivery replaces a current managed BoxLite rootfs');
+  assert(!/cap-image-assets\.json/.test(log), 'same-version registry delivery does not fetch BoxLite Release assets');
+  assert(!/^BOXLITE_ROOTFS_PATH=/m.test(envFile), 'same-version registry delivery removes the managed rootfs path');
+  assert(/BOXLITE_IMAGE=ghcr\.io\/xeonice\/cap-boxlite-sandbox:vtest/.test(envFile), 'same-version registry delivery persists the current image');
+  assert(/CAP_SANDBOX_IMAGE_DELIVERY=registry/.test(envFile), 'same-version registry delivery remains explicit');
+}
+
+{
+  const tc = makeCase();
+  const previousCompose = '# cap-managed-run-package: docker-compose.prod.yml\nservices: {}\n';
+  writeFileSync(join(tc.workdir, 'docker-compose.prod.yml'), previousCompose, 'utf8');
+  const previousEnv = seedBoxliteRootfsEnv(tc, managedBoxliteRootfs(tc, 'v0.37.1'));
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_SPLIT_ASSET: '1',
+    CAP_FAKE_CORRUPT_PART: '1',
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'release-assets',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+  });
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert(result.status !== 0, 'a corrupt BoxLite upgrade asset blocks the managed rootfs replacement');
+  assert(/checksum mismatch/.test(combined), 'a corrupt BoxLite upgrade reports its checksum failure');
+  assert(readFileSync(join(tc.workdir, '.env'), 'utf8') === previousEnv, 'a failed BoxLite rootfs upgrade restores the previous env file byte-for-byte');
+  assert(readFileSync(join(tc.workdir, 'docker-compose.prod.yml'), 'utf8') === previousCompose, 'a failed BoxLite rootfs upgrade restores the previous compose file byte-for-byte');
 }
 
 {

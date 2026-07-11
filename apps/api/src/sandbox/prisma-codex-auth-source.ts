@@ -182,17 +182,22 @@ export class PrismaCodexAuthSource implements CodexAuthSource {
   }
 
   /**
-   * The owning account of `taskId`: the operator attributed on the task's
-   * `task.created` audit event (the only lifecycle event that records the creating
-   * operator), read as the `AuditEvent.userId` account FK. That FK is populated for
-   * BOTH GitHub and LOCAL accounts (fix-local-account-task-attribution: the create
-   * chain threads the acting account's `users.id`), so a local operator's task is
-   * resolvable here. Returns null when the task has no created-event attribution —
-   * the task model itself has no owner FK, so this audit linkage is the per-task
-   * owner of record. Never throws into the resolver (the caller's try/catch
-   * degrades a DB error to the env fallback).
+   * The owning account of `taskId`. New tasks persist `Task.ownerUserId` in their
+   * creation transaction; the earliest attributed `task.created` audit remains a
+   * compatibility fallback for pre-migration rows.
    */
   private async resolveTaskOwnerId(taskId: string): Promise<string | null> {
+    try {
+      const task = await this.prisma.task.findUnique({
+        where: { id: taskId },
+        select: { ownerUserId: true },
+      });
+      if (task?.ownerUserId) return task.ownerUserId;
+    } catch {
+      // Pre-migration test doubles and legacy recovery paths may not expose the
+      // new task owner projection yet; retain the audit fallback below.
+    }
+
     const created = await this.prisma.auditEvent.findFirst({
       where: { taskId, type: 'task.created', userId: { not: null } },
       orderBy: { timestamp: 'asc' },

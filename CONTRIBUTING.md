@@ -19,6 +19,7 @@ and the schema) so the docs cannot drift out of sync.
 - [Conventions](#conventions)
 - [Track convention](#track-convention)
 - [How things run](#how-things-run)
+- [Scheduled-task E2E](#scheduled-task-e2e)
 
 ## The OpenSpec lifecycle
 
@@ -115,3 +116,43 @@ For the full workflow table, the apply-time parallelism threshold, and the
 wiring between the schema override and the orchestration engines, see
 [`.claude/workflows/README.md`](.claude/workflows/README.md). It is the source of
 truth for how propose, apply, and verify actually execute.
+
+## Scheduled-task E2E
+
+Use the isolated browser verifier when changing schedule dispatch, task
+admission, authentication, audit, or the schedules console:
+
+```bash
+pnpm test:e2e:schedules:local
+```
+
+The command requires Docker and an installed Playwright Chromium. Docker assigns
+the disposable Postgres port, the API and control servers bind ephemeral ports,
+and a short-lived socket reservation protects the web port until Vite binds it.
+The runner applies every migration and boots the real API and web console. API
+workspace builds, Prisma generation, and migrations run with an explicit empty
+environment; Prisma uses a copied schema and `package.json` under the run's
+artifact directory. The runner therefore does not use the normal CAP ports,
+`apps/api/.env`, `apps/web/.env`, operator credentials, or an existing database.
+The sandbox boundary is a test-only recording provider; TasksService,
+Guardrails, the poller, controllers, authentication, Prisma, and audit recording
+remain real.
+
+For the slower real-minute check, run:
+
+```bash
+SCHEDULE_E2E_WALL_CLOCK=1 pnpm test:e2e:schedules:local
+```
+
+On failure the command prints the artifact directory containing sanitized API,
+web, Postgres, database-state, screenshot, video, and trace evidence.
+`SCHEDULE_E2E_ARTIFACT_DIR` is an artifact root: relative values are resolved
+against the invocation directory, and every invocation always creates a unique
+`<root>/<run-id>` child with an ownership marker before it can delete that child.
+If artifact sanitization fails, the runner discards browser traces and runtime
+logs instead of retaining raw evidence. Set `KEEP_E2E_STACK=1` to retain only
+this invocation's resources for inspection; the runner prints the real Node
+process IDs, owned container name, and an exact cleanup command without
+placeholder PIDs. The fast real-Postgres scheduler gate remains available as
+`pnpm test:integration:schedules` and requires an explicitly supplied disposable
+`DATABASE_URL`.

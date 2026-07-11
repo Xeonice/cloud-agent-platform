@@ -8,7 +8,13 @@ import {
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { TaskStatus } from '@cap/contracts';
-import { TasksService } from '../tasks/tasks.service';
+import {
+  TasksService,
+  AdmissionTransitionIndeterminateError,
+  type AdmissionTransitionResult,
+} from '../tasks/tasks.service';
+import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { PrismaService } from '../prisma/prisma.service';
 import { SessionCredentialsService } from '../creds/session-credentials.service';
 import {
@@ -182,7 +188,7 @@ export const DEFAULT_GUARDRAILS_CONFIG: GuardrailsConfig = {
 };
 
 /**
- * Optional per-task guardrail parameters supplied at admission. Both are opt-in:
+ * Optional per-task admission context. Guardrail limits are opt-in:
  * an absent `idleTimeoutMs` leaves idle reclamation to the operator-level default
  * (off when unset); an absent `deadlineMs` means no wall-clock deadline.
  */
@@ -191,6 +197,8 @@ export interface GuardrailParams {
   readonly deadlineMs?: number;
   /** Per-task idle ceiling in ms; absent ⇒ operator-level default (off when unset). */
   readonly idleTimeoutMs?: number;
+  /** Account owner on whose behalf queued/running lifecycle transitions occur. */
+  readonly userId?: string;
 }
 
 @Injectable()
@@ -246,6 +254,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * task that runs immediately.
    */
   private readonly pendingGuardrails = new Map<string, GuardrailParams>();
+  private readonly admissionsInFlight = new Map<
+    string,
+    Promise<'running' | 'queued'>
+  >();
+  /** Per-process terminal fence retained only while an admission flow is in flight. */
+  private readonly terminalTasks = new Set<string>();
 
   /**
    * Per-process ledger of task running intervals (admission→terminal), the
@@ -434,16 +448,63 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * moved to `queued`. Returns the admission outcome.
    */
   async admit(taskId: string, params: GuardrailParams = {}): Promise<'running' | 'queued'> {
+    const inFlight = this.admissionsInFlight.get(taskId);
+    if (inFlight) return inFlight;
+    if (this.semaphore.isRunning(taskId)) return 'running';
+    if (this.semaphore.isQueued(taskId)) return 'queued';
+
+    const admission = this.admitUntracked(taskId, params);
+    this.admissionsInFlight.set(taskId, admission);
+    try {
+      return await admission;
+    } finally {
+      if (this.admissionsInFlight.get(taskId) === admission) {
+        this.admissionsInFlight.delete(taskId);
+      }
+      this.releaseTerminalFenceIfIdle(taskId);
+    }
+  }
+
+  private async admitUntracked(
+    taskId: string,
+    params: GuardrailParams,
+  ): Promise<'running' | 'queued'> {
     const outcome = this.semaphore.offer(taskId);
+
     if (outcome === 'running') {
-      await this.startRunning(taskId, params);
+      const started = await this.startRunning(taskId, params);
+      if (started === 'failed') {
+        this.semaphore.release(taskId);
+        throw new Error(`task ${taskId} could not transition to running`);
+      }
+      if (started === 'already-transitioned' || started === 'superseded') {
+        this.semaphore.release(taskId);
+      }
     } else {
       // Park the guardrail params so they arm when the slot frees and this queued
       // task is promoted to running (onAdmit), not silently dropped.
-      if (params.deadlineMs !== undefined || params.idleTimeoutMs !== undefined) {
+      if (
+        params.deadlineMs !== undefined ||
+        params.idleTimeoutMs !== undefined ||
+        params.userId !== undefined
+      ) {
         this.pendingGuardrails.set(taskId, params);
       }
-      await this.safeTransition(taskId, 'queued');
+      const queuedTransition = await this.safeAdmissionTransition(
+        taskId,
+        'queued',
+        params.userId,
+      );
+      if (queuedTransition === 'failed') {
+        this.pendingGuardrails.delete(taskId);
+        this.semaphore.release(taskId);
+        throw new Error(`task ${taskId} could not transition to queued`);
+      }
+      if (queuedTransition === 'superseded') {
+        this.pendingGuardrails.delete(taskId);
+        this.semaphore.release(taskId);
+        throw new Error(`task ${taskId} queued admission was superseded`);
+      }
     }
     return outcome;
   }
@@ -660,11 +721,20 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * which admits the next queued task if any (12.1 slot-release; session-end
    * teardown). Idempotent.
    */
-  async onTerminal(taskId: string): Promise<void> {
+  fenceTerminal(taskId: string): void {
+    this.terminalTasks.add(taskId);
     this.clearTimers(taskId);
-    // Close the runner-minutes interval (no-op if the task never ran) (5.4).
     this.runnerMinutes.recordEnd(taskId);
-    await this.settleTask(taskId, terminalSettlePlan());
+  }
+
+  async onTerminal(taskId: string): Promise<void> {
+    // Idempotently establish the fence even for callers that bypass TasksService.
+    this.fenceTerminal(taskId);
+    try {
+      await this.settleTask(taskId, terminalSettlePlan());
+    } finally {
+      this.releaseTerminalFenceIfIdle(taskId);
+    }
   }
 
   /**
@@ -820,16 +890,62 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
   /** Admit a previously-queued task: `queued -> running` + arm timers (12.1). */
   private async onAdmit(taskId: string): Promise<void> {
+    // release()/setMaxConcurrentTasks() may synchronously promote a task while
+    // its original pending -> queued CAS is awaiting the database. Chain that
+    // exact promise so queued is durable before queued -> running begins.
+    const queuedAdmission = this.admissionsInFlight.get(taskId);
+    const admission = (async (): Promise<'running'> => {
+      if (queuedAdmission) await queuedAdmission;
+      return this.promoteQueuedTask(taskId);
+    })();
+    this.admissionsInFlight.set(taskId, admission);
+    try {
+      await admission;
+    } catch (err) {
+      this.logger.warn(
+        `queued task ${taskId} could not transition to running; its slot was released: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    } finally {
+      if (this.admissionsInFlight.get(taskId) === admission) {
+        this.admissionsInFlight.delete(taskId);
+      }
+      this.releaseTerminalFenceIfIdle(taskId);
+    }
+  }
+
+  private async promoteQueuedTask(taskId: string): Promise<'running'> {
     // Consume the guardrail params parked at admit() so a queued-then-admitted
     // task arms its deadline/idle watchers just like one that ran immediately.
     const parked = this.pendingGuardrails.get(taskId) ?? {};
     this.pendingGuardrails.delete(taskId);
-    await this.startRunning(taskId, parked);
+    const started = await this.startRunning(taskId, parked);
+    if (started !== 'transitioned') {
+      this.semaphore.release(taskId);
+      if (started === 'failed') {
+        throw new Error(`task ${taskId} could not transition to running`);
+      }
+    }
+    return 'running';
   }
 
   /** Transition to `running`, arm the idle tracker (if opted in) and deadline (if any). */
-  private async startRunning(taskId: string, params: GuardrailParams = {}): Promise<void> {
-    await this.safeTransition(taskId, 'running');
+  private async startRunning(
+    taskId: string,
+    params: GuardrailParams = {},
+  ): Promise<AdmissionTransitionResult | 'failed'> {
+    const transitionToken = randomUUID();
+    const transition = await this.safeAdmissionTransition(
+      taskId,
+      'running',
+      params.userId,
+      transitionToken,
+    );
+    if (transition !== 'transitioned') return transition;
+    if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+      return 'superseded';
+    }
     // Idle tracking is OPT-IN: arm only when an effective ceiling exists — the
     // task's own `idleTimeoutMs`, else the operator-level default. With neither,
     // the task is NOT idle-tracked and is never force-failed for idleness, so a
@@ -863,9 +979,13 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           return undefined;
         },
       );
+      if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+        this.clearAdmissionRuntime(taskId);
+        return 'superseded';
+      }
       if (!provisionPlan) {
         await this.forceFail(taskId, 'provision_failed');
-        return;
+        return 'transitioned';
       }
 
       const selected = await Promise.resolve()
@@ -880,11 +1000,27 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           );
           return undefined;
         });
+      if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+        this.clearAdmissionRuntime(taskId);
+        return 'superseded';
+      }
+      if (this.terminalTasks.has(taskId)) {
+        this.clearAdmissionRuntime(taskId);
+        return 'superseded';
+      }
       if (!selected) {
         await this.forceFail(taskId, 'provision_failed');
-        return;
+        return 'transitioned';
       }
 
+      // The synchronous fence immediately precedes the provider invocation. Once
+      // this check passes, JavaScript cannot run an in-process terminal callback
+      // until provision() has returned its promise; the post-await token check
+      // below handles a stop that occurs while provisioning is in progress.
+      if (this.terminalTasks.has(taskId)) {
+        this.clearAdmissionRuntime(taskId);
+        return 'superseded';
+      }
       const connection = await selected.provider
         .provision({ taskId, cloneSpec: provisionPlan.cloneSpec })
         .catch((err: unknown) => {
@@ -895,9 +1031,42 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           );
           return undefined;
       });
+      if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+        await selected.provider.teardownSandbox(taskId).catch((err: unknown) => {
+          this.logger.warn(
+            `discarding superseded sandbox for task ${taskId} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+        this.clearAdmissionRuntime(taskId);
+        return 'superseded';
+      }
       if (connection) {
         this.connections.set(taskId, connection);
         const selectedRun = await this.resolveSelectedRun(taskId);
+        if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+          await selected.provider.teardownSandbox(taskId).catch((err: unknown) => {
+            this.logger.warn(
+              `discarding superseded sandbox for task ${taskId} failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+          this.clearAdmissionRuntime(taskId);
+          return 'superseded';
+        }
+        if (this.terminalTasks.has(taskId)) {
+          await selected.provider.teardownSandbox(taskId).catch((err: unknown) => {
+            this.logger.warn(
+              `discarding terminal sandbox for task ${taskId} failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+          this.clearAdmissionRuntime(taskId);
+          return 'superseded';
+        }
         // 4.2 — hand the handle through to the terminal gateway so it dials the
         // sandbox terminal OUT and registers the session (replacing the previous
         // dial-back-registers-the-session flow). Idempotent on the gateway side;
@@ -924,6 +1093,120 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         await this.forceFail(taskId, 'provision_failed');
       }
     }
+    return 'transitioned';
+  }
+
+  private async safeAdmissionTransition(
+    taskId: string,
+    next: 'queued' | 'running',
+    userId?: string,
+    transitionToken = randomUUID(),
+  ): Promise<AdmissionTransitionResult | 'failed'> {
+    try {
+      return await this.tasks.transitionForAdmission(
+        taskId,
+        next,
+        userId,
+        transitionToken,
+      );
+    } catch (err) {
+      if (err instanceof AdmissionTransitionIndeterminateError) {
+        return this.reconcileAdmissionTransition(
+          taskId,
+          next,
+          userId,
+          transitionToken,
+        );
+      }
+      this.logger.debug(
+        `guardrail admission transition ${taskId} -> ${next} skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return 'failed';
+    }
+  }
+
+  private async reconcileAdmissionTransition(
+    taskId: string,
+    next: 'queued' | 'running',
+    userId: string | undefined,
+    transitionToken: string,
+  ): Promise<AdmissionTransitionResult | 'failed'> {
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      await delay(Math.min(5_000, 50 * 2 ** Math.min(attempt - 1, 7)));
+      try {
+        return await this.tasks.reconcileAdmissionTransition(
+          taskId,
+          next,
+          transitionToken,
+          userId,
+        );
+      } catch (err) {
+        if (err instanceof AdmissionTransitionIndeterminateError) {
+          if (attempt === 1 || attempt % 10 === 0) {
+            this.logger.warn(
+              `admission transition ${taskId} -> ${next} remains indeterminate; retaining its local reservation`,
+            );
+          }
+          continue;
+        }
+        this.logger.debug(
+          `admission reconciliation ${taskId} -> ${next} failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        return 'failed';
+      }
+    }
+  }
+
+  private async waitForRunningAdmission(
+    taskId: string,
+    transitionToken: string,
+  ): Promise<boolean> {
+    let attempt = 0;
+    for (;;) {
+      if (this.terminalTasks.has(taskId)) return false;
+      const checker = this.tasks.isAdmissionTransitionCurrent;
+      // Guardrails-only tests may provide the historical narrow mock. Production
+      // always resolves the concrete TasksService with the durable token check.
+      if (typeof checker !== 'function') return true;
+      try {
+        const current = await checker.call(
+          this.tasks,
+          taskId,
+          'running',
+          transitionToken,
+        );
+        return current && !this.terminalTasks.has(taskId);
+      } catch (err) {
+        attempt += 1;
+        if (attempt === 1 || attempt % 10 === 0) {
+          this.logger.warn(
+            `running admission check for task ${taskId} failed; provider start remains fenced: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+        await delay(Math.min(5_000, 50 * 2 ** Math.min(attempt - 1, 7)));
+      }
+    }
+  }
+
+  private clearAdmissionRuntime(taskId: string): void {
+    this.clearTimers(taskId);
+    this.runnerMinutes.recordEnd(taskId);
+    this.connections.delete(taskId);
+    this.gateway?.unregisterSession(taskId);
+  }
+
+  private releaseTerminalFenceIfIdle(taskId: string): void {
+    if (!this.admissionsInFlight.has(taskId)) {
+      this.terminalTasks.delete(taskId);
+    }
   }
 
   private async resolveProvisionPlan(taskId: string) {
@@ -943,33 +1226,39 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     taskId: string,
     cause: 'deadline' | 'idle' | 'circuit_breaker' | 'provision_failed' | 'abnormal_exit',
   ): Promise<void> {
+    this.fenceTerminal(taskId);
     // structured-logging: bind taskId for all force-fail logs (incl. timer-driven
     // deadline/idle/circuit_breaker entrypoints that run outside any request).
     return runWithTaskLog(taskId, async () => {
-      // An idle ceiling on a RESIDENT session is a graceful end of life —
-      // reclaim it as `completed`, not a force-`failed`. Every other cause stays
-      // a failure. The capture / stop-only teardown / slot-release below is
-      // identical for both.
-      const terminal: 'completed' | 'failed' = cause === 'idle' ? 'completed' : 'failed';
-      this.logger.warn(
-        `${terminal === 'completed' ? 'reclaiming idle task' : 'force-failing task'} ${taskId} (${cause})`,
-      );
-      this.clearTimers(taskId);
-      // Close the runner-minutes interval on the forced-failure terminal too (5.4).
-      this.runnerMinutes.recordEnd(taskId);
-      // 6.2 — record the force-fail naming its CAUSE (deadline / idle /
-      // circuit_breaker), so the timeline shows WHY the task was reclaimed. The
-      // generic `task.failed` transition is also recorded centrally by the tasks
-      // service when the `failed` write below is accepted; the two are distinct
-      // events (the terminal transition + its cause).
-      // The cause-specific `recordForceFailed` event is only for actual failures;
-      // an idle reclamation to `completed` relies on the central `task.completed`
-      // audit emitted by the status-write chokepoint.
-      if (terminal === 'failed') {
-        await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
+      try {
+        // An idle ceiling on a RESIDENT session is a graceful end of life —
+        // reclaim it as `completed`, not a force-`failed`. Every other cause stays
+        // a failure. The capture / stop-only teardown / slot-release below is
+        // identical for both.
+        const terminal: 'completed' | 'failed' =
+          cause === 'idle' ? 'completed' : 'failed';
+        this.logger.warn(
+          `${terminal === 'completed' ? 'reclaiming idle task' : 'force-failing task'} ${taskId} (${cause})`,
+        );
+        this.clearTimers(taskId);
+        // Close the runner-minutes interval on the forced-failure terminal too (5.4).
+        this.runnerMinutes.recordEnd(taskId);
+        // 6.2 — record the force-fail naming its CAUSE (deadline / idle /
+        // circuit_breaker), so the timeline shows WHY the task was reclaimed. The
+        // generic `task.failed` transition is also recorded centrally by the tasks
+        // service when the `failed` write below is accepted; the two are distinct
+        // events (the terminal transition + its cause).
+        // The cause-specific `recordForceFailed` event is only for actual failures;
+        // an idle reclamation to `completed` relies on the central `task.completed`
+        // audit emitted by the status-write chokepoint.
+        if (terminal === 'failed') {
+          await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
+        }
+        await this.safeTransition(taskId, terminal);
+        await this.settleTask(taskId, forceFailSettlePlan({ terminal }));
+      } finally {
+        this.releaseTerminalFenceIfIdle(taskId);
       }
-      await this.safeTransition(taskId, terminal);
-      await this.settleTask(taskId, forceFailSettlePlan({ terminal }));
     });
   }
 
@@ -1009,15 +1298,21 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * force-fail path additionally records its CAUSE-specific event before calling
    * this (see {@link forceFail}).
    */
-  private async safeTransition(taskId: string, next: TaskStatus): Promise<void> {
+  private async safeTransition(
+    taskId: string,
+    next: TaskStatus,
+    userId?: string,
+  ): Promise<boolean> {
     try {
-      await this.tasks.transition(taskId, next);
+      await this.tasks.transition(taskId, next, userId);
+      return true;
     } catch (err) {
       this.logger.debug(
         `guardrail transition ${taskId} -> ${next} skipped: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      return false;
     }
   }
 

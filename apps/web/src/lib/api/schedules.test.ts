@@ -7,6 +7,11 @@ import type {
 } from "@cap/contracts";
 
 vi.mock("./real", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(readonly status: number, message: string) {
+      super(message);
+    }
+  },
   listSchedules: vi.fn(async () => [scheduleFixture("schedule-a")]),
   createSchedule: vi.fn(async (body) =>
     scheduleFixture("schedule-created", {
@@ -40,8 +45,9 @@ type Spy = ReturnType<typeof vi.fn>;
 
 function queryClientStub() {
   return {
+    setQueryData: vi.fn(),
     invalidateQueries: vi.fn(),
-  } as unknown as QueryClient & { invalidateQueries: Spy };
+  } as unknown as QueryClient & { setQueryData: Spy; invalidateQueries: Spy };
 }
 
 async function runQueryFn(factory: () => { queryFn?: unknown }): Promise<unknown> {
@@ -81,6 +87,11 @@ function scheduleFixture(
       deliver: "none",
     },
     latestRun: null,
+    currentPeriod: {
+      key: "day:2026-07-10",
+      scheduledFor: new Date("2026-07-10T09:00:00.000Z"),
+      run: null,
+    },
     createdAt: new Date("2026-07-09T00:00:00.000Z"),
     updatedAt: new Date("2026-07-09T00:00:00.000Z"),
     ...overrides,
@@ -92,8 +103,12 @@ function runFixture(id: string, scheduleId: string): ScheduleRunResponse {
     id: id === "run-a" ? uuid(21) : uuid(22),
     scheduleId,
     scheduledFor: new Date("2026-07-10T09:00:00.000Z"),
+    periodKey: "day:2026-07-10",
+    triggerSource: "automatic",
+    triggeredAt: new Date("2026-07-10T09:00:00.000Z"),
     status: "created",
     taskId: uuid(31),
+    taskStatus: "running",
     error: null,
     createdAt: new Date("2026-07-10T09:00:00.000Z"),
     updatedAt: new Date("2026-07-10T09:00:01.000Z"),
@@ -224,10 +239,14 @@ describe("schedule mutations", () => {
     );
 
     const dispatchOptions = dispatchScheduleMutation(client);
-    await dispatchOptions.mutationFn!(scheduleId, {} as never);
+    const dispatchVariables = {
+      id: scheduleId,
+      expectedPeriodKey: "day:2026-07-10",
+    };
+    await dispatchOptions.mutationFn!(dispatchVariables, {} as never);
     dispatchOptions.onSuccess?.(
       scheduleFixture(scheduleId, { id: scheduleId }),
-      scheduleId,
+      dispatchVariables,
       undefined,
       {} as never,
     );
@@ -239,8 +258,17 @@ describe("schedule mutations", () => {
     expect(real.updateSchedule).toHaveBeenCalledWith(scheduleId, { name: "updated" });
     expect(real.pauseSchedule).toHaveBeenCalledWith(scheduleId);
     expect(real.resumeSchedule).toHaveBeenCalledWith(scheduleId);
-    expect(real.dispatchSchedule).toHaveBeenCalledWith(scheduleId);
+    expect(real.dispatchSchedule).toHaveBeenCalledWith(
+      scheduleId,
+      dispatchVariables.expectedPeriodKey,
+    );
     expect(real.deleteSchedule).toHaveBeenCalledWith(scheduleId);
+
+    expect(client.setQueryData).toHaveBeenCalledTimes(1);
+    expect(client.setQueryData).toHaveBeenCalledWith(
+      queryKeys.schedules,
+      expect.any(Function),
+    );
 
     expect(client.invalidateQueries).toHaveBeenCalledTimes(11);
     for (let index = 1; index <= 6; index += 2) {
@@ -253,6 +281,7 @@ describe("schedule mutations", () => {
     }
     expect(client.invalidateQueries).toHaveBeenNthCalledWith(7, {
       queryKey: queryKeys.schedules,
+      exact: true,
     });
     expect(client.invalidateQueries).toHaveBeenNthCalledWith(8, {
       queryKey: queryKeys.scheduleRuns(scheduleId),
@@ -266,5 +295,70 @@ describe("schedule mutations", () => {
     expect(client.invalidateQueries).toHaveBeenNthCalledWith(11, {
       queryKey: queryKeys.scheduleRuns(scheduleId),
     });
+  });
+
+  it("dispatch immediately replaces the matching schedule cache before revalidation", () => {
+    const client = queryClientStub();
+    const scheduleId = uuid(1);
+    const otherSchedule = scheduleFixture(uuid(2), { id: uuid(2) });
+    const previous = scheduleFixture(scheduleId, {
+      nextRunAt: new Date("2026-07-10T09:00:00.000Z"),
+    });
+    const dispatched = scheduleFixture(scheduleId, {
+      nextRunAt: new Date("2026-07-10T10:00:00.000Z"),
+      updatedAt: new Date("2026-07-10T09:00:01.000Z"),
+    });
+    const options = dispatchScheduleMutation(client);
+
+    options.onSuccess?.(
+      dispatched,
+      { id: scheduleId, expectedPeriodKey: undefined },
+      undefined,
+      {} as never,
+    );
+
+    const updateCache = client.setQueryData.mock.calls[0]?.[1] as
+      | ((current: ScheduleResponse[] | undefined) => ScheduleResponse[] | undefined)
+      | undefined;
+    expect(updateCache).toBeTypeOf("function");
+    expect(updateCache?.([previous, otherSchedule])).toEqual([
+      dispatched,
+      otherSchedule,
+    ]);
+    expect(updateCache?.(undefined)).toBeUndefined();
+    expect(client.setQueryData.mock.invocationCallOrder[0]).toBeLessThan(
+      client.invalidateQueries.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("refreshes schedule state after a period conflict but not a generic failure", async () => {
+    const client = queryClientStub();
+    const scheduleId = uuid(1);
+    const variables = { id: scheduleId, expectedPeriodKey: "day:2026-07-10" };
+    const options = dispatchScheduleMutation(client);
+
+    await options.onError?.(
+      new real.ApiError(409, "schedule_period_changed"),
+      variables,
+      undefined,
+      {} as never,
+    );
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(1, {
+      queryKey: queryKeys.schedules,
+      exact: true,
+    });
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(2, {
+      queryKey: queryKeys.scheduleRuns(scheduleId),
+    });
+
+    client.invalidateQueries.mockClear();
+    await options.onError?.(
+      new real.ApiError(500, "server error"),
+      variables,
+      undefined,
+      {} as never,
+    );
+    expect(client.invalidateQueries).not.toHaveBeenCalled();
   });
 });

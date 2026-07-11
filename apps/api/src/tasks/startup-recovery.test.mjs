@@ -3,8 +3,8 @@
  * survive-api-redeploy guardrails-recovery 4.2): Phase 0 RE-ADOPTS still-running
  * survivors (kept in state, slot held, timers re-armed), Phase 1 reclaims the
  * orphaned in-flight tasks that were NOT re-adopted, the persisted slot ceiling
- * is loaded ceiling-first, then Phase 2 re-offers DB `queued` tasks FIFO against
- * the REMAINING capacity with their persisted guardrail params restored.
+ * is loaded ceiling-first, then Phase 2 re-offers DB `queued` tasks plus
+ * interrupted direct `pending` admissions FIFO against the REMAINING capacity.
  *
  * This inlines a FAITHFUL mirror of ONLY the seams under test — the
  * `onApplicationBootstrap` / `readoptSurvivorsOnStartup` /
@@ -24,8 +24,8 @@ import assert from 'node:assert/strict';
  * Minimal Prisma fake over an in-memory task table. Supports exactly the two
  * `findMany` shapes the recovery issues:
  *   { where: { status: { in: [...] } }, select: { id } }                 (Phase 1)
- *   { where: { status: 'queued' }, orderBy: { createdAt: 'asc' },
- *     select: { id, deadlineMs, idleTimeoutMs } }                        (Phase 2)
+ *   { where: { OR: [{ status: 'queued' }, { status: 'pending',
+ *     scheduleRun: { is: null } }] }, orderBy: { createdAt: 'asc' } }    (Phase 2)
  */
 class FakePrisma {
   constructor(rows) {
@@ -36,11 +36,17 @@ class FakePrisma {
     const rows = this.rows;
     return {
       async findMany({ where, orderBy, select }) {
-        let matched = rows.filter((row) =>
-          typeof where.status === 'string'
+        let matched = rows.filter((row) => {
+          if (where.OR) {
+            return where.OR.some((part) => {
+              if (row.status !== part.status) return false;
+              return part.scheduleRun?.is === null ? row.scheduleRun == null : true;
+            });
+          }
+          return typeof where.status === 'string'
             ? row.status === where.status
-            : where.status.in.includes(row.status),
-        );
+            : where.status.in.includes(row.status);
+        });
         if (orderBy?.createdAt === 'asc') {
           matched = [...matched].sort((a, b) => a.createdAt - b.createdAt);
         }
@@ -298,9 +304,20 @@ class RecoveryHarness {
       return 0;
     }
     const queued = await this.prisma.task.findMany({
-      where: { status: 'queued' },
+      where: {
+        OR: [
+          { status: 'queued' },
+          { status: 'pending', scheduleRun: { is: null } },
+        ],
+      },
       orderBy: { createdAt: 'asc' },
-      select: { id: true, deadlineMs: true, idleTimeoutMs: true },
+      select: {
+        id: true,
+        ownerUserId: true,
+        deadlineMs: true,
+        idleTimeoutMs: true,
+        auditEvents: true,
+      },
     });
     let reoffered = 0;
     for (const task of queued) {
@@ -308,6 +325,7 @@ class RecoveryHarness {
         await this.guardrails.admit(task.id, {
           deadlineMs: task.deadlineMs ?? undefined,
           idleTimeoutMs: task.idleTimeoutMs ?? undefined,
+          userId: task.ownerUserId ?? task.auditEvents?.[0]?.userId ?? undefined,
         });
         reoffered += 1;
       } catch {
@@ -324,7 +342,15 @@ const queuedRow = (id, createdAt, extra = {}) => ({
   createdAt,
   deadlineMs: null,
   idleTimeoutMs: null,
+  ownerUserId: null,
+  auditEvents: [],
+  scheduleRun: null,
   ...extra,
+});
+
+const pendingRow = (id, createdAt, extra = {}) => ({
+  ...queuedRow(id, createdAt, extra),
+  status: 'pending',
 });
 
 // --- tests -------------------------------------------------------------------
@@ -353,6 +379,28 @@ test('restart with K queued, ceiling M: oldest min(K, M) admitted, rest queued i
     offered,
     ['admit:t1', 'admit:t2', 'admit:t3', 'admit:t4', 'admit:t5'],
     'all K queued tasks are re-offered, oldest first',
+  );
+});
+
+test('restart re-offers direct pending admissions with the durable owner but leaves scheduled pending to schedule recovery', async () => {
+  const prisma = new FakePrisma([
+    pendingRow('direct', 1, { ownerUserId: 'owner-a' }),
+    pendingRow('scheduled', 2, {
+      ownerUserId: 'owner-a',
+      scheduleRun: { id: 'run-1' },
+    }),
+  ]);
+  const guardrails = new FakeGuardrails({ envCeiling: 2 });
+  const harness = new RecoveryHarness(prisma, guardrails);
+
+  await harness.onApplicationBootstrap();
+
+  assert.deepEqual(guardrails.running, ['direct']);
+  assert.equal(guardrails.armed.get('direct')?.userId, 'owner-a');
+  assert.equal(
+    guardrails.events.includes('admit:scheduled'),
+    false,
+    'scheduled pending tasks remain behind the occurrence-level recovery lease',
   );
 });
 
@@ -396,14 +444,14 @@ test('re-offered tasks restore persisted deadlineMs/idleTimeoutMs from the task 
   // Watchers arm with the persisted values, identical to pre-restart admission.
   assert.deepEqual(
     guardrails.armed.get('with-params'),
-    { deadlineMs: 60000, idleTimeoutMs: 30000 },
+    { deadlineMs: 60000, idleTimeoutMs: 30000, userId: undefined },
     'persisted guardrail params are handed to admit()',
   );
   // Persisted null coalesces back to undefined: no deadline, idle left to the
   // operator-level default — never a fabricated 0/null watcher value.
   assert.deepEqual(
     guardrails.armed.get('without-params'),
-    { deadlineMs: undefined, idleTimeoutMs: undefined },
+    { deadlineMs: undefined, idleTimeoutMs: undefined, userId: undefined },
     'null params read back as undefined (watchers not armed with fabricated values)',
   );
 });

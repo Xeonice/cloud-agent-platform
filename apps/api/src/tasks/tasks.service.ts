@@ -8,6 +8,7 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
@@ -28,7 +29,6 @@ import {
   IllegalTaskTransitionError,
   assertTransition,
   isTerminal,
-  toAgentFailedToStart,
 } from './task-lifecycle';
 import {
   AUDIT_RECORDER_TOKEN,
@@ -56,8 +56,10 @@ import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-envi
 export interface IGuardrailsService {
   admit(
     taskId: string,
-    params?: { deadlineMs?: number; idleTimeoutMs?: number },
+    params?: { deadlineMs?: number; idleTimeoutMs?: number; userId?: string },
   ): Promise<'running' | 'queued'>;
+  /** Synchronous cancellation fence invoked immediately after a terminal write. */
+  fenceTerminal?(taskId: string): void;
   onTerminal(taskId: string): Promise<void>;
   recordFailure(taskId: string, kind?: string): void;
   recordSuccess(taskId: string): void;
@@ -90,6 +92,28 @@ export interface IGuardrailsService {
 
 /** DI token used when injecting the guardrails service into the tasks service. */
 export const GUARDRAILS_SERVICE_TOKEN = 'GUARDRAILS_SERVICE';
+
+export type AdmissionTransitionResult =
+  | 'transitioned'
+  | 'already-transitioned'
+  | 'superseded';
+
+/**
+ * The admission status write may have committed even though the database client
+ * did not receive its acknowledgement. Callers must retry resolution with the
+ * same transition token and must not release their local reservation meanwhile.
+ */
+export class AdmissionTransitionIndeterminateError extends Error {
+  constructor(
+    readonly taskId: string,
+    readonly next: Extract<TaskStatus, 'queued' | 'running'>,
+    readonly transitionToken: string,
+    readonly cause?: unknown,
+  ) {
+    super(`Admission transition outcome is indeterminate: ${taskId} -> ${next}`);
+    this.name = 'AdmissionTransitionIndeterminateError';
+  }
+}
 
 /**
  * Narrow slice of the {@link SandboxProvider} re-adoption surface (Track 3.3)
@@ -304,10 +328,10 @@ export class TasksService implements OnApplicationBootstrap {
    * failure logs and falls through — re-offering against the env seed beats
    * stranding the queue.
    *
-   * Phase 2 (re-offer): DB `queued` tasks survived the restart as data but lost
-   * their in-memory semaphore entry; they are re-offered FIFO so the oldest fit
-   * the REMAINING capacity (after re-adopted tasks hold their slots) begin
-   * admission and the remainder stay queued in order.
+   * Phase 2 (re-offer): DB `pending` tasks whose post-commit admission was
+   * interrupted, plus `queued` tasks that lost their in-memory semaphore entry,
+   * are re-offered FIFO. The oldest fit the REMAINING capacity (after re-adopted
+   * tasks hold their slots) and the remainder stay queued in order.
    */
   async onApplicationBootstrap(): Promise<void> {
     const readopted = await this.readoptSurvivorsOnStartup();
@@ -489,10 +513,9 @@ export class TasksService implements OnApplicationBootstrap {
 
   /**
    * Phase 2 of startup recovery (configurable-task-slots 6.1): re-offer every
-   * DB `queued` task to the in-memory concurrency semaphore in `createdAt asc`
+   * DB `pending` or `queued` task to the in-memory concurrency semaphore in `createdAt asc`
    * (FIFO) order, restoring each task's persisted per-task guardrail parameters
-   * (`deadlineMs`, `idleTimeoutMs`) from its task row — zero new columns, since
-   * task-guardrail-controls already persisted them. `admit()` arms the deadline
+   * (`deadlineMs`, `idleTimeoutMs`) and durable owner from its task row. `admit()` arms the deadline
    * / idle watchers for tasks within capacity exactly as at creation time, and
    * holds the remainder `queued` in offer order, so a queued task is never
    * stranded (never re-offered) after a restart. Returns the count re-offered.
@@ -506,16 +529,41 @@ export class TasksService implements OnApplicationBootstrap {
       return 0;
     }
     const queued = await this.prisma.task.findMany({
-      where: { status: 'queued' },
+      where: {
+        OR: [
+          { status: 'queued' },
+          { status: 'pending', scheduleRun: { is: null } },
+        ],
+      },
       orderBy: { createdAt: 'asc' },
-      select: { id: true, deadlineMs: true, idleTimeoutMs: true },
+      select: {
+        id: true,
+        status: true,
+        ownerUserId: true,
+        deadlineMs: true,
+        idleTimeoutMs: true,
+        auditEvents: {
+          where: { type: 'task.created', userId: { not: null } },
+          orderBy: [{ timestamp: 'asc' }, { id: 'asc' }],
+          take: 1,
+          select: { userId: true },
+        },
+      },
     });
     let reoffered = 0;
     for (const task of queued) {
       try {
+        const ownerUserId =
+          task.ownerUserId ?? task.auditEvents[0]?.userId ?? undefined;
+        if (task.status === 'pending') {
+          await this.recordAudit(() =>
+            this.audit?.recordTaskCreated(task.id, ownerUserId),
+          );
+        }
         await this.guardrails.admit(task.id, {
           deadlineMs: task.deadlineMs ?? undefined,
           idleTimeoutMs: task.idleTimeoutMs ?? undefined,
+          userId: ownerUserId,
         });
         reoffered += 1;
       } catch (err) {
@@ -588,6 +636,7 @@ export class TasksService implements OnApplicationBootstrap {
     const task = await client.task.create({
       data: {
         repoId,
+        ownerUserId: userId ?? null,
         prompt: body.prompt,
         // add-claude-code-runtime (4.1): persist the selected runtime so it is
         // durable and readable on every later read path AND so the provider
@@ -673,13 +722,16 @@ export class TasksService implements OnApplicationBootstrap {
     body: CreateTaskBody,
     userId?: string,
   ): Promise<void> {
+    const resolvedUserId = await this.resolveTaskOwnerId(taskId, userId);
     // 6.2 — record the creation audit event (201/info), attributed to the
     // creating operator's ACCOUNT id when known (the `users.id` primary key,
     // present for local + GitHub accounts — fix-local-account-task-attribution).
     // Emitted BEFORE `admit()` so the `task.created` event precedes any
     // `task.running`/`task.queued` event, AND so the owner-scoped Codex credential
     // resolver (which reads this event's `userId`) can later attribute the task.
-    await this.recordAudit(() => this.audit?.recordTaskCreated(taskId, userId));
+    await this.recordAudit(() =>
+      this.audit?.recordTaskCreated(taskId, resolvedUserId),
+    );
 
     // VR.1 — offer the task to the guardrails concurrency semaphore so the FIFO
     // semaphore actually bounds running tasks. When a slot is free it transitions
@@ -693,6 +745,7 @@ export class TasksService implements OnApplicationBootstrap {
         .admit(taskId, {
           deadlineMs: body.deadlineMs,
           idleTimeoutMs: body.idleTimeoutMs,
+          userId: resolvedUserId,
         })
         .catch((err: unknown) => {
           this.logger.warn(
@@ -701,6 +754,32 @@ export class TasksService implements OnApplicationBootstrap {
             }`,
           );
         });
+    }
+  }
+
+  private async resolveTaskOwnerId(
+    taskId: string,
+    fallbackUserId?: string,
+  ): Promise<string | undefined> {
+    try {
+      const task = await this.prisma.task.findUnique({
+        where: { id: taskId },
+        select: { ownerUserId: true },
+      });
+      const persisted = task?.ownerUserId ?? undefined;
+      if (persisted && fallbackUserId && persisted !== fallbackUserId) {
+        this.logger.warn(
+          `task ${taskId} admission owner mismatch; using persisted owner ${persisted}`,
+        );
+      }
+      return persisted ?? fallbackUserId;
+    } catch (err) {
+      this.logger.warn(
+        `task ${taskId} owner lookup failed; using caller attribution: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return fallbackUserId;
     }
   }
 
@@ -736,44 +815,232 @@ export class TasksService implements OnApplicationBootstrap {
     next: TaskStatus,
     userId?: string,
   ): Promise<TaskResponse> {
-    const task = await this.prisma.task.findUnique({ where: { id } });
-    if (!task) {
-      throw new NotFoundException(`Task not found: ${id}`);
-    }
-
-    // Validates the edge; throws on an illegal transition so we never write.
-    assertTransition(task.status as TaskStatus, next);
-
-    const updated = await this.prisma.task.update({
-      where: { id },
-      data: { status: next },
-      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
-    });
-
-    // 6.2 — the status write was ACCEPTED (an illegal edge would have thrown
-    // above, before any write): record one audit event for this transition,
-    // attributed to the operator's ACCOUNT id when known (the `users.id` primary
-    // key, present for local + GitHub accounts). This is the single central
-    // per-transition seam every status-changing caller funnels through.
-    // Best-effort: never rolls back or blocks the transition.
-    await this.recordAudit(() => this.audit?.recordTransition(id, next, userId));
-
-    // VR.5 — on any natural terminal transition (completed / failed /
-    // agent_failed_to_start), notify the guardrails service so it clears timers,
-    // tears down the session-scoped credentials, and releases the concurrency
-    // slot. Without this, credentials leak on every cleanly-completing task (the
-    // forced-failure paths already call teardownSession directly).
-    if (isTerminal(next) && this.guardrails) {
-      await this.guardrails.onTerminal(id).catch((err: unknown) => {
+    let terminalSettlement: Promise<void> | undefined;
+    const startTerminalSettlement = (): void => {
+      if (!isTerminal(next) || !this.guardrails || terminalSettlement) return;
+      this.guardrails.fenceTerminal?.(id);
+      terminalSettlement = this.guardrails.onTerminal(id).catch((err: unknown) => {
         this.logger.warn(
           `guardrails onTerminal for task ${id} failed: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
       });
+    };
+
+    let updated;
+    for (;;) {
+      const task = await this.prisma.task.findUnique({
+        where: { id },
+        include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+      });
+      if (!task) throw new NotFoundException(`Task not found: ${id}`);
+
+      const observedStatus = task.status as TaskStatus;
+      // Validates the edge before every CAS attempt. If another lifecycle actor
+      // already committed a terminal state, this throws instead of overwriting
+      // that winner with a stale read.
+      assertTransition(observedStatus, next);
+
+      let changed: { count: number };
+      try {
+        changed = await this.prisma.task.updateMany({
+          where: { id, status: observedStatus },
+          data: { status: next },
+        });
+      } catch (err) {
+        // A database acknowledgement can be lost after commit. Re-read the row;
+        // terminal cleanup is idempotent, so confirming the requested status is
+        // safer than abandoning a committed terminal without teardown.
+        const confirmed = await this.prisma.task.findUnique({
+          where: { id },
+          include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+        });
+        if (!confirmed) throw new NotFoundException(`Task not found: ${id}`);
+        if ((confirmed.status as TaskStatus) !== next) throw err;
+        startTerminalSettlement();
+        updated = confirmed;
+        break;
+      }
+
+      if (changed.count === 1) {
+        // The status CAS is the terminal linearization point. Establish the
+        // in-process provider fence in this same continuation, before the
+        // response-row re-read yields to any admission continuation.
+        startTerminalSettlement();
+        updated = await this.prisma.task.findUnique({
+          where: { id },
+          include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+        });
+        if (!updated) throw new NotFoundException(`Task not found: ${id}`);
+        break;
+      }
+
+      const winner = await this.prisma.task.findUnique({
+        where: { id },
+        include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+      });
+      if (!winner) throw new NotFoundException(`Task not found: ${id}`);
+      if ((winner.status as TaskStatus) === next) {
+        // Another caller committed the same transition and owns its audit and
+        // terminal cleanup. Observe it idempotently without duplicating either.
+        return taskResponseSchema.parse(this.toResponse(winner));
+      }
+      // A non-terminal winner (for example running -> awaiting_input) may still
+      // permit the requested transition. Loop and validate that latest state.
+      assertTransition(winner.status as TaskStatus, next);
     }
 
+    // Covers a confirmed ambiguous commit. The ordinary count=1 path already
+    // started this before its post-CAS response read.
+    startTerminalSettlement();
+
+    // 6.2 — the status write was ACCEPTED (an illegal edge would have thrown
+    // above, before any write): record one audit event for this transition,
+    // attributed to the operator's ACCOUNT id when known. Best-effort: never
+    // rolls back or blocks the transition.
+    await Promise.all([
+      this.recordAudit(() => this.audit?.recordTransition(id, next, userId)),
+      terminalSettlement ?? Promise.resolve(),
+    ]);
+
     return taskResponseSchema.parse(this.toResponse(updated));
+  }
+
+  /**
+   * Admission-only lifecycle CAS. Unlike {@link transition}, this method returns
+   * no response DTO and therefore has no post-commit parsing failure window. A
+   * competing worker that already committed the same target is reported as
+   * `already-transitioned`; callers must not provision a second sandbox in that
+   * case.
+   */
+  async transitionForAdmission(
+    id: string,
+    next: Extract<TaskStatus, 'queued' | 'running'>,
+    userId?: string,
+    transitionToken = randomUUID(),
+  ): Promise<AdmissionTransitionResult> {
+    return this.performAdmissionTransition(
+      id,
+      next,
+      userId,
+      transitionToken,
+      false,
+    );
+  }
+
+  /** Resolve/retry an ambiguous admission write without changing its winner token. */
+  async reconcileAdmissionTransition(
+    id: string,
+    next: Extract<TaskStatus, 'queued' | 'running'>,
+    transitionToken: string,
+    userId?: string,
+  ): Promise<AdmissionTransitionResult> {
+    return this.performAdmissionTransition(
+      id,
+      next,
+      userId,
+      transitionToken,
+      true,
+    );
+  }
+
+  /** True only while this exact running-CAS winner may start provider work. */
+  async isAdmissionTransitionCurrent(
+    id: string,
+    next: Extract<TaskStatus, 'queued' | 'running'>,
+    transitionToken: string,
+  ): Promise<boolean> {
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: {
+        status: true,
+        queuedAdmissionToken: true,
+        runningAdmissionToken: true,
+      },
+    });
+    if (!task || task.status !== next) return false;
+    return (
+      (next === 'queued'
+        ? task.queuedAdmissionToken
+        : task.runningAdmissionToken) === transitionToken
+    );
+  }
+
+  private async performAdmissionTransition(
+    id: string,
+    next: Extract<TaskStatus, 'queued' | 'running'>,
+    userId: string | undefined,
+    transitionToken: string,
+    resolvingIndeterminate: boolean,
+  ): Promise<AdmissionTransitionResult> {
+    let mustResolve = resolvingIndeterminate;
+
+    for (;;) {
+      let task: {
+        status: TaskStatus;
+        queuedAdmissionToken: string | null;
+        runningAdmissionToken: string | null;
+      } | null;
+      try {
+        task = await this.prisma.task.findUnique({
+          where: { id },
+          select: {
+            status: true,
+            queuedAdmissionToken: true,
+            runningAdmissionToken: true,
+          },
+        }) as typeof task;
+      } catch (err) {
+        if (!mustResolve) throw err;
+        throw new AdmissionTransitionIndeterminateError(id, next, transitionToken, err);
+      }
+      if (!task) throw new NotFoundException(`Task not found: ${id}`);
+
+      const current = task.status as TaskStatus;
+      const persistedToken =
+        next === 'queued'
+          ? task.queuedAdmissionToken
+          : task.runningAdmissionToken;
+
+      if (persistedToken === transitionToken) {
+        await this.recordAudit(() => this.audit?.recordTransition(id, next, userId));
+        return current === next ? 'transitioned' : 'superseded';
+      }
+      if (current === next) return 'already-transitioned';
+
+      // Admission owns only pending -> queued/running and queued -> running. A
+      // later lifecycle state means another actor has already superseded this
+      // attempt; it must never be moved backward or provisioned again.
+      const eligible =
+        next === 'queued'
+          ? current === 'pending'
+          : current === 'pending' || current === 'queued';
+      if (!eligible) return 'superseded';
+      assertTransition(current, next);
+
+      let changed: { count: number };
+      try {
+        changed = await this.prisma.task.updateMany({
+          where: { id, status: current },
+          data:
+            next === 'queued'
+              ? { status: next, queuedAdmissionToken: transitionToken }
+              : { status: next, runningAdmissionToken: transitionToken },
+        });
+      } catch (err) {
+        throw new AdmissionTransitionIndeterminateError(id, next, transitionToken, err);
+      }
+
+      if (changed.count === 1) {
+        await this.recordAudit(() => this.audit?.recordTransition(id, next, userId));
+        return 'transitioned';
+      }
+
+      // A competing CAS won after our read. Re-read under resolution semantics;
+      // a transient read failure must not be mistaken for a safe local release.
+      mustResolve = true;
+    }
   }
 
   /**
@@ -781,40 +1048,11 @@ export class TasksService implements OnApplicationBootstrap {
    * when the agent process exits before it ever reaches a running state.
    */
   async markAgentFailedToStart(id: string): Promise<TaskResponse> {
-    const task = await this.prisma.task.findUnique({ where: { id } });
-    if (!task) {
-      throw new NotFoundException(`Task not found: ${id}`);
-    }
-
-    const next = toAgentFailedToStart(task.status as TaskStatus);
-    const updated = await this.prisma.task.update({
-      where: { id },
-      data: { status: next },
-      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
-    });
-
-    // 6.2 — record the `agent_failed_to_start` terminal (422/error). Best-effort.
-    await this.recordAudit(() => this.audit?.recordTransition(id, next));
-
-    // VR.4 — record the start failure in the circuit breaker so repeated
-    // agent-failed-to-start events trip the breaker and stop the burn loop.
-    if (this.guardrails) {
-      this.guardrails.recordFailure(id, 'agent_failed_to_start');
-    }
-
-    // VR.5 — agent_failed_to_start is a terminal state; tear down credentials
-    // and release the concurrency slot on this path too.
-    if (this.guardrails) {
-      await this.guardrails.onTerminal(id).catch((err: unknown) => {
-        this.logger.warn(
-          `guardrails onTerminal for task ${id} (agent_failed_to_start) failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
-    }
-
-    return taskResponseSchema.parse(this.toResponse(updated));
+    // Reuse the central status CAS so a concurrent stop/completion cannot be
+    // overwritten by a stale agent-start failure.
+    const updated = await this.transition(id, 'agent_failed_to_start');
+    this.guardrails?.recordFailure(id, 'agent_failed_to_start');
+    return updated;
   }
 
   /**

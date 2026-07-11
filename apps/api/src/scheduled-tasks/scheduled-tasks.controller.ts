@@ -14,8 +14,10 @@ import {
 } from '@nestjs/common';
 import {
   CreateScheduleRequestSchema,
+  DispatchScheduleRequestSchema,
   UpdateScheduleRequestSchema,
   type CreateScheduleRequest,
+  type DispatchScheduleRequest,
   type ListScheduleRunsResponse,
   type ListSchedulesResponse,
   type ScheduleResponse,
@@ -90,12 +92,18 @@ export class ScheduledTasksController {
 
   @Post(':id/dispatch')
   @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(DispatchScheduleRequestSchema))
   async dispatch(
     @Param('id') id: string,
+    @Body() body: DispatchScheduleRequest,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
     ScheduledTasksController.requireScope(req, 'tasks:write');
-    return this.schedules.dispatchNow(ScheduledTasksController.accountId(req), id);
+    return this.schedules.dispatchNow(
+      ScheduledTasksController.accountId(req),
+      id,
+      body,
+    );
   }
 
   @Delete(':id')

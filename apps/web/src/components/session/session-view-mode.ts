@@ -9,7 +9,9 @@
  *   - live-terminal   : a RUNNING interactive task → live xterm terminal (unchanged)
  */
 import type { TaskStatus, ExecutionMode } from "@cap/contracts";
-import { isReplayableStatus } from "@cap/contracts";
+import { isReplayableStatus, TERMINAL_TASK_STATUSES } from "@cap/contracts";
+
+import type { SessionTaskState } from "@/components/status-pill";
 
 /** Pre-running statuses: created but no provisioned sandbox/terminal yet. */
 const PRE_RUNNING_STATUSES = new Set<TaskStatus>(["pending", "queued"]);
@@ -32,4 +34,18 @@ export function sessionViewMode(
   // an interactive task keeps the live xterm.
   if (executionMode === "headless-exec") return "headless-live";
   return "live-terminal";
+}
+
+/** Map the persisted lifecycle status to the task-page status vocabulary. */
+export function sessionTaskState(
+  status: TaskStatus | null | undefined,
+): SessionTaskState {
+  if (status === "failed" || status === "agent_failed_to_start") return "failed";
+  if (
+    status != null &&
+    (TERMINAL_TASK_STATUSES as readonly TaskStatus[]).includes(status)
+  ) {
+    return "stopped";
+  }
+  return "running";
 }

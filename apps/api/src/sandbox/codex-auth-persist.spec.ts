@@ -23,9 +23,16 @@ interface UpdateCall {
   data: { authJsonCiphertext?: string };
 }
 
-function makePrisma(opts: { ownerId: string | null; cred: { mode: string } | null }) {
+function makePrisma(opts: {
+  ownerId: string | null;
+  persistedOwnerId?: string | null;
+  cred: { mode: string } | null;
+}) {
   const calls = { findUnique: 0, update: [] as UpdateCall[] };
   const prisma = {
+    task: {
+      findUnique: async () => ({ ownerUserId: opts.persistedOwnerId ?? null }),
+    },
     auditEvent: {
       findFirst: async () => (opts.ownerId ? { userId: opts.ownerId } : null),
     },
@@ -51,6 +58,19 @@ test('persistRefreshedAuth skips a non-parseable / refresh_token-less auth.json 
   await src.persistRefreshedAuth('t1', JSON.stringify({ tokens: { refresh_token: '' } })); // empty
   assert.equal(calls.findUnique, 0, 'the guard must short-circuit before any DB query');
   assert.equal(calls.update.length, 0);
+});
+
+test('persisted task owner wins over conflicting legacy audit attribution', async () => {
+  process.env.CODEX_CRED_ENC_KEY = KEY_HEX;
+  const { prisma, calls } = makePrisma({
+    ownerId: 'legacy-owner',
+    persistedOwnerId: 'durable-owner',
+    cred: { mode: 'official' },
+  });
+
+  await new PrismaCodexAuthSource(prisma).persistRefreshedAuth('t1', VALID_AUTH);
+
+  assert.deepEqual(calls.update[0]?.where, { userId: 'durable-owner' });
 });
 
 test('persistRefreshedAuth re-encrypts and updates the owner OFFICIAL credential', async () => {

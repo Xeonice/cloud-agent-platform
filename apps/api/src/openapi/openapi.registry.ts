@@ -165,7 +165,8 @@ export function buildV1Registry(): OpenAPIRegistry {
               ...(operation.requestSchema
                 ? {
                     body: {
-                      required: true,
+                      required: !operation.requestSchema.safeParse(undefined)
+                        .success,
                       content: {
                         'application/json': {
                           schema: operation.requestSchema,

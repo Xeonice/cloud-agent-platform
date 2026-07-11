@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { sessionViewMode } from "./session-view-mode";
+import { sessionTaskState, sessionViewMode } from "./session-view-mode";
 
 describe("sessionViewMode", () => {
   it("a RUNNING headless task → live polled conversation (no terminal)", () => {
@@ -43,5 +43,17 @@ describe("sessionViewMode", () => {
   it("a pre-running task waits (no sandbox yet), regardless of mode", () => {
     expect(sessionViewMode("pending", "headless-exec")).toBe("pre-running");
     expect(sessionViewMode("queued", "interactive-pty")).toBe("pre-running");
+  });
+});
+
+describe("sessionTaskState", () => {
+  it("renders both task failure terminals as failures", () => {
+    expect(sessionTaskState("failed")).toBe("failed");
+    expect(sessionTaskState("agent_failed_to_start")).toBe("failed");
+  });
+
+  it("keeps successful and operator terminal states stopped", () => {
+    expect(sessionTaskState("completed")).toBe("stopped");
+    expect(sessionTaskState("cancelled")).toBe("stopped");
   });
 });

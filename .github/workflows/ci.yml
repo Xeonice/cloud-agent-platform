@@ -80,11 +80,12 @@ jobs:
       # Release-asset packager and its quick-deploy consumer must change together.
       - name: Test (release and install contracts)
         run: |
-          bash -n scripts/release.sh scripts/quick-deploy.sh
+          bash -n scripts/release.sh scripts/quick-deploy.sh scripts/scheduled-tasks-live-e2e.sh
           node scripts/release-image-assets.test.mjs
           node scripts/release-tail.test.mjs
           node scripts/quick-deploy-preflight.test.mjs
           node scripts/docker-compose.deploy-config.test.mjs
+          node --test scripts/scheduled-tasks-live-e2e.test.mjs
 
   # Boots the BUILT @cap/api orchestrator against a throwaway Postgres and probes
   # the unauthenticated `/health` liveness endpoint, failing the pipeline on any
@@ -167,4 +168,60 @@ jobs:
       # Real Postgres + the actual polling timer. This guards the manual-dispatch
       # and future-fire interaction that service fakes alone cannot prove.
       - name: Scheduled tasks integration
-        run: pnpm --filter @cap/api test:e2e:schedules
+        run: pnpm test:integration:schedules
+
+  # Full owner-authenticated schedule story. Unlike the fast Postgres integration
+  # above, this boots the real AppModule and console, drives them through a browser,
+  # and proves the real poller reaches TasksService, Guardrails, audit recording,
+  # and the sandbox-provider port. The runner allocates all ports dynamically and
+  # owns its uniquely named disposable Postgres container.
+  scheduled-tasks-e2e:
+    name: scheduled tasks browser e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        run: pnpm --filter @cap/web exec playwright install --with-deps chromium
+
+      - name: Scheduled tasks live E2E
+        timeout-minutes: 10
+        env:
+          SCHEDULE_E2E_ARTIFACT_DIR: ${{ runner.temp }}/scheduled-tasks-e2e
+        run: pnpm test:e2e:schedules:local
+
+      - name: Sanitize scheduled-task E2E evidence
+        if: always()
+        env:
+          SCHEDULE_E2E_ARTIFACT_ROOT: ${{ runner.temp }}/scheduled-tasks-e2e
+        run: |
+          if [[ -d "$SCHEDULE_E2E_ARTIFACT_ROOT" ]]; then
+            if ! node scripts/sanitize-scheduled-tasks-e2e-artifacts.mjs "$SCHEDULE_E2E_ARTIFACT_ROOT"; then
+              rm -rf -- "$SCHEDULE_E2E_ARTIFACT_ROOT"
+              exit 1
+            fi
+          fi
+
+      - name: Upload scheduled-task evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scheduled-tasks-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/scheduled-tasks-e2e
+          if-no-files-found: ignore
+          retention-days: 7

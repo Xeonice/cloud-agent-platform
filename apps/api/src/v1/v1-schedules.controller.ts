@@ -15,10 +15,12 @@ import {
 } from '@nestjs/common';
 import {
   CreateScheduleRequestSchema,
+  DispatchScheduleRequestSchema,
   PublicV1IdParamsSchema,
   UpdateScheduleRequestSchema,
   V1ScheduleListQuerySchema,
   type CreateScheduleRequest,
+  type DispatchScheduleRequest,
   type ScheduleResponse,
   type UpdateScheduleRequest,
   type V1ListScheduleRunsResponse,
@@ -108,12 +110,14 @@ export class V1SchedulesController {
 
   @Post(':id/dispatch')
   @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(DispatchScheduleRequestSchema))
   async dispatch(
     @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @Body() body: DispatchScheduleRequest,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
     const principal = this.requireScope(req, 'tasks:write');
-    return this.schedules.dispatchNow(this.accountId(principal), id);
+    return this.schedules.dispatchNow(this.accountId(principal), id, body);
   }
 
   @Delete(':id')

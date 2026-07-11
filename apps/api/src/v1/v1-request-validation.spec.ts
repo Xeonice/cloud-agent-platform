@@ -59,6 +59,7 @@ let taskFindCalls = 0;
 let auditCalls = 0;
 let taskExists = true;
 let capturedIdempotencyKey: string | null | undefined;
+let capturedDispatchBody: unknown;
 
 const taskResponse = {
   id: VALID_ID,
@@ -128,7 +129,15 @@ before(async () => {
     update: scheduleCall,
     pause: scheduleCall,
     resume: scheduleCall,
-    dispatchNow: scheduleCall,
+    async dispatchNow(
+      _ownerUserId: string,
+      _id: string,
+      body: unknown,
+    ) {
+      businessCalls += 1;
+      capturedDispatchBody = body;
+      return {};
+    },
     delete: scheduleCall,
     listRunsPage: scheduleCall,
   };
@@ -190,6 +199,7 @@ beforeEach(() => {
   auditCalls = 0;
   taskExists = true;
   capturedIdempotencyKey = undefined;
+  capturedDispatchBody = undefined;
 });
 
 function url(path: string): string {
@@ -317,4 +327,30 @@ test('task create rejects a blank idempotency key and normalizes a valid key', a
   });
   assert.equal(normalized.status, 201);
   assert.equal(capturedIdempotencyKey, 'retry-1');
+});
+
+test('schedule dispatch validates and forwards the optional period key', async () => {
+  const invalid = await request(`/v1/schedules/${VALID_ID}/dispatch`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedPeriodKey: '' }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal(businessCalls, 0, 'invalid period key reached the schedule service');
+
+  const omitted = await request(`/v1/schedules/${VALID_ID}/dispatch`, {
+    method: 'POST',
+  });
+  assert.equal(omitted.status, 200);
+  assert.deepEqual(capturedDispatchBody, {});
+
+  const valid = await request(`/v1/schedules/${VALID_ID}/dispatch`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ expectedPeriodKey: 'day:2026-07-11' }),
+  });
+  assert.equal(valid.status, 200);
+  assert.deepEqual(capturedDispatchBody, {
+    expectedPeriodKey: 'day:2026-07-11',
+  });
 });
