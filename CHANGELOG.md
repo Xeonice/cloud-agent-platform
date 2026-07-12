@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.37.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.3...v0.37.4) (2026-07-12)
+
+
+### Bug Fixes
+
+* **deploy:** allow slow BoxLite cold starts ([21cf9fa](https://github.com/Xeonice/cloud-agent-platform/commit/21cf9fa122cfd2fed614cf311e8f2d657e852429))
+* **deploy:** allow slow BoxLite cold starts ([d1fd43d](https://github.com/Xeonice/cloud-agent-platform/commit/d1fd43d4acbf1581b0bf1441ed7b5a5dd53ad3ba))
+
 ## [0.37.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.2...v0.37.3) (2026-07-12)
 
 
