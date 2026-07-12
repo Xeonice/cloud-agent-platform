@@ -3,6 +3,7 @@ import {
   AuditEventSchema,
   type AuditEvent,
   type AuditQuery,
+  type TaskFailure,
   type TaskStatus,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
@@ -18,6 +19,7 @@ import {
   type ForceFailCause,
   type TaskStatusLookup,
 } from './audit-mapping';
+import { runtimeFailureTitle } from '../tasks/task-failure';
 
 /**
  * Audit recorder + query service (be-audit-approvals 6.2 / 6.3 / 6.4).
@@ -118,10 +120,19 @@ export class AuditService {
     taskId: string,
     status: TaskStatus,
     userId?: string,
+    failure?: TaskFailure,
   ): Promise<void> {
     const kind = kindForStatus(status);
     if (kind === null) return;
-    await this.record(kind, taskId, { userId });
+    await this.record(kind, taskId, {
+      userId,
+      ...(failure
+        ? {
+            title: runtimeFailureTitle(failure),
+            description: failure.message,
+          }
+        : {}),
+    });
   }
 
   /**
@@ -181,7 +192,7 @@ export class AuditService {
   private async record(
     kind: AuditEventKind,
     taskId: string,
-    opts: { userId?: string; description?: string } = {},
+    opts: { userId?: string; title?: string; description?: string } = {},
   ): Promise<void> {
     try {
       const descriptor = AUDIT_KIND_DESCRIPTORS[kind];
@@ -204,7 +215,7 @@ export class AuditService {
           type: kind,
           level,
           resultCode: resultCode ?? null,
-          title: descriptor.title,
+          title: opts.title ?? descriptor.title,
           description: opts.description ?? descriptor.title,
         },
       });

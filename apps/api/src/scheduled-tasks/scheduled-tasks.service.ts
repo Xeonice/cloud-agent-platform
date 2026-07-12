@@ -30,6 +30,7 @@ import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
+import { taskFailureFromRecord } from '../tasks/task-failure';
 
 const ACTIVE_TASK_STATUSES = [
   'pending',
@@ -59,7 +60,13 @@ interface ScheduleSummaryRunSource {
   readonly triggeredAt: Date | null;
   readonly status: string;
   readonly taskId: string | null;
-  readonly task: { status: string } | null;
+  readonly task: {
+    status: string;
+    runtime: string | null;
+    failureCode: string | null;
+    failureAt: Date | null;
+    failureExitCode: number | null;
+  } | null;
   readonly error: string | null;
   readonly createdAt: Date;
 }
@@ -76,7 +83,15 @@ const SCHEDULE_INCLUDE = {
       triggeredAt: true,
       status: true,
       taskId: true,
-      task: { select: { status: true } },
+      task: {
+        select: {
+          status: true,
+          runtime: true,
+          failureCode: true,
+          failureAt: true,
+          failureExitCode: true,
+        },
+      },
       error: true,
       createdAt: true,
     },
@@ -84,7 +99,15 @@ const SCHEDULE_INCLUDE = {
 } as const;
 
 const RUN_TASK_STATUS_INCLUDE = {
-  task: { select: { status: true } },
+  task: {
+    select: {
+      status: true,
+      runtime: true,
+      failureCode: true,
+      failureAt: true,
+      failureExitCode: true,
+    },
+  },
 } as const;
 
 interface KeysetCursor {
@@ -1217,7 +1240,13 @@ export class ScheduledTasksService
     triggeredAt: Date | null;
     status: string;
     taskId: string | null;
-    task: { status: string } | null;
+    task: {
+      status: string;
+      runtime?: string | null;
+      failureCode?: string | null;
+      failureAt?: Date | null;
+      failureExitCode?: number | null;
+    } | null;
     error: string | null;
     createdAt: Date;
     updatedAt: Date;
@@ -1225,6 +1254,7 @@ export class ScheduledTasksService
     return ScheduleRunResponseSchema.parse({
       ...row,
       taskStatus: row.task?.status ?? null,
+      taskFailure: row.task ? taskFailureFromRecord(row.task) : null,
     });
   }
 }
@@ -1234,6 +1264,7 @@ function scheduleRunSummary(run: ScheduleSummaryRunSource | null) {
     ? {
         ...run,
         taskStatus: run.task?.status ?? null,
+        taskFailure: run.task ? taskFailureFromRecord(run.task) : null,
       }
     : null;
 }

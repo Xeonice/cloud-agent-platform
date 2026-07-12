@@ -195,9 +195,19 @@ const MOCK_TASKS: ListTasksResponse = [
     repoId: REPO_IDS.infra,
     prompt: "收紧 AIO 镜像体积并补充 e2e 守卫",
     status: "failed",
+    failure: {
+      code: "runtime_auth_expired",
+      runtime: "claude-code",
+      message:
+        "Claude Code 登录凭据已过期，请前往设置重新连接后创建新任务。",
+      action: "reconnect_runtime",
+      occurredAt: minsAgo(179),
+      exitCode: 1,
+    },
     createdAt: minsAgo(180),
     branch: "main",
     strategy: "review-then-apply",
+    runtime: "claude-code",
     sandboxProvider: null,
   },
 ];
@@ -993,6 +1003,16 @@ const MOCK_TASK_CONTEXTS: Record<string, TaskContextView> = {
     agent: "Codex (gpt-5-codex)",
     sandboxProviderLabel: "沙箱待启动",
     resources: "2 vCPU · 4 GiB",
+    safetyBoundary: SAFETY,
+  },
+  [TASK_IDS.e]: {
+    taskId: TASK_IDS.e,
+    repo: "tanghehui/cloud-agent-platform",
+    branch: "main",
+    strategy: "review-then-apply",
+    agent: "Claude Code",
+    sandboxProviderLabel: "沙箱已释放",
+    resources: "—",
     safetyBoundary: SAFETY,
   },
 };

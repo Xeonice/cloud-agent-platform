@@ -12,15 +12,11 @@ import { randomUUID } from 'node:crypto';
 import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
-  SandboxMetadataSchema,
-  sandboxProviderLabel,
   taskResponseSchema,
   type CreateTaskBody,
   type Deliver,
-  type DeliverStatus,
   type Runtime,
-  type TaskSandboxProvider,
-  type TaskSandboxEnvironmentSummary,
+  type TaskFailureCode,
   type TaskResponse,
   type TaskStatus,
 } from '@cap/contracts';
@@ -45,6 +41,11 @@ import {
 } from '@cap/sandbox';
 import { SandboxRunOwnerService } from '../sandbox/sandbox-run-owner.service';
 import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
+import type { RuntimeFailureWrite } from './task-failure';
+import {
+  TASK_RESPONSE_INCLUDE,
+  taskResponseFromRecord,
+} from './task-response';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
@@ -159,6 +160,7 @@ export interface IAgentRuntimeRegistry {
     id: Runtime;
     /** Execution modes the resolved runtime supports (add-headless-execution-track). */
     executionModes: ReadonlySet<ExecutionMode>;
+    classifyOutputFailure?(output: string): { code: TaskFailureCode } | null;
   };
 }
 
@@ -191,30 +193,6 @@ export const CLAUDE_RUNTIME_READINESS_TOKEN = 'CLAUDE_RUNTIME_READINESS';
  * task NEVER launches an unauthenticated agent (add-claude-code-runtime 4.2).
  */
 export const RUNTIME_NOT_CONFIGURED_REASON = 'runtime not configured';
-
-const LATEST_SANDBOX_PROVIDER_INCLUDE = {
-  sandboxRuns: {
-    orderBy: { createdAt: 'desc' as const },
-    take: 1,
-    select: { providerId: true, metadata: true },
-  },
-  sandboxEnvironment: {
-    select: {
-      id: true,
-      name: true,
-      status: true,
-      providerFamilies: true,
-      runtimeIds: true,
-      source: true,
-    },
-  },
-  scheduleRun: {
-    select: {
-      scheduleId: true,
-      scheduledFor: true,
-    },
-  },
-} as const;
 
 /**
  * Thrown by `create` when the selected runtime is not configured/ready. A
@@ -682,7 +660,7 @@ export class TasksService implements OnApplicationBootstrap {
     // on `cap-net`, so there is no dial-back to authenticate (token issuance +
     // the dial-back verifier were removed with the runner, migrate-aio 7.4).
 
-    return taskResponseSchema.parse(this.toResponse(task));
+    return taskResponseSchema.parse(taskResponseFromRecord(task));
   }
 
   async normalizeTaskTemplateForSchedule(
@@ -786,20 +764,42 @@ export class TasksService implements OnApplicationBootstrap {
   async list(): Promise<TaskResponse[]> {
     const tasks = await this.prisma.task.findMany({
       orderBy: { createdAt: 'asc' },
-      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+      include: TASK_RESPONSE_INCLUDE,
     });
-    return tasks.map((task) => taskResponseSchema.parse(this.toResponse(task)));
+    return tasks.map((task) =>
+      taskResponseSchema.parse(taskResponseFromRecord(task)),
+    );
   }
 
   async findById(id: string): Promise<TaskResponse> {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+      include: TASK_RESPONSE_INCLUDE,
     });
     if (!task) {
       throw new NotFoundException(`Task not found: ${id}`);
     }
-    return taskResponseSchema.parse(this.toResponse(task));
+    return taskResponseSchema.parse(taskResponseFromRecord(task));
+  }
+
+  /**
+   * Classify a bounded runtime-output window through the task's selected
+   * AgentRuntime policy. The shared task/guardrail layers never inspect
+   * provider-specific text themselves.
+   */
+  async classifyRuntimeOutputFailure(
+    id: string,
+    output: string,
+  ): Promise<{ code: TaskFailureCode } | null> {
+    const task = await this.prisma.task.findUnique({
+      where: { id },
+      select: { runtime: true },
+    });
+    if (!task || !this.runtimes) return null;
+    const runtime = this.runtimes.resolve(
+      (task.runtime ?? DEFAULT_TASK_RUNTIME) as Runtime,
+    );
+    return runtime.classifyOutputFailure?.(output) ?? null;
   }
 
   /**
@@ -815,6 +815,42 @@ export class TasksService implements OnApplicationBootstrap {
     next: TaskStatus,
     userId?: string,
   ): Promise<TaskResponse> {
+    return this.transitionInternal(id, next, userId);
+  }
+
+  /**
+   * Persist a classified runtime-auth failure in the SAME lifecycle CAS as the
+   * terminal status. A stop/completion winner is never overwritten, and readers
+   * never observe `failed` without the already-known structured cause.
+   */
+  async failWithRuntimeFailure(
+    id: string,
+    code: TaskFailureCode,
+    exitCode: number | null = null,
+  ): Promise<TaskResponse> {
+    return this.transitionInternal(id, 'failed', undefined, {
+      code,
+      occurredAt: new Date(),
+      exitCode,
+    });
+  }
+
+  private async transitionInternal(
+    id: string,
+    next: TaskStatus,
+    userId?: string,
+    failure?: RuntimeFailureWrite,
+  ): Promise<TaskResponse> {
+    if (failure && next !== 'failed') {
+      throw new Error('Structured runtime failure can only accompany failed status');
+    }
+    const failureData = failure
+      ? {
+          failureCode: failure.code,
+          failureAt: failure.occurredAt,
+          failureExitCode: failure.exitCode,
+        }
+      : {};
     let terminalSettlement: Promise<void> | undefined;
     const startTerminalSettlement = (): void => {
       if (!isTerminal(next) || !this.guardrails || terminalSettlement) return;
@@ -832,11 +868,54 @@ export class TasksService implements OnApplicationBootstrap {
     for (;;) {
       const task = await this.prisma.task.findUnique({
         where: { id },
-        include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+        include: TASK_RESPONSE_INCLUDE,
       });
       if (!task) throw new NotFoundException(`Task not found: ${id}`);
 
       const observedStatus = task.status as TaskStatus;
+      if (failure && observedStatus === 'failed') {
+        // A generic exit/guardrail actor may win the terminal status race just
+        // before the runtime classifier finishes. Preserve that lifecycle
+        // winner, but fill its still-empty structured cause with a second CAS.
+        // Existing causes are immutable; concurrent classifiers observe the
+        // first writer and never overwrite it.
+        if (task.failureCode) {
+          return taskResponseSchema.parse(taskResponseFromRecord(task));
+        }
+        try {
+          const enriched = await this.prisma.task.updateMany({
+            where: { id, status: 'failed', failureCode: null },
+            data: failureData,
+          });
+          if (enriched.count === 1) {
+            const enrichedTask = await this.prisma.task.findUnique({
+              where: { id },
+              include: TASK_RESPONSE_INCLUDE,
+            });
+            if (!enrichedTask) {
+              throw new NotFoundException(`Task not found: ${id}`);
+            }
+            return taskResponseSchema.parse(taskResponseFromRecord(enrichedTask));
+          }
+        } catch (err) {
+          const confirmed = await this.prisma.task.findUnique({
+            where: { id },
+            include: TASK_RESPONSE_INCLUDE,
+          });
+          if (!confirmed) throw new NotFoundException(`Task not found: ${id}`);
+          if (
+            (confirmed.status as TaskStatus) !== 'failed' ||
+            !confirmed.failureCode
+          ) {
+            throw err;
+          }
+          return taskResponseSchema.parse(taskResponseFromRecord(confirmed));
+        }
+
+        // A concurrent classifier filled the cause between our read and CAS.
+        // Re-read through the loop; the branch above returns the winner.
+        continue;
+      }
       // Validates the edge before every CAS attempt. If another lifecycle actor
       // already committed a terminal state, this throws instead of overwriting
       // that winner with a stale read.
@@ -846,7 +925,7 @@ export class TasksService implements OnApplicationBootstrap {
       try {
         changed = await this.prisma.task.updateMany({
           where: { id, status: observedStatus },
-          data: { status: next },
+          data: { status: next, ...failureData },
         });
       } catch (err) {
         // A database acknowledgement can be lost after commit. Re-read the row;
@@ -854,10 +933,15 @@ export class TasksService implements OnApplicationBootstrap {
         // safer than abandoning a committed terminal without teardown.
         const confirmed = await this.prisma.task.findUnique({
           where: { id },
-          include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+          include: TASK_RESPONSE_INCLUDE,
         });
         if (!confirmed) throw new NotFoundException(`Task not found: ${id}`);
-        if ((confirmed.status as TaskStatus) !== next) throw err;
+        if (
+          (confirmed.status as TaskStatus) !== next ||
+          (failure && confirmed.failureCode !== failure.code)
+        ) {
+          throw err;
+        }
         startTerminalSettlement();
         updated = confirmed;
         break;
@@ -870,7 +954,7 @@ export class TasksService implements OnApplicationBootstrap {
         startTerminalSettlement();
         updated = await this.prisma.task.findUnique({
           where: { id },
-          include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+          include: TASK_RESPONSE_INCLUDE,
         });
         if (!updated) throw new NotFoundException(`Task not found: ${id}`);
         break;
@@ -878,13 +962,19 @@ export class TasksService implements OnApplicationBootstrap {
 
       const winner = await this.prisma.task.findUnique({
         where: { id },
-        include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+        include: TASK_RESPONSE_INCLUDE,
       });
       if (!winner) throw new NotFoundException(`Task not found: ${id}`);
       if ((winner.status as TaskStatus) === next) {
+        if (failure && !winner.failureCode) {
+          // A generic failed transition won after our initial read. Loop into
+          // the failed-row enrichment branch instead of returning without the
+          // already-classified cause.
+          continue;
+        }
         // Another caller committed the same transition and owns its audit and
         // terminal cleanup. Observe it idempotently without duplicating either.
-        return taskResponseSchema.parse(this.toResponse(winner));
+        return taskResponseSchema.parse(taskResponseFromRecord(winner));
       }
       // A non-terminal winner (for example running -> awaiting_input) may still
       // permit the requested transition. Loop and validate that latest state.
@@ -899,12 +989,20 @@ export class TasksService implements OnApplicationBootstrap {
     // above, before any write): record one audit event for this transition,
     // attributed to the operator's ACCOUNT id when known. Best-effort: never
     // rolls back or blocks the transition.
+    const response = taskResponseSchema.parse(taskResponseFromRecord(updated));
     await Promise.all([
-      this.recordAudit(() => this.audit?.recordTransition(id, next, userId)),
+      this.recordAudit(() =>
+        this.audit?.recordTransition(
+          id,
+          next,
+          userId,
+          response.failure ?? undefined,
+        ),
+      ),
       terminalSettlement ?? Promise.resolve(),
     ]);
 
-    return taskResponseSchema.parse(this.toResponse(updated));
+    return response;
   }
 
   /**
@@ -1073,14 +1171,14 @@ export class TasksService implements OnApplicationBootstrap {
   async stop(id: string, userId?: string): Promise<TaskResponse> {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      include: LATEST_SANDBOX_PROVIDER_INCLUDE,
+      include: TASK_RESPONSE_INCLUDE,
     });
     if (!task) {
       throw new NotFoundException(`Task not found: ${id}`);
     }
     if (isTerminal(task.status as TaskStatus)) {
       // Already settled — no-op (never double-release a slot).
-      return taskResponseSchema.parse(this.toResponse(task));
+      return taskResponseSchema.parse(taskResponseFromRecord(task));
     }
     try {
       // `cancelled` is terminal, so transition() fires onTerminal (teardown +
@@ -1113,98 +1211,6 @@ export class TasksService implements OnApplicationBootstrap {
         }`,
       );
     }
-  }
-
-  /**
-   * Shapes a Prisma `Task` row into the contracts response shape. The contracts
-   * `TaskSchema.createdAt` is a `Date` (`z.coerce.date()`), so the row's native
-   * `Date` is passed through unchanged; the HTTP boundary serializes it to an ISO
-   * string on the way out.
-   */
-  private toResponse(task: {
-    id: string;
-    repoId: string;
-    prompt: string;
-    status: string;
-    createdAt: Date;
-    branch: string | null;
-    strategy: string | null;
-    skills: string[];
-    idleTimeoutMs: number | null;
-    deadlineMs: number | null;
-    runtime?: string | null;
-    sandboxEnvironmentId?: string | null;
-    executionMode?: string | null;
-    deliver?: string | null;
-    deliverStatus?: string | null;
-    branchPushed?: string | null;
-    commitSha?: string | null;
-    changeRequestUrl?: string | null;
-    changeRequestNumber?: number | null;
-    sandboxRuns?: readonly { providerId: string; metadata?: unknown }[];
-    sandboxEnvironment?: {
-      id: string;
-      name: string;
-      status: string;
-      providerFamilies: string[];
-      runtimeIds: string[];
-      source: unknown;
-    } | null;
-    scheduleRun?: {
-      scheduleId: string;
-      scheduledFor: Date;
-    } | null;
-  }): TaskResponse {
-    return {
-      id: task.id,
-      repoId: task.repoId,
-      prompt: task.prompt,
-      status: task.status as TaskStatus,
-      createdAt: task.createdAt,
-      // 3.3: echo the persisted run parameters back on every read path (create
-      // 201, list, fetch-by-id, and the transition/mark responses, which all
-      // funnel through here). Prisma stores `null` for omitted values, so the
-      // read-back is the supplied value or `null` — never stale/fabricated.
-      branch: task.branch,
-      strategy: task.strategy,
-      // task-preinstall-skills: echo the persisted skill ids (Postgres text[],
-      // empty array when none selected — never stale/fabricated).
-      skills: task.skills,
-      // task-guardrail-controls: echo the persisted guardrail parameters (null
-      // when omitted — never stale/fabricated). A null `idleTimeoutMs` reads back
-      // honestly as "no idle reclaim configured" for the console.
-      idleTimeoutMs: task.idleTimeoutMs,
-      deadlineMs: task.deadlineMs,
-      // add-claude-code-runtime (4.1): echo the persisted runtime on every read
-      // path (create 201, list, fetch-by-id, transition/mark). A null column (a
-      // pre-runtime row or an omitted request) reads back as the default `codex`
-      // — never stale/fabricated (sent value == readable value).
-      runtime: (task.runtime ?? DEFAULT_TASK_RUNTIME) as Runtime,
-      sandboxEnvironmentId: task.sandboxEnvironmentId ?? null,
-      // headless-task-conversation-view: echo the persisted execution mode on
-      // every read path so the console can branch the session view (terminal vs
-      // polled conversation). A null column reads back as `interactive-pty` (the
-      // console default) — never stale/fabricated (sent value == readable value).
-      executionMode: (task.executionMode ?? 'interactive-pty') as ExecutionMode,
-      // add-multi-forge-task-delivery: echo the opt-in delivery selector (null
-      // reads back as `none`) + the push-back result columns (null until a
-      // delivery runs) on every read path — never stale/fabricated.
-      deliver: (task.deliver ?? 'none') as Deliver,
-      deliverStatus: (task.deliverStatus ?? null) as DeliverStatus | null,
-      branchPushed: task.branchPushed ?? null,
-      commitSha: task.commitSha ?? null,
-      changeRequestUrl: task.changeRequestUrl ?? null,
-      changeRequestNumber: task.changeRequestNumber ?? null,
-      scheduleProvenance: task.scheduleRun
-        ? {
-            scheduleId: task.scheduleRun.scheduleId,
-            scheduledFor: task.scheduleRun.scheduledFor,
-          }
-        : null,
-      sandboxProvider: this.toSandboxProviderSummary(task),
-      sandboxEnvironment: this.toSandboxEnvironmentSummary(task.sandboxEnvironment),
-      sandboxMetadata: this.toSandboxMetadata(task.sandboxRuns?.[0]?.metadata),
-    };
   }
 
   private async resolveCreateTaskParameters(
@@ -1319,50 +1325,6 @@ export class TasksService implements OnApplicationBootstrap {
     return row?.defaultSandboxEnvironmentId ?? null;
   }
 
-  private toSandboxProviderSummary(task: {
-    sandboxRuns?: readonly { providerId: string }[];
-  }): TaskSandboxProvider | null {
-    const providerId = task.sandboxRuns?.[0]?.providerId;
-    return providerId
-      ? { id: providerId, label: sandboxProviderLabel(providerId) }
-      : null;
-  }
-
-  private toSandboxMetadata(raw: unknown): TaskResponse['sandboxMetadata'] {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-    const metadata = (raw as Record<string, unknown>).sandboxMetadata;
-    const parsed = SandboxMetadataSchema.safeParse(metadata);
-    return parsed.success ? parsed.data : null;
-  }
-
-  private toSandboxEnvironmentSummary(
-    environment:
-      | {
-          id: string;
-          name: string;
-          status: string;
-          providerFamilies: string[];
-          runtimeIds: string[];
-          source: unknown;
-        }
-      | null
-      | undefined,
-  ): TaskSandboxEnvironmentSummary | null {
-    if (!environment || typeof environment.source !== 'object' || environment.source === null) {
-      return null;
-    }
-    const source = environment.source as { kind?: unknown };
-    return typeof source.kind === 'string'
-      ? {
-          id: environment.id,
-          name: environment.name,
-          status: environment.status as never,
-          providerFamily: (environment.providerFamilies[0] ?? null) as never,
-          sourceKind: source.kind as never,
-          runtimeIds: environment.runtimeIds,
-        }
-      : null;
-  }
 }
 
 export { IllegalTaskTransitionError };

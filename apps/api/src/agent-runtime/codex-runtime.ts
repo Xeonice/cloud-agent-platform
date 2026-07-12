@@ -11,6 +11,7 @@ import type {
   ExitSignal,
   LaunchContext,
   RuntimeId,
+  RuntimeOutputFailure,
   SandboxExec,
   SandboxRuntimePreflightProbe,
   SandboxSetupCommand,
@@ -21,6 +22,7 @@ import type {
   TranscriptFormat,
   TranscriptReadStrategy,
 } from './agent-runtime.port';
+import { classifyCodexOutputFailure } from './runtime-output-failure-classifier';
 
 /**
  * CodexRuntime (add-claude-code-runtime, task 2.2) — today's hard-coded codex
@@ -45,6 +47,10 @@ import type {
  */
 export class CodexRuntime implements AgentRuntime {
   readonly id: RuntimeId = 'codex';
+
+  classifyOutputFailure(rollingOutput: string): RuntimeOutputFailure | null {
+    return classifyCodexOutputFailure(rollingOutput);
+  }
 
   /**
    * The codex launch argv — the SAME base string the `AioPtyClient` uses

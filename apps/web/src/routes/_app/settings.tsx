@@ -42,6 +42,8 @@ import type {
   AuthSession,
   ClaudeCredentialMode,
   CodexCredentialMode,
+  Runtime,
+  TaskFailureCode,
 } from "@cap/contracts";
 import {
   apiKeysQuery,
@@ -66,7 +68,11 @@ import {
   saveSettingsMutation,
 } from "@/lib/api/mutations";
 import { ClaudeCredentialDialog } from "@/components/settings/claude-credential";
-import { RuntimeCredentialTabs } from "@/components/settings/runtime-credentials";
+import {
+  parseCredentialIssue,
+  parseCredentialRuntime,
+  RuntimeCredentialTabs,
+} from "@/components/settings/runtime-credentials";
 import { StatusPill } from "@/components/status-pill";
 import { AccountPanel } from "@/components/settings/account-panel";
 import { SettingsForm } from "@/components/settings/settings-form";
@@ -79,6 +85,15 @@ import { SmtpConfigCard } from "@/components/settings/smtp-config-card";
 import { isAdminSession } from "@/components/shell/update-banner";
 
 export const Route = createFileRoute("/_app/settings")({
+  validateSearch: (search: Record<string, unknown>): SettingsSearch => {
+    const credentialRuntime = parseCredentialRuntime(search.credentialRuntime);
+    return {
+      credentialRuntime,
+      credentialIssue: credentialRuntime
+        ? parseCredentialIssue(search.credentialIssue)
+        : undefined,
+    };
+  },
   loader: async ({ context }) => {
     // Parallel ensure — no waterfall between settings / repos / credential / keys /
     // MCP-server flag + tokens (remote-mcp-server, web-settings track).
@@ -102,6 +117,7 @@ export const Route = createFileRoute("/_app/settings")({
 });
 
 function SettingsPage() {
+  const { credentialRuntime, credentialIssue } = Route.useSearch();
   const queryClient = useQueryClient();
   const { data: settings } = useQuery(settingsQuery());
   const { data: repos } = useQuery(reposQuery());
@@ -181,6 +197,8 @@ function SettingsPage() {
             each runtime's provider entries below (Track 10.2, baseline #codex). */}
         <RuntimeCredentialTabs
           codexCred={cred}
+          defaultRuntime={credentialRuntime ?? "codex"}
+          credentialIssue={credentialIssue}
           claudeCred={
             claudeCred ?? {
               mode: "subscription",
@@ -290,6 +308,11 @@ function SettingsPage() {
       />
     </>
   );
+}
+
+export interface SettingsSearch {
+  credentialRuntime?: Runtime;
+  credentialIssue?: TaskFailureCode;
 }
 
 export function shouldShowAdminSettingsSections(

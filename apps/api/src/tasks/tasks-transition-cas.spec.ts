@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskStatus } from '@cap/contracts';
+import type { TaskFailure, TaskStatus } from '@cap/contracts';
 import type { AuditRecorderPort } from '../audit/audit-recorder.port';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { IGuardrailsService } from './tasks.service';
@@ -17,13 +17,16 @@ function taskRow(status: TaskStatus) {
     ownerUserId: null,
     prompt: 'transition race',
     status,
+    failureCode: null as string | null,
+    failureAt: null as Date | null,
+    failureExitCode: null as number | null,
     createdAt: new Date('2026-07-11T00:00:00.000Z'),
     branch: null,
     strategy: null,
     skills: [],
     idleTimeoutMs: null,
     deadlineMs: null,
-    runtime: null,
+    runtime: null as string | null,
     sandboxEnvironmentId: null,
     executionMode: null,
     deliver: null,
@@ -163,4 +166,233 @@ test('the real stop path fences and starts teardown immediately after its termin
 
   releaseAudit?.();
   assert.equal((await stopped).status, 'cancelled');
+});
+
+test('runtime auth failure writes status and structured cause in one terminal CAS', async () => {
+  const row = taskRow('running');
+  const writes: Array<{
+    status: TaskStatus;
+    failureCode?: string;
+    failureAt?: Date;
+    failureExitCode?: number | null;
+  }> = [];
+  const prisma = {
+    task: {
+      findUnique() {
+        return Promise.resolve({ ...row });
+      },
+      async updateMany({
+        where,
+        data,
+      }: {
+        where: { id: string; status: TaskStatus };
+        data: {
+          status: TaskStatus;
+          failureCode?: string;
+          failureAt?: Date;
+          failureExitCode?: number | null;
+        };
+      }) {
+        if (where.id !== TASK_ID || row.status !== where.status) {
+          return { count: 0 };
+        }
+        Object.assign(row, data);
+        writes.push(data);
+        return { count: 1 };
+      },
+    },
+  } as unknown as PrismaService;
+  const audits: Array<{ next: TaskStatus; failure?: TaskFailure }> = [];
+  const audit = {
+    async recordTransition(
+      _taskId: string,
+      next: TaskStatus,
+      _userId?: string,
+      failure?: TaskFailure,
+    ) {
+      audits.push({ next, failure });
+    },
+  } as unknown as AuditRecorderPort;
+  const fenced: string[] = [];
+  const settled: string[] = [];
+  const guardrails = {
+    fenceTerminal(taskId: string) {
+      fenced.push(taskId);
+    },
+    async onTerminal(taskId: string) {
+      settled.push(taskId);
+    },
+  } as unknown as IGuardrailsService;
+  const service = new TasksService(prisma, guardrails, audit);
+
+  const response = await service.failWithRuntimeFailure(
+    TASK_ID,
+    'runtime_auth_expired',
+    1,
+  );
+
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].status, 'failed');
+  assert.equal(writes[0].failureCode, 'runtime_auth_expired');
+  assert.ok(writes[0].failureAt instanceof Date);
+  assert.equal(writes[0].failureExitCode, 1);
+  assert.equal(row.status, 'failed');
+  assert.equal(response.failure?.runtime, 'codex');
+  assert.equal(response.failure?.code, 'runtime_auth_expired');
+  assert.equal(response.failure?.action, 'reconnect_runtime');
+  assert.equal(response.failure?.exitCode, 1);
+  assert.match(response.failure?.message ?? '', /Codex.*已过期/);
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].next, 'failed');
+  assert.deepEqual(audits[0].failure, response.failure);
+  assert.deepEqual(fenced, [TASK_ID]);
+  assert.deepEqual(settled, [TASK_ID]);
+});
+
+test('runtime auth failure enriches a generic failed CAS winner without repeating teardown', async () => {
+  const row = taskRow('failed');
+  row.runtime = 'claude-code';
+  const writes: Array<Record<string, unknown>> = [];
+  const prisma = {
+    task: {
+      findUnique() {
+        return Promise.resolve({ ...row });
+      },
+      async updateMany({
+        where,
+        data,
+      }: {
+        where: { id: string; status: TaskStatus; failureCode: null };
+        data: {
+          failureCode?: string;
+          failureAt?: Date;
+          failureExitCode?: number | null;
+        };
+      }) {
+        if (
+          where.id !== TASK_ID ||
+          row.status !== where.status ||
+          row.failureCode !== where.failureCode
+        ) {
+          return { count: 0 };
+        }
+        Object.assign(row, data);
+        writes.push(data);
+        return { count: 1 };
+      },
+    },
+  } as unknown as PrismaService;
+  let audits = 0;
+  const audit = {
+    async recordTransition() {
+      audits += 1;
+    },
+  } as unknown as AuditRecorderPort;
+  let fences = 0;
+  let settlements = 0;
+  const guardrails = {
+    fenceTerminal() {
+      fences += 1;
+    },
+    async onTerminal() {
+      settlements += 1;
+    },
+  } as unknown as IGuardrailsService;
+  const service = new TasksService(prisma, guardrails, audit);
+
+  const response = await service.failWithRuntimeFailure(
+    TASK_ID,
+    'runtime_auth_rejected',
+    1,
+  );
+
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].failureCode, 'runtime_auth_rejected');
+  assert.ok(writes[0].failureAt instanceof Date);
+  assert.equal(writes[0].failureExitCode, 1);
+  assert.equal(response.status, 'failed');
+  assert.equal(response.failure?.runtime, 'claude-code');
+  assert.equal(response.failure?.code, 'runtime_auth_rejected');
+  assert.equal(audits, 0, 'the original terminal winner owns lifecycle audit');
+  assert.equal(fences, 0, 'the original terminal winner already fenced the task');
+  assert.equal(settlements, 0, 'the original terminal winner already settled teardown');
+});
+
+test('runtime auth failure retries enrichment when a generic failed writer wins after its read', async () => {
+  const row = taskRow('running');
+  let initialReads = 0;
+  let releaseInitialReads: (() => void) | undefined;
+  const initialReadGate = new Promise<void>((resolve) => {
+    releaseInitialReads = resolve;
+  });
+  let releaseGenericWrite: (() => void) | undefined;
+  const genericWriteGate = new Promise<void>((resolve) => {
+    releaseGenericWrite = resolve;
+  });
+  const writes: Array<Record<string, unknown>> = [];
+  const prisma = {
+    task: {
+      async findUnique() {
+        if (initialReads < 2) {
+          initialReads += 1;
+          if (initialReads === 2) releaseInitialReads?.();
+          await initialReadGate;
+        }
+        return { ...row };
+      },
+      async updateMany({
+        where,
+        data,
+      }: {
+        where: { id: string; status: TaskStatus; failureCode?: null };
+        data: {
+          status?: TaskStatus;
+          failureCode?: string;
+          failureAt?: Date;
+          failureExitCode?: number | null;
+        };
+      }) {
+        if (data.failureCode && row.status === 'running') {
+          await genericWriteGate;
+        }
+        if (
+          where.id !== TASK_ID ||
+          row.status !== where.status ||
+          (where.failureCode === null && row.failureCode !== null)
+        ) {
+          return { count: 0 };
+        }
+        Object.assign(row, data);
+        writes.push(data);
+        if (!data.failureCode) releaseGenericWrite?.();
+        return { count: 1 };
+      },
+    },
+  } as unknown as PrismaService;
+  let audits = 0;
+  const audit = {
+    async recordTransition() {
+      audits += 1;
+    },
+  } as unknown as AuditRecorderPort;
+  let settlements = 0;
+  const guardrails = {
+    fenceTerminal() {},
+    async onTerminal() {
+      settlements += 1;
+    },
+  } as unknown as IGuardrailsService;
+  const service = new TasksService(prisma, guardrails, audit);
+
+  const [generic, classified] = await Promise.all([
+    service.transition(TASK_ID, 'failed'),
+    service.failWithRuntimeFailure(TASK_ID, 'runtime_auth_expired', 1),
+  ]);
+
+  assert.equal(generic.status, 'failed');
+  assert.equal(classified.failure?.code, 'runtime_auth_expired');
+  assert.equal(row.failureCode, 'runtime_auth_expired');
+  assert.equal(writes.length, 2, 'one terminal status CAS plus one cause CAS');
+  assert.equal(audits, 1, 'only the lifecycle winner records a transition audit');
+  assert.equal(settlements, 1, 'only the lifecycle winner tears down the task');
 });

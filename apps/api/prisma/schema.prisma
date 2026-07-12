@@ -108,6 +108,13 @@ model Task {
   /// Current lifecycle state; defaults to `pending` on creation.
   status TaskStatus @default(pending)
 
+  /// Stable, secret-free runtime failure classification. Written atomically with
+  /// the terminal `failed` status so read paths never observe a generic failure
+  /// after the classifier has identified an actionable authentication problem.
+  failureCode     String?   @map("failure_code")
+  failureAt       DateTime? @map("failure_at")
+  failureExitCode Int?      @map("failure_exit_code")
+
   /// Durable winners of the two admission CAS transitions. Keeping the token for
   /// each edge lets a worker resolve an ambiguous database acknowledgement even
   /// when a later worker has already advanced queued -> running.

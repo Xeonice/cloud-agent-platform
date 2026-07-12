@@ -401,6 +401,12 @@ export class TerminalGateway
     ResizeRepaintSuppressionState
   >();
 
+  /** Bounded per-task output used only by the selected runtime's pure classifier. */
+  private readonly runtimeFailureBuffers = new Map<string, string>();
+  private readonly runtimeFailureChecks = new Set<string>();
+  private readonly runtimeFailuresReported = new Set<string>();
+  private readonly runtimeFailureRuntimes = new Map<string, AgentRuntime>();
+
   private nextClientId = 1;
 
   /**
@@ -438,7 +444,10 @@ export class TerminalGateway
    * the file lives on the API-side workspace volume, so it is readable even after
    * the sandbox is torn down. Best-effort: returns `''` on any error.
    */
-  readSessionLogTail(taskId: string): Promise<string> {
+  async readSessionLogTail(taskId: string): Promise<string> {
+    // A WS close can race the final queued append. Classification needs the
+    // decisive last chunk, so observe the per-task append chain before sampling.
+    await this.flushSessionLog(taskId);
     return readSessionLogTail(resolveWorkspaceDir(taskId));
   }
 
@@ -464,6 +473,10 @@ export class TerminalGateway
     // session-terminal-replay — drop the cast append state too (the session.cast
     // file persists on the volume for replay, like session.log).
     this.sessionCasts.delete(taskId);
+    this.runtimeFailureBuffers.delete(taskId);
+    this.runtimeFailureChecks.delete(taskId);
+    this.runtimeFailuresReported.delete(taskId);
+    this.runtimeFailureRuntimes.delete(taskId);
     this.endResizeRepaintSuppression(taskId);
     // An unregistered task will never legitimately reclaim its old lease, so drop
     // its last-writer record too (bounds the map to live tasks; harmless either
@@ -1624,6 +1637,80 @@ export class TerminalGateway
         this.streamRawChunk(chunk, socket, s, meta);
       }
     }
+
+    // Runtime-auth failures may leave an interactive TUI resident instead of
+    // exiting. Inspect the same recordable stream after it has been forwarded so
+    // the operator still receives the decisive error chunk. Classification is
+    // delegated to the selected AgentRuntime; this shared gateway never parses
+    // Codex/Claude-specific envelopes.
+    if (recordable) this.inspectRuntimeFailure(taskId, chunk);
+  }
+
+  private inspectRuntimeFailure(taskId: string, chunk: string): void {
+    if (!this.guardrails || this.runtimeFailuresReported.has(taskId)) return;
+    const previous = this.runtimeFailureBuffers.get(taskId) ?? '';
+    const rolling = `${previous}${chunk}`.slice(-8 * 1024);
+    this.runtimeFailureBuffers.set(taskId, rolling);
+    if (
+      this.runtimeFailureChecks.has(taskId) ||
+      !TerminalGateway.mayContainRuntimeAuthFailure(rolling)
+    ) {
+      return;
+    }
+
+    this.runtimeFailureChecks.add(taskId);
+    void (async () => {
+      try {
+        let runtime = this.runtimeFailureRuntimes.get(taskId);
+        if (!runtime) {
+          runtime = await this.runtimes?.resolveForTask?.(taskId);
+          // unregisterSession may have completed while the runtime lookup was
+          // in flight. Do not revive classifier state for a terminal task.
+          if (!this.runtimeFailureBuffers.has(taskId)) return;
+          if (runtime) this.runtimeFailureRuntimes.set(taskId, runtime);
+        }
+        const failure = runtime?.classifyOutputFailure(rolling) ?? null;
+        if (!failure) return;
+
+        // Fence duplicate chunks before awaiting the lifecycle transition. A
+        // successful terminal teardown calls unregisterSession(), which clears
+        // this set; adding only after the await would re-introduce a stale entry.
+        this.runtimeFailuresReported.add(taskId);
+        const accepted = await this.guardrails?.failRuntime(
+          taskId,
+          failure.code,
+          null,
+        );
+        if (!accepted) this.runtimeFailuresReported.delete(taskId);
+      } catch (err) {
+        this.runtimeFailuresReported.delete(taskId);
+        this.logger.debug(
+          `task ${taskId}: runtime failure inspection skipped: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      } finally {
+        this.runtimeFailureChecks.delete(taskId);
+        const latest = this.runtimeFailureBuffers.get(taskId);
+        // Output can arrive while resolve/classification is awaiting. Re-check
+        // the latest rolling window once so a provider envelope split across
+        // those chunks cannot leave an interactive TUI running indefinitely.
+        if (
+          latest !== undefined &&
+          latest !== rolling &&
+          !this.runtimeFailuresReported.has(taskId)
+        ) {
+          this.inspectRuntimeFailure(taskId, '');
+        }
+      }
+    })();
+  }
+
+  /** Cheap runtime-neutral prefilter; the AgentRuntime owns final classification. */
+  private static mayContainRuntimeAuthFailure(output: string): boolean {
+    return /\b(?:401|expired|invalid|refresh|session)\b|auth(?:entication|orization)?|credential|token|api[ -]?key|sign(?:ed)? in|log(?:ged)? in|\/login/i.test(
+      output,
+    );
   }
 
   /**

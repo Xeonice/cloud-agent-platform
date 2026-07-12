@@ -263,7 +263,7 @@ export function reasonForExit(code: number | null, abnormal: boolean): string {
     case 143:
       return 'SIGTERM（被终止，常见于部署 / 重启）';
     default:
-      return `codex 自身错误或任务提交失败（退出码 ${code}，见输出末尾）`;
+      return `运行时进程错误或任务提交失败（退出码 ${code}，见输出末尾）`;
   }
 }
 

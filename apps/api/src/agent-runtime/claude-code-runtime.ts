@@ -11,6 +11,7 @@ import type {
   ExitSignal,
   LaunchContext,
   RuntimeId,
+  RuntimeOutputFailure,
   SandboxExec,
   SandboxRuntimePreflightProbe,
   SandboxSetupCommand,
@@ -21,6 +22,7 @@ import type {
   TranscriptFormat,
   TranscriptReadStrategy,
 } from './agent-runtime.port';
+import { classifyClaudeOutputFailure } from './runtime-output-failure-classifier';
 
 /**
  * ClaudeCodeRuntime (add-claude-code-runtime, tasks 2.4–2.8) — the second
@@ -33,6 +35,10 @@ import type {
  */
 export class ClaudeCodeRuntime implements AgentRuntime {
   readonly id: RuntimeId = 'claude-code';
+
+  classifyOutputFailure(rollingOutput: string): RuntimeOutputFailure | null {
+    return classifyClaudeOutputFailure(rollingOutput);
+  }
 
   /** Claude's config/home directory inside the sandbox (the `gem` user's HOME). */
   static readonly CONFIG_DIR = '/home/gem/.claude';

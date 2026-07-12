@@ -77,6 +77,40 @@ export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
 export const DEFAULT_TASK_RUNTIME = 'codex' as const satisfies Runtime;
 
 // ---------------------------------------------------------------------------
+// Structured runtime failure detail
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable runtime-authentication failures that require an operator action.
+ *
+ * `expired` is reserved for an explicit provider expiry signal; revoked/reused
+ * refresh tokens and other provider rejections are kept as `rejected`.
+ * This prevents a generic 401 from being presented as a known-expired token.
+ */
+export const TaskFailureCodeSchema = z.enum([
+  'runtime_auth_expired',
+  'runtime_auth_rejected',
+]);
+export type TaskFailureCode = z.infer<typeof TaskFailureCodeSchema>;
+
+export const TaskFailureActionSchema = z.enum(['reconnect_runtime']);
+export type TaskFailureAction = z.infer<typeof TaskFailureActionSchema>;
+
+/**
+ * Secret-free, actionable failure persisted with a task's terminal state.
+ * Raw provider responses and credential material never cross this boundary.
+ */
+export const TaskFailureSchema = z.object({
+  code: TaskFailureCodeSchema,
+  runtime: RuntimeSchema,
+  message: z.string().min(1),
+  action: TaskFailureActionSchema,
+  occurredAt: z.coerce.date(),
+  exitCode: z.number().int().nullable(),
+});
+export type TaskFailure = z.infer<typeof TaskFailureSchema>;
+
+// ---------------------------------------------------------------------------
 // Repo domain schema
 // ---------------------------------------------------------------------------
 
@@ -165,6 +199,11 @@ export const TaskSchema = z.object({
   /** The operator prompt / instruction the agent is driven with. */
   prompt: z.string().min(1),
   status: TaskStatusSchema,
+  /**
+   * Actionable terminal/runtime failure. Null means no structured cause was
+   * classified; clients must not infer one from transcript text.
+   */
+  failure: TaskFailureSchema.nullable().optional(),
   createdAt: z.coerce.date(),
   /**
    * Optional run parameter echoed back from the create body: the git branch the

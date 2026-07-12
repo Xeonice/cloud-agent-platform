@@ -14,17 +14,30 @@
  * two credential read shapes (presence + state only, never a secret).
  */
 import * as React from "react";
+import { CircleAlert } from "lucide-react";
 
 import type {
   ClaudeCredential,
   ClaudeCredentialMode,
   CodexCredential,
   CodexCredentialMode,
+  Runtime,
+  TaskFailureCode,
 } from "@cap/contracts";
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
 
-type Runtime = "codex" | "claude-code";
+export function parseCredentialRuntime(value: unknown): Runtime | undefined {
+  return value === "codex" || value === "claude-code" ? value : undefined;
+}
+
+export function parseCredentialIssue(
+  value: unknown,
+): TaskFailureCode | undefined {
+  return value === "runtime_auth_expired" || value === "runtime_auth_rejected"
+    ? value
+    : undefined;
+}
 
 /** Short connection-state label shared by both runtimes' tabs. */
 function stateLabel(state: "not_connected" | "not_saved" | "connected"): string {
@@ -36,6 +49,8 @@ function stateLabel(state: "not_connected" | "not_saved" | "connected"): string 
 export interface RuntimeCredentialTabsProps {
   codexCred: CodexCredential;
   claudeCred: ClaudeCredential;
+  defaultRuntime?: Runtime;
+  credentialIssue?: TaskFailureCode;
   onConfigureCodex: (mode: CodexCredentialMode) => void;
   onConfigureClaude: (mode: ClaudeCredentialMode) => void;
 }
@@ -43,13 +58,27 @@ export interface RuntimeCredentialTabsProps {
 export function RuntimeCredentialTabs({
   codexCred,
   claudeCred,
+  defaultRuntime = "codex",
+  credentialIssue,
   onConfigureCodex,
   onConfigureClaude,
 }: RuntimeCredentialTabsProps) {
-  const [runtime, setRuntime] = React.useState<Runtime>("codex");
+  const [runtime, setRuntime] = React.useState<Runtime>(defaultRuntime);
+
+  React.useEffect(() => {
+    setRuntime(defaultRuntime);
+  }, [defaultRuntime]);
 
   const anyConnected =
     codexCred.state === "connected" || claudeCred.state === "connected";
+  const hasCredentialIssue = credentialIssue !== undefined;
+  const issueLabel =
+    credentialIssue === "runtime_auth_expired" ? "凭据已过期" : "凭据已失效";
+  const issueRuntimeLabel =
+    defaultRuntime === "claude-code" ? "Claude Code" : "Codex";
+  const issueMessage =
+    `最近一次 ${issueRuntimeLabel} 任务检测到${issueLabel}，` +
+    "请重新保存对应凭据后再创建任务。";
 
   return (
     <section
@@ -66,8 +95,12 @@ export function RuntimeCredentialTabs({
             控制台登录决定谁能进入平台；这里选择远端 Agent 运行任务时使用的模型凭据。
           </p>
         </div>
-        <StatusPill variant={anyConnected ? "green" : "neutral"}>
-          {anyConnected ? "已连接" : "未连接"}
+        <StatusPill
+          variant={
+            hasCredentialIssue ? "warn" : anyConnected ? "green" : "neutral"
+          }
+        >
+          {hasCredentialIssue ? "需更新" : anyConnected ? "已连接" : "未连接"}
         </StatusPill>
       </div>
 
@@ -79,13 +112,21 @@ export function RuntimeCredentialTabs({
       >
         <RuntimeTab
           label="Codex"
-          state={stateLabel(codexCred.state)}
+          state={
+            hasCredentialIssue && defaultRuntime === "codex"
+              ? "需更新"
+              : stateLabel(codexCred.state)
+          }
           selected={runtime === "codex"}
           onSelect={() => setRuntime("codex")}
         />
         <RuntimeTab
           label="Claude Code"
-          state={stateLabel(claudeCred.state)}
+          state={
+            hasCredentialIssue && defaultRuntime === "claude-code"
+              ? "需更新"
+              : stateLabel(claudeCred.state)
+          }
           selected={runtime === "claude-code"}
           onSelect={() => setRuntime("claude-code")}
         />
@@ -93,6 +134,18 @@ export function RuntimeCredentialTabs({
 
       {/* Active runtime's provider entries */}
       <div className="mt-3.5 grid gap-3">
+        {hasCredentialIssue && runtime === defaultRuntime ? (
+          <div
+            role="alert"
+            className="flex min-w-0 items-start gap-2 rounded-md border border-warning/25 bg-warning-soft px-3 py-2.5 text-sm text-foreground"
+          >
+            <CircleAlert
+              aria-hidden="true"
+              className="mt-0.5 size-4 flex-none text-warning"
+            />
+            <p className="min-w-0 break-words leading-relaxed">{issueMessage}</p>
+          </div>
+        ) : null}
         {runtime === "codex" ? (
           <>
             <ProviderEntry

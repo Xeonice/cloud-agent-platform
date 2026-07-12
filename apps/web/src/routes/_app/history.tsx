@@ -30,6 +30,7 @@ import type { Repo, Task } from "@cap/contracts";
 import { reposQuery, tasksQuery } from "@/lib/api/queries";
 import { agentLabel } from "@/lib/runtime-label";
 import { StatusPill } from "@/components/status-pill";
+import { RuntimeAuthFailureBadge } from "@/components/runtime-credential-alert";
 import { SegmentedControl } from "@/components/segmented-control";
 import { EmptyState } from "@/components/empty-state";
 import { shortTaskId } from "@/components/dashboard/queue-panel";
@@ -108,6 +109,8 @@ function HistoryPage() {
         task.prompt,
         agentLabel(task.runtime),
         result.label,
+        task.failure?.message ?? "",
+        task.failure?.code ?? "",
       ]
         .join(" ")
         .toLowerCase();
@@ -219,6 +222,9 @@ function HistoryRow({
           <div className="mb-[3px] flex flex-wrap items-center gap-[7px]">
             <span className="font-mono text-[13px] font-semibold text-foreground">{id}</span>
             <StatusPill variant={result.variant}>{result.label}</StatusPill>
+            {task.failure ? (
+              <RuntimeAuthFailureBadge failure={task.failure} />
+            ) : null}
           </div>
           <h3 className="text-[13px] font-semibold leading-[1.3] text-foreground [text-wrap:pretty]">
             {task.prompt}

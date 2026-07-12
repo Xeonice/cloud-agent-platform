@@ -61,6 +61,7 @@ import {
 } from "@/components/session/session-view-mode";
 import { formatTaskResource } from "@/components/session/format-resource";
 import { SANDBOX_PROVIDER_PENDING_LABEL } from "@/lib/sandbox-provider-label";
+import { RuntimeCredentialAlert } from "@/components/runtime-credential-alert";
 
 /** Statusline / H1 phase label per cockpit state vocabulary (never fabricated). */
 const STATE_LABELS: Record<SessionTaskState, string> = {
@@ -196,6 +197,12 @@ function SessionPage(): React.ReactElement {
         canStop={canStop}
         stopPending={stopMutation.isPending}
         onStop={handleStop}
+      />
+
+      <RuntimeCredentialAlert
+        failure={task?.failure}
+        announce
+        className="mb-3"
       />
 
       <SandboxVersionRegion metadata={task?.sandboxMetadata} />

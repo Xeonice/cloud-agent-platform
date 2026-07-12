@@ -1,4 +1,4 @@
-import type { TaskStatus } from '@cap/contracts';
+import type { TaskFailure, TaskStatus } from '@cap/contracts';
 import type { ForceFailCause } from './audit-mapping';
 
 /**
@@ -36,7 +36,12 @@ export interface AuditRecorderPort {
    * dedicated cancel method is needed. `userId` is the account PRIMARY KEY
    * (present for local + GitHub accounts), attributed when known.
    */
-  recordTransition(taskId: string, status: TaskStatus, userId?: string): Promise<void>;
+  recordTransition(
+    taskId: string,
+    status: TaskStatus,
+    userId?: string,
+    failure?: TaskFailure,
+  ): Promise<void>;
   /** Record a force-fail naming its cause (deadline / idle / circuit_breaker). */
   recordForceFailed(taskId: string, cause: ForceFailCause): Promise<void>;
   /**
