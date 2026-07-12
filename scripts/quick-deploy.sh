@@ -47,6 +47,9 @@ BOXLITE_DEFAULT_IMAGE_REPO="${BOXLITE_DEFAULT_IMAGE_REPO:-ghcr.io/xeonice/cap-bo
 BOXLITE_DEFAULT_WORKSPACE_PATH="/home/gem/workspace"
 BOXLITE_DEFAULT_RUNTIME_REQUIRED_TOOLS="bash claude codex git gzip node openspec sh tar tmux"
 BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS="${BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS:-600}"
+BOXLITE_RUNTIME_PROBE_START_TIMEOUT_SECONDS="${BOXLITE_RUNTIME_PROBE_START_TIMEOUT_SECONDS:-120}"
+BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS="${BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS:-60}"
+BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS="${BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS:-30}"
 CAP_SANDBOX_ASSET_DIR="${CAP_SANDBOX_ASSET_DIR:-$WORKDIR/sandbox-assets}"
 # Where to fetch docker-compose.prod.yml when it is not already on disk. The
 # compose-base marker below is replaced at build time by the www injector with the
@@ -127,6 +130,18 @@ is_positive_integer(){
     *) return 0 ;;
   esac
 }
+validate_boxlite_runtime_probe_timeouts(){
+  local name value
+  for name in \
+    BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS \
+    BOXLITE_RUNTIME_PROBE_START_TIMEOUT_SECONDS \
+    BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS \
+    BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS
+  do
+    value="${!name}"
+    is_positive_integer "$value" || die "$name must be a positive integer number of seconds"
+  done
+}
 normalize_provider(){
   case "${1:-auto}" in
     auto|aio|boxlite|control-plane) printf '%s\n' "${1:-auto}" ;;
@@ -202,6 +217,7 @@ HOST_OS="$(host_os)"
 HOST_ARCH="$(host_arch)"
 SELECTED_PROVIDER="$(resolve_provider "$REQUESTED_PROVIDER")"
 SANDBOX_IMAGE_DELIVERY="$(normalize_sandbox_image_delivery "$REQUESTED_SANDBOX_IMAGE_DELIVERY")"
+[ "$SELECTED_PROVIDER" != "boxlite" ] || validate_boxlite_runtime_probe_timeouts
 echo "  host: ${HOST_OS}/${HOST_ARCH}"
 echo "  sandbox provider: ${SELECTED_PROVIDER} (requested: ${REQUESTED_PROVIDER})"
 echo "  sandbox image delivery: ${SANDBOX_IMAGE_DELIVERY} (requested: ${REQUESTED_SANDBOX_IMAGE_DELIVERY})"
@@ -1125,16 +1141,16 @@ validate_boxlite_native_runtime_probe(){
   [ -n "$probe_box_id" ] || probe_box_id="$(printf '%s\n' "$create_json" | boxlite_extract_json_string name)"
   [ -n "$probe_box_id" ] || \
     die "BoxLite runtime probe failed: create response did not include a usable box id"
-  start_json="$(curl -fsS -m 30 -X POST \
+  start_json="$(curl -fsS -m "$BOXLITE_RUNTIME_PROBE_START_TIMEOUT_SECONDS" -X POST \
     -H "authorization: Bearer ${token}" \
     -H 'accept: application/json' \
     "${endpoint%/}${api_path}/boxes/${probe_box_id}/start" 2>/dev/null || true)"
   printf '%s\n' "$start_json" | grep -Eq '"(box_id|id|name|status)"' || {
-    curl -fsS -m 10 -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
+    curl -fsS -m "$BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS" -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
     die "BoxLite runtime probe failed: could not start probe sandbox ${probe_box_id}"
   }
   probe_command="mkdir -p $(shell_quote "$workspace") && test -d $(shell_quote "$workspace") && test -w $(shell_quote "$workspace") && $(boxlite_required_tools_probe_command)"
-  exec_json="$(curl -fsS -m 30 \
+  exec_json="$(curl -fsS -m "$BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS" \
     -H "authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
     -H 'accept: application/json' \
@@ -1142,7 +1158,7 @@ validate_boxlite_native_runtime_probe(){
     "${endpoint%/}${api_path}/boxes/${probe_box_id}/exec" 2>/dev/null || true)"
   exec_id="$(printf '%s\n' "$exec_json" | boxlite_extract_json_string execution_id)"
   [ -n "$exec_id" ] || {
-    curl -fsS -m 10 -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
+    curl -fsS -m "$BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS" -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
     die "BoxLite runtime probe failed: exec did not return execution_id"
   }
   exit_code=""
@@ -1157,7 +1173,7 @@ validate_boxlite_native_runtime_probe(){
     [ -n "$exit_code" ] && break
     sleep 1
   done
-  curl -fsS -m 10 -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
+  curl -fsS -m "$BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS" -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
   [ "$exit_code" = "0" ] || \
     die "BoxLite runtime probe failed: sandbox source/workspace/tools check exited ${exit_code:-unknown}"
   echo "  BoxLite readiness: runtime sandbox source/workspace/tools probe passed"
@@ -1189,14 +1205,14 @@ validate_boxlite_cap_rest_runtime_probe(){
   printf '%s\n' "$create_json" | grep -Eq '"id"[[:space:]]*:' || \
     die "BoxLite runtime probe failed: could not create a cap-rest probe sandbox with image ${image}"
   probe_command="mkdir -p $(shell_quote "$workspace") && test -d $(shell_quote "$workspace") && test -w $(shell_quote "$workspace") && $(boxlite_required_tools_probe_command)"
-  exec_json="$(curl -fsS -m 60 \
+  exec_json="$(curl -fsS -m "$BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS" \
     -H "authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
     -H 'accept: application/json' \
     -d "{\"command\":\"$(boxlite_json_string "$probe_command")\",\"timeoutMs\":30000}" \
     "${endpoint%/}/v1/sandboxes/${sandbox_id}/exec" 2>/dev/null || true)"
   exit_code="$(printf '%s\n' "$exec_json" | boxlite_extract_camel_exit_code)"
-  curl -fsS -m 10 -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}/v1/sandboxes/${sandbox_id}" >/dev/null 2>&1 || true
+  curl -fsS -m "$BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS" -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}/v1/sandboxes/${sandbox_id}" >/dev/null 2>&1 || true
   [ "$exit_code" = "0" ] || \
     die "BoxLite runtime probe failed: cap-rest image/workspace/tools check exited ${exit_code:-unknown}"
   echo "  BoxLite readiness: cap-rest runtime image/workspace/tools probe passed"
