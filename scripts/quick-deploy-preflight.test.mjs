@@ -261,6 +261,14 @@ function readLog(testCase) {
   }
 }
 
+function curlTimeout(log, ...fragments) {
+  const line = log
+    .split('\n')
+    .find((candidate) => candidate.startsWith('curl ') && fragments.every((fragment) => candidate.includes(fragment)));
+  const match = line?.match(/(?:^|\s)-m\s+(\d+)(?:\s|$)/);
+  return match ? Number(match[1]) : undefined;
+}
+
 function managedBoxliteRootfs(testCase, version, platform = 'linux-amd64') {
   return join(
     testCase.workdir,
@@ -646,11 +654,68 @@ console.log('\n=== quick-deploy preflight ===\n');
   });
   const log = readLog(tc);
   const combined = `${result.stdout}\n${result.stderr}`;
+  const createTimeout = curlTimeout(log, '"image":"cap-boxlite:test"', '/v1/default/boxes');
+  const startTimeout = curlTimeout(log, '/v1/default/boxes/probe-box/start');
+  const execTimeout = curlTimeout(log, '/v1/default/boxes/probe-box/exec');
+  const deleteTimeout = curlTimeout(log, '-X DELETE', '/v1/default/boxes/probe-box');
   assert(result.status === 0, 'BoxLite native runtime readiness succeeds before pull/up');
   assert(/\/v1\/default\/boxes\/probe-box\/start/.test(log), 'BoxLite readiness starts native probe sandbox before exec');
+  assert(createTimeout === 600, 'BoxLite native create keeps a long image preparation timeout');
+  assert(startTimeout === 120, 'BoxLite native start reserves enough time for cold ownership and initialization');
+  assert(execTimeout === 60, 'BoxLite native exec has a bounded runtime probe timeout');
+  assert(deleteTimeout === 30, 'BoxLite native delete has a bounded cleanup timeout');
   assert(!/\{"name":"cap-quick-deploy-preflight-[0-9]+","image":"cap-boxlite:test","working_dir"/.test(log), 'BoxLite native create payload omits working_dir');
   assert(/runtime sandbox source\/workspace\/tools probe passed/.test(combined), 'BoxLite readiness runs sandbox source/workspace/tools probe');
   assert(!combined.includes('box-secret-token'), 'BoxLite runtime probe output redacts token');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_BOXLITE_READY: '1',
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_IMAGE: 'cap-boxlite:test',
+    BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS: '601',
+    BOXLITE_RUNTIME_PROBE_START_TIMEOUT_SECONDS: '121',
+    BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS: '61',
+    BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS: '31',
+  });
+  const log = readLog(tc);
+  assert(result.status === 0, 'BoxLite native runtime readiness accepts custom operation timeouts');
+  assert(
+    curlTimeout(log, '"image":"cap-boxlite:test"', '/v1/default/boxes') === 601,
+    'BoxLite native create uses the configured timeout',
+  );
+  assert(
+    curlTimeout(log, '/v1/default/boxes/probe-box/start') === 121,
+    'BoxLite native start uses the configured timeout',
+  );
+  assert(
+    curlTimeout(log, '/v1/default/boxes/probe-box/exec') === 61,
+    'BoxLite native exec uses the configured timeout',
+  );
+  assert(
+    curlTimeout(log, '-X DELETE', '/v1/default/boxes/probe-box') === 31,
+    'BoxLite native delete uses the configured timeout',
+  );
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    BOXLITE_RUNTIME_PROBE_START_TIMEOUT_SECONDS: '0',
+  });
+  assert(result.status !== 0, 'BoxLite runtime probe rejects a non-positive operation timeout');
+  assert(
+    /BOXLITE_RUNTIME_PROBE_START_TIMEOUT_SECONDS must be a positive integer/.test(result.stderr),
+    'BoxLite runtime probe reports the invalid timeout variable',
+  );
 }
 
 {
@@ -831,11 +896,17 @@ console.log('\n=== quick-deploy preflight ===\n');
     BOXLITE_API_TOKEN: 'box-secret-token',
     BOXLITE_IMAGE: 'cap-boxlite:test',
     BOXLITE_PROTOCOL_MODE: 'cap-rest',
+    BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS: '602',
+    BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS: '62',
+    BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS: '32',
   });
   const log = readLog(tc);
   const combined = `${result.stdout}\n${result.stderr}`;
   assert(result.status === 0, 'BoxLite cap-rest runtime readiness succeeds before pull/up');
   assert(/\/v1\/sandboxes/.test(log), 'BoxLite cap-rest readiness creates a probe sandbox');
+  assert(curlTimeout(log, '"taskId":"quick-deploy-preflight"', '/v1/sandboxes') === 602, 'BoxLite cap-rest create uses the configured timeout');
+  assert(curlTimeout(log, '/v1/sandboxes/', '/exec') === 62, 'BoxLite cap-rest exec uses the configured timeout');
+  assert(curlTimeout(log, '-X DELETE', '/v1/sandboxes/') === 32, 'BoxLite cap-rest delete uses the configured timeout');
   assert(/command -v 'codex'/.test(log), 'BoxLite cap-rest readiness checks the AIO runtime tool contract');
   assert(/cap-rest runtime image\/workspace\/tools probe passed/.test(combined), 'BoxLite cap-rest readiness reports runtime probe success');
 }
