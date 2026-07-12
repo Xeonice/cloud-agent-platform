@@ -272,6 +272,52 @@ test('a scopeless session principal passes the read gate on GET /v1/tasks', asyn
   assert.equal(page.nextCursor, null);
 });
 
+test('GET /v1/tasks projects persisted Codex and Claude auth failures', async () => {
+  const failureAt = new Date('2026-07-12T12:32:31.000Z');
+  const rows = [
+    {
+      ...makeTaskRow(1, new Date('2026-07-12T12:30:00.000Z')),
+      status: 'failed',
+      runtime: 'codex',
+      failureCode: 'runtime_auth_expired',
+      failureAt,
+      failureExitCode: 1,
+    },
+    {
+      ...makeTaskRow(2, new Date('2026-07-12T12:31:00.000Z')),
+      status: 'failed',
+      runtime: 'claude-code',
+      failureCode: 'runtime_auth_rejected',
+      failureAt,
+      failureExitCode: 1,
+    },
+  ];
+  const prisma = {
+    task: {
+      async findMany() {
+        return rows;
+      },
+    },
+  } as unknown as PrismaService;
+  const controller = new V1TasksController(
+    {} as TasksService,
+    prisma,
+    passthroughIdempotency(),
+  );
+
+  const page = await controller.list(
+    { limit: 10 } as never,
+    reqWith(SESSION_PRINCIPAL),
+  );
+
+  assert.equal(page.items[0].failure?.runtime, 'codex');
+  assert.equal(page.items[0].failure?.code, 'runtime_auth_expired');
+  assert.equal(page.items[0].failure?.action, 'reconnect_runtime');
+  assert.equal(page.items[1].failure?.runtime, 'claude-code');
+  assert.equal(page.items[1].failure?.code, 'runtime_auth_rejected');
+  assert.equal(page.items[1].failure?.exitCode, 1);
+});
+
 // ---------------------------------------------------------------------------
 // Keyset pagination walks the set with no drop/dup (3.2)
 // ---------------------------------------------------------------------------

@@ -77,3 +77,36 @@ test('a retry cannot replace the canonical creation owner', async () => {
   assert.equal(harness.creates(), 1);
   assert.equal(harness.row()?.userId, USER_A);
 });
+
+test('structured runtime failure writes an actionable task.failed audit', async () => {
+  let created: Omit<CreatedAuditRow, 'dedupeKey'> | null = null;
+  const prisma = {
+    user: {
+      async findUnique({ where }: { where: { id: string } }) {
+        return { id: where.id };
+      },
+    },
+    auditEvent: {
+      async create({ data }: { data: Omit<CreatedAuditRow, 'dedupeKey'> }) {
+        created = data;
+        return data;
+      },
+    },
+  } as unknown as PrismaService;
+  const service = new AuditService(prisma);
+  const createdRow = (): Omit<CreatedAuditRow, 'dedupeKey'> | null => created;
+
+  await service.recordTransition(TASK_ID, 'failed', USER_A, {
+    code: 'runtime_auth_expired',
+    runtime: 'claude-code',
+    message: 'Claude Code 登录凭据已过期，请前往设置重新连接后创建新任务。',
+    action: 'reconnect_runtime',
+    occurredAt: new Date('2026-07-12T12:32:31.000Z'),
+    exitCode: 1,
+  });
+
+  assert.equal(createdRow()?.type, 'task.failed');
+  assert.equal(createdRow()?.level, 'error');
+  assert.equal(createdRow()?.title, 'Claude Code 登录凭据已过期');
+  assert.match(createdRow()?.description ?? '', /重新连接/);
+});

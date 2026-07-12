@@ -5,6 +5,7 @@ import {
   DEFAULT_TASK_RUNTIME,
   DeliverSchema,
   RuntimeSchema,
+  TaskFailureSchema,
   TaskStatusSchema,
 } from './task.js';
 import {
@@ -248,6 +249,8 @@ export const ScheduleLatestRunSchema = z.object({
   status: ScheduleRunStatusSchema,
   taskId: z.string().uuid().nullable(),
   taskStatus: TaskStatusSchema.nullable().optional(),
+  /** Structured failure of the linked task; distinct from dispatch `error`. */
+  taskFailure: TaskFailureSchema.nullable().optional(),
   error: z.string().nullable(),
   createdAt: z.coerce.date().optional(),
 });
@@ -290,6 +293,8 @@ export const ScheduleRunResponseSchema = z.object({
   status: ScheduleRunStatusSchema,
   taskId: z.string().uuid().nullable(),
   taskStatus: TaskStatusSchema.nullable().optional(),
+  /** Structured failure of the linked task; distinct from dispatch `error`. */
+  taskFailure: TaskFailureSchema.nullable().optional(),
   error: z.string().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),

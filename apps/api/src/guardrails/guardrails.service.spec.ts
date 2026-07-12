@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskStatus } from '@cap/contracts';
+import type { TaskFailureCode, TaskStatus } from '@cap/contracts';
 import type { ModuleRef } from '@nestjs/core';
 import type { SessionCredentialsService } from '../creds/session-credentials.service';
 import {
@@ -382,4 +382,106 @@ test('force-fail releases its terminal fence even when the lifecycle write fails
 
   await internals.forceFail(TASK_ID, 'provision_failed');
   assert.equal(internals.terminalTasks.has(TASK_ID), false);
+});
+
+test('classified exit persists one structured failure without waiting for audit', async () => {
+  const service = buildService(async () => 'transitioned');
+  const structured: Array<{
+    taskId: string;
+    code: TaskFailureCode;
+    exitCode: number | null;
+  }> = [];
+  const generic: TaskStatus[] = [];
+  let auditStarted = false;
+  Object.assign(service, {
+    gateway: {
+      async readSessionLogTail() {
+        return 'HTTP 401 token expired';
+      },
+    },
+    audit: {
+      async recordExited() {
+        auditStarted = true;
+        await new Promise<never>(() => undefined);
+      },
+    },
+    tasks: {
+      async classifyRuntimeOutputFailure() {
+        return { code: 'runtime_auth_expired' as const };
+      },
+      async failWithRuntimeFailure(
+        taskId: string,
+        code: TaskFailureCode,
+        exitCode: number | null,
+      ) {
+        structured.push({ taskId, code, exitCode });
+        return {};
+      },
+      async transition(_taskId: string, next: TaskStatus) {
+        generic.push(next);
+        return {};
+      },
+    },
+  });
+
+  service.recordExit(TASK_ID, { code: 1, abnormal: false });
+  await waitFor(() => structured.length === 1);
+
+  assert.deepEqual(structured, [
+    { taskId: TASK_ID, code: 'runtime_auth_expired', exitCode: 1 },
+  ]);
+  assert.deepEqual(generic, []);
+  assert.equal(auditStarted, true);
+  const breaker = service as unknown as {
+    breaker: { consecutiveFailures(taskId: string): number };
+  };
+  assert.equal(breaker.breaker.consecutiveFailures(TASK_ID), 1);
+});
+
+test('exit classification timeout settles generically then enriches the late result', async () => {
+  const service = buildService(async () => 'transitioned');
+  let releaseTail: (() => void) | undefined;
+  const tailGate = new Promise<void>((resolve) => {
+    releaseTail = resolve;
+  });
+  const generic: TaskStatus[] = [];
+  const structured: TaskFailureCode[] = [];
+  Object.assign(service, {
+    gateway: {
+      async readSessionLogTail() {
+        await tailGate;
+        return 'Session expired. Please run /login to sign in again.';
+      },
+    },
+    tasks: {
+      async classifyRuntimeOutputFailure() {
+        return { code: 'runtime_auth_expired' as const };
+      },
+      async failWithRuntimeFailure(
+        _taskId: string,
+        code: TaskFailureCode,
+      ) {
+        structured.push(code);
+        return {};
+      },
+      async transition(_taskId: string, next: TaskStatus) {
+        generic.push(next);
+        return {};
+      },
+    },
+  });
+
+  service.recordExit(TASK_ID, { code: 1, abnormal: false });
+  await new Promise<void>((resolve) => setTimeout(resolve, 2_050));
+  await waitFor(() => generic.length === 1);
+  assert.deepEqual(generic, ['failed']);
+  assert.deepEqual(structured, []);
+
+  releaseTail?.();
+  await waitFor(() => structured.length === 1);
+  assert.deepEqual(structured, ['runtime_auth_expired']);
+  const breaker = service as unknown as {
+    breaker: { consecutiveFailures(taskId: string): number };
+  };
+  assert.equal(breaker.breaker.consecutiveFailures(TASK_ID), 1);
 });

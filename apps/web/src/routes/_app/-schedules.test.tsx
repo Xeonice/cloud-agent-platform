@@ -15,15 +15,17 @@ vi.mock("@tanstack/react-router", async () => {
       to,
       params,
       search,
+      hash,
       children,
     }: {
       to: string;
       params?: Record<string, string>;
       search?: Record<string, string | undefined>;
+      hash?: string;
       children: React.ReactNode;
     }) =>
       ReactModule.createElement("a", {
-        href: linkHref(to, params, search),
+        href: linkHref(to, params, search, hash),
       }, children),
   };
 });
@@ -43,6 +45,7 @@ function linkHref(
   to: string,
   params?: Record<string, string>,
   search?: Record<string, string | undefined>,
+  hash?: string,
 ): string {
   const path = params?.taskId
     ? to.replace("$taskId", encodeURIComponent(params.taskId))
@@ -52,7 +55,7 @@ function linkHref(
     if (value !== undefined) searchParams.set(key, value);
   }
   const query = searchParams.toString();
-  return query ? `${path}?${query}` : path;
+  return `${path}${query ? `?${query}` : ""}${hash ? `#${hash}` : ""}`;
 }
 
 function uuid(n: number): string {
@@ -97,6 +100,7 @@ function runFixture(
     status: "created",
     taskId: uuid(20),
     taskStatus: "running",
+    taskFailure: null,
     error: null,
     createdAt: new Date("2026-07-10T00:30:00.000Z"),
     updatedAt: new Date("2026-07-10T00:30:01.000Z"),
@@ -260,6 +264,7 @@ describe("schedule run history rendering", () => {
         status: "created",
         taskId: uuid(20),
         taskStatus: "running",
+        taskFailure: null,
         error: null,
       },
     });
@@ -464,6 +469,84 @@ describe("schedule run history rendering", () => {
     expect(html).toContain("任务失败");
     expect(html).toContain(`href="/tasks/${taskId}"`);
     expect(html).toContain("任务");
+  });
+
+  it("keeps dispatch success while explaining a Codex credential expiry", () => {
+    const taskId = uuid(20);
+    const authFailure = {
+      code: "runtime_auth_expired" as const,
+      runtime: "codex" as const,
+      message: "Codex OAuth token expired.",
+      action: "reconnect_runtime" as const,
+      occurredAt: new Date("2026-07-10T00:32:00.000Z"),
+      exitCode: 1,
+    };
+    const run = runFixture(uuid(41), {
+      taskId,
+      status: "created",
+      taskStatus: "failed",
+      taskFailure: authFailure,
+    });
+    const schedule = scheduleFixture({
+      latestRun: run,
+      currentPeriod: {
+        key: run.periodKey!,
+        scheduledFor: run.scheduledFor,
+        run,
+      },
+    });
+    const detail = renderToStaticMarkup(
+      <ScheduleDetail
+        schedule={schedule}
+        repos={[]}
+        onEdit={() => undefined}
+        onDispatch={() => undefined}
+        onPauseResume={() => undefined}
+        onDelete={() => undefined}
+      />,
+    );
+    const history = renderToStaticMarkup(
+      <RunList runs={[run]} timeZone="UTC" />,
+    );
+
+    for (const html of [detail, history]) {
+      expect(html).toContain("派发成功");
+      expect(html).toContain("任务失败");
+      expect(html).toContain("Codex 登录已过期");
+      expect(html).toContain("更新 Codex 凭据");
+      expect(html).toContain(
+        'href="/settings?credentialRuntime=codex&amp;credentialIssue=runtime_auth_expired#codex"',
+      );
+    }
+    expect(detail).toContain("最近一次任务失败原因");
+    expect(history).toContain("本次任务失败原因");
+    expect(detail).toContain("本周期已执行");
+    expect(detail).not.toContain("派发失败");
+  });
+
+  it("shows a Claude Code credential rejection with its own recovery action", () => {
+    const run = runFixture(uuid(42), {
+      taskStatus: "failed",
+      taskFailure: {
+        code: "runtime_auth_rejected",
+        runtime: "claude-code",
+        message: "Claude authentication failed.",
+        action: "reconnect_runtime",
+        occurredAt: new Date("2026-07-10T00:32:00.000Z"),
+        exitCode: 1,
+      },
+    });
+    const html = renderToStaticMarkup(
+      <RunList runs={[run]} timeZone="UTC" />,
+    );
+
+    expect(html).toContain("派发成功");
+    expect(html).toContain("Claude Code 凭据已失效");
+    expect(html).toContain("setup-token");
+    expect(html).toContain("更新 Claude Code 凭据");
+    expect(html).toContain(
+      'href="/settings?credentialRuntime=claude-code&amp;credentialIssue=runtime_auth_rejected#codex"',
+    );
   });
 
   it("shows agent startup failure as a task failure instead of a stopped task", () => {

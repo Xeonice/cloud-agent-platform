@@ -9,6 +9,10 @@ import {
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  TASK_RESPONSE_INCLUDE,
+  taskResponseFromRecord,
+} from '../tasks/task-response';
+import {
   buildPage,
   cursorWhere,
   decodeCursor,
@@ -27,10 +31,13 @@ export async function listTaskPage(
     where: cursorWhere(cursor),
     orderBy: KEYSET_ORDER_BY,
     take: limit + 1,
+    include: TASK_RESPONSE_INCLUDE,
   });
   const page = buildPage(rows, limit);
   return V1ListTasksResponseSchema.parse({
-    items: page.items.map((row) => taskResponseSchema.parse(row)),
+    items: page.items.map((row) =>
+      taskResponseSchema.parse(taskResponseFromRecord(row)),
+    ),
     nextCursor: page.nextCursor,
   });
 }

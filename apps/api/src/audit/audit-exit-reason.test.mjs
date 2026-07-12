@@ -28,7 +28,7 @@ function reasonForExit(code, abnormal) {
     case 143:
       return 'SIGTERM（被终止，常见于部署 / 重启）';
     default:
-      return `codex 自身错误或任务提交失败（退出码 ${code}，见输出末尾）`;
+      return `运行时进程错误或任务提交失败（退出码 ${code}，见输出末尾）`;
   }
 }
 
@@ -65,9 +65,9 @@ test('signal codes map via the 128+signal convention', () => {
   assert.match(reasonForExit(143, false), /SIGTERM/);
 });
 
-test('other non-zero codes attribute to codex + point at the tail', () => {
+test('other non-zero codes stay runtime-neutral + point at the tail', () => {
   const r = reasonForExit(1, false);
-  assert.match(r, /codex 自身错误/);
+  assert.match(r, /运行时进程错误/);
   assert.match(r, /退出码 1/);
   assert.match(r, /见输出末尾/);
 });

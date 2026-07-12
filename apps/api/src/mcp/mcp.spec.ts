@@ -524,6 +524,45 @@ test('the real MCP SDK advertises and validates structured list output', async (
   }
 });
 
+test('McpServerFactory list_tasks uses the canonical persisted failure projection', async () => {
+  const failureAt = new Date('2026-07-12T12:32:31.000Z');
+  const prisma = {
+    task: {
+      async findMany() {
+        return [
+          {
+            ...TASK,
+            status: 'failed',
+            runtime: 'claude-code',
+            executionMode: null,
+            deliver: null,
+            failureCode: 'runtime_auth_expired',
+            failureAt,
+            failureExitCode: 1,
+          },
+        ];
+      },
+    },
+  } as unknown as PrismaService;
+  const factory = new McpServerFactory(
+    {} as never,
+    {} as never,
+    {} as never,
+    prisma,
+    {} as never,
+    {} as never,
+    {} as never,
+  );
+
+  const page = await factory.listTasks({ limit: 10 });
+
+  assert.equal(page.items[0].failure?.runtime, 'claude-code');
+  assert.equal(page.items[0].failure?.code, 'runtime_auth_expired');
+  assert.equal(page.items[0].executionMode, 'interactive-pty');
+  assert.equal(page.items[0].deliver, 'none');
+  assert.equal(page.items[0].sandboxProvider, null);
+});
+
 test('schedule tools reject missing scopes before calling the schedule service', async () => {
   const { deps, calls } = recordingDeps();
   const { server, tools } = captureServer();

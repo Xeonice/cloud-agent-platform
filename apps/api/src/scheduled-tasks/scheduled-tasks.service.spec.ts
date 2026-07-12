@@ -61,6 +61,9 @@ interface TaskRow {
   repoId: string;
   prompt: string;
   status: string;
+  failureCode?: string | null;
+  failureAt?: Date | null;
+  failureExitCode?: number | null;
   createdAt: Date;
   branch: string | null;
   strategy: string | null;
@@ -863,6 +866,10 @@ test('schedule reads expose the linked task status without changing the dispatch
   );
 
   prisma.tasks[0].status = 'failed';
+  prisma.tasks[0].runtime = 'claude-code';
+  prisma.tasks[0].failureCode = 'runtime_auth_rejected';
+  prisma.tasks[0].failureAt = new Date('2026-07-09T08:15:00.000Z');
+  prisma.tasks[0].failureExitCode = 1;
 
   const refreshed = await service.get(
     USER_A,
@@ -871,18 +878,30 @@ test('schedule reads expose the linked task status without changing the dispatch
   );
   assert.equal(refreshed.latestRun?.status, 'created');
   assert.equal(refreshed.latestRun?.taskStatus, 'failed');
+  assert.equal(refreshed.latestRun?.taskFailure?.runtime, 'claude-code');
+  assert.equal(refreshed.latestRun?.taskFailure?.code, 'runtime_auth_rejected');
+  assert.equal(refreshed.latestRun?.error, null);
   assert.equal(refreshed.currentPeriod?.run?.taskStatus, 'failed');
+  assert.equal(
+    refreshed.currentPeriod?.run?.taskFailure?.code,
+    'runtime_auth_rejected',
+  );
   assert.equal('task' in (refreshed.latestRun ?? {}), false);
 
   const runs = await service.listRuns(USER_A, schedule.id);
   assert.equal(runs[0].status, 'created');
   assert.equal(runs[0].taskStatus, 'failed');
+  assert.equal(runs[0].taskFailure?.runtime, 'claude-code');
+  assert.equal(runs[0].taskFailure?.code, 'runtime_auth_rejected');
+  assert.equal(runs[0].error, null);
   assert.equal(runs[0].createdAt.toISOString(), '2026-07-09T00:02:00.000Z');
   assert.equal('task' in runs[0], false);
 
   const page = await service.listRunsPage(USER_A, schedule.id, { limit: 10 });
   assert.equal(page.items[0].status, 'created');
   assert.equal(page.items[0].taskStatus, 'failed');
+  assert.equal(page.items[0].taskFailure?.runtime, 'claude-code');
+  assert.equal(page.items[0].taskFailure?.code, 'runtime_auth_rejected');
 });
 
 test('dispatchNow advances an already-due occurrence to avoid a duplicate scheduled fire', async () => {

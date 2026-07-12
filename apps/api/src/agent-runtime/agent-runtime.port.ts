@@ -29,6 +29,24 @@
  */
 export type RuntimeId = 'codex' | 'claude-code';
 
+/**
+ * Stable task-failure codes a runtime may derive from its own output stream.
+ *
+ * This vocabulary is intentionally narrow. A runtime reports `expired` only
+ * when the provider/CLI explicitly says the credential expired; a generic 401
+ * or an invalid credential is `rejected` (or no signal when the evidence is too
+ * weak). Lifecycle persistence and user-facing remediation live above this leaf
+ * port.
+ */
+export type RuntimeOutputFailureCode =
+  | 'runtime_auth_expired'
+  | 'runtime_auth_rejected';
+
+/** Structured runtime failure signal consumed by the shared lifecycle layer. */
+export interface RuntimeOutputFailure {
+  readonly code: RuntimeOutputFailureCode;
+}
+
 /** The default runtime when a task does not specify one. */
 export const DEFAULT_RUNTIME_ID: RuntimeId = 'codex';
 
@@ -259,6 +277,16 @@ export interface TranscriptRecord {
 export interface AgentRuntime {
   /** The runtime identity; matches the task's `runtime` value. */
   readonly id: RuntimeId;
+
+  /**
+   * Classify a bounded rolling window of this runtime's raw terminal output.
+   *
+   * The caller owns buffering across PTY chunks; the runtime owns its provider-
+   * specific, pure recognition policy. Returns `null` for generic HTTP errors,
+   * quota/rate-limit output, and any text that is not a stable authentication
+   * failure signal.
+   */
+  classifyOutputFailure(rollingOutput: string): RuntimeOutputFailure | null;
 
   /**
    * Build the in-shell launch line that starts the agent in a DETACHED, NAMED

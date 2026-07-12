@@ -35,6 +35,10 @@ import { recurrenceSummary } from "@/lib/task-form";
 import { NewTaskDialog } from "@/components/dashboard/new-task-dialog";
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { StatusPill } from "@/components/status-pill";
+import {
+  RuntimeAuthFailureBadge,
+  RuntimeCredentialAlert,
+} from "@/components/runtime-credential-alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -366,7 +370,10 @@ function SchedulesPage() {
             <PanelHead
               right={
                 selectedSchedule ? (
-                  <RunResultBadges run={selectedSchedule.latestRun ?? null} />
+                  <RunResultBadges
+                    run={selectedSchedule.latestRun ?? null}
+                    showFailure={false}
+                  />
                 ) : null
               }
             >
@@ -476,6 +483,11 @@ export function ScheduleDetail({
         />
         <DetailRow label="重叠策略" value={overlapLabel(schedule.overlapPolicy)} />
       </div>
+      <RuntimeCredentialAlert
+        failure={schedule.latestRun?.taskFailure}
+        compact
+        contextLabel="最近一次任务失败原因"
+      />
       <div className="flex flex-wrap gap-2">
         <Button
           type="button"
@@ -629,6 +641,12 @@ export function RunList({
             {run.error ? (
               <p className="mt-1 text-xs text-muted-foreground">{run.error}</p>
             ) : null}
+            <RuntimeCredentialAlert
+              failure={run.taskFailure}
+              compact
+              contextLabel="本次任务失败原因"
+              className="mt-2"
+            />
           </div>
           {run.taskId ? (
             <Button asChild variant="secondary" size="sm" className="gap-2">
@@ -674,14 +692,19 @@ export function LatestRunSummary({
 
 export function RunResultBadges({
   run,
+  showFailure = true,
 }: {
   run: ScheduleRunResponse | ScheduleResponse["latestRun"] | null;
+  showFailure?: boolean;
 }) {
   if (!run) return <Badge variant="outline">无记录</Badge>;
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
       {dispatchBadge(run.status)}
       {taskStatusBadge(run.taskStatus ?? null)}
+      {showFailure && run.taskFailure ? (
+        <RuntimeAuthFailureBadge failure={run.taskFailure} />
+      ) : null}
     </span>
   );
 }

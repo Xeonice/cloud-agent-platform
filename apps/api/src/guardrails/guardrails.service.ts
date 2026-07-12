@@ -7,7 +7,7 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { TaskStatus } from '@cap/contracts';
+import type { TaskFailureCode, TaskStatus } from '@cap/contracts';
 import {
   TasksService,
   AdmissionTransitionIndeterminateError,
@@ -48,6 +48,8 @@ import {
   type RunningInterval,
 } from '../metrics/runner-minutes';
 import { runWithTaskLog } from '../observability/log-context';
+
+const EXIT_FAILURE_CLASSIFICATION_TIMEOUT_MS = 2_000;
 
 /**
  * Guardrails integration (integration 12.1b).
@@ -607,41 +609,118 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // fire-and-forget detail/transition calls it spawns (they capture the ALS
     // context), so the ddba-style exit-handling logs all carry `taskId`.
     runWithTaskLog(taskId, () => {
-    if (!status.abnormal && status.code === 0) {
-      // Clean exit: the agent finished. Reset the breaker AND drive the task to a
-      // terminal `completed` state — under the connect-in model a clean WS-close
-      // is a single terminal event with no re-launch, so `completed` (via
-      // `TasksService.transition` → `isTerminal` → `onTerminal`) tears down the
-      // sandbox/session and frees the slot. Without this the task would linger
-      // `running`, leaking its slot until idle reclamation or a restart — a
-      // permanent leak once idle reclamation is off by default.
-      this.recordSuccess(taskId);
-      void this.safeTransition(taskId, 'completed');
-    } else if (status.abnormal) {
-      // Abnormal exit: the sandbox died unexpectedly (WS closed before the session
-      // was established, container killed, OOM, or an unresolvable exit code). A
-      // dead sandbox cannot recover, so force-fail the task now to release its
-      // concurrency slot and admit the next queued task. `safeTransition` and
-      // `semaphore.release` tolerate double-calls, so this is safe even when a
-      // teardown was already triggered for the same task.
-      // record-task-failure-reason: capture the exit code + transcript tail
-      // BEFORE teardown so an abnormal failure is diagnosable (best-effort).
-      void this.recordExitDetail(taskId, status);
-      void this.forceFail(taskId, 'abnormal_exit');
-    } else {
-      // Non-zero clean exit: a single connect-in exit is terminal (no re-launch),
-      // so this task is done regardless of any breaker threshold. Record the
-      // failure for the breaker/audit AND transition to `failed` so the slot is
-      // freed on THIS exit rather than waiting for a consecutive-failure threshold
-      // that can never accumulate for a one-shot terminal exit.
-      this.recordFailure(taskId);
-      // record-task-failure-reason: capture the non-zero exit code + transcript
-      // tail into the `task.exited` detail event (best-effort), alongside the
-      // central generic `task.failed` transition below.
-      void this.recordExitDetail(taskId, status);
-      void this.safeTransition(taskId, 'failed');
-    }
+      if (this.terminalTasks.has(taskId)) return;
+      if (!status.abnormal && status.code === 0) {
+        // Clean exit: the agent finished. Reset the breaker AND drive the task to a
+        // terminal `completed` state — under the connect-in model a clean WS-close
+        // is a single terminal event with no re-launch, so `completed` (via
+        // `TasksService.transition` → `isTerminal` → `onTerminal`) tears down the
+        // sandbox/session and frees the slot. Without this the task would linger
+        // `running`, leaking its slot until idle reclamation or a restart — a
+        // permanent leak once idle reclamation is off by default.
+        this.recordSuccess(taskId);
+        void this.safeTransition(taskId, 'completed');
+      } else if (status.abnormal) {
+        this.recordFailure(taskId);
+        // Abnormal exit: the sandbox died unexpectedly (WS closed before the session
+        // was established, container killed, OOM, or an unresolvable exit code). A
+        // dead sandbox cannot recover, so force-fail the task now to release its
+        // concurrency slot and admit the next queued task. `safeTransition` and
+        // `semaphore.release` tolerate double-calls, so this is safe even when a
+        // teardown was already triggered for the same task.
+        // record-task-failure-reason: capture the exit code + transcript tail
+        // BEFORE teardown so an abnormal failure is diagnosable (best-effort).
+        void this.settleFailedRuntimeExit(taskId, status, true);
+      } else {
+        // Non-zero clean exit: a single connect-in exit is terminal (no re-launch),
+        // so this task is done regardless of any breaker threshold. Record the
+        // failure for the breaker/audit AND transition to `failed` so the slot is
+        // freed on THIS exit rather than waiting for a consecutive-failure threshold
+        // that can never accumulate for a one-shot terminal exit.
+        this.recordFailure(taskId);
+        // record-task-failure-reason: capture the non-zero exit code + transcript
+        // tail into the `task.exited` detail event (best-effort), alongside the
+        // central generic `task.failed` transition below.
+        void this.settleFailedRuntimeExit(taskId, status, false);
+      }
     });
+  }
+
+  /**
+   * Fail a task immediately when its selected runtime reports a definitive auth
+   * problem. The task service writes status + cause atomically; its terminal
+   * settlement hook owns transcript capture, sandbox teardown, and slot release.
+   */
+  async failRuntime(
+    taskId: string,
+    code: TaskFailureCode,
+    exitCode: number | null = null,
+    recordBreakerFailure = true,
+  ): Promise<boolean> {
+    if (recordBreakerFailure) this.recordFailure(taskId, 'turn_failure');
+    try {
+      await this.tasks.failWithRuntimeFailure(taskId, code, exitCode);
+      return true;
+    } catch (err) {
+      this.logger.debug(
+        `runtime failure transition for task ${taskId} skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  private async settleFailedRuntimeExit(
+    taskId: string,
+    status: ExitStatus,
+    abnormal: boolean,
+  ): Promise<void> {
+    let failure: { code: TaskFailureCode } | null = null;
+    const detail = this.recordExitDetail(taskId, status);
+    try {
+      failure = await this.withTimeout(
+        detail,
+        EXIT_FAILURE_CLASSIFICATION_TIMEOUT_MS,
+        'runtime failure classification',
+      );
+    } catch (err) {
+      this.logger.debug(
+        `exit-detail classification for task ${taskId} timed out/skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      // Do not keep lifecycle settlement waiting after the bound, but retain the
+      // late result. TasksService can CAS-enrich a generic failed winner without
+      // repeating teardown or transition audit.
+      void detail
+        .then(async (lateFailure) => {
+          if (!lateFailure) return;
+          await this.tasks.failWithRuntimeFailure(
+            taskId,
+            lateFailure.code,
+            status.code,
+          );
+        })
+        .catch((lateErr: unknown) => {
+          this.logger.debug(
+            `late runtime failure enrichment for task ${taskId} skipped: ${
+              lateErr instanceof Error ? lateErr.message : String(lateErr)
+            }`,
+          );
+        });
+    }
+    if (
+      failure &&
+      (await this.failRuntime(taskId, failure.code, status.code, false))
+    ) {
+      return;
+    }
+    if (abnormal) {
+      await this.forceFail(taskId, 'abnormal_exit');
+    } else {
+      await this.safeTransition(taskId, 'failed');
+    }
   }
 
   /**
@@ -652,18 +731,61 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * central `task.failed` transition. ANY failure is swallowed so it can never
    * affect the lifecycle transition, teardown, or slot release.
    */
-  private async recordExitDetail(taskId: string, status: ExitStatus): Promise<void> {
-    if (!this.audit) return;
+  private async recordExitDetail(
+    taskId: string,
+    status: ExitStatus,
+  ): Promise<{ code: TaskFailureCode } | null> {
+    let tail = '';
     try {
-      const tail = (await this.gateway?.readSessionLogTail(taskId)) ?? '';
-      await this.audit.recordExited(taskId, status.code, status.abnormal, tail);
+      tail = (await this.gateway?.readSessionLogTail(taskId)) ?? '';
     } catch (err) {
       this.logger.debug(
-        `exit-detail audit for task ${taskId} skipped: ${
+        `exit-detail tail for task ${taskId} unavailable: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
     }
+    let failure: { code: TaskFailureCode } | null = null;
+    try {
+      failure = await this.tasks.classifyRuntimeOutputFailure(taskId, tail);
+    } catch (err) {
+      this.logger.debug(
+        `runtime failure classification for task ${taskId} skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    if (this.audit) {
+      // Diagnostic persistence is best-effort and must never delay the failed
+      // transition, sandbox teardown, or admission-slot release.
+      void this.recordAudit(() =>
+        this.audit?.recordExited(taskId, status.code, status.abnormal, tail),
+      );
+    }
+    return failure;
+  }
+
+  private withTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    operation: string,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`${operation} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err: unknown) => {
+          clearTimeout(timer);
+          reject(err instanceof Error ? err : new Error(String(err)));
+        },
+      );
+    });
   }
 
   /**
