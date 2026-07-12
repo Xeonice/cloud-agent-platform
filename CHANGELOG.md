@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.37.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.2...v0.37.3) (2026-07-12)
+
+
+### Bug Fixes
+
+* **tasks:** surface runtime credential failures ([0fdde47](https://github.com/Xeonice/cloud-agent-platform/commit/0fdde476b6627573eddf9add86110fd5a61edffe))
+* **tasks:** surface runtime credential failures ([86a9ba3](https://github.com/Xeonice/cloud-agent-platform/commit/86a9ba382d7add80f5b2111fd41f2d1dff83b865))
+
 ## [0.37.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.1...v0.37.2) (2026-07-11)
 
 
