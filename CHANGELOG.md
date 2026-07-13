@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.37.5](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.4...v0.37.5) (2026-07-13)
+
+
+### Bug Fixes
+
+* **settings:** harden Codex device login ([f0a38fc](https://github.com/Xeonice/cloud-agent-platform/commit/f0a38fcb4ce851337ac3cef792288f1bcfa8b72e))
+* **settings:** harden Codex device login ([2c46efe](https://github.com/Xeonice/cloud-agent-platform/commit/2c46efedb6f0b06c2917b67f061318e74bbd17d4))
+
 ## [0.37.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.3...v0.37.4) (2026-07-12)
 
 
