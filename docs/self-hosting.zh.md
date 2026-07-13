@@ -179,6 +179,47 @@ GitHub 使用 Personal Access Token：
 GitLab / Gitee 使用各自平台的 PAT，并可填写自托管实例地址。PAT 按账号保存，仅用于仓库列表、
 导入、clone、push 和 PR/MR 操作。
 
+## 2.5. 连接官方 Codex 订阅
+
+控制台身份、仓库凭据和 Codex 模型凭据是三个独立概念。每个操作者在
+**设置 -> Agent 模型凭据 -> Codex -> 官方账号**中连接自己的官方 Codex 订阅。
+
+连接采用两阶段设备码流程：
+
+1. 点击**连接官方账号**。现有对话框会显示准备状态，CAP 在后台创建一个按账号隔离的临时
+   登录会话；此时不会打开空白页或 OpenAI 页面。
+2. 一次性码准备好后，复制代码并点击**前往 OpenAI 授权**。OpenAI 页面只会由这次明确的
+   浏览器操作打开；登录 ChatGPT 后输入或确认对话框中的代码。
+3. 钉死版本的 Codex 客户端完成 OAuth、CAP 校验并加密保存凭据后，对话框显示完成状态并刷新
+   凭据连接状态。
+
+需要先在个人 ChatGPT 账号的安全设置中启用设备码登录，或由 workspace 管理员开放对应权限。
+CAP 显示的过期时间是本地登录会话的资源回收截止时间，不代表 OpenAI 设备码的底层有效期承诺。
+关闭或取消对话框会取消这一次明确的 CAP 会话。
+
+生产环境仍建议使用 HTTPS。普通非 loopback HTTP 来源无法使用现代浏览器 Clipboard API。
+CAP 会为同机 / 局域网 HTTP 试用拓扑提供兼容复制路径；如果浏览器同时阻止两种程序化复制，
+对话框会选中可见代码并提示使用 Ctrl+C / Command+C，不会误报「已复制」。
+
+真正的设备授权和 token 轮询由钉死版本的 Codex App Server 完成，CAP 不直接调用 OpenAI
+内部设备端点。第一版登录 runner 仍会从同版本 AIO 镜像创建本机 Docker 临时容器，即使任务
+执行选择的是 BoxLite：
+
+~~~bash
+docker image inspect "ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}"
+~~~
+
+当前 BoxLite quick-deploy 会验证 / staging BoxLite 任务镜像，但这不代表已经存在 BoxLite
+原生登录 runner。连接官方账号前，Docker 宿主机必须存在与当前 CAP Release 完全一致的 AIO
+tag。缺少时 API 会返回稳定错误 device_login_worker_image_unavailable，可按下面方式修复：
+
+~~~bash
+docker pull "ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}"
+~~~
+
+版本化部署不要改用 latest。登录容器不发布宿主端口，会在成功、取消、错误或过期时回收；
+只有 auth.json 通过校验并经现有按账号凭据存储加密落库后，UI 才会显示已连接。
+
 ## 3. 配置你的公开域名（易出错的一步）
 
 大多数自托管失败都出在这里。cap 以 `credentials: include` **跨域**发送会话 cookie，

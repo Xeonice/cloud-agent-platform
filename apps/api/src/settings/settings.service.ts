@@ -459,7 +459,25 @@ export class SettingsService {
       },
     });
 
-    return this.readCredential(operator);
+    // The write above is the commit boundary. Build the secret-free response
+    // from the exact persisted projection instead of issuing a second database
+    // read that could fail after commit and make callers believe the previous
+    // credential was preserved when the new one was already stored.
+    return CodexCredentialSchema.parse(
+      projectCredentialRead(
+        {
+          mode: plan.mode,
+          baseUrl: plan.baseUrl,
+          hasApiKey: apiKeyCiphertext !== null && apiKeyCiphertext.length > 0,
+          apiKeyLast4,
+          defaultModel: plan.defaultModel,
+          hasAuthJson:
+            authJsonCiphertext !== null && authJsonCiphertext.length > 0,
+          persistedState: state,
+        },
+        plan.mode === 'official' && Boolean(authJsonCiphertext),
+      ),
+    );
   }
 
   /**

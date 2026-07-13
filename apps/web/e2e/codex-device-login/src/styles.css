@@ -1,0 +1,65 @@
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+.device-login-story {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.device-login-story > section {
+  width: min(560px, 100%);
+  border-radius: 12px;
+  background: var(--card);
+  padding: 24px;
+  box-shadow: var(--shadow-card);
+}
+
+.device-login-story h1,
+.device-login-story p {
+  margin: 0;
+}
+
+.device-login-story h1 {
+  margin-top: 4px;
+  font-size: 24px;
+}
+
+.device-login-story p:not(.device-login-story__eyebrow) {
+  margin-top: 8px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.device-login-story__eyebrow {
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.device-login-story button {
+  min-height: 36px;
+  margin-top: 16px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  padding: 0 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+[data-connected-count] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}

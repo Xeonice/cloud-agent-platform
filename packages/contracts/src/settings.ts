@@ -394,42 +394,105 @@ export type DiscoverModelsResponse = z.infer<
 // Official ChatGPT connect — OAuth device-code flow
 // ---------------------------------------------------------------------------
 
+/** Opaque id assigned by CAP before any login-worker preparation begins. */
+export const CodexDeviceLoginSessionIdSchema = z.string().uuid();
+export type CodexDeviceLoginSessionId = z.infer<
+  typeof CodexDeviceLoginSessionIdSchema
+>;
+
+/** Path parameters for session-scoped device-login status and cancellation. */
+export const CodexDeviceLoginSessionParamsSchema = z
+  .object({
+    sessionId: CodexDeviceLoginSessionIdSchema,
+  })
+  .strict();
+export type CodexDeviceLoginSessionParams = z.infer<
+  typeof CodexDeviceLoginSessionParamsSchema
+>;
+
 /**
- * Response to STARTING an official-account device-code login. The server runs
- * `codex login --device-auth` in a transient sandbox and surfaces the OpenAI
- * verification URL + one-time code; the operator authorizes in their browser
- * (signed into ChatGPT), then the client polls {@link CodexDeviceLoginStatus}
- * until codex receives the tokens and the server stores them encrypted. No
- * secret is in this response — only the public verification URL + user code.
+ * Response to starting an official-account device login. CAP creates the
+ * account-scoped session before launching the temporary Codex App Server
+ * worker, so this response never waits for or exposes a device code.
+ *
+ * `expiresAt` is CAP's absolute session/resource deadline. It is deliberately
+ * not presented as OpenAI's device-code lifetime.
  */
-export const CodexDeviceLoginStartResponseSchema = z.object({
-  /** OpenAI's device verification URL the operator opens (e.g. https://auth.openai.com/codex/device). */
-  verificationUri: z.string().url(),
-  /** The one-time code the operator enters at the verification URL. */
-  userCode: z.string().min(1),
-  /** Seconds until the code expires (codex's device codes last ~15 minutes). */
-  expiresInSeconds: z.number().int().positive().optional(),
-});
+export const CodexDeviceLoginStartResponseSchema = z
+  .object({
+    sessionId: CodexDeviceLoginSessionIdSchema,
+    status: z.literal('preparing'),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
 export type CodexDeviceLoginStartResponse = z.infer<
   typeof CodexDeviceLoginStartResponseSchema
 >;
 
 /**
- * Poll status of an in-flight device-code login:
- *  - `awaiting_authorization`: code issued, waiting for the operator to authorize.
- *  - `connected`: codex received the tokens; the credential is now stored.
- *  - `expired`: the code/window lapsed before authorization.
- *  - `error`: the login could not start/complete (e.g. device-auth not enabled).
- * The verification URL + user code are echoed back while awaiting so a client
- * that polls fresh (no start response) can still render them.
+ * Query state for a session-scoped device login. Every variant carries the
+ * owning CAP session id and its absolute local deadline. Only
+ * `awaiting_authorization` may carry the public OpenAI verification URL and
+ * one-time user code. Strict variants prevent terminal responses from silently
+ * stripping and thereby concealing an accidental credential/code disclosure.
  */
-export const CodexDeviceLoginStatusSchema = z.object({
-  status: z.enum(['awaiting_authorization', 'connected', 'expired', 'error']),
-  verificationUri: z.string().url().nullable().optional(),
-  userCode: z.string().min(1).nullable().optional(),
-  /** Human-readable detail for `error`/`expired` (never a secret). */
-  message: z.string().nullable().optional(),
-});
+const CodexDeviceLoginSessionFields = {
+  sessionId: CodexDeviceLoginSessionIdSchema,
+  expiresAt: z.string().datetime(),
+};
+
+export const CodexDeviceLoginStatusSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      ...CodexDeviceLoginSessionFields,
+      status: z.literal('preparing'),
+    })
+    .strict(),
+  z
+    .object({
+      ...CodexDeviceLoginSessionFields,
+      status: z.literal('awaiting_authorization'),
+      /** Exact URL returned by Codex App Server; CAP does not construct it. */
+      verificationUri: z.string().url(),
+      /** One-time code returned by Codex App Server. */
+      userCode: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...CodexDeviceLoginSessionFields,
+      status: z.literal('finalizing'),
+    })
+    .strict(),
+  z
+    .object({
+      ...CodexDeviceLoginSessionFields,
+      status: z.literal('connected'),
+    })
+    .strict(),
+  z
+    .object({
+      ...CodexDeviceLoginSessionFields,
+      status: z.literal('cancelled'),
+    })
+    .strict(),
+  z
+    .object({
+      ...CodexDeviceLoginSessionFields,
+      status: z.literal('expired'),
+      /** Human-readable explanation of CAP's local session expiry. */
+      message: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...CodexDeviceLoginSessionFields,
+      status: z.literal('error'),
+      /** Stable, secret-free operator message mapped from an internal category. */
+      message: z.string().min(1),
+    })
+    .strict(),
+]);
 export type CodexDeviceLoginStatus = z.infer<typeof CodexDeviceLoginStatusSchema>;
 
 // ---------------------------------------------------------------------------

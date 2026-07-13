@@ -1,0 +1,22 @@
+{
+  "codexVersion": "0.144.1",
+  "generatedBy": "codex app-server generate-json-schema --out <dir>",
+  "initialize": {
+    "requestMethod": "initialize",
+    "paramsRequired": ["clientInfo"],
+    "clientInfoRequired": ["name", "version"],
+    "responseRequired": ["codexHome", "platformFamily", "platformOs", "userAgent"],
+    "initializedNotificationMethod": "initialized"
+  },
+  "deviceLogin": {
+    "startMethod": "account/login/start",
+    "startType": "chatgptDeviceCode",
+    "responseRequired": ["loginId", "type", "userCode", "verificationUrl"],
+    "cancelMethod": "account/login/cancel",
+    "cancelParamsRequired": ["loginId"],
+    "cancelStatuses": ["canceled", "notFound"],
+    "completedNotificationMethod": "account/login/completed",
+    "completedRequired": ["success"],
+    "completedProperties": ["error", "loginId", "success"]
+  }
+}
