@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.38.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.5...v0.38.0) (2026-07-13)
+
+
+### Features
+
+* **schedules:** add sub-day recurrence controls ([fe45f83](https://github.com/Xeonice/cloud-agent-platform/commit/fe45f83e3154724fa74d3efef654dd1ccebf816b))
+* **schedules:** add sub-day recurrence controls ([013d262](https://github.com/Xeonice/cloud-agent-platform/commit/013d262c862ce36912c58df5d843d148b64e5099))
+
 ## [0.37.5](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.4...v0.37.5) (2026-07-13)
 
 
