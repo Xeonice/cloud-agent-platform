@@ -40,6 +40,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   DispatchScheduleRequestSchema,
   PUBLIC_V1_OPERATIONS,
+  ScheduleRecurrenceSchema,
+  ScheduleResponseSchema,
   SessionHistorySchema,
   TaskResponseSchema,
   V1CreateTaskRequestSchema,
@@ -48,11 +50,13 @@ import {
   V1ListTasksResponseSchema,
   V1ListReposResponseSchema,
   type CreateTaskBody,
+  type CreateScheduleRequest,
   type RepoResponse,
   type ScheduleResponse,
   type ScheduleRunResponse,
   type SessionHistory,
   type TaskResponse,
+  type UpdateScheduleRequest,
 } from '@cap/contracts';
 
 // ---------------------------------------------------------------------------
@@ -61,6 +65,7 @@ import {
 
 type ToolCb = (args: Record<string, unknown>, extra: ToolExtra) => Promise<unknown>;
 type ToolConfig = {
+  description?: string;
   inputSchema?: Record<string, unknown>;
   outputSchema?: unknown;
 };
@@ -461,6 +466,56 @@ test('every MCP tool advertises structured output and create_task reuses the /v1
   );
 });
 
+test('schedule tool metadata inherits the shared sub-day recurrence contract', () => {
+  const { deps } = recordingDeps();
+  const { server, configs } = captureServer();
+  registerMcpTools(server as never, deps);
+
+  for (const name of ['create_schedule', 'update_schedule']) {
+    const config = configs.get(name);
+    assert.ok(config);
+    assert.match(config.description ?? '', /hourly/);
+    assert.match(config.description ?? '', /minuteInterval/);
+    for (const interval of [5, 10, 15, 30]) {
+      assert.match(config.description ?? '', new RegExp(`\\b${interval}\\b`));
+    }
+    const recurrence = config.inputSchema?.recurrence as
+      | { parse(value: unknown): unknown }
+      | undefined;
+    assert.ok(recurrence, `${name} advertises the shared recurrence field`);
+    assert.doesNotThrow(() =>
+      recurrence.parse({
+        kind: 'hourly',
+        minuteOfHour: 15,
+        timezone: 'Asia/Shanghai',
+      }),
+    );
+    assert.doesNotThrow(() =>
+      recurrence.parse({
+        kind: 'minuteInterval',
+        intervalMinutes: 30,
+        timezone: 'UTC',
+      }),
+    );
+    assert.throws(() =>
+      recurrence.parse({
+        kind: 'minuteInterval',
+        intervalMinutes: 7,
+        timezone: 'UTC',
+      }),
+    );
+    assert.equal(config.outputSchema, ScheduleResponseSchema);
+  }
+
+  assert.doesNotThrow(() =>
+    ScheduleRecurrenceSchema.parse({
+      kind: 'hourly',
+      minuteOfHour: 59,
+      timezone: 'UTC',
+    }),
+  );
+});
+
 test('the real MCP SDK advertises and validates structured list output', async () => {
   const { deps } = recordingDeps();
   const server = new McpServer({ name: 'mcp-parity-test', version: '1.0.0' });
@@ -664,6 +719,154 @@ test('schedule tools pass the token owner and delegate to ScheduledTasksService 
     `dispatchSchedule:local-acct-1:${SCHEDULE_ID}:day:2026-07-11`,
     `deleteSchedule:local-acct-1:${SCHEDULE_ID}`,
     `listScheduleRuns:local-acct-1:${SCHEDULE_ID}:10:run-next`,
+  ]);
+});
+
+test('schedule tools round-trip sub-day descriptors and preserve cron compatibility', async () => {
+  const hourlySchedule: ScheduleResponse = {
+    ...SCHEDULE,
+    name: 'hourly check',
+    cronExpression: '15 * * * *',
+    timezone: 'Asia/Shanghai',
+    recurrence: {
+      kind: 'hourly',
+      minuteOfHour: 15,
+      timezone: 'Asia/Shanghai',
+      label: '每小时第 15 分钟',
+    },
+  };
+  const intervalSchedule: ScheduleResponse = {
+    ...SCHEDULE,
+    name: 'interval check',
+    cronExpression: '*/15 * * * *',
+    recurrence: {
+      kind: 'minuteInterval',
+      intervalMinutes: 15,
+      timezone: 'UTC',
+      label: '每 15 分钟',
+    },
+  };
+  const customSchedule: ScheduleResponse = {
+    ...SCHEDULE,
+    name: 'compatibility cron',
+    cronExpression: '7,37 * * * *',
+    recurrence: {
+      kind: 'custom',
+      timezone: 'UTC',
+      label: '自定义重复',
+    },
+  };
+  const base = recordingDeps();
+  const delegated: string[] = [];
+  let current = hourlySchedule;
+  const deps: McpToolDeps = {
+    ...base.deps,
+    async createSchedule(
+      ownerUserId: string,
+      body: CreateScheduleRequest,
+    ) {
+      delegated.push(
+        `create:${ownerUserId}:${body.recurrence?.kind ?? 'cron'}:${body.cronExpression}`,
+      );
+      current = body.recurrence?.kind === 'hourly'
+        ? hourlySchedule
+        : customSchedule;
+      return current;
+    },
+    async updateSchedule(
+      ownerUserId: string,
+      id: string,
+      body: UpdateScheduleRequest,
+    ) {
+      delegated.push(
+        `update:${ownerUserId}:${id}:${body.recurrence?.kind ?? 'cron'}:${body.cronExpression ?? '-'}`,
+      );
+      current = intervalSchedule;
+      return current;
+    },
+    async getSchedule(ownerUserId: string, id: string) {
+      delegated.push(`get:${ownerUserId}:${id}`);
+      return current;
+    },
+    async listSchedules(ownerUserId, query) {
+      delegated.push(`list:${ownerUserId}:${query.limit}`);
+      return { items: [current], nextCursor: null };
+    },
+  };
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+  const owner = extraWithOwner(['tasks:read', 'tasks:write']);
+  const structured = async (name: string, args: Record<string, unknown>) => {
+    const result = (await tools.get(name)!(args, owner)) as {
+      structuredContent: Record<string, unknown>;
+    };
+    return result.structuredContent;
+  };
+
+  const created = ScheduleResponseSchema.parse(
+    await structured('create_schedule', {
+      recurrence: {
+        kind: 'hourly',
+        minuteOfHour: 15,
+        timezone: 'Asia/Shanghai',
+      },
+      taskTemplate: { repoId: TASK.repoId, prompt: 'hourly check' },
+    }),
+  );
+  assert.equal(created.recurrence.kind, 'hourly');
+
+  const updated = ScheduleResponseSchema.parse(
+    await structured('update_schedule', {
+      id: SCHEDULE_ID,
+      recurrence: {
+        kind: 'minuteInterval',
+        intervalMinutes: 15,
+        timezone: 'UTC',
+      },
+    }),
+  );
+  assert.equal(updated.recurrence.kind, 'minuteInterval');
+  const fetched = ScheduleResponseSchema.parse(
+    await structured('get_schedule', { id: SCHEDULE_ID }),
+  );
+  assert.equal(fetched.recurrence.kind, 'minuteInterval');
+  const listed = V1ListSchedulesResponseSchema.parse(
+    await structured('list_schedules', { limit: 10 }),
+  );
+  assert.equal(listed.items[0]?.recurrence.kind, 'minuteInterval');
+
+  const beforeInvalid = delegated.length;
+  await assert.rejects(
+    () =>
+      tools.get('update_schedule')!(
+        {
+          id: SCHEDULE_ID,
+          recurrence: {
+            kind: 'minuteInterval',
+            intervalMinutes: 7,
+            timezone: 'UTC',
+          },
+        },
+        owner,
+      ),
+    /Invalid input/,
+  );
+  assert.equal(delegated.length, beforeInvalid);
+
+  const compatibility = ScheduleResponseSchema.parse(
+    await structured('create_schedule', {
+      cronExpression: '7,37 * * * *',
+      timezone: 'UTC',
+      taskTemplate: { repoId: TASK.repoId, prompt: 'compatibility cron' },
+    }),
+  );
+  assert.equal(compatibility.recurrence.kind, 'custom');
+  assert.deepEqual(delegated, [
+    'create:local-acct-1:hourly:15 * * * *',
+    `update:local-acct-1:${SCHEDULE_ID}:minuteInterval:*/15 * * * *`,
+    `get:local-acct-1:${SCHEDULE_ID}`,
+    'list:local-acct-1:10',
+    'create:local-acct-1:cron:7,37 * * * *',
   ]);
 });
 

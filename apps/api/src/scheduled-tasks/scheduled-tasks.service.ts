@@ -396,6 +396,12 @@ export class ScheduledTasksService
       nextRunAt: schedule.nextRunAt,
     });
     if (body.expectedPeriodKey && body.expectedPeriodKey !== period.key) {
+      if (await this.periodRunExists(schedule, body.expectedPeriodKey)) {
+        return this.toScheduleResponse(
+          await this.requireOwnedSchedule(ownerUserId, id),
+          now,
+        );
+      }
       throw new ConflictException({
         error: 'schedule_period_changed',
         message: 'The schedule moved to another recurrence period.',

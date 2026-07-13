@@ -1,17 +1,24 @@
-import type {
-  CreateScheduleRequest,
-  CreateTaskRequest,
-  Deliver,
-  Runtime,
-  ScheduleRecurrence,
-  ScheduleResponse,
-  UpdateScheduleRequest,
+import {
+  SCHEDULE_MINUTE_INTERVALS,
+  type CreateScheduleRequest,
+  type CreateTaskRequest,
+  type Deliver,
+  type Runtime,
+  type ScheduleMinuteInterval,
+  type ScheduleRecurrence,
+  type ScheduleResponse,
+  type UpdateScheduleRequest,
 } from "@cap/contracts";
+
+import { SCHEDULE_TIMEZONE_FALLBACK } from "./schedule-timezone";
 
 export const ENVIRONMENT_DEFAULT = "__default__";
 export const ENVIRONMENT_SERVER_DEFAULT = "__server_default__";
 export const DEFAULT_RECURRENCE_TIME = "09:00";
-export const DEFAULT_RECURRENCE_TIMEZONE = "UTC";
+export const DEFAULT_RECURRENCE_TIMEZONE = SCHEDULE_TIMEZONE_FALLBACK;
+export const DEFAULT_RECURRENCE_MINUTE_OF_HOUR = 0;
+export const DEFAULT_RECURRENCE_INTERVAL_MINUTES =
+  SCHEDULE_MINUTE_INTERVALS[0];
 
 export type RecurrenceFormKind = ScheduleRecurrence["kind"] | "custom";
 
@@ -33,6 +40,8 @@ export interface ScheduleFormState extends TaskTemplateFormState {
   name: string;
   recurrenceKind: RecurrenceFormKind;
   recurrenceTime: string;
+  minuteOfHour: number;
+  intervalMinutes: ScheduleMinuteInterval;
   timezone: string;
   weekday: number;
   dayOfMonth: number;
@@ -67,6 +76,8 @@ export function emptyScheduleForm(
     name: "",
     recurrenceKind: "weekdays",
     recurrenceTime: DEFAULT_RECURRENCE_TIME,
+    minuteOfHour: DEFAULT_RECURRENCE_MINUTE_OF_HOUR,
+    intervalMinutes: DEFAULT_RECURRENCE_INTERVAL_MINUTES,
     timezone: DEFAULT_RECURRENCE_TIMEZONE,
     weekday: 1,
     dayOfMonth: 1,
@@ -105,7 +116,20 @@ export function scheduleFormFromSchedule(
     name: schedule.name ?? "",
     recurrenceKind: recurrence.kind,
     recurrenceTime:
-      recurrence.kind === "custom" ? DEFAULT_RECURRENCE_TIME : recurrence.time,
+      recurrence.kind === "daily" ||
+      recurrence.kind === "weekdays" ||
+      recurrence.kind === "weekly" ||
+      recurrence.kind === "monthly"
+        ? recurrence.time
+        : DEFAULT_RECURRENCE_TIME,
+    minuteOfHour:
+      recurrence.kind === "hourly"
+        ? recurrence.minuteOfHour
+        : DEFAULT_RECURRENCE_MINUTE_OF_HOUR,
+    intervalMinutes:
+      recurrence.kind === "minuteInterval"
+        ? recurrence.intervalMinutes
+        : DEFAULT_RECURRENCE_INTERVAL_MINUTES,
     timezone: recurrence.timezone,
     weekday: recurrence.kind === "weekly" ? recurrence.weekday : 1,
     dayOfMonth: recurrence.kind === "monthly" ? recurrence.dayOfMonth : 1,
@@ -168,19 +192,30 @@ function buildScheduleTiming(
 }
 
 export function buildRecurrence(form: ScheduleFormState): ScheduleRecurrence {
-  const base = {
-    time: form.recurrenceTime.trim() || DEFAULT_RECURRENCE_TIME,
+  const timezone = {
     timezone: form.timezone.trim() || DEFAULT_RECURRENCE_TIMEZONE,
+  };
+  const calendar = {
+    ...timezone,
+    time: form.recurrenceTime.trim() || DEFAULT_RECURRENCE_TIME,
   };
   switch (form.recurrenceKind) {
     case "daily":
-      return { kind: "daily", ...base };
+      return { kind: "daily", ...calendar };
     case "weekdays":
-      return { kind: "weekdays", ...base };
+      return { kind: "weekdays", ...calendar };
     case "weekly":
-      return { kind: "weekly", weekday: form.weekday, ...base };
+      return { kind: "weekly", weekday: form.weekday, ...calendar };
     case "monthly":
-      return { kind: "monthly", dayOfMonth: form.dayOfMonth, ...base };
+      return { kind: "monthly", dayOfMonth: form.dayOfMonth, ...calendar };
+    case "hourly":
+      return { kind: "hourly", minuteOfHour: form.minuteOfHour, ...timezone };
+    case "minuteInterval":
+      return {
+        kind: "minuteInterval",
+        intervalMinutes: form.intervalMinutes,
+        ...timezone,
+      };
     case "custom":
       throw new Error("Custom schedule timing cannot be converted to recurrence");
   }

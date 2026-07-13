@@ -8,10 +8,17 @@ const MAX_AUDIT_EVENTS = 100;
 export async function startScheduledTasksControlServer({
   prisma,
   provider,
+  scheduledTasks,
   port,
 }) {
   const server = createServer((request, response) => {
-    void routeControlRequest({ request, response, prisma, provider });
+    void routeControlRequest({
+      request,
+      response,
+      prisma,
+      provider,
+      scheduledTasks,
+    });
   });
 
   await listen(server, port, CONTROL_HOST);
@@ -27,7 +34,13 @@ export async function startScheduledTasksControlServer({
   };
 }
 
-async function routeControlRequest({ request, response, prisma, provider }) {
+async function routeControlRequest({
+  request,
+  response,
+  prisma,
+  provider,
+  scheduledTasks,
+}) {
   try {
     if (!isLoopback(request.socket.remoteAddress)) {
       sendJson(response, 403, { error: 'loopback_only' });
@@ -37,6 +50,14 @@ async function routeControlRequest({ request, response, prisma, provider }) {
     const requestUrl = new URL(request.url ?? '/', 'http://127.0.0.1');
     if (request.method === 'GET' && requestUrl.pathname === '/control/health') {
       sendJson(response, 200, { status: 'ok' });
+      return;
+    }
+
+    if (request.method === 'POST' && requestUrl.pathname === '/control/scheduler/tick') {
+      const body = await readJsonBody(request);
+      const now = parseTickAt(body.now);
+      const fired = await scheduledTasks.tick(now);
+      sendJson(response, 200, { now: now.toISOString(), fired });
       return;
     }
 
@@ -276,6 +297,17 @@ function parseDueAt(value) {
     throw new ControlInputError(400, 'invalid_due_at');
   }
   return dueAt;
+}
+
+function parseTickAt(value) {
+  if (typeof value !== 'string') {
+    throw new ControlInputError(400, 'invalid_tick_at');
+  }
+  const now = new Date(value);
+  if (!Number.isFinite(now.getTime()) || now.toISOString() !== value) {
+    throw new ControlInputError(400, 'invalid_tick_at');
+  }
+  return now;
 }
 
 async function readJsonBody(request) {

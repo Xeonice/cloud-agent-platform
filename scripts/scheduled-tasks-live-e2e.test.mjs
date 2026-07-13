@@ -166,6 +166,7 @@ test('time control stays under apps/api/test and out of the production graph', a
   const forbidden = [
     'scheduled-tasks-live-e2e-server',
     '/control/schedules/',
+    '/control/scheduler/',
     '/control/diagnostics',
     '/control/provider-calls',
   ];
@@ -186,6 +187,7 @@ test('time control stays under apps/api/test and out of the production graph', a
     /node test\/scheduled-tasks-live-e2e-server\.mjs/,
     'the control server must be started only from the test tree',
   );
+  assert.match(runner, /TZ=UTC/);
 });
 
 async function listFiles(directory) {

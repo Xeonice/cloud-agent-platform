@@ -40,6 +40,10 @@ import {
   RunList,
   type ScheduleFormState,
 } from "./schedules";
+import {
+  recurrenceSummary,
+  scheduleFormFromSchedule,
+} from "@/lib/task-form";
 
 function linkHref(
   to: string,
@@ -68,6 +72,8 @@ function baseForm(overrides: Partial<ScheduleFormState> = {}): ScheduleFormState
     name: " Workday review ",
     recurrenceKind: "weekdays",
     recurrenceTime: "08:30",
+    minuteOfHour: 0,
+    intervalMinutes: 5,
     timezone: "Asia/Shanghai",
     weekday: 1,
     dayOfMonth: 1,
@@ -115,8 +121,8 @@ function scheduleFixture(
     id: uuid(40),
     ownerUserId: "user-1",
     repoId: uuid(1),
-    name: "legacy interval",
-    cronExpression: "*/5 * * * *",
+    name: "unsupported custom schedule",
+    cronExpression: "7,37 * * * *",
     timezone: "UTC",
     recurrence: {
       kind: "custom",
@@ -211,13 +217,13 @@ describe("schedule page payload", () => {
         recurrenceKind: "custom",
       }),
       {
-        cronExpression: "*/5 * * * *",
+        cronExpression: "7,37 * * * *",
         timezone: "UTC",
       },
     );
 
     expect(payload).toMatchObject({
-      cronExpression: "*/5 * * * *",
+      cronExpression: "7,37 * * * *",
       timezone: "UTC",
       taskTemplate: {
         prompt: "check nightly drift",
@@ -246,7 +252,71 @@ describe("schedule run history rendering", () => {
     expect(html).toContain("编辑");
     expect(html).toContain("删除");
     expect(html).not.toContain("/tasks/new");
-    expect(html).not.toContain("*/5 * * * *");
+    expect(html).not.toContain("7,37 * * * *");
+  });
+
+  it("renders server labels and round-trips sub-day recurrence through edit state", () => {
+    const hourly = scheduleFixture({
+      name: "Hourly check",
+      cronExpression: "23 * * * *",
+      timezone: "Asia/Shanghai",
+      recurrence: {
+        kind: "hourly",
+        minuteOfHour: 23,
+        timezone: "Asia/Shanghai",
+        label: "每小时第 23 分钟",
+      },
+    });
+    const minuteInterval = scheduleFixture({
+      name: "Quarter-hour check",
+      cronExpression: "*/15 * * * *",
+      timezone: "UTC",
+      recurrence: {
+        kind: "minuteInterval",
+        intervalMinutes: 15,
+        timezone: "UTC",
+        label: "每 15 分钟",
+      },
+    });
+
+    for (const schedule of [hourly, minuteInterval]) {
+      const html = renderToStaticMarkup(
+        <ScheduleDetail
+          schedule={schedule}
+          repos={[]}
+          onEdit={() => undefined}
+          onDispatch={() => undefined}
+          onPauseResume={() => undefined}
+          onDelete={() => undefined}
+        />,
+      );
+      expect(html).toContain(recurrenceSummary(schedule));
+      expect(html).not.toContain(schedule.cronExpression);
+    }
+
+    const hourlyForm = scheduleFormFromSchedule(hourly, "codex");
+    expect(hourlyForm).toMatchObject({
+      recurrenceKind: "hourly",
+      minuteOfHour: 23,
+      timezone: "Asia/Shanghai",
+    });
+    expect(buildSchedulePayload(hourlyForm, hourly).recurrence).toEqual({
+      kind: "hourly",
+      minuteOfHour: 23,
+      timezone: "Asia/Shanghai",
+    });
+
+    const intervalForm = scheduleFormFromSchedule(minuteInterval, "codex");
+    expect(intervalForm).toMatchObject({
+      recurrenceKind: "minuteInterval",
+      intervalMinutes: 15,
+      timezone: "UTC",
+    });
+    expect(buildSchedulePayload(intervalForm, minuteInterval).recurrence).toEqual({
+      kind: "minuteInterval",
+      intervalMinutes: 15,
+      timezone: "UTC",
+    });
   });
 
   it("shows the latest actual dispatch separately from the next scheduled run", () => {

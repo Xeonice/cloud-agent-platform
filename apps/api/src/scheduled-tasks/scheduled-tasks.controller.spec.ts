@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ForbiddenException } from '@nestjs/common';
-import type { DispatchScheduleRequest } from '@cap/contracts';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import {
+  CreateScheduleRequestSchema,
+  UpdateScheduleRequestSchema,
+  type CreateScheduleRequest,
+  type DispatchScheduleRequest,
+  type UpdateScheduleRequest,
+} from '@cap/contracts';
 
 import type { AuthenticatedRequest } from '../auth/auth.guard';
 import type { OperatorPrincipal } from '../auth/operator-principal';
+import { ZodValidationPipe } from '../repos/zod-validation.pipe';
 import { ScheduledTasksController } from './scheduled-tasks.controller';
 import type { ScheduledTasksService } from './scheduled-tasks.service';
 
@@ -33,6 +40,85 @@ const WRITE_PRINCIPAL: OperatorPrincipal = {
 
 const requestWith = (principal: OperatorPrincipal): AuthenticatedRequest =>
   ({ operatorPrincipal: principal }) as AuthenticatedRequest;
+
+const BODY_METADATA = { type: 'body' as const, metatype: Object, data: undefined };
+
+test('create and update forward validated sub-day recurrence bodies', async () => {
+  const calls: Array<{ operation: string; cronExpression: string }> = [];
+  const expected = { id: SCHEDULE_ID };
+  const controller = new ScheduledTasksController({
+    async create(_ownerUserId: string, body: { cronExpression: string }) {
+      calls.push({ operation: 'create', cronExpression: body.cronExpression });
+      return expected;
+    },
+    async update(
+      _ownerUserId: string,
+      _id: string,
+      body: { cronExpression: string },
+    ) {
+      calls.push({ operation: 'update', cronExpression: body.cronExpression });
+      return expected;
+    },
+  } as unknown as ScheduledTasksService);
+  const createPipe = new ZodValidationPipe(CreateScheduleRequestSchema);
+  const updatePipe = new ZodValidationPipe(UpdateScheduleRequestSchema);
+
+  const hourly = createPipe.transform(
+    {
+      recurrence: {
+        kind: 'hourly',
+        minuteOfHour: 15,
+        timezone: 'Asia/Shanghai',
+      },
+      taskTemplate: {
+        repoId: '22222222-2222-4222-8222-222222222222',
+        prompt: 'hourly check',
+      },
+    },
+    BODY_METADATA,
+  ) as CreateScheduleRequest;
+  const interval = updatePipe.transform(
+    {
+      recurrence: {
+        kind: 'minuteInterval',
+        intervalMinutes: 30,
+        timezone: 'UTC',
+      },
+    },
+    BODY_METADATA,
+  ) as UpdateScheduleRequest;
+
+  await controller.create(hourly, requestWith(WRITE_PRINCIPAL));
+  await controller.update(
+    SCHEDULE_ID,
+    interval,
+    requestWith(WRITE_PRINCIPAL),
+  );
+  assert.deepEqual(calls, [
+    { operation: 'create', cronExpression: '15 * * * *' },
+    { operation: 'update', cronExpression: '*/30 * * * *' },
+  ]);
+
+  for (const invalid of [
+    {
+      recurrence: {
+        kind: 'minuteInterval',
+        intervalMinutes: 7,
+        timezone: 'UTC',
+      },
+    },
+    {
+      recurrence: { kind: 'hourly', minuteOfHour: 15, timezone: 'UTC' },
+      cronExpression: '15 * * * *',
+    },
+  ]) {
+    assert.throws(
+      () => updatePipe.transform(invalid, BODY_METADATA),
+      BadRequestException,
+    );
+  }
+  assert.equal(calls.length, 2);
+});
 
 test('dispatch forwards the owner and expected period contract to the service', async () => {
   let captured:

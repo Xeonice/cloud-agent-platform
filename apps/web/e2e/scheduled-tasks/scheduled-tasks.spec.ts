@@ -2,6 +2,7 @@ import {
   expect,
   test,
   type APIRequestContext,
+  type Locator,
   type Page,
   type Request,
   type Response,
@@ -30,6 +31,26 @@ interface ScheduleWire {
   readonly id: string;
   readonly ownerUserId: string;
   readonly name: string | null;
+  readonly cronExpression: string;
+  readonly timezone: string;
+  readonly recurrence:
+    | {
+        readonly kind: "hourly";
+        readonly minuteOfHour: number;
+        readonly timezone: string;
+        readonly label: string;
+      }
+    | {
+        readonly kind: "minuteInterval";
+        readonly intervalMinutes: number;
+        readonly timezone: string;
+        readonly label: string;
+      }
+    | {
+        readonly kind: string;
+        readonly timezone: string;
+        readonly label: string;
+      };
   readonly enabled: boolean;
   readonly nextRunAt: string | null;
   readonly currentPeriod: {
@@ -108,6 +129,11 @@ interface DueResponseWire {
   readonly schedule: ScheduleWire;
 }
 
+interface TickResponseWire {
+  readonly now: string;
+  readonly fired: number;
+}
+
 const API_URL = requiredUrl("E2E_API_URL");
 const CONTROL_URL = requiredUrl("E2E_CONTROL_URL");
 const ADMIN_EMAIL = requiredValue("E2E_ADMIN_EMAIL");
@@ -130,7 +156,7 @@ test.afterEach(async ({ context }, testInfo) => {
   await attachFailureDiagnostics(context.request, testInfo);
 });
 
-test("owner consumes one manual period and a separate real poller schedule fires exactly once", async ({
+test("sub-day forms round-trip and owner dispatch remains exactly-once", async ({
   page,
   context,
 }) => {
@@ -160,6 +186,13 @@ test("owner consumes one manual period and a separate real poller schedule fires
       name: `scheduled-e2e-${marker}`,
       gitSource: "https://github.com/openai/codex.git",
     },
+  });
+
+  await exerciseSubdayScheduleStory({
+    page,
+    request: context.request,
+    repo,
+    marker,
   });
 
   const manualSchedule = await createSchedule(
@@ -528,6 +561,316 @@ test("owner consumes one manual period and a separate real poller schedule fires
   await expect(page).toHaveURL(new RegExp(`/tasks/${automaticTask.id}$`));
   await expect(page.getByLabel("任务状态")).toHaveText("失败");
 });
+
+async function exerciseSubdayScheduleStory({
+  page,
+  request,
+  repo,
+  marker,
+}: {
+  page: Page;
+  request: APIRequestContext;
+  repo: RepoWire;
+  marker: string;
+}): Promise<void> {
+  const hourlyName = `schedule-hourly-e2e-${marker}`;
+  const intervalName = `schedule-interval-e2e-${marker}`;
+  const hourlyPrompt = `hourly form verification ${marker}`;
+  const intervalPrompt = `interval form verification ${marker}`;
+
+  const pageFormReady = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === "/runtimes",
+  );
+  await page.goto("/tasks/new", { waitUntil: "domcontentloaded" });
+  await pageFormReady;
+  await expect(page.getByRole("heading", { name: "高级派发" })).toBeVisible();
+  await page.getByRole("button", { name: "重复运行", exact: true }).click();
+  await expect(page.getByLabel("时区")).toContainText("Asia/Shanghai");
+  await page.getByLabel("计划名称").fill(hourlyName);
+  await selectOption(page, page.getByLabel("重复频率"), "每小时");
+  await selectOption(page, page.getByLabel("每小时第几分钟"), "第 23 分钟");
+  await selectOption(page, page.getByLabel("仓库"), "openai/codex");
+  await page.getByLabel("任务描述").fill(hourlyPrompt);
+
+  const hourlyResponsePromise = page.waitForResponse(isScheduleCreateResponse);
+  const hourlyNavigation = page.waitForURL("**/schedules", {
+    waitUntil: "domcontentloaded",
+  });
+  await page.getByRole("button", { name: "创建定时任务" }).click();
+  const hourlyResponse = await hourlyResponsePromise;
+  expect(hourlyResponse.ok(), await responseFailure(hourlyResponse)).toBe(true);
+  const hourlyBody = hourlyResponse.request().postDataJSON() as JsonObject;
+  expect(hourlyBody).toMatchObject({
+    name: hourlyName,
+    recurrence: {
+      kind: "hourly",
+      minuteOfHour: 23,
+      timezone: "Asia/Shanghai",
+    },
+    taskTemplate: { repoId: repo.id, prompt: hourlyPrompt },
+  });
+  expect(hourlyBody).not.toHaveProperty("cronExpression");
+  const hourlySchedule = (await hourlyResponse.json()) as ScheduleWire;
+  expect(hourlySchedule.cronExpression).toBe("23 * * * *");
+  expect(hourlySchedule.recurrence).toMatchObject({
+    kind: "hourly",
+    minuteOfHour: 23,
+    timezone: "Asia/Shanghai",
+    label: "每小时第 23 分钟",
+  });
+  await hourlyNavigation;
+
+  const dialogFormReady = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === "/runtimes",
+  );
+  await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
+  await dialogFormReady;
+  await expect(page.getByRole("heading", { name: "运行工作台" })).toBeVisible();
+  await page.getByRole("button", { name: "新建任务" }).click();
+  const createDialog = page.getByRole("dialog", { name: "派发远端 Agent" });
+  await expect(createDialog).toBeVisible();
+  await createDialog.getByRole("button", { name: "重复运行", exact: true }).click();
+  await expect(createDialog.getByLabel("时区")).toContainText("Asia/Shanghai");
+  await createDialog.getByLabel("计划名称").fill(intervalName);
+  await selectOption(
+    page,
+    createDialog.getByLabel("重复频率"),
+    "每隔几分钟",
+  );
+  await selectOption(page, createDialog.getByLabel("间隔分钟数"), "每 15 分钟");
+  await selectOption(page, createDialog.getByLabel("仓库"), "openai/codex");
+  await createDialog.getByLabel("任务描述").fill(intervalPrompt);
+
+  const intervalResponsePromise = page.waitForResponse(isScheduleCreateResponse);
+  const intervalNavigation = page.waitForURL("**/schedules", {
+    waitUntil: "domcontentloaded",
+  });
+  await createDialog.getByRole("button", { name: "创建定时任务" }).click();
+  const intervalResponse = await intervalResponsePromise;
+  expect(intervalResponse.ok(), await responseFailure(intervalResponse)).toBe(true);
+  const intervalBody = intervalResponse.request().postDataJSON() as JsonObject;
+  expect(intervalBody).toMatchObject({
+    name: intervalName,
+    recurrence: {
+      kind: "minuteInterval",
+      intervalMinutes: 15,
+      timezone: "Asia/Shanghai",
+    },
+    taskTemplate: { repoId: repo.id, prompt: intervalPrompt },
+  });
+  expect(intervalBody).not.toHaveProperty("cronExpression");
+  const intervalSchedule = (await intervalResponse.json()) as ScheduleWire;
+  expect(intervalSchedule.cronExpression).toBe("*/15 * * * *");
+  expect(intervalSchedule.recurrence).toMatchObject({
+    kind: "minuteInterval",
+    intervalMinutes: 15,
+    timezone: "Asia/Shanghai",
+    label: "每 15 分钟",
+  });
+  failureScheduleId = intervalSchedule.id;
+  await intervalNavigation;
+
+  await expect(page.getByRole("heading", { name: "定时任务" })).toBeVisible();
+  const hourlyRow = page.getByRole("row").filter({ hasText: hourlyName });
+  const intervalRow = page.getByRole("row").filter({ hasText: intervalName });
+  await expect(hourlyRow).toContainText("每小时第 23 分钟");
+  await expect(hourlyRow).toContainText("Asia/Shanghai");
+  await expect(intervalRow).toContainText("每 15 分钟");
+  await expect(intervalRow).toContainText("Asia/Shanghai");
+
+  await hourlyRow.getByRole("button", { name: "编辑" }).click();
+  const hourlyEditDialog = page.getByRole("dialog", { name: "编辑定时任务" });
+  await expect(hourlyEditDialog.getByLabel("重复频率")).toContainText("每小时");
+  await expect(hourlyEditDialog.getByLabel("每小时第几分钟")).toContainText(
+    "第 23 分钟",
+  );
+  await expect(hourlyEditDialog.getByLabel("时区")).toContainText(
+    "Asia/Shanghai",
+  );
+  await selectOption(page, hourlyEditDialog.getByLabel("时区"), "UTC");
+  await expect(hourlyEditDialog.getByLabel("时区")).toContainText("UTC");
+
+  const hourlyUpdateResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      new URL(response.url()).pathname === `/schedules/${hourlySchedule.id}`,
+  );
+  await hourlyEditDialog
+    .getByRole("button", { name: "保存定时任务" })
+    .click();
+  const hourlyUpdateResponse = await hourlyUpdateResponsePromise;
+  expect(
+    hourlyUpdateResponse.ok(),
+    await responseFailure(hourlyUpdateResponse),
+  ).toBe(true);
+  expect(hourlyUpdateResponse.request().postDataJSON()).toMatchObject({
+    recurrence: {
+      kind: "hourly",
+      minuteOfHour: 23,
+      timezone: "UTC",
+    },
+  });
+  expect(hourlyUpdateResponse.request().postDataJSON()).not.toHaveProperty(
+    "cronExpression",
+  );
+  const updatedHourlySchedule =
+    (await hourlyUpdateResponse.json()) as ScheduleWire;
+  expect(updatedHourlySchedule.timezone).toBe("UTC");
+  expect(updatedHourlySchedule.recurrence).toMatchObject({
+    kind: "hourly",
+    minuteOfHour: 23,
+    timezone: "UTC",
+  });
+  await expect(hourlyEditDialog).toBeHidden();
+  await expect(hourlyRow).toContainText("UTC");
+
+  await hourlyRow.getByRole("button", { name: "编辑" }).click();
+  await expect(hourlyEditDialog.getByLabel("重复频率")).toContainText("每小时");
+  await expect(hourlyEditDialog.getByLabel("每小时第几分钟")).toContainText(
+    "第 23 分钟",
+  );
+  await expect(hourlyEditDialog.getByLabel("时区")).toContainText("UTC");
+  await hourlyEditDialog.getByRole("button", { name: "取消" }).click();
+  await expect(hourlyEditDialog).toBeHidden();
+
+  await intervalRow.getByRole("button", { name: "编辑" }).click();
+  const intervalEditDialog = page.getByRole("dialog", { name: "编辑定时任务" });
+  await expect(intervalEditDialog.getByLabel("重复频率")).toContainText(
+    "每隔几分钟",
+  );
+  await expect(intervalEditDialog.getByLabel("间隔分钟数")).toContainText(
+    "每 15 分钟",
+  );
+  await expect(intervalEditDialog.getByLabel("时区")).toContainText(
+    "Asia/Shanghai",
+  );
+  await intervalEditDialog.getByRole("button", { name: "取消" }).click();
+  await expect(intervalEditDialog).toBeHidden();
+
+  // The test-only tick scans every enabled schedule, just like the production
+  // scheduler. Isolate the interval race through the real pause endpoint so the
+  // hourly form fixture cannot become due at the same synthetic instant.
+  const pausedHourlySchedule = await apiJson<ScheduleWire>(
+    request,
+    API_URL,
+    `/schedules/${hourlySchedule.id}/pause`,
+    { method: "POST" },
+  );
+  expect(pausedHourlySchedule.enabled).toBe(false);
+  expect(pausedHourlySchedule.nextRunAt).toBeNull();
+
+  const initial = await getSchedule(request, intervalSchedule.id);
+  const firstScheduledFor = requiredDate(
+    initial.currentPeriod.scheduledFor,
+    "sub-day current scheduledFor",
+  ).toISOString();
+  expect(initial.currentPeriod.key).toBe(`cron:${firstScheduledFor}`);
+  expect(initial.nextRunAt).toBe(firstScheduledFor);
+
+  const dispatchResponsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        `/schedules/${intervalSchedule.id}/dispatch`,
+  );
+  const tickPromise = apiJson<TickResponseWire>(
+    request,
+    CONTROL_URL,
+    "/control/scheduler/tick",
+    { method: "POST", data: { now: firstScheduledFor } },
+  );
+  await intervalRow.getByRole("button", { name: "立即执行" }).click();
+  const [dispatchResponse, firstTick] = await Promise.all([
+    dispatchResponsePromise,
+    tickPromise,
+  ]);
+  expect(dispatchResponse.ok(), await responseFailure(dispatchResponse)).toBe(true);
+  expect(dispatchResponse.request().postDataJSON()).toEqual({
+    expectedPeriodKey: initial.currentPeriod.key,
+  });
+  expect(firstTick.now).toBe(firstScheduledFor);
+  expect([0, 1]).toContain(firstTick.fired);
+
+  const firstRuns = await pollFor(
+    () => listRuns(request, intervalSchedule.id),
+    (runs) =>
+      runs.filter((run) => sameInstant(run.scheduledFor, firstScheduledFor))
+        .length === 1 &&
+      runs.some(
+        (run) =>
+          sameInstant(run.scheduledFor, firstScheduledFor) && run.taskId !== null,
+      ),
+    "manual and automatic dispatch did not converge on one sub-day occurrence",
+  );
+  const firstRun = firstRuns.find((run) =>
+    sameInstant(run.scheduledFor, firstScheduledFor),
+  )!;
+  expect(firstRun.periodKey).toBe(`cron:${firstScheduledFor}`);
+  expect(["manual", "automatic"]).toContain(firstRun.triggerSource);
+
+  const afterFirst = await getSchedule(request, intervalSchedule.id);
+  const secondScheduledFor = requiredDate(
+    afterFirst.nextRunAt,
+    "next sub-day occurrence",
+  ).toISOString();
+  expect(requiredDate(secondScheduledFor, "second occurrence").getTime()).toBeGreaterThan(
+    requiredDate(firstScheduledFor, "first occurrence").getTime(),
+  );
+  const secondTick = await apiJson<TickResponseWire>(
+    request,
+    CONTROL_URL,
+    "/control/scheduler/tick",
+    { method: "POST", data: { now: secondScheduledFor } },
+  );
+  expect(secondTick).toEqual({ now: secondScheduledFor, fired: 1 });
+
+  const settledRuns = await pollFor(
+    () => listRuns(request, intervalSchedule.id),
+    (runs) =>
+      runs.filter(
+        (run) =>
+          sameInstant(run.scheduledFor, firstScheduledFor) ||
+          sameInstant(run.scheduledFor, secondScheduledFor),
+      ).length === 2,
+    "later sub-day occurrence was not dispatched independently",
+  );
+  const secondRun = settledRuns.find((run) =>
+    sameInstant(run.scheduledFor, secondScheduledFor),
+  )!;
+  expect(secondRun.periodKey).toBe(`cron:${secondScheduledFor}`);
+  expect(secondRun.triggerSource).toBe("automatic");
+  expect(secondRun.taskId).not.toBe(firstRun.taskId);
+  failureTaskId = secondRun.taskId;
+
+  const repeatedTick = await apiJson<TickResponseWire>(
+    request,
+    CONTROL_URL,
+    "/control/scheduler/tick",
+    { method: "POST", data: { now: secondScheduledFor } },
+  );
+  expect(repeatedTick.fired).toBe(0);
+  expect(await listRuns(request, intervalSchedule.id)).toHaveLength(2);
+}
+
+function isScheduleCreateResponse(response: Response): boolean {
+  return (
+    response.request().method() === "POST" &&
+    new URL(response.url()).pathname === "/schedules"
+  );
+}
+
+async function selectOption(
+  page: Page,
+  trigger: Locator,
+  optionName: string,
+): Promise<void> {
+  await trigger.click();
+  await page.getByRole("option", { name: optionName, exact: true }).click();
+}
 
 async function loginAndRotateFirstPassword(page: Page): Promise<void> {
   const capabilityResponsePromise = page.waitForResponse(

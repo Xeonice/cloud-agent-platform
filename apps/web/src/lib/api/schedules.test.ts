@@ -4,6 +4,7 @@ import type {
   CreateScheduleRequest,
   ScheduleResponse,
   ScheduleRunResponse,
+  UpdateScheduleRequest,
 } from "@cap/contracts";
 
 vi.mock("./real", () => ({
@@ -167,10 +168,10 @@ describe("schedule mutations", () => {
   it("create sends the schedule payload and invalidates the schedule list", async () => {
     const client = queryClientStub();
     const body = {
-      name: "Workday review",
+      name: "Hourly review",
       recurrence: {
-        kind: "weekdays",
-        time: "08:30",
+        kind: "hourly",
+        minuteOfHour: 17,
         timezone: "Asia/Shanghai",
       },
       overlapPolicy: "enqueue",
@@ -207,15 +208,22 @@ describe("schedule mutations", () => {
   it("update, pause, resume, dispatch, and delete refresh affected schedule reads", async () => {
     const client = queryClientStub();
     const scheduleId = uuid(1);
+    const updateBody: UpdateScheduleRequest = {
+      recurrence: {
+        kind: "minuteInterval",
+        intervalMinutes: 15,
+        timezone: "Asia/Shanghai",
+      },
+    };
 
     const updateOptions = updateScheduleMutation(client);
     await updateOptions.mutationFn!(
-      { id: scheduleId, body: { name: "updated" } },
+      { id: scheduleId, body: updateBody },
       {} as never,
     );
     updateOptions.onSuccess?.(
       scheduleFixture(scheduleId, { id: scheduleId }),
-      { id: scheduleId, body: { name: "updated" } },
+      { id: scheduleId, body: updateBody },
       undefined,
       {} as never,
     );
@@ -255,7 +263,7 @@ describe("schedule mutations", () => {
     await deleteOptions.mutationFn!(scheduleId, {} as never);
     deleteOptions.onSuccess?.(undefined, scheduleId, undefined, {} as never);
 
-    expect(real.updateSchedule).toHaveBeenCalledWith(scheduleId, { name: "updated" });
+    expect(real.updateSchedule).toHaveBeenCalledWith(scheduleId, updateBody);
     expect(real.pauseSchedule).toHaveBeenCalledWith(scheduleId);
     expect(real.resumeSchedule).toHaveBeenCalledWith(scheduleId);
     expect(real.dispatchSchedule).toHaveBeenCalledWith(

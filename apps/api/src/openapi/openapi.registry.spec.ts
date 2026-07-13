@@ -29,6 +29,8 @@ import {
   V1RepoListResponseSchema,
   V1ListQuerySchema,
   V1ScheduleCreateRequestSchema,
+  V1ScheduleResponseSchema,
+  V1ScheduleUpdateRequestSchema,
 } from './openapi.registry';
 
 /**
@@ -41,6 +43,18 @@ type LooseDoc = {
   openapi?: string;
   info?: { title?: string };
   paths?: Record<string, Record<string, unknown> | undefined>;
+};
+
+type LooseSchema = {
+  type?: string;
+  enum?: unknown[];
+  minimum?: number;
+  maximum?: number;
+  required?: string[];
+  properties?: Record<string, LooseSchema>;
+  not?: LooseSchema;
+  oneOf?: LooseSchema[];
+  anyOf?: LooseSchema[];
 };
 
 function asLoose(doc: ReturnType<typeof buildV1OpenApiDocument>): LooseDoc {
@@ -286,6 +300,14 @@ test('the document is built from the SAME schemas used for request validation', 
       }),
     'schedule create rejects recurrence and cronExpression together',
   );
+  assert.throws(
+    () =>
+      V1ScheduleUpdateRequestSchema.parse({
+        recurrence: { kind: 'hourly', minuteOfHour: 15, timezone: 'UTC' },
+        cronExpression: '15 * * * *',
+      }),
+    'schedule update rejects recurrence and cronExpression together',
+  );
 
   // The list envelopes the document generates are the SAME `{ items, nextCursor }`
   // schemas the list controllers return.
@@ -303,6 +325,134 @@ test('the document is built from the SAME schemas used for request validation', 
     () => V1ListQuerySchema.parse({ limit: '201' }),
     'limit is capped at 200 by the same query schema',
   );
+});
+
+test('schedule OpenAPI schemas expose exact sub-day recurrence constraints', () => {
+  const doc = buildV1OpenApiDocument();
+  const requestSchema = (path: string, method: 'post' | 'patch'): LooseSchema => {
+    const operation = doc.paths?.[path]?.[method] as
+      | {
+          requestBody?: {
+            content?: Record<string, { schema?: LooseSchema }>;
+          };
+        }
+      | undefined;
+    const schema = operation?.requestBody?.content?.['application/json']?.schema;
+    assert.ok(schema, `${method.toUpperCase()} ${path} has a JSON request schema`);
+    return schema;
+  };
+  const responseSchema = (path: string, method: 'get'): LooseSchema => {
+    const operation = doc.paths?.[path]?.[method] as
+      | {
+          responses?: Record<
+            string,
+            { content?: Record<string, { schema?: LooseSchema }> }
+          >;
+        }
+      | undefined;
+    const schema =
+      operation?.responses?.['200']?.content?.['application/json']?.schema;
+    assert.ok(schema, `${method.toUpperCase()} ${path} has a JSON response schema`);
+    return schema;
+  };
+
+  const schemas = [
+    ['create request', requestSchema('/v1/schedules', 'post')],
+    ['update request', requestSchema('/v1/schedules/{id}', 'patch')],
+    ['read response', responseSchema('/v1/schedules/{id}', 'get')],
+  ] as const;
+
+  for (const [label, schema] of schemas) {
+    const variants = schema.properties?.recurrence?.oneOf ?? [];
+    const variant = (kind: string) =>
+      variants.find((candidate) =>
+        candidate.properties?.kind?.enum?.includes(kind),
+      );
+    const hourly = variant('hourly');
+    const interval = variant('minuteInterval');
+    assert.ok(hourly, `${label} includes hourly`);
+    assert.ok(interval, `${label} includes minuteInterval`);
+    assert.deepEqual(hourly.properties?.minuteOfHour, {
+      type: 'integer',
+      minimum: 0,
+      maximum: 59,
+    });
+    assert.deepEqual(
+      interval.properties?.intervalMinutes?.anyOf?.flatMap(
+        (candidate) => candidate.enum ?? [],
+      ),
+      [5, 10, 15, 30],
+    );
+  }
+
+  const createRequest = requestSchema('/v1/schedules', 'post');
+  assert.deepEqual(createRequest.oneOf, [
+    {
+      required: ['recurrence'],
+      not: { required: ['cronExpression'] },
+    },
+    {
+      required: ['cronExpression'],
+      not: { required: ['recurrence'] },
+    },
+  ]);
+
+  const updateRequest = requestSchema('/v1/schedules/{id}', 'patch');
+  assert.deepEqual(updateRequest.oneOf, [
+    {
+      required: ['recurrence'],
+      not: {
+        anyOf: [
+          { required: ['cronExpression'] },
+          { required: ['timezone'] },
+        ],
+      },
+    },
+    {
+      required: ['cronExpression'],
+      not: { required: ['recurrence'] },
+    },
+    {
+      anyOf: [
+        { required: ['name'] },
+        { required: ['timezone'] },
+        { required: ['taskTemplate'] },
+        { required: ['enabled'] },
+        { required: ['overlapPolicy'] },
+        { required: ['misfirePolicy'] },
+      ],
+      not: {
+        anyOf: [
+          { required: ['recurrence'] },
+          { required: ['cronExpression'] },
+        ],
+      },
+    },
+  ]);
+
+  assert.doesNotThrow(() =>
+    V1ScheduleCreateRequestSchema.parse({
+      recurrence: { kind: 'hourly', minuteOfHour: 59, timezone: 'UTC' },
+      taskTemplate: {
+        repoId: '00000000-0000-4000-a000-000000000101',
+        prompt: 'hourly check',
+      },
+    }),
+  );
+  assert.doesNotThrow(() =>
+    V1ScheduleUpdateRequestSchema.parse({
+      recurrence: {
+        kind: 'minuteInterval',
+        intervalMinutes: 30,
+        timezone: 'UTC',
+      },
+    }),
+  );
+  assert.throws(
+    () => V1ScheduleUpdateRequestSchema.parse({ unknownOnly: true }),
+    'schedule update rejects a body with no known update field',
+  );
+  assert.ok(V1ScheduleResponseSchema.shape.recurrence);
 });
 
 test('request-body required flags match the shared validation schemas', () => {

@@ -275,9 +275,10 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     summary: 'Create a schedule',
     description:
       'Create an owner-scoped recurring task schedule. Prefer recurrence ' +
-      'descriptors such as daily, weekdays, weekly, or monthly; cronExpression ' +
-      'and timezone remain accepted for compatibility clients. The task template ' +
-      'is validated through the same task creation rules.',
+      'descriptors such as daily, weekdays, weekly, monthly, hourly, or ' +
+      'minuteInterval; cronExpression and timezone remain accepted for ' +
+      'compatibility clients. The task template is validated through the same ' +
+      'task creation rules.',
     scope: 'tasks:write',
     streaming: false,
     destructive: true,
@@ -310,7 +311,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     summary: 'Update a schedule',
     description:
       'Update recurrence, policies, enabled state, or task template. Prefer ' +
-      'recurrence descriptors; cronExpression and timezone remain compatibility fields.',
+      'daily, weekdays, weekly, monthly, hourly, or minuteInterval recurrence ' +
+      'descriptors; cronExpression and timezone remain compatibility fields.',
     scope: 'tasks:write',
     streaming: false,
     destructive: true,

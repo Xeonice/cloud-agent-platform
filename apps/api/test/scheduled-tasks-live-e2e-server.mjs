@@ -5,6 +5,7 @@ import { Logger } from 'nestjs-pino';
 
 import { AppModule } from '../dist/app.module.js';
 import { PrismaService } from '../dist/prisma/prisma.service.js';
+import { ScheduledTasksService } from '../dist/scheduled-tasks/scheduled-tasks.service.js';
 import { SANDBOX_PROVIDER } from '../dist/sandbox/sandbox-provider.port.js';
 import { startScheduledTasksControlServer } from './scheduled-tasks-live-e2e/control-server.mjs';
 import { RecordingSandboxProvider } from './scheduled-tasks-live-e2e/recording-sandbox-provider.mjs';
@@ -48,9 +49,11 @@ try {
   await app.listen(apiPort, API_HOST);
   const boundApiPort = tcpPort(app.getHttpServer().address(), 'API');
   const prisma = app.get(PrismaService);
+  const scheduledTasks = app.get(ScheduledTasksService);
   control = await startScheduledTasksControlServer({
     prisma,
     provider,
+    scheduledTasks,
     port: controlPort,
   });
 

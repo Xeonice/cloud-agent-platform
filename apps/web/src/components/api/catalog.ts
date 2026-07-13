@@ -174,16 +174,16 @@ const CREATE_TASK_SAMPLE = JSON.stringify(
 
 const CREATE_SCHEDULE_SAMPLE = JSON.stringify(
   {
-    name: "工作日巡检",
+    name: "每小时巡检",
     recurrence: {
-      kind: "weekdays",
-      time: "09:30",
+      kind: "hourly",
+      minuteOfHour: 15,
       timezone: "Asia/Shanghai",
     },
     taskTemplate: {
       repoId: REPO_ID,
       runtime: "codex",
-      prompt: "执行工作日仓库巡检",
+      prompt: "执行每小时仓库巡检",
     },
     enabled: true,
     overlapPolicy: "skip",
@@ -195,10 +195,10 @@ const CREATE_SCHEDULE_SAMPLE = JSON.stringify(
 
 const UPDATE_SCHEDULE_SAMPLE = JSON.stringify(
   {
-    name: "工作日巡检（更新）",
+    name: "每 15 分钟巡检",
     recurrence: {
-      kind: "weekdays",
-      time: "10:00",
+      kind: "minuteInterval",
+      intervalMinutes: 15,
       timezone: "Asia/Shanghai",
     },
     enabled: true,

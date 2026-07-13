@@ -65,6 +65,8 @@ import {
 import {
   buildSchedulePayload,
   buildTaskRequest,
+  DEFAULT_RECURRENCE_INTERVAL_MINUTES,
+  DEFAULT_RECURRENCE_MINUTE_OF_HOUR,
   DEFAULT_RECURRENCE_TIME,
   DEFAULT_RECURRENCE_TIMEZONE,
   ENVIRONMENT_DEFAULT,
@@ -87,6 +89,16 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/utils";
+import {
+  RecurrenceFields,
+  type RecurrenceFieldsValue,
+} from "@/components/schedules/recurrence-fields";
+import {
+  buildScheduleTimezoneOptions,
+  detectBrowserScheduleTimezone,
+  listSupportedScheduleTimezones,
+  resolveHydratedScheduleTimezone,
+} from "@/lib/schedule-timezone";
 
 export const Route = createFileRoute("/_app/tasks/new")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -111,16 +123,6 @@ const STRATEGIES = [
   "先读仓库与 AGENTS.md，再给出计划",
   "允许直接修改，但提交前停止",
   "只读审查，不写入文件",
-] as const;
-
-const WEEKDAY_OPTIONS = [
-  { value: 1, label: "周一" },
-  { value: 2, label: "周二" },
-  { value: 3, label: "周三" },
-  { value: 4, label: "周四" },
-  { value: 5, label: "周五" },
-  { value: 6, label: "周六" },
-  { value: 0, label: "周日" },
 ] as const;
 
 /** Resolve a repo's display full-name (`owner/name` slug from gitSource, or name). */
@@ -255,11 +257,62 @@ function NewTaskPage() {
   const [recurrenceKind, setRecurrenceKind] =
     React.useState<RecurrenceFormKind>("weekdays");
   const [recurrenceTime, setRecurrenceTime] = React.useState(DEFAULT_RECURRENCE_TIME);
+  const [minuteOfHour, setMinuteOfHour] = React.useState(
+    DEFAULT_RECURRENCE_MINUTE_OF_HOUR,
+  );
+  const [intervalMinutes, setIntervalMinutes] =
+    React.useState<ScheduleFormState["intervalMinutes"]>(
+      DEFAULT_RECURRENCE_INTERVAL_MINUTES,
+    );
   const [timezone, setTimezone] = React.useState(DEFAULT_RECURRENCE_TIMEZONE);
+  const [timezoneOptions, setTimezoneOptions] = React.useState(() =>
+    buildScheduleTimezoneOptions({
+      currentTimezone: DEFAULT_RECURRENCE_TIMEZONE,
+    }),
+  );
+  const timezoneDirtyRef = React.useRef(false);
   const [weekday, setWeekday] = React.useState(1);
   const [dayOfMonth, setDayOfMonth] = React.useState(1);
   const [overlapPolicy, setOverlapPolicy] =
     React.useState<ScheduleFormState["overlapPolicy"]>("skip");
+
+  const previousScheduleIdRef = React.useRef(scheduleId);
+  React.useEffect(() => {
+    if (previousScheduleIdRef.current === scheduleId) return;
+    previousScheduleIdRef.current = scheduleId;
+    timezoneDirtyRef.current = false;
+    if (!scheduleId) {
+      setLoadedScheduleId(null);
+      setTimezone(DEFAULT_RECURRENCE_TIMEZONE);
+      setTimezoneOptions(
+        buildScheduleTimezoneOptions({
+          currentTimezone: DEFAULT_RECURRENCE_TIMEZONE,
+        }),
+      );
+    }
+  }, [scheduleId]);
+
+  React.useEffect(() => {
+    const detectedTimezone = detectBrowserScheduleTimezone();
+    const persistedTimezone = editingSchedule?.timezone ?? null;
+    setTimezoneOptions(
+      buildScheduleTimezoneOptions({
+        supportedTimezones: listSupportedScheduleTimezones(),
+        detectedTimezone,
+        currentTimezone: persistedTimezone ?? DEFAULT_RECURRENCE_TIMEZONE,
+        persistedTimezone,
+      }),
+    );
+    setTimezone(
+      resolveHydratedScheduleTimezone({
+        detectedTimezone,
+        currentTimezone: timezone,
+        persistedTimezone,
+        editing: Boolean(scheduleId),
+        dirty: timezoneDirtyRef.current,
+      }),
+    );
+  }, [editingSchedule?.timezone, scheduleId, timezone]);
 
   function toggleSkill(id: string) {
     setSkills((cur) =>
@@ -319,6 +372,7 @@ function NewTaskPage() {
 
   React.useEffect(() => {
     if (!editingSchedule || loadedScheduleId === editingSchedule.id) return;
+    timezoneDirtyRef.current = false;
     const form = scheduleFormFromSchedule(editingSchedule, DEFAULT_RUNTIME);
     setMode("repeated");
     setLoadedScheduleId(editingSchedule.id);
@@ -334,7 +388,16 @@ function NewTaskPage() {
     setScheduleName(form.name);
     setRecurrenceKind(form.recurrenceKind);
     setRecurrenceTime(form.recurrenceTime);
+    setMinuteOfHour(form.minuteOfHour);
+    setIntervalMinutes(form.intervalMinutes);
     setTimezone(form.timezone);
+    setTimezoneOptions((current) =>
+      buildScheduleTimezoneOptions({
+        supportedTimezones: current,
+        currentTimezone: form.timezone,
+        persistedTimezone: form.timezone,
+      }),
+    );
     setWeekday(form.weekday);
     setDayOfMonth(form.dayOfMonth);
     setOverlapPolicy(form.overlapPolicy);
@@ -372,6 +435,30 @@ function NewTaskPage() {
 
   const createdTask = mutation.data;
 
+  function handleRecurrenceChange(patch: Partial<RecurrenceFieldsValue>) {
+    if (patch.recurrenceKind !== undefined) {
+      setRecurrenceKind(patch.recurrenceKind);
+    }
+    if (patch.recurrenceTime !== undefined) {
+      setRecurrenceTime(patch.recurrenceTime);
+    }
+    if (patch.minuteOfHour !== undefined) {
+      setMinuteOfHour(patch.minuteOfHour);
+    }
+    if (patch.intervalMinutes !== undefined) {
+      setIntervalMinutes(patch.intervalMinutes);
+    }
+    if (patch.timezone !== undefined) {
+      timezoneDirtyRef.current = true;
+      setTimezone(patch.timezone);
+    }
+    if (patch.weekday !== undefined) setWeekday(patch.weekday);
+    if (patch.dayOfMonth !== undefined) setDayOfMonth(patch.dayOfMonth);
+    if (patch.overlapPolicy !== undefined) {
+      setOverlapPolicy(patch.overlapPolicy);
+    }
+  }
+
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!repoId || prompt.trim().length === 0) return;
@@ -395,6 +482,8 @@ function NewTaskPage() {
         name: scheduleName,
         recurrenceKind,
         recurrenceTime,
+        minuteOfHour,
+        intervalMinutes,
         timezone,
         weekday,
         dayOfMonth,
@@ -542,137 +631,22 @@ function NewTaskPage() {
                   className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
               </div>
-              <div className="grid gap-3 min-[821px]:grid-cols-2">
-                <div className="grid gap-2">
-                  <label
-                    htmlFor="recurrenceKind"
-                    className="text-[13px] font-semibold text-ink"
-                  >
-                    重复频率
-                  </label>
-                  <Select
-                    value={recurrenceKind}
-                    onValueChange={(value) =>
-                      setRecurrenceKind(value as RecurrenceFormKind)
-                    }
-                  >
-                    <SelectTrigger id="recurrenceKind" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {recurrenceKind === "custom" ? (
-                        <SelectItem value="custom">自定义重复（保留）</SelectItem>
-                      ) : null}
-                      <SelectItem value="daily">每天</SelectItem>
-                      <SelectItem value="weekdays">工作日</SelectItem>
-                      <SelectItem value="weekly">每周</SelectItem>
-                      <SelectItem value="monthly">每月</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <label
-                    htmlFor="recurrenceTime"
-                    className="text-[13px] font-semibold text-ink"
-                  >
-                    触发时间
-                  </label>
-                  <input
-                    id="recurrenceTime"
-                    type="time"
-                    value={recurrenceTime}
-                    onChange={(event) => setRecurrenceTime(event.target.value)}
-                    disabled={recurrenceKind === "custom"}
-                    className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-                  />
-                </div>
-              </div>
-              {recurrenceKind === "weekly" ? (
-                <div className="grid gap-2">
-                  <label htmlFor="weekday" className="text-[13px] font-semibold text-ink">
-                    每周哪一天
-                  </label>
-                  <Select
-                    value={String(weekday)}
-                    onValueChange={(value) => setWeekday(Number(value))}
-                  >
-                    <SelectTrigger id="weekday" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {WEEKDAY_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={String(option.value)}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : null}
-              {recurrenceKind === "monthly" ? (
-                <div className="grid gap-2">
-                  <label
-                    htmlFor="dayOfMonth"
-                    className="text-[13px] font-semibold text-ink"
-                  >
-                    每月哪一天
-                  </label>
-                  <Select
-                    value={String(dayOfMonth)}
-                    onValueChange={(value) => setDayOfMonth(Number(value))}
-                  >
-                    <SelectTrigger id="dayOfMonth" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Array.from({ length: 28 }, (_, index) => index + 1).map(
-                        (day) => (
-                          <SelectItem key={day} value={String(day)}>
-                            {day} 日
-                          </SelectItem>
-                        ),
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : null}
-              <div className="grid gap-3 min-[821px]:grid-cols-2">
-                <div className="grid gap-2">
-                  <label htmlFor="timezone" className="text-[13px] font-semibold text-ink">
-                    时区
-                  </label>
-                  <input
-                    id="timezone"
-                    value={timezone}
-                    onChange={(event) => setTimezone(event.target.value)}
-                    disabled={recurrenceKind === "custom"}
-                    placeholder="UTC"
-                    className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <label
-                    htmlFor="overlapPolicy"
-                    className="text-[13px] font-semibold text-ink"
-                  >
-                    上次未结束时
-                  </label>
-                  <Select
-                    value={overlapPolicy}
-                    onValueChange={(value) =>
-                      setOverlapPolicy(value as ScheduleFormState["overlapPolicy"])
-                    }
-                  >
-                    <SelectTrigger id="overlapPolicy" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="skip">跳过本次</SelectItem>
-                      <SelectItem value="enqueue">继续排队</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
+              <RecurrenceFields
+                idPrefix="page"
+                value={{
+                  recurrenceKind,
+                  recurrenceTime,
+                  minuteOfHour,
+                  intervalMinutes,
+                  timezone,
+                  weekday,
+                  dayOfMonth,
+                  overlapPolicy,
+                }}
+                timezoneOptions={timezoneOptions}
+                onChange={handleRecurrenceChange}
+                labelClassName="font-semibold text-ink"
+              />
             </div>
           ) : null}
 
