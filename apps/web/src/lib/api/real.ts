@@ -68,6 +68,7 @@ import {
   type SaveCodexCredentialRequest,
   type ClaudeCredential,
   type SaveClaudeCredentialRequest,
+  type CodexDeviceLoginSessionId,
   type CodexDeviceLoginStartResponse,
   type CodexDeviceLoginStatus,
   type ListAvailableGithubReposResponse,
@@ -857,27 +858,38 @@ export async function getSessionCast(taskId: string): Promise<string> {
   return requestText(`/tasks/${encodeURIComponent(taskId)}/cast`);
 }
 
-/**
- * `POST /settings/codex/device-login` — start the OFFICIAL ChatGPT OAuth
- * device-code login (server runs `codex login --device-auth`); returns the
- * verification URL + one-time code to display.
- */
+/** Start an asynchronous, account-scoped official Codex login session. */
 export async function startCodexDeviceLogin(): Promise<CodexDeviceLoginStartResponse> {
   return CodexDeviceLoginStartResponseSchema.parse(
     await request("/settings/codex/device-login", { method: "POST" }),
   );
 }
 
-/** `GET /settings/codex/device-login` — poll the in-flight device login. */
-export async function pollCodexDeviceLogin(): Promise<CodexDeviceLoginStatus> {
-  return CodexDeviceLoginStatusSchema.parse(
-    await request("/settings/codex/device-login"),
+/** Poll one exact login attempt; callers may abort an obsolete request. */
+export async function pollCodexDeviceLogin(
+  sessionId: CodexDeviceLoginSessionId,
+  signal?: AbortSignal,
+): Promise<CodexDeviceLoginStatus> {
+  const status = CodexDeviceLoginStatusSchema.parse(
+    await request(
+      `/settings/codex/device-login/${encodeURIComponent(sessionId)}`,
+      { signal },
+    ),
   );
+  if (status.sessionId !== sessionId) {
+    throw new Error("设备登录会话响应不匹配，请重试。");
+  }
+  return status;
 }
 
-/** `DELETE /settings/codex/device-login` — cancel + reclaim the in-flight login. */
-export async function cancelCodexDeviceLogin(): Promise<void> {
-  await request("/settings/codex/device-login", { method: "DELETE" });
+/** Cancel and reclaim one exact login attempt. The endpoint is idempotent. */
+export async function cancelCodexDeviceLogin(
+  sessionId: CodexDeviceLoginSessionId,
+): Promise<void> {
+  await request(
+    `/settings/codex/device-login/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+  );
 }
 
 /**

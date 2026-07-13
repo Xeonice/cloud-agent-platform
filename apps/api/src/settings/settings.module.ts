@@ -1,4 +1,9 @@
-import { Module } from '@nestjs/common';
+import {
+  MiddlewareConsumer,
+  Module,
+  RequestMethod,
+  type NestModule,
+} from '@nestjs/common';
 import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
@@ -6,6 +11,9 @@ import { ModelDiscoveryClient } from './model-discovery.client';
 import { CodexDeviceLoginService } from './codex-device-login.service';
 import { ForgeCredentialService } from './forge-credential.service';
 import { ForgeModule } from '../forge/forge.module';
+import { CODEX_DEVICE_LOGIN_RUNNER } from './codex-device-login-runner';
+import { DockerCodexDeviceLoginRunner } from './docker-codex-device-login-runner';
+import { DeviceLoginNoStoreMiddleware } from './device-login-no-store.middleware';
 
 /**
  * Account-settings feature module (account-settings, tasks 7.2–7.6).
@@ -32,9 +40,27 @@ import { ForgeModule } from '../forge/forge.module';
   providers: [
     SettingsService,
     ModelDiscoveryClient,
+    DockerCodexDeviceLoginRunner,
+    {
+      provide: CODEX_DEVICE_LOGIN_RUNNER,
+      useExisting: DockerCodexDeviceLoginRunner,
+    },
     CodexDeviceLoginService,
     ForgeCredentialService,
   ],
   exports: [SettingsService, ForgeCredentialService],
 })
-export class SettingsModule {}
+export class SettingsModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(DeviceLoginNoStoreMiddleware).forRoutes(
+      {
+        path: 'settings/codex/device-login',
+        method: RequestMethod.ALL,
+      },
+      {
+        path: 'settings/codex/device-login/:sessionId',
+        method: RequestMethod.ALL,
+      },
+    );
+  }
+}

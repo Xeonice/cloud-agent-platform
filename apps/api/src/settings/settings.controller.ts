@@ -1,21 +1,28 @@
 import {
   BadRequestException,
   Body,
+  type CallHandler,
   Controller,
   Delete,
+  type ExecutionContext,
   ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
+  Injectable,
+  type NestInterceptor,
+  Param,
   Patch,
   Post,
   Put,
   Query,
   Req,
+  UseInterceptors,
   UsePipes,
 } from '@nestjs/common';
 import {
   ConnectForgeCredentialRequestSchema,
+  CodexDeviceLoginSessionParamsSchema,
   DiscoverModelsRequestSchema,
   ForgeKindSchema,
   RegisterForgeConnectionRequestSchema,
@@ -44,10 +51,27 @@ import {
 } from '@cap/contracts';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
 import { isAdminPrincipal } from '../auth/admin';
-import { ZodValidationPipe } from '../repos/zod-validation.pipe';
+import { ZodValidationPipe, zodParam } from '../repos/zod-validation.pipe';
 import { SettingsService } from './settings.service';
 import { CodexDeviceLoginService } from './codex-device-login.service';
 import { ForgeCredentialService } from './forge-credential.service';
+
+/**
+ * Device-login responses contain short-lived authorization state and must not
+ * be stored by browsers or intermediary caches. An interceptor runs before
+ * parameter pipes and the controller method, so validation and service errors
+ * receive the same header as successful 202/200/204 responses.
+ */
+@Injectable()
+class DeviceLoginNoStoreInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler) {
+    context
+      .switchToHttp()
+      .getResponse()
+      .setHeader('Cache-Control', 'no-store');
+    return next.handle();
+  }
+}
 
 /**
  * Account-settings REST surface (account-settings, tasks 7.2–7.6), mounted under
@@ -273,33 +297,43 @@ export class SettingsController {
     return this.settings.setMcpServerEnabled(body.mcpServerEnabled);
   }
 
-  /**
-   * Start an OFFICIAL-account OAuth device-code login: provisions a transient
-   * codex container, launches `codex login --device-auth`, and returns the OpenAI
-   * verification URL + one-time code for the operator to authorize. The client
-   * then polls `GET /settings/codex/device-login`.
-   */
+  /** Create or recover the account's asynchronous Codex device-login session. */
   @Post('codex/device-login')
-  @HttpCode(HttpStatus.OK)
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UseInterceptors(DeviceLoginNoStoreInterceptor)
   async startDeviceLogin(
     @Req() req: AuthenticatedRequest,
   ): Promise<CodexDeviceLoginStartResponse> {
     return this.deviceLogin.start(this.requireOperator(req));
   }
 
-  /** Poll the in-flight device login; `connected` once the credential is stored. */
-  @Get('codex/device-login')
-  async pollDeviceLogin(
+  /** Read one exact account-owned attempt without exposing other accounts. */
+  @Get('codex/device-login/:sessionId')
+  @UseInterceptors(DeviceLoginNoStoreInterceptor)
+  async getDeviceLoginStatus(
     @Req() req: AuthenticatedRequest,
+    @Param(
+      'sessionId',
+      zodParam(CodexDeviceLoginSessionParamsSchema.shape.sessionId),
+    )
+    sessionId: string,
   ): Promise<CodexDeviceLoginStatus> {
-    return this.deviceLogin.pollStatus(this.requireOperator(req));
+    return this.deviceLogin.getStatus(this.requireOperator(req), sessionId);
   }
 
-  /** Cancel + reclaim the in-flight device login (operator dismissed the dialog). */
-  @Delete('codex/device-login')
+  /** Idempotently cancel one exact account-owned attempt and reclaim its worker. */
+  @Delete('codex/device-login/:sessionId')
   @HttpCode(HttpStatus.NO_CONTENT)
-  async cancelDeviceLogin(@Req() req: AuthenticatedRequest): Promise<void> {
-    await this.deviceLogin.cancel(this.requireOperator(req));
+  @UseInterceptors(DeviceLoginNoStoreInterceptor)
+  async cancelDeviceLogin(
+    @Req() req: AuthenticatedRequest,
+    @Param(
+      'sessionId',
+      zodParam(CodexDeviceLoginSessionParamsSchema.shape.sessionId),
+    )
+    sessionId: string,
+  ): Promise<void> {
+    await this.deviceLogin.cancel(this.requireOperator(req), sessionId);
   }
 
   /**

@@ -1,404 +1,679 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
-import Docker from 'dockerode';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  type OnModuleDestroy,
+  type OnModuleInit,
+} from '@nestjs/common';
 import type {
   CodexDeviceLoginStartResponse,
   CodexDeviceLoginStatus,
   SessionUser,
 } from '@cap/contracts';
 
+import {
+  CODEX_DEVICE_LOGIN_RUNNER,
+  isCodexDeviceLoginRunnerError,
+  type CodexDeviceLoginRunner,
+  type CodexDeviceLoginRunnerHandle,
+} from './codex-device-login-runner';
 import { SettingsService } from './settings.service';
 
-/** One in-flight device-code login for an operator. */
-interface LoginSession {
+type ActiveDeviceLoginStatus =
+  | 'preparing'
+  | 'awaiting_authorization'
+  | 'finalizing';
+type TerminalDeviceLoginStatus =
+  | 'connected'
+  | 'cancelled'
+  | 'expired'
+  | 'error';
+type DeviceLoginStatus = ActiveDeviceLoginStatus | TerminalDeviceLoginStatus;
+
+interface DeviceLoginSession {
   readonly sessionId: string;
-  readonly containerName: string;
-  readonly baseUrl: string;
-  readonly container: Docker.Container;
-  readonly startedAtMs: number;
-  /** Updated on each poll; lets the sweep reclaim a session the client abandoned. */
-  lastPolledAtMs: number;
-  verificationUri: string;
-  userCode: string;
+  readonly generation: string;
+  readonly accountId: string;
+  readonly operator: SessionUser;
+  readonly createdAtMs: number;
+  readonly expiresAtMs: number;
+  readonly abortController: AbortController;
+  status: DeviceLoginStatus;
+  verificationUri?: string;
+  userCode?: string;
+  message?: string;
+  handle?: CodexDeviceLoginRunnerHandle;
+  deadlineTimer?: ReturnType<typeof setTimeout>;
+  retentionTimer?: ReturnType<typeof setTimeout>;
+  cleanupPromise?: Promise<void>;
+  /**
+   * Once assigned, encrypted persistence is the attempt's linearization point:
+   * cancellation/deadline waits for its outcome instead of publishing a false
+   * cancelled/expired terminal state after the database may have committed.
+   */
+  persistencePromise?: Promise<void>;
+}
+
+const TERMINAL_STATUSES = new Set<DeviceLoginStatus>([
+  'connected',
+  'cancelled',
+  'expired',
+  'error',
+]);
+
+const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
+const DEFAULT_TERMINAL_RETENTION_MS = 2 * 60 * 1000;
+const DEFAULT_SWEEP_INTERVAL_MS = 30_000;
+const DEFAULT_PREPARE_TIMEOUT_MS = 30_000;
+const DEFAULT_IO_TIMEOUT_MS = 10_000;
+const DEFAULT_CANCEL_TIMEOUT_MS = 3_000;
+
+function positiveIntegerFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 /**
- * Drives the OFFICIAL ChatGPT connect as an OAuth DEVICE-CODE flow, delegating
- * the actual OAuth to the codex CLI (which OpenAI maintains) rather than
- * re-implementing OpenAI's undocumented device endpoints:
+ * Validates the file-backed ChatGPT credential before it crosses the existing
+ * encrypted SettingsService persistence boundary. Never return the parsed
+ * token object or include it in an exception/log.
+ */
+export function isValidCodexChatgptCredential(authJson: string): boolean {
+  try {
+    const value = JSON.parse(authJson) as unknown;
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+    const auth = value as {
+      auth_mode?: unknown;
+      tokens?: unknown;
+    };
+    if (auth.auth_mode !== 'chatgpt') return false;
+    if (
+      auth.tokens === null ||
+      typeof auth.tokens !== 'object' ||
+      Array.isArray(auth.tokens)
+    ) {
+      return false;
+    }
+    const tokens = auth.tokens as {
+      access_token?: unknown;
+      refresh_token?: unknown;
+    };
+    return (
+      nonEmptyString(tokens.access_token) &&
+      nonEmptyString(tokens.refresh_token)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Owns account/session policy for official Codex device login. Disposable
+ * Docker/App Server mechanics stay behind CodexDeviceLoginRunner.
  *
- *   1. `start()` provisions a transient AIO container (codex baked in, on
- *      `cap-net`, no host port) and launches `codex login --device-auth` detached
- *      in it, then parses the verification URL + one-time code codex prints.
- *   2. The operator opens the URL and authorizes in their ChatGPT browser session
- *      (this is the only step that must happen at OpenAI — codex's first-party
- *      client cannot redirect back to this web app, so a device flow is the only
- *      remote-web-compatible path).
- *   3. `pollStatus()` watches the container for the `~/.codex/auth.json` codex
- *      writes on success, then stores it via {@link SettingsService.saveCredential}
- *      (`mode:'official'`, encrypted at rest) and tears the container down.
- *
- * The login container is owned here (its own dockerode lifecycle, distinct from
- * per-task sandboxes); it auto-removes and a sweep reclaims abandoned sessions.
+ * A session record is inserted before any await, so POST can immediately return
+ * `preparing` and cancellation can win even while the worker is being created.
  */
 @Injectable()
-export class CodexDeviceLoginService implements OnModuleDestroy {
+export class CodexDeviceLoginService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(CodexDeviceLoginService.name);
-  private readonly docker = new Docker();
-  /** Active sessions keyed by the operator's account primary key `user.id`
-   *  (fix-local-account-settings-scope) — present for both local and GitHub
-   *  accounts, so device login is per-account and works for local accounts. */
-  private readonly sessions = new Map<string, LoginSession>();
-  /** Per-operator in-flight guard: serializes start() so a double-click / retry
-   *  can never create two login containers for the same account. */
-  private readonly starting = new Set<string>();
-  /** EVERY created login container by name, so an orphan (start failed, app
-   *  shutdown) is reclaimable even before/without a session-map entry. */
-  private readonly allContainers = new Map<string, Docker.Container>();
+  private readonly sessionsById = new Map<string, DeviceLoginSession>();
+  private readonly activeSessionByAccount = new Map<string, string>();
+  private readonly backgroundWork = new Set<Promise<void>>();
+  private readonly sessionTtlMs = positiveIntegerFromEnv(
+    'CODEX_DEVICE_LOGIN_SESSION_TTL_MS',
+    DEFAULT_SESSION_TTL_MS,
+  );
+  private readonly terminalRetentionMs = positiveIntegerFromEnv(
+    'CODEX_DEVICE_LOGIN_TERMINAL_RETENTION_MS',
+    DEFAULT_TERMINAL_RETENTION_MS,
+  );
+  private readonly sweepIntervalMs = positiveIntegerFromEnv(
+    'CODEX_DEVICE_LOGIN_SWEEP_INTERVAL_MS',
+    DEFAULT_SWEEP_INTERVAL_MS,
+  );
+  private readonly prepareTimeoutMs = positiveIntegerFromEnv(
+    'CODEX_DEVICE_LOGIN_PREPARE_TIMEOUT_MS',
+    DEFAULT_PREPARE_TIMEOUT_MS,
+  );
+  private readonly ioTimeoutMs = positiveIntegerFromEnv(
+    'CODEX_DEVICE_LOGIN_IO_TIMEOUT_MS',
+    DEFAULT_IO_TIMEOUT_MS,
+  );
+  private readonly cancelTimeoutMs = positiveIntegerFromEnv(
+    'CODEX_DEVICE_LOGIN_CANCEL_TIMEOUT_MS',
+    DEFAULT_CANCEL_TIMEOUT_MS,
+  );
   private sweeper?: ReturnType<typeof setInterval>;
+  private destroyed = false;
 
-  private static readonly AIO_PORT = 8080;
-  private static readonly SECCOMP_UNCONFINED = 'seccomp=unconfined';
-  private static readonly SHM_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
-  /** codex device codes last ~15 minutes; reclaim a little after. */
-  private static readonly SESSION_TTL_MS = 16 * 60 * 1000;
-  private static readonly EXPIRES_IN_SECONDS = 15 * 60;
+  constructor(
+    private readonly settings: SettingsService,
+    @Inject(CODEX_DEVICE_LOGIN_RUNNER)
+    private readonly runner: CodexDeviceLoginRunner,
+  ) {}
 
-  constructor(private readonly settings: SettingsService) {
-    // Reclaim abandoned login containers (operator closed the dialog without
-    // finishing) so a transient container never lingers past the code window.
-    this.sweeper = setInterval(() => void this.sweep(), 60_000);
+  async onModuleInit(): Promise<void> {
+    try {
+      await this.runner.disposeOrphans({ timeoutMs: this.ioTimeoutMs });
+    } catch (error) {
+      this.logger.warn(
+        `Codex 登录孤儿工作器清理失败 (${this.errorCategory(error)})`,
+      );
+    }
+    if (this.destroyed) return;
+    this.sweeper = setInterval(() => this.sweep(), this.sweepIntervalMs);
     this.sweeper.unref?.();
   }
 
   /**
-   * Begin a device-code login for the operator: provision the transient codex
-   * container, launch `codex login --device-auth`, and return the verification
-   * URL + one-time code to display. Any prior in-flight session for this operator
-   * is torn down first (one active login per account).
+   * Create or recover the account's sole active attempt. This method performs no
+   * asynchronous preparation before returning the shared start contract.
    */
   async start(operator: SessionUser): Promise<CodexDeviceLoginStartResponse> {
-    const key = this.requireKey(operator);
-    // Serialize per operator: a double-click / client retry must not spin up two
-    // login containers (the second would orphan the first). One active start at a
-    // time per account.
-    if (this.starting.has(key)) {
-      throw new Error('一个登录会话正在进行中，请稍候或刷新后重试。');
-    }
-    this.starting.add(key);
-    try {
-      await this.teardown(key);
-
-      const image = process.env.AIO_SANDBOX_IMAGE;
-      if (!image) {
-        throw new Error('AIO_SANDBOX_IMAGE must be set to start a codex device login');
-      }
-      const network = process.env.AIO_SANDBOX_NETWORK ?? 'cap-net';
-      const sessionId = randomUUID();
-      const containerName = `cap-codexlogin-${sessionId}`;
-      const baseUrl = `http://${containerName}:${CodexDeviceLoginService.AIO_PORT}`;
-
-      const container = await this.docker.createContainer({
-        Image: image,
-        name: containerName,
-        HostConfig: {
-          SecurityOpt: [CodexDeviceLoginService.SECCOMP_UNCONFINED],
-          ShmSize: CodexDeviceLoginService.SHM_SIZE_BYTES,
-          AutoRemove: true,
-          NetworkMode: network,
-          // No PortBindings — reached by container name on cap-net, like task sandboxes.
-        },
-      });
-      // Track the container the moment it exists (BEFORE start) so a start()/
-      // readiness failure — or app shutdown — can still reclaim it; the catch +
-      // onModuleDestroy + sweep all key off allContainers.
-      this.allContainers.set(containerName, container);
-
-      try {
-        await container.start();
-        await this.waitForReadiness(baseUrl);
-        // Launch detached (setsid + redirect) so codex keeps polling OpenAI after
-        // this exec returns; it prints the URL + code, then writes auth.json on
-        // success. Remove any stale auth.json first so the poll only ever sees a
-        // login completed in THIS session.
-        await this.exec(
-          baseUrl,
-          'rm -f /home/gem/.codex/auth.json; ' +
-            'setsid sh -c "codex login --device-auth > /tmp/codexlogin.log 2>&1" ' +
-            '</dev/null >/dev/null 2>&1 & echo launched',
+    const accountId = this.requireAccountId(operator);
+    const now = Date.now();
+    const existingId = this.activeSessionByAccount.get(accountId);
+    if (existingId) {
+      const existing = this.sessionsById.get(existingId);
+      if (existing && !this.isTerminal(existing.status)) {
+        if (now < existing.expiresAtMs) return this.startResponse(existing);
+        this.finishTerminal(
+          existing,
+          'expired',
+          'CAP 登录会话已到期，请重新发起连接。',
+          true,
         );
-
-        const parsed = await this.pollForCode(baseUrl);
-        if (!parsed) {
-          // No code surfaced — most often device-auth is not enabled on the account.
-          const log = await this.readLog(baseUrl);
-          throw new Error(
-            'codex device login did not return a code (is device-code login enabled ' +
-              'in your ChatGPT security settings?)' +
-              (log ? ` — ${log.slice(0, 300)}` : ''),
-          );
-        }
-
-        const now = Date.now();
-        this.sessions.set(key, {
-          sessionId,
-          containerName,
-          baseUrl,
-          container,
-          startedAtMs: now,
-          lastPolledAtMs: now,
-          verificationUri: parsed.verificationUri,
-          userCode: parsed.userCode,
-        });
-        this.logger.debug(`codex device login ${sessionId} awaiting authorization`);
-        return {
-          verificationUri: parsed.verificationUri,
-          userCode: parsed.userCode,
-          expiresInSeconds: CodexDeviceLoginService.EXPIRES_IN_SECONDS,
-        };
-      } catch (err) {
-        await this.teardownContainer(container, containerName).catch(() => undefined);
-        throw err;
+      } else {
+        this.activeSessionByAccount.delete(accountId);
       }
-    } finally {
-      this.starting.delete(key);
-    }
-  }
-
-  /**
-   * Poll the operator's in-flight login: returns `connected` once codex has
-   * written auth.json (and the credential has been stored), `expired` past the
-   * code window, `error` if the session is gone, else `awaiting_authorization`.
-   */
-  async pollStatus(operator: SessionUser): Promise<CodexDeviceLoginStatus> {
-    const key = this.requireKey(operator);
-    const session = this.sessions.get(key);
-    if (!session) {
-      return { status: 'error', message: '没有进行中的登录会话，请重新发起连接。' };
-    }
-    if (Date.now() - session.startedAtMs > CodexDeviceLoginService.SESSION_TTL_MS) {
-      await this.teardown(key);
-      return { status: 'expired', message: '设备码已过期，请重新发起连接。' };
-    }
-    session.lastPolledAtMs = Date.now();
-
-    let authJson: string | null = null;
-    try {
-      const { exitCode, output } = await this.exec(
-        session.baseUrl,
-        'cat /home/gem/.codex/auth.json 2>/dev/null',
-      );
-      if (exitCode === 0 && this.looksLikeCodexAuth(output)) {
-        authJson = output.trim();
-      }
-    } catch (err) {
-      // A transient exec failure is not fatal — keep awaiting; the next poll retries.
-      this.logger.debug(
-        `device login poll exec failed (will retry): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
     }
 
-    if (authJson) {
-      // Store the login encrypted via the settings credential, then reclaim the
-      // container. saveCredential resolves the owning user from the operator.
-      await this.settings.saveCredential(operator, { mode: 'official', authJson });
-      await this.teardown(key);
-      this.logger.debug(`codex device login for ${key} connected + stored`);
-      return { status: 'connected' };
+    if (this.destroyed) {
+      throw new Error('codex device login service is shutting down');
     }
 
-    return {
-      status: 'awaiting_authorization',
-      verificationUri: session.verificationUri,
-      userCode: session.userCode,
+    const sessionId = randomUUID();
+    const session: DeviceLoginSession = {
+      sessionId,
+      generation: randomUUID(),
+      accountId,
+      operator,
+      createdAtMs: now,
+      expiresAtMs: now + this.sessionTtlMs,
+      abortController: new AbortController(),
+      status: 'preparing',
     };
+
+    // These writes must happen before background work is started.
+    this.sessionsById.set(sessionId, session);
+    this.activeSessionByAccount.set(accountId, sessionId);
+    session.deadlineTimer = setTimeout(
+      () => this.expireIfCurrent(session),
+      this.sessionTtlMs,
+    );
+    session.deadlineTimer.unref?.();
+
+    const work = this.runSession(session, session.generation);
+    this.backgroundWork.add(work);
+    void work.finally(() => this.backgroundWork.delete(work));
+    return this.startResponse(session);
   }
 
-  /** Cancel + reclaim the operator's in-flight login, if any. */
-  async cancel(operator: SessionUser): Promise<void> {
-    await this.teardown(this.requireKey(operator));
+  async getStatus(
+    operator: SessionUser,
+    sessionId: string,
+  ): Promise<CodexDeviceLoginStatus> {
+    const accountId = this.requireAccountId(operator);
+    const session = this.sessionsById.get(sessionId);
+    if (!session || session.accountId !== accountId) {
+      throw this.sessionNotFound();
+    }
+    if (
+      !this.isTerminal(session.status) &&
+      !session.persistencePromise &&
+      Date.now() >= session.expiresAtMs
+    ) {
+      this.finishTerminal(
+        session,
+        'expired',
+        'CAP 登录会话已到期，请重新发起连接。',
+        true,
+      );
+    }
+    return this.statusResponse(session);
+  }
+
+  /** Unknown or cross-account session ids are intentionally indistinguishable. */
+  async cancel(operator: SessionUser, sessionId: string): Promise<void> {
+    const accountId = this.requireAccountId(operator);
+    const session = this.sessionsById.get(sessionId);
+    if (!session || session.accountId !== accountId || this.isTerminal(session.status)) {
+      return;
+    }
+
+    // The encrypted write has already crossed its synchronous commit boundary.
+    // Keep this session current and report the real persistence outcome rather
+    // than allowing a retry that an older in-flight write could overwrite.
+    if (session.persistencePromise) {
+      await session.persistencePromise;
+      return;
+    }
+
+    this.finishTerminal(session, 'cancelled', undefined, true);
+    await session.cleanupPromise;
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.destroyed = true;
     if (this.sweeper) clearInterval(this.sweeper);
-    // Reclaim EVERY created login container (covers any orphan not tied to a live
-    // session), not just the session-mapped ones, so app shutdown leaves nothing.
-    const containers = [...this.allContainers];
-    this.sessions.clear();
-    this.allContainers.clear();
+
+    const sessions = [...this.sessionsById.values()];
+    for (const session of sessions) {
+      if (session.deadlineTimer) clearTimeout(session.deadlineTimer);
+      if (session.retentionTimer) clearTimeout(session.retentionTimer);
+      // A database write cannot be aborted honestly. Let it publish connected
+      // or error while preventing every earlier lifecycle phase from continuing.
+      if (!session.persistencePromise) session.abortController.abort();
+    }
+
     await Promise.all(
-      containers.map(([name, c]) => this.teardownContainer(c, name).catch(() => undefined)),
+      sessions.map((session) =>
+        this.cleanupHandle(
+          session,
+          !this.isTerminal(session.status) && !session.persistencePromise,
+        ),
+      ),
+    );
+    await Promise.allSettled([...this.backgroundWork]);
+
+    // A non-conforming runner may resolve after observing the abort signal and
+    // therefore publish its handle after the first cleanup pass. Waiting for
+    // every tracked run closes that race; this second pass reclaims any such
+    // late handle before the module drops its in-memory ownership records.
+    await Promise.all(
+      sessions.map((session) =>
+        this.cleanupHandle(
+          session,
+          !this.isTerminal(session.status) && !session.persistencePromise,
+        ),
+      ),
+    );
+
+    for (const session of sessions) {
+      if (session.deadlineTimer) clearTimeout(session.deadlineTimer);
+      if (session.retentionTimer) clearTimeout(session.retentionTimer);
+      session.abortController.abort();
+    }
+    this.sessionsById.clear();
+    this.activeSessionByAccount.clear();
+  }
+
+  private async runSession(
+    session: DeviceLoginSession,
+    generation: string,
+  ): Promise<void> {
+    let handle: CodexDeviceLoginRunnerHandle | undefined;
+    try {
+      handle = await this.runner.start({
+        sessionId: session.sessionId,
+        signal: session.abortController.signal,
+        timeoutMs: Math.min(this.prepareTimeoutMs, this.remainingMs(session)),
+      });
+
+      if (
+        this.destroyed ||
+        session.abortController.signal.aborted ||
+        !this.canTransition(session, ['preparing'], generation)
+      ) {
+        await this.disposeStaleHandle(handle, true);
+        return;
+      }
+      session.handle = handle;
+      session.status = 'awaiting_authorization';
+      session.verificationUri = handle.authorization.verificationUrl;
+      session.userCode = handle.authorization.userCode;
+
+      const completion = await handle.waitForCompletion({
+        signal: session.abortController.signal,
+        timeoutMs: this.remainingMs(session),
+      });
+      if (!this.canTransition(session, ['awaiting_authorization'], generation)) return;
+      if (!completion.success) {
+        this.finishTerminal(
+          session,
+          'error',
+          'device_login_authorization_failed: Codex 授权未完成。',
+          false,
+        );
+        return;
+      }
+
+      session.status = 'finalizing';
+      this.clearPublicAuthorization(session);
+
+      const authJson = await handle.readCredential({
+        signal: session.abortController.signal,
+        timeoutMs: Math.min(this.ioTimeoutMs, this.remainingMs(session)),
+      });
+      if (!this.canTransition(session, ['finalizing'], generation)) return;
+      if (!isValidCodexChatgptCredential(authJson)) {
+        this.finishTerminal(
+          session,
+          'error',
+          'device_login_credential_invalid: Codex 登录凭据无效，请重新授权。',
+          false,
+        );
+        return;
+      }
+
+      // There is no asynchronous gap between the final generation check and
+      // assigning persistencePromise. DELETE/deadline therefore either wins
+      // before this boundary, or waits for the real encrypted-write outcome.
+      if (!this.canTransition(session, ['finalizing'], generation)) return;
+      const persistence = this.persistCredential(session, generation, authJson);
+      session.persistencePromise = persistence;
+      await persistence;
+    } catch (error) {
+      if (this.destroyed) return;
+      if (!this.isLiveGeneration(session, generation)) return;
+      if (Date.now() >= session.expiresAtMs) {
+        this.finishTerminal(
+          session,
+          'expired',
+          'CAP 登录会话已到期，请重新发起连接。',
+          true,
+        );
+        return;
+      }
+      this.finishTerminal(
+        session,
+        'error',
+        this.safeErrorMessage(error),
+        false,
+      );
+    } finally {
+      if (handle && this.isTerminal(session.status)) {
+        await handle.dispose().catch(() => undefined);
+      }
+    }
+  }
+
+  private async persistCredential(
+    session: DeviceLoginSession,
+    generation: string,
+    authJson: string,
+  ): Promise<void> {
+    try {
+      await this.settings.saveCredential(session.operator, {
+        mode: 'official',
+        authJson,
+      });
+    } catch {
+      if (this.canTransition(session, ['finalizing'], generation)) {
+        this.finishTerminal(
+          session,
+          'error',
+          'device_login_persistence_failed: Codex 登录凭据保存失败，请重试。',
+          false,
+        );
+      }
+      return;
+    }
+
+    if (this.canTransition(session, ['finalizing'], generation)) {
+      this.finishTerminal(session, 'connected', undefined, false);
+    }
+  }
+
+  private finishTerminal(
+    session: DeviceLoginSession,
+    status: TerminalDeviceLoginStatus,
+    message: string | undefined,
+    requestCancel: boolean,
+  ): boolean {
+    if (!this.isLiveGeneration(session)) return false;
+
+    session.status = status;
+    session.message = message;
+    this.clearPublicAuthorization(session);
+    if (session.deadlineTimer) {
+      clearTimeout(session.deadlineTimer);
+      session.deadlineTimer = undefined;
+    }
+    if (this.activeSessionByAccount.get(session.accountId) === session.sessionId) {
+      this.activeSessionByAccount.delete(session.accountId);
+    }
+    session.abortController.abort();
+    session.cleanupPromise = this.cleanupHandle(session, requestCancel);
+    this.scheduleTerminalRemoval(session);
+    this.logger.debug(
+      `Codex 登录会话 ${session.sessionId} 进入 ${status} (${this.messageCategory(message)})`,
+    );
+    return true;
+  }
+
+  private async cleanupHandle(
+    session: DeviceLoginSession,
+    requestCancel: boolean,
+  ): Promise<void> {
+    const handle = session.handle;
+    if (!handle) return;
+    if (requestCancel) {
+      try {
+        await handle.cancel({ timeoutMs: this.cancelTimeoutMs });
+      } catch (error) {
+        this.logCleanupFailure(session, error);
+      }
+    }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await handle.dispose();
+        if (session.handle === handle) session.handle = undefined;
+        return;
+      } catch (error) {
+        this.logCleanupFailure(session, error);
+        if (attempt < 2) await this.delay(50 * 2 ** attempt);
+      }
+    }
+  }
+
+  private async disposeStaleHandle(
+    handle: CodexDeviceLoginRunnerHandle,
+    requestCancel: boolean,
+  ): Promise<void> {
+    if (requestCancel) {
+      await handle.cancel({ timeoutMs: this.cancelTimeoutMs }).catch((error) => {
+        this.logger.warn(
+          `Codex 迟到登录工作器取消失败 (${this.errorCategory(error)})`,
+        );
+      });
+    }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await handle.dispose();
+        return;
+      } catch (error) {
+        this.logger.warn(
+          `Codex 迟到登录工作器清理失败 (${this.errorCategory(error)})`,
+        );
+        if (attempt < 2) await this.delay(50 * 2 ** attempt);
+      }
+    }
+  }
+
+  private expireIfCurrent(session: DeviceLoginSession): void {
+    if (!this.isLiveGeneration(session) || session.persistencePromise) return;
+    this.finishTerminal(
+      session,
+      'expired',
+      'CAP 登录会话已到期，请重新发起连接。',
+      true,
     );
   }
 
-  // ----- internals -----------------------------------------------------------
+  private sweep(): void {
+    const now = Date.now();
+    for (const session of this.sessionsById.values()) {
+      if (
+        !this.isTerminal(session.status) &&
+        !session.persistencePromise &&
+        now >= session.expiresAtMs
+      ) {
+        this.expireIfCurrent(session);
+      }
+    }
+  }
 
-  /**
-   * The per-account session key — the account primary key `operator.id`
-   * (fix-local-account-settings-scope), present for both local and GitHub
-   * accounts. Rejects ONLY an identity-less principal (no account at all).
-   */
-  private requireKey(operator: SessionUser): string {
-    const userId = operator?.id;
-    if (typeof userId !== 'string' || userId.length === 0) {
+  private scheduleTerminalRemoval(session: DeviceLoginSession): void {
+    if (session.retentionTimer) clearTimeout(session.retentionTimer);
+    session.retentionTimer = setTimeout(() => {
+      void (async () => {
+        if (this.sessionsById.get(session.sessionId) !== session) return;
+        if (session.handle) {
+          await this.cleanupHandle(session, false);
+          if (session.handle) {
+            this.scheduleTerminalRemoval(session);
+            return;
+          }
+        }
+        this.sessionsById.delete(session.sessionId);
+      })();
+    }, this.terminalRetentionMs);
+    session.retentionTimer.unref?.();
+  }
+
+  private isLiveGeneration(
+    session: DeviceLoginSession,
+    generation: string = session.generation,
+  ): boolean {
+    return (
+      this.sessionsById.get(session.sessionId) === session &&
+      session.generation === generation &&
+      !this.isTerminal(session.status)
+    );
+  }
+
+  private canTransition(
+    session: DeviceLoginSession,
+    from: readonly ActiveDeviceLoginStatus[],
+    generation: string = session.generation,
+  ): boolean {
+    return (
+      this.isLiveGeneration(session, generation) &&
+      this.activeSessionByAccount.get(session.accountId) === session.sessionId &&
+      from.includes(session.status as ActiveDeviceLoginStatus) &&
+      Date.now() < session.expiresAtMs
+    );
+  }
+
+  private isTerminal(status: DeviceLoginStatus): status is TerminalDeviceLoginStatus {
+    return TERMINAL_STATUSES.has(status);
+  }
+
+  private remainingMs(session: DeviceLoginSession): number {
+    return Math.max(1, session.expiresAtMs - Date.now());
+  }
+
+  private clearPublicAuthorization(session: DeviceLoginSession): void {
+    session.verificationUri = undefined;
+    session.userCode = undefined;
+  }
+
+  private startResponse(
+    session: DeviceLoginSession,
+  ): CodexDeviceLoginStartResponse {
+    return {
+      sessionId: session.sessionId,
+      status: 'preparing',
+      expiresAt: new Date(session.expiresAtMs).toISOString(),
+    };
+  }
+
+  private statusResponse(session: DeviceLoginSession): CodexDeviceLoginStatus {
+    const common = {
+      sessionId: session.sessionId,
+      expiresAt: new Date(session.expiresAtMs).toISOString(),
+    };
+    switch (session.status) {
+      case 'preparing':
+        return { ...common, status: 'preparing' };
+      case 'awaiting_authorization':
+        return {
+          ...common,
+          status: 'awaiting_authorization',
+          verificationUri: session.verificationUri as string,
+          userCode: session.userCode as string,
+        };
+      case 'finalizing':
+        return { ...common, status: 'finalizing' };
+      case 'connected':
+        return { ...common, status: 'connected' };
+      case 'cancelled':
+        return { ...common, status: 'cancelled' };
+      case 'expired':
+        return {
+          ...common,
+          status: 'expired',
+          message: session.message ?? 'CAP 登录会话已到期，请重新发起连接。',
+        };
+      case 'error':
+        return {
+          ...common,
+          status: 'error',
+          message: session.message ?? 'device_login_failed: Codex 登录失败，请重试。',
+        };
+    }
+  }
+
+  private requireAccountId(operator: SessionUser): string {
+    const accountId = operator?.id;
+    if (!nonEmptyString(accountId)) {
       throw new Error('codex device login requires an authenticated account session');
     }
-    return userId;
+    return accountId;
   }
 
-  /** Parse the verification URL + one-time code from codex's device-auth output. */
-  private async pollForCode(
-    baseUrl: string,
-  ): Promise<{ verificationUri: string; userCode: string } | null> {
-    const deadline = Date.now() + 25_000;
-    while (Date.now() < deadline) {
-      const log = await this.readLog(baseUrl);
-      const parsed = CodexDeviceLoginService.parseDeviceCode(log);
-      if (parsed) return parsed;
-      await this.delay(800);
-    }
-    return null;
-  }
-
-  /**
-   * Extract the verification URL + user code from codex's (ANSI-coloured) output:
-   *   "Open this link ... https://auth.openai.com/codex/device"
-   *   "Enter this one-time code ... 9L44-TBBVF"
-   */
-  static parseDeviceCode(
-    log: string,
-  ): { verificationUri: string; userCode: string } | null {
-    // Strip ANSI SGR codes. ESC (0x1b) is built via char code so the regex
-    // literal carries no control character (eslint no-control-regex).
-    const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
-    const clean = log.replace(ansi, '');
-    const uri = clean.match(/https:\/\/auth\.openai\.com\/[A-Za-z0-9/_-]*device[A-Za-z0-9/_-]*/);
-    if (!uri) return null;
-    // The one-time code is printed AFTER the verification URL (codex's step 2).
-    // Scan ONLY the post-URL region so a code-shaped token earlier in the banner
-    // (a request id, a SHA fragment) cannot be mistaken for the code. Allow >2
-    // groups so a 3-group code is captured whole, not truncated.
-    const after = clean.slice((uri.index ?? 0) + uri[0].length);
-    const code = after.match(/\b([A-Z0-9]{4}(?:-[A-Z0-9]{4,6})+)\b/);
-    if (!code) return null;
-    return { verificationUri: uri[0], userCode: code[1] };
-  }
-
-  private async readLog(baseUrl: string): Promise<string> {
-    try {
-      const { output } = await this.exec(baseUrl, 'cat /tmp/codexlogin.log 2>/dev/null');
-      return output;
-    } catch {
-      return '';
-    }
-  }
-
-  private looksLikeCodexAuth(output: string): boolean {
-    try {
-      const p = JSON.parse(output.trim()) as {
-        auth_mode?: unknown;
-        tokens?: unknown;
-        OPENAI_API_KEY?: unknown;
-      };
-      // Require REAL material — not a tokenless scaffold codex might write before
-      // it has the tokens: a non-null tokens OBJECT, OR a non-empty OPENAI_API_KEY,
-      // OR (last resort) a non-empty auth_mode. `{tokens:null}` must NOT pass.
-      const hasTokens =
-        p.tokens !== null && typeof p.tokens === 'object';
-      const hasApiKey =
-        typeof p.OPENAI_API_KEY === 'string' && p.OPENAI_API_KEY.length > 0;
-      const hasMode = typeof p.auth_mode === 'string' && p.auth_mode.length > 0;
-      return hasTokens || hasApiKey || hasMode;
-    } catch {
-      return false;
-    }
-  }
-
-  private async waitForReadiness(baseUrl: string): Promise<void> {
-    const deadline = Date.now() + Number(process.env.AIO_SANDBOX_READINESS_TIMEOUT_MS ?? 60_000);
-    let lastError: unknown;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${baseUrl}/v1/docs`);
-        if (res.ok) return;
-        lastError = new Error(`/v1/docs responded ${res.status}`);
-      } catch (err) {
-        lastError = err;
-      }
-      await this.delay(250);
-    }
-    throw new Error(
-      `codex login container not ready: ${
-        lastError instanceof Error ? lastError.message : String(lastError)
-      }`,
-    );
-  }
-
-  /** POST /v1/shell/exec, tolerating the AIO `data`-nested result envelope. */
-  private async exec(
-    baseUrl: string,
-    command: string,
-  ): Promise<{ exitCode: number; output: string }> {
-    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command }),
+  private sessionNotFound(): NotFoundException {
+    return new NotFoundException({
+      error: 'device_login_session_not_found',
+      message: '登录会话不存在或已结束，请重新发起连接。',
     });
-    if (!res.ok) throw new Error(`/v1/shell/exec responded ${res.status}`);
-    const raw = (await res.json().catch(() => undefined)) as
-      | Record<string, unknown>
-      | undefined;
-    const d = ((raw?.data ?? raw) ?? {}) as Record<string, unknown>;
-    const codeRaw = d.exit_code ?? d.exitCode ?? d.code;
-    const exitCode =
-      typeof codeRaw === 'number'
-        ? codeRaw
-        : typeof codeRaw === 'string' && /^-?\d+$/.test(codeRaw.trim())
-          ? Number.parseInt(codeRaw.trim(), 10)
-          : Number.NaN;
-    const output =
-      (typeof d.output === 'string' && d.output) ||
-      (typeof d.stdout === 'string' && d.stdout) ||
-      (typeof d.stderr === 'string' && d.stderr) ||
-      '';
-    return { exitCode, output };
   }
 
-  private async teardown(key: string): Promise<void> {
-    const session = this.sessions.get(key);
-    if (!session) return;
-    this.sessions.delete(key);
-    await this.teardownContainer(session.container, session.containerName);
-  }
-
-  private async teardownContainer(
-    container: Docker.Container,
-    name: string,
-  ): Promise<void> {
-    this.allContainers.delete(name);
-    await container.stop({ t: 0 }).catch(() => undefined);
-    await container.remove({ force: true }).catch(() => undefined);
-    this.logger.debug(`reclaimed codex login container ${name}`);
-  }
-
-  /** Idle window after which a session whose client stopped polling is reclaimed. */
-  private static readonly ABANDONED_AFTER_MS = 2 * 60 * 1000;
-
-  private async sweep(): Promise<void> {
-    const now = Date.now();
-    for (const [key, s] of [...this.sessions]) {
-      // Reclaim a hard-expired session OR one the client clearly abandoned (no
-      // poll for ABANDONED_AFTER_MS — tab killed / navigated away with the
-      // best-effort cancel lost) so a transient container is not held the full TTL.
-      if (
-        now - s.startedAtMs > CodexDeviceLoginService.SESSION_TTL_MS ||
-        now - s.lastPolledAtMs > CodexDeviceLoginService.ABANDONED_AFTER_MS
-      ) {
-        await this.teardown(key).catch(() => undefined);
-      }
+  private safeErrorMessage(error: unknown): string {
+    if (isCodexDeviceLoginRunnerError(error)) {
+      return `${error.category}: ${error.message}`;
     }
+    return 'device_login_failed: Codex 登录失败，请重试。';
+  }
+
+  private errorCategory(error: unknown): string {
+    return isCodexDeviceLoginRunnerError(error)
+      ? error.category
+      : 'device_login_cleanup_failed';
+  }
+
+  private messageCategory(message: string | undefined): string {
+    if (!message) return 'none';
+    const separator = message.indexOf(':');
+    return separator > 0 ? message.slice(0, separator) : 'session_deadline';
+  }
+
+  private logCleanupFailure(session: DeviceLoginSession, error: unknown): void {
+    this.logger.warn(
+      `Codex 登录会话 ${session.sessionId} 工作器清理失败 (${this.errorCategory(error)})`,
+    );
   }
 
   private delay(ms: number): Promise<void> {

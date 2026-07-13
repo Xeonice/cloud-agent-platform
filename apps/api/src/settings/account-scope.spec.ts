@@ -333,18 +333,28 @@ function scopeRequired(err: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 test('codex device-login: a local account key resolves; an identity-less principal is rejected', async () => {
-  // The service constructor only wires a sweep timer + a SettingsService it never
-  // calls on these paths, so a bare stub is enough to reach requireKey.
-  const svc = new CodexDeviceLoginService({} as unknown as SettingsService);
+  // Keep preparation pending: start() must still return its pre-registered
+  // account-scoped session immediately, without touching SettingsService.
+  const svc = new CodexDeviceLoginService(
+    {} as unknown as SettingsService,
+    {
+      start: ({ signal }) =>
+        new Promise<never>((_resolve, reject) => {
+          const abort = (): void => reject(new Error('aborted'));
+          if (signal?.aborted) abort();
+          else signal?.addEventListener('abort', abort, { once: true });
+        }),
+      disposeOrphans: async () => undefined,
+    },
+  );
   try {
-    // pollStatus calls requireKey(operator) first. For a LOCAL account it resolves
-    // a key (no in-flight session → 'error: no session', NOT a thrown scope error).
-    const status = await svc.pollStatus(LOCAL);
-    assert.equal(status.status, 'error', 'local account key resolves (no in-flight session)');
+    const started = await svc.start(LOCAL);
+    assert.equal(started.status, 'preparing', 'a local account can own a login session');
+    assert.ok(started.sessionId, 'the local account receives an opaque session id');
 
     // An identity-less principal throws from requireKey (no account session).
     await assert.rejects(
-      () => svc.pollStatus(IDENTITY_LESS),
+      () => svc.start(IDENTITY_LESS),
       /authenticated account/,
       'an identity-less principal cannot run device login',
     );

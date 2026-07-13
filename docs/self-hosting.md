@@ -219,6 +219,60 @@ For GitHub, create a Personal Access Token with repository access:
 GitLab/Gitee use their own PATs and optional self-hosted instance URL. These PATs
 are stored per account and used only for repository listing/import/clone/push.
 
+## Step 2.5 — Connect an official Codex subscription
+
+Console identity, repository credentials, and the Codex model credential are
+separate. Each operator connects an official Codex subscription from
+**Settings -> Agent model credentials -> Codex -> Official account**.
+
+The connection is a two-stage device-code flow:
+
+1. Select **Connect official account**. The existing dialog stays open and shows
+   a preparation state while CAP starts a temporary, account-scoped login
+   session. No blank or OpenAI tab opens yet.
+2. When the one-time code is ready, copy it and select **Open OpenAI
+   authorization**. The OpenAI page opens only from that explicit browser
+   action; sign in and enter/confirm the displayed code.
+3. CAP shows finalization and then refreshes the credential status after the
+   pinned Codex client completes OAuth and CAP encrypts the resulting
+   credential.
+
+Device-code login must be enabled in the ChatGPT account's security settings or
+the workspace administrator's permissions. The expiry shown by CAP is CAP's
+local login-session cleanup deadline, not a promise about OpenAI's underlying
+device-code lifetime. Closing or cancelling the dialog cancels that exact CAP
+session.
+
+Use HTTPS for production. The modern browser Clipboard API is not available on
+an ordinary non-loopback HTTP origin. CAP provides a compatibility copy path for
+the same-host/LAN HTTP trial topology; if the browser blocks both programmatic
+paths, the dialog selects the visible code and asks the operator to use
+Ctrl+C/Command+C instead of reporting a false success.
+
+CAP delegates the actual device authorization and token polling to the pinned
+Codex App Server. It does not call OpenAI's internal device endpoints. The first
+login runner is still a temporary local Docker container created from the
+version-matched AIO image, even when task execution uses BoxLite:
+
+~~~bash
+docker image inspect "ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}"
+~~~
+
+The current BoxLite quick-deploy path validates/stages the BoxLite task image but
+does not imply a BoxLite-native login runner. Before connecting an official
+account, make sure the exact AIO tag for the running CAP release is present on
+the Docker host. A missing image is reported as
+device_login_worker_image_unavailable; remediate it with:
+
+~~~bash
+docker pull "ghcr.io/xeonice/cap-aio-sandbox:${CAP_VERSION}"
+~~~
+
+Do not substitute latest for a versioned deployment. The login container has no
+published port, is reclaimed on success/cancel/error/expiry, and its auth.json is
+validated and encrypted through the existing per-account credential store
+before the UI reports connected.
+
 ## Step 3 — Configure your public domains (the error-prone step)
 
 This is where most self-host failures come from. cap sends the session cookie
