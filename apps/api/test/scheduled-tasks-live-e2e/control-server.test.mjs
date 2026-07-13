@@ -77,14 +77,39 @@ test('control server accelerates only nextRunAt and returns sanitized evidence',
     },
   };
   const provider = new RecordingSandboxProvider();
+  const tickCalls = [];
+  const scheduledTasks = {
+    tick: async (now) => {
+      tickCalls.push(now);
+      return 2;
+    },
+  };
   await assert.rejects(
     provider.provision({ taskId: 'task-1', cloneSpec: { authHeader: 'must-not-leak' } }),
     /deterministic provision rejection/,
   );
 
-  const control = await startScheduledTasksControlServer({ prisma, provider, port: 0 });
+  const control = await startScheduledTasksControlServer({
+    prisma,
+    provider,
+    scheduledTasks,
+    port: 0,
+  });
   try {
     const base = `http://127.0.0.1:${control.port}`;
+    const tickAt = '2026-07-11T00:15:00.000Z';
+    const tickResponse = await fetch(`${base}/control/scheduler/tick`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ now: tickAt }),
+    });
+    assert.equal(tickResponse.status, 200);
+    assert.deepEqual(await tickResponse.json(), { now: tickAt, fired: 2 });
+    assert.deepEqual(
+      tickCalls.map((now) => now.toISOString()),
+      [tickAt],
+    );
+
     const dueResponse = await fetch(`${base}/control/schedules/${schedule.id}/due`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -131,6 +156,7 @@ test('control server rejects future dueAt and missing schedules', async () => {
   const control = await startScheduledTasksControlServer({
     prisma,
     provider: new RecordingSandboxProvider(),
+    scheduledTasks: { tick: async () => 0 },
     port: 0,
   });
   try {
@@ -150,6 +176,14 @@ test('control server rejects future dueAt and missing schedules', async () => {
     });
     assert.equal(missing.status, 404);
     assert.deepEqual(await missing.json(), { error: 'schedule_not_found' });
+
+    const invalidTick = await fetch(`${base}/control/scheduler/tick`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ now: '2026-07-11 00:15:00' }),
+    });
+    assert.equal(invalidTick.status, 400);
+    assert.deepEqual(await invalidTick.json(), { error: 'invalid_tick_at' });
   } finally {
     await control.close();
   }

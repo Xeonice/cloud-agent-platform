@@ -451,9 +451,10 @@ export function registerMcpTools(
     {
       title: 'Create a recurring task schedule',
       description:
-        'Create an owner-scoped recurring task schedule. Accepts either a ' +
-        'recurrence descriptor or a five-field cron expression. Requires the ' +
-        'tasks:write scope.',
+        'Create an owner-scoped recurring task schedule. Prefer daily, weekdays, ' +
+        'weekly, monthly, hourly, or minuteInterval recurrence descriptors; ' +
+        'minuteInterval accepts 5, 10, 15, or 30 minutes. A five-field cron ' +
+        'expression remains available for compatibility. Requires the tasks:write scope.',
       inputSchema: createScheduleInputSchema,
       outputSchema: ScheduleResponseSchema,
     },
@@ -505,7 +506,9 @@ export function registerMcpTools(
     {
       title: 'Update a recurring task schedule',
       description:
-        'Update future occurrences of an owner-scoped recurring task schedule. ' +
+        'Update future occurrences using daily, weekdays, weekly, monthly, hourly, ' +
+        'or minuteInterval recurrence descriptors; minuteInterval accepts 5, 10, ' +
+        '15, or 30 minutes. Five-field cron remains available for compatibility. ' +
         'Requires the tasks:write scope.',
       inputSchema: updateScheduleInputSchema,
       outputSchema: ScheduleResponseSchema,

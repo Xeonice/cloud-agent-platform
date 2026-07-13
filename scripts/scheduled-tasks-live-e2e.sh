@@ -486,6 +486,7 @@ nohup env -i \
   PATH="$PATH" \
   HOME="$ISOLATED_HOME" \
   TMPDIR="${ARTIFACT_DIR}/tmp" \
+  TZ=UTC \
   NODE_ENV=test \
   DATABASE_URL="$DATABASE_URL" \
   E2E_API_PORT=0 \

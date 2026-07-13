@@ -8,7 +8,7 @@ vi.mock("../server-cookie", () => ({
   getIncomingCookieHeader: async () => "",
 }));
 
-import { dispatchSchedule } from "./real";
+import { dispatchSchedule, listSchedules } from "./real";
 
 const SCHEDULE_ID = "00000000-0000-4000-8000-000000000001";
 const REPO_ID = "00000000-0000-4000-8000-000000000002";
@@ -78,6 +78,65 @@ describe("dispatchSchedule", () => {
     expect(init?.method).toBe("POST");
     expect(init?.body).toBeUndefined();
     expect(init?.headers).toEqual({});
+  });
+});
+
+describe("schedule response parsing", () => {
+  it("preserves structured hourly and fixed-interval recurrence responses", async () => {
+    const hourly = {
+      ...SCHEDULE_RESPONSE,
+      name: "Hourly check",
+      cronExpression: "17 * * * *",
+      recurrence: {
+        kind: "hourly",
+        minuteOfHour: 17,
+        timezone: "Asia/Shanghai",
+        label: "每小时第 17 分钟",
+      },
+      timezone: "Asia/Shanghai",
+      nextRunAt: "2026-07-10T01:17:00.000Z",
+      currentPeriod: {
+        key: "cron:2026-07-10T00:17:00.000Z",
+        scheduledFor: "2026-07-10T00:17:00.000Z",
+        run: null,
+      },
+    };
+    const minuteInterval = {
+      ...SCHEDULE_RESPONSE,
+      id: "00000000-0000-4000-8000-000000000003",
+      name: "Quarter-hour check",
+      cronExpression: "*/15 * * * *",
+      recurrence: {
+        kind: "minuteInterval",
+        intervalMinutes: 15,
+        timezone: "UTC",
+        label: "每 15 分钟",
+      },
+      nextRunAt: "2026-07-10T00:30:00.000Z",
+      currentPeriod: {
+        key: "cron:2026-07-10T00:15:00.000Z",
+        scheduledFor: "2026-07-10T00:15:00.000Z",
+        run: null,
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(JSON.stringify([hourly, minuteInterval]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+
+    const schedules = await listSchedules();
+
+    expect(schedules.map((schedule) => schedule.recurrence)).toEqual([
+      hourly.recurrence,
+      minuteInterval.recurrence,
+    ]);
+    expect(schedules[0]?.nextRunAt).toBeInstanceOf(Date);
+    expect(schedules[1]?.currentPeriod?.scheduledFor).toBeInstanceOf(Date);
   });
 });
 

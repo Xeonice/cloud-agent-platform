@@ -182,6 +182,22 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
     expect(JSON.parse(dispatch.sampleBody!)).toEqual({});
   });
 
+  it("shows structured hourly and fixed-interval recurrence samples", () => {
+    const create = JSON.parse(findEndpoint("schedules.create")!.sampleBody!);
+    const update = JSON.parse(findEndpoint("schedules.update")!.sampleBody!);
+
+    expect(create.recurrence).toEqual({
+      kind: "hourly",
+      minuteOfHour: 15,
+      timezone: "Asia/Shanghai",
+    });
+    expect(update.recurrence).toEqual({
+      kind: "minuteInterval",
+      intervalMinutes: 15,
+      timezone: "Asia/Shanghai",
+    });
+  });
+
   it("exposes every operation header declared by the manifest", () => {
     for (const operation of PUBLIC_V1_OPERATIONS) {
       const endpoint = DATA_API_CATALOG.find(

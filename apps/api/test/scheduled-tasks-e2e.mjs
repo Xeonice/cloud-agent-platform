@@ -109,6 +109,102 @@ async function createSchedule(schedules, fixture, prompt) {
   });
 }
 
+async function createSubdaySchedule(schedules, fixture, recurrence, prompt) {
+  return schedules.create(fixture.user.id, {
+    recurrence,
+    overlapPolicy: 'enqueue',
+    misfirePolicy: 'fire-once',
+    taskTemplate: {
+      repoId: fixture.repo.id,
+      prompt,
+      sandboxEnvironmentId: null,
+    },
+  });
+}
+
+test('canonical sub-day schedules keep unique nominal periods in real Postgres', async () => {
+  assertDatabaseConfigured();
+  const prisma = new PrismaService();
+  const schedules = new ScheduledTasksService(prisma, taskPort(prisma));
+  const fixture = await createFixture(prisma, 'scheduled-subday-periods');
+  const cases = [
+    {
+      name: 'hourly',
+      recurrence: { kind: 'hourly', minuteOfHour: 15, timezone: 'UTC' },
+      cron: '15 * * * *',
+    },
+    {
+      name: 'minute interval',
+      recurrence: {
+        kind: 'minuteInterval',
+        intervalMinutes: 15,
+        timezone: 'UTC',
+      },
+      cron: '*/15 * * * *',
+    },
+  ];
+
+  try {
+    for (const scenario of cases) {
+      const created = await createSubdaySchedule(
+        schedules,
+        fixture,
+        scenario.recurrence,
+        `${scenario.name} occurrence identity`,
+      );
+      assert.equal(created.cronExpression, scenario.cron);
+      const firstOccurrence = created.nextRunAt;
+      assert.ok(firstOccurrence);
+
+      assert.equal(await schedules.tick(firstOccurrence), 1);
+      const afterFirst = await prisma.taskSchedule.findUniqueOrThrow({
+        where: { id: created.id },
+      });
+      const secondOccurrence = afterFirst.nextRunAt;
+      assert.ok(secondOccurrence && secondOccurrence > firstOccurrence);
+      assert.equal(await schedules.tick(secondOccurrence), 1);
+      assert.equal(
+        await schedules.tick(secondOccurrence),
+        0,
+        'repeating the same tick must not create the occurrence twice',
+      );
+
+      const runs = await prisma.taskScheduleRun.findMany({
+        where: { scheduleId: created.id },
+        orderBy: { scheduledFor: 'asc' },
+      });
+      assert.equal(runs.length, 2);
+      assert.deepEqual(
+        runs.map((run) => run.scheduledFor.toISOString()),
+        [firstOccurrence.toISOString(), secondOccurrence.toISOString()],
+      );
+      assert.deepEqual(
+        runs.map((run) => run.periodKey),
+        [
+          `cron:${firstOccurrence.toISOString()}`,
+          `cron:${secondOccurrence.toISOString()}`,
+        ],
+      );
+      assert.equal(new Set(runs.map((run) => run.periodKey)).size, 2);
+      assert.ok(runs.every((run) => !run.periodKey?.startsWith('day:')));
+      assert.equal(
+        await prisma.task.count({
+          where: { scheduleRun: { scheduleId: created.id } },
+        }),
+        2,
+      );
+      const advanced = await prisma.taskSchedule.findUniqueOrThrow({
+        where: { id: created.id },
+      });
+      assert.ok(advanced.nextRunAt && advanced.nextRunAt > secondOccurrence);
+      await schedules.pause(fixture.user.id, created.id);
+    }
+  } finally {
+    await cleanupFixture(prisma, fixture);
+    await prisma.$disconnect();
+  }
+});
+
 test('manual dispatch consumes one period while a separate schedule proves the real poller', async () => {
   assertDatabaseConfigured();
   const prisma = new PrismaService();

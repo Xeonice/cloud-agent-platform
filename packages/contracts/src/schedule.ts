@@ -86,26 +86,50 @@ export type ScheduleLocalTime = z.infer<typeof ScheduleLocalTimeSchema>;
 
 const WeekdaySchema = z.number().int().min(0).max(6);
 
-const ScheduleRecurrenceBaseSchema = z.object({
-  time: ScheduleLocalTimeSchema,
+const ScheduleRecurrenceTimezoneSchema = z.object({
   timezone: ScheduleTimezoneSchema,
 });
 
+const ScheduleCalendarRecurrenceBaseSchema =
+  ScheduleRecurrenceTimezoneSchema.extend({
+    time: ScheduleLocalTimeSchema,
+  });
+
+export const SCHEDULE_MINUTE_INTERVALS = [5, 10, 15, 30] as const;
+
+export const ScheduleMinuteIntervalSchema = z.union([
+  z.literal(SCHEDULE_MINUTE_INTERVALS[0]),
+  z.literal(SCHEDULE_MINUTE_INTERVALS[1]),
+  z.literal(SCHEDULE_MINUTE_INTERVALS[2]),
+  z.literal(SCHEDULE_MINUTE_INTERVALS[3]),
+]);
+export type ScheduleMinuteInterval = z.infer<
+  typeof ScheduleMinuteIntervalSchema
+>;
+
 export const ScheduleRecurrenceSchema = z.discriminatedUnion('kind', [
-  ScheduleRecurrenceBaseSchema.extend({
+  ScheduleCalendarRecurrenceBaseSchema.extend({
     kind: z.literal('daily'),
   }),
-  ScheduleRecurrenceBaseSchema.extend({
+  ScheduleCalendarRecurrenceBaseSchema.extend({
     kind: z.literal('weekdays'),
   }),
-  ScheduleRecurrenceBaseSchema.extend({
+  ScheduleCalendarRecurrenceBaseSchema.extend({
     kind: z.literal('weekly'),
     weekday: WeekdaySchema,
   }),
-  ScheduleRecurrenceBaseSchema.extend({
+  ScheduleCalendarRecurrenceBaseSchema.extend({
     kind: z.literal('monthly'),
     // Kept to 1-28 so the rule can occur every month without implicit clamping.
     dayOfMonth: z.number().int().min(1).max(28),
+  }),
+  ScheduleRecurrenceTimezoneSchema.extend({
+    kind: z.literal('hourly'),
+    minuteOfHour: z.number().int().min(0).max(59),
+  }),
+  ScheduleRecurrenceTimezoneSchema.extend({
+    kind: z.literal('minuteInterval'),
+    intervalMinutes: ScheduleMinuteIntervalSchema,
   }),
 ]);
 export type ScheduleRecurrence = z.infer<typeof ScheduleRecurrenceSchema>;
@@ -115,19 +139,27 @@ const ScheduleRecurrenceLabelSchema = z.object({
 });
 
 export const ScheduleRecurrenceResponseSchema = z.discriminatedUnion('kind', [
-  ScheduleRecurrenceBaseSchema.extend({
+  ScheduleCalendarRecurrenceBaseSchema.extend({
     kind: z.literal('daily'),
   }).merge(ScheduleRecurrenceLabelSchema),
-  ScheduleRecurrenceBaseSchema.extend({
+  ScheduleCalendarRecurrenceBaseSchema.extend({
     kind: z.literal('weekdays'),
   }).merge(ScheduleRecurrenceLabelSchema),
-  ScheduleRecurrenceBaseSchema.extend({
+  ScheduleCalendarRecurrenceBaseSchema.extend({
     kind: z.literal('weekly'),
     weekday: WeekdaySchema,
   }).merge(ScheduleRecurrenceLabelSchema),
-  ScheduleRecurrenceBaseSchema.extend({
+  ScheduleCalendarRecurrenceBaseSchema.extend({
     kind: z.literal('monthly'),
     dayOfMonth: z.number().int().min(1).max(28),
+  }).merge(ScheduleRecurrenceLabelSchema),
+  ScheduleRecurrenceTimezoneSchema.extend({
+    kind: z.literal('hourly'),
+    minuteOfHour: z.number().int().min(0).max(59),
+  }).merge(ScheduleRecurrenceLabelSchema),
+  ScheduleRecurrenceTimezoneSchema.extend({
+    kind: z.literal('minuteInterval'),
+    intervalMinutes: ScheduleMinuteIntervalSchema,
   }).merge(ScheduleRecurrenceLabelSchema),
   z.object({
     kind: z.literal('custom'),
@@ -368,8 +400,9 @@ export interface ComputeSchedulePeriodForOccurrenceInput {
 
 /**
  * Resolves the period containing `at` in the schedule's timezone. Product
- * recurrence presets use calendar identities; custom cron uses its next nominal
- * occurrence, retaining an overdue persisted `nextRunAt` as the missed period.
+ * calendar recurrence presets use calendar identities; sub-day presets and
+ * custom cron use their next nominal occurrence, retaining an overdue persisted
+ * `nextRunAt` as the missed period.
  */
 export function computeCurrentSchedulePeriod(
   input: ComputeCurrentSchedulePeriodInput,
@@ -381,7 +414,7 @@ export function computeCurrentSchedulePeriod(
     input.nextRunAt == null ? null : validDate(input.nextRunAt, 'nextRunAt');
   const recurrence = recurrenceResponseFromCron(cronExpression, timezone);
 
-  if (recurrence.kind === 'custom') {
+  if (!isCalendarRecurrenceKind(recurrence.kind)) {
     const scheduledFor =
       nextRunAt && nextRunAt.getTime() <= at.getTime()
         ? nextRunAt
@@ -424,9 +457,9 @@ export function computeSchedulePeriodForOccurrence(
   const timezone = ScheduleTimezoneSchema.parse(input.timezone);
   const scheduledFor = validDate(input.scheduledFor, 'scheduledFor');
   const recurrence = recurrenceResponseFromCron(cronExpression, timezone);
-  return recurrence.kind === 'custom'
-    ? customPeriodKey(scheduledFor)
-    : calendarPeriodKey(recurrence.kind, timezone, scheduledFor);
+  return isCalendarRecurrenceKind(recurrence.kind)
+    ? calendarPeriodKey(recurrence.kind, timezone, scheduledFor)
+    : customPeriodKey(scheduledFor);
 }
 
 function nextScheduleOccurrenceAtOrAfter(
@@ -453,7 +486,21 @@ function previousScheduleOccurrenceAtOrBefore(
   return interval.prev().toDate();
 }
 
-type CalendarPeriodKind = Exclude<ScheduleRecurrenceResponse['kind'], 'custom'>;
+type CalendarPeriodKind = Extract<
+  ScheduleRecurrenceResponse['kind'],
+  'daily' | 'weekdays' | 'weekly' | 'monthly'
+>;
+
+function isCalendarRecurrenceKind(
+  kind: ScheduleRecurrenceResponse['kind'],
+): kind is CalendarPeriodKind {
+  return (
+    kind === 'daily' ||
+    kind === 'weekdays' ||
+    kind === 'weekly' ||
+    kind === 'monthly'
+  );
+}
 
 function calendarPeriodKey(
   kind: CalendarPeriodKind,
@@ -562,6 +609,18 @@ export function recurrenceToScheduleTiming(
   recurrence: ScheduleRecurrence,
 ): NormalizedScheduleTiming {
   const parsed = ScheduleRecurrenceSchema.parse(recurrence);
+  if (parsed.kind === 'hourly') {
+    return {
+      cronExpression: `${parsed.minuteOfHour} * * * *`,
+      timezone: parsed.timezone,
+    };
+  }
+  if (parsed.kind === 'minuteInterval') {
+    return {
+      cronExpression: `*/${parsed.intervalMinutes} * * * *`,
+      timezone: parsed.timezone,
+    };
+  }
   const [hour, minute] = parsed.time.split(':').map((part) => Number(part));
   const prefix = `${minute} ${hour}`;
   switch (parsed.kind) {
@@ -597,6 +656,24 @@ export function recurrenceResponseFromCron(
     month = '*',
     dayOfWeek = '*',
   ] = cron.split(/\s+/);
+  if (month === '*' && dayOfMonth === '*' && dayOfWeek === '*' && hour === '*') {
+    const minuteOfHour = parseCronNumber(minute, 0, 59);
+    if (minuteOfHour !== null) {
+      return withRecurrenceLabel({
+        kind: 'hourly',
+        minuteOfHour,
+        timezone: tz,
+      });
+    }
+    const intervalMinutes = parseSupportedMinuteInterval(minute);
+    if (intervalMinutes !== null) {
+      return withRecurrenceLabel({
+        kind: 'minuteInterval',
+        intervalMinutes,
+        timezone: tz,
+      });
+    }
+  }
   const minuteNumber = parseCronNumber(minute, 0, 59);
   const hourNumber = parseCronNumber(hour, 0, 23);
   if (minuteNumber === null || hourNumber === null) {
@@ -634,6 +711,19 @@ export function recurrenceResponseFromCron(
   return { kind: 'custom', timezone: tz, label: '自定义重复' };
 }
 
+function parseSupportedMinuteInterval(
+  value: string,
+): ScheduleMinuteInterval | null {
+  const match = /^\*\/(\d+)$/.exec(value);
+  if (!match) return null;
+  const interval = Number(match[1]);
+  return SCHEDULE_MINUTE_INTERVALS.includes(
+    interval as ScheduleMinuteInterval,
+  )
+    ? (interval as ScheduleMinuteInterval)
+    : null;
+}
+
 function parseCronNumber(value: string, min: number, max: number): number | null {
   if (!/^\d+$/.test(value)) return null;
   const parsed = Number(value);
@@ -656,5 +746,9 @@ export function withRecurrenceLabel(
       };
     case 'monthly':
       return { ...parsed, label: `每月 ${parsed.dayOfMonth} 日 ${parsed.time}` };
+    case 'hourly':
+      return { ...parsed, label: `每小时第 ${parsed.minuteOfHour} 分钟` };
+    case 'minuteInterval':
+      return { ...parsed, label: `每 ${parsed.intervalMinutes} 分钟` };
   }
 }

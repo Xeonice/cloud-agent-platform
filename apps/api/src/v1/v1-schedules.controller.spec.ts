@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import {
   CreateScheduleRequestSchema,
+  UpdateScheduleRequestSchema,
+  type CreateScheduleRequest,
   type DispatchScheduleRequest,
   type ScheduleResponse,
+  type UpdateScheduleRequest,
 } from '@cap/contracts';
 import type {
   ScheduleRunResponse,
@@ -14,6 +17,7 @@ import type {
 import type { AuthenticatedRequest } from '../auth/auth.guard';
 import type { OperatorPrincipal } from '../auth/operator-principal';
 import type { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.service';
+import { ZodValidationPipe } from '../repos/zod-validation.pipe';
 import { V1SchedulesController } from './v1-schedules.controller';
 
 const USER_A = 'acct-a';
@@ -51,6 +55,8 @@ const LEGACY: OperatorPrincipal = {
 
 const reqWith = (principal: OperatorPrincipal): AuthenticatedRequest =>
   ({ operatorPrincipal: principal }) as AuthenticatedRequest;
+
+const BODY_METADATA = { type: 'body' as const, metatype: Object, data: undefined };
 
 function scheduleResponse(): ScheduleResponse {
   return {
@@ -152,31 +158,77 @@ test('ownerless principal reaches create as ownerless so service returns shared 
   );
 });
 
-test('write key can create with a recurrence-first payload', async () => {
-  const seen: Array<{ ownerUserId: string | undefined; cronExpression: string }> = [];
+test('write key can create and update validated sub-day recurrence payloads', async () => {
+  const seen: Array<{
+    operation: string;
+    ownerUserId: string | undefined;
+    cronExpression: string;
+  }> = [];
   const controller = new V1SchedulesController({
     async create(ownerUserId: string | undefined, body: { cronExpression: string }) {
-      seen.push({ ownerUserId, cronExpression: body.cronExpression });
+      seen.push({ operation: 'create', ownerUserId, cronExpression: body.cronExpression });
+      return scheduleResponse();
+    },
+    async update(
+      ownerUserId: string | undefined,
+      _id: string,
+      body: { cronExpression: string },
+    ) {
+      seen.push({ operation: 'update', ownerUserId, cronExpression: body.cronExpression });
       return scheduleResponse();
     },
   } as unknown as ScheduledTasksService);
+  const createPipe = new ZodValidationPipe(CreateScheduleRequestSchema);
+  const updatePipe = new ZodValidationPipe(UpdateScheduleRequestSchema);
 
   const result = await controller.create(
-    CreateScheduleRequestSchema.parse({
+    createPipe.transform({
       recurrence: {
-        kind: 'weekdays',
-        time: '09:30',
+        kind: 'hourly',
+        minuteOfHour: 45,
         timezone: 'Asia/Shanghai',
       },
-      overlapPolicy: 'skip',
-      misfirePolicy: 'fire-once',
-      taskTemplate: { repoId: REPO_ID, prompt: 'weekday check' },
-    }),
+      taskTemplate: { repoId: REPO_ID, prompt: 'hourly check' },
+    }, BODY_METADATA) as CreateScheduleRequest,
+    reqWith(WRITE_KEY),
+  );
+  await controller.update(
+    SCHEDULE_ID,
+    updatePipe.transform({
+      recurrence: {
+        kind: 'minuteInterval',
+        intervalMinutes: 15,
+        timezone: 'UTC',
+      },
+    }, BODY_METADATA) as UpdateScheduleRequest,
     reqWith(WRITE_KEY),
   );
 
   assert.equal(result.id, SCHEDULE_ID);
-  assert.deepEqual(seen, [{ ownerUserId: USER_A, cronExpression: '30 9 * * 1-5' }]);
+  assert.deepEqual(seen, [
+    { operation: 'create', ownerUserId: USER_A, cronExpression: '45 * * * *' },
+    { operation: 'update', ownerUserId: USER_A, cronExpression: '*/15 * * * *' },
+  ]);
+
+  for (const invalid of [
+    {
+      recurrence: {
+        kind: 'minuteInterval',
+        intervalMinutes: 60,
+        timezone: 'UTC',
+      },
+    },
+    {
+      recurrence: { kind: 'hourly', minuteOfHour: 15, timezone: 'UTC' },
+      cronExpression: '15 * * * *',
+    },
+  ]) {
+    assert.throws(
+      () => updatePipe.transform(invalid, BODY_METADATA),
+      BadRequestException,
+    );
+  }
+  assert.equal(seen.length, 2);
 });
 
 test('list is owner-scoped and forwards pagination', async () => {

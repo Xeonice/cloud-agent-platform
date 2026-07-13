@@ -94,6 +94,70 @@ function operationErrorResponses(
   );
 }
 
+/**
+ * Zod refinements remain the runtime authority, but zod-to-openapi cannot infer
+ * cross-field refinements. Attach their JSON Schema equivalents to the same Zod
+ * instances when projecting them into OpenAPI so generated clients see the
+ * recurrence/cron compatibility boundary too.
+ */
+function requestSchemaForOpenApi(operation: PublicV1Operation) {
+  const schema = operation.requestSchema;
+  if (!schema) return undefined;
+
+  if (operation.id === 'schedules.create') {
+    return schema.openapi({
+      oneOf: [
+        {
+          required: ['recurrence'],
+          not: { required: ['cronExpression'] },
+        },
+        {
+          required: ['cronExpression'],
+          not: { required: ['recurrence'] },
+        },
+      ],
+    });
+  }
+
+  if (operation.id === 'schedules.update') {
+    return schema.openapi({
+      oneOf: [
+        {
+          required: ['recurrence'],
+          not: {
+            anyOf: [
+              { required: ['cronExpression'] },
+              { required: ['timezone'] },
+            ],
+          },
+        },
+        {
+          required: ['cronExpression'],
+          not: { required: ['recurrence'] },
+        },
+        {
+          anyOf: [
+            { required: ['name'] },
+            { required: ['timezone'] },
+            { required: ['taskTemplate'] },
+            { required: ['enabled'] },
+            { required: ['overlapPolicy'] },
+            { required: ['misfirePolicy'] },
+          ],
+          not: {
+            anyOf: [
+              { required: ['recurrence'] },
+              { required: ['cronExpression'] },
+            ],
+          },
+        },
+      ],
+    });
+  }
+
+  return schema;
+}
+
 /** Build a fresh OpenAPI registry from the canonical operation manifest. */
 export function buildV1Registry(): OpenAPIRegistry {
   // Contracts are ESM while the API is CJS. Extend the exact zod realm that
@@ -126,11 +190,12 @@ export function buildV1Registry(): OpenAPIRegistry {
     }
     const responseContentType =
       operation.responseContentType ?? 'application/json';
+    const requestSchema = requestSchemaForOpenApi(operation);
     const hasRequest = Boolean(
       operation.paramsSchema ||
         operation.querySchema ||
         operation.headersSchema ||
-        operation.requestSchema,
+        requestSchema,
     );
 
     registry.registerPath({
@@ -162,14 +227,13 @@ export function buildV1Registry(): OpenAPIRegistry {
               ...(operation.headersSchema
                 ? { headers: operation.headersSchema }
                 : {}),
-              ...(operation.requestSchema
+              ...(requestSchema
                 ? {
                     body: {
-                      required: !operation.requestSchema.safeParse(undefined)
-                        .success,
+                      required: !requestSchema.safeParse(undefined).success,
                       content: {
                         'application/json': {
-                          schema: operation.requestSchema,
+                          schema: requestSchema,
                         },
                       },
                     },

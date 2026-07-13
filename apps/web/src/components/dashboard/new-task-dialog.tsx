@@ -51,6 +51,8 @@ import type { CreateTaskBody, RuntimeId } from "@/lib/api/real";
 import {
   buildSchedulePayload,
   buildTaskRequest,
+  DEFAULT_RECURRENCE_INTERVAL_MINUTES,
+  DEFAULT_RECURRENCE_MINUTE_OF_HOUR,
   DEFAULT_RECURRENCE_TIME,
   DEFAULT_RECURRENCE_TIMEZONE,
   ENVIRONMENT_DEFAULT,
@@ -80,6 +82,16 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import {
+  RecurrenceFields,
+  type RecurrenceFieldsValue,
+} from "@/components/schedules/recurrence-fields";
+import {
+  buildScheduleTimezoneOptions,
+  detectBrowserScheduleTimezone,
+  listSupportedScheduleTimezones,
+  resolveHydratedScheduleTimezone,
+} from "@/lib/schedule-timezone";
 
 /** The 3 prototype execution strategies (verbatim copy; the value == the label). */
 const STRATEGIES = [
@@ -147,16 +159,6 @@ export const DEADLINE_OPTIONS: ReadonlyArray<{ label: string; ms: number | null 
   { label: "1 小时", ms: HOUR },
   { label: "4 小时", ms: 4 * HOUR },
 ];
-
-const WEEKDAY_OPTIONS = [
-  { value: 1, label: "周一" },
-  { value: 2, label: "周二" },
-  { value: 3, label: "周三" },
-  { value: 4, label: "周四" },
-  { value: 5, label: "周五" },
-  { value: 6, label: "周六" },
-  { value: 0, label: "周日" },
-] as const;
 
 /** The Select value (string) for a guardrail ms, or the OFF sentinel for null. */
 export function guardrailSelectValue(ms: number | null): string {
@@ -395,7 +397,20 @@ export function NewTaskDialog({
   const [recurrenceKind, setRecurrenceKind] =
     React.useState<RecurrenceFormKind>("weekdays");
   const [recurrenceTime, setRecurrenceTime] = React.useState(DEFAULT_RECURRENCE_TIME);
+  const [minuteOfHour, setMinuteOfHour] = React.useState(
+    DEFAULT_RECURRENCE_MINUTE_OF_HOUR,
+  );
+  const [intervalMinutes, setIntervalMinutes] =
+    React.useState<ScheduleFormState["intervalMinutes"]>(
+      DEFAULT_RECURRENCE_INTERVAL_MINUTES,
+    );
   const [timezone, setTimezone] = React.useState(DEFAULT_RECURRENCE_TIMEZONE);
+  const [timezoneOptions, setTimezoneOptions] = React.useState(() =>
+    buildScheduleTimezoneOptions({
+      currentTimezone: DEFAULT_RECURRENCE_TIMEZONE,
+    }),
+  );
+  const timezoneDirtyRef = React.useRef(false);
   const [weekday, setWeekday] = React.useState(1);
   const [dayOfMonth, setDayOfMonth] = React.useState(1);
   const [overlapPolicy, setOverlapPolicy] =
@@ -416,6 +431,7 @@ export function NewTaskDialog({
     resetScheduleMutation();
     resetUpdateMutation();
     if (scheduleToEdit) {
+      timezoneDirtyRef.current = false;
       const form = scheduleFormFromSchedule(scheduleToEdit, DEFAULT_RUNTIME);
       setRepoId(form.repoId);
       setBranch(form.branch || "main");
@@ -430,7 +446,15 @@ export function NewTaskDialog({
       setScheduleName(form.name);
       setRecurrenceKind(form.recurrenceKind);
       setRecurrenceTime(form.recurrenceTime);
+      setMinuteOfHour(form.minuteOfHour);
+      setIntervalMinutes(form.intervalMinutes);
       setTimezone(form.timezone);
+      setTimezoneOptions(
+        buildScheduleTimezoneOptions({
+          currentTimezone: form.timezone,
+          persistedTimezone: form.timezone,
+        }),
+      );
       setWeekday(form.weekday);
       setDayOfMonth(form.dayOfMonth);
       setOverlapPolicy(form.overlapPolicy);
@@ -446,7 +470,15 @@ export function NewTaskDialog({
     setScheduleName("");
     setRecurrenceKind("weekdays");
     setRecurrenceTime(DEFAULT_RECURRENCE_TIME);
+    setMinuteOfHour(DEFAULT_RECURRENCE_MINUTE_OF_HOUR);
+    setIntervalMinutes(DEFAULT_RECURRENCE_INTERVAL_MINUTES);
+    timezoneDirtyRef.current = false;
     setTimezone(DEFAULT_RECURRENCE_TIMEZONE);
+    setTimezoneOptions(
+      buildScheduleTimezoneOptions({
+        currentTimezone: DEFAULT_RECURRENCE_TIMEZONE,
+      }),
+    );
     setWeekday(1);
     setDayOfMonth(1);
     setOverlapPolicy("skip");
@@ -457,6 +489,29 @@ export function NewTaskDialog({
     resetUpdateMutation,
     scheduleToEdit,
   ]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const detectedTimezone = detectBrowserScheduleTimezone();
+    const persistedTimezone = scheduleToEdit?.timezone ?? null;
+    setTimezoneOptions(
+      buildScheduleTimezoneOptions({
+        supportedTimezones: listSupportedScheduleTimezones(),
+        detectedTimezone,
+        currentTimezone: persistedTimezone ?? DEFAULT_RECURRENCE_TIMEZONE,
+        persistedTimezone,
+      }),
+    );
+    setTimezone(
+      resolveHydratedScheduleTimezone({
+        detectedTimezone,
+        currentTimezone: timezone,
+        persistedTimezone,
+        editing: Boolean(scheduleToEdit),
+        dirty: timezoneDirtyRef.current,
+      }),
+    );
+  }, [open, scheduleToEdit, timezone]);
 
   // Keep the selection on a READY runtime: if the currently-selected runtime
   // reports un-ready once readiness resolves (e.g. the Claude token was removed),
@@ -569,6 +624,30 @@ export function NewTaskDialog({
     };
   }
 
+  function handleRecurrenceChange(patch: Partial<RecurrenceFieldsValue>) {
+    if (patch.recurrenceKind !== undefined) {
+      setRecurrenceKind(patch.recurrenceKind);
+    }
+    if (patch.recurrenceTime !== undefined) {
+      setRecurrenceTime(patch.recurrenceTime);
+    }
+    if (patch.minuteOfHour !== undefined) {
+      setMinuteOfHour(patch.minuteOfHour);
+    }
+    if (patch.intervalMinutes !== undefined) {
+      setIntervalMinutes(patch.intervalMinutes);
+    }
+    if (patch.timezone !== undefined) {
+      timezoneDirtyRef.current = true;
+      setTimezone(patch.timezone);
+    }
+    if (patch.weekday !== undefined) setWeekday(patch.weekday);
+    if (patch.dayOfMonth !== undefined) setDayOfMonth(patch.dayOfMonth);
+    if (patch.overlapPolicy !== undefined) {
+      setOverlapPolicy(patch.overlapPolicy);
+    }
+  }
+
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!repoId || prompt.trim().length === 0) return;
@@ -589,6 +668,8 @@ export function NewTaskDialog({
               name: scheduleName,
               recurrenceKind,
               recurrenceTime,
+              minuteOfHour,
+              intervalMinutes,
               timezone,
               weekday,
               dayOfMonth,
@@ -615,6 +696,8 @@ export function NewTaskDialog({
           name: scheduleName,
           recurrenceKind,
           recurrenceTime,
+          minuteOfHour,
+          intervalMinutes,
           timezone,
           weekday,
           dayOfMonth,
@@ -755,143 +838,21 @@ export function NewTaskDialog({
                     placeholder="工作日检查"
                   />
                 </div>
-                <div className="grid gap-3 min-[821px]:grid-cols-2">
-                  <div className="grid gap-2">
-                    <label
-                      htmlFor="modalRecurrenceKind"
-                      className="text-[13px] font-medium text-foreground"
-                    >
-                      重复频率
-                    </label>
-                    <Select
-                      value={recurrenceKind}
-                      onValueChange={(value) =>
-                        setRecurrenceKind(value as RecurrenceFormKind)
-                      }
-                    >
-                      <SelectTrigger id="modalRecurrenceKind" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {recurrenceKind === "custom" ? (
-                          <SelectItem value="custom">沿用当前重复规则</SelectItem>
-                        ) : null}
-                        <SelectItem value="daily">每天</SelectItem>
-                        <SelectItem value="weekdays">工作日</SelectItem>
-                        <SelectItem value="weekly">每周</SelectItem>
-                        <SelectItem value="monthly">每月</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {recurrenceKind !== "custom" ? (
-                    <div className="grid gap-2">
-                      <label
-                        htmlFor="modalRecurrenceTime"
-                        className="text-[13px] font-medium text-foreground"
-                      >
-                        触发时间
-                      </label>
-                      <Input
-                        id="modalRecurrenceTime"
-                        type="time"
-                        value={recurrenceTime}
-                        onChange={(event) => setRecurrenceTime(event.target.value)}
-                      />
-                    </div>
-                  ) : null}
-                </div>
-                {recurrenceKind === "weekly" ? (
-                  <div className="grid gap-2">
-                    <label
-                      htmlFor="modalWeekday"
-                      className="text-[13px] font-medium text-foreground"
-                    >
-                      每周哪一天
-                    </label>
-                    <Select
-                      value={String(weekday)}
-                      onValueChange={(value) => setWeekday(Number(value))}
-                    >
-                      <SelectTrigger id="modalWeekday" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {WEEKDAY_OPTIONS.map((option) => (
-                          <SelectItem key={option.value} value={String(option.value)}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ) : null}
-                {recurrenceKind === "monthly" ? (
-                  <div className="grid gap-2">
-                    <label
-                      htmlFor="modalDayOfMonth"
-                      className="text-[13px] font-medium text-foreground"
-                    >
-                      每月哪一天
-                    </label>
-                    <Select
-                      value={String(dayOfMonth)}
-                      onValueChange={(value) => setDayOfMonth(Number(value))}
-                    >
-                      <SelectTrigger id="modalDayOfMonth" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {Array.from({ length: 28 }, (_, index) => index + 1).map(
-                          (day) => (
-                            <SelectItem key={day} value={String(day)}>
-                              {day} 日
-                            </SelectItem>
-                          ),
-                        )}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                ) : null}
-                <div className="grid gap-3 min-[821px]:grid-cols-2">
-                  {recurrenceKind !== "custom" ? (
-                    <div className="grid gap-2">
-                      <label
-                        htmlFor="modalTimezone"
-                        className="text-[13px] font-medium text-foreground"
-                      >
-                        时区
-                      </label>
-                      <Input
-                        id="modalTimezone"
-                        value={timezone}
-                        onChange={(event) => setTimezone(event.target.value)}
-                        placeholder="UTC"
-                      />
-                    </div>
-                  ) : null}
-                  <div className="grid gap-2">
-                    <label
-                      htmlFor="modalOverlapPolicy"
-                      className="text-[13px] font-medium text-foreground"
-                    >
-                      上次未结束时
-                    </label>
-                    <Select
-                      value={overlapPolicy}
-                      onValueChange={(value) =>
-                        setOverlapPolicy(value as ScheduleFormState["overlapPolicy"])
-                      }
-                    >
-                      <SelectTrigger id="modalOverlapPolicy" className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="skip">跳过本次</SelectItem>
-                        <SelectItem value="enqueue">继续排队</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
+                <RecurrenceFields
+                  idPrefix="modal"
+                  value={{
+                    recurrenceKind,
+                    recurrenceTime,
+                    minuteOfHour,
+                    intervalMinutes,
+                    timezone,
+                    weekday,
+                    dayOfMonth,
+                    overlapPolicy,
+                  }}
+                  timezoneOptions={timezoneOptions}
+                  onChange={handleRecurrenceChange}
+                />
               </div>
             ) : null}
 

@@ -38,6 +38,8 @@ function scheduleForm(overrides: Partial<ScheduleFormState> = {}): ScheduleFormS
     name: " Workday review ",
     recurrenceKind: "weekdays",
     recurrenceTime: "08:30",
+    minuteOfHour: 0,
+    intervalMinutes: 5,
     timezone: "Asia/Shanghai",
     weekday: 1,
     dayOfMonth: 1,
@@ -119,6 +121,35 @@ describe("shared task form builders", () => {
     });
   });
 
+  it("builds hourly and fixed-interval payloads with an explicit timezone", () => {
+    expect(
+      buildSchedulePayload(
+        scheduleForm({
+          recurrenceKind: "hourly",
+          minuteOfHour: 15,
+          timezone: "Asia/Shanghai",
+        }),
+      ).recurrence,
+    ).toEqual({
+      kind: "hourly",
+      minuteOfHour: 15,
+      timezone: "Asia/Shanghai",
+    });
+    expect(
+      buildSchedulePayload(
+        scheduleForm({
+          recurrenceKind: "minuteInterval",
+          intervalMinutes: 30,
+          timezone: "",
+        }),
+      ).recurrence,
+    ).toEqual({
+      kind: "minuteInterval",
+      intervalMinutes: 30,
+      timezone: "UTC",
+    });
+  });
+
   it("prefills edit-recurring mode from an existing schedule", () => {
     const form = scheduleFormFromSchedule(scheduleFixture(), "codex");
     expect(form).toMatchObject({
@@ -134,9 +165,49 @@ describe("shared task form builders", () => {
     });
   });
 
+  it("hydrates hourly and fixed-interval edit fields without inventing calendar time", () => {
+    const hourly = scheduleFormFromSchedule(
+      scheduleFixture({
+        cronExpression: "45 * * * *",
+        timezone: "Europe/London",
+        recurrence: {
+          kind: "hourly",
+          minuteOfHour: 45,
+          timezone: "Europe/London",
+          label: "每小时第 45 分钟",
+        },
+      }),
+      "codex",
+    );
+    expect(hourly).toMatchObject({
+      recurrenceKind: "hourly",
+      minuteOfHour: 45,
+      timezone: "Europe/London",
+    });
+
+    const interval = scheduleFormFromSchedule(
+      scheduleFixture({
+        cronExpression: "*/15 * * * *",
+        timezone: "Asia/Shanghai",
+        recurrence: {
+          kind: "minuteInterval",
+          intervalMinutes: 15,
+          timezone: "Asia/Shanghai",
+          label: "每 15 分钟",
+        },
+      }),
+      "codex",
+    );
+    expect(interval).toMatchObject({
+      recurrenceKind: "minuteInterval",
+      intervalMinutes: 15,
+      timezone: "Asia/Shanghai",
+    });
+  });
+
   it("keeps custom timing opaque while editing task fields", () => {
     const custom = scheduleFixture({
-      cronExpression: "*/5 * * * *",
+      cronExpression: "*/7 * * * *",
       timezone: "UTC",
       recurrence: {
         kind: "custom",
@@ -152,7 +223,7 @@ describe("shared task form builders", () => {
 
     expect(form.recurrenceKind).toBe("custom");
     expect(payload).toMatchObject({
-      cronExpression: "*/5 * * * *",
+      cronExpression: "*/7 * * * *",
       timezone: "UTC",
       taskTemplate: {
         prompt: "keep checking",

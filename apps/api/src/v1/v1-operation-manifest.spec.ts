@@ -10,8 +10,10 @@ import {
   PATH_METADATA,
 } from '@nestjs/common/constants';
 import {
+  CreateScheduleRequestSchema,
   DispatchScheduleRequestSchema,
   PUBLIC_V1_OPERATIONS,
+  UpdateScheduleRequestSchema,
 } from '@cap/contracts';
 
 import { V1Module } from './v1.module';
@@ -134,4 +136,23 @@ test('schedule dispatch declares the same period-consumption request contract as
   assert.match(operation.description, /consume the current schedule period/i);
   assert.ok('tool' in operation.mcp);
   assert.equal(operation.mcp.tool, 'dispatch_schedule');
+});
+
+test('schedule operation documentation names every recurrence-first preset', () => {
+  const create = PUBLIC_V1_OPERATIONS.find(
+    (candidate) => candidate.id === 'schedules.create',
+  );
+  const update = PUBLIC_V1_OPERATIONS.find(
+    (candidate) => candidate.id === 'schedules.update',
+  );
+
+  assert.ok(create);
+  assert.ok(update);
+  assert.equal(create.requestSchema, CreateScheduleRequestSchema);
+  assert.equal(update.requestSchema, UpdateScheduleRequestSchema);
+  for (const operation of [create, update]) {
+    assert.match(operation.description, /hourly/);
+    assert.match(operation.description, /minuteInterval/);
+    assert.match(operation.description, /cronExpression/);
+  }
 });

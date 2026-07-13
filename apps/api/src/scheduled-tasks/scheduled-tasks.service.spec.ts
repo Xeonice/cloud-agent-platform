@@ -8,7 +8,9 @@ import {
 import {
   CreateScheduleRequestSchema,
   UpdateScheduleRequestSchema,
+  type CreateScheduleRequest,
   type CreateTaskBody,
+  type UpdateScheduleRequest,
 } from '@cap/contracts';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { TasksService } from '../tasks/tasks.service';
@@ -641,14 +643,121 @@ test('create accepts recurrence descriptors and keeps cron compatibility for cus
   const custom = await service.create(
     USER_A,
     CreateScheduleRequestSchema.parse({
-      cronExpression: '*/5 * * * *',
+      cronExpression: '7,37 * * * *',
       timezone: 'UTC',
       taskTemplate: { repoId: REPO_ID, prompt: 'legacy cron' },
     }),
   );
-  assert.equal(custom.cronExpression, '*/5 * * * *');
+  assert.equal(custom.cronExpression, '7,37 * * * *');
   assert.equal(custom.recurrence.kind, 'custom');
   assert.equal(custom.recurrence.label, '自定义重复');
+});
+
+test('sub-day descriptors round-trip through create, update, list, and get', async () => {
+  const { prisma, service } = buildHarness();
+  const hourly = await service.create(
+    USER_A,
+    CreateScheduleRequestSchema.parse({
+      name: 'hourly check',
+      recurrence: {
+        kind: 'hourly',
+        minuteOfHour: 15,
+        timezone: 'Asia/Shanghai',
+      },
+      taskTemplate: { repoId: REPO_ID, prompt: 'hourly check' },
+    }),
+    new Date('2026-07-09T00:00:00.000Z'),
+  );
+  const interval = await service.create(
+    USER_A,
+    CreateScheduleRequestSchema.parse({
+      name: 'interval check',
+      recurrence: {
+        kind: 'minuteInterval',
+        intervalMinutes: 15,
+        timezone: 'Europe/London',
+      },
+      taskTemplate: { repoId: REPO_ID, prompt: 'interval check' },
+    }),
+    new Date('2026-07-09T00:02:00.000Z'),
+  );
+
+  assert.equal(prisma.schedules[0].cron, '15 * * * *');
+  assert.equal(hourly.recurrence.kind, 'hourly');
+  assert.equal(hourly.recurrence.label, '每小时第 15 分钟');
+  assert.equal(prisma.schedules[1].cron, '*/15 * * * *');
+  assert.equal(interval.recurrence.kind, 'minuteInterval');
+  assert.equal(interval.recurrence.label, '每 15 分钟');
+
+  const listed = await service.list(USER_A);
+  assert.deepEqual(
+    listed.map((schedule) => schedule.recurrence.kind).sort(),
+    ['hourly', 'minuteInterval'],
+  );
+  assert.equal((await service.get(USER_A, hourly.id)).recurrence.kind, 'hourly');
+  assert.equal(
+    (await service.get(USER_A, interval.id)).recurrence.kind,
+    'minuteInterval',
+  );
+
+  const updated = await service.update(
+    USER_A,
+    hourly.id,
+    UpdateScheduleRequestSchema.parse({
+      recurrence: {
+        kind: 'minuteInterval',
+        intervalMinutes: 30,
+        timezone: 'UTC',
+      },
+    }),
+    new Date('2026-07-09T00:02:00.000Z'),
+  );
+  assert.equal(prisma.schedules[0].cron, '*/30 * * * *');
+  assert.equal(updated.recurrence.kind, 'minuteInterval');
+  assert.equal(updated.recurrence.label, '每 30 分钟');
+
+  const beforeUpdate = {
+    cron: prisma.schedules[0].cron,
+    timezone: prisma.schedules[0].timezone,
+    nextRunAt: prisma.schedules[0].nextRunAt?.toISOString(),
+  };
+  await assert.rejects(() =>
+    service.update(
+      USER_A,
+      hourly.id,
+      {
+        recurrence: {
+          kind: 'minuteInterval',
+          intervalMinutes: 7,
+          timezone: 'UTC',
+        },
+      } as unknown as UpdateScheduleRequest,
+    ),
+  );
+  assert.deepEqual(
+    {
+      cron: prisma.schedules[0].cron,
+      timezone: prisma.schedules[0].timezone,
+      nextRunAt: prisma.schedules[0].nextRunAt?.toISOString(),
+    },
+    beforeUpdate,
+  );
+
+  const scheduleCount = prisma.schedules.length;
+  await assert.rejects(() =>
+    service.create(
+      USER_A,
+      {
+        recurrence: {
+          kind: 'minuteInterval',
+          intervalMinutes: 60,
+          timezone: 'UTC',
+        },
+        taskTemplate: { repoId: REPO_ID, prompt: 'invalid interval' },
+      } as unknown as CreateScheduleRequest,
+    ),
+  );
+  assert.equal(prisma.schedules.length, scheduleCount);
 });
 
 test('update changes only future schedule definition and leaves existing runs/tasks untouched', async () => {
@@ -845,6 +954,119 @@ test('dispatchNow consumes the current period and same-period retries reuse its 
   assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-10T09:00:00.000Z');
 });
 
+test('early sub-day dispatch consumes one nominal occurrence and retries reuse it', async () => {
+  const { prisma, service, rowCalls, admitCalls } = buildHarness();
+  const schedule = addDueSchedule(prisma, {
+    cron: '*/15 * * * *',
+    nextRunAt: new Date('2026-07-09T08:15:00.000Z'),
+  });
+  const periodKey = 'cron:2026-07-09T08:15:00.000Z';
+
+  const dispatched = await service.dispatchNow(
+    USER_A,
+    schedule.id,
+    { expectedPeriodKey: periodKey },
+    new Date('2026-07-09T08:10:00.000Z'),
+  );
+
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(prisma.runs[0].scheduledFor.toISOString(), '2026-07-09T08:15:00.000Z');
+  assert.equal(prisma.runs[0].periodKey, periodKey);
+  assert.equal(prisma.runs[0].triggerSource, 'manual');
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T08:30:00.000Z');
+  assert.equal(dispatched.latestRun?.periodKey, periodKey);
+
+  const retried = await service.dispatchNow(
+    USER_A,
+    schedule.id,
+    { expectedPeriodKey: periodKey },
+    new Date('2026-07-09T08:11:00.000Z'),
+  );
+  assert.equal(retried.latestRun?.periodKey, periodKey);
+  assert.equal(rowCalls.length, 1);
+  assert.equal(admitCalls.length, 1);
+  assert.equal(prisma.tasks.length, 1);
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T08:30:00.000Z');
+});
+
+test('manual and automatic sub-day dispatch compete for one nominal occurrence', async () => {
+  const { prisma, service, rowCalls } = buildHarness();
+  const now = new Date('2026-07-09T08:15:00.000Z');
+  const periodKey = 'cron:2026-07-09T08:15:00.000Z';
+  const schedule = addDueSchedule(prisma, {
+    cron: '*/15 * * * *',
+    nextRunAt: now,
+  });
+
+  const [manual, automatic] = await Promise.all([
+    service.dispatchNow(
+      USER_A,
+      schedule.id,
+      { expectedPeriodKey: periodKey },
+      now,
+    ),
+    service.tick(now),
+  ]);
+
+  assert.equal(manual.latestRun?.periodKey, periodKey);
+  assert.ok(automatic === 0 || automatic === 1);
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(prisma.runs[0].periodKey, periodKey);
+  assert.equal(prisma.tasks.length, 1);
+  assert.equal(rowCalls.length, 1);
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T08:30:00.000Z');
+});
+
+test('manual retry reuses a sub-day occurrence after automatic dispatch advances it', async () => {
+  const { prisma, service, rowCalls, admitCalls } = buildHarness();
+  const scheduledFor = new Date('2026-07-09T08:15:00.000Z');
+  const periodKey = `cron:${scheduledFor.toISOString()}`;
+  const schedule = addDueSchedule(prisma, {
+    cron: '*/15 * * * *',
+    nextRunAt: scheduledFor,
+  });
+
+  assert.equal(await service.tick(scheduledFor), 1);
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T08:30:00.000Z');
+  assert.equal(prisma.runs[0]?.periodKey, periodKey);
+
+  const retried = await service.dispatchNow(
+    USER_A,
+    schedule.id,
+    { expectedPeriodKey: periodKey },
+    new Date('2026-07-09T08:15:00.001Z'),
+  );
+  assert.equal(retried.latestRun?.periodKey, periodKey);
+  assert.equal(retried.latestRun?.taskId, prisma.tasks[0]?.id);
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(prisma.tasks.length, 1);
+  assert.equal(rowCalls.length, 1);
+  assert.equal(admitCalls.length, 1);
+
+  await assert.rejects(
+    () =>
+      service.dispatchNow(
+        USER_A,
+        schedule.id,
+        { expectedPeriodKey: 'cron:2026-07-09T08:00:00.000Z' },
+        new Date('2026-07-09T08:15:00.001Z'),
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof ConflictException);
+      assert.deepEqual(error.getResponse(), {
+        error: 'schedule_period_changed',
+        message: 'The schedule moved to another recurrence period.',
+        expectedPeriodKey: 'cron:2026-07-09T08:00:00.000Z',
+        currentPeriodKey: 'cron:2026-07-09T08:30:00.000Z',
+      });
+      return true;
+    },
+  );
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(prisma.tasks.length, 1);
+});
+
 test('schedule reads expose the linked task status without changing the dispatch result', async () => {
   const { prisma, service } = buildHarness();
   const schedule = addDueSchedule(prisma, {
@@ -922,6 +1144,74 @@ test('dispatchNow advances an already-due occurrence to avoid a duplicate schedu
   assert.equal(prisma.runs[0].triggeredAt?.toISOString(), '2026-07-09T08:05:00.000Z');
   assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T09:00:00.000Z');
   assert.equal(await service.tick(new Date('2026-07-09T08:05:00.000Z')), 0);
+});
+
+test('hourly occurrences across a DST fold keep distinct run and task identities', async () => {
+  const { prisma, service, rowCalls } = buildHarness();
+  const firstOccurrence = new Date('2026-11-01T05:00:00.000Z');
+  const secondOccurrence = new Date('2026-11-01T06:00:00.000Z');
+  const schedule = addDueSchedule(prisma, {
+    cron: '0 * * * *',
+    timezone: 'America/New_York',
+    overlapPolicy: 'enqueue',
+    nextRunAt: firstOccurrence,
+  });
+
+  assert.equal(await service.tick(firstOccurrence), 1);
+  assert.equal(schedule.nextRunAt?.toISOString(), secondOccurrence.toISOString());
+  assert.equal(await service.tick(secondOccurrence), 1);
+
+  assert.deepEqual(
+    prisma.runs.map((run) => run.periodKey),
+    [
+      'cron:2026-11-01T05:00:00.000Z',
+      'cron:2026-11-01T06:00:00.000Z',
+    ],
+  );
+  assert.deepEqual(
+    prisma.runs.map((run) => run.scheduledFor.toISOString()),
+    [firstOccurrence.toISOString(), secondOccurrence.toISOString()],
+  );
+  assert.equal(prisma.tasks.length, 2);
+  assert.equal(rowCalls.length, 2);
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-11-01T07:00:00.000Z');
+});
+
+test('minute-interval occurrences across a DST fold keep distinct run identities', async () => {
+  const { prisma, service, rowCalls } = buildHarness();
+  const occurrences = [
+    '2026-11-01T05:00:00.000Z',
+    '2026-11-01T05:15:00.000Z',
+    '2026-11-01T05:30:00.000Z',
+    '2026-11-01T05:45:00.000Z',
+    '2026-11-01T06:00:00.000Z',
+    '2026-11-01T06:15:00.000Z',
+    '2026-11-01T06:30:00.000Z',
+    '2026-11-01T06:45:00.000Z',
+  ];
+  const schedule = addDueSchedule(prisma, {
+    cron: '*/15 * * * *',
+    timezone: 'America/New_York',
+    overlapPolicy: 'enqueue',
+    nextRunAt: new Date(occurrences[0]!),
+  });
+
+  for (const occurrence of occurrences) {
+    assert.equal(await service.tick(new Date(occurrence)), 1);
+  }
+
+  assert.deepEqual(
+    prisma.runs.map((run) => run.periodKey),
+    occurrences.map((occurrence) => `cron:${occurrence}`),
+  );
+  assert.deepEqual(
+    prisma.runs.map((run) => run.scheduledFor.toISOString()),
+    occurrences,
+  );
+  assert.equal(new Set(prisma.runs.map((run) => run.periodKey)).size, 8);
+  assert.equal(prisma.tasks.length, 8);
+  assert.equal(rowCalls.length, 8);
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-11-01T07:00:00.000Z');
 });
 
 test('dispatchNow consumes today and clears an overdue pointer from an earlier calendar period', async () => {
@@ -1483,6 +1773,8 @@ test('overlapPolicy=skip records a skipped run without fabricating a task', asyn
   const skipped = prisma.runs.find((run) => run.status === 'skipped');
   assert.ok(skipped);
   assert.equal(skipped?.taskId, null);
+  assert.equal(skipped?.periodKey, 'cron:2026-07-09T00:05:00.000Z');
+  assert.equal(schedule.nextRunAt?.toISOString(), '2026-07-09T00:10:00.000Z');
 });
 
 test('overlapPolicy=enqueue creates another ordinary task', async () => {

@@ -11,6 +11,7 @@ const contracts = require(path.join(here, '..', 'dist', 'index.js'));
 const {
   CreateScheduleRequestSchema,
   DispatchScheduleRequestSchema,
+  SCHEDULE_MINUTE_INTERVALS,
   ScheduleRecurrenceSchema,
   ScheduleOwnerRequiredErrorSchema,
   ScheduleResponseSchema,
@@ -64,6 +65,8 @@ test('schedule create validates five-field cron and IANA timezone', () => {
 });
 
 test('schedule recurrence validates product presets and normalizes to cron', () => {
+  assert.deepEqual(SCHEDULE_MINUTE_INTERVALS, [5, 10, 15, 30]);
+
   const recurrence = ScheduleRecurrenceSchema.parse({
     kind: 'weekdays',
     time: '09:00',
@@ -93,12 +96,52 @@ test('schedule recurrence validates product presets and normalizes to cron', () 
   });
   assert.equal(weekly.cronExpression, '30 10 * * 1');
 
+  const hourly = CreateScheduleRequestSchema.parse({
+    recurrence: {
+      kind: 'hourly',
+      minuteOfHour: 15,
+      timezone: 'Asia/Shanghai',
+    },
+    taskTemplate: { repoId, prompt: 'hourly check' },
+  });
+  assert.equal(hourly.cronExpression, '15 * * * *');
+  assert.equal(hourly.timezone, 'Asia/Shanghai');
+
+  const minuteInterval = CreateScheduleRequestSchema.parse({
+    recurrence: {
+      kind: 'minuteInterval',
+      intervalMinutes: 15,
+      timezone: 'Europe/London',
+    },
+    taskTemplate: { repoId, prompt: 'interval check' },
+  });
+  assert.equal(minuteInterval.cronExpression, '*/15 * * * *');
+  assert.equal(minuteInterval.timezone, 'Europe/London');
+
   assert.throws(() =>
     CreateScheduleRequestSchema.parse({
       recurrence: { kind: 'daily', time: '25:00', timezone: 'UTC' },
       taskTemplate: { repoId, prompt: 'bad time' },
     }),
   );
+  for (const minuteOfHour of [-1, 60, 1.5]) {
+    assert.throws(() =>
+      ScheduleRecurrenceSchema.parse({
+        kind: 'hourly',
+        minuteOfHour,
+        timezone: 'UTC',
+      }),
+    );
+  }
+  for (const intervalMinutes of [7, 60, 2.5]) {
+    assert.throws(() =>
+      ScheduleRecurrenceSchema.parse({
+        kind: 'minuteInterval',
+        intervalMinutes,
+        timezone: 'UTC',
+      }),
+    );
+  }
   assert.throws(() =>
     CreateScheduleRequestSchema.parse({
       recurrence: { kind: 'monthly', dayOfMonth: 31, time: '09:00', timezone: 'UTC' },
@@ -126,6 +169,25 @@ test('schedule update accepts recurrence and keeps cron compatibility', () => {
   assert.equal(recurrenceUpdate.cronExpression, '15 8 12 * *');
   assert.equal(recurrenceUpdate.timezone, 'Asia/Shanghai');
 
+  const hourlyUpdate = UpdateScheduleRequestSchema.parse({
+    recurrence: {
+      kind: 'hourly',
+      minuteOfHour: 45,
+      timezone: 'Europe/London',
+    },
+  });
+  assert.equal(hourlyUpdate.cronExpression, '45 * * * *');
+  assert.equal(hourlyUpdate.timezone, 'Europe/London');
+
+  const intervalUpdate = UpdateScheduleRequestSchema.parse({
+    recurrence: {
+      kind: 'minuteInterval',
+      intervalMinutes: 30,
+      timezone: 'UTC',
+    },
+  });
+  assert.equal(intervalUpdate.cronExpression, '*/30 * * * *');
+
   const cronUpdate = UpdateScheduleRequestSchema.parse({
     cronExpression: '45 17 * * *',
     timezone: 'UTC',
@@ -150,8 +212,30 @@ test('recurrence response derives supported descriptors and custom summaries', (
   assert.equal(custom.label, '自定义重复');
 
   const interval = recurrenceResponseFromCron('*/5 * * * *', 'UTC');
-  assert.equal(interval.kind, 'custom');
-  assert.equal(interval.label, '自定义重复');
+  assert.deepEqual(interval, {
+    kind: 'minuteInterval',
+    intervalMinutes: 5,
+    timezone: 'UTC',
+    label: '每 5 分钟',
+  });
+
+  const hourly = recurrenceResponseFromCron('15 * * * *', 'Asia/Shanghai');
+  assert.deepEqual(hourly, {
+    kind: 'hourly',
+    minuteOfHour: 15,
+    timezone: 'Asia/Shanghai',
+    label: '每小时第 15 分钟',
+  });
+
+  const unsupportedStep = recurrenceResponseFromCron('*/7 * * * *', 'UTC');
+  assert.equal(unsupportedStep.kind, 'custom');
+  assert.equal(unsupportedStep.label, '自定义重复');
+
+  const nonCanonicalInterval = recurrenceResponseFromCron(
+    '0,15,30,45 * * * *',
+    'UTC',
+  );
+  assert.equal(nonCanonicalInterval.kind, 'custom');
 });
 
 test('next-fire helper respects timezone and DST gaps', () => {
@@ -168,6 +252,48 @@ test('next-fire helper respects timezone and DST gaps', () => {
     after: new Date('2026-03-29T00:30:00.000Z'),
   });
   assert.equal(londonDstGap.toISOString(), '2026-03-29T01:30:00.000Z');
+
+  const hourlyGap = computeNextScheduleRunAt({
+    cronExpression: '30 * * * *',
+    timezone: 'Europe/London',
+    after: new Date('2026-03-29T00:45:00.000Z'),
+  });
+  assert.equal(hourlyGap.toISOString(), '2026-03-29T01:30:00.000Z');
+
+  const firstFoldOccurrence = computeNextScheduleRunAt({
+    cronExpression: '30 * * * *',
+    timezone: 'Europe/London',
+    after: new Date('2026-10-25T00:00:00.000Z'),
+  });
+  const secondFoldOccurrence = computeNextScheduleRunAt({
+    cronExpression: '30 * * * *',
+    timezone: 'Europe/London',
+    after: firstFoldOccurrence,
+  });
+  assert.equal(firstFoldOccurrence.toISOString(), '2026-10-25T00:30:00.000Z');
+  assert.equal(secondFoldOccurrence.toISOString(), '2026-10-25T01:30:00.000Z');
+
+  const intervalFoldOccurrences = [];
+  let after = new Date('2026-11-01T04:59:59.000Z');
+  for (let index = 0; index < 8; index += 1) {
+    const occurrence = computeNextScheduleRunAt({
+      cronExpression: '*/15 * * * *',
+      timezone: 'America/New_York',
+      after,
+    });
+    intervalFoldOccurrences.push(occurrence.toISOString());
+    after = occurrence;
+  }
+  assert.deepEqual(intervalFoldOccurrences, [
+    '2026-11-01T05:00:00.000Z',
+    '2026-11-01T05:15:00.000Z',
+    '2026-11-01T05:30:00.000Z',
+    '2026-11-01T05:45:00.000Z',
+    '2026-11-01T06:00:00.000Z',
+    '2026-11-01T06:15:00.000Z',
+    '2026-11-01T06:30:00.000Z',
+    '2026-11-01T06:45:00.000Z',
+  ]);
 });
 
 test('current periods use the schedule timezone calendar for product recurrences', () => {
@@ -211,21 +337,60 @@ test('weekday weekends retain a day period without fabricating a nominal fire', 
 
 test('custom cron uses the next nominal occurrence and preserves an overdue nextRunAt', () => {
   const next = computeCurrentSchedulePeriod({
-    cronExpression: '*/5 * * * *',
+    cronExpression: '*/7 * * * *',
     timezone: 'UTC',
     at: new Date('2026-07-11T10:02:00.000Z'),
   });
-  assert.equal(next.key, 'cron:2026-07-11T10:05:00.000Z');
-  assert.equal(next.scheduledFor?.toISOString(), '2026-07-11T10:05:00.000Z');
+  assert.equal(next.key, 'cron:2026-07-11T10:07:00.000Z');
+  assert.equal(next.scheduledFor?.toISOString(), '2026-07-11T10:07:00.000Z');
 
   const overdue = computeCurrentSchedulePeriod({
+    cronExpression: '*/7 * * * *',
+    timezone: 'UTC',
+    at: new Date('2026-07-11T10:02:00.000Z'),
+    nextRunAt: new Date('2026-07-11T09:56:00.000Z'),
+  });
+  assert.equal(overdue.key, 'cron:2026-07-11T09:56:00.000Z');
+  assert.equal(overdue.scheduledFor?.toISOString(), '2026-07-11T09:56:00.000Z');
+});
+
+test('sub-day recurrences use distinct nominal occurrence identities', () => {
+  const current = computeCurrentSchedulePeriod({
     cronExpression: '*/5 * * * *',
     timezone: 'UTC',
     at: new Date('2026-07-11T10:02:00.000Z'),
-    nextRunAt: new Date('2026-07-11T09:55:00.000Z'),
   });
-  assert.equal(overdue.key, 'cron:2026-07-11T09:55:00.000Z');
-  assert.equal(overdue.scheduledFor?.toISOString(), '2026-07-11T09:55:00.000Z');
+  assert.deepEqual(current, {
+    key: 'cron:2026-07-11T10:05:00.000Z',
+    scheduledFor: new Date('2026-07-11T10:05:00.000Z'),
+  });
+
+  const first = computeSchedulePeriodForOccurrence({
+    cronExpression: '*/5 * * * *',
+    timezone: 'UTC',
+    scheduledFor: new Date('2026-07-11T10:05:00.000Z'),
+  });
+  const second = computeSchedulePeriodForOccurrence({
+    cronExpression: '*/5 * * * *',
+    timezone: 'UTC',
+    scheduledFor: new Date('2026-07-11T10:10:00.000Z'),
+  });
+  assert.equal(first, 'cron:2026-07-11T10:05:00.000Z');
+  assert.equal(second, 'cron:2026-07-11T10:10:00.000Z');
+  assert.notEqual(first, second);
+
+  const firstFold = computeSchedulePeriodForOccurrence({
+    cronExpression: '30 * * * *',
+    timezone: 'Europe/London',
+    scheduledFor: new Date('2026-10-25T00:30:00.000Z'),
+  });
+  const secondFold = computeSchedulePeriodForOccurrence({
+    cronExpression: '30 * * * *',
+    timezone: 'Europe/London',
+    scheduledFor: new Date('2026-10-25T01:30:00.000Z'),
+  });
+  assert.equal(firstFold, 'cron:2026-10-25T00:30:00.000Z');
+  assert.equal(secondFold, 'cron:2026-10-25T01:30:00.000Z');
 });
 
 test('automatic occurrence period keys honor calendar presets and DST resolution', () => {
