@@ -19,6 +19,8 @@ import assert from 'node:assert/strict';
 
 import { EnvClaudeAuthSource } from './env-claude-auth-source';
 
+const OWNER_USER_ID = '00000000-0000-4000-a000-000000000001';
+
 const ENV = EnvClaudeAuthSource.ENV; // 'CLAUDE_CODE_OAUTH_TOKEN'
 
 /** Restore env to its original state after each test. */
@@ -55,7 +57,7 @@ test(
   'EnvClaudeAuthSource returns the token when CLAUDE_CODE_OAUTH_TOKEN is set',
   withEnv({ [ENV]: 'tok_abc123' }, async () => {
     const source = new EnvClaudeAuthSource();
-    const material = await source.getClaudeAuth();
+    const material = await source.getClaudeAuth(OWNER_USER_ID);
     assert.ok(material !== null, 'getClaudeAuth() should resolve to non-null when var is set');
     assert.equal(material.oauthToken, 'tok_abc123', 'oauthToken is the raw env value');
   }),
@@ -65,7 +67,7 @@ test(
   'EnvClaudeAuthSource reports configured = true when CLAUDE_CODE_OAUTH_TOKEN is set',
   withEnv({ [ENV]: 'tok_abc123' }, async () => {
     const source = new EnvClaudeAuthSource();
-    const isConfigured = await source.configured();
+    const isConfigured = await source.configured(OWNER_USER_ID);
     assert.equal(isConfigured, true, 'configured() must be true when the env var is present');
   }),
 );
@@ -78,7 +80,7 @@ test(
   'configured() exposes a boolean only — not the token value or any suffix',
   withEnv({ [ENV]: 'secret-token-xyz' }, async () => {
     const source = new EnvClaudeAuthSource();
-    const result = await source.configured();
+    const result = await source.configured(OWNER_USER_ID);
     // The return type must be a plain boolean, not a string or object carrying the token.
     assert.equal(typeof result, 'boolean', 'configured() return type is boolean, not string or object');
     assert.equal(result, true);
@@ -99,7 +101,7 @@ test(
   'EnvClaudeAuthSource returns null when CLAUDE_CODE_OAUTH_TOKEN is unset',
   withEnv({ [ENV]: undefined }, async () => {
     const source = new EnvClaudeAuthSource();
-    const material = await source.getClaudeAuth();
+    const material = await source.getClaudeAuth(OWNER_USER_ID);
     assert.equal(material, null, 'getClaudeAuth() must return null when var is unset');
   }),
 );
@@ -108,7 +110,7 @@ test(
   'EnvClaudeAuthSource returns null when CLAUDE_CODE_OAUTH_TOKEN is blank',
   withEnv({ [ENV]: '   ' }, async () => {
     const source = new EnvClaudeAuthSource();
-    const material = await source.getClaudeAuth();
+    const material = await source.getClaudeAuth(OWNER_USER_ID);
     assert.equal(material, null, 'getClaudeAuth() must return null when var is blank/whitespace');
   }),
 );
@@ -117,7 +119,7 @@ test(
   'EnvClaudeAuthSource reports configured = false when CLAUDE_CODE_OAUTH_TOKEN is unset',
   withEnv({ [ENV]: undefined }, async () => {
     const source = new EnvClaudeAuthSource();
-    const isConfigured = await source.configured();
+    const isConfigured = await source.configured(OWNER_USER_ID);
     assert.equal(isConfigured, false, 'configured() must be false when the env var is absent');
   }),
 );

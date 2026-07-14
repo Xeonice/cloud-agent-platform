@@ -3,6 +3,7 @@ import {
   OpenApiGeneratorV31,
   extendZodWithOpenApi,
 } from '@asteasolutions/zod-to-openapi';
+import type { AnyZodObject, ZodTypeAny } from 'zod';
 import {
   contractsZod,
   PUBLIC_V1_OPERATIONS,
@@ -17,14 +18,22 @@ import {
   V1ListTasksResponseSchema,
   V1ScheduleListQuerySchema,
   V1TaskEventSchema,
+  RuntimeModelCatalogUnavailableErrorSchema,
+  RuntimeModelNotAvailableErrorSchema,
+  type PublicErrorCode,
+  type PublicRestErrorProjection,
   type V1CreateTaskRequest,
   type V1ListQuery,
   type V1ListReposResponse,
   type V1ListScheduleRunsResponse,
   type V1ListSchedulesResponse,
   type V1ListTasksResponse,
-  type PublicV1Operation,
+  type PublicV1OperationShape,
 } from '@cap/contracts';
+import {
+  PUBLIC_ERROR_SEMANTICS,
+  REST_PUBLIC_ERROR_MAP,
+} from '../public-surface/public-error-mappings';
 
 /** The public API surface version, independent of the deployed build version. */
 export const V1_OPENAPI_INFO = {
@@ -71,27 +80,152 @@ export function v1RouteKeys(): string[] {
   ).sort();
 }
 
-const ERROR_DESCRIPTIONS = {
-  400: 'Bad Request: path, query, header, or JSON body validation failed.',
-  404: 'Not Found: the referenced task, repository, or schedule does not exist.',
-  409: 'Conflict: the request conflicts with existing state or idempotency history.',
-  429: 'Too Many Requests: the caller exceeded the task-create rate limit.',
-} as const;
+const STRUCTURED_LEGACY_ERROR_SCHEMAS = {
+  runtime_model_not_available: RuntimeModelNotAvailableErrorSchema,
+  runtime_model_catalog_unavailable:
+    RuntimeModelCatalogUnavailableErrorSchema,
+} satisfies Partial<Record<PublicErrorCode, ZodTypeAny>>;
 
 function operationErrorResponses(
-  operation: PublicV1Operation,
-): Record<number, { description: string }> {
-  const statuses = new Set<number>([400]);
-  if (operation.paramsSchema) statuses.add(404);
-  for (const status of operation.additionalErrorStatuses ?? []) {
-    statuses.add(status);
+  operation: PublicV1OperationShape,
+): Record<
+  number,
+  {
+    description: string;
+    content?: { 'application/json': { schema: ZodTypeAny } };
+    headers?: AnyZodObject;
   }
+> {
+  const errorsByStatus = new Map<number, ErrorResponseCandidate[]>();
+  for (const code of operation.errors) {
+    const status = REST_PUBLIC_ERROR_MAP[code].status;
+    const candidates = errorsByStatus.get(status) ?? [];
+    candidates.push({ code });
+    errorsByStatus.set(status, candidates);
+  }
+  for (const projection of operation.restErrorProjections ?? []) {
+    const candidates = errorsByStatus.get(projection.status) ?? [];
+    candidates.push({ code: projection.code, projection });
+    errorsByStatus.set(projection.status, candidates);
+  }
+
   return Object.fromEntries(
-    [...statuses].sort((a, b) => a - b).map((status) => [
-      status,
-      { description: ERROR_DESCRIPTIONS[status as keyof typeof ERROR_DESCRIPTIONS] },
-    ]),
+    [...errorsByStatus.entries()].sort(([a], [b]) => a - b).map(
+      ([status, candidates]) => {
+        const schema = structuredLegacyErrorSchema(candidates);
+        const headers = candidates.find(
+          (candidate) => candidate.projection?.headersSchema,
+        )?.projection?.headersSchema;
+        return [
+          status,
+          {
+            description: publicErrorDescription(
+              operation,
+              status,
+              candidates.map((candidate) => candidate.code),
+            ),
+            ...(schema
+              ? { content: { 'application/json': { schema } } }
+              : {}),
+            ...(headers ? { headers } : {}),
+          },
+        ];
+      },
+    ),
   );
+}
+
+interface ErrorResponseCandidate {
+  readonly code: PublicErrorCode;
+  readonly projection?: PublicRestErrorProjection;
+}
+
+function structuredLegacyErrorSchema(
+  candidates: readonly ErrorResponseCandidate[],
+): ZodTypeAny | undefined {
+  const schemas = candidates.flatMap((candidate) => {
+    if (candidate.projection?.responseSchema) {
+      return [candidate.projection.responseSchema];
+    }
+    if (candidate.code in STRUCTURED_LEGACY_ERROR_SCHEMAS) {
+      return [
+        STRUCTURED_LEGACY_ERROR_SCHEMAS[
+          candidate.code as keyof typeof STRUCTURED_LEGACY_ERROR_SCHEMAS
+        ],
+      ];
+    }
+    return [];
+  });
+  const uniqueSchemas = [...new Set(schemas)];
+  if (uniqueSchemas.length === 0) return undefined;
+  if (uniqueSchemas.length === 1) return uniqueSchemas[0];
+  return contractsZod.union([
+    uniqueSchemas[0]!,
+    uniqueSchemas[1]!,
+    ...uniqueSchemas.slice(2),
+  ]);
+}
+
+function publicErrorDescription(
+  operation: PublicV1OperationShape,
+  status: number,
+  codes: readonly PublicErrorCode[],
+): string {
+  const labels = [
+    ...new Set(
+      codes.map((code) => publicErrorStatusLabel(code, status)),
+    ),
+  ];
+  const messages = [
+    ...new Set(
+      codes.map((code) =>
+        code === 'insufficient_scope'
+          ? `The caller requires the \`${operation.scope}\` scope.`
+          : PUBLIC_ERROR_SEMANTICS[code].defaultMessage,
+      ),
+    ),
+  ];
+  return `${labels.join(' / ')}: ${messages.join(' ')}`;
+}
+
+function publicErrorStatusLabel(
+  code: PublicErrorCode,
+  status: number,
+): string {
+  const defaultMapping = REST_PUBLIC_ERROR_MAP[code];
+  if (defaultMapping.status === status) return defaultMapping.error;
+  return (
+    Object.values(REST_PUBLIC_ERROR_MAP).find(
+      (mapping) => mapping.status === status,
+    )?.error ?? defaultMapping.error
+  );
+}
+
+function publicRestErrorProjections(operation: PublicV1OperationShape) {
+  return (operation.restErrorProjections ?? []).map((projection) => ({
+    code: projection.code,
+    status: projection.status,
+    projector: projection.projector.kind,
+    reason: projection.reason,
+    responseSchema: projection.responseSchema ? 'declared' : 'default',
+    headers: projection.headersSchema
+      ? Object.keys(projection.headersSchema.shape)
+      : [],
+  }));
+}
+
+function publicMcpProjection(operation: PublicV1OperationShape) {
+  if ('tool' in operation.mcp) {
+    return {
+      status: 'mapped' as const,
+      tool: operation.mcp.tool,
+      differences: operation.mcp.differences,
+    };
+  }
+  return {
+    status: 'excluded' as const,
+    reason: operation.mcp.excluded,
+  };
 }
 
 /**
@@ -100,62 +234,12 @@ function operationErrorResponses(
  * instances when projecting them into OpenAPI so generated clients see the
  * recurrence/cron compatibility boundary too.
  */
-function requestSchemaForOpenApi(operation: PublicV1Operation) {
-  const schema = operation.requestSchema;
-  if (!schema) return undefined;
-
-  if (operation.id === 'schedules.create') {
-    return schema.openapi({
-      oneOf: [
-        {
-          required: ['recurrence'],
-          not: { required: ['cronExpression'] },
-        },
-        {
-          required: ['cronExpression'],
-          not: { required: ['recurrence'] },
-        },
-      ],
-    });
-  }
-
-  if (operation.id === 'schedules.update') {
-    return schema.openapi({
-      oneOf: [
-        {
-          required: ['recurrence'],
-          not: {
-            anyOf: [
-              { required: ['cronExpression'] },
-              { required: ['timezone'] },
-            ],
-          },
-        },
-        {
-          required: ['cronExpression'],
-          not: { required: ['recurrence'] },
-        },
-        {
-          anyOf: [
-            { required: ['name'] },
-            { required: ['timezone'] },
-            { required: ['taskTemplate'] },
-            { required: ['enabled'] },
-            { required: ['overlapPolicy'] },
-            { required: ['misfirePolicy'] },
-          ],
-          not: {
-            anyOf: [
-              { required: ['recurrence'] },
-              { required: ['cronExpression'] },
-            ],
-          },
-        },
-      ],
-    });
-  }
-
-  return schema;
+function requestSchemaForOpenApi(operation: PublicV1OperationShape) {
+  const pair = operation.input.body;
+  if (!pair) return undefined;
+  return pair.jsonSchemaOverlay
+    ? pair.wire.openapi(pair.jsonSchemaOverlay)
+    : pair.wire;
 }
 
 /** Build a fresh OpenAPI registry from the canonical operation manifest. */
@@ -181,7 +265,11 @@ export function buildV1Registry(): OpenAPIRegistry {
     description: 'Opaque operator session cookie issued by the login flow.',
   });
 
-  for (const operation of PUBLIC_V1_OPERATIONS) {
+  for (const exactOperation of PUBLIC_V1_OPERATIONS) {
+    // Keep the exported registry exact. This projection intentionally consumes
+    // the broad authoring contract so optional transport sections can be read
+    // without widening the canonical tuple itself.
+    const operation: PublicV1OperationShape = exactOperation;
     const streamEventComponentName = operation.streamEventSchema
       ? `StreamEvent_${operation.id.replaceAll('.', '_')}`
       : null;
@@ -192,9 +280,9 @@ export function buildV1Registry(): OpenAPIRegistry {
       operation.responseContentType ?? 'application/json';
     const requestSchema = requestSchemaForOpenApi(operation);
     const hasRequest = Boolean(
-      operation.paramsSchema ||
-        operation.querySchema ||
-        operation.headersSchema ||
+      operation.input.params ||
+        operation.input.query ||
+        operation.input.headers ||
         requestSchema,
     );
 
@@ -206,8 +294,15 @@ export function buildV1Registry(): OpenAPIRegistry {
       description: operation.description,
       security: [{ bearerAuth: [] }, { sessionCookie: [] }],
       'x-cap-required-scope': operation.scope,
+      'x-cap-owner-policy': operation.ownerPolicy,
       'x-cap-streaming': operation.streaming,
       'x-cap-destructive': operation.destructive,
+      'x-cap-public-error-codes': operation.errors,
+      'x-cap-rest-error-projection':
+        REST_PUBLIC_ERROR_MAP.validation_failed.projection,
+      'x-cap-rest-success-projection': operation.restOutputProjection,
+      'x-cap-rest-error-projections': publicRestErrorProjections(operation),
+      'x-cap-mcp': publicMcpProjection(operation),
       ...(streamEventComponentName
         ? {
             'x-cap-sse-data-schema': {
@@ -218,19 +313,20 @@ export function buildV1Registry(): OpenAPIRegistry {
       ...(hasRequest
         ? {
             request: {
-              ...(operation.paramsSchema
-                ? { params: operation.paramsSchema }
+              ...(operation.input.params
+                ? { params: operation.input.params.wire }
                 : {}),
-              ...(operation.querySchema
-                ? { query: operation.querySchema }
+              ...(operation.input.query
+                ? { query: operation.input.query.wire }
                 : {}),
-              ...(operation.headersSchema
-                ? { headers: operation.headersSchema }
+              ...(operation.input.headers
+                ? { headers: operation.input.headers.wire }
                 : {}),
               ...(requestSchema
                 ? {
                     body: {
-                      required: !requestSchema.safeParse(undefined).success,
+                      required: !operation.input.body?.parse.safeParse(undefined)
+                        .success,
                       content: {
                         'application/json': {
                           schema: requestSchema,

@@ -38,9 +38,25 @@ apps/web/playwright-report/
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 
-# local tooling / debug artifacts (not part of any change)
-.codex/
-.claude/skills/
+# local tooling / debug artifacts (not part of any change). Repository-owned
+# OpenSpec skills must remain visible to Git/lint-staged; all other local
+# Codex/Claude skill state remains ignored.
+.codex/*
+!.codex/skills/
+.codex/skills/*
+!.codex/skills/openspec-propose/
+!.codex/skills/openspec-propose/SKILL.md
+!.codex/skills/openspec-apply-change/
+!.codex/skills/openspec-apply-change/SKILL.md
+.claude/skills/*
+!.claude/skills/openspec-apply-change/
+!.claude/skills/openspec-apply-change/SKILL.md
+!.claude/skills/openspec-archive-change/
+!.claude/skills/openspec-archive-change/SKILL.md
+!.claude/skills/openspec-explore/
+!.claude/skills/openspec-explore/SKILL.md
+!.claude/skills/openspec-propose/
+!.claude/skills/openspec-propose/SKILL.md
 .playwright-mcp/
 __pycache__/
 *.pyc

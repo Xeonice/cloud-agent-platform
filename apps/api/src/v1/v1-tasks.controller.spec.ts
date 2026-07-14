@@ -24,7 +24,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
 import type { OperatorPrincipal } from '../auth/operator-principal';
-import type { TaskResponse } from '@cap/contracts';
+import {
+  RuntimeExecutionEnvironmentSnapshotSchema,
+  type TaskResponse,
+} from '@cap/contracts';
+import type { CreateTaskBody } from '@cap/contracts';
+import type { PreparedTaskCreate } from '../tasks/prepared-task-create';
+import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
 
 // ---------------------------------------------------------------------------
 // Principals
@@ -75,6 +81,33 @@ const WRITE_KEY: OperatorPrincipal = {
 const reqWith = (principal?: OperatorPrincipal): AuthenticatedRequest =>
   ({ operatorPrincipal: principal }) as AuthenticatedRequest;
 
+const MODEL_SNAPSHOT = RuntimeExecutionEnvironmentSnapshotSchema.parse({
+  schemaVersion: 1,
+  kind: 'deployment-default',
+  managedEnvironmentId: null,
+  validationId: null,
+  validationContractVersion: null,
+  provider: 'aio-local',
+  providerFamily: 'aio',
+  source: {
+    kind: 'aio-docker-image',
+    locator: 'sha256:image-before-retarget',
+    digest: 'sha256:image-before-retarget',
+    checksum: null,
+  },
+  immutableIdentity: 'sha256:image-before-retarget',
+  fingerprint: 'environment-before-retarget',
+  sandboxMetadata: {
+    schemaVersion: 1,
+    sandboxVersion: '1.0.0',
+    dependencies: { codex: '0.144.1' },
+  },
+  sandboxMetadataChecksum: `sha256:${'a'.repeat(64)}`,
+  cliVersion: '0.144.1',
+  cliArtifactChecksum: `sha256:${'b'.repeat(64)}`,
+  resolvedAt: '2026-07-14T00:00:00.000Z',
+});
+
 // ---------------------------------------------------------------------------
 // Fakes
 // ---------------------------------------------------------------------------
@@ -112,12 +145,36 @@ function makeTaskRow(i: number, createdAt: Date): TaskResponse {
  */
 function passthroughIdempotency(): IdempotencyService {
   return {
-    async run(args: {
-      admit: (tx: unknown) => Promise<TaskResponse>;
+    async lookup(): Promise<{ kind: 'missing'; requestHash: string }> {
+      return { kind: 'missing', requestHash: 'request-hash' };
+    },
+    async commit(args: {
+      create: (tx: unknown) => Promise<TaskResponse>;
     }): Promise<{ task: TaskResponse; created: boolean }> {
-      return { task: await args.admit(undefined), created: true };
+      return { task: await args.create(undefined), created: true };
+    },
+    async waitForWinner(): Promise<null> {
+      return null;
     },
   } as unknown as IdempotencyService;
+}
+
+function preparedTask(
+  repoId: string,
+  body: CreateTaskBody,
+  executionMode: 'interactive-pty' | 'headless-exec',
+  userId?: string,
+): PreparedTaskCreate {
+  return {
+    repoId,
+    ownerUserId: userId ?? null,
+    body,
+    runtime: body.runtime ?? 'codex',
+    executionMode,
+    sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
+    model: body.model ?? null,
+    executionEnvironmentSnapshot: null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -130,8 +187,16 @@ test('POST /v1/tasks delegates to TasksService.createTaskRow + admitCreatedTask 
   const tasksService = {
     // V.1 — the admit callback creates the ROW (on the idempotency tx); the
     // provision is the separate post-commit step.
-    async createTaskRow(repoId: string, body: unknown) {
-      rowCalls.push({ repoId, body });
+    async prepareTaskCreate(
+      repoId: string,
+      body: CreateTaskBody,
+      mode: 'interactive-pty' | 'headless-exec',
+      userId?: string,
+    ) {
+      return preparedTask(repoId, body, mode, userId);
+    },
+    async createTaskRow(prepared: PreparedTaskCreate) {
+      rowCalls.push({ repoId: prepared.repoId, body: prepared.body });
       return makeTaskRow(1, new Date());
     },
     async admitCreatedTask(taskId: string, _body: unknown, userId?: string) {
@@ -171,6 +236,14 @@ test('POST /v1/tasks by a LOCAL account attributes to its account id (not undefi
   // credential resolves — previously the null githubId collapsed to undefined.
   const admitCalls: Array<{ taskId: string; userId?: string }> = [];
   const tasksService = {
+    async prepareTaskCreate(
+      repoId: string,
+      body: CreateTaskBody,
+      mode: 'interactive-pty' | 'headless-exec',
+      userId?: string,
+    ) {
+      return preparedTask(repoId, body, mode, userId);
+    },
     async createTaskRow() {
       return makeTaskRow(1, new Date());
     },
@@ -202,6 +275,14 @@ test('POST /v1/tasks by a LOCAL account attributes to its account id (not undefi
 test('a tasks:read-only api-key is 403 on POST /v1/tasks and admits nothing', async () => {
   let admitted = false;
   const tasksService = {
+    async prepareTaskCreate(
+      repoId: string,
+      body: CreateTaskBody,
+      mode: 'interactive-pty' | 'headless-exec',
+      userId?: string,
+    ) {
+      return preparedTask(repoId, body, mode, userId);
+    },
     async createTaskRow() {
       admitted = true;
       return makeTaskRow(1, new Date());
@@ -233,6 +314,14 @@ test('an api-key WITH tasks:write passes POST /v1/tasks', async () => {
   let rowCreated = false;
   let admitted = false;
   const tasksService = {
+    async prepareTaskCreate(
+      repoId: string,
+      body: CreateTaskBody,
+      mode: 'interactive-pty' | 'headless-exec',
+      userId?: string,
+    ) {
+      return preparedTask(repoId, body, mode, userId);
+    },
     async createTaskRow() {
       rowCreated = true;
       return makeTaskRow(1, new Date());
@@ -255,6 +344,161 @@ test('an api-key WITH tasks:write passes POST /v1/tasks', async () => {
   );
   assert.equal(rowCreated, true, 'a tasks:write key creates the task row');
   assert.equal(admitted, true, 'and the newly-created task is admitted (provisioned)');
+});
+
+test('V1 explicit-model create pins the prepared digest outside the idempotency transaction', async () => {
+  const phases: string[] = [];
+  const transactionClient = { task: {} };
+  let inTransaction = false;
+  let mutableDeploymentTag = 'sha256:image-before-retarget';
+  const persisted: { value: PreparedTaskCreate | null } = { value: null };
+  const tasksService = {
+    async prepareTaskCreate(
+      repoId: string,
+      body: CreateTaskBody,
+      mode: 'headless-exec',
+      userId?: string,
+    ): Promise<PreparedTaskCreate> {
+      assert.equal(inTransaction, false, 'catalog work must precede the transaction');
+      phases.push('prepare');
+      return {
+        repoId,
+        ownerUserId: userId ?? null,
+        body,
+        runtime: 'codex',
+        executionMode: mode,
+        sandboxEnvironmentId: null,
+        model: body.model ?? null,
+        executionEnvironmentSnapshot: MODEL_SNAPSHOT,
+      };
+    },
+    async createTaskRow(prepared: PreparedTaskCreate, tx: unknown) {
+      phases.push('write');
+      assert.equal(inTransaction, true);
+      assert.equal(tx, transactionClient);
+      assert.equal(mutableDeploymentTag, 'sha256:image-after-retarget');
+      assert.equal(
+        prepared.executionEnvironmentSnapshot?.immutableIdentity,
+        'sha256:image-before-retarget',
+        'a mutable deployment tag cannot replace the cataloged launch identity',
+      );
+      persisted.value = prepared;
+      return {
+        ...makeTaskRow(1, new Date()),
+        model: prepared.model,
+      };
+    },
+    async admitCreatedTask() {
+      phases.push('admit');
+      assert.equal(inTransaction, false, 'admission starts only after commit');
+    },
+    async findById() {
+      throw new Error('unexpected replay lookup');
+    },
+  } as unknown as TasksService;
+  const idempotency = {
+    async lookup() {
+      phases.push('lookup');
+      return { kind: 'missing' as const, requestHash: 'request-hash' };
+    },
+    async commit(args: { create: (tx: unknown) => Promise<TaskResponse> }) {
+      phases.push('commit');
+      mutableDeploymentTag = 'sha256:image-after-retarget';
+      inTransaction = true;
+      try {
+        return { task: await args.create(transactionClient), created: true };
+      } finally {
+        inTransaction = false;
+      }
+    },
+    async waitForWinner() {
+      return null;
+    },
+  } as unknown as IdempotencyService;
+  const controller = new V1TasksController(
+    tasksService,
+    {} as PrismaService,
+    idempotency,
+  );
+
+  const response = await controller.create(
+    {
+      repoId: makeTaskRow(1, new Date()).repoId,
+      prompt: 'model-aware task',
+      runtime: 'codex',
+      model: 'provider/model:v1',
+      sandboxEnvironmentId: null,
+    },
+    reqWith(WRITE_KEY),
+    'model-key-1',
+  );
+
+  assert.equal(response.model, 'provider/model:v1');
+  assert.equal(persisted.value?.model, 'provider/model:v1');
+  assert.deepEqual(phases, ['lookup', 'prepare', 'commit', 'write', 'admit']);
+});
+
+test('V1 immutable-identity preflight failure creates and admits nothing', async () => {
+  let commitCalls = 0;
+  let admissionCalls = 0;
+  const error = new RuntimeModelPreflightError({
+    code: 'runtime_model_catalog_unavailable',
+    message: 'The immutable execution identity is unavailable.',
+    retryable: true,
+    context: {
+      runtime: 'codex',
+      sandboxEnvironmentId: null,
+      model: 'provider/model:v1',
+    },
+  });
+  const controller = new V1TasksController(
+    {
+      async prepareTaskCreate() {
+        throw error;
+      },
+      async createTaskRow() {
+        commitCalls += 1;
+        return makeTaskRow(1, new Date());
+      },
+      async admitCreatedTask() {
+        admissionCalls += 1;
+      },
+      async findById() {
+        throw new Error('unexpected replay lookup');
+      },
+    } as unknown as TasksService,
+    {} as PrismaService,
+    {
+      async lookup() {
+        return { kind: 'missing' as const, requestHash: 'request-hash' };
+      },
+      async waitForWinner() {
+        return null;
+      },
+      async commit() {
+        commitCalls += 1;
+        throw new Error('commit must not run');
+      },
+    } as unknown as IdempotencyService,
+  );
+
+  await assert.rejects(
+    () =>
+      controller.create(
+        {
+          repoId: makeTaskRow(1, new Date()).repoId,
+          prompt: 'must fail before persistence',
+          runtime: 'codex',
+          model: 'provider/model:v1',
+          sandboxEnvironmentId: null,
+        },
+        reqWith(WRITE_KEY),
+        'model-key-2',
+      ),
+    (caught: unknown) => caught === error,
+  );
+  assert.equal(commitCalls, 0);
+  assert.equal(admissionCalls, 0);
 });
 
 test('a scopeless session principal passes the read gate on GET /v1/tasks', async () => {

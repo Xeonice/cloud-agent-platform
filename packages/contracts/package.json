@@ -20,6 +20,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "pnpm build && node --test src/*.test.mjs",
+    "test:public-surface": "node --test src/public-v1-operations.test.mjs ../../scripts/public-surface-*.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src --ext .ts"
   },

@@ -17,6 +17,12 @@ For a local macOS source install, use the platform-aware `make up` path instead:
 it defaults to BoxLite and requires `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and
 `BOXLITE_IMAGE` for an operator-supplied BoxLite control plane.
 
+> **Model-aware release cutover:** the first release that accepts task `model`
+> is not rolling-upgrade safe with N-1 writers. Follow
+> [TASK_MODEL_SELECTION_CUTOVER.md](./TASK_MODEL_SELECTION_CUTOVER.md) before
+> publishing its Web/API/MCP contract. The ordinary upgrade script is only a
+> staging sub-step inside that maintenance window.
+
 Why nginx is here: Cloudflare terminates TLS to the browser, so the cross-origin
 OAuth session cookie must be `SameSite=None; Secure`. The api decides that from
 `X-Forwarded-Proto` (`apps/api/src/auth/github-oauth.controller.ts` `isSecureRequest()`),

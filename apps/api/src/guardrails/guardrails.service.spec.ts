@@ -8,6 +8,8 @@ import {
   type AdmissionTransitionResult,
 } from '../tasks/tasks.service';
 import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
+import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
+import { SandboxRuntimeModelSetupError } from '@cap/sandbox';
 import { GuardrailsService, type GuardrailsConfig } from './guardrails.service';
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
@@ -18,6 +20,32 @@ const CONFIG: GuardrailsConfig = {
   maxConcurrentTasks: 1,
   defaultIdleTimeoutMs: null,
   circuitBreakerThreshold: 3,
+};
+
+const DEFAULT_PROVISION_LOOKUP: ProvisionLookup = {
+  async getTaskLaunchContext() {
+    return {
+      modelIntent: { kind: 'runtime-default' },
+      ownerUserId: USER_ID,
+      runtimeId: 'codex',
+      executionMode: 'interactive-pty',
+    };
+  },
+  async getCloneSpec() {
+    return null;
+  },
+  async getTaskPrompt() {
+    return null;
+  },
+  async getTaskSkills() {
+    return [];
+  },
+  async getTaskRuntime() {
+    return 'codex';
+  },
+  async getTaskExecutionMode() {
+    return 'interactive-pty';
+  },
 };
 
 type Transition = (
@@ -42,6 +70,7 @@ function buildService(
       next: 'queued' | 'running',
       transitionToken: string,
     ) => Promise<boolean>;
+    provisionLookup?: ProvisionLookup;
   } = {},
 ): GuardrailsService {
   const service = new GuardrailsService(
@@ -49,6 +78,7 @@ function buildService(
     { destroyForSession() {} } as unknown as SessionCredentialsService,
     options.sandbox,
     CONFIG,
+    options.provisionLookup ?? DEFAULT_PROVISION_LOOKUP,
   );
   Object.assign(service, {
     tasks: {
@@ -382,6 +412,58 @@ test('force-fail releases its terminal fence even when the lifecycle write fails
 
   await internals.forceFail(TASK_ID, 'provision_failed');
   assert.equal(internals.terminalTasks.has(TASK_ID), false);
+});
+
+test('structured model setup errors persist the dedicated safe failure before generic provisioning failure', async () => {
+  const service = buildService(async () => 'transitioned');
+  const failures: TaskFailureCode[] = [];
+  Object.assign(service, {
+    tasks: {
+      async failWithRuntimeFailure(
+        _taskId: string,
+        code: TaskFailureCode,
+      ) {
+        failures.push(code);
+        return {};
+      },
+    },
+  });
+  const internals = service as unknown as {
+    failProvisioning(taskId: string, error: unknown): Promise<void>;
+  };
+
+  await internals.failProvisioning(
+    TASK_ID,
+    new SandboxRuntimeModelSetupError('material-verify'),
+  );
+  assert.deepEqual(failures, ['runtime_model_setup_failed']);
+});
+
+test('model rejection persistence refuses unverified structured codes for the checked pins', async () => {
+  const service = buildService(async () => 'transitioned');
+  const failures: TaskFailureCode[] = [];
+  Object.assign(service, {
+    tasks: {
+      async failWithRuntimeFailure(
+        _taskId: string,
+        code: TaskFailureCode,
+      ) {
+        failures.push(code);
+        return {};
+      },
+    },
+  });
+
+  assert.equal(
+    await service.failRuntimeModelRejection(TASK_ID, {
+      runtime: 'claude-code',
+      cliVersion: '2.1.207',
+      source: 'claude-stream-json-result',
+      stableCode: 'model_not_found',
+    }),
+    false,
+  );
+  assert.deepEqual(failures, []);
 });
 
 test('classified exit persists one structured failure without waiting for audit', async () => {

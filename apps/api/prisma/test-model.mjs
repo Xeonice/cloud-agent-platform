@@ -54,6 +54,11 @@ async function run() {
   assert(task.prompt === 'Fix the bug', 'task.prompt matches');
   assert(task.status === 'pending', 'task.status defaults to `pending`');
   assert(task.createdAt instanceof Date, 'task.createdAt is a Date');
+  assert(task.model === null, 'historical/omitted model reads back as null');
+  assert(
+    task.executionEnvironmentSnapshot === null,
+    'historical/omitted execution snapshot reads back as null',
+  );
 
   console.log('\n--- 3. Read Task back and verify via relation ---');
   const found = await prisma.task.findUnique({
@@ -64,22 +69,74 @@ async function run() {
   assert(found.repo.id === repo.id, 'included repo relation has correct id');
   assert(found.repo.name === 'test-repo', 'included repo relation has correct name');
 
-  console.log('\n--- 4. Index: list tasks by repoId ---');
-  const byRepo = await prisma.task.findMany({ where: { repoId: repo.id } });
-  assert(byRepo.length === 1, 'findMany by repoId returns exactly 1 task');
-  assert(byRepo[0].id === task.id, 'returned task id matches');
+  console.log('\n--- 4. Explicit model and immutable snapshot round-trip ---');
+  const explicitTask = await prisma.task.create({
+    data: {
+      repoId: repo.id,
+      prompt: 'Use the requested model',
+      model: 'provider/model:v1',
+      executionEnvironmentSnapshot: {
+        schemaVersion: 1,
+        kind: 'deployment-default',
+        managedEnvironmentId: null,
+        validationId: null,
+        validationContractVersion: null,
+        provider: 'aio',
+        providerFamily: 'aio',
+        source: {
+          kind: 'aio-docker-image',
+          locator: 'ghcr.io/cap/aio@sha256:test-image',
+          digest: 'sha256:test-image',
+          checksum: null,
+        },
+        immutableIdentity: 'sha256:test-image',
+        fingerprint: 'sha256:test-environment',
+        sandboxMetadata: {
+          schemaVersion: 1,
+          sandboxVersion: '1.2.3',
+          dependencies: { codex: '0.144.1' },
+        },
+        sandboxMetadataChecksum: `sha256:${'a'.repeat(64)}`,
+        cliVersion: 'test-cli',
+        cliArtifactChecksum: `sha256:${'b'.repeat(64)}`,
+        resolvedAt: '2026-07-14T00:00:00.000Z',
+      },
+    },
+  });
+  assert(explicitTask.model === 'provider/model:v1', 'explicit model round-trips');
+  assert(
+    explicitTask.executionEnvironmentSnapshot?.immutableIdentity ===
+      'sha256:test-image',
+    'immutable execution snapshot round-trips',
+  );
 
-  console.log('\n--- 5. Status update (pending -> running) ---');
+  console.log('\n--- 5. Index: list tasks by repoId ---');
+  const byRepo = await prisma.task.findMany({ where: { repoId: repo.id } });
+  assert(byRepo.length === 2, 'findMany by repoId returns both tasks');
+  assert(byRepo.some((row) => row.id === task.id), 'legacy/default task id is present');
+  assert(
+    byRepo.some((row) => row.id === explicitTask.id),
+    'explicit-model task id is present',
+  );
+
+  console.log('\n--- 6. Status update (pending -> running) ---');
   const updated = await prisma.task.update({
     where: { id: task.id },
     data: { status: 'running' },
   });
   assert(updated.status === 'running', 'task status updated to `running`');
 
-  console.log('\n--- 6. Cascade delete: deleting Repo removes Tasks ---');
+  console.log('\n--- 7. Cascade delete: deleting Repo removes Tasks ---');
   await prisma.repo.delete({ where: { id: repo.id } });
   const orphan = await prisma.task.findUnique({ where: { id: task.id } });
   assert(orphan === null, 'task is deleted when parent repo is deleted (ON DELETE CASCADE)');
+  const explicitOrphan = await prisma.task.findUnique({
+    where: { id: explicitTask.id },
+  });
+  assert(
+    explicitOrphan === null,
+    'explicit-model task is deleted when parent repo is deleted',
+  );
 
   console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);
 

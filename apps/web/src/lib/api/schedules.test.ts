@@ -9,10 +9,22 @@ import type {
 
 vi.mock("./real", () => ({
   ApiError: class ApiError extends Error {
-    constructor(readonly status: number, message: string) {
+    constructor(
+      readonly status: number,
+      message: string,
+      readonly body?: unknown,
+    ) {
       super(message);
     }
   },
+  runtimeModelErrorFromApiError: vi.fn((error: unknown) => {
+    if (!error || typeof error !== "object" || !("body" in error)) return null;
+    const body = (error as { body?: { code?: string } }).body;
+    return body?.code === "runtime_model_not_available" ||
+      body?.code === "runtime_model_catalog_unavailable"
+      ? body
+      : null;
+  }),
   listSchedules: vi.fn(async () => [scheduleFixture("schedule-a")]),
   createSchedule: vi.fn(async (body) =>
     scheduleFixture("schedule-created", {
@@ -32,6 +44,7 @@ vi.mock("./real", () => ({
 vi.mock("./mock", () => ({}));
 
 import {
+  createTaskMutation,
   createScheduleMutation,
   deleteScheduleMutation,
   dispatchScheduleMutation,
@@ -367,6 +380,45 @@ describe("schedule mutations", () => {
       undefined,
       {} as never,
     );
+    expect(client.invalidateQueries).not.toHaveBeenCalled();
+  });
+
+  it("refreshes model catalogs after task or schedule model-domain rejection only", async () => {
+    const client = queryClientStub();
+    const domainError = new real.ApiError(422, "model unavailable", {
+      code: "runtime_model_not_available",
+      message: "The requested runtime model is not available.",
+      retryable: false,
+      context: { runtime: "codex", model: "fixture/stale-model" },
+    });
+    const mutations = [
+      createTaskMutation(client),
+      createScheduleMutation(client),
+      updateScheduleMutation(client),
+    ];
+
+    for (const options of mutations) {
+      await options.onError?.(
+        domainError,
+        undefined as never,
+        undefined,
+        {} as never,
+      );
+    }
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(3);
+    for (const call of client.invalidateQueries.mock.calls) {
+      expect(call[0]).toEqual({ queryKey: queryKeys.runtimeModels });
+    }
+
+    client.invalidateQueries.mockClear();
+    for (const options of mutations) {
+      await options.onError?.(
+        new real.ApiError(500, "server error"),
+        undefined as never,
+        undefined,
+        {} as never,
+      );
+    }
     expect(client.invalidateQueries).not.toHaveBeenCalled();
   });
 });

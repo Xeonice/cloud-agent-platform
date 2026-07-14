@@ -197,6 +197,7 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
       'id',
       'environmentId',
       'name',
+      'providerId',
       'providerFamily',
       'runtimeId',
       'sourceKind',
@@ -206,8 +207,16 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
       'validationId',
       'validationVersion',
       'contractVersion',
+      'cliArtifactChecksum',
     ]) {
       if (typeof candidate[key] === 'string') out[key] = candidate[key];
+    }
+    if (
+      candidate.runtimeArtifactChecksums &&
+      typeof candidate.runtimeArtifactChecksums === 'object' &&
+      !Array.isArray(candidate.runtimeArtifactChecksums)
+    ) {
+      out.runtimeArtifactChecksums = candidate.runtimeArtifactChecksums;
     }
     if (
       candidate.metadata &&

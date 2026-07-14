@@ -110,3 +110,57 @@ test('structured runtime failure writes an actionable task.failed audit', async 
   assert.equal(createdRow()?.title, 'Claude Code 登录凭据已过期');
   assert.match(createdRow()?.description ?? '', /重新连接/);
 });
+
+test('model failure audits use fixed allowlisted text and redact supplied diagnostics', async () => {
+  const created: Array<Omit<CreatedAuditRow, 'dedupeKey'>> = [];
+  const prisma = {
+    user: {
+      async findUnique({ where }: { where: { id: string } }) {
+        return { id: where.id };
+      },
+    },
+    auditEvent: {
+      async create({ data }: { data: Omit<CreatedAuditRow, 'dedupeKey'> }) {
+        created.push(data);
+        return data;
+      },
+    },
+  } as unknown as PrismaService;
+  const service = new AuditService(prisma);
+  const unsafeDiagnostic =
+    'selector=private/provider-model token=secret endpoint=https://private.invalid';
+
+  await service.recordTransition(TASK_ID, 'failed', USER_A, {
+    code: 'runtime_model_setup_failed',
+    runtime: 'codex',
+    message: unsafeDiagnostic,
+    action: 'retry_task',
+    occurredAt: new Date('2026-07-12T12:32:31.000Z'),
+    exitCode: null,
+  });
+  await service.recordTransition(TASK_ID, 'failed', USER_A, {
+    code: 'runtime_model_rejected',
+    runtime: 'claude-code',
+    message: unsafeDiagnostic,
+    action: 'choose_another_model',
+    occurredAt: new Date('2026-07-12T12:32:32.000Z'),
+    exitCode: 1,
+  });
+
+  assert.deepEqual(
+    created.map(({ title, description }) => ({ title, description })),
+    [
+      {
+        title: 'Codex 模型准备失败',
+        description: 'Codex 未能安全准备任务指定的模型，请重试任务或检查执行环境。',
+      },
+      {
+        title: 'Claude Code 拒绝了指定模型',
+        description: 'Claude Code 拒绝了任务指定的模型，请选择其他可用模型。',
+      },
+    ],
+  );
+  assert.equal(JSON.stringify(created).includes('private/provider-model'), false);
+  assert.equal(JSON.stringify(created).includes('secret'), false);
+  assert.equal(JSON.stringify(created).includes('private.invalid'), false);
+});

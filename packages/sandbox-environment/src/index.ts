@@ -24,6 +24,16 @@ export const SANDBOX_ENVIRONMENT_BLOCKED_STATUSES: readonly SandboxEnvironmentSt
 
 export type SandboxEnvironmentRuntimeId = string;
 
+/**
+ * Preserves the three task-create environment intents without overloading null:
+ * omitted owner intent may consult a managed default, explicit null bypasses all
+ * managed defaults, and an id binds that exact managed environment.
+ */
+export type SandboxEnvironmentSelection =
+  | { readonly kind: 'managed-default' }
+  | { readonly kind: 'deployment-default' }
+  | { readonly kind: 'managed'; readonly environmentId: string };
+
 export interface SandboxEnvironmentCompatibility {
   readonly providerFamilies: readonly SandboxEnvironmentProviderFamily[];
   readonly runtimeIds?: readonly SandboxEnvironmentRuntimeId[];
@@ -251,6 +261,12 @@ export function normalizeResolvedEnvironment(args: {
   readonly providerFamily: SandboxEnvironmentProviderFamily;
   readonly runtimeId?: string | null;
   readonly validationVersion?: string | null;
+  readonly resolvedSourceRef?: string;
+  readonly resolvedDigest?: string | null;
+  readonly resolvedChecksum?: string | null;
+  readonly runtimeArtifactChecksums?: Readonly<Record<string, string>> | null;
+  readonly cliArtifactChecksum?: string | null;
+  readonly sandboxMetadata?: unknown;
 }): ResolvedSandboxEnvironment {
   const source = args.environment.source;
   const metadata: ResolvedSandboxEnvironment = {
@@ -260,12 +276,18 @@ export function normalizeResolvedEnvironment(args: {
     providerFamily: args.providerFamily,
     runtimeId: args.runtimeId ?? undefined,
     sourceKind: source.kind,
-    sourceRef: sourceReference(source),
-    digest: sourceDigest(source),
-    checksum: sourceChecksum(source),
+    sourceRef: args.resolvedSourceRef ?? sourceReference(source),
+    digest: args.resolvedDigest ?? sourceDigest(source),
+    checksum: args.resolvedChecksum ?? sourceChecksum(source),
+    runtimeArtifactChecksums: args.runtimeArtifactChecksums ?? undefined,
+    cliArtifactChecksum: args.cliArtifactChecksum ?? undefined,
     validationId: args.environment.lastValidationId ?? undefined,
     validationVersion: args.validationVersion ?? undefined,
     contractVersion: args.environment.contractVersion ?? undefined,
+    metadata:
+      args.sandboxMetadata === undefined
+        ? undefined
+        : { sandboxMetadata: args.sandboxMetadata },
     source,
   };
   return stripResolvedEnvironmentUndefined(metadata);

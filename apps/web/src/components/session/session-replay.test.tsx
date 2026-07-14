@@ -17,7 +17,7 @@ function availableHistory(turns: SessionTurn[]): SessionHistory {
   return {
     status: "available",
     turns,
-    meta: { taskId: "task-md" },
+    meta: { taskId: "task-md", model: "fixture/concrete.v2" },
     isInterrupted: false,
   };
 }
@@ -27,6 +27,7 @@ function renderReplay(history: SessionHistory): string {
   return renderToStaticMarkup(
     React.createElement(SessionReplay, {
       taskId: "task-md",
+      requestedModel: "fixture/alias.v1",
       presentationState: "completed",
       executionMode: "headless-exec",
     }),
@@ -38,6 +39,7 @@ function renderLiveReplay(history: SessionHistory): string {
   return renderToStaticMarkup(
     React.createElement(SessionReplay, {
       taskId: "task-md",
+      requestedModel: "fixture/alias.v1",
       live: true,
       executionMode: "interactive-pty",
     }),
@@ -109,7 +111,7 @@ describe("SessionReplay markdown rendering", () => {
     expect(html).toContain("| not | table |");
     expect(html).toContain("`not code`");
     expect(html).toContain("42 tok");
-    expect(html).not.toContain("<strong");
+    expect(html).not.toContain("<strong>not bold</strong>");
     expect(html).not.toContain("<a ");
     expect(html).not.toContain("<table");
     expect(html).not.toContain("<code");
@@ -132,5 +134,13 @@ describe("SessionReplay markdown rendering", () => {
     expect(html).toContain("正在检查仓库。");
     expect(html).toContain("对话记录");
     expect(html).not.toContain("终端记录");
+  });
+
+  it("keeps requested and runtime-reported actual models separate", () => {
+    const html = renderReplay(availableHistory([]));
+    expect(html).toContain("请求模型");
+    expect(html).toContain("fixture/alias.v1");
+    expect(html).toContain("实际模型");
+    expect(html).toContain("fixture/concrete.v2");
   });
 });

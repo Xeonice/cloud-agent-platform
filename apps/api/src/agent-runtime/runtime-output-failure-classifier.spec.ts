@@ -67,6 +67,8 @@ test('Codex does not classify generic HTTP/rate-limit output or ordinary prose',
     'Please document token_expired and authentication_error handling.',
     'The UI should say "Provided authentication token is expired. Please try signing in again."',
     '{"code":"token_expired"}',
+    '{"method":"turn/failed","params":{"error":{"message":"The requested model is not available","codexErrorInfo":{"type":"badRequest"}}}}',
+    '{"error":{"code":"model_not_found","message":"Unknown model selector"}}',
     'The logs may say: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.',
     'Example payload: {"type":"error","message":"Your access token could not be refreshed. Please log out and sign in again."}',
   ];
@@ -139,6 +141,9 @@ test('Claude does not classify generic HTTP/rate-limit output or quoted prose', 
     'The UI should display "OAuth refresh token is no longer valid · Please run /login to sign in again."',
     'Example: Invalid API key · Please run /login',
     'Invalid bearer token',
+    '{"type":"system","subtype":"init","model":"substituted-model"}\n{"type":"result","subtype":"success","is_error":false}',
+    '{"type":"result","subtype":"error_during_execution","is_error":true,"error":"model_not_found"}',
+    'invalid_model: the selected model is unavailable',
   ];
   for (const output of ordinary) {
     assert.equal(claude.classifyOutputFailure(output), null, output);

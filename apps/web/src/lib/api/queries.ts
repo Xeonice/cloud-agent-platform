@@ -44,6 +44,8 @@ import type {
   ListSandboxEnvironmentValidationsResponse,
   ListSchedulesResponse,
   ListScheduleRunsResponse,
+  RuntimeModelCatalog,
+  RuntimeModelCatalogQuery,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import { agentLabel } from "../runtime-label";
@@ -76,6 +78,30 @@ export const queryKeys = {
   defaultRepo: ["repos", "default"] as const,
   /** Per-runtime readiness for the create-task dialog selector (`GET /runtimes`). */
   runtimes: ["runtimes"] as const,
+  /**
+   * Catalog identity includes the environment intent. In particular, an
+   * omitted account default must never collide with explicit deployment null.
+   */
+  runtimeModels: ["runtime-models"] as const,
+  runtimeModelCatalog: (
+    ownerUserId: string,
+    query: RuntimeModelCatalogQuery,
+  ) => {
+    const environmentKey = Object.prototype.hasOwnProperty.call(
+      query,
+      "sandboxEnvironmentId",
+    )
+      ? query.sandboxEnvironmentId === null
+        ? (["deployment-default"] as const)
+        : (["managed", query.sandboxEnvironmentId] as const)
+      : (["account-default"] as const);
+    return [
+      "runtime-models",
+      ownerUserId,
+      query.runtime,
+      ...environmentKey,
+    ] as const;
+  },
   metrics: ["metrics"] as const,
   capacity: ["metrics", "capacity"] as const,
   history: (query?: Partial<AuditQuery>) =>
@@ -203,6 +229,24 @@ export function runtimesQuery() {
     queryFn: () =>
       isCapable("createTask") ? real.getRuntimes() : mock.mockRuntimes(),
     refetchOnWindowFocus: true,
+    staleTime: 60 * 1000,
+  });
+}
+
+/**
+ * Exact CLI-supported model catalog used by both task-creation surfaces.
+ * Automatic retries are disabled so the UI can expose the transient unavailable
+ * state and an explicit operator-controlled retry without silently multiplying
+ * expensive taskless probes.
+ */
+export function runtimeModelsQuery(
+  ownerUserId: string,
+  query: RuntimeModelCatalogQuery,
+) {
+  return queryOptions<RuntimeModelCatalog>({
+    queryKey: queryKeys.runtimeModelCatalog(ownerUserId, query),
+    queryFn: () => real.queryRuntimeModels(query),
+    retry: false,
     staleTime: 60 * 1000,
   });
 }

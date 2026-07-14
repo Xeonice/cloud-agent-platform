@@ -7,7 +7,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/utils";
 
-export type RuntimeAuthFailure = NonNullable<TaskResponse["failure"]>;
+type TaskFailure = NonNullable<TaskResponse["failure"]>;
+export type RuntimeAuthFailure = Extract<
+  TaskFailure,
+  { action: "reconnect_runtime" }
+>;
+
+/** Keep model failures out of credential recovery surfaces. */
+export function isRuntimeAuthFailure(
+  failure: TaskResponse["failure"],
+): failure is RuntimeAuthFailure {
+  return failure?.action === "reconnect_runtime";
+}
 
 export interface RuntimeAuthFailurePresentation {
   title: string;
@@ -49,8 +60,9 @@ export function runtimeAuthFailurePresentation(
 export function RuntimeAuthFailureBadge({
   failure,
 }: {
-  failure: RuntimeAuthFailure;
-}): React.ReactElement {
+  failure: TaskResponse["failure"];
+}): React.ReactElement | null {
+  if (!isRuntimeAuthFailure(failure)) return null;
   return (
     <Badge variant="destructive">
       {runtimeAuthFailurePresentation(failure).title}
@@ -70,13 +82,13 @@ export function RuntimeCredentialAlert({
   contextLabel,
   className,
 }: {
-  failure: RuntimeAuthFailure | null | undefined;
+  failure: TaskResponse["failure"];
   compact?: boolean;
   announce?: boolean;
   contextLabel?: string;
   className?: string;
 }): React.ReactElement | null {
-  if (!failure || failure.action !== "reconnect_runtime") return null;
+  if (!isRuntimeAuthFailure(failure)) return null;
   const presentation = runtimeAuthFailurePresentation(failure);
 
   return (

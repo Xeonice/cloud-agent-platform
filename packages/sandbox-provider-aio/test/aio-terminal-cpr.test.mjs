@@ -81,6 +81,15 @@ function startFakeSandbox() {
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
+async function waitFor(predicate, timeoutMs = 500) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await delay(5);
+  }
+  throw new Error('condition was not met before timeout');
+}
+
 /** The exact bytes verified against the live sandbox (hex 1b 5b 36 6e). */
 const DSR_QUERY = '\x1b[6n';
 /** The private-mode form the detector MUST NOT match. */
@@ -101,11 +110,56 @@ async function main() {
     new URL('../dist/aio-pty-client.js', import.meta.url).href,
   );
 
+  const createCodexClient = (taskId, sandbox) =>
+    new AioPtyClient(
+      taskId,
+      sandbox.wsUrl,
+      sandbox.baseUrl,
+      undefined,
+      'launch-or-attach',
+      async () => ({
+        executionMode: 'interactive-pty',
+        modelIntent: { kind: 'runtime-default' },
+        runtime: {
+          id: 'codex',
+          terminalStartup: {
+            replyToStartupDSR: true,
+            promptSubmit: 'cr-on-quiesce',
+            quiesceMs: 1_000,
+          },
+          buildLaunchLine: () => 'codex-test-launch',
+          async detectExit() {
+            return { status: 'running' };
+          },
+        },
+      }),
+      undefined,
+      {
+        async exec(request) {
+          return {
+            exitCode: 0,
+            output: request.command.includes('__cap_has__')
+              ? '__cap_has__1\n'
+              : '',
+            stdout: '',
+            stderr: '',
+            timedOut: false,
+          };
+        },
+      },
+      async (intent) => intent,
+    );
+
   // --- Case 1: exact \x1b[6n in output triggers a CPR input injection --------
   {
     const sandbox = startFakeSandbox();
-    const client = new AioPtyClient('task-cpr-1', sandbox.wsUrl, sandbox.baseUrl);
+    const client = createCodexClient('task-cpr-1', sandbox);
     await sandbox.ready;
+    await waitFor(() =>
+      sandbox.inbound.some(
+        (frame) => frame.type === 'input' && frame.data.includes('codex-test-launch'),
+      ),
+    );
     sandbox.sendOutput(`hello ${DSR_QUERY} world`);
     await delay(150);
 
@@ -123,15 +177,20 @@ async function main() {
         'injected CPR reply bytes are exactly \\x1b[1;1R (1b 5b 31 3b 31 52)',
       );
     }
-    client.pause(); // touch the surface so the import is real
+    client.close();
     sandbox.close();
   }
 
   // --- Case 2: private-mode \x1b[?6n must NOT trigger CPR injection ----------
   {
     const sandbox = startFakeSandbox();
-    new AioPtyClient('task-cpr-2', sandbox.wsUrl, sandbox.baseUrl);
+    const client = createCodexClient('task-cpr-2', sandbox);
     await sandbox.ready;
+    await waitFor(() =>
+      sandbox.inbound.some(
+        (frame) => frame.type === 'input' && frame.data.includes('codex-test-launch'),
+      ),
+    );
     sandbox.sendOutput(`prefix ${PRIVATE_DSR_QUERY} suffix`);
     await delay(150);
 
@@ -142,6 +201,7 @@ async function main() {
       cprFrames.length === 0,
       'private-mode \\x1b[?6n does NOT inject a CPR reply (detector matches the no-? form only)',
     );
+    client.close();
     sandbox.close();
   }
 

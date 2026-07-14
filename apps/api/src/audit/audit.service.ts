@@ -19,7 +19,10 @@ import {
   type ForceFailCause,
   type TaskStatusLookup,
 } from './audit-mapping';
-import { runtimeFailureTitle } from '../tasks/task-failure';
+import {
+  runtimeFailureMessage,
+  runtimeFailureTitle,
+} from '../tasks/task-failure';
 
 /**
  * Audit recorder + query service (be-audit-approvals 6.2 / 6.3 / 6.4).
@@ -129,7 +132,10 @@ export class AuditService {
       ...(failure
         ? {
             title: runtimeFailureTitle(failure),
-            description: failure.message,
+            description: runtimeFailureMessage(
+              failure.runtime,
+              failure.code,
+            ),
           }
         : {}),
     });

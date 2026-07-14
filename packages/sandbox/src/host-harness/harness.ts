@@ -3,6 +3,7 @@ import type {
   SandboxRunOwnerStore,
   SandboxResolvedEnvironmentMetadata,
   SandboxTranscriptSourceBase,
+  TaskModelIntent,
 } from '@cap/sandbox-core';
 import type { SandboxHostImageParameterProfile } from './image-parameters.js';
 
@@ -13,6 +14,13 @@ export interface SandboxHostLogger {
 }
 
 export interface SandboxHostProvisionLookup<TCloneSpec> {
+  getTaskLaunchContext(taskId: string): Promise<{
+    readonly modelIntent: TaskModelIntent;
+    readonly ownerUserId: string | null;
+    readonly runtimeId: string;
+    readonly executionMode: 'interactive-pty' | 'headless-exec';
+    readonly environment?: SandboxResolvedEnvironmentMetadata;
+  }>;
   getCloneSpec(taskId: string): Promise<TCloneSpec | null>;
   getTaskPrompt(taskId: string): Promise<string | null | undefined>;
   getTaskSkills?(taskId: string): Promise<readonly string[]>;
@@ -78,7 +86,7 @@ export interface SandboxHostRuntimeRegistry<TRuntimeId, TAuthMaterial> {
 export interface SandboxHostMaterialResolvers<TAuthMaterial> {
   resolve(
     runtime: { readonly id: string },
-    ctx: { readonly taskId: string },
+    ctx: { readonly taskId: string; readonly ownerUserId: string | null },
   ): Promise<TAuthMaterial | null>;
 }
 

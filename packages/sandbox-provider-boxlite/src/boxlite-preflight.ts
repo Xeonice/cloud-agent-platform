@@ -84,6 +84,10 @@ export function requiredToolsForBoxLiteCapabilities(
   ) {
     out.add('git');
   }
+  if (capabilities.includes('transcript.retained-read')) {
+    out.add('cat');
+    out.add('find');
+  }
   return [...out].sort();
 }
 

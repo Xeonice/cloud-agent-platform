@@ -161,7 +161,7 @@ describe("sandbox environment api seam", () => {
 
     expect(real.validateSandboxEnvironment).toHaveBeenCalledWith("env-1");
     expect(real.setDefaultSandboxEnvironment).toHaveBeenCalledWith("env-1");
-    expect(client.invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(5);
     expect(client.invalidateQueries).toHaveBeenNthCalledWith(1, {
       queryKey: queryKeys.sandboxEnvironments,
     });
@@ -169,7 +169,13 @@ describe("sandbox environment api seam", () => {
       queryKey: queryKeys.sandboxEnvironmentValidations("env-1"),
     });
     expect(client.invalidateQueries).toHaveBeenNthCalledWith(3, {
+      queryKey: queryKeys.runtimeModels,
+    });
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(4, {
       queryKey: queryKeys.sandboxEnvironments,
+    });
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(5, {
+      queryKey: queryKeys.runtimeModels,
     });
   });
 
@@ -182,12 +188,15 @@ describe("sandbox environment api seam", () => {
     options.onSuccess?.({} as never, "env-1", undefined, {} as never);
 
     expect(real.retireSandboxEnvironment).toHaveBeenCalledWith("env-1");
-    expect(client.invalidateQueries).toHaveBeenCalledTimes(2);
+    expect(client.invalidateQueries).toHaveBeenCalledTimes(3);
     expect(client.invalidateQueries).toHaveBeenNthCalledWith(1, {
       queryKey: queryKeys.sandboxEnvironments,
     });
     expect(client.invalidateQueries).toHaveBeenNthCalledWith(2, {
       queryKey: queryKeys.sandboxEnvironmentValidations("env-1"),
+    });
+    expect(client.invalidateQueries).toHaveBeenNthCalledWith(3, {
+      queryKey: queryKeys.runtimeModels,
     });
   });
 });

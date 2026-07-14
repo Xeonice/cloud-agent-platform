@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   assertRuntimeDeclared,
   metadataFromProbes,
+  runtimeArtifactChecksumFromProbes,
+  runtimeArtifactChecksumsFromProbes,
 } from './sandbox-environments.validator';
 
 test('metadata probe accepts arbitrary declared custom dependency keys', () => {
@@ -20,6 +22,66 @@ test('metadata probe accepts arbitrary declared custom dependency keys', () => {
   ]);
   assert.equal(metadata.dependencies['company-cli'], '4.5.6');
   assert.doesNotThrow(() => assertRuntimeDeclared('codex', metadata));
+});
+
+test('runtime artifact checksum accepts only a successful SHA-256 probe', () => {
+  const digest = 'a'.repeat(64);
+  assert.equal(
+    runtimeArtifactChecksumFromProbes('claude-code', [
+      {
+        name: 'runtime-artifact-checksum',
+        ok: true,
+        output: digest,
+      },
+    ]),
+    `sha256:${digest}`,
+  );
+  assert.throws(
+    () => runtimeArtifactChecksumFromProbes('codex', []),
+    /checksum is unavailable/,
+  );
+  assert.throws(
+    () =>
+      runtimeArtifactChecksumFromProbes('codex', [
+        { name: 'runtime-artifact-checksum', ok: true, output: 'not-a-digest' },
+      ]),
+    /checksum is unavailable/,
+  );
+  assert.throws(
+    () =>
+      runtimeArtifactChecksumFromProbes('codex', [
+        {
+          name: 'runtime-artifact-checksum',
+          ok: true,
+          output: `${digest} /private/path`,
+        },
+      ]),
+    /checksum is unavailable/,
+  );
+  assert.equal(runtimeArtifactChecksumFromProbes('custom-runtime', []), null);
+});
+
+test('multi-runtime checksum probes remain attributed to the correct CLI', () => {
+  const codex = 'a'.repeat(64);
+  const claude = 'b'.repeat(64);
+  assert.deepEqual(
+    runtimeArtifactChecksumsFromProbes(['codex', 'claude-code'], [
+      {
+        name: 'runtime-artifact-checksum:codex',
+        ok: true,
+        output: codex,
+      },
+      {
+        name: 'runtime-artifact-checksum:claude-code',
+        ok: true,
+        output: claude,
+      },
+    ]),
+    {
+      codex: `sha256:${codex}`,
+      'claude-code': `sha256:${claude}`,
+    },
+  );
 });
 
 test('metadata probe fails missing, malformed, moving, and selected-runtime omissions', () => {

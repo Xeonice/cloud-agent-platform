@@ -15,6 +15,9 @@ import {
       useClass: DefaultSandboxEnvironmentValidationRunner,
     },
   ],
-  exports: [SandboxEnvironmentsService],
+  exports: [
+    SandboxEnvironmentsService,
+    SANDBOX_ENVIRONMENT_VALIDATION_RUNNER,
+  ],
 })
 export class SandboxEnvironmentsModule {}

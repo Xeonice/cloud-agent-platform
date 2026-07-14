@@ -57,6 +57,16 @@ function makeFetch(routes) {
   return { fetch, calls };
 }
 
+function provisionContext(taskId, cloneSpec) {
+  return {
+    taskId,
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'interactive-pty',
+    ...(cloneSpec === undefined ? {} : { cloneSpec }),
+  };
+}
+
 await test('defineHttpCloudSandboxProvider returns a cloud descriptor with declared capabilities', () => {
   const { fetch } = makeFetch({});
   const descriptor = mod.defineHttpCloudSandboxProvider({
@@ -117,8 +127,18 @@ await test('provision posts selected cloneSpec and returns the cloud connection'
     fetch,
   });
   const connection = await provider.provision({
-    taskId: 'task-1',
-    cloneSpec: { url: 'https://github.com/acme/repo.git' },
+    ...provisionContext('task-1', {
+      url: 'https://github.com/acme/repo.git',
+    }),
+    environment: {
+      providerId: 'cloud-prod',
+      providerFamily: 'cloud-http',
+      runtimeId: 'codex',
+      sourceKind: 'image',
+      sourceRef: 'cap-cloud@sha256:runtime',
+      digest: 'sha256:runtime',
+      checksum: 'sha256:metadata',
+    },
   });
   assert.deepEqual(connection, {
     taskId: 'task-1',
@@ -129,7 +149,19 @@ await test('provision posts selected cloneSpec and returns the cloud connection'
   assert.equal(calls[0].headers.authorization, 'Bearer secret');
   assert.deepEqual(calls[0].body, {
     taskId: 'task-1',
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'interactive-pty',
     cloneSpec: { url: 'https://github.com/acme/repo.git' },
+    environment: {
+      providerId: 'cloud-prod',
+      providerFamily: 'cloud-http',
+      runtimeId: 'codex',
+      sourceKind: 'image',
+      sourceRef: 'cap-cloud@sha256:runtime',
+      digest: 'sha256:runtime',
+      checksum: 'sha256:metadata',
+    },
   });
 });
 
@@ -149,12 +181,17 @@ await test('provision omits cloneSpec when absent and accepts unwrapped fallback
   });
   assert.equal(provider.getSandboxMode(), 'danger-full-access');
   assert.deepEqual(provider.getProviderCapabilities(), ['terminal.websocket']);
-  assert.deepEqual(await provider.provision({ taskId: 'task-raw' }), {
+  assert.deepEqual(await provider.provision(provisionContext('task-raw')), {
     taskId: 'task-raw',
     baseUrl: 'https://sandbox.example.test/task-raw',
     wsUrl: 'wss://sandbox.example.test/task-raw/ws',
   });
-  assert.deepEqual(calls[0].body, { taskId: 'task-raw' });
+  assert.deepEqual(calls[0].body, {
+    taskId: 'task-raw',
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'interactive-pty',
+  });
   assert.equal(calls[0].headers.authorization, undefined);
 });
 
@@ -167,7 +204,7 @@ await test('provision fails closed for HTTP and invalid connection responses', a
     fetch,
   });
   await assert.rejects(
-    () => provider.provision({ taskId: 'task-fail' }),
+    () => provider.provision(provisionContext('task-fail')),
     /cloud sandbox request POST \/v1\/sandboxes failed: HTTP 500/,
   );
 
@@ -178,7 +215,7 @@ await test('provision fails closed for HTTP and invalid connection responses', a
     }).fetch,
   });
   await assert.rejects(
-    () => invalid.provision({ taskId: 'task-invalid' }),
+    () => invalid.provision(provisionContext('task-invalid')),
     /did not include a connection object/,
   );
 
@@ -191,7 +228,7 @@ await test('provision fails closed for HTTP and invalid connection responses', a
     }).fetch,
   });
   await assert.rejects(
-    () => missingUrl.provision({ taskId: 'task-invalid' }),
+    () => missingUrl.provision(provisionContext('task-invalid')),
     /missing baseUrl or wsUrl/,
   );
 
@@ -204,7 +241,7 @@ await test('provision fails closed for HTTP and invalid connection responses', a
     }).fetch,
   });
   await assert.rejects(
-    () => badBaseUrl.provision({ taskId: 'task-invalid' }),
+    () => badBaseUrl.provision(provisionContext('task-invalid')),
     /missing baseUrl or wsUrl/,
   );
 });

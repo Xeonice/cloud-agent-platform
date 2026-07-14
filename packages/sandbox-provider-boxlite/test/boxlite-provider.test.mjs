@@ -255,6 +255,68 @@ await test('provider provision is task-scoped and idempotent', async () => {
   assert.equal((await provider.reattach('task-1')).baseUrl, 'boxlite://box-task-1');
 });
 
+await test('provider delegates retained transcript reads only when the capability is implemented', async () => {
+  const retainedConfig = validConfig({
+    BOXLITE_CAPABILITIES: 'command.exec,transcript.retained-read',
+  });
+  assert.throws(
+    () =>
+      new mod.BoxLiteSandboxProvider({
+        config: retainedConfig,
+        client: new mod.FakeBoxLiteClient(),
+      }),
+    /cannot advertise transcript\.retained-read without a transcriptRead hook/,
+  );
+
+  const client = new mod.FakeBoxLiteClient();
+  const calls = [];
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: retainedConfig,
+    client,
+    resolveRuntimeId: async (taskId) => {
+      calls.push(['resolve-runtime', taskId]);
+      return 'codex';
+    },
+    transcriptRead: async (context) => {
+      calls.push([
+        'read',
+        context.taskId,
+        context.runtimeId,
+        context.sandbox.id,
+        context.workspacePath,
+      ]);
+      return { format: 'codex-rollout', jsonl: '{"ok":true}\n' };
+    },
+  });
+  assert.equal(await provider.readRolloutFromContainer('missing', 'codex'), null);
+  await provider.provision({ taskId: 'task-transcript', cloneSpec: null });
+  assert.deepEqual(
+    await provider.readRolloutFromContainer('task-transcript', 'claude-code'),
+    { format: 'codex-rollout', jsonl: '{"ok":true}\n' },
+  );
+  assert.deepEqual(
+    await provider.readRolloutFromContainer('task-transcript'),
+    { format: 'codex-rollout', jsonl: '{"ok":true}\n' },
+  );
+  assert.deepEqual(calls, [
+    [
+      'read',
+      'task-transcript',
+      'claude-code',
+      'cap-boxlite-task-transcript',
+      '/home/gem/workspace',
+    ],
+    ['resolve-runtime', 'task-transcript'],
+    [
+      'read',
+      'task-transcript',
+      'codex',
+      'cap-boxlite-task-transcript',
+      '/home/gem/workspace',
+    ],
+  ]);
+});
+
 await test('provider provisions rootfs-backed sandboxes without an image source', async () => {
   const client = new mod.FakeBoxLiteClient();
   const provider = new mod.BoxLiteSandboxProvider({
@@ -391,6 +453,10 @@ await test('validates BoxLite environments with create start exec delete probes'
 
   assert.equal(result.status, 'passed');
   assert.equal(result.resolvedDigest, 'sha256:boxlite');
+  assert.equal(
+    result.resolvedLocator,
+    'cap-boxlite-custom:v1@sha256:boxlite',
+  );
   assert.deepEqual(
     result.probes.map((probe) => [probe.name, probe.ok]),
     [
@@ -400,7 +466,10 @@ await test('validates BoxLite environments with create start exec delete probes'
       ['git', true],
     ],
   );
-  assert.equal(client.createCalls[0].image, 'cap-boxlite-custom:v1');
+  assert.equal(
+    client.createCalls[0].image,
+    'cap-boxlite-custom:v1@sha256:boxlite',
+  );
   assert.equal(client.createCalls[0].rootfsPath, undefined);
   assert.equal(client.startExecutionCalls[0].command, 'true');
   assert.equal(client.execCalls[0].command, 'true');
@@ -426,6 +495,7 @@ await test('BoxLite environment validation cleans up returned provider ids', asy
       environmentId: 'env-boxlite',
       sourceKind: 'boxlite-image',
       sourceRef: 'cap-boxlite-custom:v1',
+      digest: 'sha256:generated',
     },
   });
 
@@ -452,6 +522,7 @@ await test('BoxLite environment validation fails closed and still deletes probe 
       environmentId: 'env-boxlite',
       sourceKind: 'boxlite-image',
       sourceRef: 'cap-boxlite-custom:v1',
+      digest: 'sha256:probe-fail',
     },
   });
 
@@ -482,6 +553,7 @@ await test('BoxLite environment validation keeps original failure when cleanup f
       environmentId: 'env-boxlite',
       sourceKind: 'boxlite-image',
       sourceRef: 'cap-boxlite-custom:v1',
+      digest: 'sha256:cleanup-fail',
     },
   });
 
@@ -526,6 +598,7 @@ await test('BoxLite environment validation classifies registry pull failures', a
         environmentId: 'env-boxlite',
         sourceKind: 'boxlite-image',
         sourceRef: 'cap-boxlite-custom:v1',
+        digest: `sha256:registry-case-${index}`,
       },
     });
 
@@ -534,6 +607,23 @@ await test('BoxLite environment validation classifies registry pull failures', a
     assert.match(result.probes.at(-1).output, item.expected);
     assert.deepEqual(client.deletedSandboxIds, [`probe-${taskId}`]);
   }
+});
+
+await test('BoxLite environment validation rejects mutable tags before creating a probe', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const result = await mod.validateBoxLiteEnvironment({
+    taskId: 'task-boxlite-mutable',
+    client,
+    environment: {
+      environmentId: 'env-boxlite',
+      sourceKind: 'boxlite-image',
+      sourceRef: 'cap-boxlite-custom:v1',
+    },
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.match(result.error, /digest-qualified/);
+  assert.equal(client.createCalls.length, 0);
 });
 
 await test('provider exposes selected-run descriptors and internal BoxLite terminal only server-side', async () => {
@@ -618,8 +708,9 @@ await test('runtime preflight failure tears down the created sandbox and rejects
   assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-preflight-fail']);
 });
 
-await test('provider resolves the task runtime before environment selection and preflight', async () => {
+await test('provider uses the caller-pinned runtime before environment selection and preflight', async () => {
   const events = [];
+  let legacyRuntimeLookupCalled = false;
   const client = new mod.FakeBoxLiteClient();
   const provider = new mod.BoxLiteSandboxProvider({
     config: validConfig({
@@ -628,6 +719,7 @@ await test('provider resolves the task runtime before environment selection and 
     }),
     client,
     resolveRuntimeId: async (taskId) => {
+      legacyRuntimeLookupCalled = true;
       events.push(`runtime:${taskId}`);
       return 'claude-code';
     },
@@ -644,11 +736,17 @@ await test('provider resolves the task runtime before environment selection and 
     },
   });
 
-  await provider.provision({ taskId: 'task-claude-runtime', cloneSpec: null });
+  await provider.provision({
+    taskId: 'task-claude-runtime',
+    cloneSpec: null,
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'claude-code',
+    executionMode: 'interactive-pty',
+  });
 
   assert.equal(client.createCalls[0].image, 'cap-boxlite-claude:1');
+  assert.equal(legacyRuntimeLookupCalled, false);
   assert.deepEqual(events, [
-    'runtime:task-claude-runtime',
     'environment:task-claude-runtime:claude-code',
     'preflight:task-claude-runtime:claude-code',
     'setup:task-claude-runtime:claude-code',

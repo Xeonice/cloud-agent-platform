@@ -25,6 +25,8 @@ export type RecurrenceFormKind = ScheduleRecurrence["kind"] | "custom";
 export interface TaskTemplateFormState {
   repoId: string;
   runtime: Runtime;
+  /** Null keeps the selected runtime's default model. */
+  model: string | null;
   sandboxEnvironmentId: string;
   deliver: Deliver;
   branch: string;
@@ -55,6 +57,7 @@ export function emptyTaskTemplateForm(
   return {
     repoId,
     runtime,
+    model: null,
     sandboxEnvironmentId: ENVIRONMENT_DEFAULT,
     deliver: "none",
     branch: "",
@@ -90,11 +93,19 @@ export function taskTemplateFormFromSchedule(
   defaultRuntime: Runtime,
 ): TaskTemplateFormState {
   const template = schedule.taskTemplate;
+  let sandboxEnvironmentId = ENVIRONMENT_DEFAULT;
+  if (Object.prototype.hasOwnProperty.call(template, "sandboxEnvironmentId")) {
+    if (template.sandboxEnvironmentId === null) {
+      sandboxEnvironmentId = ENVIRONMENT_SERVER_DEFAULT;
+    } else if (template.sandboxEnvironmentId !== undefined) {
+      sandboxEnvironmentId = template.sandboxEnvironmentId;
+    }
+  }
   return {
     repoId: template.repoId,
     runtime: template.runtime ?? defaultRuntime,
-    sandboxEnvironmentId:
-      template.sandboxEnvironmentId ?? ENVIRONMENT_SERVER_DEFAULT,
+    model: template.model ?? null,
+    sandboxEnvironmentId,
     deliver: template.deliver ?? "none",
     branch: template.branch ?? "",
     strategy: template.strategy ?? "",
@@ -143,6 +154,7 @@ export function buildTaskRequest(form: TaskTemplateFormState): CreateTaskRequest
   if (form.strategy.trim()) body.strategy = form.strategy.trim();
   if (form.skills.length > 0) body.skills = form.skills;
   if (form.runtime !== "codex") body.runtime = form.runtime;
+  if (form.model !== null) body.model = form.model;
   if (form.sandboxEnvironmentId === ENVIRONMENT_SERVER_DEFAULT) {
     body.sandboxEnvironmentId = null;
   } else if (form.sandboxEnvironmentId !== ENVIRONMENT_DEFAULT) {

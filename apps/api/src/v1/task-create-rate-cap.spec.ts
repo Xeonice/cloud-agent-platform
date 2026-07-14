@@ -46,6 +46,7 @@ import { V1TasksController } from './v1-tasks.controller';
 import { IdempotencyService } from './idempotency.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
+import type { PreparedTaskCreate } from '../tasks/prepared-task-create';
 import { PrincipalThrottlerGuard } from '../rate-limit/principal.throttler-guard';
 import { CreateThrottleGuard } from '../rate-limit/create-throttle.guard';
 import type { OperatorPrincipal } from '../auth/operator-principal';
@@ -138,7 +139,24 @@ before(async () => {
   // `createTaskRow` only for a request that PASSES the create-rate cap; a
   // throttled (429) request never reaches the service (V.1 row/admit split).
   const fakeTasksService = {
-    async createTaskRow(_repoId: string, _body: unknown): Promise<TaskResponse> {
+    async prepareTaskCreate(
+      repoId: string,
+      body: PreparedTaskCreate['body'],
+      executionMode: PreparedTaskCreate['executionMode'],
+      userId?: string,
+    ): Promise<PreparedTaskCreate> {
+      return {
+        repoId,
+        ownerUserId: userId ?? null,
+        body,
+        runtime: body.runtime ?? 'codex',
+        executionMode,
+        sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
+        model: body.model ?? null,
+        executionEnvironmentSnapshot: null,
+      };
+    },
+    async createTaskRow(_prepared: PreparedTaskCreate): Promise<TaskResponse> {
       admissions += 1;
       return makeTask(admissions);
     },
@@ -156,10 +174,16 @@ before(async () => {
   // Passthrough idempotency: runs the admit callback and reports the task as NEWLY
   // created, mirroring `IdempotencyService.run`'s `{ task, created }` contract.
   const fakeIdempotency = {
-    async run(args: {
-      admit: (tx: unknown) => Promise<TaskResponse>;
+    async lookup(): Promise<{ kind: 'missing'; requestHash: string }> {
+      return { kind: 'missing', requestHash: 'request-hash' };
+    },
+    async commit(args: {
+      create: (tx: unknown) => Promise<TaskResponse>;
     }): Promise<{ task: TaskResponse; created: boolean }> {
-      return { task: await args.admit(undefined), created: true };
+      return { task: await args.create(undefined), created: true };
+    },
+    async waitForWinner(): Promise<null> {
+      return null;
     },
   } as unknown as IdempotencyService;
 

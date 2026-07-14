@@ -1,14 +1,15 @@
 # OpenSpec × Claude Code Workflows
 
 This repo enhances the stock OpenSpec flow with multi-agent Workflow orchestration
-at three seams — **without forking any OpenSpec skill**. All behavior changes live
-in a project-local schema override; the three `.js` files here are the engines it calls.
+and repository-owned public-surface metadata enforcement. Orchestration remains in
+the project-local schema override and the three `.js` engines here; the mirrored
+Claude/Codex propose and apply skills add the sidecar/task preflight around it.
 
 ## How it's wired (two layers)
 
 ```
-Stock skills (openspec-propose / apply / archive)   ← UNTOUCHED, generic executors
-        │ call `openspec instructions <id>`
+Project skills (openspec-propose / apply / archive)
+        │ validate metadata, then call `openspec instructions <id>`
         ▼
 openspec/schemas/spec-driven/schema.yaml            ← project override (shadows built-in)
    • proposal.instruction  → run opsx-propose-deep, write research-brief.md
@@ -20,7 +21,8 @@ openspec/schemas/spec-driven/schema.yaml            ← project override (shadow
 ```
 
 The schema override was created with `openspec schema fork spec-driven spec-driven`.
-Rollback = delete `openspec/schemas/spec-driven/` (built-in re-resolves) + remove these files.
+The public-surface preflight is intentionally implemented outside the OpenSpec CLI,
+schema engine, and artifact dependency graph.
 
 ## The three workflows
 
@@ -53,7 +55,8 @@ All three are invoked with `args: { changeName, changeDir, ... }`.
 
 ## Boundary
 
-Workflows are **executors/verifiers of specs**, never decision-makers. They read/write
-artifacts and code only; the `openspec` CLI, schema engine, and dependency graph are not modified.
+Workflows and project skills are **executors/verifiers of specs**, never decision-makers.
+They read/write artifacts and code only; the `openspec` CLI, schema engine, and dependency
+graph are not modified.
 `research-brief.md` and `verification-report.md` are side-car files, not tracked artifacts —
 so the artifact dependency graph is unchanged and existing changes still validate.

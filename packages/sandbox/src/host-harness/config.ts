@@ -27,13 +27,20 @@ export const DEFAULT_BOXLITE_RUNTIME_REQUIRED_TOOLS = [
   'tmux',
 ] as const;
 
-export function readOptionalEnv(name: string): string | undefined {
-  const value = process.env[name]?.trim();
+export function readOptionalEnv(
+  name: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): string | undefined {
+  const value = env[name]?.trim();
   return value ? value : undefined;
 }
 
-export function readNumberEnv(name: string, fallback: number): number {
-  const raw = readOptionalEnv(name);
+export function readNumberEnv(
+  name: string,
+  fallback: number,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): number {
+  const raw = readOptionalEnv(name, env);
   if (!raw) return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -41,16 +48,18 @@ export function readNumberEnv(name: string, fallback: number): number {
 
 export function readSandboxLocationEnv(
   name: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): SandboxProviderLocation | undefined {
-  const value = readOptionalEnv(name);
+  const value = readOptionalEnv(name, env);
   return value === 'local' || value === 'cloud' ? value : undefined;
 }
 
 export function readSandboxProviderCapabilitiesEnv(
   name: string,
   fallback: readonly SandboxProviderCapability[],
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): readonly SandboxProviderCapability[] {
-  const raw = readOptionalEnv(name);
+  const raw = readOptionalEnv(name, env);
   if (!raw) return fallback;
 
   if (raw.toLowerCase() === 'all') {

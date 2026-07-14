@@ -154,6 +154,15 @@ model Task {
   /// values (add-claude-code-runtime).
   runtime String? @map("runtime")
 
+  /// Exact normalized selector requested for this task. Null means the task
+  /// intentionally follows the effective runtime/credential default.
+  model String? @map("model")
+
+  /// Non-secret immutable provider/toolchain snapshot used to validate an
+  /// explicit model and later provision/recover the exact same environment.
+  /// Internal only; canonical task responses expose `model`, not this JSON.
+  executionEnvironmentSnapshot Json? @map("execution_environment_snapshot")
+
   /// Optional managed sandbox runtime environment selected for this task. Null
   /// means the task used the compatible managed default or the deployment-level
   /// fallback at provisioning time.
@@ -252,18 +261,28 @@ model TaskScheduleRun {
   scheduleId String       @map("schedule_id")
   schedule   TaskSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
 
-  scheduledFor DateTime @map("scheduled_for")
+  scheduledFor      DateTime  @map("scheduled_for")
   /// Stable schedule-period identity. Null only for legacy rows created before
   /// period-aware dispatch; new manual and automatic runs always populate it.
-  periodKey     String?  @map("period_key")
+  periodKey         String?   @map("period_key")
   /// Dispatch origin for period-aware runs (`manual` or `automatic`).
-  triggerSource String?  @map("trigger_source")
+  triggerSource     String?   @map("trigger_source")
   /// Request/tick time that initiated the run, distinct from its nominal fire.
-  triggeredAt   DateTime? @map("triggered_at")
-  status       String
-  taskId       String?  @unique @map("task_id")
-  task         Task?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
-  error        String?
+  triggeredAt       DateTime? @map("triggered_at")
+  status            String
+  taskId            String?   @unique @map("task_id")
+  task              Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  error             String?
+  /// Stable machine-readable pre-task model failure.
+  errorCode         String?   @map("error_code")
+  /// Next retry time for a transient pre-task catalog failure.
+  retryAt           DateTime? @map("retry_at")
+  /// One-based attempt count for the same durable occurrence.
+  retryAttempt      Int?      @map("retry_attempt")
+  /// Absolute bound after which the occurrence becomes terminal.
+  retryHorizonAt    DateTime? @map("retry_horizon_at")
+  /// Immutable normalized task-template snapshot captured on first retry.
+  retryTaskTemplate Json?     @map("retry_task_template")
 
   /// Per-occurrence post-commit admission lease. Schedule-level claims protect
   /// cadence CAS; these fields prevent one interrupted run from blocking later
@@ -279,6 +298,7 @@ model TaskScheduleRun {
   @@index([scheduleId, scheduledFor, id])
   @@index([status])
   @@index([status, admissionClaimUntil])
+  @@index([status, retryAt])
   @@map("task_schedule_runs")
 }
 
@@ -327,8 +347,11 @@ model SandboxEnvironmentValidation {
   providerFamily   String  @map("provider_family")
   runtimeId        String? @map("runtime_id")
   sourceKind       String  @map("source_kind")
+  resolvedLocator  String? @map("resolved_locator")
   resolvedDigest   String? @map("resolved_digest")
   resolvedChecksum String? @map("resolved_checksum")
+  runtimeArtifactChecksums Json? @map("runtime_artifact_checksums")
+  cliArtifactChecksum String? @map("cli_artifact_checksum")
   sandboxMetadata  Json?   @map("sandbox_metadata")
   probes           Json?   @map("probes")
   error            String?
@@ -456,7 +479,7 @@ model User {
   forgeCredentials ForgeCredential[]
   /// Durable task schedules owned by this account.
   taskSchedules    TaskSchedule[]
-  ownedTasks       Task[]             @relation("TaskOwner")
+  ownedTasks       Task[]            @relation("TaskOwner")
 
   @@map("users")
 }

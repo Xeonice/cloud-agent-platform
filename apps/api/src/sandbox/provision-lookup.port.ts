@@ -2,7 +2,9 @@ import type {
   SandboxEnvironmentProviderFamily,
   SandboxHostImageParameterProfile,
   SandboxResolvedEnvironmentMetadata,
+  TaskModelIntent,
 } from '@cap/sandbox';
+import type { ExecutionMode, Runtime } from '@cap/contracts';
 
 /**
  * ProvisionLookup port — the per-task data the provider needs at provision time
@@ -31,7 +33,41 @@ export interface CloneSpec {
   readonly authHeader?: string;
 }
 
+export interface SandboxPinnedEnvironmentMetadata
+  extends SandboxResolvedEnvironmentMetadata {
+  readonly providerId: string;
+  readonly providerFamily: SandboxEnvironmentProviderFamily;
+  readonly runtimeId: string;
+  readonly sourceKind: string;
+  readonly sourceRef: string;
+  readonly cliArtifactChecksum: string;
+}
+
+/** One atomic persisted read used by admission, recovery, and terminal launch. */
+export type TaskLaunchContext =
+  | {
+      readonly modelIntent: Extract<TaskModelIntent, { kind: 'runtime-default' }>;
+      readonly ownerUserId: string | null;
+      readonly runtimeId: Runtime;
+      readonly executionMode: ExecutionMode;
+      readonly environment?: undefined;
+    }
+  | {
+      readonly modelIntent: Extract<TaskModelIntent, { kind: 'explicit' }>;
+      readonly ownerUserId: string;
+      readonly runtimeId: Runtime;
+      readonly executionMode: ExecutionMode;
+      readonly environment: SandboxPinnedEnvironmentMetadata;
+    };
+
 export interface ProvisionLookup {
+  /**
+   * Resolve persisted model intent and its immutable execution snapshot in one
+   * database read. Missing/corrupt explicit state throws a typed setup failure;
+   * it is never represented as runtime-default.
+   */
+  getTaskLaunchContext(taskId: string): Promise<TaskLaunchContext>;
+
   /**
    * Resolve how to clone `taskId`'s repository: the task's OWN `repo.gitSource`
    * (replacing the global `TASK_REPO_URL` stopgap), plus an `authHeader` carrying

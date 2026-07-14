@@ -17,13 +17,32 @@
  * single request/response model (design D5).
  */
 
-import { PUBLIC_V1_OPERATIONS } from "@cap/contracts";
+import {
+  PUBLIC_V1_OPERATIONS,
+  type PublicErrorCode,
+  type PublicOwnerPolicy,
+  type PublicProtocolDifference,
+  type PublicV1Operation,
+  type PublicV1OperationId,
+  type PublicV1OperationShape,
+  type Scope,
+} from "@cap/contracts";
 
 /** An HTTP method a catalog endpoint can use. */
 export type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
-type PublicV1Operation = (typeof PUBLIC_V1_OPERATIONS)[number];
-export type PublicV1OperationId = PublicV1Operation["id"];
+export type { PublicV1OperationId };
+
+export type ApiMcpProjection =
+  | {
+      readonly status: "mapped";
+      readonly tool: string;
+      readonly differences: readonly PublicProtocolDifference[];
+    }
+  | {
+      readonly status: "excluded";
+      readonly reason: string;
+    };
 
 /** A path parameter (e.g. `:id`) that must be filled before the path resolves. */
 export interface ApiPathParam {
@@ -63,6 +82,14 @@ export interface ApiEndpoint {
   operationId: PublicV1OperationId | null;
   /** Data operations are drift-checked against the shared manifest. */
   kind: "data" | "documentation";
+  /** Exact registry policy, absent only for documentation endpoints. */
+  requiredScope: Scope | null;
+  /** Owner policy from the registry, absent only for documentation endpoints. */
+  ownerPolicy: PublicOwnerPolicy | null;
+  /** Stable public failures declared by the operation. */
+  publicErrors: readonly PublicErrorCode[];
+  /** MCP mapping/exclusion metadata projected without affecting rendering. */
+  mcpProjection: ApiMcpProjection | null;
   /** The domain group this endpoint is listed under in the rail. */
   domain: ApiDomain;
   /** The HTTP method. */
@@ -137,9 +164,16 @@ export interface ApiSendResult {
 interface ApiEndpointOverlay {
   readonly domain: ApiDomain;
   readonly title: string;
-  readonly pathParams: readonly ApiPathParam[];
-  readonly queryParams: readonly ApiQueryParam[];
-  readonly headerParams?: readonly ApiHeaderParam[];
+  /** Labels/examples keyed by canonical registry fields; never owns the field set. */
+  readonly pathParamHints?: Readonly<
+    Record<string, Omit<ApiPathParam, "name">>
+  >;
+  readonly queryParamHints?: Readonly<
+    Record<string, Omit<ApiQueryParam, "name">>
+  >;
+  readonly headerParamHints?: Readonly<
+    Record<string, Omit<ApiHeaderParam, "name">>
+  >;
   readonly sampleBody: string | null;
 }
 
@@ -147,19 +181,19 @@ const TASK_ID = "00000000-0000-4000-a000-000000000201";
 const REPO_ID = "00000000-0000-4000-a000-000000000101";
 const SCHEDULE_ID = "00000000-0000-4000-a000-000000000301";
 
-const TASK_ID_PARAM: readonly ApiPathParam[] = [
-  { name: "id", label: "任务 ID", placeholder: TASK_ID },
-];
-const REPO_ID_PARAM: readonly ApiPathParam[] = [
-  { name: "id", label: "仓库 ID", placeholder: REPO_ID },
-];
-const SCHEDULE_ID_PARAM: readonly ApiPathParam[] = [
-  { name: "id", label: "定时任务 ID", placeholder: SCHEDULE_ID },
-];
-const PAGE_QUERY: readonly ApiQueryParam[] = [
-  { name: "limit", defaultValue: "50", hint: "每页数量（默认 50，最大 200）" },
-  { name: "cursor", defaultValue: "", hint: "分页游标（上一页响应返回）" },
-];
+const TASK_ID_PARAM_HINTS = {
+  id: { label: "任务 ID", placeholder: TASK_ID },
+} as const;
+const REPO_ID_PARAM_HINTS = {
+  id: { label: "仓库 ID", placeholder: REPO_ID },
+} as const;
+const SCHEDULE_ID_PARAM_HINTS = {
+  id: { label: "定时任务 ID", placeholder: SCHEDULE_ID },
+} as const;
+const PAGE_QUERY_HINTS = {
+  limit: { defaultValue: "50", hint: "每页数量（默认 50，最大 200）" },
+  cursor: { defaultValue: "", hint: "分页游标（上一页响应返回）" },
+} as const;
 
 const CREATE_TASK_SAMPLE = JSON.stringify(
   {
@@ -167,6 +201,14 @@ const CREATE_TASK_SAMPLE = JSON.stringify(
     branch: "main",
     runtime: "codex",
     prompt: "为 /metrics 增加 docker-stats 采样",
+  },
+  null,
+  2,
+);
+
+const QUERY_RUNTIME_MODELS_SAMPLE = JSON.stringify(
+  {
+    runtime: "codex",
   },
   null,
   2,
@@ -217,134 +259,119 @@ const ENDPOINT_OVERLAYS = {
   "tasks.create": {
     domain: "任务",
     title: "创建任务",
-    pathParams: [],
-    queryParams: [],
-    headerParams: [
-      {
-        name: "Idempotency-Key",
+    headerParamHints: {
+      "Idempotency-Key": {
         defaultValue: "",
         hint: "可选；同一调用方重试时复用",
       },
-    ],
+    },
     sampleBody: CREATE_TASK_SAMPLE,
+  },
+  "runtimeModels.query": {
+    domain: "任务",
+    title: "运行时模型目录",
+    sampleBody: QUERY_RUNTIME_MODELS_SAMPLE,
   },
   "tasks.list": {
     domain: "任务",
     title: "任务列表",
-    pathParams: [],
-    queryParams: PAGE_QUERY,
+    queryParamHints: PAGE_QUERY_HINTS,
     sampleBody: null,
   },
   "tasks.get": {
     domain: "任务",
     title: "任务详情",
-    pathParams: TASK_ID_PARAM,
-    queryParams: [],
+    pathParamHints: TASK_ID_PARAM_HINTS,
     sampleBody: null,
   },
   "tasks.stop": {
     domain: "任务",
     title: "停止任务",
-    pathParams: TASK_ID_PARAM,
-    queryParams: [],
+    pathParamHints: TASK_ID_PARAM_HINTS,
     sampleBody: null,
   },
   "tasks.transcript": {
     domain: "任务",
     title: "任务记录",
-    pathParams: TASK_ID_PARAM,
-    queryParams: [],
+    pathParamHints: TASK_ID_PARAM_HINTS,
     sampleBody: null,
   },
   "tasks.events": {
     domain: "任务",
     title: "事件流 (SSE)",
-    pathParams: TASK_ID_PARAM,
-    queryParams: [],
-    headerParams: [
-      {
-        name: "Last-Event-ID",
+    pathParamHints: TASK_ID_PARAM_HINTS,
+    headerParamHints: {
+      "Last-Event-ID": {
         defaultValue: "",
         hint: "可选；从该事件之后恢复",
       },
-    ],
+    },
     sampleBody: null,
   },
   "repos.list": {
     domain: "仓库",
     title: "仓库列表",
-    pathParams: [],
-    queryParams: PAGE_QUERY,
+    queryParamHints: PAGE_QUERY_HINTS,
     sampleBody: null,
   },
   "repos.get": {
     domain: "仓库",
     title: "仓库详情",
-    pathParams: REPO_ID_PARAM,
-    queryParams: [],
+    pathParamHints: REPO_ID_PARAM_HINTS,
     sampleBody: null,
   },
   "schedules.list": {
     domain: "定时任务",
     title: "定时任务列表",
-    pathParams: [],
-    queryParams: PAGE_QUERY,
+    queryParamHints: PAGE_QUERY_HINTS,
     sampleBody: null,
   },
   "schedules.create": {
     domain: "定时任务",
     title: "创建定时任务",
-    pathParams: [],
-    queryParams: [],
     sampleBody: CREATE_SCHEDULE_SAMPLE,
   },
   "schedules.get": {
     domain: "定时任务",
     title: "定时任务详情",
-    pathParams: SCHEDULE_ID_PARAM,
-    queryParams: [],
+    pathParamHints: SCHEDULE_ID_PARAM_HINTS,
     sampleBody: null,
   },
   "schedules.update": {
     domain: "定时任务",
     title: "更新定时任务",
-    pathParams: SCHEDULE_ID_PARAM,
-    queryParams: [],
+    pathParamHints: SCHEDULE_ID_PARAM_HINTS,
     sampleBody: UPDATE_SCHEDULE_SAMPLE,
   },
   "schedules.pause": {
     domain: "定时任务",
     title: "暂停定时任务",
-    pathParams: SCHEDULE_ID_PARAM,
-    queryParams: [],
+    pathParamHints: SCHEDULE_ID_PARAM_HINTS,
     sampleBody: null,
   },
   "schedules.resume": {
     domain: "定时任务",
     title: "恢复定时任务",
-    pathParams: SCHEDULE_ID_PARAM,
-    queryParams: [],
+    pathParamHints: SCHEDULE_ID_PARAM_HINTS,
     sampleBody: null,
   },
   "schedules.dispatch": {
     domain: "定时任务",
     title: "立即执行",
-    pathParams: SCHEDULE_ID_PARAM,
-    queryParams: [],
+    pathParamHints: SCHEDULE_ID_PARAM_HINTS,
     sampleBody: DISPATCH_SCHEDULE_SAMPLE,
   },
   "schedules.delete": {
     domain: "定时任务",
     title: "删除定时任务",
-    pathParams: SCHEDULE_ID_PARAM,
-    queryParams: [],
+    pathParamHints: SCHEDULE_ID_PARAM_HINTS,
     sampleBody: null,
   },
   "schedules.runs": {
     domain: "定时任务",
     title: "运行记录",
-    pathParams: SCHEDULE_ID_PARAM,
-    queryParams: PAGE_QUERY,
+    pathParamHints: SCHEDULE_ID_PARAM_HINTS,
+    queryParamHints: PAGE_QUERY_HINTS,
     sampleBody: null,
   },
 } as const satisfies Record<PublicV1OperationId, ApiEndpointOverlay>;
@@ -357,6 +384,45 @@ function toCatalogPath(path: string): string {
   return path.replace(/\{([^}]+)\}/g, ":$1");
 }
 
+function toMcpProjection(
+  operation: PublicV1OperationShape,
+): ApiMcpProjection {
+  if ("tool" in operation.mcp) {
+    return {
+      status: "mapped",
+      tool: operation.mcp.tool,
+      differences: operation.mcp.differences,
+    };
+  }
+  return {
+    status: "excluded",
+    reason: operation.mcp.excluded,
+  };
+}
+
+function projectCanonicalFields<T extends { readonly name: string }>(
+  operation: PublicV1OperationShape,
+  source: "params" | "query" | "headers",
+  hints: Readonly<Record<string, Omit<T, "name">>> | undefined,
+): readonly T[] {
+  const canonicalFields = Object.keys(
+    operation.input[source]?.wire.shape ?? {},
+  );
+  const hintsByField = hints ?? {};
+  const hintedFields = Object.keys(hintsByField);
+  if (
+    canonicalFields.length !== hintedFields.length ||
+    canonicalFields.some((field) => !Object.hasOwn(hintsByField, field))
+  ) {
+    throw new TypeError(
+      `API Playground ${source} hints must exactly match registry fields for ${operation.id}`,
+    );
+  }
+  return canonicalFields.map(
+    (name) => ({ name, ...hintsByField[name]! }) as T,
+  );
+}
+
 /** Data operations are generated from the shared public `/v1` manifest. */
 export const DATA_API_CATALOG: readonly ApiEndpoint[] = PUBLIC_V1_OPERATIONS.map(
   (operation) => {
@@ -365,13 +431,29 @@ export const DATA_API_CATALOG: readonly ApiEndpoint[] = PUBLIC_V1_OPERATIONS.map
       id: operation.id,
       operationId: operation.id,
       kind: "data" as const,
+      requiredScope: operation.scope,
+      ownerPolicy: operation.ownerPolicy,
+      publicErrors: operation.errors,
+      mcpProjection: toMcpProjection(operation),
       domain: overlay.domain,
       method: toApiMethod(operation.method),
       pathTemplate: toCatalogPath(operation.path),
       title: overlay.title,
-      pathParams: overlay.pathParams,
-      queryParams: overlay.queryParams,
-      headerParams: "headerParams" in overlay ? overlay.headerParams : [],
+      pathParams: projectCanonicalFields<ApiPathParam>(
+        operation,
+        "params",
+        "pathParamHints" in overlay ? overlay.pathParamHints : undefined,
+      ),
+      queryParams: projectCanonicalFields<ApiQueryParam>(
+        operation,
+        "query",
+        "queryParamHints" in overlay ? overlay.queryParamHints : undefined,
+      ),
+      headerParams: projectCanonicalFields<ApiHeaderParam>(
+        operation,
+        "headers",
+        "headerParamHints" in overlay ? overlay.headerParamHints : undefined,
+      ),
       sampleBody: overlay.sampleBody,
       destructive: operation.destructive,
       streaming: operation.streaming,
@@ -384,6 +466,10 @@ const DOCUMENTATION_CATALOG: readonly ApiEndpoint[] = [
     id: "docs.openapi",
     operationId: null,
     kind: "documentation",
+    requiredScope: null,
+    ownerPolicy: null,
+    publicErrors: [],
+    mcpProjection: null,
     domain: "文档",
     method: "GET",
     pathTemplate: "/v1/openapi.json",
@@ -399,6 +485,10 @@ const DOCUMENTATION_CATALOG: readonly ApiEndpoint[] = [
     id: "docs.swagger",
     operationId: null,
     kind: "documentation",
+    requiredScope: null,
+    ownerPolicy: null,
+    publicErrors: [],
+    mcpProjection: null,
     domain: "文档",
     method: "GET",
     pathTemplate: "/v1/docs",

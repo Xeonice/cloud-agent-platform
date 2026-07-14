@@ -39,9 +39,13 @@ export function selectLaunch(
   ctx: AioLaunchContext,
   wantAutoSubmit: boolean,
 ): LaunchPlan {
-  const headless =
+  if (
     executionMode === 'headless-exec' &&
-    typeof runtime.buildHeadlessLine === 'function';
+    typeof runtime.buildHeadlessLine !== 'function'
+  ) {
+    throw new Error(`Runtime "${runtime.id}" does not support headless execution`);
+  }
+  const headless = executionMode === 'headless-exec';
   const line = headless
     ? runtime.buildHeadlessLine!(ctx)
     : runtime.buildLaunchLine(ctx);

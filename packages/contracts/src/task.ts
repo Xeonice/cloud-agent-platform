@@ -77,6 +77,89 @@ export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
 export const DEFAULT_TASK_RUNTIME = 'codex' as const satisfies Runtime;
 
 // ---------------------------------------------------------------------------
+// Per-task runtime model selector (add-task-model-selection)
+// ---------------------------------------------------------------------------
+
+/** Maximum UTF-8 size accepted for one runtime model selector. */
+export const TASK_MODEL_SELECTOR_MAX_BYTES = 2_048;
+
+function hasTaskModelControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit <= 0x7f) {
+      bytes += 1;
+      continue;
+    }
+    if (codeUnit <= 0x7ff) {
+      bytes += 2;
+      continue;
+    }
+    if (
+      codeUnit >= 0xd800 &&
+      codeUnit <= 0xdbff &&
+      index + 1 < value.length
+    ) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+        continue;
+      }
+    }
+    bytes += 3;
+  }
+  return bytes;
+}
+
+const NormalizedTaskModelSelectorSchema = z
+  .string()
+  .min(1, 'Model selector must not be empty')
+  // This character bound is also visible to OpenAPI. The byte refinement below
+  // is the authoritative multi-byte limit.
+  .max(TASK_MODEL_SELECTOR_MAX_BYTES, 'Model selector is too long')
+  .superRefine((value, ctx) => {
+    if (hasTaskModelControlCharacter(value)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Model selector must not contain control characters',
+      });
+    }
+    if (utf8ByteLength(value) > TASK_MODEL_SELECTOR_MAX_BYTES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Model selector must be at most ${TASK_MODEL_SELECTOR_MAX_BYTES} UTF-8 bytes`,
+      });
+    }
+  });
+
+/**
+ * Provider/CLI model selector supplied for one new task.
+ *
+ * Ordinary surrounding spaces are normalized away. A raw control character is
+ * deliberately preserved by the preprocessor so the production refinement
+ * rejects it instead of silently trimming it into a different selector.
+ */
+export const TaskModelSelectorSchema = z.preprocess(
+  (input) => {
+    if (typeof input !== 'string') return input;
+    return hasTaskModelControlCharacter(input) ? input : input.trim();
+  },
+  NormalizedTaskModelSelectorSchema,
+);
+export type TaskModelSelector = z.infer<typeof TaskModelSelectorSchema>;
+
+// ---------------------------------------------------------------------------
 // Structured runtime failure detail
 // ---------------------------------------------------------------------------
 
@@ -90,24 +173,65 @@ export const DEFAULT_TASK_RUNTIME = 'codex' as const satisfies Runtime;
 export const TaskFailureCodeSchema = z.enum([
   'runtime_auth_expired',
   'runtime_auth_rejected',
+  'runtime_model_setup_failed',
+  'runtime_model_rejected',
 ]);
 export type TaskFailureCode = z.infer<typeof TaskFailureCodeSchema>;
 
-export const TaskFailureActionSchema = z.enum(['reconnect_runtime']);
+export const TaskFailureActionSchema = z.enum([
+  'reconnect_runtime',
+  'retry_task',
+  'choose_another_model',
+]);
 export type TaskFailureAction = z.infer<typeof TaskFailureActionSchema>;
+
+const TaskFailureFields = {
+  runtime: RuntimeSchema,
+  message: z.string().min(1),
+  occurredAt: z.coerce.date(),
+  exitCode: z.number().int().nullable(),
+} as const;
+
+export const RuntimeAuthExpiredTaskFailureSchema = z.object({
+  code: z.literal('runtime_auth_expired'),
+  ...TaskFailureFields,
+  action: z.literal('reconnect_runtime'),
+});
+
+export const RuntimeAuthRejectedTaskFailureSchema = z.object({
+  code: z.literal('runtime_auth_rejected'),
+  ...TaskFailureFields,
+  action: z.literal('reconnect_runtime'),
+});
+
+export const RuntimeModelSetupTaskFailureSchema = z.object({
+  code: z.literal('runtime_model_setup_failed'),
+  ...TaskFailureFields,
+  action: z.literal('retry_task'),
+});
+export type RuntimeModelSetupTaskFailure = z.infer<
+  typeof RuntimeModelSetupTaskFailureSchema
+>;
+
+export const RuntimeModelRejectedTaskFailureSchema = z.object({
+  code: z.literal('runtime_model_rejected'),
+  ...TaskFailureFields,
+  action: z.literal('choose_another_model'),
+});
+export type RuntimeModelRejectedTaskFailure = z.infer<
+  typeof RuntimeModelRejectedTaskFailureSchema
+>;
 
 /**
  * Secret-free, actionable failure persisted with a task's terminal state.
- * Raw provider responses and credential material never cross this boundary.
+ * The discriminated branches prevent invalid code/action combinations.
  */
-export const TaskFailureSchema = z.object({
-  code: TaskFailureCodeSchema,
-  runtime: RuntimeSchema,
-  message: z.string().min(1),
-  action: TaskFailureActionSchema,
-  occurredAt: z.coerce.date(),
-  exitCode: z.number().int().nullable(),
-});
+export const TaskFailureSchema = z.discriminatedUnion('code', [
+  RuntimeAuthExpiredTaskFailureSchema,
+  RuntimeAuthRejectedTaskFailureSchema,
+  RuntimeModelSetupTaskFailureSchema,
+  RuntimeModelRejectedTaskFailureSchema,
+]);
 export type TaskFailure = z.infer<typeof TaskFailureSchema>;
 
 // ---------------------------------------------------------------------------
@@ -252,6 +376,11 @@ export const TaskSchema = z.object({
    * fabricated (sent value == readable value).
    */
   runtime: RuntimeSchema.nullable().optional(),
+  /**
+   * Exact normalized model selector requested for this task. Null/absent means
+   * the effective runtime default; it is never inferred from transcript output.
+   */
+  model: TaskModelSelectorSchema.nullable().optional(),
   /**
    * Optional sandbox runtime environment selected for this task. Null/absent
    * means the platform resolves the managed or deployment default.
@@ -408,6 +537,12 @@ export const CreateTaskRequestSchema = z.object({
    * rather than launching unauthenticated (see `agent-runtime`).
    */
   runtime: RuntimeSchema.optional(),
+  /**
+   * Optional per-run model selector. It is validated against the contextual
+   * runtime-model catalog before persistence; omission preserves the effective
+   * runtime/credential default.
+   */
+  model: TaskModelSelectorSchema.optional(),
   /**
    * Optional managed sandbox runtime environment. When omitted, the server uses
    * the current account's default image; explicit null bypasses the account

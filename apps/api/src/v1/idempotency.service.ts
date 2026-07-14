@@ -34,6 +34,9 @@ import { PrismaService } from '../prisma/prisma.service';
 export class IdempotencyService {
   /** Dedup window: a key is honored for 24h after first use. */
   static readonly WINDOW_MS = 24 * 60 * 60 * 1000;
+  /** Short bound used only to resolve a same-key winner racing a failed preflight. */
+  static readonly WINNER_WAIT_MS = 250;
+  static readonly WINNER_POLL_MS = 10;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -49,101 +52,156 @@ export class IdempotencyService {
   }
 
   /**
-   * Runs an idempotent create under the given `(scopeUserId, key)`.
-   *
-   * - No key (header absent) → admit unconditionally; no dedup row is written.
-   * - First use of the key → admit via `admit()` and record the key + resulting
-   *   `taskId` in the SAME transaction (unique-constraint race guard).
-   * - Same key + same body within the window → return the FIRST task; `admit()`
-   *   is NOT called again (exactly one sandbox admission).
-   * - Same key + different body within the window → 409, no second task.
-   *
-   * `admit` MUST be the single `TasksService.create` admission path; it receives
-   * the live transaction-bound Prisma client so the task row and the dedup row
-   * commit or roll back together.
+   * Side-effect-free first phase for V1 create. It only reads the idempotency row
+   * and, on an exact replay, the already-committed Task. No callback, catalog,
+   * provider, or write transaction runs here.
    */
-  async run(args: {
+  async lookup(args: {
     key: string | null;
     scopeUserId: string;
     body: unknown;
-    admit: (tx: TaskCreator) => Promise<TaskResponse>;
-    /** Re-fetch a previously-admitted task by id (a dedup hit returns this). */
+    loadTask: (taskId: string) => Promise<TaskResponse>;
+  }): Promise<IdempotencyLookupResult> {
+    const { key, scopeUserId, body, loadTask } = args;
+    const requestHash = IdempotencyService.hashBody(body);
+    const replay = await this.lookupByHash({
+      key,
+      scopeUserId,
+      requestHash,
+      loadTask,
+    });
+    if (replay) {
+      return { kind: 'replay', requestHash, task: replay };
+    }
+    return { kind: 'missing', requestHash };
+  }
+
+  /**
+   * Short write phase. `create` must be a pure Task-row write over already
+   * prepared local data. The transaction rechecks the key so two requests that
+   * both preflight after an initial miss still commit at most one Task.
+   */
+  async commit(args: {
+    key: string | null;
+    scopeUserId: string;
+    requestHash: string;
+    create: (tx: TaskCreator) => Promise<TaskResponse>;
     loadTask: (taskId: string) => Promise<TaskResponse>;
   }): Promise<IdempotentCreateResult> {
-    const { key, scopeUserId, body, admit, loadTask } = args;
+    const { key, scopeUserId, requestHash, create, loadTask } = args;
 
-    // No Idempotency-Key → ordinary create, no dedup record. NEWLY created, so the
-    // caller runs the post-row admission (provision) afterwards.
     if (key === null || key.length === 0) {
-      return { task: await admit(this.prisma), created: true };
+      return { task: await create(this.prisma), created: true };
     }
 
-    const requestHash = IdempotencyService.hashBody(body);
     const now = new Date();
 
-    // Fast path: an existing, unexpired record for this principal+key.
-    const existing = await this.prisma.idempotencyKey.findUnique({
-      where: { scopeUserId_key: { scopeUserId, key } },
-    });
-    if (existing && existing.expiresAt > now) {
-      if (existing.requestHash !== requestHash) {
-        // Same key, different body → caller bug; never alias to the first task.
-        throw new ConflictException(
-          'Idempotency-Key reused with a different request body',
-        );
-      }
-      // Dedup hit: return the FIRST task, admitting nothing new (it was already
-      // admitted by the first call — `created: false` so the caller does NOT
-      // re-provision).
-      return { task: await loadTask(existing.taskId), created: false };
-    }
-
-    // First use (or the prior record has expired): admit + record atomically so
-    // a raced concurrent retry cannot leave two committed tasks. An expired row,
-    // if present, is replaced inside the same transaction.
     try {
-      const task = await this.prisma.$transaction(async (tx) => {
-        if (existing) {
-          await tx.idempotencyKey.delete({
+      const outcome:
+        | { kind: 'created'; task: TaskResponse }
+        | { kind: 'replay'; taskId: string } =
+        await this.prisma.$transaction(async (tx) => {
+          const current = await tx.idempotencyKey.findUnique({
             where: { scopeUserId_key: { scopeUserId, key } },
           });
-        }
-        const task = await admit(tx as unknown as TaskCreator);
-        await tx.idempotencyKey.create({
-          data: {
-            key,
-            scopeUserId,
-            requestHash,
-            taskId: task.id,
-            expiresAt: new Date(now.getTime() + IdempotencyService.WINDOW_MS),
-          },
-        });
-        return task;
-      });
-      // The task row + dedup row committed together — NEWLY created, so the caller
-      // runs the post-row admission (provision) after this transaction commits.
-      return { task, created: true };
-    } catch (err) {
-      // Lost the unique-constraint race (a concurrent retry committed first). Our
-      // transaction rolled back (no orphan task), so resolve to the winner's task
-      // — same body → same task; different body → 409.
-      if (isUniqueViolation(err)) {
-        const winner = await this.prisma.idempotencyKey.findUnique({
-          where: { scopeUserId_key: { scopeUserId, key } },
-        });
-        if (winner) {
-          if (winner.requestHash !== requestHash) {
-            throw new ConflictException(
-              'Idempotency-Key reused with a different request body',
-            );
+          if (current && current.expiresAt > now) {
+            assertMatchingRequestHash(current.requestHash, requestHash);
+            return { kind: 'replay' as const, taskId: current.taskId };
           }
-          // The winner committed first; our transaction rolled back (no orphan
-          // task), so resolve to the winner's already-admitted task.
-          return { task: await loadTask(winner.taskId), created: false };
-        }
+          if (current) {
+            // Delete only the row observed by this transaction. A concurrent
+            // replacement is protected by the unique constraint and causes this
+            // whole transaction (including a staged Task) to roll back.
+            await tx.idempotencyKey.deleteMany({
+              where: {
+                scopeUserId,
+                key,
+                requestHash: current.requestHash,
+                taskId: current.taskId,
+                expiresAt: { lte: now },
+              },
+            });
+          }
+          const task = await create(tx as unknown as TaskCreator);
+          await tx.idempotencyKey.create({
+            data: {
+              key,
+              scopeUserId,
+              requestHash,
+              taskId: task.id,
+              expiresAt: new Date(now.getTime() + IdempotencyService.WINDOW_MS),
+            },
+          });
+          return { kind: 'created' as const, task };
+        });
+      if (outcome.kind === 'replay') {
+        return { task: await loadTask(outcome.taskId), created: false };
+      }
+      return { task: outcome.task, created: true };
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        const winner = await this.waitForWinner({
+          key,
+          scopeUserId,
+          requestHash,
+          loadTask,
+        });
+        if (winner) return { task: winner, created: false };
       }
       throw err;
     }
+  }
+
+  /**
+   * Bounded side-effect-free polling used after external preflight fails. A
+   * concurrent exact-body winner is replayed; a different-body winner still
+   * raises the ordinary 409. No Task or idempotency row is created here.
+   */
+  async waitForWinner(args: {
+    key: string | null;
+    scopeUserId: string;
+    requestHash: string;
+    loadTask: (taskId: string) => Promise<TaskResponse>;
+    maxWaitMs?: number;
+    pollMs?: number;
+  }): Promise<TaskResponse | null> {
+    if (!args.key) return null;
+    const maxWaitMs = Math.max(
+      0,
+      args.maxWaitMs ?? IdempotencyService.WINNER_WAIT_MS,
+    );
+    const pollMs = Math.max(
+      1,
+      args.pollMs ?? IdempotencyService.WINNER_POLL_MS,
+    );
+    const deadline = Date.now() + maxWaitMs;
+    for (;;) {
+      const winner = await this.lookupByHash(args);
+      if (winner) return winner;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return null;
+      await delay(Math.min(pollMs, remaining));
+    }
+  }
+
+  private async lookupByHash(args: {
+    key: string | null;
+    scopeUserId: string;
+    requestHash: string;
+    loadTask: (taskId: string) => Promise<TaskResponse>;
+  }): Promise<TaskResponse | null> {
+    if (!args.key) return null;
+    const existing = await this.prisma.idempotencyKey.findUnique({
+      where: {
+        scopeUserId_key: {
+          scopeUserId: args.scopeUserId,
+          key: args.key,
+        },
+      },
+    });
+    if (!existing || existing.expiresAt <= new Date()) return null;
+    assertMatchingRequestHash(existing.requestHash, args.requestHash);
+    return args.loadTask(existing.taskId);
   }
 }
 
@@ -154,7 +212,7 @@ export class IdempotencyService {
  * client expose the same shape — captured here so the callback type does not
  * leak the whole `PrismaService`.
  */
-export type TaskCreator = PrismaService;
+export type TaskCreator = Pick<PrismaService, 'task'>;
 
 /**
  * Result of an idempotent create. `created` is `true` when the task was NEWLY
@@ -168,6 +226,28 @@ export interface IdempotentCreateResult {
   created: boolean;
 }
 
+export type IdempotencyLookupResult =
+  | {
+      readonly kind: 'missing';
+      readonly requestHash: string;
+    }
+  | {
+      readonly kind: 'replay';
+      readonly requestHash: string;
+      readonly task: TaskResponse;
+    };
+
+function assertMatchingRequestHash(
+  persistedHash: string,
+  requestHash: string,
+): void {
+  if (persistedHash !== requestHash) {
+    throw new ConflictException(
+      'Idempotency-Key reused with a different request body',
+    );
+  }
+}
+
 /** True for a Prisma unique-constraint violation (`P2002`). */
 function isUniqueViolation(err: unknown): boolean {
   return (
@@ -176,6 +256,10 @@ function isUniqueViolation(err: unknown): boolean {
     'code' in err &&
     (err as { code?: unknown }).code === 'P2002'
   );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

@@ -23,6 +23,7 @@ import {
   DELIVERY_SANDBOX_REQUIRED_CAPABILITIES,
   READOPTION_SANDBOX_REQUIRED_CAPABILITIES,
   RETAINED_TRANSCRIPT_SANDBOX_REQUIRED_CAPABILITIES,
+  SandboxRuntimeModelSetupError,
   missingCapabilities,
 } from '@cap/sandbox-core';
 import { SandboxProviderRegistry } from './registry.js';
@@ -82,6 +83,8 @@ export type RoutableSandboxProvider<
 
 export type SandboxProviderRouterOptions = SelectSandboxProviderCandidateOptions & {
   readonly ownerStore?: SandboxRunOwnerStore;
+  /** Persisted task constraint used during restart-time owner recovery. */
+  readonly resolveTaskProviderId?: (taskId: string) => Promise<string | null>;
 };
 
 /**
@@ -133,12 +136,21 @@ export class SandboxProviderRouter<
   }
 
   async provision(ctx: SandboxProvisionContext<TCloneSpec>): Promise<SandboxConnection> {
-    const selected = this.registry.select(
-      provisionSandboxRequiredCapabilities({
-        materializeGitWorkspace: ctx.cloneSpec !== null && ctx.cloneSpec !== undefined,
-      }),
-      this.options,
-    );
+    const requiredProviderId = this.requiredProviderIdFromProvision(ctx);
+    let selected;
+    try {
+      selected = this.registry.select(
+        provisionSandboxRequiredCapabilities({
+          materializeGitWorkspace: ctx.cloneSpec !== null && ctx.cloneSpec !== undefined,
+        }),
+        { ...this.options, requiredProviderId },
+      );
+    } catch (error) {
+      if (ctx.modelIntent.kind === 'explicit') {
+        throw new SandboxRuntimeModelSetupError('provider-selection');
+      }
+      throw error;
+    }
     const connection = await selected.provider.provision(ctx);
     this.owners.set(ctx.taskId, selected.id);
     if (this.options.ownerStore) {
@@ -322,7 +334,16 @@ export class SandboxProviderRouter<
     readonly connection: SandboxConnection;
     readonly providerRun?: SelectedSandboxRun | null;
   } | null> {
-    for (const entry of this.registry.list()) {
+    const requiredProviderId = await this.resolveRequiredProviderId(taskId);
+    const candidates = requiredProviderId
+      ? [this.registry.get(requiredProviderId)].filter(
+          (entry): entry is NonNullable<typeof entry> => entry !== undefined,
+        )
+      : this.registry.list();
+    if (requiredProviderId && candidates.length === 0) {
+      throw new SandboxRuntimeModelSetupError('provider-selection');
+    }
+    for (const entry of candidates) {
       if (!this.supports(entry, READOPTION_SANDBOX_REQUIRED_CAPABILITIES)) {
         continue;
       }
@@ -364,9 +385,13 @@ export class SandboxProviderRouter<
     readonly connection?: SandboxConnection;
     readonly providerRun?: SelectedSandboxRun | null;
   } | null> {
+    const requiredProviderId = await this.resolveRequiredProviderId(taskId);
     const id = this.owners.get(taskId);
     const stored = await this.options.ownerStore?.getSandboxRunOwner(taskId);
     if (id) {
+      if (requiredProviderId && id !== requiredProviderId) {
+        throw new SandboxRuntimeModelSetupError('provider-selection');
+      }
       const provider = this.registry.get(id)!;
       return {
         owner: provider,
@@ -376,10 +401,29 @@ export class SandboxProviderRouter<
     }
 
     if (!stored) return null;
+    if (requiredProviderId && stored.providerId !== requiredProviderId) {
+      throw new SandboxRuntimeModelSetupError('provider-selection');
+    }
     const provider = this.registry.get(stored.providerId);
     if (!provider) return null;
     this.owners.set(taskId, provider.id);
     return { owner: provider, ownerRecord: stored, connection: stored.connection };
+  }
+
+  private requiredProviderIdFromProvision(
+    ctx: SandboxProvisionContext<TCloneSpec>,
+  ): string | undefined {
+    if (ctx.modelIntent.kind === 'runtime-default') return undefined;
+    const providerId = ctx.environment?.providerId;
+    if (!providerId) {
+      throw new SandboxRuntimeModelSetupError('snapshot');
+    }
+    return providerId;
+  }
+
+  private async resolveRequiredProviderId(taskId: string): Promise<string | null> {
+    if (!this.options.resolveTaskProviderId) return null;
+    return this.options.resolveTaskProviderId(taskId);
   }
 
   private providersFor(

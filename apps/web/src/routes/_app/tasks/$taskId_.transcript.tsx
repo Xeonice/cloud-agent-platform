@@ -37,6 +37,7 @@ import {
   filterTurns,
   type TranscriptFilter,
 } from "@/lib/transcript-timeline";
+import { TaskModelFacts } from "@/components/task-model-facts";
 
 export const Route = createFileRoute("/_app/tasks/$taskId_/transcript")({
   ssr: false,
@@ -115,6 +116,11 @@ function TranscriptPage() {
             <SessionTag>{meta.totalTokens.toLocaleString()} tokens</SessionTag>
           ) : null}
         </div>
+        <TaskModelFacts
+          requestedModel={task?.model}
+          actualModel={meta?.model}
+          className="mt-1"
+        />
       </section>
 
       {/* Transcript panel */}

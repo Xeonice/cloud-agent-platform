@@ -1,24 +1,11 @@
 import {
-  Body,
-  Controller,
   Delete,
-  ForbiddenException,
   Get,
-  HttpCode,
-  HttpStatus,
-  Param,
   Patch,
   Post,
-  Query,
   Req,
-  UsePipes,
 } from '@nestjs/common';
 import {
-  CreateScheduleRequestSchema,
-  DispatchScheduleRequestSchema,
-  PublicV1IdParamsSchema,
-  UpdateScheduleRequestSchema,
-  V1ScheduleListQuerySchema,
   type CreateScheduleRequest,
   type DispatchScheduleRequest,
   type ScheduleResponse,
@@ -28,140 +15,118 @@ import {
   type V1ScheduleListQuery,
 } from '@cap/contracts';
 import { type AuthenticatedRequest } from '../auth/auth.guard';
-import {
-  hasScope,
-  type OperatorPrincipal,
-} from '../auth/operator-principal';
-import {
-  ZodValidationPipe,
-  zodParam,
-  zodQuery,
-} from '../repos/zod-validation.pipe';
 import { resolveLimit } from './keyset-pagination';
 import { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.service';
+import {
+  PublicV1Controller,
+  PublicV1Input,
+  PublicV1Operation,
+  requirePublicV1OwnerId,
+} from '../public-surface/public-v1-operation';
 
-@Controller('v1/schedules')
+@PublicV1Controller('v1/schedules')
 export class V1SchedulesController {
   constructor(private readonly schedules: ScheduledTasksService) {}
 
   @Get()
+  @PublicV1Operation('schedules.list')
   async list(
-    @Query(zodQuery(V1ScheduleListQuerySchema))
+    @PublicV1Input('query')
     query: V1ScheduleListQuery,
     @Req() req: AuthenticatedRequest,
   ): Promise<V1ListSchedulesResponse> {
-    const principal = this.requireScope(req, 'tasks:read');
-    return this.schedules.listPage(this.accountId(principal), {
+    const ownerUserId = requirePublicV1OwnerId(req, this.list);
+    return this.schedules.listPage(ownerUserId, {
       limit: resolveLimit(query.limit),
       cursor: query.cursor,
     });
   }
 
   @Post()
-  @HttpCode(HttpStatus.CREATED)
-  @UsePipes(new ZodValidationPipe(CreateScheduleRequestSchema))
+  @PublicV1Operation('schedules.create')
   async create(
-    @Body() body: CreateScheduleRequest,
+    @PublicV1Input('body') body: CreateScheduleRequest,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
-    const principal = this.requireScope(req, 'tasks:write');
-    return this.schedules.create(principal.user?.id ?? undefined, body);
+    const ownerUserId = requirePublicV1OwnerId(req, this.create);
+    return this.schedules.create(ownerUserId, body);
   }
 
   @Get(':id')
+  @PublicV1Operation('schedules.get')
   async get(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @PublicV1Input('params', 'id') id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
-    const principal = this.requireScope(req, 'tasks:read');
-    return this.schedules.get(this.accountId(principal), id);
+    const ownerUserId = requirePublicV1OwnerId(req, this.get);
+    return this.schedules.get(ownerUserId, id);
   }
 
   @Patch(':id')
-  @UsePipes(new ZodValidationPipe(UpdateScheduleRequestSchema))
+  @PublicV1Operation('schedules.update')
   async update(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
-    @Body() body: UpdateScheduleRequest,
+    @PublicV1Input('params', 'id') id: string,
+    @PublicV1Input('body') body: UpdateScheduleRequest,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
-    const principal = this.requireScope(req, 'tasks:write');
-    return this.schedules.update(this.accountId(principal), id, body);
+    const ownerUserId = requirePublicV1OwnerId(req, this.update);
+    return this.schedules.update(ownerUserId, id, body);
   }
 
   @Post(':id/pause')
-  @HttpCode(HttpStatus.OK)
+  @PublicV1Operation('schedules.pause')
   async pause(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @PublicV1Input('params', 'id') id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
-    const principal = this.requireScope(req, 'tasks:write');
-    return this.schedules.pause(this.accountId(principal), id);
+    const ownerUserId = requirePublicV1OwnerId(req, this.pause);
+    return this.schedules.pause(ownerUserId, id);
   }
 
   @Post(':id/resume')
-  @HttpCode(HttpStatus.OK)
+  @PublicV1Operation('schedules.resume')
   async resume(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @PublicV1Input('params', 'id') id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
-    const principal = this.requireScope(req, 'tasks:write');
-    return this.schedules.resume(this.accountId(principal), id);
+    const ownerUserId = requirePublicV1OwnerId(req, this.resume);
+    return this.schedules.resume(ownerUserId, id);
   }
 
   @Post(':id/dispatch')
-  @HttpCode(HttpStatus.OK)
-  @UsePipes(new ZodValidationPipe(DispatchScheduleRequestSchema))
+  @PublicV1Operation('schedules.dispatch')
   async dispatch(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
-    @Body() body: DispatchScheduleRequest,
+    @PublicV1Input('params', 'id') id: string,
+    @PublicV1Input('body') body: DispatchScheduleRequest,
     @Req() req: AuthenticatedRequest,
   ): Promise<ScheduleResponse> {
-    const principal = this.requireScope(req, 'tasks:write');
-    return this.schedules.dispatchNow(this.accountId(principal), id, body);
+    const ownerUserId = requirePublicV1OwnerId(req, this.dispatch);
+    return this.schedules.dispatchNow(ownerUserId, id, body);
   }
 
   @Delete(':id')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @PublicV1Operation('schedules.delete')
   async delete(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @PublicV1Input('params', 'id') id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<void> {
-    const principal = this.requireScope(req, 'tasks:write');
-    await this.schedules.delete(this.accountId(principal), id);
+    const ownerUserId = requirePublicV1OwnerId(req, this.delete);
+    await this.schedules.delete(ownerUserId, id);
   }
 
   @Get(':id/runs')
+  @PublicV1Operation('schedules.runs')
   async listRuns(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
-    @Query(zodQuery(V1ScheduleListQuerySchema))
+    @PublicV1Input('params', 'id') id: string,
+    @PublicV1Input('query')
     query: V1ScheduleListQuery,
     @Req() req: AuthenticatedRequest,
   ): Promise<V1ListScheduleRunsResponse> {
-    const principal = this.requireScope(req, 'tasks:read');
-    return this.schedules.listRunsPage(this.accountId(principal), id, {
+    const ownerUserId = requirePublicV1OwnerId(req, this.listRuns);
+    return this.schedules.listRunsPage(ownerUserId, id, {
       limit: resolveLimit(query.limit),
       cursor: query.cursor,
     });
   }
 
-  private accountId(principal: OperatorPrincipal): string {
-    if (!principal.user?.id) {
-      throw new ForbiddenException('An account owner is required');
-    }
-    return principal.user.id;
-  }
-
-  private requireScope(
-    req: AuthenticatedRequest,
-    required: Parameters<typeof hasScope>[1],
-  ): OperatorPrincipal {
-    const principal = req.operatorPrincipal;
-    if (!principal) {
-      throw new ForbiddenException('Missing operator principal');
-    }
-    if (!hasScope(principal, required)) {
-      throw new ForbiddenException(`Insufficient scope: ${required} required`);
-    }
-    return principal;
-  }
 }

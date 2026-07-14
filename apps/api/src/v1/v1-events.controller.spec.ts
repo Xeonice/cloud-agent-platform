@@ -209,7 +209,7 @@ test('events handler passes the gate for a tasks:read api-key and for a scopeles
   assert.equal(res2.status, 200, 'scopeless session passes the gate (allow-all)');
 });
 
-test('events handler trims Last-Event-ID through the public header contract', async () => {
+test('events handler forwards the boundary-normalized Last-Event-ID', async () => {
   const controller = makeController(new FakeAuditService());
   let capturedLastEventId: string | undefined;
   controller.streamEvents = async (_res, options) => {
@@ -220,7 +220,7 @@ test('events handler trims Last-Event-ID through the public header contract', as
     TASK_ID,
     new FakeResponse() as unknown as Response,
     reqWith({ kind: 'session', user: USER }),
-    '  event-123  ',
+    'event-123',
   );
 
   assert.equal(capturedLastEventId, 'event-123');

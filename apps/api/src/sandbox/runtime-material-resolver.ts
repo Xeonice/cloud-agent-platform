@@ -9,6 +9,7 @@ export const RUNTIME_MATERIAL_RESOLVER_REGISTRY = Symbol(
 
 export interface RuntimeMaterialResolverContext {
   readonly taskId: string;
+  readonly ownerUserId: string | null;
 }
 
 export interface RuntimeMaterialResolver {
@@ -99,8 +100,9 @@ export function createClaudeRuntimeMaterialResolver(
 ): RuntimeMaterialResolver {
   return {
     runtimeId: 'claude-code',
-    async resolve(): Promise<AuthMaterial | null> {
-      const material = await claudeAuthSource?.getClaudeAuth();
+    async resolve(ctx): Promise<AuthMaterial | null> {
+      if (!ctx.ownerUserId) return null;
+      const material = await claudeAuthSource?.getClaudeAuth(ctx.ownerUserId);
       return material ? { oauthToken: material.oauthToken } : null;
     },
   };

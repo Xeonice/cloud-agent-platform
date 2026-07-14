@@ -16,6 +16,7 @@ import { PrismaService } from '../dist/prisma/prisma.service.js';
 import { ScheduledTasksService } from '../dist/scheduled-tasks/scheduled-tasks.service.js';
 import { AuditService } from '../dist/audit/audit.service.js';
 import { TasksService } from '../dist/tasks/tasks.service.js';
+import { RuntimeModelPreflightError } from '../dist/runtime-models/runtime-model-preflight.error.js';
 
 async function waitFor(predicate, { timeoutMs = 5_000, stepMs = 25 } = {}) {
   const deadline = Date.now() + timeoutMs;
@@ -56,21 +57,88 @@ async function cleanupFixture(prisma, fixture) {
 }
 
 function taskPort(prisma, options = {}) {
+  const prepareOutcomes = [...(options.prepareOutcomes ?? [])];
+  const executionEnvironmentSnapshot = {
+    schemaVersion: 1,
+    kind: 'deployment-default',
+    managedEnvironmentId: null,
+    validationId: null,
+    validationContractVersion: null,
+    provider: 'aio-local',
+    providerFamily: 'aio',
+    source: {
+      kind: 'aio-docker-image',
+      locator: 'sha256:scheduled-model-e2e',
+      digest: 'sha256:scheduled-model-e2e',
+      checksum: null,
+    },
+    immutableIdentity: 'sha256:scheduled-model-e2e',
+    fingerprint: 'scheduled-model-e2e-fingerprint',
+    sandboxMetadata: {
+      schemaVersion: 1,
+      sandboxVersion: 'scheduled-model-e2e',
+      dependencies: { codex: '0.144.1' },
+    },
+    sandboxMetadataChecksum: `sha256:${'a'.repeat(64)}`,
+    cliVersion: '0.144.1',
+    cliArtifactChecksum: `sha256:${'b'.repeat(64)}`,
+    resolvedAt: '2026-07-14T00:00:00.000Z',
+  };
+
+  async function prepare(repoId, body, executionMode, userId) {
+    const outcome = body.model ? prepareOutcomes.shift() ?? 'success' : 'success';
+    if (outcome === 'transient') {
+      throw new RuntimeModelPreflightError({
+        code: 'runtime_model_catalog_unavailable',
+        message: 'Runtime model catalog is temporarily unavailable.',
+        retryable: true,
+      });
+    }
+    if (outcome === 'permanent') {
+      throw new RuntimeModelPreflightError({
+        code: 'runtime_model_not_available',
+        message: 'The requested runtime model is not available.',
+        retryable: false,
+      });
+    }
+    return {
+      repoId,
+      ownerUserId: userId ?? null,
+      body,
+      runtime: body.runtime ?? 'codex',
+      executionMode,
+      sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
+      model: body.model ?? null,
+      executionEnvironmentSnapshot: body.model
+        ? executionEnvironmentSnapshot
+        : null,
+    };
+  }
+
   return {
-    async normalizeTaskTemplateForSchedule(repoId, body) {
+    assertTaskModelSelectionOpen() {},
+    async normalizeTaskTemplateForSchedule(repoId, body, userId) {
+      const prepared = await prepare(repoId, body, 'headless-exec', userId);
       return {
-        ...body,
+        ...prepared.body,
         repoId,
-        runtime: body.runtime ?? 'codex',
-        sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
-        deliver: body.deliver ?? 'none',
+        runtime: prepared.runtime,
+        sandboxEnvironmentId: prepared.sandboxEnvironmentId,
+        deliver: prepared.body.deliver ?? 'none',
       };
     },
-    async createTaskRow(repoId, body, client, executionMode, userId) {
+    async prepareTaskCreate(repoId, body, executionMode, userId) {
+      return prepare(repoId, body, executionMode, userId);
+    },
+    async prepareAcceptedScheduledRetryTaskCreate(repoId, body, userId) {
+      return prepare(repoId, body, 'headless-exec', userId);
+    },
+    async createTaskRow(prepared, client) {
+      const { repoId, ownerUserId, body, executionMode } = prepared;
       const task = await client.task.create({
         data: {
           repoId,
-          ownerUserId: userId ?? null,
+          ownerUserId,
           prompt: body.prompt,
           branch: body.branch ?? null,
           strategy: body.strategy ?? null,
@@ -78,6 +146,13 @@ function taskPort(prisma, options = {}) {
           idleTimeoutMs: body.idleTimeoutMs ?? null,
           deadlineMs: body.deadlineMs ?? null,
           runtime: body.runtime ?? null,
+          model: prepared.model,
+          ...(prepared.executionEnvironmentSnapshot
+            ? {
+                executionEnvironmentSnapshot:
+                  prepared.executionEnvironmentSnapshot,
+              }
+            : {}),
           sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
           executionMode,
           deliver: body.deliver ?? null,
@@ -496,6 +571,102 @@ test('competing schedulers and duplicate manual dispatch persist one occurrence 
   } finally {
     await cleanupFixture(firstPrisma, fixture);
     await Promise.all([firstPrisma.$disconnect(), secondPrisma.$disconnect()]);
+  }
+});
+
+test('durable model retry resumes the same row across competing real Prisma workers', async () => {
+  assertDatabaseConfigured();
+  const firstPrisma = new PrismaService();
+  const secondPrisma = new PrismaService();
+  const thirdPrisma = new PrismaService();
+  const firstSchedules = new ScheduledTasksService(
+    firstPrisma,
+    taskPort(firstPrisma, {
+      prepareOutcomes: ['success', 'transient'],
+    }),
+  );
+  const secondSchedules = new ScheduledTasksService(
+    secondPrisma,
+    taskPort(secondPrisma, { prepareOutcomes: ['success'] }),
+  );
+  const thirdSchedules = new ScheduledTasksService(
+    thirdPrisma,
+    taskPort(thirdPrisma, { prepareOutcomes: ['success'] }),
+  );
+  const fixture = await createFixture(firstPrisma, 'scheduled-model-retry');
+
+  try {
+    const created = await firstSchedules.create(fixture.user.id, {
+      recurrence: { kind: 'minuteInterval', intervalMinutes: 5, timezone: 'UTC' },
+      overlapPolicy: 'enqueue',
+      misfirePolicy: 'fire-once',
+      taskTemplate: {
+        repoId: fixture.repo.id,
+        prompt: 'durable explicit model retry',
+        runtime: 'codex',
+        model: 'provider:model-e2e',
+        sandboxEnvironmentId: null,
+      },
+    });
+    const dueAt = new Date(Date.now() - 1_000);
+    await firstPrisma.taskSchedule.update({
+      where: { id: created.id },
+      data: { nextRunAt: dueAt },
+    });
+
+    assert.equal(await firstSchedules.tick(new Date()), 1);
+    const retrying = await firstPrisma.taskScheduleRun.findFirstOrThrow({
+      where: { scheduleId: created.id },
+    });
+    assert.equal(retrying.status, 'retrying');
+    assert.equal(retrying.errorCode, 'runtime_model_catalog_unavailable');
+    assert.equal(retrying.retryAttempt, 1);
+    assert.equal(retrying.taskId, null);
+    assert.equal(
+      await firstPrisma.task.count({ where: { repoId: fixture.repo.id } }),
+      0,
+    );
+
+    const retryNow = new Date();
+    await firstPrisma.taskScheduleRun.update({
+      where: { id: retrying.id },
+      data: {
+        retryAt: new Date(retryNow.getTime() - 1),
+        retryHorizonAt: new Date(retryNow.getTime() + 60_000),
+      },
+    });
+    const processed = await Promise.all([
+      secondSchedules.tick(retryNow),
+      thirdSchedules.tick(retryNow),
+    ]);
+    assert.equal(processed[0] + processed[1], 1);
+
+    const completed = await firstPrisma.taskScheduleRun.findUniqueOrThrow({
+      where: { id: retrying.id },
+      include: { task: true },
+    });
+    assert.equal(completed.status, 'created');
+    assert.equal(completed.retryAttempt, 2);
+    assert.equal(completed.retryAt, null);
+    assert.equal(completed.task?.model, 'provider:model-e2e');
+    assert.ok(completed.task?.executionEnvironmentSnapshot);
+    assert.equal(
+      await firstPrisma.taskScheduleRun.count({
+        where: { scheduleId: created.id },
+      }),
+      1,
+    );
+    assert.equal(
+      await firstPrisma.task.count({ where: { repoId: fixture.repo.id } }),
+      1,
+    );
+  } finally {
+    await cleanupFixture(firstPrisma, fixture);
+    await Promise.all([
+      firstPrisma.$disconnect(),
+      secondPrisma.$disconnect(),
+      thirdPrisma.$disconnect(),
+    ]);
   }
 });
 

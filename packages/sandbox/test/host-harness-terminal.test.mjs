@@ -138,14 +138,40 @@ const pty = mod.openSandboxTerminalPty({
   selectedRun,
   onExit() {},
   mode: 'attach-only',
-  resolveRuntime: async () => undefined,
-  resolveExecutionMode: async () => 'interactive',
 });
 assert(pty.taskId === 'task-1', 'openSandboxTerminalPty returns a task-bound PTY client');
+
+let missingLaunchContext = false;
+try {
+  mod.openSandboxTerminalPty({ connection, selectedRun });
+} catch (error) {
+  missingLaunchContext =
+    error?.code === 'runtime_model_setup_failed' &&
+    error?.phase === 'launch-context';
+}
+assert(
+  missingLaunchContext,
+  'launch-or-attach fails closed without a persisted task launch-context resolver',
+);
 
 const defaultModePty = mod.openSandboxTerminalPty({
   connection,
   selectedRun,
+  resolveTaskLaunchContext: async () => ({
+    executionMode: 'interactive-pty',
+    modelIntent: { kind: 'runtime-default' },
+    runtime: {
+      id: 'codex',
+      terminalStartup: {
+        replyToStartupDSR: true,
+        promptSubmit: 'cr-on-quiesce',
+      },
+      buildLaunchLine: () => 'codex',
+      async detectExit() {
+        return { status: 'running' };
+      },
+    },
+  }),
 });
 assert(
   defaultModePty.taskId === 'task-1',

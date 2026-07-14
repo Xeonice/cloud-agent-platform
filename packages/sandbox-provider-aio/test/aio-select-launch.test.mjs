@@ -6,6 +6,7 @@ const CTX = {
   taskId: 'task-select-launch',
   workspaceDir: '/home/gem/workspace',
   sessionId: '11111111-2222-3333-4444-555555555555',
+  model: { kind: 'runtime-default' },
 };
 
 function runtime(overrides = {}) {
@@ -61,14 +62,40 @@ function runtime(overrides = {}) {
 
 {
   const noHeadless = runtime({ buildHeadlessLine: undefined });
-  const plan = selectLaunch(noHeadless, 'headless-exec', CTX, true);
-  assert.equal(plan.line, 'interactive:task-select-launch:/home/gem/workspace');
-  assert.equal(plan.armAutoSubmit, true);
+  assert.throws(
+    () => selectLaunch(noHeadless, 'headless-exec', CTX, true),
+    /does not support headless execution/,
+  );
 }
 
 {
   const plan = selectLaunch(runtime(), 'interactive-pty', CTX, false);
   assert.equal(plan.armAutoSubmit, false);
+}
+
+{
+  const explicit = {
+    ...CTX,
+    model: {
+      kind: 'explicit',
+      path: '/home/gem/.cap/task-model.txt',
+      checksum:
+        'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    },
+  };
+  let seen;
+  selectLaunch(
+    runtime({
+      buildLaunchLine(ctx) {
+        seen = ctx.model;
+        return 'explicit';
+      },
+    }),
+    'interactive-pty',
+    explicit,
+    true,
+  );
+  assert.deepEqual(seen, explicit.model);
 }
 
 console.log('aio-select-launch.test.mjs passed');

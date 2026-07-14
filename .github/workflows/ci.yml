@@ -30,6 +30,77 @@ permissions:
   contents: read
 
 jobs:
+  # Stable merge-gating context for the shared Public V1/MCP contract. Branch
+  # protection must require the exact context `public-surface-parity` after this
+  # job has reported once; hooks and CI intentionally call the same root command.
+  public-surface-parity:
+    name: public-surface-parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout complete comparison history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Public V1/MCP parity
+        env:
+          # PRs compare the complete base branch; pushes compare the full event
+          # range. The runner fails closed if this explicit base is unavailable.
+          CAP_PUBLIC_SURFACE_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: pnpm verify:public-surface
+
+  task-model-n-minus-one-compat:
+    name: task model N-1 compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate current Prisma client
+        run: pnpm --filter @cap/api prisma:generate
+
+      - name: Exercise pinned N-1 REST and MCP writers
+        env:
+          TASK_MODEL_N_MINUS_ONE_EVIDENCE: ${{ runner.temp }}/task-model-n-minus-one/evidence.json
+        run: pnpm --filter @cap/api test:compat:task-model-n-minus-one
+
+      - name: Upload sanitized N-1 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-model-n-minus-one-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/task-model-n-minus-one/evidence.json
+          if-no-files-found: ignore
+          retention-days: 7
+
   typecheck-lint:
     name: typecheck + lint + test
     runs-on: ubuntu-latest
@@ -69,6 +140,12 @@ jobs:
       # selection regression spec (and the rest of the api specs) gate in.
       - name: Test (api unit suite)
         run: pnpm --filter @cap/api test
+
+      # Shared contracts contain production-schema boundary and cross-surface
+      # parity fixtures. Run them explicitly; API/Web suites do not discover
+      # package-local `.test.mjs` files.
+      - name: Test (shared contracts)
+        run: pnpm --filter @cap/contracts test
 
       # Vitest is a separate package script rather than a turbo task. Keep it in
       # the required lane so console behavior cannot pass locally but skip CI.
@@ -159,6 +236,13 @@ jobs:
       - name: Build (@cap/api + deps)
         run: pnpm turbo build --filter=@cap/api
 
+      # Prove predecessor rows survive the additive model-selection migration,
+      # then reset the throwaway schema for the ordinary boot smoke below.
+      - name: Task model migration compatibility
+        env:
+          CAP_TASK_MODEL_MIGRATION_TEST: "1"
+        run: pnpm --filter @cap/api test:migration:model
+
       # Migrate the throwaway DB, boot the built app, probe /health. The helper
       # exits non-zero (and dumps the app log) on any migration / bootstrap / DI /
       # liveness failure — the signal this job gates on.
@@ -169,6 +253,13 @@ jobs:
       # and future-fire interaction that service fakes alone cannot prove.
       - name: Scheduled tasks integration
         run: pnpm test:integration:schedules
+
+      # Real AppModule + Postgres contract parity across Console REST, Public V1,
+      # MCP structured tools and schedule create/update/fire/recovery. External
+      # catalog/provision boundaries are deterministic; every application-owned
+      # controller, service and database write/read path remains production code.
+      - name: Task model cross-surface integration
+        run: pnpm test:integration:task-model-surfaces
 
   # Full owner-authenticated schedule story. Unlike the fast Postgres integration
   # above, this boots the real AppModule and console, drives them through a browser,

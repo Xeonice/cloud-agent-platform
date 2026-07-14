@@ -41,6 +41,12 @@ import type {
   TerminalTransport,
   TerminalTransportFactory,
   TerminalTransportFrame,
+  TaskModelIntent,
+  TaskModelLaunchMaterial,
+} from '@cap/sandbox-core';
+import {
+  SandboxRuntimeModelSetupError,
+  taskModelLaunchMaterial,
 } from '@cap/sandbox-core';
 import { createAioHttpCommandExecutor } from './aio-provider.js';
 import { AioTerminalTransport } from './aio-terminal-transport.js';
@@ -48,6 +54,7 @@ import type {
   AioExecutionMode,
   AioExitSignal,
   AioLegacySandboxExec,
+  AioResolvedTaskLaunchContext,
   AioTerminalRuntime,
   AioTerminalStartup,
 } from './aio-terminal-runtime.js';
@@ -326,8 +333,8 @@ export class AioPtyClient implements AgentTerminalPty {
    * policy for the unresolved-runtime fallback (`launchCodex`) and before launch.
    */
   private terminalStartup: AioTerminalStartup = {
-    replyToStartupDSR: true,
-    promptSubmit: 'cr-on-quiesce',
+    replyToStartupDSR: false,
+    promptSubmit: 'none',
   };
 
   /** Debounce timer backing the output-quiescence prompt auto-submit. */
@@ -399,6 +406,11 @@ export class AioPtyClient implements AgentTerminalPty {
    * launches codex exactly as before.
    */
   private runtime?: AioTerminalRuntime;
+  private modelIntent?: TaskModelIntent;
+  private modelMaterial?: TaskModelLaunchMaterial;
+  private launchContextResolution?: Promise<void>;
+  private launchDecisionStarted = false;
+  private runtimeSetupFailureReported = false;
 
   /**
    * The task's execution mode (add-headless-execution-track), resolved alongside
@@ -423,18 +435,21 @@ export class AioPtyClient implements AgentTerminalPty {
      * strand a codex task. Resolution is async (it may read the task's `runtime`
      * column), so it is threaded as a callback rather than a constructed value.
      */
-    private readonly resolveRuntime?: () => Promise<AioTerminalRuntime | undefined>,
+    private readonly resolveTaskLaunchContext?: () => Promise<AioResolvedTaskLaunchContext>,
     /**
      * Resolve the task's execution mode (add-headless-execution-track), resolved at the
      * SAME point as {@link resolveRuntime}. Optional + best-effort: a missing resolver or
      * a rejected/`null` result leaves {@link executionMode} at `interactive-pty`, so a
      * console task (or any unresolved mode) launches the interactive TUI as before.
      */
-    private readonly resolveExecutionMode?: () => Promise<
-      AioExecutionMode | null | undefined
-    >,
     transportFactory?: TerminalTransportFactory,
     commandExecutor?: SandboxCommandExecutor,
+    private readonly prepareModelMaterial?: (
+      intent: TaskModelIntent,
+    ) => Promise<TaskModelLaunchMaterial>,
+    private readonly onRuntimeSetupFailure?: (
+      code: 'runtime_model_setup_failed',
+    ) => void,
   ) {
     this.transportFactory = transportFactory ?? {
       open: () => new AioTerminalTransport(this.taskId, wsUrl),
@@ -497,6 +512,7 @@ export class AioPtyClient implements AgentTerminalPty {
     if (this.reconnectingForInput) return;
     if (this.transport.readyState === 'connecting') return;
     this.reconnectingForInput = true;
+    this.launchDecisionStarted = false;
     this.established = false;
     this.sawSessionId = false;
     this.transport.close();
@@ -510,34 +526,34 @@ export class AioPtyClient implements AgentTerminalPty {
    * launch/exit branch falls back to the DEFAULT codex inline path. Idempotent — a
    * second call is a no-op once resolved.
    */
-  private async ensureRuntimeResolved(): Promise<void> {
-    if (this.runtime || !this.resolveRuntime) return;
-    try {
-      this.runtime = (await this.resolveRuntime()) ?? undefined;
-    } catch (err) {
-      this.logger.warn(
-        `task ${this.taskId}: could not resolve AgentRuntime (defaulting to codex): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-      this.runtime = undefined;
-    }
-    // Resolve the execution mode at the same point (add-headless-execution-track).
-    // Best-effort: any failure leaves `interactive-pty`, so a hiccup never strands a
-    // task in the wrong launch mode.
-    if (this.resolveExecutionMode) {
-      try {
-        this.executionMode =
-          (await this.resolveExecutionMode()) ?? 'interactive-pty';
-      } catch (err) {
-        this.logger.warn(
-          `task ${this.taskId}: could not resolve execution mode (defaulting to interactive-pty): ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-        this.executionMode = 'interactive-pty';
+  private ensureTaskLaunchContextResolved(): Promise<void> {
+    if (this.launchContextResolution) return this.launchContextResolution;
+    this.launchContextResolution = (async () => {
+      if (!this.resolveTaskLaunchContext) {
+        throw new SandboxRuntimeModelSetupError('launch-context');
       }
-    }
+      let context: AioResolvedTaskLaunchContext;
+      try {
+        context = await this.resolveTaskLaunchContext();
+      } catch (error) {
+        if (error instanceof SandboxRuntimeModelSetupError) throw error;
+        throw new SandboxRuntimeModelSetupError('lookup');
+      }
+      if (
+        !context.runtime ||
+        (context.executionMode !== 'interactive-pty' &&
+          context.executionMode !== 'headless-exec') ||
+        (context.modelIntent.kind !== 'runtime-default' &&
+          context.modelIntent.kind !== 'explicit')
+      ) {
+        throw new SandboxRuntimeModelSetupError('launch-context');
+      }
+      this.runtime = context.runtime;
+      this.executionMode = context.executionMode;
+      this.modelIntent = context.modelIntent;
+      this.modelMaterial = taskModelLaunchMaterial(context.modelIntent);
+    })();
+    return this.launchContextResolution;
   }
 
   /**
@@ -555,14 +571,9 @@ export class AioPtyClient implements AgentTerminalPty {
    */
   private launchAgent(armAutoSubmit = true): void {
     const runtime = this.runtime;
-    if (!runtime) {
-      // UNRESOLVED runtime only (resolver missing/failed) → the inline codex launch
-      // is the safe legacy default since there is no port to call. A RESOLVED codex
-      // now flows through the port path below (VR-5: shared scaffolding no longer
-      // branches on agent identity; codex is driven through CodexRuntime, whose
-      // buildLaunchLine is byte-identical to this inline path).
-      this.launchCodex(undefined, armAutoSubmit);
-      return;
+    const model = this.modelMaterial;
+    if (!runtime || !model) {
+      throw new SandboxRuntimeModelSetupError('launch-context');
     }
     // RESOLVED runtime (codex OR claude-code): build the detached-tmux launch line
     // from the runtime itself (it owns the agent argv + env + `$(cat <prompt-file>)`
@@ -576,6 +587,7 @@ export class AioPtyClient implements AgentTerminalPty {
       // (codex ignores it). Computed here now that the consumer talks to the port
       // runtime directly (refactor step 5: the RuntimeAdapter that did this is gone).
       sessionId: aioSessionIdForTask(this.taskId),
+      model,
     };
     // add-headless-execution-track — the interactive-vs-headless launch decision is a
     // PURE function (select-launch.ts) so it is unit-testable without a WS/container.
@@ -623,7 +635,11 @@ export class AioPtyClient implements AgentTerminalPty {
      * start.
      */
     armAutoSubmit = true,
+    model: TaskModelLaunchMaterial = { kind: 'runtime-default' },
   ): void {
+    if (model.kind !== 'runtime-default') {
+      throw new SandboxRuntimeModelSetupError('launch-context');
+    }
     // Create the detached session carrying codex with the task prompt PRE-FILLED
     // (when one was injected at provision time) without inlining the prompt text,
     // then attach so its output streams here and the output-quiescence trigger in
@@ -690,49 +706,78 @@ export class AioPtyClient implements AgentTerminalPty {
    *     throws into the WS message handler.
    */
   private async launchOrAttachOnReady(): Promise<void> {
+    if (this.launchDecisionStarted) return;
+    this.launchDecisionStarted = true;
     // Provider-backed terminals (notably BoxLite) may echo a login shell prompt as
     // soon as the WS reports ready, before the async tmux liveness probe returns.
     // Treat that pre-decision shell noise as attach bootstrap so it stays live-only
     // and never becomes durable task history.
     this.beginAttachBootstrapWindow();
     let bootstrapHandedOff = false;
+    let sessionActive = false;
     try {
-      // 3.2 — resolve the task's runtime ONCE before deciding. Best-effort: a missing
-      // resolver / rejected promise / undefined result leaves `this.runtime` undefined
-      // → the DEFAULT codex inline path. Resolved BEFORE the launch branch so the
-      // runtime's `buildLaunchLine` / `autoSubmit` gate the fresh-launch path.
-      await this.ensureRuntimeResolved();
+      await this.ensureTaskLaunchContextResolved();
       const alive = await this.hasSession();
       if (alive === true) {
         bootstrapHandedOff = true;
         this.attachToNamedSession();
+        sessionActive = true;
       } else if (alive === false) {
         // Definitively GONE → genuine fresh launch; arm the auto-submit (the runtime
         // gates whether an Enter is actually injected — claude's autoSubmit is a no-op).
         this.endAttachBootstrapWindow();
+        await this.prepareFreshModelMaterial();
         bootstrapHandedOff = true;
         this.launchAgent();
+        sessionActive = true;
       } else {
         // INCONCLUSIVE → fresh launch as a recoverable fallback, but DO NOT arm
         // the auto-submit: if an agent was actually already running, the duplicate
         // `tmux new-session` is a no-op and the attach rejoins it, so a stray Enter
         // must not be injected.
+        await this.prepareFreshModelMaterial();
         bootstrapHandedOff = true;
         this.launchAgent(false);
+        sessionActive = true;
       }
-    } catch (err) {
+    } catch {
       if (!bootstrapHandedOff) this.endAttachBootstrapWindow();
-      this.logger.warn(
-        `task ${this.taskId}: launch-or-attach on ready failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      this.reportRuntimeSetupFailure();
     } finally {
-      // Arm the liveness poller regardless of which branch ran (or even if it
-      // threw): once the shell is established there is a detached session whose
-      // disappearance is the authoritative termination signal (D4).
-      this.startLivenessPoller();
+      if (sessionActive) this.startLivenessPoller();
     }
+  }
+
+  private async prepareFreshModelMaterial(): Promise<void> {
+    const intent = this.modelIntent;
+    if (!intent || !this.prepareModelMaterial) {
+      throw new SandboxRuntimeModelSetupError('launch-context');
+    }
+    let prepared: TaskModelLaunchMaterial;
+    try {
+      prepared = await this.prepareModelMaterial(intent);
+    } catch (error) {
+      if (error instanceof SandboxRuntimeModelSetupError) throw error;
+      throw new SandboxRuntimeModelSetupError('material-write');
+    }
+    const expected = taskModelLaunchMaterial(intent);
+    if (
+      prepared.kind !== expected.kind ||
+      (prepared.kind === 'explicit' &&
+        expected.kind === 'explicit' &&
+        (prepared.path !== expected.path ||
+          prepared.checksum !== expected.checksum))
+    ) {
+      throw new SandboxRuntimeModelSetupError('material-verify');
+    }
+    this.modelMaterial = prepared;
+  }
+
+  private reportRuntimeSetupFailure(): void {
+    if (this.runtimeSetupFailureReported) return;
+    this.runtimeSetupFailureReported = true;
+    this.stopLivenessPoller();
+    this.onRuntimeSetupFailure?.('runtime_model_setup_failed');
   }
 
   /**
@@ -1136,10 +1181,14 @@ export class AioPtyClient implements AgentTerminalPty {
     // resident session, so a finished turn keeps it running (not killed on end_turn).
     let signal: AioExitSignal | undefined;
     try {
+      if (!this.modelMaterial) {
+        throw new SandboxRuntimeModelSetupError('launch-context');
+      }
       signal = await runtime.detectExit(toAioTerminalRuntimeExec(this.runSandboxExec()), {
         taskId: this.taskId,
         workspaceDir: CLAUDE_WORKSPACE_DIR,
         sessionId: aioSessionIdForTask(this.taskId),
+        model: this.modelMaterial,
       });
     } catch (err) {
       this.logger.debug(

@@ -146,6 +146,13 @@ function makeHost(options = {}) {
     host: {
       ownerStore: options.ownerStore,
       provisionLookup: {
+        getTaskLaunchContext: async (taskId) =>
+          options.launchContexts?.get(taskId) ?? {
+            modelIntent: { kind: 'runtime-default' },
+            ownerUserId: options.ownerUserId ?? 'owner-task-default',
+            runtimeId: taskRuntime.id,
+            executionMode: 'interactive-pty',
+          },
         getCloneSpec: async (taskId) =>
           options.cloneSpecs?.get(taskId) ?? null,
         getTaskPrompt: async (taskId) =>
@@ -185,7 +192,7 @@ function makeHost(options = {}) {
       },
       materialResolvers: {
         async resolve(runtime, ctx) {
-          events.push(['material', runtime.id, ctx.taskId]);
+          events.push(['material', runtime.id, ctx.taskId, ctx.ownerUserId]);
           return options.material ?? { kind: 'auth-material' };
         },
       },
@@ -301,7 +308,13 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
     assert.match(preflight.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(preflight.runtimeId, 'codex');
     assert.equal(preflight.metadata.sandboxMetadata.dependencies.codex, '0.132.0');
-    await hooks.runtimeSetup({ taskId: 'task-1', executor, runtimeId: 'codex' });
+    await hooks.runtimeSetup({
+      taskId: 'task-1',
+      executor,
+      runtimeId: 'codex',
+      executionMode: 'interactive-pty',
+      modelIntent: { kind: 'runtime-default' },
+    });
     await hooks.skillPreinstall({ taskId: 'task-1', executor });
     const transcript = await hooks.transcriptRead({
       taskId: 'task-1',
@@ -350,6 +363,15 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
     assert(logs.warn.some((line) => line.includes('pre-stop HOME trim for task task-1 exited 9')));
     assert(logs.warn.some((line) => line.includes('trim timeout')));
     assert(events.some((event) => event[0] === 'artifact' && event[3] === 'session-task-1'));
+    assert(
+      events.some(
+        (event) =>
+          event[0] === 'material' &&
+          event[2] === 'task-1' &&
+          event[3] === 'owner-task-default',
+      ),
+      'runtime material resolution receives the persisted task owner',
+    );
   });
 });
 
@@ -441,7 +463,7 @@ await test('configured provider center registers cloud HTTP candidates from host
   );
 });
 
-await test('configured AIO provider hooks fail closed and fall back through host runtime registry', async () => {
+await test('configured AIO provider hooks fail closed and require an exact runtime', async () => {
   await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
     const events = [];
     const fallbackRuntime = makeRuntime('codex', {
@@ -478,7 +500,7 @@ await test('configured AIO provider hooks fail closed and fall back through host
         hooks.runtimePreflight({
           taskId: 'task-fail',
           executor,
-          runtimeId: 'missing-runtime',
+          runtimeId: 'codex',
         }),
       /runtime "codex" preflight .*exit_code 2 - fatal https:\/\/\*\*\*:\*\*\*@example\.test/,
     );
@@ -488,13 +510,31 @@ await test('configured AIO provider hooks fail closed and fall back through host
           taskId: 'task-setup-fail',
           executor,
           runtimeId: 'missing-runtime',
+          executionMode: 'interactive-pty',
+          modelIntent: { kind: 'runtime-default' },
         }),
-      /setup for task task-setup-fail failed: missing auth material/,
+      (error) =>
+        error?.code === 'runtime_model_setup_failed' &&
+        error?.phase === 'runtime-resolution',
+    );
+    await assert.rejects(
+      () =>
+        hooks.runtimeSetup({
+          taskId: 'task-setup-plan-fail',
+          executor,
+          runtimeId: 'codex',
+          executionMode: 'interactive-pty',
+          modelIntent: { kind: 'runtime-default' },
+        }),
+      /setup for task task-setup-plan-fail failed: missing auth material/,
     );
     await hooks.skillPreinstall({ taskId: 'task-skills', executor });
 
     assert(logs.warn.some((line) => line.includes('runtime lookup failed for task-fallback')));
-    assert(logs.warn.some((line) => line.includes('could not resolve AgentRuntime "missing-runtime"')));
+    assert.equal(
+      logs.warn.some((line) => line.includes('could not resolve AgentRuntime "missing-runtime"')),
+      false,
+    );
     assert(logs.warn.some((line) => line.includes('could not resolve selected skills')));
   });
 });
@@ -518,7 +558,14 @@ await test('configured AIO hooks cover setup command failures and optional auth/
     );
     const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
     await assert.rejects(
-      () => hooks.runtimeSetup({ taskId: 'task-command-fail', executor }),
+      () =>
+        hooks.runtimeSetup({
+          taskId: 'task-command-fail',
+          executor,
+          runtimeId: 'codex',
+          executionMode: 'interactive-pty',
+          modelIntent: { kind: 'runtime-default' },
+        }),
       /setup for task task-command-fail failed: exit_code NaN - Authorization: Basic \*\*\*/,
     );
 
@@ -541,6 +588,7 @@ await test('configured AIO hooks cover setup command failures and optional auth/
       () =>
         emptyHooks.runtimePreflight({
           taskId: 'task-empty-preflight',
+          runtimeId: 'codex',
           executor: makeExecutor(async () => ({ exitCode: 1, output: '' })).executor,
         }),
       /exit_code 1$/,
@@ -550,6 +598,9 @@ await test('configured AIO hooks cover setup command failures and optional auth/
         emptyHooks.runtimeSetup({
           taskId: 'task-empty-setup',
           executor: makeExecutor(async () => ({ exitCode: 1, output: '' })).executor,
+          runtimeId: 'codex',
+          executionMode: 'interactive-pty',
+          modelIntent: { kind: 'runtime-default' },
         }),
       /setup for task task-empty-setup failed: exit_code 1$/,
     );
@@ -593,7 +644,7 @@ await test('configured AIO hooks cover setup command failures and optional auth/
     );
 
     let resolveCalls = 0;
-    const fallbackFromStringResolve = makeHost({
+    const strictMissingRuntime = makeHost({
       defaultRuntime: noProbeRuntime,
       resolve(id) {
         resolveCalls += 1;
@@ -601,17 +652,19 @@ await test('configured AIO hooks cover setup command failures and optional auth/
         return noProbeRuntime;
       },
     });
-    await onlyProvider(
-      mod.createConfiguredSandboxProvider(fallbackFromStringResolve.host),
-    ).hooks.runtimePreflight({
-      taskId: 'task-runtime-id-default',
-      executor,
-    });
-    assert(
-      fallbackFromStringResolve.logs.warn.some((line) =>
-        line.includes('resolve string failure'),
-      ),
+    await assert.rejects(
+      () =>
+        onlyProvider(
+          mod.createConfiguredSandboxProvider(strictMissingRuntime.host),
+        ).hooks.runtimePreflight({
+          taskId: 'task-runtime-id-missing',
+          executor,
+        }),
+      (error) =>
+        error?.code === 'runtime_model_setup_failed' &&
+        error?.phase === 'runtime-resolution',
     );
+    assert.equal(resolveCalls, 0);
 
     const noInstaller = makeHost({
       getTaskSkills: async () => ['skill-needs-registry'],
@@ -874,6 +927,9 @@ await test('configured BoxLite provider delegates runtime setup through the same
 
       await entry.provider.runtimeSetup({
         taskId: 'box-task',
+        modelIntent: { kind: 'runtime-default' },
+        executionMode: 'interactive-pty',
+        runtimeId: 'codex',
         sandbox: { id: 'box-task', status: 'running', image: 'boxlite-image:latest' },
         executor,
         workspacePath: '/workspace',
@@ -889,6 +945,105 @@ await test('configured BoxLite provider delegates runtime setup through the same
       assert(events.some((event) => event[0] === 'plan' && event[2] === '/workspace'));
       assert(logs.debug.some((line) => line.includes('provisioned BoxLite runtime "codex" setup')));
       assert(logs.debug.some((line) => line.includes('provisioned BoxLite image parameters')));
+    },
+  );
+});
+
+await test('configured BoxLite provider reads the newest runtime-owned transcript before teardown', async () => {
+  await withEnv(
+    {
+      CAP_SANDBOX_PROVIDER: 'boxlite',
+      BOXLITE_ENDPOINT: 'http://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'token',
+      BOXLITE_IMAGE: 'boxlite-image:latest',
+      BOXLITE_CAPABILITIES:
+        'command.exec,transcript.retained-read,transcript.retained-source',
+      BOXLITE_WORKSPACE_PATH: '/workspace',
+    },
+    async () => {
+      const events = [];
+      const runtime = makeRuntime('claude-code', {
+        events,
+        transcriptDir: "/home/gem/.claude/projects/it's-safe",
+        filenameGlob: /(^|\/)session-box-task\.jsonl$/,
+        transcriptFormat: 'claude-jsonl',
+      });
+      const { host } = makeHost({
+        events,
+        defaultRuntime: runtime,
+        taskRuntime: runtime,
+        transcriptSource: {
+          create: (source) => ({ ...source, wrapped: true }),
+        },
+      });
+      const provider = onlyProvider(mod.createConfiguredSandboxProvider(host));
+      const transcript = '{"type":"assistant","message":{"model":"claude-sonnet"}}\n';
+      const client = new mod.FakeBoxLiteClient({
+        execHandler: (request) => {
+          const result = {
+            exitCode: 0,
+            output: '',
+            stdout: '',
+            stderr: '',
+            timedOut: false,
+          };
+          if (request.command === 'cat /etc/cap/sandbox-metadata.json') {
+            result.output = JSON.stringify({
+              schemaVersion: 1,
+              sandboxVersion: 'v1.2.3',
+              dependencies: { 'claude-code': '2.1.207' },
+            });
+          } else if (request.command.startsWith('find ')) {
+            result.stdout = [
+              "/home/gem/.claude/projects/it's-safe/older.jsonl",
+              "/home/gem/.claude/projects/it's-safe/session-box-task.jsonl",
+            ].join('\n');
+          } else if (request.command.startsWith('cat ')) {
+            result.stdout = transcript;
+          }
+          result.output ||= result.stdout;
+          return result;
+        },
+      });
+      provider.client = client;
+
+      await provider.provision({
+        taskId: 'box-task',
+        cloneSpec: null,
+        modelIntent: { kind: 'runtime-default' },
+        runtimeId: 'claude-code',
+        executionMode: 'headless-exec',
+      });
+      assert.deepEqual(
+        await provider.readRolloutFromContainer('box-task', 'claude-code'),
+        {
+          format: 'claude-jsonl',
+          jsonl: transcript,
+          wrapped: true,
+        },
+      );
+      assert(
+        client.execCalls.some(
+          (call) =>
+            call.command ===
+            "find '/home/gem/.claude/projects/it'\\''s-safe' -type f -print",
+        ),
+      );
+      assert(
+        client.execCalls.some(
+          (call) =>
+            call.command ===
+            "cat '/home/gem/.claude/projects/it'\\''s-safe/session-box-task.jsonl'",
+        ),
+      );
+      assert(
+        events.some(
+          (event) =>
+            event[0] === 'artifact' &&
+            event[1] === 'claude-code' &&
+            event[3] === 'session-box-task',
+        ),
+      );
     },
   );
 });
@@ -931,6 +1086,9 @@ await test('configured BoxLite provision validates metadata against the task-sel
           provider.provision({
             taskId: 'box-task-claude-metadata',
             cloneSpec: null,
+            modelIntent: { kind: 'runtime-default' },
+            runtimeId: 'claude-code',
+            executionMode: 'interactive-pty',
           }),
         /selected runtime dependency claude-code is not declared/,
       );

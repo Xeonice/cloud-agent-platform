@@ -64,6 +64,19 @@ import type {
 import { queryKeys } from "./queries";
 import { setState, upsertImportedRepo } from "../store";
 
+function invalidateRuntimeModelCatalogs(queryClient: QueryClient): void {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.runtimeModels });
+}
+
+function refreshRuntimeModelCatalogAfterDomainError(
+  queryClient: QueryClient,
+  error: unknown,
+): void {
+  if (real.runtimeModelErrorFromApiError(error)) {
+    invalidateRuntimeModelCatalogs(queryClient);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Create task (REAL today)
 // ---------------------------------------------------------------------------
@@ -87,6 +100,9 @@ export function createTaskMutation(
     mutationFn: ({ repoId, body }) => real.createTask(repoId, body),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+    },
+    onError: (error) => {
+      refreshRuntimeModelCatalogAfterDomainError(queryClient, error);
     },
   };
 }
@@ -162,6 +178,9 @@ export function createScheduleMutation(
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.schedules });
     },
+    onError: (error) => {
+      refreshRuntimeModelCatalogAfterDomainError(queryClient, error);
+    },
   };
 }
 
@@ -179,6 +198,9 @@ export function updateScheduleMutation(
       void queryClient.invalidateQueries({
         queryKey: queryKeys.scheduleRuns(schedule.id),
       });
+    },
+    onError: (error) => {
+      refreshRuntimeModelCatalogAfterDomainError(queryClient, error);
     },
   };
 }
@@ -444,6 +466,7 @@ export function createSandboxEnvironmentMutation(
         : mock.mockCreateSandboxEnvironment(body),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.sandboxEnvironments });
+      invalidateRuntimeModelCatalogs(queryClient);
     },
   };
 }
@@ -461,6 +484,7 @@ export function validateSandboxEnvironmentMutation(
       void queryClient.invalidateQueries({
         queryKey: queryKeys.sandboxEnvironmentValidations(id),
       });
+      invalidateRuntimeModelCatalogs(queryClient);
     },
   };
 }
@@ -475,6 +499,7 @@ export function setDefaultSandboxEnvironmentMutation(
         : mock.mockSetDefaultSandboxEnvironment(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.sandboxEnvironments });
+      invalidateRuntimeModelCatalogs(queryClient);
     },
   };
 }
@@ -492,6 +517,7 @@ export function retireSandboxEnvironmentMutation(
       void queryClient.invalidateQueries({
         queryKey: queryKeys.sandboxEnvironmentValidations(id),
       });
+      invalidateRuntimeModelCatalogs(queryClient);
     },
   };
 }
@@ -518,6 +544,8 @@ export function saveCodexCredentialMutation(
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.codexCredential });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runtimes });
+      invalidateRuntimeModelCatalogs(queryClient);
     },
   };
 }
@@ -545,6 +573,8 @@ export function saveClaudeCredentialMutation(
       void queryClient.invalidateQueries({
         queryKey: queryKeys.claudeCredential,
       });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.runtimes });
+      invalidateRuntimeModelCatalogs(queryClient);
     },
   };
 }

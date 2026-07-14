@@ -40,14 +40,14 @@ export interface ClaudeAuthMaterial {
  * token, for the readiness probe.
  */
 export interface ClaudeAuthSource {
-  /** Resolve the OAuth token to inject, or `null` when none is configured. */
-  getClaudeAuth(): Promise<ClaudeAuthMaterial | null>;
+  /** Resolve only this authenticated owner's OAuth token, or the deployment fallback. */
+  getClaudeAuth(ownerUserId: string): Promise<ClaudeAuthMaterial | null>;
   /**
    * Whether a Claude token is configured — a BOOLEAN only, no secret. Backs the
    * `/runtimes` readiness probe so the console can disable an unconfigured runtime
    * before task creation.
    */
-  configured(): Promise<boolean>;
+  configured(ownerUserId: string): Promise<boolean>;
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { SandboxProviderCapability, SandboxProviderLocation } from './capabilities.js';
 import { SandboxProviderConfigurationError } from './errors.js';
+import type { TaskModelIntent } from './model-material.js';
 
 export interface GitCloneSpec {
   readonly url: string;
@@ -122,12 +123,17 @@ export interface SandboxResolvedEnvironmentMetadata {
   readonly id?: string;
   readonly environmentId?: string;
   readonly name?: string;
+  /** Exact registered provider descriptor id selected during catalog preflight. */
+  readonly providerId?: string;
   readonly providerFamily?: SandboxEnvironmentProviderFamily;
   readonly runtimeId?: string;
   readonly sourceKind?: SandboxEnvironmentSourceKind;
   readonly sourceRef?: string;
   readonly digest?: string;
   readonly checksum?: string;
+  readonly runtimeArtifactChecksums?: Readonly<Record<string, string>>;
+  /** @deprecated Use runtimeArtifactChecksums for multi-runtime evidence. */
+  readonly cliArtifactChecksum?: string;
   readonly validationId?: string;
   readonly validationVersion?: string;
   readonly contractVersion?: string;
@@ -199,6 +205,10 @@ export interface SelectedSandboxRun<TProvider extends SandboxCapabilitySource = 
 
 export interface SandboxProvisionContext<TCloneSpec = GitCloneSpec> {
   readonly taskId: string;
+  /** Required persisted intent. Lookup failure must never be represented as default. */
+  readonly modelIntent: TaskModelIntent;
+  readonly runtimeId: string;
+  readonly executionMode: 'interactive-pty' | 'headless-exec';
   readonly environment?: SandboxResolvedEnvironmentMetadata | null;
   /**
    * `undefined`: caller did not pre-resolve workspace materialization.

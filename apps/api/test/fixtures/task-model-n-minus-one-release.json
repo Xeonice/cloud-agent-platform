@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "release": "v0.38.0",
+  "image": "ghcr.io/xeonice/cap-api",
+  "platform": "linux/amd64",
+  "tagDigest": "sha256:4e03848dad5419057b0d67afa5da62138d31346089e95d6c9ea2962a93dc1706",
+  "platformDigest": "sha256:7b9a4ddf0f3543adce491c43fb0c47dfd7a81dda183f3d4cbb1cec246f748d7c"
+}

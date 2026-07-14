@@ -9,9 +9,14 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import type { ExecutionMode } from '../agent-runtime/agent-runtime.port';
+import type {
+  ExecutionMode,
+  RuntimeOutputFailure,
+} from '../agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
+  RuntimeModelErrorSchema,
+  createTaskBodySchema,
   taskResponseSchema,
   type CreateTaskBody,
   type Deliver,
@@ -20,6 +25,7 @@ import {
   type TaskResponse,
   type TaskStatus,
 } from '@cap/contracts';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   IllegalTaskTransitionError,
@@ -38,6 +44,7 @@ import {
 } from '../sandbox/sandbox-provider.port';
 import {
   selectReadoptionSandboxProvider,
+  type SandboxEnvironmentSelection,
 } from '@cap/sandbox';
 import { SandboxRunOwnerService } from '../sandbox/sandbox-run-owner.service';
 import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
@@ -46,6 +53,10 @@ import {
   TASK_RESPONSE_INCLUDE,
   taskResponseFromRecord,
 } from './task-response';
+import { RuntimeModelPreflightService } from '../runtime-models/runtime-model-preflight.service';
+import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import type { PreparedTaskCreate } from './prepared-task-create';
+import { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
 
 /**
  * Narrow slice of `GuardrailsService` that `TasksService` depends on.
@@ -160,7 +171,7 @@ export interface IAgentRuntimeRegistry {
     id: Runtime;
     /** Execution modes the resolved runtime supports (add-headless-execution-track). */
     executionModes: ReadonlySet<ExecutionMode>;
-    classifyOutputFailure?(output: string): { code: TaskFailureCode } | null;
+    classifyOutputFailure?(output: string): RuntimeOutputFailure | null;
   };
 }
 
@@ -176,7 +187,7 @@ export const AGENT_RUNTIME_REGISTRY_TOKEN = 'AGENT_RUNTIME_REGISTRY';
  * skipped, deferring the fail-closed to the provision-time `injectAuth`).
  */
 export interface IRuntimeReadiness {
-  configured(): Promise<boolean>;
+  configured(ownerUserId: string): Promise<boolean>;
 }
 
 /**
@@ -278,6 +289,10 @@ export class TasksService implements OnApplicationBootstrap {
     private readonly sandboxOwners?: SandboxRunOwnerService,
     @Optional()
     private readonly sandboxEnvironments?: SandboxEnvironmentsService,
+    @Optional()
+    private readonly runtimeModelPreflight?: RuntimeModelPreflightService,
+    @Optional()
+    private readonly taskModelCapability?: TaskModelCapabilityService,
   ) {}
 
   /**
@@ -575,15 +590,159 @@ export class TasksService implements OnApplicationBootstrap {
     // `userId` is the acting account PRIMARY KEY (present for local + GitHub
     // accounts, fix-local-account-task-attribution) so the `task.created` audit
     // event is owner-attributed and the owner-scoped Codex credential resolves.
-    const response = await this.createTaskRow(
+    const prepared = await this.prepareTaskCreate(
       repoId,
       body,
+      executionMode,
+      userId,
+    );
+    const response = await this.createTaskRow(prepared, this.prisma);
+    await this.admitCreatedTask(
+      response.id,
+      prepared.body,
+      prepared.ownerUserId ?? undefined,
+    );
+    return response;
+  }
+
+  /**
+   * Resolve every non-transactional dependency needed to create a Task.
+   * Explicit models are catalog-validated here and carry the exact immutable
+   * environment snapshot used by that catalog lookup. Omitted models never
+   * invoke the catalog and retain the existing environment/default behavior.
+   */
+  async prepareTaskCreate(
+    repoId: string,
+    body: CreateTaskBody,
+    executionMode: ExecutionMode = 'interactive-pty',
+    userId?: string,
+  ): Promise<PreparedTaskCreate> {
+    return this.prepareTaskCreateInternal(
+      repoId,
+      body,
+      executionMode,
+      userId,
+      false,
+    );
+  }
+
+  /**
+   * Continue a durable schedule occurrence that was accepted while the gate was
+   * open. This skips only the new-work gate; catalog/environment validation is
+   * still repeated against the occurrence's immutable template snapshot.
+   */
+  async prepareAcceptedScheduledRetryTaskCreate(
+    repoId: string,
+    body: CreateTaskBody,
+    userId: string,
+  ): Promise<PreparedTaskCreate> {
+    return this.prepareTaskCreateInternal(
+      repoId,
+      body,
+      'headless-exec',
+      userId,
+      true,
+    );
+  }
+
+  private async prepareTaskCreateInternal(
+    repoId: string,
+    body: CreateTaskBody,
+    executionMode: ExecutionMode,
+    userId: string | undefined,
+    acceptedExplicitModel: boolean,
+  ): Promise<PreparedTaskCreate> {
+    const normalizedBody = createTaskBodySchema.parse(body);
+    if (normalizedBody.model !== undefined && !acceptedExplicitModel) {
+      // The deployment cutover fence must run before repo/runtime/readiness,
+      // environment resolution, credential work, or a taskless catalog probe.
+      this.assertTaskModelSelectionOpen();
+    }
+    const runtime = await this.resolveTaskCreateFoundation(
+      repoId,
+      normalizedBody,
       this.prisma,
       executionMode,
       userId,
     );
-    await this.admitCreatedTask(response.id, body, userId);
-    return response;
+
+    let sandboxEnvironmentId: string | null;
+    let model: string | null = null;
+    let executionEnvironmentSnapshot: PreparedTaskCreate['executionEnvironmentSnapshot'] =
+      null;
+
+    if (normalizedBody.model !== undefined) {
+      if (!userId || !this.runtimeModelPreflight) {
+        throw new RuntimeModelPreflightError(
+          RuntimeModelErrorSchema.parse({
+            code: 'runtime_model_catalog_unavailable',
+            message: 'Runtime model selection is temporarily unavailable.',
+            retryable: true,
+            context: modelErrorContext(runtime, normalizedBody),
+          }),
+        );
+      }
+      const preflight = await this.runtimeModelPreflight.preflight({
+        ownerUserId: userId,
+        query: {
+          runtime,
+          ...(Object.prototype.hasOwnProperty.call(
+            normalizedBody,
+            'sandboxEnvironmentId',
+          )
+            ? { sandboxEnvironmentId: normalizedBody.sandboxEnvironmentId }
+            : {}),
+        },
+        model: normalizedBody.model,
+      });
+      if (!preflight.ok) {
+        throw new RuntimeModelPreflightError(preflight.error);
+      }
+      if (
+        preflight.value.intent !== 'explicit' ||
+        preflight.value.executionEnvironmentSnapshot === null
+      ) {
+        throw new RuntimeModelPreflightError(
+          RuntimeModelErrorSchema.parse({
+            code: 'runtime_model_catalog_unavailable',
+            message: 'Runtime model selection is temporarily unavailable.',
+            retryable: true,
+            context: modelErrorContext(runtime, normalizedBody),
+          }),
+        );
+      }
+      model = preflight.value.model;
+      executionEnvironmentSnapshot =
+        preflight.value.executionEnvironmentSnapshot;
+      sandboxEnvironmentId =
+        executionEnvironmentSnapshot.managedEnvironmentId;
+    } else {
+      const resolved = await this.resolveTaskEnvironmentSelection(
+        normalizedBody,
+        runtime,
+        userId,
+        this.prisma,
+      );
+      sandboxEnvironmentId =
+        resolved?.environmentId ?? resolved?.id ?? null;
+    }
+
+    const frozenBody = Object.freeze({
+      ...normalizedBody,
+      ...(normalizedBody.skills
+        ? { skills: Object.freeze([...normalizedBody.skills]) as string[] }
+        : {}),
+    });
+    return Object.freeze({
+      repoId,
+      ownerUserId: userId ?? null,
+      body: frozenBody,
+      runtime,
+      executionMode,
+      sandboxEnvironmentId,
+      model,
+      executionEnvironmentSnapshot,
+    });
   }
 
   /**
@@ -597,60 +756,63 @@ export class TasksService implements OnApplicationBootstrap {
    * for the ordinary (non-transactional) console path.
    */
   async createTaskRow(
-    repoId: string,
-    body: CreateTaskBody,
-    client: PrismaService = this.prisma,
-    executionMode: ExecutionMode = 'interactive-pty',
-    userId?: string,
+    prepared: PreparedTaskCreate,
+    client: Pick<PrismaService, 'task'> = this.prisma,
+    options: { readonly acceptedExplicitModel?: boolean } = {},
   ): Promise<TaskResponse> {
-    const { resolvedEnvironment } = await this.resolveCreateTaskParameters(
-      repoId,
-      body,
-      client,
-      executionMode,
-      userId,
-    );
-
+    if (prepared.model !== null && !options.acceptedExplicitModel) {
+      // Cheap synchronous race recheck immediately before the pure write. An
+      // already accepted durable retry passes the internal-only bypass; callers
+      // cannot set it through REST/MCP schemas.
+      this.assertTaskModelSelectionOpen();
+    }
     const task = await client.task.create({
       data: {
-        repoId,
-        ownerUserId: userId ?? null,
-        prompt: body.prompt,
+        repoId: prepared.repoId,
+        ownerUserId: prepared.ownerUserId,
+        prompt: prepared.body.prompt,
         // add-claude-code-runtime (4.1): persist the selected runtime so it is
         // durable and readable on every later read path AND so the provider
         // dispatches to the right agent at provision time. Coalesce `undefined`
         // (omitted) to `null`; a null column reads back as the default `codex`
         // (repo-and-task-management: a prior task with no runtime reads as codex).
-        runtime: body.runtime ?? null,
-        sandboxEnvironmentId:
-          resolvedEnvironment?.environmentId ?? resolvedEnvironment?.id ?? null,
+        runtime: prepared.body.runtime ?? null,
+        model: prepared.model,
+        ...(prepared.executionEnvironmentSnapshot
+          ? {
+              executionEnvironmentSnapshot:
+                prepared.executionEnvironmentSnapshot as Prisma.InputJsonValue,
+            }
+          : {}),
+        sandboxEnvironmentId: prepared.sandboxEnvironmentId,
         // add-headless-execution-track (5.1/5.2): persist the consumer-derived execution
         // mode. Store null for the interactive default (console — reads back as
         // interactive-pty), and `headless-exec` for programmatic (MCP / `/v1`) tasks.
-        executionMode: executionMode === 'headless-exec' ? 'headless-exec' : null,
+        executionMode:
+          prepared.executionMode === 'headless-exec' ? 'headless-exec' : null,
         // 3.2: persist the optional run parameters from the create body so they
         // are durable and readable on every later read path. They are inert with
         // respect to clone/provision/lifecycle behavior. Coalesce `undefined`
         // (field omitted) to `null` so the stored value is the supplied value or
         // an explicit null — never stale/fabricated on read-back (3.3).
-        branch: body.branch ?? null,
-        strategy: body.strategy ?? null,
+        branch: prepared.body.branch ?? null,
+        strategy: prepared.body.strategy ?? null,
         // add-multi-forge-task-delivery: persist the opt-in delivery selector.
         // Omitted ⇒ null (reads back as `none`); the result columns are populated
         // by the push-back attempt at terminal.
-        deliver: body.deliver ?? null,
+        deliver: prepared.body.deliver ?? null,
         // task-preinstall-skills: persist the selected skill ids (inert, like
         // branch/strategy). Omitted ⇒ empty array (the column default), echoed
         // back on every read path. Validation against the server allowlist
         // happens at provision time, not here (storage is permissive).
-        skills: body.skills ?? [],
+        skills: prepared.body.skills ?? [],
         // task-guardrail-controls: persist the optional guardrail parameters.
         // They are consumed at admission (arming the idle/deadline watchers) AND
         // persisted so the configured value is readable on every task read path.
         // Coalesce `undefined` (omitted) to `null` — never stale/fabricated; a
         // null `idleTimeoutMs` means "no idle reclaim" (opt-in, off by default).
-        idleTimeoutMs: body.idleTimeoutMs ?? null,
-        deadlineMs: body.deadlineMs ?? null,
+        idleTimeoutMs: prepared.body.idleTimeoutMs ?? null,
+        deadlineMs: prepared.body.deadlineMs ?? null,
         // Initial status is the schema default (`pending`).
       },
     });
@@ -663,26 +825,39 @@ export class TasksService implements OnApplicationBootstrap {
     return taskResponseSchema.parse(taskResponseFromRecord(task));
   }
 
+  /** New explicit-model admission is fail-closed even if DI wiring regresses. */
+  assertTaskModelSelectionOpen(): void {
+    if (this.taskModelCapability) {
+      this.taskModelCapability.assertOpen();
+      return;
+    }
+    throw new RuntimeModelPreflightError(
+      RuntimeModelErrorSchema.parse({
+        code: 'runtime_model_catalog_unavailable',
+        message: 'Runtime model selection is temporarily unavailable.',
+        retryable: true,
+      }),
+    );
+  }
+
   async normalizeTaskTemplateForSchedule(
     repoId: string,
     body: CreateTaskBody,
     userId: string,
-    client: PrismaService = this.prisma,
+    _client: PrismaService = this.prisma,
   ): Promise<CreateTaskBody & { repoId: string; runtime: Runtime; sandboxEnvironmentId: string | null; deliver: Deliver }> {
-    const { runtime, resolvedEnvironment } = await this.resolveCreateTaskParameters(
+    const prepared = await this.prepareTaskCreate(
       repoId,
       body,
-      client,
       'headless-exec',
       userId,
     );
     return {
-      ...body,
+      ...prepared.body,
       repoId,
-      runtime,
-      sandboxEnvironmentId:
-        resolvedEnvironment?.environmentId ?? resolvedEnvironment?.id ?? null,
-      deliver: body.deliver ?? 'none',
+      runtime: prepared.runtime,
+      sandboxEnvironmentId: prepared.sandboxEnvironmentId,
+      deliver: prepared.body.deliver ?? 'none',
     };
   }
 
@@ -697,7 +872,7 @@ export class TasksService implements OnApplicationBootstrap {
    */
   async admitCreatedTask(
     taskId: string,
-    body: CreateTaskBody,
+    body: Readonly<CreateTaskBody>,
     userId?: string,
   ): Promise<void> {
     const resolvedUserId = await this.resolveTaskOwnerId(taskId, userId);
@@ -790,7 +965,7 @@ export class TasksService implements OnApplicationBootstrap {
   async classifyRuntimeOutputFailure(
     id: string,
     output: string,
-  ): Promise<{ code: TaskFailureCode } | null> {
+  ): Promise<RuntimeOutputFailure | null> {
     const task = await this.prisma.task.findUnique({
       where: { id },
       select: { runtime: true },
@@ -1213,20 +1388,15 @@ export class TasksService implements OnApplicationBootstrap {
     }
   }
 
-  private async resolveCreateTaskParameters(
+  private async resolveTaskCreateFoundation(
     repoId: string,
     body: CreateTaskBody,
     client: PrismaService,
     executionMode: ExecutionMode,
     userId?: string,
-  ): Promise<{
-    runtime: Runtime;
-    resolvedEnvironment: { environmentId?: string; id?: string } | null;
-  }> {
+  ): Promise<Runtime> {
     const repo = await client.repo.findUnique({ where: { id: repoId } });
-    if (!repo) {
-      throw new NotFoundException(`Repo not found: ${repoId}`);
-    }
+    if (!repo) throw new NotFoundException(`Repo not found: ${repoId}`);
 
     // add-claude-code-runtime (4.1): the runtime this create dispatches to. The
     // contract pipe has already rejected any value outside the allowed set with
@@ -1270,36 +1440,52 @@ export class TasksService implements OnApplicationBootstrap {
     // readiness source is not wired the gate is skipped and the provision-time
     // `injectAuth` remains the fail-closed backstop.
     if (runtime === 'claude-code' && this.claudeReadiness) {
-      const ready = await this.claudeReadiness.configured();
+      if (!userId) throw new RuntimeNotConfiguredException(runtime);
+      const ready = await this.claudeReadiness.configured(userId);
       if (!ready) {
         throw new RuntimeNotConfiguredException(runtime);
       }
     }
 
-    const requestedEnvironmentId =
-      body.sandboxEnvironmentId === undefined
-        ? await this.loadUserDefaultSandboxEnvironmentId(userId, client)
-        : body.sandboxEnvironmentId;
+    return runtime;
+  }
 
-    const resolvedEnvironment = await this.resolveTaskEnvironment({
-      requestedEnvironmentId,
+  private async resolveTaskEnvironmentSelection(
+    body: CreateTaskBody,
+    runtime: Runtime,
+    userId: string | undefined,
+    client: PrismaService,
+  ) {
+    let environmentSelection: SandboxEnvironmentSelection;
+    if (body.sandboxEnvironmentId === undefined) {
+      const ownerDefaultId = await this.loadUserDefaultSandboxEnvironmentId(
+        userId,
+        client,
+      );
+      environmentSelection = ownerDefaultId
+        ? { kind: 'managed', environmentId: ownerDefaultId }
+        : { kind: 'managed-default' };
+    } else if (body.sandboxEnvironmentId === null) {
+      environmentSelection = { kind: 'deployment-default' };
+    } else {
+      environmentSelection = {
+        kind: 'managed',
+        environmentId: body.sandboxEnvironmentId,
+      };
+    }
+
+    return this.resolveTaskEnvironment({
+      selection: environmentSelection,
       runtime,
     });
-
-    return {
-      runtime,
-      resolvedEnvironment: resolvedEnvironment
-        ? { environmentId: resolvedEnvironment.environmentId, id: resolvedEnvironment.id }
-        : null,
-    };
   }
 
   private async resolveTaskEnvironment(args: {
-    requestedEnvironmentId: string | null;
+    selection: SandboxEnvironmentSelection;
     runtime: Runtime;
   }) {
     if (!this.sandboxEnvironments) {
-      if (args.requestedEnvironmentId) {
+      if (args.selection.kind === 'managed') {
         throw new BadRequestException({
           error: 'sandbox_environment_unavailable',
           message: 'Sandbox environment resolution is not available.',
@@ -1308,7 +1494,7 @@ export class TasksService implements OnApplicationBootstrap {
       return null;
     }
     return this.sandboxEnvironments.resolveForTask({
-      requestedEnvironmentId: args.requestedEnvironmentId,
+      selection: args.selection,
       runtimeId: args.runtime,
     });
   }
@@ -1325,6 +1511,16 @@ export class TasksService implements OnApplicationBootstrap {
     return row?.defaultSandboxEnvironmentId ?? null;
   }
 
+}
+
+function modelErrorContext(runtime: Runtime, body: CreateTaskBody) {
+  return {
+    runtime,
+    model: body.model,
+    ...(Object.prototype.hasOwnProperty.call(body, 'sandboxEnvironmentId')
+      ? { sandboxEnvironmentId: body.sandboxEnvironmentId }
+      : {}),
+  };
 }
 
 export { IllegalTaskTransitionError };

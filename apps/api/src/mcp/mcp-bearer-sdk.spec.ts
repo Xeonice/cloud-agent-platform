@@ -16,6 +16,7 @@ import { once } from 'node:events';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
+import { PUBLIC_V1_OPERATIONS } from '@cap/contracts';
 import { McpController } from './mcp.controller';
 import { McpServerFactory } from './mcp.server';
 
@@ -67,6 +68,8 @@ test('two real Streamable HTTP clients can initialize and list tools concurrentl
     },
   };
   const factory = new McpServerFactory(
+    {} as never,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -130,9 +133,12 @@ test('two real Streamable HTTP clients can initialize and list tools concurrentl
       clients.map((client, index) => client.connect(transports[index]!)),
     );
     const inventories = await Promise.all(clients.map((client) => client.listTools()));
+    const mappedToolCount = PUBLIC_V1_OPERATIONS.filter(
+      (operation) => 'tool' in operation.mcp,
+    ).length;
     assert.deepEqual(
       inventories.map((inventory) => inventory.tools.length),
-      [16, 16],
+      inventories.map(() => mappedToolCount),
     );
     assert.deepEqual(handlerErrors, []);
   } finally {

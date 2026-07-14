@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "change": "enforce-api-mcp-development-parity",
+  "intent": "developer-constraint",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "changed",
+      "scope": "all-existing",
+      "reason": "Bind existing operations to exact typed registry metadata and runtime conformance checks."
+    },
+    "mcp": {
+      "status": "changed",
+      "scope": "all-existing",
+      "reason": "Derive existing tool contracts from the registry and add exhaustive adapter checks."
+    },
+    "openapi": {
+      "status": "changed",
+      "scope": "all-existing",
+      "reason": "Add conformance assertions against the exact registry; generated external behavior is unchanged."
+    },
+    "apiPlayground": {
+      "status": "changed",
+      "scope": "all-existing",
+      "reason": "Add projection conformance assertions; rendered external behavior is unchanged."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "developer-workflow",
+      "reason": "Add repository hooks, scripts, OpenSpec linting, and CI enforcement."
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Idempotency-Key remains an HTTP-only retry contract and is not an MCP argument."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "MCP preserves the historical text task handle alongside canonical structured content."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "MCP metadata preserves its asynchronous polling guidance and explicitly identifies Idempotency-Key as an unmapped REST-only header."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST retains its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    },
+    {
+      "operation": "runtimeModels.query",
+      "kind": "rate-limit-policy",
+      "detail": "REST applies a dedicated per-principal catalog throttle while MCP remains subject to the MCP transport limiter; both retain shared catalog-service capacity controls."
+    },
+    {
+      "operation": "tasks.events",
+      "kind": "mcp-exclusion",
+      "detail": "Lifecycle SSE remains REST-only because MCP tools use request-response transport."
+    },
+    {
+      "operation": "tasks.transcript",
+      "kind": "mcp-output-schema-relaxation",
+      "detail": "The MCP SDK high-level registrar requires a root object output schema, so tools/list advertises an object derived from every canonical SessionHistory union variant while runtime structured content remains canonically validated."
+    },
+    {
+      "operation": "schedules.delete",
+      "kind": "success-projection",
+      "detail": "REST keeps a 204 empty body while MCP returns an explicit deletion acknowledgement."
+    },
+    {
+      "scope": "all-existing",
+      "kind": "legacy-rest-error-envelope",
+      "detail": "Both adapters select from the same stable error semantics, while existing REST status and message bodies remain byte-compatible and do not gain a new code field."
+    },
+    {
+      "scope": "all-existing",
+      "kind": "legacy-rest-success-passthrough",
+      "detail": "Every REST operation explicitly validates its canonical success schema while preserving the established handler value; MCP structured content remains canonicalized."
+    },
+    {
+      "scope": "all-existing",
+      "kind": "mcp-public-error-metadata",
+      "detail": "MCP application-boundary failures preserve compatibility text and add a stable safe error envelope under the com.cloud-agent-platform/public-error result metadata key."
+    },
+    {
+      "scope": "all-existing",
+      "kind": "mcp-sdk-prevalidation",
+      "detail": "Malformed tool arguments rejected by the MCP SDK before adapter invocation retain the SDK text-only validation result; adapter-reached public failures carry stable metadata."
+    }
+  ],
+  "verification": {
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
+  }
+}

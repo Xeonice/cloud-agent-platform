@@ -36,7 +36,7 @@ export type AioFetch = (
 }>;
 
 export interface AioDockerContainer {
-  start(): Promise<void>;
+  start(options?: { readonly abortSignal?: AbortSignal }): Promise<void>;
   stop(options?: { readonly t?: number }): Promise<void>;
   remove(options?: { readonly force?: boolean }): Promise<void>;
   inspect(): Promise<unknown>;
@@ -48,9 +48,23 @@ export interface AioDockerContainerInfo {
   readonly Names?: readonly string[];
 }
 
+export interface AioDockerImageInspect {
+  readonly Id?: string;
+  readonly RepoDigests?: readonly string[];
+}
+
+export interface AioDockerImage {
+  inspect(): Promise<AioDockerImageInspect>;
+}
+
 export interface AioDockerClient<TContainer extends AioDockerContainer = AioDockerContainer> {
-  createContainer(options: AioLocalSandboxContainerConfig): Promise<TContainer>;
+  createContainer(
+    options: AioLocalSandboxContainerConfig & {
+      readonly abortSignal?: AbortSignal;
+    },
+  ): Promise<TContainer>;
   getContainer(idOrName: string): TContainer;
+  getImage(reference: string): AioDockerImage;
   listContainers(options: {
     readonly all: false;
     readonly filters: {
@@ -126,18 +140,52 @@ export class AioSandboxContainerController<
     return this.connections.get(taskId)?.baseUrl ?? buildAioSandboxBaseUrl(taskId);
   }
 
+  /** Resolve a mutable Docker reference before create into a consumable identity. */
+  async resolveImageIdentity(reference: string): Promise<{
+    readonly locator: string;
+    readonly digest: string;
+  }> {
+    const inspected = await this.docker.getImage(reference).inspect();
+    const repoDigest = [...(inspected.RepoDigests ?? [])]
+      .filter((candidate) => candidate.includes('@sha256:'))
+      .sort()[0];
+    if (repoDigest) {
+      return {
+        locator: repoDigest,
+        digest: repoDigest.slice(repoDigest.indexOf('@') + 1),
+      };
+    }
+    const imageId = inspected.Id?.trim();
+    if (imageId?.startsWith('sha256:')) {
+      return { locator: imageId, digest: imageId };
+    }
+    throw new Error('AIO image has no provider-consumable immutable identity.');
+  }
+
   async createAndStart(
     taskId: string,
     environment?: SandboxResolvedEnvironmentMetadata | null,
+    labels?: Readonly<Record<string, string>>,
+    options: { readonly signal?: AbortSignal } = {},
   ): Promise<AioProvisionedContainer<TContainer>> {
     const spec = buildAioLocalSandboxProvisionSpec({
       taskId,
       env: this.env,
       environment,
+      labels,
     });
-    const container = await this.docker.createContainer(spec.containerConfig);
+    const container = await this.docker.createContainer({
+      ...spec.containerConfig,
+      abortSignal: options.signal,
+    });
     this.containers.set(taskId, container);
-    await container.start();
+    try {
+      await container.start({ abortSignal: options.signal });
+    } catch (error) {
+      this.containers.delete(taskId);
+      await container.remove({ force: true }).catch(() => undefined);
+      throw error;
+    }
     this.logger?.debug?.(`provisioned AIO container ${spec.containerName} from ${spec.image}`);
     return { spec, container, connection: spec.connection };
   }
@@ -151,14 +199,20 @@ export class AioSandboxContainerController<
     readonly baseUrl: string;
     readonly taskId: string;
     readonly timeoutMs: number;
+    readonly signal?: AbortSignal;
   }): Promise<void> {
     const intervalMs = 250;
     const deadline = Date.now() + args.timeoutMs;
     let lastError: unknown;
 
     while (Date.now() < deadline) {
+      if (args.signal?.aborted) {
+        throw new Error(`AIO sandbox readiness was aborted for task ${args.taskId}`);
+      }
       try {
-        const res = await this.fetchImpl(`${args.baseUrl}/v1/docs`);
+        const res = await this.fetchImpl(`${args.baseUrl}/v1/docs`, {
+          signal: args.signal,
+        });
         if (res.ok) return;
         lastError = new Error(`/v1/docs responded with status ${res.status}`);
       } catch (err) {
@@ -186,12 +240,19 @@ export class AioSandboxContainerController<
     await container.stop({ t: 0 }).catch(() => undefined);
   }
 
-  async removeSandbox(taskId: string): Promise<void> {
+  async removeSandbox(
+    taskId: string,
+    options: { readonly bestEffort?: boolean } = {},
+  ): Promise<void> {
     const container =
       this.containers.get(taskId) ??
       this.docker.getContainer(buildAioSandboxContainerName(taskId));
     this.containers.delete(taskId);
     this.readopted.delete(taskId);
+    if (options.bestEffort === false) {
+      await container.remove({ force: true });
+      return;
+    }
     await container.remove({ force: true }).catch(() => undefined);
   }
 
@@ -233,11 +294,16 @@ export class AioSandboxContainerController<
     return files[files.length - 1]!.content.toString('utf8');
   }
 
-  async runSandboxExec(baseUrl: string, command: string): Promise<AioSandboxExecResult> {
+  async runSandboxExec(
+    baseUrl: string,
+    command: string,
+    options: { readonly signal?: AbortSignal } = {},
+  ): Promise<AioSandboxExecResult> {
     const res = await this.fetchImpl(`${baseUrl}/v1/shell/exec`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ command }),
+      signal: options.signal,
     });
     if (!res.ok) {
       return { exitCode: Number.NaN, output: `/v1/shell/exec responded ${res.status}` };

@@ -178,5 +178,90 @@ await test('BoxLite runtime required tools default and normalize overrides', () 
   );
 });
 
+await test('deployment environment target follows configured provider and runtime image', () => {
+  assert.deepEqual(
+    mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+      CAP_SANDBOX_PROVIDER: 'aio',
+      AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+    }),
+    {
+      name: 'Deployment AIO',
+      providerId: 'aio-local',
+      providerFamily: 'aio',
+      source: {
+        kind: 'aio-docker-image',
+        image: 'cap-aio-sandbox:v1.2.3',
+      },
+    },
+  );
+
+  const boxlite = mod.resolveConfiguredDeploymentEnvironmentTarget(
+    'claude-code',
+    {
+      CAP_SANDBOX_PROVIDER: 'boxlite',
+      BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'not-returned',
+      BOXLITE_IMAGE: 'cap-boxlite@sha256:default',
+      BOXLITE_IMAGE_MAP:
+        'claude-code=cap-boxlite@sha256:claude-runtime',
+      BOXLITE_CAPABILITIES: 'terminal.websocket,command.exec',
+      BOXLITE_TERMINAL_MODE: 'pty',
+    },
+  );
+  assert.equal(boxlite.providerFamily, 'boxlite');
+  assert.equal(
+    boxlite.source.image,
+    'cap-boxlite@sha256:claude-runtime',
+  );
+  assert.equal(JSON.stringify(boxlite).includes('not-returned'), false);
+});
+
+await test('deployment environment target fails closed for unsupported selected sources', () => {
+  assert.throws(
+    () =>
+      mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+        CAP_SANDBOX_PROVIDER: 'control-plane',
+      }),
+    /no local runtime source/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredDeploymentEnvironmentTarget('codex', {
+        CAP_SANDBOX_PROVIDER: 'auto',
+        AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+        CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+      }),
+    /cannot prove an immutable runtime source/,
+  );
+});
+
+await test('managed provider identity is taken from the enabled provider config', () => {
+  assert.equal(
+    mod.resolveConfiguredProviderIdForFamily('aio', {
+      CAP_SANDBOX_PROVIDER: 'aio',
+      AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+    }),
+    'aio-local',
+  );
+  assert.equal(
+    mod.resolveConfiguredProviderIdForFamily('boxlite', {
+      CAP_SANDBOX_PROVIDER: 'boxlite',
+      BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'secret',
+      BOXLITE_IMAGE: 'cap-boxlite@sha256:runtime',
+      BOXLITE_PROVIDER_ID: 'boxlite-prod',
+    }),
+    'boxlite-prod',
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredProviderIdForFamily('boxlite', {
+        CAP_SANDBOX_PROVIDER: 'aio',
+        AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+      }),
+    /unavailable/,
+  );
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -57,6 +57,7 @@ export interface AioLocalSandboxContainerConfig {
   Image: string;
   name: string;
   Env: string[];
+  Labels?: Readonly<Record<string, string>>;
   HostConfig: AioLocalSandboxHostConfig;
 }
 
@@ -120,6 +121,7 @@ export function buildAioLocalSandboxProvisionSpec(args: {
   readonly config?: AioLocalSandboxConfig;
   readonly env?: AioLocalSandboxEnv;
   readonly environment?: SandboxResolvedEnvironmentMetadata | null;
+  readonly labels?: Readonly<Record<string, string>>;
 }): AioLocalSandboxProvisionSpec {
   const config = args.config ?? readAioLocalSandboxConfig(args.env);
   const image = resolveAioSandboxImage({
@@ -145,6 +147,9 @@ export function buildAioLocalSandboxProvisionSpec(args: {
         taskId: args.taskId,
         approvalsBase: config.approvalsBase,
       }),
+      ...(args.labels && Object.keys(args.labels).length > 0
+        ? { Labels: { ...args.labels } }
+        : {}),
       HostConfig: {
         SecurityOpt: securityOpt,
         ShmSize: AIO_SANDBOX_SHM_SIZE_BYTES,

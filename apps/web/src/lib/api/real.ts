@@ -48,6 +48,9 @@ import {
   ListSchedulesResponseSchema,
   ListScheduleRunsResponseSchema,
   ScheduleResponseSchema,
+  RuntimeModelCatalogQuerySchema,
+  RuntimeModelCatalogSchema,
+  RuntimeModelErrorSchema,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
   type UpdateStatus,
@@ -87,6 +90,9 @@ import {
   type ListSchedulesResponse,
   type ListScheduleRunsResponse,
   type ScheduleResponse,
+  type RuntimeModelCatalogQuery,
+  type RuntimeModelCatalog,
+  type RuntimeModelError,
 } from "@cap/contracts";
 import { RepoResponseSchema } from "@cap/contracts";
 import { createParser } from "eventsource-parser";
@@ -153,10 +159,20 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly body?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/** Parse only the canonical secret-free runtime-model error body. */
+export function runtimeModelErrorFromApiError(
+  error: unknown,
+): RuntimeModelError | null {
+  if (!(error instanceof ApiError)) return null;
+  const parsed = RuntimeModelErrorSchema.safeParse(error.body);
+  return parsed.success ? parsed.data : null;
 }
 
 function authHeaders(extra?: Record<string, string>): Record<string, string> {
@@ -183,12 +199,21 @@ async function request(path: string, init?: RequestInit): Promise<unknown> {
   });
   if (!res.ok) {
     let detail = res.statusText;
+    let body: unknown;
     try {
-      detail = (await res.text()) || detail;
+      const text = await res.text();
+      detail = text || detail;
+      if (text) {
+        try {
+          body = JSON.parse(text) as unknown;
+        } catch {
+          // Plain-text errors remain available through `message`.
+        }
+      }
     } catch {
       // Ignore body read failures; fall back to the status text.
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, body);
   }
   if (res.status === 204) return undefined;
   return res.json();
@@ -540,6 +565,24 @@ export async function getRuntimes(): Promise<RuntimesResponse> {
     }
   }
   return out;
+}
+
+/**
+ * Query the owner-scoped model catalog for the exact runtime/environment
+ * context that will be used by task admission. The three environment intents
+ * (omitted, null, UUID) are preserved on the wire.
+ */
+export async function queryRuntimeModels(
+  body: RuntimeModelCatalogQuery,
+): Promise<RuntimeModelCatalog> {
+  const query = RuntimeModelCatalogQuerySchema.parse(body);
+  return RuntimeModelCatalogSchema.parse(
+    await request("/v1/runtime-models/query", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(query),
+    }),
+  );
 }
 
 /**

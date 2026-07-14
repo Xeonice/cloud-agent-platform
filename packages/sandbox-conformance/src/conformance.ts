@@ -7,6 +7,7 @@ import {
   type SandboxDeliverWorkspaceResult,
   type SandboxProviderPort,
   type SandboxReadoptionPort,
+  type SandboxResolvedEnvironmentMetadata,
   type SandboxRetentionDescriptorPort,
   type SandboxSelectedRunPort,
   type SandboxTerminalDescriptorPort,
@@ -15,6 +16,7 @@ import {
   type SandboxWorkspaceDescriptor,
   type SandboxWorkspaceDescriptorPort,
   type SelectedSandboxRun,
+  type TaskModelIntent,
 } from '@cap/sandbox-core';
 import {
   missingCapabilities,
@@ -37,6 +39,9 @@ export interface SandboxProviderConformanceOptions<
   readonly requiredCapabilities?: readonly SandboxProviderCapability[];
   readonly cloneSpec?: TCloneSpec | null;
   readonly runtimeId?: TRuntimeId | null;
+  readonly modelIntent?: TaskModelIntent;
+  readonly executionMode?: 'interactive-pty' | 'headless-exec';
+  readonly environment?: SandboxResolvedEnvironmentMetadata | null;
   readonly deliverArgs?: SandboxDeliverWorkspaceArgs;
   /**
    * Set to false for providers whose fake/test backend intentionally does not
@@ -85,6 +90,14 @@ export function createSandboxProviderConformanceScenarios<
       branch: `cap/${taskId}`,
       commitMessage: 'CAP sandbox conformance',
     } satisfies SandboxDeliverWorkspaceArgs);
+  const provisionContext = {
+    taskId,
+    cloneSpec: options.cloneSpec,
+    modelIntent: options.modelIntent ?? ({ kind: 'runtime-default' } as const),
+    runtimeId: String(options.runtimeId ?? 'codex'),
+    executionMode: options.executionMode ?? ('interactive-pty' as const),
+    environment: options.environment,
+  };
 
   const scenarios: SandboxProviderConformanceScenario[] = [
     {
@@ -106,24 +119,15 @@ export function createSandboxProviderConformanceScenarios<
     {
       name: 'provision returns an addressable task connection',
       async run() {
-        const connection = await options.provider.provision({
-          taskId,
-          cloneSpec: options.cloneSpec,
-        });
+        const connection = await options.provider.provision(provisionContext);
         assertSandboxConnection(connection, taskId, assert);
       },
     },
     {
       name: 'provision is idempotent for the same task and cloneSpec',
       async run() {
-        const first = await options.provider.provision({
-          taskId,
-          cloneSpec: options.cloneSpec,
-        });
-        const second = await options.provider.provision({
-          taskId,
-          cloneSpec: options.cloneSpec,
-        });
+        const first = await options.provider.provision(provisionContext);
+        const second = await options.provider.provision(provisionContext);
         assertSandboxConnection(first, taskId, assert);
         assert.deepEqual(
           second,

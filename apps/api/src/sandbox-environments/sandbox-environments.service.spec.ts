@@ -46,8 +46,11 @@ interface FakeValidationRow {
   providerFamily: string;
   runtimeId: string | null;
   sourceKind: string;
+  resolvedLocator?: string | null;
   resolvedDigest: string | null;
   resolvedChecksum: string | null;
+  runtimeArtifactChecksums?: Record<string, string> | null;
+  cliArtifactChecksum?: string | null;
   sandboxMetadata: unknown;
   probes: unknown;
   error: string | null;
@@ -113,16 +116,14 @@ function buildService(
   }
 
   function attachLatestValidation(row: FakeEnvironmentRow): FakeEnvironmentRow & {
-    validations: { checkedAt: Date; sandboxMetadata: unknown }[];
+    validations: FakeValidationRow[];
   } {
     const latest = validations
       .filter((validation) => validation.environmentId === row.id)
       .sort((a, b) => b.checkedAt.getTime() - a.checkedAt.getTime())[0];
     return {
       ...row,
-      validations: latest
-        ? [{ checkedAt: latest.checkedAt, sandboxMetadata: latest.sandboxMetadata }]
-        : [],
+      validations: latest ? [latest] : [],
     };
   }
 
@@ -194,6 +195,8 @@ function buildService(
       },
     },
     sandboxEnvironmentValidation: {
+      findUnique: async (args: { where: { id: string } }) =>
+        validations.find((validation) => validation.id === args.where.id) ?? null,
       create: async (args: {
         data: Omit<FakeValidationRow, 'id' | 'checkedAt' | 'error'> & {
           error?: string | null;
@@ -529,6 +532,278 @@ test('resolveForTask returns a compatible ready default and ignores incompatible
     providerFamily: 'boxlite',
   });
   assert.equal(missing, null);
+});
+
+test('selection preserves managed default, explicit null deployment fallback, and exact UUID', async () => {
+  const { service } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      isDefault: true,
+      source: { kind: 'aio-docker-image', image: 'cap/aio:v1' },
+      providerFamilies: ['aio'],
+      runtimeIds: ['codex'],
+    }),
+  ]);
+
+  assert.equal(
+    (
+      await service.resolveForTask({
+        selection: { kind: 'managed-default' },
+        runtimeId: 'codex',
+        providerFamily: 'aio',
+      })
+    )?.environmentId,
+    ENV_A,
+  );
+  assert.equal(
+    await service.resolveForTask({
+      selection: { kind: 'deployment-default' },
+      runtimeId: 'codex',
+      providerFamily: 'aio',
+    }),
+    null,
+  );
+  assert.equal(
+    (
+      await service.resolveForTask({
+        selection: { kind: 'managed', environmentId: ENV_A },
+        runtimeId: 'codex',
+        providerFamily: 'aio',
+      })
+    )?.environmentId,
+    ENV_A,
+  );
+});
+
+test('immutable managed resolution joins passed validation and canonicalizes digest source', async () => {
+  const { service, validations } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      isDefault: true,
+      source: { kind: 'aio-docker-image', image: 'registry.example/cap/aio:mutable' },
+      providerFamilies: ['aio'],
+      runtimeIds: ['codex'],
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+  validations.push({
+    id: VALIDATION_A,
+    environmentId: ENV_A,
+    status: 'passed',
+    providerFamily: 'aio',
+    runtimeId: 'codex',
+    sourceKind: 'aio-docker-image',
+    resolvedLocator: 'registry.example/cap/aio:mutable@sha256:resolved-image',
+    resolvedDigest: 'sha256:resolved-image',
+    resolvedChecksum: null,
+    cliArtifactChecksum: `sha256:${'a'.repeat(64)}`,
+    sandboxMetadata: {
+      schemaVersion: 1,
+      sandboxVersion: '1.2.3',
+      dependencies: { codex: '0.144.1' },
+    },
+    probes: [],
+    error: null,
+    contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    checkedAt: new Date('2026-07-14T00:00:00.000Z'),
+  });
+
+  const resolved = await service.resolveImmutableForTask({
+    selection: { kind: 'managed', environmentId: ENV_A },
+    runtimeId: 'codex',
+    providerFamily: 'aio',
+  });
+  assert.equal(
+    resolved?.sourceRef,
+    'registry.example/cap/aio:mutable@sha256:resolved-image',
+  );
+  assert.equal(resolved?.digest, 'sha256:resolved-image');
+  assert.deepEqual(resolved?.metadata?.sandboxMetadata, {
+    schemaVersion: 1,
+    sandboxVersion: '1.2.3',
+    dependencies: { codex: '0.144.1' },
+  });
+});
+
+test('immutable managed resolution follows lastValidationId instead of a newer unrelated row', async () => {
+  const pinnedValidationId = '00000000-0000-4000-a000-000000000402';
+  const newerValidationId = '00000000-0000-4000-a000-000000000403';
+  const { service, validations } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      source: { kind: 'aio-docker-image', image: 'registry.example/cap/aio:mutable' },
+      providerFamilies: ['aio'],
+      runtimeIds: ['codex'],
+      lastValidationId: pinnedValidationId,
+    }),
+  ]);
+  const metadata = {
+    schemaVersion: 1,
+    sandboxVersion: '1.2.3',
+    dependencies: { codex: '0.144.1' },
+  };
+  validations.push(
+    {
+      id: pinnedValidationId,
+      environmentId: ENV_A,
+      status: 'passed',
+      providerFamily: 'aio',
+      runtimeId: 'codex',
+      sourceKind: 'aio-docker-image',
+      resolvedLocator: 'sha256:pinned-image',
+      resolvedDigest: 'sha256:pinned-image',
+      resolvedChecksum: null,
+      cliArtifactChecksum: `sha256:${'b'.repeat(64)}`,
+      sandboxMetadata: metadata,
+      probes: [],
+      error: null,
+      contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+      checkedAt: new Date('2026-07-14T00:00:00.000Z'),
+    },
+    {
+      id: newerValidationId,
+      environmentId: ENV_A,
+      status: 'passed',
+      providerFamily: 'aio',
+      runtimeId: 'codex',
+      sourceKind: 'aio-docker-image',
+      resolvedLocator: 'sha256:newer-but-unpinned-image',
+      resolvedDigest: 'sha256:newer-but-unpinned-image',
+      resolvedChecksum: null,
+      cliArtifactChecksum: `sha256:${'c'.repeat(64)}`,
+      sandboxMetadata: metadata,
+      probes: [],
+      error: null,
+      contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+      checkedAt: new Date('2026-07-14T01:00:00.000Z'),
+    },
+  );
+
+  const resolved = await service.resolveImmutableForTask({
+    selection: { kind: 'managed', environmentId: ENV_A },
+    runtimeId: 'codex',
+    providerFamily: 'aio',
+  });
+
+  assert.equal(resolved?.digest, 'sha256:pinned-image');
+  assert.equal(
+    resolved?.sourceRef,
+    'sha256:pinned-image',
+  );
+});
+
+test('one immutable validation carries distinct CLI artifacts for both supported runtimes', async () => {
+  const { service, validations } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      source: { kind: 'aio-docker-image', image: 'registry.example/cap/aio:mutable' },
+      providerFamilies: ['aio'],
+      runtimeIds: [],
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+  const codexChecksum = `sha256:${'a'.repeat(64)}`;
+  const claudeChecksum = `sha256:${'b'.repeat(64)}`;
+  validations.push({
+    id: VALIDATION_A,
+    environmentId: ENV_A,
+    status: 'passed',
+    providerFamily: 'aio',
+    runtimeId: null,
+    sourceKind: 'aio-docker-image',
+    resolvedLocator: 'sha256:multi-runtime-image',
+    resolvedDigest: 'sha256:multi-runtime-image',
+    resolvedChecksum: null,
+    runtimeArtifactChecksums: {
+      codex: codexChecksum,
+      'claude-code': claudeChecksum,
+    },
+    cliArtifactChecksum: null,
+    sandboxMetadata: {
+      schemaVersion: 1,
+      sandboxVersion: '1.2.3',
+      dependencies: { codex: '0.144.1', 'claude-code': '2.1.207' },
+    },
+    probes: [],
+    error: null,
+    contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    checkedAt: new Date('2026-07-14T00:00:00.000Z'),
+  });
+
+  const codex = await service.resolveImmutableForTask({
+    selection: { kind: 'managed', environmentId: ENV_A },
+    runtimeId: 'codex',
+    providerFamily: 'aio',
+  });
+  const claude = await service.resolveImmutableForTask({
+    selection: { kind: 'managed', environmentId: ENV_A },
+    runtimeId: 'claude-code',
+    providerFamily: 'aio',
+  });
+
+  assert.equal(codex?.cliArtifactChecksum, codexChecksum);
+  assert.equal(claude?.cliArtifactChecksum, claudeChecksum);
+  assert.deepEqual(codex?.runtimeArtifactChecksums, {
+    codex: codexChecksum,
+    'claude-code': claudeChecksum,
+  });
+});
+
+test('immutable resolution fails closed for stale or identity-less validation', async () => {
+  const { service, validations } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:mutable' },
+      providerFamilies: ['boxlite'],
+      runtimeIds: ['codex'],
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+  validations.push({
+    id: VALIDATION_A,
+    environmentId: ENV_A,
+    status: 'passed',
+    providerFamily: 'boxlite',
+    runtimeId: 'codex',
+    sourceKind: 'boxlite-image',
+    resolvedLocator: 'cap/boxlite@sha256:unresolved',
+    resolvedDigest: null,
+    resolvedChecksum: null,
+    cliArtifactChecksum: `sha256:${'d'.repeat(64)}`,
+    sandboxMetadata: {
+      schemaVersion: 1,
+      sandboxVersion: '1.2.3',
+      dependencies: { codex: '0.144.1' },
+    },
+    probes: [],
+    error: null,
+    contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    checkedAt: new Date('2026-07-14T00:00:00.000Z'),
+  });
+
+  await assert.rejects(
+    () =>
+      service.resolveImmutableForTask({
+        selection: { kind: 'managed', environmentId: ENV_A },
+        runtimeId: 'codex',
+        providerFamily: 'boxlite',
+      }),
+    (error: unknown) => {
+      if (!(error instanceof BadRequestException)) return false;
+      const response = error.getResponse();
+      return (
+        typeof response === 'object' &&
+        response !== null &&
+        'error' in response &&
+        response.error === 'sandbox_environment_immutable_identity_unavailable'
+      );
+    },
+  );
 });
 
 test('resolveImageParameterProfileForTask returns selected image params without exposing them in metadata', async () => {

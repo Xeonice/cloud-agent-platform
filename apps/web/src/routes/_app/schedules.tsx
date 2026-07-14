@@ -62,6 +62,8 @@ export function immediateDispatchSuccessMessage(
     const periodResult =
       periodRun.status === "created"
         ? "本周期已执行"
+        : periodRun.status === "retrying"
+          ? "模型目录不可用，本周期等待重试"
         : periodRun.status === "failed"
           ? "本周期派发失败"
           : periodRun.status === "skipped"
@@ -436,6 +438,10 @@ export function ScheduleDetail({
         <DetailRow label="任务" value={schedule.taskTemplate.prompt} />
         <DetailRow label="仓库" value={repoLabel(repos, schedule.repoId)} />
         <DetailRow label="运行时" value={runtimeLabel(schedule)} />
+        <DetailRow
+          label="请求模型"
+          value={schedule.taskTemplate.model ?? "运行时默认"}
+        />
         <DetailRow label="重复" value={recurrenceSummary(schedule)} />
         <DetailRow label="时区" value={schedule.timezone} />
         <DetailRow
@@ -462,10 +468,16 @@ export function ScheduleDetail({
           }
         />
         <DetailRow
-          label="最近任务状态"
+          label="最近运行状态"
           value={
             schedule.latestRun ? (
-              <RunResultBadges run={schedule.latestRun} />
+              <span className="grid gap-1.5">
+                <RunResultBadges run={schedule.latestRun} />
+                <RunModelFailureDetails
+                  run={schedule.latestRun}
+                  timeZone={schedule.timezone}
+                />
+              </span>
             ) : (
               "无记录"
             )
@@ -547,6 +559,8 @@ export function CurrentPeriodSummary({
   const status = period.run
     ? period.run.status === "created"
       ? "本周期已执行"
+      : period.run.status === "retrying"
+        ? "本周期等待重试"
       : period.run.status === "claimed"
         ? "本周期处理中"
         : "本周期已处理"
@@ -638,9 +652,11 @@ export function RunList({
                 {formatDate(run.scheduledFor, timeZone)}
               </time>
             </div>
-            {run.error ? (
-              <p className="mt-1 text-xs text-muted-foreground">{run.error}</p>
-            ) : null}
+            <RunModelFailureDetails
+              run={run}
+              timeZone={timeZone}
+              className="mt-1"
+            />
             <RuntimeCredentialAlert
               failure={run.taskFailure}
               compact
@@ -675,6 +691,7 @@ export function LatestRunSummary({
   return (
     <div className="grid gap-1">
       <RunResultBadges run={run} />
+      <RunModelFailureDetails run={run} timeZone={timeZone} />
       {actualAt ? (
         <time
           dateTime={actualAt.toISOString()}
@@ -700,7 +717,7 @@ export function RunResultBadges({
   if (!run) return <Badge variant="outline">无记录</Badge>;
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
-      {dispatchBadge(run.status)}
+      {dispatchBadge(run)}
       {taskStatusBadge(run.taskStatus ?? null)}
       {showFailure && run.taskFailure ? (
         <RuntimeAuthFailureBadge failure={run.taskFailure} />
@@ -709,13 +726,68 @@ export function RunResultBadges({
   );
 }
 
-function dispatchBadge(status: ScheduleRunResponse["status"]) {
-  if (status === "created") {
+function dispatchBadge(
+  run: ScheduleRunResponse | NonNullable<ScheduleResponse["latestRun"]>,
+) {
+  if (run.status === "created") {
     return <Badge className="bg-success text-white">派发成功</Badge>;
   }
-  if (status === "skipped") return <Badge variant="secondary">已跳过</Badge>;
-  if (status === "failed") return <Badge variant="destructive">派发失败</Badge>;
+  if (run.status === "skipped") return <Badge variant="secondary">已跳过</Badge>;
+  if (run.status === "retrying") {
+    return <Badge variant="outline">模型目录不可用，等待重试</Badge>;
+  }
+  if (run.status === "failed") {
+    if (run.errorCode === "runtime_model_not_available") {
+      return <Badge variant="destructive">所选模型不可用</Badge>;
+    }
+    if (run.errorCode === "runtime_model_catalog_unavailable") {
+      return <Badge variant="destructive">模型目录不可用，重试已结束</Badge>;
+    }
+    return <Badge variant="destructive">派发失败</Badge>;
+  }
   return <Badge variant="outline">派发处理中</Badge>;
+}
+
+function RunModelFailureDetails({
+  run,
+  timeZone,
+  className,
+}: {
+  run: ScheduleRunResponse | NonNullable<ScheduleResponse["latestRun"]>;
+  timeZone: string;
+  className?: string;
+}) {
+  if (!run.errorCode && !run.error && run.status !== "retrying") return null;
+  return (
+    <span
+      className={cn(
+        "grid gap-1 text-xs font-normal text-muted-foreground",
+        className,
+      )}
+    >
+      {run.errorCode ? (
+        <span>
+          错误代码：<code className="font-mono">{run.errorCode}</code>
+        </span>
+      ) : null}
+      {run.error ? <span>错误信息：{run.error}</span> : null}
+      {run.status === "retrying" ? (
+        <>
+          <span>重试尝试：第 {run.retryAttempt ?? "?"} 次</span>
+          {run.retryAt ? (
+            <span>
+              下次重试：
+              <time dateTime={run.retryAt.toISOString()}>
+                {formatDate(run.retryAt, timeZone)}
+              </time>
+            </span>
+          ) : null}
+        </>
+      ) : run.errorCode === "runtime_model_not_available" ? (
+        <span>请编辑定时任务并选择当前可用模型。</span>
+      ) : null}
+    </span>
+  );
 }
 
 function taskStatusBadge(status: TaskStatus | null) {
@@ -750,6 +822,7 @@ function currentPeriodActionLabel(
   const run = schedule.currentPeriod?.run;
   if (!run) return "立即执行";
   if (run.status === "created") return "本周期已执行";
+  if (run.status === "retrying") return "等待模型目录重试";
   if (run.status === "claimed") return "本周期处理中";
   return "本周期已处理";
 }

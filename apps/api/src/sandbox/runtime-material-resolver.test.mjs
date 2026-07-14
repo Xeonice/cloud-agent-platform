@@ -89,10 +89,16 @@ try {
       },
     ]);
     assert.deepEqual(registry.ids(), ['custom-runtime']);
-    assert.deepEqual(await registry.resolve({ id: 'custom-runtime' }, { taskId: 'task-1' }), {
+    assert.deepEqual(await registry.resolve({ id: 'custom-runtime' }, {
+      taskId: 'task-1',
+      ownerUserId: 'owner-1',
+    }), {
       authJson: 'auth-for-task-1',
     });
-    assert.equal(await registry.resolve({ id: 'missing-runtime' }, { taskId: 'task-1' }), null);
+    assert.equal(await registry.resolve({ id: 'missing-runtime' }, {
+      taskId: 'task-1',
+      ownerUserId: 'owner-1',
+    }), null);
     assert.throws(
       () =>
         registry.register({
@@ -113,7 +119,10 @@ try {
         },
       },
     });
-    assert.deepEqual(await registry.resolve({ id: 'codex' }, { taskId: 'task-owner' }), {
+    assert.deepEqual(await registry.resolve({ id: 'codex' }, {
+      taskId: 'task-owner',
+      ownerUserId: 'owner-1',
+    }), {
       authJson: '{"auth":true}',
     });
     assert.deepEqual(received, ['task-owner']);
@@ -142,29 +151,53 @@ try {
       codexAuthSource: source,
       warn: (message) => warnings.push(message),
     });
-    assert.deepEqual(await registry.resolve({ id: 'codex' }, { taskId: 'safe' }), {
+    assert.deepEqual(await registry.resolve({ id: 'codex' }, {
+      taskId: 'safe',
+      ownerUserId: 'owner-1',
+    }), {
       codexCompatible: {
         baseUrl: 'https://93.184.216.34/v1',
         apiKey: 'key',
         model: 'model',
       },
     });
-    assert.equal(await registry.resolve({ id: 'codex' }, { taskId: 'unsafe' }), null);
+    assert.equal(await registry.resolve({ id: 'codex' }, {
+      taskId: 'unsafe',
+      ownerUserId: 'owner-1',
+    }), null);
     assert(warnings.some((message) => message.includes('failed host-safety validation')));
   });
 
   await test('default registry maps claude material and degrades when source is absent', async () => {
+    const owners = [];
     const registry = mod.createDefaultRuntimeMaterialResolverRegistry({
       codexAuthSource: { async getCodexAuth() { return null; } },
-      claudeAuthSource: { async getClaudeAuth() { return { oauthToken: 'claude-token' }; } },
+      claudeAuthSource: {
+        async getClaudeAuth(ownerUserId) {
+          owners.push(ownerUserId);
+          return { oauthToken: 'claude-token' };
+        },
+      },
     });
-    assert.deepEqual(await registry.resolve({ id: 'claude-code' }, { taskId: 'task-1' }), {
+    assert.deepEqual(await registry.resolve({ id: 'claude-code' }, {
+      taskId: 'task-1',
+      ownerUserId: 'owner-1',
+    }), {
       oauthToken: 'claude-token',
     });
+    assert.deepEqual(owners, ['owner-1']);
+    assert.equal(await registry.resolve({ id: 'claude-code' }, {
+      taskId: 'task-no-owner',
+      ownerUserId: null,
+    }), null);
+    assert.deepEqual(owners, ['owner-1'], 'missing owner fails before credential lookup');
     const absent = mod.createDefaultRuntimeMaterialResolverRegistry({
       codexAuthSource: { async getCodexAuth() { return null; } },
     });
-    assert.equal(await absent.resolve({ id: 'claude-code' }, { taskId: 'task-1' }), null);
+    assert.equal(await absent.resolve({ id: 'claude-code' }, {
+      taskId: 'task-1',
+      ownerUserId: 'owner-1',
+    }), null);
   });
 } finally {
   rmSync(outDir, { recursive: true, force: true });

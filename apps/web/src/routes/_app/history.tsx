@@ -27,7 +27,11 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 
 import type { Repo, Task } from "@cap/contracts";
-import { reposQuery, tasksQuery } from "@/lib/api/queries";
+import {
+  reposQuery,
+  sessionHistoryQuery,
+  tasksQuery,
+} from "@/lib/api/queries";
 import { agentLabel } from "@/lib/runtime-label";
 import { StatusPill } from "@/components/status-pill";
 import { RuntimeAuthFailureBadge } from "@/components/runtime-credential-alert";
@@ -39,6 +43,10 @@ import {
   type HistoryFilter,
 } from "@/components/history/history-result";
 import { formatClock, formatElapsed } from "@/components/history/format";
+import {
+  actualModelFromHistory,
+  TaskModelFacts,
+} from "@/components/task-model-facts";
 
 export const Route = createFileRoute("/_app/history")({
   loader: async ({ context }) => {
@@ -111,6 +119,7 @@ function HistoryPage() {
         result.label,
         task.failure?.message ?? "",
         task.failure?.code ?? "",
+        task.model ?? "运行时默认",
       ]
         .join(" ")
         .toLowerCase();
@@ -213,6 +222,10 @@ function HistoryRow({
   const elapsed = formatElapsed(task.createdAt, now);
   const clock = formatClock(task.createdAt);
   const timeText = queued ? clock : `${elapsed} · ${clock}`;
+  const { data: history } = useQuery({
+    ...sessionHistoryQuery(task.id),
+    enabled: !queued,
+  });
 
   return (
     <article className="border-b border-border last:border-b-0 min-[821px]:hover:bg-[#fbfbfb]">
@@ -242,6 +255,12 @@ function HistoryRow({
             {agentLabel(task.runtime)}
           </strong>
           <span className="truncate font-mono text-[11px] leading-[1.22]">{timeText}</span>
+          <TaskModelFacts
+            requestedModel={task.model}
+            actualModel={actualModelFromHistory(history)}
+            compact
+            className="mt-0.5"
+          />
         </div>
 
         {/* Action */}

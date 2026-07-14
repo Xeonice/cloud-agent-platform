@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { Sha256ChecksumSchema } from './artifact-checksum.js';
 import { SandboxMetadataSchema } from './sandbox-metadata.js';
 
 export const SandboxEnvironmentStatusSchema = z.enum([
@@ -89,6 +90,16 @@ export type SandboxEnvironmentValidationProbe = z.infer<
   typeof SandboxEnvironmentValidationProbeSchema
 >;
 
+export const RuntimeArtifactChecksumsSchema = z
+  .object({
+    codex: Sha256ChecksumSchema.optional(),
+    'claude-code': Sha256ChecksumSchema.optional(),
+  })
+  .strict();
+export type RuntimeArtifactChecksums = z.infer<
+  typeof RuntimeArtifactChecksumsSchema
+>;
+
 export const SandboxEnvironmentValidationSchema = z.object({
   id: z.string().uuid(),
   environmentId: z.string().uuid(),
@@ -96,8 +107,12 @@ export const SandboxEnvironmentValidationSchema = z.object({
   providerFamily: SandboxEnvironmentProviderFamilySchema,
   runtimeId: z.string().min(1).nullable().optional(),
   sourceKind: SandboxEnvironmentSourceKindSchema,
+  resolvedLocator: z.string().min(1).nullable().optional(),
   resolvedDigest: z.string().min(1).nullable().optional(),
   resolvedChecksum: z.string().min(1).nullable().optional(),
+  runtimeArtifactChecksums: RuntimeArtifactChecksumsSchema.nullable().optional(),
+  /** @deprecated Read runtimeArtifactChecksums for new validation rows. */
+  cliArtifactChecksum: Sha256ChecksumSchema.nullable().optional(),
   sandboxMetadata: SandboxMetadataSchema.nullable().optional(),
   probes: z.array(SandboxEnvironmentValidationProbeSchema).nullable().optional(),
   error: z.string().nullable().optional(),

@@ -12,7 +12,7 @@ test('official sandbox Dockerfiles write the same required metadata contract', (
     assert.match(dockerfile, /write-sandbox-metadata\.mjs/);
     assert.match(
       dockerfile,
-      /COPY scripts\/write-sandbox-metadata\.mjs scripts\/sandbox-version-selector\.mjs \/usr\/local\/bin\//,
+      /COPY scripts\/write-sandbox-metadata\.mjs scripts\/sandbox-version-selector\.mjs scripts\/runtime-artifact-checksum\.mjs \/usr\/local\/bin\//,
     );
     assert.match(dockerfile, /--sandbox-version "\$\{CAP_VERSION\}"/);
     assert.match(dockerfile, /--dependency "codex=\$\{CODEX_VERSION\}"/);

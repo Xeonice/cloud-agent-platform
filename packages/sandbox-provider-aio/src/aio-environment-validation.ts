@@ -13,6 +13,7 @@ export interface AioEnvironmentValidationResult {
   readonly status: 'passed' | 'failed';
   readonly providerFamily: 'aio';
   readonly sourceKind: string | undefined;
+  readonly resolvedLocator?: string;
   readonly resolvedDigest?: string;
   readonly probes: readonly SandboxPreflightProbeResult[];
   readonly error?: string;
@@ -23,16 +24,31 @@ export async function validateAioEnvironment(args: {
   readonly environment: SandboxResolvedEnvironmentMetadata;
   readonly controller: AioSandboxContainerController;
   readonly requiredCommands?: readonly AioEnvironmentValidationCommand[];
+  readonly onCleanupError?: (error: unknown) => void;
 }): Promise<AioEnvironmentValidationResult> {
   const taskId = args.taskId ?? `env-probe-${Date.now()}`;
   const probes: SandboxPreflightProbeResult[] = [];
   const sourceKind = args.environment.sourceKind;
+  let resolvedIdentity:
+    | { readonly locator: string; readonly digest: string }
+    | undefined;
+  let outcome: AioEnvironmentValidationResult;
 
   try {
     if (sourceKind !== 'aio-docker-image') {
       throw new Error(`AIO cannot validate environment source ${sourceKind ?? 'unknown'}`);
     }
-    const provisioned = await args.controller.createAndStart(taskId, args.environment);
+    if (!args.environment.sourceRef) {
+      throw new Error('AIO environment image reference is missing.');
+    }
+    resolvedIdentity = await args.controller.resolveImageIdentity(
+      args.environment.sourceRef,
+    );
+    const provisioned = await args.controller.createAndStart(taskId, {
+      ...args.environment,
+      sourceRef: resolvedIdentity.locator,
+      digest: resolvedIdentity.digest,
+    });
     probes.push({
       name: 'create-container',
       ok: true,
@@ -66,11 +82,12 @@ export async function validateAioEnvironment(args: {
         );
       }
     }
-    return {
+    outcome = {
       status: 'passed',
       providerFamily: 'aio',
       sourceKind,
-      resolvedDigest: args.environment.digest,
+      resolvedLocator: resolvedIdentity.locator,
+      resolvedDigest: resolvedIdentity.digest,
       probes,
     };
   } catch (err) {
@@ -78,15 +95,25 @@ export async function validateAioEnvironment(args: {
     if (probes.length === 0 || probes.at(-1)?.ok !== false) {
       probes.push({ name: 'validation-error', ok: false, output: message });
     }
-    return {
+    outcome = {
       status: 'failed',
       providerFamily: 'aio',
       sourceKind,
-      resolvedDigest: args.environment.digest,
+      resolvedLocator: resolvedIdentity?.locator,
+      resolvedDigest: resolvedIdentity?.digest,
       probes,
       error: message,
     };
-  } finally {
-    await args.controller.removeSandbox(taskId).catch(() => undefined);
   }
+  try {
+    await args.controller.removeSandbox(taskId);
+  } catch (error) {
+    args.onCleanupError?.(error);
+    if (outcome.status === 'passed') {
+      const message = 'AIO environment probe cleanup failed.';
+      probes.push({ name: 'cleanup', ok: false, output: message });
+      outcome = { ...outcome, status: 'failed', probes, error: message };
+    }
+  }
+  return outcome;
 }

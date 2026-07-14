@@ -107,6 +107,42 @@ describe("sendApiRequest — session-signed transport", () => {
     });
   });
 
+  it("executes the manifest-driven runtime-model catalog request and preserves its structured failure", async () => {
+    const body = {
+      code: "runtime_model_catalog_unavailable",
+      message: "Runtime model catalog is temporarily unavailable.",
+      retryable: true,
+      capacity: { scope: "owner", retryAfterMs: 1500 },
+    };
+    const spy = stubFetch(
+      new Response(JSON.stringify(body), {
+        status: 503,
+        statusText: "Service Unavailable",
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const result = await sendApiRequest({
+      method: "POST",
+      path: "/v1/runtime-models/query",
+      body: { runtime: "codex", sandboxEnvironmentId: null },
+    });
+
+    const [url, init] = spy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://api.test/v1/runtime-models/query");
+    expect(init).toMatchObject({
+      method: "POST",
+      credentials: "include",
+      body: JSON.stringify({ runtime: "codex", sandboxEnvironmentId: null }),
+    });
+    expect(result).toMatchObject({
+      kind: "response",
+      status: 503,
+      ok: false,
+      json: body,
+    });
+  });
+
   it("targets the api base URL (not an arbitrary host — no open SSRF box)", async () => {
     const spy = stubFetch(
       new Response(JSON.stringify({}), {

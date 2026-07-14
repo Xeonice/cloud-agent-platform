@@ -8,9 +8,8 @@ import type {
 import {
   AioPtyClient,
   createAioTerminalTransportFactory,
-  type AioExecutionMode,
   type AioPtyClientMode,
-  type AioTerminalRuntime,
+  type AioResolvedTaskLaunchContext,
 } from '@cap/sandbox-provider-aio';
 import { createBoxLiteTerminalTransportFactory } from '@cap/sandbox-provider-boxlite';
 import { buildSandboxCommandExecutor } from './command-executor.js';
@@ -18,6 +17,8 @@ import {
   createTerminalTransportRegistry,
   resolveTerminalDescriptor,
 } from '../terminal/transport.js';
+import { materializeTaskModel } from './model-material.js';
+import { SandboxRuntimeModelSetupError } from '@cap/sandbox-core';
 
 export interface SandboxTerminalTransportLogger {
   warn(message: string): void;
@@ -38,10 +39,10 @@ export interface OpenSandboxTerminalPtyArgs {
   readonly selectedRun?: SelectedSandboxRun | null;
   readonly onExit?: (status: TerminalExitStatus) => void;
   readonly mode?: AioPtyClientMode;
-  readonly resolveRuntime?: () => Promise<AioTerminalRuntime | undefined>;
-  readonly resolveExecutionMode?: () => Promise<
-    AioExecutionMode | null | undefined
-  >;
+  readonly resolveTaskLaunchContext?: () => Promise<AioResolvedTaskLaunchContext>;
+  readonly onRuntimeSetupFailure?: (
+    code: 'runtime_model_setup_failed',
+  ) => void;
 }
 
 export { resolveTerminalDescriptor };
@@ -65,22 +66,28 @@ export function openSandboxTerminalPty(
   args: OpenSandboxTerminalPtyArgs,
 ): AgentTerminalPty {
   const { taskId, wsUrl, baseUrl } = args.connection;
+  const mode = args.mode ?? 'launch-or-attach';
+  if (mode === 'launch-or-attach' && !args.resolveTaskLaunchContext) {
+    throw new SandboxRuntimeModelSetupError('launch-context');
+  }
+  const commandExecutor = buildSandboxCommandExecutor({
+    connection: args.connection,
+    selectedRun: args.selectedRun,
+  });
   return new AioPtyClient(
     taskId,
     wsUrl,
     baseUrl,
     args.onExit,
-    args.mode ?? 'launch-or-attach',
-    args.resolveRuntime,
-    args.resolveExecutionMode,
+    mode,
+    args.resolveTaskLaunchContext,
     buildSandboxTerminalTransportFactory({
       taskId,
       connection: args.connection,
       selectedRun: args.selectedRun,
     }),
-    buildSandboxCommandExecutor({
-      connection: args.connection,
-      selectedRun: args.selectedRun,
-    }),
+    commandExecutor,
+    (intent) => materializeTaskModel(commandExecutor, intent),
+    args.onRuntimeSetupFailure,
   );
 }

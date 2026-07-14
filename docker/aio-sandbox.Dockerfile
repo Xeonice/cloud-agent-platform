@@ -152,7 +152,7 @@ RUN ln -sfn ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
   && node --version \
   && npm --version
 
-COPY scripts/write-sandbox-metadata.mjs scripts/sandbox-version-selector.mjs /usr/local/bin/
+COPY scripts/write-sandbox-metadata.mjs scripts/sandbox-version-selector.mjs scripts/runtime-artifact-checksum.mjs /usr/local/bin/
 
 # Install the Codex CLI at the version pinned by the CODEX_VERSION build-arg
 # (default 0.144.1; overridable per the matrix above; never an unpinned latest).

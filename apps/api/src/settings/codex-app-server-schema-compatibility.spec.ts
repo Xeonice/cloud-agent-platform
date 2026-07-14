@@ -35,6 +35,23 @@ test('checked App Server fixture retains every consumed 0.144.1 login shape', ()
     completedRequired: ['success'],
     completedProperties: ['error', 'loginId', 'success'],
   });
+  assert.deepEqual(schemaFixture.modelList, {
+    requestMethod: 'model/list',
+    paramsProperties: ['cursor', 'includeHidden', 'limit'],
+    responseRequired: ['data'],
+    responseProperties: ['data', 'nextCursor'],
+    modelRequired: [
+      'defaultReasoningEffort',
+      'description',
+      'displayName',
+      'hidden',
+      'id',
+      'isDefault',
+      'model',
+      'supportedReasoningEfforts',
+    ],
+    selectorField: 'model',
+  });
   assert.deepEqual(CODEX_APP_SERVER_ARGV, [
     'codex',
     'app-server',

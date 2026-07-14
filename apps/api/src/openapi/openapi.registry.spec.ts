@@ -18,7 +18,14 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PUBLIC_V1_OPERATIONS } from '@cap/contracts';
+import {
+  PUBLIC_V1_OPERATIONS,
+  PublicV1EventHeadersSchema,
+  PublicV1IdempotencyHeadersSchema,
+  RuntimeModelCatalogQuerySchema,
+  type PublicV1OperationShape,
+} from '@cap/contracts';
+import { REST_PUBLIC_ERROR_MAP } from '../public-surface/public-error-mappings';
 
 import {
   buildV1OpenApiDocument,
@@ -50,8 +57,12 @@ type LooseSchema = {
   enum?: unknown[];
   minimum?: number;
   maximum?: number;
+  minLength?: number;
+  maxLength?: number;
   required?: string[];
   properties?: Record<string, LooseSchema>;
+  items?: LooseSchema;
+  additionalProperties?: boolean;
   not?: LooseSchema;
   oneOf?: LooseSchema[];
   anyOf?: LooseSchema[];
@@ -76,6 +87,15 @@ function documentRouteKeys(doc: ReturnType<typeof buildV1OpenApiDocument>): stri
   return keys.sort();
 }
 
+function documentedOperation(
+  doc: ReturnType<typeof buildV1OpenApiDocument>,
+  operation: PublicV1OperationShape,
+): Record<string, unknown> {
+  const documented = asLoose(doc).paths?.[operation.path]?.[operation.method];
+  assert.ok(documented, `${operation.id} is present in OpenAPI`);
+  return documented as Record<string, unknown>;
+}
+
 test('the generated spec is a valid OpenAPI 3.1 document', () => {
   const doc = asLoose(buildV1OpenApiDocument());
   assert.equal(doc.openapi, '3.1.0');
@@ -94,24 +114,66 @@ test('the spec covers every canonical manifest operation and nothing else', () =
     'every served /v1 route is in the document and the document has no extra routes',
   );
 
-  // Sanity: every current task/repo/schedule path is present.
-  const paths = Object.keys(asLoose(doc).paths ?? {});
-  for (const expected of [
-    '/v1/tasks',
-    '/v1/tasks/{id}',
-    '/v1/tasks/{id}/stop',
-    '/v1/tasks/{id}/transcript',
-    '/v1/tasks/{id}/events',
-    '/v1/repos',
-    '/v1/repos/{id}',
-    '/v1/schedules',
-    '/v1/schedules/{id}',
-    '/v1/schedules/{id}/pause',
-    '/v1/schedules/{id}/resume',
-    '/v1/schedules/{id}/dispatch',
-    '/v1/schedules/{id}/runs',
-  ]) {
-    assert.ok(paths.includes(expected), `document includes ${expected}`);
+  const documentedIds = Object.values(asLoose(doc).paths ?? {})
+    .flatMap((path) => Object.values(path ?? {}))
+    .map((operation) =>
+      operation && typeof operation === 'object' && 'operationId' in operation
+        ? operation.operationId
+        : undefined,
+    )
+    .filter((id): id is string => typeof id === 'string')
+    .sort();
+  assert.deepEqual(
+    documentedIds,
+    PUBLIC_V1_OPERATIONS.map((operation) => operation.id).sort(),
+    'OpenAPI operation ids are the exact registry set',
+  );
+});
+
+test('request and success metadata are projected from every exact registry entry', () => {
+  const doc = buildV1OpenApiDocument();
+  for (const exactOperation of PUBLIC_V1_OPERATIONS) {
+    const operation: PublicV1OperationShape = exactOperation;
+    const documented = documentedOperation(doc, operation) as {
+      parameters?: Array<{ in?: string; name?: string }>;
+      requestBody?: unknown;
+      'x-cap-rest-success-projection'?: unknown;
+      responses?: Record<
+        string,
+        { content?: Record<string, { schema?: LooseSchema }> }
+      >;
+    };
+    const parameters = documented.parameters ?? [];
+    for (const source of ['params', 'query', 'headers'] as const) {
+      const location =
+        source === 'params' ? 'path' : source === 'headers' ? 'header' : 'query';
+      const actual = parameters
+        .filter((parameter) => parameter.in === location)
+        .map((parameter) => parameter.name)
+        .sort();
+      const expected = Object.keys(operation.input[source]?.wire.shape ?? {})
+        .sort();
+      assert.deepEqual(actual, expected, `${operation.id} ${source} projection`);
+    }
+    assert.equal(
+      documented.requestBody !== undefined,
+      operation.input.body !== undefined,
+      `${operation.id} body projection`,
+    );
+    assert.deepEqual(
+      documented['x-cap-rest-success-projection'],
+      operation.restOutputProjection,
+      `${operation.id} REST output decision`,
+    );
+
+    const success = documented.responses?.[String(operation.successStatus)];
+    assert.ok(success, `${operation.id} success response is documented`);
+    const contentType = operation.responseContentType ?? 'application/json';
+    assert.equal(
+      success.content?.[contentType]?.schema !== undefined,
+      operation.responseSchema !== null,
+      `${operation.id} output schema projection`,
+    );
   }
 });
 
@@ -145,6 +207,11 @@ test('every operation documents supported auth, required scope, and standard fai
           security?: Array<Record<string, string[]>>;
           responses?: Record<string, { description?: string }>;
           'x-cap-required-scope'?: string;
+          'x-cap-owner-policy'?: string;
+          'x-cap-public-error-codes'?: string[];
+          'x-cap-rest-error-projection'?: { exposesStableCode?: boolean };
+          'x-cap-rest-error-projections'?: unknown[];
+          'x-cap-mcp'?: unknown;
         }
       | undefined;
     assert.ok(documented, `${operation.id} is present in OpenAPI`);
@@ -154,6 +221,42 @@ test('every operation documents supported auth, required scope, and standard fai
       { sessionCookie: [] },
     ]);
     assert.equal(documented['x-cap-required-scope'], operation.scope);
+    assert.equal(documented['x-cap-owner-policy'], operation.ownerPolicy);
+    assert.deepEqual(
+      documented['x-cap-public-error-codes'],
+      operation.errors,
+    );
+    assert.equal(
+      documented['x-cap-rest-error-projection']?.exposesStableCode,
+      false,
+    );
+    assert.deepEqual(
+      documented['x-cap-rest-error-projections'],
+      ('restErrorProjections' in operation
+        ? operation.restErrorProjections
+        : []
+      ).map((projection) => ({
+        code: projection.code,
+        status: projection.status,
+        projector: projection.projector.kind,
+        reason: projection.reason,
+        responseSchema: projection.responseSchema ? 'declared' : 'default',
+        headers:
+          'headersSchema' in projection && projection.headersSchema
+          ? Object.keys(projection.headersSchema.shape)
+          : [],
+      })),
+    );
+    assert.deepEqual(
+      documented['x-cap-mcp'],
+      'tool' in operation.mcp
+        ? {
+            status: 'mapped',
+            tool: operation.mcp.tool,
+            differences: operation.mcp.differences,
+          }
+        : { status: 'excluded', reason: operation.mcp.excluded },
+    );
     assert.match(documented.responses?.['400']?.description ?? '', /Bad Request/);
     assert.match(documented.responses?.['401']?.description ?? '', /Unauthorized/);
     assert.match(documented.responses?.['403']?.description ?? '', /Forbidden/);
@@ -162,6 +265,69 @@ test('every operation documents supported auth, required scope, and standard fai
       `${operation.id} 403 description names ${operation.scope}`,
     );
   }
+});
+
+test('error response statuses are exactly registry codes plus explicit projections', () => {
+  const doc = buildV1OpenApiDocument();
+  for (const exactOperation of PUBLIC_V1_OPERATIONS) {
+    const operation: PublicV1OperationShape = exactOperation;
+    const documented = documentedOperation(doc, operation) as {
+      responses?: Record<string, { description?: string }>;
+    };
+    const expected = new Set<string>([
+      String(operation.successStatus),
+      '401',
+      ...operation.errors.map((code) =>
+        String(REST_PUBLIC_ERROR_MAP[code].status),
+      ),
+      ...(operation.restErrorProjections ?? []).map((projection) =>
+        String(projection.status),
+      ),
+    ]);
+    assert.deepEqual(
+      Object.keys(documented.responses ?? {}).sort(),
+      [...expected].sort(),
+      `${operation.id} error status projection`,
+    );
+  }
+});
+
+test('MCP exclusions and protocol differences remain explicit in OpenAPI metadata', () => {
+  const doc = buildV1OpenApiDocument();
+  const extension = (id: string) => {
+    const operation = PUBLIC_V1_OPERATIONS.find((entry) => entry.id === id);
+    assert.ok(operation);
+    return documentedOperation(doc, operation) as { 'x-cap-mcp'?: unknown };
+  };
+
+  assert.deepEqual(extension('tasks.events')['x-cap-mcp'], {
+    status: 'excluded',
+    reason:
+      'MCP tools use request/response transport; lifecycle SSE is REST-only.',
+  });
+  assert.deepEqual(
+    (extension('tasks.create')['x-cap-mcp'] as {
+      differences?: Array<{ kind?: string }>;
+    }).differences?.map((difference) => difference.kind),
+    [
+      'rest-only-header',
+      'mcp-compatibility-text',
+      'mcp-description-projection',
+      'rate-limit-policy',
+    ],
+  );
+  assert.deepEqual(
+    (extension('runtimeModels.query')['x-cap-mcp'] as {
+      differences?: Array<{ kind?: string }>;
+    }).differences?.map((difference) => difference.kind),
+    ['rate-limit-policy'],
+  );
+  assert.deepEqual(
+    (extension('schedules.delete')['x-cap-mcp'] as {
+      differences?: Array<{ kind?: string }>;
+    }).differences?.map((difference) => difference.kind),
+    ['success-projection'],
+  );
 });
 
 test('operation-specific 404, 409, and 429 responses are documented', () => {
@@ -182,6 +348,136 @@ test('operation-specific 404, 409, and 429 responses are documented', () => {
   assert.equal(responses('/v1/tasks', 'get')['409'], undefined);
 });
 
+test('runtime-model errors and Retry-After are documented on the exact operations', () => {
+  const doc = asLoose(buildV1OpenApiDocument());
+  type LooseResponse = {
+    description?: string;
+    headers?: Record<string, unknown>;
+    content?: Record<string, { schema?: LooseSchema }>;
+  };
+  const responses = (path: string, method: string) =>
+    ((doc.paths?.[path]?.[method] as
+      | { responses?: Record<string, LooseResponse> }
+      | undefined)?.responses ?? {});
+  const schema = (path: string, method: string, status: string) =>
+    responses(path, method)[status]?.content?.['application/json']?.schema;
+  const schemaVariants = (value: LooseSchema | undefined) =>
+    value?.oneOf ?? value?.anyOf ?? (value ? [value] : []);
+
+  const catalog429 = schema('/v1/runtime-models/query', 'post', '429');
+  const catalog503 = schema('/v1/runtime-models/query', 'post', '503');
+  assert.deepEqual(catalog429?.properties?.code?.enum, [
+    'runtime_model_catalog_unavailable',
+  ]);
+  assert.ok(catalog429?.properties?.capacity, '429 exposes safe capacity data');
+  assert.deepEqual(catalog503?.properties?.code?.enum, [
+    'runtime_model_catalog_unavailable',
+  ]);
+  assert.ok(
+    responses('/v1/runtime-models/query', 'post')['429']?.headers?.[
+      'Retry-After'
+    ],
+    'catalog throttle documents Retry-After',
+  );
+
+  for (const [path, method] of [
+    ['/v1/tasks', 'post'],
+    ['/v1/schedules', 'post'],
+    ['/v1/schedules/{id}', 'patch'],
+  ] as const) {
+    assert.deepEqual(schema(path, method, '422')?.properties?.code?.enum, [
+      'runtime_model_not_available',
+    ]);
+    const serviceUnavailable = schemaVariants(schema(path, method, '503'));
+    assert.ok(
+      serviceUnavailable.some(
+        (candidate) =>
+          candidate.properties?.code?.enum?.[0] ===
+          'runtime_model_catalog_unavailable',
+      ),
+      `${method.toUpperCase()} ${path} documents catalog-unavailable 503`,
+    );
+    assert.ok(
+      serviceUnavailable.some(
+        (candidate) =>
+          candidate.properties?.reason?.enum?.[0] === 'runtime not configured',
+      ),
+      `${method.toUpperCase()} ${path} documents runtime-not-configured 503`,
+    );
+  }
+
+  assert.ok(schema('/v1/schedules/{id}/resume', 'post', '503'));
+  assert.ok(schema('/v1/schedules/{id}/dispatch', 'post', '503'));
+  assert.equal(
+    responses('/v1/schedules/{id}/dispatch', 'post')['422'],
+    undefined,
+    'manual dispatch returns the persisted schedule outcome instead of a sync 422',
+  );
+});
+
+test('model selectors stay optional bounded strings without a static id enum', () => {
+  const doc = asLoose(buildV1OpenApiDocument());
+  const requestSchema = (path: string, method: string): LooseSchema => {
+    const operation = doc.paths?.[path]?.[method] as
+      | {
+          requestBody?: {
+            content?: Record<string, { schema?: LooseSchema }>;
+          };
+        }
+      | undefined;
+    const result =
+      operation?.requestBody?.content?.['application/json']?.schema;
+    assert.ok(result);
+    return result;
+  };
+
+  const task = requestSchema('/v1/tasks', 'post');
+  const scheduleCreate = requestSchema('/v1/schedules', 'post');
+  const scheduleUpdate = requestSchema('/v1/schedules/{id}', 'patch');
+  const selectors = [
+    task.properties?.model,
+    scheduleCreate.properties?.taskTemplate?.properties?.model,
+    scheduleUpdate.properties?.taskTemplate?.properties?.model,
+  ];
+  for (const selector of selectors) {
+    assert.equal(selector?.type, 'string');
+    assert.equal(selector?.minLength, 1);
+    assert.equal(selector?.maxLength, 2048);
+    assert.equal(selector?.enum, undefined, 'model ids are never a static enum');
+  }
+  assert.ok(!task.required?.includes('model'));
+  assert.ok(!scheduleCreate.properties?.taskTemplate?.required?.includes('model'));
+});
+
+test('runtime-model catalog request is strict and contains no client owner field', () => {
+  const doc = asLoose(buildV1OpenApiDocument());
+  const operation = doc.paths?.['/v1/runtime-models/query']?.post as
+    | {
+        requestBody?: {
+          content?: Record<string, { schema?: LooseSchema }>;
+        };
+        responses?: Record<
+          string,
+          { content?: Record<string, { schema?: LooseSchema }> }
+        >;
+      }
+    | undefined;
+  const request =
+    operation?.requestBody?.content?.['application/json']?.schema;
+  assert.ok(request);
+  assert.equal(request.additionalProperties, false);
+  assert.deepEqual(
+    Object.keys(request.properties ?? {}).sort(),
+    Object.keys(RuntimeModelCatalogQuerySchema.shape).sort(),
+  );
+
+  const catalog = operation?.responses?.['200']?.content?.['application/json']
+    ?.schema;
+  const item = catalog?.properties?.models?.items;
+  assert.equal(item?.properties?.id?.enum, undefined);
+  assert.equal(item?.properties?.id?.maxLength, 2048);
+});
+
 test('task create and lifecycle events document their protocol headers', () => {
   const doc = asLoose(buildV1OpenApiDocument());
   const parameterNames = (path: string, method: string): string[] => {
@@ -193,10 +489,14 @@ test('task create and lifecycle events document their protocol headers', () => {
       .map((parameter) => parameter.name ?? '');
   };
 
-  assert.deepEqual(parameterNames('/v1/tasks', 'post'), ['Idempotency-Key']);
-  assert.deepEqual(parameterNames('/v1/tasks/{id}/events', 'get'), [
-    'Last-Event-ID',
-  ]);
+  assert.deepEqual(
+    parameterNames('/v1/tasks', 'post'),
+    Object.keys(PublicV1IdempotencyHeadersSchema.shape),
+  );
+  assert.deepEqual(
+    parameterNames('/v1/tasks/{id}/events', 'get'),
+    Object.keys(PublicV1EventHeadersSchema.shape),
+  );
 });
 
 test('SSE is documented as framed text with a separate data payload schema', () => {

@@ -23,8 +23,11 @@ import {
   type IRuntimeReadiness,
 } from './tasks.service';
 import { PrismaService } from '../prisma/prisma.service';
-import type { Runtime } from '@cap/contracts';
+import type { Runtime, RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
 import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
+import type { RuntimeModelPreflightService } from '../runtime-models/runtime-model-preflight.service';
+import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import type { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -32,6 +35,35 @@ import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox
 
 const REPO_ID = '00000000-0000-4000-a000-000000000001';
 const TASK_ID = '00000000-0000-4000-a000-000000000002';
+const ENVIRONMENT_ID = '00000000-0000-4000-a000-000000000003';
+const VALIDATION_ID = '00000000-0000-4000-a000-000000000004';
+
+const MODEL_SNAPSHOT: RuntimeExecutionEnvironmentSnapshot = {
+  schemaVersion: 1,
+  kind: 'managed',
+  managedEnvironmentId: ENVIRONMENT_ID,
+  validationId: VALIDATION_ID,
+  validationContractVersion: 'v2',
+  provider: 'aio-local',
+  providerFamily: 'aio',
+  source: {
+    kind: 'aio-docker-image',
+    locator: 'sha256:image-a',
+    digest: 'sha256:image-a',
+    checksum: null,
+  },
+  immutableIdentity: 'sha256:image-a',
+  fingerprint: 'sha256:environment-a',
+  sandboxMetadata: {
+    schemaVersion: 1,
+    sandboxVersion: '1.2.3',
+    dependencies: { codex: '0.144.1' },
+  },
+  sandboxMetadataChecksum: `sha256:${'a'.repeat(64)}`,
+  cliVersion: '0.144.1',
+  cliArtifactChecksum: `sha256:${'b'.repeat(64)}`,
+  resolvedAt: '2026-07-14T00:00:00.000Z',
+};
 
 /** Minimal fake Prisma that returns a canned repo + task row. */
 function makeFakePrisma(runtimeOverride?: string | null): PrismaService {
@@ -76,6 +108,9 @@ function makeFakePrisma(runtimeOverride?: string | null): PrismaService {
     repo: {
       findUnique: async () => repoRow,
     },
+    accountSettings: {
+      findUnique: async () => null,
+    },
     task: {
       create: async ({ data }: { data: Parameters<typeof makeTaskRow>[0] }) =>
         makeTaskRow(data),
@@ -110,12 +145,20 @@ function makeFakeReadiness(configured: boolean): IRuntimeReadiness {
   };
 }
 
+function makeOpenTaskModelCapability(): TaskModelCapabilityService {
+  return {
+    assertOpen() {},
+  } as unknown as TaskModelCapabilityService;
+}
+
 /** Build a TasksService with the given optional collaborators (no guardrails, no audit, no sandbox). */
 function buildService(opts: {
   prisma: PrismaService;
   registry?: IAgentRuntimeRegistry;
   claudeReadiness?: IRuntimeReadiness;
   sandboxEnvironments?: SandboxEnvironmentsService;
+  runtimeModelPreflight?: RuntimeModelPreflightService;
+  taskModelCapability?: TaskModelCapabilityService;
 }): TasksService {
   // TasksService constructor signature (positional DI):
   //   (prisma, guardrails?, audit?, sandbox?, runtimes?, claudeReadiness?, sandboxOwners?, sandboxEnvironments?)
@@ -128,6 +171,8 @@ function buildService(opts: {
     opts.claudeReadiness,
     undefined,       // sandboxOwners (optional)
     opts.sandboxEnvironments,
+    opts.runtimeModelPreflight,
+    opts.taskModelCapability,
   );
 }
 
@@ -146,7 +191,7 @@ test('create with runtime=claude-code echoes claude-code in the response', async
   const result = await svc.create(REPO_ID, {
     prompt: 'hello',
     runtime: 'claude-code',
-  });
+  }, 'owner-1');
 
   assert.equal(result.runtime, 'claude-code', 'response.runtime must echo back claude-code');
 });
@@ -171,7 +216,11 @@ test('create calls registry.resolve() with the runtime value from the body', asy
     claudeReadiness: makeFakeReadiness(true),
   });
 
-  await svc.create(REPO_ID, { prompt: 'hello', runtime: 'claude-code' });
+  await svc.create(
+    REPO_ID,
+    { prompt: 'hello', runtime: 'claude-code' },
+    'owner-1',
+  );
 
   assert.ok(calls.length >= 1, 'registry.resolve must be called at least once');
   assert.equal(calls[0], 'claude-code', 'resolve must receive the requested runtime');
@@ -200,7 +249,12 @@ test('create with claude-code and unconfigured readiness throws RuntimeNotConfig
   });
 
   await assert.rejects(
-    () => svc.create(REPO_ID, { prompt: 'hello', runtime: 'claude-code' }),
+    () =>
+      svc.create(
+        REPO_ID,
+        { prompt: 'hello', runtime: 'claude-code' },
+        'owner-1',
+      ),
     (err: unknown) => {
       assert.ok(
         err instanceof RuntimeNotConfiguredException,
@@ -250,6 +304,7 @@ function makeCapturingPrisma(options: {
           idleTimeoutMs: null,
           deadlineMs: null,
           runtime: data.runtime ?? null,
+          model: data.model ?? null,
           sandboxEnvironmentId: data.sandboxEnvironmentId ?? null,
         };
       },
@@ -273,14 +328,20 @@ function makeNoHeadlessRegistry(): IAgentRuntimeRegistry {
 test('programmatic create persists executionMode=headless-exec', async () => {
   const { prisma, box } = makeCapturingPrisma();
   const svc = buildService({ prisma, registry: makeFakeRegistry().registry });
-  await svc.createTaskRow(REPO_ID, { prompt: 'go' }, prisma, 'headless-exec');
+  const prepared = await svc.prepareTaskCreate(
+    REPO_ID,
+    { prompt: 'go' },
+    'headless-exec',
+  );
+  await svc.createTaskRow(prepared, prisma);
   assert.equal(box.value?.executionMode, 'headless-exec');
 });
 
 test('console (default) create persists executionMode=null → reads back interactive-pty', async () => {
   const { prisma, box } = makeCapturingPrisma();
   const svc = buildService({ prisma, registry: makeFakeRegistry().registry });
-  await svc.createTaskRow(REPO_ID, { prompt: 'go' }, prisma);
+  const prepared = await svc.prepareTaskCreate(REPO_ID, { prompt: 'go' });
+  await svc.createTaskRow(prepared, prisma);
   assert.equal(box.value?.executionMode, null);
 });
 
@@ -288,23 +349,21 @@ test('headless create on a runtime without headless-exec fails closed (BadReques
   const { prisma } = makeCapturingPrisma();
   const svc = buildService({ prisma, registry: makeNoHeadlessRegistry() });
   await assert.rejects(
-    () => svc.createTaskRow(REPO_ID, { prompt: 'go' }, prisma, 'headless-exec'),
+    () =>
+      svc.prepareTaskCreate(REPO_ID, { prompt: 'go' }, 'headless-exec'),
     (err: unknown) => err instanceof BadRequestException,
   );
 });
 
 test('create with sandboxEnvironmentId resolves and persists the selected environment', async () => {
   const { prisma, box } = makeCapturingPrisma();
-  const calls: Array<{
-    requestedEnvironmentId?: string | null;
-    runtimeId: string;
-  }> = [];
+  const calls: Array<{ selection: unknown; runtimeId: string }> = [];
   const sandboxEnvironmentId = '00000000-0000-4000-a000-000000000777';
   const sandboxEnvironments = {
-    async resolveForTask(args: { requestedEnvironmentId?: string | null; runtimeId: string }) {
+    async resolveForTask(args: { selection: { kind: string; environmentId?: string }; runtimeId: string }) {
       calls.push(args);
       return {
-        environmentId: args.requestedEnvironmentId,
+        environmentId: args.selection.environmentId,
         sourceKind: 'aio-docker-image',
         sourceRef: 'cap/aio:latest',
         providerFamily: 'aio',
@@ -317,16 +376,21 @@ test('create with sandboxEnvironmentId resolves and persists the selected enviro
     sandboxEnvironments,
   });
 
-  const response = await svc.createTaskRow(
+  const prepared = await svc.prepareTaskCreate(
     REPO_ID,
     {
       prompt: 'go',
       sandboxEnvironmentId,
     },
-    prisma,
   );
+  const response = await svc.createTaskRow(prepared, prisma);
 
-  assert.deepEqual(calls, [{ requestedEnvironmentId: sandboxEnvironmentId, runtimeId: 'codex' }]);
+  assert.deepEqual(calls, [
+    {
+      selection: { kind: 'managed', environmentId: sandboxEnvironmentId },
+      runtimeId: 'codex',
+    },
+  ]);
   assert.equal(box.value?.sandboxEnvironmentId, sandboxEnvironmentId);
   assert.equal(response.sandboxEnvironmentId, sandboxEnvironmentId);
 });
@@ -334,15 +398,12 @@ test('create with sandboxEnvironmentId resolves and persists the selected enviro
 test('create without sandboxEnvironmentId resolves the current user default image', async () => {
   const defaultSandboxEnvironmentId = '00000000-0000-4000-a000-000000000778';
   const { prisma, box } = makeCapturingPrisma({ defaultSandboxEnvironmentId });
-  const calls: Array<{
-    requestedEnvironmentId?: string | null;
-    runtimeId: string;
-  }> = [];
+  const calls: Array<{ selection: unknown; runtimeId: string }> = [];
   const sandboxEnvironments = {
-    async resolveForTask(args: { requestedEnvironmentId?: string | null; runtimeId: string }) {
+    async resolveForTask(args: { selection: { kind: string; environmentId?: string }; runtimeId: string }) {
       calls.push(args);
       return {
-        environmentId: args.requestedEnvironmentId,
+        environmentId: args.selection.environmentId,
         sourceKind: 'aio-docker-image',
         sourceRef: 'cap/aio:latest',
         providerFamily: 'aio',
@@ -355,16 +416,22 @@ test('create without sandboxEnvironmentId resolves the current user default imag
     sandboxEnvironments,
   });
 
-  const response = await svc.createTaskRow(
+  const prepared = await svc.prepareTaskCreate(
     REPO_ID,
     { prompt: 'go' },
-    prisma,
     'interactive-pty',
     'user-1',
   );
+  const response = await svc.createTaskRow(prepared, prisma);
 
   assert.deepEqual(calls, [
-    { requestedEnvironmentId: defaultSandboxEnvironmentId, runtimeId: 'codex' },
+    {
+      selection: {
+        kind: 'managed',
+        environmentId: defaultSandboxEnvironmentId,
+      },
+      runtimeId: 'codex',
+    },
   ]);
   assert.equal(box.value?.sandboxEnvironmentId, defaultSandboxEnvironmentId);
   assert.equal(response.sandboxEnvironmentId, defaultSandboxEnvironmentId);
@@ -374,12 +441,9 @@ test('create with sandboxEnvironmentId=null bypasses the current user default im
   const { prisma, box } = makeCapturingPrisma({
     defaultSandboxEnvironmentId: '00000000-0000-4000-a000-000000000779',
   });
-  const calls: Array<{
-    requestedEnvironmentId?: string | null;
-    runtimeId: string;
-  }> = [];
+  const calls: Array<{ selection: unknown; runtimeId: string }> = [];
   const sandboxEnvironments = {
-    async resolveForTask(args: { requestedEnvironmentId?: string | null; runtimeId: string }) {
+    async resolveForTask(args: { selection: unknown; runtimeId: string }) {
       calls.push(args);
       return null;
     },
@@ -390,17 +454,129 @@ test('create with sandboxEnvironmentId=null bypasses the current user default im
     sandboxEnvironments,
   });
 
-  const response = await svc.createTaskRow(
+  const prepared = await svc.prepareTaskCreate(
     REPO_ID,
     { prompt: 'go', sandboxEnvironmentId: null },
-    prisma,
     'interactive-pty',
     'user-1',
   );
+  const response = await svc.createTaskRow(prepared, prisma);
 
-  assert.deepEqual(calls, [{ requestedEnvironmentId: null, runtimeId: 'codex' }]);
+  assert.deepEqual(calls, [
+    { selection: { kind: 'deployment-default' }, runtimeId: 'codex' },
+  ]);
   assert.equal(box.value?.sandboxEnvironmentId, null);
   assert.equal(response.sandboxEnvironmentId, null);
+});
+
+test('explicit model preflight persists the normalized selector and exact immutable snapshot', async () => {
+  const { prisma, box } = makeCapturingPrisma();
+  const calls: Array<{ ownerUserId: string; model?: string }> = [];
+  const runtimeModelPreflight = {
+    async preflight(input: { ownerUserId: string; model?: string }) {
+      calls.push(input);
+      return {
+        ok: true as const,
+        value: {
+          intent: 'explicit' as const,
+          model: input.model!,
+          executionEnvironmentSnapshot: MODEL_SNAPSHOT,
+        },
+      };
+    },
+  } as RuntimeModelPreflightService;
+  const svc = buildService({
+    prisma,
+    registry: makeFakeRegistry().registry,
+    runtimeModelPreflight,
+    taskModelCapability: makeOpenTaskModelCapability(),
+  });
+
+  const prepared = await svc.prepareTaskCreate(
+    REPO_ID,
+    { prompt: 'go', model: '  provider/model:v1  ' },
+    'headless-exec',
+    'owner-1',
+  );
+  const response = await svc.createTaskRow(prepared, prisma);
+
+  assert.deepEqual(calls, [
+    { ownerUserId: 'owner-1', model: 'provider/model:v1', query: { runtime: 'codex' } },
+  ]);
+  assert.equal(box.value?.model, 'provider/model:v1');
+  assert.deepEqual(box.value?.executionEnvironmentSnapshot, MODEL_SNAPSHOT);
+  assert.equal(box.value?.sandboxEnvironmentId, ENVIRONMENT_ID);
+  assert.equal(response.model, 'provider/model:v1');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(response, 'executionEnvironmentSnapshot'),
+    false,
+    'internal immutable snapshot is never projected publicly',
+  );
+});
+
+test('omitted model performs zero catalog calls and persists explicit null intent', async () => {
+  const { prisma, box } = makeCapturingPrisma();
+  let preflightCalls = 0;
+  const svc = buildService({
+    prisma,
+    registry: makeFakeRegistry().registry,
+    runtimeModelPreflight: {
+      async preflight() {
+        preflightCalls += 1;
+        throw new Error('catalog must not be consulted for omitted model');
+      },
+    } as unknown as RuntimeModelPreflightService,
+  });
+
+  const prepared = await svc.prepareTaskCreate(REPO_ID, { prompt: 'go' });
+  const response = await svc.createTaskRow(prepared, prisma);
+
+  assert.equal(preflightCalls, 0);
+  assert.equal(box.value?.model, null);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(
+      box.value ?? {},
+      'executionEnvironmentSnapshot',
+    ),
+    false,
+  );
+  assert.equal(response.model, null);
+});
+
+test('model preflight failure creates no Task row', async () => {
+  const { prisma, box } = makeCapturingPrisma();
+  const svc = buildService({
+    prisma,
+    registry: makeFakeRegistry().registry,
+    runtimeModelPreflight: {
+      async preflight() {
+        return {
+          ok: false as const,
+          error: {
+            code: 'runtime_model_not_available' as const,
+            message: 'The requested runtime model is not available.',
+            retryable: false as const,
+            context: { runtime: 'codex' as const, model: 'missing/model' },
+          },
+        };
+      },
+    } as unknown as RuntimeModelPreflightService,
+    taskModelCapability: makeOpenTaskModelCapability(),
+  });
+
+  await assert.rejects(
+    () =>
+      svc.create(
+        REPO_ID,
+        { prompt: 'go', model: 'missing/model' },
+        'owner-1',
+        'headless-exec',
+      ),
+    (err: unknown) =>
+      err instanceof RuntimeModelPreflightError &&
+      err.domainError.code === 'runtime_model_not_available',
+  );
+  assert.equal(box.value, null, 'preflight failure must precede Task insertion');
 });
 
 // ---------------------------------------------------------------------------

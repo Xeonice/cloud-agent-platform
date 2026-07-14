@@ -14,8 +14,13 @@ import { V1ReposController } from './v1-repos.controller';
 import { V1TranscriptController } from './v1-transcript.controller';
 import { V1EventsController } from './v1-events.controller';
 import { V1SchedulesController } from './v1-schedules.controller';
+import { V1RuntimeModelsController } from './v1-runtime-models.controller';
 import { IdempotencyService } from './idempotency.service';
 import { ScheduledTasksModule } from '../scheduled-tasks/scheduled-tasks.module';
+import {
+  PublicV1ContractInterceptor,
+  PublicV1OperationGuard,
+} from '../public-surface/public-v1-operation';
 
 /**
  * The public `/v1` feature module (public-v1-api, Integration task 3.6).
@@ -51,10 +56,9 @@ import { ScheduledTasksModule } from '../scheduled-tasks/scheduled-tasks.module'
  * `TasksModule` — the token is module-local to whoever needs it, and this binding
  * resolves to the one concrete durable service instance.
  *
- * Auth/scope/rate posture is enforced by the GLOBAL guards (the `AuthGuard` then
- * the per-principal throttler, both `APP_GUARD`s wired in `AppModule`) plus the
- * per-handler `hasScope` checks in the controllers — none of which this module
- * re-declares.
+ * Auth/rate posture is enforced by the global guards (`AuthGuard` then the
+ * per-principal throttler). Exact operation scope, owner, input, and output
+ * policy is enforced by the registry-driven Public V1 guard/interceptor below.
  */
 @Module({
   imports: [TasksModule, ReposModule, ScheduledTasksModule],
@@ -64,9 +68,12 @@ import { ScheduledTasksModule } from '../scheduled-tasks/scheduled-tasks.module'
     V1TranscriptController,
     V1EventsController,
     V1SchedulesController,
+    V1RuntimeModelsController,
   ],
   providers: [
     IdempotencyService,
+    PublicV1OperationGuard,
+    PublicV1ContractInterceptor,
     // Re-bind the durable transcript store under the token the transcript
     // controller injects, to the concrete service TasksModule exports. Keeps
     // TasksModule untouched (the v1 track only CONSUMES the store).

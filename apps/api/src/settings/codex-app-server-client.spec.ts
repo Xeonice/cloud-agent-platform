@@ -54,6 +54,20 @@ const INITIALIZE_RESULT = {
   userAgent: 'codex_cli_rs/0.144.1',
 };
 
+function model(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    id: 'preset-id',
+    model: 'provider/model-selector',
+    displayName: 'Model Selector',
+    description: 'Fixture model',
+    hidden: false,
+    isDefault: false,
+    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: [],
+    ...overrides,
+  };
+}
+
 function isClientError(kind: CodexAppServerClientError['kind']): (error: unknown) => boolean {
   return (error) => error instanceof CodexAppServerClientError && error.kind === kind;
 }
@@ -136,6 +150,118 @@ test('sends account/login/cancel with the exact login id and accepts notFound', 
     (message) => message.method === 'account/login/cancel',
   );
   assert.deepEqual(cancel?.params, { loginId: 'login-to-cancel' });
+});
+
+test('lists visible models across bounded pages using the protocol model selector, not preset id', async () => {
+  const harness = new ProtocolHarness();
+  const client = new CodexAppServerClient(
+    { readable: harness.fromServer, writable: harness.toServer },
+    { requestTimeoutMs: 500 },
+  );
+  harness.onMessage = (message) => {
+    if (message.method === 'initialize') {
+      harness.send({ id: message.id, result: INITIALIZE_RESULT });
+    } else if (message.method === 'model/list') {
+      const cursor = (message.params as { cursor?: unknown }).cursor;
+      harness.send({
+        id: message.id,
+        result:
+          cursor === null
+            ? {
+                data: [
+                  model(),
+                  model({
+                    id: 'hidden-preset',
+                    model: 'hidden-selector',
+                    displayName: 'Hidden',
+                    hidden: true,
+                  }),
+                ],
+                nextCursor: 'page-2',
+              }
+            : {
+                data: [
+                  model({
+                    id: 'preset-2',
+                    model: 'selector-2',
+                    displayName: 'Second',
+                    isDefault: true,
+                  }),
+                ],
+                nextCursor: null,
+              },
+      });
+    }
+  };
+
+  await client.initialize();
+  assert.deepEqual(await client.listAllModels(), [
+    {
+      id: 'preset-id',
+      model: 'provider/model-selector',
+      displayName: 'Model Selector',
+      hidden: false,
+      isDefault: false,
+    },
+    {
+      id: 'preset-2',
+      model: 'selector-2',
+      displayName: 'Second',
+      hidden: false,
+      isDefault: true,
+    },
+  ]);
+  assert.deepEqual(
+    harness.messages
+      .filter((message) => message.method === 'model/list')
+      .map((message) => message.params),
+    [
+      { cursor: null, limit: 100, includeHidden: false },
+      { cursor: 'page-2', limit: 100, includeHidden: false },
+    ],
+  );
+});
+
+test('model listing rejects malformed protocol items and repeated cursors', async (t) => {
+  await t.test('malformed item', async () => {
+    const harness = new ProtocolHarness();
+    const client = new CodexAppServerClient({
+      readable: harness.fromServer,
+      writable: harness.toServer,
+    });
+    harness.onMessage = (message) => {
+      if (message.method === 'initialize') {
+        harness.send({ id: message.id, result: INITIALIZE_RESULT });
+      } else if (message.method === 'model/list') {
+        harness.send({
+          id: message.id,
+          result: { data: [model({ model: '' })], nextCursor: null },
+        });
+      }
+    };
+    await client.initialize();
+    await assert.rejects(client.listAllModels(), isClientError('malformed_message'));
+  });
+
+  await t.test('repeated cursor', async () => {
+    const harness = new ProtocolHarness();
+    const client = new CodexAppServerClient({
+      readable: harness.fromServer,
+      writable: harness.toServer,
+    });
+    harness.onMessage = (message) => {
+      if (message.method === 'initialize') {
+        harness.send({ id: message.id, result: INITIALIZE_RESULT });
+      } else if (message.method === 'model/list') {
+        harness.send({
+          id: message.id,
+          result: { data: [], nextCursor: 'same-cursor' },
+        });
+      }
+    };
+    await client.initialize();
+    await assert.rejects(client.listAllModels(), isClientError('malformed_message'));
+  });
 });
 
 test('rejects malformed and oversized JSONL without echoing protocol contents', async (t) => {

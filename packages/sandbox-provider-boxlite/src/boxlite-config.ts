@@ -492,6 +492,9 @@ function validateCapabilityCombinations(
   if (has('transcript.retained-source') && !has('command.exec')) {
     errors.push('BOXLITE_CAPABILITIES transcript.retained-source requires command.exec');
   }
+  if (has('transcript.retained-read') && !has('command.exec')) {
+    errors.push('BOXLITE_CAPABILITIES transcript.retained-read requires command.exec');
+  }
 }
 
 function parseLocation(

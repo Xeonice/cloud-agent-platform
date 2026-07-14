@@ -28,6 +28,7 @@ import { OpenApiModule } from './openapi/openapi.module';
 import { PrincipalThrottlerGuard } from './rate-limit/principal.throttler-guard';
 import { CreateThrottleGuard } from './rate-limit/create-throttle.guard';
 import { AuthThrottleGuard } from './rate-limit/auth-throttle.guard';
+import { RuntimeModelCatalogThrottleGuard } from './rate-limit/runtime-model-catalog-throttle.guard';
 import { buildThrottlerOptions } from './rate-limit/throttler.options';
 import { MailModule } from './mail/mail.module';
 import { OtpModule } from './auth-otp/otp.module';
@@ -37,6 +38,7 @@ import { PasswordModule } from './auth-password/password.module';
 import { SmtpEnvMigrationModule } from './mail/smtp-env-migration.module';
 import { SandboxEnvironmentsModule } from './sandbox-environments/sandbox-environments.module';
 import { ScheduledTasksModule } from './scheduled-tasks/scheduled-tasks.module';
+import { RuntimeModelsModule } from './runtime-models/runtime-models.module';
 
 /**
  * Root application module.
@@ -117,6 +119,7 @@ import { ScheduledTasksModule } from './scheduled-tasks/scheduled-tasks.module';
     CredsModule,
     SandboxModule,
     SandboxEnvironmentsModule,
+    RuntimeModelsModule,
     ScheduledTasksModule,
     HealthModule,
     ReposModule,
@@ -224,6 +227,10 @@ import { ScheduledTasksModule } from './scheduled-tasks/scheduled-tasks.module';
     {
       provide: APP_GUARD,
       useClass: CreateThrottleGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: RuntimeModelCatalogThrottleGuard,
     },
     // add-private-account-identity (integration task 10.1 / track rate-limit-auth):
     // the THIRD global guard — the anonymous pre-auth brute-force throttler. It

@@ -75,8 +75,41 @@ const taskResponse = {
   runtime: 'codex',
 };
 
+const scheduleResponse = {
+  id: VALID_ID,
+  ownerUserId: 'account-1',
+  repoId: VALID_REPO_ID,
+  name: 'contract schedule',
+  cronExpression: '0 9 * * *',
+  timezone: 'UTC',
+  recurrence: {
+    kind: 'daily',
+    time: '09:00',
+    timezone: 'UTC',
+    label: '每天 09:00',
+  },
+  enabled: true,
+  nextRunAt: new Date('2026-07-11T09:00:00.000Z'),
+  overlapPolicy: 'skip',
+  misfirePolicy: 'fire-once',
+  taskTemplate: {
+    repoId: VALID_REPO_ID,
+    prompt: 'contract dispatch',
+    runtime: 'codex',
+    sandboxEnvironmentId: null,
+    deliver: 'none',
+  },
+  latestRun: null,
+  createdAt: new Date('2026-07-10T00:00:00.000Z'),
+  updatedAt: new Date('2026-07-10T00:00:00.000Z'),
+};
+
 before(async () => {
   const tasks = {
+    async prepareTaskCreate() {
+      businessCalls += 1;
+      throw new Error('unexpected preparation in validation test');
+    },
     async createTaskRow() {
       businessCalls += 1;
       return taskResponse;
@@ -136,19 +169,23 @@ before(async () => {
     ) {
       businessCalls += 1;
       capturedDispatchBody = body;
-      return {};
+      return scheduleResponse;
     },
     delete: scheduleCall,
     listRunsPage: scheduleCall,
   };
 
   const idempotency = {
-    async run(args: {
+    async lookup(args: {
       key: string | null;
-    }): Promise<{ task: typeof taskResponse; created: boolean }> {
+    }): Promise<{
+      kind: 'replay';
+      requestHash: string;
+      task: typeof taskResponse;
+    }> {
       businessCalls += 1;
       capturedIdempotencyKey = args.key;
-      return { task: taskResponse, created: false };
+      return { kind: 'replay', requestHash: 'request-hash', task: taskResponse };
     },
   };
 

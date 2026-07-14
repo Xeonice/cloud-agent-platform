@@ -6,7 +6,10 @@ import type {
   SandboxProviderDescriptor,
   SandboxTranscriptSourceBase,
 } from '@cap/sandbox-core';
-import { scrubSandboxCommandOutput } from '@cap/sandbox-core';
+import {
+  SandboxRuntimeModelSetupError,
+  scrubSandboxCommandOutput,
+} from '@cap/sandbox-core';
 import {
   SANDBOX_METADATA_PATH,
   parseSandboxMetadataText,
@@ -33,6 +36,7 @@ import {
   scrubSandboxImageParameterSecrets,
   type SandboxHostImageParameterProfile,
 } from './image-parameters.js';
+import { materializeTaskModel } from './model-material.js';
 import {
   SandboxProviderRouter,
   type RoutableSandboxProvider,
@@ -144,12 +148,27 @@ export function createConfiguredSandboxProvider<
               providerLabel: 'BoxLite',
             })
           ).id,
-        runtimeSetup: ({ taskId, executor, workspacePath, runtimeId }) =>
+        runtimeSetup: ({
+          taskId,
+          modelIntent,
+          executor,
+          workspacePath,
+          runtimeId,
+        }) =>
           runBoxLiteRuntimeSetup({
             taskId,
+            modelIntent,
             executor,
             workspacePath,
             runtimeId,
+            host,
+          }),
+        transcriptRead: ({ taskId, runtimeId, executor, workspacePath }) =>
+          readBoxLiteTranscriptSource({
+            taskId,
+            runtimeId,
+            executor,
+            workspacePath,
             host,
           }),
         preStopCleanup: ({ taskId, executor }) =>
@@ -174,6 +193,15 @@ export function createConfiguredSandboxProvider<
       preferLocation: readSandboxLocationEnv('CAP_SANDBOX_PREFER_LOCATION'),
       explicitProviderFamily: explicitProviderFamilyLabel(providerFamily),
       ownerStore: host.ownerStore,
+      resolveTaskProviderId: async (taskId) => {
+        const context = await host.provisionLookup.getTaskLaunchContext(taskId);
+        if (context.modelIntent.kind === 'runtime-default') return null;
+        const providerId = context.environment?.providerId;
+        if (!providerId) {
+          throw new SandboxRuntimeModelSetupError('snapshot');
+        }
+        return providerId;
+      },
     },
   );
 }
@@ -245,7 +273,7 @@ function createAioProviderDescriptor<
           metadata: { sandboxMetadata },
         };
       },
-      runtimeSetup: async ({ taskId, executor, runtimeId }) => {
+      runtimeSetup: async ({ taskId, modelIntent, executor, runtimeId }) => {
         try {
           const runtime = resolveProvisionHookRuntime({
             provisionRuntimes,
@@ -264,6 +292,7 @@ function createAioProviderDescriptor<
             runtimeId: runtime.id,
             scrubOutput: scrubAioExecSecrets,
           });
+          await materializeTaskModel(executor, modelIntent);
           await runRuntimeSetup({
             executor,
             taskId,
@@ -403,14 +432,36 @@ function resolveProvisionHookRuntime<
   readonly runtimeId?: TRuntimeId | null;
   readonly providerLabel: string;
 }): SandboxHostRuntime<TAuthMaterial> {
-  return (
-    args.provisionRuntimes.get(args.taskId) ??
-    resolveRuntimeFromId({
-      host: args.host,
-      runtimeId: args.runtimeId,
-      providerLabel: args.providerLabel,
-    })
-  );
+  const cached = args.provisionRuntimes.get(args.taskId);
+  if (cached) return cached;
+  if (args.runtimeId === null || args.runtimeId === undefined) {
+    throw new SandboxRuntimeModelSetupError('runtime-resolution');
+  }
+  return resolveRequiredRuntimeFromId({
+    host: args.host,
+    runtimeId: args.runtimeId,
+  });
+}
+
+function resolveRequiredRuntimeFromId<
+  TCloneSpec,
+  TRuntimeId,
+  TTranscriptSource extends SandboxTranscriptSourceBase,
+  TAuthMaterial,
+>(args: {
+  readonly host: SandboxHostHarness<
+    TCloneSpec,
+    TRuntimeId,
+    TTranscriptSource,
+    TAuthMaterial
+  >;
+  readonly runtimeId: TRuntimeId;
+}): SandboxHostRuntime<TAuthMaterial> {
+  try {
+    return args.host.runtimeRegistry.resolve(args.runtimeId);
+  } catch {
+    throw new SandboxRuntimeModelSetupError('runtime-resolution');
+  }
 }
 
 async function runImageParameterSetup<
@@ -590,9 +641,13 @@ async function runRuntimeSetup<
   readonly providerLabel: string;
   readonly scrubOutput: (output: string) => string;
 }): Promise<void> {
+  const launchContext = await args.host.provisionLookup.getTaskLaunchContext(
+    args.taskId,
+  );
   const [material, prompt] = await Promise.all([
     args.host.materialResolvers.resolve(args.runtime, {
       taskId: args.taskId,
+      ownerUserId: launchContext.ownerUserId,
     }),
     args.host.provisionLookup.getTaskPrompt(args.taskId),
   ]);
@@ -847,6 +902,73 @@ async function readAioTranscriptSource<
   });
 }
 
+async function readBoxLiteTranscriptSource<
+  TCloneSpec,
+  TRuntimeId,
+  TTranscriptSource extends SandboxTranscriptSourceBase,
+  TAuthMaterial,
+>(args: {
+  readonly taskId: string;
+  readonly runtimeId?: TRuntimeId | null;
+  readonly executor: SandboxCommandExecutor;
+  readonly workspacePath: string;
+  readonly host: SandboxHostHarness<
+    TCloneSpec,
+    TRuntimeId,
+    TTranscriptSource,
+    TAuthMaterial
+  >;
+}): Promise<TTranscriptSource | null> {
+  const runtime = resolveRuntimeFromId({
+    host: args.host,
+    runtimeId: args.runtimeId,
+    providerLabel: 'BoxLite',
+  });
+  if (runtime.readTranscriptSource.kind !== 'single-newest-jsonl') {
+    return null;
+  }
+
+  const { dir, filenameGlob } = runtime.transcriptArtifact({
+    taskId: args.taskId,
+    workspaceDir: args.workspacePath,
+    sessionId: args.host.sessionIdForTask?.(args.taskId),
+  });
+  const jsonl = await readBoxLiteSingleNewestJsonl(
+    args.executor,
+    dir,
+    filenameGlob,
+  );
+  if (jsonl === null) return null;
+  return createTranscriptSource(args.host, {
+    format: runtime.transcriptFormat,
+    jsonl,
+  });
+}
+
+async function readBoxLiteSingleNewestJsonl(
+  executor: SandboxCommandExecutor,
+  dir: string,
+  filenameGlob: RegExp,
+): Promise<string | null> {
+  const listed = await executor.exec({
+    command: `find ${shellQuote(dir)} -type f -print`,
+  });
+  if (listed.exitCode !== 0) return null;
+  const paths = (listed.stdout || listed.output)
+    .split(/\r?\n/u)
+    .filter(Boolean)
+    .filter((path) => {
+      filenameGlob.lastIndex = 0;
+      return filenameGlob.test(path);
+    })
+    .sort((left, right) => left.localeCompare(right));
+  const newest = paths.at(-1);
+  if (!newest) return null;
+  const read = await executor.exec({ command: `cat ${shellQuote(newest)}` });
+  if (read.exitCode !== 0) return null;
+  return read.stdout || read.output;
+}
+
 function createTranscriptSource<
   TCloneSpec,
   TRuntimeId,
@@ -864,6 +986,10 @@ function createTranscriptSource<
   return host.transcriptSource?.create(source) ?? (source as TTranscriptSource);
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/gu, `'\\''`)}'`;
+}
+
 async function runBoxLiteRuntimeSetup<
   TCloneSpec,
   TRuntimeId,
@@ -871,6 +997,7 @@ async function runBoxLiteRuntimeSetup<
   TAuthMaterial,
 >(args: {
   readonly taskId: string;
+  readonly modelIntent: import('@cap/sandbox-core').TaskModelIntent;
   readonly executor: SandboxCommandExecutor;
   readonly workspacePath: string;
   readonly runtimeId?: string | null;
@@ -881,17 +1008,13 @@ async function runBoxLiteRuntimeSetup<
     TAuthMaterial
   >;
 }): Promise<void> {
-  const runtime = args.runtimeId
-    ? resolveRuntimeFromId({
-        host: args.host,
-        runtimeId: args.runtimeId as TRuntimeId,
-        providerLabel: 'BoxLite',
-      })
-    : await resolveProvisionRuntime({
-        host: args.host,
-        taskId: args.taskId,
-        providerLabel: 'BoxLite',
-      });
+  if (!args.runtimeId) {
+    throw new SandboxRuntimeModelSetupError('runtime-resolution');
+  }
+  const runtime = resolveRequiredRuntimeFromId({
+    host: args.host,
+    runtimeId: args.runtimeId as TRuntimeId,
+  });
   await runImageParameterSetup({
     executor: args.executor,
     taskId: args.taskId,
@@ -902,6 +1025,7 @@ async function runBoxLiteRuntimeSetup<
     runtimeId: runtime.id,
     scrubOutput: scrubSandboxCommandOutput,
   });
+  await materializeTaskModel(args.executor, args.modelIntent);
   await runRuntimeSetup({
     executor: args.executor,
     taskId: args.taskId,

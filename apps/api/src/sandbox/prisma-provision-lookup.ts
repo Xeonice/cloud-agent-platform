@@ -1,7 +1,15 @@
 import { Injectable, Optional } from '@nestjs/common';
 
-import { DEFAULT_TASK_RUNTIME } from '@cap/contracts';
-import type {
+import {
+  DEFAULT_TASK_RUNTIME,
+  ExecutionModeSchema,
+  RuntimeSchema,
+  TaskModelSelectorSchema,
+  type Runtime,
+  type RuntimeExecutionEnvironmentSnapshot,
+} from '@cap/contracts';
+import {
+  SandboxRuntimeModelSetupError,
   SandboxEnvironmentProviderFamily,
   SandboxHostImageParameterProfile,
   SandboxResolvedEnvironmentMetadata,
@@ -10,7 +18,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ForgeTargetResolver } from '../forge/forge-target-resolver';
 import { DefaultForgeRegistry } from '../forge/forge-registry';
 import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
-import type { CloneSpec, ProvisionLookup } from './provision-lookup.port';
+import type {
+  CloneSpec,
+  ProvisionLookup,
+  SandboxPinnedEnvironmentMetadata,
+  TaskLaunchContext,
+} from './provision-lookup.port';
+import { validateRuntimeExecutionEnvironmentSnapshot } from '../runtime-models/runtime-model-snapshot';
 
 /**
  * Prisma-backed {@link ProvisionLookup}: resolves a task's clone spec from its
@@ -26,6 +40,66 @@ export class PrismaProvisionLookup implements ProvisionLookup {
     @Optional() private readonly forgeRegistry?: DefaultForgeRegistry,
     @Optional() private readonly sandboxEnvironments?: SandboxEnvironmentsService,
   ) {}
+
+  async getTaskLaunchContext(taskId: string): Promise<TaskLaunchContext> {
+    let task;
+    try {
+      task = await this.prisma.task.findUnique({
+        where: { id: taskId },
+        select: {
+          model: true,
+          ownerUserId: true,
+          executionEnvironmentSnapshot: true,
+          runtime: true,
+          executionMode: true,
+        },
+      });
+    } catch {
+      throw new SandboxRuntimeModelSetupError('lookup');
+    }
+    if (!task) throw new SandboxRuntimeModelSetupError('lookup');
+    const runtime = RuntimeSchema.safeParse(
+      task.runtime ?? DEFAULT_TASK_RUNTIME,
+    );
+    const executionMode = ExecutionModeSchema.safeParse(
+      task.executionMode ?? 'interactive-pty',
+    );
+    if (!runtime.success || !executionMode.success) {
+      throw new SandboxRuntimeModelSetupError('launch-context');
+    }
+    if (task.model === null) {
+      return {
+        modelIntent: { kind: 'runtime-default' },
+        ownerUserId: task.ownerUserId ?? null,
+        runtimeId: runtime.data,
+        executionMode: executionMode.data,
+      };
+    }
+
+    const selector = TaskModelSelectorSchema.safeParse(task.model);
+    if (!selector.success) {
+      throw new SandboxRuntimeModelSetupError('launch-context');
+    }
+    if (!task.ownerUserId) {
+      throw new SandboxRuntimeModelSetupError('launch-context');
+    }
+    let snapshot: RuntimeExecutionEnvironmentSnapshot;
+    try {
+      snapshot = validateRuntimeExecutionEnvironmentSnapshot(
+        runtime.data,
+        task.executionEnvironmentSnapshot,
+      );
+    } catch {
+      throw new SandboxRuntimeModelSetupError('snapshot');
+    }
+    return {
+      modelIntent: { kind: 'explicit', selector: selector.data },
+      ownerUserId: task.ownerUserId,
+      runtimeId: runtime.data,
+      executionMode: executionMode.data,
+      environment: resolvedEnvironmentFromSnapshot(snapshot, runtime.data),
+    };
+  }
 
   async getCloneSpec(taskId: string): Promise<CloneSpec | null> {
     const task = await this.prisma.task.findUnique({
@@ -133,19 +207,67 @@ export class PrismaProvisionLookup implements ProvisionLookup {
     providerFamily: SandboxEnvironmentProviderFamily,
     runtimeId?: string | null,
   ): Promise<SandboxResolvedEnvironmentMetadata | null> {
-    if (!this.sandboxEnvironments) return null;
     const task = await this.prisma.task.findUnique({
       where: { id: taskId },
       select: {
+        model: true,
+        executionEnvironmentSnapshot: true,
         runtime: true,
         sandboxEnvironmentId: true,
       },
     });
     if (!task) return null;
+    if (task.model !== null) {
+      const resolvedRuntime = RuntimeSchema.parse(
+        runtimeId ?? task.runtime ?? DEFAULT_TASK_RUNTIME,
+      );
+      const snapshot = validateRuntimeExecutionEnvironmentSnapshot(
+        resolvedRuntime,
+        task.executionEnvironmentSnapshot,
+      );
+      if (snapshot.providerFamily !== providerFamily) {
+        throw new SandboxRuntimeModelSetupError('provider-selection');
+      }
+      return resolvedEnvironmentFromSnapshot(snapshot, resolvedRuntime);
+    }
+    if (!this.sandboxEnvironments) return null;
     return this.sandboxEnvironments.resolveForTask({
-      requestedEnvironmentId: task.sandboxEnvironmentId ?? null,
+      selection: task.sandboxEnvironmentId
+        ? { kind: 'managed', environmentId: task.sandboxEnvironmentId }
+        : { kind: 'managed-default' },
       runtimeId: runtimeId ?? task.runtime ?? DEFAULT_TASK_RUNTIME,
       providerFamily,
     });
   }
+}
+
+function resolvedEnvironmentFromSnapshot(
+  snapshot: RuntimeExecutionEnvironmentSnapshot,
+  runtimeId: Runtime,
+): SandboxPinnedEnvironmentMetadata {
+  return {
+    id: snapshot.managedEnvironmentId ?? undefined,
+    environmentId: snapshot.managedEnvironmentId ?? undefined,
+    providerId: snapshot.provider,
+    providerFamily: snapshot.providerFamily,
+    runtimeId,
+    sourceKind: snapshot.source.kind,
+    sourceRef: snapshot.source.locator,
+    digest: snapshot.source.digest ?? undefined,
+    checksum: snapshot.source.checksum ?? undefined,
+    runtimeArtifactChecksums: {
+      [runtimeId]: snapshot.cliArtifactChecksum,
+    },
+    cliArtifactChecksum: snapshot.cliArtifactChecksum,
+    validationId: snapshot.validationId ?? undefined,
+    validationVersion: snapshot.validationContractVersion ?? undefined,
+    contractVersion: snapshot.validationContractVersion ?? undefined,
+    metadata: {
+      immutableIdentity: snapshot.immutableIdentity,
+      fingerprint: snapshot.fingerprint,
+      sandboxMetadata: snapshot.sandboxMetadata,
+      sandboxMetadataChecksum: snapshot.sandboxMetadataChecksum,
+      cliVersion: snapshot.cliVersion,
+    },
+  };
 }

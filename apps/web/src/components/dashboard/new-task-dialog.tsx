@@ -43,6 +43,7 @@ import {
   updateScheduleMutation,
 } from "@/lib/api/mutations";
 import {
+  authSessionQuery,
   runtimesQuery,
   sandboxEnvironmentsQuery,
   settingsQuery,
@@ -92,6 +93,7 @@ import {
   listSupportedScheduleTimezones,
   resolveHydratedScheduleTimezone,
 } from "@/lib/schedule-timezone";
+import { RuntimeModelSelector } from "@/components/runtime-model-selector";
 
 /** The 3 prototype execution strategies (verbatim copy; the value == the label). */
 const STRATEGIES = [
@@ -222,6 +224,7 @@ export function buildCommandPreview(input: {
   idleTimeoutMs?: number | null;
   deadlineMs?: number | null;
   runtime?: RuntimeId;
+  model?: string | null;
   sandboxEnvironmentName?: string | null;
 }): string[] {
   const runtime = input.runtime ?? DEFAULT_RUNTIME;
@@ -242,6 +245,7 @@ export function buildCommandPreview(input: {
   // never chose); claude-code surfaces the `--runtime claude-code` line so the
   // operator sees the claude invocation that will launch.
   if (runtime !== DEFAULT_RUNTIME) lines.push(`  --runtime ${runtime} \\`);
+  if (input.model) lines.push(`  --model ${JSON.stringify(input.model)} \\`);
   if (input.sandboxEnvironmentName) {
     lines.push(`  --sandbox-environment "${input.sandboxEnvironmentName}" \\`);
   }
@@ -353,6 +357,7 @@ export function NewTaskDialog({
   const runtimesReadiness = useQuery(runtimesQuery());
   const sandboxEnvironments = useQuery(sandboxEnvironmentsQuery());
   const settings = useQuery(settingsQuery());
+  const authSession = useQuery(authSessionQuery());
   const readyById = React.useMemo(() => {
     const map = new Map<RuntimeId, boolean>();
     for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
@@ -381,6 +386,8 @@ export function NewTaskDialog({
   // Agent runtime selection (add-claude-code-runtime), DEFAULT codex. Gated on the
   // readiness read below so an unconfigured runtime can't be selected.
   const [runtime, setRuntime] = React.useState<RuntimeId>(DEFAULT_RUNTIME);
+  const [model, setModel] = React.useState<string | null>(null);
+  const [modelSelectionValid, setModelSelectionValid] = React.useState(true);
   const [sandboxEnvironmentId, setSandboxEnvironmentId] =
     React.useState(ENVIRONMENT_DEFAULT);
   // stopOnWrite is RETAINED as a preview-only/advisory note, never an enforced
@@ -439,6 +446,8 @@ export function NewTaskDialog({
       setSkills(form.skills);
       setPrompt(form.prompt);
       setRuntime(form.runtime as RuntimeId);
+      setModel(form.model);
+      setModelSelectionValid(form.model === null);
       setSandboxEnvironmentId(form.sandboxEnvironmentId);
       setIdleTimeoutMs(form.idleTimeoutMs);
       setDeadlineMs(form.deadlineMs);
@@ -463,6 +472,8 @@ export function NewTaskDialog({
     setPrompt("");
     setSkills([]);
     setRuntime(DEFAULT_RUNTIME);
+    setModel(null);
+    setModelSelectionValid(true);
     setSandboxEnvironmentId(ENVIRONMENT_DEFAULT);
     setIdleTimeoutMs(null);
     setDeadlineMs(null);
@@ -591,6 +602,7 @@ export function NewTaskDialog({
     idleTimeoutMs,
     deadlineMs,
     runtime,
+    model,
     sandboxEnvironmentName: previewEnvironment?.name ?? null,
   });
 
@@ -613,6 +625,7 @@ export function NewTaskDialog({
     return {
       repoId,
       runtime,
+      model,
       sandboxEnvironmentId,
       deliver: "none",
       branch,
@@ -655,6 +668,7 @@ export function NewTaskDialog({
     // would fail-closed; the UI already disables the option, this is the guard.
     if (!isRuntimeReady(runtime)) return;
     if (accountDefaultUnavailable) return;
+    if (!modelSelectionValid) return;
     const taskForm = currentTaskForm();
     const body: CreateTaskBody = buildTaskRequest(taskForm);
     if (isEditingSchedule && scheduleToEdit) {
@@ -993,6 +1007,22 @@ export function NewTaskDialog({
               </small>
             </div>
 
+            <RuntimeModelSelector
+              id="modalModel"
+              ownerUserId={authSession.data?.id ?? null}
+              runtime={runtime}
+              sandboxEnvironmentId={sandboxEnvironmentId}
+              value={model}
+              onChange={setModel}
+              onValidityChange={setModelSelectionValid}
+              enabled={isRuntimeReady(runtime) && !accountDefaultUnavailable}
+              disabledReason={
+                !isRuntimeReady(runtime)
+                  ? "请先连接当前运行时的凭据。"
+                  : "请先选择与当前运行时兼容的沙箱环境。"
+              }
+            />
+
             <div className="grid gap-2">
               <span className="text-[13px] font-medium text-foreground">
                 预装技能（可选）
@@ -1169,7 +1199,8 @@ export function NewTaskDialog({
               scheduleMutation.isPending ||
               updateMutation.isPending ||
               prompt.trim().length === 0 ||
-              accountDefaultUnavailable
+              accountDefaultUnavailable ||
+              !modelSelectionValid
             }
             className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
           >

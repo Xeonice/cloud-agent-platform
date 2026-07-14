@@ -4,8 +4,78 @@ process.env.CODEX_ATTACH_BOOTSTRAP_QUIESCE_MS = '15';
 process.env.CODEX_ATTACH_BOOTSTRAP_MAX_MS = '50';
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 
-const mod = await import(new URL('../dist/index.js', import.meta.url).href);
+const aio = await import(new URL('../dist/index.js', import.meta.url).href);
+
+/**
+ * Adapt this legacy-heavy test file to the strict combined launch-context
+ * constructor while preserving each case's original transport/executor setup.
+ * Tests that pass a resolver still exercise its success/failure exactly; cases
+ * unrelated to lookup get an explicit runtime-default context from the fixture.
+ */
+class TestAioPtyClient extends aio.AioPtyClient {
+  constructor(
+    taskId,
+    wsUrl,
+    baseUrl,
+    onExit,
+    mode = 'replay-only',
+    resolveRuntime,
+    resolveExecutionMode,
+    transportFactory,
+    commandExecutor,
+    prepareModelMaterial,
+    onRuntimeSetupFailure,
+  ) {
+    const resolveTaskLaunchContext =
+      mode === 'launch-or-attach'
+        ? async () => {
+            const runtime = resolveRuntime
+              ? await resolveRuntime()
+              : makeRuntime();
+            const executionMode = resolveExecutionMode
+              ? await resolveExecutionMode()
+              : 'interactive-pty';
+            if (
+              !runtime ||
+              (executionMode !== 'interactive-pty' &&
+                executionMode !== 'headless-exec')
+            ) {
+              throw new Error('invalid test launch context');
+            }
+            return {
+              runtime,
+              executionMode,
+              modelIntent: { kind: 'runtime-default' },
+            };
+          }
+        : undefined;
+    super(
+      taskId,
+      wsUrl,
+      baseUrl,
+      onExit,
+      mode,
+      resolveTaskLaunchContext,
+      transportFactory,
+      commandExecutor,
+      prepareModelMaterial ?? testModelMaterial,
+      onRuntimeSetupFailure,
+    );
+  }
+}
+
+const mod = { ...aio, AioPtyClient: TestAioPtyClient };
+
+async function testModelMaterial(intent) {
+  if (intent.kind === 'runtime-default') return intent;
+  return {
+    kind: 'explicit',
+    path: '/home/gem/.cap/task-model.txt',
+    checksum: `sha256:${createHash('sha256').update(intent.selector).digest('hex')}`,
+  };
+}
 
 let passed = 0;
 let failed = 0;
@@ -139,7 +209,8 @@ function makeRuntime(overrides = {}) {
   return {
     id: 'runtime-test',
     terminalStartup: { replyToStartupDSR: false, promptSubmit: 'none' },
-    buildLaunchLine: (ctx) => `interactive:${ctx.taskId}:${ctx.sessionId}`,
+    buildLaunchLine: (ctx) =>
+      `tmux -u new-session -d -s task${ctx.taskId} interactive:${ctx.sessionId}`,
     buildHeadlessLine: (ctx) => `headless:${ctx.taskId}:${ctx.sessionId}`,
     async detectExit() {
       return { status: 'running' };
@@ -198,8 +269,9 @@ await test('runtime headless launch resolves exit through the selected runtime',
   client.close();
 });
 
-await test('runtime resolver failures and inconclusive liveness use safe codex fallback', async () => {
+await test('runtime launch-context resolver failures fail closed without a default launch', async () => {
   const factory = makeTransportFactory();
+  const failures = [];
   const executor = makeExecutor((request) => {
     if (request.command.includes('__cap_has__')) {
       return { exitCode: 0, output: 'no marker' };
@@ -220,21 +292,24 @@ await test('runtime resolver failures and inconclusive liveness use safe codex f
     },
     factory,
     executor,
+    undefined,
+    (code) => failures.push(code),
   );
   const transport = factory.transports[0];
 
   transport.emit({ type: 'session_id', data: 's1' });
   transport.emit({ type: 'ready' });
-  await waitFor(() =>
-    transport.input.some((data) => data.includes('tmux -u new-session')),
-  );
+  await waitFor(() => failures.length === 1);
   transport.emit({ type: 'output', data: '\x1b[6n' });
   await delay(30);
 
-  assert.equal(transport.input.includes('\r'), false);
+  assert.deepEqual(failures, ['runtime_model_setup_failed']);
+  assert.equal(transport.input.some((data) => data.includes('new-session')), false);
+  assert.equal(executor.calls.length, 0);
   client.close();
 
   const undefinedFactory = makeTransportFactory();
+  const undefinedFailures = [];
   const undefinedClient = new mod.AioPtyClient(
     'task-undefined-runtime',
     'ws://unused',
@@ -249,15 +324,17 @@ await test('runtime resolver failures and inconclusive liveness use safe codex f
         ? { exitCode: 0, output: '__cap_has__0\n' }
         : { exitCode: 0, output: '' },
     ),
+    undefined,
+    (code) => undefinedFailures.push(code),
   );
   undefinedFactory.transports[0].emit({ type: 'session_id', data: 's1' });
   undefinedFactory.transports[0].emit({ type: 'ready' });
-  await waitFor(() =>
-    undefinedFactory.transports[0].input.some((data) => data.includes('attach')),
-  );
+  await waitFor(() => undefinedFailures.length === 1);
+  assert.equal(undefinedFactory.transports[0].input.length, 0);
   undefinedClient.close();
 
   const stringThrowFactory = makeTransportFactory();
+  const stringFailures = [];
   const stringThrowClient = new mod.AioPtyClient(
     'task-string-throw',
     'ws://unused',
@@ -276,10 +353,13 @@ await test('runtime resolver failures and inconclusive liveness use safe codex f
         ? { exitCode: 0, output: '__cap_has__1\n' }
         : { exitCode: 0, output: '' },
     ),
+    undefined,
+    (code) => stringFailures.push(code),
   );
   stringThrowFactory.transports[0].emit({ type: 'session_id', data: 's1' });
   stringThrowFactory.transports[0].emit({ type: 'ready' });
-  await delay(30);
+  await waitFor(() => stringFailures.length === 1);
+  assert.equal(stringThrowFactory.transports[0].input.length, 0);
   stringThrowClient.close();
 });
 

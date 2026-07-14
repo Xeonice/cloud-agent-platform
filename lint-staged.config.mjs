@@ -1,3 +1,5 @@
+import { classifyPublicSurfaceFiles } from "./scripts/public-surface-files.mjs";
+
 /**
  * lint-staged config — runs on the husky pre-commit hook.
  *
@@ -12,14 +14,24 @@
  * also cwd-scoped, so a single command over a cross-package file list would
  * apply the wrong config. Turbo runs each package's own `eslint .` + `tsc`
  * with its own config, and its cache makes the unchanged-package case
- * near-instant. The callback form ignores the staged filenames (Turbo scopes
- * by package, not by file), so nothing is appended to the commands.
+ * near-instant. The callback classifies the complete staged set once: ordinary
+ * TypeScript keeps the existing broad checks, while public/OpenSpec files call
+ * the shared repository gate without appending file-derived shell arguments.
  *
  * @type {import("lint-staged").Configuration}
  */
 export default {
-  "*.{ts,tsx}": () => [
-    "pnpm exec turbo run lint",
-    "pnpm exec turbo run typecheck",
-  ],
+  "*": (files) => {
+    const classification = classifyPublicSurfaceFiles(files);
+    const commands = [];
+
+    if (classification.hasTypeScript) {
+      commands.push("pnpm exec turbo run lint");
+      if (!classification.publicSurface) {
+        commands.push("pnpm exec turbo run typecheck");
+      }
+    }
+
+    return commands;
+  },
 };

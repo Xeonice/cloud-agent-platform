@@ -17,6 +17,16 @@ async function test(name, fn) {
   }
 }
 
+function provisionContext(taskId, cloneSpec = null) {
+  return {
+    taskId,
+    cloneSpec,
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'interactive-pty',
+  };
+}
+
 function fakeProvider(id, capabilities, options = {}) {
   const calls = [];
   const connection = (taskId) => ({
@@ -125,7 +135,7 @@ await test('fake conformance routes provision, ownership, selected-run, and deli
   );
 
   const cloneSpec = { url: 'https://example.test/repo.git', authHeader: 'secret' };
-  const connection = await router.provision({ taskId: 'task-1', cloneSpec });
+  const connection = await router.provision(provisionContext('task-1', cloneSpec));
 
   assert.equal(connection.taskId, 'fake-complete-task-1');
   assert.deepEqual(incomplete.calls, []);
@@ -232,10 +242,11 @@ await test('fake conformance fails closed for missing operation capabilities', a
 
   await assert.rejects(
     () =>
-      router.provision({
-        taskId: 'task-materialize',
-        cloneSpec: { url: 'https://example.test/repo.git' },
-      }),
+      router.provision(
+        provisionContext('task-materialize', {
+          url: 'https://example.test/repo.git',
+        }),
+      ),
     /No sandbox provider candidate satisfies required capabilities/,
   );
 });

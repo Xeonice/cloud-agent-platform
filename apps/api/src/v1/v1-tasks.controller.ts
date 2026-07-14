@@ -1,23 +1,10 @@
 import {
-  Body,
-  Controller,
-  ForbiddenException,
   Get,
-  Headers,
-  HttpCode,
-  HttpStatus,
-  Param,
   Post,
-  Query,
   Req,
-  UsePipes,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import {
-  PublicV1IdempotencyHeadersSchema,
-  PublicV1IdParamsSchema,
-  V1CreateTaskRequestSchema,
-  V1ListQuerySchema,
   type V1CreateTaskRequest,
   type V1ListQuery,
   type V1ListTasksResponse,
@@ -25,19 +12,16 @@ import {
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
-import {
-  hasScope,
-  type OperatorPrincipal,
-} from '../auth/operator-principal';
+import { type OperatorPrincipal } from '../auth/operator-principal';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
-import {
-  parseZodValue,
-  ZodValidationPipe,
-  zodParam,
-  zodQuery,
-} from '../repos/zod-validation.pipe';
 import { IdempotencyService } from './idempotency.service';
 import { listTaskPage } from './public-list-pages';
+import {
+  PublicV1Controller,
+  PublicV1Input,
+  PublicV1Operation,
+  requirePublicV1Principal,
+} from '../public-surface/public-v1-operation';
 
 /**
  * Stricter per-principal create cap on `POST /v1/tasks` (D7 / task 3.5).
@@ -56,7 +40,7 @@ const V1_CREATE_RATE: Parameters<typeof Throttle>[0] = {
 };
 
 /**
- * `/v1` task surface (public-v1-api, D1) — additive `@Controller('v1/...')` that
+ * `/v1` task surface (public-v1-api, D1) — additive public data controller that
  * delegates to the SAME `TasksService` the console uses, so there is exactly one
  * task-admission path and the console's unversioned endpoints stay byte-identical
  * (no `app.enableVersioning()`).
@@ -73,11 +57,11 @@ const V1_CREATE_RATE: Parameters<typeof Throttle>[0] = {
  * Auth: behind the global auth guard (an unauthenticated caller is 401'd before
  * any handler). Each handler additionally enforces the shared scope vocabulary on
  * the guard-attached `operatorPrincipal` — a session/legacy principal carries no
- * scopes and is allow-all (`hasScope` returns true for `scopes === undefined`),
- * an `api-key` missing the required scope is 403'd (distinct from 401). The
+ * scopes and is allow-all (the central boundary treats `scopes === undefined`
+ * as unrestricted), an `api-key` missing the required scope is 403'd (distinct from 401). The
  * V1Module that registers this controller is assembled in Integration (3.6).
  */
-@Controller('v1/tasks')
+@PublicV1Controller('v1/tasks')
 export class V1TasksController {
   constructor(
     private readonly tasksService: TasksService,
@@ -95,15 +79,15 @@ export class V1TasksController {
    * same key+different body → 409.
    */
   @Post()
-  @HttpCode(HttpStatus.CREATED)
+  @PublicV1Operation('tasks.create')
   @Throttle(V1_CREATE_RATE)
-  @UsePipes(new ZodValidationPipe(V1CreateTaskRequestSchema))
   async create(
-    @Body() body: V1CreateTaskRequest,
+    @PublicV1Input('body') body: V1CreateTaskRequest,
     @Req() req: AuthenticatedRequest,
-    @Headers('idempotency-key') idempotencyKey?: string,
+    @PublicV1Input('headers', 'Idempotency-Key')
+    idempotencyKey?: string,
   ): Promise<TaskResponse> {
-    const principal = this.requireScope(req, 'tasks:write');
+    const principal = requirePublicV1Principal(req, this.create);
     // Best-effort attribution by the acting account PRIMARY KEY (`users.id`),
     // present for BOTH local (password/OTP) and GitHub accounts
     // (fix-local-account-task-attribution) so a local account's task is
@@ -111,37 +95,61 @@ export class V1TasksController {
     // `undefined` only for a truly identity-less machine/legacy principal.
     const userId = principal.user?.id ?? undefined;
     const { repoId, ...createBody } = body;
-    const normalizedIdempotencyKey = parseZodValue(
-      PublicV1IdempotencyHeadersSchema.shape['Idempotency-Key'],
-      idempotencyKey,
-    );
-
-    const { task, created } = await this.idempotency.run({
-      key: normalizedIdempotencyKey ?? null,
+    const scopeUserId = idempotencyScope(principal);
+    const lookup = await this.idempotency.lookup({
+      key: idempotencyKey ?? null,
       // Per-principal dedup scope: the api-key owner / session user identity (D5).
       // A scopeless legacy/session principal with no githubId still dedups under a
       // stable per-kind sentinel so its retries are not cross-aliased.
-      scopeUserId: idempotencyScope(principal),
+      scopeUserId,
       body,
-      // V.1 — persist the task ROW on the transaction-bound `tx` client so it
-      // commits ATOMICALLY with the dedup row; a raced/retried create can never
-      // leave a committed task without its dedup row (and so never double-admits).
-      // add-headless-execution-track: `/v1` is a programmatic consumer → headless-exec.
-      admit: (tx) =>
-        this.tasksService.createTaskRow(
-          repoId,
-          createBody,
-          tx,
-          'headless-exec',
-          userId,
-        ),
+      loadTask: (taskId) => this.tasksService.findById(taskId),
+    });
+    if (lookup.kind === 'replay') return lookup.task;
+
+    let prepared: Awaited<
+      ReturnType<TasksService['prepareTaskCreate']>
+    >;
+    try {
+      // Catalog/environment/credential work is deliberately outside the short
+      // idempotency transaction. An exact historical replay returned above and
+      // therefore never depends on today's catalog state.
+      prepared = await this.tasksService.prepareTaskCreate(
+        repoId,
+        createBody,
+        'headless-exec',
+        userId,
+      );
+    } catch (err) {
+      // A same-key request may have committed while this preflight was running.
+      // Give that winner a short, read-only resolution window before surfacing
+      // the current catalog failure.
+      const winner = await this.idempotency.waitForWinner({
+        key: idempotencyKey ?? null,
+        scopeUserId,
+        requestHash: lookup.requestHash,
+        loadTask: (taskId) => this.tasksService.findById(taskId),
+      });
+      if (winner) return winner;
+      throw err;
+    }
+
+    const { task, created } = await this.idempotency.commit({
+      key: idempotencyKey ?? null,
+      scopeUserId,
+      requestHash: lookup.requestHash,
+      create: (tx) => this.tasksService.createTaskRow(prepared, tx),
       loadTask: (taskId) => this.tasksService.findById(taskId),
     });
     // Provision ONLY a newly-created task — a dedup hit was already admitted by the
     // first call. Run AFTER the dedup transaction has COMMITTED so a rolled-back
     // transaction never leaves a provisioned sandbox (V.1 / TasksService split).
     if (created) {
-      await this.tasksService.admitCreatedTask(task.id, createBody, userId);
+      await this.tasksService.admitCreatedTask(
+        task.id,
+        prepared.body,
+        prepared.ownerUserId ?? undefined,
+      );
     }
     return task;
   }
@@ -153,11 +161,12 @@ export class V1TasksController {
    * `TasksService`. `nextCursor` is null on the last page.
    */
   @Get()
+  @PublicV1Operation('tasks.list')
   async list(
-    @Query(zodQuery(V1ListQuerySchema)) query: V1ListQuery,
+    @PublicV1Input('query') query: V1ListQuery,
     @Req() req: AuthenticatedRequest,
   ): Promise<V1ListTasksResponse> {
-    this.requireScope(req, 'tasks:read');
+    requirePublicV1Principal(req, this.list);
     return listTaskPage(this.prisma, query);
   }
 
@@ -167,11 +176,12 @@ export class V1TasksController {
    * each `pending → queued → running → terminal` step. 404 when unknown.
    */
   @Get(':id')
+  @PublicV1Operation('tasks.get')
   async findById(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @PublicV1Input('params', 'id') id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<TaskResponse> {
-    this.requireScope(req, 'tasks:read');
+    requirePublicV1Principal(req, this.findById);
     return this.tasksService.findById(id);
   }
 
@@ -181,39 +191,17 @@ export class V1TasksController {
    * Idempotent for an already-terminal task. 404 when unknown.
    */
   @Post(':id/stop')
-  @HttpCode(HttpStatus.OK)
+  @PublicV1Operation('tasks.stop')
   async stop(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @PublicV1Input('params', 'id') id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<TaskResponse> {
-    const principal = this.requireScope(req, 'tasks:write');
+    const principal = requirePublicV1Principal(req, this.stop);
     // Best-effort attribution by the acting account PRIMARY KEY (`users.id`),
     // present for local + GitHub accounts (fix-local-account-task-attribution).
     return this.tasksService.stop(id, principal.user?.id ?? undefined);
   }
 
-  /**
-   * Reads the guard-attached principal and enforces the required scope (task 3.4).
-   * A scopeless principal (session/legacy: `scopes === undefined`) is allow-all;
-   * a principal carrying scopes that does NOT include `required` is rejected 403
-   * (insufficient scope) — distinct from the 401 the guard returns for an absent
-   * credential. Returns the principal so the caller can attribute the action.
-   */
-  private requireScope(
-    req: AuthenticatedRequest,
-    required: Parameters<typeof hasScope>[1],
-  ): OperatorPrincipal {
-    const principal = req.operatorPrincipal;
-    // The global auth guard attaches the principal on every admitted request; its
-    // absence means the guard was bypassed (a wiring error) — fail closed.
-    if (!principal) {
-      throw new ForbiddenException('Missing operator principal');
-    }
-    if (!hasScope(principal, required)) {
-      throw new ForbiddenException(`Insufficient scope: ${required} required`);
-    }
-    return principal;
-  }
 }
 
 /**
@@ -223,10 +211,7 @@ export class V1TasksController {
  * colliding with another principal's keys.
  */
 function idempotencyScope(principal: OperatorPrincipal): string {
-  const githubId = principal.user?.githubId;
-  if (githubId !== undefined && githubId !== null) {
-    return `github:${githubId}`;
-  }
+  if (principal.user?.id) return `user:${principal.user.id}`;
   if (principal.keyId) {
     return `key:${principal.keyId}`;
   }

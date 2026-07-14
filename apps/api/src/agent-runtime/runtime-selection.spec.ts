@@ -36,6 +36,12 @@ import type {
  */
 function lookupReturning(runtime: string | null): ProvisionLookup {
   return {
+    getTaskLaunchContext: async () => ({
+      modelIntent: { kind: 'runtime-default' },
+      ownerUserId: 'owner-1',
+      runtimeId: runtime === 'claude-code' ? 'claude-code' : 'codex',
+      executionMode: 'interactive-pty',
+    }),
     getCloneSpec: async (): Promise<CloneSpec | null> => null,
     getTaskPrompt: async (): Promise<string | null> => null,
     getTaskSkills: async (): Promise<string[]> => [],
@@ -143,6 +149,9 @@ test('an out-of-set stored runtime resolves codex AND logs a warning', async () 
 
 test('a throwing lookup resolves codex AND logs a warning', async () => {
   const throwing: ProvisionLookup = {
+    getTaskLaunchContext: async () => {
+      throw new Error('db down');
+    },
     getCloneSpec: async () => null,
     getTaskPrompt: async () => null,
     getTaskSkills: async () => [],
@@ -200,6 +209,12 @@ test('an absent runtime (null) defaults to codex WITHOUT a warning', async () =>
 
 function lookupWithExecutionMode(mode: string | null): ProvisionLookup {
   return {
+    getTaskLaunchContext: async () => ({
+      modelIntent: { kind: 'runtime-default' },
+      ownerUserId: 'owner-1',
+      runtimeId: 'codex',
+      executionMode: mode === 'headless-exec' ? 'headless-exec' : 'interactive-pty',
+    }),
     getCloneSpec: async () => null,
     getTaskPrompt: async () => null,
     getTaskSkills: async () => [],
@@ -231,6 +246,9 @@ test('getTaskExecutionMode: no lookup wired defaults to interactive-pty', async 
 
 test('getTaskExecutionMode: a throwing lookup defaults to interactive-pty (logged)', async () => {
   const throwing: ProvisionLookup = {
+    getTaskLaunchContext: async () => {
+      throw new Error('db down');
+    },
     getCloneSpec: async () => null,
     getTaskPrompt: async () => null,
     getTaskSkills: async () => [],

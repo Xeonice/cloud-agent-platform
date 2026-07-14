@@ -1,30 +1,25 @@
 import {
-  Controller,
-  ForbiddenException,
   Get,
-  Param,
-  Query,
   Req,
 } from '@nestjs/common';
 import {
-  PublicV1IdParamsSchema,
-  V1ListQuerySchema,
   type V1ListQuery,
   type V1ListReposResponse,
   type RepoResponse,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReposService } from '../repos/repos.service';
-import {
-  hasScope,
-  type OperatorPrincipal,
-} from '../auth/operator-principal';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { zodParam, zodQuery } from '../repos/zod-validation.pipe';
 import { listRepoPage } from './public-list-pages';
+import {
+  PublicV1Controller,
+  PublicV1Input,
+  PublicV1Operation,
+  requirePublicV1Principal,
+} from '../public-surface/public-v1-operation';
 
 /**
- * `/v1` repo READ surface (public-v1-api, D1) — additive `@Controller('v1/...')`
+ * `/v1` repo READ surface (public-v1-api, D1) — additive public data controller
  * delegating to the SAME `ReposService` the console uses. Only the read surface
  * ships in T0 (create/import stays console-only, design open-question).
  *
@@ -33,11 +28,11 @@ import { listRepoPage } from './public-list-pages';
  *   - `GET /v1/repos/:id`  — fetch by id, gated by `repos:read`. 404 when unknown.
  *
  * Auth: behind the global auth guard (401 for an unauthenticated caller); each
- * handler enforces `repos:read` on the guard-attached principal (a scopeless
- * session/legacy principal is allow-all; an api-key missing the scope is 403'd).
+ * The registry-driven boundary enforces `repos:read` (a scopeless session/legacy
+ * principal is allow-all; an api-key missing the scope is 403'd).
  * Registered into the V1Module in Integration (3.6).
  */
-@Controller('v1/repos')
+@PublicV1Controller('v1/repos')
 export class V1ReposController {
   constructor(
     private readonly reposService: ReposService,
@@ -50,40 +45,23 @@ export class V1ReposController {
    * without mutating `ReposService`. `nextCursor` is null on the last page.
    */
   @Get()
+  @PublicV1Operation('repos.list')
   async list(
-    @Query(zodQuery(V1ListQuerySchema)) query: V1ListQuery,
+    @PublicV1Input('query') query: V1ListQuery,
     @Req() req: AuthenticatedRequest,
   ): Promise<V1ListReposResponse> {
-    this.requireScope(req, 'repos:read');
+    requirePublicV1Principal(req, this.list);
     return listRepoPage(this.prisma, query);
   }
 
   /** `GET /v1/repos/:id` — fetch by id. 404 (NotFoundException) when unknown. */
   @Get(':id')
+  @PublicV1Operation('repos.get')
   async findById(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @PublicV1Input('params', 'id') id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<RepoResponse> {
-    this.requireScope(req, 'repos:read');
+    requirePublicV1Principal(req, this.findById);
     return this.reposService.findById(id);
-  }
-
-  /**
-   * Reads the guard-attached principal and enforces the required scope (task 3.4).
-   * A scopeless principal (session/legacy) is allow-all; a scoped principal
-   * missing `required` is 403'd (distinct from the guard's 401 for no credential).
-   */
-  private requireScope(
-    req: AuthenticatedRequest,
-    required: Parameters<typeof hasScope>[1],
-  ): OperatorPrincipal {
-    const principal = req.operatorPrincipal;
-    if (!principal) {
-      throw new ForbiddenException('Missing operator principal');
-    }
-    if (!hasScope(principal, required)) {
-      throw new ForbiddenException(`Insufficient scope: ${required} required`);
-    }
-    return principal;
   }
 }

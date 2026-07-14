@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import {
   CreateScheduleRequestSchema,
+  RuntimeModelErrorSchema,
   UpdateScheduleRequestSchema,
   type CreateScheduleRequest,
   type CreateTaskBody,
@@ -14,6 +15,8 @@ import {
 } from '@cap/contracts';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { TasksService } from '../tasks/tasks.service';
+import type { PreparedTaskCreate } from '../tasks/prepared-task-create';
+import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
 import { ScheduledTasksService } from './scheduled-tasks.service';
 
 const USER_A = 'acct-a';
@@ -50,12 +53,17 @@ interface RunRow {
   status: string;
   taskId: string | null;
   error: string | null;
+  errorCode?: string | null;
+  retryAt?: Date | null;
+  retryAttempt?: number | null;
+  retryHorizonAt?: Date | null;
+  retryTaskTemplate?: Record<string, unknown> | null;
   admissionClaimToken?: string | null;
   admissionClaimUntil?: Date | null;
   createdAt: Date;
   updatedAt: Date;
   task?: TaskRow | null;
-  schedule?: { ownerUserId: string };
+  schedule?: { ownerUserId: string } | ScheduleRow;
 }
 
 interface TaskRow {
@@ -73,6 +81,7 @@ interface TaskRow {
   idleTimeoutMs: number | null;
   deadlineMs: number | null;
   runtime: string | null;
+  model: string | null;
   sandboxEnvironmentId: string | null;
   deliver: string | null;
 }
@@ -89,8 +98,17 @@ interface TaskScheduleFindManyArgs {
   where?: {
     ownerUserId?: string;
     enabled?: boolean;
-    nextRunAt?: { lte: Date };
+    nextRunAt?: { lte?: Date; gt?: Date } | Date | null;
+    id?: string | { gt: string };
     OR?: ClaimUntilPredicate[];
+    AND?: Array<{
+      OR?: Array<
+        ClaimUntilPredicate & {
+          nextRunAt?: { gt: Date } | Date;
+          id?: { gt: string };
+        }
+      >;
+    }>;
   };
   take?: number;
 }
@@ -111,16 +129,21 @@ interface TaskScheduleUpdateManyArgs {
 interface TaskScheduleRunFindManyArgs {
   where?: {
     scheduleId?: string;
-    periodKey?: string;
+    periodKey?: string | null;
     status?: string;
-    taskId?: string | { not: null };
+    taskId?: string | null | { not: null };
+    retryAt?: Date | null | { lte: Date };
+    retryAttempt?: number | null;
     admissionClaimToken?: string | null;
     task?: { status: string };
+    schedule?: { enabled?: boolean };
     OR?: AdmissionClaimUntilPredicate[];
   };
   include?: {
     task?: boolean | { select?: { status?: boolean } };
-    schedule?: boolean | { select?: { ownerUserId?: boolean } };
+    schedule?:
+      | boolean
+      | { select?: { ownerUserId?: boolean }; include?: unknown };
   };
   take?: number;
 }
@@ -134,7 +157,9 @@ class FakePrisma {
   runs: RunRow[] = [];
   tasks: TaskRow[] = [];
   runFindManyCalls = 0;
+  transactionDepth = 0;
   seq = 0;
+  private transactionTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly runCreateThrows: ReadonlySet<string> = new Set()) {}
 
@@ -171,7 +196,10 @@ class FakePrisma {
       const where = args.where ?? {};
       if (where.ownerUserId) rows = rows.filter((row) => row.ownerUserId === where.ownerUserId);
       if (where.enabled !== undefined) rows = rows.filter((row) => row.enabled === where.enabled);
-      const dueBefore = where.nextRunAt?.lte;
+      const dueBefore =
+        where.nextRunAt && !(where.nextRunAt instanceof Date)
+          ? where.nextRunAt.lte
+          : undefined;
       if (dueBefore) {
         rows = rows.filter((row) => row.nextRunAt !== null && row.nextRunAt <= dueBefore);
       }
@@ -181,8 +209,45 @@ class FakePrisma {
           cutoff ? row.claimUntil === null || row.claimUntil < cutoff : row.claimUntil === null,
         );
       }
-      rows.sort((a, b) => (a.nextRunAt?.getTime() ?? 0) - (b.nextRunAt?.getTime() ?? 0));
-      if (args.take) rows = rows.slice(0, args.take);
+      for (const clause of where.AND ?? []) {
+        const choices = clause.OR ?? [];
+        if (choices.some((choice) => choice.claimUntil !== undefined)) {
+          const cutoff = choices.find((choice) => choice.claimUntil?.lt)
+            ?.claimUntil?.lt;
+          rows = rows.filter((row) =>
+            cutoff
+              ? row.claimUntil === null || row.claimUntil < cutoff
+              : row.claimUntil === null,
+          );
+          continue;
+        }
+        const after = choices.find(
+          (choice) =>
+            choice.nextRunAt !== undefined &&
+            !(choice.nextRunAt instanceof Date),
+        )?.nextRunAt;
+        const sameTime = choices.find(
+          (choice) => choice.nextRunAt instanceof Date && choice.id?.gt,
+        );
+        const afterDate =
+          after && !(after instanceof Date) ? after.gt : undefined;
+        rows = rows.filter((row) => {
+          if (!row.nextRunAt) return false;
+          if (afterDate && row.nextRunAt > afterDate) return true;
+          return Boolean(
+            sameTime?.nextRunAt instanceof Date &&
+              row.nextRunAt.getTime() === sameTime.nextRunAt.getTime() &&
+              sameTime.id?.gt &&
+              row.id > sameTime.id.gt,
+          );
+        });
+      }
+      rows.sort((a, b) => {
+        const byTime =
+          (a.nextRunAt?.getTime() ?? 0) - (b.nextRunAt?.getTime() ?? 0);
+        return byTime || a.id.localeCompare(b.id);
+      });
+      if (args.take !== undefined) rows = rows.slice(0, args.take);
       return rows.map((row) => this.withRuns(row));
     },
     findFirst: async ({ where }: { where: { id: string; ownerUserId: string } }) => {
@@ -269,7 +334,16 @@ class FakePrisma {
         Partial<
           Pick<
             RunRow,
-            'taskId' | 'error' | 'periodKey' | 'triggerSource' | 'triggeredAt'
+            | 'taskId'
+            | 'error'
+            | 'errorCode'
+            | 'retryAt'
+            | 'retryAttempt'
+            | 'retryHorizonAt'
+            | 'retryTaskTemplate'
+            | 'periodKey'
+            | 'triggerSource'
+            | 'triggeredAt'
           >
         >;
     }) => {
@@ -299,6 +373,11 @@ class FakePrisma {
         status: data.status,
         taskId: data.taskId ?? null,
         error: data.error ?? null,
+        errorCode: data.errorCode ?? null,
+        retryAt: data.retryAt ?? null,
+        retryAttempt: data.retryAttempt ?? null,
+        retryHorizonAt: data.retryHorizonAt ?? null,
+        retryTaskTemplate: data.retryTaskTemplate ?? null,
         admissionClaimToken: null,
         admissionClaimUntil: null,
         createdAt: now,
@@ -351,12 +430,45 @@ class FakePrisma {
       let rows = [...this.runs];
       const where = args.where ?? {};
       if (where.scheduleId) rows = rows.filter((run) => run.scheduleId === where.scheduleId);
-      if (where.periodKey) rows = rows.filter((run) => run.periodKey === where.periodKey);
+      if (where.periodKey !== undefined) {
+        rows = rows.filter((run) => run.periodKey === where.periodKey);
+      }
       if (where.status) rows = rows.filter((run) => run.status === where.status);
       if (typeof where.taskId === 'string') {
         rows = rows.filter((run) => run.taskId === where.taskId);
+      } else if (where.taskId === null) {
+        rows = rows.filter((run) => run.taskId === null);
       } else if (where.taskId?.not === null) {
         rows = rows.filter((run) => run.taskId !== null);
+      }
+      const retryAt = where.retryAt;
+      if (retryAt instanceof Date || retryAt === null) {
+        rows = rows.filter((run) => {
+          const actual = run.retryAt ?? null;
+          return retryAt === null
+            ? actual === null
+            : actual?.getTime() === retryAt.getTime();
+        });
+      } else if (retryAt?.lte) {
+        const retryBefore = retryAt.lte;
+        rows = rows.filter(
+          (run) =>
+            run.retryAt !== null &&
+            run.retryAt !== undefined &&
+            run.retryAt <= retryBefore,
+        );
+      }
+      if (where.retryAttempt !== undefined) {
+        rows = rows.filter(
+          (run) => (run.retryAttempt ?? null) === where.retryAttempt,
+        );
+      }
+      if (where.schedule?.enabled !== undefined) {
+        rows = rows.filter(
+          (run) =>
+            this.schedules.find((schedule) => schedule.id === run.scheduleId)
+              ?.enabled === where.schedule?.enabled,
+        );
       }
       const taskStatus = where.task?.status;
       if (taskStatus) {
@@ -374,16 +486,35 @@ class FakePrisma {
             : !run.admissionClaimUntil,
         );
       }
-      rows.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-      if (args.take) rows = rows.slice(0, args.take);
+      rows.sort((a, b) => {
+        if (where.status === 'retrying') {
+          const byRetry =
+            (a.retryAt?.getTime() ?? Number.MAX_SAFE_INTEGER) -
+            (b.retryAt?.getTime() ?? Number.MAX_SAFE_INTEGER);
+          if (byRetry !== 0) return byRetry;
+        }
+        const byCreated = a.createdAt.getTime() - b.createdAt.getTime();
+        return byCreated || a.id.localeCompare(b.id);
+      });
+      if (args.take !== undefined) rows = rows.slice(0, args.take);
       if (args.include?.task || args.include?.schedule) {
         return rows.map((run) => ({
           ...run,
           task: run.taskId ? this.tasks.find((task) => task.id === run.taskId) ?? null : null,
-          schedule: {
-            ownerUserId:
-              this.schedules.find((schedule) => schedule.id === run.scheduleId)?.ownerUserId ?? USER_A,
-          },
+          schedule:
+            typeof args.include?.schedule === 'object' &&
+            args.include.schedule.include
+              ? this.withRuns(
+                  this.schedules.find(
+                    (schedule) => schedule.id === run.scheduleId,
+                  )!,
+                )
+              : {
+                  ownerUserId:
+                    this.schedules.find(
+                      (schedule) => schedule.id === run.scheduleId,
+                    )?.ownerUserId ?? USER_A,
+                },
         }));
       }
       return rows;
@@ -400,6 +531,26 @@ class FakePrisma {
         if (where?.status && run.status !== where.status) return false;
         if (typeof where?.taskId === 'string' && run.taskId !== where.taskId) {
           return false;
+        }
+        if (where?.taskId === null && run.taskId !== null) return false;
+        if (where?.retryAttempt !== undefined) {
+          if ((run.retryAttempt ?? null) !== where.retryAttempt) return false;
+        }
+        if (where?.retryAt instanceof Date || where?.retryAt === null) {
+          const actual = run.retryAt ?? null;
+          if (
+            where.retryAt === null
+              ? actual !== null
+              : actual?.getTime() !== where.retryAt.getTime()
+          ) {
+            return false;
+          }
+        }
+        if (where?.schedule?.enabled !== undefined) {
+          const schedule = this.schedules.find(
+            (candidate) => candidate.id === run.scheduleId,
+          );
+          if (schedule?.enabled !== where.schedule.enabled) return false;
         }
         if (
           where?.admissionClaimToken !== undefined &&
@@ -427,9 +578,16 @@ class FakePrisma {
   };
 
   async $transaction<T>(fn: (tx: this) => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const previous = this.transactionTail;
+    this.transactionTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
     const schedules = this.schedules.map((row) => ({ ...row }));
     const runs = this.runs.map((row) => ({ ...row }));
     const tasks = this.tasks.map((row) => ({ ...row }));
+    this.transactionDepth += 1;
     try {
       return await fn(this);
     } catch (err) {
@@ -437,6 +595,9 @@ class FakePrisma {
       this.runs = runs;
       this.tasks = tasks;
       throw err;
+    } finally {
+      this.transactionDepth -= 1;
+      release();
     }
   }
 
@@ -461,13 +622,95 @@ function buildHarness(
     admitFailures?: number;
     admitKeepsPending?: boolean;
     runCreateThrows?: string[];
+    prepareOutcomes?: Array<'success' | 'transient' | 'permanent'>;
+    prepareDelaysMs?: number[];
+    transientRetryAfterMs?: number | null;
+    gateOpen?: boolean;
+    gateState?: { open: boolean };
   } = {},
 ) {
   const prisma = new FakePrisma(new Set(options.runCreateThrows));
   const normalizeCalls: Array<{ repoId: string; userId: string }> = [];
   const rowCalls: Array<{ repoId: string; userId?: string }> = [];
+  const prepareCalls: Array<{
+    acceptedRetry: boolean;
+    executionMode: 'interactive-pty' | 'headless-exec';
+    model: string | null;
+    inTransaction: boolean;
+  }> = [];
+  const acceptedModelRowCalls: boolean[] = [];
   const admitCalls: string[] = [];
+  const prepareOutcomes = [...(options.prepareOutcomes ?? [])];
+  const prepareDelaysMs = [...(options.prepareDelaysMs ?? [])];
   let remainingAdmissionFailures = options.admitFailures ?? 0;
+  async function prepare(
+    repoId: string,
+    body: CreateTaskBody,
+    executionMode: 'interactive-pty' | 'headless-exec',
+    userId: string | undefined,
+    acceptedRetry: boolean,
+  ): Promise<PreparedTaskCreate> {
+    prepareCalls.push({
+      acceptedRetry,
+      executionMode,
+      model: body.model ?? null,
+      inTransaction: prisma.transactionDepth > 0,
+    });
+    if (
+      body.model !== undefined &&
+      !acceptedRetry &&
+      (options.gateState?.open ?? options.gateOpen ?? true) === false
+    ) {
+      throw new RuntimeModelPreflightError(
+        RuntimeModelErrorSchema.parse({
+          code: 'runtime_model_catalog_unavailable',
+          message: 'Runtime model selection is temporarily unavailable.',
+          retryable: true,
+        }),
+      );
+    }
+    const delayMs = prepareDelaysMs.shift() ?? 0;
+    if (delayMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
+    const outcome = prepareOutcomes.shift() ?? 'success';
+    if (outcome === 'transient') {
+      const retryAfterMs =
+        options.transientRetryAfterMs === undefined
+          ? 2_000
+          : options.transientRetryAfterMs;
+      throw new RuntimeModelPreflightError(
+        RuntimeModelErrorSchema.parse({
+          code: 'runtime_model_catalog_unavailable',
+          message: 'Runtime model catalog is temporarily unavailable.',
+          retryable: true,
+          ...(retryAfterMs === null
+            ? {}
+            : { capacity: { scope: 'owner', retryAfterMs } }),
+        }),
+      );
+    }
+    if (outcome === 'permanent') {
+      throw new RuntimeModelPreflightError(
+        RuntimeModelErrorSchema.parse({
+          code: 'runtime_model_not_available',
+          message: 'The requested runtime model is not available.',
+          retryable: false,
+        }),
+      );
+    }
+    if (options.createThrows) throw new Error('runtime not configured');
+    return {
+      repoId,
+      ownerUserId: userId ?? null,
+      body,
+      runtime: body.runtime ?? 'codex',
+      executionMode,
+      sandboxEnvironmentId: body.sandboxEnvironmentId ?? ENV_ID,
+      model: body.model ?? null,
+      executionEnvironmentSnapshot: null,
+    };
+  }
   const tasks = {
     async normalizeTaskTemplateForSchedule(
       repoId: string,
@@ -475,17 +718,54 @@ function buildHarness(
       userId: string,
     ) {
       normalizeCalls.push({ repoId, userId });
-      return {
-        ...body,
+      const prepared = await prepare(
         repoId,
-        runtime: body.runtime ?? 'codex',
-        sandboxEnvironmentId: body.sandboxEnvironmentId ?? ENV_ID,
-        deliver: body.deliver ?? 'none',
+        body,
+        'headless-exec',
+        userId,
+        false,
+      );
+      return {
+        ...prepared.body,
+        repoId,
+        runtime: prepared.runtime,
+        sandboxEnvironmentId: prepared.sandboxEnvironmentId,
+        deliver: prepared.body.deliver ?? 'none',
       };
     },
-    async createTaskRow(repoId: string, body: CreateTaskBody, _tx: unknown, _mode: unknown, userId?: string) {
-      if (options.createThrows) throw new Error('runtime not configured');
-      rowCalls.push({ repoId, userId });
+    async prepareTaskCreate(
+      repoId: string,
+      body: CreateTaskBody,
+      executionMode: 'interactive-pty' | 'headless-exec',
+      userId?: string,
+    ): Promise<PreparedTaskCreate> {
+      return prepare(repoId, body, executionMode, userId, false);
+    },
+    async prepareAcceptedScheduledRetryTaskCreate(
+      repoId: string,
+      body: CreateTaskBody,
+      userId: string,
+    ): Promise<PreparedTaskCreate> {
+      return prepare(repoId, body, 'headless-exec', userId, true);
+    },
+    assertTaskModelSelectionOpen() {
+      if ((options.gateState?.open ?? options.gateOpen ?? true) === true) return;
+      throw new RuntimeModelPreflightError(
+        RuntimeModelErrorSchema.parse({
+          code: 'runtime_model_catalog_unavailable',
+          message: 'Runtime model selection is temporarily unavailable.',
+          retryable: true,
+        }),
+      );
+    },
+    async createTaskRow(
+      prepared: PreparedTaskCreate,
+      _tx: unknown,
+      rowOptions: { acceptedExplicitModel?: boolean } = {},
+    ) {
+      const { repoId, body, ownerUserId } = prepared;
+      rowCalls.push({ repoId, userId: ownerUserId ?? undefined });
+      acceptedModelRowCalls.push(rowOptions.acceptedExplicitModel === true);
       const task: TaskRow = {
         id: `55555555-5555-4555-8555-${(prisma.tasks.length + 1).toString().padStart(12, '0')}`,
         repoId,
@@ -498,6 +778,7 @@ function buildHarness(
         idleTimeoutMs: body.idleTimeoutMs ?? null,
         deadlineMs: body.deadlineMs ?? null,
         runtime: body.runtime ?? null,
+        model: body.model ?? null,
         sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
         deliver: body.deliver ?? null,
       };
@@ -525,6 +806,8 @@ function buildHarness(
     service: new ScheduledTasksService(prisma as unknown as PrismaService, tasks),
     normalizeCalls,
     rowCalls,
+    prepareCalls,
+    acceptedModelRowCalls,
     admitCalls,
     tasks,
   };
@@ -562,6 +845,20 @@ function addDueSchedule(
   return row;
 }
 
+function explicitTaskTemplate(
+  prompt = 'scheduled explicit model',
+  model = 'provider:model-v1',
+): Record<string, unknown> {
+  return {
+    repoId: REPO_ID,
+    prompt,
+    runtime: 'codex',
+    model,
+    sandboxEnvironmentId: ENV_ID,
+    deliver: 'none',
+  };
+}
+
 function addRecoverableRun(prisma: FakePrisma, index = prisma.tasks.length): RunRow {
   const schedule = addDueSchedule(prisma, {
     nextRunAt: new Date('2026-07-10T00:00:00.000Z'),
@@ -579,6 +876,7 @@ function addRecoverableRun(prisma: FakePrisma, index = prisma.tasks.length): Run
     idleTimeoutMs: null,
     deadlineMs: null,
     runtime: 'codex',
+    model: null,
     sandboxEnvironmentId: ENV_ID,
     deliver: 'none',
   };
@@ -778,6 +1076,7 @@ test('update changes only future schedule definition and leaves existing runs/ta
     idleTimeoutMs: null,
     deadlineMs: null,
     runtime: 'codex',
+    model: null,
     sandboxEnvironmentId: ENV_ID,
     deliver: 'none',
   });
@@ -1375,6 +1674,7 @@ test('legacy runs without a period key still consume their calendar period', asy
     idleTimeoutMs: null,
     deadlineMs: null,
     runtime: 'codex',
+    model: null,
     sandboxEnvironmentId: ENV_ID,
     deliver: 'none',
   };
@@ -1752,6 +2052,7 @@ test('overlapPolicy=skip records a skipped run without fabricating a task', asyn
     idleTimeoutMs: null,
     deadlineMs: null,
     runtime: 'codex',
+    model: null,
     sandboxEnvironmentId: ENV_ID,
     deliver: 'none',
   });
@@ -1792,6 +2093,7 @@ test('overlapPolicy=enqueue creates another ordinary task', async () => {
     idleTimeoutMs: null,
     deadlineMs: null,
     runtime: 'codex',
+    model: null,
     sandboxEnvironmentId: ENV_ID,
     deliver: 'none',
   });
@@ -1812,6 +2114,451 @@ test('failed fire records a failed run and creates no task', async () => {
   assert.ok(prisma.schedules[0].nextRunAt && prisma.schedules[0].nextRunAt > now);
   assert.equal(prisma.schedules[0].claimToken, null);
   assert.equal(prisma.schedules[0].claimUntil, null);
+});
+
+test('manual permanent model failure returns a normal schedule with one terminal run', async () => {
+  const { prisma, service, prepareCalls, admitCalls } = buildHarness({
+    prepareOutcomes: ['permanent'],
+  });
+  const schedule = addDueSchedule(prisma, {
+    taskTemplate: explicitTaskTemplate(),
+  });
+
+  const response = await service.dispatchNow(
+    USER_A,
+    schedule.id,
+    new Date('2026-07-09T00:05:00.000Z'),
+  );
+
+  assert.equal(response.latestRun?.status, 'failed');
+  assert.equal(response.latestRun?.errorCode, 'runtime_model_not_available');
+  assert.equal(response.latestRun?.taskId, null);
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(prisma.tasks.length, 0);
+  assert.equal(admitCalls.length, 0);
+  assert.equal(prepareCalls.length, 1);
+  assert.equal(prepareCalls[0]?.executionMode, 'headless-exec');
+  assert.equal(prepareCalls[0]?.inTransaction, false);
+  assert.ok(
+    prisma.schedules[0].nextRunAt &&
+      prisma.schedules[0].nextRunAt > new Date('2026-07-09T00:05:00.000Z'),
+  );
+});
+
+test('transient model outage retries the same immutable occurrence and creates one task', async () => {
+  const {
+    prisma,
+    service,
+    prepareCalls,
+    acceptedModelRowCalls,
+    admitCalls,
+  } = buildHarness({ prepareOutcomes: ['transient'] });
+  const schedule = addDueSchedule(prisma, {
+    overlapPolicy: 'enqueue',
+    taskTemplate: explicitTaskTemplate('original prompt', 'provider:model-v1'),
+  });
+  const originalNextRunAt = schedule.nextRunAt?.getTime();
+  const now = new Date('2026-07-09T00:05:00.000Z');
+
+  assert.equal(await service.tick(now), 1);
+  assert.equal(prisma.runs.length, 1);
+  const runId = prisma.runs[0].id;
+  assert.equal(prisma.runs[0].status, 'retrying');
+  assert.equal(prisma.runs[0].retryAttempt, 1);
+  assert.equal(
+    prisma.runs[0].errorCode,
+    'runtime_model_catalog_unavailable',
+  );
+  assert.ok(prisma.runs[0].retryAt);
+  assert.equal(prisma.tasks.length, 0);
+  assert.equal(admitCalls.length, 0);
+  assert.equal(schedule.nextRunAt?.getTime(), originalNextRunAt);
+
+  await service.update(USER_A, schedule.id, {
+    taskTemplate: {
+      repoId: REPO_ID,
+      prompt: 'future prompt',
+      runtime: 'codex',
+      model: 'provider:model-v2',
+      sandboxEnvironmentId: ENV_ID,
+      deliver: 'none',
+    },
+  });
+
+  const retryAt = prisma.runs[0].retryAt!;
+  assert.equal(await service.tick(retryAt), 1);
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(prisma.runs[0].id, runId);
+  assert.equal(prisma.runs[0].status, 'created');
+  assert.equal(prisma.runs[0].retryAttempt, 2);
+  assert.equal(prisma.runs[0].retryAt, null);
+  assert.equal(prisma.tasks.length, 1);
+  assert.equal(prisma.tasks[0].prompt, 'original prompt');
+  assert.equal(prisma.tasks[0].model, 'provider:model-v1');
+  assert.deepEqual(acceptedModelRowCalls, [true]);
+  assert.equal(admitCalls.length, 1);
+  assert.ok(
+    prepareCalls.every((call) => call.executionMode === 'headless-exec'),
+  );
+  assert.ok(prepareCalls.every((call) => call.inTransaction === false));
+  assert.ok(schedule.nextRunAt && schedule.nextRunAt > retryAt);
+});
+
+test('transient model retries exhaust on the same row without a late task', async () => {
+  const { prisma, service, prepareCalls, admitCalls } = buildHarness({
+    prepareOutcomes: Array.from({ length: 5 }, () => 'transient'),
+  });
+  const schedule = addDueSchedule(prisma, {
+    taskTemplate: explicitTaskTemplate(),
+  });
+  let now = new Date('2026-07-09T00:05:00.000Z');
+
+  await service.tick(now);
+  const runId = prisma.runs[0].id;
+  for (let guard = 0; prisma.runs[0].status === 'retrying'; guard += 1) {
+    assert.ok(guard < 10, 'retry policy must terminate within its bound');
+    now = prisma.runs[0].retryAt!;
+    await service.tick(now);
+  }
+
+  assert.equal(prisma.runs.length, 1);
+  assert.equal(prisma.runs[0].id, runId);
+  assert.equal(prisma.runs[0].status, 'failed');
+  assert.equal(prisma.runs[0].retryAttempt, 5);
+  assert.equal(
+    prisma.runs[0].errorCode,
+    'runtime_model_catalog_unavailable',
+  );
+  assert.equal(prisma.runs[0].retryAt, null);
+  assert.equal(prisma.tasks.length, 0);
+  assert.equal(admitCalls.length, 0);
+  assert.equal(prepareCalls.length, 5);
+  assert.ok(
+    prepareCalls.every((call) => call.executionMode === 'headless-exec'),
+  );
+  assert.ok(schedule.nextRunAt && schedule.nextRunAt > now);
+
+  await service.tick(new Date(now.getTime() + 60_000));
+  assert.equal(prisma.runs.filter((run) => run.id === runId).length, 1);
+  assert.equal(prisma.tasks.length, 0);
+  assert.equal(admitCalls.length, 0);
+});
+
+test('paused retries do no catalog work and accepted retry drains after resume with the gate closed', async () => {
+  const gateState = { open: true };
+  const { prisma, service, prepareCalls, acceptedModelRowCalls } = buildHarness({
+    prepareOutcomes: ['transient'],
+    gateState,
+  });
+  const schedule = addDueSchedule(prisma, {
+    taskTemplate: explicitTaskTemplate(),
+  });
+  const now = new Date('2026-07-09T00:05:00.000Z');
+  await service.tick(now);
+  const retryAt = prisma.runs[0].retryAt!;
+
+  await service.pause(USER_A, schedule.id);
+  assert.equal(await service.tick(retryAt), 0);
+  assert.equal(prepareCalls.length, 1);
+  assert.equal(prisma.runs[0].status, 'retrying');
+  assert.equal(prisma.tasks.length, 0);
+
+  await service.resume(
+    USER_A,
+    schedule.id,
+    new Date(retryAt.getTime() - 1),
+  );
+  gateState.open = false;
+  assert.equal(await service.tick(retryAt), 1);
+  assert.equal(prisma.runs[0].status, 'created');
+  assert.equal(prisma.tasks.length, 1);
+  assert.deepEqual(acceptedModelRowCalls, [true]);
+  assert.equal(prepareCalls.at(-1)?.acceptedRetry, true);
+});
+
+test('pausing while retry preflight is running prevents its task commit', async () => {
+  const { prisma, service, prepareCalls, admitCalls } = buildHarness({
+    prepareOutcomes: ['transient', 'success'],
+    prepareDelaysMs: [0, 30],
+  });
+  const schedule = addDueSchedule(prisma, {
+    taskTemplate: explicitTaskTemplate(),
+  });
+  await service.tick(new Date('2026-07-09T00:05:00.000Z'));
+
+  const retry = service.tick(prisma.runs[0].retryAt!);
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  await service.pause(USER_A, schedule.id);
+  await retry;
+
+  assert.equal(prepareCalls.length, 2);
+  assert.equal(prisma.runs[0].status, 'retrying');
+  assert.equal(prisma.runs[0].retryAttempt, 1);
+  assert.equal(prisma.runs[0].admissionClaimToken, null);
+  assert.equal(prisma.tasks.length, 0);
+  assert.equal(admitCalls.length, 0);
+  assert.equal(prisma.schedules[0].enabled, false);
+});
+
+test('retry success that crosses its horizon becomes terminal and never creates a task', async () => {
+  const previous = {
+    horizon: process.env.SCHEDULED_TASKS_MODEL_RETRY_HORIZON_MS,
+    base: process.env.SCHEDULED_TASKS_MODEL_RETRY_BASE_MS,
+    maxDelay: process.env.SCHEDULED_TASKS_MODEL_RETRY_MAX_DELAY_MS,
+  };
+  process.env.SCHEDULED_TASKS_MODEL_RETRY_HORIZON_MS = '10';
+  process.env.SCHEDULED_TASKS_MODEL_RETRY_BASE_MS = '1';
+  process.env.SCHEDULED_TASKS_MODEL_RETRY_MAX_DELAY_MS = '1';
+  try {
+    const { prisma, service, prepareCalls, admitCalls } = buildHarness({
+      prepareOutcomes: ['transient', 'success'],
+      prepareDelaysMs: [0, 25],
+      transientRetryAfterMs: null,
+    });
+    addDueSchedule(prisma, { taskTemplate: explicitTaskTemplate() });
+    await service.tick(new Date('2026-07-09T00:05:00.000Z'));
+    await service.tick(prisma.runs[0].retryAt!);
+
+    assert.equal(prepareCalls.length, 2);
+    assert.equal(prisma.runs[0].status, 'failed');
+    assert.equal(
+      prisma.runs[0].errorCode,
+      'runtime_model_catalog_unavailable',
+    );
+    assert.equal(prisma.tasks.length, 0);
+    assert.equal(admitCalls.length, 0);
+  } finally {
+    if (previous.horizon === undefined) {
+      delete process.env.SCHEDULED_TASKS_MODEL_RETRY_HORIZON_MS;
+    } else {
+      process.env.SCHEDULED_TASKS_MODEL_RETRY_HORIZON_MS = previous.horizon;
+    }
+    if (previous.base === undefined) {
+      delete process.env.SCHEDULED_TASKS_MODEL_RETRY_BASE_MS;
+    } else {
+      process.env.SCHEDULED_TASKS_MODEL_RETRY_BASE_MS = previous.base;
+    }
+    if (previous.maxDelay === undefined) {
+      delete process.env.SCHEDULED_TASKS_MODEL_RETRY_MAX_DELAY_MS;
+    } else {
+      process.env.SCHEDULED_TASKS_MODEL_RETRY_MAX_DELAY_MS = previous.maxDelay;
+    }
+  }
+});
+
+test('closed explicit schedules beyond one page do not starve omitted-model due work', async () => {
+  const { prisma, service } = buildHarness({ gateOpen: false });
+  const dueAt = new Date('2026-07-09T00:00:00.000Z');
+  for (let index = 0; index < 11; index += 1) {
+    addDueSchedule(prisma, {
+      nextRunAt: dueAt,
+      taskTemplate: explicitTaskTemplate(`closed ${index}`),
+    });
+  }
+  addDueSchedule(prisma, {
+    nextRunAt: dueAt,
+    taskTemplate: {
+      repoId: REPO_ID,
+      prompt: 'ordinary omitted model',
+      runtime: 'codex',
+      sandboxEnvironmentId: ENV_ID,
+      deliver: 'none',
+    },
+  });
+
+  assert.equal(await service.tick(dueAt, 1), 1);
+  assert.equal(prisma.tasks.length, 1);
+  assert.equal(prisma.tasks[0].prompt, 'ordinary omitted model');
+  assert.equal(prisma.runs.length, 1);
+  assert.ok(
+    prisma.schedules
+      .slice(0, 11)
+      .every((schedule) => schedule.nextRunAt?.getTime() === dueAt.getTime()),
+  );
+});
+
+test('future retry rows beyond one page do not starve a later ordinary due schedule', async () => {
+  const { prisma, service } = buildHarness();
+  const dueAt = new Date('2026-07-09T00:00:00.000Z');
+  for (let index = 0; index < 11; index += 1) {
+    const schedule = addDueSchedule(prisma, {
+      nextRunAt: dueAt,
+      taskTemplate: explicitTaskTemplate(`retrying ${index}`),
+    });
+    const createdAt = new Date(dueAt.getTime() + index);
+    prisma.runs.push({
+      id: `77777777-7777-4777-8777-${(index + 1).toString().padStart(12, '0')}`,
+      scheduleId: schedule.id,
+      scheduledFor: dueAt,
+      periodKey: `cron:${dueAt.toISOString()}`,
+      triggerSource: 'automatic',
+      triggeredAt: dueAt,
+      status: 'retrying',
+      taskId: null,
+      error: 'Runtime model catalog is temporarily unavailable.',
+      errorCode: 'runtime_model_catalog_unavailable',
+      retryAt: new Date(dueAt.getTime() + 60_000),
+      retryAttempt: 1,
+      retryHorizonAt: new Date(dueAt.getTime() + 15 * 60_000),
+      retryTaskTemplate: explicitTaskTemplate(`retrying ${index}`),
+      admissionClaimToken: null,
+      admissionClaimUntil: null,
+      createdAt,
+      updatedAt: createdAt,
+    });
+  }
+  addDueSchedule(prisma, {
+    nextRunAt: dueAt,
+    taskTemplate: {
+      repoId: REPO_ID,
+      prompt: 'ordinary after retries',
+      runtime: 'codex',
+      sandboxEnvironmentId: ENV_ID,
+      deliver: 'none',
+    },
+  });
+
+  assert.equal(await service.tick(dueAt, 1), 1);
+  assert.equal(prisma.tasks.length, 1);
+  assert.equal(prisma.tasks[0].prompt, 'ordinary after retries');
+  assert.equal(prisma.runs.filter((run) => run.status === 'retrying').length, 11);
+});
+
+test('closed gate still repairs cadence for an already terminal explicit occurrence', async () => {
+  const { prisma, service } = buildHarness({ gateOpen: false });
+  const dueAt = new Date('2026-07-09T00:00:00.000Z');
+  const schedule = addDueSchedule(prisma, {
+    nextRunAt: dueAt,
+    taskTemplate: explicitTaskTemplate(),
+  });
+  prisma.runs.push({
+    id: '77777777-7777-4777-8777-999999999999',
+    scheduleId: schedule.id,
+    scheduledFor: dueAt,
+    periodKey: `cron:${dueAt.toISOString()}`,
+    triggerSource: 'automatic',
+    triggeredAt: dueAt,
+    status: 'failed',
+    taskId: null,
+    error: 'The requested runtime model is not available.',
+    errorCode: 'runtime_model_not_available',
+    retryAt: null,
+    retryAttempt: null,
+    retryHorizonAt: null,
+    retryTaskTemplate: null,
+    createdAt: dueAt,
+    updatedAt: dueAt,
+  });
+
+  assert.equal(await service.tick(dueAt), 0);
+  assert.ok(schedule.nextRunAt && schedule.nextRunAt > dueAt);
+  assert.equal(prisma.tasks.length, 0);
+});
+
+test('schedule create and update preflight failures leave persisted definitions unchanged', async () => {
+  const transientHarness = buildHarness({ prepareOutcomes: ['transient'] });
+  await assert.rejects(
+    () =>
+      transientHarness.service.create(USER_A, {
+        cronExpression: '*/5 * * * *',
+        timezone: 'UTC',
+        overlapPolicy: 'skip',
+        misfirePolicy: 'fire-once',
+        taskTemplate: {
+          repoId: REPO_ID,
+          prompt: 'not persisted',
+          runtime: 'codex',
+          model: 'provider:model-v1',
+        },
+      }),
+    RuntimeModelPreflightError,
+  );
+  assert.equal(transientHarness.prisma.schedules.length, 0);
+  assert.equal(transientHarness.admitCalls.length, 0);
+
+  const { prisma, service, admitCalls } = buildHarness({
+    prepareOutcomes: ['success', 'permanent'],
+  });
+  const created = await service.create(USER_A, {
+    cronExpression: '*/5 * * * *',
+    timezone: 'UTC',
+    overlapPolicy: 'skip',
+    misfirePolicy: 'fire-once',
+    taskTemplate: {
+      repoId: REPO_ID,
+      prompt: 'kept',
+      runtime: 'codex',
+      model: 'provider:model-v1',
+    },
+  });
+  const before = structuredClone(prisma.schedules[0].taskTemplate);
+  await assert.rejects(
+    () =>
+      service.update(USER_A, created.id, {
+        taskTemplate: {
+          repoId: REPO_ID,
+          prompt: 'must not replace',
+          runtime: 'codex',
+          model: 'provider:model-v2',
+        },
+      }),
+    RuntimeModelPreflightError,
+  );
+  assert.deepEqual(prisma.schedules[0].taskTemplate, before);
+  assert.equal(prisma.runs.length, 0);
+  assert.equal(admitCalls.length, 0);
+});
+
+test('owner removal terminalizes an accepted retry instead of retrying forever', async () => {
+  const { prisma, service } = buildHarness({
+    prepareOutcomes: ['transient', 'success'],
+  });
+  addDueSchedule(prisma, {
+    taskTemplate: explicitTaskTemplate(),
+  });
+  await service.tick(new Date('2026-07-09T00:05:00.000Z'));
+  prisma.users.set(USER_A, { allowed: false });
+
+  await service.tick(prisma.runs[0].retryAt!);
+  assert.equal(prisma.runs[0].status, 'failed');
+  assert.equal(prisma.runs[0].error, 'Schedule owner is no longer available.');
+  assert.equal(prisma.runs[0].errorCode, null);
+  assert.equal(prisma.tasks.length, 0);
+  assert.ok(
+    prisma.schedules[0].nextRunAt &&
+      prisma.schedules[0].nextRunAt > new Date('2026-07-09T00:05:00.000Z'),
+  );
+});
+
+test('competing retry workers converge on one run and at most one task', async () => {
+  const harness = buildHarness({
+    prepareOutcomes: ['transient'],
+  });
+  const second = new ScheduledTasksService(
+    harness.prisma as unknown as PrismaService,
+    harness.tasks,
+  );
+  addDueSchedule(harness.prisma, {
+    overlapPolicy: 'enqueue',
+    taskTemplate: explicitTaskTemplate(),
+  });
+  const now = new Date('2026-07-09T00:05:00.000Z');
+
+  await harness.service.tick(now);
+  assert.equal(harness.prisma.runs.length, 1);
+  assert.equal(harness.prisma.runs[0].status, 'retrying');
+  const runId = harness.prisma.runs[0].id;
+  await Promise.all([
+    harness.service.tick(harness.prisma.runs[0].retryAt!),
+    second.tick(harness.prisma.runs[0].retryAt!),
+  ]);
+
+  assert.equal(harness.prisma.runs.length, 1);
+  assert.equal(harness.prisma.runs[0].id, runId);
+  assert.equal(harness.prisma.runs[0].status, 'created');
+  assert.equal(harness.prisma.tasks.length, 1);
+  assert.equal(harness.acceptedModelRowCalls.length, 1);
+  assert.ok(harness.prepareCalls.every((call) => !call.inTransaction));
 });
 
 test('failed ledger write rolls back the schedule advance and leaves the occurrence due', async () => {
@@ -1852,6 +2599,7 @@ test('skip ledger failure cannot commit a schedule advance without an outcome', 
     idleTimeoutMs: null,
     deadlineMs: null,
     runtime: 'codex',
+    model: null,
     sandboxEnvironmentId: ENV_ID,
     deliver: 'none',
   });

@@ -80,6 +80,7 @@ function baseForm(overrides: Partial<ScheduleFormState> = {}): ScheduleFormState
     overlapPolicy: "enqueue",
     repoId: uuid(1),
     runtime: "claude-code",
+    model: null,
     sandboxEnvironmentId: uuid(2),
     deliver: "pr",
     branch: " main ",
@@ -234,6 +235,38 @@ describe("schedule page payload", () => {
 });
 
 describe("schedule run history rendering", () => {
+  it("shows explicit schedule model intent and the runtime-default fallback", () => {
+    const explicit = renderToStaticMarkup(
+      <ScheduleDetail
+        schedule={scheduleFixture({
+          taskTemplate: {
+            ...scheduleFixture().taskTemplate,
+            model: "fixture/model:alias.v1",
+          },
+        })}
+        repos={[]}
+        onEdit={() => undefined}
+        onDispatch={() => undefined}
+        onPauseResume={() => undefined}
+        onDelete={() => undefined}
+      />,
+    );
+    const runtimeDefault = renderToStaticMarkup(
+      <ScheduleDetail
+        schedule={scheduleFixture()}
+        repos={[]}
+        onEdit={() => undefined}
+        onDispatch={() => undefined}
+        onPauseResume={() => undefined}
+        onDelete={() => undefined}
+      />,
+    );
+
+    expect(explicit).toContain("请求模型");
+    expect(explicit).toContain("fixture/model:alias.v1");
+    expect(runtimeDefault).toContain("运行时默认");
+  });
+
   it("shows custom recurrence summaries and edit/dispatch actions without exposing raw cron", () => {
     const schedule = scheduleFixture();
     const html = renderToStaticMarkup(
@@ -500,6 +533,93 @@ describe("schedule run history rendering", () => {
       expect(html).toContain("本周期已处理");
       expect(html).toContain(status === "failed" ? "派发失败" : "已跳过");
     }
+  });
+
+  it("renders a catalog outage as a pre-task retry with attempt and next retry", () => {
+    const retryAt = new Date("2026-07-10T00:34:00.000Z");
+    const run = runFixture(uuid(43), {
+      status: "retrying",
+      taskId: null,
+      taskStatus: null,
+      errorCode: "runtime_model_catalog_unavailable",
+      error: "模型目录暂时不可用，请稍后重试。",
+      retryAttempt: 2,
+      retryAt,
+    });
+    const history = renderToStaticMarkup(
+      <RunList runs={[run]} timeZone="UTC" />,
+    );
+    const latest = renderToStaticMarkup(
+      <LatestRunSummary run={run} timeZone="UTC" />,
+    );
+    const period = renderToStaticMarkup(
+      <CurrentPeriodSummary
+        period={{
+          key: run.periodKey!,
+          scheduledFor: run.scheduledFor,
+          run,
+        }}
+        timeZone="UTC"
+      />,
+    );
+
+    for (const html of [history, latest]) {
+      expect(html).toContain("模型目录不可用，等待重试");
+      expect(html).toContain("runtime_model_catalog_unavailable");
+      expect(html).toContain("模型目录暂时不可用，请稍后重试。");
+      expect(html).toContain("第 2 次");
+      expect(html).toContain(formatRenderedDate(retryAt, "UTC"));
+      expect(html).not.toContain('href="/tasks/');
+    }
+    expect(period).toContain("本周期等待重试");
+
+    const schedule = scheduleFixture({
+      latestRun: run,
+      currentPeriod: {
+        key: run.periodKey!,
+        scheduledFor: run.scheduledFor,
+        run,
+      },
+    });
+    expect(immediateDispatchSuccessMessage(scheduleFixture(), schedule)).toContain(
+      "本周期等待重试",
+    );
+  });
+
+  it("distinguishes permanent model rejection from exhausted catalog retries", () => {
+    const unavailable = runFixture(uuid(44), {
+      status: "failed",
+      taskId: null,
+      taskStatus: null,
+      errorCode: "runtime_model_not_available",
+      error: "所选模型不在当前目录中。",
+      retryAt: null,
+      retryAttempt: null,
+    });
+    const exhausted = runFixture(uuid(45), {
+      status: "failed",
+      taskId: null,
+      taskStatus: null,
+      errorCode: "runtime_model_catalog_unavailable",
+      error: "模型目录重试次数已用尽。",
+      retryAt: null,
+      retryAttempt: 5,
+    });
+
+    const unavailableHtml = renderToStaticMarkup(
+      <RunList runs={[unavailable]} timeZone="UTC" />,
+    );
+    const exhaustedHtml = renderToStaticMarkup(
+      <RunList runs={[exhausted]} timeZone="UTC" />,
+    );
+
+    expect(unavailableHtml).toContain("所选模型不可用");
+    expect(unavailableHtml).toContain("runtime_model_not_available");
+    expect(unavailableHtml).toContain("请编辑定时任务并选择当前可用模型");
+    expect(unavailableHtml).not.toContain("等待重试");
+    expect(exhaustedHtml).toContain("模型目录不可用，重试已结束");
+    expect(exhaustedHtml).toContain("runtime_model_catalog_unavailable");
+    expect(exhaustedHtml).not.toContain("下次重试");
   });
 
   it("keeps immediate execution available when a mixed-version response omits currentPeriod", () => {

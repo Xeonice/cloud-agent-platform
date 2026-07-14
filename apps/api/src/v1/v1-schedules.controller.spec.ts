@@ -129,14 +129,12 @@ test('read-only key cannot create a schedule', async () => {
   assert.equal(created, false);
 });
 
-test('ownerless principal reaches create as ownerless so service returns shared 400 shape', async () => {
+test('ownerless principal keeps the shared 400 shape without invoking create', async () => {
+  let created = false;
   const controller = new V1SchedulesController({
-    async create(ownerUserId: string | undefined) {
-      assert.equal(ownerUserId, undefined);
-      throw new BadRequestException({
-        error: 'schedule_owner_required',
-        message: 'Schedules require an authenticated account owner.',
-      });
+    async create() {
+      created = true;
+      return scheduleResponse();
     },
   } as unknown as ScheduledTasksService);
 
@@ -156,25 +154,39 @@ test('ownerless principal reaches create as ownerless so service returns shared 
       err instanceof BadRequestException &&
       (err.getResponse() as { error?: string }).error === 'schedule_owner_required',
   );
+  assert.equal(created, false);
 });
 
 test('write key can create and update validated sub-day recurrence payloads', async () => {
+  const selector =
+    'provider/model:v1.2+preview@[region]/family_name;$,=';
   const seen: Array<{
     operation: string;
     ownerUserId: string | undefined;
     cronExpression: string;
+    model: string | undefined;
   }> = [];
   const controller = new V1SchedulesController({
-    async create(ownerUserId: string | undefined, body: { cronExpression: string }) {
-      seen.push({ operation: 'create', ownerUserId, cronExpression: body.cronExpression });
+    async create(ownerUserId: string | undefined, body: CreateScheduleRequest) {
+      seen.push({
+        operation: 'create',
+        ownerUserId,
+        cronExpression: body.cronExpression,
+        model: body.taskTemplate.model,
+      });
       return scheduleResponse();
     },
     async update(
       ownerUserId: string | undefined,
       _id: string,
-      body: { cronExpression: string },
+      body: UpdateScheduleRequest,
     ) {
-      seen.push({ operation: 'update', ownerUserId, cronExpression: body.cronExpression });
+      seen.push({
+        operation: 'update',
+        ownerUserId,
+        cronExpression: body.cronExpression!,
+        model: body.taskTemplate?.model,
+      });
       return scheduleResponse();
     },
   } as unknown as ScheduledTasksService);
@@ -188,7 +200,11 @@ test('write key can create and update validated sub-day recurrence payloads', as
         minuteOfHour: 45,
         timezone: 'Asia/Shanghai',
       },
-      taskTemplate: { repoId: REPO_ID, prompt: 'hourly check' },
+      taskTemplate: {
+        repoId: REPO_ID,
+        prompt: 'hourly check',
+        model: selector,
+      },
     }, BODY_METADATA) as CreateScheduleRequest,
     reqWith(WRITE_KEY),
   );
@@ -200,14 +216,29 @@ test('write key can create and update validated sub-day recurrence payloads', as
         intervalMinutes: 15,
         timezone: 'UTC',
       },
+      taskTemplate: {
+        repoId: REPO_ID,
+        prompt: 'interval check',
+        model: selector,
+      },
     }, BODY_METADATA) as UpdateScheduleRequest,
     reqWith(WRITE_KEY),
   );
 
   assert.equal(result.id, SCHEDULE_ID);
   assert.deepEqual(seen, [
-    { operation: 'create', ownerUserId: USER_A, cronExpression: '45 * * * *' },
-    { operation: 'update', ownerUserId: USER_A, cronExpression: '*/15 * * * *' },
+    {
+      operation: 'create',
+      ownerUserId: USER_A,
+      cronExpression: '45 * * * *',
+      model: selector,
+    },
+    {
+      operation: 'update',
+      ownerUserId: USER_A,
+      cronExpression: '*/15 * * * *',
+      model: selector,
+    },
   ]);
 
   for (const invalid of [
@@ -300,6 +331,66 @@ test('mutating routes pass the principal account id', async () => {
     `dispatch:${USER_A}:day:2026-07-11`,
     `delete:${USER_A}`,
   ]);
+});
+
+test('dispatch returns canonical 200 payloads for terminal model failure and catalog retry', async () => {
+  const scheduledFor = new Date('2026-07-09T09:00:00.000Z');
+  const retryAt = new Date('2026-07-09T09:00:05.000Z');
+  const outcomes: ScheduleResponse[] = [
+    {
+      ...scheduleResponse(),
+      latestRun: {
+        id: RUN_ID,
+        scheduledFor,
+        status: 'failed',
+        taskId: null,
+        error: 'The requested runtime model is not available.',
+        errorCode: 'runtime_model_not_available',
+        retryAt: null,
+        retryAttempt: null,
+      },
+    },
+    {
+      ...scheduleResponse(),
+      latestRun: {
+        id: RUN_ID,
+        scheduledFor,
+        status: 'retrying',
+        taskId: null,
+        error: 'Runtime model catalog is temporarily unavailable.',
+        errorCode: 'runtime_model_catalog_unavailable',
+        retryAt,
+        retryAttempt: 2,
+      },
+    },
+  ];
+  const controller = new V1SchedulesController({
+    async dispatchNow() {
+      return outcomes.shift()!;
+    },
+  } as unknown as ScheduledTasksService);
+
+  const terminal = await controller.dispatch(
+    SCHEDULE_ID,
+    {},
+    reqWith(WRITE_KEY),
+  );
+  const retrying = await controller.dispatch(
+    SCHEDULE_ID,
+    {},
+    reqWith(WRITE_KEY),
+  );
+
+  assert.equal(terminal.latestRun?.status, 'failed');
+  assert.equal(terminal.latestRun?.errorCode, 'runtime_model_not_available');
+  assert.equal(terminal.latestRun?.taskId, null);
+  assert.equal(retrying.latestRun?.status, 'retrying');
+  assert.equal(
+    retrying.latestRun?.errorCode,
+    'runtime_model_catalog_unavailable',
+  );
+  assert.equal(retrying.latestRun?.retryAt?.getTime(), retryAt.getTime());
+  assert.equal(retrying.latestRun?.retryAttempt, 2);
 });
 
 test('run listing preserves dispatch status and exposes the linked task status', async () => {

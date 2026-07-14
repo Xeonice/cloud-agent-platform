@@ -1,3 +1,8 @@
+import type {
+  TaskModelIntent,
+  TaskModelLaunchMaterial,
+} from '@cap/sandbox-core';
+
 export type AioExecutionMode = 'interactive-pty' | 'headless-exec';
 
 export interface AioTerminalStartup {
@@ -10,6 +15,13 @@ export interface AioLaunchContext {
   readonly taskId: string;
   readonly workspaceDir: string;
   readonly sessionId?: string;
+  readonly model: TaskModelLaunchMaterial;
+}
+
+export interface AioResolvedTaskLaunchContext {
+  readonly runtime: AioTerminalRuntime;
+  readonly executionMode: AioExecutionMode;
+  readonly modelIntent: TaskModelIntent;
 }
 
 export interface AioSandboxExec {

@@ -53,6 +53,7 @@ export interface TaskResponseRecord {
   idleTimeoutMs: number | null;
   deadlineMs: number | null;
   runtime?: string | null;
+  model?: string | null;
   sandboxEnvironmentId?: string | null;
   executionMode?: string | null;
   deliver?: string | null;
@@ -91,6 +92,7 @@ export function taskResponseFromRecord(task: TaskResponseRecord): TaskResponse {
     idleTimeoutMs: task.idleTimeoutMs,
     deadlineMs: task.deadlineMs,
     runtime: (task.runtime ?? DEFAULT_TASK_RUNTIME) as Runtime,
+    model: task.model ?? null,
     sandboxEnvironmentId: task.sandboxEnvironmentId ?? null,
     executionMode: (task.executionMode ?? 'interactive-pty') as ExecutionMode,
     deliver: (task.deliver ?? 'none') as Deliver,

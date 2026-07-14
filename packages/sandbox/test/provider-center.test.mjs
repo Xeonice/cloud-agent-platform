@@ -23,6 +23,16 @@ function provider(name, capabilities) {
   };
 }
 
+function provisionContext(taskId, cloneSpec = null) {
+  return {
+    taskId,
+    cloneSpec,
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'interactive-pty',
+  };
+}
+
 function routableProvider(name, capabilities, options = {}) {
   const calls = [];
   const connection = {
@@ -476,10 +486,9 @@ await test('provider router selects by capabilities and pins the owner for later
   ]);
 
   assert.equal(router.getSandboxMode(), 'danger-full-access');
-  const connection = await router.provision({
-    taskId: 'task-routed',
-    cloneSpec: { url: 'https://example.test/repo.git' },
-  });
+  const connection = await router.provision(
+    provisionContext('task-routed', { url: 'https://example.test/repo.git' }),
+  );
   assert.equal(connection.baseUrl, 'http://cloud/task-routed');
   assert.deepEqual(local.calls, []);
 
@@ -641,7 +650,7 @@ await test('provider router uses owned provider for transcript and existence che
       ],
     }),
   ]);
-  await router.provision({ taskId: 'task-owned-read', cloneSpec: null });
+  await router.provision(provisionContext('task-owned-read'));
   assert.equal(await router.readRolloutFromContainer('task-owned-read'), transcript);
   assert.equal(await router.sandboxExists('task-owned-read'), true);
 });
@@ -686,7 +695,7 @@ await test('provider router aggregates selected-run descriptors when provider ru
     ],
     { ownerStore },
   );
-  await router.provision({ taskId: 'task-partial', cloneSpec: null });
+  await router.provision(provisionContext('task-partial'));
   const run = await router.getSelectedSandboxRun('task-partial');
   assert.equal(run.providerSandboxId, 'task-partial');
   assert.equal(run.terminal.wsUrl, 'ws://partial/terminal');
@@ -741,7 +750,7 @@ await test('provider router records and returns resolved environment metadata', 
     { ownerStore },
   );
 
-  await router.provision({ taskId: 'task-env-owner', cloneSpec: null });
+  await router.provision(provisionContext('task-env-owner'));
   const owner = await ownerStore.getSandboxRunOwner('task-env-owner');
   const run = await router.getSelectedSandboxRun('task-env-owner');
 
@@ -824,7 +833,7 @@ await test('provider router selected-run can fall back to connection task id wit
       capabilities: ['terminal.websocket'],
     }),
   ]);
-  await router.provision({ taskId: 'task-connection-fallback', cloneSpec: null });
+  await router.provision(provisionContext('task-connection-fallback'));
   const run = await router.getSelectedSandboxRun('task-connection-fallback');
   assert.equal(run.providerSandboxId, 'provider-connection-task');
 });
@@ -848,7 +857,7 @@ await test('provider router persists and prefers stored ownership after restart'
     { ownerStore },
   );
 
-  await firstRouter.provision({ taskId: 'task-owned', cloneSpec: null });
+  await firstRouter.provision(provisionContext('task-owned'));
   assert.equal((await ownerStore.getSandboxRunOwner('task-owned'))?.providerId, 'cloud');
   assert.equal(
     (await ownerStore.getSandboxRunOwner('task-owned'))?.providerSandboxId,

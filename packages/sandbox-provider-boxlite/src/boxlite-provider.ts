@@ -39,6 +39,7 @@ import type {
   BoxLitePreStopCleanup,
   BoxLiteRuntimePreflight,
   BoxLiteRuntimeSetup,
+  BoxLiteTranscriptRead,
 } from './boxlite-hooks.js';
 import { createBoxLiteCommandExecutor } from './boxlite-command.js';
 import {
@@ -54,11 +55,15 @@ import { buildBoxLiteTerminalDescriptor } from './boxlite-terminal.js';
 import { buildBoxLiteRetentionPolicy } from './boxlite-retention.js';
 import type { BoxLiteProvisionedRun } from './boxlite-types.js';
 
-export interface BoxLiteProviderOptions {
+export interface BoxLiteProviderOptions<
+  TRuntimeId = string,
+  TTranscriptSource extends SandboxTranscriptSourceBase = SandboxTranscriptSourceBase,
+> {
   readonly config: BoxLiteProviderConfig;
   readonly client?: BoxLiteClient;
   readonly preflight?: BoxLiteRuntimePreflight;
   readonly runtimeSetup?: BoxLiteRuntimeSetup;
+  readonly transcriptRead?: BoxLiteTranscriptRead<TRuntimeId, TTranscriptSource>;
   readonly preStopCleanup?: BoxLitePreStopCleanup;
   readonly resolveRuntimeId?: (
     taskId: string,
@@ -69,7 +74,10 @@ export interface BoxLiteProviderOptions {
   }) => Promise<SandboxResolvedEnvironmentMetadata | null | undefined>;
 }
 
-export interface BoxLiteProviderDescriptorOptions extends BoxLiteProviderOptions {
+export interface BoxLiteProviderDescriptorOptions<
+  TRuntimeId = string,
+  TTranscriptSource extends SandboxTranscriptSourceBase = SandboxTranscriptSourceBase,
+> extends BoxLiteProviderOptions<TRuntimeId, TTranscriptSource> {
   readonly id?: string;
 }
 
@@ -107,12 +115,13 @@ export class BoxLiteSandboxProvider<
   private readonly client: BoxLiteClient;
   private readonly preflight?: BoxLiteRuntimePreflight;
   private readonly runtimeSetup?: BoxLiteRuntimeSetup;
+  private readonly transcriptRead?: BoxLiteTranscriptRead<TRuntimeId, TTranscriptSource>;
   private readonly preStopCleanup?: BoxLitePreStopCleanup;
-  private readonly resolveRuntimeIdHook?: BoxLiteProviderOptions['resolveRuntimeId'];
-  private readonly resolveEnvironmentHook?: BoxLiteProviderOptions['resolveEnvironment'];
+  private readonly resolveRuntimeIdHook?: BoxLiteProviderOptions<TRuntimeId>['resolveRuntimeId'];
+  private readonly resolveEnvironmentHook?: BoxLiteProviderOptions<TRuntimeId>['resolveEnvironment'];
   private readonly runs = new Map<string, BoxLiteProvisionedRun>();
 
-  constructor(options: BoxLiteProviderOptions) {
+  constructor(options: BoxLiteProviderOptions<TRuntimeId, TTranscriptSource>) {
     this.config = options.config;
     this.client =
       options.client ??
@@ -125,10 +134,19 @@ export class BoxLiteSandboxProvider<
       });
     this.preflight = options.preflight;
     this.runtimeSetup = options.runtimeSetup;
+    this.transcriptRead = options.transcriptRead;
     this.preStopCleanup = options.preStopCleanup;
     this.resolveRuntimeIdHook = options.resolveRuntimeId;
     this.resolveEnvironmentHook = options.resolveEnvironment;
     assertClientSupportsCapabilities(this.client, options.config.capabilities);
+    if (
+      options.config.capabilities.includes('transcript.retained-read') &&
+      !this.transcriptRead
+    ) {
+      throw new Error(
+        'BoxLite provider cannot advertise transcript.retained-read without a transcriptRead hook',
+      );
+    }
   }
 
   getSandboxMode(): SandboxExecutionMode {
@@ -148,7 +166,7 @@ export class BoxLiteSandboxProvider<
     if (existing) return existing.connection;
 
     const sandboxId = this.sandboxIdForTask(ctx.taskId);
-    const runtimeId = await this.resolveRuntimeId(ctx.taskId);
+    const runtimeId = ctx.runtimeId;
     const environment = await this.resolveEnvironment(ctx, runtimeId);
     const source = this.resolveSandboxSource(environment, runtimeId);
     const sandbox = await this.client.createSandbox({
@@ -194,6 +212,8 @@ export class BoxLiteSandboxProvider<
       }
       await this.runtimeSetup?.({
         taskId: ctx.taskId,
+        modelIntent: ctx.modelIntent,
+        executionMode: ctx.executionMode,
         sandbox,
         executor,
         workspacePath: this.config.workspacePath,
@@ -250,10 +270,21 @@ export class BoxLiteSandboxProvider<
   }
 
   async readRolloutFromContainer(
-    _taskId: string,
-    _runtimeId?: TRuntimeId | null,
+    taskId: string,
+    runtimeId?: TRuntimeId | null,
   ): Promise<TTranscriptSource | null> {
-    return null;
+    if (!this.transcriptRead) return null;
+    const run = await this.resolveExistingRun(taskId);
+    if (!run) return null;
+    return this.transcriptRead({
+      taskId,
+      runtimeId:
+        runtimeId ??
+        ((await this.resolveRuntimeId(taskId)) as TRuntimeId | null),
+      sandbox: run.sandbox,
+      executor: this.createCommandExecutor(run.sandbox.id),
+      workspacePath: this.config.workspacePath,
+    });
   }
 
   async sandboxExists(taskId: string): Promise<boolean> {
@@ -529,7 +560,7 @@ export function defineBoxLiteSandboxProvider<
   TRuntimeId = string,
   TTranscriptSource extends SandboxTranscriptSourceBase = SandboxTranscriptSourceBase,
 >(
-  options: BoxLiteProviderDescriptorOptions,
+  options: BoxLiteProviderDescriptorOptions<TRuntimeId, TTranscriptSource>,
 ): SandboxProviderDescriptor<BoxLiteSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>> {
   const provider = new BoxLiteSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>(
     {

@@ -3,6 +3,7 @@ import {
   buildHasSessionCommand,
   CODEX_PROMPT_FILE_PATH,
   wrapHeadlessDetachedSession,
+  wrapInDetachedSession,
 } from '../terminal/codex-launch';
 import type {
   AgentRuntime,
@@ -23,6 +24,7 @@ import type {
   TranscriptReadStrategy,
 } from './agent-runtime.port';
 import { classifyCodexOutputFailure } from './runtime-output-failure-classifier';
+import { explicitTaskModelShellMaterial } from './task-model-launch';
 
 /**
  * CodexRuntime (add-claude-code-runtime, task 2.2) — today's hard-coded codex
@@ -100,6 +102,18 @@ export class CodexRuntime implements AgentRuntime {
     // detached named tmux session whose inner line reads the prompt file via
     // `$(cat …)` and passes it positionally. Workspace cwd is `ctx.workspaceDir`.
     const argv = this.resolveArgv();
+    const model = explicitTaskModelShellMaterial(ctx.model);
+    if (model) {
+      const launch =
+        `P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
+        `if [ -n "$P" ]; then set -- "$P"; else set --; fi; ` +
+        `${argv} ${model.argument} "$@"`;
+      return wrapInDetachedSession(
+        ctx.taskId,
+        `${model.guard}{ ${launch}; }`,
+        ctx.workspaceDir,
+      );
+    }
     return buildDetachedCodexLaunchLine(
       ctx.taskId,
       argv,
@@ -261,10 +275,13 @@ export class CodexRuntime implements AgentRuntime {
    */
   buildHeadlessLine(ctx: LaunchContext): string {
     const ws = ctx.workspaceDir;
-    const inner =
+    const model = explicitTaskModelShellMaterial(ctx.model);
+    const modelArgument = model ? ` ${model.argument}` : '';
+    const launch =
       `P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
       `codex exec --json --dangerously-bypass-approvals-and-sandbox ` +
-      `--skip-git-repo-check "$P" < /dev/null`;
+      `--skip-git-repo-check${modelArgument} "$P" < /dev/null`;
+    const inner = model ? `${model.guard}{ ${launch}; }` : launch;
     return wrapHeadlessDetachedSession(ctx.taskId, inner, ws);
   }
 

@@ -1,15 +1,15 @@
 import {
-  Controller,
-  ForbiddenException,
   Get,
   Inject,
-  Param,
   Req,
 } from '@nestjs/common';
+import { type SessionHistory } from '@cap/contracts';
 import {
-  PublicV1IdParamsSchema,
-  type SessionHistory,
-} from '@cap/contracts';
+  PublicV1Controller,
+  PublicV1Input,
+  PublicV1Operation,
+  requirePublicV1Principal,
+} from '../public-surface/public-v1-operation';
 import {
   SANDBOX_PROVIDER,
   type SandboxProvider,
@@ -22,9 +22,7 @@ import {
   type AuditTimelineReader,
 } from '../tasks/session-history.controller';
 import { readTaskTranscript } from '../tasks/task-transcript-reader';
-import { hasScope } from '../auth/operator-principal';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { zodParam } from '../repos/zod-validation.pipe';
 
 /**
  * `/v1` transcript surface (public-v1-api, D1) — `GET /v1/tasks/:id/transcript`,
@@ -39,7 +37,7 @@ import { zodParam } from '../repos/zod-validation.pipe';
  * allow-all; an api-key missing the scope is 403'd). Registered into the V1Module
  * in Integration (3.6).
  */
-@Controller('v1/tasks')
+@PublicV1Controller('v1/tasks')
 export class V1TranscriptController {
   constructor(
     private readonly tasksService: TasksService,
@@ -49,11 +47,12 @@ export class V1TranscriptController {
   ) {}
 
   @Get(':id/transcript')
+  @PublicV1Operation('tasks.transcript')
   async get(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) id: string,
+    @PublicV1Input('params', 'id') id: string,
     @Req() req: AuthenticatedRequest,
   ): Promise<SessionHistory> {
-    this.requireReadScope(req);
+    requirePublicV1Principal(req, this.get);
     return readTaskTranscript(
       {
         tasks: this.tasksService,
@@ -63,20 +62,5 @@ export class V1TranscriptController {
       },
       id,
     );
-  }
-
-  /**
-   * Enforces `tasks:read` on the guard-attached principal (task 3.4). A scopeless
-   * session/legacy principal is allow-all; a scoped principal missing the scope is
-   * 403'd (distinct from the guard's 401 for an absent credential).
-   */
-  private requireReadScope(req: AuthenticatedRequest): void {
-    const principal = req.operatorPrincipal;
-    if (!principal) {
-      throw new ForbiddenException('Missing operator principal');
-    }
-    if (!hasScope(principal, 'tasks:read')) {
-      throw new ForbiddenException('Insufficient scope: tasks:read required');
-    }
   }
 }

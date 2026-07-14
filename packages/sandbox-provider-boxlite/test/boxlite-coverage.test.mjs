@@ -465,7 +465,7 @@ await test('config parser covers defaults, require helper, and invalid modes', (
     BOXLITE_TIMEOUT_MS: '-1',
     BOXLITE_SANDBOX_PROXY: 'mailto:proxy@example.test',
     BOXLITE_SANDBOX_HTTPS_PROXY: 'not a url',
-    BOXLITE_CAPABILITIES: 'workspace.git.materialize,workspace.git.deliver,transcript.retained-source',
+    BOXLITE_CAPABILITIES: 'workspace.git.materialize,workspace.git.deliver,transcript.retained-source,transcript.retained-read',
   }));
   assert.equal(invalid.status, 'invalid');
   assert(invalid.errors.some((entry) => entry.includes('values must be non-empty')));
@@ -495,6 +495,7 @@ await test('config parser covers defaults, require helper, and invalid modes', (
   assert(invalid.errors.some((entry) => entry.includes('workspace.git.materialize requires command.exec')));
   assert(invalid.errors.some((entry) => entry.includes('workspace.git.deliver requires command.exec')));
   assert(invalid.errors.some((entry) => entry.includes('transcript.retained-source requires command.exec')));
+  assert(invalid.errors.some((entry) => entry.includes('transcript.retained-read requires command.exec')));
 
   assert.equal(
     mod.readBoxLiteProviderConfig({

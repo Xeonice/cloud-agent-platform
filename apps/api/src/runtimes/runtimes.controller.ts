@@ -1,4 +1,5 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Req } from '@nestjs/common';
+import type { AuthenticatedRequest } from '../auth/auth.guard';
 
 import {
   RuntimesService,
@@ -28,7 +29,7 @@ export class RuntimesController {
   constructor(private readonly runtimes: RuntimesService) {}
 
   @Get('runtimes')
-  get(): Promise<RuntimesReadinessResponse> {
-    return this.runtimes.getReadiness();
+  get(@Req() req: AuthenticatedRequest): Promise<RuntimesReadinessResponse> {
+    return this.runtimes.getReadiness(req.operatorPrincipal?.user?.id ?? null);
   }
 }

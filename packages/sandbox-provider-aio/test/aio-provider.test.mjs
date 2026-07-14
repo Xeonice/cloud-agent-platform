@@ -17,6 +17,16 @@ async function test(name, fn) {
   }
 }
 
+function provisionContext(taskId, cloneSpec) {
+  return {
+    taskId,
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'interactive-pty',
+    ...(cloneSpec === undefined ? {} : { cloneSpec }),
+  };
+}
+
 function response(status, body = { data: { exit_code: 0, output: '' } }) {
   return {
     ok: status >= 200 && status < 300,
@@ -151,13 +161,12 @@ await test('provisions AIO containers through provider hooks and descriptors', a
   });
 
   assert.equal(provider.getSandboxMode(), 'danger-full-access');
-  const connection = await provider.provision({
-    taskId: 'task-1',
-    cloneSpec: {
+  const connection = await provider.provision(
+    provisionContext('task-1', {
       url: 'https://example.invalid/repo.git',
       authHeader: 'Authorization: Basic secret',
-    },
-  });
+    }),
+  );
 
   assert.equal(docker.created[0].options.name, 'cap-aio-task-1');
   assert.equal(docker.created[0].options.HostConfig.NetworkMode, 'cap-private');
@@ -166,7 +175,7 @@ await test('provisions AIO containers through provider hooks and descriptors', a
     baseUrl: 'http://cap-aio-task-1:8080',
     wsUrl: 'ws://cap-aio-task-1:8080/v1/shell/ws',
   });
-  assert.equal(await provider.provision({ taskId: 'task-1' }), connection);
+  assert.equal(await provider.provision(provisionContext('task-1')), connection);
   assert.deepEqual(events, [
     ['preflight', 'codex', '/home/gem/workspace'],
     ['prompt-auth', 'fix the task', 'cap-aio-task-1'],
@@ -233,7 +242,7 @@ await test('uses lookup clone specs, delivers workspace changes, and scrubs fail
     },
   });
 
-  await provider.provision({ taskId: 'task-2' });
+  await provider.provision(provisionContext('task-2'));
   assert.ok(
     commands.some((command) =>
       command.includes("git  clone --recursive -- 'https://user:secret@example.invalid/repo.git'"),
@@ -361,7 +370,7 @@ await test('fails closed on preflight and clone materialization errors', async (
     },
   }).provider;
   await assert.rejects(
-    () => preflight.provision({ taskId: 'task-preflight-fail' }),
+    () => preflight.provision(provisionContext('task-preflight-fail')),
     /node is missing/,
   );
   assert.deepEqual(
@@ -370,11 +379,13 @@ await test('fails closed on preflight and clone materialization errors', async (
   );
 
   const runtimeLookupDocker = makeDocker();
+  let legacyRuntimeLookupCalled = false;
   const runtimeLookup = makeProvider({
     docker: runtimeLookupDocker,
     hooks: {
       provisionLookup: {
         getRuntimeId: async () => {
+          legacyRuntimeLookupCalled = true;
           throw new Error('runtime lookup unavailable');
         },
       },
@@ -383,14 +394,8 @@ await test('fails closed on preflight and clone materialization errors', async (
       },
     },
   }).provider;
-  await assert.rejects(
-    () => runtimeLookup.provision({ taskId: 'task-runtime-lookup-fail' }),
-    /runtime lookup unavailable/,
-  );
-  assert.deepEqual(
-    runtimeLookupDocker.byName.get('cap-aio-task-runtime-lookup-fail').calls.at(-1),
-    ['stop', { t: 0 }],
-  );
+  await runtimeLookup.provision(provisionContext('task-runtime-lookup-fail'));
+  assert.equal(legacyRuntimeLookupCalled, false);
 
   const cloneFailDocker = makeDocker();
   const cloneTrimCalls = [];
@@ -419,10 +424,11 @@ await test('fails closed on preflight and clone materialization errors', async (
   }).provider;
   await assert.rejects(
     () =>
-      cloneFail.provision({
-        taskId: 'task-clone-fail',
-        cloneSpec: { url: 'https://example.invalid/repo.git' },
-    }),
+      cloneFail.provision(
+        provisionContext('task-clone-fail', {
+          url: 'https://example.invalid/repo.git',
+        }),
+      ),
     /AIO git materialization failed: https:\/\/\*\*\*:\*\*\*@example.invalid/,
   );
   assert.deepEqual(cloneTrimCalls, [
@@ -509,13 +515,12 @@ await test('covers workspace success, validation, and degradation paths', async 
     },
   });
 
-  await provider.provision({
-    taskId: 'task-workspace-success',
-    cloneSpec: {
+  await provider.provision(
+    provisionContext('task-workspace-success', {
       repo: 'https://example.invalid/repo.git',
       authHeader: 'Authorization: Basic secret',
-    },
-  });
+    }),
+  );
   assert.ok(
     commands.some((command) =>
       command.includes("git -c http.extraHeader='Authorization: Basic secret' clone --recursive --"),
@@ -593,7 +598,7 @@ await test('covers workspace success, validation, and degradation paths', async 
 
   const invalid = makeProvider().provider;
   await assert.rejects(
-    () => invalid.provision({ taskId: 'task-invalid-clone', cloneSpec: {} }),
+    () => invalid.provision(provisionContext('task-invalid-clone', {})),
     /requires a clone spec with a url/,
   );
 
@@ -607,7 +612,7 @@ await test('covers workspace success, validation, and degradation paths', async 
     }),
     fetch: defaultNowFetch.fetch,
   });
-  await defaultNowProvider.provision({ taskId: 'task-default-now' });
+  await defaultNowProvider.provision(provisionContext('task-default-now'));
   assert.equal(
     (await defaultNowProvider.getSelectedSandboxRun('task-default-now')).preflight.status,
     'skipped',
@@ -629,7 +634,7 @@ await test('covers workspace success, validation, and degradation paths', async 
       },
     },
   }).provider;
-  await fallbackTrim.provision({ taskId: 'task-trim-fallback' });
+  await fallbackTrim.provision(provisionContext('task-trim-fallback'));
   fallbackTrim.runs.delete('task-trim-fallback');
   await fallbackTrim.teardownSandbox('task-trim-fallback');
   assert.deepEqual(fallbackTrimCalls, ['resolved-after-run-delete']);
@@ -643,7 +648,10 @@ await test('covers workspace success, validation, and degradation paths', async 
     },
   }).provider;
   await assert.rejects(
-    () => failedWithoutError.provision({ taskId: 'task-preflight-default-error' }),
+    () =>
+      failedWithoutError.provision(
+        provisionContext('task-preflight-default-error'),
+      ),
     /AIO runtime preflight failed for task task-preflight-default-error/,
   );
 
@@ -654,7 +662,7 @@ await test('covers workspace success, validation, and degradation paths', async 
       },
     },
   }).provider;
-  await cloneSkip.provision({ taskId: 'task-clone-skip' });
+  await cloneSkip.provision(provisionContext('task-clone-skip'));
 
   const failures = [
     ['git add', 'git add failed: add failed'],
@@ -723,10 +731,11 @@ await test('covers workspace success, validation, and degradation paths', async 
     },
   }).provider;
   rootWorkspace.workspaceDir = 'workspace';
-  await rootWorkspace.provision({
-    taskId: 'task-root-workspace',
-    cloneSpec: { url: 'https://example.invalid/repo.git' },
-  });
+  await rootWorkspace.provision(
+    provisionContext('task-root-workspace', {
+      url: 'https://example.invalid/repo.git',
+    }),
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

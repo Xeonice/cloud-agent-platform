@@ -108,6 +108,18 @@ function makeDocker() {
       if (!byName.has(name)) byName.set(name, makeContainer(name));
       return byName.get(name);
     },
+    getImage(reference) {
+      return {
+        async inspect() {
+          return {
+            Id: 'sha256:aio-image-id',
+            RepoDigests: reference.includes('repo-digest')
+              ? ['registry.example/cap/aio@sha256:repo-digest']
+              : [],
+          };
+        },
+      };
+    },
     async listContainers(options) {
       if (listThrows) throw new Error('docker down');
       this.lastListOptions = options;
@@ -186,7 +198,8 @@ await test('validates AIO environments with transient container probes and clean
   });
 
   assert.equal(result.status, 'passed');
-  assert.equal(result.resolvedDigest, 'sha256:abc');
+  assert.equal(result.resolvedDigest, 'sha256:aio-image-id');
+  assert.equal(result.resolvedLocator, 'sha256:aio-image-id');
   assert.deepEqual(
     result.probes.map((probe) => [probe.name, probe.ok]),
     [
@@ -195,7 +208,7 @@ await test('validates AIO environments with transient container probes and clean
       ['node', true],
     ],
   );
-  assert.equal(docker.created[0].options.Image, 'cap-aio-custom:1.0.0');
+  assert.equal(docker.created[0].options.Image, 'sha256:aio-image-id');
   assert.deepEqual(docker.byName.get('cap-aio-task-env-probe').calls.at(-1), [
     'remove',
     { force: true },

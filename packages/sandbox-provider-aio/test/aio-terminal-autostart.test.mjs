@@ -233,9 +233,63 @@ class FakeTransport {
 }
 
 async function main() {
-  const { AioPtyClient } = await import(
-    new URL('../dist/aio-pty-client.js', import.meta.url).href,
+  const aio = await import(
+    new URL('../dist/index.js', import.meta.url).href,
   );
+  class AioPtyClient extends aio.AioPtyClient {
+    constructor(
+      taskId,
+      wsUrl,
+      baseUrl,
+      onExit,
+      mode = 'replay-only',
+      _legacyRuntimeResolver,
+      _legacyModeResolver,
+      transportFactory,
+      commandExecutor,
+    ) {
+      const resolveTaskLaunchContext =
+        mode === 'launch-or-attach'
+          ? async () => ({
+              executionMode: 'interactive-pty',
+              modelIntent: { kind: 'runtime-default' },
+              runtime: {
+                id: 'codex',
+                terminalStartup: {
+                  replyToStartupDSR: true,
+                  promptSubmit: 'cr-on-quiesce',
+                  quiesceMs: 40,
+                },
+                buildLaunchLine: (ctx) =>
+                  aio.buildDetachedCodexLaunchLine(
+                    ctx.taskId,
+                    'codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox',
+                  ),
+                async detectExit(exec, ctx) {
+                  const { stdout } = await exec.exec(
+                    `tmux has-session -t task${ctx.taskId}; echo __cap_has__$?`,
+                  );
+                  const match = /__cap_has__(\d+)/.exec(stdout);
+                  return match?.[1] === '1'
+                    ? { status: 'done' }
+                    : { status: 'running' };
+                },
+              },
+            })
+          : undefined;
+      super(
+        taskId,
+        wsUrl,
+        baseUrl,
+        onExit,
+        mode,
+        resolveTaskLaunchContext,
+        transportFactory,
+        commandExecutor,
+        async (intent) => intent,
+      );
+    }
+  }
 
   // --- Case 0: provider story fixture mode launches deterministic shell fixture
   //     without detached-session lifecycle commands. --------------------------

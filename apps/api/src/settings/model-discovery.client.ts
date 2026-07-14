@@ -50,6 +50,12 @@ export interface ModelDiscoveryFailure {
 
 export type ModelDiscoveryResult = ModelDiscoverySuccess | ModelDiscoveryFailure;
 
+export interface ModelDiscoveryRequestOptions {
+  readonly signal?: AbortSignal;
+  /** Absolute wall-clock deadline shared by every redirect hop. */
+  readonly deadlineAt?: number;
+}
+
 /**
  * The minimal view of an HTTP outcome the classifier needs. The client fills
  * this from the real `fetch` result (or a thrown transport error); keeping it a
@@ -235,6 +241,7 @@ export class ModelDiscoveryClient {
     baseUrl: string,
     apiKey: string,
     resolver?: HostResolver,
+    options: ModelDiscoveryRequestOptions = {},
   ): Promise<ModelDiscoveryResult> {
     // SSRF guard BEFORE any network: an unsafe base URL never reaches fetch.
     try {
@@ -249,7 +256,20 @@ export class ModelDiscoveryClient {
       throw error;
     }
 
-    const outcome = await this.fetchModels(modelsEndpoint(baseUrl), apiKey, resolver);
+    if (options.signal?.aborted) {
+      return classifyModelDiscoveryOutcome({ networkError: true });
+    }
+    const deadlineAt = Math.min(
+      options.deadlineAt ?? Number.POSITIVE_INFINITY,
+      Date.now() + ModelDiscoveryClient.REQUEST_TIMEOUT_MS,
+    );
+    const outcome = await this.fetchModels(
+      modelsEndpoint(baseUrl),
+      apiKey,
+      resolver,
+      deadlineAt,
+      options.signal,
+    );
     return classifyModelDiscoveryOutcome(outcome);
   }
 
@@ -262,13 +282,20 @@ export class ModelDiscoveryClient {
     endpoint: string,
     apiKey: string,
     resolver: HostResolver | undefined,
+    deadlineAt: number,
+    callerSignal: AbortSignal | undefined,
     redirectsLeft = 3,
   ): Promise<ModelDiscoveryOutcome> {
+    const remainingMs = Math.floor(deadlineAt - Date.now());
+    if (remainingMs <= 0 || callerSignal?.aborted) {
+      return { networkError: true };
+    }
+    const bounded = boundedAbortSignal(callerSignal, remainingMs);
     try {
       const response = await fetch(endpoint, {
         method: 'GET',
         redirect: 'manual',
-        signal: AbortSignal.timeout(ModelDiscoveryClient.REQUEST_TIMEOUT_MS),
+        signal: bounded.signal,
         headers: {
           Authorization: `Bearer ${apiKey}`,
           Accept: 'application/json',
@@ -295,7 +322,14 @@ export class ModelDiscoveryClient {
           }
           throw error;
         }
-        return this.fetchModels(target, apiKey, resolver, redirectsLeft - 1);
+        return this.fetchModels(
+          target,
+          apiKey,
+          resolver,
+          deadlineAt,
+          callerSignal,
+          redirectsLeft - 1,
+        );
       }
 
       const text = await readBoundedText(
@@ -314,13 +348,29 @@ export class ModelDiscoveryClient {
         body = undefined;
       }
       return { status: response.status, body };
-    } catch (error) {
-      this.logger.debug(
-        `Model discovery transport error: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+    } catch {
+      this.logger.debug('Model discovery transport failed.');
       return { networkError: true };
+    } finally {
+      bounded.dispose();
     }
   }
+}
+
+function boundedAbortSignal(
+  caller: AbortSignal | undefined,
+  timeoutMs: number,
+): { readonly signal: AbortSignal; readonly dispose: () => void } {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (caller?.aborted) controller.abort();
+  else caller?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(abort, Math.max(1, timeoutMs));
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer);
+      caller?.removeEventListener('abort', abort);
+    },
+  };
 }

@@ -18,5 +18,22 @@
     "completedNotificationMethod": "account/login/completed",
     "completedRequired": ["success"],
     "completedProperties": ["error", "loginId", "success"]
+  },
+  "modelList": {
+    "requestMethod": "model/list",
+    "paramsProperties": ["cursor", "includeHidden", "limit"],
+    "responseRequired": ["data"],
+    "responseProperties": ["data", "nextCursor"],
+    "modelRequired": [
+      "defaultReasoningEffort",
+      "description",
+      "displayName",
+      "hidden",
+      "id",
+      "isDefault",
+      "model",
+      "supportedReasoningEfforts"
+    ],
+    "selectorField": "model"
   }
 }

@@ -230,6 +230,7 @@ function SessionPage(): React.ReactElement {
             return (
               <SessionReplay
                 taskId={taskId}
+                requestedModel={task.model}
                 presentationState={replayPresentationState(task.status)}
                 executionMode={task.executionMode ?? undefined}
               />
@@ -240,7 +241,12 @@ function SessionPage(): React.ReactElement {
           }
           if (task && mode === "headless-live") {
             return (
-              <SessionReplay taskId={taskId} live executionMode="headless-exec" />
+              <SessionReplay
+                taskId={taskId}
+                requestedModel={task.model}
+                live
+                executionMode="headless-exec"
+              />
             );
           }
           return (
@@ -273,6 +279,7 @@ function SessionPage(): React.ReactElement {
                 ) : (
                   <SessionReplay
                     taskId={taskId}
+                    requestedModel={task?.model}
                     live
                     executionMode={task?.executionMode ?? undefined}
                   />

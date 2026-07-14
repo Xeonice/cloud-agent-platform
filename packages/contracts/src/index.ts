@@ -12,6 +12,17 @@ export * from './task.js';
 // Agent-runtime readiness: per-runtime { id, ready } booleans (no secrets)
 export * from './runtime.js';
 
+// Contextual per-owner runtime model catalog, immutable environment snapshot,
+// and transport-neutral model-domain failures.
+export * from './runtime-model.js';
+
+// Strict packaged artifact identity shared by environment validation/release.
+export * from './artifact-checksum.js';
+
+// Deployment-wide default-closed capability and N-worker readiness attestation
+// for safe task model selection rollout.
+export * from './task-model-capability.js';
+
 // Dual-channel WebSocket frame protocol (raw + flow-control frames)
 export * from './ws-frames.js';
 

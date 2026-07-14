@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "timeoutMs": 120000,
+  "maxBudgetUsd": 0.1,
+  "images": [
+    {
+      "providerSeam": "aio",
+      "image": "replace-with-locally-built-aio-image",
+      "platform": "linux/amd64"
+    },
+    {
+      "providerSeam": "boxlite",
+      "image": "replace-with-locally-built-boxlite-image",
+      "platform": "linux/arm64"
+    }
+  ],
+  "selectors": [
+    {
+      "id": "replace-with-current-documented-selector",
+      "displayName": "Replace with current documented display name",
+      "provenance": "https://code.claude.com/docs/en/model-config"
+    }
+  ]
+}

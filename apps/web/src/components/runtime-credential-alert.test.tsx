@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { TaskResponse } from "@cap/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -98,5 +99,34 @@ describe("RuntimeCredentialAlert", () => {
     expect(renderToStaticMarkup(<RuntimeCredentialAlert failure={null} />)).toBe(
       "",
     );
+  });
+
+  it("does not mislabel model setup or rejection failures as credential issues", () => {
+    const failures = [
+      {
+        code: "runtime_model_setup_failed",
+        runtime: "codex",
+        message: "The selected model could not be prepared.",
+        action: "retry_task",
+        occurredAt: new Date("2026-07-12T08:00:00.000Z"),
+        exitCode: 1,
+      },
+      {
+        code: "runtime_model_rejected",
+        runtime: "claude-code",
+        message: "The selected model was rejected.",
+        action: "choose_another_model",
+        occurredAt: new Date("2026-07-12T08:00:00.000Z"),
+        exitCode: 1,
+      },
+    ] satisfies Array<NonNullable<TaskResponse["failure"]>>;
+
+    for (const modelFailure of failures) {
+      const html = renderToStaticMarkup(
+        <RuntimeCredentialAlert failure={modelFailure} />,
+      );
+      expect(html).toBe("");
+      expect(html).not.toContain("/settings");
+    }
   });
 });

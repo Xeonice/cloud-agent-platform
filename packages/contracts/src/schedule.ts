@@ -12,6 +12,7 @@ import {
   V1_LIST_DEFAULT_LIMIT,
   V1_LIST_MAX_LIMIT,
 } from './v1.js';
+import { RuntimeModelErrorCodeSchema } from './runtime-model.js';
 
 export const ScheduleOverlapPolicySchema = z.enum(['skip', 'enqueue']);
 export type ScheduleOverlapPolicy = z.infer<typeof ScheduleOverlapPolicySchema>;
@@ -19,7 +20,13 @@ export type ScheduleOverlapPolicy = z.infer<typeof ScheduleOverlapPolicySchema>;
 export const ScheduleMisfirePolicySchema = z.enum(['fire-once']);
 export type ScheduleMisfirePolicy = z.infer<typeof ScheduleMisfirePolicySchema>;
 
-export const ScheduleRunStatusSchema = z.enum(['claimed', 'created', 'skipped', 'failed']);
+export const ScheduleRunStatusSchema = z.enum([
+  'claimed',
+  'created',
+  'retrying',
+  'skipped',
+  'failed',
+]);
 export type ScheduleRunStatus = z.infer<typeof ScheduleRunStatusSchema>;
 
 export const ScheduleTriggerSourceSchema = z.enum(['manual', 'automatic']);
@@ -179,11 +186,21 @@ export const ScheduleTaskTemplateSchema = CreateTaskRequestSchema.extend({
 });
 export type ScheduleTaskTemplate = z.infer<typeof ScheduleTaskTemplateSchema>;
 
-const ScheduleTaskTemplateCreateSchema = CreateTaskRequestSchema.extend({
+/**
+ * Canonical schedule write template. Exported so transport/schema parity tests
+ * can prove that recurring-task writes inherit every current and future task
+ * create field rather than maintaining a second hand-written field list.
+ */
+export const ScheduleTaskTemplateCreateSchema = CreateTaskRequestSchema.extend({
   repoId: z.string().uuid(),
 });
 
-const CreateScheduleRequestBaseSchema = z.object({
+/**
+ * Field-owning wire object advertised by REST/OpenAPI and MCP. Runtime
+ * validation is layered onto this exact object below so transports never need
+ * to copy the schedule field list from a refined `ZodEffects` schema.
+ */
+export const CreateScheduleRequestWireSchema = z.object({
   name: z.string().trim().min(1).max(120).nullable().optional(),
   recurrence: ScheduleRecurrenceSchema.optional(),
   cronExpression: ScheduleCronExpressionSchema.optional(),
@@ -211,7 +228,7 @@ function validateScheduleTimingInput(
   }
 }
 
-export const CreateScheduleRequestSchema = CreateScheduleRequestBaseSchema
+export const CreateScheduleRequestParseSchema = CreateScheduleRequestWireSchema
   .superRefine((value, ctx) => {
     validateScheduleTimingInput(value, ctx);
     if (!value.recurrence && !value.cronExpression) {
@@ -226,25 +243,32 @@ export const CreateScheduleRequestSchema = CreateScheduleRequestBaseSchema
     ...value,
     ...normalizeScheduleTiming(value),
   }));
+/** Backward-compatible name for the canonical runtime parser. */
+export const CreateScheduleRequestSchema = CreateScheduleRequestParseSchema;
 export type CreateScheduleRequest = z.infer<typeof CreateScheduleRequestSchema>;
 
-export const ScheduleOwnerRequiredErrorSchema = z.object({
-  error: z.literal('schedule_owner_required'),
-  message: z.string().min(1),
-});
+/** Historical ownerless schedule body (400 rather than the default 403). */
+export const ScheduleOwnerRequiredErrorSchema = z
+  .object({
+    error: z.literal('schedule_owner_required'),
+    message: z.literal('Schedules require an authenticated account owner.'),
+  })
+  .strict();
 export type ScheduleOwnerRequiredError = z.infer<typeof ScheduleOwnerRequiredErrorSchema>;
 
-export const UpdateScheduleRequestSchema = z
-  .object({
-    name: z.string().trim().min(1).max(120).nullable().optional(),
-    recurrence: ScheduleRecurrenceSchema.optional(),
-    cronExpression: ScheduleCronExpressionSchema.optional(),
-    timezone: ScheduleTimezoneSchema.optional(),
-    taskTemplate: ScheduleTaskTemplateCreateSchema.optional(),
-    enabled: z.boolean().optional(),
-    overlapPolicy: ScheduleOverlapPolicySchema.optional(),
-    misfirePolicy: ScheduleMisfirePolicySchema.optional(),
-  })
+/** Field-owning update object; refinements remain derived from this schema. */
+export const UpdateScheduleRequestWireSchema = z.object({
+  name: z.string().trim().min(1).max(120).nullable().optional(),
+  recurrence: ScheduleRecurrenceSchema.optional(),
+  cronExpression: ScheduleCronExpressionSchema.optional(),
+  timezone: ScheduleTimezoneSchema.optional(),
+  taskTemplate: ScheduleTaskTemplateCreateSchema.optional(),
+  enabled: z.boolean().optional(),
+  overlapPolicy: ScheduleOverlapPolicySchema.optional(),
+  misfirePolicy: ScheduleMisfirePolicySchema.optional(),
+});
+
+export const UpdateScheduleRequestParseSchema = UpdateScheduleRequestWireSchema
   .superRefine((value, ctx) => {
     validateScheduleTimingInput(value, ctx);
     if (value.recurrence && value.timezone) {
@@ -262,30 +286,86 @@ export const UpdateScheduleRequestSchema = z
     ...value,
     ...(value.recurrence ? normalizeScheduleTiming(value) : {}),
   }));
+/** Backward-compatible name for the canonical runtime parser. */
+export const UpdateScheduleRequestSchema = UpdateScheduleRequestParseSchema;
 export type UpdateScheduleRequest = z.infer<typeof UpdateScheduleRequestSchema>;
 
-export const DispatchScheduleRequestSchema = z
+/** Field-owning dispatch body; its parser adds only the historical `{}` default. */
+export const DispatchScheduleRequestWireSchema = z
   .object({
     expectedPeriodKey: SchedulePeriodIdentitySchema.optional(),
   })
-  .strict()
-  .default({});
+  .strict();
+export const DispatchScheduleRequestParseSchema =
+  DispatchScheduleRequestWireSchema.default({});
+/** Backward-compatible name for the canonical runtime parser. */
+export const DispatchScheduleRequestSchema = DispatchScheduleRequestParseSchema;
 export type DispatchScheduleRequest = z.infer<typeof DispatchScheduleRequestSchema>;
 
-export const ScheduleLatestRunSchema = z.object({
-  id: z.string().uuid(),
-  scheduledFor: z.coerce.date(),
-  periodKey: SchedulePeriodIdentitySchema.nullable().optional(),
-  triggerSource: ScheduleTriggerSourceSchema.nullable().optional(),
-  triggeredAt: z.coerce.date().nullable().optional(),
-  status: ScheduleRunStatusSchema,
-  taskId: z.string().uuid().nullable(),
-  taskStatus: TaskStatusSchema.nullable().optional(),
-  /** Structured failure of the linked task; distinct from dispatch `error`. */
-  taskFailure: TaskFailureSchema.nullable().optional(),
-  error: z.string().nullable(),
-  createdAt: z.coerce.date().optional(),
-});
+const ScheduleRunRetryFields = {
+  errorCode: RuntimeModelErrorCodeSchema.nullable().optional(),
+  retryAt: z.coerce.date().nullable().optional(),
+  retryAttempt: z.number().int().positive().nullable().optional(),
+} as const;
+
+function validateScheduleRunRetryState(
+  value: {
+    readonly status: z.infer<typeof ScheduleRunStatusSchema>;
+    readonly taskId: string | null;
+    readonly errorCode?: z.infer<typeof RuntimeModelErrorCodeSchema> | null;
+    readonly retryAt?: Date | null;
+    readonly retryAttempt?: number | null;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.status !== 'retrying') return;
+  if (value.taskId !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['taskId'],
+      message: 'A retrying pre-task occurrence cannot have a Task',
+    });
+  }
+  if (value.errorCode !== 'runtime_model_catalog_unavailable') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['errorCode'],
+      message: 'A retrying occurrence requires the catalog-unavailable code',
+    });
+  }
+  if (!(value.retryAt instanceof Date)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['retryAt'],
+      message: 'A retrying occurrence requires its next retry time',
+    });
+  }
+  if (typeof value.retryAttempt !== 'number') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['retryAttempt'],
+      message: 'A retrying occurrence requires its attempt number',
+    });
+  }
+}
+
+export const ScheduleLatestRunSchema = z
+  .object({
+    id: z.string().uuid(),
+    scheduledFor: z.coerce.date(),
+    periodKey: SchedulePeriodIdentitySchema.nullable().optional(),
+    triggerSource: ScheduleTriggerSourceSchema.nullable().optional(),
+    triggeredAt: z.coerce.date().nullable().optional(),
+    status: ScheduleRunStatusSchema,
+    taskId: z.string().uuid().nullable(),
+    taskStatus: TaskStatusSchema.nullable().optional(),
+    /** Structured failure of the linked task; distinct from dispatch `error`. */
+    taskFailure: TaskFailureSchema.nullable().optional(),
+    error: z.string().nullable(),
+    ...ScheduleRunRetryFields,
+    createdAt: z.coerce.date().optional(),
+  })
+  .superRefine(validateScheduleRunRetryState);
 export type ScheduleLatestRun = z.infer<typeof ScheduleLatestRunSchema>;
 
 export const ScheduleCurrentPeriodSchema = z.object({
@@ -315,22 +395,25 @@ export const ScheduleResponseSchema = z.object({
 });
 export type ScheduleResponse = z.infer<typeof ScheduleResponseSchema>;
 
-export const ScheduleRunResponseSchema = z.object({
-  id: z.string().uuid(),
-  scheduleId: z.string().uuid(),
-  scheduledFor: z.coerce.date(),
-  periodKey: SchedulePeriodIdentitySchema.nullable().optional(),
-  triggerSource: ScheduleTriggerSourceSchema.nullable().optional(),
-  triggeredAt: z.coerce.date().nullable().optional(),
-  status: ScheduleRunStatusSchema,
-  taskId: z.string().uuid().nullable(),
-  taskStatus: TaskStatusSchema.nullable().optional(),
-  /** Structured failure of the linked task; distinct from dispatch `error`. */
-  taskFailure: TaskFailureSchema.nullable().optional(),
-  error: z.string().nullable(),
-  createdAt: z.coerce.date(),
-  updatedAt: z.coerce.date(),
-});
+export const ScheduleRunResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    scheduleId: z.string().uuid(),
+    scheduledFor: z.coerce.date(),
+    periodKey: SchedulePeriodIdentitySchema.nullable().optional(),
+    triggerSource: ScheduleTriggerSourceSchema.nullable().optional(),
+    triggeredAt: z.coerce.date().nullable().optional(),
+    status: ScheduleRunStatusSchema,
+    taskId: z.string().uuid().nullable(),
+    taskStatus: TaskStatusSchema.nullable().optional(),
+    /** Structured failure of the linked task; distinct from dispatch `error`. */
+    taskFailure: TaskFailureSchema.nullable().optional(),
+    error: z.string().nullable(),
+    ...ScheduleRunRetryFields,
+    createdAt: z.coerce.date(),
+    updatedAt: z.coerce.date(),
+  })
+  .superRefine(validateScheduleRunRetryState);
 export type ScheduleRunResponse = z.infer<typeof ScheduleRunResponseSchema>;
 
 export const ListSchedulesResponseSchema = z.array(ScheduleResponseSchema);

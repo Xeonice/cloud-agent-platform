@@ -69,6 +69,7 @@ export interface BoxLiteStartedExecution {
 
 export interface BoxLiteClient {
   createSandbox(request: BoxLiteCreateSandboxRequest): Promise<BoxLiteSandbox>;
+  listSandboxes?(): Promise<readonly BoxLiteSandbox[]>;
   getSandbox(sandboxId: string): Promise<BoxLiteSandbox | null>;
   deleteSandbox(sandboxId: string): Promise<void>;
   exec(request: BoxLiteExecRequest): Promise<BoxLiteExecResult>;
@@ -145,11 +146,16 @@ export class BoxLiteRestClient implements BoxLiteClient {
           },
         }),
       );
-      return parseSandbox(
-        await this.requestJson(`${this.sandboxPath(sandbox.id)}/start`, {
-          method: 'POST',
-        }),
-      );
+      try {
+        return parseSandbox(
+          await this.requestJson(`${this.sandboxPath(sandbox.id)}/start`, {
+            method: 'POST',
+          }),
+        );
+      } catch (error) {
+        await this.deleteSandbox(sandbox.id).catch(() => undefined);
+        throw error;
+      }
     }
     if (request.rootfsPath) {
       throw new Error('BoxLite rootfsPath create is only supported with native protocol mode');
@@ -171,6 +177,14 @@ export class BoxLiteRestClient implements BoxLiteClient {
       throw new Error(`BoxLite get sandbox ${sandboxId} failed: HTTP ${res.status}`);
     }
     return parseOptionalSandbox(await res.json().catch(() => undefined));
+  }
+
+  async listSandboxes(): Promise<readonly BoxLiteSandbox[]> {
+    const raw = await this.requestJson(
+      this.protocolMode === 'native' ? this.nativeBoxesPath() : '/v1/sandboxes',
+      { method: 'GET' },
+    );
+    return parseSandboxList(raw);
   }
 
   async deleteSandbox(sandboxId: string): Promise<void> {
@@ -504,6 +518,10 @@ export class FakeBoxLiteClient implements BoxLiteClient {
     return this.sandboxes.get(sandboxId) ?? null;
   }
 
+  async listSandboxes(): Promise<readonly BoxLiteSandbox[]> {
+    return [...this.sandboxes.values()];
+  }
+
   async deleteSandbox(sandboxId: string): Promise<void> {
     this.deletedSandboxIds.push(sandboxId);
     this.sandboxes.delete(sandboxId);
@@ -572,6 +590,21 @@ function parseOptionalSandbox(raw: unknown): BoxLiteSandbox | null {
   const value = unwrapData(raw);
   if (!value || typeof value !== 'object') return null;
   return parseSandbox(value);
+}
+
+function parseSandboxList(raw: unknown): readonly BoxLiteSandbox[] {
+  const value = unwrapData(raw);
+  const list = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object' && Array.isArray((value as { boxes?: unknown }).boxes)
+      ? (value as { boxes: unknown[] }).boxes
+      : value &&
+          typeof value === 'object' &&
+          Array.isArray((value as { sandboxes?: unknown }).sandboxes)
+        ? (value as { sandboxes: unknown[] }).sandboxes
+        : null;
+  if (!list) throw new Error('BoxLite response did not include a sandbox list');
+  return list.map(parseSandbox);
 }
 
 function parseSandbox(raw: unknown): BoxLiteSandbox {

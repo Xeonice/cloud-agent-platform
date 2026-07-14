@@ -93,6 +93,8 @@ import type {
 } from './agent-terminal-pty';
 import {
   openSandboxTerminalPty,
+  SandboxRuntimeModelSetupError,
+  type AioResolvedTaskLaunchContext,
   type SandboxTerminalExitStatus,
   type SandboxTerminalPtyMode,
 } from '@cap/sandbox';
@@ -119,6 +121,12 @@ import { AuthSessionService } from '../auth/auth-session.service';
 import { resolveOperatorPrincipal } from '../auth/operator-principal';
 import { readCookie, SESSION_COOKIE_NAME } from '../auth/session-token';
 import { GuardrailsService } from '../guardrails/guardrails.service';
+import {
+  PROVISION_LOOKUP,
+  type ProvisionLookup,
+  type TaskLaunchContext,
+} from '../sandbox/provision-lookup.port';
+import { stableJson } from '../runtime-models/runtime-model-catalog.util';
 
 /**
  * REAL headless xterm terminal backing the {@link SnapshotManager} (D9).
@@ -425,6 +433,7 @@ export class TerminalGateway
     // module provides it the gateway resolves each task's runtime and hands it to
     // the AioPtyClient's launch/exit seams.
     @Optional() @Inject(RUNTIME_REGISTRY) private readonly runtimes?: RuntimeRegistry,
+    @Optional() @Inject(PROVISION_LOOKUP) private readonly provisionLookup?: ProvisionLookup,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -886,8 +895,11 @@ export class TerminalGateway
           ? undefined
           : (status) => this.onSessionExit(taskId, status),
       mode: options.mode ?? 'launch-or-attach',
-      resolveRuntime: () => this.resolveRuntimeForTask(taskId),
-      resolveExecutionMode: () => this.resolveExecutionModeForTask(taskId),
+      resolveTaskLaunchContext: () =>
+        this.resolveTaskLaunchContext(taskId, selectedRun),
+      onRuntimeSetupFailure: (code) => {
+        void this.guardrails?.failRuntime(taskId, code, null, false);
+      },
     });
     const session: TerminalSession = { taskId, pty, snapshots };
     this.registerSession(session);
@@ -916,6 +928,70 @@ export class TerminalGateway
     snapshots.start();
     this.logger.debug(`task ${taskId}: opened sandbox terminal session`);
     return session;
+  }
+
+  private async resolveTaskLaunchContext(
+    taskId: string,
+    selectedRun?: SelectedSandboxRun | null,
+  ): Promise<AioResolvedTaskLaunchContext> {
+    if (!this.provisionLookup || !this.runtimes) {
+      throw new SandboxRuntimeModelSetupError('launch-context');
+    }
+    let launch: TaskLaunchContext;
+    try {
+      launch = await this.provisionLookup.getTaskLaunchContext(taskId);
+    } catch (error) {
+      if (error instanceof SandboxRuntimeModelSetupError) throw error;
+      throw new SandboxRuntimeModelSetupError('lookup');
+    }
+    this.assertSelectedRunMatchesLaunchContext(launch, selectedRun);
+    try {
+      return {
+        runtime: this.runtimes.resolve(launch.runtimeId),
+        executionMode: launch.executionMode,
+        modelIntent: launch.modelIntent,
+      };
+    } catch {
+      throw new SandboxRuntimeModelSetupError('runtime-resolution');
+    }
+  }
+
+  private assertSelectedRunMatchesLaunchContext(
+    launch: TaskLaunchContext,
+    selectedRun?: SelectedSandboxRun | null,
+  ): void {
+    if (launch.modelIntent.kind === 'runtime-default') return;
+    const actual = selectedRun?.environment;
+    const expected = launch.environment;
+    if (
+      !selectedRun ||
+      !actual ||
+      !expected ||
+      selectedRun.providerId !== expected.providerId ||
+      actual.providerId !== expected.providerId ||
+      actual.providerFamily !== expected.providerFamily ||
+      actual.runtimeId !== expected.runtimeId ||
+      actual.sourceKind !== expected.sourceKind ||
+      actual.sourceRef !== expected.sourceRef ||
+      actual.digest !== expected.digest ||
+      actual.checksum !== expected.checksum ||
+      actual.cliArtifactChecksum !== expected.cliArtifactChecksum ||
+      actual.validationId !== expected.validationId ||
+      actual.validationVersion !== expected.validationVersion ||
+      actual.contractVersion !== expected.contractVersion ||
+      stableJson(actual.runtimeArtifactChecksums ?? null) !==
+        stableJson(expected.runtimeArtifactChecksums ?? null) ||
+      actual.metadata?.immutableIdentity !==
+        expected.metadata?.immutableIdentity ||
+      actual.metadata?.fingerprint !== expected.metadata?.fingerprint ||
+      actual.metadata?.sandboxMetadataChecksum !==
+        expected.metadata?.sandboxMetadataChecksum ||
+      actual.metadata?.cliVersion !== expected.metadata?.cliVersion ||
+      stableJson(actual.metadata?.sandboxMetadata ?? null) !==
+        stableJson(expected.metadata?.sandboxMetadata ?? null)
+    ) {
+      throw new SandboxRuntimeModelSetupError('snapshot');
+    }
   }
 
   /**

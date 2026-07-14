@@ -1,3 +1,5 @@
+import type { TaskModelLaunchMaterial } from '@cap/sandbox';
+
 /**
  * AgentRuntime port (add-claude-code-runtime, design D1).
  *
@@ -139,6 +141,8 @@ export interface LaunchContext {
    * `<session-id>.jsonl` transcript for exit detection.
    */
   readonly sessionId?: string;
+  /** Required file-backed model material; raw selector text is never provided. */
+  readonly model: TaskModelLaunchMaterial;
 }
 
 /**

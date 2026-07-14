@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import {
   SandboxEnvironmentResponseSchema,
+  SandboxMetadataSchema,
   SandboxEnvironmentSourceSchema,
   SandboxEnvironmentValidationSchema,
   type CreateSandboxEnvironmentRequest,
@@ -26,6 +27,7 @@ import {
   type ResolvedSandboxEnvironment,
   type SandboxHostImageParameterProfile,
   type SandboxEnvironmentProviderFamily,
+  type SandboxEnvironmentSelection,
 } from '@cap/sandbox';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -145,7 +147,8 @@ export class SandboxEnvironmentsService {
       name: row.name,
       source,
       providerFamily,
-      runtimeId: row.runtimeIds[0] ?? null,
+      runtimeIds: runtimeIdsForValidation(row.runtimeIds),
+      runtimeId: row.runtimeIds.length === 1 ? row.runtimeIds[0] : null,
       contractVersion: row.contractVersion,
     });
     const validation = await this.prisma.sandboxEnvironmentValidation.create({
@@ -155,8 +158,14 @@ export class SandboxEnvironmentsService {
         providerFamily: outcome.providerFamily,
         runtimeId: outcome.runtimeId ?? null,
         sourceKind: outcome.sourceKind,
+        resolvedLocator: outcome.resolvedLocator ?? null,
         resolvedDigest: outcome.resolvedDigest ?? null,
         resolvedChecksum: outcome.resolvedChecksum ?? null,
+        runtimeArtifactChecksums:
+          outcome.runtimeArtifactChecksums == null
+            ? Prisma.DbNull
+            : (outcome.runtimeArtifactChecksums as Prisma.InputJsonObject),
+        cliArtifactChecksum: outcome.cliArtifactChecksum ?? null,
         sandboxMetadata:
           outcome.sandboxMetadata == null
             ? Prisma.DbNull
@@ -191,21 +200,52 @@ export class SandboxEnvironmentsService {
   }
 
   async resolveForTask(args: {
+    readonly selection?: SandboxEnvironmentSelection;
+    /** @deprecated use selection so explicit null cannot collapse into default */
     readonly requestedEnvironmentId?: string | null;
     readonly runtimeId: string;
     readonly providerFamily?: SandboxEnvironmentProviderFamily;
   }): Promise<ResolvedSandboxEnvironment | null> {
-    const row = args.requestedEnvironmentId
-      ? await this.prisma.sandboxEnvironment.findUnique({
-          where: { id: args.requestedEnvironmentId },
-        })
-      : await this.findDefaultEnvironment(args);
+    return this.resolveSelectedEnvironment(args, false);
+  }
+
+  /**
+   * Catalog/preflight variant: requires the latest passed validation to carry a
+   * provider-resolved digest/checksum and validated sandbox metadata. Mutable
+   * tags are converted to a canonical digest locator before returning.
+   */
+  async resolveImmutableForTask(args: {
+    readonly selection: SandboxEnvironmentSelection;
+    readonly runtimeId: string;
+    readonly providerFamily?: SandboxEnvironmentProviderFamily;
+  }): Promise<ResolvedSandboxEnvironment | null> {
+    return this.resolveSelectedEnvironment(args, true);
+  }
+
+  private async resolveSelectedEnvironment(
+    args: {
+      readonly selection?: SandboxEnvironmentSelection;
+      readonly requestedEnvironmentId?: string | null;
+      readonly runtimeId: string;
+      readonly providerFamily?: SandboxEnvironmentProviderFamily;
+    },
+    requireImmutable: boolean,
+  ): Promise<ResolvedSandboxEnvironment | null> {
+    const selection = normalizeEnvironmentSelection(args);
+    if (selection.kind === 'deployment-default') return null;
+    const row =
+      selection.kind === 'managed'
+        ? await this.prisma.sandboxEnvironment.findUnique({
+            where: { id: selection.environmentId },
+            include: latestValidationInclude(),
+          })
+        : await this.findDefaultEnvironment(args);
 
     if (!row) {
-      if (args.requestedEnvironmentId) {
+      if (selection.kind === 'managed') {
         throw new BadRequestException({
           error: 'sandbox_environment_not_found',
-          message: `Sandbox environment not found: ${args.requestedEnvironmentId}`,
+          message: `Sandbox environment not found: ${selection.environmentId}`,
         });
       }
       return null;
@@ -245,18 +285,100 @@ export class SandboxEnvironmentsService {
       throw err;
     }
 
+    const source = this.parseSource(row.source);
+    const validation = requireImmutable
+      ? await this.findPinnedValidation(row.id, row.lastValidationId)
+      : row.validations?.[0];
+    if (requireImmutable) {
+      const runtimeArtifactChecksums = readStringRecord(
+        validation?.runtimeArtifactChecksums ?? undefined,
+      );
+      const cliArtifactChecksum =
+        runtimeArtifactChecksums[args.runtimeId] ??
+        (validation?.runtimeId === args.runtimeId
+          ? validation.cliArtifactChecksum
+          : null);
+      if (
+        !validation ||
+        validation.status !== 'passed' ||
+        validation.providerFamily !== providerFamily ||
+        validation.sourceKind !== source.kind ||
+        validation.contractVersion !== row.contractVersion ||
+        (validation.runtimeId !== null &&
+          validation.runtimeId !== args.runtimeId) ||
+        !validation.resolvedLocator ||
+        (!validation.resolvedDigest && !validation.resolvedChecksum) ||
+        !cliArtifactChecksum
+      ) {
+        throw immutableEnvironmentUnavailable(row.id);
+      }
+      const parsedMetadata = SandboxMetadataSchema.safeParse(
+        validation.sandboxMetadata,
+      );
+      if (
+        !parsedMetadata.success ||
+        !parsedMetadata.data.dependencies[args.runtimeId]
+      ) {
+        throw immutableEnvironmentUnavailable(row.id);
+      }
+      return normalizeResolvedEnvironment({
+        environment: {
+          id: row.id,
+          name: row.name,
+          source,
+          lastValidationId: row.lastValidationId,
+          contractVersion: row.contractVersion,
+        },
+        providerFamily,
+        runtimeId: args.runtimeId,
+        validationVersion: validation.contractVersion ?? undefined,
+        resolvedSourceRef: validation.resolvedLocator,
+        resolvedDigest: validation.resolvedDigest,
+        resolvedChecksum: validation.resolvedChecksum,
+        runtimeArtifactChecksums,
+        cliArtifactChecksum,
+        sandboxMetadata: parsedMetadata.data,
+      });
+    }
+
     return normalizeResolvedEnvironment({
       environment: {
         id: row.id,
         name: row.name,
-        source: this.parseSource(row.source),
+        source,
         lastValidationId: row.lastValidationId,
         contractVersion: row.contractVersion,
       },
       providerFamily,
       runtimeId: args.runtimeId,
-      validationVersion: row.lastValidationId ? '1' : undefined,
     });
+  }
+
+  private async findPinnedValidation(
+    environmentId: string,
+    validationId: string | null,
+  ) {
+    if (!validationId) return null;
+    const validation = await this.prisma.sandboxEnvironmentValidation.findUnique({
+      where: { id: validationId },
+      select: {
+        id: true,
+        environmentId: true,
+        status: true,
+        providerFamily: true,
+        runtimeId: true,
+        sourceKind: true,
+        resolvedLocator: true,
+        resolvedDigest: true,
+        resolvedChecksum: true,
+        runtimeArtifactChecksums: true,
+        cliArtifactChecksum: true,
+        sandboxMetadata: true,
+        contractVersion: true,
+        checkedAt: true,
+      },
+    });
+    return validation?.environmentId === environmentId ? validation : null;
   }
 
   async resolveImageParameterProfileForTask(args: {
@@ -332,6 +454,7 @@ export class SandboxEnvironmentsService {
         contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
       },
       orderBy: { createdAt: 'asc' },
+      include: latestValidationInclude(),
     });
     return (
       rows.find((row) => {
@@ -373,6 +496,7 @@ export class SandboxEnvironmentsService {
     readonly name: string;
     readonly source: SandboxEnvironmentSource;
     readonly providerFamily: SandboxEnvironmentProviderFamily;
+    readonly runtimeIds?: readonly string[];
     readonly runtimeId?: string | null;
     readonly contractVersion?: string | null;
   }): Promise<SandboxEnvironmentValidationOutcome> {
@@ -387,6 +511,8 @@ export class SandboxEnvironmentsService {
         sourceKind: args.source.kind,
         resolvedDigest: sourceDigest(args.source) ?? null,
         resolvedChecksum: sourceChecksum(args.source) ?? null,
+        runtimeArtifactChecksums: null,
+        cliArtifactChecksum: null,
         probes: [{ name: 'validation-error', ok: false, output: message }],
         error: message,
       };
@@ -405,7 +531,10 @@ export class SandboxEnvironmentsService {
     contractVersion: string | null;
     createdAt: Date;
     updatedAt: Date;
-    validations?: readonly { checkedAt: Date; sandboxMetadata: Prisma.JsonValue | null }[];
+    validations?: readonly {
+      checkedAt: Date;
+      sandboxMetadata: Prisma.JsonValue | null;
+    }[];
     envVars?: Prisma.JsonValue;
     secretEnvVars?: Prisma.JsonValue;
   }): SandboxEnvironment {
@@ -436,8 +565,11 @@ export class SandboxEnvironmentsService {
     providerFamily: string;
     runtimeId: string | null;
     sourceKind: string;
+    resolvedLocator: string | null;
     resolvedDigest: string | null;
     resolvedChecksum: string | null;
+    runtimeArtifactChecksums: Prisma.JsonValue | null;
+    cliArtifactChecksum: string | null;
     sandboxMetadata: Prisma.JsonValue | null;
     probes: Prisma.JsonValue | null;
     error: string | null;
@@ -451,8 +583,11 @@ export class SandboxEnvironmentsService {
       providerFamily: row.providerFamily,
       runtimeId: row.runtimeId,
       sourceKind: row.sourceKind,
+      resolvedLocator: row.resolvedLocator,
       resolvedDigest: row.resolvedDigest,
       resolvedChecksum: row.resolvedChecksum,
+      runtimeArtifactChecksums: row.runtimeArtifactChecksums,
+      cliArtifactChecksum: row.cliArtifactChecksum,
       sandboxMetadata: row.sandboxMetadata,
       probes: row.probes,
       error: row.error,
@@ -521,7 +656,42 @@ function latestValidationInclude() {
     validations: {
       orderBy: { checkedAt: 'desc' as const },
       take: 1,
-      select: { checkedAt: true, sandboxMetadata: true },
+      select: {
+        id: true,
+        status: true,
+        providerFamily: true,
+        runtimeId: true,
+        sourceKind: true,
+        resolvedLocator: true,
+        resolvedDigest: true,
+        resolvedChecksum: true,
+        runtimeArtifactChecksums: true,
+        cliArtifactChecksum: true,
+        sandboxMetadata: true,
+        contractVersion: true,
+        checkedAt: true,
+      },
     },
   } as const;
+}
+
+function normalizeEnvironmentSelection(args: {
+  readonly selection?: SandboxEnvironmentSelection;
+  readonly requestedEnvironmentId?: string | null;
+}): SandboxEnvironmentSelection {
+  if (args.selection) return args.selection;
+  return typeof args.requestedEnvironmentId === 'string'
+    ? { kind: 'managed', environmentId: args.requestedEnvironmentId }
+    : { kind: 'managed-default' };
+}
+
+function immutableEnvironmentUnavailable(id: string): BadRequestException {
+  return new BadRequestException({
+    error: 'sandbox_environment_immutable_identity_unavailable',
+    message: `Sandbox environment ${id} has no current immutable validation snapshot.`,
+  });
+}
+
+function runtimeIdsForValidation(runtimeIds: readonly string[]): readonly string[] {
+  return runtimeIds.length > 0 ? runtimeIds : ['claude-code', 'codex'];
 }

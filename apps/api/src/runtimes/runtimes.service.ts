@@ -55,8 +55,8 @@ export class RuntimesService {
     private readonly claudeAuthSource?: ClaudeAuthSource,
   ) {}
 
-  async getReadiness(): Promise<RuntimesReadinessResponse> {
-    const claudeReady = await this.isClaudeConfigured();
+  async getReadiness(ownerUserId: string | null): Promise<RuntimesReadinessResponse> {
+    const claudeReady = await this.isClaudeConfigured(ownerUserId);
     return {
       runtimes: [
         { id: 'codex', ready: true },
@@ -71,10 +71,10 @@ export class RuntimesService {
    * a rejected probe reports NOT configured so the dialog disables claude-code
    * rather than offering a runtime that would fail at launch.
    */
-  private async isClaudeConfigured(): Promise<boolean> {
-    if (!this.claudeAuthSource) return false;
+  private async isClaudeConfigured(ownerUserId: string | null): Promise<boolean> {
+    if (!this.claudeAuthSource || !ownerUserId) return false;
     try {
-      return await this.claudeAuthSource.configured();
+      return await this.claudeAuthSource.configured(ownerUserId);
     } catch (err) {
       this.logger.warn(
         `claude runtime readiness probe failed (reporting not ready): ${

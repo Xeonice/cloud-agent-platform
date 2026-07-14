@@ -116,6 +116,21 @@ describe("runtime selector + command-preview reflection (add-claude-code-runtime
     expect(lines.some((l) => l.includes("# 沙箱内启动 codex"))).toBe(false);
   });
 
+  it("shows one explicit model line and omits it for the runtime default", () => {
+    const explicit = buildCommandPreview({
+      ...base,
+      model: "model.with-punctuation_v2",
+    });
+    expect(explicit.filter((line) => line.includes("--model"))).toEqual([
+      '  --model "model.with-punctuation_v2" \\',
+    ]);
+    expect(
+      buildCommandPreview({ ...base, model: null }).some((line) =>
+        line.includes("--model"),
+      ),
+    ).toBe(false);
+  });
+
   it("selected sandbox environment is reflected in the preview", () => {
     const lines = buildCommandPreview({
       ...base,

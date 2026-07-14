@@ -29,6 +29,9 @@ import type { SessionHistory } from '@cap/contracts';
 import { TasksService } from '../tasks/tasks.service';
 import { ReposService } from '../repos/repos.service';
 import { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.service';
+import { RuntimeModelCatalogService } from '../runtime-models/runtime-model-catalog.service';
+import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { listRepoPage, listTaskPage } from '../v1/public-list-pages';
 import {
@@ -65,6 +68,8 @@ export class McpServerFactory implements McpToolDeps {
     private readonly tasks: TasksService,
     private readonly repos: ReposService,
     private readonly schedules: ScheduledTasksService,
+    private readonly runtimeModels: RuntimeModelCatalogService,
+    private readonly taskModelCapability: TaskModelCapabilityService,
     private readonly prisma: PrismaService,
     @Inject(TRANSCRIPT_STORE) private readonly transcripts: TranscriptStore,
     @Inject(AUDIT_TIMELINE_READER) private readonly audit: AuditTimelineReader,
@@ -95,6 +100,18 @@ export class McpServerFactory implements McpToolDeps {
     // `userId` is the token owner's ACCOUNT primary key (local + GitHub accounts —
     // fix-local-account-task-attribution) so the task is owner-attributed.
     return this.tasks.create(repoId, body, userId, 'headless-exec');
+  }
+
+  async queryRuntimeModels(
+    ownerUserId: string,
+    query: Parameters<McpToolDeps['queryRuntimeModels']>[1],
+  ) {
+    // Keep the gate ahead of environment work and any disposable probe.
+    this.taskModelCapability.assertOpen();
+    const result = await this.runtimeModels.query(ownerUserId, query);
+    if (!result.ok) throw new RuntimeModelPreflightError(result.error);
+    this.taskModelCapability.assertOpen();
+    return result.value;
   }
 
   getTask(id: string) {

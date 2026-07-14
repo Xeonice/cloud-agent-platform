@@ -29,6 +29,7 @@ import {
   selectDeliverySandboxProvider,
   selectSandboxProvider,
   terminalSettlePlan,
+  isSandboxRuntimeModelSetupError,
   type SandboxSettlePlan,
 } from '@cap/sandbox';
 import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
@@ -48,8 +49,16 @@ import {
   type RunningInterval,
 } from '../metrics/runner-minutes';
 import { runWithTaskLog } from '../observability/log-context';
+import type { RuntimeOutputFailure } from '../agent-runtime/agent-runtime.port';
+import {
+  classifyRuntimeModelRejectionEvidence,
+  type RuntimeModelRejectionEvidence,
+} from '../agent-runtime/runtime-model-rejection-evidence';
 
 const EXIT_FAILURE_CLASSIFICATION_TIMEOUT_MS = 2_000;
+type ImmediateRuntimeFailureCode =
+  | RuntimeOutputFailure['code']
+  | 'runtime_model_setup_failed';
 
 /**
  * Guardrails integration (integration 12.1b).
@@ -653,9 +662,44 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    */
   async failRuntime(
     taskId: string,
-    code: TaskFailureCode,
+    code: ImmediateRuntimeFailureCode,
     exitCode: number | null = null,
     recordBreakerFailure = true,
+  ): Promise<boolean> {
+    return this.persistRuntimeFailure(
+      taskId,
+      code,
+      exitCode,
+      recordBreakerFailure,
+    );
+  }
+
+  /**
+   * The only runtime path that may persist `runtime_model_rejected`. Unknown,
+   * unpinned, generic, or presentation-text evidence is ignored rather than
+   * stealing the existing auth/network/quota/generic classification.
+   */
+  async failRuntimeModelRejection(
+    taskId: string,
+    evidence: RuntimeModelRejectionEvidence,
+    exitCode: number | null = null,
+    recordBreakerFailure = true,
+  ): Promise<boolean> {
+    const code = classifyRuntimeModelRejectionEvidence(evidence);
+    if (!code) return false;
+    return this.persistRuntimeFailure(
+      taskId,
+      code,
+      exitCode,
+      recordBreakerFailure,
+    );
+  }
+
+  private async persistRuntimeFailure(
+    taskId: string,
+    code: TaskFailureCode,
+    exitCode: number | null,
+    recordBreakerFailure: boolean,
   ): Promise<boolean> {
     if (recordBreakerFailure) this.recordFailure(taskId, 'turn_failure');
     try {
@@ -676,7 +720,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     status: ExitStatus,
     abnormal: boolean,
   ): Promise<void> {
-    let failure: { code: TaskFailureCode } | null = null;
+    let failure: RuntimeOutputFailure | null = null;
     const detail = this.recordExitDetail(taskId, status);
     try {
       failure = await this.withTimeout(
@@ -734,7 +778,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async recordExitDetail(
     taskId: string,
     status: ExitStatus,
-  ): Promise<{ code: TaskFailureCode } | null> {
+  ): Promise<RuntimeOutputFailure | null> {
     let tail = '';
     try {
       tail = (await this.gateway?.readSessionLogTail(taskId)) ?? '';
@@ -745,7 +789,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         }`,
       );
     }
-    let failure: { code: TaskFailureCode } | null = null;
+    let failure: RuntimeOutputFailure | null = null;
     try {
       failure = await this.tasks.classifyRuntimeOutputFailure(taskId, tail);
     } catch (err) {
@@ -1091,25 +1135,22 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // logged, not fatal to the lifecycle transition.
     const sandbox = this.sandbox;
     if (sandbox) {
-      const provisionPlan = await this.resolveProvisionPlan(taskId).catch(
-        (err: unknown) => {
-          this.logger.error(
-            `resolve sandbox requirements for task ${taskId} failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-          return undefined;
-        },
-      );
+      let provisionPlan;
+      try {
+        provisionPlan = await this.resolveProvisionPlan(taskId);
+      } catch (err) {
+        this.logger.error(
+          `resolve sandbox requirements for task ${taskId} failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        await this.failProvisioning(taskId, err);
+        return 'transitioned';
+      }
       if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
         this.clearAdmissionRuntime(taskId);
         return 'superseded';
       }
-      if (!provisionPlan) {
-        await this.forceFail(taskId, 'provision_failed');
-        return 'transitioned';
-      }
-
       const selected = await Promise.resolve()
         .then(() =>
           selectSandboxProvider(sandbox, provisionPlan.requiredCapabilities),
@@ -1143,16 +1184,25 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         this.clearAdmissionRuntime(taskId);
         return 'superseded';
       }
-      const connection = await selected.provider
-        .provision({ taskId, cloneSpec: provisionPlan.cloneSpec })
-        .catch((err: unknown) => {
-          this.logger.error(
-            `provision sandbox for task ${taskId} failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-          return undefined;
-      });
+      let connection: SandboxConnection | undefined;
+      try {
+        connection = await selected.provider.provision({
+          taskId,
+          cloneSpec: provisionPlan.cloneSpec,
+          modelIntent: provisionPlan.modelIntent,
+          runtimeId: provisionPlan.runtimeId,
+          executionMode: provisionPlan.executionMode,
+          environment: provisionPlan.environment,
+        });
+      } catch (err) {
+        this.logger.error(
+          `provision sandbox for task ${taskId} failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        await this.failProvisioning(taskId, err);
+        return 'transitioned';
+      }
       if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
         await selected.provider.teardownSandbox(taskId).catch((err: unknown) => {
           this.logger.warn(
@@ -1332,8 +1382,36 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   private async resolveProvisionPlan(taskId: string) {
-    const cloneSpec = await this.provisionLookup?.getCloneSpec(taskId);
-    return buildSandboxProvisionPlan({ cloneSpec });
+    if (!this.provisionLookup) {
+      throw new Error('Provision lookup is not configured');
+    }
+    const [cloneSpec, launch] = await Promise.all([
+      this.provisionLookup.getCloneSpec(taskId),
+      this.provisionLookup.getTaskLaunchContext(taskId),
+    ]);
+    return buildSandboxProvisionPlan({
+      cloneSpec,
+      modelIntent: launch.modelIntent,
+      runtimeId: launch.runtimeId,
+      executionMode: launch.executionMode,
+      environment: launch.environment,
+    });
+  }
+
+  private async failProvisioning(taskId: string, error: unknown): Promise<void> {
+    if (isSandboxRuntimeModelSetupError(error)) {
+      if (
+        await this.failRuntime(
+          taskId,
+          'runtime_model_setup_failed',
+          null,
+          false,
+        )
+      ) {
+        return;
+      }
+    }
+    await this.forceFail(taskId, 'provision_failed');
   }
 
   /**

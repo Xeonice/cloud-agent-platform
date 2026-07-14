@@ -10,6 +10,8 @@ import type {
   SandboxTerminalEndpointDescriptor,
   SandboxWorkspaceDescriptor,
   SelectedSandboxRun,
+  SandboxResolvedEnvironmentMetadata,
+  TaskModelIntent,
 } from '@cap/sandbox-core';
 import {
   ARCHIVE_WORKSPACE_SANDBOX_FEATURE_CAPABILITIES,
@@ -65,10 +67,16 @@ export interface SelectSandboxProviderCandidateOptions {
    * (for example CAP_SANDBOX_PROVIDER=boxlite). Used only for actionable errors.
    */
   readonly explicitProviderFamily?: string;
+  /** Exact descriptor id required by a persisted immutable task snapshot. */
+  readonly requiredProviderId?: string;
 }
 
 export interface SandboxProvisionPlan<TCloneSpec = GitCloneSpec> {
   readonly cloneSpec: TCloneSpec | null | undefined;
+  readonly modelIntent: TaskModelIntent;
+  readonly runtimeId: string;
+  readonly executionMode: 'interactive-pty' | 'headless-exec';
+  readonly environment?: SandboxResolvedEnvironmentMetadata;
   readonly requiredCapabilities: readonly SandboxProviderCapability[];
   readonly featureCapabilities: readonly SandboxProviderCapability[];
 }
@@ -96,11 +104,19 @@ export function provisionSandboxFeatureCapabilities(args: {
 
 export function buildSandboxProvisionPlan<TCloneSpec>(args: {
   readonly cloneSpec: TCloneSpec | null | undefined;
+  readonly modelIntent: TaskModelIntent;
+  readonly runtimeId: string;
+  readonly executionMode: 'interactive-pty' | 'headless-exec';
+  readonly environment?: SandboxResolvedEnvironmentMetadata;
   readonly archiveWorkspace?: boolean;
 }): SandboxProvisionPlan<TCloneSpec> {
   const materializeWorkspace = args.cloneSpec !== null && args.cloneSpec !== undefined;
   return {
     cloneSpec: args.cloneSpec,
+    modelIntent: args.modelIntent,
+    runtimeId: args.runtimeId,
+    executionMode: args.executionMode,
+    environment: args.environment,
     requiredCapabilities: provisionSandboxRequiredCapabilities({
       materializeGitWorkspace: materializeWorkspace,
     }),
@@ -205,7 +221,10 @@ export function selectSandboxProviderCandidate<
   required: readonly SandboxProviderCapability[],
   options: SelectSandboxProviderCandidateOptions = {},
 ): SandboxProviderCandidateSelection<TProvider> {
-  const ranked = candidates
+  const eligibleCandidates = options.requiredProviderId
+    ? candidates.filter((candidate) => candidate.id === options.requiredProviderId)
+    : candidates;
+  const ranked = eligibleCandidates
     .map((candidate, index) => ({ candidate, index }))
     .sort((a, b) => {
       const priorityDelta = (b.candidate.priority ?? 0) - (a.candidate.priority ?? 0);
@@ -258,7 +277,9 @@ export function selectSandboxProviderCandidate<
   throw new Error(
     rejected.length > 0
       ? `No sandbox provider candidate${family} satisfies required capabilities (${rejected.join('; ')})`
-      : `No sandbox provider candidates${family} are configured`,
+      : options.requiredProviderId
+        ? `Required sandbox provider "${options.requiredProviderId}" is not configured`
+        : `No sandbox provider candidates${family} are configured`,
   );
 }
 

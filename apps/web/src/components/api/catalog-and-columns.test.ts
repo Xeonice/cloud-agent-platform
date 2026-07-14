@@ -21,7 +21,9 @@
 import { describe, it, expect } from "vitest";
 import {
   PUBLIC_V1_OPERATIONS,
-  type PublicV1Operation,
+  type PublicV1OperationById,
+  type PublicV1OperationId,
+  type PublicV1OperationShape,
 } from "@cap/contracts";
 import { z } from "zod";
 
@@ -38,6 +40,14 @@ import {
   mapSendResult,
 } from "@/routes/_app/api";
 import type { SendApiResult } from "@/lib/api/real";
+
+function operationById<Id extends PublicV1OperationId>(
+  id: Id,
+): PublicV1OperationById<Id> {
+  const operation = PUBLIC_V1_OPERATIONS.find((entry) => entry.id === id);
+  if (!operation) throw new Error(`Missing public operation fixture: ${id}`);
+  return operation as PublicV1OperationById<Id>;
+}
 
 // ── 1. Catalog is non-empty (the rail left column has rows to render) ──────
 
@@ -114,7 +124,7 @@ describe("Request column — default-selected endpoint seeds the request panel",
 });
 
 describe("Catalog column — shared public /v1 manifest alignment", () => {
-  it("contains exactly the 17 public data operations from the shared manifest", () => {
+  it("contains exactly the public data operations from the shared manifest", () => {
     const catalogKeys = DATA_API_CATALOG.map((endpoint) =>
       `${endpoint.method} ${endpoint.pathTemplate.replace(/:([^/]+)/g, "{$1}")}`,
     ).sort();
@@ -122,12 +132,153 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
       (operation) => `${operation.method.toUpperCase()} ${operation.path}`,
     ).sort();
 
-    expect(DATA_API_CATALOG).toHaveLength(17);
+    expect(DATA_API_CATALOG).toHaveLength(PUBLIC_V1_OPERATIONS.length);
     expect(catalogKeys).toEqual(manifestKeys);
     expect(DATA_API_CATALOG.map((entry) => entry.operationId).sort()).toEqual(
       PUBLIC_V1_OPERATIONS.map((operation) => operation.id).sort(),
     );
   });
+
+  it("projects exact scope, owner, error, and MCP decisions without changing rows", () => {
+    for (const operation of PUBLIC_V1_OPERATIONS) {
+      const endpoint = DATA_API_CATALOG.find(
+        (candidate) => candidate.operationId === operation.id,
+      );
+      expect(endpoint, operation.id).toBeDefined();
+      expect(endpoint!.requiredScope, operation.id).toBe(operation.scope);
+      expect(endpoint!.ownerPolicy, operation.id).toBe(operation.ownerPolicy);
+      expect(endpoint!.publicErrors, operation.id).toEqual(operation.errors);
+
+      const expectedMcp =
+        "tool" in operation.mcp
+          ? {
+              status: "mapped",
+              tool: operation.mcp.tool,
+              differences: operation.mcp.differences,
+            }
+          : {
+              status: "excluded",
+              reason: operation.mcp.excluded,
+            };
+      expect(endpoint!.mcpProjection, operation.id).toEqual(expectedMcp);
+    }
+  });
+
+  it("retains explicit mapped differences and the reasoned SSE exclusion", () => {
+    expect(findEndpoint("tasks.create")!.mcpProjection).toEqual({
+      status: "mapped",
+      tool: "create_task",
+      differences: operationById("tasks.create").mcp.differences,
+    });
+    expect(
+      operationById("tasks.create").mcp.differences.map(
+        (difference) => difference.kind,
+      ),
+    ).toEqual([
+      "rest-only-header",
+      "mcp-compatibility-text",
+      "mcp-description-projection",
+      "rate-limit-policy",
+    ]);
+    expect(findEndpoint("runtimeModels.query")!.mcpProjection).toEqual({
+      status: "mapped",
+      tool: "list_runtime_models",
+      differences: operationById("runtimeModels.query").mcp.differences,
+    });
+    expect(
+      operationById("runtimeModels.query").mcp.differences.map(
+        (difference) => difference.kind,
+      ),
+    ).toEqual(["rate-limit-policy"]);
+
+    expect(findEndpoint("schedules.delete")!.mcpProjection).toEqual({
+      status: "mapped",
+      tool: "delete_schedule",
+      differences: operationById("schedules.delete").mcp.differences,
+    });
+    expect(findEndpoint("tasks.events")!.mcpProjection).toEqual({
+      status: "excluded",
+      reason: operationById("tasks.events").mcp.excluded,
+    });
+    expect(operationById("tasks.events").mcp.excluded.trim()).not.toBe("");
+  });
+
+  it("offers the runtime catalog without hardcoding any model selector", () => {
+    const endpoint = findEndpoint("runtimeModels.query");
+    expect(endpoint).toMatchObject({
+      method: "POST",
+      pathTemplate: "/v1/runtime-models/query",
+      destructive: false,
+    });
+    expect(JSON.parse(endpoint!.sampleBody!)).toEqual({ runtime: "codex" });
+    expect(endpoint!.sampleBody).not.toContain("modelId");
+  });
+
+  it("inherits model-aware task, schedule, scope, and error contracts from the manifest", () => {
+    const catalog = operationById("runtimeModels.query");
+    expect(catalog.scope).toBe("tasks:write");
+    expect(catalog.errors).toContain("runtime_model_catalog_unavailable");
+
+    expect(
+      operationById("tasks.create").input.body.parse.safeParse({
+        repoId: "00000000-0000-4000-a000-000000000101",
+        prompt: "check",
+        runtime: "codex",
+        model: "provider/model:v1",
+      }).success,
+    ).toBe(true);
+    expect(
+      operationById("schedules.create").input.body.parse.safeParse({
+        recurrence: { kind: "daily", time: "10:30", timezone: "UTC" },
+        taskTemplate: {
+          repoId: "00000000-0000-4000-a000-000000000101",
+          prompt: "scheduled check",
+          runtime: "claude-code",
+          model: "arn:vendor:model/family:v2",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      operationById("schedules.update").input.body.parse.safeParse({
+        taskTemplate: {
+          repoId: "00000000-0000-4000-a000-000000000101",
+          prompt: "updated check",
+          runtime: "codex",
+          model: "bad\u0000selector",
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([422, 429, 503])(
+    "keeps a structured model error visible in the response column for HTTP %i",
+    (status) => {
+      const body = JSON.stringify({
+        code:
+          status === 422
+            ? "runtime_model_not_available"
+            : "runtime_model_catalog_unavailable",
+        message: "Safe model error",
+        retryable: status !== 422,
+      });
+      const rendered = mapSendResult({
+        kind: "response",
+        status,
+        statusText: "Model Error",
+        ok: false,
+        durationMs: 12,
+        sizeBytes: new TextEncoder().encode(body).byteLength,
+        headers: { "content-type": "application/json" },
+        body,
+        json: JSON.parse(body),
+      });
+
+      expect(rendered.status).toBe(status);
+      expect(rendered.ok).toBe(false);
+      expect(rendered.body).toContain("runtime_model_");
+      expect(rendered.json).toMatchObject({ message: "Safe model error" });
+    },
+  );
 
   it("keeps documentation endpoints outside the data-operation drift set", () => {
     const docs = API_CATALOG.filter((endpoint) => endpoint.kind === "documentation");
@@ -136,34 +287,45 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
       "/v1/docs",
     ]);
     expect(docs.every((endpoint) => endpoint.operationId === null)).toBe(true);
+    expect(
+      docs.every(
+        (endpoint) =>
+          endpoint.requiredScope === null &&
+          endpoint.ownerPolicy === null &&
+          endpoint.mcpProjection === null &&
+          endpoint.publicErrors.length === 0,
+      ),
+    ).toBe(true);
   });
 
   it("never exposes the internal sandbox callback through the manifest or catalog", () => {
     const internalPath = "/internal/sandbox/approvals";
-    expect(PUBLIC_V1_OPERATIONS.some((operation) => operation.path === internalPath)).toBe(
-      false,
-    );
+    expect(
+      PUBLIC_V1_OPERATIONS.some(
+        (operation) => (operation.path as string) === internalPath,
+      ),
+    ).toBe(false);
     expect(API_CATALOG.some((endpoint) => endpoint.pathTemplate === internalPath)).toBe(
       false,
     );
   });
 
   it("parses every sample body with the operation's shared request schema", () => {
-    const byId = new Map<string, PublicV1Operation>(
+    const byId = new Map<string, PublicV1OperationShape>(
       PUBLIC_V1_OPERATIONS.map((operation) => [operation.id, operation]),
     );
 
     for (const endpoint of DATA_API_CATALOG) {
       const operation = byId.get(endpoint.operationId!);
       expect(operation, endpoint.id).toBeDefined();
-      const requestSchema = operation?.requestSchema;
-      if (!requestSchema) {
+      const bodySchema = operation?.input.body?.parse;
+      if (!bodySchema) {
         expect(endpoint.sampleBody, endpoint.id).toBeNull();
         continue;
       }
 
       expect(typeof endpoint.sampleBody, endpoint.id).toBe("string");
-      const parsed = requestSchema.safeParse(JSON.parse(endpoint.sampleBody!));
+      const parsed = bodySchema.safeParse(JSON.parse(endpoint.sampleBody!));
       expect(parsed.success, endpoint.id).toBe(true);
     }
   });
@@ -198,15 +360,24 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
     });
   });
 
-  it("exposes every operation header declared by the manifest", () => {
+  it("derives every path, query, and header field from the manifest", () => {
     for (const operation of PUBLIC_V1_OPERATIONS) {
+      const shape: PublicV1OperationShape = operation;
       const endpoint = DATA_API_CATALOG.find(
         (candidate) => candidate.operationId === operation.id,
       )!;
       expect(
+        endpoint.pathParams.map((param) => param.name),
+        operation.id,
+      ).toEqual(Object.keys(shape.input.params?.wire.shape ?? {}));
+      expect(
+        endpoint.queryParams.map((param) => param.name),
+        operation.id,
+      ).toEqual(Object.keys(shape.input.query?.wire.shape ?? {}));
+      expect(
         endpoint.headerParams.map((header) => header.name),
         operation.id,
-      ).toEqual(Object.keys(operation.headersSchema?.shape ?? {}));
+      ).toEqual(Object.keys(shape.input.headers?.wire.shape ?? {}));
     }
   });
 });

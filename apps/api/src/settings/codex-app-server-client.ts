@@ -3,6 +3,9 @@ import type { Readable, Writable } from 'node:stream';
 
 export const DEFAULT_APP_SERVER_LINE_BYTES = 256 * 1024;
 export const DEFAULT_APP_SERVER_REQUEST_TIMEOUT_MS = 10_000;
+export const DEFAULT_APP_SERVER_MODEL_PAGE_SIZE = 100;
+export const MAX_APP_SERVER_MODEL_PAGES = 20;
+export const MAX_APP_SERVER_MODELS = 1_000;
 
 export type CodexAppServerClientErrorKind =
   | 'aborted'
@@ -58,6 +61,21 @@ export interface CodexAppServerDeviceCode {
 export type CodexAppServerLoginCompletion =
   | { readonly loginId: string; readonly success: true }
   | { readonly loginId: string; readonly success: false };
+
+/** Bounded subset of the exact 0.144.1 App Server Model protocol shape. */
+export interface CodexAppServerModel {
+  readonly id: string;
+  /** Actual selector accepted by Codex `--model`; it is not the preset id. */
+  readonly model: string;
+  readonly displayName: string;
+  readonly hidden: boolean;
+  readonly isDefault: boolean;
+}
+
+export interface CodexAppServerModelListPage {
+  readonly data: readonly CodexAppServerModel[];
+  readonly nextCursor: string | null;
+}
 
 interface PendingRequest<T = unknown> {
   readonly method: string;
@@ -141,6 +159,42 @@ function parseCancelResult(value: unknown): 'canceled' | 'notFound' {
     throw new CodexAppServerClientError('malformed_message');
   }
   return value.status;
+}
+
+function parseModelListResult(value: unknown): CodexAppServerModelListPage {
+  if (!isObject(value) || !Array.isArray(value.data)) {
+    throw new CodexAppServerClientError('malformed_message');
+  }
+  const nextCursor = value.nextCursor ?? null;
+  if (
+    nextCursor !== null &&
+    (typeof nextCursor !== 'string' || nextCursor.length === 0)
+  ) {
+    throw new CodexAppServerClientError('malformed_message');
+  }
+  const data = value.data.map((raw): CodexAppServerModel => {
+    if (
+      !isObject(raw) ||
+      !nonEmptyString(raw.id) ||
+      !nonEmptyString(raw.model) ||
+      !nonEmptyString(raw.displayName) ||
+      typeof raw.description !== 'string' ||
+      typeof raw.hidden !== 'boolean' ||
+      typeof raw.isDefault !== 'boolean' ||
+      !nonEmptyString(raw.defaultReasoningEffort) ||
+      !Array.isArray(raw.supportedReasoningEfforts)
+    ) {
+      throw new CodexAppServerClientError('malformed_message');
+    }
+    return {
+      id: raw.id,
+      model: raw.model,
+      displayName: raw.displayName,
+      hidden: raw.hidden,
+      isDefault: raw.isDefault,
+    };
+  });
+  return { data, nextCursor };
 }
 
 /**
@@ -274,6 +328,77 @@ export class CodexAppServerClient {
       parseCancelResult,
       options,
     );
+  }
+
+  async listModelsPage(
+    params: {
+      readonly cursor?: string | null;
+      readonly limit?: number;
+      readonly includeHidden?: boolean;
+    } = {},
+    options: CodexAppServerOperationOptions = {},
+  ): Promise<CodexAppServerModelListPage> {
+    if (!this.initialized) {
+      throw new CodexAppServerClientError('malformed_message');
+    }
+    if (
+      params.cursor !== undefined &&
+      params.cursor !== null &&
+      !nonEmptyString(params.cursor)
+    ) {
+      throw new CodexAppServerClientError('malformed_message');
+    }
+    const limit = params.limit ?? DEFAULT_APP_SERVER_MODEL_PAGE_SIZE;
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > MAX_APP_SERVER_MODELS) {
+      throw new CodexAppServerClientError('malformed_message');
+    }
+    return this.request(
+      'model/list',
+      {
+        cursor: params.cursor ?? null,
+        limit,
+        includeHidden: params.includeHidden ?? false,
+      },
+      parseModelListResult,
+      options,
+    );
+  }
+
+  /** Fetch every visible model under one absolute deadline and hard bounds. */
+  async listAllModels(
+    options: CodexAppServerOperationOptions = {},
+  ): Promise<readonly CodexAppServerModel[]> {
+    const timeoutMs = options.timeoutMs ?? this.requestTimeoutMs;
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new CodexAppServerClientError('request_timeout');
+    }
+    const deadlineAt = Date.now() + timeoutMs;
+    const seenCursors = new Set<string>();
+    const models: CodexAppServerModel[] = [];
+    let cursor: string | null = null;
+    for (let page = 0; page < MAX_APP_SERVER_MODEL_PAGES; page += 1) {
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) {
+        throw new CodexAppServerClientError('request_timeout');
+      }
+      const result = await this.listModelsPage(
+        { cursor, limit: DEFAULT_APP_SERVER_MODEL_PAGE_SIZE, includeHidden: false },
+        { ...options, timeoutMs: remaining },
+      );
+      for (const model of result.data) {
+        if (!model.hidden) models.push(model);
+        if (models.length > MAX_APP_SERVER_MODELS) {
+          throw new CodexAppServerClientError('message_too_large');
+        }
+      }
+      if (result.nextCursor === null) return models;
+      if (seenCursors.has(result.nextCursor)) {
+        throw new CodexAppServerClientError('malformed_message');
+      }
+      seenCursors.add(result.nextCursor);
+      cursor = result.nextCursor;
+    }
+    throw new CodexAppServerClientError('message_too_large');
   }
 
   /** Stops protocol processing without writing any raw buffered data. */

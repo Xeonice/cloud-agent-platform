@@ -16,14 +16,15 @@ export const AUTH_THROTTLE_NAME = 'auth';
  * filter cannot drift — an unknown throttler name is silently inert.
  */
 export const CREATE_THROTTLE_NAME = 'create';
+export const RUNTIME_MODEL_CATALOG_THROTTLE_NAME = 'runtime-model-catalog';
 
 /**
  * Throttler configuration for the public API (public-v1-api, Integration 6.1).
  *
  * Builds the in-memory (default store) named throttlers the global
  * {@link PrincipalThrottlerGuard} and the per-route `@Throttle` decorators key
- * off. Three named throttlers are registered so the guards can enforce a broad
- * per-request cap, a stricter task-creation cap, and a dedicated pre-auth tier:
+ * off. Four named throttlers are registered so the guards can enforce a broad
+ * per-request cap, stricter task-creation/catalog caps, and a pre-auth tier:
  *
  *   - `default` — the GLOBAL per-request rate cap applied to every guarded route.
  *     The {@link PrincipalThrottlerGuard} keys it on the resolved principal, so it
@@ -35,6 +36,8 @@ export const CREATE_THROTTLE_NAME = 'create';
  *     RUNNING tasks, not CREATED ones, so an unbounded queued backlog is the real
  *     abuse surface this caps. The per-route `@Throttle` already sets the create
  *     limit/ttl; this registration only has to make the `create` name exist.
+ *   - `runtime-model-catalog` — an independent per-principal cap for the
+ *     potentially probe-backed `POST /v1/runtime-models/query` operation.
  *   - `auth`    — the pre-authentication brute-force tier for the public auth
  *     endpoints (password login, OTP request/verify, change-password). These run
  *     BEFORE a principal exists, so the principal throttler has nothing to key on;
@@ -50,6 +53,8 @@ export const CREATE_THROTTLE_NAME = 'create';
  *   - `V1_RATE_DEFAULT_LIMIT` / `V1_RATE_DEFAULT_TTL_SEC`  (default 120 / 60s)
  *   - `V1_RATE_CREATE_LIMIT`  / `V1_RATE_CREATE_TTL_SEC`   (default  10 / 60s)
  *   - `AUTH_RATE_LIMIT`       / `AUTH_RATE_TTL_SEC`         (default  10 / 60s)
+ *   - `RUNTIME_MODEL_CATALOG_RATE_LIMIT` /
+ *     `RUNTIME_MODEL_CATALOG_RATE_TTL_SEC`                  (default  30 / 60s)
  *
  * The in-memory store is intentional: a single API instance with a per-principal
  * tracker key needs no shared store, and the polling floor + idempotency dedup
@@ -66,6 +71,13 @@ export function buildThrottlerOptions(): ThrottlerModuleOptions {
       name: CREATE_THROTTLE_NAME,
       limit: positiveIntEnv(process.env.V1_RATE_CREATE_LIMIT, 10),
       ttl: seconds(positiveIntEnv(process.env.V1_RATE_CREATE_TTL_SEC, 60)),
+    },
+    {
+      name: RUNTIME_MODEL_CATALOG_THROTTLE_NAME,
+      limit: positiveIntEnv(process.env.RUNTIME_MODEL_CATALOG_RATE_LIMIT, 30),
+      ttl: seconds(
+        positiveIntEnv(process.env.RUNTIME_MODEL_CATALOG_RATE_TTL_SEC, 60),
+      ),
     },
     {
       name: AUTH_THROTTLE_NAME,

@@ -23,6 +23,7 @@ import type {
   TranscriptReadStrategy,
 } from './agent-runtime.port';
 import { classifyClaudeOutputFailure } from './runtime-output-failure-classifier';
+import { explicitTaskModelShellMaterial } from './task-model-launch';
 
 /**
  * ClaudeCodeRuntime (add-claude-code-runtime, tasks 2.4–2.8) — the second
@@ -121,18 +122,13 @@ export class ClaudeCodeRuntime implements AgentRuntime {
         'ClaudeCodeRuntime.buildLaunchLine requires ctx.sessionId (the --session-id uuid)',
       );
     }
-    const envPrefix =
-      'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 ' +
-      'CLAUDE_CODE_SANDBOXED=1 ' +
-      `CLAUDE_CONFIG_DIR=${ClaudeCodeRuntime.CONFIG_DIR}`;
-    // Source the auth env (token + ANTHROPIC_* unsets), read the prompt file, and
-    // launch claude with the prompt positionally. `2>/dev/null` + the file's own
-    // existence guard keep a missing prompt/auth file from aborting the launch.
-    const inner =
-      `${envPrefix} ` +
-      `. ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} 2>/dev/null; ` +
-      `P="$(cat ${ClaudeCodeRuntime.PROMPT_FILE_PATH} 2>/dev/null)"; ` +
-      `claude --session-id ${sessionId} --dangerously-skip-permissions "$P"`;
+    const model = explicitTaskModelShellMaterial(ctx.model);
+    const inner = this.guardedInner(
+      `claude --session-id ${sessionId} --dangerously-skip-permissions` +
+        (model ? ` ${model.argument}` : '') +
+        ` "$P"`,
+      model?.guard,
+    );
     // SHARED launch mechanism: claude supplies only the inner agent line; the
     // detached-tmux wrapper is identical for every runtime (refactor step 4).
     return wrapInDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
@@ -318,30 +314,41 @@ export class ClaudeCodeRuntime implements AgentRuntime {
         'ClaudeCodeRuntime.buildHeadlessLine requires ctx.sessionId (the --session-id uuid)',
       );
     }
-    const inner = this.headlessInner(
-      `claude -p "$P" --session-id ${sessionId} --output-format stream-json --verbose --dangerously-skip-permissions < /dev/null`,
+    const model = explicitTaskModelShellMaterial(ctx.model);
+    const inner = this.guardedInner(
+      `claude -p "$P" --session-id ${sessionId} --output-format stream-json --verbose --dangerously-skip-permissions` +
+        (model ? ` ${model.argument}` : '') +
+        ` < /dev/null`,
+      model?.guard,
     );
     return wrapHeadlessDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
   }
 
   /** Headless resume: `claude -p --resume <id>` continues a prior session non-interactively. */
   buildResumeLine(ctx: LaunchContext, prevSessionId: string): string {
-    const inner = this.headlessInner(
+    const inner = this.guardedInner(
       `claude -p "$P" --resume ${prevSessionId} --output-format stream-json --verbose --dangerously-skip-permissions < /dev/null`,
     );
     return wrapHeadlessDetachedSession(ctx.taskId, inner, ctx.workspaceDir);
   }
 
-  /** Shared env-prefix + auth-source + prompt-read preamble for the headless `claude` invocations. */
-  private headlessInner(claudeCmd: string): string {
-    const envPrefix =
-      'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 ' +
-      'CLAUDE_CODE_SANDBOXED=1 ' +
-      `CLAUDE_CONFIG_DIR=${ClaudeCodeRuntime.CONFIG_DIR}`;
+  /**
+   * Shared fail-closed auth + prompt preamble for every Claude invocation.
+   * The prompt remains optional, but Claude never runs unless the injected auth
+   * file is readable, non-empty, sources successfully, and exports a token.
+   */
+  private guardedInner(claudeCmd: string, modelGuard = ''): string {
     return (
-      `${envPrefix} ` +
-      `. ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} 2>/dev/null; ` +
-      `P="$(cat ${ClaudeCodeRuntime.PROMPT_FILE_PATH} 2>/dev/null)"; ` +
+      'export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 ' +
+      'CLAUDE_CODE_SANDBOXED=1 ' +
+      `CLAUDE_CONFIG_DIR=${ClaudeCodeRuntime.CONFIG_DIR} && ` +
+      `test -r ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} && ` +
+      `test -s ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} && ` +
+      'unset CLAUDE_CODE_OAUTH_TOKEN && ' +
+      `. ${ClaudeCodeRuntime.AUTH_ENV_FILE_PATH} 2>/dev/null && ` +
+      'test -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" && ' +
+      `P="$(cat ${ClaudeCodeRuntime.PROMPT_FILE_PATH} 2>/dev/null || true)" && ` +
+      modelGuard +
       claudeCmd
     );
   }

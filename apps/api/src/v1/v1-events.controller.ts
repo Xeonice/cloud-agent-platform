@@ -1,25 +1,23 @@
 import {
-  Controller,
-  ForbiddenException,
   Get,
-  Headers,
-  Param,
   Req,
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import {
-  PublicV1EventHeadersSchema,
-  PublicV1IdParamsSchema,
   V1TaskEventSchema,
   type AuditEvent,
   type V1TaskEvent,
 } from '@cap/contracts';
 import { AuditService } from '../audit/audit.service';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
-import { hasScope } from '../auth/operator-principal';
+import {
+  PublicV1Controller,
+  PublicV1Input,
+  PublicV1Operation,
+  requirePublicV1Principal,
+} from '../public-surface/public-v1-operation';
 import { TasksService } from '../tasks/tasks.service';
-import { parseZodValue, zodParam } from '../repos/zod-validation.pipe';
 
 /**
  * `/v1` SSE lifecycle-observation surface (public-v1-api, Track sse-observation,
@@ -75,7 +73,7 @@ import { parseZodValue, zodParam } from '../repos/zod-validation.pipe';
  * and treat this stream as best-effort — the polling floor (task 5.2) ships
  * regardless of the probe outcome.
  */
-@Controller('v1/tasks')
+@PublicV1Controller('v1/tasks')
 export class V1EventsController {
   /**
    * Heartbeat cadence (ms). MUST stay well below the 90s spec ceiling AND below
@@ -116,29 +114,17 @@ export class V1EventsController {
    * end-to-end (no Nest serialization); it never resolves a value.
    */
   @Get(':id/events')
+  @PublicV1Operation('tasks.events')
   async events(
-    @Param('id', zodParam(PublicV1IdParamsSchema.shape.id)) taskId: string,
+    @PublicV1Input('params', 'id') taskId: string,
     @Res({ passthrough: false }) res: Response,
     @Req() req: AuthenticatedRequest,
-    @Headers('last-event-id') lastEventIdHeader?: string,
+    @PublicV1Input('headers', 'Last-Event-ID') lastEventId?: string,
   ): Promise<void> {
-    // Scope gate (V.2): streaming a task's lifecycle events is a `tasks:read`
-    // operation, gated like every sibling /v1 read so an api-key lacking
-    // `tasks:read` cannot observe task lifecycle. A scopeless session/legacy
-    // principal carries no scopes and is allow-all. Checked BEFORE any response
-    // byte is written, so a denial is a plain Nest 403 (the exception filter
-    // serializes it) rather than a half-open event-stream.
-    const principal = req.operatorPrincipal;
-    if (!principal) {
-      throw new ForbiddenException('Missing operator principal');
-    }
-    if (!hasScope(principal, 'tasks:read')) {
-      throw new ForbiddenException('Insufficient scope: tasks:read required');
-    }
-    const lastEventId = parseZodValue(
-      PublicV1EventHeadersSchema.shape['Last-Event-ID'],
-      lastEventIdHeader,
-    );
+    // Reuse the registry-driven authorization result when this method is invoked
+    // directly in focused tests. On HTTP requests the guard has already checked
+    // scope before any response byte, preventing a denied half-open event stream.
+    requirePublicV1Principal(req, this.events);
     // Resolve before writing the SSE headers/open comment. An unknown task stays
     // an ordinary 404 response rather than a misleading 200 stream of heartbeats.
     await this.tasksService.findById(taskId);

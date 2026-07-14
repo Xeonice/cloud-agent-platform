@@ -27,6 +27,7 @@ import { TranscriptMarkdown } from "@/components/markdown/transcript-markdown";
 import { sessionHistoryQuery } from "@/lib/api/queries";
 import { cn } from "@/utils";
 import { SessionCastLog } from "./session-cast-log";
+import { TaskModelFacts } from "@/components/task-model-facts";
 
 /**
  * A conversation turn (user / assistant / tool) — the kinds the cockpit's 对话记录
@@ -50,6 +51,8 @@ const META_BY_STATE: Record<ReplayPresentationState, (n: number) => string> = {
 
 export interface SessionReplayProps {
   taskId: string;
+  /** Caller intent persisted on Task; null/absent means runtime default. */
+  requestedModel?: string | null;
   /**
    * The terminal task's replay presentation state (drives the meta line). Absent
    * for a LIVE running view (headless-task-conversation-view), which has no
@@ -70,6 +73,7 @@ export interface SessionReplayProps {
 
 export function SessionReplay({
   taskId,
+  requestedModel,
   presentationState,
   live = false,
   executionMode,
@@ -84,13 +88,25 @@ export function SessionReplay({
   );
 
   if (isLoading || !data) {
-    return <ReplayShell meta="读取会话记录…">{null}</ReplayShell>;
+    return (
+      <ReplayShell
+        meta="读取会话记录…"
+        modelFacts={<TaskModelFacts requestedModel={requestedModel} />}
+      >
+        {null}
+      </ReplayShell>
+    );
   }
   if (data.status === "empty") {
     // A live task whose rollout has no turns yet is STARTING, not failed.
     if (live) {
       return (
-        <ReplayShell meta="运行中 · 实时 · 等待首个输出…">{null}</ReplayShell>
+        <ReplayShell
+          meta="运行中 · 实时 · 等待首个输出…"
+          modelFacts={<TaskModelFacts requestedModel={requestedModel} />}
+        >
+          {null}
+        </ReplayShell>
       );
     }
     return (
@@ -103,6 +119,7 @@ export function SessionReplay({
             : "该任务没有产生可回看的对话记录（agent 未运行或未写出记录）。"
         }
         metaLabel="未能启动"
+        requestedModel={requestedModel}
       />
     );
   }
@@ -113,6 +130,7 @@ export function SessionReplay({
         title="会话记录已过期"
         detail="该任务的沙箱与会话记录已超过保留期被清理，无法回看。"
         metaLabel="已过期"
+        requestedModel={requestedModel}
       />
     );
   }
@@ -123,6 +141,7 @@ export function SessionReplay({
       presentationState={presentationState}
       live={live}
       executionMode={executionMode}
+      requestedModel={requestedModel}
     />
   );
 }
@@ -134,12 +153,14 @@ function AvailableReplay({
   presentationState,
   live,
   executionMode,
+  requestedModel,
 }: {
   taskId: string;
   history: Extract<SessionHistory, { status: "available" }>;
   presentationState?: ReplayPresentationState;
   live?: boolean;
   executionMode?: ExecutionMode;
+  requestedModel?: string | null;
 }): React.ReactElement {
   const [tab, setTab] = React.useState<"conv" | "term">("conv");
   const [filter, setFilter] = React.useState<Filter>("默认");
@@ -179,6 +200,12 @@ function AvailableReplay({
       // headless-task-conversation-view: a headless task has no terminal record,
       // so the 终端记录 tab is hidden for it (conversation is the only surface).
       showTermTab={!live && executionMode !== "headless-exec"}
+      modelFacts={
+        <TaskModelFacts
+          requestedModel={requestedModel}
+          actualModel={history.meta.model}
+        />
+      }
     >
       {tab === "conv" ? (
         <div className="grid min-h-0 flex-1 grid-cols-[212px_minmax(0,1fr)]">
@@ -229,12 +256,14 @@ function ReplayShell({
   tab = "conv",
   onTab,
   showTermTab = false,
+  modelFacts,
   children,
 }: {
   meta: string;
   tab?: "conv" | "term";
   onTab?: (t: "conv" | "term") => void;
   showTermTab?: boolean;
+  modelFacts?: React.ReactNode;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
@@ -253,6 +282,9 @@ function ReplayShell({
           </div>
           <span className="text-xs text-muted-foreground">{meta}</span>
         </div>
+        {modelFacts ? (
+          <div className="border-b border-border px-3.5 py-2">{modelFacts}</div>
+        ) : null}
         {children}
       </section>
       <p className="mt-3.5 flex items-center gap-2 text-xs text-muted-2">
@@ -434,14 +466,19 @@ function EmptyReplay({
   title,
   detail,
   metaLabel,
+  requestedModel,
 }: {
   icon: string;
   title: string;
   detail: string;
   metaLabel: string;
+  requestedModel?: string | null;
 }): React.ReactElement {
   return (
-    <ReplayShell meta={metaLabel}>
+    <ReplayShell
+      meta={metaLabel}
+      modelFacts={<TaskModelFacts requestedModel={requestedModel} />}
+    >
       <div className="flex flex-1 flex-col items-center justify-center gap-2 px-12 py-12 text-center text-muted-foreground">
         <div className="grid h-11 w-11 place-items-center rounded-[11px] bg-secondary text-[22px] text-muted-2">
           {icon}

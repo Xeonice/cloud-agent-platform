@@ -211,6 +211,7 @@ async function main() {
   const codexLine = codex.buildLaunchLine({
     taskId: 'b3ee3f63',
     workspaceDir: '/home/gem/workspace',
+    model: { kind: 'runtime-default' },
   });
   assert(
     codexLine.startsWith('tmux -u new-session -d -s taskb3ee3f63 '),
@@ -307,6 +308,7 @@ async function main() {
     taskId: 'abc',
     workspaceDir: '/home/gem/workspace',
     sessionId: '11111111-2222-3333-4444-555555555555',
+    model: { kind: 'runtime-default' },
   });
   assert(
     claudeLine.startsWith('tmux -u new-session -d -s taskabc -c /home/gem/workspace '),
@@ -337,7 +339,11 @@ async function main() {
   );
   let threwNoSession = false;
   try {
-    claude.buildLaunchLine({ taskId: 'abc', workspaceDir: '/home/gem/workspace' });
+    claude.buildLaunchLine({
+      taskId: 'abc',
+      workspaceDir: '/home/gem/workspace',
+      model: { kind: 'runtime-default' },
+    });
   } catch {
     threwNoSession = true;
   }

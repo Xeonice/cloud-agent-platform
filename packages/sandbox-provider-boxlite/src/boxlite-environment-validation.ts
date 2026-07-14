@@ -8,6 +8,7 @@ export interface BoxLiteEnvironmentValidationResult {
   readonly status: 'passed' | 'failed';
   readonly providerFamily: 'boxlite';
   readonly sourceKind: string | undefined;
+  readonly resolvedLocator?: string;
   readonly resolvedDigest?: string;
   readonly resolvedChecksum?: string;
   readonly probes: readonly SandboxPreflightProbeResult[];
@@ -20,15 +21,21 @@ export async function validateBoxLiteEnvironment(args: {
   readonly client: BoxLiteClient;
   readonly workspacePath?: string;
   readonly requiredCommands?: readonly BoxLiteEnvironmentValidationCommand[];
+  readonly onCleanupError?: (error: unknown) => void;
 }): Promise<BoxLiteEnvironmentValidationResult> {
   const taskId = args.taskId ?? `env-probe-${Date.now()}`;
   const sandboxId = `probe-${taskId}`;
   const probes: SandboxPreflightProbeResult[] = [];
   const sourceKind = args.environment.sourceKind;
   let cleanupSandboxId = sandboxId;
+  let resolvedIdentity:
+    | { readonly locator: string; readonly digest: string }
+    | undefined;
+  let outcome: BoxLiteEnvironmentValidationResult;
 
   try {
-    const image = resolveBoxLiteValidationImage(args.environment);
+    resolvedIdentity = resolveBoxLiteValidationImage(args.environment);
+    const image = resolvedIdentity.locator;
     const sandbox = await args.client.createSandbox({
       taskId,
       sandboxId,
@@ -91,11 +98,12 @@ export async function validateBoxLiteEnvironment(args: {
       }
     }
 
-    return {
+    outcome = {
       status: 'passed',
       providerFamily: 'boxlite',
       sourceKind,
-      resolvedDigest: args.environment.digest,
+      resolvedLocator: resolvedIdentity.locator,
+      resolvedDigest: resolvedIdentity.digest,
       resolvedChecksum: args.environment.checksum,
       probes,
     };
@@ -106,18 +114,28 @@ export async function validateBoxLiteEnvironment(args: {
     if (probes.length === 0 || probes.at(-1)?.ok !== false) {
       probes.push({ name: 'validation-error', ok: false, output: message });
     }
-    return {
+    outcome = {
       status: 'failed',
       providerFamily: 'boxlite',
       sourceKind,
-      resolvedDigest: args.environment.digest,
+      resolvedLocator: resolvedIdentity?.locator,
+      resolvedDigest: resolvedIdentity?.digest,
       resolvedChecksum: args.environment.checksum,
       probes,
       error: message,
     };
-  } finally {
-    await args.client.deleteSandbox(cleanupSandboxId).catch(() => undefined);
   }
+  try {
+    await args.client.deleteSandbox(cleanupSandboxId);
+  } catch (error) {
+    args.onCleanupError?.(error);
+    if (outcome.status === 'passed') {
+      const message = 'BoxLite environment probe cleanup failed.';
+      probes.push({ name: 'cleanup', ok: false, output: message });
+      outcome = { ...outcome, status: 'failed', probes, error: message };
+    }
+  }
+  return outcome;
 }
 
 export interface BoxLiteEnvironmentValidationCommand {
@@ -127,9 +145,21 @@ export interface BoxLiteEnvironmentValidationCommand {
 
 function resolveBoxLiteValidationImage(
   environment: SandboxResolvedEnvironmentMetadata,
-): string {
+): { readonly locator: string; readonly digest: string } {
   if (environment.sourceKind === 'boxlite-image' && environment.sourceRef) {
-    return environment.sourceRef;
+    const separator = environment.sourceRef.lastIndexOf('@');
+    const qualifiedDigest =
+      separator >= 0 ? environment.sourceRef.slice(separator + 1) : null;
+    const digest = environment.digest ?? qualifiedDigest;
+    if (!digest?.startsWith('sha256:')) {
+      throw new Error(
+        'BoxLite image validation requires a digest-qualified image reference.',
+      );
+    }
+    const locator = environment.sourceRef.endsWith(`@${digest}`)
+      ? environment.sourceRef
+      : `${environment.sourceRef.split('@', 1)[0]}@${digest}`;
+    return { locator, digest };
   }
   throw new Error(
     `BoxLite cannot validate environment source ${environment.sourceKind ?? 'unknown'}`,

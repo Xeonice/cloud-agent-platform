@@ -18,6 +18,7 @@ import type {
   SandboxSelectedRunPort,
   SandboxTerminalEndpointDescriptor,
   SandboxTranscriptSourceBase,
+  TaskModelIntent,
   SandboxWorkspaceDescriptor,
   SelectedSandboxRun,
 } from '@cap/sandbox-core';
@@ -56,6 +57,8 @@ export interface AioProvisionLookupHook<TCloneSpec, TRuntimeId> {
 
 export interface AioProviderExecutionContext<TRuntimeId = string> {
   readonly taskId: string;
+  readonly modelIntent: TaskModelIntent;
+  readonly executionMode: 'interactive-pty' | 'headless-exec';
   readonly runtimeId?: TRuntimeId | null;
   readonly connection: SandboxConnection;
   readonly executor: SandboxCommandExecutor;
@@ -240,14 +243,16 @@ export class AioSandboxProvider<
     let environment: SandboxResolvedEnvironmentMetadata | null | undefined;
 
     try {
-      environment = await this.resolveEnvironment(ctx, null);
+      runtimeId = ctx.runtimeId as TRuntimeId;
+      environment = await this.resolveEnvironment(ctx, runtimeId);
       const provisioned = await this.controller.createAndStart(ctx.taskId, environment);
       const { spec } = provisioned;
       connection = provisioned.connection;
-      runtimeId = await this.resolveRuntimeId(ctx.taskId);
       const executor = this.createCommandExecutor(connection.baseUrl);
       const executionContext: AioProviderExecutionContext<TRuntimeId> = {
         taskId: ctx.taskId,
+        modelIntent: ctx.modelIntent,
+        executionMode: ctx.executionMode,
         runtimeId,
         connection,
         executor,

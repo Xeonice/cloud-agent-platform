@@ -21,7 +21,7 @@ ARG CAP_VERSION=unknown
 ARG GIT_SHA=unknown
 ARG BUILD_TIME=unknown
 
-COPY scripts/write-sandbox-metadata.mjs scripts/sandbox-version-selector.mjs /usr/local/bin/
+COPY scripts/write-sandbox-metadata.mjs scripts/sandbox-version-selector.mjs scripts/runtime-artifact-checksum.mjs /usr/local/bin/
 
 ENV NODE_ENV=production
 ENV CAP_VERSION=${CAP_VERSION}

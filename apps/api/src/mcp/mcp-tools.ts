@@ -1,18 +1,10 @@
 /**
  * MCP tool definitions (remote-mcp-server, Track `mcp-endpoint-tools`, task 4.2).
  *
- * The tools the `/mcp` server advertises, each delegating to the EXISTING
- * console services (one admission path, design D4) with a per-tool scope gate:
- *
- *   - `create_task`    (`tasks:write`) — returns a handle (id + status) IMMEDIATELY,
- *                                        never blocks for the run (D4 / spec).
- *   - `get_task`       (`tasks:read`)  — fetch one task by id.
- *   - `list_tasks`     (`tasks:read`)  — list the shared pool.
- *   - `stop_task`      (`tasks:write`) — operator stop (terminal `cancelled`).
- *   - `get_transcript` (`tasks:read`)  — the DURABLE session-history read.
- *   - `list_repos` / `get_repo` (`repos:read`) — the repo read surface.
- *   - schedule tools   (`tasks:read` / `tasks:write`) — owner-scoped schedule
- *                                               management and immediate dispatch.
+ * The exact advertised inventory and each tool's policy/schema metadata are
+ * projected from `PUBLIC_V1_OPERATIONS`. Thin operation-id adapters delegate to
+ * the EXISTING console services (one admission path, design D4); adding a mapped
+ * registry entry without its adapter is a compile-time error.
  *
  * SCOPE GATING. Every `/mcp` request is first validated by the SDK
  * `requireBearerAuth` → `resolveMcpToken` (registered in `main.ts`, Track 7), which
@@ -37,35 +29,22 @@
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { z } from 'zod';
-import type { Scope } from '@cap/contracts';
 import {
-  CreateScheduleRequestSchema,
-  CreateTaskRequestSchema,
-  DispatchScheduleRequestSchema,
-  RepoResponseSchema,
-  ScheduleCronExpressionSchema,
-  ScheduleMisfirePolicySchema,
-  ScheduleOverlapPolicySchema,
-  ScheduleRecurrenceSchema,
-  ScheduleResponseSchema,
-  ScheduleTimezoneSchema,
-  SessionHistoryEmptyReasonSchema,
-  SessionHistoryMetaSchema,
-  SessionTurnSchema,
-  TaskResponseSchema,
-  UpdateScheduleRequestSchema,
-  V1CreateTaskRequestSchema,
-  V1ListQuerySchema,
-  V1ListReposResponseSchema,
-  V1ListSchedulesResponseSchema,
-  V1ListScheduleRunsResponseSchema,
-  V1ListTasksResponseSchema,
-  V1ScheduleListQuerySchema,
+  PUBLIC_V1_OPERATIONS,
+  PublicErrorEnvelopeSchema,
+  composePublicInputWireSchema,
   type CreateScheduleRequest,
   type CreateTaskBody,
   type DispatchScheduleRequest,
+  type McpMappedOperation,
+  type McpMappedOperationId,
+  type PublicErrorCode,
+  type PublicV1OperationById,
   type RepoResponse,
+  type RuntimeModelCatalog,
+  type RuntimeModelCatalogQuery,
   type ScheduleResponse,
+  type Scope,
   type SessionHistory,
   type TaskResponse,
   type UpdateScheduleRequest,
@@ -76,6 +55,12 @@ import {
   type V1ListTasksResponse,
   type V1ScheduleListQuery,
 } from '@cap/contracts';
+import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
+import {
+  PublicSurfaceError,
+  normalizePublicSurfaceFailure,
+  projectPublicSurfaceErrorToMcp,
+} from '../public-surface/public-surface-error';
 
 /**
  * The NARROW slice of `McpServer.registerTool` the tools use. Declared as a local
@@ -94,8 +79,14 @@ export interface ToolRegistrar {
     config: {
       title?: string;
       description?: string;
-      inputSchema?: z.ZodRawShape;
+      inputSchema?: z.ZodRawShape | z.ZodTypeAny;
       outputSchema?: z.ZodRawShape | z.ZodTypeAny;
+      annotations?: {
+        readOnlyHint?: boolean;
+        destructiveHint?: boolean;
+        idempotentHint?: boolean;
+        openWorldHint?: boolean;
+      };
     },
     cb: (...args: never[]) => unknown,
   ): unknown;
@@ -123,6 +114,10 @@ export interface McpToolDeps {
     body: CreateTaskBody,
     userId?: string,
   ): Promise<TaskResponse>;
+  queryRuntimeModels(
+    ownerUserId: string,
+    query: RuntimeModelCatalogQuery,
+  ): Promise<RuntimeModelCatalog>;
   getTask(id: string): Promise<TaskResponse>;
   listTasks(query: V1ListQuery): Promise<V1ListTasksResponse>;
   stopTask(id: string, userId?: string): Promise<TaskResponse>;
@@ -173,15 +168,182 @@ export function userIdFromExtra(extra: ToolExtra): string | undefined {
   return typeof raw === 'string' && raw.length > 0 ? raw : undefined;
 }
 
+type SchemaPairOutput<Value> = Value extends {
+  readonly parse: infer Schema extends z.ZodTypeAny;
+}
+  ? z.output<Schema>
+  : Record<never, never>;
+
+type InputSectionOutput<
+  Operation extends McpMappedOperation,
+  Source extends 'params' | 'query' | 'body',
+> = Operation['input'] extends infer Input
+  ? Source extends keyof Input
+    ? SchemaPairOutput<Input[Source]>
+    : Record<never, never>
+  : never;
+
+export type McpAdapterInput<Operation extends McpMappedOperation> =
+  InputSectionOutput<Operation, 'params'> &
+    InputSectionOutput<Operation, 'query'> &
+    InputSectionOutput<Operation, 'body'>;
+
+type McpAdapterOutputSchema<Operation extends McpMappedOperation> =
+  Operation['mcp']['outputProjection'] extends {
+    readonly schema: infer Schema extends z.ZodTypeAny;
+  }
+    ? Schema
+    : Operation['responseSchema'] extends z.ZodTypeAny
+      ? Operation['responseSchema']
+      : never;
+
+export type McpAdapterOutput<Operation extends McpMappedOperation> = z.output<
+  McpAdapterOutputSchema<Operation>
+>;
+
+type McpAdapterContext<Operation extends McpMappedOperation> = {
+  readonly deps: McpToolDeps;
+  readonly actorUserId: string | undefined;
+} & (Operation['ownerPolicy'] extends 'required'
+  ? { readonly ownerUserId: string }
+  : { readonly ownerUserId: string | undefined });
+
+type McpCompatibilityTextProjection<Operation extends McpMappedOperation> =
+  Extract<
+    Operation['mcp']['differences'][number],
+    { readonly kind: 'mcp-compatibility-text' }
+  > extends never
+    ? { readonly textProjection?: never }
+    : {
+        /** Registry-declared compatibility text; structured output stays canonical. */
+        readonly textProjection: (
+          output: McpAdapterOutput<Operation>,
+        ) => unknown;
+      };
+
+export type McpAdapter<Operation extends McpMappedOperation> = {
+  readonly execute: (
+    input: McpAdapterInput<Operation>,
+    context: McpAdapterContext<Operation>,
+  ) => Promise<McpAdapterOutput<Operation>>;
+} & McpCompatibilityTextProjection<Operation>;
+
+export type McpAdapterMap = {
+  readonly [Id in McpMappedOperationId]: McpAdapter<
+    Extract<PublicV1OperationById<Id>, McpMappedOperation>
+  >;
+};
+
 /**
- * Enforce that the resolved token carries `required`, else throw an MCP error
- * with 403-semantics. The `mcp` principal's scopes arrive on `extra.authInfo`
- * (the SDK threads the `requireBearerAuth` result through); an ABSENT `authInfo`
- * is fail-closed (the transport should never reach a tool without it, since the
- * bearer middleware 401s first). Unlike the REST surface there is no scopeless
- * allow-all principal here — every `/mcp` caller is a scoped `mcp_` token — so a
- * tool is gated strictly by `scopes.includes(required)`.
+ * Behavior only. Tool names, policies, schemas, descriptions, annotations, and
+ * declared errors all come from `PUBLIC_V1_OPERATIONS` in the common pipeline.
  */
+export const MCP_ADAPTERS: McpAdapterMap = {
+  'tasks.create': {
+    async execute(input, { deps, actorUserId }) {
+      const { repoId, ...body } = input;
+      return deps.createTask(repoId, body, actorUserId);
+    },
+    textProjection(task) {
+      return { id: task.id, status: task.status, task };
+    },
+  },
+  'runtimeModels.query': {
+    async execute(input, { deps, ownerUserId }) {
+      return deps.queryRuntimeModels(ownerUserId, input);
+    },
+  },
+  'tasks.list': {
+    async execute(input, { deps }) {
+      return deps.listTasks(input);
+    },
+  },
+  'tasks.get': {
+    async execute({ id }, { deps }) {
+      return deps.getTask(id);
+    },
+  },
+  'tasks.stop': {
+    async execute({ id }, { deps, actorUserId }) {
+      return deps.stopTask(id, actorUserId);
+    },
+  },
+  'tasks.transcript': {
+    async execute({ id }, { deps }) {
+      return deps.getTranscript(id);
+    },
+  },
+  'repos.list': {
+    async execute(input, { deps }) {
+      return deps.listRepos(input);
+    },
+  },
+  'repos.get': {
+    async execute({ id }, { deps }) {
+      return deps.getRepo(id);
+    },
+  },
+  'schedules.list': {
+    async execute(input, { deps, ownerUserId }) {
+      return deps.listSchedules(ownerUserId, input);
+    },
+  },
+  'schedules.create': {
+    async execute(input, { deps, ownerUserId }) {
+      return deps.createSchedule(ownerUserId, input);
+    },
+  },
+  'schedules.get': {
+    async execute({ id }, { deps, ownerUserId }) {
+      return deps.getSchedule(ownerUserId, id);
+    },
+  },
+  'schedules.update': {
+    async execute({ id, ...body }, { deps, ownerUserId }) {
+      return deps.updateSchedule(ownerUserId, id, body);
+    },
+  },
+  'schedules.pause': {
+    async execute({ id }, { deps, ownerUserId }) {
+      return deps.pauseSchedule(ownerUserId, id);
+    },
+  },
+  'schedules.resume': {
+    async execute({ id }, { deps, ownerUserId }) {
+      return deps.resumeSchedule(ownerUserId, id);
+    },
+  },
+  'schedules.dispatch': {
+    async execute({ id, ...body }, { deps, ownerUserId }) {
+      return deps.dispatchSchedule(ownerUserId, id, body);
+    },
+  },
+  'schedules.delete': {
+    async execute({ id }, { deps, ownerUserId }) {
+      await deps.deleteSchedule(ownerUserId, id);
+      return { id, deleted: true };
+    },
+  },
+  'schedules.runs': {
+    async execute({ id, ...query }, { deps, ownerUserId }) {
+      return deps.listScheduleRuns(ownerUserId, id, query);
+    },
+  },
+} satisfies McpAdapterMap;
+
+interface RuntimeMcpAdapter {
+  readonly execute: (
+    input: Record<string, unknown>,
+    context: {
+      readonly deps: McpToolDeps;
+      readonly actorUserId: string | undefined;
+      readonly ownerUserId: string | undefined;
+    },
+  ) => Promise<unknown>;
+  readonly textProjection?: (output: unknown) => unknown;
+}
+
+/** Fail closed against the registry-derived scope before parsing or acting. */
 export function requireScope(extra: ToolExtra, required: Scope): void {
   const scopes = extra.authInfo?.scopes;
   if (!Array.isArray(scopes) || !scopes.includes(required)) {
@@ -189,38 +351,25 @@ export function requireScope(extra: ToolExtra, required: Scope): void {
   }
 }
 
-/**
- * An MCP error with 403-semantics for a missing scope. Uses the JSON-RPC
- * `InvalidParams` code (the SDK's closest analogue to an authorization refusal at
- * the application layer — the transport-level 401 is owned by `requireBearerAuth`)
- * and a message naming the required scope, mirroring the REST
- * `Insufficient scope: <scope> required`.
- */
 export function scopeError(required: Scope): McpError {
-  return new McpError(
-    ErrorCode.InvalidParams,
-    `Insufficient scope: ${required} required (403)`,
+  return publicSurfaceMcpError(
+    new PublicSurfaceError({
+      code: 'insufficient_scope',
+      message: `Insufficient scope: ${required} required (403)`,
+    }),
   );
 }
 
-/** Schedule definitions always execute with the MCP token owner's account. */
-function requireOwner(
-  extra: ToolExtra,
-  userIdOf: (extra: ToolExtra) => string | undefined,
-): string {
-  const userId = userIdOf(extra);
-  if (userId) return userId;
-  throw new McpError(
-    ErrorCode.InvalidParams,
-    'Schedule tools require an authenticated account owner (403)',
+function ownerError(): McpError {
+  return publicSurfaceMcpError(
+    new PublicSurfaceError({
+      code: 'owner_required',
+      message: 'Schedule tools require an authenticated account owner (403)',
+    }),
   );
 }
 
-/** Wrap a value as the MCP tool text result the clients render. */
-function jsonResult(
-  value: unknown,
-  structuredValue: unknown = value,
-) {
+function jsonResult(value: unknown, structuredValue: unknown = value) {
   return {
     content: [
       {
@@ -232,397 +381,371 @@ function jsonResult(
   };
 }
 
-/** MCP structured content must be a JSON object; normalize Dates and omit undefined. */
 function jsonObject(value: unknown): Record<string, unknown> {
   const normalized: unknown = JSON.parse(JSON.stringify(value));
-  if (normalized === null || Array.isArray(normalized) || typeof normalized !== 'object') {
+  if (
+    normalized === null ||
+    Array.isArray(normalized) ||
+    typeof normalized !== 'object'
+  ) {
     throw new TypeError('MCP structured content must be a JSON object');
   }
   return normalized as Record<string, unknown>;
 }
 
-const scheduleIdSchema = ScheduleResponseSchema.shape.id.describe('The schedule id.');
-const taskIdSchema = TaskResponseSchema.shape.id.describe('The task id.');
-const repoIdSchema = RepoResponseSchema.shape.id.describe('The repo id.');
-const scheduleTaskTemplateInputSchema = CreateTaskRequestSchema.extend({
-  repoId: z.string().uuid().describe('The repo id the scheduled task runs against.'),
-});
+const PUBLIC_ERROR_META_KEY = 'com.cloud-agent-platform/public-error';
 
-const createScheduleInputSchema = {
-  name: z.string().trim().min(1).max(120).nullable().optional(),
-  recurrence: ScheduleRecurrenceSchema.optional(),
-  cronExpression: ScheduleCronExpressionSchema.optional(),
-  timezone: ScheduleTimezoneSchema.optional(),
-  taskTemplate: scheduleTaskTemplateInputSchema,
-  enabled: z.boolean().optional(),
-  overlapPolicy: ScheduleOverlapPolicySchema.optional(),
-  misfirePolicy: ScheduleMisfirePolicySchema.optional(),
-} satisfies z.ZodRawShape;
+/** Preserve the already-public model-domain error without violating outputSchema. */
+function runtimeModelErrorResult(error: RuntimeModelPreflightError) {
+  const safeError = jsonObject(error.domainError);
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify(safeError, null, 2),
+      },
+    ],
+    // `structuredContent` is reserved for the advertised success outputSchema.
+    // MCP result metadata remains machine-readable without being validated as a
+    // successful catalog/task/schedule response by clients after `tools/list`.
+    _meta: {
+      [PUBLIC_ERROR_META_KEY]: safeError,
+    },
+    isError: true as const,
+  };
+}
 
-const updateScheduleInputSchema = {
-  id: scheduleIdSchema,
-  name: z.string().trim().min(1).max(120).nullable().optional(),
-  recurrence: ScheduleRecurrenceSchema.optional(),
-  cronExpression: ScheduleCronExpressionSchema.optional(),
-  timezone: ScheduleTimezoneSchema.optional(),
-  taskTemplate: scheduleTaskTemplateInputSchema.optional(),
-  enabled: z.boolean().optional(),
-  overlapPolicy: ScheduleOverlapPolicySchema.optional(),
-  misfirePolicy: ScheduleMisfirePolicySchema.optional(),
-} satisfies z.ZodRawShape;
+function mappedOperations(): readonly McpMappedOperation[] {
+  return PUBLIC_V1_OPERATIONS.filter(
+    (operation): operation is McpMappedOperation => 'tool' in operation.mcp,
+  );
+}
 
-const transcriptOutputSchema = z.object({
-  status: z.enum(['available', 'empty', 'expired']),
-  turns: z.array(SessionTurnSchema).optional(),
-  meta: SessionHistoryMetaSchema.optional(),
-  isInterrupted: z.boolean().optional(),
-  reason: SessionHistoryEmptyReasonSchema.optional(),
-});
-const deleteScheduleOutputSchema = z.object({
-  id: ScheduleResponseSchema.shape.id,
-  deleted: z.literal(true),
-});
+function inputPairForSource(
+  operation: McpMappedOperation,
+  source: 'params' | 'query' | 'body',
+) {
+  switch (source) {
+    case 'params':
+      return 'params' in operation.input
+        ? operation.input.params
+        : undefined;
+    case 'query':
+      return 'query' in operation.input ? operation.input.query : undefined;
+    case 'body':
+      return 'body' in operation.input ? operation.input.body : undefined;
+  }
+}
+
+function projectedInputSchema(
+  operation: McpMappedOperation,
+): z.AnyZodObject {
+  const wireSchemas = operation.mcp.inputProjection.sources.map((source) => {
+    const pair = inputPairForSource(operation, source);
+    if (!pair) {
+      throw new Error(
+        `Missing ${source} schema for MCP operation ${operation.id}`,
+      );
+    }
+    return pair.wire;
+  });
+
+  if (wireSchemas.length === 0) return z.object({}).strict();
+  if (wireSchemas.length === 1) {
+    return composePublicInputWireSchema(wireSchemas[0]!);
+  }
+  if (wireSchemas.length === 2) {
+    return composePublicInputWireSchema(wireSchemas[0]!, wireSchemas[1]!);
+  }
+  return composePublicInputWireSchema(
+    wireSchemas[0]!,
+    wireSchemas[1]!,
+    wireSchemas[2]!,
+  );
+}
+
+function projectedOutputSchema(operation: McpMappedOperation): z.ZodTypeAny {
+  const projection = operation.mcp.outputProjection;
+  if (projection !== 'canonical') return projection.schema;
+  if (!operation.responseSchema) {
+    throw new Error(`Missing MCP output projection for ${operation.id}`);
+  }
+  return operation.responseSchema;
+}
 
 /**
- * Register the tools on `server`, delegating to `deps` with per-tool scope
- * gates. Called once for each request-scoped `McpServer`; the SDK server itself
- * owns exactly one transport, so stateless concurrent requests must not share it.
- *
- * `userIdOf(extra)` resolves the acting operator's ACCOUNT primary key (`users.id`)
- * from the resolved token (for audit attribution on create/stop, and so the
- * owner-scoped Codex credential resolves — fix-local-account-task-attribution); it
- * is best-effort — a token whose `AuthInfo` carries no owner account id simply
- * attributes the action to no id, exactly as a scopeless legacy principal does on
- * the REST path. The account id (not the GitHub numeric id) is threaded so a LOCAL
- * account's MCP task is owner-attributed too.
+ * The MCP SDK high-level registrar normalizes only root object schemas before
+ * exposing `tools/list`. A canonical object union therefore needs the explicit
+ * registry difference below. Its wider object is derived solely from the union
+ * options (no copied field names), while callback output is still parsed by the
+ * untouched canonical schema before it reaches `structuredContent`.
  */
+function sdkOutputObjectSchema(
+  operation: McpMappedOperation,
+  schema: z.ZodTypeAny,
+): z.AnyZodObject {
+  const relaxationCount = operation.mcp.differences.filter(
+    (difference) => difference.kind === 'mcp-output-schema-relaxation',
+  ).length;
+  if ('shape' in schema && schema.shape) {
+    if (relaxationCount !== 0) {
+      throw new Error(
+        `Unnecessary MCP output schema relaxation for ${operation.id}`,
+      );
+    }
+    return schema as z.AnyZodObject;
+  }
+
+  if (relaxationCount !== 1) {
+    throw new Error(
+      `MCP output schema for ${operation.id} is not a root object and has no exact relaxation decision`,
+    );
+  }
+
+  const options = (
+    schema as unknown as { options?: readonly z.AnyZodObject[] }
+  ).options;
+  if (!Array.isArray(options) || options.length === 0) {
+    throw new Error(
+      `MCP output schema relaxation for ${operation.id} requires an object union`,
+    );
+  }
+
+  const fieldNames = new Set(
+    options.flatMap((option) => Object.keys(option.shape)),
+  );
+  const shape: z.ZodRawShape = {};
+  for (const fieldName of fieldNames) {
+    const variants = options.flatMap((option) => {
+      const field = option.shape[fieldName] as z.ZodTypeAny | undefined;
+      return field ? [field] : [];
+    });
+    const uniqueVariants = [...new Set(variants)];
+    let fieldSchema: z.ZodTypeAny;
+    if (uniqueVariants.length === 1) {
+      fieldSchema = uniqueVariants[0]!;
+    } else {
+      fieldSchema = z.union([
+        uniqueVariants[0]!,
+        uniqueVariants[1]!,
+        ...uniqueVariants.slice(2),
+      ]);
+    }
+    shape[fieldName] =
+      variants.length === options.length ? fieldSchema : fieldSchema.optional();
+  }
+  return z.object(shape);
+}
+
+function pickSchemaFields(
+  value: Record<string, unknown>,
+  schema: z.AnyZodObject,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.keys(schema.shape)
+      .filter((field) => Object.prototype.hasOwnProperty.call(value, field))
+      .map((field) => [field, value[field]]),
+  );
+}
+
+function parseProjectedInput(
+  operation: McpMappedOperation,
+  inputSchema: z.AnyZodObject,
+  rawInput: unknown,
+): Record<string, unknown> {
+  const wireInput = inputSchema.parse(rawInput) as Record<string, unknown>;
+  const canonicalInput: Record<string, unknown> = {};
+  for (const source of operation.mcp.inputProjection.sources) {
+    const pair = inputPairForSource(operation, source);
+    if (!pair) {
+      throw new Error(
+        `Missing ${source} parser for MCP operation ${operation.id}`,
+      );
+    }
+    Object.assign(
+      canonicalInput,
+      pair.parse.parse(pickSchemaFields(wireInput, pair.wire)),
+    );
+  }
+  return canonicalInput;
+}
+
+function assertDeclaredError(
+  operation: McpMappedOperation,
+  code: PublicErrorCode,
+): void {
+  if (!(operation.errors as readonly PublicErrorCode[]).includes(code)) {
+    throw new McpError(
+      ErrorCode.InternalError,
+      `Undeclared public error for ${operation.id}`,
+    );
+  }
+}
+
+function publicErrorResult(error: McpError, legacyText = error.message) {
+  const parsed = PublicErrorEnvelopeSchema.safeParse(error.data);
+  if (!parsed.success) throw error;
+  const safeError = jsonObject(parsed.data);
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        // Keep the pre-existing human text while adding machine-readable
+        // metadata. Scope/owner were McpErrors (with the SDK prefix); ordinary
+        // domain and validation failures previously exposed their safe message.
+        text: legacyText,
+      },
+    ],
+    _meta: {
+      [PUBLIC_ERROR_META_KEY]: safeError,
+    },
+    isError: true as const,
+  };
+}
+
+function projectFailureToMcpResult(
+  operation: McpMappedOperation,
+  failure: unknown,
+) {
+  if (failure instanceof McpError) {
+    const parsed = PublicErrorEnvelopeSchema.safeParse(failure.data);
+    if (!parsed.success) throw failure;
+    assertDeclaredError(operation, parsed.data.code);
+    return publicErrorResult(
+      failure,
+      parsed.data.code === 'validation_failed'
+        ? parsed.data.message
+        : failure.message,
+    );
+  }
+  const normalized = normalizePublicSurfaceFailure(failure);
+  assertDeclaredError(operation, normalized.code);
+  return publicErrorResult(
+    publicSurfaceMcpError(normalized),
+    normalized.message,
+  );
+}
+
+function publicSurfaceMcpError(error: PublicSurfaceError): McpError {
+  const projected = projectPublicSurfaceErrorToMcp(error);
+  return new McpError(
+    projected.jsonRpcCode,
+    projected.message,
+    projected.data,
+  );
+}
+
+function inputValidationError(failure: unknown): McpError {
+  const message =
+    failure instanceof Error && failure.message.trim().length > 0
+      ? failure.message
+      : 'Invalid input';
+  try {
+    return publicSurfaceMcpError(
+      new PublicSurfaceError({ code: 'validation_failed', message }),
+    );
+  } catch {
+    return publicSurfaceMcpError(
+      new PublicSurfaceError({ code: 'validation_failed' }),
+    );
+  }
+}
+
+function registerOne(
+  server: ToolRegistrar,
+  operation: McpMappedOperation,
+  adapter: RuntimeMcpAdapter,
+  deps: McpToolDeps,
+  userIdOf: (extra: ToolExtra) => string | undefined,
+): void {
+  const inputSchema = projectedInputSchema(operation);
+  const canonicalOutputSchema = projectedOutputSchema(operation);
+  const outputSchema = sdkOutputObjectSchema(
+    operation,
+    canonicalOutputSchema,
+  );
+  const description =
+    'description' in operation.mcp &&
+    typeof operation.mcp.description === 'string'
+      ? operation.mcp.description
+      : operation.description;
+  server.registerTool(
+    operation.mcp.tool,
+    {
+      title: operation.summary,
+      description: `${description} Requires the ${operation.scope} scope.`,
+      inputSchema,
+      outputSchema,
+      annotations: {
+        readOnlyHint: !operation.destructive,
+        destructiveHint: operation.destructive,
+        openWorldHint: false,
+      },
+    },
+    async (rawInput: unknown, extra: ToolExtra) => {
+      try {
+        try {
+          requireScope(extra, operation.scope);
+        } catch (error) {
+          assertDeclaredError(operation, 'insufficient_scope');
+          throw error;
+        }
+        const actorUserId = userIdOf(extra);
+        if (operation.ownerPolicy === 'required' && !actorUserId) {
+          assertDeclaredError(operation, 'owner_required');
+          throw ownerError();
+        }
+        let input: Record<string, unknown>;
+        try {
+          input = parseProjectedInput(operation, inputSchema, rawInput);
+        } catch (error) {
+          assertDeclaredError(operation, 'validation_failed');
+          throw inputValidationError(error);
+        }
+        const output = await adapter.execute(input, {
+          deps,
+          actorUserId,
+          ownerUserId: actorUserId,
+        });
+        let canonicalOutput: unknown;
+        try {
+          canonicalOutput = canonicalOutputSchema.parse(output);
+        } catch {
+          throw new McpError(
+            ErrorCode.InternalError,
+            `MCP result failed its contract for ${operation.id}`,
+          );
+        }
+        const textValue = adapter.textProjection
+          ? adapter.textProjection(canonicalOutput)
+          : canonicalOutput;
+        return jsonResult(textValue, canonicalOutput);
+      } catch (error) {
+        if (error instanceof RuntimeModelPreflightError) {
+          assertDeclaredError(operation, error.domainError.code);
+          return runtimeModelErrorResult(error);
+        }
+        return projectFailureToMcpResult(operation, error);
+      }
+    },
+  );
+}
+
+/** Register every mapped capability from the exact registry and adapter map. */
 export function registerMcpTools(
   server: ToolRegistrar,
   deps: McpToolDeps,
   userIdOf: (extra: ToolExtra) => string | undefined = userIdFromExtra,
 ): void {
-  // --- create_task (tasks:write) — IMMEDIATE handle, never blocks (D4) ---------
-  server.registerTool(
-    'create_task',
-    {
-      title: 'Create a task',
-      description:
-        'Create a sandbox task on a repo. Returns the task handle (id + status) ' +
-        'immediately; provisioning proceeds asynchronously through the same ' +
-        'admission the console uses. Poll get_task to a terminal status, then ' +
-        'read get_transcript. Each MCP call is a distinct create: the REST-only ' +
-        'Idempotency-Key header is not mapped to a tool argument. Requires the ' +
-        'tasks:write scope.',
-      inputSchema: V1CreateTaskRequestSchema.shape,
-      outputSchema: TaskResponseSchema,
-    },
-    async (args: unknown, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:write');
-      const { repoId, ...body } = V1CreateTaskRequestSchema.parse(args);
-      // Delegate to the SAME admission path the console uses. `create` persists
-      // the row then OFFERS the task to the guardrails semaphore and returns the
-      // handle — it does NOT await the (minutes-long) run, so the tool call never
-      // blocks on completion (spec: "create_task returns a handle without
-      // blocking").
-      const task = await deps.createTask(
-        repoId,
-        body,
-        userIdOf(extra),
-      );
-      // Keep the historical text handle for clients that render `content`, while
-      // the machine-readable result matches POST /v1/tasks exactly.
-      return jsonResult({ id: task.id, status: task.status, task }, task);
-    },
-  );
-
-  // --- get_task (tasks:read) ---------------------------------------------------
-  server.registerTool(
-    'get_task',
-    {
-      title: 'Get a task',
-      description:
-        'Fetch one task by id (the polling floor — every status transition is ' +
-        'durably persisted before the response). Requires the tasks:read scope.',
-      inputSchema: {
-        id: taskIdSchema,
-      },
-      outputSchema: TaskResponseSchema,
-    },
-    async ({ id }: { id: string }, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:read');
-      return jsonResult(await deps.getTask(id));
-    },
-  );
-
-  // --- list_tasks (tasks:read) -------------------------------------------------
-  server.registerTool(
-    'list_tasks',
-    {
-      title: 'List tasks',
-      description:
-        'List tasks in the shared pool using the same keyset pagination as /v1. ' +
-        'Requires the tasks:read scope.',
-      inputSchema: V1ListQuerySchema.shape,
-      outputSchema: V1ListTasksResponseSchema,
-    },
-    async (args: unknown, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:read');
-      const query = V1ListQuerySchema.parse(args);
-      return jsonResult(await deps.listTasks(query));
-    },
-  );
-
-  // --- stop_task (tasks:write) -------------------------------------------------
-  server.registerTool(
-    'stop_task',
-    {
-      title: 'Stop a task',
-      description:
-        'Stop a running task (terminal cancelled + teardown). Idempotent for an ' +
-        'already-terminal task. Requires the tasks:write scope.',
-      inputSchema: {
-        id: taskIdSchema.describe('The task id to stop.'),
-      },
-      outputSchema: TaskResponseSchema,
-    },
-    async ({ id }: { id: string }, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:write');
-      return jsonResult(await deps.stopTask(id, userIdOf(extra)));
-    },
-  );
-
-  // --- get_transcript (tasks:read) — durable session-history, NEVER the raw PTY -
-  server.registerTool(
-    'get_transcript',
-    {
-      title: 'Get a task transcript',
-      description:
-        'Read the durable session transcript for a finished task (durable-first, ' +
-        'container fallback). Never exposes the live PTY/WebSocket stream. ' +
-        'Requires the tasks:read scope.',
-      inputSchema: {
-        id: taskIdSchema.describe('The task id whose transcript to read.'),
-      },
-      outputSchema: transcriptOutputSchema,
-    },
-    async ({ id }: { id: string }, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:read');
-      const transcript = await deps.getTranscript(id);
-      return jsonResult(transcript);
-    },
-  );
-
-  // --- list_repos (repos:read) -------------------------------------------------
-  server.registerTool(
-    'list_repos',
-    {
-      title: 'List repos',
-      description:
-        'List the configured repos a task can run against using the same keyset ' +
-        'pagination as /v1. Requires the repos:read scope.',
-      inputSchema: V1ListQuerySchema.shape,
-      outputSchema: V1ListReposResponseSchema,
-    },
-    async (args: unknown, extra: ToolExtra) => {
-      requireScope(extra, 'repos:read');
-      const query = V1ListQuerySchema.parse(args);
-      return jsonResult(await deps.listRepos(query));
-    },
-  );
-
-  // --- get_repo (repos:read) ---------------------------------------------------
-  server.registerTool(
-    'get_repo',
-    {
-      title: 'Get a repo',
-      description: 'Fetch one configured repo by id. Requires the repos:read scope.',
-      inputSchema: { id: repoIdSchema },
-      outputSchema: RepoResponseSchema,
-    },
-    async ({ id }: { id: string }, extra: ToolExtra) => {
-      requireScope(extra, 'repos:read');
-      return jsonResult(await deps.getRepo(id));
-    },
-  );
-
-  // --- owner-scoped scheduled tasks -------------------------------------------
-  server.registerTool(
-    'create_schedule',
-    {
-      title: 'Create a recurring task schedule',
-      description:
-        'Create an owner-scoped recurring task schedule. Prefer daily, weekdays, ' +
-        'weekly, monthly, hourly, or minuteInterval recurrence descriptors; ' +
-        'minuteInterval accepts 5, 10, 15, or 30 minutes. A five-field cron ' +
-        'expression remains available for compatibility. Requires the tasks:write scope.',
-      inputSchema: createScheduleInputSchema,
-      outputSchema: ScheduleResponseSchema,
-    },
-    async (args: unknown, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:write');
-      const ownerUserId = requireOwner(extra, userIdOf);
-      const body = CreateScheduleRequestSchema.parse(args);
-      return jsonResult(await deps.createSchedule(ownerUserId, body));
-    },
-  );
-
-  server.registerTool(
-    'list_schedules',
-    {
-      title: 'List recurring task schedules',
-      description:
-        'List recurring task schedules owned by the MCP token account using the ' +
-        'same keyset pagination as /v1. Requires the tasks:read scope.',
-      inputSchema: V1ScheduleListQuerySchema.shape,
-      outputSchema: V1ListSchedulesResponseSchema,
-    },
-    async (args: unknown, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:read');
-      const ownerUserId = requireOwner(extra, userIdOf);
-      const query = V1ScheduleListQuerySchema.parse(args);
-      return jsonResult(await deps.listSchedules(ownerUserId, query));
-    },
-  );
-
-  server.registerTool(
-    'get_schedule',
-    {
-      title: 'Get a recurring task schedule',
-      description:
-        'Fetch one recurring task schedule owned by the MCP token account. ' +
-        'Requires the tasks:read scope.',
-      inputSchema: { id: scheduleIdSchema },
-      outputSchema: ScheduleResponseSchema,
-    },
-    async ({ id }: { id: string }, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:read');
-      const ownerUserId = requireOwner(extra, userIdOf);
-      return jsonResult(await deps.getSchedule(ownerUserId, id));
-    },
-  );
-
-  server.registerTool(
-    'update_schedule',
-    {
-      title: 'Update a recurring task schedule',
-      description:
-        'Update future occurrences using daily, weekdays, weekly, monthly, hourly, ' +
-        'or minuteInterval recurrence descriptors; minuteInterval accepts 5, 10, ' +
-        '15, or 30 minutes. Five-field cron remains available for compatibility. ' +
-        'Requires the tasks:write scope.',
-      inputSchema: updateScheduleInputSchema,
-      outputSchema: ScheduleResponseSchema,
-    },
-    async (
-      { id, ...input }: { id: string } & Record<string, unknown>,
-      extra: ToolExtra,
-    ) => {
-      requireScope(extra, 'tasks:write');
-      const ownerUserId = requireOwner(extra, userIdOf);
-      const body = UpdateScheduleRequestSchema.parse(input);
-      return jsonResult(await deps.updateSchedule(ownerUserId, id, body));
-    },
-  );
-
-  server.registerTool(
-    'pause_schedule',
-    {
-      title: 'Pause a recurring task schedule',
-      description:
-        'Disable future fires for an owner-scoped recurring task schedule. ' +
-        'Requires the tasks:write scope.',
-      inputSchema: { id: scheduleIdSchema },
-      outputSchema: ScheduleResponseSchema,
-    },
-    async ({ id }: { id: string }, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:write');
-      const ownerUserId = requireOwner(extra, userIdOf);
-      return jsonResult(await deps.pauseSchedule(ownerUserId, id));
-    },
-  );
-
-  server.registerTool(
-    'resume_schedule',
-    {
-      title: 'Resume a recurring task schedule',
-      description:
-        'Enable an owner-scoped recurring task schedule and compute its next ' +
-        'future fire time. Requires the tasks:write scope.',
-      inputSchema: { id: scheduleIdSchema },
-      outputSchema: ScheduleResponseSchema,
-    },
-    async ({ id }: { id: string }, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:write');
-      const ownerUserId = requireOwner(extra, userIdOf);
-      return jsonResult(await deps.resumeSchedule(ownerUserId, id));
-    },
-  );
-
-  server.registerTool(
-    'dispatch_schedule',
-    {
-      title: 'Run a recurring task schedule now',
-      description:
-        'Consume the current period of an owner-scoped recurring task schedule ' +
-        'immediately and advance its next period. expectedPeriodKey can bind a ' +
-        'retry to the period observed by the caller. Requires the tasks:write scope.',
-      inputSchema: {
-        id: scheduleIdSchema,
-        ...DispatchScheduleRequestSchema.removeDefault().shape,
-      },
-      outputSchema: ScheduleResponseSchema,
-    },
-    async (
-      { id, ...rawBody }: { id: string; expectedPeriodKey?: string },
-      extra: ToolExtra,
-    ) => {
-      requireScope(extra, 'tasks:write');
-      const ownerUserId = requireOwner(extra, userIdOf);
-      const body = DispatchScheduleRequestSchema.parse(rawBody);
-      return jsonResult(await deps.dispatchSchedule(ownerUserId, id, body));
-    },
-  );
-
-  server.registerTool(
-    'delete_schedule',
-    {
-      title: 'Delete a recurring task schedule',
-      description:
-        'Delete an owner-scoped recurring task schedule. Existing tasks and run ' +
-        'history follow the scheduled-task service semantics. Requires the ' +
-        'tasks:write scope.',
-      inputSchema: { id: scheduleIdSchema },
-      outputSchema: deleteScheduleOutputSchema,
-    },
-    async ({ id }: { id: string }, extra: ToolExtra) => {
-      requireScope(extra, 'tasks:write');
-      const ownerUserId = requireOwner(extra, userIdOf);
-      await deps.deleteSchedule(ownerUserId, id);
-      return jsonResult({ id, deleted: true });
-    },
-  );
-
-  server.registerTool(
-    'list_schedule_runs',
-    {
-      title: 'List runs for a recurring task schedule',
-      description:
-        'List recent occurrence records for an owner-scoped recurring task ' +
-        'schedule. Requires the tasks:read scope.',
-      inputSchema: {
-        id: scheduleIdSchema,
-        ...V1ScheduleListQuerySchema.shape,
-      },
-      outputSchema: V1ListScheduleRunsResponseSchema,
-    },
-    async (
-      { id, ...rawQuery }: { id: string } & Record<string, unknown>,
-      extra: ToolExtra,
-    ) => {
-      requireScope(extra, 'tasks:read');
-      const ownerUserId = requireOwner(extra, userIdOf);
-      const query = V1ScheduleListQuerySchema.parse(rawQuery);
-      return jsonResult(await deps.listScheduleRuns(ownerUserId, id, query));
-    },
-  );
+  for (const operation of mappedOperations()) {
+    // The exact map proves coverage; this is the single correlation cast needed
+    // after iterating a runtime discriminated union.
+    registerOne(
+      server,
+      operation,
+      MCP_ADAPTERS[operation.id] as RuntimeMcpAdapter,
+      deps,
+      userIdOf,
+    );
+  }
 }

@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "change": "add-task-model-selection",
+  "intent": "public-feature",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "changed",
+      "operationIds": [
+        "runtimeModels.query",
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "schedules.list",
+        "schedules.create",
+        "schedules.get",
+        "schedules.update",
+        "schedules.pause",
+        "schedules.resume",
+        "schedules.dispatch",
+        "schedules.runs"
+      ],
+      "reason": "Adds the contextual model catalog and additive requested-model task and schedule wire behavior."
+    },
+    "mcp": {
+      "status": "changed",
+      "operationIds": [
+        "runtimeModels.query",
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "schedules.list",
+        "schedules.create",
+        "schedules.get",
+        "schedules.update",
+        "schedules.pause",
+        "schedules.resume",
+        "schedules.dispatch",
+        "schedules.runs"
+      ],
+      "toolIds": [
+        "list_runtime_models",
+        "create_task",
+        "list_tasks",
+        "get_task",
+        "stop_task",
+        "list_schedules",
+        "create_schedule",
+        "get_schedule",
+        "update_schedule",
+        "pause_schedule",
+        "resume_schedule",
+        "dispatch_schedule",
+        "list_schedule_runs"
+      ],
+      "reason": "Maps model discovery and model-aware task and schedule behavior to the matching MCP tools."
+    },
+    "openapi": {
+      "status": "derived",
+      "operationIds": [
+        "runtimeModels.query",
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "schedules.list",
+        "schedules.create",
+        "schedules.get",
+        "schedules.update",
+        "schedules.pause",
+        "schedules.resume",
+        "schedules.dispatch",
+        "schedules.runs"
+      ],
+      "reason": "Derives model-aware operations, schemas, and errors from the public contract manifest."
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "operationIds": [
+        "runtimeModels.query",
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "schedules.list",
+        "schedules.create",
+        "schedules.get",
+        "schedules.update",
+        "schedules.pause",
+        "schedules.resume",
+        "schedules.dispatch",
+        "schedules.runs"
+      ],
+      "reason": "Derives model-aware request and response rendering from the public contract manifest."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "runtime-model-catalog-launch-scheduler-cutover",
+      "reason": "Adds persistence, catalog, launch, scheduler, capability-gate, and deployment-cutover internals."
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Idempotency-Key remains an HTTP-only retry contract and is not an MCP argument."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "MCP structured output matches the canonical Task while compatibility text retains its historical task handle."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "The MCP description explains asynchronous polling without claiming support for the HTTP-only idempotency header."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST keeps its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    },
+    {
+      "operation": "runtimeModels.query",
+      "kind": "rate-limit-policy",
+      "detail": "REST applies a dedicated per-principal catalog throttle while MCP remains subject to the MCP transport limiter; both retain shared catalog-service capacity controls."
+    }
+  ],
+  "verification": {
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
+  }
+}

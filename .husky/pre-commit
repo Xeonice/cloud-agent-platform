@@ -1,1 +1,1 @@
-pnpm exec lint-staged
+pnpm exec lint-staged && node scripts/public-surface-hook.mjs staged

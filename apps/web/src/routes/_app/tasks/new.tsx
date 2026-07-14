@@ -37,6 +37,7 @@ import { toast } from "sonner";
 
 import type { Repo } from "@cap/contracts";
 import {
+  authSessionQuery,
   metricsQuery,
   reposQuery,
   runtimesQuery,
@@ -99,6 +100,7 @@ import {
   listSupportedScheduleTimezones,
   resolveHydratedScheduleTimezone,
 } from "@/lib/schedule-timezone";
+import { RuntimeModelSelector } from "@/components/runtime-model-selector";
 
 export const Route = createFileRoute("/_app/tasks/new")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -234,9 +236,12 @@ function NewTaskPage() {
   // Gated on the booleans-only `/runtimes` readiness read — an unconfigured runtime
   // is shown disabled with a configure hint, never selectable-and-failing-at-launch.
   const [runtime, setRuntime] = React.useState<RuntimeId>(DEFAULT_RUNTIME);
+  const [model, setModel] = React.useState<string | null>(null);
+  const [modelSelectionValid, setModelSelectionValid] = React.useState(true);
   const runtimesReadiness = useQuery(runtimesQuery());
   const sandboxEnvironments = useQuery(sandboxEnvironmentsQuery());
   const settings = useQuery(settingsQuery());
+  const authSession = useQuery(authSessionQuery());
   const readyById = React.useMemo(() => {
     const map = new Map<RuntimeId, boolean>();
     for (const r of runtimesReadiness.data ?? []) map.set(r.id, r.ready);
@@ -378,6 +383,8 @@ function NewTaskPage() {
     setLoadedScheduleId(editingSchedule.id);
     setRepoId(form.repoId);
     setRuntime(form.runtime);
+    setModel(form.model);
+    setModelSelectionValid(form.model === null);
     setSandboxEnvironmentId(form.sandboxEnvironmentId);
     setBranch(form.branch);
     setStrategy(form.strategy);
@@ -423,6 +430,7 @@ function NewTaskPage() {
     idleTimeoutMs,
     deadlineMs,
     sandboxEnvironmentName: previewEnvironment?.name ?? null,
+    model,
   });
 
   // Free remote slots, when the (mock-today) metrics resolve; else keep the
@@ -462,10 +470,13 @@ function NewTaskPage() {
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!repoId || prompt.trim().length === 0) return;
+    if (!isRuntimeReady(runtime)) return;
     if (accountDefaultUnavailable) return;
+    if (!modelSelectionValid) return;
     const taskForm: TaskTemplateFormState = {
       repoId,
       runtime,
+      model,
       sandboxEnvironmentId,
       deliver: "none",
       branch,
@@ -535,7 +546,9 @@ function NewTaskPage() {
     createSchedule.isPending ||
     updateSchedule.isPending ||
     prompt.trim().length === 0 ||
+    !isRuntimeReady(runtime) ||
     accountDefaultUnavailable ||
+    !modelSelectionValid ||
     (mode === "repeated" && recurrenceKind === "custom" && !editingSchedule);
   const submitting =
     mutation.isPending || createSchedule.isPending || updateSchedule.isPending;
@@ -719,6 +732,22 @@ function NewTaskPage() {
                   : "未设置账号默认时，会沿用服务端部署默认。"}
             </small>
           </div>
+
+          <RuntimeModelSelector
+            id="model"
+            ownerUserId={authSession.data?.id ?? null}
+            runtime={runtime}
+            sandboxEnvironmentId={sandboxEnvironmentId}
+            value={model}
+            onChange={setModel}
+            onValidityChange={setModelSelectionValid}
+            enabled={isRuntimeReady(runtime) && !accountDefaultUnavailable}
+            disabledReason={
+              !isRuntimeReady(runtime)
+                ? "请先连接当前运行时的凭据。"
+                : "请先选择与当前运行时兼容的沙箱环境。"
+            }
+          />
 
           <div className="grid gap-2">
             <label htmlFor="repo" className="text-[13px] font-semibold text-ink">

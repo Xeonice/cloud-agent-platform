@@ -1,6 +1,8 @@
 import type {
   SandboxCommandExecutor,
   SandboxPreflightResult,
+  SandboxTranscriptSourceBase,
+  TaskModelIntent,
 } from '@cap/sandbox-core';
 import type { BoxLiteSandbox } from './boxlite-client.js';
 
@@ -22,6 +24,8 @@ export type BoxLiteRuntimePreflight = (
 
 export interface BoxLiteRuntimeSetupContext {
   readonly taskId: string;
+  readonly modelIntent: TaskModelIntent;
+  readonly executionMode: 'interactive-pty' | 'headless-exec';
   readonly sandbox: BoxLiteSandbox;
   readonly executor: SandboxCommandExecutor;
   readonly workspacePath: string;
@@ -32,8 +36,28 @@ export type BoxLiteRuntimeSetup = (
   context: BoxLiteRuntimeSetupContext,
 ) => Promise<void> | void;
 
+export interface BoxLiteTranscriptReadContext<TRuntimeId = string> {
+  readonly taskId: string;
+  readonly runtimeId?: TRuntimeId | null;
+  readonly sandbox: BoxLiteSandbox;
+  readonly executor: SandboxCommandExecutor;
+  readonly workspacePath: string;
+}
+
+export type BoxLiteTranscriptRead<
+  TRuntimeId = string,
+  TTranscriptSource extends SandboxTranscriptSourceBase = SandboxTranscriptSourceBase,
+> = (
+  context: BoxLiteTranscriptReadContext<TRuntimeId>,
+) => Promise<TTranscriptSource | null> | TTranscriptSource | null;
+
+export type BoxLitePreStopCleanupContext = Omit<
+  BoxLiteRuntimeSetupContext,
+  'modelIntent' | 'executionMode'
+>;
+
 export type BoxLitePreStopCleanup = (
-  context: BoxLiteRuntimeSetupContext,
+  context: BoxLitePreStopCleanupContext,
 ) => Promise<void> | void;
 
 export interface BoxLiteRuntimePreflightOptions {

@@ -83,9 +83,17 @@ export class HttpCloudSandboxProvider<
   }
 
   async provision(ctx: SandboxProvisionContext<TCloneSpec>): Promise<SandboxConnection> {
-    const body: Record<string, unknown> = { taskId: ctx.taskId };
+    const body: Record<string, unknown> = {
+      taskId: ctx.taskId,
+      modelIntent: ctx.modelIntent,
+      runtimeId: ctx.runtimeId,
+      executionMode: ctx.executionMode,
+    };
     if ('cloneSpec' in ctx) {
       body.cloneSpec = ctx.cloneSpec;
+    }
+    if ('environment' in ctx) {
+      body.environment = ctx.environment;
     }
     const raw = await this.requestJson('/v1/sandboxes', {
       method: 'POST',

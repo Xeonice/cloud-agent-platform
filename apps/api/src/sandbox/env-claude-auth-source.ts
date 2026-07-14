@@ -32,7 +32,7 @@ export class EnvClaudeAuthSource implements ClaudeAuthSource {
   /** Env var carrying the operator's Claude OAuth subscription token. */
   static readonly ENV = 'CLAUDE_CODE_OAUTH_TOKEN';
 
-  async getClaudeAuth(): Promise<ClaudeAuthMaterial | null> {
+  async getClaudeAuth(_ownerUserId: string): Promise<ClaudeAuthMaterial | null> {
     const token = process.env[EnvClaudeAuthSource.ENV]?.trim();
     if (!token) {
       this.logger.warn(
@@ -43,7 +43,7 @@ export class EnvClaudeAuthSource implements ClaudeAuthSource {
     return { oauthToken: token };
   }
 
-  async configured(): Promise<boolean> {
+  async configured(_ownerUserId: string): Promise<boolean> {
     // Boolean only — the readiness probe must never observe the token value.
     return Boolean(process.env[EnvClaudeAuthSource.ENV]?.trim());
   }

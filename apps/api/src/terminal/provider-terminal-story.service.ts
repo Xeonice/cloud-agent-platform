@@ -111,6 +111,9 @@ export class ProviderTerminalStoryService {
       const connection = await selected.provider.provision({
         taskId: sessionId,
         cloneSpec: null,
+        modelIntent: { kind: 'runtime-default' },
+        runtimeId: 'codex',
+        executionMode: 'interactive-pty',
       });
       selectedRun =
         (await selected.provider.getSelectedSandboxRun?.(sessionId)) ?? null;

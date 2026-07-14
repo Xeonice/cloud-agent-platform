@@ -175,6 +175,7 @@ const MOCK_TASKS: ListTasksResponse = [
     createdAt: minsAgo(94),
     branch: "fix/dialback-reconnect",
     strategy: "single-pass",
+    model: "fixture/alias.v1",
     sandboxProvider: { id: "boxlite", label: "BoxLite Sandbox" },
   },
   {
@@ -195,6 +196,7 @@ const MOCK_TASKS: ListTasksResponse = [
     repoId: REPO_IDS.infra,
     prompt: "收紧 AIO 镜像体积并补充 e2e 守卫",
     status: "failed",
+    model: "fixture/claude-alias.v1",
     failure: {
       code: "runtime_auth_expired",
       runtime: "claude-code",
@@ -532,6 +534,7 @@ export async function mockTaskResource(id: string): Promise<TaskResourceResponse
 function availableSessionHistory(
   id: string,
   variant: "completed" | "failed",
+  actualModel = "fixture/concrete.v2",
 ): SessionHistory {
   const turns: SessionTurn[] = [
     {
@@ -590,7 +593,7 @@ function availableSessionHistory(
     turns,
     meta: {
       taskId: id,
-      model: "gpt-5-codex",
+      model: actualModel,
       cwd: "/home/gem/workspace",
       startedAt: "2026-06-12T09:30:00Z",
       totalTokens: 1922,
@@ -611,8 +614,16 @@ function availableSessionHistory(
  */
 export async function mockSessionHistory(id: string): Promise<SessionHistory> {
   await delay();
-  if (id === TASK_IDS.c) return availableSessionHistory(id, "completed");
-  if (id === TASK_IDS.e) return availableSessionHistory(id, "failed");
+  if (id === TASK_IDS.c) {
+    return availableSessionHistory(id, "completed", "fixture/concrete.v2");
+  }
+  if (id === TASK_IDS.e) {
+    return availableSessionHistory(
+      id,
+      "failed",
+      "fixture/claude-concrete.v2",
+    );
+  }
   const firstHex = id.replace(/[^0-9a-f]/gi, "").charAt(0) || "0";
   switch (parseInt(firstHex, 16) % 4) {
     case 1:
