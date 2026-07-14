@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.38.0...v0.39.0) (2026-07-14)
+
+
+### Features
+
+* **tasks:** add model selection with API and MCP parity ([a27356f](https://github.com/Xeonice/cloud-agent-platform/commit/a27356f8ea1035861d70050cc934844d3376eaad))
+
 ## [0.38.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.37.5...v0.38.0) (2026-07-13)
 
 
