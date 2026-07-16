@@ -10,7 +10,9 @@ This package owns the low-level vocabulary shared by every sandbox adapter:
 - provider ports and connection/result shapes;
 - provider descriptors and local/cloud descriptor helpers;
 - provider-neutral error types;
-- the `GitCloneSpec` value object used by workspace materialization callers.
+- immutable resource/workspace plans and exact-host redacted Git credentials;
+- the provider-private mode-0600 secret-file write/delete port;
+- the deprecated `GitCloneSpec` compatibility shape used during staged migration.
 
 It intentionally contains no scheduler, lifecycle policy, workspace transport,
 Nest, Docker, or cloud client code.
@@ -22,4 +24,5 @@ The stable contracts are:
 - `SandboxProviderPort` and optional descriptor/readoption ports;
 - selected-run, terminal, command, workspace, retention, and preflight descriptors;
 - normalized command executor result shapes;
+- secret-free ordinary/workspace command request types;
 - provider-neutral configuration, selection, and capability errors.

@@ -214,6 +214,52 @@ describe("taskContextQuery sandbox provider label", () => {
     expect(result.sandboxProviderLabel).toBe("BoxLite Sandbox");
   });
 
+  it("uses the canonical resolved branch instead of mock main", async () => {
+    flags.tasks = true;
+    vi.mocked(real.getTask).mockResolvedValueOnce({
+      id: "task-1",
+      repoId: "repo-1",
+      prompt: "p",
+      status: "pending",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      branch: null,
+      provisioning: {
+        state: "running",
+        stage: "workspace_transfer",
+        attempt: 1,
+        resolvedBranch: "master",
+        updatedAt: new Date("2026-01-01T00:00:01.000Z"),
+      },
+    });
+
+    const result = (await runQueryFn(() => taskContextQuery("task-1"))) as {
+      branch: string;
+    };
+
+    expect(result.branch).toBe("master");
+    expect(result.branch).not.toBe("main");
+  });
+
+  it("keeps an unresolved real branch explicit instead of restoring mock main", async () => {
+    flags.tasks = true;
+    vi.mocked(real.getTask).mockResolvedValueOnce({
+      id: "task-1",
+      repoId: "repo-1",
+      prompt: "p",
+      status: "pending",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      branch: null,
+      provisioning: null,
+    });
+
+    const result = (await runQueryFn(() => taskContextQuery("task-1"))) as {
+      branch: string;
+    };
+
+    expect(result.branch).toBe("待解析");
+    expect(result.branch).not.toBe("main");
+  });
+
   it("does not guess AIO when tasks are not capable", async () => {
     flags.tasks = false;
 

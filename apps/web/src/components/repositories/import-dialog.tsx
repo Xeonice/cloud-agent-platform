@@ -35,18 +35,24 @@
  * `RepoRow`; a disabled action uses the muted `#fafafa` pill.
  */
 import * as React from "react";
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import type {
-  AvailableGithubRepo,
-  AvailableForgeRepo,
-  ForgeKind,
-  Repo,
+import {
+  type RepoImportFailureCode,
+  type AvailableGithubRepo,
+  type AvailableForgeRepo,
+  type CreateRepoRequest,
+  type ForgeKind,
+  type Repo,
 } from "@cap/contracts";
 import { availableForgeReposQuery, githubReposQuery } from "@/lib/api/queries";
 import { createRepoMutation, importRepoMutation } from "@/lib/api/mutations";
-import { ApiError } from "@/lib/api/real";
+import {
+  ApiError,
+  repoImportFailureFromApiError,
+} from "@/lib/api/real";
 import { StatusPill } from "@/components/status-pill";
 import { CountChip } from "@/components/count-chip";
 import {
@@ -102,6 +108,100 @@ export type ImportGitUrlParseResult =
   | { ok: true; gitSource: string; name: string }
   | { ok: false; message: string };
 
+type ParsedImportGitUrl = Extract<ImportGitUrlParseResult, { ok: true }>;
+
+export interface RepoImportFailurePresentation {
+  code: RepoImportFailureCode | "repo_import_failed";
+  pill: string;
+  variant: "danger" | "warn";
+  message: string;
+  action?: "forges" | "login";
+}
+
+const REPO_IMPORT_FAILURE_PRESENTATIONS = {
+  session_operator_required: {
+    pill: "登录状态不可用",
+    variant: "danger",
+    message: "仓库导入需要有效的 Console 登录状态，请重新登录后再试。",
+    action: "login",
+  },
+  repo_git_source_invalid: {
+    pill: "URL 无效",
+    variant: "danger",
+    message: "请填写包含项目路径的 HTTP(S) 仓库 URL。",
+  },
+  repo_git_source_credentials_forbidden: {
+    pill: "URL 含有凭据",
+    variant: "danger",
+    message: "请移除 URL 中的用户名、密码或令牌；系统只使用当前账号已保存的凭据。",
+  },
+  repo_forge_unresolved: {
+    pill: "无法识别代码托管平台",
+    variant: "danger",
+    message: "请确认 URL 与所选 GitHub、GitLab 或 Gitee 类型一致，并已注册对应主机。",
+  },
+  repo_forge_auth_required: {
+    pill: "尚未连接凭据",
+    variant: "danger",
+    message: "请先连接这个仓库主机的代码托管凭据，再重新验证导入。",
+    action: "forges",
+  },
+  repo_forge_authentication_failed: {
+    pill: "凭据验证失败",
+    variant: "danger",
+    message: "当前代码托管凭据已失效或无法认证，请更新凭据后重试。",
+    action: "forges",
+  },
+  repo_forge_access_denied: {
+    pill: "仓库访问被拒绝",
+    variant: "danger",
+    message: "当前凭据无权访问该仓库，请检查令牌范围和仓库成员权限。",
+    action: "forges",
+  },
+  repo_forge_network_unavailable: {
+    pill: "网络或 TLS 不可用",
+    variant: "warn",
+    message: "无法连接仓库主机，请检查服务端网络、代理和证书信任后重试。",
+  },
+  repo_default_branch_unresolved: {
+    pill: "默认分支未解析",
+    variant: "danger",
+    message: "仓库可访问，但无法解析远端默认分支；请检查默认分支或 symbolic HEAD 设置。",
+  },
+  repo_picker_candidate_not_accessible: {
+    pill: "仓库已不可访问",
+    variant: "danger",
+    message: "该仓库已不在当前账号的可访问列表中，请重新同步后选择。",
+  },
+  repo_import_identity_conflict: {
+    pill: "仓库身份冲突",
+    variant: "danger",
+    message: "该 URL 与已有仓库身份不一致，请检查导入来源或联系管理员。",
+  },
+} satisfies Record<
+  RepoImportFailureCode,
+  Omit<RepoImportFailurePresentation, "code">
+>;
+
+/** Classify only the stable response code; never inspect raw error prose. */
+export function repoImportFailurePresentation(
+  error: unknown,
+): RepoImportFailurePresentation {
+  const failure = repoImportFailureFromApiError(error);
+  if (failure) {
+    return {
+      code: failure.error,
+      ...REPO_IMPORT_FAILURE_PRESENTATIONS[failure.error],
+    };
+  }
+  return {
+    code: "repo_import_failed",
+    pill: "导入验证失败",
+    variant: "warn",
+    message: "未能完成仓库访问与默认分支验证，请检查连接设置或稍后重试。",
+  };
+}
+
 export function parseImportGitUrl(value: string): ImportGitUrlParseResult {
   const raw = value.trim();
   if (raw.length === 0) {
@@ -139,6 +239,19 @@ export function parseImportGitUrl(value: string): ImportGitUrlParseResult {
   return { ok: true, gitSource: url.toString(), name };
 }
 
+export function buildUrlImportRequest(
+  parsed: ParsedImportGitUrl,
+  displayName: string,
+  forge: ForgeKind,
+): CreateRepoRequest {
+  return {
+    name: displayName.trim() || parsed.name,
+    gitSource: parsed.gitSource,
+    forge,
+    importSource: "url",
+  };
+}
+
 export function forgeListErrorCopy(
   errorMessage: string,
   source: ForgeKind,
@@ -166,6 +279,18 @@ export function forgeListErrorCopy(
   };
 }
 
+/** Picker writes identify the selection; the API re-verifies its metadata. */
+export function buildPickerImportRequest(
+  candidate: AvailableForgeRepo,
+): CreateRepoRequest {
+  return {
+    name: candidate.fullPath,
+    gitSource: candidate.gitSource,
+    forge: candidate.forge,
+    importSource: "picker",
+  };
+}
+
 /** The 仓库导入 dialog. */
 export function ImportDialog({
   open,
@@ -186,8 +311,9 @@ export function ImportDialog({
   const [importingPath, setImportingPath] = React.useState<string | null>(null);
   const [urlValue, setUrlValue] = React.useState("");
   const [urlName, setUrlName] = React.useState("");
-  const [urlError, setUrlError] = React.useState<string | null>(null);
-  const [importingUrl, setImportingUrl] = React.useState(false);
+  const [urlFailure, setUrlFailure] =
+    React.useState<RepoImportFailurePresentation | null>(null);
+  const urlImportFence = React.useRef(false);
 
   const githubRepos = useQuery({ ...githubReposQuery(), enabled: armed });
   const importMutation = useMutation(importRepoMutation(queryClient));
@@ -197,6 +323,9 @@ export function ImportDialog({
     enabled: armed && source !== "github",
   });
   const createMutation = useMutation(createRepoMutation(queryClient));
+  const importingUrl =
+    createMutation.isPending &&
+    createMutation.variables?.importSource === "url";
 
   // Reset the dialog's fetch + search state whenever it (re)opens so a reopened
   // dialog always starts from the 待拉取 state rather than a stale list.
@@ -209,8 +338,7 @@ export function ImportDialog({
     setImportingPath(null);
     setUrlValue("");
     setUrlName("");
-    setUrlError(null);
-    setImportingUrl(false);
+    setUrlFailure(null);
   }, [open]);
 
   const candidates = githubRepos.data ?? [];
@@ -274,11 +402,7 @@ export function ImportDialog({
   function handleImportForge(candidate: AvailableForgeRepo) {
     setImportingPath(candidate.gitSource);
     createMutation.mutate(
-      {
-        name: candidate.fullPath,
-        gitSource: candidate.gitSource,
-        forge: candidate.forge,
-      },
+      buildPickerImportRequest(candidate),
       {
         onSuccess: () => {
           toast.success(`已导入 ${candidate.fullPath}`);
@@ -286,33 +410,44 @@ export function ImportDialog({
         },
         onError: (error) => {
           setImportingPath(null);
-          toast.error(`导入失败：${error.message}`);
+          const failure = repoImportFailurePresentation(error);
+          toast.error(`${failure.pill}：${failure.message}`);
         },
       },
     );
   }
 
   function handleImportUrl() {
+    if (urlImportFence.current || createMutation.isPending) return;
     const parsed = parseImportGitUrl(urlValue);
     if (!parsed.ok) {
-      setUrlError(parsed.message);
+      setUrlFailure({
+        code: "repo_git_source_invalid",
+        pill: "URL 无效",
+        variant: "danger",
+        message: parsed.message,
+      });
       return;
     }
-    setUrlError(null);
-    const displayName = urlName.trim() || parsed.name;
-    setImportingUrl(true);
+    setUrlFailure(null);
+    urlImportFence.current = true;
     createMutation.mutate(
-      { name: displayName, gitSource: parsed.gitSource, forge: source },
+      buildUrlImportRequest(parsed, urlName, source),
       {
         onSuccess: (repo) => {
-          toast.success(`已导入 ${repo.name}`);
-          setImportingUrl(false);
+          toast.success(
+            `已验证并导入 ${repo.name}（默认分支 ${repo.defaultBranch}）`,
+          );
           setUrlValue("");
           setUrlName("");
         },
         onError: (error) => {
-          setImportingUrl(false);
-          toast.error(`导入失败：${error.message}`);
+          const failure = repoImportFailurePresentation(error);
+          setUrlFailure(failure);
+          toast.error(failure.pill);
+        },
+        onSettled: () => {
+          urlImportFence.current = false;
         },
       },
     );
@@ -402,7 +537,7 @@ export function ImportDialog({
                 onClick={() => {
                   setSource(s.kind);
                   setSearch("");
-                  setUrlError(null);
+                  setUrlFailure(null);
                 }}
                 className={`inline-flex h-8 items-center rounded-md px-3 text-[13px] font-medium ${
                   source === s.kind
@@ -429,7 +564,7 @@ export function ImportDialog({
                   value={urlValue}
                   onChange={(e) => {
                     setUrlValue(e.target.value);
-                    setUrlError(null);
+                    setUrlFailure(null);
                   }}
                   placeholder={`https://${source === "github" ? "github.com" : source === "gitlab" ? "gitlab.com" : "gitee.com"}/team/repo.git`}
                   className="min-h-10 w-full min-w-0 rounded-md bg-card px-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none placeholder:text-muted-foreground focus-visible:shadow-[inset_0_0_0_1px_var(--foreground),0_0_0_3px_rgba(10,114,239,0.12)]"
@@ -450,13 +585,51 @@ export function ImportDialog({
                 onClick={handleImportUrl}
                 className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-60"
               >
-                {importingUrl ? "导入中…" : "导入 URL"}
+                {importingUrl ? "验证并导入中…" : "验证并导入"}
               </button>
             </div>
-            {urlError ? (
-              <p role="alert" className="m-0 text-[13px] text-danger">
-                {urlError}
-              </p>
+            {importingUrl ? (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground"
+              >
+                <StatusPill variant="neutral">正在验证</StatusPill>
+                <span>正在使用当前登录账号验证仓库访问并解析远端默认分支…</span>
+              </div>
+            ) : null}
+            {urlFailure ? (
+              <div
+                role="alert"
+                data-repo-import-failure={urlFailure.code}
+                className="grid gap-2 rounded-md bg-danger-soft px-3 py-2.5"
+              >
+                <StatusPill
+                  variant={urlFailure.variant}
+                  className="justify-self-start"
+                >
+                  {urlFailure.pill}
+                </StatusPill>
+                <p className="m-0 text-[13px] leading-relaxed text-foreground">
+                  {urlFailure.message}
+                </p>
+                {urlFailure.action === "forges" ? (
+                  <Link
+                    to="/settings"
+                    hash="forges"
+                    className="w-fit text-xs font-medium text-foreground underline underline-offset-2"
+                  >
+                    检查代码托管连接
+                  </Link>
+                ) : urlFailure.action === "login" ? (
+                  <Link
+                    to="/login"
+                    className="w-fit text-xs font-medium text-foreground underline underline-offset-2"
+                  >
+                    重新登录
+                  </Link>
+                ) : null}
+              </div>
             ) : null}
           </div>
 

@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled', 'agent_failed_to_start'];
 
 const ALLOWED_TRANSITIONS = {
-  pending: ['queued', 'running', 'agent_failed_to_start', 'failed'],
+  pending: ['queued', 'running', 'agent_failed_to_start', 'failed', 'cancelled'],
   queued: ['running', 'agent_failed_to_start', 'failed', 'cancelled'],
   running: ['awaiting_input', 'completed', 'failed', 'agent_failed_to_start', 'cancelled'],
   awaiting_input: ['running', 'completed', 'failed', 'cancelled'],
@@ -44,7 +44,7 @@ test('an operator stop edge -> cancelled exists from every ACTIVE state', () => 
 
 test('cancelled is NOT reachable from pending or from a terminal state', () => {
   // pending is transient (immediately admitted); stop targets active tasks.
-  assert.equal(canTransition('pending', 'cancelled'), false, 'pending -> cancelled not permitted');
+  assert.equal(canTransition('pending', 'cancelled'), true, 'pending -> cancelled stops durable admission');
   for (const terminal of TERMINAL_STATUSES) {
     assert.equal(
       canTransition(terminal, 'cancelled'),

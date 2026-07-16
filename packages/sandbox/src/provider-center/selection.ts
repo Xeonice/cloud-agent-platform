@@ -6,11 +6,15 @@ import type {
   SandboxPreflightResult,
   SandboxProviderCapability,
   SandboxProviderLocation,
+  SandboxResourceSnapshot,
   SandboxRetentionPolicy,
   SandboxTerminalEndpointDescriptor,
   SandboxWorkspaceDescriptor,
   SelectedSandboxRun,
   SandboxResolvedEnvironmentMetadata,
+  SandboxWorkspaceMaterializationPlan,
+  SandboxWorkspaceProgressReporter,
+  SandboxWorkspaceBoundaryGuard,
   TaskModelIntent,
 } from '@cap/sandbox-core';
 import {
@@ -22,6 +26,9 @@ import {
   READOPTION_SANDBOX_REQUIRED_CAPABILITIES,
   RETAINED_TRANSCRIPT_SANDBOX_REQUIRED_CAPABILITIES,
   missingCapabilities,
+  sandboxResourceRequiredCapabilities,
+  snapshotSandboxResources,
+  snapshotSandboxWorkspacePlan,
 } from '@cap/sandbox-core';
 
 export type SandboxProviderCompatibility = 'declared' | 'legacy-assumed';
@@ -77,6 +84,11 @@ export interface SandboxProvisionPlan<TCloneSpec = GitCloneSpec> {
   readonly runtimeId: string;
   readonly executionMode: 'interactive-pty' | 'headless-exec';
   readonly environment?: SandboxResolvedEnvironmentMetadata;
+  readonly resources?: SandboxResourceSnapshot;
+  readonly workspace?: SandboxWorkspaceMaterializationPlan | null;
+  readonly cancellationSignal?: AbortSignal;
+  readonly onWorkspaceProgress?: SandboxWorkspaceProgressReporter;
+  readonly beforeWorkspaceBoundary?: SandboxWorkspaceBoundaryGuard;
   readonly requiredCapabilities: readonly SandboxProviderCapability[];
   readonly featureCapabilities: readonly SandboxProviderCapability[];
 }
@@ -108,18 +120,47 @@ export function buildSandboxProvisionPlan<TCloneSpec>(args: {
   readonly runtimeId: string;
   readonly executionMode: 'interactive-pty' | 'headless-exec';
   readonly environment?: SandboxResolvedEnvironmentMetadata;
+  readonly resources?: SandboxResourceSnapshot | null;
+  readonly workspace?: SandboxWorkspaceMaterializationPlan | null;
+  readonly cancellationSignal?: AbortSignal;
+  readonly onWorkspaceProgress?: SandboxWorkspaceProgressReporter;
+  readonly beforeWorkspaceBoundary?: SandboxWorkspaceBoundaryGuard;
   readonly archiveWorkspace?: boolean;
 }): SandboxProvisionPlan<TCloneSpec> {
-  const materializeWorkspace = args.cloneSpec !== null && args.cloneSpec !== undefined;
+  const resources = snapshotSandboxResources(
+    args.resources === undefined ? args.environment?.resources : args.resources,
+  );
+  const workspace = snapshotSandboxWorkspacePlan(args.workspace);
+  const materializeWorkspace =
+    workspace !== undefined
+      ? workspace !== null
+      : args.cloneSpec !== null && args.cloneSpec !== undefined;
+  const requiredCapabilities = new Set(
+    provisionSandboxRequiredCapabilities({
+      materializeGitWorkspace: materializeWorkspace,
+    }),
+  );
+  for (const capability of sandboxResourceRequiredCapabilities(resources)) {
+    requiredCapabilities.add(capability);
+  }
   return {
     cloneSpec: args.cloneSpec,
     modelIntent: args.modelIntent,
     runtimeId: args.runtimeId,
     executionMode: args.executionMode,
     environment: args.environment,
-    requiredCapabilities: provisionSandboxRequiredCapabilities({
-      materializeGitWorkspace: materializeWorkspace,
-    }),
+    ...(resources === undefined ? {} : { resources }),
+    ...(workspace === undefined ? {} : { workspace }),
+    ...(args.cancellationSignal === undefined
+      ? {}
+      : { cancellationSignal: args.cancellationSignal }),
+    ...(args.onWorkspaceProgress === undefined
+      ? {}
+      : { onWorkspaceProgress: args.onWorkspaceProgress }),
+    ...(args.beforeWorkspaceBoundary === undefined
+      ? {}
+      : { beforeWorkspaceBoundary: args.beforeWorkspaceBoundary }),
+    requiredCapabilities: [...requiredCapabilities],
     featureCapabilities: provisionSandboxFeatureCapabilities({
       materializeWorkspace,
       archiveWorkspace: args.archiveWorkspace,

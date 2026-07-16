@@ -144,6 +144,28 @@ export class ConcurrencySemaphore {
   }
 
   /**
+   * Restores a task that is already running outside this process (for example,
+   * a provider-confirmed survivor discovered during bootstrap readoption).
+   *
+   * Recovery is accounting, not a new admission decision: it MUST preserve
+   * every surviving task even when a persisted ceiling was lowered while the
+   * API was offline. Consequently this method deliberately ignores capacity,
+   * removes a stale queued copy, inserts the task into the running set, and
+   * never invokes {@link ConcurrencySemaphoreOptions.onAdmit}. The semaphore may
+   * remain temporarily over its ceiling; ordinary releases converge it back
+   * below the ceiling before FIFO back-filling resumes.
+   *
+  * Idempotent for an already-restored task.
+  */
+  restoreRunning(taskId: string): void {
+    const queueIndex = this.queue.indexOf(taskId);
+    if (queueIndex !== -1) {
+      this.queue.splice(queueIndex, 1);
+    }
+    this.running.add(taskId);
+  }
+
+  /**
    * Releases the slot held by a task that has reached a terminal state and, if a
    * slot is now free and the backlog is non-empty, admits the oldest queued task
    * (FIFO), invoking {@link ConcurrencySemaphoreOptions.onAdmit} for it.

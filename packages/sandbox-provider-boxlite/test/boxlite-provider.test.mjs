@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
+const core = await import(new URL('../../sandbox-core/dist/index.js', import.meta.url).href);
 
 let passed = 0;
 let failed = 0;
@@ -14,6 +15,16 @@ async function test(name, fn) {
     console.error(`not ok - ${name}`);
     console.error(err);
   }
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
 }
 
 function validEnv(overrides = {}) {
@@ -147,8 +158,109 @@ await test('config supports rootfs paths and rejects ambiguous sources', () => {
 await test('config defaults to native protocol with default path prefix', () => {
   const config = validConfig();
   assert.equal(config.protocolMode, 'native');
+  assert.equal(config.capabilities.includes('resource.disk-size-gb'), true);
   assert.equal(config.pathPrefix, 'default');
   assert.deepEqual(config.sandboxEnv, {});
+  assert.equal(config.diskSizeGb, mod.BOXLITE_DEFAULT_DISK_SIZE_GB);
+  assert.equal(
+    config.gitCloneTimeoutMs,
+    mod.BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS,
+  );
+  assert.equal(
+    config.gitCloneTimeoutMs,
+    core.DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
+  );
+  assert.equal(config.timeoutMs, mod.BOXLITE_DEFAULT_TIMEOUT_MS);
+});
+
+await test('cap-rest cannot opt into native disk enforcement capability', () => {
+  const result = mod.readBoxLiteProviderConfig(
+    validEnv({
+      BOXLITE_PROTOCOL_MODE: 'cap-rest',
+      BOXLITE_CAPABILITIES: 'command.exec,resource.disk-size-gb',
+    }),
+  );
+  assert.equal(result.status, 'invalid');
+  assert(
+    result.errors.some((entry) =>
+      entry.includes('cap-rest cannot advertise resource.disk-size-gb'),
+    ),
+  );
+});
+
+await test('config strictly validates disk and Git clone timeout bounds', () => {
+  const deploymentDiskSizeGb = core.SANDBOX_DISK_SIZE_GB_MIN + 6;
+  const gitCloneTimeoutMs = mod.BOXLITE_GIT_CLONE_TIMEOUT_MS_MIN + 12_345;
+  const configured = validConfig({
+    BOXLITE_DISK_SIZE_GB: String(deploymentDiskSizeGb),
+    BOXLITE_GIT_CLONE_TIMEOUT_MS: String(gitCloneTimeoutMs),
+  });
+  assert.equal(configured.diskSizeGb, deploymentDiskSizeGb);
+  assert.equal(configured.gitCloneTimeoutMs, gitCloneTimeoutMs);
+
+  for (const [name, value] of [
+    ['BOXLITE_DISK_SIZE_GB', String(core.SANDBOX_DISK_SIZE_GB_MIN - 1)],
+    ['BOXLITE_DISK_SIZE_GB', String(core.SANDBOX_DISK_SIZE_GB_MAX + 1)],
+    ['BOXLITE_DISK_SIZE_GB', '1.5'],
+    [
+      'BOXLITE_GIT_CLONE_TIMEOUT_MS',
+      String(mod.BOXLITE_GIT_CLONE_TIMEOUT_MS_MIN - 1),
+    ],
+    [
+      'BOXLITE_GIT_CLONE_TIMEOUT_MS',
+      String(mod.BOXLITE_GIT_CLONE_TIMEOUT_MS_MAX + 1),
+    ],
+    ['BOXLITE_GIT_CLONE_TIMEOUT_MS', '1e3'],
+  ]) {
+    const result = mod.readBoxLiteProviderConfig(
+      validEnv({ [name]: value }),
+    );
+    assert.equal(result.status, 'invalid');
+    assert(result.errors.some((entry) => entry.includes(name)));
+  }
+});
+
+await test('disk resolution uses managed resource then deployment config then product default', () => {
+  const deploymentDiskSizeGb = core.SANDBOX_DISK_SIZE_GB_MIN + 7;
+  const managedDiskSizeGb = deploymentDiskSizeGb + 1;
+  const configured = validConfig({
+    BOXLITE_DISK_SIZE_GB: String(deploymentDiskSizeGb),
+  });
+  assert.equal(
+    mod.resolveBoxLiteDiskSizeGb({
+      config: configured,
+      resources: { diskSizeGb: managedDiskSizeGb },
+    }),
+    managedDiskSizeGb,
+  );
+  assert.equal(
+    mod.resolveBoxLiteDiskSizeGb({ config: configured, resources: null }),
+    deploymentDiskSizeGb,
+  );
+  assert.equal(
+    mod.resolveBoxLiteDiskSizeGb({ config: validConfig() }),
+    mod.BOXLITE_DEFAULT_DISK_SIZE_GB,
+  );
+  assert.throws(
+    () =>
+      mod.resolveBoxLiteDiskSizeGb({
+        config: configured,
+        resources: { diskSizeGb: core.SANDBOX_DISK_SIZE_GB_MAX + 1 },
+      }),
+    /integer from 1 to 1024/u,
+  );
+});
+
+await test('control-plane and Git clone timeout configuration remain independent', () => {
+  const controlPlaneTimeoutMs = mod.BOXLITE_DEFAULT_TIMEOUT_MS + 1;
+  const gitCloneTimeoutMs =
+    mod.BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS + 1;
+  const config = validConfig({
+    BOXLITE_TIMEOUT_MS: String(controlPlaneTimeoutMs),
+    BOXLITE_GIT_CLONE_TIMEOUT_MS: String(gitCloneTimeoutMs),
+  });
+  assert.equal(config.timeoutMs, controlPlaneTimeoutMs);
+  assert.equal(config.gitCloneTimeoutMs, gitCloneTimeoutMs);
 });
 
 await test('config maps sandbox proxy env into uppercase and lowercase variables', () => {
@@ -214,6 +326,7 @@ await test('descriptor factory installs default readiness preflight from capabil
   assert.deepEqual(
     client.execCalls.map((call) => call.command),
     [
+      "df -Pk / | awk -v minimum=4718592 'NR == 2 { exit ($2 >= minimum ? 0 : 1) } END { if (NR < 2) exit 1 }'",
       "test -d '/home/gem/workspace'",
       "command -v 'bash'",
       "command -v 'git'",
@@ -253,6 +366,661 @@ await test('provider provision is task-scoped and idempotent', async () => {
   });
   assert.equal(await provider.sandboxExists('task-1'), true);
   assert.equal((await provider.reattach('task-1')).baseUrl, 'boxlite://box-task-1');
+});
+
+await test('durable BoxLite provisioning carries an immutable resource generation and readopts it after a lost create response', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const originalCreate = client.createSandbox.bind(client);
+  let firstCreate = true;
+  client.createSandbox = async (request) => {
+    const sandbox = await originalCreate(request);
+    if (firstCreate) {
+      firstCreate = false;
+      throw Object.assign(new Error('BoxLite create failed: HTTP 409'), {
+        status: 409,
+      });
+    }
+    return sandbox;
+  };
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+  const ownership = {
+    ownerGeneration: 'owner:g1',
+    resourceGeneration: 'resource:r1',
+  };
+
+  await provider.provision({
+    taskId: 'task-generation',
+    cloneSpec: null,
+    ownership,
+    beforeSandboxCleanup: async () => true,
+    afterSandboxCleanup: async () => undefined,
+  });
+
+  assert.equal(client.createCalls.length, 1);
+  assert.equal(
+    client.createCalls[0].env.CAP_RESOURCE_GENERATION,
+    'resource:r1',
+  );
+  assert.equal(
+    client.createCalls[0].labels['cap.resourceGeneration'],
+    'resource:r1',
+  );
+  assert.equal(
+    client.createCalls[0].metadata.resourceGeneration,
+    'resource:r1',
+  );
+});
+
+await test('BoxLite exact-generation teardown cannot address a recreated physical generation', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+  await provider.provision({
+    taskId: 'task-generation-mismatch',
+    cloneSpec: null,
+    ownership: {
+      ownerGeneration: 'owner:g2',
+      resourceGeneration: 'resource:new',
+    },
+    beforeSandboxCleanup: async () => true,
+    afterSandboxCleanup: async () => undefined,
+  });
+
+  assert.deepEqual(
+    await provider.teardownSandbox('task-generation-mismatch', {
+      ownership: {
+        ownerGeneration: 'owner:g1',
+        resourceGeneration: 'resource:old',
+      },
+    }),
+    { kind: 'already-absent' },
+  );
+  assert.deepEqual(client.deletedSandboxIds, []);
+  assert.equal(
+    client.sandboxes.has(client.createCalls[0].sandboxId),
+    true,
+    'the newer physical generation must remain live',
+  );
+});
+
+await test('BoxLite exact-generation teardown checks a same-id replacement instead of stale cache metadata', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+  const ownership = {
+    ownerGeneration: 'owner:g1',
+    resourceGeneration: 'resource:old',
+  };
+  await provider.provision({
+    taskId: 'task-same-id-replacement',
+    cloneSpec: null,
+    ownership,
+    beforeSandboxCleanup: async () => true,
+    afterSandboxCleanup: async () => undefined,
+  });
+
+  const sandboxId = client.createCalls[0].sandboxId;
+  client.sandboxes.set(sandboxId, {
+    id: sandboxId,
+    taskId: 'task-same-id-replacement',
+    state: 'running',
+    baseUrl: `boxlite://${sandboxId}`,
+    terminalUrl: `boxlite://${sandboxId}/terminal`,
+    metadata: { resourceGeneration: 'resource:new' },
+  });
+
+  await assert.rejects(
+    provider.teardownSandbox('task-same-id-replacement', { ownership }),
+    /resource generation mismatch/,
+  );
+  assert.deepEqual(client.deletedSandboxIds, []);
+});
+
+await test('an inspected old BoxLite generation cannot delete a newer ABA replacement', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const firstProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+  const firstOwnership = {
+    ownerGeneration: 'owner:g1',
+    resourceGeneration: 'resource:r1',
+  };
+  await firstProvider.provision({
+    taskId: 'task-boxlite-aba',
+    cloneSpec: null,
+    ownership: firstOwnership,
+    beforeSandboxCleanup: async () => null,
+    afterSandboxCleanup: async () => undefined,
+  });
+  const firstSandboxId = client.createCalls[0].sandboxId;
+  const inspected = deferred();
+  const releaseInspection = deferred();
+  const originalGetSandbox = client.getSandbox.bind(client);
+  let heldFirstInspection = false;
+  client.getSandbox = async (sandboxId) => {
+    if (sandboxId === firstSandboxId && !heldFirstInspection) {
+      heldFirstInspection = true;
+      const snapshot = await originalGetSandbox(sandboxId);
+      inspected.resolve();
+      await releaseInspection.promise;
+      return snapshot;
+    }
+    return originalGetSandbox(sandboxId);
+  };
+
+  const firstCleanup = firstProvider.teardownSandbox('task-boxlite-aba', {
+    ownership: firstOwnership,
+    cleanupAuthorization: {
+      kind: 'generation',
+      taskId: 'task-boxlite-aba',
+      providerId: 'boxlite-test',
+      ownership: firstOwnership,
+    },
+    providerSandboxId: firstSandboxId,
+  });
+  await inspected.promise;
+
+  await client.deleteSandbox(firstSandboxId);
+  const secondProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+  const secondOwnership = {
+    ownerGeneration: 'owner:g2',
+    resourceGeneration: 'resource:r2',
+  };
+  await secondProvider.provision({
+    taskId: 'task-boxlite-aba',
+    cloneSpec: null,
+    ownership: secondOwnership,
+    beforeSandboxCleanup: async () => null,
+    afterSandboxCleanup: async () => undefined,
+  });
+  const secondSandboxId = client.createCalls[1].sandboxId;
+  assert.notEqual(secondSandboxId, firstSandboxId);
+
+  releaseInspection.resolve();
+  assert.deepEqual(await firstCleanup, { kind: 'found-and-cleaned' });
+  assert.equal(await client.getSandbox(secondSandboxId) !== null, true);
+});
+
+await test('a restarted BoxLite provider readopts a generation-scoped persisted sandbox id', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const ownership = {
+    ownerGeneration: 'owner:g1',
+    resourceGeneration: 'resource:r1',
+  };
+  const firstProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+  await firstProvider.provision({
+    taskId: 'task-generation-readopt',
+    cloneSpec: null,
+    ownership,
+    beforeSandboxCleanup: async () => null,
+    afterSandboxCleanup: async () => undefined,
+  });
+  const providerSandboxId = client.createCalls[0].sandboxId;
+  assert.notEqual(providerSandboxId, 'cap-boxlite-task-generation-readopt');
+
+  const restartedProvider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+  assert.equal(await restartedProvider.reattach('task-generation-readopt'), null);
+  const connection = await restartedProvider.reattach(
+    'task-generation-readopt',
+    { providerSandboxId, ownership },
+  );
+  assert.equal(connection?.baseUrl, `boxlite://${providerSandboxId}`);
+  assert.equal(
+    (await restartedProvider.getSelectedSandboxRun('task-generation-readopt'))
+      ?.providerSandboxId,
+    providerSandboxId,
+  );
+});
+
+await test('BoxLite partial-create cleanup cannot bypass a lost owner fence', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  let partialSandboxId;
+  client.createSandbox = async (request) => {
+    partialSandboxId = request.sandboxId;
+    const sandbox = {
+      id: request.sandboxId,
+      taskId: request.taskId,
+      state: 'configured',
+      image: request.image,
+    };
+    client.sandboxes.set(sandbox.id, sandbox);
+    throw new mod.BoxLitePartialCreateError(
+      sandbox,
+      new Error('start failed'),
+    );
+  };
+  let cleanupChecks = 0;
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+
+  await assert.rejects(
+    provider.provision({
+      taskId: 'task-partial-fenced',
+      cloneSpec: null,
+      ownership: {
+        ownerGeneration: 'owner:g1',
+        resourceGeneration: 'resource:r1',
+      },
+      beforeSandboxCleanup: async () => {
+        cleanupChecks += 1;
+        return false;
+      },
+      afterSandboxCleanup: async () => undefined,
+    }),
+    mod.BoxLitePartialCreateError,
+  );
+
+  assert.equal(cleanupChecks, 1);
+  assert.deepEqual(client.deletedSandboxIds, []);
+  assert.equal(client.sandboxes.has(partialSandboxId), true);
+});
+
+await test('BoxLite late create is removed after an earlier exact teardown observed absence', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const createEntered = deferred();
+  const releaseCreate = deferred();
+  let lateSandboxId;
+  let authorityCurrent = true;
+  let currentCleanupAuthorization = null;
+  const cleanupCompletions = [];
+  client.createSandbox = async (request) => {
+    lateSandboxId = request.sandboxId;
+    await request.externalBoundaryGuard?.({
+      taskId: request.taskId,
+      action: 'sandbox.create',
+      position: 'before',
+    });
+    createEntered.resolve();
+    await releaseCreate.promise;
+    const sandbox = {
+      id: request.sandboxId,
+      taskId: request.taskId,
+      state: 'running',
+      image: request.image,
+      diskSizeGb: request.diskSizeGb,
+      baseUrl: `boxlite://${request.sandboxId}`,
+      terminalUrl: `boxlite://${request.sandboxId}/terminal`,
+      metadata: request.metadata,
+    };
+    client.sandboxes.set(sandbox.id, sandbox);
+    try {
+      await request.externalBoundaryGuard?.({
+        taskId: request.taskId,
+        action: 'sandbox.create',
+        position: 'after',
+      });
+      return sandbox;
+    } catch (error) {
+      throw new mod.BoxLitePartialCreateError(sandbox, error);
+    }
+  };
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+  const ownership = {
+    ownerGeneration: 'owner:g1',
+    resourceGeneration: 'resource:r1',
+  };
+  const provision = provider.provision({
+    taskId: 'task-late-boxlite-create',
+    cloneSpec: null,
+    ownership,
+    externalBoundaryGuard: async () => {
+      if (!authorityCurrent) throw new Error('lease lost');
+    },
+    beforeSandboxCleanup: async () => currentCleanupAuthorization,
+    afterSandboxCleanup: async (authorization) => {
+      cleanupCompletions.push(authorization);
+    },
+  });
+  await createEntered.promise;
+
+  currentCleanupAuthorization = {
+    kind: 'generation',
+    taskId: 'task-late-boxlite-create',
+    providerId: 'boxlite-test',
+    ownership: {
+      ownerGeneration: 'owner:g2',
+      resourceGeneration: 'resource:r1',
+    },
+  };
+  authorityCurrent = false;
+  assert.deepEqual(
+    await provider.teardownSandbox('task-late-boxlite-create', {
+      ownership: currentCleanupAuthorization.ownership,
+    }),
+    { kind: 'already-absent' },
+  );
+  assert.equal(client.sandboxes.size, 0);
+
+  releaseCreate.resolve();
+  await assert.rejects(provision, mod.BoxLitePartialCreateError);
+  assert.equal(client.sandboxes.size, 0);
+  assert.deepEqual(cleanupCompletions, [currentCleanupAuthorization]);
+  assert.deepEqual(client.deletedSandboxIds, [lateSandboxId]);
+});
+
+await test('durable BoxLite provisioning fences provider actions independently from progress stages', async () => {
+  const events = [];
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    preflight: async ({ executor }) => {
+      await executor.exec({ command: 'preflight-check' });
+      return { status: 'passed', checkedAt: '2026-07-16T00:00:00.000Z' };
+    },
+    runtimeSetup: async ({ executor }) => {
+      await executor.exec({ command: 'runtime-setup' });
+    },
+  });
+
+  await provider.provision({
+    taskId: 'task-boundary-events',
+    cloneSpec: null,
+    ownership: {
+      ownerGeneration: 'owner:g1',
+      resourceGeneration: 'resource:r1',
+    },
+    externalBoundaryGuard: async (event) => {
+      events.push(`${event.action}:${event.position}`);
+    },
+    beforeSandboxCleanup: async () => true,
+    afterSandboxCleanup: async () => undefined,
+  });
+
+  assert.deepEqual(events, [
+    'environment.resolve:before',
+    'environment.resolve:after',
+    'sandbox.inspect:before',
+    'sandbox.inspect:after',
+    'sandbox.create:before',
+    'sandbox.create:after',
+    'sandbox.readiness:before',
+    'sandbox.readiness:after',
+    'runtime.preflight:before',
+    'command.execute:before',
+    'command.execute:after',
+    'runtime.preflight:after',
+    'workspace.materialize:before',
+    'workspace.materialize:after',
+    'runtime.setup:before',
+    'command.execute:before',
+    'command.execute:after',
+    'runtime.setup:after',
+  ]);
+});
+
+await test('BoxLite latches one-shot nested authority failures across redaction wrappers', async () => {
+  for (const phase of ['preflight', 'runtime-setup']) {
+    const authorityFailure = new Error(`lease authority lost during ${phase}`);
+    let rejected = false;
+    const provider = new mod.BoxLiteSandboxProvider({
+      config: validConfig(),
+      client: new mod.FakeBoxLiteClient(),
+      preflight: async ({ executor }) => {
+        if (phase === 'preflight') {
+          await executor.exec({ command: 'preflight-authority-check' });
+        }
+        return { status: 'passed', checkedAt: '2026-07-16T00:00:00.000Z' };
+      },
+      runtimeSetup: async ({ executor }) => {
+        if (phase === 'runtime-setup') {
+          await executor.exec({ command: 'runtime-authority-check' });
+        }
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        provider.provision({
+          taskId: `task-one-shot-authority-${phase}`,
+          cloneSpec: null,
+          externalBoundaryGuard: async (event) => {
+            if (
+              !rejected &&
+              event.action === 'command.execute' &&
+              event.position === 'after'
+            ) {
+              rejected = true;
+              throw authorityFailure;
+            }
+          },
+        }),
+      (error) => error === authorityFailure,
+    );
+    assert.equal(rejected, true);
+  }
+});
+
+await test('BoxLite preserves the caller cancellation authority reason', async () => {
+  const controller = new AbortController();
+  const authorityFailure = new Error('durable worker stopped this provision');
+  controller.abort(authorityFailure);
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+
+  await assert.rejects(
+    () =>
+      provider.provision({
+        taskId: 'task-cancel-reason',
+        cloneSpec: null,
+        cancellationSignal: controller.signal,
+      }),
+    (error) => error === authorityFailure,
+  );
+  assert.equal(client.createCalls.length, 0);
+});
+
+await test('reports composite phases before deferred BoxLite runtime setup settles', async () => {
+  const setupEntered = deferred();
+  const releaseSetup = deferred();
+  const progress = [];
+  const durableCheckpoints = [];
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client: new mod.FakeBoxLiteClient(),
+    preflight: async () => ({
+      status: 'passed',
+      checkedAt: '2026-07-16T00:00:00.000Z',
+    }),
+    runtimeSetup: async () => {
+      setupEntered.resolve();
+      await releaseSetup.promise;
+    },
+  });
+  let settled = false;
+  const provisioning = provider
+    .provision({
+      taskId: 'task-composite-progress',
+      cloneSpec: null,
+      onProvisioningProgress: (event) => progress.push(event.stage),
+      beforeProvisioningBoundary: (event) =>
+        durableCheckpoints.push(event.stage),
+    })
+    .finally(() => {
+      settled = true;
+    });
+
+  await setupEntered.promise;
+  assert.deepEqual(progress, ['readiness', 'runtime_setup']);
+  assert.deepEqual(durableCheckpoints, ['runtime_setup']);
+  assert.equal(settled, false);
+  releaseSetup.resolve();
+  await provisioning;
+});
+
+await test('redacts ordinary BoxLite preflight diagnostics', async () => {
+  const canary = 'boxlite-preflight-private-canary';
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    preflight: async () => {
+      throw new Error(canary);
+    },
+  });
+
+  await assert.rejects(
+    () => provider.provision({ taskId: 'task-preflight-canary', cloneSpec: null }),
+    (error) =>
+      error?.code === 'sandbox_provisioning_stage_error' &&
+      error?.stage === 'runtime_setup' &&
+      !error.message.includes(canary),
+  );
+  assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-preflight-canary']);
+});
+
+await test('BoxLite provider-internal cleanup obeys the owner CAS and cannot delete after transfer', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  let cleanupChecks = 0;
+  let cleanupCompletions = 0;
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    runtimeSetup: async () => {
+      throw new Error('runtime setup failed after transfer');
+    },
+  });
+
+  await assert.rejects(
+    provider.provision({
+      taskId: 'task-stale-cleanup',
+      cloneSpec: null,
+      ownership: {
+        ownerGeneration: 'owner:g1',
+        resourceGeneration: 'resource:r1',
+      },
+      beforeSandboxCleanup: async () => {
+        cleanupChecks += 1;
+        return false;
+      },
+      afterSandboxCleanup: async () => {
+        cleanupCompletions += 1;
+      },
+    }),
+    (error) =>
+      error?.code === 'sandbox_provisioning_stage_error' &&
+      error?.stage === 'runtime_setup' &&
+      !error.message.includes('runtime setup failed after transfer'),
+  );
+
+  assert.equal(cleanupChecks, 1);
+  assert.equal(cleanupCompletions, 0);
+  assert.deepEqual(client.deletedSandboxIds, []);
+  assert.equal(
+    await client.getSandbox(client.createCalls[0].sandboxId) !== null,
+    true,
+  );
+});
+
+await test('cap-rest provisioning rejects the resolved fallback resource before create', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({ BOXLITE_PROTOCOL_MODE: 'cap-rest' }),
+    client,
+  });
+
+  await assert.rejects(
+    () =>
+      provider.provision({
+        taskId: 'task-resource-gate',
+        cloneSpec: null,
+      }),
+    /missing capabilities: resource\.disk-size-gb/,
+  );
+  assert.equal(client.createCalls.length, 0);
+});
+
+await test('task provisioning verifies actual rootfs capacity even when create echoes the requested disk', async () => {
+  const canary = 'CAP_BOXLITE_CAPACITY_OUTPUT_CANARY';
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: () => ({
+      exitCode: 1,
+      stdout: '',
+      stderr: canary,
+      output: canary,
+      timedOut: false,
+    }),
+  });
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({ BOXLITE_DISK_SIZE_GB: '9' }),
+    client,
+  });
+
+  await assert.rejects(
+    () =>
+      provider.provision({
+        taskId: 'task-capacity-probe',
+        cloneSpec: null,
+      }),
+    (error) =>
+      error?.code === 'sandbox_provisioning_capacity_error' &&
+      error?.message ===
+        'Sandbox provisioned capacity is below the resolved resource policy' &&
+      !error.message.includes(canary),
+  );
+  assert.equal(client.createCalls[0].diskSizeGb, 9);
+  assert.match(client.execCalls[0].command, /^df -Pk \/ \| awk/);
+  assert.deepEqual(client.deletedSandboxIds, [
+    'cap-boxlite-task-capacity-probe',
+  ]);
+  assert.equal(await provider.sandboxExists('task-capacity-probe'), false);
+});
+
+await test('direct BoxLite provisioning rejects canonical credentials before create', async () => {
+  const canary = 'CAP_BOXLITE_UNMIGRATED_CREDENTIAL_CANARY';
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+  });
+
+  await assert.rejects(
+    () =>
+      provider.provision({
+        taskId: 'task-credential-gate',
+        cloneSpec: null,
+        workspace: {
+          repositoryUrl: 'https://code.example.test/org/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'master',
+          deadlineMs: 900_000,
+          credential: core.createExactHostGitCredential(
+            'https://code.example.test/org/repo.git',
+            `Authorization: Basic ${canary}`,
+          ),
+        },
+      }),
+    (err) =>
+      err?.code === 'sandbox_provider_configuration_error' &&
+      /staged workspace hook/.test(err.message) &&
+      !err.message.includes(canary),
+  );
+  assert.equal(client.createCalls.length, 0);
 });
 
 await test('provider delegates retained transcript reads only when the capability is implemented', async () => {
@@ -365,6 +1133,36 @@ await test('provider preserves configured BoxLite defaults when no managed envir
   assert.equal(rootfsClient.createCalls[0].rootfsPath, '/var/lib/cap/boxlite/default-rootfs');
 });
 
+await test('legacy environments snapshot the validated deployment disk fallback', async () => {
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({ BOXLITE_DISK_SIZE_GB: '11' }),
+    client,
+    resolveEnvironment: async () => ({
+      environmentId: 'env-legacy-no-resources',
+      name: 'Legacy BoxLite environment',
+      sourceKind: 'boxlite-image',
+      sourceRef: 'cap-boxlite-legacy:v1',
+      providerFamily: 'boxlite',
+    }),
+  });
+
+  await provider.provision({
+    taskId: 'task-legacy-disk-fallback',
+    cloneSpec: null,
+  });
+
+  assert.equal(client.createCalls[0].diskSizeGb, 11);
+  assert.deepEqual(client.createCalls[0].metadata.resources, {
+    diskSizeGb: 11,
+  });
+  const selected = await provider.getSelectedSandboxRun(
+    'task-legacy-disk-fallback',
+  );
+  assert.deepEqual(selected.environment.resources, { diskSizeGb: 11 });
+  assert.equal(Object.isFrozen(selected.environment.resources), true);
+});
+
 await test('provider uses selected BoxLite image environments before config defaults', async () => {
   const imageClient = new mod.FakeBoxLiteClient();
   const imageProvider = new mod.BoxLiteSandboxProvider({
@@ -447,6 +1245,7 @@ await test('validates BoxLite environments with create start exec delete probes'
       sourceKind: 'boxlite-image',
       sourceRef: 'cap-boxlite-custom:v1',
       digest: 'sha256:boxlite',
+      resources: { diskSizeGb: 9 },
     },
     requiredCommands: [{ name: 'git', command: 'command -v git' }],
   });
@@ -461,6 +1260,7 @@ await test('validates BoxLite environments with create start exec delete probes'
     result.probes.map((probe) => [probe.name, probe.ok]),
     [
       ['create-sandbox', true],
+      ['disk-capacity', true],
       ['start-execution', true],
       ['exec-probe', true],
       ['git', true],
@@ -471,10 +1271,56 @@ await test('validates BoxLite environments with create start exec delete probes'
     'cap-boxlite-custom:v1@sha256:boxlite',
   );
   assert.equal(client.createCalls[0].rootfsPath, undefined);
+  assert.equal(client.createCalls[0].diskSizeGb, 9);
+  assert.deepEqual(result.resourceSnapshot, { diskSizeGb: 9 });
   assert.equal(client.startExecutionCalls[0].command, 'true');
-  assert.equal(client.execCalls[0].command, 'true');
-  assert.equal(client.execCalls[1].command, 'command -v git');
+  assert.match(client.execCalls[0].command, /^df -Pk \/ \| awk/);
+  assert.equal(client.execCalls[1].command, 'true');
+  assert.equal(client.execCalls[2].command, 'command -v git');
   assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-probe']);
+});
+
+await test('validation and task provisioning use the same frozen managed disk snapshot', async () => {
+  const resources = { diskSizeGb: 13 };
+  const environment = {
+    environmentId: 'env-resource-parity',
+    name: 'Resource parity',
+    providerFamily: 'boxlite',
+    sourceKind: 'boxlite-image',
+    sourceRef: 'cap-boxlite-custom:v1@sha256:parity',
+    digest: 'sha256:parity',
+    resources,
+  };
+  const validationClient = new mod.FakeBoxLiteClient();
+  const validation = await mod.validateBoxLiteEnvironment({
+    taskId: 'task-resource-parity-probe',
+    client: validationClient,
+    environment,
+  });
+  assert.equal(validation.status, 'passed');
+
+  const taskClient = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({ BOXLITE_DISK_SIZE_GB: '7' }),
+    client: taskClient,
+    resolveEnvironment: async () => environment,
+  });
+  await provider.provision({
+    taskId: 'task-resource-parity',
+    cloneSpec: null,
+  });
+
+  assert.equal(validationClient.createCalls[0].diskSizeGb, 13);
+  assert.equal(taskClient.createCalls[0].diskSizeGb, 13);
+  assert.deepEqual(validation.resourceSnapshot, resources);
+  assert.deepEqual(taskClient.createCalls[0].metadata.resources, resources);
+  assert.equal(
+    Object.isFrozen(
+      (await provider.getSelectedSandboxRun('task-resource-parity')).environment
+        .resources,
+    ),
+    true,
+  );
 });
 
 await test('BoxLite environment validation cleans up returned provider ids', async () => {
@@ -681,13 +1527,13 @@ await test('runtime preflight probes tools and caches by provider image runtime 
   });
   assert.equal(first.status, 'passed');
   assert.equal(second, first);
-  assert.equal(execCount, 2);
+  assert.equal(execCount, 3);
 });
 
 await test('runtime preflight failure tears down the created sandbox and rejects provision', async () => {
   const client = new mod.FakeBoxLiteClient({
-    execHandler: () => ({
-      exitCode: 1,
+    execHandler: (request) => ({
+      exitCode: request.command.startsWith('df -Pk /') ? 0 : 1,
       stdout: '',
       stderr: 'missing',
       output: 'missing',
@@ -703,7 +1549,10 @@ await test('runtime preflight failure tears down the created sandbox and rejects
   });
   await assert.rejects(
     () => provider.provision({ taskId: 'task-preflight-fail', cloneSpec: null }),
-    /BoxLite image missing required tools: missing-tool/,
+    (error) =>
+      error?.code === 'sandbox_provisioning_stage_error' &&
+      error?.stage === 'runtime_setup' &&
+      !error.message.includes('missing-tool'),
   );
   assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-preflight-fail']);
 });
@@ -780,12 +1629,18 @@ await test('metadata preflight failure blocks git materialization and credential
           authHeader: 'Authorization: Basic secret',
         },
       }),
-    /sandbox metadata invalid/,
+    (error) =>
+      error?.code === 'sandbox_provisioning_stage_error' &&
+      error?.stage === 'runtime_setup' &&
+      !error.message.includes('sandbox metadata invalid'),
   );
 
   assert.deepEqual(
     client.execCalls.map((call) => call.command),
-    ['cat /etc/cap/sandbox-metadata.json'],
+    [
+      "df -Pk / | awk -v minimum=4718592 'NR == 2 { exit ($2 >= minimum ? 0 : 1) } END { if (NR < 2) exit 1 }'",
+      'cat /etc/cap/sandbox-metadata.json',
+    ],
   );
   assert.deepEqual(client.deletedSandboxIds, [
     'cap-boxlite-task-metadata-before-clone',
@@ -824,6 +1679,7 @@ await test('provider runs runtime setup hook after preflight', async () => {
 
   assert.equal(connection.baseUrl, 'boxlite://cap-boxlite-task-runtime-setup');
   assert.deepEqual(events, [
+    "exec:df -Pk / | awk -v minimum=4718592 'NR == 2 { exit ($2 >= minimum ? 0 : 1) } END { if (NR < 2) exit 1 }':/home/gem/workspace",
     'preflight:task-runtime-setup',
     'exec:preflight-check:',
     'setup:task-runtime-setup:cap-boxlite-task-runtime-setup:/home/gem/workspace',
@@ -839,13 +1695,16 @@ await test('runtime setup hook failure tears down the created sandbox and reject
     client,
     preflight: () => ({ status: 'passed', checkedAt: '2026-06-29T00:00:00.000Z' }),
     runtimeSetup: () => {
-      throw new Error('setup failed');
+      throw new Error('boxlite-runtime-setup-private-canary');
     },
   });
 
   await assert.rejects(
     () => provider.provision({ taskId: 'task-runtime-setup-fail', cloneSpec: null }),
-    /setup failed/,
+    (error) =>
+      error?.code === 'sandbox_provisioning_stage_error' &&
+      error?.stage === 'runtime_setup' &&
+      !error.message.includes('boxlite-runtime-setup-private-canary'),
   );
   assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-runtime-setup-fail']);
 });
@@ -879,18 +1738,17 @@ await test('provider materializes git workspace when cloneSpec is present', asyn
     taskId: 'task-materialize',
     cloneSpec: {
       url: 'https://example.test/repo.git',
-      authHeader: 'Authorization: Basic token',
     },
   });
-  assert(commands.some((command) => command.includes('git -c http.extraHeader=')));
+  assert(commands.every((command) => !command.includes('http.extraHeader=')));
   assert(commands.some((command) => command.includes('clone --recursive')));
   assert.equal(client.deletedSandboxIds.length, 0);
 });
 
 await test('provider tears down sandbox when git materialization fails', async () => {
   const client = new mod.FakeBoxLiteClient({
-    execHandler: () => ({
-      exitCode: 128,
+    execHandler: (request) => ({
+      exitCode: request.command.startsWith('df -Pk /') ? 0 : 128,
       stdout: '',
       stderr: 'clone failed',
       output: 'clone failed',
@@ -966,7 +1824,7 @@ await test('terminal and retention descriptors are capability gated', async () =
   assert.equal((await sleepProvider.getRetentionPolicy('task-sleep')).mode, 'provider-native');
 });
 
-await test('provider teardown is idempotent and clears existence', async () => {
+await test('provider teardown is idempotent, deletes once, and clears existence', async () => {
   const client = new mod.FakeBoxLiteClient();
   const provider = new mod.BoxLiteSandboxProvider({
     config: validConfig(),
@@ -976,7 +1834,7 @@ await test('provider teardown is idempotent and clears existence', async () => {
   await provider.teardownSandbox('task-4');
   await provider.teardownSandbox('task-4');
   assert.equal(await provider.sandboxExists('task-4'), false);
-  assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-4', 'cap-boxlite-task-4']);
+  assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-4']);
 });
 
 await test('provider runs pre-stop cleanup before teardown and keeps deletion best-effort', async () => {
@@ -1003,6 +1861,7 @@ await test('provider runs pre-stop cleanup before teardown and keeps deletion be
     },
   });
   await provider.provision({ taskId: 'task-cleanup', cloneSpec: null });
+  events.length = 0;
   await provider.teardownSandbox('task-cleanup');
 
   assert.deepEqual(events, [
@@ -1031,6 +1890,7 @@ await test('provider runs pre-stop cleanup for readoptable BoxLite sandboxes', a
     client,
   });
   await firstProvider.provision({ taskId: 'task-readopt-cleanup', cloneSpec: null });
+  events.length = 0;
 
   const restartedProvider = new mod.BoxLiteSandboxProvider({
     config: validConfig(),

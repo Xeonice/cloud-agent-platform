@@ -10,6 +10,7 @@ import {
 import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
 import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
 import { SandboxRuntimeModelSetupError } from '@cap/sandbox';
+import { TaskBranchResolutionError } from '../forge/task-branch-resolver';
 import { GuardrailsService, type GuardrailsConfig } from './guardrails.service';
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
@@ -29,6 +30,7 @@ const DEFAULT_PROVISION_LOOKUP: ProvisionLookup = {
       ownerUserId: USER_ID,
       runtimeId: 'codex',
       executionMode: 'interactive-pty',
+      workspaceMaterializationDeadlineMs: 900_000,
     };
   },
   async getCloneSpec() {
@@ -98,6 +100,22 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   assert.fail('condition was not reached');
 }
 
+function deferred<T = void>(): {
+  readonly promise: Promise<T>;
+  resolve(value?: T): void;
+} {
+  let resolvePromise!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve(value?: T) {
+      resolvePromise(value as T);
+    },
+  };
+}
+
 test('duplicate admission is idempotent and preserves owner attribution', async () => {
   const transitions: Array<{ taskId: string; next: TaskStatus; userId?: string }> = [];
   const service = buildService(async (taskId, next, userId) => {
@@ -111,6 +129,142 @@ test('duplicate admission is idempotent and preserves owner attribution', async 
   assert.deepEqual(transitions, [{ taskId: TASK_ID, next: 'running', userId: USER_ID }]);
   assert.equal(service.runningCount, 1);
   assert.equal(service.queuedCount, 0);
+});
+
+test('durable terminal cleanup without a sandbox port fails closed and retains the slot', async () => {
+  const service = buildService(async () => 'transitioned');
+  const semaphore = (
+    service as unknown as {
+      semaphore: { offer(taskId: string): 'running' | 'queued' };
+    }
+  ).semaphore;
+  assert.equal(semaphore.offer(TASK_ID), 'running');
+  assert.equal(service.runningCount, 1);
+
+  await assert.rejects(
+    service.onDurableAdmissionTerminal(TASK_ID, 'lease:missing-sandbox'),
+    /cleanup provider is unavailable/,
+  );
+  assert.equal(service.runningCount, 1);
+});
+
+test('provision forwards the immutable resource snapshot in the provider context', async () => {
+  const provisionContexts: unknown[] = [];
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => [
+      'terminal.websocket',
+      'resource.disk-size-gb',
+    ],
+    async provision(context: unknown) {
+      provisionContexts.push(context);
+      return {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/task',
+        wsUrl: 'ws://sandbox.test/task/ws',
+      };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisionLookup: {
+      ...DEFAULT_PROVISION_LOOKUP,
+      async getTaskLaunchContext() {
+        return {
+          modelIntent: { kind: 'explicit', selector: 'gpt-5.4' },
+          ownerUserId: USER_ID,
+          runtimeId: 'codex',
+          executionMode: 'interactive-pty',
+          workspaceMaterializationDeadlineMs: 900_000,
+          environment: {
+            providerId: 'sandbox-test',
+            providerFamily: 'aio',
+            runtimeId: 'codex',
+            sourceKind: 'aio-docker-image',
+            sourceRef: 'example.test/cap-aio@sha256:image',
+            cliArtifactChecksum: `sha256:${'a'.repeat(64)}`,
+            resources: { diskSizeGb: 8 },
+          },
+        };
+      },
+    },
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  assert.equal(provisionContexts.length, 1);
+  const context = provisionContexts[0] as {
+    resources?: { diskSizeGb?: number };
+    environment?: { resources?: { diskSizeGb?: number } };
+  };
+  assert.deepEqual(context.resources, { diskSizeGb: 8 });
+  assert.equal(Object.isFrozen(context.resources), true);
+  assert.equal(context.environment?.resources, context.resources);
+});
+
+test('provision forwards the canonical resolved branch workspace plan to the provider', async () => {
+  const provisionContexts: unknown[] = [];
+  let legacyCloneLookups = 0;
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => [
+      'terminal.websocket',
+      'workspace.git.materialize',
+    ],
+    async provision(context: unknown) {
+      provisionContexts.push(context);
+      return {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/task',
+        wsUrl: 'ws://sandbox.test/task/ws',
+      };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisionLookup: {
+      ...DEFAULT_PROVISION_LOOKUP,
+      async getCloneSpec() {
+        legacyCloneLookups += 1;
+        return {
+          url: 'https://gitee.com/team/private.git',
+          authHeader: 'Authorization: Basic legacy-compat-secret',
+        };
+      },
+      async getTaskWorkspacePlan() {
+        return {
+          repositoryUrl: 'https://gitee.com/team/private.git',
+          callerBranch: null,
+          resolvedBranch: 'master',
+          deadlineMs: 15 * 60_000,
+        };
+      },
+    },
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  assert.equal(provisionContexts.length, 1);
+  const context = provisionContexts[0] as {
+    cloneSpec?: unknown;
+    workspace?: {
+      repositoryUrl: string;
+      callerBranch: string | null;
+      resolvedBranch: string;
+      deadlineMs: number;
+    };
+  };
+  assert.equal(context.cloneSpec, null);
+  assert.equal(legacyCloneLookups, 0);
+  assert.deepEqual(context.workspace, {
+    repositoryUrl: 'https://gitee.com/team/private.git',
+    callerBranch: null,
+    resolvedBranch: 'master',
+    deadlineMs: 15 * 60_000,
+  });
+  assert.equal(Object.isFrozen(context.workspace), true);
 });
 
 test('failed running transition releases the reserved semaphore slot', async () => {
@@ -439,6 +593,219 @@ test('structured model setup errors persist the dedicated safe failure before ge
   assert.deepEqual(failures, ['runtime_model_setup_failed']);
 });
 
+test('typed branch resolution failures persist the canonical provisioning cause', async () => {
+  const service = buildService(async () => 'transitioned');
+  const failures: TaskFailureCode[] = [];
+  Object.assign(service, {
+    tasks: {
+      async failWithProvisioningFailure(
+        _taskId: string,
+        code: TaskFailureCode,
+      ) {
+        failures.push(code);
+        return {};
+      },
+    },
+  });
+  const internals = service as unknown as {
+    failProvisioning(taskId: string, error: unknown): Promise<void>;
+  };
+
+  await internals.failProvisioning(
+    TASK_ID,
+    new TaskBranchResolutionError('branch_not_found'),
+  );
+
+  assert.deepEqual(failures, ['provisioning_ref_not_found']);
+});
+
+test('legacy provisioning logs redact provider failure details', async () => {
+  const canary = 'CAP_PROVISION_SECRET_CANARY_8_5';
+  const messages: string[] = [];
+  let provisionCalls = 0;
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision() {
+      provisionCalls += 1;
+      throw new Error(`clone failed with ${canary}`);
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', { sandbox });
+  const record = (message: unknown) => messages.push(String(message));
+  Object.assign(service, {
+    logger: {
+      debug: record,
+      error: record,
+      log: record,
+      warn: record,
+    },
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+
+  assert.equal(provisionCalls, 1);
+  assert.equal(messages.some((message) => message.includes(canary)), false);
+  assert.ok(
+    messages.includes(
+      `provision sandbox for task ${TASK_ID} failed (provider details redacted)`,
+    ),
+  );
+});
+
+test('PR delivery uses the shared resolved snapshot as its base branch', async () => {
+  let openedBaseBranch: string | null = null;
+  const writes: Array<Record<string, unknown>> = [];
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['workspace.git.deliver'],
+    async deliverWorkspaceChanges() {
+      return { hadChanges: true, commitSha: 'abc123', error: null };
+    },
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', { sandbox });
+  Object.assign(service, {
+    prisma: {
+      task: {
+        async findUnique() {
+          return { status: 'completed', deliver: 'pr', branch: null };
+        },
+        async update(args: { data: Record<string, unknown> }) {
+          writes.push(args.data);
+          return {};
+        },
+      },
+    },
+    forgeResolver: {
+      async getForgeTarget() {
+        return {
+          kind: 'gitee',
+          apiBaseUrl: 'https://gitee.com/api/v5',
+          cloneUrl: 'https://gitee.com/team/private.git',
+          repoId: { style: 'owner-repo', owner: 'team', repo: 'private' },
+          token: 'owner-token',
+        };
+      },
+    },
+    forgeRegistry: {
+      forKind() {
+        return {
+          kind: 'gitee',
+          cloneAuthHeader: () => 'Authorization: Basic safe-test-value',
+          resolveBaseBranch: async () => {
+            assert.fail('delivery must not independently resolve a forge base');
+          },
+          findExistingChangeRequest: async () => null,
+          openChangeRequest: async (
+            _target: unknown,
+            args: { baseBranch: string },
+          ) => {
+            openedBaseBranch = args.baseBranch;
+            return {
+              number: 7,
+              url: 'https://gitee.com/team/private/pulls/7',
+              state: 'open',
+              headBranch: `cap/task-${TASK_ID}`,
+            };
+          },
+        };
+      },
+    },
+    branchResolver: {
+      async resolve(taskId: string) {
+        return {
+          taskId,
+          callerBranch: null,
+          resolvedBranch: 'master',
+          source: 'snapshot',
+          snapshotted: true,
+        };
+      },
+    },
+  });
+  const internals = service as unknown as {
+    deliverResult(taskId: string): Promise<void>;
+  };
+
+  await internals.deliverResult(TASK_ID);
+
+  assert.equal(openedBaseBranch, 'master');
+  assert.equal(writes.at(-1)?.deliverStatus, 'pr_opened');
+});
+
+test('delivery failures keep the exact-host credential private and redact provider errors', async () => {
+  const canary = 'CAP_DELIVERY_SECRET_CANARY_8_5';
+  const writes: Array<Record<string, unknown>> = [];
+  const warnings: string[] = [];
+  let providerCalls = 0;
+  let serializedCredential = '';
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['workspace.git.deliver'],
+    async deliverWorkspaceChanges(
+      _taskId: string,
+      args: { credential?: unknown },
+    ) {
+      providerCalls += 1;
+      serializedCredential = JSON.stringify(args.credential);
+      throw new Error(`provider rejected ${canary}`);
+    },
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', { sandbox });
+  Object.assign(service, {
+    logger: {
+      warn(message: string) {
+        warnings.push(message);
+      },
+    },
+    prisma: {
+      task: {
+        async findUnique() {
+          return { status: 'completed', deliver: 'branch', branch: null };
+        },
+        async update(args: { data: Record<string, unknown> }) {
+          writes.push(args.data);
+          return {};
+        },
+      },
+    },
+    forgeResolver: {
+      async getForgeTarget() {
+        return {
+          kind: 'gitee',
+          apiBaseUrl: 'https://gitee.com/api/v5',
+          cloneUrl: 'https://gitee.com/team/private.git',
+          repoId: { style: 'owner-repo', owner: 'team', repo: 'private' },
+          token: canary,
+        };
+      },
+    },
+    forgeRegistry: {
+      forKind() {
+        return {
+          kind: 'gitee',
+          cloneAuthHeader: () => `Authorization: Basic ${canary}`,
+        };
+      },
+    },
+  });
+  const internals = service as unknown as {
+    deliverResult(taskId: string): Promise<void>;
+  };
+
+  await internals.deliverResult(TASK_ID);
+
+  assert.equal(providerCalls, 1);
+  assert.equal(serializedCredential.includes(canary), false);
+  assert.match(serializedCredential, /\[REDACTED\]/);
+  assert.deepEqual(writes.at(-1), { deliverStatus: 'failed' });
+  assert.equal(JSON.stringify({ warnings, writes }).includes(canary), false);
+  assert.deepEqual(warnings, [
+    `result delivery for task ${TASK_ID} failed (provider details redacted)`,
+  ]);
+});
+
 test('model rejection persistence refuses unverified structured codes for the checked pins', async () => {
   const service = buildService(async () => 'transitioned');
   const failures: TaskFailureCode[] = [];
@@ -566,4 +933,557 @@ test('exit classification timeout settles generically then enriches the late res
     breaker: { consecutiveFailures(taskId: string): number };
   };
   assert.equal(breaker.breaker.consecutiveFailures(TASK_ID), 1);
+});
+
+test('startup readoption restores two confirmed survivors above ceiling one without fresh admission', async () => {
+  const service = buildService(async () => 'transitioned');
+  const modes: Array<string | undefined> = [];
+  Object.assign(service, {
+    gateway: {
+      openSession(
+        _connection: unknown,
+        _selectedRun: unknown,
+        options?: { mode?: string },
+      ) {
+        modes.push(options?.mode);
+        return { launchDecision: Promise.resolve({ kind: 'attached' as const }) };
+      },
+      unregisterSession() {},
+      async readSessionLogTail() {
+        return '';
+      },
+    },
+  });
+
+  assert.equal(
+    await service.readopt(TASK_ID, {
+      taskId: TASK_ID,
+      baseUrl: 'http://sandbox.test/one',
+      wsUrl: 'ws://sandbox.test/one',
+    }),
+    'attached',
+  );
+  assert.equal(
+    await service.readopt(OTHER_TASK_ID, {
+      taskId: OTHER_TASK_ID,
+      baseUrl: 'http://sandbox.test/two',
+      wsUrl: 'ws://sandbox.test/two',
+    }),
+    'attached',
+  );
+
+  assert.equal(service.runningCount, 2);
+  assert.equal(service.queuedCount, 0);
+  assert.deepEqual(modes, ['attach-only', 'attach-only']);
+});
+
+test('attach-only absence and indeterminate failure leave no readoption state', async () => {
+  for (const kind of ['absent', 'indeterminate', 'failed'] as const) {
+    const service = buildService(async () => 'transitioned');
+    const unregistered: string[] = [];
+    Object.assign(service, {
+      gateway: {
+        openSession() {
+          return { launchDecision: Promise.resolve({ kind }) };
+        },
+        unregisterSession(taskId: string) {
+          unregistered.push(taskId);
+        },
+        async readSessionLogTail() {
+          return '';
+        },
+      },
+    });
+
+    const attempt = service.readopt(
+      TASK_ID,
+      {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/readopt',
+        wsUrl: 'ws://sandbox.test/readopt',
+      },
+      { deadlineMs: 60_000, idleTimeoutMs: 30_000 },
+    );
+    if (kind === 'absent') {
+      assert.equal(await attempt, 'absent');
+    } else {
+      await assert.rejects(attempt, /indeterminate/);
+    }
+
+    const internals = service as unknown as {
+      connections: Map<string, unknown>;
+      idle: { isTracking(taskId: string): boolean };
+      deadlines: { isWatching(taskId: string): boolean };
+      runnerMinutes: { intervals(): Array<unknown> };
+    };
+    assert.equal(service.runningCount, 0, `${kind}: no slot restored`);
+    assert.equal(internals.connections.has(TASK_ID), false, `${kind}: no connection`);
+    assert.equal(internals.idle.isTracking(TASK_ID), false, `${kind}: no idle timer`);
+    assert.equal(
+      internals.deadlines.isWatching(TASK_ID),
+      false,
+      `${kind}: no deadline timer`,
+    );
+    assert.deepEqual(internals.runnerMinutes.intervals(), [], `${kind}: no accounting`);
+    assert.deepEqual(unregistered, [TASK_ID], `${kind}: provisional gateway state removed`);
+  }
+});
+
+test('readoption final fence false or rejection leaves no partial state', async () => {
+  for (const outcome of ['false', 'throw'] as const) {
+    const service = buildService(async () => 'transitioned');
+    let unregisterCalls = 0;
+    Object.assign(service, {
+      gateway: {
+        openSession() {
+          return {
+            launchDecision: Promise.resolve({ kind: 'attached' as const }),
+          };
+        },
+        unregisterSession() {
+          unregisterCalls += 1;
+        },
+        async readSessionLogTail() {
+          return '';
+        },
+      },
+    });
+
+    const attempt = service.readopt(
+      TASK_ID,
+      {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/fenced',
+        wsUrl: 'ws://sandbox.test/fenced',
+      },
+      { deadlineMs: 60_000, idleTimeoutMs: 30_000 },
+      null,
+      {
+        beforeCommit: async () => {
+          if (outcome === 'throw') throw new Error('database fence unavailable');
+          return false;
+        },
+      },
+    );
+    if (outcome === 'false') {
+      assert.equal(await attempt, 'superseded');
+    } else {
+      await assert.rejects(attempt, /database fence unavailable/);
+    }
+
+    const internals = service as unknown as {
+      connections: Map<string, unknown>;
+      idle: { isTracking(taskId: string): boolean };
+      deadlines: { isWatching(taskId: string): boolean };
+      runnerMinutes: { intervals(): Array<unknown> };
+    };
+    assert.equal(service.runningCount, 0);
+    assert.equal(internals.connections.has(TASK_ID), false);
+    assert.equal(internals.idle.isTracking(TASK_ID), false);
+    assert.equal(internals.deadlines.isWatching(TASK_ID), false);
+    assert.deepEqual(internals.runnerMinutes.intervals(), []);
+    assert.equal(unregisterCalls, 1);
+  }
+});
+
+test('terminal transition winning during the final readoption fence prevents restoration', async () => {
+  let resolveDecision!: (value: { kind: 'attached' }) => void;
+  const decision = new Promise<{ kind: 'attached' }>((resolve) => {
+    resolveDecision = resolve;
+  });
+  let resolveFence!: (value: boolean) => void;
+  const fence = new Promise<boolean>((resolve) => {
+    resolveFence = resolve;
+  });
+  let fenceStarted = false;
+  const service = buildService(async () => 'transitioned');
+  Object.assign(service, {
+    gateway: {
+      openSession() {
+        return { launchDecision: decision };
+      },
+      unregisterSession() {},
+      async readSessionLogTail() {
+        return '';
+      },
+    },
+  });
+
+  const attempt = service.readopt(
+    TASK_ID,
+    {
+      taskId: TASK_ID,
+      baseUrl: 'http://sandbox.test/race',
+      wsUrl: 'ws://sandbox.test/race',
+    },
+    {},
+    null,
+    {
+      beforeCommit: async () => {
+        fenceStarted = true;
+        return fence;
+      },
+    },
+  );
+  resolveDecision({ kind: 'attached' });
+  await waitFor(() => fenceStarted);
+
+  await service.onTerminal(TASK_ID);
+  resolveFence(true);
+
+  assert.equal(await attempt, 'superseded');
+  const internals = service as unknown as {
+    connections: Map<string, unknown>;
+    terminalTasks: Set<string>;
+    runnerMinutes: { intervals(): Array<unknown> };
+  };
+  assert.equal(service.runningCount, 0);
+  assert.equal(internals.connections.has(TASK_ID), false);
+  assert.deepEqual(internals.runnerMinutes.intervals(), []);
+  assert.equal(internals.terminalTasks.has(TASK_ID), false);
+});
+
+test('remote terminal winner after readoption commit clears only local runtime accounting on exit', async () => {
+  let authorityCurrent = true;
+  let transitionAttempts = 0;
+  let unregisterCalls = 0;
+  let teardownCalls = 0;
+  const service = buildService(async () => 'transitioned');
+  Object.assign(service, {
+    tasks: {
+      async transition() {
+        transitionAttempts += 1;
+        throw new Error('task is already terminal on another replica');
+      },
+    },
+    sandbox: {
+      async teardownSandbox() {
+        teardownCalls += 1;
+      },
+    },
+    gateway: {
+      openSession() {
+        return {
+          launchDecision: Promise.resolve({ kind: 'attached' as const }),
+        };
+      },
+      unregisterSession() {
+        unregisterCalls += 1;
+      },
+      async readSessionLogTail() {
+        return '';
+      },
+    },
+  });
+
+  assert.equal(
+    await service.readopt(
+      TASK_ID,
+      {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/remote-terminal-race',
+        wsUrl: 'ws://sandbox.test/remote-terminal-race',
+      },
+      { deadlineMs: 60_000, idleTimeoutMs: 30_000 },
+      null,
+      { beforeCommit: async () => authorityCurrent },
+    ),
+    'attached',
+  );
+  assert.equal(service.runningCount, 1);
+
+  // Another API instance commits terminal + owns provider/session settlement
+  // after our final startup read but before this local terminal event arrives.
+  authorityCurrent = false;
+  service.recordExit(TASK_ID, { code: 0, abnormal: false });
+  await waitFor(() => service.runningCount === 0);
+
+  const internals = service as unknown as {
+    connections: Map<string, unknown>;
+    idle: { isTracking(taskId: string): boolean };
+    deadlines: { isWatching(taskId: string): boolean };
+    runnerMinutes: { intervals(): Array<{ endedAt: number | null }> };
+    readoptionAuthorityChecks: Map<string, unknown>;
+  };
+  assert.equal(transitionAttempts, 1);
+  assert.equal(internals.connections.has(TASK_ID), false);
+  assert.equal(internals.idle.isTracking(TASK_ID), false);
+  assert.equal(internals.deadlines.isWatching(TASK_ID), false);
+  assert.equal(
+    internals.runnerMinutes.intervals().some(({ endedAt }) => endedAt === null),
+    false,
+    'the restored running interval is closed, while historical accounting remains',
+  );
+  assert.equal(internals.readoptionAuthorityChecks.has(TASK_ID), false);
+  assert.equal(unregisterCalls, 1);
+  assert.equal(
+    teardownCalls,
+    0,
+    'the remote terminal winner retains sole provider-settlement ownership',
+  );
+});
+
+test('same-target remote terminal winner is detected even when transition resolves', async () => {
+  let authorityCurrent = true;
+  let unregisterCalls = 0;
+  let teardownCalls = 0;
+  const service = buildService(async () => 'transitioned');
+  Object.assign(service, {
+    tasks: {
+      // Mirrors TasksService's same-target CAS-loser branch: it returns the
+      // winner response without starting terminal settlement in this process.
+      async transition() {},
+    },
+    sandbox: {
+      async teardownSandbox() {
+        teardownCalls += 1;
+      },
+    },
+    gateway: {
+      openSession() {
+        return {
+          launchDecision: Promise.resolve({ kind: 'attached' as const }),
+        };
+      },
+      unregisterSession() {
+        unregisterCalls += 1;
+      },
+      async readSessionLogTail() {
+        return '';
+      },
+    },
+  });
+
+  assert.equal(
+    await service.readopt(
+      TASK_ID,
+      {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/same-target-winner',
+        wsUrl: 'ws://sandbox.test/same-target-winner',
+      },
+      { deadlineMs: 60_000, idleTimeoutMs: 30_000 },
+      null,
+      { beforeCommit: async () => authorityCurrent },
+    ),
+    'attached',
+  );
+
+  authorityCurrent = false;
+  service.recordExit(TASK_ID, { code: 0, abnormal: false });
+  await waitFor(() => service.runningCount === 0);
+
+  const internals = service as unknown as {
+    connections: Map<string, unknown>;
+    idle: { isTracking(taskId: string): boolean };
+    deadlines: { isWatching(taskId: string): boolean };
+    runnerMinutes: { intervals(): Array<{ endedAt: number | null }> };
+  };
+  assert.equal(internals.connections.has(TASK_ID), false);
+  assert.equal(internals.idle.isTracking(TASK_ID), false);
+  assert.equal(internals.deadlines.isWatching(TASK_ID), false);
+  assert.equal(
+    internals.runnerMinutes.intervals().some(({ endedAt }) => endedAt === null),
+    false,
+  );
+  assert.equal(unregisterCalls, 1);
+  assert.equal(teardownCalls, 0);
+});
+
+test('structured remote failure winner also clears readoption accounting without provider settlement', async () => {
+  let unregisterCalls = 0;
+  let teardownCalls = 0;
+  const service = buildService(async () => 'transitioned');
+  Object.assign(service, {
+    tasks: {
+      async classifyRuntimeOutputFailure() {
+        return { code: 'runtime_auth_expired' as const };
+      },
+      // Mirrors TasksService observing another replica's same failed winner.
+      async failWithRuntimeFailure() {},
+    },
+    sandbox: {
+      async teardownSandbox() {
+        teardownCalls += 1;
+      },
+    },
+    gateway: {
+      openSession() {
+        return {
+          launchDecision: Promise.resolve({ kind: 'attached' as const }),
+        };
+      },
+      unregisterSession() {
+        unregisterCalls += 1;
+      },
+      async readSessionLogTail() {
+        return 'HTTP 401 token expired';
+      },
+    },
+  });
+
+  assert.equal(
+    await service.readopt(
+      TASK_ID,
+      {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/structured-remote-winner',
+        wsUrl: 'ws://sandbox.test/structured-remote-winner',
+      },
+      { deadlineMs: 60_000, idleTimeoutMs: 30_000 },
+      null,
+      { beforeCommit: async () => true },
+    ),
+    'attached',
+  );
+
+  service.recordExit(TASK_ID, { code: 1, abnormal: false });
+  await waitFor(() => service.runningCount === 0);
+
+  const internals = service as unknown as {
+    connections: Map<string, unknown>;
+    idle: { isTracking(taskId: string): boolean };
+    deadlines: { isWatching(taskId: string): boolean };
+    runnerMinutes: { intervals(): Array<{ endedAt: number | null }> };
+  };
+  assert.equal(internals.connections.has(TASK_ID), false);
+  assert.equal(internals.idle.isTracking(TASK_ID), false);
+  assert.equal(internals.deadlines.isWatching(TASK_ID), false);
+  assert.equal(
+    internals.runnerMinutes.intervals().some(({ endedAt }) => endedAt === null),
+    false,
+  );
+  assert.equal(unregisterCalls, 1);
+  assert.equal(teardownCalls, 0);
+});
+
+test('provisional deadline fence does not make a remote terminal winner repeat provider settlement', async () => {
+  let unregisterCalls = 0;
+  let teardownCalls = 0;
+  const service = buildService(async () => 'transitioned');
+  Object.assign(service, {
+    tasks: {
+      // Remote replica already committed the same failed target; TasksService
+      // returns that winner without invoking this process's onTerminal.
+      async transition() {},
+    },
+    sandbox: {
+      async teardownSandbox() {
+        teardownCalls += 1;
+      },
+    },
+    gateway: {
+      openSession() {
+        return {
+          launchDecision: Promise.resolve({ kind: 'attached' as const }),
+        };
+      },
+      unregisterSession() {
+        unregisterCalls += 1;
+      },
+      async readSessionLogTail() {
+        return '';
+      },
+    },
+  });
+
+  assert.equal(
+    await service.readopt(
+      TASK_ID,
+      {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/deadline-remote-winner',
+        wsUrl: 'ws://sandbox.test/deadline-remote-winner',
+      },
+      { deadlineMs: 60_000, idleTimeoutMs: 30_000 },
+      null,
+      { beforeCommit: async () => true },
+    ),
+    'attached',
+  );
+
+  await (
+    service as unknown as {
+      forceFail(taskId: string, cause: 'deadline'): Promise<void>;
+    }
+  ).forceFail(TASK_ID, 'deadline');
+
+  assert.equal(service.runningCount, 0);
+  assert.equal(service.connectionFor(TASK_ID), undefined);
+  assert.equal(unregisterCalls, 1);
+  assert.equal(
+    teardownCalls,
+    0,
+    'the remote winner remains the only provider-settlement owner',
+  );
+});
+
+test('local terminal fence retains readoption state until its own settlement finishes', async () => {
+  let unregisterCalls = 0;
+  let teardownCalls = 0;
+  const teardownEntered = deferred<void>();
+  const releaseTeardown = deferred<void>();
+  const service = buildService(async () => 'transitioned');
+  Object.assign(service, {
+    tasks: {
+      // A concurrent caller observes the same target while this process's
+      // onTerminal settlement is still active.
+      async transition() {},
+    },
+    sandbox: {
+      async teardownSandbox() {
+        teardownCalls += 1;
+        teardownEntered.resolve();
+        await releaseTeardown.promise;
+      },
+    },
+    gateway: {
+      openSession() {
+        return {
+          launchDecision: Promise.resolve({ kind: 'attached' as const }),
+        };
+      },
+      unregisterSession() {
+        unregisterCalls += 1;
+      },
+      async readSessionLogTail() {
+        return '';
+      },
+    },
+  });
+
+  assert.equal(
+    await service.readopt(
+      TASK_ID,
+      {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/local-terminal-winner',
+        wsUrl: 'ws://sandbox.test/local-terminal-winner',
+      },
+      { deadlineMs: 60_000, idleTimeoutMs: 30_000 },
+      null,
+      { beforeCommit: async () => true },
+    ),
+    'attached',
+  );
+
+  const localSettlement = service.onTerminal(TASK_ID);
+  await teardownEntered.promise;
+  const transition = await (
+    service as unknown as {
+      safeTransition(taskId: string, next: TaskStatus): Promise<string>;
+    }
+  ).safeTransition(TASK_ID, 'completed');
+  assert.equal(transition, 'transitioned');
+  assert.equal(service.runningCount, 1);
+  assert.equal(service.connectionFor(TASK_ID)?.taskId, TASK_ID);
+  assert.equal(unregisterCalls, 0, 'remote-only cleanup must not interrupt local settlement');
+  assert.equal(teardownCalls, 1);
+
+  releaseTeardown.resolve();
+  await localSettlement;
+  assert.equal(service.runningCount, 0);
+  assert.equal(service.connectionFor(TASK_ID), undefined);
+  assert.equal(unregisterCalls, 1);
+  assert.equal(teardownCalls, 1);
 });

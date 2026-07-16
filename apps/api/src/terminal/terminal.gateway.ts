@@ -88,6 +88,7 @@ import {
   castResizeData,
 } from './cast-writer';
 import type {
+  AgentTerminalLaunchOutcome,
   AgentTerminalOutputMeta,
   AgentTerminalPty,
 } from './agent-terminal-pty';
@@ -241,11 +242,21 @@ export interface TerminalSession {
   readonly taskId: string;
   readonly pty: TerminalPty;
   readonly snapshots: SnapshotManager;
+  /** Await before settling durable admission success and releasing launch authority. */
+  readonly launchDecision: Promise<AgentTerminalLaunchOutcome>;
 }
 
 export interface OpenTerminalSessionOptions {
+  /** Use `attach-only` for recovery paths that must never create an agent session. */
   readonly mode?: SandboxTerminalPtyMode;
   readonly recordExit?: boolean;
+  /** Cancels a fresh agent launch without affecting readoption of an existing session. */
+  readonly signal?: AbortSignal;
+  /**
+   * Load-bearing durable-authority check executed after launch preparation and
+   * immediately before the first tmux agent-launch input is sent.
+   */
+  readonly beforeAgentLaunch?: () => Promise<void>;
 }
 
 /**
@@ -895,13 +906,20 @@ export class TerminalGateway
           ? undefined
           : (status) => this.onSessionExit(taskId, status),
       mode: options.mode ?? 'launch-or-attach',
+      signal: options.signal,
+      beforeAgentLaunch: options.beforeAgentLaunch,
       resolveTaskLaunchContext: () =>
         this.resolveTaskLaunchContext(taskId, selectedRun),
       onRuntimeSetupFailure: (code) => {
         void this.guardrails?.failRuntime(taskId, code, null, false);
       },
     });
-    const session: TerminalSession = { taskId, pty, snapshots };
+    const session: TerminalSession = {
+      taskId,
+      pty,
+      snapshots,
+      launchDecision: pty.launchDecision,
+    };
     this.registerSession(session);
     // 3.1 — register the per-task session.log append target. The path MUST match
     // the one SnapshotManager reads for tail-replay (workspaceDir/session.log) so

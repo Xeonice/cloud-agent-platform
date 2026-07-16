@@ -45,6 +45,7 @@ test('startup re-offers only direct pending tasks with durable owner attribution
 
   assert.equal(await service.reofferQueuedOnStartup(), 1);
   assert.deepEqual(where, {
+    admissionWork: { is: null },
     OR: [
       { status: 'queued' },
       { status: 'pending', scheduleRun: { is: null } },
@@ -54,4 +55,46 @@ test('startup re-offers only direct pending tasks with durable owner attribution
     `audit:${TASK_ID}:${USER_ID}`,
     `admit:${TASK_ID}:${USER_ID}`,
   ]);
+});
+
+test('startup re-offer excludes pending/queued tasks owned by durable admission work', async () => {
+  const admitted: string[] = [];
+  const rows = [
+    { id: 'legacy-pending', status: 'pending', hasWork: false },
+    { id: 'legacy-queued', status: 'queued', hasWork: false },
+    { id: 'durable-pending', status: 'pending', hasWork: true },
+    { id: 'durable-queued', status: 'queued', hasWork: true },
+  ];
+  const prisma = {
+    task: {
+      async findMany(args: {
+        where: { admissionWork?: { is: null } };
+      }) {
+        assert.deepEqual(args.where.admissionWork, { is: null });
+        return rows
+          .filter((row) => !row.hasWork)
+          .map((row) => ({
+            id: row.id,
+            status: row.status,
+            ownerUserId: USER_ID,
+            deadlineMs: null,
+            idleTimeoutMs: null,
+            auditEvents: [],
+          }));
+      },
+    },
+  } as unknown as PrismaService;
+  const guardrails: IGuardrailsService = {
+    async admit(taskId) {
+      admitted.push(taskId);
+      return 'running';
+    },
+    async onTerminal() {},
+    recordFailure() {},
+    recordSuccess() {},
+  };
+  const service = new TasksService(prisma, guardrails);
+
+  assert.equal(await service.reofferQueuedOnStartup(), 2);
+  assert.deepEqual(admitted, ['legacy-pending', 'legacy-queued']);
 });

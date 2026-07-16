@@ -206,6 +206,19 @@ export function ApiRequestPanel({
         </span>
       </div>
 
+      <div
+        data-api-operation-guidance
+        className="grid gap-1 rounded-lg bg-[#fafafa] p-3 shadow-[inset_0_0_0_1px_var(--border)]"
+      >
+        <p className="m-0 text-[13px] leading-5 text-foreground">
+          {endpoint.description}
+        </p>
+        <p className="m-0 text-xs leading-5 text-muted-foreground">
+          <span className="font-medium text-foreground">成功响应：</span>
+          {endpoint.responseDescription}
+        </p>
+      </div>
+
       {/* Request bar: method tag + resolved path + 发送. */}
       <div className="flex gap-2">
         <div className="flex min-w-0 flex-1 items-center overflow-hidden rounded-lg bg-card shadow-[inset_0_0_0_1px_var(--border)]">

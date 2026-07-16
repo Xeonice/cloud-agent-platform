@@ -17,6 +17,11 @@
 自定义任务基础镜像的创建和维护流程见
 [`docs/sandbox-images.zh.md`](sandbox-images.zh.md)。
 
+包含持久化异步任务 admission 的版本必须经过显式、默认关闭的部署切换。设置
+`CAP_TASK_ADMISSION_V2_ENABLED=true` 前，应先检查 BoxLite 容量与原生就绪性，并严格执行
+[`deploy/TASK_ADMISSION_V2_CUTOVER.md`](../deploy/TASK_ADMISSION_V2_CUTOVER.md)
+中的分阶段启用和「先关闭门禁、排空未完成 admission、再回滚代码」流程。
+
 应用内升级是后续阶段，今天自托管并不需要它。
 
 > **想在一台全新的本地主机上试试？** 公开宣传站托管了一个一键安装脚本，运行预构建

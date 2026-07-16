@@ -102,6 +102,9 @@ importers:
       '@cap/eslint-config':
         specifier: workspace:*
         version: link:../../packages/eslint-config
+      '@cap/sandbox-conformance':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-conformance
       '@nestjs/cli':
         specifier: ^10.4.0
         version: 10.4.9
@@ -412,6 +415,9 @@ importers:
       '@cap/sandbox-cloud-http':
         specifier: workspace:*
         version: link:../sandbox-cloud-http
+      '@cap/sandbox-conformance':
+        specifier: workspace:*
+        version: link:../sandbox-conformance
       '@cap/sandbox-core':
         specifier: workspace:*
         version: link:../sandbox-core

@@ -7,24 +7,46 @@ import type {
   SandboxDeliverWorkspaceArgs,
   SandboxDeliverWorkspaceResult,
   SandboxExecutionMode,
+  SandboxExternalBoundaryAction,
+  SandboxExternalBoundaryGuard,
+  SandboxInventoryReconcileInput,
+  SandboxInventoryReconcileResult,
   SandboxPreflightResult,
+  SandboxOwnershipFence,
   SandboxProviderCapability,
   SandboxProviderDescriptor,
   SandboxProviderPort,
   SandboxProvisionContext,
   SandboxReadoptionPort,
+  SandboxReadoptionTarget,
   SandboxRetentionPolicy,
   SandboxResolvedEnvironmentMetadata,
+  SandboxRunCleanupAuthorization,
   SandboxSelectedRunPort,
+  SandboxTeardownDisposition,
+  SandboxTeardownResult,
   SandboxTerminalEndpointDescriptor,
   SandboxTranscriptSourceBase,
   TaskModelIntent,
   SandboxWorkspaceDescriptor,
+  SandboxWorkspaceDeliveryHook,
+  SandboxWorkspaceMaterializationHook,
   SelectedSandboxRun,
 } from '@cap/sandbox-core';
 import {
+  assertSandboxProviderSupportsResources,
   buildSandboxCommandLine,
+  isSandboxLegacyDeliverWorkspaceArgs,
+  latchSandboxExternalBoundaryGuard,
   normalizeSandboxCommandResult,
+  redactSandboxProvisioningStageFailure,
+  reportSandboxProvisioningProgress,
+  resourcesForSandboxProvision,
+  runSandboxExternalBoundary,
+  SandboxProvisioningStageError,
+  SandboxProviderConfigurationError,
+  SandboxWorkspaceMaterializationError,
+  snapshotSandboxProvisionContext,
 } from '@cap/sandbox-core';
 import Docker from 'dockerode';
 import {
@@ -40,6 +62,7 @@ import {
   buildAioSandboxContainerName,
   defineAioLocalSandboxProvider,
 } from './aio-local-provider.js';
+import { createAioWorkspaceSecurityAdapter } from './aio-workspace-security.js';
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -132,6 +155,8 @@ export interface AioSandboxProviderHooks<
   readonly skillPreinstall?: AioSkillPreinstallHook<TRuntimeId>;
   readonly transcriptRead?: AioTranscriptReadHook<TRuntimeId, TTranscriptSource>;
   readonly preStopTrim?: AioPreStopTrimHook<TRuntimeId>;
+  readonly workspaceMaterialization?: SandboxWorkspaceMaterializationHook;
+  readonly workspaceDelivery?: SandboxWorkspaceDeliveryHook;
 }
 
 export interface AioSandboxProviderOptions<
@@ -172,14 +197,25 @@ export interface AioDockerProviderDescriptorOptions<
 export interface AioHttpCommandExecutorOptions {
   readonly baseUrl: string;
   readonly fetch?: AioFetch;
+  readonly taskId?: string;
+  readonly externalBoundaryGuard?: SandboxExternalBoundaryGuard;
+  readonly signal?: AbortSignal;
+}
+
+interface AioCommandBoundaryContext {
+  readonly taskId: string;
+  readonly guard?: SandboxExternalBoundaryGuard;
+  readonly signal?: AbortSignal;
 }
 
 interface AioProvisionedRun<TRuntimeId> {
   readonly taskId: string;
   readonly connection: SandboxConnection;
+  readonly providerSandboxId?: string;
   readonly runtimeId?: TRuntimeId | null;
   readonly preflight?: SandboxPreflightResult;
   readonly environment?: SandboxResolvedEnvironmentMetadata | null;
+  readonly ownership?: SandboxOwnershipFence;
 }
 
 export class AioSandboxProvider<
@@ -235,61 +271,212 @@ export class AioSandboxProvider<
   }
 
   async provision(ctx: SandboxProvisionContext<TCloneSpec>): Promise<SandboxConnection> {
-    const existing = this.controller.getConnection(ctx.taskId);
-    if (existing) return existing;
-
+    ctx = snapshotSandboxProvisionContext({
+      ...ctx,
+      externalBoundaryGuard: latchSandboxExternalBoundaryGuard(
+        ctx.externalBoundaryGuard,
+      ),
+    });
+    if (
+      !ctx.ownership &&
+      (ctx.beforeSandboxCleanup !== undefined ||
+        ctx.afterSandboxCleanup !== undefined)
+    ) {
+      throw new SandboxProviderConfigurationError(
+        'AIO sandbox cleanup callbacks require an ownership fence',
+      );
+    }
+    if (ctx.workspace !== undefined && ctx.workspace !== null && !this.hooks.workspaceMaterialization) {
+      throw new SandboxProviderConfigurationError(
+        'AIO canonical workspace materialization requires the staged workspace hook',
+      );
+    }
+    assertSandboxProviderSupportsResources(
+      this.getProviderCapabilities(),
+      resourcesForSandboxProvision(ctx),
+    );
     let connection: SandboxConnection | null = null;
     let runtimeId: TRuntimeId | null | undefined;
     let environment: SandboxResolvedEnvironmentMetadata | null | undefined;
 
     try {
       runtimeId = ctx.runtimeId as TRuntimeId;
-      environment = await this.resolveEnvironment(ctx, runtimeId);
-      const provisioned = await this.controller.createAndStart(ctx.taskId, environment);
-      const { spec } = provisioned;
+      environment = await this.runProvisionBoundary(
+        ctx,
+        'environment.resolve',
+        () => this.resolveEnvironment(ctx, runtimeId),
+      );
+      const provisioned = await this.controller.createAndStart(
+        ctx.taskId,
+        environment,
+        undefined,
+        {
+          signal: ctx.cancellationSignal,
+          ownership: ctx.ownership,
+          externalBoundaryGuard: ctx.externalBoundaryGuard,
+          onSandboxCreateObserved: ctx.onSandboxCreateObserved,
+        },
+      );
+      const { spec, providerSandboxId } = provisioned;
       connection = provisioned.connection;
-      const executor = this.createCommandExecutor(connection.baseUrl);
+      const rawWorkspaceExecutor = this.createCommandExecutor(
+        connection.baseUrl,
+        {
+          taskId: ctx.taskId,
+          signal: ctx.cancellationSignal,
+        },
+      );
+      const guardedHookExecutor = this.createCommandExecutor(connection.baseUrl, {
+        taskId: ctx.taskId,
+        guard: ctx.externalBoundaryGuard,
+        signal: ctx.cancellationSignal,
+      });
       const executionContext: AioProviderExecutionContext<TRuntimeId> = {
         taskId: ctx.taskId,
         modelIntent: ctx.modelIntent,
         executionMode: ctx.executionMode,
         runtimeId,
         connection,
-        executor,
+        executor: guardedHookExecutor,
         workspaceDir: this.workspaceDir,
-        providerSandboxId: connection.taskId,
+        providerSandboxId,
         containerName: spec.containerName,
         controller: this.controller,
         environment,
       };
+      reportSandboxProvisioningProgress(ctx.onProvisioningProgress, {
+        status: 'started',
+        stage: 'readiness',
+      });
       await this.controller.waitForReadiness({
-        baseUrl: connection.baseUrl,
+        baseUrl: executionContext.connection.baseUrl,
         taskId: ctx.taskId,
         timeoutMs: spec.readinessTimeoutMs,
+        signal: ctx.cancellationSignal,
+        externalBoundaryGuard: ctx.externalBoundaryGuard,
       });
-      const preflight = await this.runRuntimePreflight(executionContext);
+      reportSandboxProvisioningProgress(ctx.onProvisioningProgress, {
+        status: 'started',
+        stage: 'runtime_setup',
+      });
+      const preflight = await this.runProvisionBoundary(
+        ctx,
+        'runtime.preflight',
+        async () => {
+          try {
+            return await this.runRuntimePreflight(executionContext);
+          } catch (error) {
+            throw redactSandboxProvisioningStageFailure(
+              'runtime_setup',
+              error,
+            );
+          }
+        },
+      );
       if (preflight.status === 'failed') {
-        throw new Error(preflight.error ?? `AIO runtime preflight failed for task ${ctx.taskId}`);
+        throw new SandboxProvisioningStageError('runtime_setup');
       }
-      const prompt = await this.hooks.provisionLookup?.getTaskPrompt?.(ctx.taskId);
+      const prompt = await this.runProvisionBoundary(
+        ctx,
+        'prompt.lookup',
+        () => this.hooks.provisionLookup?.getTaskPrompt?.(ctx.taskId),
+      );
       const promptContext: AioPromptAuthInjectionContext<TRuntimeId> = {
         ...executionContext,
         prompt: prompt ?? null,
       };
-      await this.hooks.promptAuthInjection?.(promptContext);
-      await this.hooks.runtimeSetup?.(promptContext);
-      await this.materializeWorkspace(ctx, executor);
-      await this.hooks.skillPreinstall?.(executionContext);
+      await this.runProvisionBoundary(ctx, 'prompt-auth.inject', () =>
+        this.hooks.promptAuthInjection?.(promptContext),
+      );
+      await this.runProvisionBoundary(ctx, 'runtime.setup', async () => {
+        try {
+          await this.hooks.runtimeSetup?.(promptContext);
+        } catch (error) {
+          throw redactSandboxProvisioningStageFailure(
+            'runtime_setup',
+            error,
+          );
+        }
+      });
+      await this.runProvisionBoundary(ctx, 'workspace.materialize', () =>
+        this.materializeWorkspace(ctx, rawWorkspaceExecutor),
+      );
+      await this.runProvisionBoundary(ctx, 'skills.preinstall', () =>
+        this.hooks.skillPreinstall?.(executionContext),
+      );
       this.runs.set(ctx.taskId, {
         taskId: ctx.taskId,
         connection,
+        providerSandboxId,
         runtimeId,
         preflight: this.withEnvironment(preflight, environment),
         environment,
+        ownership: ctx.ownership,
       });
     } catch (err) {
       this.runs.delete(ctx.taskId);
-      await this.cleanupFailedProvision(ctx.taskId, runtimeId).catch(() => undefined);
+      const cleanupAuthorization = ctx.beforeSandboxCleanup
+        ? await ctx.beforeSandboxCleanup()
+        : null;
+      if (ctx.beforeSandboxCleanup && !cleanupAuthorization) throw err;
+      if (ctx.ownership && !cleanupAuthorization) throw err;
+      if (cleanupAuthorization) {
+        assertAioCleanupAuthorization(
+          cleanupAuthorization,
+          ctx.taskId,
+          this.id,
+        );
+        if (
+          ctx.ownership &&
+          (cleanupAuthorization.kind !== 'generation' ||
+            cleanupAuthorization.ownership.resourceGeneration !==
+              ctx.ownership.resourceGeneration)
+        ) {
+          throw new SandboxProviderConfigurationError(
+            'AIO cleanup authorization changed physical resource generation',
+          );
+        }
+      }
+      const cleanupOwnership =
+        cleanupAuthorization?.kind === 'generation'
+          ? cleanupAuthorization.ownership
+          : undefined;
+      let cleanupResult: SandboxTeardownResult | null = null;
+      try {
+        if (
+          ctx.workspace?.credential !== undefined ||
+          cleanupAuthorization?.kind === 'generation'
+        ) {
+          cleanupResult = await this.controller.removeSandboxAndConfirm(
+            ctx.taskId,
+            cleanupOwnership,
+          );
+        } else {
+          cleanupResult = await this.cleanupFailedProvision(
+            ctx.taskId,
+            runtimeId,
+            cleanupOwnership,
+          );
+        }
+      } catch {
+        if (ctx.workspace?.credential !== undefined) {
+          throw new SandboxProviderConfigurationError(
+            'AIO credentialed workspace cleanup could not be confirmed',
+          );
+        }
+        if (cleanupAuthorization?.kind === 'generation') {
+          throw new SandboxProviderConfigurationError(
+            'AIO sandbox cleanup could not be confirmed',
+          );
+        }
+        // Legacy provisioning cleanup remains best-effort for compatibility.
+      }
+      if (
+        cleanupAuthorization &&
+        cleanupResult?.kind === 'found-and-cleaned'
+      ) {
+        await ctx.afterSandboxCleanup?.(cleanupAuthorization);
+      }
       throw err;
     }
 
@@ -302,8 +489,10 @@ export class AioSandboxProvider<
   private async cleanupFailedProvision(
     taskId: string,
     runtimeId: TRuntimeId | null | undefined,
-  ): Promise<void> {
-    await this.controller.teardownSandbox(taskId, {
+    ownership?: SandboxOwnershipFence,
+  ): Promise<SandboxTeardownResult> {
+    const result = await this.controller.teardownSandbox(taskId, {
+      ownership,
       beforeStop: async ({ baseUrl }) => {
         if (runtimeId === undefined) return;
         const executor = this.createCommandExecutor(baseUrl);
@@ -322,28 +511,76 @@ export class AioSandboxProvider<
       },
     });
     this.runs.delete(taskId);
+    return result;
   }
 
-  async teardownSandbox(taskId: string): Promise<void> {
+  async teardownSandbox(
+    taskId: string,
+    options: {
+      readonly ownership?: SandboxOwnershipFence;
+      readonly cleanupAuthorization?: SandboxRunCleanupAuthorization;
+      readonly providerSandboxId?: string;
+      readonly disposition?: SandboxTeardownDisposition;
+    } = {},
+  ): Promise<SandboxTeardownResult> {
     const run = this.runs.get(taskId);
-    await this.controller.teardownSandbox(taskId, {
-      beforeStop: async ({ baseUrl }) => {
-        const executor = this.createCommandExecutor(baseUrl);
-        await this.hooks.preStopTrim?.({
+    if (options.cleanupAuthorization) {
+      assertAioCleanupAuthorization(
+        options.cleanupAuthorization,
+        taskId,
+        this.id,
+      );
+    }
+    const ownership =
+      options.cleanupAuthorization?.kind === 'generation'
+        ? options.cleanupAuthorization.ownership
+        : options.cleanupAuthorization?.kind === 'legacy'
+          ? undefined
+          : options.ownership ?? run?.ownership;
+    const providerSandboxId =
+      options.providerSandboxId ??
+      run?.providerSandboxId ??
+      this.controller.getProviderSandboxId(taskId);
+    const result = options.disposition === 'superseded-remove'
+      ? await this.controller.removeSandboxAndConfirm(
           taskId,
-          runtimeId: run?.runtimeId ?? (await this.resolveRuntimeId(taskId)),
-          baseUrl,
-          executor,
-          workspaceDir: this.workspaceDir,
-          controller: this.controller,
+          ownership,
+          providerSandboxId,
+        )
+      : await this.controller.teardownSandbox(taskId, {
+          ownership,
+          providerSandboxId,
+          beforeStop: async ({ baseUrl }) => {
+            const executor = this.createCommandExecutor(baseUrl);
+            await this.hooks.preStopTrim?.({
+              taskId,
+              runtimeId:
+                run?.runtimeId ?? (await this.resolveRuntimeId(taskId)),
+              baseUrl,
+              executor,
+              workspaceDir: this.workspaceDir,
+              controller: this.controller,
+            });
+          },
         });
-      },
-    });
     this.runs.delete(taskId);
+    return result;
   }
 
-  async removeSandbox(taskId: string): Promise<void> {
-    await this.controller.removeSandbox(taskId);
+  async removeSandbox(
+    taskId: string,
+    options: {
+      readonly ownership?: SandboxOwnershipFence;
+      readonly providerSandboxId?: string;
+    } = {},
+  ): Promise<void> {
+    await this.controller.removeSandbox(taskId, {
+      ownership: options.ownership ?? this.runs.get(taskId)?.ownership,
+      providerSandboxId:
+        options.providerSandboxId ??
+        this.runs.get(taskId)?.providerSandboxId ??
+        this.controller.getProviderSandboxId(taskId),
+    });
     this.runs.delete(taskId);
   }
 
@@ -369,29 +606,152 @@ export class AioSandboxProvider<
     taskId: string,
     args: SandboxDeliverWorkspaceArgs,
   ): Promise<SandboxDeliverWorkspaceResult> {
+    if (isSandboxLegacyDeliverWorkspaceArgs(args)) {
+      return failure('Legacy raw-header Git delivery is disabled');
+    }
+    if (!this.hooks.workspaceDelivery) {
+      return failure('Credentialed delivery requires the staged workspace hook');
+    }
+    if (
+      (args.beforeSandboxCleanup === undefined) !==
+      (args.afterSandboxCleanup === undefined)
+    ) {
+      throw new SandboxProviderConfigurationError(
+        'AIO delivery cleanup callbacks must be provided together',
+      );
+    }
+    if (
+      args.ownership &&
+      (!args.beforeSandboxCleanup || !args.afterSandboxCleanup)
+    ) {
+      throw new SandboxProviderConfigurationError(
+        'AIO durable delivery cleanup requires owner generation callbacks',
+      );
+    }
+    const deliveryRun = this.runs.get(taskId);
     const baseUrl = this.controller.resolveBaseUrl(taskId);
-    return deliverGitWorkspaceChanges({
-      executor: this.createCommandExecutor(baseUrl),
-      workspaceDir: this.workspaceDir,
-      args,
+    const executor = this.createCommandExecutor(baseUrl);
+    const adapter = createAioWorkspaceSecurityAdapter({
+      taskId,
+      providerId: this.id,
+      controller: this.controller,
+      executor,
+      ownership: args.ownership,
+      beforeSandboxCleanup: args.beforeSandboxCleanup,
+      afterSandboxCleanup: args.afterSandboxCleanup,
     });
+    let result: SandboxDeliverWorkspaceResult;
+    try {
+      result = await this.hooks.workspaceDelivery({
+        taskId,
+        plan: {
+          branch: args.branch,
+          commitMessage: args.commitMessage,
+          credential: args.credential,
+          deadlineMs: args.deadlineMs ?? AIO_WORKSPACE_DELIVERY_TIMEOUT_MS,
+          ...(args.cancellationSignal === undefined
+            ? {}
+            : { cancellationSignal: args.cancellationSignal }),
+        },
+        workspaceDir: this.workspaceDir,
+        stageExecutor: adapter.stageExecutor,
+        secretFilePort: adapter.secretFilePort,
+      });
+    } finally {
+      if (adapter.wasSandboxFenced()) {
+        this.forgetFencedDeliveryRun(taskId, deliveryRun);
+      }
+    }
+    if (adapter.wasSandboxFenced() && result.error === null) {
+      throw new SandboxProviderConfigurationError(
+        'AIO workspace delivery cannot retain a fenced sandbox',
+      );
+    }
+    return result;
+  }
+
+  private forgetFencedDeliveryRun(
+    taskId: string,
+    deliveryRun: AioProvisionedRun<TRuntimeId> | undefined,
+  ): void {
+    if (!deliveryRun) return;
+    const current = this.runs.get(taskId);
+    if (!current) return;
+    const providerSandboxId = deliveryRun.providerSandboxId;
+    const resourceGeneration =
+      deliveryRun.ownership?.resourceGeneration;
+    if (providerSandboxId === undefined && resourceGeneration === undefined) {
+      if (current === deliveryRun) this.runs.delete(taskId);
+      return;
+    }
+    if (
+      (providerSandboxId !== undefined &&
+        current.providerSandboxId !== providerSandboxId) ||
+      (resourceGeneration !== undefined &&
+        current.ownership?.resourceGeneration !== resourceGeneration)
+    ) {
+      return;
+    }
+    this.runs.delete(taskId);
   }
 
   async listReadoptable(): Promise<string[]> {
     return this.controller.listReadoptable();
   }
 
-  async reattach(taskId: string): Promise<SandboxConnection | null> {
-    const connection = this.controller.reattach(taskId);
-    if (!connection) return null;
+  async reconcileSandboxInventory(
+    input: SandboxInventoryReconcileInput,
+  ): Promise<SandboxInventoryReconcileResult> {
+    return this.controller.reconcileSandboxInventory(input);
+  }
+
+  async reattach(
+    taskId: string,
+    target?: SandboxReadoptionTarget,
+  ): Promise<SandboxConnection | null> {
+    const reattachRun = this.runs.get(taskId);
+    const connection = await this.controller.reattach(taskId, target);
+    if (!connection) {
+      this.forgetFailedReattachRun(taskId, reattachRun, target);
+      return null;
+    }
     const runtimeId = await this.resolveRuntimeId(taskId);
+    const providerSandboxId =
+      this.controller.getProviderSandboxId(taskId) ??
+      target?.providerSandboxId;
     this.runs.set(taskId, {
       taskId,
       connection,
+      ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       runtimeId,
       preflight: this.skippedPreflight(runtimeId),
+      ownership: target?.ownership,
     });
     return connection;
+  }
+
+  private forgetFailedReattachRun(
+    taskId: string,
+    reattachRun: AioProvisionedRun<TRuntimeId> | undefined,
+    target: SandboxReadoptionTarget | undefined,
+  ): void {
+    if (!reattachRun || this.runs.get(taskId) !== reattachRun) return;
+    if (
+      target?.providerSandboxId !== undefined &&
+      reattachRun.providerSandboxId !== target.providerSandboxId
+    ) {
+      return;
+    }
+    if (
+      target?.ownership !== undefined &&
+      (reattachRun.ownership?.ownerGeneration !==
+        target.ownership.ownerGeneration ||
+        reattachRun.ownership.resourceGeneration !==
+          target.ownership.resourceGeneration)
+    ) {
+      return;
+    }
+    this.runs.delete(taskId);
   }
 
   async getSelectedSandboxRun(taskId: string): Promise<SelectedSandboxRun | null> {
@@ -399,7 +759,9 @@ export class AioSandboxProvider<
     return {
       taskId,
       providerId: this.id,
-      providerSandboxId: connection.taskId,
+      ...(this.runs.get(taskId)?.providerSandboxId === undefined
+        ? {}
+        : { providerSandboxId: this.runs.get(taskId)?.providerSandboxId }),
       provider: this,
       capabilities: this.getProviderCapabilities(),
       connection,
@@ -458,16 +820,36 @@ export class AioSandboxProvider<
     };
   }
 
-  createCommandExecutor(baseUrl: string): SandboxCommandExecutor {
+  createCommandExecutor(
+    baseUrl: string,
+    boundary?: AioCommandBoundaryContext,
+  ): SandboxCommandExecutor {
     return createAioHttpCommandExecutor({
       baseUrl,
       fetch: this.fetch,
+      taskId: boundary?.taskId,
+      externalBoundaryGuard: boundary?.guard,
+      signal: boundary?.signal,
     });
   }
 
   releaseHandles(): void {
     this.controller.releaseHandles();
     this.runs.clear();
+  }
+
+  private runProvisionBoundary<T>(
+    ctx: SandboxProvisionContext<TCloneSpec>,
+    action: SandboxExternalBoundaryAction,
+    run: () => MaybePromise<T>,
+  ): Promise<T> {
+    return runSandboxExternalBoundary({
+      taskId: ctx.taskId,
+      action,
+      guard: ctx.externalBoundaryGuard,
+      signal: ctx.cancellationSignal,
+      run: async () => run(),
+    });
   }
 
   private async resolveRuntimeId(taskId: string): Promise<TRuntimeId | null> {
@@ -499,6 +881,44 @@ export class AioSandboxProvider<
     ctx: SandboxProvisionContext<TCloneSpec>,
     executor: SandboxCommandExecutor,
   ): Promise<void> {
+    if (ctx.workspace !== undefined) {
+      if (ctx.workspace === null) return;
+      const hook = this.hooks.workspaceMaterialization;
+      if (!hook) {
+        throw new SandboxProviderConfigurationError(
+          'AIO canonical workspace materialization requires the staged workspace hook',
+        );
+      }
+      const adapter = createAioWorkspaceSecurityAdapter({
+        taskId: ctx.taskId,
+        providerId: this.id,
+        controller: this.controller,
+        executor,
+        ownership: ctx.ownership,
+        beforeSandboxCleanup: ctx.beforeSandboxCleanup,
+        afterSandboxCleanup: ctx.afterSandboxCleanup,
+      });
+      const result = await hook({
+        taskId: ctx.taskId,
+        plan: ctx.workspace,
+        workspaceDir: this.workspaceDir,
+        stageExecutor: adapter.stageExecutor,
+        secretFilePort: adapter.secretFilePort,
+        ...(ctx.cancellationSignal === undefined
+          ? {}
+          : { cancellationSignal: ctx.cancellationSignal }),
+        ...(ctx.onWorkspaceProgress === undefined
+          ? {}
+          : { onProgress: ctx.onWorkspaceProgress }),
+        ...(ctx.beforeWorkspaceBoundary === undefined
+          ? {}
+          : { beforeBoundary: ctx.beforeWorkspaceBoundary }),
+      });
+      if (result.status !== 'succeeded') {
+        throw new SandboxWorkspaceMaterializationError(result);
+      }
+      return;
+    }
     const cloneSpec = await this.resolveCloneSpec(ctx);
     if (!cloneSpec) return;
     const gitCloneSpec =
@@ -585,32 +1005,77 @@ export function defineAioSandboxProviderFromDocker<
 export function createAioHttpCommandExecutor(
   options: AioHttpCommandExecutorOptions,
 ): SandboxCommandExecutor {
+  if (options.externalBoundaryGuard && !options.taskId) {
+    throw new SandboxProviderConfigurationError(
+      'AIO guarded command executor requires a task id',
+    );
+  }
   const fetchImpl =
     options.fetch ??
     ((input, init) => globalThis.fetch(input, init) as ReturnType<AioFetch>);
   return {
     async exec(request: SandboxCommandExecutionRequest) {
-      const res = await fetchImpl(`${options.baseUrl}/v1/shell/exec`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: buildSandboxCommandLine(request) }),
-        signal:
-          request.timeoutMs === undefined
-            ? undefined
-            : AbortSignal.timeout(request.timeoutMs),
+      const signal = combineAioCommandSignals(
+        options.signal,
+        request.signal,
+        request.timeoutMs === undefined
+          ? undefined
+          : AbortSignal.timeout(request.timeoutMs),
+      );
+      return runSandboxExternalBoundary({
+        taskId: options.taskId ?? 'unscoped-aio-command',
+        action: 'command.execute',
+        guard: options.externalBoundaryGuard,
+        signal,
+        run: async () => {
+          const res = await fetchImpl(`${options.baseUrl}/v1/shell/exec`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ command: buildSandboxCommandLine(request) }),
+            signal,
+          });
+          if (!res.ok) {
+            return {
+              exitCode: Number.NaN,
+              output: `/v1/shell/exec responded ${res.status}`,
+              stdout: '',
+              stderr: `/v1/shell/exec responded ${res.status}`,
+              timedOut: false,
+            };
+          }
+          return normalizeSandboxCommandResult(
+            await res.json().catch(() => undefined),
+          );
+        },
       });
-      if (!res.ok) {
-        return {
-          exitCode: Number.NaN,
-          output: `/v1/shell/exec responded ${res.status}`,
-          stdout: '',
-          stderr: `/v1/shell/exec responded ${res.status}`,
-          timedOut: false,
-        };
-      }
-      return normalizeSandboxCommandResult(await res.json().catch(() => undefined));
     },
   };
+}
+
+function combineAioCommandSignals(
+  ...signals: Array<AbortSignal | undefined>
+): AbortSignal | undefined {
+  const defined = signals.filter(
+    (signal): signal is AbortSignal => signal !== undefined,
+  );
+  if (defined.length === 0) return undefined;
+  if (defined.length === 1) return defined[0];
+  return AbortSignal.any(defined);
+}
+
+function assertAioCleanupAuthorization(
+  authorization: SandboxRunCleanupAuthorization,
+  taskId: string,
+  providerId: string,
+): void {
+  if (
+    authorization.taskId !== taskId ||
+    authorization.providerId !== providerId
+  ) {
+    throw new SandboxProviderConfigurationError(
+      'AIO sandbox cleanup authorization does not match the selected run',
+    );
+  }
 }
 
 async function materializeGitWorkspace(args: {
@@ -618,12 +1083,17 @@ async function materializeGitWorkspace(args: {
   readonly workspaceDir: string;
   readonly cloneSpec: GitCloneSpec;
 }): Promise<void> {
+  if (args.cloneSpec.authHeader !== undefined) {
+    throw new SandboxProviderConfigurationError(
+      'Legacy raw-header Git clone is disabled',
+    );
+  }
   const parent = dirname(args.workspaceDir);
   const clone = await args.executor.exec({
     command: [
       `rm -rf ${shellQuote(args.workspaceDir)}`,
       `mkdir -p ${shellQuote(parent)}`,
-      `git ${gitAuthOption(args.cloneSpec.authHeader)} clone --recursive -- ${shellQuote(
+      `git clone --recursive -- ${shellQuote(
         args.cloneSpec.url,
       )} ${shellQuote(args.workspaceDir)}`,
     ].join(' && '),
@@ -631,89 +1101,6 @@ async function materializeGitWorkspace(args: {
   if (clone.exitCode !== 0) {
     throw new Error(`AIO git materialization failed: ${scrubOutput(clone.output)}`);
   }
-}
-
-async function deliverGitWorkspaceChanges(args: {
-  readonly executor: SandboxCommandExecutor;
-  readonly workspaceDir: string;
-  readonly args: SandboxDeliverWorkspaceArgs;
-}): Promise<SandboxDeliverWorkspaceResult> {
-  const exec = (request: Pick<SandboxCommandExecutionRequest, 'command' | 'cwd'>) =>
-    args.executor.exec({
-      ...request,
-      timeoutMs: AIO_WORKSPACE_DELIVERY_TIMEOUT_MS,
-    });
-
-  const status = await exec({
-    command: 'git status --porcelain',
-    cwd: args.workspaceDir,
-  });
-  if (status.exitCode !== 0) {
-    return failure(`git status failed: ${status.output}`);
-  }
-  if (!status.output.trim()) {
-    return { hadChanges: false, commitSha: null, error: null };
-  }
-
-  const add = await exec({
-    command: 'git add -A',
-    cwd: args.workspaceDir,
-  });
-  if (add.exitCode !== 0) {
-    return failure(`git add failed: ${add.output}`, { hadChanges: true });
-  }
-
-  const msgPath = '/tmp/cap-commit-msg';
-  const commitMessageB64 = Buffer.from(args.args.commitMessage, 'utf8').toString(
-    'base64',
-  );
-  const writeMessage = await exec({
-    command: `printf %s ${shellQuote(commitMessageB64)} | base64 -d > ${shellQuote(msgPath)}`,
-  });
-  if (writeMessage.exitCode !== 0) {
-    return failure(`git commit message write failed: ${writeMessage.output}`, {
-      hadChanges: true,
-    });
-  }
-
-  const commit = await exec({
-    command:
-      `git -c ${shellQuote('user.name=cap-bot')} ` +
-      `-c ${shellQuote('user.email=cap-bot@users.noreply.github.com')} ` +
-      `commit -F ${shellQuote(msgPath)}`,
-    cwd: args.workspaceDir,
-  });
-  if (commit.exitCode !== 0) {
-    return failure(`git commit failed: ${commit.output}`, { hadChanges: true });
-  }
-
-  const sha = await exec({
-    command: 'git rev-parse HEAD',
-    cwd: args.workspaceDir,
-  });
-  if (sha.exitCode !== 0) {
-    return failure(`git rev-parse failed: ${sha.output}`, { hadChanges: true });
-  }
-
-  const commitSha = sha.output.trim() || null;
-  const push = await exec({
-    command:
-      `git -c ${shellQuote(`http.extraHeader=${args.args.authHeader}`)} ` +
-      `push --force-with-lease origin ${shellQuote(`HEAD:${args.args.branch}`)}`,
-    cwd: args.workspaceDir,
-  });
-  if (push.exitCode !== 0) {
-    return failure(`git push failed: ${push.output}`, {
-      hadChanges: true,
-      commitSha,
-    });
-  }
-
-  return {
-    hadChanges: true,
-    commitSha,
-    error: null,
-  };
 }
 
 function requireGitCloneSpec(raw: unknown): GitCloneSpec {
@@ -747,10 +1134,6 @@ function scrubOutput(output: string): string {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function gitAuthOption(authHeader: string | undefined): string {
-  return authHeader ? `-c http.extraHeader=${shellQuote(authHeader)}` : '';
 }
 
 function dirname(path: string): string {

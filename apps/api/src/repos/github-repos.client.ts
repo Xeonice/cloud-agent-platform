@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import type { AvailableGithubRepo } from '@cap/contracts';
+import { GitBranchNameSchema, type AvailableGithubRepo } from '@cap/contracts';
 import {
   classifyGithubListError,
   type ClassifiedGithubListError,
@@ -146,10 +146,11 @@ export class GithubReposClient {
       typeof r.name === 'string' && r.name.length > 0
         ? r.name
         : r.full_name.split('/').pop() ?? r.full_name;
-    const defaultBranch =
-      typeof r.default_branch === 'string' && r.default_branch.length > 0
-        ? r.default_branch
-        : 'main';
+    // A picker entry is a verified metadata source. If GitHub omits its default
+    // branch, do not fabricate `main`; leave the malformed/incomplete candidate
+    // out of the picker so it cannot become task-selectable without verification.
+    const defaultBranch = GitBranchNameSchema.safeParse(r.default_branch);
+    if (!defaultBranch.success) return [];
     // Prefer explicit `visibility`; fall back to the `private` boolean.
     const visibility =
       r.visibility === 'private' || r.visibility === 'public'
@@ -162,7 +163,7 @@ export class GithubReposClient {
         id: r.id,
         full_name: r.full_name,
         name,
-        defaultBranch,
+        defaultBranch: defaultBranch.data,
         visibility,
         description: typeof r.description === 'string' ? r.description : null,
       },

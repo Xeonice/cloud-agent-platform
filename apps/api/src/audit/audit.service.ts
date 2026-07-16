@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   AuditEventSchema,
+  TaskProvisioningStageSchema,
   type AuditEvent,
   type AuditQuery,
   type TaskFailure,
+  type TaskProvisioningStage,
   type TaskStatus,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
@@ -20,9 +22,14 @@ import {
   type TaskStatusLookup,
 } from './audit-mapping';
 import {
-  runtimeFailureMessage,
-  runtimeFailureTitle,
+  taskFailureMessage,
+  taskFailureTitle,
 } from '../tasks/task-failure';
+import {
+  taskCreatedAuditData,
+  taskCreatedAuditDedupeKey,
+} from './task-created-audit';
+import type { ProvisioningAuditFailure } from './audit-recorder.port';
 
 /**
  * Audit recorder + query service (be-audit-approvals 6.2 / 6.3 / 6.4).
@@ -82,33 +89,126 @@ export class AuditService {
    */
   async recordTaskCreated(taskId: string, userId?: string): Promise<void> {
     try {
-      const descriptor = AUDIT_KIND_DESCRIPTORS['task.created'];
-      const validated = assertResultCodeLevelConsistent(
+      const resolvedUserId =
+        userId !== undefined ? await this.resolveUserId(userId) : null;
+      await this.prisma.auditEvent.upsert({
+        where: { dedupeKey: taskCreatedAuditDedupeKey(taskId) },
+        update: {},
+        create: taskCreatedAuditData(taskId, resolvedUserId),
+      });
+    } catch {
+      this.logger.warn(
+        `audit record (task.created) for task ${taskId} failed (swallowed)`,
+      );
+    }
+  }
+
+  async recordProvisioningProgress(
+    taskId: string,
+    stage: TaskProvisioningStage,
+    attempt: number,
+  ): Promise<void> {
+    const parsedStage = TaskProvisioningStageSchema.safeParse(stage);
+    if (!parsedStage.success || !isPositiveSafeInteger(attempt)) {
+      this.logger.warn(
+        `audit provisioning progress for task ${taskId} rejected invalid safe metadata`,
+      );
+      return;
+    }
+    const stageLabel = provisioningStageLabel(parsedStage.data);
+    await this.recordIdempotent({
+      dedupeKey: `task.provisioning:${taskId}:${attempt}:${parsedStage.data}`,
+      taskId,
+      type: `task.provisioning:${parsedStage.data}`,
+      level: 'info',
+      resultCode: 200,
+      title: `任务环境准备：${stageLabel}`,
+      description: `置备阶段：${stageLabel}；尝试次数：${attempt}`,
+    });
+  }
+
+  async recordProvisioningFailure(
+    taskId: string,
+    stage: TaskProvisioningStage,
+    attempt: number,
+    failure: ProvisioningAuditFailure,
+  ): Promise<boolean> {
+    const parsedStage = TaskProvisioningStageSchema.safeParse(stage);
+    if (
+      !parsedStage.success ||
+      !isPositiveSafeInteger(attempt) ||
+      'runtime' in failure
+    ) {
+      this.logger.warn(
+        `audit provisioning failure for task ${taskId} rejected invalid safe metadata`,
+      );
+      return false;
+    }
+    const title = taskFailureTitle(failure);
+    const message = taskFailureMessage(failure);
+    const stageLabel = provisioningStageLabel(parsedStage.data);
+    // The central lifecycle event and its provisioning detail have independent
+    // dedupe identities so either one can be repaired by recovery without
+    // duplicating the other.
+    const centralRecorded = await this.recordIdempotent({
+      dedupeKey: `task.failed:provisioning:${taskId}`,
+      taskId,
+      type: 'task.failed',
+      level: 'error',
+      resultCode: 422,
+      title,
+      description: message,
+    });
+    const detailRecorded = await this.recordIdempotent({
+      dedupeKey: `task.provisioning.failed:${taskId}`,
+      taskId,
+      type: `task.provisioning.failed:${failure.code}`,
+      level: 'error',
+      resultCode: 422,
+      title: `任务环境准备失败：${title}`,
+      description:
+        `置备阶段：${stageLabel}；尝试次数：${attempt}；` +
+        `安全原因：${message}`,
+    });
+    return centralRecorded && detailRecorded;
+  }
+
+  async recordTaskCancellation(
+    taskId: string,
+    userId?: string,
+  ): Promise<boolean> {
+    const kind = 'task.cancelled' as const;
+    const dedupeKey = `task.cancelled:${taskId}`;
+    try {
+      const descriptor = AUDIT_KIND_DESCRIPTORS[kind];
+      const { level, resultCode } = assertResultCodeLevelConsistent(
         descriptor.level,
         descriptor.resultCode,
       );
       const resolvedUserId =
-        userId !== undefined ? await this.resolveUserId(userId) : null;
+        userId === undefined ? null : await this.resolveUserId(userId);
       await this.prisma.auditEvent.upsert({
-        where: { dedupeKey: `task.created:${taskId}` },
+        where: { dedupeKey },
         update: {},
         create: {
           taskId,
           userId: resolvedUserId,
-          type: 'task.created',
-          level: validated.level,
-          resultCode: validated.resultCode ?? null,
+          type: kind,
+          level,
+          resultCode: resultCode ?? null,
           title: descriptor.title,
           description: descriptor.title,
-          dedupeKey: `task.created:${taskId}`,
+          dedupeKey,
         },
       });
-    } catch (err) {
+      return true;
+    } catch {
+      // Recovery needs only a durability acknowledgement. Never interpolate a
+      // rejected adapter value because it may carry provider/Git diagnostics.
       this.logger.warn(
-        `audit record (task.created) for task ${taskId} failed (swallowed): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `audit idempotent cancellation record for task ${taskId} failed (swallowed)`,
       );
+      return false;
     }
   }
 
@@ -127,15 +227,16 @@ export class AuditService {
   ): Promise<void> {
     const kind = kindForStatus(status);
     if (kind === null) return;
+    if (kind === 'task.cancelled') {
+      await this.recordTaskCancellation(taskId, userId);
+      return;
+    }
     await this.record(kind, taskId, {
       userId,
       ...(failure
         ? {
-            title: runtimeFailureTitle(failure),
-            description: runtimeFailureMessage(
-              failure.runtime,
-              failure.code,
-            ),
+            title: taskFailureTitle(failure),
+            description: taskFailureMessage(failure),
           }
         : {}),
     });
@@ -225,14 +326,51 @@ export class AuditService {
           description: opts.description ?? descriptor.title,
         },
       });
-    } catch (err) {
+    } catch {
       // BEST-EFFORT (6.2): never propagate — log and continue so the lifecycle
-      // transition that triggered this is never rolled back or blocked.
+      // transition that triggered this is never rolled back or blocked. The
+      // rejected value is deliberately omitted because an adapter can include
+      // provider or Git diagnostics in its error.
       this.logger.warn(
-        `audit record (${kind}) for task ${taskId} failed (swallowed): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `audit record (${kind}) for task ${taskId} failed (swallowed)`,
       );
+    }
+  }
+
+  private async recordIdempotent(input: {
+    readonly dedupeKey: string;
+    readonly taskId: string;
+    readonly type: string;
+    readonly level: 'info' | 'error';
+    readonly resultCode: 200 | 422;
+    readonly title: string;
+    readonly description: string;
+  }): Promise<boolean> {
+    try {
+      const { level, resultCode } = assertResultCodeLevelConsistent(
+        input.level,
+        input.resultCode,
+      );
+      await this.prisma.auditEvent.upsert({
+        where: { dedupeKey: input.dedupeKey },
+        update: {},
+        create: {
+          taskId: input.taskId,
+          userId: null,
+          type: input.type,
+          level,
+          resultCode: resultCode ?? null,
+          title: input.title,
+          description: input.description,
+          dedupeKey: input.dedupeKey,
+        },
+      });
+      return true;
+    } catch {
+      this.logger.warn(
+        `audit idempotent provisioning record for task ${input.taskId} failed (swallowed)`,
+      );
+      return false;
     }
   }
 
@@ -360,6 +498,39 @@ export class AuditService {
       resultCode: row.resultCode ?? undefined,
       runId: row.runId ?? undefined,
     });
+  }
+}
+
+function isPositiveSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+function provisioningStageLabel(stage: TaskProvisioningStage): string {
+  switch (stage) {
+    case 'accepted':
+      return '已接受';
+    case 'sandbox_creation':
+      return '创建沙箱';
+    case 'credential_setup':
+      return '准备仓库凭据';
+    case 'remote_ref_resolution':
+      return '解析远端引用';
+    case 'workspace_transfer':
+      return '传输仓库工作区';
+    case 'checkout':
+      return '检出分支';
+    case 'submodules':
+      return '准备子模块';
+    case 'credential_cleanup':
+      return '清理临时凭据';
+    case 'runtime_setup':
+      return '准备运行时';
+    case 'readiness':
+      return '检查就绪状态';
+    case 'agent_launch':
+      return '启动智能体';
+    case 'complete':
+      return '准备完成';
   }
 }
 

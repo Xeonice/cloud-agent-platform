@@ -988,9 +988,12 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     path: '/v1/tasks',
     summary: 'Create a task',
     description:
-      'Admit a new task against a repo (`repoId` in the body). Goes through the ' +
-      'same admission path as the console create. Accepts an optional ' +
-      '`Idempotency-Key` header for safe retries.',
+      'Atomically admit a new task and its durable provisioning work against a ' +
+      'repo (`repoId` in the body), then return as soon as that acceptance is ' +
+      'committed. Provisioning continues asynchronously through the same path ' +
+      'as Console create; poll `tasks.get` for its additive safe progress and ' +
+      'structured terminal failure. Accepts an optional `Idempotency-Key` header ' +
+      'for safe REST retries.',
     scope: 'tasks:write',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1003,7 +1006,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     headersSchema: PublicV1IdempotencyHeadersSchema,
     requestSchema: V1CreateTaskRequestSchema,
     successStatus: 201,
-    responseDescription: 'The created task with its initial status.',
+    responseDescription:
+      'The accepted task with its initial optional/nullable safe provisioning summary.',
     responseSchema: TaskResponseSchema,
     additionalErrorStatuses: [404, 409, 422, 429, 503],
     errors: [
@@ -1106,7 +1110,10 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     method: 'get',
     path: '/v1/tasks',
     summary: 'List tasks',
-    description: 'Keyset-paginated list of tasks ordered by `(createdAt, id)`.',
+    description:
+      'Keyset-paginated tasks ordered by `(createdAt, id)`. Each item carries ' +
+      'the same additive optional/nullable safe provisioning summary and ' +
+      'structured failure projection as task create/get/stop.',
     scope: 'tasks:read',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1115,7 +1122,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { query: V1ListQuerySchemaPair },
     querySchema: V1ListQuerySchema,
     successStatus: 200,
-    responseDescription: 'A page of tasks plus the next-page cursor.',
+    responseDescription:
+      'A page of tasks with safe provisioning/failure projections plus the next-page cursor.',
     responseSchema: V1ListTasksResponseSchema,
     errors: COMMON_ERRORS,
     mcp: {
@@ -1132,7 +1140,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     summary: 'Get a task',
     description:
       'Fetch a single task by id. This polling read is the guaranteed observation ' +
-      'floor: every status transition is persisted before the response.',
+      'floor: every status transition is persisted before the response, including ' +
+      'the additive optional/nullable safe provisioning summary and structured failure.',
     scope: 'tasks:read',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1141,7 +1150,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { params: PublicV1IdParamsSchemaPair },
     paramsSchema: PublicV1IdParamsSchema,
     successStatus: 200,
-    responseDescription: 'The task.',
+    responseDescription:
+      'The task with its current safe provisioning and structured failure projection.',
     responseSchema: TaskResponseSchema,
     errors: READ_BY_ID_ERRORS,
     mcp: {
@@ -1156,7 +1166,9 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     method: 'post',
     path: '/v1/tasks/{id}/stop',
     summary: 'Stop a task',
-    description: 'Operator-initiated stop; transitions an active task to `cancelled`.',
+    description:
+      'Operator-initiated stop; transitions an active task toward `cancelled` ' +
+      'and returns the same additive safe provisioning/failure projection as task reads.',
     scope: 'tasks:write',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1165,7 +1177,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { params: PublicV1IdParamsSchemaPair },
     paramsSchema: PublicV1IdParamsSchema,
     successStatus: 200,
-    responseDescription: 'The task transitioned toward its terminal state.',
+    responseDescription:
+      'The task transitioned toward its terminal state with safe provisioning/failure data.',
     responseSchema: TaskResponseSchema,
     errors: READ_BY_ID_ERRORS,
     mcp: {
@@ -1242,7 +1255,9 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     method: 'get',
     path: '/v1/repos',
     summary: 'List repos',
-    description: 'Keyset-paginated list of repos ordered by `(createdAt, id)`.',
+    description:
+      'Keyset-paginated repos ordered by `(createdAt, id)`. `defaultBranch` is ' +
+      'the persisted verified forge default; it remains optional/nullable for legacy rows.',
     scope: 'repos:read',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1251,7 +1266,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { query: V1ListQuerySchemaPair },
     querySchema: V1ListQuerySchema,
     successStatus: 200,
-    responseDescription: 'A page of repos plus the next-page cursor.',
+    responseDescription:
+      'A page of repos with verified-or-legacy-null default branches plus the next-page cursor.',
     responseSchema: V1ListReposResponseSchema,
     errors: COMMON_ERRORS,
     mcp: {
@@ -1266,7 +1282,9 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     method: 'get',
     path: '/v1/repos/{id}',
     summary: 'Get a repo',
-    description: 'Fetch a single repo by id.',
+    description:
+      'Fetch a repo by id. `defaultBranch` is its persisted verified forge ' +
+      'default and remains optional/nullable for a legacy unverified row.',
     scope: 'repos:read',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1275,7 +1293,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { params: PublicV1IdParamsSchemaPair },
     paramsSchema: PublicV1IdParamsSchema,
     successStatus: 200,
-    responseDescription: 'The repo.',
+    responseDescription:
+      'The repo with its verified or legacy optional/nullable default branch.',
     responseSchema: RepoSchema,
     errors: READ_BY_ID_ERRORS,
     mcp: {

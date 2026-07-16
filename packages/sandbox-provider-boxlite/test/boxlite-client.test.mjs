@@ -98,6 +98,148 @@ await test('REST client creates a sandbox with bearer auth and normalized URL', 
   });
 });
 
+await test('REST create observes the immutable response id only after the definitive response and keeps internal fields off the wire', async () => {
+  const events = [];
+  const { fetch, calls } = makeFetch({
+    'POST /v1/sandboxes': () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        events.push('definitive-response');
+        return {
+          data: {
+            id: 'immutable-provider-id',
+            taskId: 'task-observed',
+            state: 'running',
+          },
+        };
+      },
+      async arrayBuffer() {
+        return new Uint8Array().buffer;
+      },
+    }),
+  });
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'cap-rest',
+    fetch,
+  });
+  const cancellationController = new AbortController();
+
+  const sandbox = await client.createSandbox({
+    taskId: 'task-observed',
+    sandboxId: 'requested-sandbox-id',
+    image: 'cap-boxlite:1',
+    labels: { task: 'task-observed' },
+    externalBoundaryGuard: async () => {},
+    onSandboxCreateObserved: async (observation) => {
+      events.push(observation);
+    },
+    cancellationSignal: cancellationController.signal,
+  });
+
+  assert.equal(sandbox.id, 'immutable-provider-id');
+  assert.deepEqual(events, [
+    'definitive-response',
+    { kind: 'created', providerSandboxId: 'immutable-provider-id' },
+  ]);
+  assert.deepEqual(calls[0].body, {
+    taskId: 'task-observed',
+    sandboxId: 'requested-sandbox-id',
+    image: 'cap-boxlite:1',
+    labels: { task: 'task-observed' },
+  });
+  assert.equal('externalBoundaryGuard' in calls[0].body, false);
+  assert.equal('onSandboxCreateObserved' in calls[0].body, false);
+  assert.equal('cancellationSignal' in calls[0].body, false);
+});
+
+await test('REST create reports not-created only for definitive non-retryable 4xx responses', async () => {
+  const observations = [];
+  const { fetch } = makeFetch({
+    'POST /v1/sandboxes': response(422, { error: 'invalid image' }),
+  });
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'cap-rest',
+    fetch,
+  });
+
+  await assert.rejects(
+    () =>
+      client.createSandbox({
+        taskId: 'task-rejected',
+        image: 'invalid-image',
+        onSandboxCreateObserved: async (observation) => {
+          observations.push(observation);
+        },
+      }),
+    /HTTP 422/,
+  );
+
+  assert.deepEqual(observations, [{ kind: 'not-created' }]);
+});
+
+await test('REST create keeps ambiguous 408 entered and settles explicit 425 or 429 rejections', async () => {
+  for (const status of [408, 425, 429]) {
+    const observations = [];
+    const { fetch } = makeFetch({
+      'POST /v1/sandboxes': response(status, { error: 'retry later' }),
+    });
+    const client = new mod.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'cap-rest',
+      fetch,
+    });
+
+    await assert.rejects(
+      () =>
+        client.createSandbox({
+          taskId: `task-retry-${status}`,
+          image: 'cap-boxlite:1',
+          onSandboxCreateObserved: async (observation) => {
+            observations.push(observation);
+          },
+        }),
+      new RegExp(`HTTP ${status}`),
+    );
+    assert.deepEqual(
+      observations,
+      status === 408 ? [] : [{ kind: 'not-created' }],
+      `HTTP ${status} must use its definitive resource outcome`,
+    );
+  }
+});
+
+await test('REST create does not observe timeout or lost-response failures', async () => {
+  for (const failure of [
+    new DOMException('request timed out', 'TimeoutError'),
+    new Error('connection reset after request was sent'),
+  ]) {
+    const observations = [];
+    const client = new mod.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'cap-rest',
+      fetch: async () => {
+        throw failure;
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        client.createSandbox({
+          taskId: 'task-ambiguous-create',
+          image: 'cap-boxlite:1',
+          onSandboxCreateObserved: async (observation) => {
+            observations.push(observation);
+          },
+        }),
+      (error) => error === failure,
+    );
+    assert.deepEqual(observations, []);
+  }
+});
+
 await test('native REST client creates a sandbox from rootfs_path', async () => {
   const { fetch, calls } = makeFetch({
     'POST /v1/default/boxes': response(200, {
@@ -134,11 +276,104 @@ await test('native REST client creates a sandbox from rootfs_path', async () => 
   });
 });
 
+await test('native REST create observes the response id before starting the sandbox', async () => {
+  const events = [];
+  const { fetch, calls } = makeFetch({
+    'POST /v1/default/boxes': () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        events.push('create-response');
+        return {
+          box_id: 'native-immutable-id',
+          task_id: 'task-native-observed',
+          status: 'configured',
+          image: 'cap-boxlite:1',
+        };
+      },
+      async arrayBuffer() {
+        return new Uint8Array().buffer;
+      },
+    }),
+    'POST /v1/default/boxes/native-immutable-id/start': () => {
+      events.push('start-request');
+      return response(200, {
+        box_id: 'native-immutable-id',
+        task_id: 'task-native-observed',
+        status: 'running',
+      });
+    },
+  });
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    pathPrefix: 'default',
+    fetch,
+  });
+
+  const sandbox = await client.createSandbox({
+    taskId: 'task-native-observed',
+    sandboxId: 'requested-native-id',
+    image: 'cap-boxlite:1',
+    onSandboxCreateObserved: async (observation) => {
+      events.push(observation);
+    },
+  });
+
+  assert.equal(sandbox.id, 'native-immutable-id');
+  assert.deepEqual(events, [
+    'create-response',
+    { kind: 'created', providerSandboxId: 'native-immutable-id' },
+    'start-request',
+  ]);
+  assert.deepEqual(calls[0].body, {
+    name: 'requested-native-id',
+    image: 'cap-boxlite:1',
+  });
+});
+
+await test('native REST create settles explicit 4xx rejections, keeps 408 entered, and never starts', async () => {
+  for (const status of [408, 409, 425, 429]) {
+    const observations = [];
+    const { fetch, calls } = makeFetch({
+      'POST /v1/default/boxes': response(status, { error: 'create rejected' }),
+    });
+    const client = new mod.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      pathPrefix: 'default',
+      fetch,
+    });
+
+    await assert.rejects(
+      () =>
+        client.createSandbox({
+          taskId: `task-native-rejected-${status}`,
+          sandboxId: `native-rejected-${status}`,
+          image: 'cap-boxlite:1',
+          onSandboxCreateObserved: async (observation) => {
+            observations.push(observation);
+          },
+        }),
+      new RegExp(`HTTP ${status}`),
+    );
+
+    assert.deepEqual(
+      observations,
+      status === 408 ? [] : [{ kind: 'not-created' }],
+    );
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+      'POST /v1/default/boxes',
+    ]);
+  }
+});
+
 await test('rootfsPath is rejected for cap-rest and ambiguous create sources fail', async () => {
+  const harness = makeFetch({});
   const client = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'cap-rest',
-    fetch: makeFetch({}).fetch,
+    fetch: harness.fetch,
   });
   await assert.rejects(
     () => client.createSandbox({ taskId: 'task', rootfsPath: '/rootfs' }),
@@ -152,6 +387,16 @@ await test('rootfsPath is rejected for cap-rest and ambiguous create sources fai
     () => client.createSandbox({ taskId: 'task' }),
     /requires image or rootfsPath/,
   );
+  await assert.rejects(
+    () =>
+      client.createSandbox({
+        taskId: 'task',
+        image: 'img',
+        diskSizeGb: 5,
+      }),
+    /diskSizeGb create is only supported with native protocol mode/,
+  );
+  assert.equal(harness.calls.length, 0);
 });
 
 await test('REST client exec normalizes nested and snake-case responses', async () => {
@@ -253,6 +498,7 @@ await test('native REST client uses BoxLite 0.9 routes for boxes exec and files'
       box_id: 'box-task-1',
       status: 'configured',
       image: 'cap-boxlite:1',
+      disk_size_gb: 9,
     }),
     'POST /v1/default/boxes/box-task-1/start': response(200, {
       box_id: 'box-task-1',
@@ -288,10 +534,12 @@ await test('native REST client uses BoxLite 0.9 routes for boxes exec and files'
     taskId: 'task-1',
     sandboxId: 'box-task-1',
     image: 'cap-boxlite:1',
+    diskSizeGb: 9,
     env: { FOO: 'bar' },
     metadata: { workspacePath: '/workspace' },
   });
   assert.equal(sandbox.id, 'box-task-1');
+  assert.equal(sandbox.diskSizeGb, 9);
   assert.equal((await client.getSandbox('box-task-1')).id, 'box-task-1');
   const exec = await client.exec({
     sandboxId: 'box-task-1',
@@ -324,6 +572,7 @@ await test('native REST client uses BoxLite 0.9 routes for boxes exec and files'
   assert.deepEqual(calls[0].body, {
     name: 'box-task-1',
     image: 'cap-boxlite:1',
+    disk_size_gb: 9,
     env: { FOO: 'bar' },
   });
   assert.deepEqual(calls[3].body, {
@@ -333,6 +582,93 @@ await test('native REST client uses BoxLite 0.9 routes for boxes exec and files'
     tty: false,
     timeout_seconds: 1,
   });
+});
+
+await test('native start failure exposes the partial create without deleting outside the provider fence', async () => {
+  const { fetch, calls } = makeFetch({
+    'POST /v1/default/boxes': response(200, {
+      box_id: 'box-partial',
+      status: 'configured',
+      image: 'cap-boxlite:1',
+    }),
+    'POST /v1/default/boxes/box-partial/start': response(503, {
+      error: 'start unavailable',
+    }),
+    'DELETE /v1/default/boxes/box-partial': response(204, null),
+  });
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    pathPrefix: 'default',
+    fetch,
+  });
+
+  let failure;
+  await assert.rejects(
+    () => client.createSandbox({
+      taskId: 'task-partial',
+      sandboxId: 'box-partial',
+      image: 'cap-boxlite:1',
+    }),
+    (error) => {
+      failure = error;
+      return error instanceof mod.BoxLitePartialCreateError;
+    },
+  );
+
+  assert.equal(failure.sandbox.id, 'box-partial');
+  assert.match(String(failure.cause), /start.*HTTP 503/);
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'POST /v1/default/boxes',
+    'POST /v1/default/boxes/box-partial/start',
+  ]);
+});
+
+await test('native create and start are separately fenced and a rejected start fence makes no start request', async () => {
+  const { fetch, calls } = makeFetch({
+    'POST /v1/default/boxes': response(200, {
+      box_id: 'box-start-fenced',
+      status: 'configured',
+      image: 'cap-boxlite:1',
+    }),
+    'POST /v1/default/boxes/box-start-fenced/start': response(200, {
+      box_id: 'box-start-fenced',
+      status: 'running',
+    }),
+  });
+  const events = [];
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    pathPrefix: 'default',
+    fetch,
+  });
+
+  await assert.rejects(
+    client.createSandbox({
+      taskId: 'task-start-fenced',
+      sandboxId: 'box-start-fenced',
+      image: 'cap-boxlite:1',
+      externalBoundaryGuard: async (event) => {
+        events.push(`${event.action}:${event.position}`);
+        if (event.action === 'sandbox.start' && event.position === 'before') {
+          throw new Error('lease lost before start');
+        }
+      },
+    }),
+    (error) =>
+      error instanceof mod.BoxLitePartialCreateError &&
+      error.cause?.message === 'lease lost before start',
+  );
+
+  assert.deepEqual(events, [
+    'sandbox.create:before',
+    'sandbox.create:after',
+    'sandbox.start:before',
+  ]);
+  assert.deepEqual(calls.map((call) => `${call.method} ${call.path}`), [
+    'POST /v1/default/boxes',
+  ]);
 });
 
 await test('fake client is deterministic and records calls', async () => {
@@ -350,20 +686,25 @@ await test('fake client is deterministic and records calls', async () => {
     taskId: 'task-1',
     sandboxId: 'box-task-1',
     image: 'cap-boxlite:1',
+    diskSizeGb: 12,
     metadata: { selected: true },
   });
   assert.equal(sandbox.id, 'box-task-1');
+  assert.equal(sandbox.diskSizeGb, 12);
+  assert.equal(client.createCalls[0].diskSizeGb, 12);
   assert.equal((await client.getSandbox('box-task-1')).metadata.selected, true);
 
   const result = await client.exec({ sandboxId: 'box-task-1', command: 'false' });
   assert.equal(result.exitCode, 1);
   assert.deepEqual(client.execCalls.map((call) => call.command), ['false']);
 
+  const uploaded = new Uint8Array([4, 5]);
   await client.uploadArchive({
     sandboxId: 'box-task-1',
     path: '/workspace',
-    archive: new Uint8Array([4, 5]),
+    archive: uploaded,
   });
+  uploaded.fill(0);
   assert.deepEqual([...await client.downloadArchive({
     sandboxId: 'box-task-1',
     path: '/workspace',

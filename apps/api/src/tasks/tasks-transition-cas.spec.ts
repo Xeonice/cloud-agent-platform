@@ -237,8 +237,9 @@ test('runtime auth failure writes status and structured cause in one terminal CA
   assert.ok(writes[0].failureAt instanceof Date);
   assert.equal(writes[0].failureExitCode, 1);
   assert.equal(row.status, 'failed');
-  assert.equal(response.failure?.runtime, 'codex');
   assert.equal(response.failure?.code, 'runtime_auth_expired');
+  assert.ok(response.failure && 'runtime' in response.failure);
+  assert.equal(response.failure.runtime, 'codex');
   assert.equal(response.failure?.action, 'reconnect_runtime');
   assert.equal(response.failure?.exitCode, 1);
   assert.match(response.failure?.message ?? '', /Codex.*已过期/);
@@ -246,6 +247,54 @@ test('runtime auth failure writes status and structured cause in one terminal CA
   assert.equal(audits[0].next, 'failed');
   assert.deepEqual(audits[0].failure, response.failure);
   assert.deepEqual(fenced, [TASK_ID]);
+  assert.deepEqual(settled, [TASK_ID]);
+});
+
+test('branch resolution failure writes the provisioning ref cause in the terminal CAS', async () => {
+  const row = taskRow('running');
+  const writes: Array<Record<string, unknown>> = [];
+  const prisma = {
+    task: {
+      findUnique() {
+        return Promise.resolve({ ...row });
+      },
+      async updateMany({
+        where,
+        data,
+      }: {
+        where: { id: string; status: TaskStatus };
+        data: Record<string, unknown> & { status: TaskStatus };
+      }) {
+        if (where.id !== TASK_ID || row.status !== where.status) {
+          return { count: 0 };
+        }
+        Object.assign(row, data);
+        writes.push(data);
+        return { count: 1 };
+      },
+    },
+  } as unknown as PrismaService;
+  const settled: string[] = [];
+  const guardrails = {
+    fenceTerminal() {},
+    async onTerminal(taskId: string) {
+      settled.push(taskId);
+    },
+  } as unknown as IGuardrailsService;
+  const service = new TasksService(prisma, guardrails);
+
+  const response = await service.failWithProvisioningFailure(
+    TASK_ID,
+    'provisioning_ref_not_found',
+  );
+
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].status, 'failed');
+  assert.equal(writes[0].failureCode, 'provisioning_ref_not_found');
+  assert.ok(writes[0].failureAt instanceof Date);
+  assert.equal(writes[0].failureExitCode, null);
+  assert.equal(response.failure?.code, 'provisioning_ref_not_found');
+  assert.equal(response.failure?.action, 'verify_repository_ref');
   assert.deepEqual(settled, [TASK_ID]);
 });
 
@@ -311,8 +360,9 @@ test('runtime auth failure enriches a generic failed CAS winner without repeatin
   assert.ok(writes[0].failureAt instanceof Date);
   assert.equal(writes[0].failureExitCode, 1);
   assert.equal(response.status, 'failed');
-  assert.equal(response.failure?.runtime, 'claude-code');
   assert.equal(response.failure?.code, 'runtime_auth_rejected');
+  assert.ok(response.failure && 'runtime' in response.failure);
+  assert.equal(response.failure.runtime, 'claude-code');
   assert.equal(audits, 0, 'the original terminal winner owns lifecycle audit');
   assert.equal(fences, 0, 'the original terminal winner already fenced the task');
   assert.equal(settlements, 0, 'the original terminal winner already settled teardown');

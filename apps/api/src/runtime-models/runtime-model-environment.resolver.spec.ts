@@ -19,6 +19,10 @@ import {
 import { sha256Revision } from './runtime-model-catalog.util';
 import { RuntimeModelCatalogCache } from './runtime-model-catalog-cache';
 import { OwnerFairProbeScheduler } from './owner-fair-probe-scheduler';
+import {
+  buildRuntimeExecutionEnvironmentSnapshot,
+  validateRuntimeExecutionEnvironmentSnapshot,
+} from './runtime-model-snapshot';
 
 const OWNER = '00000000-0000-4000-a000-000000000101';
 const ENVIRONMENT_ID = '00000000-0000-4000-a000-000000000201';
@@ -128,6 +132,7 @@ function buildResolver(input: {
       if (input.managedError) throw input.managedError;
       return input.managed === undefined ? managedEnvironment() : input.managed;
     },
+    resolveProvisioningResourcesForTask: async () => ({}),
   } as unknown as SandboxEnvironmentsService;
   const deployment = {
     resolve: async () => {
@@ -148,6 +153,29 @@ function buildResolver(input: {
   );
   return { resolver, selections, deploymentCalls: () => deploymentCalls };
 }
+
+test('legacy fingerprints remain valid while resolved resources affect new fingerprints', () => {
+  const legacy = deploymentEnvironment().snapshot;
+  assert.equal(
+    validateRuntimeExecutionEnvironmentSnapshot('codex', legacy).fingerprint,
+    legacy.fingerprint,
+  );
+  const {
+    fingerprint: _fingerprint,
+    sandboxMetadataChecksum: _sandboxMetadataChecksum,
+    ...base
+  } = legacy;
+  const fiveGiB = buildRuntimeExecutionEnvironmentSnapshot({
+    ...base,
+    resources: { diskSizeGb: 5 },
+  });
+  const nineGiB = buildRuntimeExecutionEnvironmentSnapshot({
+    ...base,
+    resources: { diskSizeGb: 9 },
+  });
+  assert.notEqual(fiveGiB.fingerprint, legacy.fingerprint);
+  assert.notEqual(fiveGiB.fingerprint, nineGiB.fingerprint);
+});
 
 test('omitted environment uses exact owner default and builds an immutable snapshot', async () => {
   const harness = buildResolver({ ownerDefault: ENVIRONMENT_ID });
@@ -318,4 +346,73 @@ test('configured deployment resolver pins identity, validates once and caches by
   assert.equal(first.snapshot.source.locator, `sha256:${'d'.repeat(64)}`);
   assert.equal(first.snapshot.cliArtifactChecksum, checksum);
   assert.equal(second.snapshot.fingerprint, first.snapshot.fingerprint);
+});
+
+test('configured BoxLite deployment validates and snapshots one identical disk policy', async () => {
+  const checksum = `sha256:${'e'.repeat(64)}`;
+  let validationResources: unknown;
+  const validationRunner: SandboxEnvironmentValidationRunner = {
+    resolveImmutableTarget: async (target) => ({
+      ...target,
+      source: {
+        ...target.source,
+        digest: `sha256:${'e'.repeat(64)}`,
+      },
+    }),
+    validate: async (target) => {
+      validationResources = target.resources;
+      return {
+        status: 'passed',
+        providerFamily: 'boxlite',
+        runtimeId: 'codex',
+        sourceKind: 'boxlite-image',
+        resolvedLocator: target.source.image,
+        resolvedDigest: target.source.digest ?? null,
+        resolvedChecksum: null,
+        runtimeArtifactChecksums: { codex: checksum },
+        cliArtifactChecksum: checksum,
+        resourceSnapshot: target.resources ?? {},
+        sandboxMetadata: {
+          schemaVersion: 1,
+          sandboxVersion: '1.2.3',
+          dependencies: { codex: '0.144.1' },
+        },
+        probes: [],
+        error: null,
+      };
+    },
+  };
+  const resolver = new ConfiguredDeploymentRuntimeModelEnvironmentResolver({
+    validationRunner,
+    cache: new RuntimeModelCatalogCache({
+      ttlMs: 10_000,
+      maxEntries: 4,
+      maxInFlight: 2,
+      maxInFlightPerOwner: 1,
+    }),
+    scheduler: new OwnerFairProbeScheduler({
+      globalConcurrency: 2,
+      perOwnerConcurrency: 1,
+      globalQueueLimit: 4,
+      perOwnerQueueLimit: 2,
+      queueWaitTimeoutMs: 1_000,
+    }),
+    env: {
+      CAP_SANDBOX_PROVIDER: 'boxlite',
+      BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'test-only',
+      BOXLITE_IMAGE: `registry.example/cap/boxlite@sha256:${'e'.repeat(64)}`,
+      BOXLITE_DISK_SIZE_GB: '9',
+      BOXLITE_CAPABILITIES: 'terminal.websocket,command.exec',
+      BOXLITE_TERMINAL_MODE: 'pty',
+      BOXLITE_PROTOCOL_MODE: 'native',
+    },
+  });
+
+  const resolved = await resolver.resolve({
+    ownerUserId: OWNER,
+    runtime: 'codex',
+  });
+  assert.deepEqual(validationResources, { diskSizeGb: 9 });
+  assert.deepEqual(resolved.snapshot.resources, { diskSizeGb: 9 });
 });

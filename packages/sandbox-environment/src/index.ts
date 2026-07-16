@@ -1,8 +1,10 @@
 import type {
   SandboxEnvironmentProviderFamily,
   SandboxEnvironmentSourceKind,
+  SandboxResourceSnapshot,
   SandboxResolvedEnvironmentMetadata,
 } from '@cap/sandbox-core';
+import { snapshotSandboxResources } from '@cap/sandbox-core';
 
 export type SandboxEnvironmentStatus =
   | 'draft'
@@ -72,6 +74,7 @@ export interface SandboxEnvironmentRecord {
   readonly status: SandboxEnvironmentStatus;
   readonly source: SandboxEnvironmentSourceDescriptor;
   readonly compatibility: SandboxEnvironmentCompatibility;
+  readonly resources?: SandboxResourceSnapshot | null;
   readonly parameters?: readonly SandboxEnvironmentParameter[];
   readonly isDefault?: boolean;
   readonly lastValidationId?: string | null;
@@ -256,7 +259,12 @@ export function selectEnvironmentSourceForProvider(args: {
 export function normalizeResolvedEnvironment(args: {
   readonly environment: Pick<
     SandboxEnvironmentRecord,
-    'id' | 'name' | 'source' | 'lastValidationId' | 'contractVersion'
+    | 'id'
+    | 'name'
+    | 'source'
+    | 'resources'
+    | 'lastValidationId'
+    | 'contractVersion'
   >;
   readonly providerFamily: SandboxEnvironmentProviderFamily;
   readonly runtimeId?: string | null;
@@ -284,6 +292,7 @@ export function normalizeResolvedEnvironment(args: {
     validationId: args.environment.lastValidationId ?? undefined,
     validationVersion: args.validationVersion ?? undefined,
     contractVersion: args.environment.contractVersion ?? undefined,
+    resources: snapshotSandboxResources(args.environment.resources),
     metadata:
       args.sandboxMetadata === undefined
         ? undefined

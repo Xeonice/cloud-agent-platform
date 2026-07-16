@@ -24,6 +24,7 @@ interface FakeSandboxRunRow {
 
 interface FakeTaskRow {
   id: string;
+  lifecycleVersion: number;
   repoId: string;
   prompt: string;
   status: string;
@@ -51,6 +52,7 @@ function makeTask(
 ): FakeTaskRow {
   return {
     id,
+    lifecycleVersion: 0,
     repoId: REPO_ID,
     prompt: `prompt ${id}`,
     status: 'running',
@@ -129,13 +131,26 @@ function buildService(rows: FakeTaskRow[]): {
         return row ? projectTask(row, args) : null;
       },
       updateMany: async (args: {
-        where: { id: string; status: string };
-        data: { status?: string };
+        where: { id: string; status: string; lifecycleVersion?: number };
+        data: {
+          status?: string;
+          lifecycleVersion?: { increment: number };
+        };
       }) => {
         calls.updateMany.push(args);
         const row = rows.find((candidate) => candidate.id === args.where.id);
-        if (!row || row.status !== args.where.status) return { count: 0 };
+        if (
+          !row ||
+          row.status !== args.where.status ||
+          (args.where.lifecycleVersion !== undefined &&
+            row.lifecycleVersion !== args.where.lifecycleVersion)
+        ) {
+          return { count: 0 };
+        }
         if (args.data.status) row.status = args.data.status;
+        if (args.data.lifecycleVersion) {
+          row.lifecycleVersion += args.data.lifecycleVersion.increment;
+        }
         return { count: 1 };
       },
     },
@@ -276,8 +291,11 @@ test('transition response includes the selected provider summary', async () => {
   });
   assertProviderInclude(calls.findUnique[calls.findUnique.length - 1]);
   assert.deepEqual(calls.updateMany[0], {
-    where: { id: taskId, status: 'running' },
-    data: { status: 'completed' },
+    where: { id: taskId, status: 'running', lifecycleVersion: 0 },
+    data: {
+      status: 'completed',
+      lifecycleVersion: { increment: 1 },
+    },
   });
 });
 

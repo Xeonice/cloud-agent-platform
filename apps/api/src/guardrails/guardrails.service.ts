@@ -7,7 +7,7 @@ import {
   type OnModuleInit,
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import type { TaskFailureCode, TaskStatus } from '@cap/contracts';
+import type { TaskProvisioningStage, TaskStatus } from '@cap/contracts';
 import {
   TasksService,
   AdmissionTransitionIndeterminateError,
@@ -25,20 +25,42 @@ import {
 } from '../sandbox/sandbox-provider.port';
 import {
   buildSandboxProvisionPlan,
+  createExactHostGitCredential,
   forceFailSettlePlan,
   selectDeliverySandboxProvider,
   selectSandboxProvider,
+  snapshotSandboxProvisionContext,
   terminalSettlePlan,
   isSandboxRuntimeModelSetupError,
+  isSandboxProvisioningCapacityError,
+  isSandboxProvisioningStageError,
+  isSandboxWorkspaceMaterializationError,
+  type AgentTerminalLaunchOutcome,
+  type SandboxTerminalPtyMode,
   type SandboxSettlePlan,
 } from '@cap/sandbox';
+import {
+  TaskAdmissionCoordinationError,
+  TaskAdmissionLeaseLostError,
+  TaskAdmissionProcessingError,
+  type TaskAdmissionProcessorContext,
+  type TaskAdmissionProcessResult,
+  type TaskAdmissionTerminalFailure,
+  type TaskAdmissionTerminalRecovery,
+} from '../task-admission/task-admission.types';
 import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
 import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
+  type ProvisioningAuditFailure,
 } from '../audit/audit-recorder.port';
 import { ForgeTargetResolver } from '../forge/forge-target-resolver';
 import { DefaultForgeRegistry } from '../forge/forge-registry';
+import {
+  TaskBranchResolutionError,
+  TaskBranchResolver,
+  isTaskBranchResolutionError,
+} from '../forge/task-branch-resolver';
 import { ConcurrencySemaphore } from './semaphore';
 import { DeadlineWatcher } from './deadline-watcher';
 import { IdleTracker } from './idle-tracker';
@@ -51,14 +73,34 @@ import {
 import { runWithTaskLog } from '../observability/log-context';
 import type { RuntimeOutputFailure } from '../agent-runtime/agent-runtime.port';
 import {
+  isProvisioningTaskFailureCode,
+  isRuntimeTaskFailureCode,
+  taskFailureFromRecord,
+  type ProvisioningTaskFailureCode,
+  type RuntimeTaskFailureCode,
+} from '../tasks/task-failure';
+import {
   classifyRuntimeModelRejectionEvidence,
   type RuntimeModelRejectionEvidence,
 } from '../agent-runtime/runtime-model-rejection-evidence';
+import { isValidMaxConcurrentTasks } from '../settings/settings-logic';
 
 const EXIT_FAILURE_CLASSIFICATION_TIMEOUT_MS = 2_000;
 type ImmediateRuntimeFailureCode =
   | RuntimeOutputFailure['code']
   | 'runtime_model_setup_failed';
+
+interface DurableTerminalCleanupOptions {
+  readonly disposition?: 'superseded-remove' | 'terminal-retain';
+  readonly sessionReason?: 'completed' | 'failed';
+  readonly captureTranscript?: boolean;
+  readonly deliverWorkspace?: boolean;
+}
+
+type RecoveredFailedAdmission =
+  | { readonly kind: 'provisioning'; readonly causeCode: ProvisioningTaskFailureCode }
+  | { readonly kind: 'runtime' }
+  | { readonly kind: 'generic' };
 
 /**
  * Guardrails integration (integration 12.1b).
@@ -119,7 +161,15 @@ export interface ITerminalGateway {
   openSession(
     connection: SandboxConnection,
     selectedRun?: SelectedSandboxRun | null,
-  ): unknown;
+    options?: {
+      /** Recovery must prove an existing session and never launch a new one. */
+      readonly mode?: SandboxTerminalPtyMode;
+      readonly signal?: AbortSignal;
+      readonly beforeAgentLaunch?: () => Promise<void>;
+    },
+  ): {
+    readonly launchDecision: Promise<AgentTerminalLaunchOutcome>;
+  };
   /** Remove a task's terminal session (e.g. on completion/teardown). */
   unregisterSession(taskId: string): void;
   /**
@@ -212,6 +262,21 @@ export interface GuardrailParams {
   readonly userId?: string;
 }
 
+/** Final database/status fence run after attach is proven, before local restore. */
+export interface GuardrailsReadoptOptions {
+  readonly beforeCommit?: () => Promise<boolean>;
+}
+
+/**
+ * Result of a startup re-adoption attempt.
+ *
+ * `absent` is provider-attested and may enter orphan reclamation;
+ * `superseded` means the final task/admission fence rejected the restore and
+ * must be re-read by the caller. Indeterminate attach outcomes reject instead
+ * of being collapsed into either result.
+ */
+export type GuardrailsReadoptResult = 'attached' | 'absent' | 'superseded';
+
 @Injectable()
 export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private readonly logger = new Logger(GuardrailsService.name);
@@ -246,6 +311,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    */
   private forgeResolver?: ForgeTargetResolver;
   private forgeRegistry?: DefaultForgeRegistry;
+  /** Shared immutable branch semantics for clone/recovery and PR base intent. */
+  private branchResolver?: TaskBranchResolver;
 
   private readonly semaphore: ConcurrencySemaphore;
   private readonly deadlines: DeadlineWatcher;
@@ -269,6 +336,23 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     string,
     Promise<'running' | 'queued'>
   >();
+  /** Coalesces duplicate startup readoption and keeps terminal fences live. */
+  private readonly readoptionsInFlight = new Map<
+    string,
+    Promise<GuardrailsReadoptResult>
+  >();
+  /**
+   * Exact durable fence retained for a re-adopted runtime. If a different API
+   * replica wins the Task terminal transition, a later local exit can re-read
+   * this fence and discard only process-local accounting without repeating the
+   * winner's provider teardown or result delivery.
+   */
+  private readonly readoptionAuthorityChecks = new Map<
+    string,
+    () => Promise<boolean>
+  >();
+  /** Counts local terminal settlement owners; a provisional fence is not ownership. */
+  private readonly terminalSettlementsInFlight = new Map<string, number>();
   /** Per-process terminal fence retained only while an admission flow is in flight. */
   private readonly terminalTasks = new Set<string>();
 
@@ -290,6 +374,8 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * teardown when the task settles.
    */
   private readonly connections = new Map<string, SandboxConnection>();
+  /** Process-local timer/accounting mirror; database Task status owns capacity. */
+  private readonly durableRuntimeArmed = new Set<string>();
 
   constructor(
     private readonly moduleRef: ModuleRef,
@@ -303,21 +389,21 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     /**
      * Best-effort audit recorder (6.2), injected by the {@link AUDIT_RECORDER_TOKEN}
      * (verify-phase wiring in `app.module.ts`). Optional so the service still
-     * constructs without it; when absent, transitions proceed unaudited. Every
-     * call is fire-and-forget and the recorder never throws (6.2), so it can never
-     * affect a transition.
+     * constructs without it; when absent, transitions proceed unaudited.
+     * Ordinary lifecycle/progress calls are best-effort. Durable provisioning
+     * terminal detail is acknowledged before cleanup so recovery can retry it.
      */
     @Optional()
     @Inject(AUDIT_RECORDER_TOKEN)
     private readonly audit?: AuditRecorderPort,
     /**
-     * Prisma client for the bootstrap-time persisted-ceiling read
-     * (configurable-task-slots). Optional so guardrails-only unit contexts
-     * still construct without a database; when absent,
-     * {@link loadPersistedCeiling} degrades to the env-seeded ceiling. The
-     * admission hot path NEVER touches it — the in-memory ceiling is
-     * authoritative and is written only at bootstrap load and on a
-     * settings-save push.
+     * Prisma client for the bootstrap-time persisted-ceiling read and the
+     * post-terminal-CAS durable-work/Task authority checks. Optional so
+     * guardrails-only unit contexts still construct without a database; when
+     * absent, {@link loadPersistedCeiling} degrades to the env-seeded ceiling,
+     * while production durable terminal recovery fails closed. Ordinary slot
+     * admission still does not read this client: the in-memory ceiling is
+     * updated only at bootstrap load and on a settings-save push.
      */
     @Optional()
     private readonly prisma?: PrismaService,
@@ -384,10 +470,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     try {
       this.forgeResolver = this.moduleRef.get(ForgeTargetResolver, { strict: false });
       this.forgeRegistry = this.moduleRef.get(DefaultForgeRegistry, { strict: false });
+      this.branchResolver = this.moduleRef.get(TaskBranchResolver, { strict: false });
     } catch {
       // Forge module not wired in this context — result delivery is skipped.
       this.forgeResolver = undefined;
       this.forgeRegistry = undefined;
+      this.branchResolver = undefined;
     }
   }
 
@@ -438,7 +526,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       const persisted = row?.maxConcurrentTasks;
       // Defensive validity guard (contracts constrain writes to 1–20 already):
       // an invalid stored value is ignored rather than thrown by the setter.
-      if (persisted !== undefined && Number.isInteger(persisted) && persisted >= 1) {
+      if (isValidMaxConcurrentTasks(persisted)) {
         this.semaphore.setMaxConcurrentTasks(persisted);
         this.logger.log(`slot ceiling loaded from system settings: ${persisted}`);
       }
@@ -474,6 +562,331 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       }
       this.releaseTerminalFenceIfIdle(taskId);
     }
+  }
+
+  /**
+   * Durable admission path. Capacity is linearized by TasksService against the
+   * shared database; this method never inserts durable work into the legacy
+   * process-local semaphore queue, whose taskId-only onAdmit callback has no
+   * lease/version authority.
+   */
+  async processDurableAdmission(
+    context: TaskAdmissionProcessorContext,
+  ): Promise<TaskAdmissionProcessResult> {
+    const { claim, lease, signal } = context;
+    const taskId = claim.taskId;
+    await lease.authorize();
+
+    let fence = lease.currentTaskFence();
+    if (fence.status === 'pending' || fence.status === 'queued') {
+      const targets =
+        fence.status === 'pending'
+          ? (['queued', 'running'] as const)
+          : (['running'] as const);
+      lease.beginTaskTransition(targets);
+      let reservation;
+      try {
+        reservation = await this.tasks.reserveDurableAdmissionCapacity({
+          taskId,
+          leaseToken: claim.leaseToken,
+          expectedStatus: fence.status,
+          expectedLifecycleVersion: fence.lifecycleVersion,
+          fallbackMaxConcurrentTasks: this.semaphore.maxConcurrentTasks,
+          transitionToken: randomUUID(),
+        });
+      } catch (error) {
+        lease.rollbackTaskTransition();
+        throw error;
+      }
+      if (reservation.outcome === 'superseded') {
+        lease.rollbackTaskTransition();
+        throw new TaskAdmissionLeaseLostError(taskId);
+      }
+      if (reservation.outcome === 'running') {
+        // The reservation transaction has already committed the durable slot.
+        // Mirror it before the next lease await so a lease-loss/crash window
+        // cannot let a legacy admission consume the same local capacity.
+        this.restoreDurableAdmissionSlot(taskId);
+      }
+      if (reservation.transitioned) {
+        lease.commitTaskTransition({
+          status: reservation.status,
+          lifecycleVersion: reservation.lifecycleVersion,
+        });
+      } else {
+        lease.rollbackTaskTransition();
+      }
+      await lease.authorize();
+      fence = lease.currentTaskFence();
+      if (reservation.outcome === 'queued') {
+        return { kind: 'queued', stage: claim.stage };
+      }
+    }
+
+    if (fence.status !== 'running' && fence.status !== 'awaiting_input') {
+      throw new TaskAdmissionLeaseLostError(taskId);
+    }
+
+    // The DB transaction above is the durable capacity authority. Mirror its
+    // running winner into the legacy process-local semaphore so mixed rollout
+    // tasks cannot consume that same local slot. restoreRunning is idempotent.
+    this.restoreDurableAdmissionSlot(taskId);
+
+    await this.armDurableRuntime(taskId, lease);
+    const sandbox = this.sandbox;
+    if (!sandbox) {
+      throw new TaskAdmissionProcessingError(
+        'provisioning_unknown',
+        claim.stage,
+        false,
+      );
+    }
+
+    try {
+      await lease.checkpoint('sandbox_creation');
+      await lease.authorize();
+      const provisionPlan = await this.resolveProvisionPlan(taskId);
+      await lease.authorize();
+      this.assertDurableClaimMatchesProvisionPlan(claim, provisionPlan);
+
+      const selected = selectSandboxProvider(
+        sandbox,
+        provisionPlan.requiredCapabilities,
+      );
+      await lease.authorize();
+      const connection = await selected.provider.provision(
+        snapshotSandboxProvisionContext({
+          taskId,
+          cloneSpec: provisionPlan.cloneSpec,
+          modelIntent: provisionPlan.modelIntent,
+          runtimeId: provisionPlan.runtimeId,
+          executionMode: provisionPlan.executionMode,
+          environment: provisionPlan.environment,
+          resources: provisionPlan.resources,
+          workspace: provisionPlan.workspace,
+          ownership: Object.freeze({
+            ownerGeneration: claim.leaseToken,
+            resourceGeneration: randomUUID(),
+          }),
+          cancellationSignal: signal,
+          externalBoundaryGuard: async () => lease.authorize(),
+          beforeProvisioningBoundary: (event) =>
+            lease.checkpoint(event.stage),
+          onProvisioningProgress: (event) => {
+            // Provider-composite phases have different physical ordering. They
+            // are audit-only hints; monotonic durable checkpoints remain owned
+            // by the admission worker and are written after provision returns.
+            void this.recordAudit(() =>
+              this.audit?.recordProvisioningProgress(
+                taskId,
+                event.stage,
+                claim.attempt,
+              ),
+            );
+          },
+          onWorkspaceProgress: async (event) => {
+            if (event.status === 'started') {
+              await lease.checkpoint(event.stage);
+            }
+          },
+          beforeWorkspaceBoundary: async (event) => {
+            if (event.position === 'before') {
+              await lease.checkpoint(event.stage);
+            } else {
+              await lease.authorize();
+            }
+          },
+        }),
+      );
+      const selectedRun = await this.resolveSelectedRunStrict(taskId);
+      if (
+        !selectedRun?.owner?.ownership ||
+        selectedRun.owner.ownership.ownerGeneration !== claim.leaseToken
+      ) {
+        throw new TaskAdmissionLeaseLostError(taskId);
+      }
+      await lease.authorize();
+
+      // Providers execute readiness/runtime setup in different physical orders.
+      // A successful composite provision proves both completed, so project them
+      // only now in the stable provider-neutral order without regressing a
+      // workspace checkpoint.
+      await lease.checkpoint('runtime_setup');
+      await lease.authorize();
+      await lease.checkpoint('readiness');
+      await lease.authorize();
+
+      this.connections.set(taskId, connection);
+      await lease.checkpoint('agent_launch');
+      await lease.authorize();
+      const gateway = this.gateway;
+      if (!gateway) {
+        throw new TaskAdmissionProcessingError(
+          'provisioning_unknown',
+          'agent_launch',
+          false,
+        );
+      }
+      const session = gateway.openSession(connection, selectedRun, {
+        signal,
+        beforeAgentLaunch: () => lease.authorize(),
+      });
+      const launchDecision = await session.launchDecision;
+      if (launchDecision.kind === 'fenced') {
+        throw new TaskAdmissionLeaseLostError(taskId);
+      }
+      if (
+        launchDecision.kind !== 'launched' &&
+        launchDecision.kind !== 'attached'
+      ) {
+        throw new TaskAdmissionProcessingError(
+          'provisioning_unknown',
+          'agent_launch',
+          false,
+        );
+      }
+      await lease.authorize();
+      await lease.checkpoint('complete');
+      return { kind: 'succeeded' };
+    } catch (error) {
+      // A DB/lease acknowledgement failure aborts the worker signal as well,
+      // but it is not proof that ownership was superseded. Preserve the live
+      // resource for expiry replay instead of deleting it as lease-lost work.
+      if (error instanceof TaskAdmissionCoordinationError) throw error;
+      if (
+        signal.aborted ||
+        error instanceof TaskAdmissionLeaseLostError
+      ) {
+        // Lost lease authority cannot distinguish an operator terminal CAS from
+        // a replay owner transfer without another race-prone read. Never cross
+        // a physical cleanup boundary here: terminal recovery is audit-first,
+        // while a nonterminal successor reuses/readopts the persisted owner.
+        throw new TaskAdmissionLeaseLostError(taskId);
+      }
+      throw classifyDurableAdmissionError(error, claim.stage);
+    }
+  }
+
+  async settleDurableAdmissionFailure(
+    context: TaskAdmissionProcessorContext,
+    failure: TaskAdmissionTerminalFailure,
+  ): Promise<boolean> {
+    const fence = context.lease.currentTaskFence();
+    if (
+      fence.status !== 'pending' &&
+      fence.status !== 'queued' &&
+      fence.status !== 'running' &&
+      fence.status !== 'awaiting_input'
+    ) {
+      return false;
+    }
+    return this.tasks.settleDurableAdmissionFailure({
+      taskId: context.claim.taskId,
+      leaseToken: context.claim.leaseToken,
+      attempt: context.claim.attempt,
+      expectedStatus: fence.status,
+      expectedLifecycleVersion: fence.lifecycleVersion,
+      stage: failure.stage,
+      causeCode: failure.causeCode,
+    });
+  }
+
+  async recoverDurableTerminalAdmission(
+    context: TaskAdmissionProcessorContext,
+  ): Promise<TaskAdmissionTerminalRecovery> {
+    await context.lease.authorize();
+    const task = await this.requireTerminalTaskSnapshot(context);
+    const taskId = context.claim.taskId;
+
+    if (task.status === 'cancelled') {
+      await this.requireTaskCancellationAudit(taskId);
+      await this.onDurableAdmissionTerminal(taskId, context.claim.leaseToken, {
+        disposition: 'superseded-remove',
+        sessionReason: 'failed',
+        captureTranscript: true,
+      });
+      await context.lease.authorize();
+      return { state: 'cancelled', stage: context.claim.stage };
+    }
+
+    if (task.status === 'completed') {
+      await this.onDurableAdmissionTerminal(taskId, context.claim.leaseToken, {
+        disposition: 'terminal-retain',
+        sessionReason: 'completed',
+        captureTranscript: true,
+        deliverWorkspace: true,
+      });
+      await context.lease.authorize();
+      return context.claim.stage === 'complete'
+        ? { state: 'succeeded', stage: 'complete' }
+        : { state: 'cancelled', stage: context.claim.stage };
+    }
+
+    if (task.status === 'agent_failed_to_start') {
+      await this.onDurableAdmissionTerminal(taskId, context.claim.leaseToken, {
+        disposition: 'terminal-retain',
+        sessionReason: 'failed',
+        captureTranscript: true,
+      });
+      await context.lease.authorize();
+      return {
+        state: 'failed',
+        stage:
+          context.claim.stage === 'complete'
+            ? 'complete'
+            : 'agent_launch',
+        causeCode: 'provisioning_unknown',
+      };
+    }
+
+    const failed = this.classifyRecoveredFailedAdmission(
+      context.claim.causeCode,
+      task.failureCode,
+      taskId,
+    );
+    if (failed.kind === 'provisioning') {
+      const failure = taskFailureFromRecord({
+        failureCode: failed.causeCode,
+        failureAt: new Date(),
+        failureExitCode: null,
+      });
+      if (!failure || 'runtime' in failure) {
+        throw new TaskAdmissionCoordinationError(
+          'checkpoint',
+          taskId,
+          new Error('terminal provisioning failure classification is invalid'),
+        );
+      }
+      await this.requireProvisioningFailureAudit(
+        taskId,
+        context.claim.stage,
+        context.claim.attempt,
+        failure,
+      );
+      await this.onDurableAdmissionTerminal(taskId, context.claim.leaseToken);
+      await context.lease.authorize();
+      return {
+        state: 'failed',
+        stage: context.claim.stage,
+        causeCode: failed.causeCode,
+      };
+    }
+
+    await this.onDurableAdmissionTerminal(taskId, context.claim.leaseToken, {
+      disposition: 'terminal-retain',
+      sessionReason: 'failed',
+      captureTranscript: true,
+    });
+    await context.lease.authorize();
+    if (failed.kind === 'runtime' && context.claim.stage === 'complete') {
+      return { state: 'succeeded', stage: 'complete' };
+    }
+    return context.claim.stage === 'complete'
+      ? { state: 'succeeded', stage: 'complete' }
+      : {
+          state: 'cancelled',
+          stage: context.claim.stage,
+        };
   }
 
   private async admitUntracked(
@@ -533,57 +946,148 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * provider has re-registered its own tracking and supplies the still-valid
    * {@link SandboxConnection} handle here). It:
    *
-   *  - re-inserts the task into the semaphore running set via `offer()` so the
-   *    slot is re-accounted (at boot the running set starts empty, so each
-   *    re-adopt takes a slot; this is what reduces the capacity the later queued
-   *    re-offer admits against). Idempotent: a re-offer of an already-running
-   *    task is a no-op in the semaphore.
+   *  - restores the task into the semaphore running set without consulting the
+   *    current ceiling. Every provider-confirmed survivor is preserved even if
+   *    the operator lowered the persisted ceiling while the API was offline;
+   *    releases later converge naturally before FIFO admission resumes.
    *  - captures the connection handle (so terminal reconnect / teardown find it)
-   *    and hands it to the terminal gateway, whose `openSession` ATTACHES to the
-   *    live named session rather than launching fresh (Track 2 D2). Best-effort:
-   *    a terminal-wiring hiccup never fails the re-adoption.
+   *    and hands it to the terminal gateway in attach-only mode. The gateway
+   *    must attest an existing named session; absence is returned distinctly,
+   *    and an indeterminate probe fails bootstrap closed rather than launching.
    *  - re-arms the idle tracker (when an effective ceiling exists) and the
    *    deadline watcher from the PERSISTED `deadlineMs`/`idleTimeoutMs`, identical
    *    to a task admitted before the restart, and re-opens the runner-minutes
    *    interval so the derived accounting resumes.
    */
-  readopt(
+  async readopt(
     taskId: string,
     connection: SandboxConnection,
     params: GuardrailParams = {},
     selectedRun?: SelectedSandboxRun | null,
-  ): void {
-    // Re-account the slot. At boot the running set is empty so this takes a slot;
-    // idempotent if the same task is re-adopted twice. This is the slot the later
-    // queued re-offer's capacity is reduced by.
-    this.semaphore.offer(taskId);
-    // Capture the still-valid handle so terminal reconnect + teardown resolve it.
-    this.connections.set(taskId, connection);
-    // Re-attach the terminal: openSession ATTACHES to the live named session
-    // (Track 2 D2) rather than launching a fresh codex. Best-effort.
-    if (this.gateway) {
-      try {
-        this.gateway.openSession(connection, selectedRun);
-      } catch (err: unknown) {
-        this.logger.error(
-          `re-attaching terminal session for re-adopted task ${taskId} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
+    options: GuardrailsReadoptOptions = {},
+  ): Promise<GuardrailsReadoptResult> {
+    const existing = this.readoptionsInFlight.get(taskId);
+    if (existing) return existing;
+
+    // Defer the actual attach by one microtask so the in-flight marker is
+    // installed before any terminal callback can observe this attempt.
+    const readoption = Promise.resolve().then(() =>
+      this.readoptUntracked(taskId, connection, params, selectedRun, options),
+    );
+    this.readoptionsInFlight.set(taskId, readoption);
+    try {
+      return await readoption;
+    } finally {
+      if (this.readoptionsInFlight.get(taskId) === readoption) {
+        this.readoptionsInFlight.delete(taskId);
       }
+      this.releaseTerminalFenceIfIdle(taskId);
     }
-    // Re-arm the idle ceiling (opt-in: only when a per-task or operator-level
-    // ceiling exists) and the wall-clock deadline from the persisted values.
-    const idleMs = params.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
-    if (idleMs !== undefined) {
-      this.idle.start(taskId, idleMs);
+  }
+
+  private async readoptUntracked(
+    taskId: string,
+    connection: SandboxConnection,
+    params: GuardrailParams,
+    selectedRun: SelectedSandboxRun | null | undefined,
+    options: GuardrailsReadoptOptions,
+  ): Promise<GuardrailsReadoptResult> {
+    if (this.terminalTasks.has(taskId)) {
+      return 'superseded';
     }
-    if (params.deadlineMs !== undefined) {
-      this.deadlines.armAfter(taskId, params.deadlineMs);
+
+    const gateway = this.gateway;
+    if (!gateway) {
+      throw new Error(
+        `re-adopting task ${taskId} is indeterminate: terminal gateway is unavailable`,
+      );
     }
-    // Resume the runner-minutes interval for the re-adopted running task (5.4).
-    this.runnerMinutes.recordStart(taskId);
-    this.logger.log(`re-adopted running task ${taskId} (slot held, timers re-armed)`);
+
+    let session: ReturnType<ITerminalGateway['openSession']>;
+    try {
+      session = gateway.openSession(connection, selectedRun, {
+        mode: 'attach-only',
+      });
+    } catch (error) {
+      gateway.unregisterSession(taskId);
+      throw error;
+    }
+
+    let launchDecision: AgentTerminalLaunchOutcome;
+    try {
+      launchDecision = await session.launchDecision;
+    } catch (error) {
+      gateway.unregisterSession(taskId);
+      if (this.terminalTasks.has(taskId)) {
+        return 'superseded';
+      }
+      throw error;
+    }
+
+    if (this.terminalTasks.has(taskId)) {
+      gateway.unregisterSession(taskId);
+      return 'superseded';
+    }
+    if (launchDecision.kind === 'absent') {
+      gateway.unregisterSession(taskId);
+      return 'absent';
+    }
+    if (launchDecision.kind !== 'attached') {
+      gateway.unregisterSession(taskId);
+      throw new Error(
+        `re-adopting task ${taskId} is indeterminate: attach-only terminal decision was ${launchDecision.kind}`,
+      );
+    }
+
+    try {
+      if (this.terminalTasks.has(taskId)) {
+        gateway.unregisterSession(taskId);
+        return 'superseded';
+      }
+      if (options.beforeCommit && !(await options.beforeCommit())) {
+        gateway.unregisterSession(taskId);
+        return 'superseded';
+      }
+      // No await is permitted after this final terminal check and before all
+      // process-local restore state is committed. A racing terminal transition
+      // either owns the fence before this point or runs afterwards and clears
+      // the just-restored state through the ordinary terminal path.
+      if (this.terminalTasks.has(taskId)) {
+        gateway.unregisterSession(taskId);
+        return 'superseded';
+      }
+
+      if (options.beforeCommit) {
+        this.readoptionAuthorityChecks.set(taskId, options.beforeCommit);
+      }
+      const idleMs =
+        params.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
+      if (idleMs !== undefined) {
+        this.idle.start(taskId, idleMs);
+      }
+      if (params.deadlineMs !== undefined) {
+        this.deadlines.armAfter(taskId, params.deadlineMs);
+      }
+      this.connections.set(taskId, connection);
+      this.runnerMinutes.recordStart(taskId);
+      // Recovery accounting intentionally ignores a lowered ceiling and never
+      // fires the fresh-admission callback.
+      this.semaphore.restoreRunning(taskId);
+    } catch (error) {
+      this.idle.stop(taskId);
+      this.deadlines.clear(taskId);
+      this.connections.delete(taskId);
+      if (this.readoptionAuthorityChecks.get(taskId) === options.beforeCommit) {
+        this.readoptionAuthorityChecks.delete(taskId);
+      }
+      gateway.unregisterSession(taskId);
+      throw error;
+    }
+
+    this.logger.log(
+      `re-adopted running task ${taskId} (slot restored, attach proven, timers re-armed)`,
+    );
+    return 'attached';
   }
 
   /** Record terminal output or a hook event — resets the idle window (12.3). */
@@ -697,13 +1201,14 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
   private async persistRuntimeFailure(
     taskId: string,
-    code: TaskFailureCode,
+    code: RuntimeTaskFailureCode,
     exitCode: number | null,
     recordBreakerFailure: boolean,
   ): Promise<boolean> {
     if (recordBreakerFailure) this.recordFailure(taskId, 'turn_failure');
     try {
       await this.tasks.failWithRuntimeFailure(taskId, code, exitCode);
+      this.clearReadoptionAfterTerminalObservation(taskId);
       return true;
     } catch (err) {
       this.logger.debug(
@@ -728,11 +1233,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         EXIT_FAILURE_CLASSIFICATION_TIMEOUT_MS,
         'runtime failure classification',
       );
-    } catch (err) {
+    } catch {
       this.logger.debug(
-        `exit-detail classification for task ${taskId} timed out/skipped: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `exit-detail classification for task ${taskId} timed out/skipped (details redacted)`,
       );
       // Do not keep lifecycle settlement waiting after the bound, but retain the
       // late result. TasksService can CAS-enrich a generic failed winner without
@@ -745,12 +1248,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
             lateFailure.code,
             status.code,
           );
+          this.clearReadoptionAfterTerminalObservation(taskId);
         })
-        .catch((lateErr: unknown) => {
+        .catch(() => {
           this.logger.debug(
-            `late runtime failure enrichment for task ${taskId} skipped: ${
-              lateErr instanceof Error ? lateErr.message : String(lateErr)
-            }`,
+            `late runtime failure enrichment for task ${taskId} skipped (details redacted)`,
           );
         });
     }
@@ -782,21 +1284,17 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     let tail = '';
     try {
       tail = (await this.gateway?.readSessionLogTail(taskId)) ?? '';
-    } catch (err) {
+    } catch {
       this.logger.debug(
-        `exit-detail tail for task ${taskId} unavailable: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `exit-detail tail for task ${taskId} unavailable (details redacted)`,
       );
     }
     let failure: RuntimeOutputFailure | null = null;
     try {
       failure = await this.tasks.classifyRuntimeOutputFailure(taskId, tail);
-    } catch (err) {
+    } catch {
       this.logger.debug(
-        `runtime failure classification for task ${taskId} skipped: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `runtime failure classification for task ${taskId} skipped (details redacted)`,
       );
     }
     if (this.audit) {
@@ -849,11 +1347,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     if (!this.transcripts) return;
     try {
       await this.transcripts.capture(taskId);
-    } catch (err) {
+    } catch {
       this.logger.warn(
-        `transcript capture for task ${taskId} failed (swallowed): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `transcript capture for task ${taskId} failed (details redacted; swallowed)`,
       );
     }
   }
@@ -871,14 +1367,19 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async resolveSelectedRun(taskId: string): Promise<SelectedSandboxRun | null> {
     try {
       return (await this.sandbox?.getSelectedSandboxRun?.(taskId)) ?? null;
-    } catch (err) {
+    } catch {
       this.logger.warn(
-        `selected sandbox run metadata for task ${taskId} unavailable (continuing with connection only): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `selected sandbox run metadata for task ${taskId} unavailable (details redacted; continuing with connection only)`,
       );
       return null;
     }
+  }
+
+  /** Durable create/readopt must fail closed on an indeterminate owner lookup. */
+  private async resolveSelectedRunStrict(
+    taskId: string,
+  ): Promise<SelectedSandboxRun | null> {
+    return (await this.sandbox?.getSelectedSandboxRun?.(taskId)) ?? null;
   }
 
   /**
@@ -894,12 +1395,107 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   async onTerminal(taskId: string): Promise<void> {
+    this.beginTerminalSettlement(taskId);
     // Idempotently establish the fence even for callers that bypass TasksService.
     this.fenceTerminal(taskId);
     try {
+      if (await this.deferTerminalSettlementToDurableRecovery(taskId)) {
+        return;
+      }
       await this.settleTask(taskId, terminalSettlePlan());
     } finally {
+      this.readoptionAuthorityChecks.delete(taskId);
+      this.endTerminalSettlement(taskId);
       this.releaseTerminalFenceIfIdle(taskId);
+    }
+  }
+
+  /**
+   * Durable admission cleanup is load-bearing: the DB work lease/slot is not
+   * released until provider teardown of the exact owner generation succeeds.
+   * Unlike the ordinary terminal UX path this method never swallows teardown.
+   */
+  async onDurableAdmissionTerminal(
+    taskId: string,
+    ownerGeneration: string,
+    options: DurableTerminalCleanupOptions = {},
+  ): Promise<void> {
+    this.beginTerminalSettlement(taskId);
+    this.fenceTerminal(taskId);
+    try {
+      const disposition = options.disposition ?? 'superseded-remove';
+      // Every terminal cleanup keeps the historical transcript chokepoint,
+      // including pre-launch/provisioning failures where capture is normally a
+      // cheap no-rollout no-op. Callers may opt out only for a proven duplicate.
+      if (options.captureTranscript ?? true) {
+        await this.captureTranscript(taskId);
+      }
+      if (options.deliverWorkspace) {
+        await this.deliverResult(taskId);
+      }
+      const sandbox = this.sandbox;
+      if (!sandbox) {
+        throw new Error('Durable sandbox cleanup provider is unavailable');
+      }
+      if (!sandbox.claimSandboxCleanupOwnership) {
+        throw new Error('Durable sandbox cleanup ownership is unavailable');
+      }
+      const cleanupAuthorization = await sandbox.claimSandboxCleanupOwnership(
+        taskId,
+        ownerGeneration,
+      );
+      if (cleanupAuthorization) {
+        await sandbox.teardownSandbox(taskId, {
+          cleanupAuthorization,
+          disposition,
+        });
+      }
+      this.connections.delete(taskId);
+      this.teardownSession(taskId, options.sessionReason ?? 'failed');
+      this.semaphore.release(taskId);
+    } finally {
+      this.readoptionAuthorityChecks.delete(taskId);
+      this.endTerminalSettlement(taskId);
+      this.releaseTerminalFenceIfIdle(taskId);
+    }
+  }
+
+  /** Mirror a DB-authorized durable running task into the legacy local ceiling. */
+  restoreDurableAdmissionSlot(taskId: string): void {
+    // This compatibility mirror is replica-local. Cross-replica mixed-legacy
+    // safety depends on the deployment-time admission-v2 capability gate and
+    // drain precondition (8.1); a process-local environment switch alone does
+    // not enforce that rollout invariant.
+    this.semaphore.restoreRunning(taskId);
+  }
+
+  /**
+   * A terminal Task CAS invalidates the worker fence before this read. If its
+   * durable work is still unfinished, only terminal recovery may perform the
+   * exact-owner teardown and release the mirrored slot. A failed authority
+   * read is conservatively treated the same way: releasing on uncertainty can
+   * over-admit legacy work while a provisioning/running/deleting owner is live.
+   */
+  private async deferTerminalSettlementToDurableRecovery(
+    taskId: string,
+  ): Promise<boolean> {
+    if (!this.prisma) return false;
+    try {
+      const work = await this.prisma.taskAdmissionWork.findUnique({
+        where: { taskId },
+        select: { state: true },
+      });
+      return (
+        work?.state === 'accepted' ||
+        work?.state === 'queued' ||
+        work?.state === 'running' ||
+        work?.state === 'retrying'
+      );
+    } catch {
+      this.logger.warn(
+        `terminal admission state for task ${taskId} is indeterminate; retaining its local slot for durable recovery`,
+      );
+      return true;
     }
   }
 
@@ -927,11 +1523,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       await this.deliverResult(taskId);
     }
     if (plan.teardownSandbox && this.sandbox) {
-      await this.sandbox.teardownSandbox(taskId).catch((err: unknown) => {
+      await this.sandbox.teardownSandbox(taskId, {
+        disposition: 'terminal-retain',
+      }).catch(() => {
         this.logger.warn(
-          `sandbox teardown for task ${taskId} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `sandbox teardown for task ${taskId} failed (provider details redacted)`,
         );
       });
     }
@@ -978,7 +1574,10 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         `Automated delivery of the agent's workspace changes.`;
 
       const pushResult = await selected.provider.deliverWorkspaceChanges(taskId, {
-        authHeader: forge.cloneAuthHeader(target),
+        credential: createExactHostGitCredential(
+          target.cloneUrl,
+          forge.cloneAuthHeader(target),
+        ),
         branch,
         commitMessage,
       });
@@ -1000,7 +1599,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       }
 
       // deliver === 'pr' — open or reuse a change request (platform-side fetch).
-      const baseBranch = task.branch ?? (await forge.resolveBaseBranch(target));
+      const branchResolution = await this.branchResolver?.resolve(taskId);
+      if (!branchResolution) {
+        await this.persistDeliver(taskId, { deliverStatus: 'failed' });
+        return;
+      }
+      const baseBranch = branchResolution.resolvedBranch;
       const existing = await forge.findExistingChangeRequest(target, branch);
       const reused = existing !== null;
       const ref =
@@ -1025,11 +1629,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           reused,
         }),
       );
-    } catch (err) {
+    } catch {
       this.logger.warn(
-        `result delivery for task ${taskId} failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `result delivery for task ${taskId} failed (provider details redacted)`,
       );
       await this.persistDeliver(taskId, { deliverStatus: 'failed' }).catch(() => undefined);
     }
@@ -1140,9 +1742,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         provisionPlan = await this.resolveProvisionPlan(taskId);
       } catch (err) {
         this.logger.error(
-          `resolve sandbox requirements for task ${taskId} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `resolve sandbox requirements for task ${taskId} failed (provider details redacted)`,
         );
         await this.failProvisioning(taskId, err);
         return 'transitioned';
@@ -1155,11 +1755,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         .then(() =>
           selectSandboxProvider(sandbox, provisionPlan.requiredCapabilities),
         )
-        .catch((err: unknown) => {
+        .catch(() => {
           this.logger.error(
-            `select sandbox provider for task ${taskId} failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
+            `select sandbox provider for task ${taskId} failed (provider details redacted)`,
           );
           return undefined;
         });
@@ -1186,29 +1784,33 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       }
       let connection: SandboxConnection | undefined;
       try {
-        connection = await selected.provider.provision({
-          taskId,
-          cloneSpec: provisionPlan.cloneSpec,
-          modelIntent: provisionPlan.modelIntent,
-          runtimeId: provisionPlan.runtimeId,
-          executionMode: provisionPlan.executionMode,
-          environment: provisionPlan.environment,
-        });
+        connection = await selected.provider.provision(
+          snapshotSandboxProvisionContext({
+            taskId,
+            cloneSpec: provisionPlan.cloneSpec,
+            modelIntent: provisionPlan.modelIntent,
+            runtimeId: provisionPlan.runtimeId,
+            executionMode: provisionPlan.executionMode,
+            environment: provisionPlan.environment,
+            resources: provisionPlan.resources,
+            workspace: provisionPlan.workspace,
+            cancellationSignal: provisionPlan.cancellationSignal,
+            onWorkspaceProgress: provisionPlan.onWorkspaceProgress,
+          }),
+        );
       } catch (err) {
         this.logger.error(
-          `provision sandbox for task ${taskId} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `provision sandbox for task ${taskId} failed (provider details redacted)`,
         );
         await this.failProvisioning(taskId, err);
         return 'transitioned';
       }
       if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-        await selected.provider.teardownSandbox(taskId).catch((err: unknown) => {
+        await selected.provider.teardownSandbox(taskId, {
+          disposition: 'superseded-remove',
+        }).catch(() => {
           this.logger.warn(
-            `discarding superseded sandbox for task ${taskId} failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
+            `discarding superseded sandbox for task ${taskId} failed (provider details redacted)`,
           );
         });
         this.clearAdmissionRuntime(taskId);
@@ -1218,22 +1820,22 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         this.connections.set(taskId, connection);
         const selectedRun = await this.resolveSelectedRun(taskId);
         if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
-          await selected.provider.teardownSandbox(taskId).catch((err: unknown) => {
+          await selected.provider.teardownSandbox(taskId, {
+            disposition: 'superseded-remove',
+          }).catch(() => {
             this.logger.warn(
-              `discarding superseded sandbox for task ${taskId} failed: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
+              `discarding superseded sandbox for task ${taskId} failed (provider details redacted)`,
             );
           });
           this.clearAdmissionRuntime(taskId);
           return 'superseded';
         }
         if (this.terminalTasks.has(taskId)) {
-          await selected.provider.teardownSandbox(taskId).catch((err: unknown) => {
+          await selected.provider.teardownSandbox(taskId, {
+            disposition: 'superseded-remove',
+          }).catch(() => {
             this.logger.warn(
-              `discarding terminal sandbox for task ${taskId} failed: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
+              `discarding terminal sandbox for task ${taskId} failed (provider details redacted)`,
             );
           });
           this.clearAdmissionRuntime(taskId);
@@ -1246,11 +1848,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         if (this.gateway) {
           try {
             this.gateway.openSession(connection, selectedRun);
-          } catch (err: unknown) {
+          } catch {
             this.logger.error(
-              `opening terminal session for task ${taskId} failed: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
+              `opening terminal session for task ${taskId} failed (provider details redacted)`,
             );
           }
         }
@@ -1375,30 +1975,146 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     this.gateway?.unregisterSession(taskId);
   }
 
+  private async armDurableRuntime(
+    taskId: string,
+    lease: import('../task-admission/task-admission.types').TaskAdmissionLeaseControls,
+  ): Promise<void> {
+    if (this.durableRuntimeArmed.has(taskId)) return;
+    await lease.authorize();
+    const params = this.prisma
+      ? await this.prisma.task.findUnique({
+          where: { id: taskId },
+          select: { deadlineMs: true, idleTimeoutMs: true },
+        })
+      : null;
+    await lease.authorize();
+    if (this.durableRuntimeArmed.has(taskId)) return;
+    this.durableRuntimeArmed.add(taskId);
+    const idleMs = params?.idleTimeoutMs ?? this.defaultIdleTimeoutMs ?? undefined;
+    if (idleMs !== undefined) this.idle.start(taskId, idleMs);
+    this.runnerMinutes.recordStart(taskId);
+    if (params?.deadlineMs !== null && params?.deadlineMs !== undefined) {
+      this.deadlines.armAfter(taskId, params.deadlineMs);
+    }
+  }
+
   private releaseTerminalFenceIfIdle(taskId: string): void {
-    if (!this.admissionsInFlight.has(taskId)) {
+    if (
+      !this.admissionsInFlight.has(taskId) &&
+      !this.readoptionsInFlight.has(taskId) &&
+      !this.terminalSettlementsInFlight.has(taskId)
+    ) {
       this.terminalTasks.delete(taskId);
     }
+  }
+
+  private beginTerminalSettlement(taskId: string): void {
+    this.terminalSettlementsInFlight.set(
+      taskId,
+      (this.terminalSettlementsInFlight.get(taskId) ?? 0) + 1,
+    );
+  }
+
+  private endTerminalSettlement(taskId: string): void {
+    const remaining = (this.terminalSettlementsInFlight.get(taskId) ?? 1) - 1;
+    if (remaining > 0) this.terminalSettlementsInFlight.set(taskId, remaining);
+    else this.terminalSettlementsInFlight.delete(taskId);
   }
 
   private async resolveProvisionPlan(taskId: string) {
     if (!this.provisionLookup) {
       throw new Error('Provision lookup is not configured');
     }
-    const [cloneSpec, launch] = await Promise.all([
-      this.provisionLookup.getCloneSpec(taskId),
+    const workspaceResolver = this.provisionLookup.getTaskWorkspacePlan;
+    if (typeof workspaceResolver !== 'function') {
+      // Compatibility is structural and explicit: only an adapter that omits the
+      // canonical method may supply the old clone input. Production Prisma always
+      // implements the method, so it can never reach this implicit-HEAD path.
+      const [launch, cloneSpec] = await Promise.all([
+        this.provisionLookup.getTaskLaunchContext(taskId),
+        this.provisionLookup.getCloneSpec(taskId),
+      ]);
+      return buildSandboxProvisionPlan({
+        cloneSpec,
+        modelIntent: launch.modelIntent,
+        runtimeId: launch.runtimeId,
+        executionMode: launch.executionMode,
+        resources: launch.resources,
+        environment: launch.environment,
+      });
+    }
+
+    const [launch, workspace] = await Promise.all([
       this.provisionLookup.getTaskLaunchContext(taskId),
+      workspaceResolver.call(this.provisionLookup, taskId),
     ]);
+    // Runtime guards matter even though the port is non-nullable: an incorrectly
+    // wired production adapter must fail closed instead of falling back to a bare
+    // clone and letting the remote choose HEAD.
+    if (workspace === null || workspace === undefined) {
+      throw new TaskBranchResolutionError('repository_unavailable');
+    }
     return buildSandboxProvisionPlan({
-      cloneSpec,
+      cloneSpec: null,
       modelIntent: launch.modelIntent,
       runtimeId: launch.runtimeId,
       executionMode: launch.executionMode,
+      resources: launch.resources,
       environment: launch.environment,
+      workspace: {
+        ...workspace,
+        deadlineMs: launch.workspaceMaterializationDeadlineMs,
+      },
     });
   }
 
+  private assertDurableClaimMatchesProvisionPlan(
+    claim: TaskAdmissionProcessorContext['claim'],
+    plan: {
+      readonly resources?: { readonly diskSizeGb?: number };
+      readonly workspace?: {
+        readonly resolvedBranch: string;
+        readonly deadlineMs: number;
+      } | null;
+    },
+  ): void {
+    const resolvedBranch = plan.workspace?.resolvedBranch ?? null;
+    const resources = plan.resources ?? {};
+    const deadlineMs = plan.workspace?.deadlineMs ?? null;
+    const deadlineMatches =
+      claim.workspaceMaterializationDeadlineMs === null ||
+      claim.workspaceMaterializationDeadlineMs === deadlineMs;
+    if (
+      claim.resolvedBranch !== resolvedBranch ||
+      claim.resourceSnapshot.diskSizeGb !== resources.diskSizeGb ||
+      !deadlineMatches
+    ) {
+      throw new TaskAdmissionProcessingError(
+        'provisioning_unknown',
+        claim.stage,
+        false,
+      );
+    }
+  }
+
   private async failProvisioning(taskId: string, error: unknown): Promise<void> {
+    if (isTaskBranchResolutionError(error)) {
+      try {
+        await this.tasks.failWithProvisioningFailure(
+          taskId,
+          error.failureCode,
+        );
+        return;
+      } catch (persistError) {
+        this.logger.debug(
+          `branch resolution failure transition for task ${taskId} skipped: ${
+            persistError instanceof Error
+              ? persistError.message
+              : String(persistError)
+          }`,
+        );
+      }
+    }
     if (isSandboxRuntimeModelSetupError(error)) {
       if (
         await this.failRuntime(
@@ -1454,9 +2170,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         if (terminal === 'failed') {
           await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
         }
-        await this.safeTransition(taskId, terminal);
+        const transition = await this.safeTransition(taskId, terminal);
+        if (transition === 'superseded-readoption') return;
         await this.settleTask(taskId, forceFailSettlePlan({ terminal }));
       } finally {
+        this.readoptionAuthorityChecks.delete(taskId);
         this.releaseTerminalFenceIfIdle(taskId);
       }
     });
@@ -1468,6 +2186,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     this.idle.stop(taskId);
     // Drop any guardrail params parked while the task was queued but never promoted.
     this.pendingGuardrails.delete(taskId);
+    this.durableRuntimeArmed.delete(taskId);
   }
 
   /**
@@ -1502,18 +2221,79 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     taskId: string,
     next: TaskStatus,
     userId?: string,
-  ): Promise<boolean> {
+  ): Promise<'transitioned' | 'skipped' | 'superseded-readoption'> {
     try {
       await this.tasks.transition(taskId, next, userId);
-      return true;
+      // `TasksService.transition` also resolves when another replica won the
+      // same target status; in that branch the winner, not this process, owns
+      // terminal settlement. A successful terminal observation is sufficient
+      // to clear local readoption accounting without another fallible DB read.
+      // A local winner establishes terminalTasks synchronously before awaiting
+      // transcript/provider settlement, so this helper deliberately stays out
+      // of that in-process winner's way.
+      if (this.clearReadoptionAfterTerminalObservation(taskId)) {
+        return 'superseded-readoption';
+      }
+      return 'transitioned';
     } catch (err) {
+      if (await this.clearSupersededReadoption(taskId)) {
+        this.logger.debug(
+          `guardrail transition ${taskId} -> ${next} lost to a durable remote winner; local readoption accounting cleared`,
+        );
+        return 'superseded-readoption';
+      }
       this.logger.debug(
         `guardrail transition ${taskId} -> ${next} skipped: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      return 'skipped';
+    }
+  }
+
+  /**
+   * Re-check the exact Task/version/admission fence retained at readoption. A
+   * false result is monotonic evidence that this process no longer owns runtime
+   * settlement. Clear only local timers/session/accounting and release its
+   * restored slot; the remote terminal winner owns credentials, delivery, and
+   * provider teardown. An indeterminate re-read deliberately keeps state.
+   */
+  private async clearSupersededReadoption(taskId: string): Promise<boolean> {
+    if (this.terminalSettlementsInFlight.has(taskId)) return false;
+    const authority = this.readoptionAuthorityChecks.get(taskId);
+    if (!authority) return false;
+    let current: boolean;
+    try {
+      current = await authority();
+    } catch (err) {
+      this.logger.warn(
+        `readoption authority re-check for task ${taskId} is indeterminate; local accounting remains fenced: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
       return false;
     }
+    if (
+      current ||
+      this.terminalSettlementsInFlight.has(taskId) ||
+      this.readoptionAuthorityChecks.get(taskId) !== authority
+    ) {
+      return false;
+    }
+    return this.clearReadoptionAfterTerminalObservation(taskId);
+  }
+
+  /** Clear only process-local state after a definitive remote terminal result. */
+  private clearReadoptionAfterTerminalObservation(taskId: string): boolean {
+    if (
+      this.terminalSettlementsInFlight.has(taskId) ||
+      !this.readoptionAuthorityChecks.delete(taskId)
+    ) {
+      return false;
+    }
+    this.clearAdmissionRuntime(taskId);
+    this.semaphore.release(taskId);
+    return true;
   }
 
   /**
@@ -1526,13 +2306,153 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async recordAudit(call: () => Promise<void> | undefined): Promise<void> {
     try {
       await call();
-    } catch (err) {
-      this.logger.debug(
-        `guardrail audit record failed (swallowed): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+    } catch {
+      // A non-conforming recorder may reject with raw provider/Git output.
+      // Keep that value outside structured logs; durable state is authoritative.
+      this.logger.debug('guardrail audit record failed (swallowed)');
+    }
+  }
+
+  private async requireTerminalTaskSnapshot(
+    context: TaskAdmissionProcessorContext,
+  ): Promise<{
+    readonly status:
+      | 'completed'
+      | 'failed'
+      | 'cancelled'
+      | 'agent_failed_to_start';
+    readonly failureCode: string | null;
+  }> {
+    const taskId = context.claim.taskId;
+    if (!this.prisma) {
+      throw new TaskAdmissionCoordinationError(
+        'checkpoint',
+        taskId,
+        new Error('terminal task authority is unavailable'),
       );
     }
+    let task: {
+      readonly status: TaskStatus;
+      readonly lifecycleVersion: number;
+      readonly failureCode: string | null;
+    } | null;
+    try {
+      task = await this.prisma.task.findUnique({
+        where: { id: taskId },
+        select: {
+          status: true,
+          lifecycleVersion: true,
+          failureCode: true,
+        },
+      });
+    } catch {
+      throw new TaskAdmissionCoordinationError(
+        'checkpoint',
+        taskId,
+        new Error('terminal task authority remains indeterminate'),
+      );
+    }
+    if (
+      !task ||
+      task.status !== context.claim.taskStatus ||
+      task.lifecycleVersion !== context.claim.taskLifecycleVersion ||
+      (task.status !== 'completed' &&
+        task.status !== 'failed' &&
+        task.status !== 'cancelled' &&
+        task.status !== 'agent_failed_to_start')
+    ) {
+      throw new TaskAdmissionCoordinationError(
+        'checkpoint',
+        taskId,
+        new Error('terminal task authority no longer matches its claim'),
+      );
+    }
+    return { status: task.status, failureCode: task.failureCode };
+  }
+
+  private classifyRecoveredFailedAdmission(
+    workCauseCode: ProvisioningTaskFailureCode | null | undefined,
+    taskFailureCode: string | null,
+    taskId: string,
+  ): RecoveredFailedAdmission {
+    if (workCauseCode) {
+      if (taskFailureCode !== workCauseCode) {
+        throw new TaskAdmissionCoordinationError(
+          'checkpoint',
+          taskId,
+          new Error('terminal Task and admission failure causes disagree'),
+        );
+      }
+      return { kind: 'provisioning', causeCode: workCauseCode };
+    }
+    if (isProvisioningTaskFailureCode(taskFailureCode)) {
+      return { kind: 'provisioning', causeCode: taskFailureCode };
+    }
+    if (isRuntimeTaskFailureCode(taskFailureCode)) {
+      return { kind: 'runtime' };
+    }
+    if (taskFailureCode === null) return { kind: 'generic' };
+    throw new TaskAdmissionCoordinationError(
+      'checkpoint',
+      taskId,
+      new Error('terminal Task carries an unsupported failure cause'),
+    );
+  }
+
+  private async requireProvisioningFailureAudit(
+    taskId: string,
+    stage: TaskProvisioningStage,
+    attempt: number,
+    failure: ProvisioningAuditFailure,
+  ): Promise<void> {
+    if (!this.audit) {
+      throw new TaskAdmissionCoordinationError(
+        'checkpoint',
+        taskId,
+        new Error('terminal provisioning audit recorder is unavailable'),
+      );
+    }
+    let recorded = false;
+    try {
+      recorded = await this.audit.recordProvisioningFailure(
+        taskId,
+        stage,
+        attempt,
+        failure,
+      );
+    } catch {
+      // The raw rejection is intentionally discarded; the durable running work
+      // row is the retry marker and must retain no provider/Git diagnostics.
+    }
+    if (recorded) return;
+    throw new TaskAdmissionCoordinationError(
+      'checkpoint',
+      taskId,
+      new Error('terminal provisioning audit remains pending'),
+    );
+  }
+
+  private async requireTaskCancellationAudit(taskId: string): Promise<void> {
+    if (!this.audit) {
+      throw new TaskAdmissionCoordinationError(
+        'checkpoint',
+        taskId,
+        new Error('terminal cancellation audit recorder is unavailable'),
+      );
+    }
+    let recorded = false;
+    try {
+      recorded = await this.audit.recordTaskCancellation(taskId);
+    } catch {
+      // Keep arbitrary rejection details out of durable state and logs. The
+      // running work row remains the retry marker for terminal recovery.
+    }
+    if (recorded) return;
+    throw new TaskAdmissionCoordinationError(
+      'checkpoint',
+      taskId,
+      new Error('terminal cancellation audit remains pending'),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -1589,4 +2509,67 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   runnerMinuteIntervals(): RunningInterval[] {
     return this.runnerMinutes.intervals();
   }
+}
+
+function classifyDurableAdmissionError(
+  error: unknown,
+  fallbackStage: TaskProvisioningStage,
+): TaskAdmissionProcessingError {
+  if (error instanceof TaskAdmissionProcessingError) return error;
+  if (isTaskBranchResolutionError(error)) {
+    return new TaskAdmissionProcessingError(
+      error.failureCode,
+      'remote_ref_resolution',
+      error.failureCode === 'provisioning_tls_network_failed',
+    );
+  }
+  if (isSandboxProvisioningCapacityError(error)) {
+    return new TaskAdmissionProcessingError(
+      'provisioning_capacity_exhausted',
+      'sandbox_creation',
+      false,
+    );
+  }
+  if (isSandboxWorkspaceMaterializationError(error)) {
+    const failure = error.failure;
+    if (failure.status === 'cancelled') {
+      return new TaskAdmissionProcessingError(
+        'provisioning_workspace_timeout',
+        failure.stage,
+        false,
+      );
+    }
+    const cause = {
+      capacity_exhausted: 'provisioning_capacity_exhausted',
+      timeout: 'provisioning_workspace_timeout',
+      authentication: 'provisioning_forge_auth_failed',
+      tls_network: 'provisioning_tls_network_failed',
+      ref_not_found: 'provisioning_ref_not_found',
+      unknown: 'provisioning_unknown',
+    } as const;
+    return new TaskAdmissionProcessingError(
+      cause[failure.cause],
+      failure.stage,
+      failure.retryable && failure.cause === 'tls_network',
+    );
+  }
+  if (isSandboxProvisioningStageError(error)) {
+    return new TaskAdmissionProcessingError(
+      'provisioning_unknown',
+      error.stage,
+      false,
+    );
+  }
+  if (isSandboxRuntimeModelSetupError(error)) {
+    return new TaskAdmissionProcessingError(
+      'provisioning_unknown',
+      'runtime_setup',
+      false,
+    );
+  }
+  return new TaskAdmissionProcessingError(
+    'provisioning_unknown',
+    fallbackStage,
+    false,
+  );
 }

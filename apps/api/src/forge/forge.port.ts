@@ -10,7 +10,9 @@
  *
  * Implementations build per-forge requests + parse per-forge responses; the
  * differences (GitLab's `/merge_requests` + `source_branch`/`target_branch` + `iid`
- * + project id; Gitee's missing head filter) are isolated behind the four methods.
+ * + project id; Gitee's missing head filter) are isolated behind the three async
+ * methods. Checkout/PR base resolution belongs to the shared task branch resolver,
+ * never an independent forge metadata request.
  */
 
 import type { ForgeKind } from '@cap/contracts';
@@ -73,7 +75,6 @@ export interface OpenChangeRequestArgs {
 export interface Forge {
   readonly kind: ForgeKind;
   cloneAuthHeader(target: ForgeTarget): string;
-  resolveBaseBranch(target: ForgeTarget): Promise<string>;
   findExistingChangeRequest(
     target: ForgeTarget,
     headBranch: string,

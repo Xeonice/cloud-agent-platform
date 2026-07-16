@@ -4,6 +4,7 @@ import { ReposService } from './repos.service';
 import { GithubImportController } from './github-import.controller';
 import { GithubImportService } from './github-import.service';
 import { GithubReposClient } from './github-repos.client';
+import { ForgeModule } from '../forge/forge.module';
 
 /**
  * Feature module bundling the repos REST controllers and their services. Relies
@@ -15,6 +16,7 @@ import { GithubReposClient } from './github-repos.client';
  * mounts under `/repos/github/*` and the global `AuthGuard` session-gates it.
  */
 @Module({
+  imports: [ForgeModule],
   controllers: [ReposController, GithubImportController],
   providers: [ReposService, GithubImportService, GithubReposClient],
   exports: [ReposService, GithubImportService],

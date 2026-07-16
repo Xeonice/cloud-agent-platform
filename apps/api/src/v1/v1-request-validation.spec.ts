@@ -110,7 +110,7 @@ before(async () => {
       businessCalls += 1;
       throw new Error('unexpected preparation in validation test');
     },
-    async createTaskRow() {
+    async acceptPreparedTask() {
       businessCalls += 1;
       return taskResponse;
     },

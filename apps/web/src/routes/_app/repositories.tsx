@@ -100,7 +100,9 @@ function RepositoriesPage() {
           value={defaultRepo ? defaultRepo.name : "未设置"}
           caption={
             defaultRepo
-              ? `新建任务默认使用 ${defaultRepo.defaultBranch ?? "main"} 分支。`
+              ? defaultRepo.defaultBranch
+                ? `新建任务默认使用 ${defaultRepo.defaultBranch} 分支。`
+                : "默认分支尚未解析；新建任务将由后端安全解析。"
               : "导入仓库后可指定默认仓库。"
           }
         />

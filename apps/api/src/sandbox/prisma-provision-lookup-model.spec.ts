@@ -33,6 +33,32 @@ const SNAPSHOT = buildRuntimeExecutionEnvironmentSnapshot({
   resolvedAt: '2026-07-14T00:00:00.000Z',
 });
 
+const RESOURCE_SNAPSHOT = buildRuntimeExecutionEnvironmentSnapshot({
+  schemaVersion: 1,
+  kind: 'deployment-default',
+  managedEnvironmentId: null,
+  validationId: null,
+  validationContractVersion: null,
+  provider: 'boxlite',
+  providerFamily: 'boxlite',
+  resources: { diskSizeGb: 9 },
+  source: {
+    kind: 'boxlite-image',
+    locator: 'registry.example/cap/boxlite@sha256:image-b',
+    digest: 'sha256:image-b',
+    checksum: null,
+  },
+  immutableIdentity: 'sha256:image-b',
+  sandboxMetadata: {
+    schemaVersion: 1,
+    sandboxVersion: '1.2.3',
+    dependencies: { codex: '0.144.1' },
+  },
+  cliVersion: '0.144.1',
+  cliArtifactChecksum: `sha256:${'b'.repeat(64)}`,
+  resolvedAt: '2026-07-14T00:00:00.000Z',
+});
+
 function lookupReturning(row: unknown): PrismaProvisionLookup {
   return new PrismaProvisionLookup({
     task: { findUnique: async () => row },
@@ -57,6 +83,7 @@ test('legacy/null model rows resolve the byte-compatible runtime-default intent 
     ownerUserId: null,
     runtimeId: 'codex',
     executionMode: 'interactive-pty',
+    workspaceMaterializationDeadlineMs: 900_000,
   });
 });
 
@@ -77,6 +104,7 @@ test('explicit model rows return one atomic owner/runtime/mode/immutable environ
   assert.equal(context.ownerUserId, OWNER);
   assert.equal(context.runtimeId, 'codex');
   assert.equal(context.executionMode, 'headless-exec');
+  assert.equal(context.workspaceMaterializationDeadlineMs, 900_000);
   assert.equal(context.environment.providerId, SNAPSHOT.provider);
   assert.equal(
     context.environment.metadata?.fingerprint,
@@ -86,6 +114,100 @@ test('explicit model rows return one atomic owner/runtime/mode/immutable environ
     context.environment.runtimeArtifactChecksums?.codex,
     SNAPSHOT.cliArtifactChecksum,
   );
+});
+
+test('launch context restores durable resources for runtime-default and explicit models', async () => {
+  const runtimeDefault = await lookupReturning({
+    model: null,
+    ownerUserId: OWNER,
+    executionEnvironmentSnapshot: null,
+    runtime: 'codex',
+    executionMode: 'interactive-pty',
+    admissionWork: {
+      resourceSnapshot: { diskSizeGb: 11 },
+      workspaceMaterializationDeadlineMs: 123_456,
+    },
+  }).getTaskLaunchContext('task-runtime-resource');
+  assert.deepEqual(runtimeDefault.resources, { diskSizeGb: 11 });
+  assert.equal(
+    runtimeDefault.workspaceMaterializationDeadlineMs,
+    123_456,
+  );
+  assert.equal(Object.isFrozen(runtimeDefault.resources), true);
+
+  const explicit = await lookupReturning({
+    model: 'provider/model:v1',
+    ownerUserId: OWNER,
+    executionEnvironmentSnapshot: RESOURCE_SNAPSHOT,
+    runtime: 'codex',
+    executionMode: 'headless-exec',
+    admissionWork: {
+      resourceSnapshot: { diskSizeGb: 9 },
+      workspaceMaterializationDeadlineMs: 654_321,
+    },
+  }).getTaskLaunchContext('task-explicit-resource');
+  assert.deepEqual(explicit.resources, { diskSizeGb: 9 });
+  assert.deepEqual(explicit.environment?.resources, { diskSizeGb: 9 });
+  assert.equal(explicit.workspaceMaterializationDeadlineMs, 654_321);
+
+  await assert.rejects(
+    lookupReturning({
+      model: 'provider/model:v1',
+      ownerUserId: OWNER,
+      executionEnvironmentSnapshot: RESOURCE_SNAPSHOT,
+      runtime: 'codex',
+      executionMode: 'headless-exec',
+      admissionWork: { resourceSnapshot: { diskSizeGb: 10 } },
+    }).getTaskLaunchContext('task-resource-mismatch'),
+    setupErrorAt('snapshot'),
+  );
+});
+
+test('launch context keeps durable workspace deadlines stable and only defaults legacy null rows', async () => {
+  const persisted = await lookupReturning({
+    model: null,
+    ownerUserId: OWNER,
+    executionEnvironmentSnapshot: null,
+    runtime: 'codex',
+    executionMode: 'interactive-pty',
+    admissionWork: {
+      resourceSnapshot: {},
+      workspaceMaterializationDeadlineMs: 321_000,
+    },
+  }).getTaskLaunchContext('task-persisted-deadline');
+  assert.equal(persisted.workspaceMaterializationDeadlineMs, 321_000);
+
+  for (const legacyAdmissionWork of [undefined, null, {
+    resourceSnapshot: null,
+    workspaceMaterializationDeadlineMs: null,
+  }]) {
+    const legacy = await lookupReturning({
+      model: null,
+      ownerUserId: OWNER,
+      executionEnvironmentSnapshot: null,
+      runtime: 'codex',
+      executionMode: 'interactive-pty',
+      admissionWork: legacyAdmissionWork,
+    }).getTaskLaunchContext('task-legacy-deadline');
+    assert.equal(legacy.workspaceMaterializationDeadlineMs, 900_000);
+  }
+
+  for (const invalid of [999, 86_400_001]) {
+    await assert.rejects(
+      lookupReturning({
+        model: null,
+        ownerUserId: OWNER,
+        executionEnvironmentSnapshot: null,
+        runtime: 'codex',
+        executionMode: 'interactive-pty',
+        admissionWork: {
+          resourceSnapshot: {},
+          workspaceMaterializationDeadlineMs: invalid,
+        },
+      }).getTaskLaunchContext('task-invalid-deadline'),
+      setupErrorAt('snapshot'),
+    );
+  }
 });
 
 test('explicit model rows fail closed for missing owners, bad selectors and tampered snapshots', async () => {

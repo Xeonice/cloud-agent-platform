@@ -55,7 +55,8 @@ test(
 
       const selected = await first.provider.getSelectedSandboxRun(taskId);
       assert.equal(selected.providerId, 'aio-local');
-      assert.equal(selected.providerSandboxId, taskId);
+      assert.equal(typeof selected.providerSandboxId, 'string');
+      assert.notEqual(selected.providerSandboxId, taskId);
       assert.equal(selected.terminal.protocol, 'aio-json-v1');
       assert.equal(selected.command.protocol, 'aio-http-exec-v1');
       assert.equal(selected.workspace.path, mod.AIO_SANDBOX_WORKSPACE_DIR);
@@ -74,14 +75,20 @@ test(
         `expected ${taskId} in readoptable tasks, got ${JSON.stringify(readoptable)}`,
       );
 
-      const reattached = await second.provider.reattach(taskId);
+      const reattached = await second.provider.reattach(taskId, {
+        providerSandboxId: selected.providerSandboxId,
+      });
       assert.equal(reattached?.baseUrl, connection.baseUrl);
       const readoptedRun = await second.provider.getSelectedSandboxRun(taskId);
-      assert.equal(readoptedRun.providerSandboxId, taskId);
+      assert.equal(readoptedRun.providerSandboxId, selected.providerSandboxId);
       assert.equal(readoptedRun.command.protocol, 'aio-http-exec-v1');
 
-      await second.provider.teardownSandbox(taskId);
-      await second.provider.removeSandbox(taskId);
+      await second.provider.teardownSandbox(taskId, {
+        providerSandboxId: selected.providerSandboxId,
+      });
+      await second.provider.removeSandbox(taskId, {
+        providerSandboxId: selected.providerSandboxId,
+      });
       activeProvider = null;
 
       await assertContainerRemoved(docker, containerName);

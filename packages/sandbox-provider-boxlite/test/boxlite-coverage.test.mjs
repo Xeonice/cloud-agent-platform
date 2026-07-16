@@ -402,7 +402,10 @@ await test('config parser covers defaults, require helper, and invalid modes', (
   });
   assert.equal(defaults.status, 'valid');
   assert.equal(defaults.config.endpoint, 'https://boxlite.example.test');
-  assert.deepEqual(defaults.config.capabilities, ['command.exec']);
+  assert.deepEqual(defaults.config.capabilities, [
+    'command.exec',
+    'resource.disk-size-gb',
+  ]);
   assert.deepEqual(defaults.config.sandboxEnv, {});
   assert.equal(mod.resolveBoxLiteImage({ config: defaults.config, runtimeId: null }), 'cap-boxlite:default');
   assert.deepEqual(mod.resolveBoxLiteSandboxSource({ config: defaults.config, runtimeId: null }), {
@@ -602,7 +605,16 @@ await test('provider covers fallback URLs, stale sandboxes, local descriptors, a
     /requires a clone spec with a url/,
   );
 
-  const connection = await provider.provision({ taskId: 'task-fallback', cloneSpec: null });
+  await assert.rejects(
+    () => provider.provision({ taskId: 'task-fallback', cloneSpec: null }),
+    /missing capabilities: resource\.disk-size-gb/,
+  );
+  assert.equal(client.sandboxes.size, 0);
+  client.sandboxes.set('cap-boxlite-task-fallback', {
+    id: 'cap-boxlite-task-fallback',
+    state: 'running',
+  });
+  const connection = await provider.reattach('task-fallback');
   assert.equal(connection.baseUrl, 'https://boxlite.example.test/v1/sandboxes/cap-boxlite-task-fallback');
   assert.equal(connection.wsUrl, 'wss://boxlite.example.test/v1/sandboxes/cap-boxlite-task-fallback/terminal');
   assert.equal(await provider.getTerminalDescriptor('task-fallback'), null);
@@ -611,16 +623,21 @@ await test('provider covers fallback URLs, stale sandboxes, local descriptors, a
   assert.deepEqual(await provider.listReadoptable(), ['task-fallback']);
   assert.equal(await provider.reattach('missing'), null);
 
+  const capRestTerminalClient = new mod.FakeBoxLiteClient();
   const capRestTerminalProvider = new mod.BoxLiteSandboxProvider({
     config: validConfig({
       BOXLITE_PROTOCOL_MODE: 'cap-rest',
       BOXLITE_TERMINAL_MODE: 'pty',
       BOXLITE_CAPABILITIES: 'terminal.websocket,terminal.interactive,command.exec',
     }),
-    client: new mod.FakeBoxLiteClient(),
+    client: capRestTerminalClient,
   });
   assert.equal(await capRestTerminalProvider.getTerminalDescriptor('missing'), null);
-  await capRestTerminalProvider.provision({ taskId: 'task-cap-rest-terminal', cloneSpec: null });
+  capRestTerminalClient.sandboxes.set('cap-boxlite-task-cap-rest-terminal', {
+    id: 'cap-boxlite-task-cap-rest-terminal',
+    state: 'running',
+    terminalUrl: 'boxlite://cap-boxlite-task-cap-rest-terminal/terminal',
+  });
   assert.equal(
     (await capRestTerminalProvider.getTerminalDescriptor('task-cap-rest-terminal')).wsUrl,
     'boxlite://cap-boxlite-task-cap-rest-terminal/terminal',
@@ -704,7 +721,9 @@ await test('provider covers fallback URLs, stale sandboxes, local descriptors, a
   });
   await assert.rejects(
     () => noErrorPreflightProvider.provision({ taskId: 'task-no-error-preflight', cloneSpec: null }),
-    /BoxLite runtime preflight failed/,
+    (error) =>
+      error?.code === 'sandbox_provisioning_stage_error' &&
+      error?.stage === 'runtime_setup',
   );
 
   const undefinedRuntimePreflightProvider = new mod.BoxLiteSandboxProvider({
@@ -844,63 +863,12 @@ async function deliveryResultFor(responses) {
   });
 }
 
-await test('provider git delivery covers success and each command failure', async () => {
-  assert.match(
-    (await deliveryResultFor([{ exitCode: 2, output: 'bad status', stdout: '', stderr: '' }])).error,
-    /git status failed/,
-  );
-  assert.match(
-    (await deliveryResultFor([
-      { exitCode: 0, output: ' M file', stdout: ' M file', stderr: '' },
-      { exitCode: 2, output: 'bad add', stdout: '', stderr: '' },
-    ])).error,
-    /git add failed/,
-  );
-  assert.match(
-    (await deliveryResultFor([
-      { exitCode: 0, output: ' M file', stdout: ' M file', stderr: '' },
-      { exitCode: 0, output: '', stdout: '', stderr: '' },
-      { exitCode: 2, output: 'bad commit', stdout: '', stderr: '' },
-    ])).error,
-    /git commit failed/,
-  );
-  assert.match(
-    (await deliveryResultFor([
-      { exitCode: 0, output: ' M file', stdout: ' M file', stderr: '' },
-      { exitCode: 0, output: '', stdout: '', stderr: '' },
-      { exitCode: 0, output: '', stdout: '', stderr: '' },
-      { exitCode: 2, output: 'bad sha', stdout: '', stderr: '' },
-    ])).error,
-    /git rev-parse failed/,
-  );
-  assert.match(
-    (await deliveryResultFor([
-      { exitCode: 0, output: ' M file', stdout: ' M file', stderr: '' },
-      { exitCode: 0, output: '', stdout: '', stderr: '' },
-      { exitCode: 0, output: '', stdout: '', stderr: '' },
-      { exitCode: 0, output: 'abc123\n', stdout: 'abc123\n', stderr: '' },
-      { exitCode: 2, output: 'bad push', stdout: '', stderr: '' },
-    ])).error,
-    /git push failed/,
-  );
-  const success = await deliveryResultFor([
-    { exitCode: 0, output: ' M file', stdout: ' M file', stderr: '' },
-    { exitCode: 0, output: '', stdout: '', stderr: '' },
-    { exitCode: 0, output: '', stdout: '', stderr: '' },
-    { exitCode: 0, output: 'abc123\n', stdout: 'abc123\n', stderr: '' },
-    { exitCode: 0, output: '', stdout: '', stderr: '' },
-  ]);
-  assert.equal(success.hadChanges, true);
-  assert.equal(success.commitSha, 'abc123');
-  const successNoSha = await deliveryResultFor([
-    { exitCode: 0, output: ' M file', stdout: ' M file', stderr: '' },
-    { exitCode: 0, output: '', stdout: '', stderr: '' },
-    { exitCode: 0, output: '', stdout: '', stderr: '' },
-    { exitCode: 0, output: '\n', stdout: '\n', stderr: '' },
-    { exitCode: 0, output: '', stdout: '', stderr: '' },
-  ]);
-  assert.equal(successNoSha.hadChanges, true);
-  assert.equal(successNoSha.commitSha, null);
+await test('provider legacy raw-header delivery fails before BoxLite exec', async () => {
+  assert.deepEqual(await deliveryResultFor([]), {
+    hadChanges: false,
+    commitSha: null,
+    error: 'Legacy raw-header Git delivery is disabled',
+  });
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

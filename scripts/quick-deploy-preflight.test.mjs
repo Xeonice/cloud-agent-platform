@@ -6,6 +6,33 @@ import { spawnSync } from 'node:child_process';
 const repoRoot = resolve(new URL('..', import.meta.url).pathname);
 const quickDeploy = resolve(repoRoot, 'scripts/quick-deploy.sh');
 const preflightLib = resolve(repoRoot, 'scripts/install-preflight.sh');
+const TEST_ADMISSION_ATTESTATION = JSON.stringify({
+  schemaVersion: 1,
+  deploymentId: 'quick-deploy-test',
+  expectedWorkers: [{ instanceId: 'cap-api-1', roles: ['api', 'worker'] }],
+  reports: [
+    {
+      schemaVersion: 1,
+      instanceId: 'cap-api-1',
+      role: 'api',
+      buildIdentity: 'test-build',
+      capabilities: ['task-admission-v2'],
+      ready: true,
+      reportedAt: '2026-07-16T00:00:00.000Z',
+    },
+    {
+      schemaVersion: 1,
+      instanceId: 'cap-api-1',
+      role: 'worker',
+      buildIdentity: 'test-build',
+      capabilities: ['task-admission-v2'],
+      ready: true,
+      reportedAt: '2026-07-16T00:00:00.000Z',
+    },
+  ],
+  attestedAt: '2026-07-16T00:01:00.000Z',
+  expiresAt: '2099-07-16T01:01:00.000Z',
+});
 
 let passed = 0;
 let failed = 0;
@@ -36,6 +63,9 @@ function makeCase() {
   makeBin(bin, 'timeout', 'echo "timeout should-not-run" >> "$CAP_TEST_LOG"; exit 99\n');
   makeBin(bin, 'docker', `
 echo "docker $*" >> "$CAP_TEST_LOG"
+if [ -n "\${CAP_CUTOVER_BEARER_TOKEN:-}\${CAP_CUTOVER_BEARER_TOKEN_VALUE:-}\${BOXLITE_HOST_STORAGE_PATH:-}\${BOXLITE_HOST_AVAILABLE_GB:-}" ]; then
+  echo "PROCESS_ONLY_VALUE_LEAKED_TO_DOCKER" >> "$CAP_TEST_LOG"
+fi
 case "$1 $2" in
   "compose version") exit 0 ;;
   "info ") exit 0 ;;
@@ -45,8 +75,52 @@ esac
 if [ "$1" = "context" ]; then exit 0; fi
 if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then exit 0; fi
 if [ "$1" = "load" ]; then cat >/dev/null; exit 0; fi
-if [ "$1" = "compose" ]; then exit 0; fi
+if [ "$1" = "compose" ]; then
+  case "$*" in
+    *"up -d --force-recreate api"*)
+      [ "\${CAP_FAKE_ROLLBACK_RECREATE_FAIL:-0}" = "1" ] && exit 17
+      exit 0
+      ;;
+    *" pull "*)
+      [ "\${CAP_FAKE_COMPOSE_PULL_FAIL:-0}" = "1" ] && exit 18
+      exit 0
+      ;;
+    *" up -d "*)
+      [ "\${CAP_FAKE_COMPOSE_UP_FAIL:-0}" = "1" ] && exit 19
+      exit 0
+      ;;
+    *"ps --status running --services"*)
+      printf '%s\\n' "\${CAP_FAKE_COMPOSE_RUNNING_SERVICES:-}"
+      exit 0
+      ;;
+    *"JSON.parse(process.argv[1])"*)
+      [ "\${CAP_FAKE_ATTESTATION_SYNTAX_INVALID:-0}" = "1" ] && exit 2
+      exit 0
+      ;;
+    *"sandboxEnvironment.findMany"*)
+      [ "\${CAP_FAKE_CAPACITY_QUERY_FAIL:-0}" = "1" ] && exit 1
+      case "$*" in
+        *'status: "ready"'*'providerFamilies: { has: "boxlite" }'*) ;;
+        *) exit 4 ;;
+      esac
+      printf 'persisted=%s\\nmaxReadyDisk=%s' \
+        "\${CAP_FAKE_PERSISTED_CONCURRENCY:-none}" \
+        "\${CAP_FAKE_MAX_READY_BOXLITE_DISK_GB:-0}"
+      exit 0
+      ;;
+    *"value?.gate?.open === true"*)
+      [ "\${CAP_FAKE_CAPABILITY_OPEN:-0}" = "1" ] && exit 0
+      exit 2
+      ;;
+  esac
+  exit 0
+fi
 exit 0
+`);
+  makeBin(bin, 'df', `
+available="\${CAP_FAKE_HOST_AVAILABLE_KIB:-104857600}"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+printf '/dev/test 209715200 0 %s 0%% /test\\n' "$available"
 `);
   makeBin(bin, 'zstd', `
 echo "zstd $*" >> "$CAP_TEST_LOG"
@@ -72,6 +146,9 @@ exit 0
 `);
   makeBin(bin, 'curl', `
 echo "curl $*" >> "$CAP_TEST_LOG"
+if [ -n "\${CAP_CUTOVER_BEARER_TOKEN:-}\${CAP_CUTOVER_BEARER_TOKEN_VALUE:-}\${BOXLITE_HOST_STORAGE_PATH:-}\${BOXLITE_HOST_AVAILABLE_GB:-}" ]; then
+  echo "PROCESS_ONLY_VALUE_LEAKED_TO_CURL" >> "$CAP_TEST_LOG"
+fi
 out=""
 prev=""
 for arg in "$@"; do
@@ -168,6 +245,23 @@ JSON
     ;;
   *api.github.com/rate_limit*)
     echo 200
+    exit 0
+    ;;
+  *"/auth/password"*)
+    status="\${CAP_FAKE_ADMIN_LOGIN_STATUS:-200}"
+    [ -z "$out" ] || printf '{"ok":true}' > "$out"
+    echo "$status"
+    exit 0
+    ;;
+  *"/deployment-capabilities/task-admission-v2"*)
+    status="\${CAP_FAKE_CAPABILITY_STATUS:-200}"
+    if [ "\${CAP_FAKE_CAPABILITY_OPEN:-0}" = "1" ]; then
+      body='{"capability":"task-admission-v2","gate":{"capability":"task-admission-v2","open":true,"verifiedRoles":["api","worker"]},"localReports":[]}'
+    else
+      body='{"capability":"task-admission-v2","gate":{"capability":"task-admission-v2","open":false,"reason":"worker_not_ready","missingRoles":["worker"]},"localReports":[]}'
+    fi
+    [ -z "$out" ] && printf '%s\\n' "$body" || printf '%s' "$body" > "$out"
+    echo "$status"
     exit 0
     ;;
   *"-w %{http_code}"*"/health"*)
@@ -608,6 +702,161 @@ console.log('\n=== quick-deploy preflight ===\n');
   assert(readFileSync(join(tc.workdir, 'docker-compose.prod.yml'), 'utf8') === previousCompose, 'a failed BoxLite rootfs upgrade restores the previous compose file byte-for-byte');
 }
 
+for (const [name, value, pattern] of [
+  ['BOXLITE_DISK_SIZE_GB', '0', /BOXLITE_DISK_SIZE_GB must be an integer from 1 to 1024/],
+  ['BOXLITE_DISK_SIZE_GB', '1025', /BOXLITE_DISK_SIZE_GB must be an integer from 1 to 1024/],
+  ['BOXLITE_DISK_SIZE_GB', '1.5', /BOXLITE_DISK_SIZE_GB must be a base-10 integer from 1 to 1024/],
+  ['BOXLITE_GIT_CLONE_TIMEOUT_MS', '999', /BOXLITE_GIT_CLONE_TIMEOUT_MS must be an integer from 1000 to 86400000/],
+  ['BOXLITE_GIT_CLONE_TIMEOUT_MS', '86400001', /BOXLITE_GIT_CLONE_TIMEOUT_MS must be an integer from 1000 to 86400000/],
+  ['BOXLITE_GIT_CLONE_TIMEOUT_MS', '1e3', /BOXLITE_GIT_CLONE_TIMEOUT_MS must be a base-10 integer from 1000 to 86400000/],
+]) {
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_IMAGE: 'cap-boxlite:test',
+    [name]: value,
+  });
+  assert(result.status !== 0, `${name}=${value} fails before provider readiness`);
+  assert(pattern.test(result.stderr), `${name}=${value} reports its canonical range`);
+}
+
+for (const [value, pattern] of [
+  ['unsafe instance', /CAP_INSTANCE_ID must contain only/],
+  ['a'.repeat(257), /CAP_INSTANCE_ID must be at most 256 characters/],
+]) {
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_INSTANCE_ID: value,
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+  });
+  assert(result.status !== 0, 'quick-deploy rejects an unsafe CAP_INSTANCE_ID before startup');
+  assert(pattern.test(result.stderr), 'unsafe CAP_INSTANCE_ID reports the stable identity contract');
+}
+
+{
+  const tc = makeCase();
+  writeFileSync(
+    join(tc.workdir, '.env'),
+    'CAP_INSTANCE_ID=existing-api-7\nCAP_INSTANCE_ID=duplicate-api-8\n',
+    'utf8',
+  );
+  const result = runQuickDeploy(tc, { CAP_QUICK_DEPLOY_STOP_AFTER: 'env' });
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'quick-deploy accepts an existing safe CAP_INSTANCE_ID');
+  assert(/^CAP_INSTANCE_ID=existing-api-7$/m.test(envFile), 'quick-deploy preserves the existing stable instance identity');
+  assert((envFile.match(/^CAP_INSTANCE_ID=/gm) ?? []).length === 1, 'quick-deploy collapses duplicate instance identity keys to one canonical value');
+}
+
+{
+  const tc = makeCase();
+  writeFileSync(join(tc.workdir, '.env'), 'CAP_INSTANCE_ID=existing-api-7\n', 'utf8');
+  const result = runQuickDeploy(tc, {
+    CAP_INSTANCE_ID: 'explicit-api-9',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+  });
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'quick-deploy accepts an explicit safe CAP_INSTANCE_ID override');
+  assert(/^CAP_INSTANCE_ID=explicit-api-9$/m.test(envFile), 'explicit CAP_INSTANCE_ID replaces the prior run-package value deterministically');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_TASK_ADMISSION_V2_ENABLED: 'yes',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+  });
+  assert(result.status !== 0, 'admission-v2 rejects an ambiguous boolean value');
+  assert(/CAP_TASK_ADMISSION_V2_ENABLED must be true\/false or 1\/0/.test(result.stderr), 'admission-v2 boolean failure names accepted values');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_COMPOSE_RUNNING_SERVICES: 'api',
+    CAP_TASK_ADMISSION_V2_ENABLED: 'true',
+    CAP_TASK_ADMISSION_V2_ATTESTATION_JSON: TEST_ADMISSION_ATTESTATION,
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_IMAGE: 'cap-boxlite:test',
+    BOXLITE_PROTOCOL_MODE: 'cap-rest',
+  });
+  assert(result.status !== 0, 'cap-rest cannot enable admission-v2');
+  assert(/cap-rest cannot prove disk_size_gb\/rootfs enforcement/.test(result.stderr), 'cap-rest gate-on failure explains the missing proof');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_COMPOSE_RUNNING_SERVICES: 'api',
+    CAP_FAKE_PERSISTED_CONCURRENCY: '3',
+    CAP_FAKE_MAX_READY_BOXLITE_DISK_GB: '9',
+    CAP_TASK_ADMISSION_V2_ENABLED: 'true',
+    CAP_TASK_ADMISSION_V2_ATTESTATION_JSON: TEST_ADMISSION_ATTESTATION,
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    MAX_CONCURRENT_TASKS: '1',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_READINESS_ENDPOINT: 'http://127.0.0.1:7331',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_IMAGE: 'cap-boxlite:test',
+    BOXLITE_PROTOCOL_MODE: 'native',
+  });
+  assert(result.status !== 0, 'external BoxLite gate-on fails when host capacity evidence is absent');
+  assert(/BOXLITE_HOST_AVAILABLE_GB/.test(result.stderr), 'remote runtime remains external even when readiness uses a localhost tunnel');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_COMPOSE_RUNNING_SERVICES: 'api',
+    CAP_FAKE_PERSISTED_CONCURRENCY: '3',
+    CAP_FAKE_MAX_READY_BOXLITE_DISK_GB: '9',
+    CAP_TASK_ADMISSION_V2_ENABLED: 'true',
+    CAP_TASK_ADMISSION_V2_ATTESTATION_JSON: TEST_ADMISSION_ATTESTATION,
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    MAX_CONCURRENT_TASKS: '1',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_IMAGE: 'cap-boxlite:test',
+    BOXLITE_PROTOCOL_MODE: 'native',
+    BOXLITE_HOST_AVAILABLE_GB: '26',
+  });
+  assert(result.status !== 0, 'ready BoxLite environment max disk and persisted concurrency block insufficient host capacity');
+  assert(/9 GiB x effective persisted concurrency 3 requires at least 27 GiB/.test(result.stderr), 'capacity failure uses ready BoxLite max disk and DB ceiling rather than env seed');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_COMPOSE_RUNNING_SERVICES: 'api',
+    CAP_FAKE_PERSISTED_CONCURRENCY: '3',
+    CAP_FAKE_MAX_READY_BOXLITE_DISK_GB: '9',
+    CAP_TASK_ADMISSION_V2_ENABLED: 'true',
+    CAP_TASK_ADMISSION_V2_ATTESTATION_JSON: TEST_ADMISSION_ATTESTATION,
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_IMAGE: 'cap-boxlite:test',
+    BOXLITE_PROTOCOL_MODE: 'native',
+    BOXLITE_HOST_AVAILABLE_GB: '27',
+  });
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert(result.status === 0, 'external BoxLite gate-on accepts exact proven aggregate capacity');
+  assert(/external host reports 27 GiB available >= 9 GiB x persisted concurrency 3/.test(combined), 'capacity success reports its exact DB/environment calculation');
+}
+
 {
   const tc = makeCase();
   const result = runQuickDeploy(tc, {
@@ -634,6 +883,7 @@ console.log('\n=== quick-deploy preflight ===\n');
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
     BOXLITE_API_TOKEN: 'box-secret-token',
     BOXLITE_IMAGE: 'cap-boxlite:test',
+    BOXLITE_DISK_SIZE_GB: '7',
   });
   const combined = `${result.stdout}\n${result.stderr}`;
   assert(result.status !== 0, 'BoxLite readiness failure blocks success before pull/up');
@@ -651,6 +901,7 @@ console.log('\n=== quick-deploy preflight ===\n');
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
     BOXLITE_API_TOKEN: 'box-secret-token',
     BOXLITE_IMAGE: 'cap-boxlite:test',
+    BOXLITE_DISK_SIZE_GB: '7',
   });
   const log = readLog(tc);
   const combined = `${result.stdout}\n${result.stderr}`;
@@ -664,8 +915,10 @@ console.log('\n=== quick-deploy preflight ===\n');
   assert(startTimeout === 120, 'BoxLite native start reserves enough time for cold ownership and initialization');
   assert(execTimeout === 60, 'BoxLite native exec has a bounded runtime probe timeout');
   assert(deleteTimeout === 30, 'BoxLite native delete has a bounded cleanup timeout');
+  assert(/"disk_size_gb":7/.test(log), 'BoxLite native readiness sends the resolved deployment disk_size_gb');
+  assert(/df -Pk \/ \| awk -v minimum=6606028/.test(log), 'BoxLite native readiness verifies the rootfs with the production 90% tolerance');
   assert(!/\{"name":"cap-quick-deploy-preflight-[0-9]+","image":"cap-boxlite:test","working_dir"/.test(log), 'BoxLite native create payload omits working_dir');
-  assert(/runtime sandbox source\/workspace\/tools probe passed/.test(combined), 'BoxLite readiness runs sandbox source/workspace/tools probe');
+  assert(/runtime sandbox disk_size_gb\/rootfs\/source\/workspace\/tools probe passed/.test(combined), 'BoxLite readiness runs disk/rootfs/source/workspace/tools probe');
   assert(!combined.includes('box-secret-token'), 'BoxLite runtime probe output redacts token');
 }
 
@@ -842,6 +1095,23 @@ console.log('\n=== quick-deploy preflight ===\n');
 
 {
   const tc = makeCase();
+  writeFileSync(
+    join(tc.workdir, '.env'),
+    `CAP_TASK_ADMISSION_V2_ENABLED=true\nCAP_TASK_ADMISSION_V2_ATTESTATION_JSON=${TEST_ADMISSION_ATTESTATION}\n`,
+    'utf8',
+  );
+  const result = runQuickDeploy(tc, {
+    CAP_TASK_ADMISSION_V2_ENABLED: 'false',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
+  });
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'gate-disabled synthesis succeeds over a previously enabled run package');
+  assert(/^CAP_TASK_ADMISSION_V2_ENABLED=false$/m.test(envFile), 'gate-disabled synthesis persists the closed state');
+  assert(!/^CAP_TASK_ADMISSION_V2_ATTESTATION_JSON=/m.test(envFile), 'gate-disabled synthesis removes stale deployment attestation evidence');
+}
+
+{
+  const tc = makeCase();
   const result = runQuickDeploy(tc, {
     CAP_SANDBOX_PROVIDER: 'boxlite',
     CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
@@ -866,6 +1136,7 @@ console.log('\n=== quick-deploy preflight ===\n');
 {
   const tc = makeCase();
   const result = runQuickDeploy(tc, {
+    HOSTNAME: 'random-container-hostname',
     CAP_SANDBOX_PROVIDER: 'boxlite',
     CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
     CAP_QUICK_DEPLOY_STOP_AFTER: 'env',
@@ -882,6 +1153,142 @@ console.log('\n=== quick-deploy preflight ===\n');
     /BOXLITE_WORKSPACE_PATH=\/home\/gem\/workspace/.test(envFile),
     'quick-deploy defaults BoxLite workspace to the AIO launch path',
   );
+  assert(/BOXLITE_DISK_SIZE_GB=5/.test(envFile), 'quick-deploy persists the BoxLite 5 GiB safe fallback');
+  assert(/BOXLITE_GIT_CLONE_TIMEOUT_MS=900000/.test(envFile), 'quick-deploy persists the independent 15-minute Git deadline');
+  assert(/CAP_TASK_ADMISSION_V2_ENABLED=false/.test(envFile), 'quick-deploy persists admission-v2 default closed');
+  assert(/^CAP_INSTANCE_ID=cap-api-1$/m.test(envFile), 'single-instance quick-deploy persists a stable admission identity');
+  assert(!envFile.includes('random-container-hostname'), 'quick-deploy never persists the transient container hostname as its identity');
+}
+
+{
+  const tc = makeCase();
+  writeFileSync(
+    join(tc.workdir, '.env'),
+    'CAP_CUTOVER_BEARER_TOKEN=stale-cutover-secret\nBOXLITE_HOST_STORAGE_PATH=/stale/host/path\nBOXLITE_HOST_AVAILABLE_GB=99\n',
+    'utf8',
+  );
+  const result = runQuickDeploy(tc, { CAP_QUICK_DEPLOY_STOP_AFTER: 'env' });
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'ordinary synthesis scrubs stale process-only rollout values');
+  for (const key of ['CAP_CUTOVER_BEARER_TOKEN', 'BOXLITE_HOST_STORAGE_PATH', 'BOXLITE_HOST_AVAILABLE_GB']) {
+    assert(!new RegExp(`^${key}=`, 'm').test(envFile), `${key} is never retained in the api env file`);
+  }
+}
+
+{
+  const tc = makeCase();
+  const cutoverToken = 'cap_sk_process_only_cutover_test';
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_COMPOSE_RUNNING_SERVICES: 'api',
+    CAP_FAKE_CAPABILITY_OPEN: '1',
+    CAP_TASK_ADMISSION_V2_ENABLED: 'true',
+    CAP_TASK_ADMISSION_V2_ATTESTATION_JSON: TEST_ADMISSION_ATTESTATION,
+    CAP_CUTOVER_BEARER_TOKEN: cutoverToken,
+    TMPDIR: tc.dir,
+    CAP_SANDBOX_PROVIDER: 'aio',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+  });
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  const log = readLog(tc);
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert(result.status === 0, 'gate-on completes only when the restarted api reports capability gate.open=true');
+  assert(/running api reports gate\.open=true/.test(combined), 'gate-on reports the exact runtime capability proof');
+  assert(!envFile.includes(cutoverToken), 'process-only cutover bearer is never persisted to .env');
+  assert(!log.includes(cutoverToken) && !combined.includes(cutoverToken), 'process-only cutover bearer is absent from command/output logs');
+  assert(!/PROCESS_ONLY_VALUE_LEAKED_TO_(DOCKER|CURL)/.test(log), 'process-only cutover bearer is removed before child processes run');
+  assert(/-H @- .*deployment-capabilities\/task-admission-v2/.test(log), 'cutover verification streams its authorization header over stdin');
+  assert(!readdirSync(tc.dir).some((name) => name.startsWith('cap-admission-v2-')), 'cutover verification leaves no auth or capability temp file behind');
+}
+
+for (const [label, capabilityEnv] of [
+  ['closed', { CAP_FAKE_CAPABILITY_OPEN: '0' }],
+  ['unauthorized', { CAP_FAKE_CAPABILITY_OPEN: '0', CAP_FAKE_CAPABILITY_STATUS: '401' }],
+]) {
+  const tc = makeCase();
+  writeFileSync(
+    join(tc.workdir, '.env'),
+    'CAP_INSTANCE_ID=cap-api-1\nCAP_INSTANCE_ID=duplicate-runtime-id\nCAP_TASK_ADMISSION_V2_ENABLED=true\nCAP_TASK_ADMISSION_V2_ENABLED=true\n',
+    'utf8',
+  );
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_COMPOSE_RUNNING_SERVICES: 'api',
+    CAP_TASK_ADMISSION_V2_ENABLED: 'true',
+    CAP_TASK_ADMISSION_V2_ATTESTATION_JSON: TEST_ADMISSION_ATTESTATION,
+    CAP_CUTOVER_BEARER_TOKEN: 'cap_sk_process_only_cutover_test',
+    HOSTNAME: 'random-container-after-recreate',
+    CAP_SANDBOX_PROVIDER: 'aio',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    ...capabilityEnv,
+  });
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  const log = readLog(tc);
+  assert(result.status !== 0, `runtime capability ${label} fails the deploy`);
+  assert(/CAP_TASK_ADMISSION_V2_ENABLED=false/.test(envFile), `runtime capability ${label} rolls the gate back to false`);
+  assert(!/CAP_TASK_ADMISSION_V2_ATTESTATION_JSON=/.test(envFile), `runtime capability ${label} removes the rejected attestation`);
+  assert(/up -d --force-recreate api/.test(log), `runtime capability ${label} force-recreates api after closing the gate`);
+  assert(/^CAP_INSTANCE_ID=cap-api-1$/m.test(envFile), `runtime capability ${label} keeps the same instance identity through rollback force-recreate`);
+  assert((envFile.match(/^CAP_INSTANCE_ID=/gm) ?? []).length === 1, `runtime capability ${label} collapses duplicate instance identity keys`);
+  assert((envFile.match(/^CAP_TASK_ADMISSION_V2_ENABLED=/gm) ?? []).length === 1, `runtime capability ${label} leaves one fail-closed gate key`);
+  assert(!envFile.includes('random-container-after-recreate'), `runtime capability ${label} never falls back to the recreated container hostname`);
+}
+
+for (const [label, failureEnv] of [
+  ['pull', { CAP_FAKE_COMPOSE_PULL_FAIL: '1' }],
+  ['up', { CAP_FAKE_COMPOSE_UP_FAIL: '1' }],
+]) {
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_COMPOSE_RUNNING_SERVICES: 'api',
+    CAP_TASK_ADMISSION_V2_ENABLED: 'true',
+    CAP_TASK_ADMISSION_V2_ATTESTATION_JSON: TEST_ADMISSION_ATTESTATION,
+    CAP_CUTOVER_BEARER_TOKEN: 'cap_sk_process_only_cutover_test',
+    CAP_SANDBOX_PROVIDER: 'aio',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    ...failureEnv,
+  });
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  const log = readLog(tc);
+  assert(result.status !== 0, `Gate6 ${label} failure aborts admission-v2 cutover`);
+  assert(/^CAP_TASK_ADMISSION_V2_ENABLED=false$/m.test(envFile), `Gate6 ${label} failure closes the persisted gate`);
+  assert(!/^CAP_TASK_ADMISSION_V2_ATTESTATION_JSON=/m.test(envFile), `Gate6 ${label} failure removes the rejected attestation`);
+  assert(/up -d --force-recreate api/.test(log), `Gate6 ${label} failure force-recreates api with the gate closed`);
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_COMPOSE_RUNNING_SERVICES: 'api',
+    CAP_FAKE_CAPABILITY_OPEN: '0',
+    CAP_FAKE_ROLLBACK_RECREATE_FAIL: '1',
+    CAP_TASK_ADMISSION_V2_ENABLED: 'true',
+    CAP_TASK_ADMISSION_V2_ATTESTATION_JSON: TEST_ADMISSION_ATTESTATION,
+    CAP_CUTOVER_BEARER_TOKEN: 'cap_sk_process_only_cutover_test',
+    CAP_SANDBOX_PROVIDER: 'aio',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+  });
+  const log = readLog(tc);
+  assert(result.status !== 0, 'failed rollback force-recreate aborts the cutover');
+  assert(/stop api/.test(log), 'failed rollback force-recreate stops api fail-closed');
+  assert(/api was stopped fail-closed/.test(result.stderr), 'failed rollback reports the verified stopped runtime state');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_COMPOSE_RUNNING_SERVICES: 'api',
+    CAP_FAKE_HEALTH_FAIL: '1',
+    CAP_HEALTH_TIMEOUT_SECONDS: '1',
+    CAP_ADMISSION_ROLLBACK_HEALTH_TIMEOUT_SECONDS: '1',
+    CAP_TASK_ADMISSION_V2_ENABLED: 'true',
+    CAP_TASK_ADMISSION_V2_ATTESTATION_JSON: TEST_ADMISSION_ATTESTATION,
+    CAP_CUTOVER_BEARER_TOKEN: 'cap_sk_process_only_cutover_test',
+    CAP_SANDBOX_PROVIDER: 'aio',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+  });
+  const log = readLog(tc);
+  assert(result.status !== 0, 'unhealthy gate-on api aborts after bounded probes');
+  assert(/--connect-timeout 2 --max-time 3 .*\/health/.test(log), 'health probes use per-request connect and total timeouts');
+  assert(/stop api/.test(log), 'unverified rollback health stops api fail-closed');
 }
 
 {

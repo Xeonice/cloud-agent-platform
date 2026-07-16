@@ -50,6 +50,189 @@ test('owner with a forge credential resolves a credentialed target', async () =>
   assert.equal(target?.apiBaseUrl, 'https://gitlab.com/api/v4');
 });
 
+test('direct owner import resolution uses the exact normalized forge host and owner', async () => {
+  const stored = encryptToStored('gitee-owner-import-secret', ENV);
+  const location: ForgeLocation = {
+    kind: 'gitee',
+    apiBaseUrl: 'https://code.example.com/api/v5',
+    cloneUrl: 'https://code.example.com/team/app.git',
+    repoId: { style: 'owner-repo', owner: 'team', repo: 'app' },
+  };
+  let credentialWhere: unknown;
+  let detected: unknown;
+  const prisma = {
+    forgeCredential: {
+      findUnique: async (args: unknown) => {
+        credentialWhere = args;
+        return { tokenCiphertext: stored };
+      },
+      findFirst: async () => {
+        assert.fail('an exact owner/kind/host credential must not fall back');
+      },
+    },
+  } as unknown as PrismaService;
+  const registry = {
+    detect: async (repo: unknown) => {
+      detected = repo;
+      return location;
+    },
+  } as unknown as DefaultForgeRegistry;
+
+  const result = await new ForgeTargetResolver(prisma, registry).resolveForOwner(
+    'owner-account-a',
+    {
+      gitSource: 'https://code.example.com/team/app.git',
+      forge: 'gitee',
+    },
+    ENV,
+  );
+
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(detected, {
+    gitSource: 'https://code.example.com/team/app.git',
+    forge: 'gitee',
+  });
+  assert.deepEqual(credentialWhere, {
+    where: {
+      userId_kind_host: {
+        userId: 'owner-account-a',
+        kind: 'gitee',
+        host: 'code.example.com',
+      },
+    },
+  });
+  assert.equal(result.target.token, 'gitee-owner-import-secret');
+  assert.equal(result.target.cloneUrl.includes('gitee-owner-import-secret'), false);
+});
+
+test('direct owner import resolution reports a safe missing-credential reason', async () => {
+  const result = await resolver({
+    ownerId: 'unused',
+    forgeCredential: null,
+  }).resolveForOwner(
+    'owner-account-b',
+    { gitSource: 'https://gitlab.com/g/p.git', forge: 'gitlab' },
+    ENV,
+  );
+
+  assert.deepEqual(result, {
+    ok: false,
+    reason: 'owner_credential_unavailable',
+  });
+  assert.equal(JSON.stringify(result).includes('token'), false);
+});
+
+const PRIVATE_OWNER_ISOLATION_CASES: Array<{
+  kind: 'github' | 'gitlab' | 'gitee';
+  location: ForgeLocation;
+}> = [
+  {
+    kind: 'github',
+    location: {
+      kind: 'github',
+      apiBaseUrl: 'https://api.github.com',
+      cloneUrl: 'https://github.com/team/private.git',
+      repoId: { style: 'owner-repo', owner: 'team', repo: 'private' },
+    },
+  },
+  {
+    kind: 'gitlab',
+    location: {
+      kind: 'gitlab',
+      apiBaseUrl: 'https://gitlab.com/api/v4',
+      cloneUrl: 'https://gitlab.com/team/private.git',
+      repoId: { style: 'project', idOrPath: 'team/private' },
+    },
+  },
+  {
+    kind: 'gitee',
+    location: {
+      kind: 'gitee',
+      apiBaseUrl: 'https://gitee.com/api/v5',
+      cloneUrl: 'https://gitee.com/team/private.git',
+      repoId: { style: 'owner-repo', owner: 'team', repo: 'private' },
+    },
+  },
+];
+
+for (const fixture of PRIVATE_OWNER_ISOLATION_CASES) {
+  test(`private ${fixture.kind} import reads only the authenticated owner's exact credential`, async () => {
+    const queriedOwners: string[] = [];
+    const exactLookups: Array<{ userId: string; kind: string; host: string }> = [];
+    const credentials = new Map<string, { tokenCiphertext: string }>([
+      [
+        'owner-a',
+        { tokenCiphertext: encryptToStored(`${fixture.kind}-owner-a`, ENV) },
+      ],
+      [
+        'owner-b',
+        { tokenCiphertext: encryptToStored(`${fixture.kind}-owner-b`, ENV) },
+      ],
+    ]);
+    const prisma = {
+      forgeCredential: {
+        findUnique: async (args: {
+          where: {
+            userId_kind_host: { userId: string; kind: string; host: string };
+          };
+        }) => {
+          const key = args.where.userId_kind_host;
+          exactLookups.push(key);
+          const owner = key.userId;
+          queriedOwners.push(owner);
+          return credentials.get(owner) ?? null;
+        },
+        findFirst: async (args: { where: { userId: string } }) => {
+          queriedOwners.push(args.where.userId);
+          return credentials.get(args.where.userId) ?? null;
+        },
+      },
+    } as unknown as PrismaService;
+    const registry = {
+      detect: async () => fixture.location,
+    } as unknown as DefaultForgeRegistry;
+    const resolver = new ForgeTargetResolver(prisma, registry);
+
+    const resolved = await resolver.resolveForOwner(
+      'owner-a',
+      {
+        gitSource: fixture.location.cloneUrl,
+        forge: fixture.kind,
+      },
+      ENV,
+    );
+
+    assert.equal(resolved.ok, true);
+    if (resolved.ok) assert.equal(resolved.target.token, `${fixture.kind}-owner-a`);
+    assert.deepEqual(queriedOwners, ['owner-a']);
+    assert.deepEqual(exactLookups, [
+      {
+        userId: 'owner-a',
+        kind: fixture.kind,
+        host: new URL(fixture.location.cloneUrl).host,
+      },
+    ]);
+
+    credentials.delete('owner-a');
+    queriedOwners.length = 0;
+    exactLookups.length = 0;
+    const missing = await resolver.resolveForOwner(
+      'owner-a',
+      {
+        gitSource: fixture.location.cloneUrl,
+        forge: fixture.kind,
+      },
+      ENV,
+    );
+    assert.deepEqual(missing, {
+      ok: false,
+      reason: 'owner_credential_unavailable',
+    });
+    assert.ok(queriedOwners.every((owner) => owner === 'owner-a'));
+  });
+}
+
 test('unattributed task (no task.created owner) → null (skip)', async () => {
   const target = await resolver({ ownerId: null, forgeCredential: { tokenCiphertext: 'x' } }).getForgeTarget('t1', ENV);
   assert.equal(target, null);

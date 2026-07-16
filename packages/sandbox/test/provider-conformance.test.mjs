@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
+const conformance = await import(
+  new URL('../../sandbox-conformance/dist/index.js', import.meta.url).href
+);
+
+const WORKSPACE_GIT_SECRET_CANARY =
+  'CAP_CONFORMANCE_SECRET_CANARY_6dd71fc9';
 
 let passed = 0;
 let failed = 0;
@@ -161,7 +167,10 @@ await test('fake conformance routes provision, ownership, selected-run, and deli
   const delivery = await router.deliverWorkspaceChanges('task-1', {
     branch: 'provider-e2e',
     commitMessage: 'provider conformance',
-    authHeader: 'Authorization: Bearer hidden',
+    credential: mod.createExactHostGitCredential(
+      'https://example.test/repo.git',
+      'Authorization: Bearer hidden',
+    ),
   });
   assert.deepEqual(delivery, {
     hadChanges: true,
@@ -171,7 +180,11 @@ await test('fake conformance routes provision, ownership, selected-run, and deli
 
   await router.teardownSandbox('task-1');
   assert.deepEqual(complete.calls.at(-1), ['teardown', 'task-1']);
-  assert.equal((await ownerStore.getSandboxRunOwner('task-1')).status, 'removed');
+  assert.equal(
+    await ownerStore.getSandboxRunOwner('task-1'),
+    null,
+    'terminally settled owners are no longer returned as active owners',
+  );
 });
 
 await test('stored owner metadata selects readoption provider before probing unrelated providers', async () => {
@@ -249,6 +262,34 @@ await test('fake conformance fails closed for missing operation capabilities', a
       ),
     /No sandbox provider candidate satisfies required capabilities/,
   );
+});
+
+await test('real production workspace Git helpers pass provider conformance', async () => {
+  const scenarios = conformance.createSandboxWorkspaceGitConformanceScenarios(
+    {
+      operations: {
+        materialize: mod.materializeSandboxGitWorkspaceStaged,
+        deliver: mod.deliverSandboxGitWorkspaceStaged,
+        classify: mod.classifySandboxGitFailure,
+      },
+      secretCanary: WORKSPACE_GIT_SECRET_CANARY,
+    },
+    assert,
+  );
+
+  assert.deepEqual(
+    scenarios.map((scenario) => scenario.name),
+    [
+      'production materialization scopes one private config and exposes no secret',
+      'production delivery retries without duplicate commit and cleans idempotently',
+      'production cancellation waits for guest settlement before cleanup',
+      'production deadline waits for guest settlement before cleanup',
+      'production classifier and materializer expose the typed failure matrix',
+    ],
+  );
+  for (const scenario of scenarios) {
+    await scenario.run();
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

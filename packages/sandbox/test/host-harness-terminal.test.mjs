@@ -140,6 +140,7 @@ const pty = mod.openSandboxTerminalPty({
   mode: 'attach-only',
 });
 assert(pty.taskId === 'task-1', 'openSandboxTerminalPty returns a task-bound PTY client');
+pty.close?.();
 
 let missingLaunchContext = false;
 try {
@@ -177,6 +178,7 @@ assert(
   defaultModePty.taskId === 'task-1',
   'openSandboxTerminalPty defaults launch-or-attach mode',
 );
+defaultModePty.close?.();
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

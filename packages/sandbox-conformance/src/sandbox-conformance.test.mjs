@@ -23,15 +23,19 @@ function makeProvider({
   reattach = { taskId: 'task-1', baseUrl: 'http://sandbox', wsUrl: 'ws://sandbox/ws' },
   mode = 'workspace-write',
   onDeliver,
+  onProvision,
 } = {}) {
   return {
     getSandboxMode: () => mode,
     getProviderCapabilities: capabilities === undefined ? undefined : () => capabilities,
-    provision: async ({ taskId }) => ({
-      taskId,
-      baseUrl: `http://sandbox/${taskId}`,
-      wsUrl: `ws://sandbox/${taskId}/ws`,
-    }),
+    provision: async (context) => {
+      onProvision?.(context);
+      return {
+        taskId: context.taskId,
+        baseUrl: `http://sandbox/${context.taskId}`,
+        wsUrl: `ws://sandbox/${context.taskId}/ws`,
+      };
+    },
     sandboxExists: async () => true,
     deliverWorkspaceChanges: async (_taskId, args) => {
       onDeliver?.(args);
@@ -93,7 +97,10 @@ await test('conformance scenarios pass for a fully capable provider', async () =
 await test('conformance scenarios honor custom delivery args and nullable reattach', async () => {
   let delivered;
   const deliverArgs = {
-    authHeader: 'Authorization: Basic custom',
+    credential: core.createExactHostGitCredential(
+      'https://conformance.invalid/repository.git',
+      'Authorization: Basic custom',
+    ),
     branch: 'cap/custom',
     commitMessage: 'custom message',
   };
@@ -110,6 +117,59 @@ await test('conformance scenarios honor custom delivery args and nullable reatta
     await scenario.run();
   }
   assert.equal(delivered, deliverArgs);
+});
+
+await test('conformance carries immutable resources, branch facts, deadline, and cancellation', async () => {
+  let received;
+  const controller = new AbortController();
+  const resources = { diskSizeGb: 10 };
+  const workspace = {
+    repositoryUrl: 'https://example.test/repo.git',
+    callerBranch: null,
+    resolvedBranch: 'master',
+    deadlineMs: 900_000,
+  };
+  const scenarios = mod.createSandboxProviderConformanceScenarios(
+    {
+      provider: makeProvider({
+        capabilities: [
+          ...core.SANDBOX_PROVIDER_CAPABILITIES,
+          'resource.disk-size-gb',
+        ],
+        onProvision: (context) => (received = context),
+      }),
+      taskId: 'task-resources',
+      resources,
+      workspace,
+      cancellationSignal: controller.signal,
+      expectTranscriptSource: false,
+      expectReadoption: false,
+    },
+    assert,
+  );
+  await scenarios[0].run();
+  await scenarios[1].run();
+  assert.deepEqual(received.resources, { diskSizeGb: 10 });
+  assert.notEqual(received.resources, resources);
+  assert.equal(Object.isFrozen(received.resources), true);
+  assert.equal(received.workspace.callerBranch, null);
+  assert.equal(received.workspace.resolvedBranch, 'master');
+  assert.equal(received.workspace.deadlineMs, 900_000);
+  assert.equal(Object.isFrozen(received.workspace), true);
+  assert.equal(received.cancellationSignal, controller.signal);
+
+  const capabilityScenario = mod.createSandboxProviderConformanceScenarios(
+    {
+      provider: makeProvider({ capabilities: core.SANDBOX_PROVIDER_CAPABILITIES }),
+      taskId: 'task-unsupported-resource',
+      resources: { diskSizeGb: 10 },
+    },
+    assert,
+  )[0];
+  await assert.rejects(
+    () => capabilityScenario.run(),
+    /provider is missing required capabilities/,
+  );
 });
 
 await test('conformance supports absent transcript and disabled readoption scenarios', async () => {
@@ -314,6 +374,72 @@ await test('shape assertion helpers accept nullable fields and omit task id chec
   mod.assertTerminalDescriptor({ protocol: 'provider-native', url: 'http://terminal' }, assert);
   mod.assertCommandDescriptor({ protocol: 'provider-native' }, assert);
   mod.assertWorkspaceDescriptor({ mode: 'archive' }, assert);
+});
+
+await test('generated private Git fixture rejects wildcard and unsafe URL hosts', async () => {
+  await assert.rejects(
+    () => mod.createGeneratedPrivateGitFixture({ listenHost: '0.0.0.0' }),
+    /advertisedHost is required for a wildcard listenHost/,
+  );
+  await assert.rejects(
+    () =>
+      mod.createGeneratedPrivateGitFixture({
+        listenHost: '::',
+        advertisedHost: '::',
+      }),
+    /advertisedHost must not be a wildcard address/,
+  );
+
+  const unsafeHosts = [
+    '',
+    ' guest.internal',
+    'https://guest.internal',
+    'guest.internal:8080',
+    'guest.internal/repository',
+    'user@guest.internal',
+    'guest.internal?query=1',
+    'guest.internal#fragment',
+    'guest_internal',
+    '127.1',
+    '[::1]',
+    'fe80::1%lo0',
+    123,
+    null,
+  ];
+  for (const optionName of ['listenHost', 'advertisedHost']) {
+    for (const unsafeHost of unsafeHosts) {
+      await assert.rejects(
+        () =>
+          mod.createGeneratedPrivateGitFixture({
+            [optionName]: unsafeHost,
+          }),
+        new RegExp(optionName),
+      );
+    }
+  }
+});
+
+await test('generated private Git fixture advertises one safe guest host with real ports', async () => {
+  const fixture = await mod.createGeneratedPrivateGitFixture({
+    largeBlobBytes: 2 * 1024 * 1024,
+    advertisedHost: 'Host.BoxLite.Internal',
+  });
+  try {
+    const root = new URL(fixture.rootUrl);
+    const sameOrigin = new URL(fixture.submodules.sameOriginUrl);
+    const crossOrigin = new URL(fixture.submodules.crossOriginUrl);
+    assert.equal(root.hostname, 'host.boxlite.internal');
+    assert.equal(sameOrigin.hostname, 'host.boxlite.internal');
+    assert.equal(crossOrigin.hostname, 'host.boxlite.internal');
+    assert.equal(root.port, sameOrigin.port);
+    assert.notEqual(root.port, crossOrigin.port);
+    assert.match(root.port, /^\d+$/u);
+    assert.match(crossOrigin.port, /^\d+$/u);
+  } finally {
+    await fixture.dispose();
+  }
+  assert.equal(fixture.diagnostics().activeRequests, 0);
+  assert.equal(fixture.diagnostics().activeBackendProcesses, 0);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

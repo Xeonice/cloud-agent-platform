@@ -130,6 +130,14 @@ export class DefaultRuntimeModelEnvironmentResolver
     const cliArtifactChecksum = environment.cliArtifactChecksum;
     const source = managedSnapshotSource(environment);
     const providerFamily = knownProviderFamily(environment.providerFamily);
+    const resources =
+      environment.resources?.diskSizeGb !== undefined
+        ? environment.resources
+        : await this.environments.resolveProvisioningResourcesForTask({
+            selection: { kind: 'managed', environmentId },
+            runtimeId: runtime,
+            providerFamily,
+          });
     if (
       !cliVersion ||
       !cliArtifactChecksum ||
@@ -146,6 +154,7 @@ export class DefaultRuntimeModelEnvironmentResolver
         validationContractVersion: environment.validationVersion,
         provider,
         providerFamily,
+        resources,
         source,
         immutableIdentity: sourceIdentity(source),
         sandboxMetadata,
@@ -239,6 +248,7 @@ export class ConfiguredDeploymentRuntimeModelEnvironmentResolver
           name: configured.name,
           source: configured.source,
           providerFamily: configured.providerFamily,
+          resources: configured.provisioningPolicy.resources,
           runtimeIds: [input.runtime],
           runtimeId: input.runtime,
         },
@@ -256,6 +266,7 @@ export class ConfiguredDeploymentRuntimeModelEnvironmentResolver
       sourceKind: immutableTarget.source.kind,
       sourceReference: sourceReference(immutableTarget.source),
       identity,
+      resources: configured.provisioningPolicy.resources ?? null,
     });
 
     return this.options.cache.getOrLoad(
@@ -268,6 +279,12 @@ export class ConfiguredDeploymentRuntimeModelEnvironmentResolver
             probeTaskId: `runtime-model-env-probe-${randomUUID()}`,
           });
           if (outcome.status !== 'passed') {
+            throw new RuntimeModelCatalogOperationalError();
+          }
+          if (
+            JSON.stringify(outcome.resourceSnapshot ?? null) !==
+            JSON.stringify(configured.provisioningPolicy.resources ?? null)
+          ) {
             throw new RuntimeModelCatalogOperationalError();
           }
           const sandboxMetadata = SandboxMetadataSchema.parse(
@@ -294,6 +311,7 @@ export class ConfiguredDeploymentRuntimeModelEnvironmentResolver
             validationContractVersion: null,
             provider: configured.providerId,
             providerFamily: knownProviderFamily(configured.providerFamily),
+            resources: configured.provisioningPolicy.resources,
             source,
             immutableIdentity: sourceIdentity(source),
             sandboxMetadata,
@@ -437,6 +455,7 @@ const SAFE_ENVIRONMENT_ERROR_CODES = new Set([
   'sandbox_environment_immutable_identity_unavailable',
   'sandbox_environment_compatibility_error',
   'sandbox_environment_source_error',
+  'sandbox_environment_resource_unsupported',
 ]);
 
 function mapEnvironmentError(error: unknown): Error {

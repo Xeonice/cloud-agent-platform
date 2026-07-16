@@ -81,6 +81,18 @@ class ConcurrencySemaphore {
     return 'queued';
   }
 
+  restoreRunning(taskId) {
+    if (this.running.has(taskId)) return;
+    const queued = this.queue.indexOf(taskId);
+    if (queued !== -1) this.queue.splice(queued, 1);
+    this.running.add(taskId);
+  }
+
+  release(taskId) {
+    if (!this.running.delete(taskId)) return null;
+    return this._admitNext();
+  }
+
   _admitNext() {
     if (!this.hasCapacity || this.queue.length === 0) return null;
     const next = this.queue.shift();
@@ -126,12 +138,12 @@ class GuardrailsBootstrapHarness {
 
   /**
    * Mirrors `GuardrailsService.readopt` (survive-api-redeploy 4.1): re-account
-   * the slot via `offer()`, capture the connection handle, re-attach the
+   * the slot via `restoreRunning()`, capture the connection handle, re-attach the
    * terminal (gateway.openSession), and re-arm the idle/deadline watchers from
    * the persisted params — with NO lifecycle transition and NO fresh provision.
    */
   readopt(taskId, connection, params = {}, selectedRun = null) {
-    this.semaphore.offer(taskId);
+    this.semaphore.restoreRunning(taskId);
     this.connections.set(taskId, connection);
     this.attached.push(taskId);
     this.attachedRuns.set(taskId, selectedRun);
@@ -153,7 +165,12 @@ class GuardrailsBootstrapHarness {
     try {
       const row = await this.prisma.systemSettings.findFirst();
       const persisted = row?.maxConcurrentTasks;
-      if (persisted !== undefined && Number.isInteger(persisted) && persisted >= 1) {
+      if (
+        persisted !== undefined &&
+        Number.isInteger(persisted) &&
+        persisted >= 1 &&
+        persisted <= 20
+      ) {
         this.semaphore.setMaxConcurrentTasks(persisted);
       }
     } catch (err) {
@@ -265,9 +282,9 @@ console.log('\n=== Guardrails bootstrap: persisted ceiling load ===\n');
   assert(svc.warnings.length === 1, 'T6c: the failure is surfaced as a warning, not an error');
 }
 
-// T7: an invalid stored value (0 / non-integer) is ignored, ceiling unchanged
+// T7: an invalid stored value (outside 1..20 / non-integer) is ignored
 {
-  for (const bad of [0, -1, 2.5]) {
+  for (const bad of [0, -1, 2.5, 21, Number.MAX_SAFE_INTEGER]) {
     const svc = new GuardrailsBootstrapHarness(
       { maxConcurrentTasks: seedMaxConcurrentTasks('5') },
       prismaWithRow({ id: 'system', maxConcurrentTasks: bad }),
@@ -368,6 +385,25 @@ const conn = (taskId) => ({
   assert(svc.semaphore.runningCount === 2, 'R4a: ceiling 2 = 1 re-adopted + 1 admitted from the queue');
   assert(o1 === 'running' && o2 === 'queued', 'R4b: capacity reduced by the re-adopted slot (only q1 admitted)');
   assert(svc.semaphore.queuedCount === 1, 'R4c: q2 stays queued behind the re-adopted slot');
+}
+
+// R5: recovery accounting preserves every already-running survivor even when
+// the persisted ceiling was lowered while the API was offline. New FIFO work
+// waits until ordinary releases converge back below the ceiling.
+{
+  const svc = new GuardrailsBootstrapHarness({
+    maxConcurrentTasks: seedMaxConcurrentTasks('1'),
+  });
+  svc.readopt('survivor-a', conn('survivor-a'), {});
+  svc.readopt('survivor-b', conn('survivor-b'), {});
+  const offered = svc.semaphore.offer('queued');
+
+  assert(svc.semaphore.runningCount === 2, 'R5a: both real survivors are restored above a lowered ceiling of 1');
+  assert(offered === 'queued', 'R5b: fresh work remains queued while recovery is above ceiling');
+  svc.semaphore.release('survivor-a');
+  assert(svc.semaphore.runningCount === 1 && svc.semaphore.queuedCount === 1, 'R5c: first release converges without promoting queued work');
+  svc.semaphore.release('survivor-b');
+  assert(svc.semaphore.runningCount === 1 && svc.semaphore.queuedCount === 0, 'R5d: queued work promotes only after capacity genuinely returns');
 }
 
 // ---- summary ----

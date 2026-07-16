@@ -35,6 +35,7 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { toast } from "sonner";
 
 import type { Repo, SandboxEnvironment, ScheduleResponse } from "@cap/contracts";
 import {
@@ -59,6 +60,8 @@ import {
   ENVIRONMENT_DEFAULT,
   ENVIRONMENT_SERVER_DEFAULT,
   scheduleFormFromSchedule,
+  taskBranchFormValue,
+  taskBranchOptions,
   type RecurrenceFormKind,
   type ScheduleFormState,
   type TaskTemplateFormState,
@@ -94,6 +97,12 @@ import {
   resolveHydratedScheduleTimezone,
 } from "@/lib/schedule-timezone";
 import { RuntimeModelSelector } from "@/components/runtime-model-selector";
+import {
+  canResetTaskCreateSubmission,
+  claimTaskCreateSubmission,
+  releaseRejectedTaskCreate,
+  resetTaskCreateSubmission,
+} from "@/lib/task-create-flow";
 
 /** The 3 prototype execution strategies (verbatim copy; the value == the label). */
 const STRATEGIES = [
@@ -377,7 +386,7 @@ export function NewTaskDialog({
   }, [repos, repoId]);
 
   const selectedRepo = repos.find((r) => r.id === repoId) ?? null;
-  const defaultBranch = selectedRepo?.defaultBranch ?? "main";
+  const defaultBranch = taskBranchFormValue(selectedRepo?.defaultBranch);
 
   const [branch, setBranch] = React.useState(defaultBranch);
   const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0]);
@@ -399,6 +408,8 @@ export function NewTaskDialog({
   const [idleTimeoutMs, setIdleTimeoutMs] = React.useState<number | null>(null);
   const [deadlineMs, setDeadlineMs] = React.useState<number | null>(null);
   const [createdTaskId, setCreatedTaskId] = React.useState<string | null>(null);
+  const taskCreateSubmissionFence = React.useRef(false);
+  const acceptedTaskIdRef = React.useRef<string | null>(null);
   const [mode, setMode] = React.useState<"once" | "repeated">("once");
   const [scheduleName, setScheduleName] = React.useState("");
   const [recurrenceKind, setRecurrenceKind] =
@@ -433,6 +444,16 @@ export function NewTaskDialog({
   const resetUpdateMutation = updateMutation.reset;
   React.useEffect(() => {
     if (!open) return;
+    if (
+      !canResetTaskCreateSubmission(
+        taskCreateSubmissionFence,
+        acceptedTaskIdRef.current,
+      )
+    ) {
+      return;
+    }
+    resetTaskCreateSubmission(taskCreateSubmissionFence);
+    acceptedTaskIdRef.current = null;
     setCreatedTaskId(null);
     resetMutation();
     resetScheduleMutation();
@@ -441,7 +462,7 @@ export function NewTaskDialog({
       timezoneDirtyRef.current = false;
       const form = scheduleFormFromSchedule(scheduleToEdit, DEFAULT_RUNTIME);
       setRepoId(form.repoId);
-      setBranch(form.branch || "main");
+      setBranch(form.branch);
       setStrategy(form.strategy || STRATEGIES[0]);
       setSkills(form.skills);
       setPrompt(form.prompt);
@@ -585,11 +606,10 @@ export function NewTaskDialog({
     setBranch(defaultBranch);
   }, [defaultBranch, isEditingSchedule]);
 
-  const branchOptions = React.useMemo(() => {
-    const set = new Set<string>([defaultBranch]);
-    if (branch) set.add(branch);
-    return [...set];
-  }, [defaultBranch, branch]);
+  const branchOptions = React.useMemo(
+    () => taskBranchOptions(defaultBranch, branch),
+    [defaultBranch, branch],
+  );
 
   const charCount = [...prompt.trim()].length;
   const commandLines = buildCommandPreview({
@@ -618,7 +638,7 @@ export function NewTaskDialog({
   function handleRepoChange(nextRepoId: string) {
     setRepoId(nextRepoId);
     const nextRepo = repos.find((repo) => repo.id === nextRepoId);
-    if (nextRepo) setBranch(nextRepo.defaultBranch ?? "main");
+    setBranch(taskBranchFormValue(nextRepo?.defaultBranch));
   }
 
   function currentTaskForm(): TaskTemplateFormState {
@@ -727,13 +747,29 @@ export function NewTaskDialog({
       );
       return;
     }
+    if (!claimTaskCreateSubmission(taskCreateSubmissionFence)) return;
     mutation.mutate(
       { repoId, body },
       {
         onSuccess: (task) => {
+          acceptedTaskIdRef.current = task.id;
           setCreatedTaskId(task.id);
-          // Persist the operator's last selection + the created run for re-entry.
-          setState({ selectedRepo: repoId });
+          // Persist the exact acceptance handle before navigation so a replaced
+          // route transition or refresh cannot lose the committed task id.
+          setState({
+            selectedRepo: repoId,
+            selectedBranch: body.branch ?? null,
+            latestRunId: task.id,
+          });
+          const openCreatedTask = () => {
+            void navigate({
+              to: "/tasks/$taskId",
+              params: { taskId: task.id },
+            });
+          };
+          toast.success("任务已进入远端 Agent 队列", {
+            action: { label: "打开任务", onClick: openCreatedTask },
+          });
           // Navigate straight into the created task's session instead of making
           // the operator click the "进入会话" link. CLOSE the dialog FIRST: a Radix
           // modal still `open` traps focus + overlays the route, which swallowed
@@ -741,8 +777,9 @@ export function NewTaskDialog({
           // it unmounts the modal layer so the navigate actually takes effect; the
           // session page shows a friendly pre-running state until the sandbox is up.
           onOpenChange(false);
-          void navigate({ to: "/tasks/$taskId", params: { taskId: task.id } });
+          openCreatedTask();
         },
+        onError: () => releaseRejectedTaskCreate(taskCreateSubmissionFence),
       },
     );
   }
@@ -1198,6 +1235,7 @@ export function NewTaskDialog({
               mutation.isPending ||
               scheduleMutation.isPending ||
               updateMutation.isPending ||
+              (!isEditingSchedule && mode === "once" && createdTaskId !== null) ||
               prompt.trim().length === 0 ||
               accountDefaultUnavailable ||
               !modelSelectionValid

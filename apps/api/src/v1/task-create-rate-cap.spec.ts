@@ -132,11 +132,11 @@ class StubAuthGuard implements CanActivate {
 
 let app: INestApplication;
 let port: number;
-let admissions: number; // counts how many times TasksService.createTaskRow was called
+let admissions: number; // counts canonical task acceptance writes
 
 before(async () => {
   // Track admission (row-create) calls. The /v1 create path reaches
-  // `createTaskRow` only for a request that PASSES the create-rate cap; a
+  // `acceptPreparedTask` only for a request that PASSES the create-rate cap; a
   // throttled (429) request never reaches the service (V.1 row/admit split).
   const fakeTasksService = {
     async prepareTaskCreate(
@@ -156,7 +156,7 @@ before(async () => {
         executionEnvironmentSnapshot: null,
       };
     },
-    async createTaskRow(_prepared: PreparedTaskCreate): Promise<TaskResponse> {
+    async acceptPreparedTask(_prepared: PreparedTaskCreate): Promise<TaskResponse> {
       admissions += 1;
       return makeTask(admissions);
     },

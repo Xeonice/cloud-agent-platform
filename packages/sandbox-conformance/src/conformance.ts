@@ -7,6 +7,7 @@ import {
   type SandboxDeliverWorkspaceResult,
   type SandboxProviderPort,
   type SandboxReadoptionPort,
+  type SandboxResourceSnapshot,
   type SandboxResolvedEnvironmentMetadata,
   type SandboxRetentionDescriptorPort,
   type SandboxSelectedRunPort,
@@ -15,11 +16,17 @@ import {
   type SandboxTranscriptSourceBase,
   type SandboxWorkspaceDescriptor,
   type SandboxWorkspaceDescriptorPort,
+  type SandboxWorkspaceMaterializationPlan,
+  type SandboxWorkspaceProgressReporter,
   type SelectedSandboxRun,
   type TaskModelIntent,
 } from '@cap/sandbox-core';
 import {
+  createExactHostGitCredential,
   missingCapabilities,
+  resourcesForSandboxProvision,
+  sandboxResourceRequiredCapabilities,
+  snapshotSandboxProvisionContext,
   type SandboxProviderCapability,
 } from '@cap/sandbox-core';
 
@@ -42,6 +49,10 @@ export interface SandboxProviderConformanceOptions<
   readonly modelIntent?: TaskModelIntent;
   readonly executionMode?: 'interactive-pty' | 'headless-exec';
   readonly environment?: SandboxResolvedEnvironmentMetadata | null;
+  readonly resources?: SandboxResourceSnapshot;
+  readonly workspace?: SandboxWorkspaceMaterializationPlan | null;
+  readonly cancellationSignal?: AbortSignal;
+  readonly onWorkspaceProgress?: SandboxWorkspaceProgressReporter;
   readonly deliverArgs?: SandboxDeliverWorkspaceArgs;
   /**
    * Set to false for providers whose fake/test backend intentionally does not
@@ -86,18 +97,25 @@ export function createSandboxProviderConformanceScenarios<
   const deliverArgs =
     options.deliverArgs ??
     ({
-      authHeader: 'Authorization: Basic test-token',
+      credential: createExactHostGitCredential(
+        'https://conformance.invalid/repository.git',
+        'Authorization: Basic test-token',
+      ),
       branch: `cap/${taskId}`,
       commitMessage: 'CAP sandbox conformance',
     } satisfies SandboxDeliverWorkspaceArgs);
-  const provisionContext = {
+  const provisionContext = snapshotSandboxProvisionContext({
     taskId,
     cloneSpec: options.cloneSpec,
     modelIntent: options.modelIntent ?? ({ kind: 'runtime-default' } as const),
     runtimeId: String(options.runtimeId ?? 'codex'),
     executionMode: options.executionMode ?? ('interactive-pty' as const),
     environment: options.environment,
-  };
+    resources: options.resources,
+    workspace: options.workspace,
+    cancellationSignal: options.cancellationSignal,
+    onWorkspaceProgress: options.onWorkspaceProgress,
+  });
 
   const scenarios: SandboxProviderConformanceScenario[] = [
     {
@@ -109,10 +127,13 @@ export function createSandboxProviderConformanceScenarios<
         );
         const capabilities = options.provider.getProviderCapabilities?.();
         assert.ok(Array.isArray(capabilities), 'provider must declare capabilities');
-        const missing = missingCapabilities(
-          capabilities ?? [],
-          options.requiredCapabilities ?? [],
-        );
+        const required = new Set(options.requiredCapabilities ?? []);
+        for (const capability of sandboxResourceRequiredCapabilities(
+          resourcesForSandboxProvision(provisionContext),
+        )) {
+          required.add(capability);
+        }
+        const missing = missingCapabilities(capabilities ?? [], [...required]);
         assert.deepEqual(missing, [], 'provider is missing required capabilities');
       },
     },

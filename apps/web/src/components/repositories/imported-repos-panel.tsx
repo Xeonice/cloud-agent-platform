@@ -108,7 +108,7 @@ export function ImportedReposPanel({
                 sync={
                   <>
                     <span className="font-mono text-xs text-foreground">
-                      {repo.defaultBranch ?? "main"}
+                      {repo.defaultBranch ?? "待解析"}
                     </span>
                     <small className="text-xs">默认分支</small>
                   </>

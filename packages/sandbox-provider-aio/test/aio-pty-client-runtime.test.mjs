@@ -27,6 +27,8 @@ class TestAioPtyClient extends aio.AioPtyClient {
     commandExecutor,
     prepareModelMaterial,
     onRuntimeSetupFailure,
+    signal,
+    beforeAgentLaunch,
   ) {
     const resolveTaskLaunchContext =
       mode === 'launch-or-attach'
@@ -62,6 +64,8 @@ class TestAioPtyClient extends aio.AioPtyClient {
       commandExecutor,
       prepareModelMaterial ?? testModelMaterial,
       onRuntimeSetupFailure,
+      signal,
+      beforeAgentLaunch,
     );
   }
 }
@@ -93,6 +97,16 @@ async function test(name, fn) {
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 async function waitFor(predicate, timeoutMs = 500) {
   const deadline = Date.now() + timeoutMs;
@@ -300,6 +314,7 @@ await test('runtime launch-context resolver failures fail closed without a defau
   transport.emit({ type: 'session_id', data: 's1' });
   transport.emit({ type: 'ready' });
   await waitFor(() => failures.length === 1);
+  assert.deepEqual(await client.launchDecision, { kind: 'failed' });
   transport.emit({ type: 'output', data: '\x1b[6n' });
   await delay(30);
 
@@ -361,6 +376,272 @@ await test('runtime launch-context resolver failures fail closed without a defau
   await waitFor(() => stringFailures.length === 1);
   assert.equal(stringThrowFactory.transports[0].input.length, 0);
   stringThrowClient.close();
+});
+
+await test('final launch fence aborts both fresh-launch branches without input, attach, polling, or model failure', async () => {
+  const cases = [
+    { name: 'gone', probeOutput: '__cap_has__1\n', abortWhileChecked: true },
+    { name: 'inconclusive', probeOutput: 'no marker', abortWhileChecked: false },
+  ];
+
+  for (const scenario of cases) {
+    const factory = makeTransportFactory();
+    const controller = new AbortController();
+    const failures = [];
+    const checkEntered = deferred();
+    const releaseCheck = deferred();
+    let checkCount = 0;
+    const client = new mod.AioPtyClient(
+      `task-launch-fence-${scenario.name}`,
+      'ws://unused',
+      'http://unused',
+      undefined,
+      'launch-or-attach',
+      undefined,
+      undefined,
+      factory,
+      makeExecutor((request) =>
+        request.command.includes('__cap_has__')
+          ? { exitCode: 0, output: scenario.probeOutput }
+          : { exitCode: 0, output: '' },
+      ),
+      undefined,
+      (code) => failures.push(code),
+      controller.signal,
+      async () => {
+        checkCount += 1;
+        checkEntered.resolve();
+        if (scenario.abortWhileChecked) {
+          await releaseCheck.promise;
+          return;
+        }
+        throw new Error('lease authority lost');
+      },
+    );
+
+    const launch = client.launchOrAttachOnReady();
+    await checkEntered.promise;
+    assert.equal(factory.transports[0].input.length, 0);
+    if (scenario.abortWhileChecked) {
+      controller.abort(new Error('task stopped'));
+      assert.deepEqual(await client.launchDecision, { kind: 'fenced' });
+      releaseCheck.resolve();
+    }
+    await launch;
+
+    assert.deepEqual(await client.launchDecision, { kind: 'fenced' });
+    assert.equal(checkCount, 1);
+    assert.deepEqual(factory.transports[0].input, []);
+    assert.deepEqual(failures, []);
+    assert.equal(client.livenessTimer, undefined);
+    client.close();
+  }
+});
+
+await test('abort settles a no-ready launch decision immediately and prevents later launch work', async () => {
+  const factory = makeTransportFactory();
+  const controller = new AbortController();
+  let decisionSettled = false;
+  const client = new mod.AioPtyClient(
+    'task-launch-fence-no-ready',
+    'ws://unused',
+    'http://unused',
+    undefined,
+    'launch-or-attach',
+    undefined,
+    undefined,
+    factory,
+    makeExecutor(),
+    undefined,
+    undefined,
+    controller.signal,
+    async () => {
+      throw new Error('must not run without ready');
+    },
+  );
+  void client.launchDecision.then(() => {
+    decisionSettled = true;
+  });
+
+  await Promise.resolve();
+  assert.equal(decisionSettled, false);
+  controller.abort(new Error('lease lost before ready'));
+  assert.deepEqual(await client.launchDecision, { kind: 'fenced' });
+  assert.equal(decisionSettled, true);
+  assert.deepEqual(factory.transports[0].input, []);
+  assert.equal(factory.transports[0].closeCount, 1);
+  assert.equal(client.livenessTimer, undefined);
+
+  factory.transports[0].emit({ type: 'session_id', data: 'late' });
+  factory.transports[0].emit({ type: 'ready' });
+  await Promise.resolve();
+  assert.deepEqual(factory.transports[0].input, []);
+});
+
+await test('successful final launch fence runs once immediately before launch while readoption skips it', async () => {
+  const freshFactory = makeTransportFactory();
+  const checkEntered = deferred();
+  const releaseCheck = deferred();
+  let freshCheckCount = 0;
+  const freshClient = new mod.AioPtyClient(
+    'task-launch-fence-success',
+    'ws://unused',
+    'http://unused',
+    undefined,
+    'launch-or-attach',
+    undefined,
+    undefined,
+    freshFactory,
+    makeExecutor((request) =>
+      request.command.includes('__cap_has__')
+        ? { exitCode: 0, output: '__cap_has__1\n' }
+        : { exitCode: 0, output: '' },
+    ),
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      freshCheckCount += 1;
+      assert.equal(freshFactory.transports[0].input.length, 0);
+      checkEntered.resolve();
+      await releaseCheck.promise;
+    },
+  );
+
+  let freshDecisionSettled = false;
+  void freshClient.launchDecision.then(() => {
+    freshDecisionSettled = true;
+  });
+  await Promise.resolve();
+  assert.equal(freshDecisionSettled, false);
+  const freshLaunch = freshClient.launchOrAttachOnReady();
+  await checkEntered.promise;
+  assert.equal(freshDecisionSettled, false);
+  assert.deepEqual(freshFactory.transports[0].input, []);
+  releaseCheck.resolve();
+  assert.deepEqual(await freshClient.launchDecision, { kind: 'launched' });
+  await freshLaunch;
+  await freshClient.launchOrAttachOnReady();
+  assert.equal(freshCheckCount, 1);
+  assert.equal(freshFactory.transports[0].input.length, 2);
+  assert.match(freshFactory.transports[0].input[0], /new-session/);
+  assert.match(freshFactory.transports[0].input[1], /attach/);
+  assert.notEqual(freshClient.livenessTimer, undefined);
+  freshClient.close();
+
+  const adoptedFactory = makeTransportFactory();
+  let adoptedCheckCount = 0;
+  const adoptedClient = new mod.AioPtyClient(
+    'task-launch-fence-readopt',
+    'ws://unused',
+    'http://unused',
+    undefined,
+    'launch-or-attach',
+    undefined,
+    undefined,
+    adoptedFactory,
+    makeExecutor((request) =>
+      request.command.includes('__cap_has__')
+        ? { exitCode: 0, output: '__cap_has__0\n' }
+        : { exitCode: 0, output: '' },
+    ),
+    undefined,
+    undefined,
+    undefined,
+    async () => {
+      adoptedCheckCount += 1;
+    },
+  );
+
+  await adoptedClient.launchOrAttachOnReady();
+  assert.deepEqual(await adoptedClient.launchDecision, { kind: 'attached' });
+  assert.equal(adoptedCheckCount, 0);
+  assert.equal(adoptedFactory.transports[0].input.length, 1);
+  assert.doesNotMatch(adoptedFactory.transports[0].input[0], /new-session/);
+  assert.match(adoptedFactory.transports[0].input[0], /attach/);
+  adoptedClient.close();
+});
+
+await test('attach-only attaches only after a definitive live probe', async () => {
+  const factory = makeTransportFactory();
+  const probeEntered = deferred();
+  const probeResult = deferred();
+  const executor = makeExecutor(async (request) => {
+    assert.match(request.command, /__cap_has__/);
+    probeEntered.resolve();
+    return probeResult.promise;
+  });
+  const client = new mod.AioPtyClient(
+    'task-attach-only-live',
+    'ws://unused',
+    'http://unused',
+    undefined,
+    'attach-only',
+    undefined,
+    undefined,
+    factory,
+    executor,
+  );
+
+  factory.transports[0].emit({ type: 'session_id', data: 's1' });
+  factory.transports[0].emit({ type: 'ready' });
+  await probeEntered.promise;
+  assert.deepEqual(factory.transports[0].input, []);
+
+  probeResult.resolve({ exitCode: 0, output: '__cap_has__0\n' });
+  assert.deepEqual(await client.launchDecision, { kind: 'attached' });
+  assert.equal(factory.transports[0].input.length, 1);
+  assert.match(factory.transports[0].input[0], /attach/);
+  assert.doesNotMatch(factory.transports[0].input[0], /new-session/);
+  assert.notEqual(client.livenessTimer, undefined);
+  client.close();
+});
+
+await test('attach-only distinguishes absent from indeterminate without launching', async () => {
+  const cases = [
+    {
+      name: 'absent',
+      probeOutput: '__cap_has__1\n',
+      expected: { kind: 'absent' },
+    },
+    {
+      name: 'indeterminate',
+      probeOutput: 'provider response omitted the marker',
+      expected: { kind: 'indeterminate' },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const factory = makeTransportFactory();
+    const probeEntered = deferred();
+    const releaseProbe = deferred();
+    const client = new mod.AioPtyClient(
+      `task-attach-only-${scenario.name}`,
+      'ws://unused',
+      'http://unused',
+      undefined,
+      'attach-only',
+      undefined,
+      undefined,
+      factory,
+      makeExecutor(async () => {
+        probeEntered.resolve();
+        await releaseProbe.promise;
+        return { exitCode: 0, output: scenario.probeOutput };
+      }),
+    );
+
+    factory.transports[0].emit({ type: 'session_id', data: 's1' });
+    factory.transports[0].emit({ type: 'ready' });
+    await probeEntered.promise;
+    assert.deepEqual(factory.transports[0].input, []);
+    releaseProbe.resolve();
+
+    assert.deepEqual(await client.launchDecision, scenario.expected);
+    assert.deepEqual(factory.transports[0].input, []);
+    assert.equal(client.livenessTimer, undefined);
+    client.close();
+  }
 });
 
 await test('launch-or-attach catches runtime launch errors and still arms cleanup', async () => {

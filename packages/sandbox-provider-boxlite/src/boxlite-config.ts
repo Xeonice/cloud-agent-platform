@@ -2,17 +2,34 @@ import type {
   SandboxExecutionMode,
   SandboxProviderCapability,
   SandboxProviderLocation,
+  SandboxResourceSnapshot,
 } from '@cap/sandbox-core';
 import {
+  DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
+  SANDBOX_DISK_SIZE_CAPABILITY,
+  SANDBOX_DISK_SIZE_GB_MAX,
+  SANDBOX_DISK_SIZE_GB_MIN,
   SANDBOX_EXECUTION_MODES,
   SANDBOX_PROVIDER_KNOWN_CAPABILITIES,
   SANDBOX_PROVIDER_LOCATIONS,
+  SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX,
+  SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MIN,
+  resolveSandboxResources,
+  snapshotSandboxResources,
 } from '@cap/sandbox-core';
 
 export const BOXLITE_SANDBOX_PROVIDER_ID = 'boxlite';
 export const BOXLITE_DEFAULT_WORKSPACE_PATH = '/home/gem/workspace';
 export const BOXLITE_DEFAULT_SANDBOX_ID_PREFIX = 'cap-boxlite-';
 export const BOXLITE_DEFAULT_TIMEOUT_MS = 30_000;
+/** Incident-verified capacity that completed the observed large-repo checkout. */
+export const BOXLITE_DEFAULT_DISK_SIZE_GB = 5;
+export const BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS =
+  DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS;
+export const BOXLITE_GIT_CLONE_TIMEOUT_MS_MIN =
+  SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MIN;
+export const BOXLITE_GIT_CLONE_TIMEOUT_MS_MAX =
+  SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX;
 export const BOXLITE_DEFAULT_PATH_PREFIX = 'default';
 
 export type BoxLiteClientMode = 'rest';
@@ -42,6 +59,8 @@ export interface BoxLiteProviderEnv {
   readonly BOXLITE_PATH_PREFIX?: string;
   readonly BOXLITE_TERMINAL_MODE?: string;
   readonly BOXLITE_TIMEOUT_MS?: string;
+  readonly BOXLITE_DISK_SIZE_GB?: string;
+  readonly BOXLITE_GIT_CLONE_TIMEOUT_MS?: string;
 }
 
 export interface BoxLiteProviderConfig {
@@ -63,6 +82,11 @@ export interface BoxLiteProviderConfig {
   readonly protocolMode: BoxLiteProtocolMode;
   readonly pathPrefix: string;
   readonly terminalMode: BoxLiteTerminalMode;
+  /** Deployment fallback used when a managed environment omits diskSizeGb. */
+  readonly diskSizeGb: number;
+  /** Workspace Git deadline, deliberately separate from timeoutMs. */
+  readonly gitCloneTimeoutMs: number;
+  /** Short REST/native BoxLite control-plane request timeout only. */
   readonly timeoutMs: number;
 }
 
@@ -125,6 +149,22 @@ export function readBoxLiteProviderConfig(
     'BOXLITE_TIMEOUT_MS',
     errors,
   );
+  const diskSizeGb = parseStrictBoundedInteger(
+    env.BOXLITE_DISK_SIZE_GB,
+    BOXLITE_DEFAULT_DISK_SIZE_GB,
+    'BOXLITE_DISK_SIZE_GB',
+    SANDBOX_DISK_SIZE_GB_MIN,
+    SANDBOX_DISK_SIZE_GB_MAX,
+    errors,
+  );
+  const gitCloneTimeoutMs = parseStrictBoundedInteger(
+    env.BOXLITE_GIT_CLONE_TIMEOUT_MS,
+    BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS,
+    'BOXLITE_GIT_CLONE_TIMEOUT_MS',
+    BOXLITE_GIT_CLONE_TIMEOUT_MS_MIN,
+    BOXLITE_GIT_CLONE_TIMEOUT_MS_MAX,
+    errors,
+  );
   const location = parseLocation(env.BOXLITE_PROVIDER_LOCATION, errors);
   const sandboxMode = parseSandboxMode(env.BOXLITE_SANDBOX_MODE, errors);
   const clientMode = parseClientMode(env.BOXLITE_CLIENT_MODE, errors);
@@ -134,7 +174,11 @@ export function readBoxLiteProviderConfig(
       ? BOXLITE_DEFAULT_PATH_PREFIX
       : env.BOXLITE_PATH_PREFIX.trim().replace(/^\/+|\/+$/g, '');
   const terminalMode = parseTerminalMode(env.BOXLITE_TERMINAL_MODE, errors);
-  const capabilities = parseCapabilities(env.BOXLITE_CAPABILITIES, errors);
+  const capabilities = resolveProtocolCapabilities(
+    parseCapabilities(env.BOXLITE_CAPABILITIES, errors),
+    protocolMode,
+    errors,
+  );
   const workspacePath =
     nonEmpty(env.BOXLITE_WORKSPACE_PATH) ?? BOXLITE_DEFAULT_WORKSPACE_PATH;
   const sandboxIdPrefix =
@@ -179,6 +223,8 @@ export function readBoxLiteProviderConfig(
       protocolMode,
       pathPrefix,
       terminalMode,
+      diskSizeGb,
+      gitCloneTimeoutMs,
       timeoutMs,
     },
   };
@@ -193,6 +239,30 @@ export function requireBoxLiteProviderConfig(
     throw new Error(result.reason);
   }
   throw new Error(`Invalid BoxLite provider configuration: ${result.errors.join('; ')}`);
+}
+
+/**
+ * Resolve capacity without consulting mutable process state:
+ * managed environment resource > validated deployment config > product default.
+ * The final two levels are already collapsed into config.diskSizeGb by the
+ * configuration reader.
+ */
+export function resolveBoxLiteDiskSizeGb(args: {
+  readonly config: Pick<BoxLiteProviderConfig, 'diskSizeGb'>;
+  readonly resources?: SandboxResourceSnapshot | null;
+}): number {
+  const resources = snapshotSandboxResources(args.resources);
+  return resources?.diskSizeGb ?? args.config.diskSizeGb;
+}
+
+export function resolveBoxLiteResourceSnapshot(args: {
+  readonly config: Pick<BoxLiteProviderConfig, 'diskSizeGb'>;
+  readonly resources?: SandboxResourceSnapshot | null;
+}): SandboxResourceSnapshot {
+  return resolveSandboxResources({
+    explicit: args.resources,
+    fallback: { diskSizeGb: args.config.diskSizeGb },
+  })!;
 }
 
 export function resolveBoxLiteImage(args: {
@@ -464,6 +534,26 @@ function parseCapabilities(
   return out;
 }
 
+function resolveProtocolCapabilities(
+  declared: readonly SandboxProviderCapability[],
+  protocolMode: BoxLiteProtocolMode,
+  errors: string[],
+): readonly SandboxProviderCapability[] {
+  if (protocolMode === 'native') {
+    return declared.includes(SANDBOX_DISK_SIZE_CAPABILITY)
+      ? declared
+      : [...declared, SANDBOX_DISK_SIZE_CAPABILITY];
+  }
+  if (declared.includes(SANDBOX_DISK_SIZE_CAPABILITY)) {
+    errors.push(
+      'BOXLITE_PROTOCOL_MODE=cap-rest cannot advertise resource.disk-size-gb',
+    );
+  }
+  return declared.filter(
+    (capability) => capability !== SANDBOX_DISK_SIZE_CAPABILITY,
+  );
+}
+
 function validateCapabilityCombinations(
   capabilities: readonly SandboxProviderCapability[],
   terminalMode: BoxLiteTerminalMode,
@@ -573,6 +663,36 @@ function parsePositiveInteger(
   const parsed = parseInteger(raw, fallback, label, errors);
   if (parsed <= 0) {
     errors.push(`${label} must be a positive integer, received: ${raw}`);
+    return fallback;
+  }
+  return parsed;
+}
+
+function parseStrictBoundedInteger(
+  raw: string | undefined,
+  fallback: number,
+  label: string,
+  minimum: number,
+  maximum: number,
+  errors: string[],
+): number {
+  const value = raw?.trim();
+  if (!value) return fallback;
+  if (!/^[0-9]+$/u.test(value)) {
+    errors.push(
+      `${label} must be a base-10 integer from ${minimum} to ${maximum}, received: ${raw}`,
+    );
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed < minimum ||
+    parsed > maximum
+  ) {
+    errors.push(
+      `${label} must be an integer from ${minimum} to ${maximum}, received: ${raw}`,
+    );
     return fallback;
   }
   return parsed;

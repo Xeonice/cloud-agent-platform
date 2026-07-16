@@ -22,6 +22,7 @@
  * trusted verbatim.
  */
 import { useSyncExternalStore } from "react";
+import { GitBranchNameSchema, TaskResponseSchema } from "@cap/contracts";
 import type {
   ClaudeCredential,
   CodexCredential,
@@ -43,8 +44,8 @@ export interface ImportedRepo {
   name: string;
   /** Canonical `owner/name` slug, the de-duplication key. */
   fullName: string;
-  /** GitHub default branch captured at import time. */
-  defaultBranch: string;
+  /** Verified forge default branch, or null for a legacy unverified import. */
+  defaultBranch: string | null;
   /** GitHub description, when one was reported. */
   description?: string | null;
 }
@@ -74,6 +75,10 @@ export interface PersistedState {
   importedRepos: ImportedRepo[];
   /** The currently selected/default repo id, or null. */
   selectedRepo: string | null;
+  /** Last explicit task branch selected by this client; null means omitted. */
+  selectedBranch: string | null;
+  /** Most recently committed task id, retained across interrupted navigation. */
+  latestRunId: string | null;
   /** The editable account-settings draft. */
   settings: SettingsDraft;
   /** The Codex execution-credential draft (never holds a plaintext key). */
@@ -87,6 +92,8 @@ export const DEFAULT_STATE: PersistedState = {
   githubConnected: false,
   importedRepos: [],
   selectedRepo: null,
+  selectedBranch: null,
+  latestRunId: null,
   settings: {
     defaultRepoId: null,
     defaultSandboxEnvironmentId: null,
@@ -160,8 +167,9 @@ export function normalizeState(raw: unknown): PersistedState {
         id,
         name,
         fullName,
-        defaultBranch:
-          typeof e.defaultBranch === "string" ? e.defaultBranch : "main",
+        defaultBranch: GitBranchNameSchema.safeParse(e.defaultBranch).success
+          ? (e.defaultBranch as string)
+          : null,
         description:
           typeof e.description === "string" ? e.description : null,
       });
@@ -173,6 +181,14 @@ export function normalizeState(raw: unknown): PersistedState {
     typeof r.selectedRepo === "string" ? r.selectedRepo : null;
   const selectedRepo =
     selectedRaw && seen.has(selectedRaw) ? selectedRaw : null;
+  const selectedBranchResult = GitBranchNameSchema.safeParse(r.selectedBranch);
+  const selectedBranch = selectedBranchResult.success
+    ? selectedBranchResult.data
+    : null;
+  const latestRunIdResult = TaskResponseSchema.shape.id.safeParse(r.latestRunId);
+  const latestRunId = latestRunIdResult.success
+    ? latestRunIdResult.data
+    : null;
 
   const settingsRaw =
     typeof r.settings === "object" && r.settings !== null
@@ -215,6 +231,8 @@ export function normalizeState(raw: unknown): PersistedState {
     githubConnected: r.githubConnected === true,
     importedRepos,
     selectedRepo,
+    selectedBranch,
+    latestRunId,
     settings: {
       defaultRepoId: settingsDefaultRepoId,
       defaultSandboxEnvironmentId: settingsDefaultSandboxEnvironmentId,

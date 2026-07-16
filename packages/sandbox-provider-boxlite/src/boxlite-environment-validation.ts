@@ -1,6 +1,11 @@
 import type {
   SandboxPreflightProbeResult,
   SandboxResolvedEnvironmentMetadata,
+  SandboxResourceSnapshot,
+} from '@cap/sandbox-core';
+import {
+  SandboxProvisioningStageError,
+  snapshotSandboxResources,
 } from '@cap/sandbox-core';
 import type { BoxLiteClient } from './boxlite-client.js';
 
@@ -12,6 +17,7 @@ export interface BoxLiteEnvironmentValidationResult {
   readonly resolvedDigest?: string;
   readonly resolvedChecksum?: string;
   readonly probes: readonly SandboxPreflightProbeResult[];
+  readonly resourceSnapshot?: SandboxResourceSnapshot;
   readonly error?: string;
 }
 
@@ -27,6 +33,9 @@ export async function validateBoxLiteEnvironment(args: {
   const sandboxId = `probe-${taskId}`;
   const probes: SandboxPreflightProbeResult[] = [];
   const sourceKind = args.environment.sourceKind;
+  const resourceSnapshot = snapshotSandboxResources(
+    args.environment.resources,
+  );
   let cleanupSandboxId = sandboxId;
   let resolvedIdentity:
     | { readonly locator: string; readonly digest: string }
@@ -40,10 +49,12 @@ export async function validateBoxLiteEnvironment(args: {
       taskId,
       sandboxId,
       image,
+      diskSizeGb: resourceSnapshot?.diskSizeGb,
       metadata: {
         provider: 'boxlite',
         sandboxEnvironmentId: args.environment.environmentId ?? args.environment.id,
         sandboxEnvironmentSourceKind: args.environment.sourceKind,
+        resources: resourceSnapshot,
       },
     });
     cleanupSandboxId = sandbox.id;
@@ -52,6 +63,21 @@ export async function validateBoxLiteEnvironment(args: {
       ok: true,
       output: sandbox.image ?? image,
     });
+
+    if (resourceSnapshot?.diskSizeGb !== undefined) {
+      const capacityProbe = await probeBoxLiteDiskCapacity({
+        client: args.client,
+        sandboxId: sandbox.id,
+        diskSizeGb: resourceSnapshot.diskSizeGb,
+        cwd: args.workspacePath,
+      });
+      probes.push(capacityProbe);
+      if (!capacityProbe.ok) {
+        throw new Error(
+          `BoxLite environment disk capacity probe failed for ${resourceSnapshot.diskSizeGb} GiB`,
+        );
+      }
+    }
 
     if (args.client.startExecution) {
       await args.client.startExecution({
@@ -105,6 +131,7 @@ export async function validateBoxLiteEnvironment(args: {
       resolvedLocator: resolvedIdentity.locator,
       resolvedDigest: resolvedIdentity.digest,
       resolvedChecksum: args.environment.checksum,
+      resourceSnapshot,
       probes,
     };
   } catch (err) {
@@ -121,6 +148,7 @@ export async function validateBoxLiteEnvironment(args: {
       resolvedLocator: resolvedIdentity?.locator,
       resolvedDigest: resolvedIdentity?.digest,
       resolvedChecksum: args.environment.checksum,
+      resourceSnapshot,
       probes,
       error: message,
     };
@@ -136,6 +164,36 @@ export async function validateBoxLiteEnvironment(args: {
     }
   }
   return outcome;
+}
+
+export async function probeBoxLiteDiskCapacity(args: {
+  readonly client: BoxLiteClient;
+  readonly sandboxId: string;
+  readonly diskSizeGb: number;
+  readonly cwd?: string;
+}): Promise<SandboxPreflightProbeResult> {
+  const minimumKiB = Math.floor(args.diskSizeGb * 1024 * 1024 * 0.9);
+  const command =
+    `df -Pk / | awk -v minimum=${minimumKiB} ` +
+    "'NR == 2 { exit ($2 >= minimum ? 0 : 1) } END { if (NR < 2) exit 1 }'";
+  let result: Awaited<ReturnType<BoxLiteClient['exec']>>;
+  try {
+    result = await args.client.exec({
+      sandboxId: args.sandboxId,
+      command,
+      cwd: args.cwd,
+    });
+  } catch {
+    // The client error may carry a native endpoint or command response. Expose
+    // only the provider-neutral readiness stage to orchestration.
+    throw new SandboxProvisioningStageError('readiness');
+  }
+  return {
+    name: 'disk-capacity',
+    command,
+    ok: result.exitCode === 0,
+    output: result.output,
+  };
 }
 
 export interface BoxLiteEnvironmentValidationCommand {

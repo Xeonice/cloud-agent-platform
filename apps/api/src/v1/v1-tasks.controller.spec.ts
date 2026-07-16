@@ -181,7 +181,7 @@ function preparedTask(
 // Create — delegation + scope gate (3.1 / 3.4)
 // ---------------------------------------------------------------------------
 
-test('POST /v1/tasks delegates to TasksService.createTaskRow + admitCreatedTask (one admission path)', async () => {
+test('POST /v1/tasks delegates to TasksService.acceptPreparedTask + admitCreatedTask (one admission path)', async () => {
   const rowCalls: Array<{ repoId: string; body: unknown }> = [];
   const admitCalls: Array<{ taskId: string; userId?: string }> = [];
   const tasksService = {
@@ -195,7 +195,7 @@ test('POST /v1/tasks delegates to TasksService.createTaskRow + admitCreatedTask 
     ) {
       return preparedTask(repoId, body, mode, userId);
     },
-    async createTaskRow(prepared: PreparedTaskCreate) {
+    async acceptPreparedTask(prepared: PreparedTaskCreate) {
       rowCalls.push({ repoId: prepared.repoId, body: prepared.body });
       return makeTaskRow(1, new Date());
     },
@@ -216,7 +216,7 @@ test('POST /v1/tasks delegates to TasksService.createTaskRow + admitCreatedTask 
     undefined,
   );
 
-  assert.equal(rowCalls.length, 1, 'exactly one row create via createTaskRow');
+  assert.equal(rowCalls.length, 1, 'exactly one canonical acceptance write');
   assert.equal(rowCalls[0].repoId, 'repo-1', 'repoId comes from the body');
   assert.ok(
     !(rowCalls[0].body as { repoId?: string }).repoId,
@@ -228,6 +228,73 @@ test('POST /v1/tasks delegates to TasksService.createTaskRow + admitCreatedTask 
     'acct-4242',
     'admission attributes to the session account id (users.id)',
   );
+});
+
+test('an exact replay returns the current Task without current preparation or admission work', async () => {
+  const currentTask = {
+    ...makeTaskRow(1, new Date('2026-07-15T00:00:00.000Z')),
+    status: 'running',
+  } as TaskResponse;
+  let taskReads = 0;
+  let preparations = 0;
+  let acceptanceWrites = 0;
+  let postCommitAdmissions = 0;
+  let commits = 0;
+  const tasksService = {
+    async findById(taskId: string) {
+      taskReads += 1;
+      assert.equal(taskId, currentTask.id);
+      return currentTask;
+    },
+    async prepareTaskCreate() {
+      preparations += 1;
+      throw new Error('an exact replay must not run current preparation');
+    },
+    async acceptPreparedTask() {
+      acceptanceWrites += 1;
+      throw new Error('an exact replay must not write another acceptance');
+    },
+    async admitCreatedTask() {
+      postCommitAdmissions += 1;
+      throw new Error('an exact replay must not wake or run admission');
+    },
+  } as unknown as TasksService;
+  const idempotency = {
+    async lookup(args: {
+      loadTask: (taskId: string) => Promise<TaskResponse>;
+    }) {
+      return {
+        kind: 'replay' as const,
+        requestHash: 'persisted-request-hash',
+        task: await args.loadTask(currentTask.id),
+      };
+    },
+    async commit() {
+      commits += 1;
+      throw new Error('an exact replay must not open a write transaction');
+    },
+    async waitForWinner() {
+      throw new Error('an already committed replay does not need race polling');
+    },
+  } as unknown as IdempotencyService;
+  const controller = new V1TasksController(
+    tasksService,
+    {} as PrismaService,
+    idempotency,
+  );
+
+  const response = await controller.create(
+    { repoId: currentTask.repoId, prompt: currentTask.prompt } as never,
+    reqWith(WRITE_KEY),
+    'already-committed-key',
+  );
+
+  assert.equal(response, currentTask, 'the replay returns the current canonical projection');
+  assert.equal(taskReads, 1, 'the current Task is loaded exactly once');
+  assert.equal(preparations, 0, 'catalog/provider preparation is skipped');
+  assert.equal(acceptanceWrites, 0, 'no second Task or admission work is written');
+  assert.equal(postCommitAdmissions, 0, 'no wake or provider admission is restarted');
+  assert.equal(commits, 0, 'no idempotency write transaction is opened');
 });
 
 test('POST /v1/tasks by a LOCAL account attributes to its account id (not undefined)', async () => {
@@ -244,7 +311,7 @@ test('POST /v1/tasks by a LOCAL account attributes to its account id (not undefi
     ) {
       return preparedTask(repoId, body, mode, userId);
     },
-    async createTaskRow() {
+    async acceptPreparedTask() {
       return makeTaskRow(1, new Date());
     },
     async admitCreatedTask(taskId: string, _body: unknown, userId?: string) {
@@ -283,7 +350,7 @@ test('a tasks:read-only api-key is 403 on POST /v1/tasks and admits nothing', as
     ) {
       return preparedTask(repoId, body, mode, userId);
     },
-    async createTaskRow() {
+    async acceptPreparedTask() {
       admitted = true;
       return makeTaskRow(1, new Date());
     },
@@ -322,7 +389,7 @@ test('an api-key WITH tasks:write passes POST /v1/tasks', async () => {
     ) {
       return preparedTask(repoId, body, mode, userId);
     },
-    async createTaskRow() {
+    async acceptPreparedTask() {
       rowCreated = true;
       return makeTaskRow(1, new Date());
     },
@@ -372,7 +439,7 @@ test('V1 explicit-model create pins the prepared digest outside the idempotency 
         executionEnvironmentSnapshot: MODEL_SNAPSHOT,
       };
     },
-    async createTaskRow(prepared: PreparedTaskCreate, tx: unknown) {
+    async acceptPreparedTask(prepared: PreparedTaskCreate, tx: unknown) {
       phases.push('write');
       assert.equal(inTransaction, true);
       assert.equal(tx, transactionClient);
@@ -456,7 +523,7 @@ test('V1 immutable-identity preflight failure creates and admits nothing', async
       async prepareTaskCreate() {
         throw error;
       },
-      async createTaskRow() {
+      async acceptPreparedTask() {
         commitCalls += 1;
         return makeTaskRow(1, new Date());
       },
@@ -554,11 +621,13 @@ test('GET /v1/tasks projects persisted Codex and Claude auth failures', async ()
     reqWith(SESSION_PRINCIPAL),
   );
 
-  assert.equal(page.items[0].failure?.runtime, 'codex');
   assert.equal(page.items[0].failure?.code, 'runtime_auth_expired');
+  assert.ok(page.items[0].failure && 'runtime' in page.items[0].failure);
+  assert.equal(page.items[0].failure.runtime, 'codex');
   assert.equal(page.items[0].failure?.action, 'reconnect_runtime');
-  assert.equal(page.items[1].failure?.runtime, 'claude-code');
   assert.equal(page.items[1].failure?.code, 'runtime_auth_rejected');
+  assert.ok(page.items[1].failure && 'runtime' in page.items[1].failure);
+  assert.equal(page.items[1].failure.runtime, 'claude-code');
   assert.equal(page.items[1].failure?.exitCode, 1);
 });
 

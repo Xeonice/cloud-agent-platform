@@ -8,6 +8,10 @@ and the rest of the required provider configuration are present and valid. In
 absent. In explicit `CAP_SANDBOX_PROVIDER=boxlite`, invalid or unreachable
 BoxLite configuration fails closed instead of falling back to AIO.
 
+For release rollout, aggregate host-capacity review, native disk readiness, and
+the durable-admission capability gate, follow
+[`deploy/TASK_ADMISSION_V2_CUTOVER.md`](../../deploy/TASK_ADMISSION_V2_CUTOVER.md).
+
 ## Local startup
 
 `make up` is platform-aware: macOS resolves `CAP_SANDBOX_PROVIDER=auto` to the
@@ -80,7 +84,31 @@ Use `make up-aio`, `make up-boxlite`, or `make up-cp` to force a mode.
   requests use `/v1/<prefix>/...`.
 - `BOXLITE_TERMINAL_MODE`: `none` or `pty`. Terminal capabilities require
   `pty`; streaming exec alone must not advertise live terminal support.
-- `BOXLITE_TIMEOUT_MS`: REST timeout in ms, default `30000`.
+- `BOXLITE_DISK_SIZE_GB`: deployment fallback disk capacity for BoxLite
+  sandboxes. It must be a base-10 integer from `1` through `1024`. The CAP
+  product default is `5` GiB, a capacity verified to complete the observed
+  large-repository incident checkout while leaving useful headroom.
+- `BOXLITE_GIT_CLONE_TIMEOUT_MS`: independent workspace Git deadline in
+  milliseconds. It must be a base-10 integer from `1000` through `86400000`;
+  the default is `900000` (15 minutes).
+- `BOXLITE_TIMEOUT_MS`: short REST/native control-plane request timeout in
+  milliseconds, default `30000`. It does not bound clone, checkout, submodule,
+  or push work.
+
+### Disk and timeout precedence
+
+Disk capacity is resolved once for each validation probe or task sandbox in
+this order:
+
+1. the selected managed environment's explicit `resources.diskSizeGb`;
+2. the validated deployment value from `BOXLITE_DISK_SIZE_GB`;
+3. the CAP BoxLite product default of `5` GiB.
+
+Legacy managed environments without an explicit resource therefore receive a
+known CAP fallback rather than the BoxLite SDK's implicit default. The resolved
+value is immutable for the run. `BOXLITE_GIT_CLONE_TIMEOUT_MS` is a separate
+workspace-operation policy; changing `BOXLITE_TIMEOUT_MS` only changes short
+control-plane calls.
 
 ## Capabilities
 
@@ -156,3 +184,31 @@ pnpm --filter @cap/sandbox-provider-boxlite test
 
 To live-test a rootfs source instead, replace `BOXLITE_IMAGE` with an absolute
 `BOXLITE_ROOTFS_PATH` and keep `BOXLITE_PROTOCOL_MODE=native`.
+
+The API integration suite also contains a destructive, opt-in generated
+private-Git story. It must target a disposable loopback BoxLite daemon in
+`native`/`local` mode; invalid or incomplete configuration fails instead of
+skipping. The story snapshots existing boxes, requests the configured disk,
+cancels a controlled transfer, retries the same task, validates full history
+and exact-origin submodule credentials, and removes only the boxes it observed
+creating:
+
+```sh
+BOXLITE_NATIVE_PRIVATE_GIT_E2E=1 \
+BOXLITE_NATIVE_PRIVATE_GIT_FIXTURE_HOST=host.boxlite.internal \
+BOXLITE_ENDPOINT=http://127.0.0.1:8100 \
+BOXLITE_API_TOKEN=... \
+BOXLITE_ROOTFS_PATH=/absolute/path/to/rootfs \
+BOXLITE_PROVIDER_LOCATION=local \
+BOXLITE_PROTOCOL_MODE=native \
+BOXLITE_DISK_SIZE_GB=5 \
+BOXLITE_TIMEOUT_MS=30000 \
+BOXLITE_GIT_CLONE_TIMEOUT_MS=900000 \
+BOXLITE_CAPABILITIES=command.exec,resource.disk-size-gb,workspace.archive.transfer,workspace.git.materialize \
+pnpm --filter @cap/api test:generated-private-git
+```
+
+`BOXLITE_NATIVE_PRIVATE_GIT_FIXTURE_HOST` is the loopback host address as
+resolved from inside the guest and defaults to `host.boxlite.internal`. The
+fixture servers listen on the host's `127.0.0.1` with ephemeral ports and are
+drained before the test exits.

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import Docker from 'dockerode';
 import { Injectable, Logger } from '@nestjs/common';
 import type {
+  SandboxEnvironmentResources,
   SandboxMetadata,
   SandboxEnvironmentSource,
   SandboxEnvironmentValidation,
@@ -15,6 +16,7 @@ import {
   AioSandboxContainerController,
   BoxLiteRestClient,
   readBoxLiteProviderConfig,
+  resolveConfiguredProviderProvisioningPolicyForFamily,
   sourceChecksum,
   sourceDigest,
   sourceReference,
@@ -37,6 +39,7 @@ export interface SandboxEnvironmentValidationTarget {
   readonly name: string;
   readonly source: SandboxEnvironmentSource;
   readonly providerFamily: SandboxEnvironmentProviderFamily;
+  readonly resources?: SandboxEnvironmentResources | null;
   /** Runtime ids whose concrete CLI artifacts must be verified in this image. */
   readonly runtimeIds?: readonly string[];
   /** @deprecated Single-runtime compatibility input. */
@@ -56,6 +59,7 @@ export interface SandboxEnvironmentValidationOutcome {
   readonly runtimeArtifactChecksums?: Readonly<Record<string, string>> | null;
   readonly cliArtifactChecksum?: string | null;
   readonly sandboxMetadata?: SandboxMetadata | null;
+  readonly resourceSnapshot?: SandboxEnvironmentResources | null;
   readonly probes?: readonly SandboxPreflightProbeResult[];
   readonly error?: string | null;
 }
@@ -121,7 +125,27 @@ export class DefaultSandboxEnvironmentValidationRunner
   async validate(
     target: SandboxEnvironmentValidationTarget,
   ): Promise<SandboxEnvironmentValidationOutcome> {
-    const environment = toResolvedEnvironment(target);
+    let provisioningPolicy;
+    try {
+      provisioningPolicy =
+        resolveConfiguredProviderProvisioningPolicyForFamily({
+          providerFamily: target.providerFamily,
+          resources: target.resources,
+        });
+    } catch (error) {
+      return failedOutcome(
+        target,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    target = Object.freeze({
+      ...target,
+      resources: provisioningPolicy.resources ?? Object.freeze({}),
+    });
+    const environment = toResolvedEnvironment(
+      target,
+      provisioningPolicy.resources,
+    );
     const runtimeIds = validationRuntimeIds(target);
     if (target.providerFamily === 'aio') {
       const controller = new AioSandboxContainerController({
@@ -183,6 +207,7 @@ function normalizeProviderOutcome(
     readonly resolvedLocator?: string;
     readonly resolvedDigest?: string;
     readonly resolvedChecksum?: string;
+    readonly resourceSnapshot?: SandboxEnvironmentResources;
     readonly probes?: readonly SandboxPreflightProbeResult[];
     readonly error?: string;
   },
@@ -211,6 +236,7 @@ function normalizeProviderOutcome(
         runtimeArtifactChecksums,
         cliArtifactChecksum,
         sandboxMetadata,
+        resourceSnapshot: result.resourceSnapshot ?? target.resources ?? null,
         probes: result.probes,
         error: null,
       };
@@ -218,6 +244,7 @@ function normalizeProviderOutcome(
       const message = `sandbox metadata validation failed: ${error instanceof Error ? error.message : String(error)}`;
       return {
         ...failedOutcome(target, message),
+        resourceSnapshot: result.resourceSnapshot ?? target.resources ?? null,
         resolvedLocator: result.resolvedLocator ?? null,
         resolvedDigest: result.resolvedDigest ?? sourceDigest(target.source) ?? null,
         resolvedChecksum: result.resolvedChecksum ?? sourceChecksum(target.source) ?? null,
@@ -239,6 +266,7 @@ function normalizeProviderOutcome(
     runtimeArtifactChecksums: null,
     cliArtifactChecksum: null,
     sandboxMetadata: null,
+    resourceSnapshot: result.resourceSnapshot ?? target.resources ?? null,
     probes: result.probes,
     error: result.error ?? null,
   };
@@ -313,6 +341,7 @@ function requireRuntimeArtifactChecksum(
 
 function toResolvedEnvironment(
   target: SandboxEnvironmentValidationTarget,
+  resources?: SandboxEnvironmentResources,
 ): SandboxResolvedEnvironmentMetadata {
   return {
     id: target.id,
@@ -328,6 +357,7 @@ function toResolvedEnvironment(
     digest: sourceDigest(target.source),
     checksum: sourceChecksum(target.source),
     contractVersion: target.contractVersion ?? undefined,
+    resources,
   };
 }
 
@@ -346,6 +376,7 @@ function failedOutcome(
     runtimeArtifactChecksums: null,
     cliArtifactChecksum: null,
     sandboxMetadata: null,
+    resourceSnapshot: target.resources ?? null,
     probes: [{ name: 'validation-error', ok: false, output: error }],
     error,
   };

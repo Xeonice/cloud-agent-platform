@@ -16,19 +16,20 @@ import { PrismaService } from '../prisma/prisma.service';
  *   - The dedup record is the `IdempotencyKey` row, scoped per principal
  *     (`@@unique([scopeUserId, key])`) so two principals may reuse the same key
  *     string without colliding while the task POOL stays shared.
- *   - The row is inserted in the SAME transaction as the `task.create` admission
- *     callback, so a raced concurrent retry that loses the unique-constraint race
- *     (`P2002`) rolls its just-created task back and resolves to the WINNER's
- *     task — a raced retry can never leave two committed tasks.
+ *   - The row is inserted in the SAME transaction as the canonical acceptance
+ *     callback. With durable admission enabled that callback writes the Task,
+ *     its unique admission work item, and creation audit, so a concurrent retry
+ *     that loses the unique-constraint race (`P2002`) rolls all of its staged
+ *     acceptance state back and resolves to the WINNER's task.
  *   - `requestHash` is the SHA-256 of the canonicalized request body; a reuse of
  *     the same key with a DIFFERENT body is a client mistake and is rejected 409
  *     (never silently aliased to the first task).
  *   - Records expire 24h after creation; an expired row no longer dedups.
  *
- * The service is body-shape agnostic: the controller passes the parsed body and
- * an `admit` callback that runs the SINGLE `TasksService.create` admission path
- * (D1 — no second admission path), so this layer only owns the dedup, never the
- * task semantics.
+ * The service is body-shape agnostic: the controller prepares the request before
+ * entering this short transaction and supplies the SINGLE canonical acceptance
+ * writer. This layer owns only deduplication and transaction composition, never
+ * task-domain preparation or provisioning semantics.
  */
 @Injectable()
 export class IdempotencyService {
@@ -77,9 +78,11 @@ export class IdempotencyService {
   }
 
   /**
-   * Short write phase. `create` must be a pure Task-row write over already
-   * prepared local data. The transaction rechecks the key so two requests that
-   * both preflight after an initial miss still commit at most one Task.
+   * Short write phase. `create` must only persist already-prepared acceptance
+   * state on the supplied transaction client; it must not perform catalog,
+   * provider, workspace, or runtime work. The transaction rechecks the key so
+   * two requests that both preflight after an initial miss still commit at most
+   * one Task and one admission work item.
    */
   async commit(args: {
     key: string | null;
@@ -91,7 +94,12 @@ export class IdempotencyService {
     const { key, scopeUserId, requestHash, create, loadTask } = args;
 
     if (key === null || key.length === 0) {
-      return { task: await create(this.prisma), created: true };
+      // Even without a dedup key, the canonical acceptance writer may need to
+      // commit Task + admission work + creation audit atomically.
+      const task = await this.prisma.$transaction((tx) =>
+        create(tx as unknown as TaskCreator),
+      );
+      return { task, created: true };
     }
 
     const now = new Date();
@@ -139,15 +147,20 @@ export class IdempotencyService {
       }
       return { task: outcome.task, created: true };
     } catch (err) {
-      if (isUniqueViolation(err)) {
-        const winner = await this.waitForWinner({
-          key,
-          scopeUserId,
-          requestHash,
-          loadTask,
-        });
-        if (winner) return { task: winner, created: false };
-      }
+      // The winner may commit while this request is inside its acceptance
+      // transaction even when the loser fails before reaching the unique-key
+      // insert (for example a final model gate or transient acceptance write).
+      // Resolve any now-visible winner before surfacing the local error so an
+      // exact retry still returns the canonical Task and a mismatched body still
+      // receives the required 409. `waitForWinner` is side-effect-free and
+      // bounded; if no winner exists, preserve the original failure exactly.
+      const winner = await this.waitForWinner({
+        key,
+        scopeUserId,
+        requestHash,
+        loadTask,
+      });
+      if (winner) return { task: winner, created: false };
       throw err;
     }
   }
@@ -206,20 +219,20 @@ export class IdempotencyService {
 }
 
 /**
- * The minimal Prisma surface the `admit` callback needs to create a task row on
- * the transaction-bound client. `TasksService.create` uses `this.prisma.task`/
- * `this.prisma.repo`; binding it to the transaction client requires only that the
- * client expose the same shape — captured here so the callback type does not
- * leak the whole `PrismaService`.
+ * The minimal transaction-bound Prisma surface needed by the canonical
+ * acceptance writer. Keeping this structural type narrow prevents the callback
+ * from accidentally reaching non-transactional dependencies.
  */
-export type TaskCreator = Pick<PrismaService, 'task'>;
+export type TaskCreator = Pick<
+  PrismaService,
+  'task' | 'taskAdmissionWork' | 'auditEvent'
+>;
 
 /**
  * Result of an idempotent create. `created` is `true` when the task was NEWLY
- * persisted by this call (so the caller runs the post-row admission — audit +
- * guardrails provision — AFTER the dedup transaction commits) and `false` on a
- * dedup hit (the task already exists and was already admitted by the first call,
- * so it must NOT be re-admitted).
+ * persisted by this call (so the caller may issue the best-effort post-commit
+ * worker wake) and `false` on a dedup hit (the task and its durable work already
+ * exist, so current admission/provisioning must NOT be restarted).
  */
 export interface IdempotentCreateResult {
   task: TaskResponse;
@@ -246,16 +259,6 @@ function assertMatchingRequestHash(
       'Idempotency-Key reused with a different request body',
     );
   }
-}
-
-/** True for a Prisma unique-constraint violation (`P2002`). */
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'code' in err &&
-    (err as { code?: unknown }).code === 'P2002'
-  );
 }
 
 function delay(ms: number): Promise<void> {

@@ -10,3 +10,4 @@ export * from './boxlite-terminal.js';
 export * from './boxlite-terminal-transport.js';
 export * from './boxlite-types.js';
 export * from './boxlite-workspace.js';
+export * from './boxlite-workspace-security.js';

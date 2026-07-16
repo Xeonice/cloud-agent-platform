@@ -47,6 +47,7 @@ export function snapshotFingerprintInput(
     | 'validationContractVersion'
     | 'provider'
     | 'providerFamily'
+    | 'resources'
     | 'source'
     | 'immutableIdentity'
     | 'sandboxMetadataChecksum'
@@ -61,6 +62,9 @@ export function snapshotFingerprintInput(
     validationContractVersion: snapshot.validationContractVersion,
     provider: snapshot.provider,
     providerFamily: snapshot.providerFamily,
+    ...(snapshot.resources === undefined
+      ? {}
+      : { resources: snapshot.resources }),
     source: snapshot.source,
     immutableIdentity: snapshot.immutableIdentity,
     sandboxMetadataChecksum: snapshot.sandboxMetadataChecksum,

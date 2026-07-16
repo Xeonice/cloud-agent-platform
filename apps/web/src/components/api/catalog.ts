@@ -102,6 +102,10 @@ export interface ApiEndpoint {
   pathTemplate: string;
   /** A short human title shown in the rail / request bar (verbatim copy). */
   title: string;
+  /** Registry-derived operation guidance shown above the request editor. */
+  description: string;
+  /** Registry-derived success response guidance shown with the operation copy. */
+  responseDescription: string;
   /** The path params (in order) the template declares; empty for static paths. */
   pathParams: readonly ApiPathParam[];
   /** Default query params offered on the Params tab; empty when none apply. */
@@ -198,7 +202,6 @@ const PAGE_QUERY_HINTS = {
 const CREATE_TASK_SAMPLE = JSON.stringify(
   {
     repoId: REPO_ID,
-    branch: "main",
     runtime: "codex",
     prompt: "为 /metrics 增加 docker-stats 采样",
   },
@@ -439,6 +442,8 @@ export const DATA_API_CATALOG: readonly ApiEndpoint[] = PUBLIC_V1_OPERATIONS.map
       method: toApiMethod(operation.method),
       pathTemplate: toCatalogPath(operation.path),
       title: overlay.title,
+      description: operation.description,
+      responseDescription: operation.responseDescription,
       pathParams: projectCanonicalFields<ApiPathParam>(
         operation,
         "params",
@@ -474,6 +479,8 @@ const DOCUMENTATION_CATALOG: readonly ApiEndpoint[] = [
     method: "GET",
     pathTemplate: "/v1/openapi.json",
     title: "OpenAPI 规范",
+    description: "获取由 Public V1 共享操作清单生成的 OpenAPI 3.1 规范。",
+    responseDescription: "OpenAPI 3.1 JSON 文档。",
     pathParams: [],
     queryParams: [],
     headerParams: [],
@@ -493,6 +500,8 @@ const DOCUMENTATION_CATALOG: readonly ApiEndpoint[] = [
     method: "GET",
     pathTemplate: "/v1/docs",
     title: "Swagger UI",
+    description: "打开基于同一份 Public V1 OpenAPI 规范生成的 Swagger UI。",
+    responseDescription: "Swagger UI HTML 页面。",
     pathParams: [],
     queryParams: [],
     headerParams: [],

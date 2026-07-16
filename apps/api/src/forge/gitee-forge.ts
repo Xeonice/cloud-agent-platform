@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { GitBranchNameSchema } from '@cap/contracts';
 import {
   basicAuthHeader,
   forgeFetch,
@@ -38,14 +39,6 @@ export class GiteeForge implements Forge {
 
   cloneAuthHeader(target: ForgeTarget): string {
     return basicAuthHeader('x-access-token', target.token);
-  }
-
-  async resolveBaseBranch(target: ForgeTarget): Promise<string> {
-    const { json } = await forgeFetch(
-      `${target.apiBaseUrl}/repos/${this.ownerRepo(target)}`,
-      { headers: this.headers(target.token) },
-    );
-    return (json as { default_branch: string }).default_branch;
   }
 
   async findExistingChangeRequest(
@@ -103,12 +96,14 @@ export class GiteeForge implements Forge {
       );
       const repos = (json as GiteeRepo[]) ?? [];
       for (const r of repos) {
+        const defaultBranch = GitBranchNameSchema.safeParse(r.default_branch);
+        if (!defaultBranch.success) continue;
         out.push({
           forge: 'gitee',
           fullPath: r.full_name,
           gitSource: r.html_url,
           visibility: r.private ? 'private' : 'public',
-          defaultBranch: r.default_branch,
+          defaultBranch: defaultBranch.data,
         });
       }
       if (repos.length < PER_PAGE) {

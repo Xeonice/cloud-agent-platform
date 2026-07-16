@@ -38,6 +38,8 @@ describe("normalizeState", () => {
         "githubConnected",
         "importedRepos",
         "selectedRepo",
+        "selectedBranch",
+        "latestRunId",
         "settings",
         "codexCredential",
         "claudeCredential",
@@ -74,6 +76,44 @@ describe("normalizeState", () => {
       selectedRepo: "r1",
     });
     expect(valid.selectedRepo).toBe("r1");
+  });
+
+  it("keeps only verified branch and task-id recovery values", () => {
+    const valid = normalizeState({
+      selectedBranch: "master",
+      latestRunId: "00000000-0000-4000-8000-000000000123",
+      importedRepos: [
+        { id: "legacy", name: "legacy", fullName: "o/legacy" },
+        {
+          id: "verified",
+          name: "verified",
+          fullName: "o/verified",
+          defaultBranch: "master",
+        },
+      ],
+    });
+    expect(valid.selectedBranch).toBe("master");
+    expect(valid.latestRunId).toBe("00000000-0000-4000-8000-000000000123");
+    expect(valid.importedRepos.map((repo) => repo.defaultBranch)).toEqual([
+      null,
+      "master",
+    ]);
+
+    const invalid = normalizeState({
+      selectedBranch: "--invalid",
+      latestRunId: "not-a-task-id",
+      importedRepos: [
+        {
+          id: "invalid",
+          name: "invalid",
+          fullName: "o/invalid",
+          defaultBranch: "bad branch",
+        },
+      ],
+    });
+    expect(invalid.selectedBranch).toBeNull();
+    expect(invalid.latestRunId).toBeNull();
+    expect(invalid.importedRepos[0]?.defaultBranch).toBeNull();
   });
 
   it("clamps an invalid retention to the 30-day default", () => {

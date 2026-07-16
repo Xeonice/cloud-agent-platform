@@ -8,13 +8,15 @@ import type {
   SelectedSandboxRun,
 } from '@cap/sandbox-core';
 import {
+  isSandboxLegacyDeliverWorkspaceArgs,
+} from '@cap/sandbox-core';
+import {
   AIO_SANDBOX_WORKSPACE_DIR,
   createAioHttpCommandExecutor,
   scrubAioExecSecrets,
 } from '@cap/sandbox-provider-aio';
 import {
   buildGitCloneCommand,
-  buildGitDeliveryCommands,
 } from '../workspace/git.js';
 
 interface WorkspaceExecResult {
@@ -134,67 +136,13 @@ export async function materializeSandboxGitWorkspace(
 export async function deliverSandboxGitWorkspaceChanges(
   args: DeliverSandboxGitWorkspaceArgs,
 ): Promise<SandboxDeliverWorkspaceResult> {
-  const commands = buildGitDeliveryCommands({
-    workspaceDir: args.workspaceDir,
-    authHeader: args.deliver.authHeader,
-    branch: args.deliver.branch,
-    commitMessage: args.deliver.commitMessage,
-  });
-  const executor = resolveWorkspaceExecutor(args);
-  const run = (command: string) =>
-    runWorkspaceCommand(executor, command, args.timeoutMs);
-
-  try {
-    const status = await run(commands.status);
-    if (status.exitCode !== 0) {
-      return {
-        hadChanges: false,
-        commitSha: null,
-        error: `git status exit ${status.exitCode}`,
-      };
-    }
-    if (status.output.trim().length === 0) {
-      return { hadChanges: false, commitSha: null, error: null };
-    }
-
-    const wrote = await run(commands.writeCommitMessage);
-    if (wrote.exitCode !== 0) {
-      return {
-        hadChanges: true,
-        commitSha: null,
-        error: 'failed to stage commit message',
-      };
-    }
-
-    const committed = await run(commands.commit);
-    if (committed.exitCode !== 0) {
-      return {
-        hadChanges: true,
-        commitSha: null,
-        error: scrubAioExecSecrets(committed.output).trim() || 'commit failed',
-      };
-    }
-
-    const sha = await run(commands.revParse);
-    const commitSha =
-      sha.exitCode === 0 ? sha.output.trim().split(/\s+/)[0] || null : null;
-
-    const pushed = await run(commands.push);
-    if (pushed.exitCode !== 0) {
-      return {
-        hadChanges: true,
-        commitSha,
-        error: scrubAioExecSecrets(pushed.output).trim() || 'push failed',
-      };
-    }
-    return { hadChanges: true, commitSha, error: null };
-  } catch (err) {
-    return {
-      hadChanges: false,
-      commitSha: null,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
+  return {
+    hadChanges: false,
+    commitSha: null,
+    error: isSandboxLegacyDeliverWorkspaceArgs(args.deliver)
+      ? 'Legacy raw-header Git delivery is disabled'
+      : 'Credentialed delivery requires the provider staged workspace adapter',
+  };
 }
 
 export async function runSandboxAioShellExec(

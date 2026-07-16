@@ -2,7 +2,31 @@ export interface SandboxCommandExecutionRequest {
   readonly command: string;
   readonly cwd?: string;
   readonly timeoutMs?: number;
+  /**
+   * Cooperative cancellation for adapters that can prove the guest process has
+   * stopped before resolving. A transport abort by itself is not that proof.
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * Ordinary execution is command-only. Provider setup needing structured
+   * non-secret input must define a narrower allowlisted request instead of a
+   * generic env/stdin/argv escape hatch.
+   */
+  readonly env?: never;
+  readonly stdin?: never;
+  readonly argv?: never;
+  readonly authHeader?: never;
+  readonly credential?: never;
+  readonly secret?: never;
 }
+
+/**
+ * Workspace Git commands are stricter than general provider setup commands:
+ * credentials must already have become a temporary file path, so no generic
+ * environment/stdin/argv escape hatch is accepted at this boundary.
+ */
+export type SandboxWorkspaceCommandExecutionRequest =
+  SandboxCommandExecutionRequest;
 
 export interface SandboxCommandExecutionResult {
   readonly exitCode: number;
@@ -18,8 +42,18 @@ export interface SandboxCommandExecutor {
   ): Promise<SandboxCommandExecutionResult>;
 }
 
+export interface SandboxWorkspaceCommandExecutor {
+  exec(
+    request: SandboxWorkspaceCommandExecutionRequest,
+  ): Promise<SandboxCommandExecutionResult>;
+}
+
 export type SandboxCommandRunner = (
   request: SandboxCommandExecutionRequest,
+) => Promise<unknown>;
+
+export type SandboxWorkspaceCommandRunner = (
+  request: SandboxWorkspaceCommandExecutionRequest,
 ) => Promise<unknown>;
 
 export interface NormalizeSandboxCommandResultOptions {
@@ -30,6 +64,17 @@ export function createSandboxCommandExecutor(
   run: SandboxCommandRunner,
   options: NormalizeSandboxCommandResultOptions = {},
 ): SandboxCommandExecutor {
+  return {
+    async exec(request) {
+      return normalizeSandboxCommandResult(await run(request), options);
+    },
+  };
+}
+
+export function createSandboxWorkspaceCommandExecutor(
+  run: SandboxWorkspaceCommandRunner,
+  options: NormalizeSandboxCommandResultOptions = {},
+): SandboxWorkspaceCommandExecutor {
   return {
     async exec(request) {
       return normalizeSandboxCommandResult(await run(request), options);
