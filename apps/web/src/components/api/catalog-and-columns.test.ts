@@ -2,9 +2,9 @@
  * Minimal ground-truth test: "The API Playground page renders a catalog +
  * request/response columns" (add-api-playground requirement).
  *
- * The vitest environment is `node` (no DOM, no React render — established repo
- * convention). This test proves the structural requirement through the
- * pure-logic seams the page composes:
+ * The vitest environment is `node` (no DOM); a focused server render verifies
+ * registry guidance while the remaining assertions exercise the pure-logic
+ * seams the page composes:
  *
  *  1. The CATALOG exists and is non-empty — the rail has something to render.
  *  2. The catalog is grouped into DOMAIN GROUPS that the rail turns into
@@ -19,6 +19,8 @@
  *     `_app` shell server-side without crashing).
  */
 import { describe, it, expect } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
   PUBLIC_V1_OPERATIONS,
   type PublicV1OperationById,
@@ -35,6 +37,7 @@ import {
   findEndpoint,
   resolvePath,
 } from "@/components/api/catalog";
+import { ApiRequestPanel } from "@/components/api/api-request-panel";
 import {
   initialSelectedEndpoint,
   mapSendResult,
@@ -48,6 +51,54 @@ function operationById<Id extends PublicV1OperationId>(
   if (!operation) throw new Error(`Missing public operation fixture: ${id}`);
   return operation as PublicV1OperationById<Id>;
 }
+
+const AFFECTED_PROJECTION_OPERATION_IDS = [
+  "tasks.create",
+  "tasks.list",
+  "tasks.get",
+  "tasks.stop",
+  "repos.list",
+  "repos.get",
+] as const satisfies readonly PublicV1OperationId[];
+
+const CANONICAL_TASK_SAMPLE = {
+  id: "11111111-1111-4111-8111-111111111111",
+  repoId: "22222222-2222-4222-8222-222222222222",
+  prompt: "inspect the verified default branch",
+  status: "pending",
+  createdAt: "2026-07-15T01:00:00.000Z",
+  provisioning: {
+    state: "accepted",
+    stage: "accepted",
+    attempt: 0,
+    resolvedBranch: null,
+    updatedAt: "2026-07-15T01:00:01.000Z",
+  },
+};
+
+const CANONICAL_FAILURE_SAMPLE = {
+  ...CANONICAL_TASK_SAMPLE,
+  status: "failed",
+  provisioning: {
+    ...CANONICAL_TASK_SAMPLE.provisioning,
+    state: "failed",
+    stage: "workspace_transfer",
+  },
+  failure: {
+    code: "provisioning_ref_not_found",
+    message: "Verify the repository ref and retry.",
+    action: "verify_repository_ref",
+    occurredAt: "2026-07-15T01:02:00.000Z",
+  },
+};
+
+const CANONICAL_REPO_SAMPLE = {
+  id: CANONICAL_TASK_SAMPLE.repoId,
+  name: "zhiwen",
+  gitSource: "https://code.example.test/group/zhiwen.git",
+  createdAt: CANONICAL_TASK_SAMPLE.createdAt,
+  defaultBranch: "master",
+};
 
 // ── 1. Catalog is non-empty (the rail left column has rows to render) ──────
 
@@ -65,6 +116,8 @@ describe("Catalog column — catalog exists and is non-empty", () => {
       expect(["GET", "POST", "PATCH", "DELETE"]).toContain(entry.method);
       expect(entry.pathTemplate.startsWith("/")).toBe(true);
       expect(typeof entry.title).toBe("string");
+      expect(entry.description.trim().length).toBeGreaterThan(0);
+      expect(entry.responseDescription.trim().length).toBeGreaterThan(0);
       // Domain drives the rail grouping header
       expect(API_DOMAINS).toContain(entry.domain);
     }
@@ -112,6 +165,19 @@ describe("Request column — default-selected endpoint seeds the request panel",
     // Params the request panel binds to inputs
     expect(Array.isArray(endpoint.pathParams)).toBe(true);
     expect(Array.isArray(endpoint.queryParams)).toBe(true);
+  });
+
+  it("renders immediate-create, asynchronous provisioning, and polling guidance", () => {
+    const endpoint = findEndpoint("tasks.create")!;
+    const html = renderToStaticMarkup(
+      createElement(ApiRequestPanel, { endpoint, onSend: () => undefined }),
+    );
+
+    expect(html).toContain("data-api-operation-guidance");
+    expect(html).toContain("return as soon as that acceptance is committed");
+    expect(html).toContain("Provisioning continues asynchronously");
+    expect(html).toContain("poll `tasks.get`");
+    expect(html).toContain(endpoint.responseDescription);
   });
 
   it("resolvePath substitutes a path param for an endpoint that has one", () => {
@@ -162,6 +228,25 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
             };
       expect(endpoint!.mcpProjection, operation.id).toEqual(expectedMcp);
     }
+  });
+
+  it("projects exact descriptions for the six affected task/repo operations", () => {
+    for (const id of AFFECTED_PROJECTION_OPERATION_IDS) {
+      const operation = operationById(id);
+      const endpoint = findEndpoint(id);
+      expect(endpoint, id).toBeDefined();
+      expect(endpoint!.description, id).toBe(operation.description);
+      expect(endpoint!.responseDescription, id).toBe(
+        operation.responseDescription,
+      );
+    }
+
+    const create = findEndpoint("tasks.create")!;
+    expect(create.description).toContain(
+      "return as soon as that acceptance is committed",
+    );
+    expect(create.description).toContain("Provisioning continues asynchronously");
+    expect(create.description).toContain("poll `tasks.get`");
   });
 
   it("retains explicit mapped differences and the reasoned SSE exclusion", () => {
@@ -327,6 +412,68 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
       expect(typeof endpoint.sampleBody, endpoint.id).toBe("string");
       const parsed = bodySchema.safeParse(JSON.parse(endpoint.sampleBody!));
       expect(parsed.success, endpoint.id).toBe(true);
+    }
+  });
+
+  it("does not fabricate main when the create-task sample omits a branch", () => {
+    const create = findEndpoint("tasks.create")!;
+    const sample = JSON.parse(create.sampleBody!) as Record<string, unknown>;
+    expect(sample).not.toHaveProperty("branch");
+    expect(operationById("tasks.create").input.body.parse.safeParse(sample).success).toBe(
+      true,
+    );
+  });
+
+  it("parses canonical accepted/failure/repo samples and maps their exact bodies", () => {
+    const { defaultBranch: _defaultBranch, ...repoWithoutDefaultBranch } =
+      CANONICAL_REPO_SAMPLE;
+    const cases: ReadonlyArray<
+      readonly [string, PublicV1OperationId, unknown]
+    > = [
+      ["accepted task", "tasks.create", CANONICAL_TASK_SAMPLE],
+      ["provisioning failure", "tasks.get", CANONICAL_FAILURE_SAMPLE],
+      ["repo master", "repos.get", CANONICAL_REPO_SAMPLE],
+      [
+        "repo null",
+        "repos.list",
+        {
+          items: [{ ...CANONICAL_REPO_SAMPLE, defaultBranch: null }],
+          nextCursor: null,
+        },
+      ],
+      ["repo absent", "repos.get", repoWithoutDefaultBranch],
+    ];
+
+    for (const [label, operationId, sample] of cases) {
+      const operation: PublicV1OperationShape = operationById(operationId);
+      expect(operation.responseSchema?.safeParse(sample).success, label).toBe(true);
+
+      const body = JSON.stringify(sample);
+      const rendered = mapSendResult({
+        kind: "response",
+        status: operation.successStatus,
+        statusText: "Canonical fixture",
+        ok: true,
+        durationMs: 1,
+        sizeBytes: new TextEncoder().encode(body).byteLength,
+        headers: { "content-type": "application/json" },
+        body,
+        json: sample,
+      });
+      expect(rendered.body, label).toBe(body);
+      expect(rendered.json, label).toEqual(sample);
+
+      for (const forbidden of [
+        "leaseOwner",
+        "providerEndpoint",
+        "nativeSandboxId",
+        "credentialPath",
+        "rawOutput",
+        "authenticatedGitCommand",
+        "secret-canary",
+      ]) {
+        expect(body, `${label} excludes ${forbidden}`).not.toContain(forbidden);
+      }
     }
   });
 

@@ -27,8 +27,9 @@ export type TerminalTaskStatus = (typeof TERMINAL_STATUSES)[number];
 /**
  * Adjacency map of permitted transitions: `from -> set of allowed `to` states.
  *
- * - `pending`        : initial state; may be admitted to `running`, held in
- *                      `queued` by the concurrency semaphore, or fail to start.
+ * - `pending`        : initial durable-acceptance state; may be admitted to
+ *                      `running`, held in `queued`, stopped before admission,
+ *                      or fail to start.
  * - `queued`         : admission-control holding state; may start running, be
  *                      stopped by the operator (`cancelled`), or, if the agent
  *                      never starts, surface `agent_failed_to_start`.
@@ -38,10 +39,10 @@ export type TerminalTaskStatus = (typeof TERMINAL_STATUSES)[number];
  * - terminal states  : no outgoing transitions.
  *
  * An operator stop (`POST /tasks/:taskId/stop`) drives the `-> cancelled` edge
- * from any active state (`queued`/`running`/`awaiting_input`).
+ * from any active state (`pending`/`queued`/`running`/`awaiting_input`).
  */
 export const ALLOWED_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
-  pending: ['queued', 'running', 'agent_failed_to_start', 'failed'],
+  pending: ['queued', 'running', 'agent_failed_to_start', 'failed', 'cancelled'],
   queued: ['running', 'agent_failed_to_start', 'failed', 'cancelled'],
   running: ['awaiting_input', 'completed', 'failed', 'agent_failed_to_start', 'cancelled'],
   awaiting_input: ['running', 'completed', 'failed', 'cancelled'],

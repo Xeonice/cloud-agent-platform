@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { RepoSchema } from './task.js';
+import { GitBranchNameSchema } from './git-ref.js';
 
 /**
  * GitHub repository import contract (github-repository-import spec).
@@ -46,7 +47,7 @@ export const AvailableGithubRepoSchema = z.object({
   /** Short repository name (the `name` segment of `full_name`). */
   name: z.string().min(1),
   /** GitHub default branch name. */
-  defaultBranch: z.string().min(1),
+  defaultBranch: GitBranchNameSchema,
   /** Repository visibility (public/private). */
   visibility: GithubRepoVisibilitySchema,
   /** GitHub repo description, present only when GitHub reports one. */
@@ -77,7 +78,7 @@ export const ImportRepoRequestSchema = z.object({
   /** Canonical `owner/name` slug; fallback de-duplication key and name source. */
   full_name: z.string().min(1),
   /** GitHub default branch, captured as import metadata on the created `Repo`. */
-  defaultBranch: z.string().min(1),
+  defaultBranch: GitBranchNameSchema,
   /** GitHub repo description, captured as import metadata when present. */
   description: z.string().nullable().optional(),
   /**

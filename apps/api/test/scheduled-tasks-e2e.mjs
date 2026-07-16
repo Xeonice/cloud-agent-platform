@@ -107,6 +107,12 @@ function taskPort(prisma, options = {}) {
       body,
       runtime: body.runtime ?? 'codex',
       executionMode,
+      // This integration adapter intentionally exercises the gate-closed
+      // compatibility path: schedule acceptance writes the Task in the caller's
+      // real Prisma transaction, then the post-commit admission port queues it.
+      // Durable-v2 acceptance (Task + TaskAdmissionWork + audit atomically) is
+      // covered by TasksService tests and must not be imitated partially here.
+      admissionMode: 'legacy',
       sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
       model: body.model ?? null,
       executionEnvironmentSnapshot: body.model
@@ -133,7 +139,12 @@ function taskPort(prisma, options = {}) {
     async prepareAcceptedScheduledRetryTaskCreate(repoId, body, userId) {
       return prepare(repoId, body, 'headless-exec', userId);
     },
-    async createTaskRow(prepared, client) {
+    async acceptPreparedTask(prepared, client) {
+      assert.equal(
+        prepared.admissionMode,
+        'legacy',
+        'the schedule integration task port only implements legacy acceptance',
+      );
       const { repoId, ownerUserId, body, executionMode } = prepared;
       const task = await client.task.create({
         data: {
@@ -167,6 +178,7 @@ function taskPort(prisma, options = {}) {
       options.admissionAttempts?.push(taskId);
       if (options.admitThrows) throw new Error(options.admitThrows);
       await prisma.task.update({ where: { id: taskId }, data: { status: 'queued' } });
+      return 'legacy-admitted';
     },
   };
 }

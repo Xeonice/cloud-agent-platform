@@ -39,8 +39,11 @@ export class ReposController {
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @UsePipes(new ZodValidationPipe(createRepoBodySchema))
-  async create(@Body() body: CreateRepoBody): Promise<RepoResponse> {
-    return this.reposService.create(body);
+  async create(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: CreateRepoBody,
+  ): Promise<RepoResponse> {
+    return this.reposService.create(this.requireConsoleAccountId(req), body);
   }
 
   @Get()
@@ -54,5 +57,23 @@ export class ReposController {
   @Get(':id')
   async findById(@Param('id') id: string): Promise<RepoResponse> {
     return this.reposService.findById(id);
+  }
+
+  /**
+   * Generic URL/Gitee/GitLab import is an authenticated Console/Internal write.
+   * It deliberately does not reuse `repos:read` as write authority: API-key and
+   * MCP principals are rejected even when they resolve to an account and carry
+   * that read scope. The owner id therefore comes only from a human Console
+   * session and cannot be selected by the request body.
+   */
+  private requireConsoleAccountId(req: AuthenticatedRequest): string {
+    const principal = req.operatorPrincipal;
+    if (principal?.kind !== 'session' || !principal.user?.id) {
+      throw new ForbiddenException({
+        error: 'session_operator_required',
+        message: 'Repository import requires an authenticated Console session.',
+      });
+    }
+    return principal.user.id;
   }
 }

@@ -102,7 +102,24 @@ test('deployment snapshot enforces managed/null identity without secrets', () =>
       ...base,
       kind: 'deployment-default',
       managedEnvironmentId: null,
+      resources: { diskSizeGb: 9 },
     }),
+  );
+  assert.throws(() =>
+    RuntimeExecutionEnvironmentSnapshotSchema.parse({
+      ...base,
+      kind: 'deployment-default',
+      managedEnvironmentId: null,
+      resources: { diskSizeGb: 0 },
+    }),
+  );
+  assert.equal(
+    RuntimeExecutionEnvironmentSnapshotSchema.parse({
+      ...base,
+      kind: 'deployment-default',
+      managedEnvironmentId: null,
+    }).resources,
+    undefined,
   );
   assert.throws(() =>
     RuntimeExecutionEnvironmentSnapshotSchema.parse({

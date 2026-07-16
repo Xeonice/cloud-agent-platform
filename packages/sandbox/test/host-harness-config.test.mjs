@@ -192,6 +192,7 @@ await test('deployment environment target follows configured provider and runtim
         kind: 'aio-docker-image',
         image: 'cap-aio-sandbox:v1.2.3',
       },
+      provisioningPolicy: {},
     },
   );
 
@@ -213,7 +214,173 @@ await test('deployment environment target follows configured provider and runtim
     boxlite.source.image,
     'cap-boxlite@sha256:claude-runtime',
   );
+  assert.deepEqual(boxlite.provisioningPolicy.resources, { diskSizeGb: 5 });
+  assert.equal(
+    boxlite.provisioningPolicy.workspaceMaterializationDeadlineMs,
+    900_000,
+  );
+  assert.equal(Object.isFrozen(boxlite.provisioningPolicy.resources), true);
   assert.equal(JSON.stringify(boxlite).includes('not-returned'), false);
+});
+
+await test('configured provisioning policy freezes explicit resources over fallback', () => {
+  const env = {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'not-returned',
+    BOXLITE_IMAGE: 'cap-boxlite@sha256:default',
+    BOXLITE_DISK_SIZE_GB: '7',
+  };
+  const fallback = mod.resolveConfiguredProviderProvisioningPolicyForFamily(
+    { providerFamily: 'boxlite', resources: null },
+    env,
+  );
+  assert.deepEqual(fallback.resources, { diskSizeGb: 7 });
+  assert.equal(fallback.capabilities.includes('resource.disk-size-gb'), true);
+
+  const explicit = mod.resolveConfiguredProviderProvisioningPolicyForFamily(
+    { providerFamily: 'boxlite', resources: { diskSizeGb: 11 } },
+    env,
+  );
+  assert.deepEqual(explicit.resources, { diskSizeGb: 11 });
+  env.BOXLITE_DISK_SIZE_GB = '13';
+  assert.deepEqual(explicit.resources, { diskSizeGb: 11 });
+  assert.equal(Object.isFrozen(explicit), true);
+  assert.equal(Object.isFrozen(explicit.resources), true);
+});
+
+await test('task provisioning policy mirrors Router candidates and materialized-workspace ranking', () => {
+  const cloud = mod.resolveConfiguredTaskProvisioningPolicy({}, {
+    CAP_SANDBOX_PROVIDER: 'auto',
+    CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+    CAP_SANDBOX_CLOUD_HTTP_CAPABILITIES: 'all',
+  });
+  assert.equal(cloud.providerId, 'cloud-http');
+  assert.equal(cloud.providerFamily, 'cloud-http');
+  assert.deepEqual(cloud.resources ?? {}, {});
+
+  const fallbackAio = mod.resolveConfiguredTaskProvisioningPolicy({}, {
+    CAP_SANDBOX_PROVIDER: 'auto',
+    AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+    CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+  });
+  assert.equal(fallbackAio.providerId, 'aio-local');
+  assert.deepEqual(fallbackAio.resources ?? {}, {});
+
+  const preferredAio = mod.resolveConfiguredTaskProvisioningPolicy({}, {
+    CAP_SANDBOX_PROVIDER: 'auto',
+    AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+    CAP_SANDBOX_LOCAL_PRIORITY: '50',
+    CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+    CAP_SANDBOX_CLOUD_HTTP_PRIORITY: '50',
+    CAP_SANDBOX_CLOUD_HTTP_CAPABILITIES: 'all',
+    CAP_SANDBOX_PREFER_LOCATION: 'local',
+  });
+  assert.equal(preferredAio.providerId, 'aio-local');
+
+  assert.throws(
+    () =>
+      mod.resolveConfiguredTaskProvisioningPolicy({}, {
+        CAP_SANDBOX_PROVIDER: 'auto',
+      }),
+    /Selected sandbox provider candidate aio-local is unavailable/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredTaskProvisioningPolicy({}, {
+        CAP_SANDBOX_PROVIDER: 'aio',
+      }),
+    /Selected sandbox provider candidate aio-local is unavailable/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredTaskProvisioningPolicy({}, {
+        CAP_SANDBOX_PROVIDER: 'auto',
+        CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+        CAP_SANDBOX_CLOUD_HTTP_PRIORITY: '5',
+        CAP_SANDBOX_CLOUD_HTTP_CAPABILITIES: 'all',
+      }),
+    /Selected sandbox provider candidate aio-local is unavailable/,
+  );
+});
+
+await test('task provisioning applies each candidate fallback before resource capability eligibility', () => {
+  const commonBoxLite = {
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'not-returned',
+    BOXLITE_IMAGE: 'cap-boxlite@sha256:default',
+    BOXLITE_PROVIDER_PRIORITY: '25',
+    BOXLITE_CAPABILITIES:
+      'terminal.websocket,command.exec,workspace.git.materialize',
+    BOXLITE_TERMINAL_MODE: 'pty',
+  };
+  const fallbackAio = mod.resolveConfiguredTaskProvisioningPolicy({}, {
+    CAP_SANDBOX_PROVIDER: 'auto',
+    AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+    ...commonBoxLite,
+    BOXLITE_PROTOCOL_MODE: 'cap-rest',
+  });
+  assert.equal(fallbackAio.providerId, 'aio-local');
+  assert.deepEqual(fallbackAio.resources ?? {}, {});
+
+  const nativeBoxLite = mod.resolveConfiguredTaskProvisioningPolicy({}, {
+    CAP_SANDBOX_PROVIDER: 'auto',
+    ...commonBoxLite,
+    BOXLITE_DISK_SIZE_GB: '9',
+    BOXLITE_GIT_CLONE_TIMEOUT_MS: '123456',
+  });
+  assert.equal(nativeBoxLite.providerFamily, 'boxlite');
+  assert.deepEqual(nativeBoxLite.resources, { diskSizeGb: 9 });
+  assert.equal(nativeBoxLite.workspaceMaterializationDeadlineMs, 123456);
+  assert.equal(Object.isFrozen(nativeBoxLite), true);
+  assert.equal(Object.isFrozen(nativeBoxLite.resources), true);
+
+  assert.throws(
+    () =>
+      mod.resolveConfiguredTaskProvisioningPolicy({}, {
+        CAP_SANDBOX_PROVIDER: 'boxlite',
+        ...commonBoxLite,
+        BOXLITE_PROTOCOL_MODE: 'cap-rest',
+      }),
+    /missing resource\.disk-size-gb/,
+  );
+});
+
+await test('configured resource eligibility fails closed before unsupported create protocols', () => {
+  assert.throws(
+    () =>
+      mod.resolveConfiguredProviderProvisioningPolicyForFamily(
+        { providerFamily: 'boxlite', resources: null },
+        {
+          CAP_SANDBOX_PROVIDER: 'boxlite',
+          BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+          BOXLITE_API_TOKEN: 'not-returned',
+          BOXLITE_IMAGE: 'cap-boxlite@sha256:default',
+          BOXLITE_PROTOCOL_MODE: 'cap-rest',
+        },
+      ),
+    /missing capabilities: resource\.disk-size-gb/,
+  );
+  assert.throws(
+    () =>
+      mod.resolveConfiguredProviderProvisioningPolicyForFamily(
+        { providerFamily: 'aio', resources: { diskSizeGb: 5 } },
+        {
+          CAP_SANDBOX_PROVIDER: 'aio',
+          AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+        },
+      ),
+    /missing capabilities: resource\.disk-size-gb/,
+  );
+  assert.doesNotThrow(() =>
+    mod.resolveConfiguredProviderProvisioningPolicyForFamily(
+      { providerFamily: 'aio', resources: null },
+      {
+        CAP_SANDBOX_PROVIDER: 'aio',
+        AIO_SANDBOX_IMAGE: 'cap-aio-sandbox:v1.2.3',
+      },
+    ),
+  );
 });
 
 await test('deployment environment target fails closed for unsupported selected sources', () => {

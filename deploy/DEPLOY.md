@@ -23,6 +23,13 @@ it defaults to BoxLite and requires `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and
 > publishing its Web/API/MCP contract. The ordinary upgrade script is only a
 > staging sub-step inside that maintenance window.
 
+> **Durable admission cutover:** keep `CAP_TASK_ADMISSION_V2_ENABLED=false`
+> while deploying the additive admission worker. Before opening it, verify the
+> BoxLite disk/clone policy, aggregate host capacity, native readiness, and the
+> complete API/worker capability attestation in
+> [TASK_ADMISSION_V2_CUTOVER.md](./TASK_ADMISSION_V2_CUTOVER.md). Rollback must
+> close the gate and drain unfinished admission work before older code starts.
+
 Why nginx is here: Cloudflare terminates TLS to the browser, so the cross-origin
 OAuth session cookie must be `SameSite=None; Secure`. The api decides that from
 `X-Forwarded-Proto` (`apps/api/src/auth/github-oauth.controller.ts` `isSecureRequest()`),

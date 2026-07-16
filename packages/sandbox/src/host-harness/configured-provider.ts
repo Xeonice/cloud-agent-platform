@@ -41,6 +41,10 @@ import {
   SandboxProviderRouter,
   type RoutableSandboxProvider,
 } from '../provider-center/router.js';
+import {
+  deliverSandboxGitWorkspaceStaged,
+  materializeSandboxGitWorkspaceStaged,
+} from '../workspace/git.js';
 import type {
   SandboxHostHarness,
   SandboxHostLogger,
@@ -183,6 +187,8 @@ export function createConfiguredSandboxProvider<
             'boxlite',
             runtimeId ?? null,
           )) ?? null,
+        workspaceMaterialization: materializeSandboxGitWorkspaceStaged,
+        workspaceDelivery: deliverSandboxGitWorkspaceStaged,
       }),
     );
   }
@@ -232,7 +238,6 @@ function createAioProviderDescriptor<
     logger: host.logger,
     hooks: {
       provisionLookup: {
-        getCloneSpec: (taskId) => host.provisionLookup.getCloneSpec(taskId),
         getTaskPrompt: (taskId) => host.provisionLookup.getTaskPrompt(taskId),
         getRuntimeId: async (taskId) => {
           const runtime = await resolveProvisionRuntime({
@@ -333,6 +338,8 @@ function createAioProviderDescriptor<
           taskId,
         });
       },
+      workspaceMaterialization: materializeSandboxGitWorkspaceStaged,
+      workspaceDelivery: deliverSandboxGitWorkspaceStaged,
     },
   });
 }

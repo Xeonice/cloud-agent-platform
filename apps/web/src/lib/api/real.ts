@@ -39,6 +39,7 @@ import {
   CodexDeviceLoginStatusSchema,
   ListAvailableGithubReposResponseSchema,
   DefaultRepoResponseSchema,
+  VerifiedRepoImportResponseSchema,
   UpdateStatusSchema,
   DiscoverModelsResponseSchema,
   ListSandboxEnvironmentsResponseSchema,
@@ -51,6 +52,7 @@ import {
   RuntimeModelCatalogQuerySchema,
   RuntimeModelCatalogSchema,
   RuntimeModelErrorSchema,
+  RepoImportFailureSchema,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
   type UpdateStatus,
@@ -76,7 +78,7 @@ import {
   type CodexDeviceLoginStatus,
   type ListAvailableGithubReposResponse,
   type ImportRepoRequest,
-  type RepoResponse,
+  type VerifiedRepoImportResponse,
   type SetDefaultRepoRequest,
   type DefaultRepoResponse,
   type ListSandboxEnvironmentsResponse,
@@ -93,8 +95,8 @@ import {
   type RuntimeModelCatalogQuery,
   type RuntimeModelCatalog,
   type RuntimeModelError,
+  type RepoImportFailure,
 } from "@cap/contracts";
-import { RepoResponseSchema } from "@cap/contracts";
 import { createParser } from "eventsource-parser";
 import {
   ListAvailableForgeReposResponseSchema,
@@ -172,6 +174,15 @@ export function runtimeModelErrorFromApiError(
 ): RuntimeModelError | null {
   if (!(error instanceof ApiError)) return null;
   const parsed = RuntimeModelErrorSchema.safeParse(error.body);
+  return parsed.success ? parsed.data : null;
+}
+
+/** Parse only the stable, secret-free Console repository-import error body. */
+export function repoImportFailureFromApiError(
+  error: unknown,
+): RepoImportFailure | null {
+  if (!(error instanceof ApiError)) return null;
+  const parsed = RepoImportFailureSchema.safeParse(error.body);
   return parsed.success ? parsed.data : null;
 }
 
@@ -949,8 +960,8 @@ export async function listGithubRepos(): Promise<ListAvailableGithubReposRespons
 /** `POST /repos/github/import` — import a GitHub repo into the platform as a `Repo`. */
 export async function importRepo(
   body: ImportRepoRequest,
-): Promise<RepoResponse> {
-  return RepoResponseSchema.parse(
+): Promise<VerifiedRepoImportResponse> {
+  return VerifiedRepoImportResponseSchema.parse(
     await request("/repos/github/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -976,8 +987,10 @@ export async function listAvailableForgeRepos(
  * `POST /repos` — register a repo by gitSource + forge (the GitLab/Gitee picker
  * and by-URL import path; GitHub keeps its dedicated `/repos/github/import`).
  */
-export async function createRepo(body: CreateRepoRequest): Promise<RepoResponse> {
-  return RepoResponseSchema.parse(
+export async function createRepo(
+  body: CreateRepoRequest,
+): Promise<VerifiedRepoImportResponse> {
+  return VerifiedRepoImportResponseSchema.parse(
     await request("/repos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

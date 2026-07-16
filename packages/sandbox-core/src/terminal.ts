@@ -50,7 +50,23 @@ export interface TerminalExitStatus {
   readonly abnormal: boolean;
 }
 
+/**
+ * Non-rejecting settlement of the terminal's one launch-or-attach decision.
+ * Consumers may safely ignore the promise, while durable admission can await it
+ * before releasing the lease that authorizes a fresh agent launch.
+ */
+export type AgentTerminalLaunchOutcome =
+  | { readonly kind: 'launched' }
+  | { readonly kind: 'attached' }
+  /** Attach-only probe definitively established that the named session is gone. */
+  | { readonly kind: 'absent' }
+  /** Attach-only probe could not establish whether the named session is live. */
+  | { readonly kind: 'indeterminate' }
+  | { readonly kind: 'fenced' }
+  | { readonly kind: 'failed' };
+
 export interface AgentTerminalPty extends PausablePty {
+  readonly launchDecision: Promise<AgentTerminalLaunchOutcome>;
   onData(listener: AgentTerminalDataListener): { dispose(): void };
   write(data: string): void;
   resize(cols: number, rows: number): void;

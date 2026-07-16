@@ -50,6 +50,7 @@ import {
   DispatchScheduleRequestSchema,
   PUBLIC_V1_OPERATIONS,
   PublicV1DeletionAcknowledgementSchema,
+  RepoResponseSchema,
   RuntimeModelCatalogQuerySchema,
   RuntimeModelCatalogSchema,
   ScheduleRecurrenceSchema,
@@ -78,6 +79,18 @@ import {
   type UpdateScheduleRequest,
 } from '@cap/contracts';
 import { MCP_PUBLIC_ERROR_MAP } from '../public-surface/public-error-mappings';
+import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
+import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
+import type { TaskBranchResolver } from '../forge/task-branch-resolver';
+import { ReposService } from '../repos/repos.service';
+import {
+  TasksService,
+  type TaskAcceptanceClient,
+} from '../tasks/tasks.service';
+import type {
+  TaskAdmissionGatePort,
+  TaskAdmissionWakePort,
+} from '../tasks/task-admission-gate';
 
 // ---------------------------------------------------------------------------
 // Fakes: a server that captures (name -> callback), and recording deps.
@@ -2026,8 +2039,10 @@ test('McpServerFactory list_tasks uses the canonical persisted failure projectio
 
   const page = await factory.listTasks({ limit: 10 });
 
-  assert.equal(page.items[0].failure?.runtime, 'claude-code');
-  assert.equal(page.items[0].failure?.code, 'runtime_auth_expired');
+  const failure = page.items[0].failure;
+  assert.equal(failure?.code, 'runtime_auth_expired');
+  assert.ok(failure && 'runtime' in failure);
+  assert.equal(failure.runtime, 'claude-code');
   assert.equal(page.items[0].executionMode, 'interactive-pty');
   assert.equal(page.items[0].deliver, 'none');
   assert.equal(page.items[0].sandboxProvider, null);
@@ -2402,6 +2417,218 @@ test('schedule tools reuse contract cross-field validation before delegation', a
 // 2 + 3. One admission path + immediate handle (task 4.4).
 // ---------------------------------------------------------------------------
 
+interface McpDeferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function mcpDeferred<T>(): McpDeferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+const MCP_DURABLE_CREATED_AT = new Date('2026-07-16T00:00:00.000Z');
+
+interface McpDurableState {
+  tasks: Map<string, Record<string, unknown>>;
+  works: Map<string, Record<string, unknown>>;
+  audits: Map<string, Record<string, unknown>>;
+  idempotencyKeys: Map<string, Record<string, unknown>>;
+}
+
+/**
+ * Minimal transaction-aware persistence boundary for the real MCP create path.
+ * A transaction publishes Task + admission work + audit together; the root
+ * readers return the same relation projection consumed by TasksService and the
+ * shared V1/MCP page helpers.
+ */
+class McpDurableCreateDatabase {
+  private readonly state: McpDurableState = {
+    tasks: new Map(),
+    works: new Map(),
+    audits: new Map(),
+    idempotencyKeys: new Map(),
+  };
+  private idempotencyOperations = 0;
+
+  private readonly repo = {
+    id: TASK.repoId,
+    name: 'durable-mcp-repo',
+    gitSource: 'https://gitee.example/acme/repo.git',
+    createdAt: MCP_DURABLE_CREATED_AT,
+    description: null,
+    defaultBranch: 'master',
+    branchCount: null,
+    updatedAt: MCP_DURABLE_CREATED_AT,
+    githubId: null,
+    isDefault: false,
+    forge: 'gitee',
+  };
+
+  readonly prisma = {
+    repo: {
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        where.id === this.repo.id ? { ...this.repo } : null,
+      findMany: async () => [{ ...this.repo }],
+    },
+    task: {
+      findUnique: async ({ where }: { where: { id: string } }) =>
+        this.readTask(where.id),
+      findMany: async () =>
+        [...this.state.tasks.keys()]
+          .map((id) => this.readTask(id))
+          .filter((row): row is Record<string, unknown> => row !== null),
+    },
+    taskAdmissionWork: {
+      findUnique: async ({ where }: { where: { taskId: string } }) =>
+        this.state.works.get(where.taskId) ?? null,
+    },
+    idempotencyKey: {
+      findUnique: async () => {
+        this.idempotencyOperations += 1;
+        return null;
+      },
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        this.idempotencyOperations += 1;
+        const key = `${String(data.scopeUserId)}\u0000${String(data.key)}`;
+        this.state.idempotencyKeys.set(key, { ...data });
+        return data;
+      },
+      deleteMany: async () => {
+        this.idempotencyOperations += 1;
+        return { count: 0 };
+      },
+    },
+    $transaction: async <T>(
+      operation: (client: TaskAcceptanceClient) => Promise<T>,
+    ): Promise<T> => {
+      const staged: McpDurableState = {
+        tasks: new Map(this.state.tasks),
+        works: new Map(this.state.works),
+        audits: new Map(this.state.audits),
+        idempotencyKeys: new Map(this.state.idempotencyKeys),
+      };
+      const result = await operation(this.transactionClient(staged));
+      this.publish(staged);
+      return result;
+    },
+  } as unknown as PrismaService;
+
+  get counts() {
+    return {
+      tasks: this.state.tasks.size,
+      works: this.state.works.size,
+      audits: this.state.audits.size,
+      idempotencyKeys: this.state.idempotencyKeys.size,
+      idempotencyOperations: this.idempotencyOperations,
+    } as const;
+  }
+
+  private readTask(id: string): Record<string, unknown> | null {
+    const task = this.state.tasks.get(id);
+    if (!task) return null;
+    const work = this.state.works.get(id);
+    return {
+      ...task,
+      admissionWork: work
+        ? {
+            state: work.state,
+            stage: work.stage,
+            attempt: work.attempt,
+            resolvedBranch: work.resolvedBranch,
+            updatedAt: work.updatedAt,
+          }
+        : null,
+      sandboxRuns: [],
+      sandboxEnvironment: null,
+      scheduleRun: null,
+    };
+  }
+
+  private transactionClient(state: McpDurableState): TaskAcceptanceClient {
+    return {
+      task: {
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          if (state.tasks.has(TASK.id)) {
+            throw Object.assign(new Error('duplicate task'), { code: 'P2002' });
+          }
+          const row = {
+            id: TASK.id,
+            ...data,
+            status: 'pending',
+            lifecycleVersion: 0,
+            failureCode: null,
+            failureAt: null,
+            failureExitCode: null,
+            createdAt: MCP_DURABLE_CREATED_AT,
+            branch: data.branch ?? null,
+            strategy: data.strategy ?? null,
+            skills: data.skills ?? [],
+            idleTimeoutMs: data.idleTimeoutMs ?? null,
+            deadlineMs: data.deadlineMs ?? null,
+            runtime: data.runtime ?? null,
+            model: data.model ?? null,
+            sandboxEnvironmentId: data.sandboxEnvironmentId ?? null,
+            executionMode: data.executionMode ?? null,
+            deliver: data.deliver ?? null,
+            deliverStatus: null,
+            branchPushed: null,
+            commitSha: null,
+            changeRequestUrl: null,
+            changeRequestNumber: null,
+          };
+          state.tasks.set(TASK.id, row);
+          return row as never;
+        },
+      } as never,
+      taskAdmissionWork: {
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          const taskId = String(data.taskId);
+          if (state.works.has(taskId)) {
+            throw Object.assign(new Error('duplicate admission work'), {
+              code: 'P2002',
+            });
+          }
+          const row = {
+            ...data,
+            taskId,
+            state: 'accepted',
+            stage: 'accepted',
+            attempt: 0,
+            updatedAt: MCP_DURABLE_CREATED_AT,
+          };
+          state.works.set(taskId, row);
+          return row as never;
+        },
+      } as never,
+      auditEvent: {
+        upsert: async ({ create }: { create: Record<string, unknown> }) => {
+          const key = String(create.dedupeKey);
+          const existing = state.audits.get(key);
+          if (existing) return existing as never;
+          state.audits.set(key, { ...create });
+          return create as never;
+        },
+      } as never,
+    };
+  }
+
+  private publish(source: McpDurableState): void {
+    for (const [target, next] of [
+      [this.state.tasks, source.tasks],
+      [this.state.works, source.works],
+      [this.state.audits, source.audits],
+      [this.state.idempotencyKeys, source.idempotencyKeys],
+    ] as const) {
+      target.clear();
+      for (const [key, value] of next) target.set(key, value);
+    }
+  }
+}
+
 test('tools dispatch to the same service surface the console uses', async () => {
   const { deps, calls } = recordingDeps();
   const { server, tools } = captureServer();
@@ -2423,56 +2650,262 @@ test('tools dispatch to the same service surface the console uses', async () => 
   ]);
 });
 
-test('create_task returns a handle WITHOUT blocking on the run', async () => {
-  // A createTask whose underlying run NEVER resolves: the dep returns the handle
-  // immediately (the console admission path: persist row + offer to the semaphore,
-  // do not await the run). The tool must resolve with the handle regardless.
-  let runResolved = false;
-  const deps: McpToolDeps = {
-    async createTask() {
-      // The handle returns now; the (simulated) run would resolve later — we never
-      // let it, and assert the tool STILL returns.
-      void new Promise<void>((resolve) => {
-        setTimeout(() => {
-          runResolved = true;
-          resolve();
-        }, 1_000_000);
+test(
+  'the production MCP factory returns canonical durable projections before provisioning completes',
+  { timeout: 10_000 },
+  async () => {
+    const database = new McpDurableCreateDatabase();
+    const provisionEntered = mcpDeferred<void>();
+    const releaseProvision = mcpDeferred<void>();
+    const providerOperations: Promise<void>[] = [];
+    let providerCalls = 0;
+    let providerCompletions = 0;
+    let wakeCalls = 0;
+
+    const provider: Pick<SandboxProvider, 'provision'> = {
+      async provision(context) {
+        providerCalls += 1;
+        assert.equal(context.taskId, TASK.id);
+        assert.equal(context.executionMode, 'headless-exec');
+        provisionEntered.resolve();
+        await releaseProvision.promise;
+        return {
+          taskId: context.taskId,
+          baseUrl: 'http://sandbox.test/task',
+          wsUrl: 'ws://sandbox.test/task/ws',
+        };
+      },
+    };
+    const wake: TaskAdmissionWakePort = {
+      wake(taskId) {
+        wakeCalls += 1;
+        const operation = provider
+          .provision({
+            taskId,
+            modelIntent: { kind: 'runtime-default' },
+            runtimeId: 'codex',
+            executionMode: 'headless-exec',
+            environment: null,
+            resources: Object.freeze({ diskSizeGb: 12 }),
+            workspace: null,
+            cloneSpec: null,
+          })
+          .then(() => {
+            providerCompletions += 1;
+          });
+        providerOperations.push(operation);
+      },
+    };
+    const gate: TaskAdmissionGatePort = { isEnabled: () => true };
+    const environments = {
+      async resolveTaskAdmission() {
+        return Object.freeze({
+          environment: null,
+          providerId: 'boxlite',
+          providerFamily: 'boxlite' as const,
+          provisioningPolicy: Object.freeze({
+            resources: Object.freeze({ diskSizeGb: 12 }),
+            workspaceMaterializationDeadlineMs: 900_000,
+          }),
+        });
+      },
+    } as unknown as SandboxEnvironmentsService;
+    const branches = {
+      async prepareForCreate() {
+        return {
+          repositoryUrl: 'https://gitee.example/acme/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'master',
+          source: 'repo-default-branch' as const,
+        };
+      },
+    } as unknown as TaskBranchResolver;
+    const tasks = new TasksService(
+      database.prisma,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      environments,
+      undefined,
+      undefined,
+      gate,
+      branches,
+      wake,
+    );
+    let prepareCalls = 0;
+    let acceptanceCalls = 0;
+    const prepareTaskCreate = tasks.prepareTaskCreate.bind(tasks);
+    tasks.prepareTaskCreate = async (
+      ...args: Parameters<TasksService['prepareTaskCreate']>
+    ) => {
+      prepareCalls += 1;
+      return prepareTaskCreate(...args);
+    };
+    const acceptPreparedTask = tasks.acceptPreparedTask.bind(tasks);
+    tasks.acceptPreparedTask = async (
+      ...args: Parameters<TasksService['acceptPreparedTask']>
+    ) => {
+      acceptanceCalls += 1;
+      return acceptPreparedTask(...args);
+    };
+
+    const repos = new ReposService(
+      database.prisma,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const factory = new McpServerFactory(
+      tasks,
+      repos,
+      {} as never,
+      {} as never,
+      {} as never,
+      database.prisma,
+      {} as never,
+      {} as never,
+      provider as SandboxProvider,
+    );
+    const server = factory.createServer();
+    const client = new Client({
+      name: 'mcp-durable-create-client',
+      version: '1.0.0',
+    });
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
+    const send = clientTransport.send.bind(clientTransport);
+    clientTransport.send = (message, options) =>
+      send(message, {
+        ...options,
+        authInfo: {
+          token: 'mcp_durable_create',
+          clientId: 'settings',
+          scopes: ['tasks:read', 'tasks:write', 'repos:read'],
+          expiresAt: Math.floor(Date.now() / 1000) + 3_600,
+          extra: { userId: 'local-acct-1' },
+        },
       });
-      return TASK;
-    },
-  } as unknown as McpToolDeps;
 
-  const { server, tools } = captureServer();
-  registerMcpTools(server as never, deps);
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport);
+      const createResultPromise = client.callTool({
+        name: 'create_task',
+        arguments: {
+          repoId: TASK.repoId,
+          prompt: 'go',
+          sandboxEnvironmentId: null,
+        },
+      });
 
-  const result = (await tools.get('create_task')!(
-    { repoId: TASK.repoId, prompt: 'go' },
-    extraWith(['tasks:write']),
-  )) as {
-    content: Array<{ text: string }>;
-    structuredContent: Record<string, unknown>;
-  };
+      const admissionSignal = await Promise.race([
+        provisionEntered.promise.then(() => ({ entered: true as const })),
+        createResultPromise.then((result) => ({
+          entered: false as const,
+          result,
+        })),
+      ]);
+      assert.equal(
+        admissionSignal.entered,
+        true,
+        `create_task returned before durable provisioning was woken: ${JSON.stringify(
+          'result' in admissionSignal ? admissionSignal.result : null,
+        )}`,
+      );
+      const created = await createResultPromise;
+      const canonical = TaskResponseSchema.parse(created.structuredContent);
+      const canonicalJson = JSON.parse(
+        JSON.stringify(canonical),
+      ) as Record<string, unknown>;
+      const text = JSON.parse(
+        (created.content as Array<{ type: string; text: string }>)[0]!.text,
+      ) as { id: string; status: string; task: Record<string, unknown> };
 
-  const payload = JSON.parse(result.content[0].text) as {
-    id: string;
-    status: string;
-    task: typeof TASK;
-  };
-  assert.equal(payload.id, TASK.id, 'returns the task id immediately');
-  assert.equal(payload.status, 'pending', 'returns the handle status immediately');
-  assert.doesNotThrow(() => TaskResponseSchema.parse(result.structuredContent));
-  assert.deepEqual(
-    result.structuredContent,
-    JSON.parse(JSON.stringify(TASK)),
-    'structuredContent matches the canonical /v1 task response',
-  );
-  assert.deepEqual(
-    payload.task,
-    JSON.parse(JSON.stringify(TASK)),
-    'legacy text keeps the historical wrapper',
-  );
-  assert.equal(runResolved, false, 'did NOT wait for the run to complete');
-});
+      assert.deepEqual(
+        created.structuredContent,
+        canonicalJson,
+        'structuredContent contains exactly the canonical secret-free task projection',
+      );
+      assert.deepEqual(text, {
+        id: canonical.id,
+        status: canonical.status,
+        task: canonicalJson,
+      });
+      assert.equal(canonical.executionMode, 'headless-exec');
+      assert.deepEqual(canonical.provisioning, {
+        state: 'accepted',
+        stage: 'accepted',
+        attempt: 0,
+        resolvedBranch: 'master',
+        updatedAt: MCP_DURABLE_CREATED_AT,
+      });
+      assert.equal(
+        providerCompletions,
+        0,
+        'the tool resolves while the controllable provider barrier is held',
+      );
+      assert.deepEqual(database.counts, {
+        tasks: 1,
+        works: 1,
+        audits: 1,
+        idempotencyKeys: 0,
+        idempotencyOperations: 0,
+      });
+      assert.deepEqual(
+        { prepareCalls, acceptanceCalls, wakeCalls, providerCalls },
+        {
+          prepareCalls: 1,
+          acceptanceCalls: 1,
+          wakeCalls: 1,
+          providerCalls: 1,
+        },
+      );
+
+      const taskRead = await client.callTool({
+        name: 'get_task',
+        arguments: { id: canonical.id },
+      });
+      assert.deepEqual(
+        TaskResponseSchema.parse(taskRead.structuredContent),
+        canonical,
+        'get_task preserves the canonical create projection',
+      );
+      const taskPage = await client.callTool({
+        name: 'list_tasks',
+        arguments: { limit: 10 },
+      });
+      assert.deepEqual(
+        V1ListTasksResponseSchema.parse(taskPage.structuredContent).items,
+        [canonical],
+        'list_tasks uses the matching shared task projection',
+      );
+
+      const repoRead = await client.callTool({
+        name: 'get_repo',
+        arguments: { id: TASK.repoId },
+      });
+      const canonicalRepo = RepoResponseSchema.parse(repoRead.structuredContent);
+      assert.equal(canonicalRepo.defaultBranch, 'master');
+      const repoPage = await client.callTool({
+        name: 'list_repos',
+        arguments: { limit: 10 },
+      });
+      assert.deepEqual(
+        V1ListReposResponseSchema.parse(repoPage.structuredContent).items,
+        [canonicalRepo],
+        'list_repos and get_repo preserve the same verified branch projection',
+      );
+    } finally {
+      releaseProvision.resolve();
+      await Promise.all(providerOperations);
+      await client.close();
+      await server.close();
+    }
+  },
+);
 
 test('create_task rejects a non-UUID repo id through the shared /v1 schema', async () => {
   let called = false;

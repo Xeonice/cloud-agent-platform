@@ -9,6 +9,9 @@
 // Repo / Task domain + REST bodies + task-status enum + agent-runtime selector
 export * from './task.js';
 
+// Shared git branch/ref validation used by verified repository import metadata.
+export * from './git-ref.js';
+
 // Agent-runtime readiness: per-runtime { id, ready } booleans (no secrets)
 export * from './runtime.js';
 
@@ -19,9 +22,15 @@ export * from './runtime-model.js';
 // Strict packaged artifact identity shared by environment validation/release.
 export * from './artifact-checksum.js';
 
+// Secret-free shared primitives for deployment capability attestations.
+export * from './deployment-capability.js';
+
 // Deployment-wide default-closed capability and N-worker readiness attestation
 // for safe task model selection rollout.
 export * from './task-model-capability.js';
+
+// Deployment-wide default-closed capability attestation for durable admission.
+export * from './task-admission-capability.js';
 
 // Dual-channel WebSocket frame protocol (raw + flow-control frames)
 export * from './ws-frames.js';

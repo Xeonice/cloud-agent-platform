@@ -20,6 +20,12 @@ installer and agent path should not clone the repo or run `make up`.
 For custom task base images, see
 [`docs/sandbox-images.md`](sandbox-images.md).
 
+Releases containing durable asynchronous task admission require an explicit,
+default-closed deployment cutover. Review BoxLite capacity/readiness and follow
+the staged enablement plus drain-first rollback in
+[`deploy/TASK_ADMISSION_V2_CUTOVER.md`](../deploy/TASK_ADMISSION_V2_CUTOVER.md)
+before setting `CAP_TASK_ADMISSION_V2_ENABLED=true`.
+
 In-app upgrades are a later phase you do not need to self-host today.
 
 > **Trying it on a fresh local host?** The public marketing site hosts a

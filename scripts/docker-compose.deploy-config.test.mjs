@@ -25,6 +25,8 @@ import { dirname, join } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const composePath = join(here, '..', 'docker-compose.yml');
 const compose = readFileSync(composePath, 'utf8');
+const prodComposePath = join(here, '..', 'docker-compose.prod.yml');
+const prodCompose = readFileSync(prodComposePath, 'utf8');
 
 let passed = 0;
 let failed = 0;
@@ -121,6 +123,46 @@ assert(
   Boolean(volumeName) && !volumeName.includes('/'),
   '4.2: workspaces mount source is a named volume, not a host bind path',
 );
+
+// ── fix-large-repo-task-provisioning: source-free env-file passthrough ───────
+// The production run package deliberately relies on env_file for these values.
+// Redeclaring them in `environment:` as `${VAR:-}` would replace a Dokploy
+// file-only value with the empty shell interpolation, so test both halves of the
+// contract: both optional env files are loaded and no clobbering key is present.
+const prodApi = apiServiceBlock(prodCompose);
+assert(prodApi.length > 0, 'prod compose declares an `api` service');
+assert(
+  /env_file:\s*\n\s*- path: \.env\s*\n\s*required: false\s*\n\s*- path: \.\.\/files\/api\.env\s*\n\s*required: false/m.test(
+    prodApi,
+  ),
+  'prod compose loads both local and Dokploy api env files as optional inputs',
+);
+
+const admissionPassthroughKeys = [
+  'BOXLITE_DISK_SIZE_GB',
+  'BOXLITE_GIT_CLONE_TIMEOUT_MS',
+  'CAP_TASK_ADMISSION_V2_ENABLED',
+  'CAP_TASK_ADMISSION_V2_ATTESTATION_JSON',
+];
+for (const key of admissionPassthroughKeys) {
+  assert(prodApi.includes(key), `prod compose documents ${key} env-file passthrough`);
+  assert(
+    !new RegExp(`^\\s+${key}:`, 'm').test(prodApi),
+    `prod compose does not clobber env-file ${key} in environment`,
+  );
+}
+
+for (const [label, relativePath] of [
+  ['root', '.env.example'],
+  ['api', 'apps/api/.env.example'],
+  ['prod', 'docker-compose.prod.env.example'],
+]) {
+  const example = readFileSync(join(here, '..', relativePath), 'utf8');
+  assert(/^BOXLITE_DISK_SIZE_GB=5$/m.test(example), `${label} env example pins the 5 GiB BoxLite fallback`);
+  assert(/^BOXLITE_GIT_CLONE_TIMEOUT_MS=900000$/m.test(example), `${label} env example pins the 15-minute Git deadline`);
+  assert(/^CAP_TASK_ADMISSION_V2_ENABLED=false$/m.test(example), `${label} env example keeps admission-v2 closed by default`);
+  assert(/^# CAP_TASK_ADMISSION_V2_ATTESTATION_JSON=$/m.test(example), `${label} env example documents the staged attestation input`);
+}
 
 // ── add-release-upgrade-scripts: force-both + release-image guards ────────────
 // The manual upgrade path MUST stage BOTH images together (api + the aio-sandbox

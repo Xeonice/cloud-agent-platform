@@ -34,6 +34,7 @@
  */
 import type {
   AgentTerminalDataListener,
+  AgentTerminalLaunchOutcome,
   AgentTerminalOutputMeta,
   AgentTerminalPty,
   SandboxCommandExecutor,
@@ -201,8 +202,21 @@ const CLAUDE_WORKSPACE_DIR = '/home/gem/workspace';
 export type AioExitStatus = TerminalExitStatus;
 export type AioPtyClientMode =
   | 'launch-or-attach'
+  | 'attach-only'
   | 'provider-story-fixture'
   | 'replay-only';
+
+/**
+ * Internal control-flow marker for a cancelled or superseded fresh launch.
+ * This is deliberately distinct from runtime/model setup failure: losing
+ * admission authority is an expected coordination outcome, not a bad model.
+ */
+class AioAgentLaunchFencedError extends Error {
+  constructor() {
+    super('Agent launch was fenced before terminal input');
+    this.name = 'AioAgentLaunchFencedError';
+  }
+}
 
 const PROVIDER_STORY_SCRIPT_PATH = '/tmp/cap-provider-terminal-story.sh';
 
@@ -282,6 +296,12 @@ function buildProviderStoryFixtureInstallCommand(): string {
  */
 export class AioPtyClient implements AgentTerminalPty {
   private readonly logger: AioPtyClientLogger = noopLogger;
+
+  /** Always resolves exactly once; it never rejects when callers ignore it. */
+  readonly launchDecision: Promise<AgentTerminalLaunchOutcome>;
+  private resolveLaunchDecision!: (outcome: AgentTerminalLaunchOutcome) => void;
+  private launchDecisionSettled = false;
+  private launchAbortListener?: () => void;
 
   /** Subscribers to translated raw PTY output (decoded sandbox `output` data). */
   private readonly dataListeners = new Set<AgentTerminalDataListener>();
@@ -394,6 +414,10 @@ export class AioPtyClient implements AgentTerminalPty {
    *                   mode implements the gateway's create-vs-attach decision (2.5)
    *                   AND the boot re-adoption re-attach (Track 3) over the same
    *                   liveness probe, with no synchronous pre-probe needed.
+   *                 - `'attach-only'`: probe the named session and attach only
+   *                   after it is definitively live. A gone or indeterminate
+   *                   probe is surfaced through `launchDecision` and never falls
+   *                   back to `tmux new-session`.
    *                 - `'replay-only'`: do nothing on `ready` (no launch, no attach,
    *                   no liveness poller) — a terminal opened purely for
    *                   snapshot/tail replay of a finished task.
@@ -450,7 +474,14 @@ export class AioPtyClient implements AgentTerminalPty {
     private readonly onRuntimeSetupFailure?: (
       code: 'runtime_model_setup_failed',
     ) => void,
+    /** Cancellation fence supplied by the durable admission owner. */
+    private readonly signal?: AbortSignal,
+    /** Final DB-backed authority check before a fresh agent launch. */
+    private readonly beforeAgentLaunch?: () => Promise<void>,
   ) {
+    this.launchDecision = new Promise<AgentTerminalLaunchOutcome>((resolve) => {
+      this.resolveLaunchDecision = resolve;
+    });
     this.transportFactory = transportFactory ?? {
       open: () => new AioTerminalTransport(this.taskId, wsUrl),
     };
@@ -464,6 +495,7 @@ export class AioPtyClient implements AgentTerminalPty {
     // (survive-api-redeploy D1/D2), and `SnapshotManager` (above the seam) owns
     // operator reconnect/restore.
     this.transport = this.openTransport();
+    this.listenForAgentLaunchAbort();
   }
 
   // -------------------------------------------------------------------------
@@ -706,7 +738,7 @@ export class AioPtyClient implements AgentTerminalPty {
    *     throws into the WS message handler.
    */
   private async launchOrAttachOnReady(): Promise<void> {
-    if (this.launchDecisionStarted) return;
+    if (this.launchDecisionStarted || this.launchDecisionSettled) return;
     this.launchDecisionStarted = true;
     // Provider-backed terminals (notably BoxLite) may echo a login shell prompt as
     // soon as the WS reports ready, before the async tmux liveness probe returns.
@@ -717,35 +749,134 @@ export class AioPtyClient implements AgentTerminalPty {
     let sessionActive = false;
     try {
       await this.ensureTaskLaunchContextResolved();
+      if (this.launchDecisionSettled) return;
       const alive = await this.hasSession();
+      if (this.launchDecisionSettled) return;
       if (alive === true) {
         bootstrapHandedOff = true;
         this.attachToNamedSession();
         sessionActive = true;
+        this.settleLaunchDecision({ kind: 'attached' });
       } else if (alive === false) {
         // Definitively GONE → genuine fresh launch; arm the auto-submit (the runtime
         // gates whether an Enter is actually injected — claude's autoSubmit is a no-op).
+        await this.prepareFreshAgentLaunch();
+        // No await is permitted between this final signal check and launchAgent:
+        // launchAgent synchronously sends both the tmux launch and attach lines.
+        if (this.launchDecisionSettled) return;
+        this.assertAgentLaunchSignal();
         this.endAttachBootstrapWindow();
-        await this.prepareFreshModelMaterial();
         bootstrapHandedOff = true;
         this.launchAgent();
         sessionActive = true;
+        this.settleLaunchDecision({ kind: 'launched' });
       } else {
         // INCONCLUSIVE → fresh launch as a recoverable fallback, but DO NOT arm
         // the auto-submit: if an agent was actually already running, the duplicate
         // `tmux new-session` is a no-op and the attach rejoins it, so a stray Enter
         // must not be injected.
-        await this.prepareFreshModelMaterial();
+        await this.prepareFreshAgentLaunch();
+        // Keep the last cancellation read adjacent to the synchronous launch.
+        if (this.launchDecisionSettled) return;
+        this.assertAgentLaunchSignal();
         bootstrapHandedOff = true;
         this.launchAgent(false);
         sessionActive = true;
+        this.settleLaunchDecision({ kind: 'launched' });
       }
-    } catch {
+    } catch (error) {
       if (!bootstrapHandedOff) this.endAttachBootstrapWindow();
-      this.reportRuntimeSetupFailure();
+      if (error instanceof AioAgentLaunchFencedError) {
+        this.fencePendingAgentLaunch();
+      } else {
+        this.settleLaunchDecision({ kind: 'failed' });
+        this.reportRuntimeSetupFailure();
+      }
     } finally {
       if (sessionActive) this.startLivenessPoller();
     }
+  }
+
+  /**
+   * Re-adoption-only decision used during startup recovery. Unlike
+   * {@link launchOrAttachOnReady}, this path has no fresh-launch fallback:
+   * recovery must not turn an absent or temporarily unprobeable historical
+   * session into a second agent process.
+   */
+  private async attachOnlyOnReady(): Promise<void> {
+    if (this.launchDecisionStarted || this.launchDecisionSettled) return;
+    this.launchDecisionStarted = true;
+    this.beginAttachBootstrapWindow();
+    let bootstrapHandedOff = false;
+    let sessionActive = false;
+    try {
+      const alive = await this.hasSession();
+      if (this.launchDecisionSettled) return;
+      if (alive === true) {
+        bootstrapHandedOff = true;
+        this.attachToNamedSession();
+        sessionActive = true;
+        this.settleLaunchDecision({ kind: 'attached' });
+        return;
+      }
+      this.settleLaunchDecision({
+        kind: alive === false ? 'absent' : 'indeterminate',
+      });
+    } catch {
+      // `hasSession` normally translates transport errors to `null`; keep this
+      // defensive branch equally fail-closed if an executor violates that seam.
+      this.settleLaunchDecision({ kind: 'indeterminate' });
+    } finally {
+      if (!bootstrapHandedOff) this.endAttachBootstrapWindow();
+      if (sessionActive) this.startLivenessPoller();
+    }
+  }
+
+  /**
+   * Finish every asynchronous launch prerequisite, then execute the caller's
+   * durable authority check. The caller performs one final synchronous signal
+   * check after this promise settles and immediately before sending input.
+   */
+  private async prepareFreshAgentLaunch(): Promise<void> {
+    await this.prepareFreshModelMaterial();
+    this.assertAgentLaunchSignal();
+    if (!this.beforeAgentLaunch) return;
+    try {
+      await this.beforeAgentLaunch();
+    } catch {
+      // Coordination/lease errors are intentionally not reclassified as model
+      // setup failures and their possibly-sensitive diagnostics are not logged.
+      throw new AioAgentLaunchFencedError();
+    }
+  }
+
+  private assertAgentLaunchSignal(): void {
+    if (this.signal?.aborted) throw new AioAgentLaunchFencedError();
+  }
+
+  private listenForAgentLaunchAbort(): void {
+    if (!this.signal || this.mode !== 'launch-or-attach') return;
+    const onAbort = () => this.fencePendingAgentLaunch();
+    this.launchAbortListener = onAbort;
+    if (this.signal.aborted) onAbort();
+    else this.signal.addEventListener('abort', onAbort, { once: true });
+  }
+
+  private settleLaunchDecision(outcome: AgentTerminalLaunchOutcome): boolean {
+    if (this.launchDecisionSettled) return false;
+    this.launchDecisionSettled = true;
+    if (this.signal && this.launchAbortListener) {
+      this.signal.removeEventListener('abort', this.launchAbortListener);
+      this.launchAbortListener = undefined;
+    }
+    this.resolveLaunchDecision(outcome);
+    return true;
+  }
+
+  private fencePendingAgentLaunch(): void {
+    if (!this.settleLaunchDecision({ kind: 'fenced' })) return;
+    this.launchDecisionStarted = true;
+    this.close();
   }
 
   private async prepareFreshModelMaterial(): Promise<void> {
@@ -877,6 +1008,7 @@ export class AioPtyClient implements AgentTerminalPty {
    * now-defunct bridge (the next process re-adopts via a fresh `AioPtyClient`).
    */
   close(): void {
+    this.settleLaunchDecision({ kind: 'fenced' });
     this.exitResolved = true;
     this.stopLivenessPoller();
     this.endAttachBootstrapWindow();
@@ -907,20 +1039,31 @@ export class AioPtyClient implements AgentTerminalPty {
         // start of the session-established handshake.
         this.sawSessionId = true;
         break;
-      case 'ready':
+      case 'ready': {
         // `session_id` then `ready` is the session-established signal: the AIO
         // shell is now live. Codex itself lives in a DETACHED tmux session
         // (survive-api-redeploy D1) that we launch fresh or re-attach to. A
         // replay-only terminal does neither. Best-effort: an error is logged,
         // never thrown, so it cannot break the WS message handler.
         this.established = true;
+        const reconnectingForInput = this.reconnectingForInput;
         this.reconnectingForInput = false;
         if (this.mode === 'launch-or-attach') {
-          void this.launchOrAttachOnReady();
+          if (reconnectingForInput && this.launchDecisionSettled) {
+            // The one durable launch-or-attach decision was already settled on
+            // the original bridge. A replacement input bridge must rejoin that
+            // same detached session without trying to reopen or resettle it.
+            this.attachToNamedSession();
+          } else {
+            void this.launchOrAttachOnReady();
+          }
+        } else if (this.mode === 'attach-only') {
+          void this.attachOnlyOnReady();
         } else if (this.mode === 'provider-story-fixture') {
           void this.launchProviderStoryFixture();
         }
         break;
+      }
       case 'output':
         this.onOutput(frame);
         break;
@@ -1077,11 +1220,16 @@ export class AioPtyClient implements AgentTerminalPty {
     if (!this.established) {
       if (this.exitResolved) return;
       this.exitResolved = true;
+      this.settleLaunchDecision({ kind: 'failed' });
       this.logger.warn(
         `task ${this.taskId}: terminal WS closed before session established (abnormal)`,
       );
       this.onExit?.({ code: null, abnormal: true });
       return;
+    }
+    if (!this.launchDecisionSettled) {
+      this.launchDecisionStarted = true;
+      this.settleLaunchDecision({ kind: 'failed' });
     }
     // Established session: the WS closed but the detached session may still be
     // alive. Do NOT resolve exit here — the liveness poller decides. Stop polling

@@ -173,21 +173,43 @@ test('GitlabForge.findExistingChangeRequest uses state=opened&source_branch', as
 // --- listRepos mapping (all three) -----------------------------------------
 
 test('listRepos maps each forge to AvailableRepo', async () => {
-  let s = stubFetch([{ body: JSON.stringify([{ full_name: 'o/r', clone_url: 'https://github.com/o/r.git', private: true, default_branch: 'main' }]) }]);
+  let s = stubFetch([{ body: JSON.stringify([{ full_name: 'o/r', clone_url: 'https://github.com/o/r.git', private: true, default_branch: 'master' }]) }]);
   try {
     const gh = await new GithubForge().listRepos(GH);
-    assert.deepEqual(gh, [{ forge: 'github', fullPath: 'o/r', gitSource: 'https://github.com/o/r.git', visibility: 'private', defaultBranch: 'main' }]);
+    assert.deepEqual(gh, [{ forge: 'github', fullPath: 'o/r', gitSource: 'https://github.com/o/r.git', visibility: 'private', defaultBranch: 'master' }]);
   } finally {
     s.restore();
   }
 
-  s = stubFetch([{ body: JSON.stringify([{ id: 55, path_with_namespace: 'g/p', http_url_to_repo: 'https://gitlab.com/g/p.git', visibility: 'private', default_branch: 'main' }]) }]);
+  s = stubFetch([{ body: JSON.stringify([{ id: 55, path_with_namespace: 'g/p', http_url_to_repo: 'https://gitlab.com/g/p.git', visibility: 'private', default_branch: 'master' }]) }]);
   try {
     const gl = await new GitlabForge().listRepos(GL);
     assert.equal(gl[0].forge, 'gitlab');
     assert.equal(gl[0].fullPath, 'g/p');
     assert.equal(gl[0].gitlabProjectId, '55');
+    assert.equal(gl[0].defaultBranch, 'master');
     assert.match(s.captured[0].url, /\/projects\?membership=true/);
+  } finally {
+    s.restore();
+  }
+
+  s = stubFetch([{ body: JSON.stringify([{ full_name: 'o/r', html_url: 'https://gitee.com/o/r', private: true, default_branch: 'master' }]) }]);
+  try {
+    const gitee = await new GiteeForge().listRepos(GITEE);
+    assert.equal(gitee[0].defaultBranch, 'master');
+  } finally {
+    s.restore();
+  }
+});
+
+test('listRepos drops missing, whitespace-normalized, and invalid default refs', async () => {
+  const s = stubFetch([{ body: JSON.stringify([
+    { full_name: 'o/missing', html_url: 'https://gitee.com/o/missing', private: true },
+    { full_name: 'o/spaced', html_url: 'https://gitee.com/o/spaced', private: true, default_branch: ' master ' },
+    { full_name: 'o/option', html_url: 'https://gitee.com/o/option', private: true, default_branch: '-master' },
+  ]) }]);
+  try {
+    assert.deepEqual(await new GiteeForge().listRepos(GITEE), []);
   } finally {
     s.restore();
   }

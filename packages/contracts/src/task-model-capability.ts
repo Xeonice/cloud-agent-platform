@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { RuntimeModelCatalogUnavailableErrorSchema } from './runtime-model.js';
+import {
+  DeploymentCapabilityLocalReportFields,
+  DeploymentCapabilitySafeTextSchema,
+} from './deployment-capability.js';
 
 /** Deployment-wide capability required before any explicit-model write is accepted. */
 export const TASK_MODEL_SELECTION_CAPABILITY =
@@ -18,26 +22,14 @@ export type TaskModelSelectionWorkerRole = z.infer<
   typeof TaskModelSelectionWorkerRoleSchema
 >;
 
-const SafeCapabilityTextSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(256)
-  .regex(/^[A-Za-z0-9._:@/+-]+$/u);
-
 /**
  * One process-local report. It is evidence about one worker only and is never,
  * by itself, proof that every deployment replica is model-aware.
  */
 export const TaskModelSelectionLocalRoleReportSchema = z
   .object({
-    schemaVersion: z.literal(1),
-    instanceId: SafeCapabilityTextSchema,
+    ...DeploymentCapabilityLocalReportFields,
     role: TaskModelSelectionWorkerRoleSchema,
-    buildIdentity: SafeCapabilityTextSchema,
-    capabilities: z.array(SafeCapabilityTextSchema).max(64),
-    ready: z.boolean(),
-    reportedAt: z.string().datetime({ offset: true }),
   })
   .strict();
 export type TaskModelSelectionLocalRoleReport = z.infer<
@@ -46,7 +38,7 @@ export type TaskModelSelectionLocalRoleReport = z.infer<
 
 export const TaskModelSelectionExpectedWorkerSchema = z
   .object({
-    instanceId: SafeCapabilityTextSchema,
+    instanceId: DeploymentCapabilitySafeTextSchema,
     roles: z.array(TaskModelSelectionWorkerRoleSchema).min(1).max(4),
   })
   .strict()
@@ -71,7 +63,7 @@ export type TaskModelSelectionExpectedWorker = z.infer<
 export const TaskModelSelectionDeploymentAttestationSchema = z
   .object({
     schemaVersion: z.literal(1),
-    deploymentId: SafeCapabilityTextSchema,
+    deploymentId: DeploymentCapabilitySafeTextSchema,
     expectedWorkers: z.array(TaskModelSelectionExpectedWorkerSchema).min(1),
     reports: z.array(TaskModelSelectionLocalRoleReportSchema).min(1),
     databaseMigrationComplete: z.boolean(),

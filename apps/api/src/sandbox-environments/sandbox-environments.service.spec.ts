@@ -23,11 +23,70 @@ function encryptForTest(value: string): string {
   return encryptToStored(value, TEST_ENV);
 }
 
+async function withBoxLiteDeployment<T>(
+  diskSizeGb: number,
+  run: () => Promise<T>,
+): Promise<T> {
+  const values = {
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'test-only',
+    BOXLITE_IMAGE: 'cap/boxlite@sha256:deployment',
+    BOXLITE_IMAGE_MAP: '',
+    BOXLITE_ROOTFS_PATH: '',
+    BOXLITE_ROOTFS_PATH_MAP: '',
+    BOXLITE_PROVIDER_ID: 'boxlite-test',
+    BOXLITE_PROVIDER_PRIORITY: '0',
+    BOXLITE_PROVIDER_LOCATION: 'local',
+    BOXLITE_PROTOCOL_MODE: 'native',
+    BOXLITE_CAPABILITIES:
+      'terminal.websocket,command.exec,workspace.git.materialize',
+    BOXLITE_TERMINAL_MODE: 'pty',
+    BOXLITE_SANDBOX_MODE: 'danger-full-access',
+    BOXLITE_PATH_PREFIX: 'default',
+    BOXLITE_TIMEOUT_MS: '30000',
+    BOXLITE_GIT_CLONE_TIMEOUT_MS: '900000',
+    BOXLITE_DISK_SIZE_GB: String(diskSizeGb),
+  } as const;
+  const previous = Object.fromEntries(
+    Object.keys(values).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, values);
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function withAioDeployment<T>(run: () => Promise<T>): Promise<T> {
+  const values = {
+    CAP_SANDBOX_PROVIDER: 'aio',
+    AIO_SANDBOX_IMAGE: 'cap/aio@sha256:deployment',
+  } as const;
+  const previous = Object.fromEntries(
+    Object.keys(values).map((key) => [key, process.env[key]]),
+  );
+  Object.assign(process.env, values);
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 interface FakeEnvironmentRow {
   id: string;
   name: string;
   source: Record<string, unknown>;
   status: string;
+  resources: Record<string, unknown> | null;
   envVars: Record<string, unknown>;
   secretEnvVars: Record<string, unknown>;
   providerFamilies: string[];
@@ -52,6 +111,7 @@ interface FakeValidationRow {
   runtimeArtifactChecksums?: Record<string, string> | null;
   cliArtifactChecksum?: string | null;
   sandboxMetadata: unknown;
+  resourceSnapshot?: Record<string, unknown> | null;
   probes: unknown;
   error: string | null;
   contractVersion: string | null;
@@ -72,6 +132,9 @@ function makeEnvironment(overrides: Partial<FakeEnvironmentRow>): FakeEnvironmen
     name: overrides.name ?? 'Base image',
     source: overrides.source ?? { kind: 'aio-docker-image', image: 'cap/base:latest' },
     status: overrides.status ?? 'draft',
+    resources: Object.prototype.hasOwnProperty.call(overrides, 'resources')
+      ? (overrides.resources ?? null)
+      : null,
     envVars: overrides.envVars ?? {},
     secretEnvVars: overrides.secretEnvVars ?? {},
     providerFamilies: overrides.providerFamilies ?? ['aio'],
@@ -93,11 +156,16 @@ function buildService(
   service: SandboxEnvironmentsService;
   rows: FakeEnvironmentRow[];
   validations: FakeValidationRow[];
-  validationWrites: { sandboxMetadata: unknown }[];
+  validationWrites: { sandboxMetadata: unknown; resourceSnapshot: unknown }[];
+  environmentReadCount(): number;
 } {
   const rows = [...initialRows];
   const validations: FakeValidationRow[] = [];
-  const validationWrites: { sandboxMetadata: unknown }[] = [];
+  let environmentReadCount = 0;
+  const validationWrites: {
+    sandboxMetadata: unknown;
+    resourceSnapshot: unknown;
+  }[] = [];
 
   function matchesWhere(row: FakeEnvironmentRow, where?: FakeEnvironmentWhere): boolean {
     if (!where) return true;
@@ -134,11 +202,13 @@ function buildService(
         where?: FakeEnvironmentWhere;
         include?: unknown;
       }) => {
+        environmentReadCount += 1;
         const result = rows.filter((row) => matchesWhere(row, args?.where));
         result.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
         return args?.include ? result.map(attachLatestValidation) : result;
       },
       findUnique: async (args: { where: { id: string }; include?: unknown }) => {
+        environmentReadCount += 1;
         const row = rows.find((candidate) => candidate.id === args.where.id);
         if (!row) return null;
         return args.include ? attachLatestValidation(row) : row;
@@ -148,6 +218,7 @@ function buildService(
           name: string;
           source: Record<string, unknown>;
           status: string;
+          resources?: Record<string, unknown> | typeof Prisma.DbNull;
           envVars?: Record<string, unknown>;
           secretEnvVars?: Record<string, unknown>;
           providerFamilies: string[];
@@ -162,6 +233,11 @@ function buildService(
           name: args.data.name,
           source: args.data.source,
           status: args.data.status,
+          resources:
+            args.data.resources === Prisma.DbNull
+              ? null
+              : ((args.data.resources as Record<string, unknown> | undefined) ??
+                null),
           envVars: args.data.envVars ?? {},
           secretEnvVars: args.data.secretEnvVars ?? {},
           providerFamilies: args.data.providerFamilies,
@@ -202,7 +278,11 @@ function buildService(
           error?: string | null;
         };
       }) => {
-        validationWrites.push({ sandboxMetadata: args.data.sandboxMetadata });
+        validationWrites.push({
+          sandboxMetadata: args.data.sandboxMetadata,
+          resourceSnapshot: args.data.resourceSnapshot,
+        });
+        const resourceSnapshot = args.data.resourceSnapshot as unknown;
         const validation: FakeValidationRow = {
           id: VALIDATION_A,
           checkedAt: new Date('2026-07-01T04:00:00.000Z'),
@@ -213,6 +293,11 @@ function buildService(
             args.data.sandboxMetadata === Prisma.JsonNull
               ? null
               : args.data.sandboxMetadata,
+          resourceSnapshot:
+            resourceSnapshot === Prisma.DbNull ||
+            resourceSnapshot === Prisma.JsonNull
+              ? null
+              : (resourceSnapshot as Record<string, unknown> | null | undefined),
         };
         validations.push(validation);
         return validation;
@@ -233,6 +318,7 @@ function buildService(
     rows,
     validations,
     validationWrites,
+    environmentReadCount: () => environmentReadCount,
   };
 }
 
@@ -255,6 +341,7 @@ function createPassingValidationRunner(): SandboxEnvironmentValidationRunner {
           sandboxVersion: 'v1.2.3',
           dependencies: { codex: '0.132.0', 'company-cli': '4.5.6' },
         },
+        resourceSnapshot: target.resources ?? {},
         probes: [{ name: 'provider-probe', ok: true, output: 'ok' }],
         error: null,
       };
@@ -278,6 +365,35 @@ test('validation persists and exposes only builder-declared sandbox metadata', a
     dependencies: { codex: '0.132.0', 'company-cli': '4.5.6' },
   });
   assert.deepEqual(result.environment.sandboxMetadata, result.validation.sandboxMetadata);
+});
+
+test('validation persists the exact resource snapshot used by its probe', async () => {
+  const environment = makeEnvironment({
+    id: ENV_A,
+    source: { kind: 'boxlite-image', image: 'cap/boxlite@sha256:resource' },
+    providerFamilies: ['boxlite'],
+    resources: { diskSizeGb: 9 },
+    runtimeIds: ['codex'],
+  });
+  const runner: SandboxEnvironmentValidationRunner = {
+    async validate(target) {
+      assert.deepEqual(target.resources, { diskSizeGb: 9 });
+      return {
+        ...(await createPassingValidationRunner().validate(target)),
+        resourceSnapshot: Object.freeze({ diskSizeGb: 9 }),
+      };
+    },
+  };
+  const { service, validations, validationWrites } = buildService(
+    [environment],
+    runner,
+  );
+
+  const result = await service.validate(ENV_A);
+
+  assert.deepEqual(validationWrites[0]?.resourceSnapshot, { diskSizeGb: 9 });
+  assert.deepEqual(validations[0]?.resourceSnapshot, { diskSizeGb: 9 });
+  assert.deepEqual(result.validation.resourceSnapshot, { diskSizeGb: 9 });
 });
 
 test('failed validation persists absent sandbox metadata as database null', async () => {
@@ -344,6 +460,44 @@ test('create stores image parameters and redacts secret values on reads', async 
     decryptStored(String(rows[0]?.secretEnvVars.GCODE_TOKEN), TEST_ENV),
     'gcode-secret',
   );
+});
+
+test('create persists bounded resources separately from guest image parameters', async () => {
+  const { service, rows } = buildService();
+
+  const created = await service.create({
+    name: 'BoxLite large workspace',
+    source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+    resources: { diskSizeGb: 5 },
+    parameters: [
+      { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v5' },
+    ],
+  });
+
+  assert.deepEqual(created.resources, { diskSizeGb: 5 });
+  assert.deepEqual(rows[0]?.resources, { diskSizeGb: 5 });
+  assert.deepEqual(rows[0]?.envVars, {
+    GCODE_API_BASE_URL: 'https://code.example/api/v5',
+  });
+  assert.equal('diskSizeGb' in (rows[0]?.envVars ?? {}), false);
+});
+
+test('legacy null resources remain readable and invalid resource values fail centrally', async () => {
+  const { service } = buildService([
+    makeEnvironment({ id: ENV_A, resources: null }),
+  ]);
+
+  assert.equal((await service.list())[0]?.resources, null);
+
+  for (const diskSizeGb of [0, 1.5, 1025]) {
+    await assert.rejects(() =>
+      service.create({
+        name: 'Invalid resource',
+        source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+        resources: { diskSizeGb },
+      }),
+    );
+  }
 });
 
 test('create rejects duplicate image parameter names', async () => {
@@ -500,6 +654,7 @@ test('resolveForTask returns a compatible ready default and ignores incompatible
       status: 'ready',
       isDefault: true,
       source: { kind: 'boxlite-image', image: 'cap/boxlite:latest' },
+      resources: { diskSizeGb: 6 },
       providerFamilies: ['boxlite'],
       runtimeIds: ['codex'],
       lastValidationId: VALIDATION_A,
@@ -525,6 +680,8 @@ test('resolveForTask returns a compatible ready default and ignores incompatible
   assert.equal(resolved?.environmentId, ENV_A);
   assert.equal(resolved?.sourceKind, 'boxlite-image');
   assert.equal(resolved?.sourceRef, 'cap/boxlite:latest');
+  assert.deepEqual(resolved?.resources, { diskSizeGb: 6 });
+  assert.equal(Object.isFrozen(resolved?.resources), true);
 
   const missing = await service.resolveForTask({
     requestedEnvironmentId: null,
@@ -574,6 +731,241 @@ test('selection preserves managed default, explicit null deployment fallback, an
     )?.environmentId,
     ENV_A,
   );
+});
+
+test('admission resolves explicit and implicit deployment defaults before task write', async () => {
+  const { service } = buildService();
+  await withBoxLiteDeployment(11, async () => {
+    const admission = await service.resolveTaskAdmission({
+      selection: { kind: 'deployment-default' },
+      runtimeId: 'codex',
+    });
+    const explicit = admission.provisioningPolicy.resources;
+    const implicit = await service.resolveProvisioningResourcesForTask({
+      selection: { kind: 'managed-default' },
+      runtimeId: 'codex',
+    });
+    assert.deepEqual(explicit, { diskSizeGb: 11 });
+    assert.deepEqual(implicit, { diskSizeGb: 11 });
+    assert.equal(admission.providerId, 'boxlite-test');
+    assert.equal(admission.providerFamily, 'boxlite');
+    assert.equal(
+      admission.provisioningPolicy.workspaceMaterializationDeadlineMs,
+      900_000,
+    );
+    assert.equal(Object.isFrozen(explicit), true);
+    assert.equal(Object.isFrozen(implicit), true);
+  });
+});
+
+test('explicit-model admission validates its immutable resources over the current provider fallback', async () => {
+  const { service } = buildService();
+  await withBoxLiteDeployment(5, async () => {
+    const admission = await service.resolveTaskAdmission({
+      selection: { kind: 'deployment-default' },
+      runtimeId: 'codex',
+      providerFamily: 'boxlite',
+      resources: { diskSizeGb: 9 },
+    });
+    assert.equal(admission.providerId, 'boxlite-test');
+    assert.equal(admission.providerFamily, 'boxlite');
+    assert.deepEqual(admission.provisioningPolicy.resources, {
+      diskSizeGb: 9,
+    });
+    assert.equal(
+      admission.provisioningPolicy.workspaceMaterializationDeadlineMs,
+      900_000,
+    );
+  });
+});
+
+test('atomic task admission resolves managed environment and pinned policy from one row observation', async () => {
+  const { service, validations, environmentReadCount } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      source: {
+        kind: 'boxlite-image',
+        image: 'cap/boxlite@sha256:atomic',
+      },
+      providerFamilies: ['boxlite'],
+      runtimeIds: ['codex'],
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+  validations.push({
+    id: VALIDATION_A,
+    environmentId: ENV_A,
+    status: 'passed',
+    providerFamily: 'boxlite',
+    runtimeId: 'codex',
+    sourceKind: 'boxlite-image',
+    resolvedLocator: 'cap/boxlite@sha256:atomic',
+    resolvedDigest: 'sha256:atomic',
+    resolvedChecksum: null,
+    resourceSnapshot: { diskSizeGb: 8 },
+    sandboxMetadata: null,
+    probes: [],
+    error: null,
+    contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    checkedAt: new Date('2026-07-14T00:00:00.000Z'),
+  });
+
+  const admission = await withBoxLiteDeployment(15, () =>
+    service.resolveTaskAdmission({
+      selection: { kind: 'managed', environmentId: ENV_A },
+      runtimeId: 'codex',
+      providerFamily: 'boxlite',
+    }),
+  );
+  assert.equal(environmentReadCount(), 1);
+  assert.equal(admission.environment?.environmentId, ENV_A);
+  assert.equal(admission.providerId, 'boxlite-test');
+  assert.equal(admission.providerFamily, 'boxlite');
+  assert.deepEqual(admission.environment?.resources, { diskSizeGb: 8 });
+  assert.deepEqual(admission.provisioningPolicy.resources, { diskSizeGb: 8 });
+  assert.equal(
+    admission.provisioningPolicy.workspaceMaterializationDeadlineMs,
+    900_000,
+  );
+  assert.equal(Object.isFrozen(admission), true);
+  assert.equal(Object.isFrozen(admission.provisioningPolicy), true);
+  assert.equal(Object.isFrozen(admission.provisioningPolicy.resources), true);
+});
+
+test('managed task resolution keeps its validation-pinned resources across config changes', async () => {
+  const { service, validations } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      isDefault: true,
+      source: {
+        kind: 'boxlite-image',
+        image: 'cap/boxlite@sha256:managed',
+      },
+      resources: null,
+      providerFamilies: ['boxlite'],
+      runtimeIds: ['codex'],
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+  validations.push({
+    id: VALIDATION_A,
+    environmentId: ENV_A,
+    status: 'passed',
+    providerFamily: 'boxlite',
+    runtimeId: 'codex',
+    sourceKind: 'boxlite-image',
+    resolvedLocator: 'cap/boxlite@sha256:managed',
+    resolvedDigest: 'sha256:managed',
+    resolvedChecksum: null,
+    resourceSnapshot: { diskSizeGb: 7 },
+    sandboxMetadata: null,
+    probes: [],
+    error: null,
+    contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    checkedAt: new Date('2026-07-14T00:00:00.000Z'),
+  });
+
+  for (const mutableFallback of [13, 17]) {
+    await withBoxLiteDeployment(mutableFallback, async () => {
+      assert.deepEqual(
+        await service.resolveProvisioningResourcesForTask({
+          selection: { kind: 'managed', environmentId: ENV_A },
+          runtimeId: 'codex',
+          providerFamily: 'boxlite',
+        }),
+        { diskSizeGb: 7 },
+      );
+    });
+  }
+});
+
+test('an empty pinned AIO resource snapshot remains authoritative while admission freezes the default deadline', async () => {
+  const { service, validations } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      source: { kind: 'aio-docker-image', image: 'cap/aio@sha256:pinned' },
+      resources: null,
+      providerFamilies: ['aio'],
+      runtimeIds: ['codex'],
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+  validations.push({
+    id: VALIDATION_A,
+    environmentId: ENV_A,
+    status: 'passed',
+    providerFamily: 'aio',
+    runtimeId: 'codex',
+    sourceKind: 'aio-docker-image',
+    resolvedLocator: 'cap/aio@sha256:pinned',
+    resolvedDigest: 'sha256:pinned',
+    resolvedChecksum: null,
+    resourceSnapshot: {},
+    sandboxMetadata: null,
+    probes: [],
+    error: null,
+    contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    checkedAt: new Date('2026-07-14T00:00:00.000Z'),
+  });
+
+  const admission = await withAioDeployment(() =>
+    service.resolveTaskAdmission({
+      selection: { kind: 'managed', environmentId: ENV_A },
+      runtimeId: 'codex',
+      providerFamily: 'aio',
+    }),
+  );
+  assert.deepEqual(admission.provisioningPolicy.resources, {});
+  assert.equal(
+    admission.provisioningPolicy.workspaceMaterializationDeadlineMs,
+    900_000,
+  );
+  assert.equal(Object.isFrozen(admission.provisioningPolicy.resources), true);
+});
+
+test('legacy null validation resources use current fallback without rewriting environment', async () => {
+  const row = makeEnvironment({
+    id: ENV_A,
+    status: 'ready',
+    source: { kind: 'boxlite-image', image: 'cap/boxlite@sha256:legacy' },
+    resources: null,
+    providerFamilies: ['boxlite'],
+    runtimeIds: ['codex'],
+    lastValidationId: VALIDATION_A,
+  });
+  const { service, validations } = buildService([row]);
+  validations.push({
+    id: VALIDATION_A,
+    environmentId: ENV_A,
+    status: 'passed',
+    providerFamily: 'boxlite',
+    runtimeId: 'codex',
+    sourceKind: 'boxlite-image',
+    resolvedLocator: 'cap/boxlite@sha256:legacy',
+    resolvedDigest: 'sha256:legacy',
+    resolvedChecksum: null,
+    resourceSnapshot: null,
+    sandboxMetadata: null,
+    probes: [],
+    error: null,
+    contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
+    checkedAt: new Date('2026-07-14T00:00:00.000Z'),
+  });
+
+  await withBoxLiteDeployment(12, async () => {
+    assert.deepEqual(
+      await service.resolveProvisioningResourcesForTask({
+        selection: { kind: 'managed', environmentId: ENV_A },
+        runtimeId: 'codex',
+        providerFamily: 'boxlite',
+      }),
+      { diskSizeGb: 12 },
+    );
+  });
+  assert.equal(row.resources, null);
 });
 
 test('immutable managed resolution joins passed validation and canonicalizes digest source', async () => {

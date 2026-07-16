@@ -296,7 +296,11 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
     const aio = onlyProvider(router);
     const hooks = aio.hooks;
 
-    assert.equal(await hooks.provisionLookup.getCloneSpec('task-1'), null);
+    assert.equal(
+      hooks.provisionLookup.getCloneSpec,
+      undefined,
+      'the production AIO descriptor never re-reads a legacy clone spec',
+    );
     assert.equal(await hooks.provisionLookup.getTaskPrompt('task-1'), 'fix task');
     assert.equal(await hooks.provisionLookup.getRuntimeId('task-1'), 'codex');
     const preflight = await hooks.runtimePreflight({
@@ -1090,12 +1094,17 @@ await test('configured BoxLite provision validates metadata against the task-sel
             runtimeId: 'claude-code',
             executionMode: 'interactive-pty',
           }),
-        /selected runtime dependency claude-code is not declared/,
+        (error) =>
+          error?.code === 'sandbox_provisioning_stage_error' &&
+          error.stage === 'runtime_setup' &&
+          !error.message.includes('claude-code'),
       );
 
-      assert.deepEqual(
-        client.execCalls.map((call) => call.command),
-        ['cat /etc/cap/sandbox-metadata.json'],
+      assert.equal(client.execCalls.length, 2);
+      assert.match(client.execCalls[0].command, /^df -Pk \/ \| awk /);
+      assert.equal(
+        client.execCalls[1].command,
+        'cat /etc/cap/sandbox-metadata.json',
       );
       assert.deepEqual(client.deletedSandboxIds, [
         'cap-boxlite-box-task-claude-metadata',

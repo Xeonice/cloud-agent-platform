@@ -22,6 +22,12 @@ import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 import { SessionTranscriptService } from './session-transcript.service';
 import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-environments.module';
+import { ForgeModule } from '../forge/forge.module';
+import {
+  EnvironmentTaskAdmissionGate,
+  TASK_ADMISSION_GATE_TOKEN,
+} from './task-admission-gate';
+import { TaskAdmissionModule } from '../task-admission/task-admission.module';
 
 /**
  * Feature module bundling the tasks REST controller, the tasks service, and the
@@ -45,13 +51,23 @@ import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-envir
  * via `ModuleRef` under their own `TRANSCRIPT_SERVICE_TOKEN`.
  */
 @Module({
-  imports: [forwardRef(() => GuardrailsModule), SandboxEnvironmentsModule],
+  imports: [
+    forwardRef(() => GuardrailsModule),
+    SandboxEnvironmentsModule,
+    ForgeModule,
+    TaskAdmissionModule,
+  ],
   // SessionHistoryController is a standalone read-only REST surface; it injects
   // the global SANDBOX_PROVIDER port (no extra module import needed) + TasksService
   // + the durable TRANSCRIPT_STORE bound below.
   controllers: [TasksController, SessionHistoryController, SessionCastController],
   providers: [
     TasksService,
+    EnvironmentTaskAdmissionGate,
+    {
+      provide: TASK_ADMISSION_GATE_TOKEN,
+      useExisting: EnvironmentTaskAdmissionGate,
+    },
     // Bridge the GuardrailsService under a token that TasksService injects
     // with @Optional(), resolving the circular module dependency.
     {

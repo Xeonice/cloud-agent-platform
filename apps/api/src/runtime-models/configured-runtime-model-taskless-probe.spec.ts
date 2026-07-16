@@ -7,6 +7,10 @@ import type {
   BoxLiteProviderConfig,
   SandboxResolvedEnvironmentMetadata,
 } from '@cap/sandbox';
+import {
+  BOXLITE_DEFAULT_DISK_SIZE_GB,
+  BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS,
+} from '@cap/sandbox';
 import type { RuntimeExecutionEnvironmentSnapshot } from '@cap/contracts';
 import {
   ConfiguredRuntimeModelTasklessProbeLifecycle,
@@ -50,6 +54,7 @@ function boxLiteSnapshot(): RuntimeExecutionEnvironmentSnapshot {
     ...snapshot(),
     provider: 'boxlite',
     providerFamily: 'boxlite',
+    resources: { diskSizeGb: BOXLITE_DEFAULT_DISK_SIZE_GB },
     source: {
       kind: 'boxlite-image',
       locator: 'registry.example.test/cap@sha256:bbbbbbbb',
@@ -70,15 +75,17 @@ const BOXLITE_CONFIG = {
   rootfsPathByRuntime: {},
   priority: 0,
   location: 'local',
-  capabilities: [],
+  capabilities: ['resource.disk-size-gb'],
   workspacePath: '/workspace',
   sandboxIdPrefix: 'cap-',
   sandboxEnv: {},
   sandboxMode: 'danger-full-access',
   clientMode: 'rest',
-  protocolMode: 'cap-rest',
+  protocolMode: 'native',
   pathPrefix: '',
   terminalMode: 'pty',
+  diskSizeGb: BOXLITE_DEFAULT_DISK_SIZE_GB,
+  gitCloneTimeoutMs: BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS,
   timeoutMs: 10_000,
 } as const satisfies BoxLiteProviderConfig;
 
@@ -384,12 +391,49 @@ test('BoxLite taskless lifecycle tracks and deletes the provider-returned id', a
   assert.equal(createCalls.length, 1);
   assert.match(String(createCalls[0]?.taskId), /^cap-model-probe-/);
   assert.equal(
+    createCalls[0]?.diskSizeGb,
+    BOXLITE_DEFAULT_DISK_SIZE_GB,
+  );
+  assert.deepEqual(
+    (createCalls[0]?.metadata as Record<string, unknown>).resources,
+    { diskSizeGb: BOXLITE_DEFAULT_DISK_SIZE_GB },
+  );
+  assert.equal(
     (createCalls[0]?.metadata as Record<string, unknown>)[
       'cap.resource-purpose'
     ],
     'runtime-model-catalog',
   );
   assert.deepEqual(deleted, ['provider-generated-id']);
+});
+
+test('BoxLite taskless lifecycle rejects unsupported disk before native create', async () => {
+  let creates = 0;
+  const lifecycle = new ConfiguredRuntimeModelTasklessProbeLifecycle({
+    aioController: {} as AioSandboxContainerController,
+    docker: { listContainers: async () => [] } as unknown as Docker,
+    boxLiteConfig: () => ({
+      status: 'valid',
+      config: {
+        ...BOXLITE_CONFIG,
+        protocolMode: 'cap-rest',
+        capabilities: [],
+      },
+    }),
+    boxLiteClientFactory: () =>
+      ({
+        async createSandbox() {
+          creates += 1;
+          return { id: 'must-not-create' };
+        },
+      }) as unknown as BoxLiteClient,
+  });
+
+  await assert.rejects(
+    lifecycle.create(createInput(boxLiteSnapshot())),
+    /missing capabilities: resource\.disk-size-gb/,
+  );
+  assert.equal(creates, 0);
 });
 
 test('orphan reconciliation isolates failures and recognizes BoxLite metadata/task ids', async () => {

@@ -50,6 +50,32 @@ export interface ScheduleFormState extends TaskTemplateFormState {
   overlapPolicy: "skip" | "enqueue";
 }
 
+/**
+ * Project a verified persisted repository default into the Select form value.
+ * An empty value intentionally means "omit branch" so legacy repositories can
+ * use the authenticated backend resolution path instead of inventing a ref.
+ */
+export function taskBranchFormValue(
+  defaultBranch: string | null | undefined,
+): string {
+  return defaultBranch ?? "";
+}
+
+/**
+ * Build the branch Select options without ever emitting Radix's forbidden
+ * empty item. The current value is retained for schedule edits whose explicit
+ * branch differs from the repository default.
+ */
+export function taskBranchOptions(
+  defaultBranch: string | null | undefined,
+  currentBranch: string,
+): string[] {
+  const options = new Set<string>();
+  if (defaultBranch) options.add(defaultBranch);
+  if (currentBranch) options.add(currentBranch);
+  return [...options];
+}
+
 export function emptyTaskTemplateForm(
   repoId: string,
   runtime: Runtime,

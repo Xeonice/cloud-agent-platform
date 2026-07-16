@@ -36,8 +36,8 @@ import { ZodValidationPipe } from './zod-validation.pipe';
  *                                         github_auth_required / github_unavailable
  *                                         error (never a session 401, never an
  *                                         empty list standing in for failure).
- * - `POST /repos/github/import`        -> 201 created Repo, or 409 when the GitHub
- *                                         repo (by numeric id) is already imported.
+ * - `POST /repos/github/import`        -> 201 created or idempotently reconciled
+ *                                         Repo (by stable GitHub identity).
  * - `POST /repos/github/default`       -> 200 the new default Repo (clears prior).
  * - `GET  /repos/github/default`       -> 200 `{ repo }` or `{ repo: null }`.
  */

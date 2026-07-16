@@ -1,7 +1,10 @@
 import type {
+  GitCloneSpec,
   SandboxEnvironmentProviderFamily,
   SandboxHostImageParameterProfile,
   SandboxResolvedEnvironmentMetadata,
+  SandboxResourceSnapshot,
+  SandboxWorkspaceMaterializationPlan,
   TaskModelIntent,
 } from '@cap/sandbox';
 import type { ExecutionMode, Runtime } from '@cap/contracts';
@@ -15,23 +18,12 @@ import type { ExecutionMode, Runtime } from '@cap/contracts';
  * `prisma-provision-lookup.ts`.
  */
 /**
- * How to clone a task's repository: the URL with NO embedded credential, plus an
- * optional git `http.extraHeader` carrying the auth.
- *
- * The token is deliberately kept OUT of `url` (and thus out of the clone command
- * line / the URL `git` echoes on failure) — it rides `authHeader` instead, so a
- * clone-failure stderr that quotes the URL can never leak the credential.
+ * @deprecated Compatibility alias for the pre-staged clone path. Canonical new
+ * admission work carries `SandboxWorkspaceMaterializationPlan.credential`, so
+ * API orchestration has one exact-host redacted descriptor instead of defining
+ * another raw provider-neutral credential shape here.
  */
-export interface CloneSpec {
-  /** Clone URL with NO credential userinfo — safe to log / echo on failure. */
-  readonly url: string;
-  /**
-   * Optional git `http.extraHeader` value (e.g. `Authorization: Basic <b64>`)
-   * for a private repo. Passed via `git -c http.extraHeader=...` so the token is
-   * never embedded in the URL that `git` echoes in failure messages.
-   */
-  readonly authHeader?: string;
-}
+export type CloneSpec = GitCloneSpec;
 
 export interface SandboxPinnedEnvironmentMetadata
   extends SandboxResolvedEnvironmentMetadata {
@@ -50,6 +42,8 @@ export type TaskLaunchContext =
       readonly ownerUserId: string | null;
       readonly runtimeId: Runtime;
       readonly executionMode: ExecutionMode;
+      readonly resources?: SandboxResourceSnapshot;
+      readonly workspaceMaterializationDeadlineMs: number;
       readonly environment?: undefined;
     }
   | {
@@ -57,6 +51,8 @@ export type TaskLaunchContext =
       readonly ownerUserId: string;
       readonly runtimeId: Runtime;
       readonly executionMode: ExecutionMode;
+      readonly resources?: SandboxResourceSnapshot;
+      readonly workspaceMaterializationDeadlineMs: number;
       readonly environment: SandboxPinnedEnvironmentMetadata;
     };
 
@@ -69,12 +65,23 @@ export interface ProvisionLookup {
   getTaskLaunchContext(taskId: string): Promise<TaskLaunchContext>;
 
   /**
-   * Resolve how to clone `taskId`'s repository: the task's OWN `repo.gitSource`
-   * (replacing the global `TASK_REPO_URL` stopgap), plus an `authHeader` carrying
-   * the repo owner's connected forge PAT for private `https://github.com/...` repos.
-   * Returns `null` when no repo/url resolves — the provider then SKIPS the clone.
+   * Legacy adapter-only clone input. The production Prisma implementation fails
+   * closed here: canonical task planning must use `getTaskWorkspacePlan()` so a
+   * provider never lets an unqualified clone choose remote HEAD implicitly.
    */
   getCloneSpec(taskId: string): Promise<CloneSpec | null>;
+
+  /**
+   * Canonical immutable Git workspace input. Provision planning prefers this
+   * over the compatibility clone spec so checkout never relies on remote HEAD.
+   * Optional only for legacy/test adapters that have not migrated to staged
+   * materialization; the production Prisma lookup implements it and must return
+   * a concrete plan or throw. An adapter that cannot provide canonical planning
+   * must omit the method rather than return null/undefined.
+   */
+  getTaskWorkspacePlan?(
+    taskId: string,
+  ): Promise<SandboxWorkspaceMaterializationPlan>;
 
   /**
    * Resolve `taskId`'s operator-supplied prompt (`task.prompt`) — the goal the

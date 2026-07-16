@@ -185,5 +185,28 @@ await test('normalizes immutable resolved environment metadata', () => {
   assert(!('loadedImage' in metadata));
 });
 
+await test('normalizes an immutable resource snapshot apart from image parameters', () => {
+  const resources = { diskSizeGb: 12 };
+  const metadata = mod.normalizeResolvedEnvironment({
+    environment: {
+      id: 'env-resources',
+      name: 'large workspace',
+      source: boxliteImage,
+      resources,
+      lastValidationId: 'validation-resources',
+      contractVersion: 'sandbox-contract-v1',
+    },
+    providerFamily: 'boxlite',
+    runtimeId: 'codex',
+  });
+
+  assert.deepEqual(metadata.resources, { diskSizeGb: 12 });
+  assert.notEqual(metadata.resources, resources);
+  assert.equal(Object.isFrozen(metadata.resources), true);
+  resources.diskSizeGb = 20;
+  assert.equal(metadata.resources.diskSizeGb, 12);
+  assert(!('parameters' in metadata.resources));
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

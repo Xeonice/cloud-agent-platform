@@ -24,6 +24,7 @@ import type {
   TaskResponse,
   ImportRepoRequest,
   RepoResponse,
+  VerifiedRepoImportResponse,
   SetDefaultRepoRequest,
   DefaultRepoResponse,
   UpdateSettingsRequest,
@@ -47,6 +48,8 @@ import type {
   DispatchScheduleRequest,
   UpdateScheduleRequest,
   ScheduleResponse,
+  ListTasksResponse,
+  ListReposResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import * as real from "./real";
@@ -88,6 +91,20 @@ export interface CreateTaskVars {
 }
 
 /**
+ * Project the committed create response into an already-loaded task list.
+ * Newly accepted work is shown first and an accidental duplicate callback
+ * cannot create two rows. An absent list stays absent so this helper never
+ * fabricates a complete fleet snapshot from one create response.
+ */
+export function upsertAcceptedTask(
+  current: ListTasksResponse | undefined,
+  task: TaskResponse,
+): ListTasksResponse | undefined {
+  if (!current) return undefined;
+  return [task, ...current.filter((item) => item.id !== task.id)];
+}
+
+/**
  * Create a task under a repo. REAL `POST /repos/:repoId/tasks`. On success
  * invalidates `['tasks']` so the dashboard queue re-fetches and shows the new
  * task. (`createTask` capability is `true`; there is no mock branch — the four
@@ -98,8 +115,21 @@ export function createTaskMutation(
 ): UseMutationOptions<TaskResponse, Error, CreateTaskVars> {
   return {
     mutationFn: ({ repoId, body }) => real.createTask(repoId, body),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+    onSuccess: (task) => {
+      // Preserve the exact committed response before navigation. The detail
+      // route can render immediately, and if SPA navigation is interrupted the
+      // dashboard still exposes the returned task id through its existing row.
+      queryClient.setQueryData<TaskResponse>(queryKeys.task(task.id), task);
+      queryClient.setQueryData<ListTasksResponse>(
+        queryKeys.tasks,
+        (current) => upsertAcceptedTask(current, task),
+      );
+      // Do not await the reconciliation read: creating ends at durable
+      // acceptance, never at clone/provision completion or list refetch.
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.tasks,
+        exact: true,
+      });
     },
     onError: (error) => {
       refreshRuntimeModelCatalogAfterDomainError(queryClient, error);
@@ -114,13 +144,30 @@ export function createTaskMutation(
  */
 export function createRepoMutation(
   queryClient: QueryClient,
-): UseMutationOptions<RepoResponse, Error, CreateRepoRequest> {
+): UseMutationOptions<VerifiedRepoImportResponse, Error, CreateRepoRequest> {
   return {
     mutationFn: (body) => real.createRepo(body),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.repos });
+    onSuccess: (repo) => {
+      // A create response has already crossed the owner-authenticated branch
+      // verification boundary. Seed only that stronger response; nullable
+      // legacy Repo reads are never optimistically added by this mutation.
+      queryClient.setQueryData<ListReposResponse>(queryKeys.repos, (current) =>
+        upsertVerifiedRepo(current, repo),
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.repos,
+        exact: true,
+      });
     },
   };
+}
+
+export function upsertVerifiedRepo(
+  current: ListReposResponse | undefined,
+  repo: VerifiedRepoImportResponse,
+): ListReposResponse | undefined {
+  if (!current) return undefined;
+  return [repo, ...current.filter((item) => item.id !== repo.id)];
 }
 
 /**

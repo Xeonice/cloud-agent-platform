@@ -9,6 +9,8 @@ import {
   buildTaskRequest,
   ENVIRONMENT_SERVER_DEFAULT,
   scheduleFormFromSchedule,
+  taskBranchFormValue,
+  taskBranchOptions,
   type ScheduleFormState,
   type TaskTemplateFormState,
 } from "./task-form";
@@ -94,6 +96,31 @@ function scheduleFixture(
 }
 
 describe("shared task form builders", () => {
+  it("preselects only a verified repository default and never emits an empty option", () => {
+    expect(taskBranchFormValue("master")).toBe("master");
+    expect(taskBranchFormValue(null)).toBe("");
+    expect(taskBranchFormValue(undefined)).toBe("");
+    expect(taskBranchOptions("master", "master")).toEqual(["master"]);
+    expect(taskBranchOptions(null, "")).toEqual([]);
+    expect(taskBranchOptions(null, "release/next")).toEqual(["release/next"]);
+  });
+
+  it("preserves master and omits an unknown legacy branch from task and schedule requests", () => {
+    expect(buildTaskRequest(taskForm({ branch: "master" }))).toHaveProperty(
+      "branch",
+      "master",
+    );
+    expect(buildTaskRequest(taskForm({ branch: "" }))).not.toHaveProperty(
+      "branch",
+    );
+    expect(buildTaskRequest(taskForm({ branch: "   " }))).not.toHaveProperty(
+      "branch",
+    );
+    expect(
+      buildSchedulePayload(scheduleForm({ branch: "" })).taskTemplate,
+    ).not.toHaveProperty("branch");
+  });
+
   it("projects every canonical Console task-create field", () => {
     const body = buildTaskRequest(taskForm());
 

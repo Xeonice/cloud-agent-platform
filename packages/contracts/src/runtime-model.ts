@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { Sha256ChecksumSchema } from './artifact-checksum.js';
-import { SandboxEnvironmentProviderFamilySchema } from './sandbox-environment.js';
+import {
+  SandboxEnvironmentProviderFamilySchema,
+  SandboxEnvironmentResourcesSchema,
+} from './sandbox-environment.js';
 import { SandboxMetadataSchema } from './sandbox-metadata.js';
 import { RuntimeSchema, TaskModelSelectorSchema } from './task.js';
 
@@ -102,6 +105,8 @@ export const RuntimeExecutionEnvironmentSnapshotSchema = z
     validationContractVersion: z.string().trim().min(1).max(128).nullable(),
     provider: z.string().trim().min(1).max(120),
     providerFamily: SandboxEnvironmentProviderFamilySchema,
+    /** Immutable provider-neutral resources used by validation and launch. */
+    resources: SandboxEnvironmentResourcesSchema.optional(),
     /** Exact provider-consumable immutable source, never a mutable tag alone. */
     source: RuntimeExecutionEnvironmentSourceSchema,
     /** Content digest or provider-equivalent immutable identity. */

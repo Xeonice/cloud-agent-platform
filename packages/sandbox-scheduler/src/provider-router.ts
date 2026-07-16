@@ -7,6 +7,7 @@ import type {
   SandboxProviderCapability,
   SandboxProviderDescriptor,
   SandboxProviderPort,
+  SandboxProvisionContext,
   SandboxReadoptionPort,
   SandboxRunOwnerRecord,
   SandboxSelectedRunPort,
@@ -22,6 +23,10 @@ import {
   DELIVERY_SANDBOX_REQUIRED_CAPABILITIES,
   READOPTION_SANDBOX_REQUIRED_CAPABILITIES,
   RETAINED_TRANSCRIPT_SANDBOX_REQUIRED_CAPABILITIES,
+  hasSandboxWorkspaceMaterialization,
+  resourcesForSandboxProvision,
+  sandboxResourceRequiredCapabilities,
+  snapshotSandboxProvisionContext,
 } from '@cap/sandbox-core';
 import { SandboxProviderRegistry } from './registry.js';
 import type { SelectSandboxProviderCandidateOptions } from './scheduler.js';
@@ -131,24 +136,33 @@ export class SandboxProviderRouter<
     return [...capabilities];
   }
 
-  async provision(ctx: {
-    readonly taskId: string;
-    readonly cloneSpec?: TCloneSpec | null;
-  }): Promise<SandboxConnection> {
-    const selected = this.registry.select(
+  async provision(ctx: SandboxProvisionContext<TCloneSpec>): Promise<SandboxConnection> {
+    const requiredCapabilities = new Set(
       provisionSandboxRequiredCapabilities({
-        materializeGitWorkspace: ctx.cloneSpec !== null && ctx.cloneSpec !== undefined,
+        materializeGitWorkspace: hasSandboxWorkspaceMaterialization(ctx),
       }),
+    );
+    for (const capability of sandboxResourceRequiredCapabilities(
+      resourcesForSandboxProvision(ctx),
+    )) {
+      requiredCapabilities.add(capability);
+    }
+    const selected = this.registry.select(
+      [...requiredCapabilities],
       this.options,
     );
-    const connection = await selected.provider.provision(ctx);
+    const connection = await selected.provider.provision(
+      snapshotSandboxProvisionContext(ctx),
+    );
     this.owners.set(ctx.taskId, selected.id);
     if (this.options.ownerStore) {
       const providerRun = await this.selectedRunFor(ctx.taskId, selected);
       await this.options.ownerStore.recordSandboxRunOwner({
         taskId: ctx.taskId,
         providerId: selected.id,
-        providerSandboxId: providerRun?.providerSandboxId ?? connection.taskId,
+        ...(providerRun?.providerSandboxId === undefined
+          ? {}
+          : { providerSandboxId: providerRun.providerSandboxId }),
         connection,
       });
     }
@@ -297,8 +311,7 @@ export class SandboxProviderRouter<
       provider: resolved.owner.provider,
       providerSandboxId:
         providerRun?.providerSandboxId ??
-        resolved.ownerRecord?.providerSandboxId ??
-        connection.taskId,
+        resolved.ownerRecord?.providerSandboxId,
       capabilities: resolved.owner.capabilities,
       connection,
       terminal,
@@ -334,7 +347,9 @@ export class SandboxProviderRouter<
         await this.options.ownerStore?.recordSandboxRunOwner({
           taskId,
           providerId: entry.id,
-          providerSandboxId: providerRun?.providerSandboxId ?? connection.taskId,
+          ...(providerRun?.providerSandboxId === undefined
+            ? {}
+            : { providerSandboxId: providerRun.providerSandboxId }),
           connection,
         });
         return { owner: entry, connection, providerRun };

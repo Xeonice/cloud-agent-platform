@@ -4,19 +4,31 @@ import {
   DEFAULT_TASK_RUNTIME,
   ExecutionModeSchema,
   RuntimeSchema,
+  SandboxEnvironmentResourcesSchema,
   TaskModelSelectorSchema,
   type Runtime,
   type RuntimeExecutionEnvironmentSnapshot,
 } from '@cap/contracts';
 import {
+  DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
+  SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX,
+  SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MIN,
   SandboxRuntimeModelSetupError,
   SandboxEnvironmentProviderFamily,
   SandboxHostImageParameterProfile,
   SandboxResolvedEnvironmentMetadata,
+  createExactHostGitCredential,
+  snapshotSandboxResources,
+  type SandboxResourceSnapshot,
+  type SandboxWorkspaceMaterializationPlan,
 } from '@cap/sandbox';
 import { PrismaService } from '../prisma/prisma.service';
 import { ForgeTargetResolver } from '../forge/forge-target-resolver';
 import { DefaultForgeRegistry } from '../forge/forge-registry';
+import {
+  TaskBranchResolutionError,
+  TaskBranchResolver,
+} from '../forge/task-branch-resolver';
 import { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
 import type {
   CloneSpec,
@@ -27,10 +39,9 @@ import type {
 import { validateRuntimeExecutionEnvironmentSnapshot } from '../runtime-models/runtime-model-snapshot';
 
 /**
- * Prisma-backed {@link ProvisionLookup}: resolves a task's clone spec from its
- * own `repo.gitSource`, attaching the task owner's forge PAT as an Authorization
- * header (NOT in the URL) for private repos. This is where the database access
- * lives so provider hooks consume a small port instead of Prisma directly.
+ * Prisma-backed {@link ProvisionLookup}. Canonical admission consumes the
+ * immutable workspace plan; cloneSpec remains only for providers still moving
+ * to staged materialization.
  */
 @Injectable()
 export class PrismaProvisionLookup implements ProvisionLookup {
@@ -39,7 +50,66 @@ export class PrismaProvisionLookup implements ProvisionLookup {
     @Optional() private readonly forgeResolver?: ForgeTargetResolver,
     @Optional() private readonly forgeRegistry?: DefaultForgeRegistry,
     @Optional() private readonly sandboxEnvironments?: SandboxEnvironmentsService,
+    /**
+     * Present in the production SandboxModule/ForgeModule graph. Optional only
+     * so model-only isolated unit fixtures can construct this lookup without
+     * assembling forge I/O; every production workspace plan passes through it.
+     */
+    @Optional() private readonly taskBranchResolver?: TaskBranchResolver,
   ) {}
+
+  async getTaskWorkspacePlan(
+    taskId: string,
+  ): Promise<SandboxWorkspaceMaterializationPlan> {
+    if (!this.taskBranchResolver) {
+      throw new Error('Task branch resolver is not configured');
+    }
+    const [branch, workspaceMaterializationDeadlineMs] = await Promise.all([
+      this.taskBranchResolver.resolve(taskId),
+      this.resolveWorkspaceMaterializationDeadline(taskId),
+    ]);
+    let repositoryUrl = branch.repositoryUrl;
+    let credential: ReturnType<typeof createExactHostGitCredential> | undefined;
+
+    if (this.forgeResolver && this.forgeRegistry) {
+      const target = await this.forgeResolver.getForgeTarget(taskId);
+      if (target) {
+        repositoryUrl = target.cloneUrl;
+        const authorizationHeader = this.forgeRegistry
+          .forKind(target.kind)
+          .cloneAuthHeader(target);
+        credential = createExactHostGitCredential(
+          repositoryUrl,
+          authorizationHeader,
+        );
+      }
+    }
+
+    return {
+      repositoryUrl,
+      callerBranch: branch.callerBranch,
+      resolvedBranch: branch.resolvedBranch,
+      deadlineMs: workspaceMaterializationDeadlineMs,
+      ...(credential === undefined ? {} : { credential }),
+    };
+  }
+
+  private async resolveWorkspaceMaterializationDeadline(
+    taskId: string,
+  ): Promise<number> {
+    let work;
+    try {
+      work = await this.prisma.taskAdmissionWork.findUnique({
+        where: { taskId },
+        select: { workspaceMaterializationDeadlineMs: true },
+      });
+    } catch {
+      throw new SandboxRuntimeModelSetupError('lookup');
+    }
+    return parseAdmissionWorkspaceMaterializationDeadline(
+      work?.workspaceMaterializationDeadlineMs,
+    );
+  }
 
   async getTaskLaunchContext(taskId: string): Promise<TaskLaunchContext> {
     let task;
@@ -52,6 +122,12 @@ export class PrismaProvisionLookup implements ProvisionLookup {
           executionEnvironmentSnapshot: true,
           runtime: true,
           executionMode: true,
+          admissionWork: {
+            select: {
+              resourceSnapshot: true,
+              workspaceMaterializationDeadlineMs: true,
+            },
+          },
         },
       });
     } catch {
@@ -67,12 +143,23 @@ export class PrismaProvisionLookup implements ProvisionLookup {
     if (!runtime.success || !executionMode.success) {
       throw new SandboxRuntimeModelSetupError('launch-context');
     }
+    const admissionResources = parseAdmissionResourceSnapshot(
+      task.admissionWork?.resourceSnapshot,
+    );
+    const workspaceMaterializationDeadlineMs =
+      parseAdmissionWorkspaceMaterializationDeadline(
+        task.admissionWork?.workspaceMaterializationDeadlineMs,
+      );
     if (task.model === null) {
       return {
         modelIntent: { kind: 'runtime-default' },
         ownerUserId: task.ownerUserId ?? null,
         runtimeId: runtime.data,
         executionMode: executionMode.data,
+        workspaceMaterializationDeadlineMs,
+        ...(admissionResources === undefined
+          ? {}
+          : { resources: admissionResources }),
       };
     }
 
@@ -92,42 +179,32 @@ export class PrismaProvisionLookup implements ProvisionLookup {
     } catch {
       throw new SandboxRuntimeModelSetupError('snapshot');
     }
+    if (
+      admissionResources !== undefined &&
+      admissionResources.diskSizeGb !== snapshot.resources?.diskSizeGb
+    ) {
+      throw new SandboxRuntimeModelSetupError('snapshot');
+    }
     return {
       modelIntent: { kind: 'explicit', selector: selector.data },
       ownerUserId: task.ownerUserId,
       runtimeId: runtime.data,
       executionMode: executionMode.data,
+      workspaceMaterializationDeadlineMs,
+      ...(admissionResources === undefined && snapshot.resources === undefined
+        ? {}
+        : { resources: admissionResources ?? snapshot.resources }),
       environment: resolvedEnvironmentFromSnapshot(snapshot, runtime.data),
     };
   }
 
-  async getCloneSpec(taskId: string): Promise<CloneSpec | null> {
-    const task = await this.prisma.task.findUnique({
-      where: { id: taskId },
-      include: { repo: true },
-    });
-    const gitSource = task?.repo?.gitSource;
-    if (!gitSource) {
-      // Fallback to the legacy global env ONLY when the task/repo lookup yields
-      // nothing — keeps a single-repo deploy that still sets it working.
-      const fallback = process.env.TASK_REPO_URL;
-      return fallback ? { url: fallback } : null;
-    }
-    // add-multi-forge-task-delivery (4.2): clone auth is now multi-forge +
-    // OWNER-SCOPED. When the task owner has a forge credential for the repo's
-    // forge, clone with `forge.cloneAuthHeader` (github/gitee `x-access-token`,
-    // gitlab `oauth2`); the token rides the http.extraHeader, never the URL.
-    if (this.forgeResolver && this.forgeRegistry) {
-      const target = await this.forgeResolver.getForgeTarget(taskId);
-      if (target) {
-        const authHeader = this.forgeRegistry.forKind(target.kind).cloneAuthHeader(target);
-        return { url: target.cloneUrl, authHeader };
-      }
-    }
-    // No owner-scoped forge PAT could be resolved. Clone public repos with the
-    // bare URL; private repos will fail closed inside git rather than borrowing a
-    // global or OAuth-derived credential.
-    return { url: gitSource };
+  async getCloneSpec(_taskId: string): Promise<CloneSpec | null> {
+    // This concrete lookup is the production adapter and therefore never emits
+    // an unqualified clone request. Both the retired deployment-global URL and a
+    // task repo's bare URL let `git clone` select remote HEAD implicitly, bypassing
+    // the immutable TaskBranchResolver snapshot. Legacy/test adapters may still
+    // implement this port when they omit getTaskWorkspacePlan altogether.
+    throw new TaskBranchResolutionError('repository_unavailable');
   }
 
   /**
@@ -241,6 +318,33 @@ export class PrismaProvisionLookup implements ProvisionLookup {
   }
 }
 
+function parseAdmissionResourceSnapshot(
+  value: unknown,
+): SandboxResourceSnapshot | undefined {
+  if (value === null || value === undefined) return undefined;
+  const parsed = SandboxEnvironmentResourcesSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new SandboxRuntimeModelSetupError('snapshot');
+  }
+  return snapshotSandboxResources(parsed.data);
+}
+
+function parseAdmissionWorkspaceMaterializationDeadline(
+  value: unknown,
+): number {
+  if (value === null || value === undefined) {
+    return DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS;
+  }
+  if (
+    !Number.isSafeInteger(value) ||
+    (value as number) < SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MIN ||
+    (value as number) > SANDBOX_WORKSPACE_MATERIALIZATION_DEADLINE_MS_MAX
+  ) {
+    throw new SandboxRuntimeModelSetupError('snapshot');
+  }
+  return value as number;
+}
+
 function resolvedEnvironmentFromSnapshot(
   snapshot: RuntimeExecutionEnvironmentSnapshot,
   runtimeId: Runtime,
@@ -262,6 +366,7 @@ function resolvedEnvironmentFromSnapshot(
     validationId: snapshot.validationId ?? undefined,
     validationVersion: snapshot.validationContractVersion ?? undefined,
     contractVersion: snapshot.validationContractVersion ?? undefined,
+    resources: snapshot.resources,
     metadata: {
       immutableIdentity: snapshot.immutableIdentity,
       fingerprint: snapshot.fingerprint,

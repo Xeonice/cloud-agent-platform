@@ -47,6 +47,44 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const NON_2XX_PUBLIC_V1_CASES = [
+  {
+    label: "tasks.get legacy 404 envelope",
+    request: { method: "GET", path: "/v1/tasks/missing" },
+    status: 404,
+    statusText: "Not Found",
+    envelope: {
+      message: "Task not found",
+      error: "Not Found",
+      statusCode: 404,
+    },
+    responseHeaders: { "x-request-id": "request-404" },
+  },
+  {
+    label: "tasks.create structured catalog-unavailable 503 envelope",
+    request: {
+      method: "POST",
+      path: "/v1/tasks",
+      body: {
+        repoId: "00000000-0000-4000-a000-000000000101",
+        prompt: "check",
+      },
+    },
+    status: 503,
+    statusText: "Service Unavailable",
+    envelope: {
+      code: "runtime_model_catalog_unavailable",
+      message: "Runtime model catalog is temporarily unavailable.",
+      retryable: true,
+      capacity: { scope: "owner", retryAfterMs: 1_500 },
+    },
+    responseHeaders: {
+      "retry-after": "2",
+      "x-request-id": "request-503",
+    },
+  },
+] as const;
+
 // ---------------------------------------------------------------------------
 // Scenario: A sent request is signed by the session and rendered
 // ---------------------------------------------------------------------------
@@ -181,28 +219,37 @@ describe("sendApiRequest — session-signed transport", () => {
     expect(result.json).toMatchObject({ id: "t1", status: "running" });
   });
 
-  it("resolves a non-2xx to kind:response (not a throw) — renders honestly, not a crash", async () => {
-    stubFetch(
-      new Response(JSON.stringify({ error: "not found" }), {
-        status: 404,
-        statusText: "Not Found",
-        headers: { "content-type": "application/json" },
-      }),
-    );
+  for (const fixture of NON_2XX_PUBLIC_V1_CASES) {
+    it(`preserves ${fixture.label} exactly instead of throwing`, async () => {
+      const body = JSON.stringify(fixture.envelope);
+      const expectedHeaders = {
+        "content-type": "application/json",
+        ...fixture.responseHeaders,
+      };
+      stubFetch(
+        new Response(body, {
+          status: fixture.status,
+          statusText: fixture.statusText,
+          headers: expectedHeaders,
+        }),
+      );
 
-    // A playground must surface whatever the api returned, incl. 4xx/5xx.
-    const result = await sendApiRequest({
-      method: "GET",
-      path: "/v1/tasks/missing",
+      // A playground must surface whatever the api returned, incl. 4xx/5xx.
+      const result = await sendApiRequest(fixture.request);
+
+      expect(result.kind).toBe("response");
+      if (result.kind !== "response") return;
+      expect(result.status).toBe(fixture.status);
+      expect(result.statusText).toBe(fixture.statusText);
+      expect(result.ok).toBe(false);
+      expect(result.sizeBytes).toBe(new TextEncoder().encode(body).byteLength);
+      expect(result.headers).toEqual(expectedHeaders);
+      // Preserve both legacy and structured Public V1 error envelopes byte-for-byte
+      // and field-for-field; the Playground must not normalize or swallow them.
+      expect(result.body).toBe(body);
+      expect(result.json).toEqual(fixture.envelope);
     });
-
-    expect(result.kind).toBe("response");
-    if (result.kind !== "response") return;
-    expect(result.status).toBe(404);
-    expect(result.ok).toBe(false);
-    // The body is still captured and returned (not swallowed).
-    expect(result.body).toContain("not found");
-  });
+  }
 
   it("resolves a transport failure to kind:error (never throws — page stays usable)", async () => {
     vi.stubGlobal(

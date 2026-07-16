@@ -39,6 +39,8 @@ export interface OpenSandboxTerminalPtyArgs {
   readonly selectedRun?: SelectedSandboxRun | null;
   readonly onExit?: (status: TerminalExitStatus) => void;
   readonly mode?: AioPtyClientMode;
+  readonly signal?: AbortSignal;
+  readonly beforeAgentLaunch?: () => Promise<void>;
   readonly resolveTaskLaunchContext?: () => Promise<AioResolvedTaskLaunchContext>;
   readonly onRuntimeSetupFailure?: (
     code: 'runtime_model_setup_failed',
@@ -67,6 +69,9 @@ export function openSandboxTerminalPty(
 ): AgentTerminalPty {
   const { taskId, wsUrl, baseUrl } = args.connection;
   const mode = args.mode ?? 'launch-or-attach';
+  // Only a fresh launch needs model/runtime material. Startup re-adoption uses
+  // attach-only and must be able to probe legacy sessions without manufacturing
+  // a launch context that it will never execute.
   if (mode === 'launch-or-attach' && !args.resolveTaskLaunchContext) {
     throw new SandboxRuntimeModelSetupError('launch-context');
   }
@@ -89,5 +94,7 @@ export function openSandboxTerminalPty(
     commandExecutor,
     (intent) => materializeTaskModel(commandExecutor, intent),
     args.onRuntimeSetupFailure,
+    args.signal,
+    args.beforeAgentLaunch,
   );
 }

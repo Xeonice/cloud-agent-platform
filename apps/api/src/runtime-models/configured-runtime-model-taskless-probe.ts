@@ -10,6 +10,7 @@ import { z } from 'zod';
 import {
   AioSandboxContainerController,
   BoxLiteRestClient,
+  assertSandboxProviderSupportsResources,
   readBoxLiteProviderConfig,
   type AioDockerClient,
   type BoxLiteClient,
@@ -248,6 +249,10 @@ export class ConfiguredRuntimeModelTasklessProbeLifecycle
       }
       const config = configResult.config;
       const client = this.boxLiteClientFactory(config);
+      assertSandboxProviderSupportsResources(
+        config.capabilities,
+        input.environment.resources,
+      );
       const sandboxId = `${BOXLITE_PROBE_PREFIX}${createdAt}-${id}`;
       const state: BoxLiteProbeState = {
         kind: 'boxlite',
@@ -267,6 +272,7 @@ export class ConfiguredRuntimeModelTasklessProbeLifecycle
             ? { image: input.environment.source.locator }
             : { rootfsPath: input.environment.source.locator }),
           location: config.location,
+          diskSizeGb: input.environment.resources?.diskSizeGb,
           env: {
             ...(config.sandboxEnv ?? {}),
             CAP_RESOURCE_PURPOSE: PURPOSE,
@@ -277,6 +283,7 @@ export class ConfiguredRuntimeModelTasklessProbeLifecycle
             [PURPOSE_LABEL]: PURPOSE,
             [CREATED_AT_LABEL]: new Date(createdAt).toISOString(),
             provider: input.environment.provider,
+            resources: input.environment.resources,
           },
         });
         state.sandboxId = sandbox.id;

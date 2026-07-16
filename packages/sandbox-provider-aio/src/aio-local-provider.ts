@@ -12,6 +12,9 @@ import {
 
 export const AIO_LOCAL_SANDBOX_PROVIDER_ID = 'aio-local';
 export const AIO_SANDBOX_CONTAINER_PREFIX = 'cap-aio-';
+/** Immutable physical-incarnation fence shared with durable sandbox ownership. */
+export const AIO_SANDBOX_RESOURCE_GENERATION_LABEL =
+  'cap.resourceGeneration';
 export const AIO_SANDBOX_PORT = 8080;
 export const AIO_SANDBOX_WORKSPACE_DIR = '/home/gem/workspace';
 export const AIO_SANDBOX_CODEX_HOME_DIR = '/home/gem/.codex';

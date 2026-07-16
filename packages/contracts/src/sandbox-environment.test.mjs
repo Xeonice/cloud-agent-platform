@@ -15,7 +15,10 @@ const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const {
   CreateSandboxEnvironmentRequestSchema,
+  SANDBOX_ENVIRONMENT_DISK_SIZE_GB_MAX,
+  SANDBOX_ENVIRONMENT_DISK_SIZE_GB_MIN,
   SandboxEnvironmentSchema,
+  SandboxEnvironmentValidationSchema,
   SandboxEnvironmentSourceKindSchema,
   SandboxEnvironmentSourceSchema,
 } = require(path.join(here, '..', 'dist', 'sandbox-environment.js'));
@@ -114,6 +117,93 @@ test('create request accepts image parameters and validates env names', () => {
       source: { kind: 'aio-docker-image', image: 'cap/aio:v1' },
       parameters: [{ name: 'bad-name', value: 'x' }],
     }),
+  );
+});
+
+test('create/read contracts validate bounded resources independently of image parameters', () => {
+  assert.equal(SANDBOX_ENVIRONMENT_DISK_SIZE_GB_MIN, 1);
+  assert.equal(SANDBOX_ENVIRONMENT_DISK_SIZE_GB_MAX, 1024);
+
+  const request = CreateSandboxEnvironmentRequestSchema.parse({
+    name: 'BoxLite large workspace',
+    source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+    resources: { diskSizeGb: 5 },
+    parameters: [{ name: 'GCODE_TOKEN', value: 'secret', secret: true }],
+  });
+  assert.deepEqual(request.resources, { diskSizeGb: 5 });
+  assert.deepEqual(request.parameters, [
+    { name: 'GCODE_TOKEN', value: 'secret', secret: true },
+  ]);
+
+  for (const diskSizeGb of [0, 1.5, 1025]) {
+    assert.throws(() =>
+      CreateSandboxEnvironmentRequestSchema.parse({
+        name: 'Invalid disk',
+        source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+        resources: { diskSizeGb },
+      }),
+    );
+  }
+  assert.throws(() =>
+    CreateSandboxEnvironmentRequestSchema.parse({
+      name: 'Unknown resource',
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+      resources: { diskSizeGb: 5, memorySizeGb: 8 },
+    }),
+  );
+  assert.throws(() =>
+    CreateSandboxEnvironmentRequestSchema.parse({
+      name: 'Resource disguised as a guest parameter field',
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+      parameters: [{ name: 'GCODE_TOKEN', value: 'secret', diskSizeGb: 5 }],
+    }),
+  );
+});
+
+test('resource contracts preserve nullable and omitted legacy representations', () => {
+  const base = {
+    id: '00000000-0000-4000-a000-000000000001',
+    name: 'Legacy BoxLite',
+    status: 'ready',
+    source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+    compatibility: { providerFamilies: ['boxlite'] },
+    isDefault: false,
+    createdAt: new Date('2026-07-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-07-01T00:00:00.000Z'),
+  };
+
+  assert.equal(SandboxEnvironmentSchema.parse(base).resources, undefined);
+  assert.equal(
+    SandboxEnvironmentSchema.parse({ ...base, resources: null }).resources,
+    null,
+  );
+});
+
+test('validation history carries an additive nullable resource snapshot', () => {
+  const validation = {
+    id: '00000000-0000-4000-a000-000000000101',
+    environmentId: '00000000-0000-4000-a000-000000000001',
+    status: 'passed',
+    providerFamily: 'boxlite',
+    sourceKind: 'boxlite-image',
+    resourceSnapshot: { diskSizeGb: 9 },
+    checkedAt: new Date('2026-07-01T00:00:00.000Z'),
+  };
+  assert.deepEqual(
+    SandboxEnvironmentValidationSchema.parse(validation).resourceSnapshot,
+    { diskSizeGb: 9 },
+  );
+  assert.equal(
+    SandboxEnvironmentValidationSchema.parse({
+      ...validation,
+      resourceSnapshot: null,
+    }).resourceSnapshot,
+    null,
+  );
+  const { resourceSnapshot: _resourceSnapshot, ...legacy } = validation;
+  assert.equal(
+    SandboxEnvironmentValidationSchema.parse(legacy).resourceSnapshot,
+    undefined,
   );
 });
 

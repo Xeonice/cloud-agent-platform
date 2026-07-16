@@ -10,6 +10,14 @@ const runnerPath = join(root, 'scripts/scheduled-tasks-live-e2e.sh');
 const runner = await readFile(runnerPath, 'utf8');
 const ci = await readFile(join(root, '.github/workflows/ci.yml'), 'utf8');
 const contributing = await readFile(join(root, 'CONTRIBUTING.md'), 'utf8');
+const scheduledBrowserSpec = await readFile(
+  join(root, 'apps/web/e2e/scheduled-tasks/scheduled-tasks.spec.ts'),
+  'utf8',
+);
+const controlServer = await readFile(
+  join(root, 'apps/api/test/scheduled-tasks-live-e2e/control-server.mjs'),
+  'utf8',
+);
 
 test('scheduled-task runner is valid shell and allocates isolated resources', () => {
   const syntax = spawnSync('bash', ['-n', runnerPath], {
@@ -169,6 +177,7 @@ test('time control stays under apps/api/test and out of the production graph', a
     '/control/scheduler/',
     '/control/diagnostics',
     '/control/provider-calls',
+    '/control/fixtures/repos',
   ];
 
   for (const file of productionFiles.filter((path) => path.endsWith('.ts'))) {
@@ -188,6 +197,22 @@ test('time control stays under apps/api/test and out of the production graph', a
     'the control server must be started only from the test tree',
   );
   assert.match(runner, /TZ=UTC/);
+});
+
+test('repository setup uses only the loopback test control plane', () => {
+  assert.match(controlServer, /const CONTROL_HOST = '127\.0\.0\.1'/);
+  assert.match(
+    controlServer,
+    /requestUrl\.pathname === '\/control\/fixtures\/repos'/,
+  );
+  assert.match(
+    scheduledBrowserSpec,
+    /CONTROL_URL,[\s\S]*?"\/control\/fixtures\/repos"/,
+  );
+  assert.doesNotMatch(
+    scheduledBrowserSpec,
+    /API_URL,\s*"\/repos",\s*\{\s*method:\s*"POST"/,
+  );
 });
 
 async function listFiles(directory) {

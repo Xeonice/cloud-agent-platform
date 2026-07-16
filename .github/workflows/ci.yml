@@ -243,6 +243,14 @@ jobs:
           CAP_TASK_MODEL_MIGRATION_TEST: "1"
         run: pnpm --filter @cap/api test:migration:model
 
+      # Exercise both a predecessor upgrade and a clean install. The fixture
+      # drops only this job's loopback throwaway schema and rejects every other
+      # database target before doing destructive work.
+      - name: Task admission migration compatibility
+        env:
+          CAP_TASK_ADMISSION_MIGRATION_TEST: "1"
+        run: pnpm --filter @cap/api test:migration:task-admission
+
       # Migrate the throwaway DB, boot the built app, probe /health. The helper
       # exits non-zero (and dumps the app log) on any migration / bootstrap / DI /
       # liveness failure — the signal this job gates on.

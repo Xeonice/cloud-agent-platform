@@ -73,6 +73,8 @@ import {
   ENVIRONMENT_DEFAULT,
   ENVIRONMENT_SERVER_DEFAULT,
   scheduleFormFromSchedule,
+  taskBranchFormValue,
+  taskBranchOptions,
   type RecurrenceFormKind,
   type ScheduleFormState,
   type TaskTemplateFormState,
@@ -101,6 +103,10 @@ import {
   resolveHydratedScheduleTimezone,
 } from "@/lib/schedule-timezone";
 import { RuntimeModelSelector } from "@/components/runtime-model-selector";
+import {
+  claimTaskCreateSubmission,
+  releaseRejectedTaskCreate,
+} from "@/lib/task-create-flow";
 
 export const Route = createFileRoute("/_app/tasks/new")({
   validateSearch: (search: Record<string, unknown>) => ({
@@ -220,7 +226,7 @@ function NewTaskPage() {
   }, [repoList, repoId]);
 
   const selectedRepo = repoList.find((r) => r.id === repoId) ?? null;
-  const defaultBranch = selectedRepo?.defaultBranch ?? "main";
+  const defaultBranch = taskBranchFormValue(selectedRepo?.defaultBranch);
 
   const [branch, setBranch] = React.useState(defaultBranch);
   const [strategy, setStrategy] = React.useState<string>(STRATEGIES[0]);
@@ -254,6 +260,7 @@ function NewTaskPage() {
   const [idleTimeoutMs, setIdleTimeoutMs] = React.useState<number | null>(null);
   const [deadlineMs, setDeadlineMs] = React.useState<number | null>(null);
   const [createdTaskId, setCreatedTaskId] = React.useState<string | null>(null);
+  const taskCreateSubmissionFence = React.useRef(false);
   const [mode, setMode] = React.useState<"once" | "repeated">(
     scheduleId ? "repeated" : "once",
   );
@@ -410,11 +417,10 @@ function NewTaskPage() {
     setOverlapPolicy(form.overlapPolicy);
   }, [editingSchedule, loadedScheduleId]);
 
-  const branchOptions = React.useMemo(() => {
-    const set = new Set<string>([defaultBranch]);
-    if (branch) set.add(branch);
-    return [...set];
-  }, [branch, defaultBranch]);
+  const branchOptions = React.useMemo(
+    () => taskBranchOptions(defaultBranch, branch),
+    [branch, defaultBranch],
+  );
 
   // CJK-aware character count over the spread code points (prototype cadence).
   const charCount = [...prompt.trim()].length;
@@ -524,19 +530,34 @@ function NewTaskPage() {
       return;
     }
     const body = buildTaskRequest(taskForm);
+    if (!claimTaskCreateSubmission(taskCreateSubmissionFence)) return;
     mutation.mutate(
       { repoId, body },
       {
         onSuccess: (task) => {
           setCreatedTaskId(task.id);
-          // Persist the operator's last repo selection for re-entry.
-          setState({ selectedRepo: repoId });
-          toast.success("任务已进入远端 Agent 队列");
+          // Persist the exact acceptance handle before navigation so a replaced
+          // route transition or refresh cannot lose the committed task id.
+          setState({
+            selectedRepo: repoId,
+            selectedBranch: body.branch ?? null,
+            latestRunId: task.id,
+          });
+          const openCreatedTask = () => {
+            void navigate({
+              to: "/tasks/$taskId",
+              params: { taskId: task.id },
+            });
+          };
+          toast.success("任务已进入远端 Agent 队列", {
+            action: { label: "打开任务", onClick: openCreatedTask },
+          });
           // Navigate straight into the created task's session (mirrors the
           // dashboard dialog); the session page shows a friendly pre-running
           // state until the sandbox is provisioned.
-          void navigate({ to: "/tasks/$taskId", params: { taskId: task.id } });
+          openCreatedTask();
         },
+        onError: () => releaseRejectedTaskCreate(taskCreateSubmissionFence),
       },
     );
   }
@@ -545,6 +566,7 @@ function NewTaskPage() {
     mutation.isPending ||
     createSchedule.isPending ||
     updateSchedule.isPending ||
+    (mode === "once" && createdTaskId !== null) ||
     prompt.trim().length === 0 ||
     !isRuntimeReady(runtime) ||
     accountDefaultUnavailable ||

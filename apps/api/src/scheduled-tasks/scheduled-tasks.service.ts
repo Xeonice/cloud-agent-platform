@@ -1033,7 +1033,7 @@ export class ScheduledTasksService
       }
 
       const taskBody = mutableTaskBody(args.prepared.body);
-      const task = await this.tasks.createTaskRow(args.prepared, tx, {
+      const task = await this.tasks.acceptPreparedTask(args.prepared, tx, {
         acceptedExplicitModel: true,
       });
       const updated = await tx.taskScheduleRun.updateMany({
@@ -1178,7 +1178,10 @@ export class ScheduledTasksService
         where: {
           status: 'created',
           taskId: { not: null },
-          task: { status: 'pending' },
+          task: {
+            status: 'pending',
+            admissionWork: { is: null },
+          },
           OR: [
             { admissionClaimUntil: null },
             { admissionClaimUntil: { lt: claimedAt } },
@@ -1206,11 +1209,17 @@ export class ScheduledTasksService
 
         let release = false;
         try {
-          await this.tasks.admitCreatedTask(
+          const outcome = await this.tasks.admitCreatedTask(
             row.task.id,
             taskBodyFromRow(row.task),
             row.schedule.ownerUserId,
           );
+          if (outcome === 'durable-woken') {
+            release = true;
+            recovered += 1;
+            continue;
+          }
+          if (outcome === 'fail-closed') continue;
           const current = await this.prisma.task.findUnique({
             where: { id: row.task.id },
             select: { status: true },
@@ -1383,11 +1392,16 @@ export class ScheduledTasksService
     token: string,
   ): Promise<void> {
     try {
-      await this.tasks.admitCreatedTask(
+      const outcome = await this.tasks.admitCreatedTask(
         committed.taskId,
         committed.taskBody,
         ownerUserId,
       );
+      if (outcome === 'durable-woken') {
+        await this.releaseAdmissionClaim(committed.runId, token);
+        return;
+      }
+      if (outcome === 'fail-closed') return;
     } catch (err) {
       // The task row and run ledger are already committed. Leave the task
       // pending and retain the bounded admission lease so startup recovery can
@@ -1500,7 +1514,7 @@ export class ScheduledTasksService
           status: 'claimed',
         },
       });
-      const task = await this.tasks.createTaskRow(
+      const task = await this.tasks.acceptPreparedTask(
         prepared,
         tx,
       );

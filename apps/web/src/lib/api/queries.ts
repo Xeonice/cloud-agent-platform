@@ -565,7 +565,8 @@ export function taskContextQuery(id: string) {
       return {
         ...ctx,
         repo: repoName,
-        branch: task.branch ?? ctx.branch,
+        branch:
+          task.provisioning?.resolvedBranch ?? task.branch ?? "待解析",
         strategy: task.strategy ?? ctx.strategy,
         agent: agentLabel(task.runtime),
         sandboxProviderLabel: taskSandboxProviderLabel(task),

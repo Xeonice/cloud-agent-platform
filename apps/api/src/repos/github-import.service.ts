@@ -1,5 +1,4 @@
 import {
-  ConflictException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -16,7 +15,6 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { decryptStored } from '../settings/secret-storage';
 import {
-  findExistingImport,
   githubDedupKey,
   pickDefaultRepo,
   reconcileAvailableRepos,
@@ -25,6 +23,7 @@ import {
   type ImportedRepoRef,
 } from './github-import.logic';
 import { GithubReposClient } from './github-repos.client';
+import { ReposService } from './repos.service';
 
 /**
  * GitHub-import orchestration (be-github-import, 4.1–4.5).
@@ -78,6 +77,7 @@ export class GithubImportService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly githubRepos: GithubReposClient,
+    private readonly repos: ReposService,
   ) {}
 
   /**
@@ -121,16 +121,16 @@ export class GithubImportService {
 
   /**
    * 4.3 / 4.4 — Imports a selected GitHub repo as a platform Repo, de-duplicated
-   * on the originating GitHub numeric id (full_name fallback). On a re-import of
-   * an already-imported repo it throws 409 identifying the existing Repo. Returns
-   * the created (or, conceptually, existing) Repo with its platform id.
+   * on the originating GitHub numeric id (full_name/normalized URL fallback).
+   * Re-import is idempotent and reconciles fresh verified metadata into the
+   * existing Repo instead of creating a second row.
    */
   async importRepoForOperator(
     operatorId: string,
     body: ImportRepoRequest,
   ): Promise<RepoResponse> {
     const available = await this.listAvailable(operatorId);
-    const accessible = available.some(
+    const accessible = available.find(
       (repo) => repo.id === body.id && repo.full_name === body.full_name,
     );
     if (!accessible) {
@@ -140,41 +140,18 @@ export class GithubImportService {
           'The requested GitHub repository is not visible to the connected PAT.',
       });
     }
-    return this.importRepo(body);
-  }
-
-  async importRepo(body: ImportRepoRequest): Promise<RepoResponse> {
-    const imported = await this.loadImportedRefs();
-    const existing = findExistingImport(
-      { id: body.id, full_name: body.full_name },
-      imported,
-    );
-    if (existing !== null) {
-      // Re-import: identify the existing platform Repo (de-dup on numeric id).
-      throw new ConflictException({
-        error: 'already_imported',
-        message: `GitHub repo ${body.full_name} is already imported.`,
-        repoId: existing.id,
-      });
-    }
-
-    // Derive the platform Repo: display name from the slug, gitSource from the
-    // canonical HTTPS clone URL, and the GitHub-import metadata (numeric id ->
-    // namespaced githubId, default branch, description).
-    const repo = await this.prisma.repo.create({
-      data: {
-        name: this.deriveName(body.full_name),
-        gitSource: this.deriveGitSource(body.full_name),
-        githubId: githubDedupKey(body.id),
-        defaultBranch: body.defaultBranch,
-        description: body.description ?? null,
-        // add-multi-forge-task-delivery: record the source forge so every imported
-        // repo carries it (detection step (1) is populated, not null) — a GitHub
-        // import is github by construction.
-        forge: 'github',
-      },
+    // The browser body selects a candidate; it is not the metadata authority.
+    // Persist the freshly owner-authenticated GitHub API result so a forged or
+    // stale request cannot replace `master` with `main` (or another branch).
+    return this.repos.reconcileVerifiedImport({
+      name: this.deriveName(accessible.full_name),
+      gitSource: this.deriveGitSource(accessible.full_name),
+      forge: 'github',
+      defaultBranch: accessible.defaultBranch,
+      description: accessible.description ?? null,
+      githubId: githubDedupKey(accessible.id),
+      legacyGithubId: accessible.full_name,
     });
-    return repoResponseSchema.parse(this.toResponse(repo));
   }
 
   /**

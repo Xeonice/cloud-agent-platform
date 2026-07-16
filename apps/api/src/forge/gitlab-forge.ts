@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { GitBranchNameSchema } from '@cap/contracts';
 import {
   basicAuthHeader,
   forgeFetch,
@@ -39,14 +40,6 @@ export class GitlabForge implements Forge {
 
   cloneAuthHeader(target: ForgeTarget): string {
     return basicAuthHeader('oauth2', target.token);
-  }
-
-  async resolveBaseBranch(target: ForgeTarget): Promise<string> {
-    const { json } = await forgeFetch(
-      `${target.apiBaseUrl}/projects/${this.projectId(target)}`,
-      { headers: this.headers(target.token) },
-    );
-    return (json as { default_branch: string }).default_branch;
   }
 
   async findExistingChangeRequest(
@@ -102,12 +95,14 @@ export class GitlabForge implements Forge {
       );
       const projects = (json as GlProject[]) ?? [];
       for (const p of projects) {
+        const defaultBranch = GitBranchNameSchema.safeParse(p.default_branch);
+        if (!defaultBranch.success) continue;
         out.push({
           forge: 'gitlab',
           fullPath: p.path_with_namespace,
           gitSource: p.http_url_to_repo,
           visibility: p.visibility,
-          defaultBranch: p.default_branch,
+          defaultBranch: defaultBranch.data,
           gitlabProjectId: String(p.id),
         });
       }

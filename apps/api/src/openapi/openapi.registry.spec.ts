@@ -53,7 +53,9 @@ type LooseDoc = {
 };
 
 type LooseSchema = {
-  type?: string;
+  type?: string | string[];
+  const?: unknown;
+  nullable?: boolean;
   enum?: unknown[];
   minimum?: number;
   maximum?: number;
@@ -67,6 +69,85 @@ type LooseSchema = {
   oneOf?: LooseSchema[];
   anyOf?: LooseSchema[];
 };
+
+const AFFECTED_PROJECTION_OPERATION_IDS = [
+  'tasks.create',
+  'tasks.list',
+  'tasks.get',
+  'tasks.stop',
+  'repos.list',
+  'repos.get',
+] as const;
+
+const PROVISIONING_FAILURE_CODE_ACTIONS = [
+  ['provisioning_capacity_exhausted', 'increase_sandbox_capacity'],
+  ['provisioning_workspace_timeout', 'retry_task'],
+  ['provisioning_forge_auth_failed', 'reconnect_forge'],
+  ['provisioning_tls_network_failed', 'retry_task'],
+  ['provisioning_ref_not_found', 'verify_repository_ref'],
+  ['provisioning_unknown', 'retry_task'],
+] as const;
+
+function operationById(id: string): PublicV1OperationShape {
+  const operation = PUBLIC_V1_OPERATIONS.find((candidate) => candidate.id === id);
+  assert.ok(operation, `missing public operation ${id}`);
+  return operation;
+}
+
+function successSchema(
+  doc: ReturnType<typeof buildV1OpenApiDocument>,
+  operation: PublicV1OperationShape,
+): LooseSchema {
+  const documented = documentedOperation(doc, operation) as {
+    responses?: Record<
+      string,
+      {
+        content?: Record<string, { schema?: LooseSchema }>;
+      }
+    >;
+  };
+  const contentType = operation.responseContentType ?? 'application/json';
+  const schema =
+    documented.responses?.[String(operation.successStatus)]?.content?.[contentType]
+      ?.schema;
+  assert.ok(schema, `${operation.id} has a success schema`);
+  return schema;
+}
+
+function projectedItemSchema(
+  schema: LooseSchema,
+  operationId: string,
+): LooseSchema {
+  if (operationId === 'tasks.list' || operationId === 'repos.list') {
+    const item = schema.properties?.items?.items;
+    assert.ok(item, `${operationId} exposes paginated items`);
+    return item;
+  }
+  return schema;
+}
+
+function schemaAllowsNull(schema: LooseSchema | undefined): boolean {
+  if (!schema) return false;
+  if (schema.nullable === true || schema.type === 'null') return true;
+  if (Array.isArray(schema.type) && schema.type.includes('null')) return true;
+  return [...(schema.oneOf ?? []), ...(schema.anyOf ?? [])].some(
+    schemaAllowsNull,
+  );
+}
+
+function nestedSchemas(schema: LooseSchema): LooseSchema[] {
+  return [
+    schema,
+    ...(schema.oneOf ?? []).flatMap(nestedSchemas),
+    ...(schema.anyOf ?? []).flatMap(nestedSchemas),
+  ];
+}
+
+function literalValues(schema: LooseSchema | undefined): unknown[] {
+  if (!schema) return [];
+  if (schema.enum) return schema.enum;
+  return schema.const === undefined ? [] : [schema.const];
+}
 
 function asLoose(doc: ReturnType<typeof buildV1OpenApiDocument>): LooseDoc {
   return doc as unknown as LooseDoc;
@@ -175,6 +256,140 @@ test('request and success metadata are projected from every exact registry entry
       `${operation.id} output schema projection`,
     );
   }
+});
+
+test('the six task/repo projections keep exact guidance and additive safe schemas', () => {
+  const doc = buildV1OpenApiDocument();
+  const taskOperationIds = AFFECTED_PROJECTION_OPERATION_IDS.filter((id) =>
+    id.startsWith('tasks.'),
+  );
+  const repoOperationIds = AFFECTED_PROJECTION_OPERATION_IDS.filter((id) =>
+    id.startsWith('repos.'),
+  );
+
+  for (const id of AFFECTED_PROJECTION_OPERATION_IDS) {
+    const operation = operationById(id);
+    const documented = documentedOperation(doc, operation) as {
+      description?: string;
+      responses?: Record<string, { description?: string }>;
+    };
+    assert.equal(documented.description, operation.description, `${id} description`);
+    assert.equal(
+      documented.responses?.[String(operation.successStatus)]?.description,
+      operation.responseDescription,
+      `${id} response description`,
+    );
+  }
+
+  for (const id of taskOperationIds) {
+    const operation = operationById(id);
+    const task = projectedItemSchema(successSchema(doc, operation), id);
+    for (const field of ['provisioning', 'failure'] as const) {
+      const fieldSchema = task.properties?.[field];
+      assert.ok(fieldSchema, `${id} documents ${field}`);
+      assert.ok(!task.required?.includes(field), `${id} ${field} remains optional`);
+      assert.ok(schemaAllowsNull(fieldSchema), `${id} ${field} remains nullable`);
+    }
+
+    const documentedPairs = nestedSchemas(task.properties!.failure!)
+      .flatMap((candidate) => {
+        const codes = literalValues(candidate.properties?.code);
+        const actions = literalValues(candidate.properties?.action);
+        return codes.flatMap((code) => actions.map((action) => [code, action]));
+      })
+      .map(([code, action]) => `${String(code)}:${String(action)}`);
+    assert.deepEqual(
+      PROVISIONING_FAILURE_CODE_ACTIONS.filter(
+        ([code, action]) => documentedPairs.includes(`${code}:${action}`),
+      ),
+      PROVISIONING_FAILURE_CODE_ACTIONS,
+      `${id} documents every stable provisioning code/action pair`,
+    );
+  }
+
+  for (const id of repoOperationIds) {
+    const operation = operationById(id);
+    const repo = projectedItemSchema(successSchema(doc, operation), id);
+    const defaultBranch = repo.properties?.defaultBranch;
+    assert.ok(defaultBranch, `${id} documents defaultBranch`);
+    assert.ok(
+      !repo.required?.includes('defaultBranch'),
+      `${id} defaultBranch remains optional`,
+    );
+    assert.ok(schemaAllowsNull(defaultBranch), `${id} defaultBranch remains nullable`);
+  }
+
+  const acceptedTask = {
+    id: '11111111-1111-4111-8111-111111111111',
+    repoId: '22222222-2222-4222-8222-222222222222',
+    prompt: 'inspect the verified default branch',
+    status: 'pending',
+    createdAt: '2026-07-15T01:00:00.000Z',
+    provisioning: {
+      state: 'accepted',
+      stage: 'accepted',
+      attempt: 0,
+      resolvedBranch: null,
+      updatedAt: '2026-07-15T01:00:01.000Z',
+    },
+  };
+  const failedTask = {
+    ...acceptedTask,
+    status: 'failed',
+    provisioning: {
+      ...acceptedTask.provisioning,
+      state: 'failed',
+      stage: 'workspace_transfer',
+    },
+    failure: {
+      code: 'provisioning_forge_auth_failed',
+      message: 'Reconnect the repository credential and retry.',
+      action: 'reconnect_forge',
+      occurredAt: '2026-07-15T01:02:00.000Z',
+    },
+  };
+  const repo = {
+    id: acceptedTask.repoId,
+    name: 'zhiwen',
+    gitSource: 'https://code.example.test/group/zhiwen.git',
+    createdAt: acceptedTask.createdAt,
+    defaultBranch: 'master',
+  };
+  const safeSamples = new Map<string, unknown>([
+    ['tasks.create', acceptedTask],
+    ['tasks.list', { items: [failedTask], nextCursor: null }],
+    ['tasks.get', failedTask],
+    ['tasks.stop', acceptedTask],
+    ['repos.list', { items: [repo], nextCursor: null }],
+    ['repos.get', { ...repo, defaultBranch: null }],
+  ]);
+  for (const id of AFFECTED_PROJECTION_OPERATION_IDS) {
+    const operation = operationById(id);
+    const sample = safeSamples.get(id);
+    assert.ok(operation.responseSchema?.safeParse(sample).success, `${id} sample parses`);
+    const serialized = JSON.stringify(sample);
+    const documentedSchema = JSON.stringify(successSchema(doc, operation));
+    for (const forbidden of [
+      'leaseOwner',
+      'providerEndpoint',
+      'nativeSandboxId',
+      'credentialPath',
+      'rawOutput',
+      'authenticatedGitCommand',
+      'secret-canary',
+    ]) {
+      assert.ok(!serialized.includes(forbidden), `${id} sample excludes ${forbidden}`);
+      assert.ok(
+        !documentedSchema.includes(forbidden),
+        `${id} OpenAPI schema excludes ${forbidden}`,
+      );
+    }
+  }
+  const { defaultBranch: _defaultBranch, ...legacyRepo } = repo;
+  assert.ok(
+    operationById('repos.get').responseSchema?.safeParse(legacyRepo).success,
+    'legacy repo sample may omit defaultBranch',
+  );
 });
 
 test('every operation documents supported auth, required scope, and standard failures', () => {

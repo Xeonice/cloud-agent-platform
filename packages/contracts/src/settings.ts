@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { GitBranchNameSchema } from './git-ref.js';
 
 /**
  * Account settings + Codex credential contract (account-settings spec).
@@ -649,7 +650,7 @@ export const AvailableForgeRepoSchema = z.object({
   /** Repository visibility. */
   visibility: z.string().min(1),
   /** Default branch. */
-  defaultBranch: z.string().min(1),
+  defaultBranch: GitBranchNameSchema,
   /** GitLab numeric project id (cache), when known. */
   gitlabProjectId: z.string().min(1).optional(),
 });

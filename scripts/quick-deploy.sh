@@ -24,10 +24,27 @@
 #   CAP_VERSION=v0.24.0 scripts/quick-deploy.sh
 #   CAP_SANDBOX_PROVIDER=boxlite BOXLITE_ENDPOINT=... BOXLITE_API_TOKEN=... scripts/quick-deploy.sh
 #   BOXLITE_ENDPOINT=http://host.docker.internal:7331 BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331 ...
+#   BOXLITE_HOST_STORAGE_PATH=$HOME/.boxlite ... # local native capacity proof
+#   BOXLITE_HOST_AVAILABLE_GB=80 ...             # external native host proof (floor of host df available GiB)
+#   CAP_CUTOVER_BEARER_TOKEN=...                  # process-only gate-on capability verification credential
 #   WITH_WEB=0 scripts/quick-deploy.sh      # api + postgres only (no console)
 #   CAP_SMOKE_REPO_ID=<id> CAP_SMOKE_COOKIE=<cap_session> RUN_SMOKE=1 scripts/quick-deploy.sh
 #
 set -euo pipefail
+
+# Capture rollout-only host inputs before any child process runs. They must not
+# be exported into docker/curl subprocesses or persisted into the api env file.
+CAP_CAPTURE_XTRACE_WAS_ENABLED=0
+case "$-" in
+  *x*) CAP_CAPTURE_XTRACE_WAS_ENABLED=1; set +x ;;
+esac
+unset CAP_CUTOVER_BEARER_TOKEN_VALUE BOXLITE_HOST_STORAGE_PATH_VALUE BOXLITE_HOST_AVAILABLE_GB_VALUE
+CAP_CUTOVER_BEARER_TOKEN_VALUE="${CAP_CUTOVER_BEARER_TOKEN:-}"
+BOXLITE_HOST_STORAGE_PATH_VALUE="${BOXLITE_HOST_STORAGE_PATH:-}"
+BOXLITE_HOST_AVAILABLE_GB_VALUE="${BOXLITE_HOST_AVAILABLE_GB:-}"
+unset CAP_CUTOVER_BEARER_TOKEN BOXLITE_HOST_STORAGE_PATH BOXLITE_HOST_AVAILABLE_GB
+if [ "$CAP_CAPTURE_XTRACE_WAS_ENABLED" = "1" ]; then set -x; fi
+unset CAP_CAPTURE_XTRACE_WAS_ENABLED
 
 # ── Tunables (env-overridable) ────────────────────────────────────────────────
 REQUESTED_CAP_VERSION="${CAP_VERSION:-latest}" # latest resolves to the latest GitHub Release tag
@@ -46,6 +63,20 @@ GITHUB_RELEASES_REPO="${GITHUB_RELEASES_REPO:-Xeonice/cloud-agent-platform}"
 BOXLITE_DEFAULT_IMAGE_REPO="${BOXLITE_DEFAULT_IMAGE_REPO:-ghcr.io/xeonice/cap-boxlite-sandbox}"
 BOXLITE_DEFAULT_WORKSPACE_PATH="/home/gem/workspace"
 BOXLITE_DEFAULT_RUNTIME_REQUIRED_TOOLS="bash claude codex git gzip node openspec sh tar tmux"
+# Keep these deployment defaults/bounds aligned with
+# packages/sandbox-provider-boxlite/src/boxlite-config.ts and the canonical
+# sandbox resource/settings contracts. quick-deploy validates before persisting
+# them so an invalid host value cannot silently fall back inside the api.
+BOXLITE_DEFAULT_DISK_SIZE_GB=5
+BOXLITE_DISK_SIZE_GB_MIN=1
+BOXLITE_DISK_SIZE_GB_MAX=1024
+BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS=900000
+BOXLITE_GIT_CLONE_TIMEOUT_MS_MIN=1000
+BOXLITE_GIT_CLONE_TIMEOUT_MS_MAX=86400000
+CAP_DEFAULT_MAX_CONCURRENT_TASKS=5
+CAP_MAX_CONCURRENT_TASKS_MIN=1
+CAP_MAX_CONCURRENT_TASKS_MAX=20
+CAP_ADMISSION_ROLLBACK_HEALTH_TIMEOUT_SECONDS="${CAP_ADMISSION_ROLLBACK_HEALTH_TIMEOUT_SECONDS:-60}"
 BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS="${BOXLITE_RUNTIME_PROBE_CREATE_TIMEOUT_SECONDS:-600}"
 BOXLITE_RUNTIME_PROBE_START_TIMEOUT_SECONDS="${BOXLITE_RUNTIME_PROBE_START_TIMEOUT_SECONDS:-120}"
 BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS="${BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS:-60}"
@@ -129,6 +160,43 @@ is_positive_integer(){
     ''|*[!0-9]*|0) return 1 ;;
     *) return 0 ;;
   esac
+}
+bounded_base10_integer(){
+  local name="$1" raw="$2" minimum="$3" maximum="$4" value
+  case "$raw" in
+    ''|*[!0-9]*)
+      die "$name must be a base-10 integer from $minimum to $maximum"
+      ;;
+  esac
+  value="$(printf '%s\n' "$raw" | sed 's/^0*//')"
+  [ -n "$value" ] || value=0
+  if [ "${#value}" -gt "${#maximum}" ] || \
+     { [ "${#value}" -eq "${#maximum}" ] && [ "$value" \> "$maximum" ]; }; then
+    die "$name must be an integer from $minimum to $maximum, received: $raw"
+  fi
+  if [ "$value" -lt "$minimum" ] || [ "$value" -gt "$maximum" ]; then
+    die "$name must be an integer from $minimum to $maximum, received: $raw"
+  fi
+  printf '%s\n' "$value"
+}
+normalize_strict_boolean(){
+  local name="$1" raw="$2" value
+  value="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | awk '{$1=$1; print}')"
+  case "$value" in
+    1|true) printf '%s\n' true ;;
+    0|false) printf '%s\n' false ;;
+    *) die "$name must be true/false or 1/0" ;;
+  esac
+}
+safe_deployment_identity(){
+  local name="$1" value="$2"
+  case "$value" in
+    ''|*[!A-Za-z0-9._:@/+-]*)
+      die "$name must contain only A-Z, a-z, 0-9, dot, underscore, colon, at, slash, plus, or hyphen"
+      ;;
+  esac
+  [ "${#value}" -le 256 ] || die "$name must be at most 256 characters"
+  printf '%s\n' "$value"
 }
 validate_boxlite_runtime_probe_timeouts(){
   local name value
@@ -218,6 +286,8 @@ HOST_ARCH="$(host_arch)"
 SELECTED_PROVIDER="$(resolve_provider "$REQUESTED_PROVIDER")"
 SANDBOX_IMAGE_DELIVERY="$(normalize_sandbox_image_delivery "$REQUESTED_SANDBOX_IMAGE_DELIVERY")"
 [ "$SELECTED_PROVIDER" != "boxlite" ] || validate_boxlite_runtime_probe_timeouts
+is_positive_integer "$CAP_ADMISSION_ROLLBACK_HEALTH_TIMEOUT_SECONDS" || \
+  die "CAP_ADMISSION_ROLLBACK_HEALTH_TIMEOUT_SECONDS must be a positive integer number of seconds"
 echo "  host: ${HOST_OS}/${HOST_ARCH}"
 echo "  sandbox provider: ${SELECTED_PROVIDER} (requested: ${REQUESTED_PROVIDER})"
 echo "  sandbox image delivery: ${SANDBOX_IMAGE_DELIVERY} (requested: ${REQUESTED_SANDBOX_IMAGE_DELIVERY})"
@@ -450,7 +520,7 @@ set_env_value(){
   fi
   tmp="${ENV_FILE}.captmp"
   awk -F= -v k="$key" -v v="$value" '
-    $1 == k && !done { print k "=" v; done = 1; next }
+    $1 == k { if (!done) print k "=" v; done = 1; next }
     { print }
     END { if (!done) print k "=" v }
   ' "$ENV_FILE" >"$tmp"
@@ -473,6 +543,115 @@ require_value(){
   value="$(value_for "$key")"
   [ -n "$value" ] || die "$key is required for CAP_SANDBOX_PROVIDER=$SELECTED_PROVIDER"
   printf '%s\n' "$value"
+}
+compose_service_is_running(){
+  local service="$1"
+  (
+    cd "$WORKDIR"
+    docker compose -f "$COMPOSE" ps --status running --services 2>/dev/null
+  ) | grep -Fxq "$service"
+}
+validate_attestation_json_syntax(){
+  local value="$1"
+  # admission-v2 enablement is deliberately a second-stage rollout, so a
+  # gate-disabled api must already be running. Reuse that container's Node
+  # runtime for strict JSON syntax without adding jq as a host dependency.
+  (
+    cd "$WORKDIR"
+    docker compose -f "$COMPOSE" exec -T api node -e \
+      'try { const value = JSON.parse(process.argv[1]); if (!value || typeof value !== "object" || Array.isArray(value)) process.exit(2); } catch { process.exit(2); }' \
+      "$value" >/dev/null 2>&1
+  ) || die "CAP_TASK_ADMISSION_V2_ATTESTATION_JSON must be one valid JSON object"
+}
+effective_persisted_capacity_policy(){
+  local raw persisted max_ready_disk concurrency resolved_disk
+  compose_service_is_running api || \
+    die "CAP_TASK_ADMISSION_V2_ENABLED=true requires the gate-disabled api to be running so quick-deploy can read the effective persisted concurrency. Deploy once with the gate false, verify/drain the rollout, then re-run to enable it."
+  if ! raw="$(
+    cd "$WORKDIR"
+    docker compose -f "$COMPOSE" exec -T api node -e \
+      'const { PrismaClient } = require("@prisma/client"); const prisma = new PrismaClient(); (async () => { try { const [settings, environments] = await Promise.all([prisma.systemSettings.findUnique({ where: { id: "system" }, select: { maxConcurrentTasks: true } }), prisma.sandboxEnvironment.findMany({ where: { status: "ready", providerFamilies: { has: "boxlite" } }, select: { resources: true } })]); let maxReadyDisk = 0; for (const row of environments) { const value = row.resources && typeof row.resources === "object" && !Array.isArray(row.resources) ? row.resources.diskSizeGb : undefined; if (value === undefined) continue; if (!Number.isInteger(value) || value < 1 || value > 1024) process.exit(3); maxReadyDisk = Math.max(maxReadyDisk, value); } process.stdout.write(`persisted=${settings ? settings.maxConcurrentTasks : "none"}\nmaxReadyDisk=${maxReadyDisk}`); } finally { await prisma.$disconnect(); } })().catch(() => process.exit(1));' \
+      2>/dev/null
+  )"; then
+    die "could not read the persisted concurrency and ready environment disk policies from the running api; admission-v2 remains disabled"
+  fi
+  persisted="$(printf '%s\n' "$raw" | awk -F= '$1 == "persisted" { print $2; exit }')"
+  max_ready_disk="$(printf '%s\n' "$raw" | awk -F= '$1 == "maxReadyDisk" { print $2; exit }')"
+  [ -n "$persisted" ] && [ -n "$max_ready_disk" ] || \
+    die "running api returned an invalid capacity-policy projection; admission-v2 remains disabled"
+  if [ "$persisted" = "none" ]; then
+    concurrency="$MAX_CONCURRENT_TASKS_VALUE"
+  else
+    concurrency="$(bounded_base10_integer MAX_CONCURRENT_TASKS "$persisted" \
+      "$CAP_MAX_CONCURRENT_TASKS_MIN" "$CAP_MAX_CONCURRENT_TASKS_MAX")"
+  fi
+  max_ready_disk="$(bounded_base10_integer READY_SANDBOX_ENVIRONMENT_DISK_SIZE_GB \
+    "$max_ready_disk" 0 "$BOXLITE_DISK_SIZE_GB_MAX")"
+  resolved_disk="$BOXLITE_DISK_SIZE_GB_VALUE"
+  [ "$max_ready_disk" -le "$resolved_disk" ] || resolved_disk="$max_ready_disk"
+  printf '%s %s\n' "$concurrency" "$resolved_disk"
+}
+validate_boxlite_host_capacity(){
+  local policy concurrency resolved_disk required_gib runtime_endpoint storage_path available_kib available_gib external_available
+  policy="$(effective_persisted_capacity_policy)"
+  read -r concurrency resolved_disk <<<"$policy"
+  required_gib=$((resolved_disk * concurrency))
+  # Capacity belongs to the runtime host, not the host-side readiness route. A
+  # localhost readiness URL may only be an SSH tunnel to a remote BoxLite host.
+  runtime_endpoint="$(require_value BOXLITE_ENDPOINT)"
+  if boxlite_endpoint_is_local_host "$runtime_endpoint"; then
+    command -v df >/dev/null 2>&1 || \
+      die "df is required for the local BoxLite admission-v2 host-capacity preflight"
+    storage_path="${BOXLITE_HOST_STORAGE_PATH_VALUE:-${HOME:?HOME is required to resolve the default BoxLite storage path}/.boxlite}"
+    case "$storage_path" in
+      /*) ;;
+      *) die "BOXLITE_HOST_STORAGE_PATH must be an absolute host path when provided" ;;
+    esac
+    [ -d "$storage_path" ] || \
+      die "BoxLite host-capacity preflight cannot inspect $storage_path; pass BOXLITE_HOST_STORAGE_PATH as a process env pointing at the actual BoxLite home directory"
+    available_kib="$(df -Pk "$storage_path" 2>/dev/null | awk 'NR > 1 { value = $4 } END { print value }')"
+    case "$available_kib" in
+      ''|*[!0-9]*) die "BoxLite host-capacity preflight could not read available KiB for $storage_path" ;;
+    esac
+    available_gib="$(awk -v kib="$available_kib" 'BEGIN { printf "%.2f", kib / 1048576 }')"
+    if [ "$available_kib" -lt "$((required_gib * 1024 * 1024))" ]; then
+      die "BoxLite host capacity is insufficient: ${available_gib} GiB available at $storage_path, but ${resolved_disk} GiB x effective persisted concurrency ${concurrency} requires at least ${required_gib} GiB. Lower the persisted concurrency, free capacity, or increase the BoxLite storage filesystem before enabling admission-v2."
+    fi
+    echo "  admission-v2 capacity: ${available_gib} GiB available at $storage_path >= ${resolved_disk} GiB x persisted concurrency ${concurrency}"
+    return
+  fi
+  external_available="${BOXLITE_HOST_AVAILABLE_GB_VALUE:-}"
+  case "$external_available" in
+    ''|*[!0-9]*|0)
+      die "external BoxLite admission-v2 capacity is unproven. On the BoxLite host, floor the available GiB for its home filesystem and pass BOXLITE_HOST_AVAILABLE_GB as a positive process env value"
+      ;;
+  esac
+  if ! awk -v available="$external_available" -v required="$required_gib" \
+    'BEGIN { exit (available >= required ? 0 : 1) }'; then
+    die "external BoxLite host capacity is insufficient: ${external_available} GiB reported, but ${resolved_disk} GiB x effective persisted concurrency ${concurrency} requires at least ${required_gib} GiB"
+  fi
+  echo "  admission-v2 capacity: external host reports ${external_available} GiB available >= ${resolved_disk} GiB x persisted concurrency ${concurrency}"
+}
+validate_task_admission_v2_preflight(){
+  if [ "$TASK_ADMISSION_V2_ENABLED_VALUE" != "true" ]; then
+    echo "  admission-v2: disabled (safe rollout default)"
+    return
+  fi
+  [ -n "$TASK_ADMISSION_V2_ATTESTATION_VALUE" ] || \
+    die "CAP_TASK_ADMISSION_V2_ENABLED=true requires CAP_TASK_ADMISSION_V2_ATTESTATION_JSON from the complete gate-disabled deployment"
+  compose_service_is_running api || \
+    die "CAP_TASK_ADMISSION_V2_ENABLED=true is a second-stage rollout. Deploy all roles once with the gate false, verify capability reports, then re-run with the complete attestation."
+  validate_attestation_json_syntax "$TASK_ADMISSION_V2_ATTESTATION_VALUE"
+  [ "$SELECTED_PROVIDER" != "control-plane" ] || \
+    die "CAP_TASK_ADMISSION_V2_ENABLED=true requires a runnable sandbox provider; control-plane mode cannot attest admission readiness"
+  if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
+    [ "$BOXLITE_PROTOCOL_MODE_VALUE" = "native" ] || \
+      die "CAP_TASK_ADMISSION_V2_ENABLED=true requires BOXLITE_PROTOCOL_MODE=native; cap-rest cannot prove disk_size_gb/rootfs enforcement"
+    [ "${CAP_BOXLITE_SKIP_RUNTIME_PROBE:-0}" != "1" ] || \
+      die "CAP_BOXLITE_SKIP_RUNTIME_PROBE=1 cannot be used while admission-v2 is enabled because disk_size_gb/rootfs enforcement would be unproven"
+    validate_boxlite_host_capacity
+  fi
+  echo "  admission-v2: staged attestation and deployment preflight accepted"
 }
 boxlite_default_readiness_endpoint(){
   local endpoint="$1"
@@ -905,6 +1084,16 @@ SESSION_SECRET_VALUE="$(value_for SESSION_SECRET)"
 CODEX_CRED_ENC_KEY_VALUE="$(value_for CODEX_CRED_ENC_KEY)"
 [ -n "$CODEX_CRED_ENC_KEY_VALUE" ] || CODEX_CRED_ENC_KEY_VALUE="$(openssl rand -hex 32)"
 
+CAP_INSTANCE_ID_VALUE="$(safe_deployment_identity CAP_INSTANCE_ID \
+  "$(value_or_default CAP_INSTANCE_ID cap-api-1)")"
+MAX_CONCURRENT_TASKS_VALUE="$(bounded_base10_integer MAX_CONCURRENT_TASKS \
+  "$(value_or_default MAX_CONCURRENT_TASKS "$CAP_DEFAULT_MAX_CONCURRENT_TASKS")" \
+  "$CAP_MAX_CONCURRENT_TASKS_MIN" "$CAP_MAX_CONCURRENT_TASKS_MAX")"
+TASK_ADMISSION_V2_ENABLED_VALUE="$(normalize_strict_boolean \
+  CAP_TASK_ADMISSION_V2_ENABLED \
+  "$(value_or_default CAP_TASK_ADMISSION_V2_ENABLED false)")"
+TASK_ADMISSION_V2_ATTESTATION_VALUE="$(value_for CAP_TASK_ADMISSION_V2_ATTESTATION_JSON)"
+
 set_env_value CAP_VERSION "$CAP_VERSION"
 set_env_value CAP_SANDBOX_PROVIDER "$SELECTED_PROVIDER"
 SANDBOX_IMAGE_DELIVERY_EFFECTIVE="$SANDBOX_IMAGE_DELIVERY"
@@ -916,6 +1105,23 @@ set_env_value PASSWORD_AUTH_ENABLED true
 set_env_value AUTH_TOKEN_LEGACY_ENABLED false
 set_env_value SESSION_SECRET "$SESSION_SECRET_VALUE"
 set_env_value CODEX_CRED_ENC_KEY "$CODEX_CRED_ENC_KEY_VALUE"
+set_env_value CAP_INSTANCE_ID "$CAP_INSTANCE_ID_VALUE"
+set_env_value MAX_CONCURRENT_TASKS "$MAX_CONCURRENT_TASKS_VALUE"
+# These inputs are intentionally process-only. Scrub stale/manual entries so
+# docker compose env_file cannot accidentally pass them into the api container.
+unset_env_value CAP_CUTOVER_BEARER_TOKEN
+unset_env_value BOXLITE_HOST_STORAGE_PATH
+unset_env_value BOXLITE_HOST_AVAILABLE_GB
+set_env_value CAP_TASK_ADMISSION_V2_ENABLED "$TASK_ADMISSION_V2_ENABLED_VALUE"
+if [ "$TASK_ADMISSION_V2_ENABLED_VALUE" = "true" ]; then
+  [ -z "$TASK_ADMISSION_V2_ATTESTATION_VALUE" ] || \
+    set_env_value CAP_TASK_ADMISSION_V2_ATTESTATION_JSON "$TASK_ADMISSION_V2_ATTESTATION_VALUE"
+else
+  # A closed first-stage rollout must not carry stale membership evidence into
+  # a later force-recreate. Enabling always requires a freshly supplied,
+  # complete attestation from the gate-disabled deployment.
+  unset_env_value CAP_TASK_ADMISSION_V2_ATTESTATION_JSON
+fi
 set_env_value API_HOST_PORT "$API_PORT"
 set_env_value WEB_HOST_PORT "$WEB_PORT"
 set_env_value CAP_PUBLIC_API_PORT "$API_PORT"
@@ -970,6 +1176,13 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   fi
   boxlite_protocol_mode="$(value_for BOXLITE_PROTOCOL_MODE)"
   boxlite_protocol_mode="$(normalize_boxlite_protocol "$boxlite_protocol_mode")"
+  BOXLITE_PROTOCOL_MODE_VALUE="$boxlite_protocol_mode"
+  BOXLITE_DISK_SIZE_GB_VALUE="$(bounded_base10_integer BOXLITE_DISK_SIZE_GB \
+    "$(value_or_default BOXLITE_DISK_SIZE_GB "$BOXLITE_DEFAULT_DISK_SIZE_GB")" \
+    "$BOXLITE_DISK_SIZE_GB_MIN" "$BOXLITE_DISK_SIZE_GB_MAX")"
+  BOXLITE_GIT_CLONE_TIMEOUT_MS_VALUE="$(bounded_base10_integer BOXLITE_GIT_CLONE_TIMEOUT_MS \
+    "$(value_or_default BOXLITE_GIT_CLONE_TIMEOUT_MS "$BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS")" \
+    "$BOXLITE_GIT_CLONE_TIMEOUT_MS_MIN" "$BOXLITE_GIT_CLONE_TIMEOUT_MS_MAX")"
   if [ -n "$boxlite_rootfs_path" ] || [ -n "$boxlite_rootfs_path_map" ]; then
     [ "$boxlite_protocol_mode" = "native" ] || \
       die "BOXLITE_ROOTFS_PATH requires BOXLITE_PROTOCOL_MODE=native"
@@ -1016,11 +1229,14 @@ if [ "$SELECTED_PROVIDER" = "boxlite" ]; then
   set_env_value BOXLITE_SANDBOX_MODE "$(value_or_default BOXLITE_SANDBOX_MODE workspace-write)"
   set_env_value BOXLITE_CLIENT_MODE "$(value_or_default BOXLITE_CLIENT_MODE rest)"
   set_env_value BOXLITE_TIMEOUT_MS "$(value_or_default BOXLITE_TIMEOUT_MS 30000)"
+  set_env_value BOXLITE_DISK_SIZE_GB "$BOXLITE_DISK_SIZE_GB_VALUE"
+  set_env_value BOXLITE_GIT_CLONE_TIMEOUT_MS "$BOXLITE_GIT_CLONE_TIMEOUT_MS_VALUE"
   set_env_value BOXLITE_TERMINAL_MODE "$(value_or_default BOXLITE_TERMINAL_MODE pty)"
   set_env_value BOXLITE_CAPABILITIES "$(value_or_default BOXLITE_CAPABILITIES terminal.websocket,terminal.interactive,command.exec,workspace.git.materialize,workspace.git.deliver,workspace.archive.transfer,lifecycle.readopt,lifecycle.readoption)"
 fi
 maybe_stage_aio_release_asset
 set_env_value CAP_SANDBOX_IMAGE_DELIVERY "$SANDBOX_IMAGE_DELIVERY_EFFECTIVE"
+validate_task_admission_v2_preflight
 maybe_stop_after env
 
 github_validation_token(){
@@ -1103,7 +1319,7 @@ boxlite_extract_camel_exit_code(){
 }
 
 validate_boxlite_native_runtime_probe(){
-  local endpoint token image rootfs_path api_path sandbox_id probe_box_id workspace create_json start_json exec_json exec_id status_json exit_code probe_command attempts create_body source_label
+  local endpoint token image rootfs_path api_path sandbox_id probe_box_id workspace create_json start_json exec_json exec_id status_json exit_code probe_command attempts create_body source_label disk_size_gb minimum_kib capacity_probe
   [ "$(normalize_boxlite_protocol "$(value_or_default BOXLITE_PROTOCOL_MODE native)")" = "native" ] || return 0
   if [ "${CAP_BOXLITE_SKIP_RUNTIME_PROBE:-}" = "1" ]; then
     warn "CAP_BOXLITE_SKIP_RUNTIME_PROBE=1 — BoxLite image/tool runtime probe skipped"
@@ -1120,11 +1336,14 @@ validate_boxlite_native_runtime_probe(){
   api_path="$(boxlite_native_api_path)"
   sandbox_id="cap-quick-deploy-preflight-$$"
   workspace="$(value_or_default BOXLITE_WORKSPACE_PATH "$BOXLITE_DEFAULT_WORKSPACE_PATH")"
+  disk_size_gb="$(bounded_base10_integer BOXLITE_DISK_SIZE_GB \
+    "$(value_or_default BOXLITE_DISK_SIZE_GB "$BOXLITE_DEFAULT_DISK_SIZE_GB")" \
+    "$BOXLITE_DISK_SIZE_GB_MIN" "$BOXLITE_DISK_SIZE_GB_MAX")"
   if [ -n "$rootfs_path" ]; then
-    create_body="{\"name\":\"$(boxlite_json_string "$sandbox_id")\",\"rootfs_path\":\"$(boxlite_json_string "$rootfs_path")\"}"
+    create_body="{\"name\":\"$(boxlite_json_string "$sandbox_id")\",\"rootfs_path\":\"$(boxlite_json_string "$rootfs_path")\",\"disk_size_gb\":${disk_size_gb}}"
     source_label="rootfs path ${rootfs_path}"
   else
-    create_body="{\"name\":\"$(boxlite_json_string "$sandbox_id")\",\"image\":\"$(boxlite_json_string "$image")\"}"
+    create_body="{\"name\":\"$(boxlite_json_string "$sandbox_id")\",\"image\":\"$(boxlite_json_string "$image")\",\"disk_size_gb\":${disk_size_gb}}"
     source_label="image ${image}"
   fi
   echo "  BoxLite readiness: creating runtime probe sandbox ${sandbox_id} from ${source_label}"
@@ -1149,7 +1368,12 @@ validate_boxlite_native_runtime_probe(){
     curl -fsS -m "$BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS" -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
     die "BoxLite runtime probe failed: could not start probe sandbox ${probe_box_id}"
   }
-  probe_command="mkdir -p $(shell_quote "$workspace") && test -d $(shell_quote "$workspace") && test -w $(shell_quote "$workspace") && $(boxlite_required_tools_probe_command)"
+  # Match the production provider's explicit 90% rootfs-capacity tolerance:
+  # filesystem metadata consumes part of the requested virtual disk, while a
+  # materially undersized/ignored disk_size_gb must fail readiness.
+  minimum_kib=$((disk_size_gb * 1024 * 1024 * 9 / 10))
+  capacity_probe="df -Pk / | awk -v minimum=${minimum_kib} 'NR == 2 { exit (\$2 >= minimum ? 0 : 1) } END { if (NR < 2) exit 1 }'"
+  probe_command="${capacity_probe} && mkdir -p $(shell_quote "$workspace") && test -d $(shell_quote "$workspace") && test -w $(shell_quote "$workspace") && $(boxlite_required_tools_probe_command)"
   exec_json="$(curl -fsS -m "$BOXLITE_RUNTIME_PROBE_EXEC_TIMEOUT_SECONDS" \
     -H "authorization: Bearer ${token}" \
     -H 'content-type: application/json' \
@@ -1176,7 +1400,7 @@ validate_boxlite_native_runtime_probe(){
   curl -fsS -m "$BOXLITE_RUNTIME_PROBE_DELETE_TIMEOUT_SECONDS" -X DELETE -H "authorization: Bearer ${token}" "${endpoint%/}${api_path}/boxes/${probe_box_id}" >/dev/null 2>&1 || true
   [ "$exit_code" = "0" ] || \
     die "BoxLite runtime probe failed: sandbox source/workspace/tools check exited ${exit_code:-unknown}"
-  echo "  BoxLite readiness: runtime sandbox source/workspace/tools probe passed"
+  echo "  BoxLite readiness: runtime sandbox disk_size_gb/rootfs/source/workspace/tools probe passed"
 }
 
 validate_boxlite_cap_rest_runtime_probe(){
@@ -1281,6 +1505,143 @@ validate_aio_image_staged(){
   echo "  AIO readiness: staged $image"
 }
 
+rollback_task_admission_v2(){
+  local reason="$1" rollback_deadline recovered=0 stopped=0
+  # Rollback owns process termination from this point. Clear any cutover/body
+  # traps first so its deliberate final `die` cannot recursively re-enter here.
+  trap - EXIT INT TERM
+  warn "$reason"
+  warn "closing admission-v2 and force-recreating api before reporting failure"
+  set_env_value CAP_TASK_ADMISSION_V2_ENABLED false
+  unset_env_value CAP_TASK_ADMISSION_V2_ATTESTATION_JSON
+  if (
+    cd "$WORKDIR"
+    COMPOSE_PROFILES="$profiles" CAP_VERSION="$CAP_VERSION" \
+      CAP_SANDBOX_PROVIDER="$SELECTED_PROVIDER" \
+      CAP_IMAGE_PLATFORM="$CAP_IMAGE_PLATFORM" \
+      docker compose -f "$COMPOSE" up -d --force-recreate api >/dev/null
+  ); then
+    rollback_deadline=$(( $(date +%s) + CAP_ADMISSION_ROLLBACK_HEALTH_TIMEOUT_SECONDS ))
+    until [ "$(date +%s)" -ge "$rollback_deadline" ]; do
+      if curl -fsS --connect-timeout 2 --max-time 3 \
+        "http://localhost:${API_PORT}/health" >/dev/null 2>&1; then
+        recovered=1
+        break
+      fi
+      sleep 1
+    done
+  fi
+  if [ "$recovered" = "1" ]; then
+    warn "api recovered with CAP_TASK_ADMISSION_V2_ENABLED=false"
+    die "$reason Admission-v2 remains disabled."
+  fi
+  if (
+    cd "$WORKDIR"
+    COMPOSE_PROFILES="$profiles" docker compose -f "$COMPOSE" stop api >/dev/null
+  ); then
+    stopped=1
+    warn "api was stopped fail-closed because the admission-v2 runtime rollback could not be verified"
+  else
+    warn "could not stop api after the admission-v2 runtime rollback failed; runtime state is unverified"
+  fi
+  if [ "$stopped" = "1" ]; then
+    die "$reason Admission-v2 is disabled in .env and api was stopped fail-closed."
+  fi
+  die "$reason Admission-v2 is disabled in .env, but api runtime state remains unverified; stop api manually before accepting tasks."
+}
+
+TASK_ADMISSION_CAPABILITY_BODY_FILE=""
+cleanup_task_admission_capability_body(){
+  [ -z "${TASK_ADMISSION_CAPABILITY_BODY_FILE:-}" ] || \
+    rm -f "$TASK_ADMISSION_CAPABILITY_BODY_FILE"
+  TASK_ADMISSION_CAPABILITY_BODY_FILE=""
+}
+
+fail_closed_on_task_admission_capability_exit(){
+  local status="$?"
+  trap - EXIT INT TERM
+  cleanup_task_admission_capability_body
+  unset CAP_CUTOVER_BEARER_TOKEN_VALUE
+  if [ "$status" -ne 0 ]; then
+    rollback_task_admission_v2 \
+      "admission-v2 capability verification was interrupted before the running gate was confirmed."
+  fi
+  exit "$status"
+}
+
+fail_closed_on_task_admission_cutover_exit(){
+  local status="$?"
+  trap - EXIT INT TERM
+  rollback_task_admission_v2 \
+    "admission-v2 cutover exited before the running capability gate was confirmed."
+  exit "$status"
+}
+
+verify_task_admission_v2_runtime_gate(){
+  local capability_body capability_status closed_reason restore_xtrace=0
+  [ "$TASK_ADMISSION_V2_ENABLED_VALUE" = "true" ] || return 0
+  case "$-" in
+    *x*) restore_xtrace=1; set +x ;;
+  esac
+  [ -n "$CAP_CUTOVER_BEARER_TOKEN_VALUE" ] || \
+    rollback_task_admission_v2 \
+      "admission-v2 gate-on verification requires process-only CAP_CUTOVER_BEARER_TOKEN; bootstrap ADMIN_PASSWORD/session state is not a valid cutover credential."
+  case "$CAP_CUTOVER_BEARER_TOKEN_VALUE" in
+    *$'\n'*|*$'\r'*)
+      rollback_task_admission_v2 "CAP_CUTOVER_BEARER_TOKEN must be a single-line process-only value."
+      ;;
+  esac
+  if ! capability_body="$(mktemp "${TMPDIR:-/tmp}/cap-admission-v2-capability.XXXXXX")"; then
+    unset CAP_CUTOVER_BEARER_TOKEN_VALUE
+    rollback_task_admission_v2 "could not create the admission-v2 capability response file."
+  fi
+  TASK_ADMISSION_CAPABILITY_BODY_FILE="$capability_body"
+  # Any unexpected exit or operator signal after the gate-on API starts must
+  # execute the same fail-closed runtime rollback as an HTTP/schema failure.
+  # The EXIT trap owns cleanup; INT/TERM only choose the conventional status.
+  trap fail_closed_on_task_admission_capability_exit EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  if ! chmod 600 "$capability_body"; then
+    cleanup_task_admission_capability_body
+    trap - EXIT INT TERM
+    unset CAP_CUTOVER_BEARER_TOKEN_VALUE
+    rollback_task_admission_v2 "could not secure the admission-v2 capability response file."
+  fi
+  capability_status="$(
+    printf 'Authorization: Bearer %s\n' "$CAP_CUTOVER_BEARER_TOKEN_VALUE" | \
+      curl -sS --connect-timeout 3 --max-time 10 \
+        -o "$capability_body" -w '%{http_code}' \
+        -H @- \
+        -H 'accept: application/json' \
+        "http://localhost:${API_PORT}/deployment-capabilities/task-admission-v2" \
+        2>/dev/null || true
+  )"
+  unset CAP_CUTOVER_BEARER_TOKEN_VALUE
+  if [ "$restore_xtrace" = "1" ]; then set -x; fi
+  if [ "$capability_status" != "200" ]; then
+    cleanup_task_admission_capability_body
+    trap - EXIT INT TERM
+    rollback_task_admission_v2 \
+      "admission-v2 capability endpoint returned HTTP ${capability_status:-000} instead of 200."
+  fi
+  if ! (
+    cd "$WORKDIR"
+    docker compose -f "$COMPOSE" exec -T api node -e \
+      'let raw = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", chunk => raw += chunk); process.stdin.on("end", () => { try { const value = JSON.parse(raw); process.exit(value?.capability === "task-admission-v2" && value?.gate?.open === true ? 0 : 2); } catch { process.exit(2); } });' \
+      <"$capability_body" >/dev/null 2>&1
+  ); then
+    closed_reason="$(sed -n 's/.*"reason"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$capability_body" | head -1)"
+    cleanup_task_admission_capability_body
+    trap - EXIT INT TERM
+    rollback_task_admission_v2 \
+      "admission-v2 runtime capability gate did not open${closed_reason:+ (reason=${closed_reason})}."
+  fi
+  cleanup_task_admission_capability_body
+  trap - EXIT INT TERM
+  echo "  admission-v2 capability: running api reports gate.open=true"
+}
+
 validate_github_dependency
 validate_selected_provider_before_pull
 commit_quick_deploy_transaction
@@ -1292,24 +1653,45 @@ profiles=""; [ "$WITH_WEB" = "1" ] && profiles="web"
 services=(api postgres)
 [ "$WITH_WEB" = "1" ] && services+=(web)
 [ "$SELECTED_PROVIDER" = "aio" ] && [ "$SANDBOX_IMAGE_DELIVERY_EFFECTIVE" != "release-assets" ] && services+=(aio-sandbox-image)
-( cd "$WORKDIR"
-  COMPOSE_PROFILES="$profiles" CAP_VERSION="$CAP_VERSION" CAP_SANDBOX_PROVIDER="$SELECTED_PROVIDER" CAP_IMAGE_PLATFORM="$CAP_IMAGE_PLATFORM" docker compose -f "$COMPOSE" pull "${services[@]}"
-  COMPOSE_PROFILES="$profiles" CAP_VERSION="$CAP_VERSION" CAP_SANDBOX_PROVIDER="$SELECTED_PROVIDER" CAP_IMAGE_PLATFORM="$CAP_IMAGE_PLATFORM" validate_aio_image_staged
+if [ "$TASK_ADMISSION_V2_ENABLED_VALUE" = "true" ]; then
+  # Cover operator signals and unexpected shell exits throughout pull, startup,
+  # health waiting, and the hand-off to the authenticated capability check.
+  trap fail_closed_on_task_admission_cutover_exit EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+fi
+if ( cd "$WORKDIR"
+  COMPOSE_PROFILES="$profiles" CAP_VERSION="$CAP_VERSION" CAP_SANDBOX_PROVIDER="$SELECTED_PROVIDER" CAP_IMAGE_PLATFORM="$CAP_IMAGE_PLATFORM" docker compose -f "$COMPOSE" pull "${services[@]}" &&
+  COMPOSE_PROFILES="$profiles" CAP_VERSION="$CAP_VERSION" CAP_SANDBOX_PROVIDER="$SELECTED_PROVIDER" CAP_IMAGE_PLATFORM="$CAP_IMAGE_PLATFORM" validate_aio_image_staged &&
   COMPOSE_PROFILES="$profiles" CAP_VERSION="$CAP_VERSION" CAP_SANDBOX_PROVIDER="$SELECTED_PROVIDER" CAP_IMAGE_PLATFORM="$CAP_IMAGE_PLATFORM" docker compose -f "$COMPOSE" up -d "${services[@]}"
-)
+); then
+  :
+elif [ "$TASK_ADMISSION_V2_ENABLED_VALUE" = "true" ]; then
+  rollback_task_admission_v2 "docker compose pull/up failed during admission-v2 cutover."
+else
+  die "docker compose pull/up failed"
+fi
 
 # ── GATE 7 — wait for /health, surface the local-account credentials ───────────
 step "GATE 7 — wait for api /health"
 echo "  waiting up to ${HEALTH_TIMEOUT_SECONDS}s for api /health"
 deadline=$(( $(date +%s) + HEALTH_TIMEOUT_SECONDS ))
-until curl -fsS "http://localhost:${API_PORT}/health" >/dev/null 2>&1; do
+until curl -fsS --connect-timeout 2 --max-time 3 \
+  "http://localhost:${API_PORT}/health" >/dev/null 2>&1; do
   if [ "$(date +%s)" -ge "$deadline" ]; then
+    if [ "$TASK_ADMISSION_V2_ENABLED_VALUE" = "true" ]; then
+      rollback_task_admission_v2 \
+        "api did not become healthy in ${HEALTH_TIMEOUT_SECONDS}s after admission-v2 enablement."
+    fi
     die "api did not become healthy in ${HEALTH_TIMEOUT_SECONDS}s — inspect: docker compose -f $COMPOSE logs api"
   fi
   sleep 3
 done
-ver="$(curl -fsS "http://localhost:${API_PORT}/version" 2>/dev/null || echo '{}')"
-login_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+verify_task_admission_v2_runtime_gate
+ver="$(curl -fsS --connect-timeout 2 --max-time 5 \
+  "http://localhost:${API_PORT}/version" 2>/dev/null || echo '{}')"
+login_status="$(curl -sS --connect-timeout 2 --max-time 5 \
+  -o /dev/null -w '%{http_code}' \
   -H 'content-type: application/json' \
   -d "$ADMIN_LOGIN_PAYLOAD" \
   "http://localhost:${API_PORT}/auth/password" 2>/dev/null || true)"

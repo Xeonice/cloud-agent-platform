@@ -46,12 +46,10 @@ enum Role {
 
 /// A registered repository the operator can launch tasks against.
 ///
-/// The GitHub-import metadata columns (`description`, `defaultBranch`,
-/// `branchCount`, `updatedAt`, `githubId`) are all NULLABLE: they are populated
-/// only when the repo was imported from GitHub. A plain `gitSource`-only repo
-/// created without GitHub import stays valid with these columns null. `githubId`
-/// is the originating GitHub repository identity, carried so imports can be
-/// de-duplicated. Names mirror the `@cap/contracts` `RepoSchema`.
+/// Import metadata remains nullable for legacy rows. `defaultBranch` is
+/// forge-neutral and stores a verified picker/API or symbolic-HEAD value;
+/// description/branchCount/updatedAt/githubId remain GitHub provenance fields.
+/// Names mirror the `@cap/contracts` `RepoSchema`.
 model Repo {
   id        String   @id @default(uuid())
   /// Human-friendly display name.
@@ -62,7 +60,7 @@ model Repo {
 
   /// GitHub repo description (import metadata). Null when not imported.
   description   String?   @map("description")
-  /// GitHub default branch name (import metadata). Null when not imported.
+  /// Verified forge default branch. Null for legacy unverified rows.
   defaultBranch String?   @map("default_branch")
   /// GitHub branch count (import metadata). Null when not imported.
   branchCount   Int?      @map("branch_count")
@@ -107,6 +105,11 @@ model Task {
 
   /// Current lifecycle state; defaults to `pending` on creation.
   status TaskStatus @default(pending)
+
+  /// Monotonic lifecycle fence used by durable admission workers. Historical
+  /// tasks start at zero; every later lifecycle compare-and-swap must increment
+  /// this value so a superseded worker cannot cross an external boundary.
+  lifecycleVersion Int @default(0) @map("lifecycle_version")
 
   /// Stable, secret-free runtime failure classification. Written atomically with
   /// the terminal `failed` status so read paths never observe a generic failure
@@ -211,10 +214,59 @@ model Task {
   /// one schedule-run record for their occurrence.
   scheduleRun TaskScheduleRun?
 
+  /// Durable asynchronous admission outbox (zero or one). Historical tasks
+  /// intentionally have no row; every newly accepted task gets exactly one.
+  admissionWork TaskAdmissionWork?
+
   @@index([repoId])
   @@index([ownerUserId])
   @@index([sandboxEnvironmentId])
   @@map("tasks")
+}
+
+/// Durable, secret-free task-admission outbox. `taskId` is both the primary key
+/// and task foreign key, making the relationship exactly zero-or-one per Task.
+/// Lease identity is internal coordination metadata and is never projected on
+/// public task responses. Cause values are stable codes, never raw diagnostics.
+model TaskAdmissionWork {
+  taskId String @id @map("task_id")
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  /// Public-safe orchestration state. Kept in sync with the contracts
+  /// provisioning-state vocabulary by migration CHECK constraints.
+  state   String @default("accepted")
+  /// Zero before the first claim; incremented once per processing attempt.
+  attempt Int    @default(0)
+
+  /// Earliest instant at which a fresh/retry claim may be acquired.
+  availableAt DateTime  @default(now()) @map("available_at")
+  /// Opaque worker identity and lease expiry. They are present as a pair only
+  /// while the work item is in its active `running` state.
+  leaseOwner  String?   @map("lease_owner")
+  leaseUntil  DateTime? @map("lease_until")
+
+  /// Public-safe progress stage and optional terminal cause code. No command,
+  /// provider endpoint, credential, or raw diagnostic has a persistence field.
+  stage     String  @default("accepted")
+  causeCode String? @map("cause_code")
+
+  /// Write-once recovery snapshots. The database permits initial nulls for
+  /// legacy/default-branch resolution, then prevents replacing a resolved value.
+  resolvedBranch   String? @map("resolved_branch")
+  resourceSnapshot Json?   @map("resource_snapshot")
+  /// Immutable workspace materialization deadline selected at admission. Null
+  /// is retained only for rolling-upgrade and historical work compatibility.
+  workspaceMaterializationDeadlineMs Int? @map("workspace_materialization_deadline_ms")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// Supports deterministic available-work claims and polling after a missed
+  /// in-process wake-up.
+  @@index([state, availableAt, createdAt, taskId])
+  /// Supports restart recovery of expired leases by state.
+  @@index([state, leaseUntil, createdAt, taskId])
+  @@map("task_admission_work")
 }
 
 /// Durable recurring task definition. A schedule is an intent to create future
@@ -312,6 +364,10 @@ model SandboxEnvironment {
   source Json
   status String @default("draft")
 
+  /// Non-secret provisioning-time resource policy. This is distinct from
+  /// guest image parameters and remains nullable for pre-resource environments.
+  resources Json?
+
   /// Admin-managed image runtime parameters. `envVars` stores readable plain
   /// values. `secretEnvVars` stores encrypted values and must never be returned
   /// on API read paths.
@@ -343,19 +399,20 @@ model SandboxEnvironmentValidation {
   environmentId String             @map("environment_id")
   environment   SandboxEnvironment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
 
-  status           String
-  providerFamily   String  @map("provider_family")
-  runtimeId        String? @map("runtime_id")
-  sourceKind       String  @map("source_kind")
-  resolvedLocator  String? @map("resolved_locator")
-  resolvedDigest   String? @map("resolved_digest")
-  resolvedChecksum String? @map("resolved_checksum")
-  runtimeArtifactChecksums Json? @map("runtime_artifact_checksums")
-  cliArtifactChecksum String? @map("cli_artifact_checksum")
-  sandboxMetadata  Json?   @map("sandbox_metadata")
-  probes           Json?   @map("probes")
-  error            String?
-  contractVersion  String? @map("contract_version")
+  status                   String
+  providerFamily           String  @map("provider_family")
+  runtimeId                String? @map("runtime_id")
+  sourceKind               String  @map("source_kind")
+  resolvedLocator          String? @map("resolved_locator")
+  resolvedDigest           String? @map("resolved_digest")
+  resolvedChecksum         String? @map("resolved_checksum")
+  runtimeArtifactChecksums Json?   @map("runtime_artifact_checksums")
+  cliArtifactChecksum      String? @map("cli_artifact_checksum")
+  sandboxMetadata          Json?   @map("sandbox_metadata")
+  resourceSnapshot         Json?   @map("resource_snapshot")
+  probes                   Json?   @map("probes")
+  error                    String?
+  contractVersion          String? @map("contract_version")
 
   checkedAt DateTime @default(now()) @map("checked_at")
 
@@ -376,6 +433,12 @@ model SandboxRun {
 
   providerId        String  @map("provider_id")
   providerSandboxId String? @map("provider_sandbox_id")
+  /// Admission lease generation currently authorized to operate this run.
+  ownerGeneration    String? @map("owner_generation")
+  /// Immutable identity of the physical sandbox incarnation.
+  resourceGeneration String? @map("resource_generation")
+  /// Whether a provider create request may still produce a late resource.
+  createState        String  @default("entered") @map("create_state")
   status            String  @default("running")
   connectionJson    Json?   @map("connection_json")
   metadata          Json?   @map("metadata")
@@ -387,6 +450,7 @@ model SandboxRun {
 
   @@index([taskId, status])
   @@index([providerId, providerSandboxId])
+  @@index([taskId, ownerGeneration, resourceGeneration])
   @@map("sandbox_runs")
 }
 
@@ -1079,9 +1143,10 @@ model SessionTranscript {
 /// A per-principal idempotency record for `POST /v1/tasks` (public-v1-api).
 ///
 /// `POST /v1/tasks` accepts an optional `Idempotency-Key` header. The dedup row
-/// is INSERTED in the SAME transaction as the `Task` create, so a raced retry can
-/// never double-admit a sandbox: the UNIQUE `([scopeUserId, key])` makes the
-/// second insert fail, and the handler then returns the already-recorded `taskId`.
+/// is INSERTED in the SAME transaction as the `Task`, its unique admission work,
+/// and creation audit, so a raced retry can never commit a second work item: the
+/// UNIQUE `([scopeUserId, key])` makes the second insert fail, and the handler
+/// then returns the already-recorded `taskId`.
 ///
 /// Scope semantics: `scopeUserId` is the PER-PRINCIPAL scope string (the api-key
 /// owner / session user identity), NOT a hard FK — the principal kind is not

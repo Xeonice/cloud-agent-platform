@@ -19,6 +19,7 @@ export type SandboxProviderCapability =
   | 'lifecycle.readoption'
   | 'lifecycle.sleep'
   | 'lifecycle.snapshot'
+  | 'resource.disk-size-gb'
   | 'port.expose';
 
 /**
@@ -48,6 +49,7 @@ export const SANDBOX_PROVIDER_FEATURE_CAPABILITIES: readonly SandboxProviderCapa
   'lifecycle.readoption',
   'lifecycle.sleep',
   'lifecycle.snapshot',
+  'resource.disk-size-gb',
   'port.expose',
 ] as const;
 

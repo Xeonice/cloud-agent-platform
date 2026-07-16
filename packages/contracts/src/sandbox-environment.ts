@@ -66,7 +66,7 @@ export const SandboxEnvironmentParameterInputSchema = z.object({
   name: SandboxEnvironmentParameterNameSchema,
   value: z.string(),
   secret: z.boolean().optional(),
-});
+}).strict();
 export type SandboxEnvironmentParameterInput = z.infer<
   typeof SandboxEnvironmentParameterInputSchema
 >;
@@ -75,9 +75,33 @@ export const SandboxEnvironmentParameterSchema = z.object({
   name: SandboxEnvironmentParameterNameSchema,
   value: z.string().optional(),
   secret: z.boolean(),
-});
+}).strict();
 export type SandboxEnvironmentParameter = z.infer<
   typeof SandboxEnvironmentParameterSchema
+>;
+
+/** Platform admission bounds for managed sandbox root disks, in GiB. */
+export const SANDBOX_ENVIRONMENT_DISK_SIZE_GB_MIN = 1;
+export const SANDBOX_ENVIRONMENT_DISK_SIZE_GB_MAX = 1024;
+
+export const SandboxEnvironmentDiskSizeGbSchema = z
+  .number()
+  .int()
+  .min(SANDBOX_ENVIRONMENT_DISK_SIZE_GB_MIN)
+  .max(SANDBOX_ENVIRONMENT_DISK_SIZE_GB_MAX);
+
+/**
+ * Provisioning-time resources are deliberately separate from guest image
+ * parameters. Keep this object strict so a resource is only admitted after a
+ * central contract has defined its validation and persistence semantics.
+ */
+export const SandboxEnvironmentResourcesSchema = z
+  .object({
+    diskSizeGb: SandboxEnvironmentDiskSizeGbSchema.optional(),
+  })
+  .strict();
+export type SandboxEnvironmentResources = z.infer<
+  typeof SandboxEnvironmentResourcesSchema
 >;
 
 export const SandboxEnvironmentValidationProbeSchema = z.object({
@@ -114,6 +138,7 @@ export const SandboxEnvironmentValidationSchema = z.object({
   /** @deprecated Read runtimeArtifactChecksums for new validation rows. */
   cliArtifactChecksum: Sha256ChecksumSchema.nullable().optional(),
   sandboxMetadata: SandboxMetadataSchema.nullable().optional(),
+  resourceSnapshot: SandboxEnvironmentResourcesSchema.nullable().optional(),
   probes: z.array(SandboxEnvironmentValidationProbeSchema).nullable().optional(),
   error: z.string().nullable().optional(),
   contractVersion: z.string().min(1).nullable().optional(),
@@ -129,6 +154,7 @@ export const SandboxEnvironmentSchema = z.object({
   status: SandboxEnvironmentStatusSchema,
   source: SandboxEnvironmentSourceSchema,
   compatibility: SandboxEnvironmentCompatibilitySchema,
+  resources: SandboxEnvironmentResourcesSchema.nullable().optional(),
   parameters: z.array(SandboxEnvironmentParameterSchema).optional(),
   isDefault: z.boolean(),
   lastValidationId: z.string().uuid().nullable().optional(),
@@ -156,6 +182,7 @@ export const CreateSandboxEnvironmentRequestSchema = z.object({
   name: z.string().min(1),
   source: SandboxEnvironmentSourceSchema,
   runtimeIds: z.array(z.string().min(1)).optional(),
+  resources: SandboxEnvironmentResourcesSchema.nullable().optional(),
   parameters: z.array(SandboxEnvironmentParameterInputSchema).optional(),
   isDefault: z.boolean().optional(),
 });

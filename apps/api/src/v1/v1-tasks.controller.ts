@@ -72,11 +72,10 @@ export class V1TasksController {
   /**
    * `POST /v1/tasks` — create a task with `repoId` in the body.
    *
-   * Single admission path (D1): every create funnels through
-   * `TasksService.create(repoId, body)` — the same guardrails admission the
-   * console's `POST /repos/:repoId/tasks` uses. An optional `Idempotency-Key`
-   * dedups retries (D5): same key+body → the SAME task (one sandbox admission),
-   * same key+different body → 409.
+   * Single acceptance path (D1): every create uses the same preparation and
+   * transaction-bound `TasksService.acceptPreparedTask` writer as Console/MCP.
+   * An optional `Idempotency-Key` dedups retries (D5): same key+body → the SAME
+   * task/work item; same key+different body → 409.
    */
   @Post()
   @PublicV1Operation('tasks.create')
@@ -138,12 +137,13 @@ export class V1TasksController {
       key: idempotencyKey ?? null,
       scopeUserId,
       requestHash: lookup.requestHash,
-      create: (tx) => this.tasksService.createTaskRow(prepared, tx),
+      create: (tx) => this.tasksService.acceptPreparedTask(prepared, tx),
       loadTask: (taskId) => this.tasksService.findById(taskId),
     });
-    // Provision ONLY a newly-created task — a dedup hit was already admitted by the
-    // first call. Run AFTER the dedup transaction has COMMITTED so a rolled-back
-    // transaction never leaves a provisioned sandbox (V.1 / TasksService split).
+    // Dispatch ONLY a newly-created acceptance. With durable admission this is a
+    // best-effort local wake (the polling floor owns recovery); a dedup hit must
+    // not wake or restart current provisioning. Run only AFTER the transaction
+    // commits so a rolled-back loser cannot leave external side effects.
     if (created) {
       await this.tasksService.admitCreatedTask(
         task.id,

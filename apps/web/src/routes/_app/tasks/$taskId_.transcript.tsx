@@ -38,6 +38,8 @@ import {
   type TranscriptFilter,
 } from "@/lib/transcript-timeline";
 import { TaskModelFacts } from "@/components/task-model-facts";
+import { TaskProvisioningStatus } from "@/components/task-provisioning-status";
+import { taskDisplayBranch } from "@/lib/task-provisioning";
 
 export const Route = createFileRoute("/_app/tasks/$taskId_/transcript")({
   ssr: false,
@@ -62,7 +64,7 @@ function TranscriptPage() {
 
   const shortId = shortTaskId(taskId);
   const repo = context?.repo ?? "—";
-  const branch = task?.branch ?? context?.branch ?? "main";
+  const branch = taskDisplayBranch(task);
   const agent = context?.agent ?? "—";
   const statusLabel = STATUS_LABEL[task?.status ?? ""] ?? "—";
 
@@ -122,6 +124,8 @@ function TranscriptPage() {
           className="mt-1"
         />
       </section>
+
+      <TaskProvisioningStatus task={task} className="mb-3" />
 
       {/* Transcript panel */}
       <section className="mt-3 rounded-[8px] bg-card p-[18px] shadow-ring">

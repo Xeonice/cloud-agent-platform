@@ -1,19 +1,20 @@
 /**
- * Unit tests for the startup recovery (configurable-task-slots 6.1–6.3 +
- * survive-api-redeploy guardrails-recovery 4.2): Phase 0 RE-ADOPTS still-running
- * survivors (kept in state, slot held, timers re-armed), Phase 1 reclaims the
- * orphaned in-flight tasks that were NOT re-adopted, the persisted slot ceiling
- * is loaded ceiling-first, then Phase 2 re-offers DB `queued` tasks plus
- * interrupted direct `pending` admissions FIFO against the REMAINING capacity.
+ * Unit tests for startup recovery (configurable-task-slots 6.1–6.3 +
+ * survive-api-redeploy guardrails-recovery 4.2 +
+ * fix-large-repo-task-provisioning 5.4): unfinished durable admission work is
+ * protected first, legacy survivors are re-adopted only from complete provider
+ * + terminal evidence, legacy orphans are reclaimed only after a definitive
+ * absence, the persisted slot ceiling is restored, provider inventory is
+ * reconciled, and only then is legacy queued work re-offered by the stable
+ * `(createdAt, id)` FIFO before durable-worker polling begins.
  *
  * This inlines a FAITHFUL mirror of ONLY the seams under test — the
  * `onApplicationBootstrap` / `readoptSurvivorsOnStartup` /
  * `reclaimOrphanedOnStartup` / `reofferQueuedOnStartup` logic of
  * `tasks.service.ts` — plus a fake guardrails service whose `admit`/`readopt`
- * mirror the capacity-bounded FIFO semantics of `GuardrailsService` over
- * `ConcurrencySemaphore.offer`, matching the sibling no-transpile `.mjs` tests
- * (`task-lifecycle.test.mjs`, `guardrails-exit-roundtrip.test.mjs`). The REAL
- * modules are additionally exercised end-to-end by `test/api-e2e.mjs`.
+ * mirror `ConcurrencySemaphore.offer` / `restoreRunning`. The production
+ * classes are covered separately by `tasks-startup-durable-recovery.spec.ts`;
+ * this file remains the fast no-transpile historical model.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,11 +22,9 @@ import assert from 'node:assert/strict';
 // --- fakes -------------------------------------------------------------------
 
 /**
- * Minimal Prisma fake over an in-memory task table. Supports exactly the two
- * `findMany` shapes the recovery issues:
- *   { where: { status: { in: [...] } }, select: { id } }                 (Phase 1)
- *   { where: { OR: [{ status: 'queued' }, { status: 'pending',
- *     scheduleRun: { is: null } }] }, orderBy: { createdAt: 'asc' } }    (Phase 2)
+ * Minimal Prisma fake over an in-memory task table. It deliberately supports
+ * only the startup-recovery predicates used below, including relation filters
+ * that keep unfinished durable admission work out of legacy recovery.
  */
 class FakePrisma {
   constructor(rows) {
@@ -36,19 +35,17 @@ class FakePrisma {
     const rows = this.rows;
     return {
       async findMany({ where, orderBy, select }) {
-        let matched = rows.filter((row) => {
-          if (where.OR) {
-            return where.OR.some((part) => {
-              if (row.status !== part.status) return false;
-              return part.scheduleRun?.is === null ? row.scheduleRun == null : true;
-            });
-          }
-          return typeof where.status === 'string'
-            ? row.status === where.status
-            : where.status.in.includes(row.status);
-        });
-        if (orderBy?.createdAt === 'asc') {
-          matched = [...matched].sort((a, b) => a.createdAt - b.createdAt);
+        let matched = rows.filter((row) => matchesTaskWhere(row, where));
+        const ordering = Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : [];
+        if (ordering.length > 0) {
+          matched = [...matched].sort((a, b) => {
+            for (const clause of ordering) {
+              const [field, direction] = Object.entries(clause)[0];
+              const compared = a[field] < b[field] ? -1 : a[field] > b[field] ? 1 : 0;
+              if (compared !== 0) return direction === 'desc' ? -compared : compared;
+            }
+            return 0;
+          });
         }
         return matched.map((row) =>
           Object.fromEntries(Object.keys(select).map((key) => [key, row[key]])),
@@ -62,6 +59,74 @@ class FakePrisma {
       },
     };
   }
+
+  get taskAdmissionWork() {
+    const rows = this.rows;
+    return {
+      async findMany({ where, select }) {
+        return rows
+          .filter((row) => where.state.in.includes(row.admissionWork?.state))
+          .map((row) => {
+            const work = { taskId: row.admissionWork?.taskId ?? row.id };
+            return Object.fromEntries(
+              Object.keys(select).map((key) => [key, work[key]]),
+            );
+          });
+      },
+    };
+  }
+}
+
+function matchesTaskWhere(row, where) {
+  if (where.status) {
+    if (typeof where.status === 'string' && row.status !== where.status) return false;
+    if (where.status.in && !where.status.in.includes(row.status)) return false;
+  }
+  if (where.scheduleRun?.is === null && row.scheduleRun != null) return false;
+  if (where.admissionWork?.is === null && row.admissionWork != null) return false;
+  const workStateFilter = where.admissionWork?.is?.state;
+  if (workStateFilter?.notIn) {
+    if (row.admissionWork == null) return false;
+    if (workStateFilter.notIn.includes(row.admissionWork.state)) return false;
+  }
+  if (where.OR && !where.OR.some((part) => matchesTaskWhere(row, part))) return false;
+  return true;
+}
+
+const UNFINISHED_ADMISSION_STATES = ['accepted', 'queued', 'running', 'retrying'];
+const TERMINAL_TASK_STATUSES = [
+  'completed',
+  'failed',
+  'cancelled',
+  'agent_failed_to_start',
+];
+
+function isUnfinishedAdmissionState(state) {
+  return UNFINISHED_ADMISSION_STATES.includes(state);
+}
+
+function isLegacyReadoptionWorkState(state) {
+  return state == null || state === 'succeeded';
+}
+
+function isTerminalTaskStatus(status) {
+  return TERMINAL_TASK_STATUSES.includes(status);
+}
+
+function sandboxRun(taskId) {
+  return {
+    taskId,
+    providerId: 'startup-test',
+    connection: {
+      taskId,
+      baseUrl: `http://cap-aio-${taskId}:8080`,
+      wsUrl: `ws://cap-aio-${taskId}:8080/v1/shell/ws`,
+    },
+    terminal: {
+      protocol: 'aio-json-v1',
+      wsUrl: `ws://cap-aio-${taskId}:8080/v1/shell/ws`,
+    },
+  };
 }
 
 /**
@@ -77,6 +142,8 @@ class FakeSandbox {
     capabilities = null,
     selectedRuns = {},
     throwOnSelectedRun = [],
+    throwOnList = false,
+    eventSink = null,
   } = {}) {
     this.readoptable = readoptable;
     this.goneOnReattach = new Set(goneOnReattach);
@@ -84,7 +151,10 @@ class FakeSandbox {
     this.selectedRunLookups = [];
     this.selectedRuns = selectedRuns;
     this.throwOnSelectedRun = new Set(throwOnSelectedRun);
+    this.throwOnList = throwOnList;
     this.capabilities = capabilities;
+    this.eventSink = eventSink;
+    this.reconciliations = [];
   }
   getSandboxMode() {
     return 'test';
@@ -93,6 +163,7 @@ class FakeSandbox {
     return this.capabilities ?? undefined;
   }
   async listReadoptable() {
+    if (this.throwOnList) throw new Error('provider inventory unavailable');
     return [...this.readoptable];
   }
   async reattach(taskId) {
@@ -107,7 +178,16 @@ class FakeSandbox {
   async getSelectedSandboxRun(taskId) {
     this.selectedRunLookups.push(taskId);
     if (this.throwOnSelectedRun.has(taskId)) throw new Error(`metadata down for ${taskId}`);
-    return this.selectedRuns[taskId] ?? null;
+    if (Object.hasOwn(this.selectedRuns, taskId)) return this.selectedRuns[taskId];
+    return sandboxRun(taskId);
+  }
+  async reconcileSandboxInventory({ protectedTaskIds, canReap }) {
+    this.eventSink?.push('provider-reconcile');
+    this.reconciliations.push({
+      protectedTaskIds: [...protectedTaskIds],
+      canReap,
+    });
+    return { inspected: this.readoptable.length, reaped: 0 };
   }
 }
 
@@ -139,7 +219,7 @@ function hasCapability(declaredCapabilities, required) {
  * present, overrides it (`dbSetting ?? envDefault`).
  */
 class FakeGuardrails {
-  constructor({ envCeiling, persistedCeiling = null }) {
+  constructor({ envCeiling, persistedCeiling = null, eventSink = null }) {
     this.ceiling = envCeiling;
     this.persistedCeiling = persistedCeiling;
     this.running = [];
@@ -147,10 +227,12 @@ class FakeGuardrails {
     this.armed = new Map(); // taskId -> params handed to admit (watcher arming)
     this.selectedRuns = new Map(); // taskId -> selected-run metadata handed to readopt
     this.events = []; // ordered log proving phase/ceiling ordering
+    this.eventSink = eventSink;
   }
 
   async loadPersistedCeiling() {
     this.events.push('loadPersistedCeiling');
+    this.eventSink?.push('loadPersistedCeiling');
     if (this.persistedCeiling !== null) {
       this.ceiling = this.persistedCeiling;
     }
@@ -158,6 +240,7 @@ class FakeGuardrails {
 
   async admit(taskId, params = {}) {
     this.events.push(`admit:${taskId}`);
+    this.eventSink?.push(`admit:${taskId}`);
     if (this.running.length < this.ceiling) {
       this.running.push(taskId);
       this.armed.set(taskId, params);
@@ -174,13 +257,18 @@ class FakeGuardrails {
    * see (running.length is checked against the ceiling), which is exactly the
    * slot-accounting Phase 2's re-offer relies on.
    */
-  readopt(taskId, _connection, params = {}, selectedRun = null) {
+  async readopt(taskId, _connection, params = {}, selectedRun = null, options = {}) {
     this.events.push(`readopt:${taskId}`);
+    this.eventSink?.push(`readopt:${taskId}`);
+    if (!(await options.beforeCommit?.() ?? true)) return 'superseded';
     if (!this.running.includes(taskId)) {
+      // Mirrors `restoreRunning`: survivors remain accounted even when their
+      // count is already above a newly persisted/lowered ceiling.
       this.running.push(taskId);
     }
     this.armed.set(taskId, params);
     this.selectedRuns.set(taskId, selectedRun);
+    return 'attached';
   }
 
   /**
@@ -201,18 +289,21 @@ class FakeGuardrails {
 // --- inline mirror of tasks.service.ts startup recovery ----------------------
 
 class RecoveryHarness {
-  constructor(prisma, guardrails, sandbox, sandboxOwners) {
+  constructor(prisma, guardrails, sandbox, sandboxOwners, worker) {
     this.prisma = prisma;
     this.guardrails = guardrails;
     this.sandbox = sandbox;
     this.sandboxOwners = sandboxOwners;
+    this.worker = worker;
     this.failed = []; // taskIds reclaimed -> failed (Phase 1)
   }
 
-  // mirrors TasksService.onApplicationBootstrap (three-phase, ceiling-first)
+  // Mirrors TasksService.onApplicationBootstrap, including durable ownership
+  // fences and the reconcile-before-worker-start boundary.
   async onApplicationBootstrap() {
-    const readopted = await this.readoptSurvivorsOnStartup();
-    await this.reclaimOrphanedOnStartup(readopted);
+    const durableProtected = await this.listUnfinishedDurableAdmissionTaskIds();
+    const readopted = await this.readoptSurvivorsOnStartup(durableProtected);
+    await this.reclaimOrphanedOnStartup(readopted, durableProtected);
     if (this.guardrails?.loadPersistedCeiling) {
       try {
         await this.guardrails.loadPersistedCeiling();
@@ -220,11 +311,35 @@ class RecoveryHarness {
         // best-effort: env seed stays effective
       }
     }
+    // Reconcile before legacy re-offer: a re-offer may provision a fresh
+    // sandbox, which must never be classified as pre-bootstrap orphan inventory.
+    for (const taskId of await this.listUnfinishedDurableAdmissionTaskIds()) {
+      durableProtected.add(taskId);
+    }
+    await this.sandbox?.reconcileSandboxInventory?.({
+      protectedTaskIds: [...durableProtected, ...readopted],
+      canReap: async ({ taskId }) => {
+        const task = await this.prisma.task.findUnique({
+          where: { id: taskId },
+          select: { id: true },
+        });
+        return task === null;
+      },
+    });
     await this.reofferQueuedOnStartup();
+    this.worker?.start?.();
+  }
+
+  async listUnfinishedDurableAdmissionTaskIds() {
+    const rows = await this.prisma.taskAdmissionWork.findMany({
+      where: { state: { in: [...UNFINISHED_ADMISSION_STATES] } },
+      select: { taskId: true },
+    });
+    return new Set(rows.map(({ taskId }) => taskId));
   }
 
   // mirrors TasksService.readoptSurvivorsOnStartup (Phase 0)
-  async readoptSurvivorsOnStartup() {
+  async readoptSurvivorsOnStartup(durableProtected = new Set()) {
     const readopted = new Set();
     const sandbox = this.sandbox;
     if (!sandbox?.reattach || !this.guardrails?.readopt) {
@@ -234,39 +349,75 @@ class RecoveryHarness {
     try {
       selected = selectSandboxProvider(sandbox, ['lifecycle.readopt']).provider;
     } catch {
-      return readopted;
+      throw new Error('startup re-adopt provider selection is indeterminate');
+    }
+    if (
+      typeof selected.reattach !== 'function' ||
+      typeof selected.getSelectedSandboxRun !== 'function'
+    ) {
+      throw new Error('startup re-adopt provider surface is incomplete');
     }
     const candidates = new Set();
     try {
       const ownerRows = await this.sandboxOwners?.listActiveSandboxRunOwners?.() ?? [];
       for (const owner of ownerRows) candidates.add(owner.taskId);
     } catch {
-      // best-effort: fall back to provider listing
+      throw new Error('startup persisted sandbox owner inventory is indeterminate');
     }
     try {
       const providerCandidates = await selected.listReadoptable?.() ?? [];
       for (const taskId of providerCandidates) candidates.add(taskId);
     } catch {
-      if (candidates.size === 0) return readopted;
+      throw new Error('startup provider sandbox inventory is indeterminate');
     }
     for (const taskId of candidates) {
+      if (durableProtected.has(taskId)) continue;
+      const row = await this.prisma.task.findUnique({
+        where: { id: taskId },
+        select: {
+          status: true,
+          lifecycleVersion: true,
+          deadlineMs: true,
+          idleTimeoutMs: true,
+          admissionWork: { select: { state: true } },
+        },
+      });
+      if (!row || (row.status !== 'running' && row.status !== 'awaiting_input')) {
+        continue;
+      }
+      const admissionState = row.admissionWork?.state;
+      if (isUnfinishedAdmissionState(admissionState)) {
+        durableProtected.add(taskId);
+        continue;
+      }
+      if (!isLegacyReadoptionWorkState(admissionState)) continue;
+
+      let connection;
       try {
-        const row = await this.prisma.task.findUnique({
-          where: { id: taskId },
-          select: { status: true, deadlineMs: true, idleTimeoutMs: true },
-        });
-        if (!row || (row.status !== 'running' && row.status !== 'awaiting_input')) {
-          continue;
-        }
-        const connection = await selected.reattach?.(taskId);
-        if (!connection) continue; // raced to gone -> let Phase 1 fail it
-        let selectedRun = null;
-        try {
-          selectedRun = (await selected.getSelectedSandboxRun?.(taskId)) ?? null;
-        } catch {
-          selectedRun = null;
-        }
-        this.guardrails.readopt(
+        connection = await selected.reattach(taskId);
+      } catch {
+        throw new Error(`startup sandbox reattach for task ${taskId} is indeterminate`);
+      }
+      if (!connection) continue; // definitive absence -> Phase 1 may reclaim
+
+      let selectedRun;
+      try {
+        selectedRun = (await selected.getSelectedSandboxRun(taskId)) ?? null;
+      } catch {
+        throw new Error(`startup selected-run lookup for task ${taskId} is indeterminate`);
+      }
+      if (
+        !selectedRun ||
+        selectedRun.taskId !== taskId ||
+        connection.taskId !== taskId ||
+        (!selectedRun.terminal && !connection.terminal)
+      ) {
+        throw new Error(`startup selected-run metadata for task ${taskId} is incomplete`);
+      }
+
+      let result;
+      try {
+        result = await this.guardrails.readopt(
           taskId,
           connection,
           {
@@ -274,10 +425,50 @@ class RecoveryHarness {
             idleTimeoutMs: row?.idleTimeoutMs ?? undefined,
           },
           selectedRun,
+          {
+            beforeCommit: async () => {
+              const current = await this.prisma.task.findUnique({
+                where: { id: taskId },
+                select: {
+                  status: true,
+                  lifecycleVersion: true,
+                  admissionWork: { select: { state: true } },
+                },
+              });
+              return (
+                current?.status === row.status &&
+                current.lifecycleVersion === row.lifecycleVersion &&
+                isLegacyReadoptionWorkState(current.admissionWork?.state)
+              );
+            },
+          },
         );
-        readopted.add(taskId); // KEEP current state — no transition
       } catch {
-        // best-effort per task: a re-adopt failure falls through to Phase 1
+        throw new Error(`startup terminal attach for task ${taskId} is indeterminate`);
+      }
+      if (result === 'attached') {
+        readopted.add(taskId); // KEEP current state — no transition
+        continue;
+      }
+      if (result === 'superseded') {
+        const current = await this.prisma.task.findUnique({
+          where: { id: taskId },
+          select: {
+            status: true,
+            lifecycleVersion: true,
+            admissionWork: { select: { state: true } },
+          },
+        });
+        if (!current) continue;
+        if (isTerminalTaskStatus(current.status)) {
+          durableProtected.add(taskId);
+          continue;
+        }
+        if (isUnfinishedAdmissionState(current.admissionWork?.state)) {
+          durableProtected.add(taskId);
+          continue;
+        }
+        throw new Error(`startup readoption fence for task ${taskId} changed indeterminately`);
       }
     }
     return readopted;
@@ -285,17 +476,29 @@ class RecoveryHarness {
 
   // mirrors TasksService.reclaimOrphanedOnStartup (transition spied as `failed`)
   // — Phase 0 re-adopted survivors are SKIPPED, only the truly-dead are failed.
-  async reclaimOrphanedOnStartup(readopted = new Set()) {
+  async reclaimOrphanedOnStartup(readopted = new Set(), durableProtected = new Set()) {
     const orphaned = await this.prisma.task.findMany({
-      where: { status: { in: ['running', 'awaiting_input'] } },
+      where: {
+        status: { in: ['running', 'awaiting_input'] },
+        OR: [
+          { admissionWork: { is: null } },
+          {
+            admissionWork: {
+              is: { state: { notIn: [...UNFINISHED_ADMISSION_STATES] } },
+            },
+          },
+        ],
+      },
       select: { id: true },
     });
+    let reclaimed = 0;
     for (const { id } of orphaned) {
-      if (readopted.has(id)) continue; // kept in its current state
+      if (readopted.has(id) || durableProtected.has(id)) continue;
       this.failed.push(id);
       this.guardrails?.events.push(`fail:${id}`);
+      reclaimed += 1;
     }
-    return orphaned.length - [...readopted].filter((id) => orphaned.some((o) => o.id === id)).length;
+    return reclaimed;
   }
 
   // mirrors TasksService.reofferQueuedOnStartup
@@ -305,12 +508,13 @@ class RecoveryHarness {
     }
     const queued = await this.prisma.task.findMany({
       where: {
+        admissionWork: { is: null },
         OR: [
           { status: 'queued' },
           { status: 'pending', scheduleRun: { is: null } },
         ],
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: {
         id: true,
         ownerUserId: true,
@@ -345,6 +549,7 @@ const queuedRow = (id, createdAt, extra = {}) => ({
   ownerUserId: null,
   auditEvents: [],
   scheduleRun: null,
+  admissionWork: null,
   ...extra,
 });
 
@@ -355,14 +560,15 @@ const pendingRow = (id, createdAt, extra = {}) => ({
 
 // --- tests -------------------------------------------------------------------
 
-test('restart with K queued, ceiling M: oldest min(K, M) admitted, rest queued in order — none stranded', async () => {
-  // Rows deliberately out of createdAt order to prove the `createdAt asc` sort.
+test('restart with K queued, ceiling M: stable createdAt/id FIFO admits oldest and strands none', async () => {
+  // Equal timestamps and shuffled rows prove `id asc` is the deterministic
+  // tie-break rather than incidental database return order.
   const prisma = new FakePrisma([
-    queuedRow('t3', 3),
+    queuedRow('t4', 2),
+    queuedRow('t2', 1),
+    queuedRow('t3', 2),
     queuedRow('t1', 1),
-    queuedRow('t5', 5),
-    queuedRow('t2', 2),
-    queuedRow('t4', 4),
+    queuedRow('t5', 3),
   ]);
   const guardrails = new FakeGuardrails({ envCeiling: 2 });
   const harness = new RecoveryHarness(prisma, guardrails);
@@ -378,7 +584,7 @@ test('restart with K queued, ceiling M: oldest min(K, M) admitted, rest queued i
   assert.deepEqual(
     offered,
     ['admit:t1', 'admit:t2', 'admit:t3', 'admit:t4', 'admit:t5'],
-    'all K queued tasks are re-offered, oldest first',
+    'all K queued tasks are re-offered by (createdAt, id)',
   );
 });
 
@@ -402,6 +608,27 @@ test('restart re-offers direct pending admissions with the durable owner but lea
     false,
     'scheduled pending tasks remain behind the occurrence-level recovery lease',
   );
+});
+
+test('restart leaves queued and pending tasks with durable admission work exclusively to the worker', async () => {
+  const prisma = new FakePrisma([
+    pendingRow('durable-pending', 1, {
+      admissionWork: { taskId: 'durable-pending', state: 'accepted' },
+    }),
+    queuedRow('durable-queued', 2, {
+      admissionWork: { taskId: 'durable-queued', state: 'queued' },
+    }),
+    pendingRow('legacy-pending', 3),
+    queuedRow('legacy-queued', 4),
+  ]);
+  const guardrails = new FakeGuardrails({ envCeiling: 4 });
+  const harness = new RecoveryHarness(prisma, guardrails);
+
+  await harness.onApplicationBootstrap();
+
+  assert.deepEqual(guardrails.running, ['legacy-pending', 'legacy-queued']);
+  assert.equal(guardrails.events.includes('admit:durable-pending'), false);
+  assert.equal(guardrails.events.includes('admit:durable-queued'), false);
 });
 
 test('ceiling-first: persisted 2 with env 5 and 3 queued admits exactly 2 (DB override before re-offer)', async () => {
@@ -491,10 +718,104 @@ test('guardrails not wired: re-offer is a no-op returning 0 (boot never blocks)'
 const runningRow = (id, createdAt, extra = {}) => ({
   id,
   status: 'running',
+  lifecycleVersion: 1,
   createdAt,
   deadlineMs: null,
   idleTimeoutMs: null,
+  admissionWork: null,
   ...extra,
+});
+
+test('unfinished durable work is protected; async readopt and reconcile finish before legacy re-offer and worker start', async () => {
+  const events = [];
+  const prisma = new FakePrisma([
+    runningRow('durable-running', 1, {
+      admissionWork: { taskId: 'durable-running', state: 'retrying' },
+    }),
+    runningRow('legacy-running', 2),
+    queuedRow('legacy-queued', 3),
+  ]);
+  const guardrails = new FakeGuardrails({
+    envCeiling: 5,
+    persistedCeiling: 2,
+    eventSink: events,
+  });
+  const sandbox = new FakeSandbox({
+    readoptable: ['durable-running', 'legacy-running'],
+    eventSink: events,
+  });
+
+  let releaseReadopt;
+  const readoptGate = new Promise((resolve) => {
+    releaseReadopt = resolve;
+  });
+  let signalReadoptStarted;
+  const readoptStarted = new Promise((resolve) => {
+    signalReadoptStarted = resolve;
+  });
+  const baseReadopt = guardrails.readopt.bind(guardrails);
+  guardrails.readopt = async (...args) => {
+    events.push('terminal-attach-start');
+    signalReadoptStarted();
+    await readoptGate;
+    const result = await baseReadopt(...args);
+    events.push('terminal-attach-done');
+    return result;
+  };
+
+  const worker = {
+    start() {
+      events.push('worker-start');
+    },
+  };
+  const harness = new RecoveryHarness(
+    prisma,
+    guardrails,
+    sandbox,
+    undefined,
+    worker,
+  );
+
+  const bootstrap = harness.onApplicationBootstrap();
+  await readoptStarted;
+  assert.equal(events.includes('provider-reconcile'), false, 'bootstrap awaits terminal attach');
+  assert.equal(events.includes('admit:legacy-queued'), false, 'legacy re-offer has not started');
+  assert.equal(events.includes('worker-start'), false, 'worker polling has not started');
+  releaseReadopt();
+  await bootstrap;
+
+  assert.deepEqual(
+    sandbox.reattached,
+    ['legacy-running'],
+    'unfinished durable work stays exclusively owned by the durable worker',
+  );
+  assert.deepEqual(harness.failed, [], 'durable work and the legacy survivor are not reclaimed');
+  assert.deepEqual(
+    new Set(sandbox.reconciliations[0].protectedTaskIds),
+    new Set(['durable-running', 'legacy-running']),
+    'reconciliation protects unfinished durable work plus attached legacy survivors',
+  );
+  assert.equal(
+    await sandbox.reconciliations[0].canReap({
+      taskId: 'durable-running',
+      providerSandboxId: 'late-sandbox',
+    }),
+    false,
+    'the live DB check protects a task even outside a stale snapshot',
+  );
+  assert.equal(
+    await sandbox.reconciliations[0].canReap({
+      taskId: 'deleted-task',
+      providerSandboxId: 'orphan-sandbox',
+    }),
+    true,
+    'only a deleted task is eligible for physical orphan cleanup',
+  );
+  const index = (event) => events.indexOf(event);
+  assert.ok(index('terminal-attach-done') < index('loadPersistedCeiling'));
+  assert.ok(index('loadPersistedCeiling') < index('provider-reconcile'));
+  assert.ok(index('provider-reconcile') < index('admit:legacy-queued'));
+  assert.ok(index('admit:legacy-queued') < index('worker-start'));
 });
 
 test('a live-session task is re-adopted: kept running (not failed), slot held, timers armed from persisted params', async () => {
@@ -556,20 +877,29 @@ test('persisted owner rows drive restart re-adoption when provider listing is em
   });
 });
 
-test('a declared provider missing lifecycle.readopt is not used for startup re-adoption', async () => {
+test('provider inventory uncertainty aborts bootstrap before reclaim, reconcile, or worker polling', async () => {
   const prisma = new FakePrisma([runningRow('alive', 1)]);
   const guardrails = new FakeGuardrails({ envCeiling: 5 });
   const sandbox = new FakeSandbox({
     readoptable: ['alive'],
-    capabilities: ['terminal.websocket'],
+    capabilities: ['lifecycle.readopt'],
+    throwOnList: true,
   });
-  const harness = new RecoveryHarness(prisma, guardrails, sandbox);
+  let workerStarts = 0;
+  const harness = new RecoveryHarness(prisma, guardrails, sandbox, undefined, {
+    start() {
+      workerStarts += 1;
+    },
+  });
 
-  await harness.onApplicationBootstrap();
+  await assert.rejects(
+    harness.onApplicationBootstrap(),
+    /startup provider sandbox inventory is indeterminate/,
+  );
 
-  assert.deepEqual(sandbox.reattached, [], 'reattach is not attempted without lifecycle.readopt');
-  assert.deepEqual(guardrails.running, [], 'no running slot is held for a provider that cannot re-adopt');
-  assert.deepEqual(harness.failed, ['alive'], 'the in-flight task falls through to Phase 1 reclaim');
+  assert.deepEqual(harness.failed, [], 'uncertain provider evidence never becomes a death observation');
+  assert.deepEqual(sandbox.reconciliations, [], 'destructive reconciliation is not reached');
+  assert.equal(workerStarts, 0, 'worker polling is not started after an unsafe bootstrap');
 });
 
 test('a dead-session task is force-failed: only non-re-adopted in-flight tasks are reclaimed', async () => {
@@ -620,22 +950,78 @@ test('startup re-adoption forwards selected-run metadata into guardrails', async
   assert.equal(guardrails.selectedRuns.get('alive'), selectedRun, 'selected-run metadata is passed to guardrails.readopt');
 });
 
-test('startup re-adoption falls back to connection-only when selected-run metadata fails', async () => {
-  const prisma = new FakePrisma([runningRow('alive', 1)]);
-  const guardrails = new FakeGuardrails({ envCeiling: 5 });
-  const sandbox = new FakeSandbox({
-    readoptable: ['alive'],
-    capabilities: ['lifecycle.readopt'],
-    throwOnSelectedRun: ['alive'],
-  });
-  const harness = new RecoveryHarness(prisma, guardrails, sandbox);
+test('selected-run uncertainty or missing terminal evidence aborts instead of connection-only recovery', async (t) => {
+  const scenarios = [
+    {
+      name: 'metadata lookup rejected',
+      options: { throwOnSelectedRun: ['alive'] },
+      error: /startup selected-run lookup for task alive is indeterminate/,
+    },
+    {
+      name: 'selected run has no terminal evidence',
+      options: {
+        selectedRuns: {
+          alive: { ...sandboxRun('alive'), terminal: undefined },
+        },
+      },
+      error: /startup selected-run metadata for task alive is incomplete/,
+    },
+    {
+      name: 'selected run is absent',
+      options: { selectedRuns: { alive: null } },
+      error: /startup selected-run metadata for task alive is incomplete/,
+    },
+  ];
 
-  await harness.onApplicationBootstrap();
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async () => {
+      const prisma = new FakePrisma([runningRow('alive', 1)]);
+      const guardrails = new FakeGuardrails({ envCeiling: 5 });
+      const sandbox = new FakeSandbox({
+        readoptable: ['alive'],
+        capabilities: ['lifecycle.readopt'],
+        ...scenario.options,
+      });
+      let workerStarts = 0;
+      const harness = new RecoveryHarness(prisma, guardrails, sandbox, undefined, {
+        start() {
+          workerStarts += 1;
+        },
+      });
 
-  assert.deepEqual(sandbox.selectedRunLookups, ['alive'], 'selected-run metadata is attempted after reattach');
-  assert.deepEqual(guardrails.running, ['alive'], 'the task is still re-adopted when metadata lookup fails');
-  assert.equal(guardrails.selectedRuns.get('alive'), null, 'guardrails receives a null selected-run fallback');
-  assert.deepEqual(harness.failed, [], 'metadata failure does not force-fail the live survivor');
+      await assert.rejects(harness.onApplicationBootstrap(), scenario.error);
+
+      assert.deepEqual(guardrails.running, [], 'no connection-only slot is restored');
+      assert.deepEqual(harness.failed, [], 'uncertain metadata never flows into reclaim');
+      assert.deepEqual(sandbox.reconciliations, [], 'reconciliation is not reached');
+      assert.equal(workerStarts, 0, 'worker polling remains stopped');
+    });
+  }
+});
+
+test('a terminal winner during the final readoption fence stays protected for every non-error terminal status', async (t) => {
+  for (const terminalStatus of ['completed', 'agent_failed_to_start']) {
+    await t.test(terminalStatus, async () => {
+      const prisma = new FakePrisma([runningRow('raced-terminal', 1)]);
+      const guardrails = new FakeGuardrails({ envCeiling: 5 });
+      const sandbox = new FakeSandbox({ readoptable: ['raced-terminal'] });
+      guardrails.readopt = async () => {
+        prisma.rows[0].status = terminalStatus;
+        prisma.rows[0].lifecycleVersion += 1;
+        return 'superseded';
+      };
+      const harness = new RecoveryHarness(prisma, guardrails, sandbox);
+
+      await harness.onApplicationBootstrap();
+
+      assert.deepEqual(harness.failed, []);
+      assert.equal(
+        sandbox.reconciliations[0].protectedTaskIds.includes('raced-terminal'),
+        true,
+        'the remote terminal winner remains on its ordinary terminal-retain path',
+      );
+    });
+  }
 });
 
 test('a survivor that raced to gone between list and reattach is reclaimed, not re-adopted', async () => {
@@ -651,22 +1037,24 @@ test('a survivor that raced to gone between list and reattach is reclaimed, not 
   assert.deepEqual(harness.failed, ['raced'], 'the gone task is force-failed by Phase 1');
 });
 
-test('queued re-offer capacity accounts for re-adopted slots (ceiling minus re-adopted)', async () => {
+test('restoreRunning keeps all survivors above a lowered persisted ceiling and queues new work', async () => {
   const prisma = new FakePrisma([
-    runningRow('survivor', 1),
-    queuedRow('q1', 2),
-    queuedRow('q2', 3),
+    runningRow('survivor-a', 1),
+    runningRow('survivor-b', 2),
+    queuedRow('q1', 3),
   ]);
-  // Persisted ceiling 2; one re-adopted survivor leaves capacity for exactly one
-  // queued task — proving Phase 2 admits against the REMAINING capacity.
-  const guardrails = new FakeGuardrails({ envCeiling: 5, persistedCeiling: 2 });
-  const sandbox = new FakeSandbox({ readoptable: ['survivor'] });
+  const guardrails = new FakeGuardrails({ envCeiling: 5, persistedCeiling: 1 });
+  const sandbox = new FakeSandbox({ readoptable: ['survivor-a', 'survivor-b'] });
   const harness = new RecoveryHarness(prisma, guardrails, sandbox);
 
   await harness.onApplicationBootstrap();
 
-  assert.deepEqual(guardrails.running, ['survivor', 'q1'], 'ceiling 2 = 1 re-adopted + 1 admitted from the queue');
-  assert.deepEqual(guardrails.queue, ['q2'], 'the remaining queued task stays queued behind the re-adopted slot');
+  assert.deepEqual(
+    guardrails.running,
+    ['survivor-a', 'survivor-b'],
+    'both real survivors remain restored even though the persisted ceiling is one',
+  );
+  assert.deepEqual(guardrails.queue, ['q1'], 'new work waits until running drops below the ceiling');
 });
 
 test('a re-adopted task that later dies terminates cleanly exactly once (slot freed once)', async () => {

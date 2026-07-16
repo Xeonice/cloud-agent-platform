@@ -1,4 +1,9 @@
 import { createServer } from 'node:http';
+import {
+  ForgeKindSchema,
+  GitBranchNameSchema,
+  createRepoBodySchema,
+} from '@cap/contracts';
 
 const CONTROL_HOST = '127.0.0.1';
 const MAX_BODY_BYTES = 16 * 1024;
@@ -58,6 +63,20 @@ async function routeControlRequest({
       const now = parseTickAt(body.now);
       const fired = await scheduledTasks.tick(now);
       sendJson(response, 200, { now: now.toISOString(), fired });
+      return;
+    }
+
+    if (
+      request.method === 'POST' &&
+      requestUrl.pathname === '/control/fixtures/repos'
+    ) {
+      // Repository import is not part of this scheduled-task story. Seed a
+      // validated test fixture directly in the disposable database through the
+      // loopback-only test control plane, so the production `/repos` boundary
+      // keeps requiring the authenticated owner's exact-host forge credential.
+      const fixture = parseRepoFixture(await readJsonBody(request));
+      const repo = await prisma.repo.create({ data: fixture });
+      sendJson(response, 201, { repo: sanitizeRepo(repo) });
       return;
     }
 
@@ -282,6 +301,60 @@ function emptyDiagnostics() {
     tasks: [],
     audit: [],
     limits: { runs: MAX_RUNS, tasks: MAX_RUNS, audit: MAX_AUDIT_EVENTS },
+  };
+}
+
+function parseRepoFixture(body) {
+  const createBody = createRepoBodySchema.safeParse({
+    name: body.name,
+    gitSource: body.gitSource,
+    forge: body.forge,
+  });
+  const name = createBody.success ? createBody.data.name.trim() : '';
+  const forge = ForgeKindSchema.safeParse(body.forge);
+  const defaultBranch = GitBranchNameSchema.safeParse(body.defaultBranch);
+  if (
+    !createBody.success ||
+    name.length === 0 ||
+    !forge.success ||
+    !defaultBranch.success
+  ) {
+    throw new ControlInputError(400, 'invalid_repo_fixture');
+  }
+
+  let gitSource;
+  try {
+    gitSource = new URL(createBody.data.gitSource);
+  } catch {
+    throw new ControlInputError(400, 'invalid_repo_fixture');
+  }
+  if (
+    !['http:', 'https:'].includes(gitSource.protocol) ||
+    gitSource.username.length > 0 ||
+    gitSource.password.length > 0 ||
+    gitSource.pathname.replace(/\/+$/, '').length === 0
+  ) {
+    throw new ControlInputError(400, 'invalid_repo_fixture');
+  }
+  gitSource.search = '';
+  gitSource.hash = '';
+  gitSource.pathname = gitSource.pathname.replace(/\/+$/, '');
+
+  return {
+    name,
+    gitSource: gitSource.toString(),
+    forge: forge.data,
+    defaultBranch: defaultBranch.data,
+  };
+}
+
+function sanitizeRepo(repo) {
+  return {
+    id: repo.id,
+    name: repo.name,
+    gitSource: repo.gitSource,
+    forge: repo.forge,
+    defaultBranch: repo.defaultBranch,
   };
 }
 

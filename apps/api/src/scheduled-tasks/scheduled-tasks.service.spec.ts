@@ -14,7 +14,10 @@ import {
   type UpdateScheduleRequest,
 } from '@cap/contracts';
 import type { PrismaService } from '../prisma/prisma.service';
-import type { TasksService } from '../tasks/tasks.service';
+import type {
+  PostCommitAdmissionResult,
+  TasksService,
+} from '../tasks/tasks.service';
 import type { PreparedTaskCreate } from '../tasks/prepared-task-create';
 import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
 import { ScheduledTasksService } from './scheduled-tasks.service';
@@ -84,6 +87,7 @@ interface TaskRow {
   model: string | null;
   sandboxEnvironmentId: string | null;
   deliver: string | null;
+  admissionWork?: { taskId: string } | null;
 }
 
 interface ClaimUntilPredicate {
@@ -135,7 +139,10 @@ interface TaskScheduleRunFindManyArgs {
     retryAt?: Date | null | { lte: Date };
     retryAttempt?: number | null;
     admissionClaimToken?: string | null;
-    task?: { status: string };
+    task?: {
+      status: string;
+      admissionWork?: { is: null };
+    };
     schedule?: { enabled?: boolean };
     OR?: AdmissionClaimUntilPredicate[];
   };
@@ -474,7 +481,10 @@ class FakePrisma {
       if (taskStatus) {
         rows = rows.filter((run) => {
           const task = run.taskId ? this.tasks.find((row) => row.id === run.taskId) : null;
-          return task?.status === taskStatus;
+          if (task?.status !== taskStatus) return false;
+          return where.task?.admissionWork?.is === null
+            ? task.admissionWork == null
+            : true;
         });
       }
       if (where.OR?.some((part) => part.admissionClaimUntil !== undefined)) {
@@ -621,6 +631,7 @@ function buildHarness(
     createThrows?: boolean;
     admitFailures?: number;
     admitKeepsPending?: boolean;
+    admissionOutcome?: PostCommitAdmissionResult;
     runCreateThrows?: string[];
     prepareOutcomes?: Array<'success' | 'transient' | 'permanent'>;
     prepareDelaysMs?: number[];
@@ -758,7 +769,7 @@ function buildHarness(
         }),
       );
     },
-    async createTaskRow(
+    async acceptPreparedTask(
       prepared: PreparedTaskCreate,
       _tx: unknown,
       rowOptions: { acceptedExplicitModel?: boolean } = {},
@@ -782,6 +793,9 @@ function buildHarness(
         sandboxEnvironmentId: body.sandboxEnvironmentId ?? null,
         deliver: body.deliver ?? null,
       };
+      if (options.admissionOutcome === 'durable-woken') {
+        task.admissionWork = { taskId: task.id };
+      }
       prisma.tasks.push(task);
       return {
         ...task,
@@ -799,6 +813,11 @@ function buildHarness(
         const task = prisma.tasks.find((row) => row.id === taskId);
         if (task) task.status = 'queued';
       }
+      if (options.admissionOutcome === 'durable-woken') {
+        const task = prisma.tasks.find((row) => row.id === taskId);
+        if (task) task.admissionWork = { taskId };
+      }
+      return options.admissionOutcome ?? 'legacy-admitted';
     },
   } as unknown as TasksService;
   return {
@@ -1399,8 +1418,10 @@ test('schedule reads expose the linked task status without changing the dispatch
   );
   assert.equal(refreshed.latestRun?.status, 'created');
   assert.equal(refreshed.latestRun?.taskStatus, 'failed');
-  assert.equal(refreshed.latestRun?.taskFailure?.runtime, 'claude-code');
-  assert.equal(refreshed.latestRun?.taskFailure?.code, 'runtime_auth_rejected');
+  const latestFailure = refreshed.latestRun?.taskFailure;
+  assert.equal(latestFailure?.code, 'runtime_auth_rejected');
+  assert.ok(latestFailure && 'runtime' in latestFailure);
+  assert.equal(latestFailure.runtime, 'claude-code');
   assert.equal(refreshed.latestRun?.error, null);
   assert.equal(refreshed.currentPeriod?.run?.taskStatus, 'failed');
   assert.equal(
@@ -1412,8 +1433,10 @@ test('schedule reads expose the linked task status without changing the dispatch
   const runs = await service.listRuns(USER_A, schedule.id);
   assert.equal(runs[0].status, 'created');
   assert.equal(runs[0].taskStatus, 'failed');
-  assert.equal(runs[0].taskFailure?.runtime, 'claude-code');
-  assert.equal(runs[0].taskFailure?.code, 'runtime_auth_rejected');
+  const listedFailure = runs[0].taskFailure;
+  assert.equal(listedFailure?.code, 'runtime_auth_rejected');
+  assert.ok(listedFailure && 'runtime' in listedFailure);
+  assert.equal(listedFailure.runtime, 'claude-code');
   assert.equal(runs[0].error, null);
   assert.equal(runs[0].createdAt.toISOString(), '2026-07-09T00:02:00.000Z');
   assert.equal('task' in runs[0], false);
@@ -1421,8 +1444,10 @@ test('schedule reads expose the linked task status without changing the dispatch
   const page = await service.listRunsPage(USER_A, schedule.id, { limit: 10 });
   assert.equal(page.items[0].status, 'created');
   assert.equal(page.items[0].taskStatus, 'failed');
-  assert.equal(page.items[0].taskFailure?.runtime, 'claude-code');
-  assert.equal(page.items[0].taskFailure?.code, 'runtime_auth_rejected');
+  const pagedFailure = page.items[0].taskFailure;
+  assert.equal(pagedFailure?.code, 'runtime_auth_rejected');
+  assert.ok(pagedFailure && 'runtime' in pagedFailure);
+  assert.equal(pagedFailure.runtime, 'claude-code');
 });
 
 test('dispatchNow advances an already-due occurrence to avoid a duplicate scheduled fire', async () => {
@@ -2667,6 +2692,28 @@ test('dispatch retains only the run admission lease when admission leaves the ta
   assert.equal(admitCalls.length, 1);
 });
 
+test('durable dispatch wakes once, releases the schedule lease, and is excluded from legacy recovery', async () => {
+  const { prisma, service, admitCalls } = buildHarness({
+    admitKeepsPending: true,
+    admissionOutcome: 'durable-woken',
+  });
+  const now = new Date();
+  addDueSchedule(prisma, {
+    nextRunAt: new Date(now.getTime() - 1_000),
+  });
+
+  assert.equal(await service.tick(now), 1);
+  assert.equal(prisma.tasks[0].status, 'pending');
+  assert.ok(prisma.tasks[0].admissionWork);
+  assert.equal(prisma.schedules[0].claimToken, null);
+  assert.equal(prisma.runs[0].admissionClaimToken, null);
+  assert.equal(prisma.runs[0].admissionClaimUntil, null);
+  assert.deepEqual(admitCalls, [prisma.tasks[0].id]);
+
+  assert.equal(await service.recoverPendingAdmissions(), 0);
+  assert.deepEqual(admitCalls, [prisma.tasks[0].id]);
+});
+
 test('startup recovery admits created pending scheduled tasks once', async () => {
   const { prisma, service, admitCalls } = buildHarness();
   addRecoverableRun(prisma);
@@ -2722,6 +2769,24 @@ test('recovery retains its lease when admission resolves but leaves the task pen
   assert.ok(prisma.runs[0].admissionClaimUntil);
   assert.equal(await service.recoverPendingAdmissions(), 0);
   assert.equal(admitCalls.length, 1);
+});
+
+test('recovery outcome fence releases a raced durable work item without spinning or waking twice', async () => {
+  const { prisma, service, admitCalls } = buildHarness({
+    admitKeepsPending: true,
+    admissionOutcome: 'durable-woken',
+  });
+  const run = addRecoverableRun(prisma);
+  assert.equal(prisma.tasks[0].admissionWork, undefined);
+
+  assert.equal(await service.recoverPendingAdmissions(), 1);
+  assert.ok(prisma.tasks[0].admissionWork);
+  assert.equal(run.admissionClaimToken, null);
+  assert.equal(run.admissionClaimUntil, null);
+  assert.deepEqual(admitCalls, [prisma.tasks[0].id]);
+
+  assert.equal(await service.recoverPendingAdmissions(), 0);
+  assert.deepEqual(admitCalls, [prisma.tasks[0].id]);
 });
 
 test('run-level admission leases do not block sibling recovery or the next cadence', async () => {

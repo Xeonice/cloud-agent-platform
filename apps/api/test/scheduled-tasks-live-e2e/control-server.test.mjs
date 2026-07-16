@@ -188,3 +188,94 @@ test('control server rejects future dueAt and missing schedules', async () => {
     await control.close();
   }
 });
+
+test('control server seeds a validated repo fixture without calling production import', async () => {
+  let createArgs;
+  const created = {
+    id: 'repo-1',
+    name: 'scheduled fixture',
+    gitSource: 'https://github.com/openai/codex.git',
+    forge: 'github',
+    defaultBranch: 'main',
+    createdAt,
+    description: null,
+  };
+  const prisma = {
+    repo: {
+      create: async (args) => {
+        createArgs = args;
+        return created;
+      },
+    },
+  };
+  const control = await startScheduledTasksControlServer({
+    prisma,
+    provider: new RecordingSandboxProvider(),
+    scheduledTasks: { tick: async () => 0 },
+    port: 0,
+  });
+  try {
+    const base = `http://127.0.0.1:${control.port}`;
+    const response = await fetch(`${base}/control/fixtures/repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' scheduled fixture ',
+        gitSource: 'https://github.com/openai/codex.git?ignored=1#fragment',
+        forge: 'github',
+        defaultBranch: 'main',
+      }),
+    });
+
+    assert.equal(response.status, 201);
+    assert.deepEqual(createArgs, {
+      data: {
+        name: 'scheduled fixture',
+        gitSource: 'https://github.com/openai/codex.git',
+        forge: 'github',
+        defaultBranch: 'main',
+      },
+    });
+    assert.deepEqual(await response.json(), {
+      repo: {
+        id: created.id,
+        name: created.name,
+        gitSource: created.gitSource,
+        forge: created.forge,
+        defaultBranch: created.defaultBranch,
+      },
+    });
+
+    const credentialUrl = await fetch(`${base}/control/fixtures/repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'must not persist',
+        gitSource: 'https://user:secret@example.test/team/repo.git',
+        forge: 'github',
+        defaultBranch: 'main',
+      }),
+    });
+    assert.equal(credentialUrl.status, 400);
+    assert.deepEqual(await credentialUrl.json(), {
+      error: 'invalid_repo_fixture',
+    });
+
+    const blankName = await fetch(`${base}/control/fixtures/repos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: '   ',
+        gitSource: 'https://example.test/team/repo.git',
+        forge: 'github',
+        defaultBranch: 'main',
+      }),
+    });
+    assert.equal(blankName.status, 400);
+    assert.deepEqual(await blankName.json(), {
+      error: 'invalid_repo_fixture',
+    });
+  } finally {
+    await control.close();
+  }
+});

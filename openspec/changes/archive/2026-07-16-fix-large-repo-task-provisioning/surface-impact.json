@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "change": "fix-large-repo-task-provisioning",
+  "intent": "public-feature",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "changed",
+      "operationIds": [
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "repos.list",
+        "repos.get"
+      ],
+      "reason": "Task creation returns a durable initial handle without waiting for provisioning, task reads expose additive safe provisioning progress/failures, and repo reads return the resolved default branch."
+    },
+    "mcp": {
+      "status": "changed",
+      "operationIds": [
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "repos.list",
+        "repos.get"
+      ],
+      "toolIds": [
+        "create_task",
+        "list_tasks",
+        "get_task",
+        "stop_task",
+        "list_repos",
+        "get_repo"
+      ],
+      "reason": "Matching tools preserve canonical task/repo responses and create_task is made genuinely non-blocking through the shared durable admission path."
+    },
+    "openapi": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "repos.list",
+        "repos.get"
+      ],
+      "reason": "Operation descriptions and additive provisioning/failure schemas derive from the canonical public registry and contracts."
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "repos.list",
+        "repos.get"
+      ],
+      "reason": "The playground derives the affected endpoints and response rendering from the same registry while preserving non-2xx failure bodies."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "sandbox-resources-secure-git-owner-aware-import-durable-admission-console",
+      "reason": "Adds environment resource policy, BoxLite disk plumbing, secret-aware workspace materialization, owner-aware URL import/default-branch resolution, a durable admission worker, safe failure persistence, and immediate Console navigation."
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Idempotency-Key remains an HTTP-only retry contract and is not an MCP argument; its durable admission work item is committed with the winning REST task row."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "MCP structured content remains the canonical initial Task while compatibility text retains the historical task handle."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "MCP metadata continues to explain immediate asynchronous provisioning and polling without claiming support for the HTTP-only idempotency header."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST keeps its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    }
+  ],
+  "verification": {
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
+  }
+}

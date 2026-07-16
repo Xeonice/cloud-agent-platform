@@ -1,5 +1,14 @@
-import type { TaskFailure, TaskStatus } from '@cap/contracts';
+import type {
+  TaskFailure,
+  TaskProvisioningStage,
+  TaskStatus,
+} from '@cap/contracts';
 import type { ForceFailCause } from './audit-mapping';
+
+export type ProvisioningAuditFailure = Exclude<
+  TaskFailure,
+  { runtime: unknown }
+>;
 
 /**
  * Narrow, best-effort audit-recorder PORT the lifecycle services depend on
@@ -13,11 +22,11 @@ import type { ForceFailCause } from './audit-mapping';
  * (which would form a cycle: TasksModule -> AuditModule -> TerminalModule ->
  * TasksModule). The concrete `AuditService` satisfies this shape.
  *
- * CONTRACT: every method is BEST-EFFORT and MUST NOT throw — a persistence
- * failure is logged and swallowed by the implementation, so an audit failure can
- * never roll back or block the lifecycle transition that triggered it (6.2). The
- * methods return `Promise<void>`; callers `void` them (or await-and-ignore) so a
- * rejected promise can never surface in the transition path.
+ * CONTRACT: ordinary lifecycle and provisioning-progress methods are
+ * BEST-EFFORT and MUST NOT throw. Terminal provisioning detail is different:
+ * it returns a durability acknowledgement so the already-failed Task can keep
+ * its admission work reclaimable until central/detail audit rows are confirmed.
+ * The concrete implementation still does not expose its raw persistence error.
  */
 export interface AuditRecorderPort {
   /**
@@ -30,11 +39,38 @@ export interface AuditRecorderPort {
    */
   recordTaskCreated(taskId: string, userId?: string): Promise<void>;
   /**
+   * Record one durable provisioning checkpoint after the work row advanced.
+   * `(taskId, attempt, stage)` is the idempotency identity, so a lease replay
+   * may observe the same checkpoint without duplicating timeline detail.
+   */
+  recordProvisioningProgress(
+    taskId: string,
+    stage: TaskProvisioningStage,
+    attempt: number,
+  ): Promise<void>;
+  /**
+   * Record the central task.failed event plus one structured provisioning detail.
+   * Both rows are idempotent per Task so recovery can safely fill a crash gap.
+   * Returns false when either durable row could not be confirmed; callers keep
+   * terminal work reclaimable so expiry recovery can retry the audit boundary.
+   */
+  recordProvisioningFailure(
+    taskId: string,
+    stage: TaskProvisioningStage,
+    attempt: number,
+    failure: ProvisioningAuditFailure,
+  ): Promise<boolean>;
+  /**
+   * Record the operator-driven terminal cancellation with one Task-stable
+   * identity. Terminal admission recovery keeps its work marker reclaimable
+   * until this method confirms the central lifecycle event is durable.
+   */
+  recordTaskCancellation(taskId: string, userId?: string): Promise<boolean>;
+  /**
    * Record a lifecycle transition event for `status` (no-op for `pending`). The
-   * operator-driven `task.cancelled` terminal flows through here too —
-   * `recordTransition(id, 'cancelled')` emits the `task.cancelled` event — so no
-   * dedicated cancel method is needed. `userId` is the account PRIMARY KEY
-   * (present for local + GitHub accounts), attributed when known.
+   * operator-driven `task.cancelled` terminal delegates to the idempotent
+   * cancellation recorder above. `userId` is the account PRIMARY KEY (present
+   * for local + GitHub accounts), attributed when known.
    */
   recordTransition(
     taskId: string,

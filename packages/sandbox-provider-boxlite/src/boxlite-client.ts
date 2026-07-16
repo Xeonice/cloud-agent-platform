@@ -1,5 +1,10 @@
 import { StringDecoder } from 'node:string_decoder';
 import WebSocket from 'ws';
+import type {
+  SandboxCreateObservation,
+  SandboxExternalBoundaryGuard,
+} from '@cap/sandbox-core';
+import { runSandboxExternalBoundary } from '@cap/sandbox-core';
 
 export interface BoxLiteSandboxMetadata {
   readonly [key: string]: unknown;
@@ -11,9 +16,29 @@ export interface BoxLiteSandbox {
   readonly state?: string;
   readonly image?: string;
   readonly rootfsPath?: string;
+  readonly diskSizeGb?: number;
   readonly baseUrl?: string;
   readonly terminalUrl?: string;
   readonly metadata?: BoxLiteSandboxMetadata;
+}
+
+/**
+ * BoxLite create/setup may succeed before its response authority check or start
+ * step fails. Surface the created identity to the provider and let its ownership
+ * fence authorize any cleanup.
+ */
+export class BoxLitePartialCreateError extends Error {
+  readonly sandbox: BoxLiteSandbox;
+  override readonly cause: unknown;
+
+  constructor(sandbox: BoxLiteSandbox, cause: unknown) {
+    super(
+      `BoxLite sandbox ${sandbox.id} was created but setup did not complete`,
+    );
+    this.name = 'BoxLitePartialCreateError';
+    this.sandbox = sandbox;
+    this.cause = cause;
+  }
 }
 
 export interface BoxLiteCreateSandboxRequest {
@@ -21,10 +46,19 @@ export interface BoxLiteCreateSandboxRequest {
   readonly sandboxId?: string;
   readonly image?: string;
   readonly rootfsPath?: string;
+  /** Native BoxLite root disk capacity; serialized as disk_size_gb. */
+  readonly diskSizeGb?: number;
   readonly location?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly labels?: Readonly<Record<string, string>>;
   readonly metadata?: BoxLiteSandboxMetadata;
+  /** Internal durable-admission authority; never serialized to BoxLite. */
+  readonly externalBoundaryGuard?: SandboxExternalBoundaryGuard;
+  /** Internal durable create observation; never serialized to BoxLite. */
+  readonly onSandboxCreateObserved?: (
+    observation: SandboxCreateObservation,
+  ) => Promise<void>;
+  readonly cancellationSignal?: AbortSignal;
 }
 
 export interface BoxLiteExecRequest {
@@ -134,38 +168,106 @@ export class BoxLiteRestClient implements BoxLiteClient {
   async createSandbox(request: BoxLiteCreateSandboxRequest): Promise<BoxLiteSandbox> {
     validateSandboxSource(request);
     if (this.protocolMode === 'native') {
-      const sandbox = parseSandbox(
-        await this.requestJson(this.nativeBoxesPath(), {
-          method: 'POST',
-          body: {
-            name: request.sandboxId ?? request.taskId,
-            ...(request.rootfsPath
-              ? { rootfs_path: request.rootfsPath }
-              : { image: request.image }),
-            env: request.env,
-          },
-        }),
-      );
+      let created: BoxLiteSandbox | undefined;
       try {
-        return parseSandbox(
-          await this.requestJson(`${this.sandboxPath(sandbox.id)}/start`, {
-            method: 'POST',
-          }),
-        );
+        created = await runSandboxExternalBoundary({
+          taskId: request.taskId,
+          action: 'sandbox.create',
+          guard: request.externalBoundaryGuard,
+          signal: request.cancellationSignal,
+          run: async () => {
+            const sandbox = parseSandbox(
+              await this.requestJson(this.nativeBoxesPath(), {
+                method: 'POST',
+                onDefinitiveRejection: async () => {
+                  await request.onSandboxCreateObserved?.({
+                    kind: 'not-created',
+                  });
+                },
+                body: {
+                  name: request.sandboxId ?? request.taskId,
+                  ...(request.rootfsPath
+                    ? { rootfs_path: request.rootfsPath }
+                    : { image: request.image }),
+                  disk_size_gb: request.diskSizeGb,
+                  env: request.env,
+                },
+              }),
+            );
+            created = sandbox;
+            await request.onSandboxCreateObserved?.({
+              kind: 'created',
+              providerSandboxId: sandbox.id,
+            });
+            return sandbox;
+          },
+        });
       } catch (error) {
-        await this.deleteSandbox(sandbox.id).catch(() => undefined);
+        if (created) throw new BoxLitePartialCreateError(created, error);
         throw error;
+      }
+      if (!created) throw new Error('BoxLite create returned no sandbox');
+      const sandbox = created;
+      try {
+        const started = await runSandboxExternalBoundary({
+          taskId: request.taskId,
+          action: 'sandbox.start',
+          guard: request.externalBoundaryGuard,
+          signal: request.cancellationSignal,
+          run: async () => parseSandbox(
+            await this.requestJson(`${this.sandboxPath(sandbox.id)}/start`, {
+              method: 'POST',
+            }),
+          ),
+        });
+        return {
+          ...sandbox,
+          ...started,
+          diskSizeGb: started.diskSizeGb ?? sandbox.diskSizeGb,
+        };
+      } catch (error) {
+        throw new BoxLitePartialCreateError(sandbox, error);
       }
     }
     if (request.rootfsPath) {
       throw new Error('BoxLite rootfsPath create is only supported with native protocol mode');
     }
-    return parseSandbox(
-      await this.requestJson('/v1/sandboxes', {
-        method: 'POST',
-        body: request,
-      }),
-    );
+    if (request.diskSizeGb !== undefined) {
+      throw new Error(
+        'BoxLite diskSizeGb create is only supported with native protocol mode',
+      );
+    }
+    let created: BoxLiteSandbox | undefined;
+    try {
+      return await runSandboxExternalBoundary({
+        taskId: request.taskId,
+        action: 'sandbox.create',
+        guard: request.externalBoundaryGuard,
+        signal: request.cancellationSignal,
+        run: async () => {
+          const sandbox = parseSandbox(
+            await this.requestJson('/v1/sandboxes', {
+              method: 'POST',
+              onDefinitiveRejection: async () => {
+                await request.onSandboxCreateObserved?.({
+                  kind: 'not-created',
+                });
+              },
+              body: stripCreateBoundaryFields(request),
+            }),
+          );
+          created = sandbox;
+          await request.onSandboxCreateObserved?.({
+            kind: 'created',
+            providerSandboxId: sandbox.id,
+          });
+          return sandbox;
+        },
+      });
+    } catch (error) {
+      if (created) throw new BoxLitePartialCreateError(created, error);
+      throw error;
+    }
   }
 
   async getSandbox(sandboxId: string): Promise<BoxLiteSandbox | null> {
@@ -328,10 +430,14 @@ export class BoxLiteRestClient implements BoxLiteClient {
     init: {
       readonly method: string;
       readonly body?: unknown;
+      readonly onDefinitiveRejection?: () => Promise<void>;
     },
   ): Promise<unknown> {
     const res = await this.request(path, init);
     if (!res.ok) {
+      if (isDefinitiveCreateRejectionStatus(res.status)) {
+        await init.onDefinitiveRejection?.();
+      }
       const text =
         typeof res.text === 'function'
           ? await res.text().catch(() => '')
@@ -479,6 +585,10 @@ export class BoxLiteRestClient implements BoxLiteClient {
   }
 }
 
+function isDefinitiveCreateRejectionStatus(status: number): boolean {
+  return status >= 400 && status < 500 && status !== 408;
+}
+
 export interface FakeBoxLiteClientOptions {
   readonly execHandler?: (request: BoxLiteExecRequest) => BoxLiteExecResult | Promise<BoxLiteExecResult>;
 }
@@ -498,20 +608,40 @@ export class FakeBoxLiteClient implements BoxLiteClient {
 
   async createSandbox(request: BoxLiteCreateSandboxRequest): Promise<BoxLiteSandbox> {
     validateSandboxSource(request);
-    this.createCalls.push(request);
-    const id = request.sandboxId ?? request.taskId;
-    const sandbox: BoxLiteSandbox = {
-      id,
-      taskId: request.taskId,
-      state: 'running',
-      image: request.image,
-      rootfsPath: request.rootfsPath,
-      baseUrl: `boxlite://${id}`,
-      terminalUrl: `boxlite://${id}/terminal`,
-      metadata: request.metadata,
-    };
-    this.sandboxes.set(id, sandbox);
-    return sandbox;
+    let created: BoxLiteSandbox | undefined;
+    try {
+      return await runSandboxExternalBoundary({
+        taskId: request.taskId,
+        action: 'sandbox.create',
+        guard: request.externalBoundaryGuard,
+        signal: request.cancellationSignal,
+        run: async () => {
+          this.createCalls.push(request);
+          const id = request.sandboxId ?? request.taskId;
+          const sandbox: BoxLiteSandbox = {
+            id,
+            taskId: request.taskId,
+            state: 'running',
+            image: request.image,
+            rootfsPath: request.rootfsPath,
+            diskSizeGb: request.diskSizeGb,
+            baseUrl: `boxlite://${id}`,
+            terminalUrl: `boxlite://${id}/terminal`,
+            metadata: request.metadata,
+          };
+          this.sandboxes.set(id, sandbox);
+          created = sandbox;
+          await request.onSandboxCreateObserved?.({
+            kind: 'created',
+            providerSandboxId: sandbox.id,
+          });
+          return sandbox;
+        },
+      });
+    } catch (error) {
+      if (created) throw new BoxLitePartialCreateError(created, error);
+      throw error;
+    }
   }
 
   async getSandbox(sandboxId: string): Promise<BoxLiteSandbox | null> {
@@ -550,7 +680,10 @@ export class FakeBoxLiteClient implements BoxLiteClient {
   }
 
   async uploadArchive(request: BoxLiteArchiveUploadRequest): Promise<void> {
-    this.archives.set(archiveKey(request.sandboxId, request.path), request.archive);
+    this.archives.set(
+      archiveKey(request.sandboxId, request.path),
+      request.archive.slice(),
+    );
   }
 
   async downloadArchive(
@@ -643,6 +776,12 @@ function parseSandbox(raw: unknown): BoxLiteSandbox {
         : typeof record.rootfs_path === 'string'
           ? record.rootfs_path
           : undefined,
+    diskSizeGb:
+      typeof record.diskSizeGb === 'number'
+        ? record.diskSizeGb
+        : typeof record.disk_size_gb === 'number'
+          ? record.disk_size_gb
+          : undefined,
     baseUrl: typeof record.baseUrl === 'string' ? record.baseUrl : undefined,
     terminalUrl: typeof record.terminalUrl === 'string' ? record.terminalUrl : undefined,
     metadata:
@@ -659,6 +798,24 @@ function validateSandboxSource(request: BoxLiteCreateSandboxRequest): void {
   if (!request.image && !request.rootfsPath) {
     throw new Error('BoxLite createSandbox requires image or rootfsPath');
   }
+}
+
+function stripCreateBoundaryFields(
+  request: BoxLiteCreateSandboxRequest,
+): Omit<
+  BoxLiteCreateSandboxRequest,
+  'externalBoundaryGuard' | 'onSandboxCreateObserved' | 'cancellationSignal'
+> {
+  const {
+    externalBoundaryGuard: _externalBoundaryGuard,
+    onSandboxCreateObserved: _onSandboxCreateObserved,
+    cancellationSignal: _cancellationSignal,
+    ...wireRequest
+  } = request;
+  void _externalBoundaryGuard;
+  void _onSandboxCreateObserved;
+  void _cancellationSignal;
+  return wireRequest;
 }
 
 function parseStartedExecution(

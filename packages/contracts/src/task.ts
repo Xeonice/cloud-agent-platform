@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ForgeKindSchema } from './settings.js';
 import { TaskSandboxEnvironmentSummarySchema } from './sandbox-environment.js';
 import { SandboxMetadataSchema } from './sandbox-metadata.js';
+import { GitBranchNameSchema } from './git-ref.js';
 
 /**
  * Task lifecycle status (repo-and-task-management spec).
@@ -75,6 +76,88 @@ export type ExecutionMode = z.infer<typeof ExecutionModeSchema>;
  * Existing tasks and omitted requests therefore read back as `codex`.
  */
 export const DEFAULT_TASK_RUNTIME = 'codex' as const satisfies Runtime;
+
+// ---------------------------------------------------------------------------
+// Safe task provisioning progress
+// ---------------------------------------------------------------------------
+
+/**
+ * Stable public states for the durable task-provisioning work item.
+ *
+ * These values describe orchestration progress only. They intentionally do not
+ * expose a database lease owner, provider-native sandbox state, or retry
+ * scheduling internals.
+ */
+export const TASK_PROVISIONING_STATES = [
+  'accepted',
+  'queued',
+  'running',
+  'retrying',
+  'succeeded',
+  'failed',
+  'cancelled',
+] as const;
+export const TaskProvisioningStateSchema = z.enum(TASK_PROVISIONING_STATES);
+export type TaskProvisioningState = z.infer<
+  typeof TaskProvisioningStateSchema
+>;
+
+/**
+ * Stable, provider-neutral stages that may be shown on task read surfaces.
+ *
+ * A provider may combine multiple implementation steps, but it must project
+ * progress through this vocabulary instead of leaking BoxLite/AIO commands or
+ * provider-native identifiers.
+ */
+export const TASK_PROVISIONING_STAGES = [
+  'accepted',
+  'sandbox_creation',
+  'credential_setup',
+  'remote_ref_resolution',
+  'workspace_transfer',
+  'checkout',
+  'submodules',
+  'credential_cleanup',
+  'runtime_setup',
+  'readiness',
+  'agent_launch',
+  'complete',
+] as const;
+export const TaskProvisioningStageSchema = z.enum(TASK_PROVISIONING_STAGES);
+export type TaskProvisioningStage = z.infer<
+  typeof TaskProvisioningStageSchema
+>;
+
+/**
+ * Secret-free task provisioning projection shared by Console, Public V1, MCP,
+ * OpenAPI, and the API Playground.
+ *
+ * This schema is strict by design: adding an internal lease, provider endpoint,
+ * native sandbox id, command, credential path, or diagnostic bag must fail
+ * validation instead of silently becoming part of a public response.
+ */
+export const TaskProvisioningSummarySchema = z
+  .object({
+    state: TaskProvisioningStateSchema,
+    stage: TaskProvisioningStageSchema,
+    /** Zero before the first claim; incremented for each processing attempt. */
+    attempt: z.number().int().nonnegative(),
+    /** Provider-neutral checkout branch snapshot, once it has been resolved. */
+    resolvedBranch: z.string().min(1).nullable(),
+    updatedAt: z.coerce.date(),
+  })
+  .strict();
+export type TaskProvisioningSummary = z.infer<
+  typeof TaskProvisioningSummarySchema
+>;
+
+/** Short aliases for orchestration code that already lives in a task context. */
+export const ProvisioningStateSchema = TaskProvisioningStateSchema;
+export type ProvisioningState = TaskProvisioningState;
+export const ProvisioningStageSchema = TaskProvisioningStageSchema;
+export type ProvisioningStage = TaskProvisioningStage;
+export const ProvisioningSummarySchema = TaskProvisioningSummarySchema;
+export type ProvisioningSummary = TaskProvisioningSummary;
 
 // ---------------------------------------------------------------------------
 // Per-task runtime model selector (add-task-model-selection)
@@ -175,6 +258,12 @@ export const TaskFailureCodeSchema = z.enum([
   'runtime_auth_rejected',
   'runtime_model_setup_failed',
   'runtime_model_rejected',
+  'provisioning_capacity_exhausted',
+  'provisioning_workspace_timeout',
+  'provisioning_forge_auth_failed',
+  'provisioning_tls_network_failed',
+  'provisioning_ref_not_found',
+  'provisioning_unknown',
 ]);
 export type TaskFailureCode = z.infer<typeof TaskFailureCodeSchema>;
 
@@ -182,6 +271,9 @@ export const TaskFailureActionSchema = z.enum([
   'reconnect_runtime',
   'retry_task',
   'choose_another_model',
+  'increase_sandbox_capacity',
+  'reconnect_forge',
+  'verify_repository_ref',
 ]);
 export type TaskFailureAction = z.infer<typeof TaskFailureActionSchema>;
 
@@ -222,6 +314,79 @@ export type RuntimeModelRejectedTaskFailure = z.infer<
   typeof RuntimeModelRejectedTaskFailureSchema
 >;
 
+const ProvisioningTaskFailureFields = {
+  // Public messages are deliberately bounded and carry no diagnostic bag. The
+  // service supplies fixed, localized copy rather than raw provider/git output.
+  message: z.string().trim().min(1).max(1_024),
+  occurredAt: z.coerce.date(),
+} as const;
+
+export const ProvisioningCapacityTaskFailureSchema = z
+  .object({
+    code: z.literal('provisioning_capacity_exhausted'),
+    ...ProvisioningTaskFailureFields,
+    action: z.literal('increase_sandbox_capacity'),
+  })
+  .strict();
+export type ProvisioningCapacityTaskFailure = z.infer<
+  typeof ProvisioningCapacityTaskFailureSchema
+>;
+
+export const ProvisioningWorkspaceTimeoutTaskFailureSchema = z
+  .object({
+    code: z.literal('provisioning_workspace_timeout'),
+    ...ProvisioningTaskFailureFields,
+    action: z.literal('retry_task'),
+  })
+  .strict();
+export type ProvisioningWorkspaceTimeoutTaskFailure = z.infer<
+  typeof ProvisioningWorkspaceTimeoutTaskFailureSchema
+>;
+
+export const ProvisioningForgeAuthTaskFailureSchema = z
+  .object({
+    code: z.literal('provisioning_forge_auth_failed'),
+    ...ProvisioningTaskFailureFields,
+    action: z.literal('reconnect_forge'),
+  })
+  .strict();
+export type ProvisioningForgeAuthTaskFailure = z.infer<
+  typeof ProvisioningForgeAuthTaskFailureSchema
+>;
+
+export const ProvisioningTlsNetworkTaskFailureSchema = z
+  .object({
+    code: z.literal('provisioning_tls_network_failed'),
+    ...ProvisioningTaskFailureFields,
+    action: z.literal('retry_task'),
+  })
+  .strict();
+export type ProvisioningTlsNetworkTaskFailure = z.infer<
+  typeof ProvisioningTlsNetworkTaskFailureSchema
+>;
+
+export const ProvisioningRefNotFoundTaskFailureSchema = z
+  .object({
+    code: z.literal('provisioning_ref_not_found'),
+    ...ProvisioningTaskFailureFields,
+    action: z.literal('verify_repository_ref'),
+  })
+  .strict();
+export type ProvisioningRefNotFoundTaskFailure = z.infer<
+  typeof ProvisioningRefNotFoundTaskFailureSchema
+>;
+
+export const ProvisioningUnknownTaskFailureSchema = z
+  .object({
+    code: z.literal('provisioning_unknown'),
+    ...ProvisioningTaskFailureFields,
+    action: z.literal('retry_task'),
+  })
+  .strict();
+export type ProvisioningUnknownTaskFailure = z.infer<
+  typeof ProvisioningUnknownTaskFailureSchema
+>;
+
 /**
  * Secret-free, actionable failure persisted with a task's terminal state.
  * The discriminated branches prevent invalid code/action combinations.
@@ -231,6 +396,12 @@ export const TaskFailureSchema = z.discriminatedUnion('code', [
   RuntimeAuthRejectedTaskFailureSchema,
   RuntimeModelSetupTaskFailureSchema,
   RuntimeModelRejectedTaskFailureSchema,
+  ProvisioningCapacityTaskFailureSchema,
+  ProvisioningWorkspaceTimeoutTaskFailureSchema,
+  ProvisioningForgeAuthTaskFailureSchema,
+  ProvisioningTlsNetworkTaskFailureSchema,
+  ProvisioningRefNotFoundTaskFailureSchema,
+  ProvisioningUnknownTaskFailureSchema,
 ]);
 export type TaskFailure = z.infer<typeof TaskFailureSchema>;
 
@@ -241,12 +412,10 @@ export type TaskFailure = z.infer<typeof TaskFailureSchema>;
 /**
  * A registered git repository the operator can launch tasks against.
  *
- * The GitHub-import metadata fields (`description`, `defaultBranch`,
- * `branchCount`, `updatedAt`, `githubId`) are OPTIONAL and NULLABLE: they are
- * populated only when the repo was imported from GitHub. A plain `gitSource`-only
- * repo created without GitHub import remains valid with these fields null/absent;
- * the read responses MUST NOT fabricate them. `githubId` is the originating
- * GitHub repository identity, carried so imports can be de-duplicated.
+ * Import metadata is OPTIONAL and NULLABLE for legacy rows. `defaultBranch` is
+ * forge-neutral and carries a verified picker/API or symbolic-HEAD value;
+ * description/branchCount/updatedAt/githubId remain GitHub provenance fields.
+ * Read responses MUST NOT fabricate a missing branch.
  */
 export const RepoSchema = z.object({
   id: z.string().uuid(),
@@ -257,8 +426,8 @@ export const RepoSchema = z.object({
   createdAt: z.coerce.date(),
   /** GitHub repo description (import metadata). Null/absent when not imported. */
   description: z.string().nullable().optional(),
-  /** GitHub default branch name (import metadata). Null/absent when not imported. */
-  defaultBranch: z.string().min(1).nullable().optional(),
+  /** Verified forge default branch. Null/absent for legacy unverified rows. */
+  defaultBranch: GitBranchNameSchema.nullable().optional(),
   /** GitHub branch count (import metadata). Null/absent when not imported. */
   branchCount: z.number().int().nonnegative().nullable().optional(),
   /** GitHub last-updated timestamp (import metadata). Null/absent when not imported. */
@@ -467,8 +636,46 @@ export const CreateRepoRequestSchema = z.object({
    * gitee.com); a self-hosted host must supply it explicitly.
    */
   forge: ForgeKindSchema.optional(),
+  /**
+   * How the repository was selected. Picker imports are re-validated against
+   * the requesting account's forge API listing so their default-branch metadata
+   * is server verified; omission keeps the existing URL-import behavior.
+   */
+  importSource: z.enum(['url', 'picker']).optional(),
 });
 export type CreateRepoRequest = z.infer<typeof CreateRepoRequestSchema>;
+
+/**
+ * Stable, secret-free failures returned by the authenticated Console repo
+ * import boundary. The Console classifies these codes directly; it must not
+ * parse raw Git output, transport diagnostics, or arbitrary error prose.
+ */
+export const REPO_IMPORT_FAILURE_CODES = [
+  'session_operator_required',
+  'repo_git_source_invalid',
+  'repo_git_source_credentials_forbidden',
+  'repo_forge_unresolved',
+  'repo_forge_auth_required',
+  'repo_forge_authentication_failed',
+  'repo_forge_access_denied',
+  'repo_forge_network_unavailable',
+  'repo_default_branch_unresolved',
+  'repo_picker_candidate_not_accessible',
+  'repo_import_identity_conflict',
+] as const;
+export const RepoImportFailureCodeSchema = z.enum(REPO_IMPORT_FAILURE_CODES);
+export type RepoImportFailureCode = z.infer<
+  typeof RepoImportFailureCodeSchema
+>;
+
+export const RepoImportFailureSchema = z
+  .object({
+    error: RepoImportFailureCodeSchema,
+    /** Bounded server-safe copy; clients may use their own code-based wording. */
+    message: z.string().trim().min(1).max(1_024),
+  })
+  .strict();
+export type RepoImportFailure = z.infer<typeof RepoImportFailureSchema>;
 
 /**
  * Aliases for the repo create body under the `*Body`/lower-camel naming used by
@@ -482,6 +689,18 @@ export type CreateRepoBody = CreateRepoRequest;
 /** Response body for a single repo (create / fetch-by-id). */
 export const RepoResponseSchema = RepoSchema;
 export type RepoResponse = z.infer<typeof RepoResponseSchema>;
+
+/**
+ * Successful `POST /repos` / verified picker responses are stronger than legacy
+ * reads: a repository is not import-successful or task-selectable until its real
+ * default branch has crossed the owner-authenticated verification boundary.
+ */
+export const VerifiedRepoImportResponseSchema = RepoResponseSchema.extend({
+  defaultBranch: GitBranchNameSchema,
+});
+export type VerifiedRepoImportResponse = z.infer<
+  typeof VerifiedRepoImportResponseSchema
+>;
 
 /** Lower-camel alias of {@link RepoResponseSchema} used by the api repos service. */
 export const repoResponseSchema = RepoResponseSchema;
@@ -569,6 +788,12 @@ export type CreateTaskBody = CreateTaskRequest;
 
 /** Response body for a single task (create / fetch-by-id). */
 export const TaskResponseSchema = TaskSchema.extend({
+  /**
+   * Safe durable-admission/provisioning progress. Optional and nullable so task
+   * rows written before this projection existed remain valid without inventing
+   * progress. Current services emit null until a durable work row is available.
+   */
+  provisioning: TaskProvisioningSummarySchema.nullable().optional(),
   /**
    * Public sandbox provider selected for this task, when provisioning has
    * recorded an owner. Null means no provider has been selected yet. Optional so

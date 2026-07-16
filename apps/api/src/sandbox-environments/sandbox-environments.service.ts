@@ -6,7 +6,9 @@ import {
   Optional,
 } from '@nestjs/common';
 import {
+  CreateSandboxEnvironmentRequestSchema,
   SandboxEnvironmentResponseSchema,
+  SandboxEnvironmentResourcesSchema,
   SandboxMetadataSchema,
   SandboxEnvironmentSourceSchema,
   SandboxEnvironmentValidationSchema,
@@ -14,6 +16,7 @@ import {
   type SandboxEnvironment,
   type SandboxEnvironmentParameter,
   type SandboxEnvironmentParameterInput,
+  type SandboxEnvironmentResources,
   type SandboxEnvironmentSource,
   type SandboxEnvironmentValidation,
 } from '@cap/contracts';
@@ -21,13 +24,17 @@ import {
   assertEnvironmentSelectable,
   normalizeResolvedEnvironment,
   providerFamiliesForEnvironmentSource,
+  resolveConfiguredTaskProvisioningPolicy,
   SandboxEnvironmentError,
+  snapshotSandboxProvisioningPolicy,
   sourceChecksum,
   sourceDigest,
   type ResolvedSandboxEnvironment,
   type SandboxHostImageParameterProfile,
   type SandboxEnvironmentProviderFamily,
   type SandboxEnvironmentSelection,
+  type ConfiguredProviderProvisioningPolicy,
+  type SandboxProvisioningPolicySnapshot,
 } from '@cap/sandbox';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -40,6 +47,13 @@ import {
 } from './sandbox-environments.validator';
 
 export const SANDBOX_ENVIRONMENT_CONTRACT_VERSION = 'sandbox-environment-v2';
+
+export interface SandboxTaskAdmissionResolution {
+  readonly environment: ResolvedSandboxEnvironment | null;
+  readonly providerId: string;
+  readonly providerFamily: SandboxEnvironmentProviderFamily;
+  readonly provisioningPolicy: SandboxProvisioningPolicySnapshot;
+}
 
 @Injectable()
 export class SandboxEnvironmentsService {
@@ -59,13 +73,15 @@ export class SandboxEnvironmentsService {
   }
 
   async create(input: CreateSandboxEnvironmentRequest): Promise<SandboxEnvironment> {
-    const source = SandboxEnvironmentSourceSchema.parse(input.source);
+    const request = CreateSandboxEnvironmentRequestSchema.parse(input);
+    const source = SandboxEnvironmentSourceSchema.parse(request.source);
     const providerFamilies = [...providerFamiliesForEnvironmentSource(source)];
-    const runtimeIds = input.runtimeIds ?? [];
-    const parameters = this.encodeParameters(input.parameters ?? []);
+    const runtimeIds = request.runtimeIds ?? [];
+    const resources = request.resources ?? null;
+    const parameters = this.encodeParameters(request.parameters ?? []);
 
     return this.prisma.$transaction(async (tx) => {
-      if (input.isDefault) {
+      if (request.isDefault) {
         await tx.sandboxEnvironment.updateMany({
           where: { isDefault: true },
           data: { isDefault: false },
@@ -73,14 +89,18 @@ export class SandboxEnvironmentsService {
       }
       const created = await tx.sandboxEnvironment.create({
         data: {
-          name: input.name,
+          name: request.name,
           source: source as unknown as Prisma.InputJsonObject,
           status: 'draft',
+          resources:
+            resources === null
+              ? Prisma.DbNull
+              : (resources as Prisma.InputJsonObject),
           envVars: parameters.plain as unknown as Prisma.InputJsonObject,
           secretEnvVars: parameters.secret as unknown as Prisma.InputJsonObject,
           providerFamilies,
           runtimeIds,
-          isDefault: input.isDefault ?? false,
+          isDefault: request.isDefault ?? false,
           contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
         },
         include: latestValidationInclude(),
@@ -147,6 +167,7 @@ export class SandboxEnvironmentsService {
       name: row.name,
       source,
       providerFamily,
+      resources: this.parseResources(row.resources),
       runtimeIds: runtimeIdsForValidation(row.runtimeIds),
       runtimeId: row.runtimeIds.length === 1 ? row.runtimeIds[0] : null,
       contractVersion: row.contractVersion,
@@ -170,6 +191,10 @@ export class SandboxEnvironmentsService {
           outcome.sandboxMetadata == null
             ? Prisma.DbNull
             : (outcome.sandboxMetadata as unknown as Prisma.InputJsonValue),
+        resourceSnapshot:
+          outcome.resourceSnapshot == null
+            ? Prisma.DbNull
+            : (outcome.resourceSnapshot as Prisma.InputJsonObject),
         probes: (outcome.probes ?? []) as unknown as Prisma.InputJsonValue,
         error: outcome.error ?? null,
         contractVersion: SANDBOX_ENVIRONMENT_CONTRACT_VERSION,
@@ -207,6 +232,74 @@ export class SandboxEnvironmentsService {
     readonly providerFamily?: SandboxEnvironmentProviderFamily;
   }): Promise<ResolvedSandboxEnvironment | null> {
     return this.resolveSelectedEnvironment(args, false);
+  }
+
+  /**
+   * Atomic admission-time seam shared by every durable task-create surface.
+   * The selected managed environment and its resource policy are derived from
+   * the same database observation, so admission cannot persist an environment
+   * id from one row version and resources from a later query.
+   */
+  async resolveTaskAdmission(args: {
+    readonly selection?: SandboxEnvironmentSelection;
+    readonly requestedEnvironmentId?: string | null;
+    readonly runtimeId: string;
+    readonly providerFamily?: SandboxEnvironmentProviderFamily;
+    readonly resources?: SandboxEnvironmentResources | null;
+  }): Promise<SandboxTaskAdmissionResolution> {
+    const environment = await this.resolveForTask(args);
+    let configuredPolicy: ConfiguredProviderProvisioningPolicy;
+    if (environment !== null) {
+      const providerFamily = environment.providerFamily ?? args.providerFamily;
+      if (!providerFamily) {
+        throw new BadRequestException({
+          error: 'sandbox_environment_invalid_source',
+          message: 'Sandbox environment has no provider family.',
+        });
+      }
+      configuredPolicy = this.resolveTaskProvisioningPolicy({
+        providerFamily,
+        resources:
+          environment.resources == null
+            ? null
+            : Object.freeze(
+                SandboxEnvironmentResourcesSchema.parse(
+                  environment.resources,
+                ),
+              ),
+      });
+    } else {
+      configuredPolicy = this.resolveTaskProvisioningPolicy({
+        ...(args.providerFamily
+          ? { providerFamily: args.providerFamily }
+          : {}),
+        resources: args.resources ?? null,
+      });
+    }
+    const provisioningPolicy = snapshotSandboxProvisioningPolicy(
+      configuredPolicy,
+    );
+    return Object.freeze({
+      environment,
+      providerId: configuredPolicy.providerId,
+      providerFamily: configuredPolicy.providerFamily,
+      provisioningPolicy,
+    });
+  }
+
+  /** Compatibility helper for non-durable catalog callers. */
+  async resolveProvisioningResourcesForTask(args: {
+    readonly selection?: SandboxEnvironmentSelection;
+    readonly requestedEnvironmentId?: string | null;
+    readonly runtimeId: string;
+    readonly providerFamily?: SandboxEnvironmentProviderFamily;
+  }): Promise<SandboxEnvironmentResources> {
+    const { provisioningPolicy } = await this.resolveTaskAdmission(args);
+    return Object.freeze(
+      SandboxEnvironmentResourcesSchema.parse(
+        provisioningPolicy.resources ?? {},
+      ),
+    );
   }
 
   /**
@@ -286,9 +379,14 @@ export class SandboxEnvironmentsService {
     }
 
     const source = this.parseSource(row.source);
+    const declaredResources = this.parseResources(row.resources);
     const validation = requireImmutable
       ? await this.findPinnedValidation(row.id, row.lastValidationId)
       : row.validations?.[0];
+    const resources = this.resolveManagedProvisioningResources({
+      declaredResources,
+      validationResourceSnapshot: validation?.resourceSnapshot,
+    });
     if (requireImmutable) {
       const runtimeArtifactChecksums = readStringRecord(
         validation?.runtimeArtifactChecksums ?? undefined,
@@ -326,6 +424,7 @@ export class SandboxEnvironmentsService {
           id: row.id,
           name: row.name,
           source,
+          resources,
           lastValidationId: row.lastValidationId,
           contractVersion: row.contractVersion,
         },
@@ -346,6 +445,7 @@ export class SandboxEnvironmentsService {
         id: row.id,
         name: row.name,
         source,
+        resources,
         lastValidationId: row.lastValidationId,
         contractVersion: row.contractVersion,
       },
@@ -374,6 +474,7 @@ export class SandboxEnvironmentsService {
         runtimeArtifactChecksums: true,
         cliArtifactChecksum: true,
         sandboxMetadata: true,
+        resourceSnapshot: true,
         contractVersion: true,
         checkedAt: true,
       },
@@ -496,6 +597,7 @@ export class SandboxEnvironmentsService {
     readonly name: string;
     readonly source: SandboxEnvironmentSource;
     readonly providerFamily: SandboxEnvironmentProviderFamily;
+    readonly resources?: SandboxEnvironmentResources | null;
     readonly runtimeIds?: readonly string[];
     readonly runtimeId?: string | null;
     readonly contractVersion?: string | null;
@@ -513,6 +615,7 @@ export class SandboxEnvironmentsService {
         resolvedChecksum: sourceChecksum(args.source) ?? null,
         runtimeArtifactChecksums: null,
         cliArtifactChecksum: null,
+        resourceSnapshot: args.resources ?? null,
         probes: [{ name: 'validation-error', ok: false, output: message }],
         error: message,
       };
@@ -523,6 +626,7 @@ export class SandboxEnvironmentsService {
     id: string;
     name: string;
     source: Prisma.JsonValue;
+    resources?: Prisma.JsonValue | null;
     status: string;
     providerFamilies: string[];
     runtimeIds: string[];
@@ -547,6 +651,7 @@ export class SandboxEnvironmentsService {
         providerFamilies: row.providerFamilies,
         runtimeIds: row.runtimeIds.length > 0 ? row.runtimeIds : undefined,
       },
+      resources: this.parseResources(row.resources),
       parameters: this.toParameterDescriptors(row.envVars, row.secretEnvVars),
       isDefault: row.isDefault,
       lastValidationId: row.lastValidationId,
@@ -571,6 +676,7 @@ export class SandboxEnvironmentsService {
     runtimeArtifactChecksums: Prisma.JsonValue | null;
     cliArtifactChecksum: string | null;
     sandboxMetadata: Prisma.JsonValue | null;
+    resourceSnapshot: Prisma.JsonValue | null;
     probes: Prisma.JsonValue | null;
     error: string | null;
     contractVersion: string | null;
@@ -589,6 +695,7 @@ export class SandboxEnvironmentsService {
       runtimeArtifactChecksums: row.runtimeArtifactChecksums,
       cliArtifactChecksum: row.cliArtifactChecksum,
       sandboxMetadata: row.sandboxMetadata,
+      resourceSnapshot: this.parseResources(row.resourceSnapshot),
       probes: row.probes,
       error: row.error,
       contractVersion: row.contractVersion,
@@ -598,6 +705,54 @@ export class SandboxEnvironmentsService {
 
   private parseSource(raw: Prisma.JsonValue): SandboxEnvironmentSource {
     return SandboxEnvironmentSourceSchema.parse(raw);
+  }
+
+  private parseResources(
+    raw: Prisma.JsonValue | null | undefined,
+  ): SandboxEnvironmentResources | null {
+    if (raw == null) return null;
+    return SandboxEnvironmentResourcesSchema.parse(raw);
+  }
+
+  private resolveTaskProvisioningPolicy(args: {
+    readonly providerFamily?: SandboxEnvironmentProviderFamily;
+    readonly resources?: SandboxEnvironmentResources | null;
+  }): ConfiguredProviderProvisioningPolicy {
+    try {
+      const resolved = resolveConfiguredTaskProvisioningPolicy(args);
+      const provisioningPolicy = snapshotSandboxProvisioningPolicy({
+        resources: Object.freeze(
+          SandboxEnvironmentResourcesSchema.parse(resolved.resources ?? {}),
+        ),
+        ...(resolved.workspaceMaterializationDeadlineMs === undefined
+          ? {}
+          : {
+              workspaceMaterializationDeadlineMs:
+                resolved.workspaceMaterializationDeadlineMs,
+            }),
+      });
+      return Object.freeze({
+        providerId: resolved.providerId,
+        providerFamily: resolved.providerFamily,
+        capabilities: resolved.capabilities,
+        ...provisioningPolicy,
+      });
+    } catch (error) {
+      throw new BadRequestException({
+        error: 'sandbox_environment_resource_unsupported',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private resolveManagedProvisioningResources(args: {
+    readonly declaredResources: SandboxEnvironmentResources | null;
+    readonly validationResourceSnapshot?: Prisma.JsonValue | null;
+  }): SandboxEnvironmentResources | null {
+    if (args.validationResourceSnapshot != null) {
+      return this.parseResources(args.validationResourceSnapshot);
+    }
+    return args.declaredResources;
   }
 
   private encodeParameters(
@@ -668,6 +823,7 @@ function latestValidationInclude() {
         runtimeArtifactChecksums: true,
         cliArtifactChecksum: true,
         sandboxMetadata: true,
+        resourceSnapshot: true,
         contractVersion: true,
         checkedAt: true,
       },

@@ -1,6 +1,7 @@
 import {
   DEFAULT_TASK_RUNTIME,
   SandboxMetadataSchema,
+  TaskProvisioningSummarySchema,
   sandboxProviderLabel,
   type Deliver,
   type DeliverStatus,
@@ -15,6 +16,15 @@ import { taskFailureFromRecord } from './task-failure';
 
 /** Relations required by every full TaskResponse projection. */
 export const TASK_RESPONSE_INCLUDE = {
+  admissionWork: {
+    select: {
+      state: true,
+      stage: true,
+      attempt: true,
+      resolvedBranch: true,
+      updatedAt: true,
+    },
+  },
   sandboxRuns: {
     orderBy: { createdAt: 'desc' as const },
     take: 1,
@@ -62,6 +72,13 @@ export interface TaskResponseRecord {
   commitSha?: string | null;
   changeRequestUrl?: string | null;
   changeRequestNumber?: number | null;
+  admissionWork?: {
+    state: string;
+    stage: string;
+    attempt: number;
+    resolvedBranch: string | null;
+    updatedAt: Date;
+  } | null;
   sandboxRuns?: readonly { providerId: string; metadata?: unknown }[];
   sandboxEnvironment?: {
     id: string;
@@ -101,6 +118,7 @@ export function taskResponseFromRecord(task: TaskResponseRecord): TaskResponse {
     commitSha: task.commitSha ?? null,
     changeRequestUrl: task.changeRequestUrl ?? null,
     changeRequestNumber: task.changeRequestNumber ?? null,
+    provisioning: taskProvisioningSummary(task.admissionWork),
     scheduleProvenance: task.scheduleRun
       ? {
           scheduleId: task.scheduleRun.scheduleId,
@@ -111,6 +129,22 @@ export function taskResponseFromRecord(task: TaskResponseRecord): TaskResponse {
     sandboxEnvironment: sandboxEnvironmentSummary(task.sandboxEnvironment),
     sandboxMetadata: sandboxMetadata(task.sandboxRuns?.[0]?.metadata),
   };
+}
+
+function taskProvisioningSummary(
+  work: TaskResponseRecord['admissionWork'],
+): TaskResponse['provisioning'] {
+  if (!work) return null;
+  const parsed = TaskProvisioningSummarySchema.safeParse({
+    state: work.state,
+    stage: work.stage,
+    attempt: work.attempt,
+    resolvedBranch: work.resolvedBranch,
+    updatedAt: work.updatedAt,
+  });
+  // Persisted work is schema/check constrained, but a mixed-version or corrupt
+  // row must still fail closed instead of leaking an internal coordination bag.
+  return parsed.success ? parsed.data : null;
 }
 
 function sandboxProviderSummary(task: {

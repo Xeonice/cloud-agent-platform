@@ -28,7 +28,10 @@ import {
   V1ListScheduleRunsResponseSchema,
   V1ListTasksResponseSchema,
 } from '@cap/contracts';
-import { taskModelLaunchMaterial } from '@cap/sandbox';
+import {
+  DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
+  taskModelLaunchMaterial,
+} from '@cap/sandbox';
 
 import { AppModule } from '../dist/app.module.js';
 import { CodexRuntime } from '../dist/agent-runtime/codex-runtime.js';
@@ -480,6 +483,8 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
         ownerUserId: user.id,
         runtimeId: 'codex',
         executionMode: 'interactive-pty',
+        workspaceMaterializationDeadlineMs:
+          DEFAULT_SANDBOX_GIT_MATERIALIZATION_DEADLINE_MS,
       },
     );
     await prisma.task.update({

@@ -1,1 +1,5 @@
-export type { AgentTerminalOutputMeta, AgentTerminalPty } from '@cap/sandbox';
+export type {
+  AgentTerminalLaunchOutcome,
+  AgentTerminalOutputMeta,
+  AgentTerminalPty,
+} from '@cap/sandbox';

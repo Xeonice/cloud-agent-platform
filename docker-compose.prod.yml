@@ -59,6 +59,11 @@ services:
     # Secrets/config come from a `.env` you create NEXT TO this file (source-free:
     # NOT from the repo tree). `../files/api.env` is also honored for Dokploy's
     # file-mount layout. Both optional so `docker compose config` parses without them.
+    # BOXLITE_DISK_SIZE_GB, BOXLITE_GIT_CLONE_TIMEOUT_MS,
+    # CAP_TASK_ADMISSION_V2_ENABLED and CAP_TASK_ADMISSION_V2_ATTESTATION_JSON
+    # deliberately flow through these env files. Do NOT redeclare them below
+    # with empty `${VAR:-}` values: that would clobber a Dokploy file-only value
+    # instead of passing it to the api unchanged.
     env_file:
       - path: .env
         required: false

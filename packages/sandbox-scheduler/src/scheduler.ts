@@ -6,8 +6,11 @@ import type {
   SandboxPreflightResult,
   SandboxProviderCapability,
   SandboxProviderLocation,
+  SandboxResourceSnapshot,
   SandboxRetentionPolicy,
   SandboxTerminalEndpointDescriptor,
+  SandboxWorkspaceMaterializationPlan,
+  SandboxWorkspaceProgressReporter,
   SandboxWorkspaceDescriptor,
   SelectedSandboxRun,
 } from '@cap/sandbox-core';
@@ -19,6 +22,9 @@ import {
   MATERIALIZED_WORKSPACE_SANDBOX_REQUIRED_CAPABILITIES,
   READOPTION_SANDBOX_REQUIRED_CAPABILITIES,
   RETAINED_TRANSCRIPT_SANDBOX_REQUIRED_CAPABILITIES,
+  sandboxResourceRequiredCapabilities,
+  snapshotSandboxResources,
+  snapshotSandboxWorkspacePlan,
 } from '@cap/sandbox-core';
 
 export type SandboxProviderCompatibility = 'declared' | 'legacy-assumed';
@@ -68,6 +74,10 @@ export interface SelectSandboxProviderCandidateOptions {
 
 export interface SandboxProvisionPlan<TCloneSpec = GitCloneSpec> {
   readonly cloneSpec: TCloneSpec | null | undefined;
+  readonly resources?: SandboxResourceSnapshot;
+  readonly workspace?: SandboxWorkspaceMaterializationPlan | null;
+  readonly cancellationSignal?: AbortSignal;
+  readonly onWorkspaceProgress?: SandboxWorkspaceProgressReporter;
   readonly requiredCapabilities: readonly SandboxProviderCapability[];
   readonly featureCapabilities: readonly SandboxProviderCapability[];
 }
@@ -95,14 +105,37 @@ export function provisionSandboxFeatureCapabilities(args: {
 
 export function buildSandboxProvisionPlan<TCloneSpec>(args: {
   readonly cloneSpec: TCloneSpec | null | undefined;
+  readonly resources?: SandboxResourceSnapshot | null;
+  readonly workspace?: SandboxWorkspaceMaterializationPlan | null;
+  readonly cancellationSignal?: AbortSignal;
+  readonly onWorkspaceProgress?: SandboxWorkspaceProgressReporter;
   readonly archiveWorkspace?: boolean;
 }): SandboxProvisionPlan<TCloneSpec> {
-  const materializeWorkspace = args.cloneSpec !== null && args.cloneSpec !== undefined;
-  return {
-    cloneSpec: args.cloneSpec,
-    requiredCapabilities: provisionSandboxRequiredCapabilities({
+  const resources = snapshotSandboxResources(args.resources);
+  const workspace = snapshotSandboxWorkspacePlan(args.workspace);
+  const materializeWorkspace =
+    workspace !== undefined
+      ? workspace !== null
+      : args.cloneSpec !== null && args.cloneSpec !== undefined;
+  const requiredCapabilities = new Set(
+    provisionSandboxRequiredCapabilities({
       materializeGitWorkspace: materializeWorkspace,
     }),
+  );
+  for (const capability of sandboxResourceRequiredCapabilities(resources)) {
+    requiredCapabilities.add(capability);
+  }
+  return {
+    cloneSpec: args.cloneSpec,
+    ...(resources === undefined ? {} : { resources }),
+    ...(workspace === undefined ? {} : { workspace }),
+    ...(args.cancellationSignal === undefined
+      ? {}
+      : { cancellationSignal: args.cancellationSignal }),
+    ...(args.onWorkspaceProgress === undefined
+      ? {}
+      : { onWorkspaceProgress: args.onWorkspaceProgress }),
+    requiredCapabilities: [...requiredCapabilities],
     featureCapabilities: provisionSandboxFeatureCapabilities({
       materializeWorkspace,
       archiveWorkspace: args.archiveWorkspace,

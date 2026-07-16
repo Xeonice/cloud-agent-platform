@@ -26,6 +26,7 @@ function provider(name, capabilities) {
 
 function routableProvider(name, capabilities, options = {}) {
   const calls = [];
+  const provisionContexts = [];
   const connection = {
     taskId: options.reattachTask ?? 'task',
     baseUrl: `http://${name}`,
@@ -33,9 +34,11 @@ function routableProvider(name, capabilities, options = {}) {
   };
   return {
     calls,
+    provisionContexts,
     getSandboxMode: () => options.mode ?? 'workspace-write',
     getProviderCapabilities: capabilities === undefined ? undefined : () => capabilities,
     async provision(ctx) {
+      provisionContexts.push(ctx);
       calls.push(['provision', ctx.taskId, ctx.cloneSpec ?? null]);
       return {
         taskId: ctx.taskId,
@@ -315,6 +318,39 @@ await test('provision plan couples cloneSpec and required capabilities', () => {
       'workspace.archive.transfer',
     ],
   });
+
+  const resources = { diskSizeGb: 10 };
+  const workspace = {
+    repositoryUrl: 'https://example.test/repo.git',
+    callerBranch: null,
+    resolvedBranch: 'master',
+    deadlineMs: 900_000,
+  };
+  const controller = new AbortController();
+  const planned = mod.buildSandboxProvisionPlan({
+    cloneSpec,
+    resources,
+    workspace,
+    cancellationSignal: controller.signal,
+  });
+  assert.deepEqual(planned.requiredCapabilities, [
+    'terminal.websocket',
+    'workspace.git.materialize',
+    'resource.disk-size-gb',
+  ]);
+  assert.notEqual(planned.resources, resources);
+  assert.notEqual(planned.workspace, workspace);
+  assert.equal(Object.isFrozen(planned.resources), true);
+  assert.equal(Object.isFrozen(planned.workspace), true);
+  assert.equal(planned.workspace.callerBranch, null);
+  assert.equal(planned.workspace.resolvedBranch, 'master');
+  assert.equal(planned.cancellationSignal, controller.signal);
+
+  assert.deepEqual(
+    mod.buildSandboxProvisionPlan({ cloneSpec, workspace: null })
+      .requiredCapabilities,
+    ['terminal.websocket'],
+  );
 });
 
 await test('selected run builder carries provider, connection, and descriptors', () => {
@@ -449,6 +485,58 @@ await test('provider router selects local or cloud by capabilities and pins task
     'exists',
     'teardown',
   ]);
+});
+
+await test('provider router enforces resource capability before creation and forwards snapshots', async () => {
+  const unsupported = routableProvider('unsupported', [
+    'terminal.websocket',
+    'workspace.git.materialize',
+  ]);
+  const supported = routableProvider('supported', [
+    'terminal.websocket',
+    'workspace.git.materialize',
+    'resource.disk-size-gb',
+  ]);
+  const router = new mod.SandboxProviderRouter([
+    core.defineLocalSandboxProvider({
+      id: 'unsupported',
+      provider: unsupported,
+      priority: 100,
+    }),
+    core.defineCloudSandboxProvider({
+      id: 'supported',
+      provider: supported,
+      priority: 10,
+    }),
+  ]);
+  const resources = { diskSizeGb: 8 };
+  const workspace = {
+    repositoryUrl: 'https://example.test/repo.git',
+    callerBranch: null,
+    resolvedBranch: 'master',
+    deadlineMs: 900_000,
+  };
+  const controller = new AbortController();
+
+  await router.provision({
+    taskId: 'task-resources',
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'interactive-pty',
+    resources,
+    workspace,
+    cancellationSignal: controller.signal,
+  });
+
+  assert.deepEqual(unsupported.calls, []);
+  assert.equal(supported.calls.length, 1);
+  const received = supported.provisionContexts[0];
+  assert.deepEqual(received.resources, { diskSizeGb: 8 });
+  assert.equal(Object.isFrozen(received.resources), true);
+  assert.equal(received.workspace.callerBranch, null);
+  assert.equal(received.workspace.resolvedBranch, 'master');
+  assert.equal(Object.isFrozen(received.workspace), true);
+  assert.equal(received.cancellationSignal, controller.signal);
 });
 
 await test('provider router honors location preference and handles missing owner capabilities', async () => {
@@ -906,7 +994,11 @@ await test('provider router selected-run can use reattached connection without o
 
   const run = await router.getSelectedSandboxRun('task-no-store');
   assert.equal(run.connection.baseUrl, 'http://readopt-no-store');
-  assert.equal(run.providerSandboxId, 'task-no-store');
+  assert.equal(
+    run.providerSandboxId,
+    undefined,
+    'a logical task id is not a provider-attested physical sandbox id',
+  );
   assert.equal(run.owner, undefined);
 });
 

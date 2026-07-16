@@ -7,12 +7,25 @@
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "testing": [
+        "dist/testing.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js",
+      "require": "./dist/testing.js",
+      "default": "./dist/testing.js"
     }
   },
   "files": [
@@ -21,15 +34,16 @@
     "docs"
   ],
   "scripts": {
-    "build": "pnpm --filter @cap/contracts build && pnpm --filter @cap/sandbox-core build && pnpm --filter @cap/sandbox-environment build && pnpm --filter @cap/sandbox-cloud-http build && pnpm --filter @cap/sandbox-provider-aio build && pnpm --filter @cap/sandbox-provider-boxlite build && tsc -p tsconfig.json",
-    "typecheck": "pnpm --filter @cap/contracts build && pnpm --filter @cap/sandbox-core build && pnpm --filter @cap/sandbox-environment build && pnpm --filter @cap/sandbox-cloud-http build && pnpm --filter @cap/sandbox-provider-aio build && pnpm --filter @cap/sandbox-provider-boxlite build && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && node test/provider-center.test.mjs && node test/provider-conformance.test.mjs && node test/host-harness-config.test.mjs && node test/host-harness-configured-provider.test.mjs && node test/host-harness-image-parameters.test.mjs && node test/host-harness-command-executor.test.mjs && node --test test/model-material.test.mjs && node test/host-harness-terminal.test.mjs && node test/host-harness-workspace-bridge.test.mjs && node test/host-harness-provider-terminal-story.test.mjs && node test/terminal-reconnect.test.mjs",
-    "coverage": "pnpm build && c8 --100 --include=dist/**/*.js --reporter=text sh -c \"node test/provider-center.test.mjs && node test/provider-conformance.test.mjs && node test/host-harness-config.test.mjs && node test/host-harness-configured-provider.test.mjs && node test/host-harness-image-parameters.test.mjs && node test/host-harness-command-executor.test.mjs && node test/host-harness-terminal.test.mjs && node test/host-harness-workspace-bridge.test.mjs && node test/host-harness-provider-terminal-story.test.mjs && node test/terminal-reconnect.test.mjs\"",
+    "build": "pnpm --filter @cap/contracts build && pnpm --filter @cap/sandbox-core build && pnpm --filter @cap/sandbox-environment build && pnpm --filter @cap/sandbox-cloud-http build && pnpm --filter @cap/sandbox-provider-aio build && pnpm --filter @cap/sandbox-provider-boxlite build && pnpm --filter @cap/sandbox-conformance build && tsc -p tsconfig.json",
+    "typecheck": "pnpm --filter @cap/contracts build && pnpm --filter @cap/sandbox-core build && pnpm --filter @cap/sandbox-environment build && pnpm --filter @cap/sandbox-cloud-http build && pnpm --filter @cap/sandbox-provider-aio build && pnpm --filter @cap/sandbox-provider-boxlite build && pnpm --filter @cap/sandbox-conformance build && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build && pnpm --filter @cap/sandbox-conformance build && node test/provider-center.test.mjs && node test/provider-conformance.test.mjs && node test/staged-workspace-git.test.mjs && node test/boxlite-workspace-adapter.test.mjs && node test/host-harness-config.test.mjs && node test/host-harness-configured-provider.test.mjs && node test/host-harness-image-parameters.test.mjs && node test/host-harness-command-executor.test.mjs && node --test test/model-material.test.mjs && node test/host-harness-terminal.test.mjs && node test/host-harness-workspace-bridge.test.mjs && node test/host-harness-provider-terminal-story.test.mjs && node test/terminal-reconnect.test.mjs",
+    "coverage": "pnpm build && pnpm --filter @cap/sandbox-conformance build && c8 --100 --include=dist/**/*.js --reporter=text sh -c \"node test/provider-center.test.mjs && node test/provider-conformance.test.mjs && node test/staged-workspace-git.test.mjs && node test/boxlite-workspace-adapter.test.mjs && node test/host-harness-config.test.mjs && node test/host-harness-configured-provider.test.mjs && node test/host-harness-image-parameters.test.mjs && node test/host-harness-command-executor.test.mjs && node test/host-harness-terminal.test.mjs && node test/host-harness-workspace-bridge.test.mjs && node test/host-harness-provider-terminal-story.test.mjs && node test/terminal-reconnect.test.mjs\"",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
     "@cap/contracts": "workspace:*",
     "@cap/sandbox-cloud-http": "workspace:*",
+    "@cap/sandbox-conformance": "workspace:*",
     "@cap/sandbox-core": "workspace:*",
     "@cap/sandbox-environment": "workspace:*",
     "@cap/sandbox-provider-aio": "workspace:*",

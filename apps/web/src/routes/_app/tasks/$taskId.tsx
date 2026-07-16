@@ -34,9 +34,9 @@ import { toast } from "sonner";
 
 import {
   TERMINAL_TASK_STATUSES,
-  isReplayableStatus,
   replayPresentationState,
   type SandboxMetadata,
+  type TaskResponse,
 } from "@cap/contracts";
 import {
   taskQuery,
@@ -62,6 +62,13 @@ import {
 import { formatTaskResource } from "@/components/session/format-resource";
 import { SANDBOX_PROVIDER_PENDING_LABEL } from "@/lib/sandbox-provider-label";
 import { RuntimeCredentialAlert } from "@/components/runtime-credential-alert";
+import { TaskProvisioningStatus } from "@/components/task-provisioning-status";
+import {
+  TASK_PROVISIONING_STAGE_LABELS,
+  TASK_PROVISIONING_STATE_LABELS,
+  taskDetailPollingInterval,
+  taskDisplayBranch,
+} from "@/lib/task-provisioning";
 
 /** Statusline / H1 phase label per cockpit state vocabulary (never fabricated). */
 const STATE_LABELS: Record<SessionTaskState, string> = {
@@ -98,9 +105,7 @@ function SessionPage(): React.ReactElement {
   const { data: task } = useQuery({
     ...taskQuery(taskId),
     refetchInterval: (query) =>
-      query.state.data && isReplayableStatus(query.state.data.status)
-        ? false
-        : 4000,
+      taskDetailPollingInterval(query.state.data),
   });
   const { data: context } = useQuery(taskContextQuery(taskId));
   // This task's own live CPU/memory (real-time per-task sampler read). Polls
@@ -126,11 +131,11 @@ function SessionPage(): React.ReactElement {
 
   const shortId = shortTaskId(taskId);
 
-  // Identity copy — bound to query data where available; the branch is refined by
-  // the REAL task.branch only when present (the `branches` capability already
-  // wires this into `taskContextQuery`; we never fabricate an unsent field, D5.5).
+  // Identity copy — resolved checkout wins over explicit caller intent. A loaded
+  // legacy task with neither value stays visibly unresolved; it must never fall
+  // through to mock context or an invented `main` branch.
   const repo = context?.repo ?? "—";
-  const branch = task?.branch ?? context?.branch ?? "main";
+  const branch = taskDisplayBranch(task);
   const agent = context?.agent ?? "—";
   const sandboxProviderLabel =
     context?.sandboxProviderLabel ?? SANDBOX_PROVIDER_PENDING_LABEL;
@@ -199,6 +204,12 @@ function SessionPage(): React.ReactElement {
         onStop={handleStop}
       />
 
+      <TaskProvisioningStatus
+        task={task}
+        announce
+        className="mb-3"
+      />
+
       <RuntimeCredentialAlert
         failure={task?.failure}
         announce
@@ -237,7 +248,12 @@ function SessionPage(): React.ReactElement {
             );
           }
           if (task && mode === "pre-running") {
-            return <PreRunningPlaceholder status={task.status} />;
+            return (
+              <PreRunningPlaceholder
+                status={task.status}
+                provisioning={task.provisioning}
+              />
+            );
           }
           if (task && mode === "headless-live") {
             return (
@@ -370,13 +386,16 @@ function LivePaneButton({
 /** Friendly pre-running state shown before the sandbox/terminal exists. */
 function PreRunningPlaceholder({
   status,
+  provisioning,
 }: {
   status: string;
+  provisioning?: TaskResponse["provisioning"];
 }): React.ReactElement {
-  const label =
-    status === "queued"
+  const label = provisioning
+    ? `${TASK_PROVISIONING_STATE_LABELS[provisioning.state]} · ${TASK_PROVISIONING_STAGE_LABELS[provisioning.stage]}`
+    : status === "queued"
       ? "排队中 · 等待并发槽位释放…"
-      : "正在启动沙箱 · 准备会话环境…";
+      : "任务已接受 · 等待准备进度…";
   return (
     <article className="flex h-full min-h-0 flex-col overflow-hidden rounded-md bg-terminal-bg text-terminal-fg shadow-terminal">
       <div className="flex min-h-[40px] flex-none items-center justify-between border-b border-terminal-line bg-[#0d0d0d] px-3.5 font-mono text-xs text-terminal-muted">

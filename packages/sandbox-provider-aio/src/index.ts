@@ -6,6 +6,7 @@ export * from './aio-pty-client.js';
 export * from './aio-retention-store.js';
 export * from './aio-terminal-runtime.js';
 export * from './aio-terminal-transport.js';
+export * from './aio-workspace-security.js';
 export * from './codex-launch.js';
 export * from './select-launch.js';
 export * from './tar-extract.js';

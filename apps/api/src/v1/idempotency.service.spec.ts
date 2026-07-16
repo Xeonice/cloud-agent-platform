@@ -2,15 +2,12 @@
  * Tests for `IdempotencyService` (public-v1-api, task 3.3 / 3.7).
  *
  * Covers the `Idempotency-Key` dedup contract on `POST /v1/tasks`:
- *   1. No key → admit unconditionally, no dedup row written.
- *   2. First use of a key → admit once + record the key in the SAME transaction.
- *   3. Same key + same body → return the SAME task, admit NOTHING new (one
- *      sandbox admission).
- *   4. Same key + DIFFERENT body within the window → 409, no second task.
- *   5. An expired record does not dedup (a fresh admission replaces it).
- *   6. A lost unique-constraint race (P2002) resolves to the winner's task
- *      rather than leaving two committed tasks.
- *   7. `hashBody` is canonical (key order independent).
+ *   1. The first winner atomically commits its Task, admission work, and key.
+ *   2. Any key-write or concurrent-commit loser rolls back all staged acceptance.
+ *   3. Same-body replay/race returns the winner without a second work item.
+ *   4. Different-body replay/race returns 409 without a second work item.
+ *   5. An expired record permits a fresh acceptance; canonical body hashing is
+ *      stable across object key ordering.
  *
  * Run from apps/api with `pnpm test` (nest build → node --test dist/**\/*.spec.js).
  */
@@ -18,7 +15,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ConflictException } from '@nestjs/common';
 
-import { IdempotencyService } from './idempotency.service';
+import {
+  IdempotencyService,
+  type TaskCreator,
+} from './idempotency.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { TaskResponse } from '@cap/contracts';
 
@@ -36,54 +36,254 @@ interface KeyRow {
   expiresAt: Date;
 }
 
-/**
- * A minimal in-memory fake of the Prisma surface IdempotencyService touches:
- * `idempotencyKey.{findUnique,create,delete}` keyed on `(scopeUserId, key)`, plus
- * an interactive `$transaction(cb)` that runs the callback against the same store
- * and discards its writes when the callback throws (rollback).
- */
-function makeFakePrisma() {
-  const rows = new Map<string, KeyRow>();
-  const compositeKey = (scopeUserId: string, key: string) => `${scopeUserId}\u0000${key}`;
+interface AdmissionWorkRow {
+  taskId: string;
+  state: 'accepted';
+}
 
-  const makeClient = (store: Map<string, KeyRow>): PrismaService =>
+interface FakePrismaOptions {
+  /** Error surfaced by a transaction that loses a concurrent key commit. */
+  concurrentConflict?: 'p2002' | 'ordinary';
+  /** One-shot failure injected at the idempotency-key insert. */
+  keyCreateError?: Error;
+  onRootKeyLookup?: (lookup: {
+    scopeUserId: string;
+    key: string;
+    row: KeyRow | null;
+  }) => void;
+}
+
+interface FakeTaskDelegate {
+  create(args: { data: TaskResponse }): Promise<TaskResponse>;
+}
+
+interface FakeAdmissionWorkDelegate {
+  create(args: { data: AdmissionWorkRow }): Promise<AdmissionWorkRow>;
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+function makeBarrier(parties: number): () => Promise<void> {
+  const released = deferred<void>();
+  let arrivals = 0;
+  return async () => {
+    arrivals += 1;
+    assert.ok(arrivals <= parties, 'barrier received too many arrivals');
+    if (arrivals === parties) released.resolve();
+    await released.promise;
+  };
+}
+
+/**
+ * A transaction-aware in-memory fake of the Prisma surface used by these tests.
+ * Each callback writes to a private snapshot. Its task, admission-work, and key
+ * mutations are validated and published synchronously as one atomic commit. A
+ * concurrent transaction based on an older snapshot therefore either commits
+ * all three rows or loses the key race and publishes none of them.
+ */
+function makeFakePrisma(options: FakePrismaOptions = {}) {
+  const rows = new Map<string, KeyRow>();
+  const tasks = new Map<string, TaskResponse>();
+  const works = new Map<string, AdmissionWorkRow>();
+  const compositeKey = (scopeUserId: string, key: string) => `${scopeUserId}\u0000${key}`;
+  let nextKeyCreateError = options.keyCreateError;
+
+  const makeIdempotencyDelegate = (
+    store: Map<string, KeyRow>,
+    injectCreateFailure: boolean,
+  ) => ({
+    async findUnique({
+      where,
+    }: {
+      where: { scopeUserId_key: { scopeUserId: string; key: string } };
+    }) {
+      const { scopeUserId, key } = where.scopeUserId_key;
+      const row = store.get(compositeKey(scopeUserId, key)) ?? null;
+      if (store === rows) {
+        options.onRootKeyLookup?.({ scopeUserId, key, row });
+      }
+      return row;
+    },
+    async create({ data }: { data: KeyRow }) {
+      if (injectCreateFailure && nextKeyCreateError) {
+        const error = nextKeyCreateError;
+        nextKeyCreateError = undefined;
+        throw error;
+      }
+      const k = compositeKey(data.scopeUserId, data.key);
+      if (store.has(k)) throw uniqueConstraintError();
+      const row = { ...data };
+      store.set(k, row);
+      return row;
+    },
+    async delete({
+      where,
+    }: {
+      where: { scopeUserId_key: { scopeUserId: string; key: string } };
+    }) {
+      store.delete(
+        compositeKey(
+          where.scopeUserId_key.scopeUserId,
+          where.scopeUserId_key.key,
+        ),
+      );
+      return {};
+    },
+    async deleteMany({
+      where,
+    }: {
+      where: {
+        scopeUserId: string;
+        key: string;
+        requestHash?: string;
+        taskId?: string;
+        expiresAt?: { lte: Date };
+      };
+    }) {
+      const k = compositeKey(where.scopeUserId, where.key);
+      const current = store.get(k);
+      const matches =
+        current !== undefined &&
+        (where.requestHash === undefined ||
+          current.requestHash === where.requestHash) &&
+        (where.taskId === undefined || current.taskId === where.taskId) &&
+        (where.expiresAt === undefined ||
+          current.expiresAt <= where.expiresAt.lte);
+      if (matches) store.delete(k);
+      return { count: matches ? 1 : 0 };
+    },
+  });
+
+  const makeTransactionClient = (
+    stagedRows: Map<string, KeyRow>,
+    stagedTasks: Map<string, TaskResponse>,
+    stagedWorks: Map<string, AdmissionWorkRow>,
+  ): PrismaService =>
     ({
-      idempotencyKey: {
-        async findUnique({ where }: { where: { scopeUserId_key: { scopeUserId: string; key: string } } }) {
-          return store.get(compositeKey(where.scopeUserId_key.scopeUserId, where.scopeUserId_key.key)) ?? null;
-        },
-        async create({ data }: { data: Omit<KeyRow, never> }) {
-          const k = compositeKey(data.scopeUserId, data.key);
-          if (store.has(k)) {
-            const err = new Error('Unique constraint failed') as Error & { code: string };
-            err.code = 'P2002';
-            throw err;
-          }
-          store.set(k, { ...data });
+      idempotencyKey: makeIdempotencyDelegate(stagedRows, true),
+      task: {
+        async create({ data }: { data: TaskResponse }) {
+          if (stagedTasks.has(data.id)) throw uniqueConstraintError();
+          stagedTasks.set(data.id, data);
           return data;
         },
-        async delete({ where }: { where: { scopeUserId_key: { scopeUserId: string; key: string } } }) {
-          store.delete(compositeKey(where.scopeUserId_key.scopeUserId, where.scopeUserId_key.key));
-          return {};
-        },
-        async deleteMany({ where }: { where: { scopeUserId: string; key: string } }) {
-          const deleted = store.delete(compositeKey(where.scopeUserId, where.key));
-          return { count: deleted ? 1 : 0 };
-        },
       },
-      async $transaction<T>(cb: (tx: PrismaService) => Promise<T>): Promise<T> {
-        // Snapshot-on-write: the callback runs against a staged copy; on success
-        // the copy is committed back, on throw it is discarded (rollback).
-        const staged = new Map(store);
-        const txClient = makeClient(staged);
-        const result = await cb(txClient);
-        store.clear();
-        for (const [k, v] of staged) store.set(k, v);
-        return result;
+      taskAdmissionWork: {
+        async create({ data }: { data: AdmissionWorkRow }) {
+          if (stagedWorks.has(data.taskId)) throw uniqueConstraintError();
+          stagedWorks.set(data.taskId, data);
+          return data;
+        },
       },
     }) as unknown as PrismaService;
 
-  return { prisma: makeClient(rows), rows };
+  const prisma = {
+    idempotencyKey: makeIdempotencyDelegate(rows, false),
+    async $transaction<T>(cb: (tx: PrismaService) => Promise<T>): Promise<T> {
+      const initialRows = new Map(rows);
+      const initialTasks = new Map(tasks);
+      const initialWorks = new Map(works);
+      const stagedRows = new Map(initialRows);
+      const stagedTasks = new Map(initialTasks);
+      const stagedWorks = new Map(initialWorks);
+      const tx = makeTransactionClient(stagedRows, stagedTasks, stagedWorks);
+
+      // A throw from the callback drops every staged mutation.
+      const result = await cb(tx);
+
+      // Validate every touched unique key before publishing any mutation. This
+      // block has no await, so validation + publication is atomic in the fake.
+      for (const key of touchedKeys(initialRows, stagedRows)) {
+        if (rows.get(key) !== initialRows.get(key)) {
+          throw concurrentCommitError(options.concurrentConflict ?? 'p2002');
+        }
+      }
+      for (const taskId of touchedKeys(initialTasks, stagedTasks)) {
+        if (tasks.get(taskId) !== initialTasks.get(taskId)) {
+          throw concurrentCommitError(options.concurrentConflict ?? 'p2002');
+        }
+      }
+      for (const taskId of touchedKeys(initialWorks, stagedWorks)) {
+        if (works.get(taskId) !== initialWorks.get(taskId)) {
+          throw concurrentCommitError(options.concurrentConflict ?? 'p2002');
+        }
+      }
+
+      publishChanges(rows, initialRows, stagedRows);
+      publishChanges(tasks, initialTasks, stagedTasks);
+      publishChanges(works, initialWorks, stagedWorks);
+      return result;
+    },
+  } as unknown as PrismaService;
+
+  const loadTask = async (taskId: string): Promise<TaskResponse> => {
+    const task = tasks.get(taskId);
+    if (!task) throw new Error(`Task ${taskId} was not committed`);
+    return task;
+  };
+
+  return { prisma, rows, tasks, works, loadTask };
+}
+
+function touchedKeys<K, V>(before: Map<K, V>, after: Map<K, V>): Set<K> {
+  const touched = new Set<K>();
+  for (const [key, value] of before) {
+    if (after.get(key) !== value) touched.add(key);
+  }
+  for (const [key, value] of after) {
+    if (before.get(key) !== value) touched.add(key);
+  }
+  return touched;
+}
+
+function publishChanges<K, V>(
+  target: Map<K, V>,
+  before: Map<K, V>,
+  after: Map<K, V>,
+): void {
+  for (const key of touchedKeys(before, after)) {
+    const value = after.get(key);
+    if (value === undefined) target.delete(key);
+    else target.set(key, value);
+  }
+}
+
+function uniqueConstraintError(): Error & { code: 'P2002' } {
+  const error = new Error('Unique constraint failed') as Error & {
+    code: 'P2002';
+  };
+  error.code = 'P2002';
+  return error;
+}
+
+function concurrentCommitError(kind: 'p2002' | 'ordinary'): Error {
+  return kind === 'p2002'
+    ? uniqueConstraintError()
+    : new Error('transaction serialization conflict');
+}
+
+async function writeTaskAndAdmissionWork(
+  tx: Pick<PrismaService, 'task' | 'taskAdmissionWork'>,
+  task: TaskResponse,
+): Promise<TaskResponse> {
+  await (tx.task as unknown as FakeTaskDelegate).create({ data: task });
+  await (
+    tx.taskAdmissionWork as unknown as FakeAdmissionWorkDelegate
+  ).create({
+    data: { taskId: task.id, state: 'accepted' },
+  });
+  return task;
 }
 
 let taskSeq = 0;
@@ -110,7 +310,7 @@ async function runCreate(
     key: string | null;
     scopeUserId: string;
     body: unknown;
-    admit: (tx: Pick<PrismaService, 'task'>) => Promise<TaskResponse>;
+    admit: (tx: TaskCreator) => Promise<TaskResponse>;
     loadTask: (taskId: string) => Promise<TaskResponse>;
   },
 ) {
@@ -156,8 +356,8 @@ test('no Idempotency-Key admits unconditionally and writes no dedup row', async 
   assert.equal(rows.size, 0, 'no dedup row written without a key');
 });
 
-test('first key use admits once and records the key', async () => {
-  const { prisma, rows } = makeFakePrisma();
+test('first key use atomically commits one task, one admission work item, and one key', async () => {
+  const { prisma, rows, tasks, works } = makeFakePrisma();
   const svc = new IdempotencyService(prisma);
   let admits = 0;
   const task = makeTask();
@@ -166,9 +366,9 @@ test('first key use admits once and records the key', async () => {
     key: 'k1',
     scopeUserId: SCOPE,
     body: { prompt: 'a' },
-    admit: async () => {
+    admit: async (tx) => {
       admits += 1;
-      return task;
+      return writeTaskAndAdmissionWork(tx, task);
     },
     loadTask: async () => {
       throw new Error('loadTask must not run on a first use');
@@ -179,6 +379,44 @@ test('first key use admits once and records the key', async () => {
   assert.equal(result.created, true, 'first key use is newly created');
   assert.equal(admits, 1);
   assert.equal(rows.size, 1, 'one dedup row recorded');
+  assert.equal(tasks.size, 1, 'one Task row committed');
+  assert.equal(works.size, 1, 'one admission-work row committed');
+  assert.equal(rows.values().next().value?.taskId, task.id);
+  assert.ok(tasks.has(task.id));
+  assert.ok(works.has(task.id));
+});
+
+test('a key insert failure rolls back its staged task and admission work', async () => {
+  const keyFailure = new Error('idempotency key insert failed');
+  const { prisma, rows, tasks, works } = makeFakePrisma({
+    keyCreateError: keyFailure,
+  });
+  const svc = new IdempotencyService(prisma);
+  const task = makeTask();
+  let stagedAdmissions = 0;
+
+  await assert.rejects(
+    () =>
+      runCreate(svc, {
+        key: 'key-insert-failure',
+        scopeUserId: SCOPE,
+        body: { prompt: 'a' },
+        admit: async (tx) => {
+          const created = await writeTaskAndAdmissionWork(tx, task);
+          stagedAdmissions += 1;
+          return created;
+        },
+        loadTask: async () => {
+          throw new Error('loadTask must not run when the key insert fails');
+        },
+      }),
+    (error: unknown) => error === keyFailure,
+  );
+
+  assert.equal(stagedAdmissions, 1, 'task and work were staged before key insert');
+  assert.equal(rows.size, 0, 'failed transaction commits no key');
+  assert.equal(tasks.size, 0, 'failed transaction commits no Task');
+  assert.equal(works.size, 0, 'failed transaction commits no admission work');
 });
 
 test('same key + same body returns the SAME task and admits nothing new', async () => {
@@ -284,44 +522,101 @@ test('an expired record does not dedup', async () => {
   assert.equal(admits, 1);
 });
 
-test('a lost unique-constraint race resolves to the winner task', async () => {
-  const { prisma, rows } = makeFakePrisma();
-  const svc = new IdempotencyService(prisma);
-  const winner = makeTask();
-  let admits = 0;
+test('same-body race commits one admission and makes the loser replay the winner', async (t) => {
+  for (const concurrentConflict of ['p2002', 'ordinary'] as const) {
+    await t.test(`loser surfaces ${concurrentConflict}`, async () => {
+      const { prisma, rows, tasks, works, loadTask } = makeFakePrisma({
+        concurrentConflict,
+      });
+      const svc = new IdempotencyService(prisma);
+      const barrier = makeBarrier(2);
+      const first = makeTask();
+      const second = makeTask();
+      const body = { prompt: 'a', repoId: 'r' };
+      let stagedAdmissions = 0;
 
-  // Simulate a racer that committed first: seed the winner row AFTER findUnique
-  // sees nothing but BEFORE our create lands, so our create hits P2002. We model
-  // this by pre-seeding the row (findUnique returns it as unexpired) — which the
-  // fast path would short-circuit — so instead drive the race via a same-body
-  // second call whose admit would double-admit if not deduped.
-  await runCreate(svc, {
-    key: 'k5',
-    scopeUserId: SCOPE,
-    body: { prompt: 'a' },
-    admit: async () => {
-      admits += 1;
-      return winner;
-    },
-    loadTask: async (id) => ({ ...winner, id }),
-  });
+      const race = (task: TaskResponse) =>
+        runCreate(svc, {
+          key: `same-body-${concurrentConflict}`,
+          scopeUserId: SCOPE,
+          body,
+          admit: async (tx) => {
+            const created = await writeTaskAndAdmissionWork(tx, task);
+            stagedAdmissions += 1;
+            await barrier();
+            return created;
+          },
+          loadTask,
+        });
 
-  // Second concurrent retry (same key+body): resolves to the winner, no re-admit.
-  const result = await runCreate(svc, {
-    key: 'k5',
-    scopeUserId: SCOPE,
-    body: { prompt: 'a' },
-    admit: async () => {
-      admits += 1;
-      return makeTask();
-    },
-    loadTask: async (id) => ({ ...winner, id }),
-  });
+      const [left, right] = await Promise.all([race(first), race(second)]);
 
-  assert.equal(result.task.id, winner.id);
-  assert.equal(result.created, false, 'the loser resolves to the winner — no re-admit');
-  assert.equal(admits, 1, 'the loser does not double-admit');
-  assert.equal(rows.size, 1, 'exactly one dedup row');
+      assert.equal(stagedAdmissions, 2, 'both racers staged Task + work');
+      assert.deepEqual(
+        [left.created, right.created].sort(),
+        [false, true],
+        'one request creates and the losing request is an exact replay',
+      );
+      assert.equal(left.task.id, right.task.id, 'loser returns the winner Task');
+      assert.equal(rows.size, 1, 'one idempotency key committed');
+      assert.equal(tasks.size, 1, 'loser Task was rolled back');
+      assert.equal(works.size, 1, 'loser admission work was rolled back');
+      assert.equal(rows.values().next().value?.taskId, left.task.id);
+      assert.ok(tasks.has(left.task.id));
+      assert.ok(works.has(left.task.id));
+    });
+  }
+});
+
+test('mismatched-body race returns one 409 and never commits a second admission', async (t) => {
+  for (const concurrentConflict of ['p2002', 'ordinary'] as const) {
+    await t.test(`loser surfaces ${concurrentConflict}`, async () => {
+      const { prisma, rows, tasks, works, loadTask } = makeFakePrisma({
+        concurrentConflict,
+      });
+      const svc = new IdempotencyService(prisma);
+      const barrier = makeBarrier(2);
+      const first = makeTask();
+      const second = makeTask();
+      let stagedAdmissions = 0;
+
+      const race = (task: TaskResponse, prompt: string) =>
+        runCreate(svc, {
+          key: `mismatched-body-${concurrentConflict}`,
+          scopeUserId: SCOPE,
+          body: { prompt, repoId: 'r' },
+          admit: async (tx) => {
+            const created = await writeTaskAndAdmissionWork(tx, task);
+            stagedAdmissions += 1;
+            await barrier();
+            return created;
+          },
+          loadTask,
+        });
+
+      const settled = await Promise.allSettled([
+        race(first, 'first'),
+        race(second, 'second'),
+      ]);
+      const success = settled.find((result) => result.status === 'fulfilled');
+      const failure = settled.find((result) => result.status === 'rejected');
+
+      assert.ok(success && success.status === 'fulfilled');
+      assert.ok(failure && failure.status === 'rejected');
+      assert.equal(success.value.created, true, 'the winner is the sole create');
+      assert.ok(
+        failure.reason instanceof ConflictException,
+        'the mismatched loser receives 409',
+      );
+      assert.equal(stagedAdmissions, 2, 'both racers staged Task + work');
+      assert.equal(rows.size, 1, 'one idempotency key committed');
+      assert.equal(tasks.size, 1, 'mismatched loser Task was rolled back');
+      assert.equal(works.size, 1, 'mismatched loser work was rolled back');
+      assert.equal(rows.values().next().value?.taskId, success.value.task.id);
+      assert.ok(tasks.has(success.value.task.id));
+      assert.ok(works.has(success.value.task.id));
+    });
+  }
 });
 
 test('commit rechecks a key that appeared after the side-effect-free lookup', async () => {
@@ -364,22 +659,21 @@ test('commit rechecks a key that appeared after the side-effect-free lookup', as
 });
 
 test('bounded winner lookup recovers a same-body commit racing a failed preflight', async () => {
-  const { prisma, rows } = makeFakePrisma();
+  const firstMiss = deferred<void>();
+  let observedFirstMiss = false;
+  const { prisma, rows } = makeFakePrisma({
+    onRootKeyLookup: ({ key, row }) => {
+      if (key === 'preflight-race' && row === null && !observedFirstMiss) {
+        observedFirstMiss = true;
+        firstMiss.resolve();
+      }
+    },
+  });
   const svc = new IdempotencyService(prisma);
   const winner = makeTask();
   const body = { repoId: 'r', prompt: 'a', model: 'provider/model:a' };
   const requestHash = IdempotencyService.hashBody(body);
-  const timer = setTimeout(() => {
-    rows.set(`${SCOPE}${String.fromCharCode(0)}preflight-race`, {
-      key: 'preflight-race',
-      scopeUserId: SCOPE,
-      requestHash,
-      taskId: winner.id,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-  }, 5);
-
-  const resolved = await svc.waitForWinner({
+  const pending = svc.waitForWinner({
     key: 'preflight-race',
     scopeUserId: SCOPE,
     requestHash,
@@ -387,7 +681,16 @@ test('bounded winner lookup recovers a same-body commit racing a failed prefligh
     maxWaitMs: 100,
     pollMs: 2,
   });
-  clearTimeout(timer);
+
+  await firstMiss.promise;
+  rows.set(`${SCOPE}${String.fromCharCode(0)}preflight-race`, {
+    key: 'preflight-race',
+    scopeUserId: SCOPE,
+    requestHash,
+    taskId: winner.id,
+    expiresAt: new Date(Date.now() + 60_000),
+  });
+  const resolved = await pending;
 
   assert.equal(resolved?.id, winner.id);
 });
