@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.39.0...v0.39.1) (2026-07-16)
+
+
+### Bug Fixes
+
+* **tasks:** harden large private repository provisioning ([fe94b7a](https://github.com/Xeonice/cloud-agent-platform/commit/fe94b7a2ef59da3959b307d71fdac033e49dbeb9))
+* **tasks:** harden large private repository provisioning ([995051e](https://github.com/Xeonice/cloud-agent-platform/commit/995051eb133baaf66c64168ba536c3abe5597d5a))
+
 ## [0.39.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.38.0...v0.39.0) (2026-07-14)
 
 
