@@ -22,6 +22,10 @@ const ADMISSION_DEADLINE_MIGRATION =
   '20260715130000_add_task_admission_workspace_deadline_snapshot';
 const SANDBOX_RUN_GENERATION_MIGRATION =
   '20260715140000_add_sandbox_run_generation_fence';
+const PLATFORM_DEPENDENCY_FAILURE_MIGRATION =
+  '20260716130000_add_platform_dependency_failure_codes';
+const PLATFORM_DEPENDENCY_FAILURE_CODE =
+  'provisioning_platform_dependency_unavailable';
 const EXPECTED_WORK_COLUMNS = [
   ['task_id', 'text', 'NO'],
   ['state', 'text', 'NO'],
@@ -63,13 +67,25 @@ const EXPECTED_WORK_INDEXES = [
   'task_admission_work_state_available_at_created_at_task_id_idx',
   'task_admission_work_state_lease_until_created_at_task_id_idx',
 ];
-const PROVISIONING_FAILURE_CODES = [
+const LEGACY_PROVISIONING_FAILURE_CODES = [
   'provisioning_capacity_exhausted',
   'provisioning_workspace_timeout',
   'provisioning_forge_auth_failed',
   'provisioning_tls_network_failed',
   'provisioning_ref_not_found',
   'provisioning_unknown',
+];
+const PROVISIONING_FAILURE_CODES = [
+  ...LEGACY_PROVISIONING_FAILURE_CODES.slice(0, -1),
+  PLATFORM_DEPENDENCY_FAILURE_CODE,
+  'provisioning_unknown',
+];
+const LEGACY_TASK_FAILURE_CODES = [
+  'runtime_auth_expired',
+  'runtime_auth_rejected',
+  'runtime_model_setup_failed',
+  'runtime_model_rejected',
+  ...LEGACY_PROVISIONING_FAILURE_CODES,
 ];
 const FORBIDDEN_DURABLE_COLUMN =
   /(credential|secret|auth|header|argv|command|diagnostic|error|log|output|raw)/i;
@@ -125,6 +141,10 @@ assert.ok(
   migrationNames.includes(SANDBOX_RUN_GENERATION_MIGRATION),
   `missing sandbox owner generation migration ${SANDBOX_RUN_GENERATION_MIGRATION}`,
 );
+assert.ok(
+  migrationNames.includes(PLATFORM_DEPENDENCY_FAILURE_MIGRATION),
+  `missing platform dependency failure migration ${PLATFORM_DEPENDENCY_FAILURE_MIGRATION}`,
+);
 
 const tempRoot = mkdtempSync(path.join(tmpdir(), 'cap-task-admission-migration-'));
 const oldPrismaDir = path.join(tempRoot, 'prisma');
@@ -132,6 +152,14 @@ const oldMigrationsDir = path.join(oldPrismaDir, 'migrations');
 const preDeadlinePrismaDir = path.join(tempRoot, 'pre-deadline-prisma');
 const preDeadlineMigrationsDir = path.join(
   preDeadlinePrismaDir,
+  'migrations',
+);
+const prePlatformDependencyPrismaDir = path.join(
+  tempRoot,
+  'pre-platform-dependency-prisma',
+);
+const prePlatformDependencyMigrationsDir = path.join(
+  prePlatformDependencyPrismaDir,
   'migrations',
 );
 
@@ -208,6 +236,232 @@ function preparePreDeadlineMigrationFixture() {
         { recursive: true },
       );
     }
+  }
+}
+
+function preparePrePlatformDependencyMigrationFixture() {
+  mkdirSync(prePlatformDependencyMigrationsDir, { recursive: true });
+  cpSync(
+    path.join(sourcePrismaDir, 'schema.prisma'),
+    path.join(prePlatformDependencyPrismaDir, 'schema.prisma'),
+  );
+  cpSync(
+    path.join(sourceMigrationsDir, 'migration_lock.toml'),
+    path.join(prePlatformDependencyMigrationsDir, 'migration_lock.toml'),
+  );
+  for (const name of migrationNames) {
+    if (
+      name < PLATFORM_DEPENDENCY_FAILURE_MIGRATION &&
+      name !== 'migration_lock.toml'
+    ) {
+      cpSync(
+        path.join(sourceMigrationsDir, name),
+        path.join(prePlatformDependencyMigrationsDir, name),
+        { recursive: true },
+      );
+    }
+  }
+}
+
+async function seedPrePlatformDependencyFailureRows() {
+  const prisma = client();
+  try {
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO "users" ("id", "name", "allowed")
+      VALUES ('platform-failure-user', 'Platform Failure User', true)
+    `);
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO "repos" ("id", "name", "git_source")
+      VALUES (
+        'platform-failure-repo',
+        'Platform Failure Repo',
+        'https://example.invalid/platform-failure.git'
+      )
+    `);
+
+    for (const [index, failureCode] of LEGACY_TASK_FAILURE_CODES.entries()) {
+      await prisma.$executeRawUnsafe(
+        `
+          INSERT INTO "tasks" (
+            "id", "repo_id", "owner_user_id", "prompt", "status",
+            "failure_code", "failure_at"
+          ) VALUES ($1, 'platform-failure-repo', 'platform-failure-user', $2,
+                    'failed', $3, CURRENT_TIMESTAMP)
+        `,
+        `legacy-platform-task-${String(index).padStart(2, '0')}`,
+        `legacy failure ${failureCode}`,
+        failureCode,
+      );
+    }
+    for (const [index, causeCode] of LEGACY_PROVISIONING_FAILURE_CODES.entries()) {
+      await prisma.$executeRawUnsafe(
+        `
+          INSERT INTO "task_admission_work" (
+            "task_id", "state", "cause_code", "updated_at"
+          ) VALUES ($1, 'failed', $2, CURRENT_TIMESTAMP)
+        `,
+        `legacy-platform-task-${String(index + 4).padStart(2, '0')}`,
+        causeCode,
+      );
+    }
+
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO "tasks" (
+        "id", "repo_id", "owner_user_id", "prompt", "status"
+      ) VALUES (
+        'new-platform-dependency-task',
+        'platform-failure-repo',
+        'platform-failure-user',
+        'platform dependency failure after upgrade',
+        'pending'
+      )
+    `);
+    await prisma.$executeRawUnsafe(`
+      INSERT INTO "task_admission_work" ("task_id", "updated_at")
+      VALUES ('new-platform-dependency-task', CURRENT_TIMESTAMP)
+    `);
+
+    await assert.rejects(
+      prisma.$executeRawUnsafe(
+        `
+          UPDATE "tasks"
+          SET "failure_code" = $1
+          WHERE "id" = 'new-platform-dependency-task'
+        `,
+        PLATFORM_DEPENDENCY_FAILURE_CODE,
+      ),
+      undefined,
+      'predecessor Task CHECK must reject the new platform dependency code',
+    );
+  } finally {
+    await prisma.$disconnect();
+  }
+}
+
+async function verifyPlatformDependencyFailureUpgradeAndRollback() {
+  const prisma = client();
+  try {
+    const legacyTaskRows = await prisma.$queryRawUnsafe(`
+      SELECT "id", "failure_code"
+      FROM "tasks"
+      WHERE "id" LIKE 'legacy-platform-task-%'
+      ORDER BY "id"
+    `);
+    assert.deepEqual(
+      legacyTaskRows.map(({ failure_code }) => failure_code),
+      LEGACY_TASK_FAILURE_CODES,
+      'upgrade must not rewrite any predecessor Task failure value',
+    );
+    const legacyWorkRows = await prisma.$queryRawUnsafe(`
+      SELECT "task_id", "cause_code"
+      FROM "task_admission_work"
+      WHERE "task_id" LIKE 'legacy-platform-task-%'
+      ORDER BY "task_id"
+    `);
+    assert.deepEqual(
+      legacyWorkRows.map(({ cause_code }) => cause_code),
+      LEGACY_PROVISIONING_FAILURE_CODES,
+      'upgrade must not rewrite any predecessor admission cause value',
+    );
+
+    const constraintRows = await prisma.$queryRawUnsafe(`
+      SELECT constraint_row."conname",
+             pg_get_constraintdef(constraint_row."oid") AS definition
+      FROM "pg_constraint" AS constraint_row
+      WHERE constraint_row."conname" IN (
+        'tasks_failure_code_check',
+        'task_admission_work_cause_code_check'
+      )
+      ORDER BY constraint_row."conname"
+    `);
+    assert.equal(constraintRows.length, 2);
+    for (const row of constraintRows) {
+      assert.match(row.definition, /provisioning_platform_dependency_unavailable/);
+    }
+
+    await prisma.$executeRawUnsafe(
+      `
+        UPDATE "tasks"
+        SET "status" = 'failed', "failure_code" = $1,
+            "failure_at" = CURRENT_TIMESTAMP
+        WHERE "id" = 'new-platform-dependency-task'
+      `,
+      PLATFORM_DEPENDENCY_FAILURE_CODE,
+    );
+    await prisma.$executeRawUnsafe(
+      `
+        UPDATE "task_admission_work"
+        SET "state" = 'failed', "cause_code" = $1
+        WHERE "task_id" = 'new-platform-dependency-task'
+      `,
+      PLATFORM_DEPENDENCY_FAILURE_CODE,
+    );
+
+    const rollbackSql = readFileSync(
+      path.join(
+        sourceMigrationsDir,
+        PLATFORM_DEPENDENCY_FAILURE_MIGRATION,
+        'rollback.sql',
+      ),
+      'utf8',
+    );
+    const rollbackStatements = rollbackSql
+      .replace(/^\s*--.*$/gmu, '')
+      .split(';')
+      .map((statement) => statement.trim())
+      .filter(Boolean);
+    assert.equal(
+      rollbackStatements.length,
+      2,
+      'rollback artifact must contain only the Task and admission normalization writes',
+    );
+    await prisma.$transaction(async (tx) => {
+      for (const statement of rollbackStatements) {
+        await tx.$executeRawUnsafe(statement);
+      }
+    });
+
+    const [normalizedTask] = await prisma.$queryRawUnsafe(`
+      SELECT "failure_code", "failure_at"
+      FROM "tasks"
+      WHERE "id" = 'new-platform-dependency-task'
+    `);
+    assert.equal(normalizedTask.failure_code, 'provisioning_unknown');
+    assert.ok(normalizedTask.failure_at instanceof Date);
+    const [normalizedWork] = await prisma.$queryRawUnsafe(`
+      SELECT "state", "cause_code"
+      FROM "task_admission_work"
+      WHERE "task_id" = 'new-platform-dependency-task'
+    `);
+    assert.deepEqual(normalizedWork, {
+      state: 'failed',
+      cause_code: 'provisioning_unknown',
+    });
+
+    const taskRowsAfterRollback = await prisma.$queryRawUnsafe(`
+      SELECT "failure_code"
+      FROM "tasks"
+      WHERE "id" LIKE 'legacy-platform-task-%'
+      ORDER BY "id"
+    `);
+    assert.deepEqual(
+      taskRowsAfterRollback.map(({ failure_code }) => failure_code),
+      LEGACY_TASK_FAILURE_CODES,
+      'rollback normalization must leave every legacy Task failure untouched',
+    );
+    const workRowsAfterRollback = await prisma.$queryRawUnsafe(`
+      SELECT "cause_code"
+      FROM "task_admission_work"
+      WHERE "task_id" LIKE 'legacy-platform-task-%'
+      ORDER BY "task_id"
+    `);
+    assert.deepEqual(
+      workRowsAfterRollback.map(({ cause_code }) => cause_code),
+      LEGACY_PROVISIONING_FAILURE_CODES,
+      'rollback normalization must leave every legacy admission cause untouched',
+    );
+  } finally {
+    await prisma.$disconnect();
   }
 }
 
@@ -571,6 +825,11 @@ async function verifyFreshSchemaAndBehavior() {
       constraints.map(({ conname, definition }) => [conname, definition]),
     );
     assert.match(
+      constraintDefinitions.task_admission_work_cause_code_check,
+      /provisioning_platform_dependency_unavailable/,
+      'fresh admission CHECK accepts the platform dependency cause',
+    );
+    assert.match(
       constraintDefinitions.task_admission_work_pkey,
       /^PRIMARY KEY \(task_id\)$/,
     );
@@ -616,6 +875,22 @@ async function verifyFreshSchemaAndBehavior() {
         AND constraint_row."conname" = 'tasks_lifecycle_version_check'
     `);
     assert.match(taskFenceConstraint.definition, /lifecycle_version >= 0/);
+    const [taskFailureConstraint] = await prisma.$queryRawUnsafe(`
+      SELECT pg_get_constraintdef(constraint_row."oid") AS definition
+      FROM "pg_constraint" AS constraint_row
+      JOIN "pg_class" AS relation
+        ON relation."oid" = constraint_row."conrelid"
+      JOIN "pg_namespace" AS namespace
+        ON namespace."oid" = relation."relnamespace"
+      WHERE namespace."nspname" = 'public'
+        AND relation."relname" = 'tasks'
+        AND constraint_row."conname" = 'tasks_failure_code_check'
+    `);
+    assert.match(
+      taskFailureConstraint.definition,
+      /provisioning_platform_dependency_unavailable/,
+      'fresh Task CHECK accepts the platform dependency failure',
+    );
 
     const sandboxGenerationColumns = await prisma.$queryRawUnsafe(`
       SELECT "column_name", "data_type", "is_nullable", "column_default"
@@ -873,6 +1148,22 @@ async function verifyFreshSchemaAndBehavior() {
         "cause_code" = 'provisioning_workspace_timeout'
       WHERE "task_id" = 'fresh-admission-task'
     `);
+    for (const causeCode of PROVISIONING_FAILURE_CODES) {
+      await prisma.$executeRawUnsafe(
+        `
+          UPDATE "task_admission_work"
+          SET "cause_code" = $1
+          WHERE "task_id" = 'fresh-admission-task'
+        `,
+        causeCode,
+      );
+      const [persistedCause] = await prisma.$queryRawUnsafe(`
+        SELECT "cause_code"
+        FROM "task_admission_work"
+        WHERE "task_id" = 'fresh-admission-task'
+      `);
+      assert.equal(persistedCause.cause_code, causeCode);
+    }
     await expectConstraintFailure(
       prisma.$executeRawUnsafe(`
         UPDATE "task_admission_work"
@@ -1042,6 +1333,7 @@ async function verifyFreshSchemaAndBehavior() {
 try {
   preparePreResourceMigrationFixture();
   preparePreDeadlineMigrationFixture();
+  preparePrePlatformDependencyMigrationFixture();
 
   await resetPublicSchema();
   migrate(path.join(oldPrismaDir, 'schema.prisma'));
@@ -1056,13 +1348,20 @@ try {
   await verifyPreDeadlineAdmissionWorkUpgrade();
 
   await resetPublicSchema();
+  migrate(path.join(prePlatformDependencyPrismaDir, 'schema.prisma'));
+  await seedPrePlatformDependencyFailureRows();
+  migrate(path.join(sourcePrismaDir, 'schema.prisma'));
+  await verifyPlatformDependencyFailureUpgradeAndRollback();
+
+  await resetPublicSchema();
   migrate(path.join(sourcePrismaDir, 'schema.prisma'));
   await verifyFreshSchemaAndBehavior();
 
   console.log(
     'task-admission migration: historical null compatibility, pre-deadline ' +
-      'rolling upgrade, exact fresh schema, constraints, one-work uniqueness, ' +
-      'and cascade passed',
+      'rolling upgrade, platform dependency fresh/upgrade/rollback ' +
+      'compatibility, exact fresh schema, ' +
+      'constraints, one-work uniqueness, and cascade passed',
   );
 } finally {
   await resetPublicSchema();

@@ -19,6 +19,7 @@ export type RemoteRefsProbeFailureReason =
   | 'authentication_failed'
   | 'access_denied'
   | 'network_unavailable'
+  | 'platform_dependency_unavailable'
   | 'default_branch_unresolved';
 
 export type RemoteRefsProbeResult =
@@ -182,7 +183,13 @@ export class GitRemoteRefsProbe extends RemoteRefsProbePort {
   private classifyThrown(error: unknown): RemoteRefsProbeFailureReason {
     if (
       error instanceof RemoteRefsCommandRunnerError &&
-      (error.reason === 'aborted' || error.reason === 'spawn_failed')
+      error.reason === 'spawn_failed'
+    ) {
+      return 'platform_dependency_unavailable';
+    }
+    if (
+      error instanceof RemoteRefsCommandRunnerError &&
+      error.reason === 'aborted'
     ) {
       return 'network_unavailable';
     }

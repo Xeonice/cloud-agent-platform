@@ -17,6 +17,8 @@
 #   - on a merged, version-bumped main (manifest already at the target version)
 #   - `gh` authenticated as a PAT / real user (NOT GITHUB_TOKEN), or release.yml
 #     will not fire
+#   - Docker is available to execute the published cap-api runtime dependency
+#     smoke after the registry tag checks pass
 #
 # ENV
 #   CAP_REPO         GitHub repo slug      (default: Xeonice/cloud-agent-platform)
@@ -85,6 +87,18 @@ for pkg in cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox; do
   [[ "$code" == "200" ]] || fail=1
 done
 [[ -z "$fail" ]] || { echo "error: not all release images are present at $VERSION" >&2; exit 1; }
+
+# A registry manifest alone cannot prove the final runtime layer contains the
+# executable used by authenticated remote-ref resolution. Pull the exact
+# versioned API tag, execute Git, and invoke the same compiled startup preflight
+# that bootstrap uses. The verifier never emits captured container diagnostics.
+echo "==> verify published cap-api Git runtime at $VERSION"
+node scripts/cap-api-image-smoke.mjs \
+  --image "ghcr.io/${OWNER}/cap-api:${VERSION}" \
+  --pull always || {
+    echo "error: published cap-api:${VERSION} is missing its required Git runtime dependency" >&2
+    exit 1
+  }
 
 echo "==> verify sandbox image Release assets at $VERSION"
 required_assets=(

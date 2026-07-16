@@ -7,6 +7,8 @@ import { ApiError } from "@/lib/api/real";
 import {
   buildPickerImportRequest,
   buildUrlImportRequest,
+  findImportedForgeRepo,
+  findImportedGithubRepo,
   forgeListErrorCopy,
   parseImportGitUrl,
   repoImportFailurePresentation,
@@ -100,6 +102,127 @@ describe("parseImportGitUrl", () => {
   });
 });
 
+describe("already-imported refresh reconciliation", () => {
+  const repos = [
+    {
+      id: "11111111-1111-4111-8111-111111111111",
+      name: "github-repo",
+      gitSource: "https://github.com/team/github-repo.git",
+      createdAt: new Date("2026-07-16T00:00:00.000Z"),
+      forge: "github" as const,
+      githubId: "101",
+      defaultBranch: "trunk",
+    },
+    {
+      id: "22222222-2222-4222-8222-222222222222",
+      name: "gitlab-repo",
+      gitSource: "https://gitlab.example/team/gitlab-repo.git",
+      createdAt: new Date("2026-07-16T00:00:00.000Z"),
+      forge: "gitlab" as const,
+      defaultBranch: "develop",
+    },
+    {
+      id: "33333333-3333-4333-8333-333333333333",
+      name: "gitee-repo",
+      gitSource: "https://gitee.example/team/gitee-repo.git",
+      createdAt: new Date("2026-07-16T00:00:00.000Z"),
+      forge: "gitee" as const,
+      defaultBranch: "master",
+    },
+  ] as const;
+  const gitlabRepo = repos[1]!;
+
+  it("maps an imported GitHub candidate to the stable platform Repo id", () => {
+    const found = findImportedGithubRepo(
+      {
+        id: 101,
+        name: "renamed-browser-label",
+        full_name: "team/github-repo",
+        visibility: "private",
+        defaultBranch: "stale-browser-branch",
+        description: null,
+      },
+      repos,
+    );
+
+    expect(found).toMatchObject({
+      id: repos[0]?.id,
+      defaultBranch: "trunk",
+    });
+  });
+
+  it.each([
+    ["explicit GitLab", gitlabRepo],
+    ["legacy null-forge GitLab", { ...gitlabRepo, forge: null }],
+    [
+      "self-hosted GitHub",
+      {
+        ...gitlabRepo,
+        forge: "github" as const,
+        gitSource: "https://github.example/team/gitlab-repo.git",
+        githubId: "404",
+      },
+    ],
+  ])(
+    "does not reconcile a same-slug %s Repo as a github.com candidate",
+    (_label, otherForgeRepo) => {
+      const found = findImportedGithubRepo(
+        {
+          id: 404,
+          name: "gitlab-repo",
+          full_name: "team/gitlab-repo",
+          visibility: "private",
+          defaultBranch: "main",
+          description: null,
+        },
+        [otherForgeRepo],
+      );
+
+      expect(found).toBeNull();
+    },
+  );
+
+  it.each([
+    ["gitlab", "https://gitlab.example/team/gitlab-repo.git", "develop", 1],
+    ["gitee", "https://gitee.example/team/gitee-repo.git", "master", 2],
+  ] as const)(
+    "maps an imported %s candidate by normalized clone identity",
+    (forge, gitSource, branch, index) => {
+      const found = findImportedForgeRepo(
+        {
+          forge,
+          fullPath: `team/${forge}-repo`,
+          gitSource: `${gitSource.replace(
+            `${forge}.example`,
+            `${forge.toUpperCase()}.EXAMPLE`,
+          )}/`,
+          visibility: "private",
+          defaultBranch: "stale-browser-branch",
+        },
+        repos,
+      );
+
+      expect(found).toMatchObject({
+        id: repos[index]?.id,
+        defaultBranch: branch,
+      });
+    },
+  );
+
+  it("wires imported candidates to refresh rather than a second import", () => {
+    const source = readFileSync(
+      new URL("./import-dialog.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("refreshRepoDefaultBranchMutation(queryClient)");
+    expect(source).toContain("data-refresh-repo-id={importedRepo?.id}");
+    expect(source).toContain("claimRepoRefreshSubmission(refreshFence, repo.id)");
+    expect(source).toContain("repoImportFailurePresentation(error)");
+    expect(source).not.toContain(">\n                              已导入\n");
+  });
+});
+
 const failureCases = {
   session_operator_required: ["登录状态不可用", "login"],
   repo_git_source_invalid: ["URL 无效", undefined],
@@ -109,6 +232,7 @@ const failureCases = {
   repo_forge_authentication_failed: ["凭据验证失败", "forges"],
   repo_forge_access_denied: ["仓库访问被拒绝", "forges"],
   repo_forge_network_unavailable: ["网络或 TLS 不可用", undefined],
+  repo_platform_dependency_unavailable: ["部署依赖不可用", undefined],
   repo_default_branch_unresolved: ["默认分支未解析", undefined],
   repo_picker_candidate_not_accessible: ["仓库已不可访问", undefined],
   repo_import_identity_conflict: ["仓库身份冲突", undefined],

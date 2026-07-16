@@ -7,11 +7,9 @@
  * the shared four-column list head, one `RepoRow` per imported repo, and the
  * `.repo-empty` "还没有导入仓库" state when the list is empty.
  *
- * The single mutable affordance is per-row: a 设为默认 button (shown only when the
- * repo is not already the default) that runs `setDefaultRepoMutation` — at most
- * one repo is ever the default. The default repo instead shows an inert 默认 badge
- * in its title line. Set-default is wired by the page (so the toast + pending
- * state live with the page-owned mutation); this panel just renders the action.
+ * Every row can re-verify its persisted default branch. Non-default rows also
+ * retain the 设为默认 action. Both mutations are page-owned so their pending
+ * state and safe operator feedback remain outside this pure rendering panel.
  *
  * SSR-safe: pure render off props. No window/clock/random.
  *
@@ -29,7 +27,18 @@ import { RepoRow, RepoListHead, repoFullName } from "./repo-row";
  * The permission label shown for every scoped imported repo. GitHub-imported
  * repos use the operator's connected GitHub PAT server-side.
  */
-const PERMISSION_LABEL = "GitHub PAT";
+function permissionLabel(repo: Repo): string {
+  switch (repo.forge) {
+    case "gitlab":
+      return "GitLab 凭据";
+    case "gitee":
+      return "Gitee 凭据";
+    case "github":
+    case null:
+    case undefined:
+      return "GitHub PAT";
+  }
+}
 
 export interface ImportedReposPanelProps {
   /** The imported platform repos (from `reposQuery`). */
@@ -40,6 +49,10 @@ export interface ImportedReposPanelProps {
   settingDefault?: boolean;
   /** The repo id currently being set as default (for the pending label). */
   pendingDefaultId?: string | null;
+  /** Re-verify one existing repository's persisted default branch. */
+  onRefreshDefaultBranch: (repoId: string) => void;
+  /** The Repo id whose server-side symbolic-HEAD probe is in flight. */
+  refreshingRepoId?: string | null;
 }
 
 /** The 已导入仓库 panel. */
@@ -48,6 +61,8 @@ export function ImportedReposPanel({
   onSetDefault,
   settingDefault = false,
   pendingDefaultId = null,
+  onRefreshDefaultBranch,
+  refreshingRepoId = null,
 }: ImportedReposPanelProps) {
   return (
     <article
@@ -84,6 +99,7 @@ export function ImportedReposPanel({
           {repos.map((repo) => {
             const isDefault = repo.isDefault === true;
             const pending = settingDefault && pendingDefaultId === repo.id;
+            const refreshing = refreshingRepoId === repo.id;
             return (
               <RepoRow
                 key={repo.id}
@@ -101,7 +117,7 @@ export function ImportedReposPanel({
                 }
                 policy={
                   <>
-                    <p className="m-0 truncate">{PERMISSION_LABEL}</p>
+                    <p className="m-0 truncate">{permissionLabel(repo)}</p>
                     <p className="m-0 truncate text-xs">使用已连接 PAT 授权 clone/push。</p>
                   </>
                 }
@@ -114,23 +130,27 @@ export function ImportedReposPanel({
                   </>
                 }
                 action={
-                  isDefault ? (
-                    <span
-                      aria-disabled="true"
-                      className="inline-flex h-[30px] cursor-default items-center justify-center rounded-md bg-[#fafafa] px-[7px] text-[13px] font-medium text-muted-foreground"
-                    >
-                      默认仓库
-                    </span>
-                  ) : (
+                  <div className="flex flex-col items-stretch gap-1.5">
                     <button
                       type="button"
-                      disabled={settingDefault}
-                      onClick={() => onSetDefault(repo.id)}
+                      data-refresh-repo-id={repo.id}
+                      disabled={refreshingRepoId !== null || settingDefault}
+                      onClick={() => onRefreshDefaultBranch(repo.id)}
                       className="inline-flex h-[30px] items-center justify-center whitespace-nowrap rounded-md bg-[#f6f8fa] px-[7px] text-[13px] font-medium text-foreground shadow-[0_0_0_1px_var(--border)] hover:bg-secondary disabled:pointer-events-none disabled:opacity-60"
                     >
-                      {pending ? "设置中…" : "设为默认"}
+                      {refreshing ? "刷新中…" : "刷新分支"}
                     </button>
-                  )
+                    {isDefault ? null : (
+                      <button
+                        type="button"
+                        disabled={settingDefault || refreshingRepoId !== null}
+                        onClick={() => onSetDefault(repo.id)}
+                        className="inline-flex h-[30px] items-center justify-center whitespace-nowrap rounded-md bg-[#f6f8fa] px-[7px] text-[13px] font-medium text-foreground shadow-[0_0_0_1px_var(--border)] hover:bg-secondary disabled:pointer-events-none disabled:opacity-60"
+                      >
+                        {pending ? "设置中…" : "设为默认"}
+                      </button>
+                    )}
+                  </div>
                 }
               />
             );

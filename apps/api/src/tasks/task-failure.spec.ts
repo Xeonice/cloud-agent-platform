@@ -72,6 +72,11 @@ test('provisioning failure columns project to fixed secret-free public failures'
       message: /未找到.*分支或引用.*确认/,
     },
     {
+      code: 'provisioning_platform_dependency_unavailable',
+      action: 'repair_deployment',
+      message: /部署缺少.*依赖.*修复或升级部署/,
+    },
+    {
       code: 'provisioning_unknown',
       action: 'retry_task',
       message: /环境准备失败.*重试/,

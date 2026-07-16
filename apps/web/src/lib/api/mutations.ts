@@ -171,6 +171,47 @@ export function upsertVerifiedRepo(
 }
 
 /**
+ * Replace only the existing canonical Repo after the refresh request has
+ * completed. An unloaded or stale cache that lacks the id is left untouched;
+ * its invalidation read remains authoritative and refresh never fabricates a
+ * repository row client-side.
+ */
+export function replaceRefreshedRepo(
+  current: ListReposResponse | undefined,
+  repo: RepoResponse,
+): ListReposResponse | undefined {
+  if (!current || !current.some((item) => item.id === repo.id)) return current;
+  return current.map((item) => (item.id === repo.id ? repo : item));
+}
+
+/**
+ * Refresh an imported repository's verified default branch. There is no
+ * optimistic update: only the validated server response replaces the same id.
+ * `repos` is the shared source for the repository views and both task-create
+ * surfaces; the default-repo read is invalidated as a second repository view.
+ */
+export function refreshRepoDefaultBranchMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<RepoResponse, Error, string> {
+  return {
+    mutationFn: (repoId) => real.refreshRepoDefaultBranch(repoId),
+    onSuccess: (repo) => {
+      queryClient.setQueryData<ListReposResponse>(queryKeys.repos, (current) =>
+        replaceRefreshedRepo(current, repo),
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.repos,
+        exact: true,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.defaultRepo,
+        exact: true,
+      });
+    },
+  };
+}
+
+/**
  * Connect a forge by pasting a PAT (the settings "code-hosting connection" card,
  * add-forge-credentials). REAL today (`PUT /settings/forges`). Invalidates the
  * connected-forges list so the card reflects the new connection.

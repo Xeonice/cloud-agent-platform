@@ -39,8 +39,13 @@ describe("recurring-task surface parity", () => {
       );
       expect(source).toContain("taskBranchOptions(defaultBranch, branch)");
       expect(source).toContain("buildTaskRequest(taskForm)");
+      expect(source).toContain("setBranch(defaultBranch)");
+      expect(source).toMatch(/\[defaultBranch, (?:scheduleId|isEditingSchedule)\]/);
       expect(source).not.toMatch(/defaultBranch\s*\?\?\s*["']main["']/);
       expect(source).not.toMatch(/form\.branch\s*\|\|\s*["']main["']/);
+      expect(source).not.toMatch(
+        /(?:defaultBranch|branch)\s*(?:\?\?|\|\|)\s*["'](?:main|master)["']/,
+      );
     },
   );
 

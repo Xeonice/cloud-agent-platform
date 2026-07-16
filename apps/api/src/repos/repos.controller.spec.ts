@@ -75,6 +75,27 @@ test('Console import forwards only the authenticated session account id', async 
   assert.equal('ownerUserId' in BODY, false, 'the body cannot select a credential owner');
 });
 
+test('Console refresh forwards the route repo id with only the session account id', async () => {
+  const calls: Array<{ ownerUserId: string; repoId: string }> = [];
+  const service = {
+    async refreshDefaultBranch(ownerUserId: string, repoId: string) {
+      calls.push({ ownerUserId, repoId });
+      return REPO;
+    },
+  } as unknown as ReposService;
+  const controller = new ReposController(service);
+
+  const result = await controller.refreshDefaultBranch(
+    request(principal('session')),
+    REPO.id,
+  );
+
+  assert.equal(result.id, REPO.id);
+  assert.deepEqual(calls, [
+    { ownerUserId: 'account-owner-a', repoId: REPO.id },
+  ]);
+});
+
 test('repos:read machine principals cannot call the Console import write', async () => {
   let createCalls = 0;
   const service = {
@@ -100,6 +121,37 @@ test('repos:read machine principals cannot call the Console import write', async
     );
   }
   assert.equal(createCalls, 0, 'no repo write occurs for a read-scoped machine credential');
+});
+
+test('repos:read machine principals cannot refresh a repository', async () => {
+  let refreshCalls = 0;
+  const service = {
+    async refreshDefaultBranch() {
+      refreshCalls += 1;
+      return REPO;
+    },
+  } as unknown as ReposService;
+  const controller = new ReposController(service);
+
+  for (const kind of ['api-key', 'mcp'] as const) {
+    await assert.rejects(
+      () =>
+        controller.refreshDefaultBranch(
+          request(principal(kind, ['repos:read'])),
+          REPO.id,
+        ),
+      (err: unknown) => {
+        assert.equal(err instanceof ForbiddenException, true);
+        const response = (err as ForbiddenException).getResponse();
+        return (
+          typeof response === 'object' &&
+          response !== null &&
+          (response as { error?: string }).error === 'session_operator_required'
+        );
+      },
+    );
+  }
+  assert.equal(refreshCalls, 0);
 });
 
 test('public V1 and MCP repository inventories remain read-only', () => {

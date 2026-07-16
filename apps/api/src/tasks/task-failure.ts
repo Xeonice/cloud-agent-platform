@@ -29,6 +29,7 @@ const PROVISIONING_TASK_FAILURE_CODES: Readonly<
   provisioning_forge_auth_failed: true,
   provisioning_tls_network_failed: true,
   provisioning_ref_not_found: true,
+  provisioning_platform_dependency_unavailable: true,
   provisioning_unknown: true,
 };
 
@@ -157,6 +158,12 @@ function provisioningFailurePresentation(
         message: '未找到任务指定的分支或引用，请确认仓库默认分支或任务分支后重试。',
         action: 'verify_repository_ref',
       };
+    case 'provisioning_platform_dependency_unavailable':
+      return {
+        title: '部署缺少仓库置备依赖',
+        message: '当前部署缺少仓库置备所需的控制面依赖，请修复或升级部署后再创建任务。',
+        action: 'repair_deployment',
+      };
     case 'provisioning_unknown':
       return {
         title: '任务环境准备失败',
@@ -179,6 +186,7 @@ export function taskFailureTitle(failure: TaskFailure): string {
     case 'provisioning_forge_auth_failed':
     case 'provisioning_tls_network_failed':
     case 'provisioning_ref_not_found':
+    case 'provisioning_platform_dependency_unavailable':
     case 'provisioning_unknown':
       return provisioningFailurePresentation(failure.code).title;
   }
@@ -197,6 +205,7 @@ export function taskFailureMessage(failure: TaskFailure): string {
     case 'provisioning_forge_auth_failed':
     case 'provisioning_tls_network_failed':
     case 'provisioning_ref_not_found':
+    case 'provisioning_platform_dependency_unavailable':
     case 'provisioning_unknown':
       return provisioningFailurePresentation(failure.code).message;
   }
@@ -229,6 +238,7 @@ export function taskFailureFromRecord(
     case 'provisioning_forge_auth_failed':
     case 'provisioning_tls_network_failed':
     case 'provisioning_ref_not_found':
+    case 'provisioning_platform_dependency_unavailable':
     case 'provisioning_unknown': {
       const presentation = provisioningFailurePresentation(parsedCode.data);
       return TaskFailureSchema.parse({

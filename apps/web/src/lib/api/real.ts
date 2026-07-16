@@ -19,6 +19,7 @@ import {
   ListTasksResponseSchema,
   TaskResponseSchema,
   ListReposResponseSchema,
+  RepoResponseSchema,
   AuthSessionResponseSchema,
   AuthCapabilitiesSchema,
   type AuthCapabilities,
@@ -59,6 +60,7 @@ import {
   type ListTasksResponse,
   type TaskResponse,
   type ListReposResponse,
+  type RepoResponse,
   type CreateTaskRequest,
   type AuthSession,
   type AuthSessionResponse,
@@ -529,6 +531,30 @@ export async function getTask(id: string): Promise<TaskResponse> {
 /** `GET /repos` — registered repos for the new-task form. */
 export async function listRepos(): Promise<ListReposResponse> {
   return ListReposResponseSchema.parse(await request("/repos"));
+}
+
+/**
+ * `POST /repos/:repoId/refresh-default-branch` — re-verify one existing
+ * repository's symbolic HEAD with the current Console session. The endpoint
+ * accepts no client branch (and therefore no JSON body); the canonical Repo
+ * response is the only value callers may publish into the query cache.
+ */
+export async function refreshRepoDefaultBranch(
+  repoId: string,
+): Promise<RepoResponse> {
+  const refreshed = RepoResponseSchema.parse(
+    await request(
+      `/repos/${encodeURIComponent(repoId)}/refresh-default-branch`,
+      { method: "POST" },
+    ),
+  );
+  if (refreshed.id !== repoId) {
+    throw new ApiError(
+      502,
+      "Repository refresh returned a mismatched repository identity.",
+    );
+  }
+  return refreshed;
 }
 
 /**

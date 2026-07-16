@@ -215,6 +215,54 @@ test('terminal provisioning audit writes one safe central event and one deduped 
   assert.equal(serialized.includes('extraHeader'), false);
 });
 
+test('platform dependency audit uses its stable cause and never records process diagnostics', async () => {
+  const rows = new Map<string, CreatedAuditRow>();
+  const prisma = {
+    auditEvent: {
+      async upsert({
+        where,
+        create,
+      }: {
+        where: { dedupeKey: string };
+        create: CreatedAuditRow;
+      }) {
+        rows.set(where.dedupeKey, create);
+        return create;
+      },
+    },
+  } as unknown as PrismaService;
+  const service = new AuditService(prisma);
+  const secretCanary =
+    'token=platform-secret-canary argv=git --version stderr=ENOENT /private/bin/git';
+
+  assert.equal(
+    await service.recordProvisioningFailure(
+      TASK_ID,
+      'remote_ref_resolution',
+      1,
+      {
+        code: 'provisioning_platform_dependency_unavailable',
+        message: secretCanary,
+        action: 'repair_deployment',
+        occurredAt: new Date('2026-07-16T00:00:00.000Z'),
+      },
+    ),
+    true,
+  );
+
+  const detail = rows.get(`task.provisioning.failed:${TASK_ID}`);
+  assert.equal(
+    detail?.type,
+    'task.provisioning.failed:provisioning_platform_dependency_unavailable',
+  );
+  assert.match(detail?.description ?? '', /解析远端引用.*修复或升级部署/);
+  assert.doesNotMatch(detail?.description ?? '', /TLS|网络错误/u);
+  const serialized = JSON.stringify([...rows.values()]);
+  for (const unsafe of ['platform-secret-canary', 'argv', 'stderr', '/private/bin']) {
+    assert.equal(serialized.includes(unsafe), false, unsafe);
+  }
+});
+
 test('progress audit swallows persistence failure while terminal audit reports it', async () => {
   const unsafeCanary =
     'Bearer secret-canary https://provider.invalid git -c http.extraHeader=...';

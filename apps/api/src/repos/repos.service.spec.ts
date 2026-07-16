@@ -624,6 +624,11 @@ const remoteFailureCases: Array<{
     status: 503,
   },
   {
+    reason: 'platform_dependency_unavailable',
+    error: 'repo_platform_dependency_unavailable',
+    status: 503,
+  },
+  {
     reason: 'default_branch_unresolved',
     error: 'repo_default_branch_unresolved',
     status: 422,
@@ -663,3 +668,309 @@ for (const fixture of remoteFailureCases) {
     assert.equal(captured(), undefined);
   });
 }
+
+interface RefreshHarnessOptions {
+  row?: ReturnType<typeof repoRow> | null;
+  resolution?: OwnerForgeTargetResolution;
+  probe?: () => RemoteRefsProbeResult | Promise<RemoteRefsProbeResult>;
+}
+
+function refreshHarness(options: RefreshHarnessOptions = {}) {
+  let current =
+    options.row === undefined
+      ? repoRow({
+          forge: 'github',
+          gitSource: 'https://github.com/team/repo.git',
+          defaultBranch: 'main',
+          description: 'keep-me',
+          githubId: 'provider-id',
+        })
+      : options.row;
+  let transactionEntries = 0;
+  let probeAttempts = 0;
+  const resolutions: Array<{
+    ownerUserId: string;
+    repo: { gitSource: string; forge?: string | null; gitlabProjectId?: string | null };
+  }> = [];
+  const writes: Array<{
+    where: { id: string; gitSource: string; forge: string | null };
+    data: { defaultBranch: string };
+  }> = [];
+
+  const repoDelegate = {
+    async findUnique() {
+      return current ? { ...current } : null;
+    },
+    async updateMany(args: {
+      where: { id: string; gitSource: string; forge: string | null };
+      data: { defaultBranch: string };
+    }) {
+      writes.push(args);
+      if (
+        !current ||
+        current.id !== args.where.id ||
+        current.gitSource !== args.where.gitSource ||
+        current.forge !== args.where.forge
+      ) {
+        return { count: 0 };
+      }
+      current = { ...current, defaultBranch: args.data.defaultBranch };
+      return { count: 1 };
+    },
+  };
+  const prisma = {
+    repo: repoDelegate,
+    async $transaction<T>(
+      callback: (tx: { repo: typeof repoDelegate }) => Promise<T>,
+    ): Promise<T> {
+      transactionEntries += 1;
+      return callback({ repo: repoDelegate });
+    },
+  } as unknown as PrismaService;
+  const forgeTargets = {
+    async resolveForOwner(
+      ownerUserId: string,
+      repo: {
+        gitSource: string;
+        forge?: string | null;
+        gitlabProjectId?: string | null;
+      },
+    ): Promise<OwnerForgeTargetResolution> {
+      resolutions.push({ ownerUserId, repo });
+      if (options.resolution) return options.resolution;
+      const kind =
+        repo.forge === 'github' || repo.forge === 'gitlab' || repo.forge === 'gitee'
+          ? repo.forge
+          : 'github';
+      return {
+        ok: true,
+        target: {
+          kind,
+          apiBaseUrl: `https://${new URL(repo.gitSource).host}/api`,
+          cloneUrl: repo.gitSource,
+          repoId:
+            kind === 'gitlab'
+              ? { style: 'project', idOrPath: repo.gitlabProjectId ?? 'team/repo' }
+              : { style: 'owner-repo', owner: 'team', repo: 'repo' },
+          token: `secret-for-${ownerUserId}`,
+        },
+      };
+    },
+  } as ForgeTargetResolver;
+  const remoteRefs: RemoteRefsProbePort = {
+    async resolveDefaultBranch(): Promise<RemoteRefsProbeResult> {
+      probeAttempts += 1;
+      return options.probe
+        ? options.probe()
+        : { ok: true, defaultBranch: 'trunk' };
+    },
+  };
+  const svc = new ReposService(
+    prisma,
+    forgeTargets,
+    remoteRefs,
+    {} as DefaultForgeRegistry,
+  );
+  return {
+    svc,
+    row: () => current,
+    writes,
+    resolutions,
+    probeAttempts: () => probeAttempts,
+    transactionEntries: () => transactionEntries,
+    mutateRow(overrides: Partial<ReturnType<typeof repoRow>> | null) {
+      current = overrides === null || !current ? null : { ...current, ...overrides };
+    },
+  };
+}
+
+for (const fixture of [
+  {
+    forge: 'github',
+    gitSource: 'https://github.com/team/repo.git',
+    branch: 'trunk',
+  },
+  {
+    forge: 'gitlab',
+    gitSource: 'https://gitlab.com/team/repo.git',
+    branch: 'develop',
+  },
+  {
+    forge: 'gitee',
+    gitSource: 'https://gitee.com/team/repo.git',
+    branch: 'master',
+  },
+] as const) {
+  test(`refresh persists the verified ${fixture.forge} ${fixture.branch} branch on the same Repo`, async () => {
+    const original = repoRow({
+      forge: fixture.forge,
+      gitSource: fixture.gitSource,
+      defaultBranch: 'old-default',
+      description: 'must-survive',
+      githubId: fixture.forge === 'github' ? 'github-id' : null,
+    });
+    const harness = refreshHarness({
+      row: original,
+      probe: () => ({ ok: true, defaultBranch: fixture.branch }),
+    });
+
+    const result = await harness.svc.refreshDefaultBranch('request-account', original.id);
+
+    assert.equal(result.id, original.id);
+    assert.equal(result.defaultBranch, fixture.branch);
+    assert.equal(result.description, original.description);
+    assert.equal(result.githubId, original.githubId);
+    assert.deepEqual(harness.writes, [
+      {
+        where: {
+          id: original.id,
+          gitSource: original.gitSource,
+          forge: original.forge,
+        },
+        data: { defaultBranch: fixture.branch },
+      },
+    ]);
+    assert.deepEqual(harness.resolutions, [
+      {
+        ownerUserId: 'request-account',
+        repo: {
+          gitSource: original.gitSource,
+          forge: original.forge,
+          gitlabProjectId: original.gitlabProjectId,
+        },
+      },
+    ]);
+  });
+}
+
+test('refresh probes outside the database transaction', async () => {
+  const harness = refreshHarness({
+    probe: () => {
+      assert.equal(harness.transactionEntries(), 0);
+      return { ok: true, defaultBranch: 'trunk' };
+    },
+  });
+
+  await harness.svc.refreshDefaultBranch('request-account', harness.row()!.id);
+
+  assert.equal(harness.transactionEntries(), 1);
+});
+
+for (const fixture of remoteFailureCases) {
+  test(`refresh ${fixture.reason} preserves the last verified branch and performs no write`, async () => {
+    const original = repoRow({
+      forge: 'gitee',
+      gitSource: 'https://gitee.com/team/private.git',
+      defaultBranch: 'stable-before-failure',
+    });
+    const harness = refreshHarness({
+      row: original,
+      probe: () => ({ ok: false, reason: fixture.reason }),
+    });
+
+    await assert.rejects(
+      () => harness.svc.refreshDefaultBranch('request-account', original.id),
+      (error: unknown) => {
+        const exception = error as {
+          getStatus?: () => number;
+          getResponse?: () => unknown;
+        };
+        assert.equal(exception.getStatus?.(), fixture.status);
+        assert.equal(
+          (exception.getResponse?.() as { error?: string }).error,
+          fixture.error,
+        );
+        return true;
+      },
+    );
+    assert.equal(harness.row()?.defaultBranch, 'stable-before-failure');
+    assert.equal(harness.writes.length, 0);
+    assert.equal(harness.transactionEntries(), 0);
+  });
+}
+
+test('refresh cannot borrow another account credential', async () => {
+  const original = repoRow({
+    forge: 'gitee',
+    gitSource: 'https://gitee.com/team/private.git',
+    defaultBranch: 'master',
+  });
+  const harness = refreshHarness({
+    row: original,
+    resolution: { ok: false, reason: 'owner_credential_unavailable' },
+  });
+
+  await assert.rejects(
+    () => harness.svc.refreshDefaultBranch('account-without-this-token', original.id),
+    (error: unknown) => {
+      const response = (error as { getResponse?: () => unknown }).getResponse?.();
+      return (
+        typeof response === 'object' &&
+        response !== null &&
+        (response as { error?: string }).error === 'repo_forge_auth_required'
+      );
+    },
+  );
+  assert.equal(harness.probeAttempts(), 0);
+  assert.equal(harness.writes.length, 0);
+});
+
+test('refresh fences a concurrent repository identity change', async () => {
+  const original = repoRow({
+    forge: 'gitlab',
+    gitSource: 'https://gitlab.com/team/repo.git',
+    defaultBranch: 'develop',
+  });
+  const harness = refreshHarness({
+    row: original,
+    probe: () => {
+      harness.mutateRow({ gitSource: 'https://gitlab.com/other/repo.git' });
+      return { ok: true, defaultBranch: 'trunk' };
+    },
+  });
+
+  await assert.rejects(
+    () => harness.svc.refreshDefaultBranch('request-account', original.id),
+    (error: unknown) => {
+      const exception = error as {
+        getStatus?: () => number;
+        getResponse?: () => unknown;
+      };
+      assert.equal(exception.getStatus?.(), 409);
+      assert.equal(
+        (exception.getResponse?.() as { error?: string }).error,
+        'repo_import_identity_conflict',
+      );
+      return true;
+    },
+  );
+  assert.equal(harness.row()?.defaultBranch, 'develop');
+  assert.equal(harness.row()?.gitSource, 'https://gitlab.com/other/repo.git');
+});
+
+test('concurrent refreshes of one identity use the last completed verified result', async () => {
+  let resolveFirst!: (result: RemoteRefsProbeResult) => void;
+  let resolveSecond!: (result: RemoteRefsProbeResult) => void;
+  const first = new Promise<RemoteRefsProbeResult>((resolve) => {
+    resolveFirst = resolve;
+  });
+  const second = new Promise<RemoteRefsProbeResult>((resolve) => {
+    resolveSecond = resolve;
+  });
+  let probeIndex = 0;
+  const harness = refreshHarness({
+    probe: () => (probeIndex++ === 0 ? first : second),
+  });
+  const repoId = harness.row()!.id;
+
+  const slow = harness.svc.refreshDefaultBranch('request-account', repoId);
+  const fast = harness.svc.refreshDefaultBranch('request-account', repoId);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  resolveSecond({ ok: true, defaultBranch: 'develop' });
+  assert.equal((await fast).defaultBranch, 'develop');
+  resolveFirst({ ok: true, defaultBranch: 'trunk' });
+  assert.equal((await slow).defaultBranch, 'trunk');
+
+  assert.equal(harness.row()?.defaultBranch, 'trunk');
+  assert.equal(harness.writes.length, 2);
+});

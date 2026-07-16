@@ -87,6 +87,9 @@ if (
 
 export const WORKFLOW_TEST_FILES = Object.freeze([
   metadataInvariantFile,
+  'scripts/task-admission-migration-workflow.test.mjs',
+  'scripts/release-image-gates.test.mjs',
+  'scripts/release-tail.test.mjs',
   'scripts/public-surface-adversarial.test.mjs',
   'scripts/public-surface-files.test.mjs',
   'scripts/public-surface-hook.test.mjs',

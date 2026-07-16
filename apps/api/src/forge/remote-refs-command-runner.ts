@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { Injectable } from '@nestjs/common';
 
-const MAX_REMOTE_REFS_OUTPUT_BYTES = 1024 * 1024;
+export const MAX_REMOTE_REFS_OUTPUT_BYTES = 1024 * 1024;
 
 export interface RemoteRefsCommandRequest {
   /** Arguments after the fixed `git` executable. Secret values are forbidden. */
@@ -15,8 +15,13 @@ export interface RemoteRefsCommandResult {
   readonly stderr: string;
 }
 
+export type RemoteRefsCommandRunnerFailureReason =
+  | 'aborted'
+  | 'spawn_failed'
+  | 'output_limit';
+
 export class RemoteRefsCommandRunnerError extends Error {
-  constructor(readonly reason: 'aborted' | 'spawn_failed' | 'output_limit') {
+  constructor(readonly reason: RemoteRefsCommandRunnerFailureReason) {
     super(`remote refs command ${reason}`);
     this.name = 'RemoteRefsCommandRunnerError';
   }
@@ -124,10 +129,13 @@ export function runRemoteRefsGitCommand(
       child.stdout?.on('data', (chunk: Buffer | string) => capture(stdout, chunk));
       child.stderr?.on('data', (chunk: Buffer | string) => capture(stderr, chunk));
       child.once('error', () => {
-        stop(
-          new RemoteRefsCommandRunnerError(
-            request.signal.aborted ? 'aborted' : 'spawn_failed',
-          ),
+        if (settled || pendingError) return;
+        // A ChildProcess `error` means the executable did not start (most notably
+        // ENOENT). Preserve that local spawn identity and wait for `close` before
+        // settling, but never retain the raw Error/cause: it may contain a PATH,
+        // command detail, or other deployment diagnostic unsuitable for callers.
+        pendingError = new RemoteRefsCommandRunnerError(
+          request.signal.aborted ? 'aborted' : 'spawn_failed',
         );
       });
       child.once('close', (code) => {

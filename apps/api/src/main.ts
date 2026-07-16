@@ -19,6 +19,10 @@ import {
   isLegacyTokenEnabled,
   parseWebOrigins,
 } from './auth/auth-config';
+import {
+  assertGitRuntimeAvailable,
+  GIT_RUNTIME_PREFLIGHT_FATAL_MESSAGE,
+} from './forge/git-runtime-preflight';
 
 // public-v1-api (Integration 4.1): the ONCE-per-process `extendZodWithOpenApi`
 // init, owned here (outside `@cap/contracts`) so the `.openapi(...)` augmentation
@@ -57,6 +61,19 @@ extendZodWithOpenApi(contractsZod);
  * here so the gateway's custom dual-channel frame protocol is served correctly.
  */
 async function bootstrap(): Promise<void> {
+  // The API resolves authenticated symbolic HEADs with the local Git executable.
+  // Verify that packaged dependency before Nest creates/listens on any socket.
+  // The reusable preflight owns its bounded command and sanitized environment;
+  // this boundary deliberately discards every raw error/diagnostic and emits only
+  // the fixed platform-dependency reason.
+  try {
+    await assertGitRuntimeAvailable();
+  } catch {
+    console.error(GIT_RUNTIME_PREFLIGHT_FATAL_MESSAGE);
+    process.exitCode = 1;
+    return;
+  }
+
   // 11.3b — refuse to boot on an unset/empty AUTH_TOKEN ONLY when the legacy
   // operator-token break-glass path is enabled. The constant-time helper (11.3)
   // underpins the runtime comparison; here we require the token to be a non-empty

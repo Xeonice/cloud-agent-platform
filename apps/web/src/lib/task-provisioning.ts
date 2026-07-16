@@ -31,6 +31,7 @@ export type ProvisioningTaskFailure = Extract<
       | "provisioning_forge_auth_failed"
       | "provisioning_tls_network_failed"
       | "provisioning_ref_not_found"
+      | "provisioning_platform_dependency_unavailable"
       | "provisioning_unknown";
   }
 >;
@@ -94,6 +95,12 @@ const PROVISIONING_FAILURE_PRESENTATIONS = {
     guidance: "请确认仓库默认分支或任务指定分支仍存在，并且当前账号有权访问。",
     actionLabel: "检查仓库与分支",
   },
+  provisioning_platform_dependency_unavailable: {
+    title: "部署依赖不可用",
+    guidance:
+      "请修复或升级 API 部署，确认仓库验证所需的 Git 运行依赖可用后再重新创建任务。",
+    actionLabel: "检查部署与升级",
+  },
   provisioning_unknown: {
     title: "仓库准备失败",
     guidance: "系统未能安全识别具体原因；请重试，持续失败时联系管理员查看服务端诊断。",
@@ -110,6 +117,7 @@ export function isProvisioningTaskFailure(
     case "provisioning_forge_auth_failed":
     case "provisioning_tls_network_failed":
     case "provisioning_ref_not_found":
+    case "provisioning_platform_dependency_unavailable":
     case "provisioning_unknown":
       return true;
     default:

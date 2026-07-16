@@ -85,6 +85,13 @@ export interface GeneratedPrivateGitFixture {
     };
   };
   readonly transferBarrier: GeneratedPrivateGitTransferBarrier;
+  /**
+   * Move the bare repository's symbolic HEAD to a verified branch ref without
+   * relying on an external forge. The target ref is created at the current HEAD
+   * commit, which lets integration stories exercise real `ls-remote --symref`
+   * refresh behavior while keeping the fixture deterministic.
+   */
+  moveSymbolicHead(branch: string): Promise<void>;
   authorizationEvidence(): readonly GeneratedPrivateGitAuthorizationEvidence[];
   diagnostics(): GeneratedPrivateGitFixtureDiagnostics;
   dispose(): Promise<void>;
@@ -103,6 +110,12 @@ export interface CreateGeneratedPrivateGitFixtureOptions {
    * Defaults to the non-wildcard `listenHost`.
    */
   readonly advertisedHost?: string;
+  /**
+   * Basic-auth username accepted by the private origin. Defaults to the legacy
+   * `cap-fixture`; forge integration stories may select their provider's fixed
+   * Git username while retaining the fixture-generated unique password.
+   */
+  readonly basicAuthUsername?: string;
 }
 
 interface GeneratedPrivateGitFixtureNetwork {
@@ -257,7 +270,9 @@ export async function createGeneratedPrivateGitFixture(
     mkdir(worktrees, { recursive: true }),
   ]);
 
-  const username = 'cap-fixture';
+  const username = validateBasicAuthUsername(
+    options.basicAuthUsername ?? 'cap-fixture',
+  );
   const password = `private-${randomUUID()}`;
   const authorizationValue = `Basic ${Buffer.from(`${username}:${password}`).toString(
     'base64',
@@ -344,6 +359,12 @@ export async function createGeneratedPrivateGitFixture(
         },
       },
       transferBarrier,
+      async moveSymbolicHead(branch: string): Promise<void> {
+        await moveBareRepositorySymbolicHead(
+          join(originProjects, 'root.git'),
+          branch,
+        );
+      },
       authorizationEvidence: () =>
         diagnostics.authorizationEvidence.map((entry) => ({ ...entry })),
       diagnostics: () => ({
@@ -391,6 +412,45 @@ export async function createGeneratedPrivateGitFixture(
     await rm(root, { recursive: true, force: true });
     throw error;
   }
+}
+
+function validateBasicAuthUsername(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 128 ||
+    value !== value.trim() ||
+    value.includes(':') ||
+    [...value].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint < 0x20 || codePoint === 0x7f;
+    })
+  ) {
+    throw new TypeError(
+      'Generated private Git fixture basicAuthUsername must be a non-empty Basic-auth username',
+    );
+  }
+  return value;
+}
+
+async function moveBareRepositorySymbolicHead(
+  barePath: string,
+  branch: string,
+): Promise<void> {
+  if (
+    typeof branch !== 'string' ||
+    branch.length === 0 ||
+    branch !== branch.trim()
+  ) {
+    throw new TypeError(
+      'Generated private Git fixture symbolic HEAD branch must be non-empty',
+    );
+  }
+  await git(['check-ref-format', '--branch', branch], barePath);
+  const currentCommit = await gitOutput(['rev-parse', 'HEAD'], barePath);
+  const targetRef = `refs/heads/${branch}`;
+  await git(['update-ref', targetRef, currentCommit], barePath);
+  await git(['symbolic-ref', 'HEAD', targetRef], barePath);
 }
 
 class TransferBarrier implements GeneratedPrivateGitTransferBarrier {

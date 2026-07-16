@@ -747,6 +747,31 @@ test('deterministic auth failure stays terminal even when a processor marks it r
   assert.equal(row.settlement?.state, 'failed');
 });
 
+test('platform dependency failure is terminal even when a processor marks it retryable', async () => {
+  const clock = new ManualClock();
+  const store = new MemoryTaskAdmissionStore(clock);
+  const row = store.add('missing-platform-dependency');
+  const { worker } = createWorker({
+    store,
+    clock,
+    processor: new FunctionProcessor(async () => {
+      throw new TaskAdmissionProcessingError(
+        'provisioning_platform_dependency_unavailable',
+        'remote_ref_resolution',
+        true,
+      );
+    }),
+  });
+
+  assert.equal((await worker.runOnce()).kind, 'failed');
+  assert.equal(row.attempt, 1);
+  assert.deepEqual(row.settlement, {
+    state: 'failed',
+    stage: 'remote_ref_resolution',
+    causeCode: 'provisioning_platform_dependency_unavailable',
+  });
+});
+
 test('unknown exceptions terminalize with only the safe provisioning_unknown code', async () => {
   const clock = new ManualClock();
   const store = new MemoryTaskAdmissionStore(clock);

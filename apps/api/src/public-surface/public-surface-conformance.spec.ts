@@ -12,8 +12,11 @@ import {
   CreateTaskRequestSchema,
   RepoResponseSchema,
   ScheduleResponseSchema,
+  ScheduleRunResponseSchema,
   TaskResponseSchema,
   V1ListReposResponseSchema,
+  V1ListScheduleRunsResponseSchema,
+  V1ListSchedulesResponseSchema,
   V1ListTasksResponseSchema,
   type CreateScheduleRequest,
   type CreateTaskBody,
@@ -93,6 +96,10 @@ const PROVISIONING_FAILURES = [
     action: 'verify_repository_ref',
   },
   {
+    code: 'provisioning_platform_dependency_unavailable',
+    action: 'repair_deployment',
+  },
+  {
     code: 'provisioning_unknown',
     action: 'retry_task',
   },
@@ -165,6 +172,33 @@ const SCHEDULE_OUTPUT: ScheduleResponse = ScheduleResponseSchema.parse({
   latestRun: null,
   createdAt: new Date('2026-07-14T09:00:00.000Z'),
   updatedAt: new Date('2026-07-14T09:00:00.000Z'),
+});
+
+const PLATFORM_DEPENDENCY_FAILURE = Object.freeze({
+  code: 'provisioning_platform_dependency_unavailable' as const,
+  message: 'The deployment is missing a required control-plane dependency.',
+  action: 'repair_deployment' as const,
+  occurredAt: UPDATED_AT,
+});
+
+const PLATFORM_SCHEDULE_OUTPUT = ScheduleResponseSchema.parse({
+  ...SCHEDULE_OUTPUT,
+  latestRun: {
+    id: '55555555-5555-4555-8555-555555555555',
+    scheduledFor: CREATED_AT,
+    status: 'created',
+    taskId: TASK_ID,
+    taskStatus: 'failed',
+    taskFailure: PLATFORM_DEPENDENCY_FAILURE,
+    error: null,
+    createdAt: CREATED_AT,
+  },
+});
+
+const PLATFORM_SCHEDULE_RUN_OUTPUT = ScheduleRunResponseSchema.parse({
+  ...PLATFORM_SCHEDULE_OUTPUT.latestRun!,
+  scheduleId: SCHEDULE_ID,
+  updatedAt: UPDATED_AT,
 });
 
 type ToolCallback = (
@@ -546,6 +580,30 @@ async function restGetRepo(
   );
 }
 
+async function restScheduleCall(
+  handler: PublicV1Handler,
+  input: {
+    readonly body?: unknown;
+    readonly params?: Record<string, unknown>;
+    readonly query?: Record<string, unknown>;
+  },
+  invoke: (
+    parsed: NonNullable<ReturnType<typeof publicV1RequestContext>>['input'],
+    request: AuthenticatedRequest,
+  ) => Promise<unknown>,
+): Promise<unknown> {
+  const request = fixtureRequest(
+    input.body,
+    OWNER_PRINCIPAL,
+    input.params ?? {},
+    input.query ?? {},
+  );
+  const context = seedRestBoundary(handler, request);
+  const parsed = publicV1RequestContext(request)?.input;
+  assert.ok(parsed);
+  return throughRestOutputBoundary(context, () => invoke(parsed, request));
+}
+
 test('initial accepted task has identical secret-free REST and MCP projections', async () => {
   const unsafeTask = unsafeTaskOutput('pending');
   let restAccepts = 0;
@@ -761,10 +819,15 @@ test('all provisioning failures round-trip through task create/list/get/stop on 
   }
 });
 
-test('repo master and legacy null projections match across REST and MCP without secret fields', async () => {
-  const legacyRepoId = '44444444-4444-4444-8444-444444444444';
+test('GitHub trunk, GitLab develop, Gitee master, and legacy null repos match across REST and MCP', async () => {
+  const githubRepoId = REPO_ID;
+  const gitlabRepoId = '44444444-4444-4444-8444-444444444444';
+  const giteeRepoId = '66666666-6666-4666-8666-666666666666';
+  const legacyRepoId = '77777777-7777-4777-8777-777777777777';
   const repos = [
-    repoRecord(REPO_ID, 'master'),
+    { ...repoRecord(githubRepoId, 'trunk'), forge: 'github' },
+    { ...repoRecord(gitlabRepoId, 'develop'), forge: 'gitlab' },
+    { ...repoRecord(giteeRepoId, 'master'), forge: 'gitee' },
     repoRecord(legacyRepoId, null),
   ];
   const prisma = {
@@ -785,7 +848,9 @@ test('repo master and legacy null projections match across REST and MCP without 
   );
   const controller = new V1ReposController(reposService, prisma);
   const restList = await restListRepos(controller);
-  const restMaster = await restGetRepo(controller, REPO_ID);
+  const restGithub = await restGetRepo(controller, githubRepoId);
+  const restGitlab = await restGetRepo(controller, gitlabRepoId);
+  const restGitee = await restGetRepo(controller, giteeRepoId);
   const restLegacy = await restGetRepo(controller, legacyRepoId);
 
   const tools = captureMcpTools({
@@ -799,8 +864,23 @@ test('repo master and legacy null projections match across REST and MCP without 
   const mcpList = parseMcpSuccess(
     await tools.get('list_repos')!({ limit: 10 }, ownerExtra(['repos:read'])),
   );
-  const mcpMaster = parseMcpSuccess(
-    await tools.get('get_repo')!({ id: REPO_ID }, ownerExtra(['repos:read'])),
+  const mcpGithub = parseMcpSuccess(
+    await tools.get('get_repo')!(
+      { id: githubRepoId },
+      ownerExtra(['repos:read']),
+    ),
+  );
+  const mcpGitlab = parseMcpSuccess(
+    await tools.get('get_repo')!(
+      { id: gitlabRepoId },
+      ownerExtra(['repos:read']),
+    ),
+  );
+  const mcpGitee = parseMcpSuccess(
+    await tools.get('get_repo')!(
+      { id: giteeRepoId },
+      ownerExtra(['repos:read']),
+    ),
   );
   const mcpLegacy = parseMcpSuccess(
     await tools.get('get_repo')!(
@@ -816,27 +896,297 @@ test('repo master and legacy null projections match across REST and MCP without 
     canonicalJson(V1ListReposResponseSchema.parse(restList)),
     { items: expectedRepos, nextCursor: null },
   );
-  assert.deepEqual(canonicalJson(RepoResponseSchema.parse(restMaster)), expectedRepos[0]);
-  assert.deepEqual(canonicalJson(RepoResponseSchema.parse(restLegacy)), expectedRepos[1]);
+  assert.deepEqual(canonicalJson(RepoResponseSchema.parse(restGithub)), expectedRepos[0]);
+  assert.deepEqual(canonicalJson(RepoResponseSchema.parse(restGitlab)), expectedRepos[1]);
+  assert.deepEqual(canonicalJson(RepoResponseSchema.parse(restGitee)), expectedRepos[2]);
+  assert.deepEqual(canonicalJson(RepoResponseSchema.parse(restLegacy)), expectedRepos[3]);
   assert.deepEqual(mcpList.structured, { items: expectedRepos, nextCursor: null });
   assert.deepEqual(mcpList.text, mcpList.structured);
-  assert.deepEqual(mcpMaster.structured, expectedRepos[0]);
-  assert.deepEqual(mcpMaster.text, expectedRepos[0]);
-  assert.deepEqual(mcpLegacy.structured, expectedRepos[1]);
-  assert.deepEqual(mcpLegacy.text, expectedRepos[1]);
-  assert.equal((expectedRepos[0] as { defaultBranch: string }).defaultBranch, 'master');
-  assert.equal((expectedRepos[1] as { defaultBranch: null }).defaultBranch, null);
+  for (const [mcp, expected] of [
+    [mcpGithub, expectedRepos[0]],
+    [mcpGitlab, expectedRepos[1]],
+    [mcpGitee, expectedRepos[2]],
+    [mcpLegacy, expectedRepos[3]],
+  ] as const) {
+    assert.deepEqual(mcp.structured, expected);
+    assert.deepEqual(mcp.text, expected);
+  }
+  assert.deepEqual(
+    expectedRepos.slice(0, 3).map(
+      (repo) => (repo as { defaultBranch: string }).defaultBranch,
+    ),
+    ['trunk', 'develop', 'master'],
+  );
+  assert.equal((expectedRepos[3] as { defaultBranch: null }).defaultBranch, null);
   assertNoSecretCanary(
     restList,
-    restMaster,
+    restGithub,
+    restGitlab,
+    restGitee,
     restLegacy,
     mcpList.structured,
     mcpList.text,
-    mcpMaster.structured,
-    mcpMaster.text,
+    mcpGithub.structured,
+    mcpGithub.text,
+    mcpGitlab.structured,
+    mcpGitlab.text,
+    mcpGitee.structured,
+    mcpGitee.text,
     mcpLegacy.structured,
     mcpLegacy.text,
   );
+});
+
+test('all eight schedule operations preserve nested platform dependency truth across real REST and MCP adapters', async () => {
+  const scheduleOutput = PLATFORM_SCHEDULE_OUTPUT;
+  const runOutput = PLATFORM_SCHEDULE_RUN_OUTPUT;
+  const schedules = {
+    async listPage() {
+      return { items: [scheduleOutput], nextCursor: null };
+    },
+    async create() {
+      return scheduleOutput;
+    },
+    async get() {
+      return scheduleOutput;
+    },
+    async update() {
+      return scheduleOutput;
+    },
+    async pause() {
+      return scheduleOutput;
+    },
+    async resume() {
+      return scheduleOutput;
+    },
+    async dispatchNow() {
+      return scheduleOutput;
+    },
+    async listRunsPage() {
+      return { items: [runOutput], nextCursor: null };
+    },
+  } as unknown as ScheduledTasksService;
+  const controller = new V1SchedulesController(schedules);
+  const restOutputs = new Map<string, unknown>([
+    [
+      'schedules.list',
+      await restScheduleCall(
+        controller.list,
+        { query: { limit: '10' } },
+        (parsed, request) => controller.list(parsed.query as never, request),
+      ),
+    ],
+    [
+      'schedules.create',
+      await restScheduleCall(
+        controller.create,
+        {
+          body: {
+            recurrence: {
+              kind: 'daily',
+              time: '09:00',
+              timezone: 'UTC',
+            },
+            taskTemplate: {
+              repoId: REPO_ID,
+              prompt: 'verify deployment dependency',
+            },
+          },
+        },
+        (parsed, request) => controller.create(parsed.body as never, request),
+      ),
+    ],
+    [
+      'schedules.get',
+      await restScheduleCall(
+        controller.get,
+        { params: { id: SCHEDULE_ID } },
+        (parsed, request) =>
+          controller.get((parsed.params as { id: string }).id, request),
+      ),
+    ],
+    [
+      'schedules.update',
+      await restScheduleCall(
+        controller.update,
+        { params: { id: SCHEDULE_ID }, body: { name: 'verified schedule' } },
+        (parsed, request) =>
+          controller.update(
+            (parsed.params as { id: string }).id,
+            parsed.body as never,
+            request,
+          ),
+      ),
+    ],
+    [
+      'schedules.pause',
+      await restScheduleCall(
+        controller.pause,
+        { params: { id: SCHEDULE_ID } },
+        (parsed, request) =>
+          controller.pause((parsed.params as { id: string }).id, request),
+      ),
+    ],
+    [
+      'schedules.resume',
+      await restScheduleCall(
+        controller.resume,
+        { params: { id: SCHEDULE_ID } },
+        (parsed, request) =>
+          controller.resume((parsed.params as { id: string }).id, request),
+      ),
+    ],
+    [
+      'schedules.dispatch',
+      await restScheduleCall(
+        controller.dispatch,
+        { params: { id: SCHEDULE_ID }, body: {} },
+        (parsed, request) =>
+          controller.dispatch(
+            (parsed.params as { id: string }).id,
+            parsed.body as never,
+            request,
+          ),
+      ),
+    ],
+    [
+      'schedules.runs',
+      await restScheduleCall(
+        controller.listRuns,
+        { params: { id: SCHEDULE_ID }, query: { limit: '10' } },
+        (parsed, request) =>
+          controller.listRuns(
+            (parsed.params as { id: string }).id,
+            parsed.query as never,
+            request,
+          ),
+      ),
+    ],
+  ]);
+
+  const tools = captureMcpTools({
+    async listSchedules() {
+      return { items: [scheduleOutput], nextCursor: null } as never;
+    },
+    async createSchedule() {
+      return scheduleOutput;
+    },
+    async getSchedule() {
+      return scheduleOutput;
+    },
+    async updateSchedule() {
+      return scheduleOutput;
+    },
+    async pauseSchedule() {
+      return scheduleOutput;
+    },
+    async resumeSchedule() {
+      return scheduleOutput;
+    },
+    async dispatchSchedule() {
+      return scheduleOutput;
+    },
+    async listScheduleRuns() {
+      return { items: [runOutput], nextCursor: null };
+    },
+  });
+  const mcpInputs = new Map<string, Record<string, unknown>>([
+    ['list_schedules', { limit: 10 }],
+    [
+      'create_schedule',
+      {
+        recurrence: { kind: 'daily', time: '09:00', timezone: 'UTC' },
+        taskTemplate: {
+          repoId: REPO_ID,
+          prompt: 'verify deployment dependency',
+        },
+      },
+    ],
+    ['get_schedule', { id: SCHEDULE_ID }],
+    ['update_schedule', { id: SCHEDULE_ID, name: 'verified schedule' }],
+    ['pause_schedule', { id: SCHEDULE_ID }],
+    ['resume_schedule', { id: SCHEDULE_ID }],
+    ['dispatch_schedule', { id: SCHEDULE_ID }],
+    ['list_schedule_runs', { id: SCHEDULE_ID, limit: 10 }],
+  ]);
+  const operationTools = new Map<string, string>([
+    ['schedules.list', 'list_schedules'],
+    ['schedules.create', 'create_schedule'],
+    ['schedules.get', 'get_schedule'],
+    ['schedules.update', 'update_schedule'],
+    ['schedules.pause', 'pause_schedule'],
+    ['schedules.resume', 'resume_schedule'],
+    ['schedules.dispatch', 'dispatch_schedule'],
+    ['schedules.runs', 'list_schedule_runs'],
+  ]);
+
+  const canonicalSchedule = canonicalJson(
+    ScheduleResponseSchema.parse(scheduleOutput),
+  );
+  const canonicalRun = canonicalJson(
+    ScheduleRunResponseSchema.parse(runOutput),
+  );
+  const expectedByOperation = new Map<string, unknown>([
+    [
+      'schedules.list',
+      canonicalJson(
+        V1ListSchedulesResponseSchema.parse({
+          items: [scheduleOutput],
+          nextCursor: null,
+        }),
+      ),
+    ],
+    ['schedules.create', canonicalSchedule],
+    ['schedules.get', canonicalSchedule],
+    ['schedules.update', canonicalSchedule],
+    ['schedules.pause', canonicalSchedule],
+    ['schedules.resume', canonicalSchedule],
+    ['schedules.dispatch', canonicalSchedule],
+    [
+      'schedules.runs',
+      canonicalJson(
+        V1ListScheduleRunsResponseSchema.parse({
+          items: [runOutput],
+          nextCursor: null,
+        }),
+      ),
+    ],
+  ]);
+
+  for (const [operationId, toolName] of operationTools) {
+    const expected = expectedByOperation.get(operationId);
+    assert.deepEqual(canonicalJson(restOutputs.get(operationId)), expected, operationId);
+    const mcp = parseMcpSuccess(
+      await tools.get(toolName)!(
+        mcpInputs.get(toolName)!,
+        ownerExtra([
+          operationId === 'schedules.list' ||
+          operationId === 'schedules.get' ||
+          operationId === 'schedules.runs'
+            ? 'tasks:read'
+            : 'tasks:write',
+        ]),
+      ),
+    );
+    assert.deepEqual(mcp.structured, expected, operationId);
+    assert.deepEqual(mcp.text, expected, operationId);
+    assertNoSecretCanary(restOutputs.get(operationId), mcp.structured, mcp.text);
+  }
+
+  const scheduleFailure = (
+    canonicalSchedule as {
+      latestRun: { taskFailure: { code: string; action: string } };
+    }
+  ).latestRun.taskFailure;
+  const runFailure = (
+    canonicalRun as { taskFailure: { code: string; action: string } }
+  ).taskFailure;
+  for (const failure of [scheduleFailure, runFailure]) {
+    assert.deepEqual(failure, {
+      ...PLATFORM_DEPENDENCY_FAILURE,
+      occurredAt: UPDATED_AT.toISOString(),
+    });
+  }
 });
 
 test('the six affected operations deny insufficient scopes on REST and MCP before delegation', async () => {

@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "change": "harden-forge-default-branch-resolution",
+  "intent": "public-feature",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "changed",
+      "operationIds": [
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "repos.list",
+        "repos.get",
+        "schedules.list",
+        "schedules.create",
+        "schedules.get",
+        "schedules.update",
+        "schedules.pause",
+        "schedules.resume",
+        "schedules.dispatch",
+        "schedules.runs"
+      ],
+      "reason": "Task and nested schedule-run projections gain a control-plane dependency failure variant, while task creation and repository reads consistently preserve the authenticated non-main default branch selected by the shared task domain path."
+    },
+    "mcp": {
+      "status": "changed",
+      "operationIds": [
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "repos.list",
+        "repos.get",
+        "schedules.list",
+        "schedules.create",
+        "schedules.get",
+        "schedules.update",
+        "schedules.pause",
+        "schedules.resume",
+        "schedules.dispatch",
+        "schedules.runs"
+      ],
+      "toolIds": [
+        "create_task",
+        "list_tasks",
+        "get_task",
+        "stop_task",
+        "list_repos",
+        "get_repo",
+        "list_schedules",
+        "create_schedule",
+        "get_schedule",
+        "update_schedule",
+        "pause_schedule",
+        "resume_schedule",
+        "dispatch_schedule",
+        "list_schedule_runs"
+      ],
+      "reason": "Matching tools expose the same safe failure in direct task and nested schedule-run responses, plus refreshed default-branch values through canonical contracts without a provider-specific branch fallback."
+    },
+    "openapi": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "repos.list",
+        "repos.get",
+        "schedules.list",
+        "schedules.create",
+        "schedules.get",
+        "schedules.update",
+        "schedules.pause",
+        "schedules.resume",
+        "schedules.dispatch",
+        "schedules.runs"
+      ],
+      "reason": "The task failure schema, its nested schedule-run projections, and default-branch semantics derive from the canonical public registry and shared contracts."
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.create",
+        "tasks.list",
+        "tasks.get",
+        "tasks.stop",
+        "repos.list",
+        "repos.get",
+        "schedules.list",
+        "schedules.create",
+        "schedules.get",
+        "schedules.update",
+        "schedules.pause",
+        "schedules.resume",
+        "schedules.dispatch",
+        "schedules.runs"
+      ],
+      "reason": "The playground derives the affected task and schedule-run failure rendering plus repository default-branch projections from the same registry."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "api-git-runtime-remote-refs-forge-metadata-refresh-console",
+      "reason": "Installs and attests the API Git dependency, separates local dependency failures from network failures, refreshes verified forge metadata explicitly, and adds Console refresh plus direct-task and schedule-run deployment-repair presentation."
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Idempotency-Key remains an HTTP-only retry contract and is not an MCP argument."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "MCP structured content remains the canonical Task while compatibility text retains the historical task handle."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "MCP metadata continues to describe asynchronous task observation without claiming support for the HTTP-only idempotency header."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST keeps its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    }
+  ],
+  "verification": {
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
+  }
+}

@@ -87,6 +87,44 @@ export function normalizeRepoGitSource(gitSource: string): string {
 }
 
 /**
+ * Shared, secret-free mapping for Console/Internal repository verification.
+ * Refresh and import must return the same stable body/status without copying
+ * command, credential, or provider diagnostics across the HTTP boundary.
+ */
+export function throwRepoRemoteRefsFailure(
+  reason: RemoteRefsProbeFailureReason,
+): never {
+  switch (reason) {
+    case 'authentication_failed':
+      throw new ForbiddenException({
+        error: 'repo_forge_authentication_failed',
+        message: 'The connected forge credential could not authenticate this repository.',
+      });
+    case 'access_denied':
+      throw new ForbiddenException({
+        error: 'repo_forge_access_denied',
+        message: 'The connected forge credential cannot access this repository.',
+      });
+    case 'network_unavailable':
+      throw new ServiceUnavailableException({
+        error: 'repo_forge_network_unavailable',
+        message: 'The repository host could not be reached during the access probe.',
+      });
+    case 'platform_dependency_unavailable':
+      throw new ServiceUnavailableException({
+        error: 'repo_platform_dependency_unavailable',
+        message:
+          'The deployment is missing a required repository verification dependency.',
+      });
+    case 'default_branch_unresolved':
+      throw new UnprocessableEntityException({
+        error: 'repo_default_branch_unresolved',
+        message: 'The repository default branch could not be resolved.',
+      });
+  }
+}
+
+/**
  * Repository persistence + read service. Every value returned to a controller is
  * re-validated against the contracts `repoResponseSchema` so the response body
  * is guaranteed to match the shared contract (a defensive check against schema
@@ -114,18 +152,7 @@ export class ReposService {
       forge: body.forge,
     });
     if (!target.ok) {
-      if (target.reason === 'forge_unresolved') {
-        throw new BadRequestException({
-          error: 'repo_forge_unresolved',
-          message:
-            'Repository forge could not be resolved for this URL. Select the forge or register its host first.',
-        });
-      }
-      throw new ForbiddenException({
-        error: 'repo_forge_auth_required',
-        message:
-          'A connected credential for this repository host is required before import.',
-      });
+      this.throwOwnerTargetFailure(target.reason);
     }
 
     let defaultBranch: string;
@@ -143,7 +170,7 @@ export class ReposService {
       // stable secret-free reason.
       const probe = await this.remoteRefs.resolveDefaultBranch(target.target);
       if (!probe.ok) {
-        this.throwRemoteRefsFailure(probe.reason);
+        throwRepoRemoteRefsFailure(probe.reason);
       }
       defaultBranch = probe.defaultBranch;
     }
@@ -154,6 +181,68 @@ export class ReposService {
       forge: target.target.kind,
       defaultBranch,
       gitlabProjectId,
+    });
+  }
+
+  /**
+   * Re-verifies an existing repository's symbolic HEAD for the authenticated
+   * Console account without accepting a branch from the caller.
+   *
+   * The remote operation deliberately happens before the transaction. The
+   * subsequent write is fenced by the immutable database identity observed
+   * before that probe, so a concurrent delete or forge/source reassignment
+   * cannot be recreated or overwritten by a stale result.
+   */
+  async refreshDefaultBranch(
+    ownerUserId: string,
+    repoId: string,
+  ): Promise<RepoResponse> {
+    const snapshot = await this.prisma.repo.findUnique({
+      where: { id: repoId },
+      select: {
+        id: true,
+        gitSource: true,
+        forge: true,
+        gitlabProjectId: true,
+      },
+    });
+    if (!snapshot) {
+      throw new NotFoundException(`Repo not found: ${repoId}`);
+    }
+
+    const target = await this.forgeTargets.resolveForOwner(ownerUserId, {
+      gitSource: snapshot.gitSource,
+      forge: snapshot.forge,
+      gitlabProjectId: snapshot.gitlabProjectId,
+    });
+    if (!target.ok) {
+      this.throwOwnerTargetFailure(target.reason);
+    }
+
+    const probe = await this.remoteRefs.resolveDefaultBranch(target.target);
+    if (!probe.ok) {
+      throwRepoRemoteRefsFailure(probe.reason);
+    }
+    const defaultBranch = this.requireVerifiedDefaultBranch(probe.defaultBranch);
+
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.repo.updateMany({
+        where: {
+          id: snapshot.id,
+          gitSource: snapshot.gitSource,
+          forge: snapshot.forge,
+        },
+        data: { defaultBranch },
+      });
+      if (updated.count !== 1) {
+        this.throwRefreshIdentityConflict();
+      }
+
+      const refreshed = await tx.repo.findUnique({ where: { id: snapshot.id } });
+      if (!refreshed) {
+        this.throwRefreshIdentityConflict();
+      }
+      return repoResponseSchema.parse(this.toResponse(refreshed));
     });
   }
 
@@ -310,10 +399,10 @@ export class ReposService {
       candidates = await this.forgeRegistry.forKind(target.kind).listRepos(target);
     } catch (error) {
       if (error instanceof ForgeHttpError && error.status === 401) {
-        this.throwRemoteRefsFailure('authentication_failed');
+        throwRepoRemoteRefsFailure('authentication_failed');
       }
       if (error instanceof ForgeHttpError && error.status === 403) {
-        this.throwRemoteRefsFailure('access_denied');
+        throwRepoRemoteRefsFailure('access_denied');
       }
       throw new ServiceUnavailableException({
         error: 'repo_forge_network_unavailable',
@@ -346,9 +435,34 @@ export class ReposService {
   private requireVerifiedDefaultBranch(value: string): string {
     const branch = GitBranchNameSchema.safeParse(value);
     if (!branch.success) {
-      this.throwRemoteRefsFailure('default_branch_unresolved');
+      throwRepoRemoteRefsFailure('default_branch_unresolved');
     }
     return branch.data;
+  }
+
+  private throwOwnerTargetFailure(
+    reason: 'forge_unresolved' | 'owner_credential_unavailable',
+  ): never {
+    if (reason === 'forge_unresolved') {
+      throw new BadRequestException({
+        error: 'repo_forge_unresolved',
+        message:
+          'Repository forge could not be resolved for this URL. Select the forge or register its host first.',
+      });
+    }
+    throw new ForbiddenException({
+      error: 'repo_forge_auth_required',
+      message:
+        'A connected credential for this repository host is required before import.',
+    });
+  }
+
+  private throwRefreshIdentityConflict(): never {
+    throw new ConflictException({
+      error: 'repo_import_identity_conflict',
+      message:
+        'The repository identity changed while its default branch was being refreshed.',
+    });
   }
 
   private throwImportIdentityConflict(): never {
@@ -356,31 +470,6 @@ export class ReposService {
       error: 'repo_import_identity_conflict',
       message: 'The repository URL conflicts with an existing provider identity.',
     });
-  }
-
-  private throwRemoteRefsFailure(reason: RemoteRefsProbeFailureReason): never {
-    switch (reason) {
-      case 'authentication_failed':
-        throw new ForbiddenException({
-          error: 'repo_forge_authentication_failed',
-          message: 'The connected forge credential could not authenticate this repository.',
-        });
-      case 'access_denied':
-        throw new ForbiddenException({
-          error: 'repo_forge_access_denied',
-          message: 'The connected forge credential cannot access this repository.',
-        });
-      case 'network_unavailable':
-        throw new ServiceUnavailableException({
-          error: 'repo_forge_network_unavailable',
-          message: 'The repository host could not be reached during the access probe.',
-        });
-      case 'default_branch_unresolved':
-        throw new UnprocessableEntityException({
-          error: 'repo_default_branch_unresolved',
-          message: 'The repository default branch could not be resolved.',
-        });
-    }
   }
 
   async list(): Promise<RepoResponse[]> {

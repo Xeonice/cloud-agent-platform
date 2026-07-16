@@ -171,16 +171,18 @@ sandbox creation, remote-ref resolution, repository transfer, checkout,
 submodules, runtime setup, readiness, and cleanup without accessing ephemeral
 sandbox logs. A terminal provisioning detail SHALL carry a stable safe cause
 covering at least capacity exhaustion, timeout, forge authentication,
-TLS/network, missing branch/ref, and an unknown fallback, plus attempt and
-timestamp information. It SHALL accompany rather than replace the central task
-lifecycle transition.
+TLS/network, missing branch/ref, platform dependency unavailability, and an
+unknown fallback, plus attempt and timestamp information. A local command-start
+or missing-executable failure SHALL be recorded as the platform dependency cause
+and SHALL NOT be recorded as TLS/network. It SHALL accompany rather than replace
+the central task lifecycle transition.
 
 Audit descriptions and structured fields SHALL NOT contain a forge token,
 authorization header, credential-bearing URL, temporary secret content/path,
-authenticated command, raw exec request, provider endpoint, or unsanitized git
-output. Recording stage/audit detail SHALL be idempotent across admission lease
-replay, and failure to persist a progress event SHALL NOT block the controlled
-provisioning action; the durable admission work state remains the recovery
+authenticated command, raw exec request, provider endpoint, argv, stderr, or
+unsanitized Git output. Recording stage/audit detail SHALL be idempotent across
+admission lease replay, and failure to persist a progress event SHALL NOT block
+the controlled provisioning action; durable admission work remains the recovery
 source of truth.
 
 #### Scenario: Disk exhaustion is recorded after authenticated refs succeed
@@ -195,6 +197,12 @@ source of truth.
 - **THEN** audit history records a workspace timeout at the active stage
 - **AND** it does not report a forge credential rejection or generic BoxLite health failure
 
+#### Scenario: Missing Git is recorded separately from remote failure
+
+- **WHEN** remote-ref resolution cannot start the control-plane Git executable
+- **THEN** audit history records the platform dependency cause at remote-ref resolution
+- **AND** it records no TLS/network cause, raw command, stderr, config path, or token
+
 #### Scenario: Lease replay does not duplicate terminal detail
 
 - **WHEN** a worker loses its lease after persisting a terminal provisioning cause and recovery replays the work item
@@ -203,6 +211,6 @@ source of truth.
 
 #### Scenario: Secret canary never reaches history
 
-- **WHEN** a private-repository provisioning test uses a unique credential canary and exercises success, failure, timeout, retry, and retention
+- **WHEN** a private-repository provisioning test uses a unique credential canary and exercises success, failure, timeout, retry, refresh, and retention
 - **THEN** the canary is absent from audit rows, task failure projections, structured logs, and retained workspace credential files
 

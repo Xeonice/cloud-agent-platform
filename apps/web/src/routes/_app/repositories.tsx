@@ -31,10 +31,20 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { reposQuery } from "@/lib/api/queries";
-import { setDefaultRepoMutation } from "@/lib/api/mutations";
+import {
+  refreshRepoDefaultBranchMutation,
+  setDefaultRepoMutation,
+} from "@/lib/api/mutations";
+import {
+  claimRepoRefreshSubmission,
+  releaseRepoRefreshSubmission,
+} from "@/lib/repo-refresh-flow";
 import { RepoStatStrip, RepoStatTile } from "@/components/repositories/repo-stat-strip";
 import { ImportedReposPanel } from "@/components/repositories/imported-repos-panel";
-import { ImportDialog } from "@/components/repositories/import-dialog";
+import {
+  ImportDialog,
+  repoImportFailurePresentation,
+} from "@/components/repositories/import-dialog";
 
 export const Route = createFileRoute("/_app/repositories")({
   loader: async ({ context }) => {
@@ -50,6 +60,13 @@ function RepositoriesPage() {
   const queryClient = useQueryClient();
   const { data: repos } = useQuery(reposQuery());
   const setDefault = useMutation(setDefaultRepoMutation(queryClient));
+  const refreshDefaultBranch = useMutation(
+    refreshRepoDefaultBranchMutation(queryClient),
+  );
+  const refreshFence = React.useRef<string | null>(null);
+  const [refreshingRepoId, setRefreshingRepoId] = React.useState<string | null>(
+    null,
+  );
 
   const [dialogOpen, setDialogOpen] = React.useState(false);
 
@@ -69,6 +86,26 @@ function RepositoriesPage() {
         },
       },
     );
+  }
+
+  function handleRefreshDefaultBranch(repoId: string) {
+    if (!claimRepoRefreshSubmission(refreshFence, repoId)) return;
+    setRefreshingRepoId(repoId);
+    refreshDefaultBranch.mutate(repoId, {
+      onSuccess: (repo) => {
+        toast.success(
+          `已刷新 ${repo.name} 的默认分支：${repo.defaultBranch ?? "待解析"}`,
+        );
+      },
+      onError: (error) => {
+        const failure = repoImportFailurePresentation(error);
+        toast.error(`${failure.pill}：${failure.message}`);
+      },
+      onSettled: () => {
+        releaseRepoRefreshSubmission(refreshFence, repoId);
+        setRefreshingRepoId(null);
+      },
+    });
   }
 
   return (
@@ -130,6 +167,8 @@ function RepositoriesPage() {
           onSetDefault={handleSetDefault}
           settingDefault={setDefault.isPending}
           pendingDefaultId={setDefault.variables?.repoId ?? null}
+          onRefreshDefaultBranch={handleRefreshDefaultBranch}
+          refreshingRepoId={refreshingRepoId}
         />
       </section>
 

@@ -59,6 +59,14 @@ const AFFECTED_PROJECTION_OPERATION_IDS = [
   "tasks.stop",
   "repos.list",
   "repos.get",
+  "schedules.list",
+  "schedules.create",
+  "schedules.get",
+  "schedules.update",
+  "schedules.pause",
+  "schedules.resume",
+  "schedules.dispatch",
+  "schedules.runs",
 ] as const satisfies readonly PublicV1OperationId[];
 
 const CANONICAL_TASK_SAMPLE = {
@@ -85,9 +93,9 @@ const CANONICAL_FAILURE_SAMPLE = {
     stage: "workspace_transfer",
   },
   failure: {
-    code: "provisioning_ref_not_found",
-    message: "Verify the repository ref and retry.",
-    action: "verify_repository_ref",
+    code: "provisioning_platform_dependency_unavailable",
+    message: "Repair the deployment dependency before creating another task.",
+    action: "repair_deployment",
     occurredAt: "2026-07-15T01:02:00.000Z",
   },
 };
@@ -97,7 +105,54 @@ const CANONICAL_REPO_SAMPLE = {
   name: "zhiwen",
   gitSource: "https://code.example.test/group/zhiwen.git",
   createdAt: CANONICAL_TASK_SAMPLE.createdAt,
-  defaultBranch: "master",
+  defaultBranch: "trunk",
+  forge: "github",
+};
+
+const CANONICAL_SCHEDULE_LATEST_RUN = {
+  id: "33333333-3333-4333-8333-333333333333",
+  scheduledFor: CANONICAL_TASK_SAMPLE.createdAt,
+  status: "created",
+  taskId: CANONICAL_TASK_SAMPLE.id,
+  taskStatus: "failed",
+  taskFailure: CANONICAL_FAILURE_SAMPLE.failure,
+  error: null,
+  createdAt: CANONICAL_TASK_SAMPLE.createdAt,
+};
+
+const CANONICAL_SCHEDULE_SAMPLE = {
+  id: "44444444-4444-4444-8444-444444444444",
+  ownerUserId: "playground-example-owner",
+  repoId: CANONICAL_TASK_SAMPLE.repoId,
+  name: "deployment dependency example",
+  cronExpression: "0 9 * * *",
+  timezone: "UTC",
+  recurrence: {
+    kind: "daily",
+    time: "09:00",
+    timezone: "UTC",
+    label: "Daily 09:00",
+  },
+  enabled: true,
+  nextRunAt: "2026-07-16T09:00:00.000Z",
+  overlapPolicy: "skip",
+  misfirePolicy: "fire-once",
+  taskTemplate: {
+    repoId: CANONICAL_TASK_SAMPLE.repoId,
+    prompt: "verify deployment dependency",
+    runtime: "codex",
+    sandboxEnvironmentId: null,
+    deliver: "none",
+  },
+  latestRun: CANONICAL_SCHEDULE_LATEST_RUN,
+  createdAt: CANONICAL_TASK_SAMPLE.createdAt,
+  updatedAt: "2026-07-15T01:02:00.000Z",
+};
+
+const CANONICAL_SCHEDULE_RUN_SAMPLE = {
+  ...CANONICAL_SCHEDULE_LATEST_RUN,
+  scheduleId: CANONICAL_SCHEDULE_SAMPLE.id,
+  updatedAt: CANONICAL_SCHEDULE_SAMPLE.updatedAt,
 };
 
 // ── 1. Catalog is non-empty (the rail left column has rows to render) ──────
@@ -230,7 +285,7 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
     }
   });
 
-  it("projects exact descriptions for the six affected task/repo operations", () => {
+  it("projects exact descriptions for all fourteen affected operations", () => {
     for (const id of AFFECTED_PROJECTION_OPERATION_IDS) {
       const operation = operationById(id);
       const endpoint = findEndpoint(id);
@@ -247,6 +302,15 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
     );
     expect(create.description).toContain("Provisioning continues asynchronously");
     expect(create.description).toContain("poll `tasks.get`");
+    for (const id of AFFECTED_PROJECTION_OPERATION_IDS.filter((candidate) =>
+      candidate.startsWith("schedules."),
+    )) {
+      const endpoint = findEndpoint(id)!;
+      expect(
+        `${endpoint.description} ${endpoint.responseDescription}`,
+        id,
+      ).toMatch(/taskFailure|task failure/i);
+    }
   });
 
   it("retains explicit mapped differences and the reasoned SSE exclusion", () => {
@@ -365,6 +429,40 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
     },
   );
 
+  it.each(AFFECTED_PROJECTION_OPERATION_IDS)(
+    "keeps the real non-2xx body visible for %s without remapping safe failure data",
+    (operationId) => {
+      const payload = operationId.startsWith("schedules.")
+        ? { latestRun: { taskFailure: CANONICAL_FAILURE_SAMPLE.failure } }
+        : operationId.startsWith("tasks.")
+          ? { failure: CANONICAL_FAILURE_SAMPLE.failure }
+          : {
+              code: "temporarily_unavailable",
+              message: "Repository service is temporarily unavailable.",
+              retryable: true,
+            };
+      const body = JSON.stringify(payload);
+      const rendered = mapSendResult({
+        kind: "response",
+        status: 503,
+        statusText: "Service Unavailable",
+        ok: false,
+        durationMs: 7,
+        sizeBytes: new TextEncoder().encode(body).byteLength,
+        headers: { "content-type": "application/json" },
+        body,
+        json: payload,
+      });
+
+      expect(findEndpoint(operationId)).toBeDefined();
+      expect(rendered.status).toBe(503);
+      expect(rendered.ok).toBe(false);
+      expect(rendered.body).toBe(body);
+      expect(rendered.json).toEqual(payload);
+      expect(rendered.body).not.toContain("providerDiagnostic");
+    },
+  );
+
   it("keeps documentation endpoints outside the data-operation drift set", () => {
     const docs = API_CATALOG.filter((endpoint) => endpoint.kind === "documentation");
     expect(docs.map((endpoint) => endpoint.pathTemplate)).toEqual([
@@ -383,16 +481,28 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
     ).toBe(true);
   });
 
-  it("never exposes the internal sandbox callback through the manifest or catalog", () => {
-    const internalPath = "/internal/sandbox/approvals";
+  it("never exposes internal callbacks or repository refresh through the manifest or catalog", () => {
+    for (const internalPath of [
+      "/internal/sandbox/approvals",
+      "/repos/:repoId/refresh-default-branch",
+    ]) {
+      expect(
+        PUBLIC_V1_OPERATIONS.some(
+          (operation) => (operation.path as string) === internalPath,
+        ),
+      ).toBe(false);
+      expect(
+        API_CATALOG.some((endpoint) => endpoint.pathTemplate === internalPath),
+      ).toBe(false);
+    }
     expect(
-      PUBLIC_V1_OPERATIONS.some(
-        (operation) => (operation.path as string) === internalPath,
+      DATA_API_CATALOG.some(
+        ({ operationId, mcpProjection }) =>
+          operationId?.includes("refresh") ||
+          (mcpProjection?.status === "mapped" &&
+            mcpProjection.tool.includes("refresh")),
       ),
     ).toBe(false);
-    expect(API_CATALOG.some((endpoint) => endpoint.pathTemplate === internalPath)).toBe(
-      false,
-    );
   });
 
   it("parses every sample body with the operation's shared request schema", () => {
@@ -424,24 +534,58 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
     );
   });
 
-  it("parses canonical accepted/failure/repo samples and maps their exact bodies", () => {
+  it("parses all affected direct/nested failure and arbitrary-branch samples and maps exact bodies", () => {
     const { defaultBranch: _defaultBranch, ...repoWithoutDefaultBranch } =
       CANONICAL_REPO_SAMPLE;
+    const repoSamples = [
+      CANONICAL_REPO_SAMPLE,
+      {
+        ...CANONICAL_REPO_SAMPLE,
+        id: "55555555-5555-4555-8555-555555555555",
+        forge: "gitlab",
+        defaultBranch: "develop",
+      },
+      {
+        ...CANONICAL_REPO_SAMPLE,
+        id: "66666666-6666-4666-8666-666666666666",
+        forge: "gitee",
+        defaultBranch: "master",
+      },
+    ];
     const cases: ReadonlyArray<
       readonly [string, PublicV1OperationId, unknown]
     > = [
-      ["accepted task", "tasks.create", CANONICAL_TASK_SAMPLE],
-      ["provisioning failure", "tasks.get", CANONICAL_FAILURE_SAMPLE],
-      ["repo master", "repos.get", CANONICAL_REPO_SAMPLE],
+      ["failed task create", "tasks.create", CANONICAL_FAILURE_SAMPLE],
       [
-        "repo null",
+        "failed task list",
+        "tasks.list",
+        { items: [CANONICAL_FAILURE_SAMPLE], nextCursor: null },
+      ],
+      ["provisioning failure", "tasks.get", CANONICAL_FAILURE_SAMPLE],
+      ["failed task stop", "tasks.stop", CANONICAL_FAILURE_SAMPLE],
+      ["repo trunk", "repos.get", CANONICAL_REPO_SAMPLE],
+      [
+        "cross-forge repo branches",
         "repos.list",
-        {
-          items: [{ ...CANONICAL_REPO_SAMPLE, defaultBranch: null }],
-          nextCursor: null,
-        },
+        { items: repoSamples, nextCursor: null },
       ],
       ["repo absent", "repos.get", repoWithoutDefaultBranch],
+      [
+        "schedule list nested failure",
+        "schedules.list",
+        { items: [CANONICAL_SCHEDULE_SAMPLE], nextCursor: null },
+      ],
+      ["schedule create nested failure", "schedules.create", CANONICAL_SCHEDULE_SAMPLE],
+      ["schedule get nested failure", "schedules.get", CANONICAL_SCHEDULE_SAMPLE],
+      ["schedule update nested failure", "schedules.update", CANONICAL_SCHEDULE_SAMPLE],
+      ["schedule pause nested failure", "schedules.pause", CANONICAL_SCHEDULE_SAMPLE],
+      ["schedule resume nested failure", "schedules.resume", CANONICAL_SCHEDULE_SAMPLE],
+      ["schedule dispatch nested failure", "schedules.dispatch", CANONICAL_SCHEDULE_SAMPLE],
+      [
+        "schedule run nested failure",
+        "schedules.runs",
+        { items: [CANONICAL_SCHEDULE_RUN_SAMPLE], nextCursor: null },
+      ],
     ];
 
     for (const [label, operationId, sample] of cases) {
@@ -475,6 +619,11 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
         expect(body, `${label} excludes ${forbidden}`).not.toContain(forbidden);
       }
     }
+    expect(repoSamples.map(({ defaultBranch }) => defaultBranch)).toEqual([
+      "trunk",
+      "develop",
+      "master",
+    ]);
   });
 
   it("uses UUID examples for every id path parameter", () => {

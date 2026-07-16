@@ -84,6 +84,9 @@ test('full gate declares build/codegen and downstream typecheck before fast reus
   assert.ok(FULL_PREREQUISITE_STEPS[0].args.includes('--force'));
   assert.deepEqual(WORKFLOW_TEST_FILES, [
     'scripts/openspec-metadata.test.mjs',
+    'scripts/task-admission-migration-workflow.test.mjs',
+    'scripts/release-image-gates.test.mjs',
+    'scripts/release-tail.test.mjs',
     'scripts/public-surface-adversarial.test.mjs',
     'scripts/public-surface-files.test.mjs',
     'scripts/public-surface-hook.test.mjs',

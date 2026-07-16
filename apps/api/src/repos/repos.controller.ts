@@ -46,6 +46,18 @@ export class ReposController {
     return this.reposService.create(this.requireConsoleAccountId(req), body);
   }
 
+  @Post(':repoId/refresh-default-branch')
+  @HttpCode(HttpStatus.OK)
+  async refreshDefaultBranch(
+    @Req() req: AuthenticatedRequest,
+    @Param('repoId') repoId: string,
+  ): Promise<RepoResponse> {
+    return this.reposService.refreshDefaultBranch(
+      this.requireConsoleAccountId(req),
+      repoId,
+    );
+  }
+
   @Get()
   async list(@Req() req: AuthenticatedRequest): Promise<RepoResponse[]> {
     if (!hasScope(req.operatorPrincipal, 'repos:read')) {

@@ -222,7 +222,7 @@ test('settlement accepts only safe causes and never interpolates them into SQL',
     },
   } as unknown as PrismaService;
   const store = new PrismaTaskAdmissionStore(prisma);
-  const safeCause = 'provisioning_tls_network_failed';
+  const safeCause = 'provisioning_platform_dependency_unavailable';
 
   assert.equal(
     await store.settle({

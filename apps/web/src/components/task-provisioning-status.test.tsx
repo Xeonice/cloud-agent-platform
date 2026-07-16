@@ -91,6 +91,13 @@ const failures = [
     href: "/repositories",
   },
   {
+    code: "provisioning_platform_dependency_unavailable",
+    action: "repair_deployment",
+    title: "部署依赖不可用",
+    actionLabel: "检查部署与升级",
+    href: "/settings",
+  },
+  {
     code: "provisioning_unknown",
     action: "retry_task",
     title: "仓库准备失败",

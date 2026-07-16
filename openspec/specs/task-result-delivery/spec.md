@@ -4,31 +4,48 @@
 TBD - created by archiving change add-multi-forge-task-delivery. Update Purpose after archive.
 ## Requirements
 ### Requirement: A single Forge port abstracts GitHub, Gitee, and GitLab
-The system SHALL expose a single `Forge` port (a `FORGE` DI token + a `ForgeRegistry` resolver) with
-concrete `GithubForge`, `GiteeForge`, and `GitlabForge` implementations selected solely by the resolved
-`ForgeTarget.kind` + `apiBaseUrl`. The port SHALL provide `cloneAuthHeader` (synchronous, pure) plus the
-HTTP operations `resolveBaseBranch`, `findExistingChangeRequest`, `openChangeRequest`, and `listRepos`,
-each an ordinary platform-process `fetch` against the operator's connected forge. The port SHALL NOT
-define a git push operation (git push is a sandbox concern — the working tree lives there). The repo
-identifier SHALL be a discriminated union (`owner-repo` for github/gitee, `project` for gitlab) so a
-GitLab project id can never reach a github/gitee call path.
 
-#### Scenario: The forge impl is chosen by kind, not by call site
-- **WHEN** push-back or the import picker resolves a `ForgeTarget` for a repo
-- **THEN** the registry returns the matching forge impl and all forge HTTP routes through it with the target's `apiBaseUrl`
+The system SHALL expose a single `Forge` port through the `FORGE` DI token and
+`ForgeRegistry` resolver, with concrete `GithubForge`, `GiteeForge`, and
+`GitlabForge` implementations selected solely by the resolved
+`ForgeTarget.kind` and `apiBaseUrl`. The port SHALL provide the synchronous,
+pure `cloneAuthHeader` plus `findExistingChangeRequest`,
+`openChangeRequest`, and `listRepos`. It SHALL NOT provide
+`resolveBaseBranch` or a git push operation: checkout and change-request base
+SHALL come from the shared immutable task branch snapshot, while Git push stays
+inside the selected sandbox/provider workspace. The repository identifier SHALL
+remain a discriminated union (`owner-repo` for GitHub/Gitee and `project` for
+GitLab) so a GitLab project id cannot enter a GitHub/Gitee call path.
+
+#### Scenario: The forge implementation is chosen by kind, not call site
+
+- **WHEN** push-back or the import picker resolves a ForgeTarget for a repository
+- **THEN** the registry returns the matching implementation and its HTTP calls use the target apiBaseUrl
+
+#### Scenario: Forge port cannot choose another base branch
+
+- **WHEN** delivery opens a change request for a task resolved to `trunk`
+- **THEN** the Forge implementation receives `baseBranch = trunk` from the task snapshot
+- **AND** no Forge method independently resolves or guesses a default branch
 
 ### Requirement: Forge HTTP calls the operator's connected forge directly and is not SSRF-gated
-The system SHALL perform every forge HTTP call (`resolveBaseBranch`, `findExistingChangeRequest`,
-`openChangeRequest`, `listRepos`) as a platform-process `fetch` to the operator's connected forge API
-with the decrypted credential. Because the target is the operator's OWN connected forge (not an arbitrary
-URL), these calls SHALL NOT pass through `assertSafeProviderUrl`, and that guard SHALL remain unchanged
-and scoped to the compatible-provider gateway. The system SHALL NOT route forge HTTP through the sandbox
-or build a fallback for the platform being unable to reach a self-hosted forge (a deployer network
-concern); an unreachable forge SHALL surface as a fail-open audited skip.
+
+The system SHALL perform `findExistingChangeRequest`, `openChangeRequest`, and
+`listRepos` as platform-process fetches to the operator's connected forge API
+with the decrypted credential. Because the target is the operator's own
+connected forge rather than an arbitrary compatible-provider URL, these calls
+SHALL NOT pass through `assertSafeProviderUrl`; that guard SHALL remain scoped
+to the compatible-provider gateway. Authenticated Git symbolic-HEAD probing
+SHALL remain a separate exact-host Git boundary, not a Forge HTTP method. The
+system SHALL NOT route Forge HTTP through the sandbox or invent an API fallback
+when the platform cannot reach a self-hosted forge; delivery unreachability
+SHALL remain a fail-open audited skip.
 
 #### Scenario: A self-hosted forge on a private network is called directly
+
 - **WHEN** a task targets a registered self-hosted forge whose apiBase resolves to a private IP
-- **THEN** the platform calls it with a plain native fetch (no SSRF rejection of the private IP) and, if it cannot route to it, the delivery fails-open with an audited skip
+- **THEN** the platform calls it with native fetch and no compatible-provider SSRF rejection
+- **AND** an unreachable delivery API fails open with an audited skip
 
 ### Requirement: cloneAuthHeader supplies one token-bearing header for the in-sandbox clone and push
 
@@ -62,21 +79,35 @@ retry paths and SHALL prove it absent before sandbox retention.
 - **AND** that submodule uses its own resolved credential or fails without receiving the parent secret
 
 ### Requirement: openChangeRequest and findExistingChangeRequest map per forge and are idempotent
-For github/gitee the system SHALL `POST {apiBase}/repos/{owner}/{repo}/pulls` with `{head,base,title,body}`
-and map the response to `number`/`html_url`; for gitlab it SHALL `POST {apiBase}/projects/{id}/merge_requests`
-with `{source_branch,target_branch,title,description}` and map `iid`/`web_url`. Before opening, the system
-SHALL look for an existing open change request on the head/source branch — github via
-`?state=open&head={owner}:{b}`, gitlab via `?state=opened&source_branch={b}` (literal `opened`), gitee by
-listing `?state=open` then client-side filtering `head.ref===b` — and SHALL reuse it (or treat a 422
-"already exists" on create) as an idempotent success rather than an error.
+
+For GitHub/Gitee the system SHALL `POST
+{apiBase}/repos/{owner}/{repo}/pulls` with
+`{head,base,title,body}` and map `number`/`html_url`; for GitLab it SHALL `POST
+{apiBase}/projects/{id}/merge_requests` with
+`{source_branch,target_branch,title,description}` and map `iid`/`web_url`.
+Before opening, the system SHALL look for an existing open change request on the
+head/source branch—GitHub via `?state=open&head={owner}:{b}`, GitLab via
+`?state=opened&source_branch={b}`, and Gitee by listing `?state=open` then
+filtering `head.ref===b`—and SHALL reuse it, including a 422 already-exists
+recovery, as idempotent success. The target/base branch supplied to every forge
+SHALL be the shared task resolved-branch snapshot and SHALL NOT be fetched or
+guessed independently during delivery.
 
 #### Scenario: GitLab MR uses its own shape
-- **WHEN** delivering to a gitlab repo
-- **THEN** the MR is created at `/merge_requests` with `source_branch`/`target_branch`, listed with `state=opened`, and the result reads `iid`/`web_url`
+
+- **WHEN** delivering to a GitLab repository
+- **THEN** the MR is created at `/merge_requests` with source/target branches, listed with `state=opened`, and mapped from `iid`/`web_url`
 
 #### Scenario: Re-delivering the same task reuses the open CR
+
 - **WHEN** a task is re-run and an open change request already exists for `cap/task-<taskId>`
 - **THEN** the existing change request is reused and no duplicate is created
+
+#### Scenario: Delivery base follows the accepted snapshot after repository refresh
+
+- **WHEN** a task accepted on `develop` is delivered after the Repo default is refreshed to `trunk`
+- **THEN** its PR or MR base remains `develop`
+- **AND** the Forge API is not queried for a replacement default
 
 ### Requirement: Forge detection is layered
 The system SHALL resolve a repo to a forge by: (1) the explicit nullable `Repo.forge` column when set;

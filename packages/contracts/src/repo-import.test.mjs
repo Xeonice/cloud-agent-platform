@@ -70,6 +70,7 @@ test('repo import failure codes are complete, bounded, and reject diagnostic fie
     'repo_forge_authentication_failed',
     'repo_forge_access_denied',
     'repo_forge_network_unavailable',
+    'repo_platform_dependency_unavailable',
     'repo_default_branch_unresolved',
     'repo_picker_candidate_not_accessible',
     'repo_import_identity_conflict',
