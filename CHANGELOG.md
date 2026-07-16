@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.40.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.39.1...v0.40.0) (2026-07-16)
+
+
+### Features
+
+* **repositories:** harden forge default branch resolution ([3a7a2ba](https://github.com/Xeonice/cloud-agent-platform/commit/3a7a2bacea4d4378aaba28f14e28240b8c3f4109))
+* **repositories:** harden forge default branch resolution ([f97e7df](https://github.com/Xeonice/cloud-agent-platform/commit/f97e7dfcb771163ba136292e19c761d4ca55039a))
+
 ## [0.39.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.39.0...v0.39.1) (2026-07-16)
 
 
