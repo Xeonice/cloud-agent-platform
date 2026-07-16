@@ -131,11 +131,13 @@
   - requirements: ["api-mcp-development-parity/canonical-public-capability-registry", "api-mcp-development-parity/transport-bindings-are-exhaustive"]
   - surfaces: ["openspec", "developer-workflow", "public-v1", "mcp"]
   - verify: "openspec-metadata"
-- [ ] 7.5 Run the deterministic image/release workflow contract gate locally, then require the release CI job to pass the real built-`cap-api` and published-tag Git smoke before rollout evidence is accepted.
+- [x] 7.5 Run the deterministic image/release workflow contract gate locally, then require the release CI job to pass the real built-`cap-api` and published-tag Git smoke before rollout evidence is accepted.
   - requirements: ["release-and-versioning/a-github-release-triggered-workflow-publishes-a-matched-versioned-image-set-to-ghcr", "release-and-versioning/release-tail-is-scriptized-and-verifies-all-three-images"]
   - surfaces: ["ci", "developer-workflow"]
   - verify: "workflow-gates"
-- [ ] 7.6 Run the deterministic migration workflow contract gate locally, then require the CI loopback-Postgres fresh/upgrade/rollback job to pass before database compatibility evidence is accepted.
+  - evidence: "[v0.40.0](https://github.com/Xeonice/cloud-agent-platform/releases/tag/v0.40.0): [Release CI](https://github.com/Xeonice/cloud-agent-platform/actions/runs/29525868706) passed the built-image Git smoke, matched image publish, latest promotion, and Release asset jobs; `scripts/release.sh v0.40.0` then passed the published-tag Git/startup smoke and verified every declared asset digest and size."
+- [x] 7.6 Run the deterministic migration workflow contract gate locally, then require the CI loopback-Postgres fresh/upgrade/rollback job to pass before database compatibility evidence is accepted.
   - requirements: ["repo-and-task-management/task-reads-expose-safe-provisioning-progress-and-failure-causes"]
   - surfaces: ["contracts", "ci", "developer-workflow"]
   - verify: "workflow-gates"
+  - evidence: "[PR CI](https://github.com/Xeonice/cloud-agent-platform/actions/runs/29525077975) passed the loopback-Postgres [task admission migration compatibility job](https://github.com/Xeonice/cloud-agent-platform/actions/runs/29525077975/job/87711415468), including fresh, upgrade, and rollback coverage."
