@@ -180,13 +180,24 @@ test("sub-day forms round-trip and owner dispatch remains exactly-once", async (
   expect(session.user.login).toBeNull();
   expect(session.user.mustChangePassword).toBe(false);
 
-  const repo = await apiJson<RepoWire>(context.request, API_URL, "/repos", {
-    method: "POST",
-    data: {
-      name: `scheduled-e2e-${marker}`,
-      gitSource: "https://github.com/openai/codex.git",
+  // Repo import has its own owner-credential E2E coverage. This story only
+  // needs a contract-valid repository prerequisite, so the isolated loopback
+  // control plane seeds one in its disposable database without weakening the
+  // production `POST /repos` authorization.
+  const { repo } = await apiJson<{ readonly repo: RepoWire }>(
+    context.request,
+    CONTROL_URL,
+    "/control/fixtures/repos",
+    {
+      method: "POST",
+      data: {
+        name: `scheduled-e2e-${marker}`,
+        gitSource: "https://github.com/openai/codex.git",
+        forge: "github",
+        defaultBranch: "main",
+      },
     },
-  });
+  );
 
   await exerciseSubdayScheduleStory({
     page,
