@@ -28,25 +28,36 @@ The web build SHALL bake a build identifier (`VITE_BUILD_ID`, a Vite compile-tim
 
 ### Requirement: A GitHub-Release-triggered workflow publishes a matched, versioned image set to GHCR
 
-The repository SHALL define a CI workflow triggered on `release: published` (and
-`workflow_dispatch` for manual runs) that builds and pushes a MATCHED set of
-container images -- `ghcr.io/<owner>/cap-api`, `ghcr.io/<owner>/cap-web`,
-`ghcr.io/<owner>/cap-aio-sandbox`, and
-`ghcr.io/<owner>/cap-boxlite-sandbox` -- ALL tagged with the SINGLE release
-version `vX.Y.Z` (so a release is one matched, mutually-compatible set),
-injecting `CAP_VERSION`/`GIT_SHA`/`BUILD_TIME` build args so the published images
-self-report via `/version`. The workflow SHALL use the built-in token with
-`packages: write` and SHALL make the published packages publicly pullable.
-Merely committing the workflow SHALL NOT publish anything -- publishing occurs
-only when a Release is published.
+The repository SHALL define a CI workflow triggered on `release: published` and
+`workflow_dispatch` that builds and pushes a matched set of
+`ghcr.io/<owner>/cap-api`, `cap-web`, `cap-aio-sandbox`, and
+`cap-boxlite-sandbox`, all tagged with one `vX.Y.Z` release version and built
+with `CAP_VERSION`/`GIT_SHA`/`BUILD_TIME`. The final `cap-api` runtime image SHALL
+contain the Git executable required by production remote-ref resolution. Before
+the API image is published, the workflow SHALL execute a container-level
+dependency smoke against the built artifact, including `git --version`, and
+SHALL fail without pushing a known-bad API image when the command is absent or
+not executable. The workflow SHALL use the built-in token with `packages: write`
+and make published packages publicly pullable. Merely committing the workflow
+SHALL remain inert until a Release is published.
 
 #### Scenario: Publishing a Release builds and pushes the matched image set
 
 - **WHEN** a GitHub Release `vX.Y.Z` is published
-- **THEN** the workflow builds and pushes `cap-api`, `cap-web`,
-  `cap-aio-sandbox`, and `cap-boxlite-sandbox` to GHCR, all tagged `vX.Y.Z`,
-  with the version build args injected
+- **THEN** the workflow builds and pushes all four matched CAP images with version metadata
 - **AND** the published packages are publicly pullable
+
+#### Scenario: Built API image proves its Git runtime dependency before push
+
+- **WHEN** the release workflow builds `cap-api:vX.Y.Z`
+- **THEN** it runs the required Git executable inside that exact image before publication
+- **AND** a missing or non-executable Git binary fails the image job instead of publishing it
+
+#### Scenario: API runtime preflight rejects a missing Git dependency before serving
+
+- **WHEN** a packaged or custom API runtime starts without an executable Git dependency
+- **THEN** the bounded startup preflight fails before the API begins serving traffic
+- **AND** startup reports only a safe platform-dependency reason without a credential, command argument, or raw diagnostic
 
 #### Scenario: Committing the workflow is inert until a Release is cut
 
@@ -55,10 +66,8 @@ only when a Release is published.
 
 #### Scenario: A published api image self-reports its version
 
-- **WHEN** the `cap-api:vX.Y.Z` image published by the workflow is run and
-  `GET /version` is requested
-- **THEN** `version` is `vX.Y.Z` and `gitSha`/`buildTime` reflect the release
-  build
+- **WHEN** the published `cap-api:vX.Y.Z` image serves `GET /version`
+- **THEN** `version` is `vX.Y.Z` and gitSha/buildTime reflect the release build
 
 ### Requirement: A documented prebuilt-image self-host path exists without changing the default
 The project SHALL provide a way for a self-hoster to run the pinned prebuilt GHCR images instead of building from source, pinning all cap images to the SAME version, in BOTH of these shapes, while the DEFAULT compose path remains build-from-source (additive and opt-in):
@@ -151,24 +160,24 @@ The repository SHALL run release automation (release-please, `release-type: simp
 ### Requirement: Release tail is scriptized and verifies all three images
 
 The project SHALL provide a release script for the post-merge mechanical tail:
-given a target version (or the bumped manifest version), it SHALL create the
-GitHub Release with a non-`GITHUB_TOKEN` identity (so the image-build workflow
-fires), watch the build to success, and verify every published CAP image
-(`cap-api`, `cap-web`, `cap-aio-sandbox`, and `cap-boxlite-sandbox`) plus the
-sandbox image Release assets are present at the tag. It SHALL NOT perform the
-change-selection / version-bump / changelog / PR steps -- those remain operator
-and skill judgment. Each gate SHALL fail fast with a clear message.
+given a target version or the bumped manifest version, it SHALL create the GitHub Release with a
+non-`GITHUB_TOKEN` identity, watch the build to success, and verify every
+published CAP image (`cap-api`, `cap-web`, `cap-aio-sandbox`, and
+`cap-boxlite-sandbox`) plus sandbox Release assets at the tag. Verification
+SHALL include executing or equivalently attesting the required Git runtime
+dependency in the published `cap-api` image, not merely checking that its tag
+exists. The script SHALL NOT perform change selection, version bump, changelog,
+or PR judgment. Each gate SHALL fail fast with a clear message.
 
-#### Scenario: Release script tags and verifies all three images
+#### Scenario: Release script tags and verifies every image and API dependency
 
-- **WHEN** the release script runs against a merged, version-bumped main
-- **THEN** it creates the Release under a PAT identity, the build workflow runs
-  to success, and all CAP GHCR images plus the sandbox image Release assets are
-  confirmed present at the tag
+- **WHEN** the release script runs against a merged version-bumped main branch
+- **THEN** it creates the Release, observes a successful build, and confirms all CAP images and sandbox assets
+- **AND** it verifies the published API image can execute its required Git dependency
 
 #### Scenario: Release script flags a GITHUB_TOKEN identity
 
-- **WHEN** the script cannot confirm a non-`GITHUB_TOKEN` `gh` identity
+- **WHEN** the script cannot confirm a non-`GITHUB_TOKEN` GitHub identity
 - **THEN** it warns that the image-build workflow may not fire
 
 ### Requirement: The release skill drives the server upgrade end-to-end

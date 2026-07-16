@@ -121,6 +121,24 @@ describe("shared task form builders", () => {
     ).not.toHaveProperty("branch");
   });
 
+  it.each(["trunk", "develop", "master"])(
+    "preserves the refreshed provider branch %s without conventional-name substitution",
+    (defaultBranch) => {
+      const formValue = taskBranchFormValue(defaultBranch);
+      expect(formValue).toBe(defaultBranch);
+      expect(taskBranchOptions(defaultBranch, formValue)).toEqual([
+        defaultBranch,
+      ]);
+      expect(buildTaskRequest(taskForm({ branch: formValue }))).toHaveProperty(
+        "branch",
+        defaultBranch,
+      );
+      expect(
+        buildSchedulePayload(scheduleForm({ branch: formValue })).taskTemplate,
+      ).toHaveProperty("branch", defaultBranch);
+    },
+  );
+
   it("projects every canonical Console task-create field", () => {
     const body = buildTaskRequest(taskForm());
 

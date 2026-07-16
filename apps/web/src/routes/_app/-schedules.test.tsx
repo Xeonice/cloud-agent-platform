@@ -739,6 +739,52 @@ describe("schedule run history rendering", () => {
     );
   });
 
+  it("renders deployment-repair guidance on latest-run and run-history surfaces", () => {
+    const failure = {
+      code: "provisioning_platform_dependency_unavailable" as const,
+      message: "The deployment is missing a required Git dependency.",
+      action: "repair_deployment" as const,
+      occurredAt: new Date("2026-07-10T00:32:00.000Z"),
+    };
+    const run = runFixture(uuid(46), {
+      taskStatus: "failed",
+      taskFailure: failure,
+    });
+    const schedule = scheduleFixture({ latestRun: run });
+    const detail = renderToStaticMarkup(
+      <ScheduleDetail
+        schedule={schedule}
+        repos={[]}
+        onEdit={() => undefined}
+        onDispatch={() => undefined}
+        onPauseResume={() => undefined}
+        onDelete={() => undefined}
+      />,
+    );
+    const latest = renderToStaticMarkup(
+      <LatestRunSummary run={run} timeZone="UTC" />,
+    );
+    const history = renderToStaticMarkup(
+      <RunList runs={[run]} timeZone="UTC" />,
+    );
+
+    for (const html of [detail, latest, history]) {
+      expect(html).toContain("部署依赖不可用");
+      expect(html).toContain(
+        'data-provisioning-failure="provisioning_platform_dependency_unavailable"',
+      );
+      expect(html).not.toContain("代码托管凭据不可用");
+      expect(html).not.toContain("网络或 TLS 连接失败");
+    }
+    for (const html of [detail, history]) {
+      expect(html).toContain("检查部署与升级");
+      expect(html).toContain('href="/settings"');
+      expect(html).toContain("Git 运行依赖");
+    }
+    expect(detail).toContain("最近一次任务失败原因");
+    expect(history).toContain("本次任务失败原因");
+  });
+
   it("shows agent startup failure as a task failure instead of a stopped task", () => {
     const html = renderToStaticMarkup(
       React.createElement(RunResultBadges, {

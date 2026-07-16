@@ -5,8 +5,11 @@
 #   ghcr.io/xeonice/cap-web
 #   ghcr.io/xeonice/cap-aio-sandbox
 #   ghcr.io/xeonice/cap-boxlite-sandbox
-# ALL tagged with the SINGLE release version (`github.event.release.tag_name`,
-# e.g. vX.Y.Z) plus `latest`, so one Release is one mutually-compatible set
+# ALL first published with the SINGLE release version (`github.event.release.tag_name`,
+# e.g. vX.Y.Z). Only after all four version tags exist does one promotion gate
+# move every `latest` tag to that release, so `latest` never advances merely
+# because the API or one matrix member happened to finish first. One Release is
+# therefore one mutually-compatible set
 # (design D2 / decision ⑤). Each image is injected with the version build-args
 # (`CAP_VERSION`/`GIT_SHA`/`BUILD_TIME`) so the published api self-reports via
 # `GET /version` and the web bundle bakes its build id (`VITE_BUILD_ID`). The
@@ -53,6 +56,7 @@ jobs:
   # gen-prod-observability-configs.mjs; this fails the release on drift (release-and-versioning).
   verify-run-package:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,18 +67,105 @@ jobs:
       - name: Verify inline observability configs are in sync and escaped
         run: node deploy/observability/gen-prod-observability-configs.mjs --check
 
-  build-push:
+  # Resolve one release identity once so every image receives the exact same
+  # version and build timestamp. The API image gate and the remaining image
+  # matrix consume these immutable outputs rather than resolving independently.
+  resolve-release:
     needs: verify-run-package
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build_time: ${{ steps.version.outputs.build_time }}
+    steps:
+      - name: Resolve release version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: |
+          VERSION="${RELEASE_TAG:-$INPUT_VERSION}"
+          if [ -z "$VERSION" ]; then
+            echo "No version available (no release tag and no workflow_dispatch input)." >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+  # Build the production API artifact into the local Docker image store, prove
+  # both its packaged Git executable and its real startup preflight, and only
+  # then authenticate and push those exact local tags. No other image job can
+  # begin pushing until this job has passed.
+  build-smoke-push-api:
+    needs: resolve-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build local cap-api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: ghcr.io/xeonice/cap-api:${{ needs.resolve-release.outputs.version }}
+          build-args: |
+            CAP_VERSION=${{ needs.resolve-release.outputs.version }}
+            GIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.resolve-release.outputs.build_time }}
+            CODEX_VERSION=${{ env.CODEX_VERSION }}
+            CLAUDE_CODE_VERSION=${{ env.CLAUDE_CODE_VERSION }}
+            OPENSPEC_VERSION=${{ env.OPENSPEC_VERSION }}
+
+      - name: Smoke built cap-api image
+        run: |
+          node scripts/cap-api-image-smoke.mjs \
+            --image "ghcr.io/xeonice/cap-api:${{ needs.resolve-release.outputs.version }}" \
+            --pull never \
+            --negative-fixture
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push verified cap-api version image
+        run: docker push "ghcr.io/xeonice/cap-api:${{ needs.resolve-release.outputs.version }}"
+
+      - name: Set cap-api package visibility public
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "/user/packages/container/cap-api/visibility" \
+            -f visibility=public
+
+  build-push:
+    needs: [resolve-release, build-smoke-push-api]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       # Build every image even if one fails, so a partial failure is visible
       # per-image rather than masking the rest.
       fail-fast: false
       matrix:
         include:
-          - name: cap-api
-            dockerfile: apps/api/Dockerfile
-            platforms: linux/amd64
           - name: cap-web
             dockerfile: apps/web/Dockerfile
             platforms: linux/amd64
@@ -90,23 +181,6 @@ jobs:
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-
-      # The single user-facing cap version that unifies all release image tags.
-      # From the Release tag on a `release: published` run, or the manual input
-      # on a `workflow_dispatch` run.
-      - name: Resolve release version
-        id: version
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          INPUT_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          VERSION="${RELEASE_TAG:-$INPUT_VERSION}"
-          if [ -z "$VERSION" ]; then
-            echo "No version available (no release tag and no workflow_dispatch input)." >&2
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -127,9 +201,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: ${{ matrix.platforms }}
           push: true
-          tags: |
-            ghcr.io/xeonice/${{ matrix.name }}:${{ steps.version.outputs.version }}
-            ghcr.io/xeonice/${{ matrix.name }}:latest
+          tags: ghcr.io/xeonice/${{ matrix.name }}:${{ needs.resolve-release.outputs.version }}
           # Version build-args injected into EVERY image so the published api
           # self-reports via /version and the web bundle bakes its build id.
           # VITE_BUILD_ID is consumed by apps/web/Dockerfile; the api/sandbox
@@ -139,10 +211,10 @@ jobs:
           # (AIO base tag + codex + openspec) is left to the pinned defaults in
           # docker/aio-sandbox.Dockerfile (never overridden to :latest here).
           build-args: |
-            CAP_VERSION=${{ steps.version.outputs.version }}
+            CAP_VERSION=${{ needs.resolve-release.outputs.version }}
             GIT_SHA=${{ github.sha }}
-            BUILD_TIME=${{ steps.version.outputs.build_time }}
-            VITE_BUILD_ID=${{ steps.version.outputs.version }}
+            BUILD_TIME=${{ needs.resolve-release.outputs.build_time }}
+            VITE_BUILD_ID=${{ needs.resolve-release.outputs.version }}
             CODEX_VERSION=${{ env.CODEX_VERSION }}
             CLAUDE_CODE_VERSION=${{ env.CLAUDE_CODE_VERSION }}
             OPENSPEC_VERSION=${{ env.OPENSPEC_VERSION }}
@@ -163,14 +235,52 @@ jobs:
             "/user/packages/container/${{ matrix.name }}/visibility" \
             -f visibility=public
 
+  # Every immutable version image must be present before any moving tag advances.
+  # `imagetools create` promotes the registry manifest itself instead of pulling,
+  # retagging, and pushing one host platform; this preserves BoxLite's amd64/arm64
+  # manifest list as well as the single-platform manifests of the other images.
+  promote-latest:
+    needs: [resolve-release, build-smoke-push-api, build-push]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the complete immutable image set
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          for image in cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox; do
+            docker buildx imagetools inspect "ghcr.io/xeonice/${image}:${RELEASE_VERSION}"
+          done
+
+      - name: Promote the complete image set to latest
+        env:
+          RELEASE_VERSION: ${{ needs.resolve-release.outputs.version }}
+        run: |
+          for image in cap-api cap-web cap-aio-sandbox cap-boxlite-sandbox; do
+            docker buildx imagetools create \
+              --tag "ghcr.io/xeonice/${image}:latest" \
+              "ghcr.io/xeonice/${image}:${RELEASE_VERSION}"
+          done
+
   # Attach the SOURCE-FREE run package to the Release so anyone can run cap from
   # prebuilt images WITHOUT cloning: download these two files, fill .env, and
   # `docker compose -f docker-compose.prod.yml up -d` (release-and-versioning,
   # decision ④/⑤ — build/run split). Only on a real Release (not workflow_dispatch).
   attach-run-assets:
-    needs: verify-run-package
+    needs: [verify-run-package, promote-latest]
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
@@ -185,9 +295,10 @@ jobs:
             --clobber --repo "${{ github.repository }}"
 
   attach-sandbox-image-assets:
-    needs: build-push
+    needs: promote-latest
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
       packages: read

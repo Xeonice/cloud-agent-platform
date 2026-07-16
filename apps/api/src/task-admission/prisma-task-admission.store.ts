@@ -37,6 +37,7 @@ const SAFE_CAUSE_CODES = new Set<ProvisioningTaskFailureCode>([
   'provisioning_forge_auth_failed',
   'provisioning_tls_network_failed',
   'provisioning_ref_not_found',
+  'provisioning_platform_dependency_unavailable',
   'provisioning_unknown',
 ]);
 

@@ -43,6 +43,10 @@ import { DefaultForgeRegistry } from '../forge/forge-registry';
 import { basicAuthHeader, type ForgeTarget } from '../forge/forge.port';
 import { ForgeTargetResolver } from '../forge/forge-target-resolver';
 import { GiteeForge } from '../forge/gitee-forge';
+import {
+  assertGitRuntimeAvailable,
+  GitRuntimePreflightError,
+} from '../forge/git-runtime-preflight';
 import { GithubForge } from '../forge/github-forge';
 import { GitlabForge } from '../forge/gitlab-forge';
 import {
@@ -52,6 +56,7 @@ import {
 } from '../forge/remote-refs-command-runner';
 import { GitRemoteRefsProbe } from '../forge/remote-refs-probe';
 import { NodeRemoteRefsSecretStore } from '../forge/remote-refs-secret-store';
+import { TaskBranchResolver } from '../forge/task-branch-resolver';
 import { McpServerFactory } from '../mcp/mcp.server';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReposController } from '../repos/repos.controller';
@@ -346,6 +351,21 @@ class RepoPrismaFixture {
         assert.ok(row, `missing repo ${where.id}`);
         Object.assign(row, data, { updatedAt: CREATED_AT });
         return row;
+      },
+      updateMany: async ({
+        where,
+        data,
+      }: {
+        where?: Record<string, unknown>;
+        data: Record<string, unknown>;
+      }) => {
+        let count = 0;
+        for (const row of this.rows) {
+          if (!matchesWhere(row, where ?? {})) continue;
+          Object.assign(row, data, { updatedAt: CREATED_AT });
+          count += 1;
+        }
+        return { count };
       },
       findUnique: async ({ where }: { where: { id: string } }) =>
         this.rows.find((row) => row.id === where.id) ?? null,
@@ -887,6 +907,46 @@ test(
       assert.equal(diagnostics.crossOriginAuthorizationLeakCount, 0);
     });
 
+    const startupRequests: Array<{ readonly args: readonly string[] }> = [];
+    await assertGitRuntimeAvailable({
+      runner: {
+        async run(request) {
+          canary.assertAbsent(request, 'startup preflight argv and signal');
+          assert.equal('env' in request, false);
+          startupRequests.push({ args: [...request.args] });
+          return {
+            exitCode: 0,
+            stdout: 'git version 2.50.1\n',
+            stderr: `ignored startup diagnostic ${canary.token}`,
+          };
+        },
+      },
+    });
+    const sanitizedStartupFailure = await (async () => {
+      try {
+        await assertGitRuntimeAvailable({
+          runner: {
+            async run(request) {
+              canary.assertAbsent(
+                request,
+                'failing startup preflight argv and signal',
+              );
+              throw new Error(`ENOENT /private/${canary.token}/git`);
+            },
+          },
+        });
+        assert.fail('the missing startup dependency must fail closed');
+      } catch (error) {
+        assert.ok(error instanceof GitRuntimePreflightError);
+        return error;
+      }
+    })();
+    new Logger('PrivateGitCanaryStartup').error(sanitizedStartupFailure.message);
+    canary.assertAbsent(
+      { startupRequests, sanitizedStartupFailure },
+      'startup preflight retained observations',
+    );
+
     const repoDatabase = new RepoPrismaFixture();
     const forgeTarget: ForgeTarget = {
       kind: 'gitee',
@@ -942,15 +1002,54 @@ test(
       }),
     );
     assert.equal(importedRepo.defaultBranch, DEFAULT_BRANCH);
-    assert.equal(refsRunner.observations.length, 1);
-    await assert.rejects(
-      () => access(refsRunner.observations[0]!.configPath),
-      (error: unknown) =>
-        error instanceof Error &&
-        'code' in error &&
-        (error as NodeJS.ErrnoException).code === 'ENOENT',
-      'the refs credential directory must be absent after import',
+    const refreshedRepo = RepoResponseSchema.parse(
+      await reposController.refreshDefaultBranch(REQUEST, importedRepo.id),
     );
+    assert.equal(refreshedRepo.id, importedRepo.id);
+    assert.equal(refreshedRepo.defaultBranch, DEFAULT_BRANCH);
+    assert.equal(refsRunner.observations.length, 2);
+    for (const observation of refsRunner.observations) {
+      await assert.rejects(
+        () => access(observation.configPath),
+        (error: unknown) =>
+          error instanceof Error &&
+          'code' in error &&
+          (error as NodeJS.ErrnoException).code === 'ENOENT',
+        'the refs credential directory must be absent after import/refresh',
+      );
+    }
+
+    const recoveryBranchResolver = new TaskBranchResolver(
+      {
+        task: {
+          async findUnique() {
+            return {
+              id: TASK_ID,
+              branch: null,
+              repo: {
+                id: importedRepo.id,
+                gitSource: importedRepo.gitSource,
+                defaultBranch: refreshedRepo.defaultBranch,
+              },
+            };
+          },
+        },
+        taskAdmissionWork: {
+          async findUnique() {
+            return { resolvedBranch: DEFAULT_BRANCH };
+          },
+          async updateMany() {
+            assert.fail('recovery must consume the immutable existing snapshot');
+          },
+        },
+      } as unknown as PrismaService,
+      forgeTargetResolver,
+      refsProbe,
+    );
+    const recoveryBranch = await recoveryBranchResolver.resolve(TASK_ID);
+    assert.equal(recoveryBranch.source, 'snapshot');
+    assert.equal(recoveryBranch.resolvedBranch, DEFAULT_BRANCH);
+    canary.assertAbsent(recoveryBranch, 'task recovery branch snapshot');
 
     const credential = createExactHostGitCredential(
       REPOSITORY_URL,
@@ -1627,8 +1726,12 @@ test(
     );
 
     const publicArtifacts = {
+      startupRequests,
+      sanitizedStartupFailure,
       importedRepo,
+      refreshedRepo,
       repoRows: repoDatabase.rows,
+      recoveryBranch,
       refsObservations: refsRunner.observations.map(
         ({ configPath: _configPath, ...observation }) => observation,
       ),
@@ -1671,7 +1774,7 @@ test(
       mcpTask,
     });
     for (const credentialPath of [
-      refsRunner.observations[0]!.configPath,
+      ...refsRunner.observations.map((observation) => observation.configPath),
       ...secrets.allPaths,
       ...realSecrets.writtenPaths,
     ]) {

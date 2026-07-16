@@ -53,10 +53,10 @@ function auditBranchPlanningSource(
       reason: 'base branch must come from the shared TaskBranchResolver snapshot',
     });
   }
-  if (/(['"])main\1/u.test(code)) {
+  if (/(['"])(?:main|master)\1/u.test(code)) {
     violations.push({
       file,
-      reason: 'production branch planning must not hard-code main',
+      reason: 'production branch planning must not hard-code a conventional default',
     });
   }
   return violations;
@@ -93,7 +93,8 @@ test('production forge/import/task planning contains no implicit default-branch 
   const fabricatedDefaults = [...new Set(branchPlanningFiles)].flatMap((file) =>
     auditBranchPlanningSource(readFileSync(file, 'utf8'), relative(file)).filter(
       (violation) =>
-        violation.reason === 'production branch planning must not hard-code main',
+        violation.reason ===
+        'production branch planning must not hard-code a conventional default',
     ),
   );
 
@@ -151,7 +152,21 @@ test('branch source policy detects representative regression mutations', () => {
       },
       {
         file: 'mutation.ts',
-        reason: 'production branch planning must not hard-code main',
+        reason:
+          'production branch planning must not hard-code a conventional default',
+      },
+    ],
+  );
+  assert.deepEqual(
+    auditBranchPlanningSource(
+      `const base = repo.defaultBranch || 'master';`,
+      'master-mutation.ts',
+    ),
+    [
+      {
+        file: 'master-mutation.ts',
+        reason:
+          'production branch planning must not hard-code a conventional default',
       },
     ],
   );

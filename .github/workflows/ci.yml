@@ -101,6 +101,53 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  task-admission-migration-compatibility:
+    name: task admission migration compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: cap
+          POSTGRES_PASSWORD: cap
+          POSTGRES_DB: cap
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cap -d cap"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://cap:cap@localhost:5432/cap?schema=public
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm --filter @cap/api prisma:generate
+
+      - name: Task admission fresh, upgrade, and rollback compatibility
+        env:
+          CAP_TASK_ADMISSION_MIGRATION_TEST: "1"
+        run: pnpm --filter @cap/api test:migration:task-admission
+
   typecheck-lint:
     name: typecheck + lint + test
     runs-on: ubuntu-latest
@@ -242,14 +289,6 @@ jobs:
         env:
           CAP_TASK_MODEL_MIGRATION_TEST: "1"
         run: pnpm --filter @cap/api test:migration:model
-
-      # Exercise both a predecessor upgrade and a clean install. The fixture
-      # drops only this job's loopback throwaway schema and rejects every other
-      # database target before doing destructive work.
-      - name: Task admission migration compatibility
-        env:
-          CAP_TASK_ADMISSION_MIGRATION_TEST: "1"
-        run: pnpm --filter @cap/api test:migration:task-admission
 
       # Migrate the throwaway DB, boot the built app, probe /health. The helper
       # exits non-zero (and dumps the app log) on any migration / bootstrap / DI /

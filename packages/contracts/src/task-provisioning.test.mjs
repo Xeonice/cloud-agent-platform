@@ -12,6 +12,9 @@ const {
   PUBLIC_V1_OPERATIONS,
   ProvisioningSummarySchema,
   RepoResponseSchema,
+  ScheduleLatestRunSchema,
+  ScheduleResponseSchema,
+  ScheduleRunResponseSchema,
   TASK_PROVISIONING_STAGES,
   TASK_PROVISIONING_STATES,
   TaskFailureSchema,
@@ -63,6 +66,7 @@ const provisioningFailures = [
   ['provisioning_forge_auth_failed', 'reconnect_forge'],
   ['provisioning_tls_network_failed', 'retry_task'],
   ['provisioning_ref_not_found', 'verify_repository_ref'],
+  ['provisioning_platform_dependency_unavailable', 'repair_deployment'],
   ['provisioning_unknown', 'retry_task'],
 ];
 
@@ -197,6 +201,125 @@ test('provisioning failure codes have fixed actions and reject diagnostic fields
       }),
     );
   }
+});
+
+test('closed failure union documents the matched-upgrade boundary while current readers accept legacy payloads', () => {
+  assert.match(TaskFailureSchema.description ?? '', /closed/iu);
+  assert.match(TaskFailureSchema.description ?? '', /matched upgrade/iu);
+  for (const [code, action] of provisioningFailures.slice(0, -1)) {
+    assert.doesNotThrow(() =>
+      TaskFailureSchema.parse({
+        code,
+        message: `legacy-safe-${code}`,
+        action,
+        occurredAt: UPDATED_AT,
+      }),
+    );
+  }
+});
+
+test('all eight schedule operations preserve the platform dependency failure in latest-run or ledger shapes', () => {
+  const failure = {
+    code: 'provisioning_platform_dependency_unavailable',
+    message: 'The deployment is missing a required control-plane dependency.',
+    action: 'repair_deployment',
+    occurredAt: UPDATED_AT,
+  };
+  const latestRun = ScheduleLatestRunSchema.parse({
+    id: '33333333-3333-4333-8333-333333333333',
+    scheduledFor: CREATED_AT,
+    status: 'created',
+    taskId: TASK_ID,
+    taskStatus: 'failed',
+    taskFailure: failure,
+    error: null,
+    createdAt: CREATED_AT,
+  });
+  const schedule = ScheduleResponseSchema.parse({
+    id: '44444444-4444-4444-8444-444444444444',
+    ownerUserId: 'owner-current-reader',
+    repoId: REPO_ID,
+    name: 'platform dependency projection',
+    cronExpression: '0 9 * * *',
+    timezone: 'UTC',
+    recurrence: {
+      kind: 'daily',
+      time: '09:00',
+      timezone: 'UTC',
+      label: 'Daily 09:00',
+    },
+    enabled: true,
+    nextRunAt: UPDATED_AT,
+    overlapPolicy: 'skip',
+    misfirePolicy: 'fire-once',
+    taskTemplate: {
+      repoId: REPO_ID,
+      prompt: 'verify deployment dependency',
+      runtime: 'codex',
+      sandboxEnvironmentId: null,
+      deliver: 'none',
+    },
+    latestRun,
+    currentPeriod: {
+      key: 'day:2026-07-16',
+      scheduledFor: UPDATED_AT,
+      run: latestRun,
+    },
+    createdAt: CREATED_AT,
+    updatedAt: UPDATED_AT,
+  });
+  const run = ScheduleRunResponseSchema.parse({
+    ...latestRun,
+    scheduleId: schedule.id,
+    updatedAt: UPDATED_AT,
+  });
+
+  const scheduleOperationIds = [
+    'schedules.list',
+    'schedules.create',
+    'schedules.get',
+    'schedules.update',
+    'schedules.pause',
+    'schedules.resume',
+    'schedules.dispatch',
+    'schedules.runs',
+  ];
+  for (const operationId of scheduleOperationIds) {
+    const operation = PUBLIC_V1_OPERATIONS.find(
+      (candidate) => candidate.id === operationId,
+    );
+    assert.ok(operation, `missing public operation ${operationId}`);
+    const payload =
+      operationId === 'schedules.list'
+        ? { items: [schedule], nextCursor: null }
+        : operationId === 'schedules.runs'
+          ? { items: [run], nextCursor: null }
+          : schedule;
+    const parsed = operation.responseSchema.parse(payload);
+    const projectedFailure =
+      operationId === 'schedules.list'
+        ? parsed.items[0].latestRun.taskFailure
+        : operationId === 'schedules.runs'
+          ? parsed.items[0].taskFailure
+          : parsed.latestRun.taskFailure;
+    assert.equal(projectedFailure.code, failure.code, operationId);
+    assert.equal(projectedFailure.action, failure.action, operationId);
+    assert.equal(JSON.stringify(projectedFailure).includes('token'), false);
+  }
+
+  const legacySchedule = {
+    ...schedule,
+    latestRun: { ...latestRun, taskFailure: undefined },
+    currentPeriod: undefined,
+  };
+  assert.equal(
+    ScheduleResponseSchema.parse(legacySchedule).latestRun.taskFailure,
+    undefined,
+  );
+  assert.equal(
+    ScheduleRunResponseSchema.parse({ ...run, taskFailure: null }).taskFailure,
+    null,
+  );
 });
 
 test('console, Public V1, and canonical MCP mappings share task provisioning', () => {

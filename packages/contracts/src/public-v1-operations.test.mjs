@@ -20,15 +20,39 @@ const {
   DispatchScheduleRequestSchemaPair,
   DispatchScheduleRequestWireSchema,
   PublicErrorEnvelopeSchema,
+  RepoResponseSchema,
+  ScheduleResponseSchema,
+  TaskResponseSchema,
   UpdateScheduleRequestSchema,
   UpdateScheduleRequestSchemaPair,
   UpdateScheduleRequestWireSchema,
+  V1ListReposResponseSchema,
+  V1ListScheduleRunsResponseSchema,
+  V1ListSchedulesResponseSchema,
+  V1ListTasksResponseSchema,
   assertPublicV1OperationUniqueness,
   definePublicSchemaPair,
   composePublicInputWireSchema,
 } = contracts;
 
 const repoId = '11111111-1111-4111-8111-111111111111';
+
+const AFFECTED_OPERATION_BINDINGS = [
+  ['tasks.create', 'post', '/v1/tasks', 'tasks:write', 'create_task', TaskResponseSchema],
+  ['tasks.list', 'get', '/v1/tasks', 'tasks:read', 'list_tasks', V1ListTasksResponseSchema],
+  ['tasks.get', 'get', '/v1/tasks/{id}', 'tasks:read', 'get_task', TaskResponseSchema],
+  ['tasks.stop', 'post', '/v1/tasks/{id}/stop', 'tasks:write', 'stop_task', TaskResponseSchema],
+  ['repos.list', 'get', '/v1/repos', 'repos:read', 'list_repos', V1ListReposResponseSchema],
+  ['repos.get', 'get', '/v1/repos/{id}', 'repos:read', 'get_repo', RepoResponseSchema],
+  ['schedules.list', 'get', '/v1/schedules', 'tasks:read', 'list_schedules', V1ListSchedulesResponseSchema],
+  ['schedules.create', 'post', '/v1/schedules', 'tasks:write', 'create_schedule', ScheduleResponseSchema],
+  ['schedules.get', 'get', '/v1/schedules/{id}', 'tasks:read', 'get_schedule', ScheduleResponseSchema],
+  ['schedules.update', 'patch', '/v1/schedules/{id}', 'tasks:write', 'update_schedule', ScheduleResponseSchema],
+  ['schedules.pause', 'post', '/v1/schedules/{id}/pause', 'tasks:write', 'pause_schedule', ScheduleResponseSchema],
+  ['schedules.resume', 'post', '/v1/schedules/{id}/resume', 'tasks:write', 'resume_schedule', ScheduleResponseSchema],
+  ['schedules.dispatch', 'post', '/v1/schedules/{id}/dispatch', 'tasks:write', 'dispatch_schedule', ScheduleResponseSchema],
+  ['schedules.runs', 'get', '/v1/schedules/{id}/runs', 'tasks:read', 'list_schedule_runs', V1ListScheduleRunsResponseSchema],
+];
 
 function operation(id) {
   const result = PUBLIC_V1_OPERATIONS.find((entry) => entry.id === id);
@@ -500,6 +524,67 @@ test('intentional REST and MCP differences are explicit registry data', () => {
       projection.projector.body,
     );
   }
+});
+
+test('the fourteen affected operations retain exact registry identities and canonical projections', () => {
+  assert.equal(AFFECTED_OPERATION_BINDINGS.length, 14);
+  for (const [id, method, route, scope, tool, responseSchema] of AFFECTED_OPERATION_BINDINGS) {
+    const entry = operation(id);
+    assert.equal(entry.method, method, id);
+    assert.equal(entry.path, route, id);
+    assert.equal(entry.scope, scope, id);
+    assert.equal(entry.responseSchema, responseSchema, id);
+    assert.ok('tool' in entry.mcp, `${id} remains MCP mapped`);
+    assert.equal(entry.mcp.tool, tool, id);
+    assert.equal(entry.mcp.outputProjection, 'canonical', id);
+
+    const guidance = `${entry.description} ${entry.responseDescription}`;
+    if (id.startsWith('tasks.')) {
+      assert.match(guidance, /provisioning|failure/iu, id);
+    } else if (id.startsWith('repos.')) {
+      assert.match(guidance, /defaultBranch/u, id);
+    } else {
+      assert.match(guidance, /taskFailure|task failure/iu, id);
+    }
+  }
+});
+
+test('repository refresh stays outside Public V1 and MCP while task-create keeps exactly four differences', () => {
+  const repositoryEntries = PUBLIC_V1_OPERATIONS.filter(({ id }) =>
+    id.startsWith('repos.'),
+  );
+  assert.deepEqual(
+    repositoryEntries.map(({ id, method, path }) => ({ id, method, path })),
+    [
+      { id: 'repos.list', method: 'get', path: '/v1/repos' },
+      { id: 'repos.get', method: 'get', path: '/v1/repos/{id}' },
+    ],
+  );
+  assert.deepEqual(
+    repositoryEntries.map(({ mcp }) => ('tool' in mcp ? mcp.tool : null)),
+    ['list_repos', 'get_repo'],
+  );
+  assert.equal(
+    JSON.stringify(PUBLIC_V1_OPERATIONS).includes('refresh-default-branch'),
+    false,
+  );
+  assert.equal(
+    PUBLIC_V1_OPERATIONS.some(
+      ({ id, mcp }) =>
+        /refresh/iu.test(id) || ('tool' in mcp && /refresh/iu.test(mcp.tool)),
+    ),
+    false,
+  );
+
+  assert.deepEqual(
+    operation('tasks.create').mcp.differences.map(({ kind }) => kind),
+    [
+      'rest-only-header',
+      'mcp-compatibility-text',
+      'mcp-description-projection',
+      'rate-limit-policy',
+    ],
+  );
 });
 
 test('public error envelopes accept only stable codes and safe details', () => {

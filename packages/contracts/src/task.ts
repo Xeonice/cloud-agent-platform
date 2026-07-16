@@ -263,6 +263,7 @@ export const TaskFailureCodeSchema = z.enum([
   'provisioning_forge_auth_failed',
   'provisioning_tls_network_failed',
   'provisioning_ref_not_found',
+  'provisioning_platform_dependency_unavailable',
   'provisioning_unknown',
 ]);
 export type TaskFailureCode = z.infer<typeof TaskFailureCodeSchema>;
@@ -274,6 +275,7 @@ export const TaskFailureActionSchema = z.enum([
   'increase_sandbox_capacity',
   'reconnect_forge',
   'verify_repository_ref',
+  'repair_deployment',
 ]);
 export type TaskFailureAction = z.infer<typeof TaskFailureActionSchema>;
 
@@ -376,6 +378,17 @@ export type ProvisioningRefNotFoundTaskFailure = z.infer<
   typeof ProvisioningRefNotFoundTaskFailureSchema
 >;
 
+export const ProvisioningPlatformDependencyTaskFailureSchema = z
+  .object({
+    code: z.literal('provisioning_platform_dependency_unavailable'),
+    ...ProvisioningTaskFailureFields,
+    action: z.literal('repair_deployment'),
+  })
+  .strict();
+export type ProvisioningPlatformDependencyTaskFailure = z.infer<
+  typeof ProvisioningPlatformDependencyTaskFailureSchema
+>;
+
 export const ProvisioningUnknownTaskFailureSchema = z
   .object({
     code: z.literal('provisioning_unknown'),
@@ -401,8 +414,13 @@ export const TaskFailureSchema = z.discriminatedUnion('code', [
   ProvisioningForgeAuthTaskFailureSchema,
   ProvisioningTlsNetworkTaskFailureSchema,
   ProvisioningRefNotFoundTaskFailureSchema,
+  ProvisioningPlatformDependencyTaskFailureSchema,
   ProvisioningUnknownTaskFailureSchema,
-]);
+]).describe(
+  'Closed Task failure discriminator. Current readers accept legacy payloads, ' +
+    'but strict previous-version readers require a matched upgrade before the ' +
+    'platform-dependency variant can be served.',
+);
 export type TaskFailure = z.infer<typeof TaskFailureSchema>;
 
 // ---------------------------------------------------------------------------
@@ -659,6 +677,7 @@ export const REPO_IMPORT_FAILURE_CODES = [
   'repo_forge_authentication_failed',
   'repo_forge_access_denied',
   'repo_forge_network_unavailable',
+  'repo_platform_dependency_unavailable',
   'repo_default_branch_unresolved',
   'repo_picker_candidate_not_accessible',
   'repo_import_identity_conflict',

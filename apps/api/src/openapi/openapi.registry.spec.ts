@@ -77,6 +77,14 @@ const AFFECTED_PROJECTION_OPERATION_IDS = [
   'tasks.stop',
   'repos.list',
   'repos.get',
+  'schedules.list',
+  'schedules.create',
+  'schedules.get',
+  'schedules.update',
+  'schedules.pause',
+  'schedules.resume',
+  'schedules.dispatch',
+  'schedules.runs',
 ] as const;
 
 const PROVISIONING_FAILURE_CODE_ACTIONS = [
@@ -85,6 +93,7 @@ const PROVISIONING_FAILURE_CODE_ACTIONS = [
   ['provisioning_forge_auth_failed', 'reconnect_forge'],
   ['provisioning_tls_network_failed', 'retry_task'],
   ['provisioning_ref_not_found', 'verify_repository_ref'],
+  ['provisioning_platform_dependency_unavailable', 'repair_deployment'],
   ['provisioning_unknown', 'retry_task'],
 ] as const;
 
@@ -118,7 +127,12 @@ function projectedItemSchema(
   schema: LooseSchema,
   operationId: string,
 ): LooseSchema {
-  if (operationId === 'tasks.list' || operationId === 'repos.list') {
+  if (
+    operationId === 'tasks.list' ||
+    operationId === 'repos.list' ||
+    operationId === 'schedules.list' ||
+    operationId === 'schedules.runs'
+  ) {
     const item = schema.properties?.items?.items;
     assert.ok(item, `${operationId} exposes paginated items`);
     return item;
@@ -258,13 +272,16 @@ test('request and success metadata are projected from every exact registry entry
   }
 });
 
-test('the six task/repo projections keep exact guidance and additive safe schemas', () => {
+test('the fourteen affected projections keep exact guidance and additive safe schemas', () => {
   const doc = buildV1OpenApiDocument();
   const taskOperationIds = AFFECTED_PROJECTION_OPERATION_IDS.filter((id) =>
     id.startsWith('tasks.'),
   );
   const repoOperationIds = AFFECTED_PROJECTION_OPERATION_IDS.filter((id) =>
     id.startsWith('repos.'),
+  );
+  const scheduleOperationIds = AFFECTED_PROJECTION_OPERATION_IDS.filter((id) =>
+    id.startsWith('schedules.'),
   );
 
   for (const id of AFFECTED_PROJECTION_OPERATION_IDS) {
@@ -319,6 +336,41 @@ test('the six task/repo projections keep exact guidance and additive safe schema
     assert.ok(schemaAllowsNull(defaultBranch), `${id} defaultBranch remains nullable`);
   }
 
+  for (const id of scheduleOperationIds) {
+    const operation = operationById(id);
+    const output = projectedItemSchema(successSchema(doc, operation), id);
+    const taskFailure =
+      id === 'schedules.runs'
+        ? output.properties?.taskFailure
+        : nestedSchemas(output.properties?.latestRun ?? {}).flatMap(
+            (candidate) =>
+              candidate.properties?.taskFailure
+                ? [candidate.properties.taskFailure]
+                : [],
+          )[0];
+    assert.ok(taskFailure, `${id} documents nested taskFailure`);
+    assert.ok(
+      id === 'schedules.runs'
+        ? !output.required?.includes('taskFailure')
+        : !output.required?.includes('latestRun'),
+      `${id} keeps its nested failure carrier optional`,
+    );
+    assert.ok(schemaAllowsNull(taskFailure), `${id} taskFailure remains nullable`);
+    const documentedPairs = nestedSchemas(taskFailure)
+      .flatMap((candidate) => {
+        const codes = literalValues(candidate.properties?.code);
+        const actions = literalValues(candidate.properties?.action);
+        return codes.flatMap((code) => actions.map((action) => [code, action]));
+      })
+      .map(([code, action]) => `${String(code)}:${String(action)}`);
+    assert.ok(
+      documentedPairs.includes(
+        'provisioning_platform_dependency_unavailable:repair_deployment',
+      ),
+      `${id} documents the deployment-repair failure pair`,
+    );
+  }
+
   const acceptedTask = {
     id: '11111111-1111-4111-8111-111111111111',
     repoId: '22222222-2222-4222-8222-222222222222',
@@ -342,26 +394,96 @@ test('the six task/repo projections keep exact guidance and additive safe schema
       stage: 'workspace_transfer',
     },
     failure: {
-      code: 'provisioning_forge_auth_failed',
-      message: 'Reconnect the repository credential and retry.',
-      action: 'reconnect_forge',
+      code: 'provisioning_platform_dependency_unavailable',
+      message: 'Repair the deployment dependency before creating another task.',
+      action: 'repair_deployment',
       occurredAt: '2026-07-15T01:02:00.000Z',
     },
   };
-  const repo = {
-    id: acceptedTask.repoId,
-    name: 'zhiwen',
-    gitSource: 'https://code.example.test/group/zhiwen.git',
+  const repos = [
+    {
+      id: acceptedTask.repoId,
+      name: 'github-zhiwen',
+      gitSource: 'https://github.example.test/group/zhiwen.git',
+      createdAt: acceptedTask.createdAt,
+      defaultBranch: 'trunk',
+      forge: 'github',
+    },
+    {
+      id: '33333333-3333-4333-8333-333333333333',
+      name: 'gitlab-zhiwen',
+      gitSource: 'https://gitlab.example.test/group/zhiwen.git',
+      createdAt: acceptedTask.createdAt,
+      defaultBranch: 'develop',
+      forge: 'gitlab',
+    },
+    {
+      id: '44444444-4444-4444-8444-444444444444',
+      name: 'gitee-zhiwen',
+      gitSource: 'https://gitee.example.test/group/zhiwen.git',
+      createdAt: acceptedTask.createdAt,
+      defaultBranch: 'master',
+      forge: 'gitee',
+    },
+  ];
+  const latestRun = {
+    id: '55555555-5555-4555-8555-555555555555',
+    scheduledFor: acceptedTask.createdAt,
+    status: 'created',
+    taskId: acceptedTask.id,
+    taskStatus: 'failed',
+    taskFailure: failedTask.failure,
+    error: null,
     createdAt: acceptedTask.createdAt,
-    defaultBranch: 'master',
+  };
+  const schedule = {
+    id: '66666666-6666-4666-8666-666666666666',
+    ownerUserId: 'openapi-example-owner',
+    repoId: acceptedTask.repoId,
+    name: 'deployment dependency example',
+    cronExpression: '0 9 * * *',
+    timezone: 'UTC',
+    recurrence: {
+      kind: 'daily',
+      time: '09:00',
+      timezone: 'UTC',
+      label: 'Daily 09:00',
+    },
+    enabled: true,
+    nextRunAt: '2026-07-16T09:00:00.000Z',
+    overlapPolicy: 'skip',
+    misfirePolicy: 'fire-once',
+    taskTemplate: {
+      repoId: acceptedTask.repoId,
+      prompt: 'verify deployment dependency',
+      runtime: 'codex',
+      sandboxEnvironmentId: null,
+      deliver: 'none',
+    },
+    latestRun,
+    createdAt: acceptedTask.createdAt,
+    updatedAt: '2026-07-15T01:02:00.000Z',
+  };
+  const scheduleRun = {
+    ...latestRun,
+    scheduleId: schedule.id,
+    updatedAt: schedule.updatedAt,
   };
   const safeSamples = new Map<string, unknown>([
-    ['tasks.create', acceptedTask],
+    ['tasks.create', failedTask],
     ['tasks.list', { items: [failedTask], nextCursor: null }],
     ['tasks.get', failedTask],
-    ['tasks.stop', acceptedTask],
-    ['repos.list', { items: [repo], nextCursor: null }],
-    ['repos.get', { ...repo, defaultBranch: null }],
+    ['tasks.stop', failedTask],
+    ['repos.list', { items: repos, nextCursor: null }],
+    ['repos.get', repos[0]],
+    ['schedules.list', { items: [schedule], nextCursor: null }],
+    ['schedules.create', schedule],
+    ['schedules.get', schedule],
+    ['schedules.update', schedule],
+    ['schedules.pause', schedule],
+    ['schedules.resume', schedule],
+    ['schedules.dispatch', schedule],
+    ['schedules.runs', { items: [scheduleRun], nextCursor: null }],
   ]);
   for (const id of AFFECTED_PROJECTION_OPERATION_IDS) {
     const operation = operationById(id);
@@ -385,10 +507,21 @@ test('the six task/repo projections keep exact guidance and additive safe schema
       );
     }
   }
-  const { defaultBranch: _defaultBranch, ...legacyRepo } = repo;
+  const { defaultBranch: _defaultBranch, ...legacyRepo } = repos[0];
   assert.ok(
     operationById('repos.get').responseSchema?.safeParse(legacyRepo).success,
     'legacy repo sample may omit defaultBranch',
+  );
+  assert.deepEqual(
+    repos.map(({ defaultBranch }) => defaultBranch),
+    ['trunk', 'develop', 'master'],
+  );
+  assert.equal(
+    Object.keys(asLoose(doc).paths ?? {}).some((path) =>
+      path.includes('refresh-default-branch'),
+    ),
+    false,
+    'OpenAPI does not expose the internal refresh write',
   );
 });
 

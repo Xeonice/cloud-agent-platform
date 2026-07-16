@@ -27,6 +27,7 @@ export type TaskBranchResolutionFailureReason =
   | 'authentication_failed'
   | 'access_denied'
   | 'network_unavailable'
+  | 'platform_dependency_unavailable'
   | 'branch_not_found';
 
 export type TaskBranchResolutionFailureCode = Extract<
@@ -34,6 +35,7 @@ export type TaskBranchResolutionFailureCode = Extract<
   | 'provisioning_forge_auth_failed'
   | 'provisioning_tls_network_failed'
   | 'provisioning_ref_not_found'
+  | 'provisioning_platform_dependency_unavailable'
   | 'provisioning_unknown'
 >;
 
@@ -424,6 +426,8 @@ function reasonForProbeFailure(
       return 'access_denied';
     case 'network_unavailable':
       return 'network_unavailable';
+    case 'platform_dependency_unavailable':
+      return 'platform_dependency_unavailable';
     case 'default_branch_unresolved':
       return 'branch_not_found';
   }
@@ -439,6 +443,8 @@ function failureCodeForReason(
       return 'provisioning_forge_auth_failed';
     case 'network_unavailable':
       return 'provisioning_tls_network_failed';
+    case 'platform_dependency_unavailable':
+      return 'provisioning_platform_dependency_unavailable';
     case 'explicit_branch_invalid':
     case 'repo_default_branch_invalid':
     case 'snapshot_invalid':

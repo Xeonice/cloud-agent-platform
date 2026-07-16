@@ -473,6 +473,10 @@ for (const remoteFailure of [
     reason: 'network_unavailable' as const,
     failureCode: 'provisioning_tls_network_failed' as const,
   },
+  {
+    reason: 'platform_dependency_unavailable' as const,
+    failureCode: 'provisioning_platform_dependency_unavailable' as const,
+  },
 ]) {
   test(`legacy probe ${remoteFailure.reason} preserves its typed safe classification`, async () => {
     const { resolver, state } = fixture({

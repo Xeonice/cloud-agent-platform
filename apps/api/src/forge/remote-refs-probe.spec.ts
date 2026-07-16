@@ -99,19 +99,27 @@ test('probes real symbolic HEAD through an exact-host 0600 config and cleans it'
 
 for (const fixture of [
   {
+    diagnostic: 'authentication rejection',
     stderr: `fatal: Authentication failed for repository ${SECRET_CANARY}`,
     reason: 'authentication_failed',
   },
   {
+    diagnostic: 'access rejection',
     stderr: `remote: repository not found ${SECRET_CANARY}`,
     reason: 'access_denied',
   },
   {
+    diagnostic: 'DNS failure',
     stderr: `fatal: unable to access repository: Could not resolve host ${SECRET_CANARY}`,
     reason: 'network_unavailable',
   },
+  {
+    diagnostic: 'TLS failure',
+    stderr: `fatal: unable to access repository: TLS certificate problem ${SECRET_CANARY}`,
+    reason: 'network_unavailable',
+  },
 ] as const) {
-  test(`classifies ${fixture.reason} and discards raw git diagnostics`, async () => {
+  test(`classifies ${fixture.diagnostic} as ${fixture.reason} and discards raw git diagnostics`, async () => {
     const probe = probeWith(async () => ({
       exitCode: 128,
       stdout: '',
@@ -236,15 +244,38 @@ test('cleanup failure overrides a successful HEAD probe and stays secret-free', 
   assert.equal(JSON.stringify(result).includes('/safe/non-secret'), false);
 });
 
-test('runner failures clean the config and expose no local diagnostic', async () => {
+test('missing Git cleans the config and reports a platform dependency, not network', async () => {
   let configPath = '';
   const probe = probeWith(async (request) => {
     configPath = configPathFrom(request);
     throw new RemoteRefsCommandRunnerError('spawn_failed');
   });
   const result = await probe.resolveDefaultBranch(TARGET, new AbortController().signal);
-  assert.deepEqual(result, { ok: false, reason: 'network_unavailable' });
+  assert.deepEqual(result, {
+    ok: false,
+    reason: 'platform_dependency_unavailable',
+  });
   await assert.rejects(() => access(configPath));
+});
+
+test('bounded-output and unknown non-zero outcomes remain secret-free access failures', async () => {
+  for (const run of [
+    async () => {
+      throw new RemoteRefsCommandRunnerError('output_limit');
+    },
+    async () => ({
+      exitCode: 99,
+      stdout: SECRET_CANARY,
+      stderr: `unrecognized remote failure ${SECRET_CANARY}`,
+    }),
+  ]) {
+    const result = await probeWith(run).resolveDefaultBranch(
+      TARGET,
+      new AbortController().signal,
+    );
+    assert.deepEqual(result, { ok: false, reason: 'access_denied' });
+    assert.equal(JSON.stringify(result).includes(SECRET_CANARY), false);
+  }
 });
 
 test('credential canary is absent from argv, env, logs, and public result', async () => {

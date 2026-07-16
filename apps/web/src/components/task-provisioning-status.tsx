@@ -106,7 +106,7 @@ export function TaskProvisioningStatus({
       ) : null}
 
       {failure ? (
-        <ProvisioningFailureAlert failure={failure} announce={announce} />
+        <TaskProvisioningFailureAlert failure={failure} announce={announce} />
       ) : null}
     </div>
   );
@@ -139,12 +139,43 @@ function ProvisioningFact({
   );
 }
 
-function ProvisioningFailureAlert({
+/**
+ * Shared direct/nested TaskFailure presentation used by task detail and
+ * schedule latest/history views. It accepts only the canonical failure union
+ * and never classifies raw logs or process output.
+ */
+export function TaskProvisioningFailureAlert({
+  failure,
+  announce = false,
+  contextLabel,
+  className,
+}: {
+  failure: TaskResponse["failure"];
+  announce?: boolean;
+  contextLabel?: string;
+  className?: string;
+}): React.ReactElement | null {
+  if (!isProvisioningTaskFailure(failure)) return null;
+  return (
+    <ProvisioningFailureAlertView
+      failure={failure}
+      announce={announce}
+      contextLabel={contextLabel}
+      className={className}
+    />
+  );
+}
+
+function ProvisioningFailureAlertView({
   failure,
   announce,
+  contextLabel,
+  className,
 }: {
   failure: ProvisioningTaskFailure;
   announce: boolean;
+  contextLabel?: string;
+  className?: string;
 }): React.ReactElement {
   const presentation = provisioningFailurePresentation(failure);
 
@@ -152,13 +183,21 @@ function ProvisioningFailureAlert({
     <section
       role={announce ? "alert" : undefined}
       data-provisioning-failure={failure.code}
-      className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-3 border-l-4 border-danger bg-danger-soft px-4 py-3 text-sm min-[641px]:grid-cols-[auto_minmax(0,1fr)_auto]"
+      className={cn(
+        "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-start gap-3 border-l-4 border-danger bg-danger-soft px-4 py-3 text-sm min-[641px]:grid-cols-[auto_minmax(0,1fr)_auto]",
+        className,
+      )}
     >
       <CircleAlert
         aria-hidden="true"
         className="mt-0.5 size-4 flex-none text-danger"
       />
       <div className="min-w-0">
+        {contextLabel ? (
+          <span className="mb-1 block text-xs font-medium text-muted-foreground">
+            {contextLabel}
+          </span>
+        ) : null}
         <strong className="block font-semibold text-danger">
           {presentation.title}
         </strong>
@@ -215,6 +254,12 @@ function ProvisioningFailureAction({
           <Link to="/tasks/new" search={{ scheduleId: undefined }}>
             {contents}
           </Link>
+        </Button>
+      );
+    case "repair_deployment":
+      return (
+        <Button asChild variant="secondary" size="sm" className={className}>
+          <Link to="/settings">{contents}</Link>
         </Button>
       );
   }

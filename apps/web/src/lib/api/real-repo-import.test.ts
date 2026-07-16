@@ -11,6 +11,7 @@ vi.mock("../server-cookie", () => ({
 import {
   ApiError,
   createRepo,
+  refreshRepoDefaultBranch,
   repoImportFailureFromApiError,
 } from "./real";
 
@@ -138,5 +139,66 @@ describe("real.createRepo verified Console import", () => {
     });
 
     expect(repoImportFailureFromApiError(error)).toBeNull();
+  });
+});
+
+describe("real.refreshRepoDefaultBranch", () => {
+  it("posts only the encoded repo identity and accepts the same canonical Repo id", async () => {
+    const refreshed = { ...repo("trunk"), forge: "github" };
+    const fetchMock = vi.fn(async () => jsonResponse(refreshed, 200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(refreshRepoDefaultBranch(refreshed.id)).resolves.toMatchObject({
+      id: refreshed.id,
+      defaultBranch: "trunk",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toBe(
+      `http://api.test/repos/${refreshed.id}/refresh-default-branch`,
+    );
+    expect(init).toMatchObject({ method: "POST", credentials: "include" });
+    expect(init.body).toBeUndefined();
+    expect(init.headers).not.toHaveProperty("Content-Type");
+    expect(JSON.stringify(init)).not.toMatch(/defaultBranch|gitSource/);
+  });
+
+  it("rejects a canonical response whose Repo identity does not match the path", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          ...repo("develop"),
+          id: "22222222-2222-4222-8222-222222222222",
+          forge: "gitlab",
+        }, 200),
+      ),
+    );
+
+    await expect(
+      refreshRepoDefaultBranch("11111111-1111-4111-8111-111111111111"),
+    ).rejects.toMatchObject({ status: 502, body: undefined });
+  });
+
+  it("preserves stable refresh failure bodies for safe code-based guidance", async () => {
+    const body = {
+      error: "repo_platform_dependency_unavailable",
+      message: "The deployment is missing a repository verification dependency.",
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(body, 503)));
+
+    let caught: unknown;
+    try {
+      await refreshRepoDefaultBranch(
+        "11111111-1111-4111-8111-111111111111",
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(repoImportFailureFromApiError(caught)).toEqual(body);
   });
 });

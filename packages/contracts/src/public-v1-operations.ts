@@ -992,7 +992,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
       'repo (`repoId` in the body), then return as soon as that acceptance is ' +
       'committed. Provisioning continues asynchronously through the same path ' +
       'as Console create; poll `tasks.get` for its additive safe progress and ' +
-      'structured terminal failure. Accepts an optional `Idempotency-Key` header ' +
+      'structured terminal failure, including deployment dependency failures ' +
+      'with the `repair_deployment` action. Accepts an optional `Idempotency-Key` header ' +
       'for safe REST retries.',
     scope: 'tasks:write',
     ownerPolicy: 'optional',
@@ -1113,7 +1114,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     description:
       'Keyset-paginated tasks ordered by `(createdAt, id)`. Each item carries ' +
       'the same additive optional/nullable safe provisioning summary and ' +
-      'structured failure projection as task create/get/stop.',
+      'structured failure projection as task create/get/stop, including the ' +
+      'non-retryable deployment dependency variant.',
     scope: 'tasks:read',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1141,7 +1143,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     description:
       'Fetch a single task by id. This polling read is the guaranteed observation ' +
       'floor: every status transition is persisted before the response, including ' +
-      'the additive optional/nullable safe provisioning summary and structured failure.',
+      'the additive optional/nullable safe provisioning summary and structured ' +
+      'failure with its canonical operator action.',
     scope: 'tasks:read',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1168,7 +1171,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     summary: 'Stop a task',
     description:
       'Operator-initiated stop; transitions an active task toward `cancelled` ' +
-      'and returns the same additive safe provisioning/failure projection as task reads.',
+      'and returns the same additive safe provisioning/failure projection and ' +
+      'canonical operator action as task reads.',
     scope: 'tasks:write',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1257,7 +1261,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     summary: 'List repos',
     description:
       'Keyset-paginated repos ordered by `(createdAt, id)`. `defaultBranch` is ' +
-      'the persisted verified forge default; it remains optional/nullable for legacy rows.',
+      'the persisted verified forge default, preserves arbitrary valid branch names ' +
+      'without substituting `main` or `master`, and remains optional/nullable for legacy rows.',
     scope: 'repos:read',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1284,7 +1289,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     summary: 'Get a repo',
     description:
       'Fetch a repo by id. `defaultBranch` is its persisted verified forge ' +
-      'default and remains optional/nullable for a legacy unverified row.',
+      'default, preserves arbitrary valid branch names without substituting a ' +
+      'conventional default, and remains optional/nullable for a legacy unverified row.',
     scope: 'repos:read',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1309,7 +1315,10 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     method: 'get',
     path: '/v1/schedules',
     summary: 'List schedules',
-    description: 'Owner-scoped keyset-paginated list of task schedules.',
+    description:
+      'Owner-scoped keyset-paginated list of task schedules. Each latest run ' +
+      'preserves its optional canonical `taskFailure`, including deployment ' +
+      'dependency failures with the `repair_deployment` action.',
     scope: 'tasks:read',
     ownerPolicy: 'required',
     streaming: false,
@@ -1318,7 +1327,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { query: V1ScheduleListQuerySchemaPair },
     querySchema: V1ScheduleListQuerySchema,
     successStatus: 200,
-    responseDescription: 'A page of schedules plus the next-page cursor.',
+    responseDescription:
+      'A page of schedules, including safe latest-run task failures, plus the next-page cursor.',
     responseSchema: V1ListSchedulesResponseSchema,
     errors: [...COMMON_ERRORS, 'owner_required'],
     restErrorProjections: [SCHEDULE_OWNER_REQUIRED_REST_PROJECTION],
@@ -1339,7 +1349,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
       'descriptors such as daily, weekdays, weekly, monthly, hourly, or ' +
       'minuteInterval; cronExpression and timezone remain accepted for ' +
       'compatibility clients. The task template is validated through the same ' +
-      'task creation rules.',
+      'task creation rules, and a returned latest run preserves its canonical ' +
+      'optional `taskFailure` and operator action.',
     scope: 'tasks:write',
     ownerPolicy: 'required',
     streaming: false,
@@ -1348,7 +1359,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { body: CreateScheduleRequestSchemaPair },
     requestSchema: CreateScheduleRequestSchema,
     successStatus: 201,
-    responseDescription: 'The created schedule.',
+    responseDescription:
+      'The created schedule with any safe latest-run task failure preserved.',
     responseSchema: ScheduleResponseSchema,
     additionalErrorStatuses: [404, 422, 503],
     errors: [
@@ -1377,7 +1389,9 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     method: 'get',
     path: '/v1/schedules/{id}',
     summary: 'Get a schedule',
-    description: 'Fetch an owner-scoped schedule by id.',
+    description:
+      'Fetch an owner-scoped schedule by id, preserving the latest run canonical ' +
+      '`taskFailure` and operator action when present.',
     scope: 'tasks:read',
     ownerPolicy: 'required',
     streaming: false,
@@ -1386,7 +1400,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { params: PublicV1IdParamsSchemaPair },
     paramsSchema: PublicV1IdParamsSchema,
     successStatus: 200,
-    responseDescription: 'The schedule.',
+    responseDescription:
+      'The schedule with any safe latest-run task failure preserved.',
     responseSchema: ScheduleResponseSchema,
     errors: OWNER_READ_BY_ID_ERRORS,
     restErrorProjections: [SCHEDULE_OWNER_REQUIRED_REST_PROJECTION],
@@ -1405,7 +1420,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     description:
       'Update recurrence, policies, enabled state, or task template. Prefer ' +
       'daily, weekdays, weekly, monthly, hourly, or minuteInterval recurrence ' +
-      'descriptors; cronExpression and timezone remain compatibility fields.',
+      'descriptors; cronExpression and timezone remain compatibility fields. ' +
+      'The response preserves any canonical latest-run `taskFailure` and action.',
     scope: 'tasks:write',
     ownerPolicy: 'required',
     streaming: false,
@@ -1418,7 +1434,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     paramsSchema: PublicV1IdParamsSchema,
     requestSchema: UpdateScheduleRequestSchema,
     successStatus: 200,
-    responseDescription: 'The updated schedule.',
+    responseDescription:
+      'The updated schedule with any safe latest-run task failure preserved.',
     responseSchema: ScheduleResponseSchema,
     additionalErrorStatuses: [422, 503],
     errors: [
@@ -1445,7 +1462,9 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     method: 'post',
     path: '/v1/schedules/{id}/pause',
     summary: 'Pause a schedule',
-    description: 'Disable future fires for an owner-scoped schedule.',
+    description:
+      'Disable future fires for an owner-scoped schedule while preserving any ' +
+      'canonical latest-run `taskFailure` and operator action.',
     scope: 'tasks:write',
     ownerPolicy: 'required',
     streaming: false,
@@ -1454,7 +1473,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { params: PublicV1IdParamsSchemaPair },
     paramsSchema: PublicV1IdParamsSchema,
     successStatus: 200,
-    responseDescription: 'The paused schedule.',
+    responseDescription:
+      'The paused schedule with any safe latest-run task failure preserved.',
     responseSchema: ScheduleResponseSchema,
     errors: OWNER_WRITE_BY_ID_ERRORS,
     restErrorProjections: [SCHEDULE_OWNER_REQUIRED_REST_PROJECTION],
@@ -1470,7 +1490,9 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     method: 'post',
     path: '/v1/schedules/{id}/resume',
     summary: 'Resume a schedule',
-    description: 'Enable a schedule and compute its next future fire time.',
+    description:
+      'Enable a schedule and compute its next future fire time while preserving ' +
+      'any canonical latest-run `taskFailure` and operator action.',
     scope: 'tasks:write',
     ownerPolicy: 'required',
     streaming: false,
@@ -1479,7 +1501,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     input: { params: PublicV1IdParamsSchemaPair },
     paramsSchema: PublicV1IdParamsSchema,
     successStatus: 200,
-    responseDescription: 'The resumed schedule.',
+    responseDescription:
+      'The resumed schedule with any safe latest-run task failure preserved.',
     responseSchema: ScheduleResponseSchema,
     additionalErrorStatuses: [503],
     errors: [
@@ -1505,7 +1528,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     description:
       'Consume the current schedule period immediately and advance nextRunAt to ' +
       'the next period. expectedPeriodKey can bind a retry to the period observed ' +
-      'by the caller.',
+      'by the caller. The response preserves any canonical latest-run ' +
+      '`taskFailure`, including the deployment-repair action.',
     scope: 'tasks:write',
     ownerPolicy: 'required',
     streaming: false,
@@ -1518,7 +1542,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     paramsSchema: PublicV1IdParamsSchema,
     requestSchema: DispatchScheduleRequestSchema,
     successStatus: 200,
-    responseDescription: 'The schedule after the immediate dispatch.',
+    responseDescription:
+      'The schedule after dispatch with any safe latest-run task failure preserved.',
     responseSchema: ScheduleResponseSchema,
     additionalErrorStatuses: [409, 503],
     errors: [
@@ -1578,7 +1603,9 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     path: '/v1/schedules/{id}/runs',
     summary: "List a schedule's runs",
     description:
-      'Owner-scoped keyset-paginated run ledger ordered by scheduled fire time.',
+      'Owner-scoped keyset-paginated run ledger ordered by scheduled fire time. ' +
+      'Each item preserves its optional canonical `taskFailure`, including ' +
+      'deployment dependency failures with the `repair_deployment` action.',
     scope: 'tasks:read',
     ownerPolicy: 'required',
     streaming: false,
@@ -1591,7 +1618,8 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     paramsSchema: PublicV1IdParamsSchema,
     querySchema: V1ScheduleListQuerySchema,
     successStatus: 200,
-    responseDescription: 'A page of schedule runs plus the next-page cursor.',
+    responseDescription:
+      'A page of schedule runs with safe task failures plus the next-page cursor.',
     responseSchema: V1ListScheduleRunsResponseSchema,
     errors: OWNER_READ_BY_ID_ERRORS,
     restErrorProjections: [SCHEDULE_OWNER_REQUIRED_REST_PROJECTION],

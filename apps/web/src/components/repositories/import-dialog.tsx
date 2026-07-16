@@ -13,12 +13,12 @@
  *   3. available list  — a search row (筛选仓库 input + a「N 个可导入」count chip),
  *                         the list head, and one candidate row per GitHub repo.
  *
- * Candidate reconciliation (task 14.2): each GitHub candidate is checked against
- * the already-imported platform repos (by GitHub numeric id AND `owner/name`
- * slug). An already-imported candidate is disabled and labelled 已导入 instead of
- * offering an 导入 button — and an import that races a concurrent import (the
- * real endpoint answers 409 already-imported) is reconciled the same way rather
- * than surfaced as an error. The data is read EXCLUSIVELY through
+ * Candidate reconciliation (task 14.2): each candidate is checked against the
+ * already-imported platform repos by stable GitHub id/slug or normalized clone
+ * identity. An imported candidate offers verified default-branch refresh rather
+ * than a second import; a synchronous fence prevents duplicate probes. An import
+ * that races a concurrent import (the real endpoint answers 409 already-imported)
+ * is reconciled the same way rather than surfaced as an error. Data is read through
  * `githubReposQuery` (never a bespoke fetch), so flipping the `githubImport`
  * capability repoints it at the real `GET /user/repos` with no change here; the
  * distinct empty-vs-error-vs-PAT-required states are kept as honest seams.
@@ -48,7 +48,15 @@ import {
   type Repo,
 } from "@cap/contracts";
 import { availableForgeReposQuery, githubReposQuery } from "@/lib/api/queries";
-import { createRepoMutation, importRepoMutation } from "@/lib/api/mutations";
+import {
+  createRepoMutation,
+  importRepoMutation,
+  refreshRepoDefaultBranchMutation,
+} from "@/lib/api/mutations";
+import {
+  claimRepoRefreshSubmission,
+  releaseRepoRefreshSubmission,
+} from "@/lib/repo-refresh-flow";
 import {
   ApiError,
   repoImportFailureFromApiError,
@@ -101,6 +109,34 @@ export function isAlreadyImported(
   return (
     index.githubIds.has(String(candidate.id)) ||
     index.fullNames.has(candidate.full_name.toLowerCase())
+  );
+}
+
+/** Resolve an imported GitHub candidate to its canonical platform Repo. */
+export function findImportedGithubRepo(
+  candidate: AvailableGithubRepo,
+  repos: readonly Repo[],
+): Repo | null {
+  const candidateId = String(candidate.id);
+  const candidateFullName = candidate.full_name.toLowerCase();
+  return (
+    repos.find((repo) => {
+      // A slug and numeric id are scoped to one forge installation. Require the
+      // canonical github.com clone host as well as a compatible stored forge so
+      // legacy null rows and self-hosted forges cannot turn a GitHub candidate
+      // into a refresh action for the wrong platform Repo.
+      if (repo.forge && repo.forge !== "github") return false;
+      const parsedSource = parseImportGitUrl(repo.gitSource);
+      if (!parsedSource.ok) return false;
+      const source = new URL(parsedSource.gitSource);
+      if (source.hostname !== "github.com") return false;
+      if (repo.githubId === candidateId) return true;
+      const fullName = source.pathname
+        .replace(/^\/+|\/+$/g, "")
+        .replace(/\.git$/i, "")
+        .toLowerCase();
+      return fullName === candidateFullName;
+    }) ?? null
   );
 }
 
@@ -162,6 +198,12 @@ const REPO_IMPORT_FAILURE_PRESENTATIONS = {
     pill: "网络或 TLS 不可用",
     variant: "warn",
     message: "无法连接仓库主机，请检查服务端网络、代理和证书信任后重试。",
+  },
+  repo_platform_dependency_unavailable: {
+    pill: "部署依赖不可用",
+    variant: "danger",
+    message:
+      "服务端缺少仓库验证所需的运行依赖，请修复或升级 API 部署后重试；无需重新连接代码托管凭据。",
   },
   repo_default_branch_unresolved: {
     pill: "默认分支未解析",
@@ -291,6 +333,27 @@ export function buildPickerImportRequest(
   };
 }
 
+/** Resolve a Gitee/GitLab picker candidate by its normalized clone identity. */
+export function findImportedForgeRepo(
+  candidate: AvailableForgeRepo,
+  repos: readonly Repo[],
+): Repo | null {
+  const parsedCandidate = parseImportGitUrl(candidate.gitSource);
+  const candidateGitSource = parsedCandidate.ok
+    ? parsedCandidate.gitSource
+    : candidate.gitSource.trim();
+  return (
+    repos.find((repo) => {
+      if (repo.forge && repo.forge !== candidate.forge) return false;
+      const parsedRepo = parseImportGitUrl(repo.gitSource);
+      const repoGitSource = parsedRepo.ok
+        ? parsedRepo.gitSource
+        : repo.gitSource.trim();
+      return repoGitSource === candidateGitSource;
+    }) ?? null
+  );
+}
+
 /** The 仓库导入 dialog. */
 export function ImportDialog({
   open,
@@ -309,11 +372,15 @@ export function ImportDialog({
   // add-multi-forge-task-delivery: the selected import source (the picker switch).
   const [source, setSource] = React.useState<ForgeKind>("github");
   const [importingPath, setImportingPath] = React.useState<string | null>(null);
+  const [refreshingRepoId, setRefreshingRepoId] = React.useState<string | null>(
+    null,
+  );
   const [urlValue, setUrlValue] = React.useState("");
   const [urlName, setUrlName] = React.useState("");
   const [urlFailure, setUrlFailure] =
     React.useState<RepoImportFailurePresentation | null>(null);
   const urlImportFence = React.useRef(false);
+  const refreshFence = React.useRef<string | null>(null);
 
   const githubRepos = useQuery({ ...githubReposQuery(), enabled: armed });
   const importMutation = useMutation(importRepoMutation(queryClient));
@@ -323,6 +390,9 @@ export function ImportDialog({
     enabled: armed && source !== "github",
   });
   const createMutation = useMutation(createRepoMutation(queryClient));
+  const refreshMutation = useMutation(
+    refreshRepoDefaultBranchMutation(queryClient),
+  );
   const importingUrl =
     createMutation.isPending &&
     createMutation.variables?.importSource === "url";
@@ -342,11 +412,6 @@ export function ImportDialog({
   }, [open]);
 
   const candidates = githubRepos.data ?? [];
-
-  const importedIndex = React.useMemo(
-    () => buildImportedIndex(importedRepos),
-    [importedRepos],
-  );
 
   // Client-only filter over the candidate list (never touches the cache).
   const visible = React.useMemo(() => {
@@ -381,16 +446,6 @@ export function ImportDialog({
 
   // --- forge (gitlab/gitee) picker source ---------------------------------
   const forgeCandidates = forgeRepos.data ?? [];
-  const importedGitSources = React.useMemo(
-    () =>
-      new Set(
-        importedRepos.map((r) => {
-          const parsed = parseImportGitUrl(r.gitSource);
-          return parsed.ok ? parsed.gitSource : r.gitSource.trim();
-        }),
-      ),
-    [importedRepos],
-  );
   const visibleForge = React.useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return forgeCandidates;
@@ -415,6 +470,26 @@ export function ImportDialog({
         },
       },
     );
+  }
+
+  function handleRefreshRepo(repo: Repo) {
+    if (!claimRepoRefreshSubmission(refreshFence, repo.id)) return;
+    setRefreshingRepoId(repo.id);
+    refreshMutation.mutate(repo.id, {
+      onSuccess: (refreshed) => {
+        toast.success(
+          `已刷新 ${refreshed.name} 的默认分支：${refreshed.defaultBranch ?? "待解析"}`,
+        );
+      },
+      onError: (error) => {
+        const failure = repoImportFailurePresentation(error);
+        toast.error(`${failure.pill}：${failure.message}`);
+      },
+      onSettled: () => {
+        releaseRepoRefreshSubmission(refreshFence, repo.id);
+        setRefreshingRepoId(null);
+      },
+    });
   }
 
   function handleImportUrl() {
@@ -732,8 +807,13 @@ export function ImportDialog({
               ) : (
                 <div data-available-repo-list>
                   {visible.map((candidate) => {
-                    const imported = isAlreadyImported(candidate, importedIndex);
+                    const importedRepo = findImportedGithubRepo(
+                      candidate,
+                      importedRepos,
+                    );
+                    const imported = importedRepo !== null;
                     const importing = importingId === candidate.id;
+                    const refreshing = refreshingRepoId === importedRepo?.id;
                     return (
                       <RepoRow
                         key={candidate.id}
@@ -756,19 +836,26 @@ export function ImportDialog({
                         sync={
                           <>
                             <span className="font-mono text-xs text-foreground">
-                              {candidate.defaultBranch}
+                              {importedRepo
+                                ? importedRepo.defaultBranch ?? "待解析"
+                                : candidate.defaultBranch}
                             </span>
                             <small className="text-xs">默认分支</small>
                           </>
                         }
                         action={
                           imported ? (
-                            <span
-                              aria-disabled="true"
-                              className="inline-flex h-[30px] cursor-default items-center justify-center rounded-md bg-[#fafafa] px-[7px] text-[13px] font-medium text-muted-foreground"
+                            <button
+                              type="button"
+                              data-refresh-repo-id={importedRepo?.id}
+                              disabled={refreshingRepoId !== null}
+                              onClick={() => {
+                                if (importedRepo) handleRefreshRepo(importedRepo);
+                              }}
+                              className="inline-flex h-[30px] items-center justify-center whitespace-nowrap rounded-md bg-[#f6f8fa] px-[7px] text-[13px] font-medium text-foreground shadow-[0_0_0_1px_var(--border)] hover:bg-secondary disabled:pointer-events-none disabled:opacity-60"
                             >
-                              已导入
-                            </span>
+                              {refreshing ? "刷新中…" : "刷新分支"}
+                            </button>
                           ) : (
                             <button
                               type="button"
@@ -857,12 +944,13 @@ export function ImportDialog({
               ) : (
                 <div data-available-repo-list>
                   {visibleForge.map((candidate) => {
-                    const parsed = parseImportGitUrl(candidate.gitSource);
-                    const normalizedGitSource = parsed.ok
-                      ? parsed.gitSource
-                      : candidate.gitSource;
-                    const imported = importedGitSources.has(normalizedGitSource);
+                    const importedRepo = findImportedForgeRepo(
+                      candidate,
+                      importedRepos,
+                    );
+                    const imported = importedRepo !== null;
                     const importing = importingPath === candidate.gitSource;
+                    const refreshing = refreshingRepoId === importedRepo?.id;
                     return (
                       <RepoRow
                         key={candidate.gitSource}
@@ -876,19 +964,26 @@ export function ImportDialog({
                         sync={
                           <>
                             <span className="font-mono text-xs text-foreground">
-                              {candidate.defaultBranch}
+                              {importedRepo
+                                ? importedRepo.defaultBranch ?? "待解析"
+                                : candidate.defaultBranch}
                             </span>
                             <small className="text-xs">默认分支</small>
                           </>
                         }
                         action={
                           imported ? (
-                            <span
-                              aria-disabled="true"
-                              className="inline-flex h-[30px] cursor-default items-center justify-center rounded-md bg-[#fafafa] px-[7px] text-[13px] font-medium text-muted-foreground"
+                            <button
+                              type="button"
+                              data-refresh-repo-id={importedRepo?.id}
+                              disabled={refreshingRepoId !== null}
+                              onClick={() => {
+                                if (importedRepo) handleRefreshRepo(importedRepo);
+                              }}
+                              className="inline-flex h-[30px] items-center justify-center whitespace-nowrap rounded-md bg-[#f6f8fa] px-[7px] text-[13px] font-medium text-foreground shadow-[0_0_0_1px_var(--border)] hover:bg-secondary disabled:pointer-events-none disabled:opacity-60"
                             >
-                              已导入
-                            </span>
+                              {refreshing ? "刷新中…" : "刷新分支"}
+                            </button>
                           ) : (
                             <button
                               type="button"

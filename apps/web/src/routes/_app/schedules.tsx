@@ -35,6 +35,11 @@ import { recurrenceSummary } from "@/lib/task-form";
 import { NewTaskDialog } from "@/components/dashboard/new-task-dialog";
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { StatusPill } from "@/components/status-pill";
+import { TaskProvisioningFailureAlert } from "@/components/task-provisioning-status";
+import {
+  isProvisioningTaskFailure,
+  provisioningFailurePresentation,
+} from "@/lib/task-provisioning";
 import {
   RuntimeAuthFailureBadge,
   RuntimeCredentialAlert,
@@ -500,6 +505,10 @@ export function ScheduleDetail({
         compact
         contextLabel="最近一次任务失败原因"
       />
+      <TaskProvisioningFailureAlert
+        failure={schedule.latestRun?.taskFailure ?? null}
+        contextLabel="最近一次任务失败原因"
+      />
       <div className="flex flex-wrap gap-2">
         <Button
           type="button"
@@ -663,6 +672,11 @@ export function RunList({
               contextLabel="本次任务失败原因"
               className="mt-2"
             />
+            <TaskProvisioningFailureAlert
+              failure={run.taskFailure}
+              contextLabel="本次任务失败原因"
+              className="mt-2"
+            />
           </div>
           {run.taskId ? (
             <Button asChild variant="secondary" size="sm" className="gap-2">
@@ -720,7 +734,16 @@ export function RunResultBadges({
       {dispatchBadge(run)}
       {taskStatusBadge(run.taskStatus ?? null)}
       {showFailure && run.taskFailure ? (
-        <RuntimeAuthFailureBadge failure={run.taskFailure} />
+        isProvisioningTaskFailure(run.taskFailure) ? (
+          <Badge
+            variant="destructive"
+            data-provisioning-failure={run.taskFailure.code}
+          >
+            {provisioningFailurePresentation(run.taskFailure).title}
+          </Badge>
+        ) : (
+          <RuntimeAuthFailureBadge failure={run.taskFailure} />
+        )
       ) : null}
     </span>
   );

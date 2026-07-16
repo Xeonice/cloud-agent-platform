@@ -164,12 +164,32 @@ case "$*" in
   *) printf '{"token":"test"}' ;;
 esac
 `);
+  writeCommand(binDir, 'docker', `
+echo "docker $*" >> "$CAP_TEST_LOG"
+case "$1" in
+  pull) exit 0 ;;
+  run)
+    case "$*" in
+      *"--entrypoint git"*)
+        if [ "$CAP_FAKE_GIT_MISSING" = "1" ]; then
+          echo "ENOENT cap-release-tail-secret-canary" >&2
+          exit 127
+        fi
+        echo "git version 2.39.5"
+        ;;
+      *"--entrypoint /usr/local/bin/node"*) exit 0 ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+`);
   writeCommand(binDir, 'sleep', 'exit 0');
 
   return { root, binDir, logPath, manifestPath, releaseAssetsPath, badReleaseAssetsPath };
 }
 
-function runRelease(fixture, releaseAssetsPath) {
+function runRelease(fixture, releaseAssetsPath, extraEnv = {}) {
   return spawnSync('bash', [releaseScript, version], {
     cwd: repoRoot,
     env: {
@@ -178,6 +198,7 @@ function runRelease(fixture, releaseAssetsPath) {
       CAP_TEST_LOG: fixture.logPath,
       CAP_FAKE_MANIFEST: fixture.manifestPath,
       CAP_FAKE_RELEASE_ASSETS: releaseAssetsPath,
+      ...extraEnv,
     },
     encoding: 'utf8',
   });
@@ -188,9 +209,35 @@ const success = runRelease(fixture, fixture.releaseAssetsPath);
 assert.equal(success.status, 0, success.stderr || success.stdout);
 assert.match(success.stdout, /part-0001 -> digest and size verified/);
 assert.match(success.stdout, /part-0002 -> digest and size verified/);
+assert.match(success.stdout, /cap-api image smoke passed: Git and startup preflight verified/);
 assert.doesNotMatch(success.stdout, /cap-aio-sandbox-v1\.2\.3-linux-amd64\.docker\.tar\.zst -> present/);
 const commands = readFileSync(fixture.logPath, 'utf8');
 assert.match(commands, /run list .*--branch v1\.2\.3 .*--event release/);
+assert.match(
+  commands,
+  /docker pull --platform linux\/amd64 ghcr\.io\/xeonice\/cap-api:v1\.2\.3/,
+);
+assert.match(
+  commands,
+  /docker run --rm --pull=never --platform linux\/amd64 --entrypoint git ghcr\.io\/xeonice\/cap-api:v1\.2\.3 --version/,
+);
+assert.match(
+  commands,
+  /docker run --rm --pull=never --platform linux\/amd64 --entrypoint \/usr\/local\/bin\/node ghcr\.io\/xeonice\/cap-api:v1\.2\.3 -e/,
+);
+
+const missingGit = runRelease(fixture, fixture.releaseAssetsPath, {
+  CAP_FAKE_GIT_MISSING: '1',
+});
+assert.notEqual(missingGit.status, 0);
+assert.match(
+  `${missingGit.stdout}\n${missingGit.stderr}`,
+  /published cap-api:v1\.2\.3 is missing its required Git runtime dependency/,
+);
+assert.doesNotMatch(
+  `${missingGit.stdout}\n${missingGit.stderr}`,
+  /cap-release-tail-secret-canary|ENOENT/,
+);
 
 const failure = runRelease(fixture, fixture.badReleaseAssetsPath);
 assert.notEqual(failure.status, 0);
