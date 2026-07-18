@@ -692,6 +692,7 @@ test('Console and MCP create delegates converge on TasksService.create', async (
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
   await mcp.createTask(REPO_ID, { prompt: 'mcp' }, USER_ID);
 

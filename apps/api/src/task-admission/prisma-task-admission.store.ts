@@ -29,6 +29,7 @@ const CLAIM_SOURCE_STATES = new Set<TaskAdmissionClaimSourceState>([
   'queued',
   'retrying',
   'running',
+  'succeeded',
 ]);
 
 const SAFE_CAUSE_CODES = new Set<ProvisioningTaskFailureCode>([
@@ -104,6 +105,29 @@ export function buildTaskAdmissionClaimQuery(
           w."state" = 'running'
           AND w."lease_until" <= clock_timestamp()
         )
+        OR (
+          -- Provisioning may already be settled while the launched Task keeps
+          -- owning a generation-fenced SandboxRun.  A later Task terminal CAS
+          -- reopens only the cleanup lease; the terminal attempt branch below
+          -- preserves its attempt number and recoverTerminal performs no
+          -- provisioning work.
+          w."state" = 'succeeded'
+          AND t."status"::text IN (
+            'completed',
+            'failed',
+            'cancelled',
+            'agent_failed_to_start'
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM "sandbox_runs" AS run
+            WHERE
+              run."task_id" = w."task_id"
+              AND run."status" IN ('provisioning', 'running', 'deleting')
+              AND run."owner_generation" IS NOT NULL
+              AND run."resource_generation" IS NOT NULL
+          )
+        )
       ORDER BY
         CASE
           WHEN w."state" = 'running' THEN w."lease_until"
@@ -118,12 +142,14 @@ export function buildTaskAdmissionClaimQuery(
       SET
         "state" = 'running',
         "attempt" = CASE
-          WHEN w."state" = 'queued' THEN w."attempt"
           -- Terminal recovery is completing the same provisioning attempt
           -- whose Task failure already committed. Advancing it here would
           -- make a repaired detail audit disagree with the persisted failure.
-          WHEN w."state" = 'running' AND c."task_terminal"
-            THEN GREATEST(w."attempt", 1)
+          -- This must precede every source-state branch: a terminal Task may
+          -- be recovered from accepted, queued, retrying, or expired running
+          -- work, and none of those paths starts a new attempt.
+          WHEN c."task_terminal" THEN GREATEST(w."attempt", 1)
+          WHEN w."state" = 'queued' THEN w."attempt"
           ELSE w."attempt" + 1
         END,
         "lease_owner" = ${request.leaseToken},
@@ -255,7 +281,9 @@ export class PrismaTaskAdmissionStore extends TaskAdmissionStore {
     const settlement = normalizeSettlement(request.settlement);
     const taskFence = buildTaskFenceExistsPredicate(request.taskFences, 'w');
     const causeCode =
-      settlement.state === 'failed' ? settlement.causeCode : null;
+      settlement.state === 'failed' || settlement.state === 'retrying'
+        ? settlement.causeCode
+        : null;
     const availableAfterMs =
       settlement.state === 'queued' || settlement.state === 'retrying'
         ? settlement.availableAfterMs
@@ -398,11 +426,13 @@ function normalizeSettlement(
     }
     return { state: 'succeeded', stage: 'complete' };
   }
-  if (settlement.state === 'failed') {
+  if (settlement.state === 'failed' || settlement.state === 'retrying') {
     if (!SAFE_CAUSE_CODES.has(settlement.causeCode)) {
       throw new Error('Task admission settlement has an unsafe cause code');
     }
-    return { ...settlement, stage };
+    if (settlement.state === 'failed') {
+      return { ...settlement, stage };
+    }
   }
   if (settlement.state === 'queued' || settlement.state === 'retrying') {
     assertNonnegativeDuration(

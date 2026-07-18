@@ -26,6 +26,7 @@ describe("isCapable", () => {
     expect(isCapable("tasks")).toBe(true);
     expect(isCapable("repos")).toBe(true);
     expect(isCapable("createTask")).toBe(true);
+    expect(isCapable("taskProvisioningDiagnostics")).toBe(true);
   });
 
   it("reports the session-gated domains as capable now their real paths are wired", () => {

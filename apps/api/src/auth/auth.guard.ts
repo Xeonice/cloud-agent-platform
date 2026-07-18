@@ -6,7 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import type { Scope, SessionUser } from '@cap/contracts';
+import type { SessionUser } from '@cap/contracts';
 import { AuthSessionService } from './auth-session.service';
 import {
   resolveOperatorPrincipal,
@@ -202,7 +202,7 @@ export class AuthGuard implements CanActivate {
           return {
             kind: 'mcp',
             user: authInfo.owner,
-            scopes: authInfo.scopes as Scope[],
+            scopes: authInfo.scopes,
           };
         },
       },

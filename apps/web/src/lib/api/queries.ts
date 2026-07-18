@@ -16,7 +16,12 @@
  * Terminal bytes never enter Query (D5.4) — these factories cover discrete reads
  * only; raw WS frames go straight to `term.write`.
  */
-import { queryOptions } from "@tanstack/react-query";
+import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
+import type { InfiniteData } from "@tanstack/react-query";
+import {
+  TASK_PROVISIONING_DIAGNOSTIC_DEFAULT_PAGE_SIZE,
+  TaskProvisioningDiagnosticsQuerySchema,
+} from "@cap/contracts";
 import type {
   AuditQuery,
   ListTasksResponse,
@@ -46,6 +51,7 @@ import type {
   ListScheduleRunsResponse,
   RuntimeModelCatalog,
   RuntimeModelCatalogQuery,
+  TaskProvisioningDiagnosticsResponse,
 } from "@cap/contracts";
 import { isCapable } from "./capabilities";
 import { agentLabel } from "../runtime-label";
@@ -74,6 +80,12 @@ import type {
 export const queryKeys = {
   tasks: ["tasks"] as const,
   task: (id: string) => ["tasks", id] as const,
+  /**
+   * Dedicated root keeps diagnostic evidence out of the ordinary Task,
+   * transcript, terminal, schedule, and task-prefix invalidation caches.
+   */
+  taskProvisioningDiagnostics: (id: string, limit: number) =>
+    ["task-provisioning-diagnostics", id, { limit }] as const,
   repos: ["repos"] as const,
   defaultRepo: ["repos", "default"] as const,
   /** Per-runtime readiness for the create-task dialog selector (`GET /runtimes`). */
@@ -179,6 +191,37 @@ export function taskQuery(id: string) {
   return queryOptions<TaskResponse>({
     queryKey: queryKeys.task(id),
     queryFn: () => (isCapable("tasks") ? real.getTask(id) : mock.mockGetTask(id)),
+  });
+}
+
+/**
+ * Cursor-backed canonical diagnostics pages for the task-detail panel. Cursor
+ * values are page parameters, never cache-key material; one isolated infinite
+ * query owns the stable ordered page chain for a task and bounded page size.
+ */
+export function taskProvisioningDiagnosticsInfiniteQuery(
+  id: string,
+  limit: number = TASK_PROVISIONING_DIAGNOSTIC_DEFAULT_PAGE_SIZE,
+) {
+  const boundedLimit = TaskProvisioningDiagnosticsQuerySchema.parse({ limit }).limit;
+  return infiniteQueryOptions<
+    TaskProvisioningDiagnosticsResponse,
+    Error,
+    InfiniteData<TaskProvisioningDiagnosticsResponse, string | undefined>,
+    ReturnType<typeof queryKeys.taskProvisioningDiagnostics>,
+    string | undefined
+  >({
+    queryKey: queryKeys.taskProvisioningDiagnostics(id, boundedLimit),
+    initialPageParam: undefined,
+    queryFn: ({ pageParam }) =>
+      isCapable("taskProvisioningDiagnostics")
+        ? real.getTaskProvisioningDiagnostics(id, {
+            limit: boundedLimit,
+            ...(pageParam === undefined ? {} : { cursor: pageParam }),
+          })
+        : mock.mockTaskProvisioningDiagnostics(id),
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    retry: false,
   });
 }
 

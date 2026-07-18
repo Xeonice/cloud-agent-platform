@@ -32,6 +32,7 @@ import { ScheduledTasksService } from '../scheduled-tasks/scheduled-tasks.servic
 import { RuntimeModelCatalogService } from '../runtime-models/runtime-model-catalog.service';
 import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
 import { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
+import { TaskProvisioningDiagnosticsPublicQueryService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { listRepoPage, listTaskPage } from '../v1/public-list-pages';
 import {
@@ -74,6 +75,7 @@ export class McpServerFactory implements McpToolDeps {
     @Inject(TRANSCRIPT_STORE) private readonly transcripts: TranscriptStore,
     @Inject(AUDIT_TIMELINE_READER) private readonly audit: AuditTimelineReader,
     @Inject(SANDBOX_PROVIDER) private readonly sandbox: SandboxProvider,
+    private readonly taskProvisioningDiagnostics: TaskProvisioningDiagnosticsPublicQueryService,
   ) {}
 
   /** Create one tools-registered SDK server for one stateless HTTP request. */
@@ -116,6 +118,14 @@ export class McpServerFactory implements McpToolDeps {
 
   getTask(id: string) {
     return this.tasks.findById(id);
+  }
+
+  getTaskProvisioningDiagnostics(
+    ownerUserId: string,
+    id: string,
+    query: Parameters<McpToolDeps['getTaskProvisioningDiagnostics']>[2],
+  ) {
+    return this.taskProvisioningDiagnostics.readForOwner(ownerUserId, id, query);
   }
 
   listTasks(query: Parameters<McpToolDeps['listTasks']>[0]) {

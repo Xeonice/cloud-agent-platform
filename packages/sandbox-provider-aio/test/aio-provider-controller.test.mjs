@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
+const core = await import(
+  new URL('../../sandbox-core/dist/index.js', import.meta.url).href
+);
 const { tar } = await import('./test-tar-helpers.mjs');
 
 let passed = 0;
@@ -451,9 +454,14 @@ await test('validates AIO environments with transient container probes and clean
     },
   });
 
+  let diagnosticId = 0;
+  const diagnostics = core.createNonPersistingSandboxProvisioningDiagnosticObserver({
+    createOperationId: () =>
+      `32000000-0000-4000-8000-${String(++diagnosticId).padStart(12, '0')}`,
+  });
   const result = await mod.validateAioEnvironment({
-    taskId: 'task-env-probe',
     controller,
+    diagnostics,
     environment: {
       environmentId: 'env-aio',
       sourceKind: 'aio-docker-image',
@@ -475,10 +483,17 @@ await test('validates AIO environments with transient container probes and clean
     ],
   );
   assert.equal(docker.created[0].options.Image, 'sha256:aio-image-id');
-  assert.deepEqual(docker.byName.get('cap-aio-task-env-probe').calls.at(-1), [
-    'remove',
-    { force: true },
-  ]);
+  assert.equal(diagnostics.mode, 'non-persisting');
+  assert.equal(Object.hasOwn(diagnostics, 'attemptContext'), false);
+  assert.equal(
+    docker.byName
+      .get(docker.created[0].options.name)
+      .calls.some(
+        (call) =>
+          call[0] === 'remove' && call[1]?.force === true,
+      ),
+    true,
+  );
 });
 
 await test('default fetch and delay implementations are usable from the controller', async () => {

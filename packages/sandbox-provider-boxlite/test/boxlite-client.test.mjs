@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
+const core = await import(new URL('../../sandbox-core/dist/index.js', import.meta.url).href);
 
 let passed = 0;
 let failed = 0;
@@ -582,6 +583,174 @@ await test('native REST client uses BoxLite 0.9 routes for boxes exec and files'
     tty: false,
     timeout_seconds: 1,
   });
+});
+
+await test('native execution settlement keeps terminal state separate from nullable exit code', async () => {
+  assert.deepEqual(
+    mod.parseBoxLiteNativeExecutionPollResult({
+      status: 'failed',
+      stderr: 'CAP_NATIVE_OUTPUT_SECRET_CANARY',
+    }),
+    {
+      kind: 'terminal',
+      nativeState: 'failed',
+      exitCode: null,
+      stdout: '',
+      stderr: 'CAP_NATIVE_OUTPUT_SECRET_CANARY',
+      output: 'CAP_NATIVE_OUTPUT_SECRET_CANARY',
+      outcome: 'failed',
+      cause: 'missing_exit_code',
+      retryable: false,
+      anomaly: 'missing_exit_code',
+    },
+  );
+  assert.deepEqual(
+    mod.parseBoxLiteNativeExecutionPollResult({ status: 'completed' }),
+    {
+      kind: 'invalid',
+      nativeState: 'completed',
+      exitCode: null,
+      outcome: 'failed',
+      cause: 'protocol_failed',
+      retryable: false,
+      anomaly: 'invalid_poll_settlement',
+    },
+  );
+  assert.equal(
+    mod.parseBoxLiteNativeExecutionPollResult({ status: 'completed', exit_code: 0 }).outcome,
+    'succeeded',
+  );
+  assert.equal(
+    mod.parseBoxLiteNativeExecutionPollResult({ status: 'completed', exit_code: 7 }).outcome,
+    'failed',
+  );
+
+  const execWithPoll = async (pollResponse, timeoutMs = 1_000) => {
+    const { fetch } = makeFetch({
+      'POST /v1/default/boxes/box/exec': response(200, {
+        execution_id: 'CAP_NATIVE_EXECUTION_ID_SECRET_CANARY',
+      }),
+      'GET /v1/default/boxes/box/executions/CAP_NATIVE_EXECUTION_ID_SECRET_CANARY':
+        typeof pollResponse === 'function'
+          ? pollResponse
+          : response(200, pollResponse),
+    });
+    return new mod.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch,
+    }).exec({
+      sandboxId: 'box',
+      command: 'CAP_NATIVE_COMMAND_SECRET_CANARY',
+      timeoutMs,
+    });
+  };
+
+  const completed = await execWithPoll({ status: 'completed', exit_code: 0 });
+  assert.equal(completed.exitCode, 0);
+  assert.equal(completed.nativeState, 'completed');
+  assert.equal(completed.nativeExitCode, 0);
+
+  for (const [nativeState, exitCode] of [
+    ['completed', 7],
+    ['failed', 9],
+    ['killed', 137],
+  ]) {
+    const result = await execWithPoll({ status: nativeState, exit_code: exitCode });
+    assert.equal(result.exitCode, exitCode);
+    assert.equal(result.nativeState, nativeState);
+    assert.equal(result.nativeExitCode, exitCode);
+  }
+
+  for (const nativeState of ['failed', 'killed']) {
+    await assert.rejects(
+      () =>
+        execWithPoll({
+          status: nativeState,
+          stderr: 'CAP_NATIVE_OUTPUT_SECRET_CANARY',
+        }),
+      (error) => {
+        assert.equal(error.code, 'sandbox_command_settlement_error');
+        assert.equal(error.settlement, 'failed_without_exit');
+        assert.deepEqual(core.classifySandboxCommandExecutionRejection(error), {
+          settlement: 'failed_without_exit',
+          outcome: 'failed',
+          cause: 'missing_exit_code',
+          retryable: false,
+          exitCode: null,
+          anomaly: 'missing_exit_code',
+        });
+        assert.doesNotMatch(JSON.stringify(error), /SECRET_CANARY/u);
+        return true;
+      },
+    );
+  }
+
+  for (const invalidPoll of [
+    { status: 'failed', exit_code: 0 },
+    { status: 'killed', exit_code: 0 },
+    { status: 'completed' },
+    { status: 'completed', exit_code: '0' },
+    { status: 'mystery', exit_code: 0 },
+    { status: 'completed', state: 'failed', exit_code: 0 },
+    { exit_code: 0 },
+    null,
+  ]) {
+    await assert.rejects(
+      () => execWithPoll(invalidPoll),
+      (error) =>
+        error?.code === 'sandbox_command_settlement_error' &&
+        error?.settlement === 'protocol',
+    );
+  }
+
+  const nativeTimeout = await execWithPoll({ status: 'timed_out' });
+  assert.equal(nativeTimeout.exitCode, 124);
+  assert.equal(nativeTimeout.timedOut, true);
+  assert.equal(nativeTimeout.nativeState, 'timed_out');
+  assert.equal(nativeTimeout.nativeExitCode, null);
+
+  await assert.rejects(
+    () =>
+      execWithPoll(() => {
+        throw new Error('CAP_NATIVE_TRANSPORT_SECRET_CANARY');
+      }),
+    (error) => {
+      assert.equal(error.code, 'sandbox_command_settlement_error');
+      assert.equal(error.settlement, 'transport');
+      assert.doesNotMatch(error.message, /SECRET_CANARY/u);
+      assert.doesNotMatch(JSON.stringify(error), /SECRET_CANARY/u);
+      return true;
+    },
+  );
+  await assert.rejects(
+    () =>
+      execWithPoll(() =>
+        response(503, {
+          error: 'CAP_NATIVE_POLL_503_BODY_SECRET_CANARY',
+        }),
+      ),
+    (error) => {
+      assert.equal(error.code, 'sandbox_command_settlement_error');
+      assert.equal(error.settlement, 'transport');
+      assert.deepEqual(core.classifySandboxCommandExecutionRejection(error), {
+        settlement: 'transport',
+        outcome: 'failed',
+        cause: 'transport_failed',
+        retryable: true,
+        exitCode: null,
+      });
+      assert.doesNotMatch(error.message, /SECRET_CANARY/u);
+      assert.doesNotMatch(JSON.stringify(error), /SECRET_CANARY/u);
+      return true;
+    },
+  );
+  await assert.rejects(
+    () => execWithPoll({ status: 'running' }, 1),
+    (error) =>
+      error?.code === 'sandbox_command_settlement_error' &&
+      error?.settlement === 'indeterminate',
+  );
 });
 
 await test('native start failure exposes the partial create without deleting outside the provider fence', async () => {

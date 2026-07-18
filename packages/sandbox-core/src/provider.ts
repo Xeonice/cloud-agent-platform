@@ -4,6 +4,17 @@ import type { ExactHostGitCredential } from './git-credential.js';
 import type { TaskModelIntent } from './model-material.js';
 import type { SandboxExternalBoundaryGuard } from './external-boundary.js';
 import type {
+  SandboxProvisioningDiagnosticEmitter,
+  SandboxProvisioningDiagnosticObserver,
+} from './provisioning-diagnostics.js';
+import type {
+  BeginSandboxCleanupAttemptResult,
+  LegacySandboxTeardownProof,
+  SandboxCleanupAttemptEvidence,
+  SandboxPhysicalCleanupResult,
+  SettleSandboxCleanupAttemptResult,
+} from './cleanup.js';
+import type {
   SandboxResourceSnapshot,
   SandboxProvisioningBoundaryGuard,
   SandboxProvisioningProgressReporter,
@@ -232,10 +243,8 @@ export type SandboxRunCleanupAuthorization =
       readonly providerId: string;
     };
 
-/** Provider proof used to distinguish a completed delete from an unsafe 404. */
-export type SandboxTeardownResult =
-  | { readonly kind: 'found-and-cleaned' }
-  | { readonly kind: 'already-absent' };
+/** @deprecated Provider adapters migrate to SandboxPhysicalCleanupResult. */
+export type SandboxTeardownResult = LegacySandboxTeardownProof;
 
 /** Business disposition is independent from the cleanup authorization token. */
 export type SandboxTeardownDisposition =
@@ -252,7 +261,68 @@ export interface SandboxRunOwnerRecord {
   readonly connection?: SandboxConnection;
   readonly environment?: SandboxResolvedEnvironmentMetadata;
   readonly metadata?: SandboxDescriptorMetadata;
+  /** Latest bounded physical evidence; status remains cleanup authority. */
+  readonly cleanupAttemptInFlight?: boolean;
+  readonly cleanupAttemptCount?: number;
+  readonly cleanupLastAttemptId?: string;
+  readonly cleanupLastOutcome?: SandboxCleanupAttemptEvidence['outcome'];
+  readonly cleanupLastProof?: SandboxCleanupAttemptEvidence['proof'];
+  readonly cleanupLastCause?: SandboxCleanupAttemptEvidence['cause'];
+  readonly cleanupLastRetryable?: boolean;
+  readonly cleanupLastObservedAt?: Date;
+  /** Fresh provider-inventory proof that this exact deleting resource exists. */
+  readonly cleanupOrphanConfirmedAt?: Date;
 }
+
+export type SandboxRunCleanupAuthorityState =
+  | 'not_required'
+  | 'pending'
+  | 'succeeded'
+  | 'failed';
+
+export type SandboxRunCleanupOwnershipKind =
+  | 'generation'
+  | 'legacy'
+  | 'none';
+
+/**
+ * Secret-free read model of the canonical cleanup authority. It deliberately
+ * excludes provider ids, provider sandbox ids, generations, and arbitrary
+ * metadata. `SandboxRun.status` remains the authority; the remaining fields are
+ * only the latest bounded physical-attempt evidence.
+ */
+export interface SandboxRunCleanupAuthorityProjection {
+  readonly state: SandboxRunCleanupAuthorityState;
+  readonly ownershipKind: SandboxRunCleanupOwnershipKind;
+  /** Never infer presence from a failed/unconfirmed delete attempt. */
+  readonly orphanState: 'none' | 'unknown' | 'confirmed';
+  readonly status: SandboxRunOwnerStatus | null;
+  readonly attemptCount: number;
+  readonly lastAttemptOutcome: SandboxCleanupAttemptEvidence['outcome'] | null;
+  readonly lastAttemptProof: SandboxCleanupAttemptEvidence['proof'] | null;
+  readonly lastAttemptCause: SandboxCleanupAttemptEvidence['cause'] | null;
+  readonly lastAttemptRetryable: boolean | null;
+  readonly lastAttemptObservedAt: Date | null;
+}
+
+export type SandboxRunCleanupSettledStatus = Extract<
+  SandboxRunOwnerStatus,
+  'terminal' | 'removed' | 'failed'
+>;
+
+/**
+ * Legacy rows have no restart-safe exact owner. Their one bounded physical
+ * disposition can therefore only close the row: a successful exact removal is
+ * `removed`; retained resources and unconfirmed removal remain `terminal`.
+ */
+export type SandboxRunLegacyCleanupSettledStatus = Extract<
+  SandboxRunCleanupSettledStatus,
+  'terminal' | 'removed'
+>;
+
+export type SandboxRunCleanupSettledOwner = SandboxRunOwnerRecord & {
+  readonly status: SandboxRunCleanupSettledStatus;
+};
 
 export interface RecordSandboxRunOwnerArgs {
   readonly taskId: string;
@@ -309,6 +379,10 @@ export type BeginSandboxRunCleanupResult =
       readonly owner: SandboxRunOwnerRecord;
       readonly authorization: SandboxRunCleanupAuthorization;
     }
+  | {
+      readonly kind: 'settled';
+      readonly owner: SandboxRunCleanupSettledOwner;
+    }
   | { readonly kind: 'absent' | 'stale' };
 
 export type ClaimSandboxRunCleanupResult =
@@ -316,6 +390,10 @@ export type ClaimSandboxRunCleanupResult =
       readonly kind: 'authorized';
       readonly owner: SandboxRunOwnerRecord;
       readonly authorization: SandboxRunCleanupAuthorization;
+    }
+  | {
+      readonly kind: 'settled';
+      readonly owner: SandboxRunCleanupSettledOwner;
     }
   | { readonly kind: 'absent' | 'conflict' };
 
@@ -334,10 +412,73 @@ export type JoinSandboxRunCleanupResult =
         { readonly kind: 'generation' }
       >;
     }
+  | {
+      readonly kind: 'settled';
+      readonly owner: SandboxRunCleanupSettledOwner;
+    }
   | { readonly kind: 'absent' | 'stale' | 'conflict' };
+
+export type FailSandboxRunCleanupByTerminalPolicyResult =
+  | {
+      readonly kind: 'failed' | 'replayed';
+      readonly owner: SandboxRunCleanupSettledOwner & {
+        readonly status: 'failed';
+      };
+    }
+  | { readonly kind: 'stale' | 'conflict' };
+
+export interface SettleLegacySandboxRunCleanupArgs {
+  readonly taskId: string;
+  readonly providerId: string;
+  readonly disposition: SandboxTeardownDisposition;
+  readonly evidence: SandboxCleanupAttemptEvidence;
+  readonly status: SandboxRunLegacyCleanupSettledStatus;
+}
+
+export type SettleLegacySandboxRunCleanupResult =
+  | {
+      readonly kind: 'recorded' | 'replayed';
+      readonly owner: SandboxRunCleanupSettledOwner;
+    }
+  | { readonly kind: 'stale' | 'conflict' };
+
+export interface ConfirmSandboxRunCleanupOrphanArgs {
+  readonly taskId: string;
+  readonly providerId: string;
+  /** Exact provider identity from one freshly inspected inventory candidate. */
+  readonly providerSandboxId: string;
+}
+
+export type ConfirmSandboxRunCleanupOrphanResult =
+  | {
+      readonly kind: 'recorded' | 'replayed';
+      readonly owner: SandboxRunOwnerRecord;
+    }
+  | { readonly kind: 'stale' | 'conflict' };
+
+export type SandboxCleanupOwnershipClaim =
+  | {
+      readonly kind: 'authorized';
+      readonly authorization: Extract<
+        SandboxRunCleanupAuthorization,
+        { readonly kind: 'generation' }
+      >;
+      readonly authority: SandboxRunCleanupAuthorityProjection;
+    }
+  | {
+      readonly kind: 'settled';
+      readonly authority: SandboxRunCleanupAuthorityProjection;
+    }
+  | {
+      readonly kind: 'absent';
+      readonly authority: SandboxRunCleanupAuthorityProjection;
+    };
 
 export interface SandboxRunOwnerStore {
   getSandboxRunOwner(taskId: string): Promise<SandboxRunOwnerRecord | null>;
+  getSandboxRunCleanupAuthority?(
+    taskId: string,
+  ): Promise<SandboxRunCleanupAuthorityProjection>;
   listActiveSandboxRunOwners?(): Promise<readonly SandboxRunOwnerRecord[]>;
   recordSandboxRunOwner(args: RecordSandboxRunOwnerArgs): Promise<void>;
   acquireSandboxRunOwner?(
@@ -374,6 +515,19 @@ export interface SandboxRunOwnerStore {
     taskId: string,
     ownership?: SandboxOwnershipFence,
   ): Promise<BeginSandboxRunCleanupResult>;
+  /** Atomically allocate the evidence placeholder before physical cleanup. */
+  beginSandboxRunCleanupAttempt?(
+    authorization: SandboxRunCleanupAuthorization,
+    attemptId: string,
+  ): Promise<BeginSandboxCleanupAttemptResult>;
+  /**
+   * Settle or replay one safe physical result under the exact attempt/owner
+   * fence. This method never settles the authoritative SandboxRun status.
+   */
+  settleSandboxRunCleanupAttempt?(
+    authorization: SandboxRunCleanupAuthorization,
+    evidence: SandboxCleanupAttemptEvidence,
+  ): Promise<SettleSandboxCleanupAttemptResult>;
   /**
    * Settle after the provider proved the exact physical generation cleaned.
    * Owner generation is an action-before fence; completion is atomically
@@ -382,8 +536,30 @@ export interface SandboxRunOwnerStore {
    */
   completeSandboxRunCleanup?(
     authorization: SandboxRunCleanupAuthorization,
-    status: Extract<SandboxRunOwnerStatus, 'removed' | 'terminal' | 'failed'>,
+    status: Extract<SandboxRunOwnerStatus, 'removed' | 'terminal'>,
   ): Promise<boolean>;
+  /**
+   * Apply the configured bounded reconciliation terminal policy. This is the
+   * only non-success transition allowed to settle a deleting durable owner.
+   */
+  failSandboxRunCleanupByTerminalPolicy?(
+    authorization: Extract<
+      SandboxRunCleanupAuthorization,
+      { readonly kind: 'generation' }
+    >,
+    expectedAttempt: number,
+  ): Promise<FailSandboxRunCleanupByTerminalPolicyResult>;
+  /**
+   * Record one ownerless legacy best-effort disposition atomically without
+   * creating a durable `deleting` recovery authority.
+   */
+  settleLegacySandboxRunCleanup?(
+    args: SettleLegacySandboxRunCleanupArgs,
+  ): Promise<SettleLegacySandboxRunCleanupResult>;
+  /** Persist fresh, exact provider-presence evidence without settling cleanup. */
+  confirmSandboxRunCleanupOrphan?(
+    args: ConfirmSandboxRunCleanupOrphanArgs,
+  ): Promise<ConfirmSandboxRunCleanupOrphanResult>;
   markSandboxRunOwnerStatus?(
     taskId: string,
     status: SandboxRunOwnerStatus,
@@ -408,6 +584,11 @@ export interface SelectedSandboxRun<TProvider extends SandboxCapabilitySource = 
 
 export interface SandboxProvisionContext<TCloneSpec = GitCloneSpec> {
   readonly taskId: string;
+  /**
+   * Optional during the additive rollout. Task-scoped orchestration supplies
+   * the validated attempt emitter; providers never receive its recorder.
+   */
+  readonly diagnostics?: SandboxProvisioningDiagnosticEmitter;
   /** Required persisted intent. Lookup failure must never be represented as default. */
   readonly modelIntent: TaskModelIntent;
   readonly runtimeId: string;
@@ -446,9 +627,17 @@ export interface SandboxProvisionContext<TCloneSpec = GitCloneSpec> {
   readonly ownership?: SandboxOwnershipFence;
   /** Provider-internal failure cleanup must obtain this current DB token first. */
   readonly beforeSandboxCleanup?: () => Promise<SandboxRunCleanupAuthorization | null>;
-  /** Called only after provider cleanup of the token's exact resource was confirmed. */
+  /**
+   * Legacy confirmed-success-only acknowledgement. Providers may call this
+   * only after proving the authorized physical resource is absent.
+   */
   readonly afterSandboxCleanup?: (
     authorization: SandboxRunCleanupAuthorization,
+  ) => Promise<void>;
+  /** Settle any typed physical attempt under the token's durable owner fence. */
+  readonly settleSandboxCleanupAttempt?: (
+    authorization: SandboxRunCleanupAuthorization,
+    physical: SandboxPhysicalCleanupResult,
   ) => Promise<void>;
   /**
    * `undefined`: caller did not pre-resolve workspace materialization.
@@ -513,9 +702,17 @@ export interface SandboxCredentialedDeliverWorkspaceArgs
   readonly ownership?: SandboxOwnershipFence;
   /** Provider-internal fencing must win this exact owner CAS before deletion. */
   readonly beforeSandboxCleanup?: () => Promise<SandboxRunCleanupAuthorization | null>;
-  /** Settle the durable cleanup only after physical absence is confirmed. */
+  /**
+   * Legacy confirmed-success-only acknowledgement after physical absence was
+   * proved for the authorized resource.
+   */
   readonly afterSandboxCleanup?: (
     authorization: SandboxRunCleanupAuthorization,
+  ) => Promise<void>;
+  /** Settle any typed physical attempt under the token's durable owner fence. */
+  readonly settleSandboxCleanupAttempt?: (
+    authorization: SandboxRunCleanupAuthorization,
+    physical: SandboxPhysicalCleanupResult,
   ) => Promise<void>;
 }
 
@@ -532,6 +729,7 @@ export interface SandboxLegacyDeliverWorkspaceArgs
   readonly ownership?: never;
   readonly beforeSandboxCleanup?: never;
   readonly afterSandboxCleanup?: never;
+  readonly settleSandboxCleanupAttempt?: never;
 }
 
 export type SandboxDeliverWorkspaceArgs =
@@ -569,14 +767,30 @@ export interface SandboxProviderPort<
       readonly cleanupAuthorization?: SandboxRunCleanupAuthorization;
       readonly providerSandboxId?: string;
       readonly disposition?: SandboxTeardownDisposition;
+      /** Continue cleanup diagnostics in the provisioning attempt when present. */
+      readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
     },
-  ): Promise<void | SandboxTeardownResult>;
+  ): Promise<void | SandboxTeardownResult | SandboxPhysicalCleanupResult>;
 
   /** Claim the persisted owner for an exact, retryable durable cleanup. */
   claimSandboxCleanupOwnership?(
     taskId: string,
     ownerGeneration: string,
-  ): Promise<SandboxRunCleanupAuthorization | null>;
+  ): Promise<SandboxCleanupOwnershipClaim>;
+
+  /** Read the strict, secret-free cleanup authority without claiming it. */
+  getSandboxCleanupAuthority?(
+    taskId: string,
+  ): Promise<SandboxRunCleanupAuthorityProjection>;
+
+  /** Apply the orchestration-configured terminal policy under an exact claim. */
+  failSandboxCleanupByTerminalPolicy?(
+    authorization: Extract<
+      SandboxRunCleanupAuthorization,
+      { readonly kind: 'generation' }
+    >,
+    expectedAttempt: number,
+  ): Promise<SandboxRunCleanupAuthorityProjection>;
 
   readRolloutFromContainer(
     taskId: string,

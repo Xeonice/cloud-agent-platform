@@ -285,32 +285,55 @@ test('bootstrap protects unfinished durable work, restores legacy survivors, rec
   const prisma = {
     taskAdmissionWork: {
       async findMany(args: {
-        where: {
-          state: { in: string[] };
-          task?: unknown;
-        };
+        where: unknown;
         orderBy?: unknown;
         select: { taskId: true };
       }) {
-        if (args.where.task) {
+        if (args.orderBy) {
           events.push('durable-running-slots');
           assert.deepEqual(args, {
             where: {
-              state: { in: ['accepted', 'queued', 'running', 'retrying'] },
-              task: {
-                OR: [
-                  { status: { in: ['running', 'awaiting_input'] } },
-                  {
+              OR: [
+                {
+                  state: { in: ['accepted', 'queued', 'running', 'retrying'] },
+                  task: {
+                    OR: [
+                      { status: { in: ['running', 'awaiting_input'] } },
+                      {
+                        sandboxRuns: {
+                          some: {
+                            status: {
+                              in: ['provisioning', 'running', 'deleting'],
+                            },
+                          },
+                        },
+                      },
+                    ],
+                  },
+                },
+                {
+                  state: 'succeeded',
+                  task: {
+                    status: {
+                      in: [
+                        'completed',
+                        'failed',
+                        'cancelled',
+                        'agent_failed_to_start',
+                      ],
+                    },
                     sandboxRuns: {
                       some: {
                         status: {
                           in: ['provisioning', 'running', 'deleting'],
                         },
+                        ownerGeneration: { not: null },
+                        resourceGeneration: { not: null },
                       },
                     },
                   },
-                ],
-              },
+                },
+              ],
             },
             orderBy: [{ createdAt: 'asc' }, { taskId: 'asc' }],
             select: { taskId: true },
@@ -326,11 +349,38 @@ test('bootstrap protects unfinished durable work, restores legacy survivors, rec
         events.push(`durable:${++durableReads}`);
         assert.deepEqual(args, {
           where: {
-            state: { in: ['accepted', 'queued', 'running', 'retrying'] },
+            OR: [
+              { state: { in: ['accepted', 'queued', 'running', 'retrying'] } },
+              {
+                state: 'succeeded',
+                task: {
+                  status: {
+                    in: [
+                      'completed',
+                      'failed',
+                      'cancelled',
+                      'agent_failed_to_start',
+                    ],
+                  },
+                  sandboxRuns: {
+                    some: {
+                      status: {
+                        in: ['provisioning', 'running', 'deleting'],
+                      },
+                      ownerGeneration: { not: null },
+                      resourceGeneration: { not: null },
+                    },
+                  },
+                },
+              },
+            ],
           },
           select: { taskId: true },
         });
-        return [{ taskId: DURABLE_TASK_ID }];
+        return [
+          { taskId: DURABLE_TASK_ID },
+          { taskId: TERMINAL_CLEANUP_TASK_ID },
+        ];
       },
     },
     task: {
@@ -411,7 +461,11 @@ test('bootstrap protects unfinished durable work, restores legacy survivors, rec
       events.push('provider-reconcile');
       assert.deepEqual(
         new Set(protectedTaskIds),
-        new Set([DURABLE_TASK_ID, LEGACY_TASK_ID]),
+        new Set([
+          DURABLE_TASK_ID,
+          TERMINAL_CLEANUP_TASK_ID,
+          LEGACY_TASK_ID,
+        ]),
       );
       assert.equal(
         await canReap({

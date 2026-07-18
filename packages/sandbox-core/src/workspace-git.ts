@@ -10,6 +10,7 @@ import type {
   SandboxWorkspaceBoundaryGuard,
 } from './provisioning.js';
 import type { ExactHostGitCredential } from './git-credential.js';
+import type { SandboxProvisioningDiagnosticObserver } from './provisioning-diagnostics.js';
 
 export const SANDBOX_GIT_COMMAND_STAGES = [
   'remote_ref_resolution',
@@ -49,6 +50,8 @@ export interface SandboxWorkspaceMaterializationHookContext {
   readonly stageExecutor: SandboxGitStageExecutor;
   readonly secretFilePort?: SandboxSecretFilePort;
   readonly cancellationSignal?: AbortSignal;
+  /** Task attempts persist through their emitter; probes use non-persisting. */
+  readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
   readonly onProgress?: SandboxWorkspaceProgressReporter;
   readonly beforeBoundary?: SandboxWorkspaceBoundaryGuard;
 }

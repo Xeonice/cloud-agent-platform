@@ -8,22 +8,37 @@ import {
 import type {
   AcquireSandboxRunOwnerArgs,
   AcquireSandboxRunOwnerResult,
+  BeginSandboxCleanupAttemptResult,
   BeginSandboxRunCreateArgs,
   BeginSandboxRunCleanupResult,
   ClaimSandboxRunCleanupResult,
+  ConfirmSandboxRunCleanupOrphanArgs,
+  ConfirmSandboxRunCleanupOrphanResult,
+  FailSandboxRunCleanupByTerminalPolicyResult,
   JoinSandboxRunCleanupArgs,
   JoinSandboxRunCleanupResult,
   ObserveSandboxRunCreateArgs,
   RecordSandboxRunOwnerArgs,
+  SandboxCleanupAttemptEvidence,
   SandboxConnection,
   SandboxDescriptorMetadata,
   SandboxResolvedEnvironmentMetadata,
   SandboxOwnershipFence,
+  SandboxRunCleanupAuthorityProjection,
   SandboxRunCleanupAuthorization,
   SandboxRunCreateState,
   SandboxRunOwnerRecord,
   SandboxRunOwnerStatus,
   SandboxRunOwnerStore,
+  SettleLegacySandboxRunCleanupArgs,
+  SettleLegacySandboxRunCleanupResult,
+  SettleSandboxCleanupAttemptResult,
+} from '@cap/sandbox';
+import {
+  SANDBOX_CLEANUP_ATTEMPT_MAX,
+  sandboxCleanupAttemptPlaceholder,
+  validateSandboxCleanupAttemptEvidence,
+  validateSandboxCleanupAttemptId,
 } from '@cap/sandbox';
 import { Prisma } from '@prisma/client';
 
@@ -65,6 +80,18 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
     return run ? SandboxRunOwnerService.toOwnerRecord(run) : null;
   }
 
+  async getSandboxRunCleanupAuthority(
+    taskId: string,
+  ): Promise<SandboxRunCleanupAuthorityProjection> {
+    const run = await this.prisma.sandboxRun.findFirst({
+      where: { taskId },
+      orderBy: { createdAt: 'desc' },
+    });
+    return SandboxRunOwnerService.toCleanupAuthorityProjection(
+      run ? SandboxRunOwnerService.toOwnerRecord(run) : undefined,
+    );
+  }
+
   async listActiveSandboxRunOwners(): Promise<readonly SandboxRunOwnerRecord[]> {
     const runs = await this.prisma.sandboxRun.findMany({
       where: {
@@ -93,6 +120,7 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
           resourceGeneration: true,
           createState: true,
           status: true,
+          cleanupOrphanConfirmedAt: true,
         },
       });
       if (args.ownership) {
@@ -130,6 +158,10 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
         ...(args.providerSandboxId === undefined
           ? {}
           : { providerSandboxId: args.providerSandboxId }),
+        ...(args.providerSandboxId !== undefined &&
+        args.providerSandboxId !== existing?.providerSandboxId
+          ? { cleanupOrphanConfirmedAt: null }
+          : {}),
         createState: 'idle',
         status: args.status ?? 'running',
         ...(args.ownership
@@ -283,6 +315,10 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
           ...(args.providerSandboxId === undefined
             ? {}
             : { providerSandboxId: args.providerSandboxId }),
+          ...(args.providerSandboxId !== undefined &&
+          args.providerSandboxId !== existing.providerSandboxId
+            ? { cleanupOrphanConfirmedAt: null }
+            : {}),
         },
       });
       return true;
@@ -301,11 +337,16 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
       const existing = await client.sandboxRun.findFirst({
         where: {
           taskId,
-          status: { in: [...LIVE_SANDBOX_RUN_STATUSES] },
         },
         orderBy: { createdAt: 'desc' },
       });
       if (!existing) return { kind: 'absent' } as const;
+      if (SandboxRunOwnerService.isSettledStatus(existing.status)) {
+        return {
+          kind: 'settled',
+          owner: SandboxRunOwnerService.toSettledOwnerRecord(existing),
+        } as const;
+      }
       if (
         (ownership &&
           (existing.ownerGeneration !== ownership.ownerGeneration ||
@@ -342,33 +383,48 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
       const existing = await client.sandboxRun.findFirst({
         where: {
           taskId,
-          status: { in: [...LIVE_SANDBOX_RUN_STATUSES] },
         },
         orderBy: { createdAt: 'desc' },
       });
       if (!existing) return { kind: 'absent' } as const;
+      if (SandboxRunOwnerService.isSettledStatus(existing.status)) {
+        return {
+          kind: 'settled',
+          owner: SandboxRunOwnerService.toSettledOwnerRecord(existing),
+        } as const;
+      }
       if (
         (existing.ownerGeneration === null) !==
         (existing.resourceGeneration === null)
       ) {
         return { kind: 'conflict' } as const;
       }
-      const owner = existing.ownerGeneration && existing.resourceGeneration
+      const isTakeover = existing.ownerGeneration
+        ? existing.ownerGeneration !== ownerGeneration
+        : false;
+      const settledExisting =
+        isTakeover && existing.cleanupAttemptInFlight
+          ? { ...existing, cleanupAttemptInFlight: false }
+          : existing;
+      const owner = settledExisting.ownerGeneration && settledExisting.resourceGeneration
         ? SandboxRunOwnerService.toOwnerRecord({
-            ...existing,
+            ...settledExisting,
             ownerGeneration,
             status: 'deleting',
           })
         : SandboxRunOwnerService.toOwnerRecord({
-            ...existing,
+            ...settledExisting,
             status: 'deleting',
           });
       await client.sandboxRun.update({
         where: { id: existing.id },
         data: {
           status: 'deleting',
-          ...(existing.ownerGeneration && existing.resourceGeneration
+          ...(settledExisting.ownerGeneration && settledExisting.resourceGeneration
             ? { ownerGeneration }
+            : {}),
+          ...(isTakeover && existing.cleanupAttemptInFlight
+            ? { cleanupAttemptInFlight: false }
             : {}),
         },
       });
@@ -389,11 +445,16 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
       const existing = await client.sandboxRun.findFirst({
         where: {
           taskId: args.taskId,
-          status: { in: [...LIVE_SANDBOX_RUN_STATUSES] },
         },
         orderBy: { createdAt: 'desc' },
       });
       if (!existing) return { kind: 'absent' } as const;
+      if (SandboxRunOwnerService.isSettledStatus(existing.status)) {
+        return {
+          kind: 'settled',
+          owner: SandboxRunOwnerService.toSettledOwnerRecord(existing),
+        } as const;
+      }
       if (
         existing.providerId !== args.providerId ||
         !existing.ownerGeneration ||
@@ -430,7 +491,7 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
 
   async completeSandboxRunCleanup(
     authorization: SandboxRunCleanupAuthorization,
-    status: Extract<SandboxRunOwnerStatus, 'removed' | 'terminal' | 'failed'>,
+    status: Extract<SandboxRunOwnerStatus, 'removed' | 'terminal'>,
   ): Promise<boolean> {
     if (authorization.kind === 'generation') {
       assertGeneration(authorization.ownership.ownerGeneration, 'ownerGeneration');
@@ -442,6 +503,14 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
           taskId: authorization.taskId,
           providerId: authorization.providerId,
           status: 'deleting',
+          cleanupAttemptInFlight: false,
+          cleanupAttemptCount: { gt: 0 },
+          cleanupLastOutcome: 'succeeded',
+          cleanupLastProof: {
+            in: ['found-and-cleaned', 'already-absent'],
+          },
+          cleanupLastCause: null,
+          cleanupLastRetryable: false,
           ...(authorization.kind === 'generation'
             ? {
                 resourceGeneration: authorization.ownership.resourceGeneration,
@@ -452,9 +521,7 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
         data: {
           status,
           terminalAt:
-            status === 'terminal' || status === 'failed'
-              ? new Date()
-              : undefined,
+            status === 'terminal' ? new Date() : undefined,
           removedAt: status === 'removed' ? new Date() : undefined,
         },
       });
@@ -462,15 +529,392 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
     });
   }
 
+  async beginSandboxRunCleanupAttempt(
+    authorization: SandboxRunCleanupAuthorization,
+    attemptId: string,
+  ): Promise<BeginSandboxCleanupAttemptResult> {
+    validateSandboxCleanupAttemptId(attemptId);
+    if (authorization.kind === 'generation') {
+      assertGeneration(authorization.ownership.ownerGeneration, 'ownerGeneration');
+      assertGeneration(
+        authorization.ownership.resourceGeneration,
+        'resourceGeneration',
+      );
+    }
+    return this.withTaskOwnerLock(authorization.taskId, async (client) => {
+      const existing = await client.sandboxRun.findFirst({
+        where: {
+          taskId: authorization.taskId,
+          providerId: authorization.providerId,
+          status: 'deleting',
+          ...(authorization.kind === 'generation'
+            ? {
+                ownerGeneration: authorization.ownership.ownerGeneration,
+                resourceGeneration:
+                  authorization.ownership.resourceGeneration,
+              }
+            : { ownerGeneration: null, resourceGeneration: null }),
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!existing) return { kind: 'stale' } as const;
+      const current = SandboxRunOwnerService.toCleanupEvidence(existing);
+      if (current?.attemptId === attemptId) {
+        return { kind: 'replayed', evidence: current } as const;
+      }
+      if (existing.cleanupAttemptInFlight) {
+        return current
+          ? ({ kind: 'in-flight', evidence: current } as const)
+          : ({ kind: 'conflict' } as const);
+      }
+      if (existing.cleanupAttemptCount >= SANDBOX_CLEANUP_ATTEMPT_MAX) {
+        return { kind: 'conflict' } as const;
+      }
+      const evidence = sandboxCleanupAttemptPlaceholder(
+        existing.cleanupAttemptCount + 1,
+        attemptId,
+      );
+      await client.sandboxRun.update({
+        where: { id: existing.id },
+        data: {
+          cleanupAttemptInFlight: true,
+          cleanupAttemptCount: evidence.attempt,
+          cleanupLastAttemptId: evidence.attemptId,
+          cleanupLastOutcome: evidence.outcome,
+          cleanupLastProof: evidence.proof,
+          cleanupLastCause: evidence.cause,
+          cleanupLastRetryable: evidence.retryable,
+          cleanupLastObservedAt: evidence.observedAt,
+        },
+      });
+      return { kind: 'allocated', evidence } as const;
+    });
+  }
+
+  async settleSandboxRunCleanupAttempt(
+    authorization: SandboxRunCleanupAuthorization,
+    evidence: SandboxCleanupAttemptEvidence,
+  ): Promise<SettleSandboxCleanupAttemptResult> {
+    const candidate = validateSandboxCleanupAttemptEvidence(evidence);
+    if (authorization.kind === 'generation') {
+      assertGeneration(authorization.ownership.ownerGeneration, 'ownerGeneration');
+      assertGeneration(
+        authorization.ownership.resourceGeneration,
+        'resourceGeneration',
+      );
+    }
+    return this.withTaskOwnerLock(authorization.taskId, async (client) => {
+      const existing = await client.sandboxRun.findFirst({
+        where: {
+          taskId: authorization.taskId,
+          providerId: authorization.providerId,
+          status: 'deleting',
+          ...(authorization.kind === 'generation'
+            ? {
+                ownerGeneration: authorization.ownership.ownerGeneration,
+                resourceGeneration:
+                  authorization.ownership.resourceGeneration,
+              }
+            : { ownerGeneration: null, resourceGeneration: null }),
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!existing) return { kind: 'stale' } as const;
+      if (candidate.attempt < existing.cleanupAttemptCount) {
+        return { kind: 'stale' } as const;
+      }
+      if (
+        candidate.attempt !== existing.cleanupAttemptCount ||
+        candidate.attemptId !== existing.cleanupLastAttemptId
+      ) {
+        return { kind: 'conflict' } as const;
+      }
+      if (
+        candidate.outcome === 'succeeded' &&
+        existing.createState !== 'idle'
+      ) {
+        return { kind: 'conflict' } as const;
+      }
+      if (!existing.cleanupAttemptInFlight) {
+        return SandboxRunOwnerService.sameCleanupEvidence(existing, candidate)
+          ? ({ kind: 'replayed' } as const)
+          : ({ kind: 'conflict' } as const);
+      }
+      await client.sandboxRun.update({
+        where: { id: existing.id },
+        data: {
+          cleanupAttemptInFlight: false,
+          cleanupLastOutcome: candidate.outcome,
+          cleanupLastProof: candidate.proof,
+          cleanupLastCause: candidate.cause,
+          cleanupLastRetryable: candidate.retryable,
+          cleanupLastObservedAt: candidate.observedAt,
+        },
+      });
+      return { kind: 'recorded' } as const;
+    });
+  }
+
+  async failSandboxRunCleanupByTerminalPolicy(
+    authorization: Extract<
+      SandboxRunCleanupAuthorization,
+      { readonly kind: 'generation' }
+    >,
+    expectedAttempt: number,
+  ): Promise<FailSandboxRunCleanupByTerminalPolicyResult> {
+    assertGeneration(authorization.ownership.ownerGeneration, 'ownerGeneration');
+    assertGeneration(
+      authorization.ownership.resourceGeneration,
+      'resourceGeneration',
+    );
+    if (
+      !Number.isSafeInteger(expectedAttempt) ||
+      expectedAttempt < 1 ||
+      expectedAttempt > SANDBOX_CLEANUP_ATTEMPT_MAX
+    ) {
+      return { kind: 'conflict' };
+    }
+    return this.withTaskOwnerLock(authorization.taskId, async (client) => {
+      const existing = await client.sandboxRun.findFirst({
+        where: { taskId: authorization.taskId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!existing) return { kind: 'stale' } as const;
+      const exact =
+        existing.createState === 'idle' &&
+        existing.providerId === authorization.providerId &&
+        existing.ownerGeneration === authorization.ownership.ownerGeneration &&
+        existing.resourceGeneration ===
+          authorization.ownership.resourceGeneration &&
+        existing.cleanupAttemptCount === expectedAttempt;
+      if (existing.status === 'failed') {
+        return exact &&
+          !existing.cleanupAttemptInFlight &&
+          existing.cleanupLastOutcome !== null &&
+          existing.cleanupLastOutcome !== 'succeeded'
+          ? ({
+              kind: 'replayed',
+              owner: {
+                ...SandboxRunOwnerService.toSettledOwnerRecord(existing),
+                status: 'failed' as const,
+              },
+            } as const)
+          : ({ kind: 'stale' } as const);
+      }
+      if (existing.status !== 'deleting' || !exact) {
+        return { kind: 'stale' } as const;
+      }
+      if (
+        existing.cleanupAttemptInFlight ||
+        existing.cleanupLastOutcome === null ||
+        existing.cleanupLastOutcome === 'succeeded'
+      ) {
+        return { kind: 'conflict' } as const;
+      }
+      await SandboxRunOwnerService.enableCleanupTransition(
+        client,
+        'terminal_policy',
+      );
+      const changed = await client.sandboxRun.updateMany({
+        where: {
+          id: existing.id,
+          status: 'deleting',
+          createState: 'idle',
+          providerId: authorization.providerId,
+          ownerGeneration: authorization.ownership.ownerGeneration,
+          resourceGeneration: authorization.ownership.resourceGeneration,
+          cleanupAttemptInFlight: false,
+          cleanupAttemptCount: expectedAttempt,
+          cleanupLastOutcome: { in: ['failed', 'indeterminate'] },
+        },
+        data: { status: 'failed' },
+      });
+      if (changed.count !== 1) return { kind: 'stale' } as const;
+      return {
+        kind: 'failed',
+        owner: {
+          ...SandboxRunOwnerService.toSettledOwnerRecord({
+            ...existing,
+            status: 'failed',
+          }),
+          status: 'failed' as const,
+        },
+      } as const;
+    });
+  }
+
+  async settleLegacySandboxRunCleanup(
+    args: SettleLegacySandboxRunCleanupArgs,
+  ): Promise<SettleLegacySandboxRunCleanupResult> {
+    const evidence = validateSandboxCleanupAttemptEvidence(args.evidence);
+    if (
+      !SandboxRunOwnerService.legacySettlementStatusMatches(
+        args.status,
+        args.disposition,
+        evidence,
+      )
+    ) {
+      return { kind: 'conflict' };
+    }
+    return this.withTaskOwnerLock(args.taskId, async (client) => {
+      const existing = await client.sandboxRun.findFirst({
+        where: { taskId: args.taskId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!existing || existing.providerId !== args.providerId) {
+        return { kind: 'stale' } as const;
+      }
+      if (SandboxRunOwnerService.isSettledStatus(existing.status)) {
+        return existing.status === args.status &&
+          SandboxRunOwnerService.sameCleanupEvidence(existing, evidence)
+          ? ({
+              kind: 'replayed',
+              owner: SandboxRunOwnerService.toSettledOwnerRecord(existing),
+            } as const)
+          : ({ kind: 'stale' } as const);
+      }
+      if (
+        existing.status === 'deleting' ||
+        existing.ownerGeneration !== null ||
+        existing.resourceGeneration !== null ||
+        existing.cleanupAttemptInFlight ||
+        evidence.attempt !== existing.cleanupAttemptCount + 1
+      ) {
+        return { kind: 'conflict' } as const;
+      }
+      await SandboxRunOwnerService.enableCleanupTransition(
+        client,
+        'legacy_settlement',
+      );
+      const changed = await client.sandboxRun.updateMany({
+        where: {
+          id: existing.id,
+          status: { in: [...ACTIVE_SANDBOX_RUN_STATUSES] },
+          ownerGeneration: null,
+          resourceGeneration: null,
+          cleanupAttemptInFlight: false,
+          cleanupAttemptCount: existing.cleanupAttemptCount,
+        },
+        data: {
+          status: args.status,
+          cleanupAttemptInFlight: false,
+          cleanupAttemptCount: evidence.attempt,
+          cleanupLastAttemptId: evidence.attemptId,
+          cleanupLastOutcome: evidence.outcome,
+          cleanupLastProof: evidence.proof,
+          cleanupLastCause: evidence.cause,
+          cleanupLastRetryable: evidence.retryable,
+          cleanupLastObservedAt: evidence.observedAt,
+          terminalAt: args.status === 'terminal' ? new Date() : undefined,
+          removedAt: args.status === 'removed' ? new Date() : undefined,
+        },
+      });
+      if (changed.count !== 1) return { kind: 'stale' } as const;
+      return {
+        kind: 'recorded',
+        owner: SandboxRunOwnerService.toSettledOwnerRecord({
+          ...existing,
+          status: args.status,
+          cleanupAttemptInFlight: false,
+          cleanupAttemptCount: evidence.attempt,
+          cleanupLastAttemptId: evidence.attemptId,
+          cleanupLastOutcome: evidence.outcome,
+          cleanupLastProof: evidence.proof,
+          cleanupLastCause: evidence.cause,
+          cleanupLastRetryable: evidence.retryable,
+          cleanupLastObservedAt: evidence.observedAt,
+        }),
+      } as const;
+    });
+  }
+
+  async confirmSandboxRunCleanupOrphan(
+    args: ConfirmSandboxRunCleanupOrphanArgs,
+  ): Promise<ConfirmSandboxRunCleanupOrphanResult> {
+    return this.withTaskOwnerLock(args.taskId, async (client) => {
+      const existing = await client.sandboxRun.findFirst({
+        where: { taskId: args.taskId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!existing) return { kind: 'stale' } as const;
+      if (
+        existing.status !== 'deleting' ||
+        existing.ownerGeneration === null ||
+        existing.resourceGeneration === null ||
+        existing.providerId !== args.providerId ||
+        existing.providerSandboxId !== args.providerSandboxId
+      ) {
+        return { kind: 'conflict' } as const;
+      }
+      if (existing.cleanupOrphanConfirmedAt) {
+        return {
+          kind: 'replayed',
+          owner: SandboxRunOwnerService.toOwnerRecord(existing),
+        } as const;
+      }
+      await SandboxRunOwnerService.enableCleanupTransition(
+        client,
+        'orphan_confirmation',
+      );
+      const confirmedAt = new Date();
+      const changed = await client.sandboxRun.updateMany({
+        where: {
+          id: existing.id,
+          status: 'deleting',
+          providerId: args.providerId,
+          providerSandboxId: args.providerSandboxId,
+          ownerGeneration: existing.ownerGeneration,
+          resourceGeneration: existing.resourceGeneration,
+          cleanupOrphanConfirmedAt: null,
+        },
+        data: { cleanupOrphanConfirmedAt: confirmedAt },
+      });
+      if (changed.count !== 1) return { kind: 'stale' } as const;
+      return {
+        kind: 'recorded',
+        owner: SandboxRunOwnerService.toOwnerRecord({
+          ...existing,
+          cleanupOrphanConfirmedAt: confirmedAt,
+        }),
+      } as const;
+    });
+  }
+
   async markSandboxRunOwnerStatus(
     taskId: string,
     status: SandboxRunOwnerStatus,
   ): Promise<void> {
+    // Cleanup entry and terminal-policy failure have dedicated fenced methods.
+    if (status === 'deleting' || status === 'failed') return;
     await this.withTaskOwnerLock(taskId, async (client) => {
       await client.sandboxRun.updateMany({
         where: {
           taskId,
-          status: { in: [...LIVE_SANDBOX_RUN_STATUSES] },
+          status:
+            status === 'removed' || status === 'terminal'
+              ? { in: [...LIVE_SANDBOX_RUN_STATUSES] }
+              : { in: [...ACTIVE_SANDBOX_RUN_STATUSES] },
+          ...(status === 'removed' || status === 'terminal'
+            ? {
+                OR: [
+                  // Preserve the existing non-cleanup terminal transition.
+                  // Only a deleting row is governed by the cleanup protocol.
+                  { status: { in: [...ACTIVE_SANDBOX_RUN_STATUSES] } },
+                  {
+                    status: 'deleting',
+                    createState: 'idle',
+                    cleanupAttemptInFlight: false,
+                    cleanupAttemptCount: { gt: 0 },
+                    cleanupLastOutcome: 'succeeded',
+                    cleanupLastProof: {
+                      in: ['found-and-cleaned', 'already-absent'],
+                    },
+                    cleanupLastCause: null,
+                    cleanupLastRetryable: false,
+                  },
+                ],
+              }
+            : {}),
         },
         data: {
           status,
@@ -484,7 +928,9 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
   private async withTaskOwnerLock<T>(
     taskId: string,
     operation: (
-      client: Pick<Prisma.TransactionClient, 'sandboxRun'>,
+      client: Pick<Prisma.TransactionClient, 'sandboxRun'> & {
+        readonly $executeRaw?: Prisma.TransactionClient['$executeRaw'];
+      },
     ) => Promise<T>,
   ): Promise<T> {
     // Small unit adapters predating transaction support remain usable; the
@@ -518,8 +964,18 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
     status: string;
     connectionJson: Prisma.JsonValue | null;
     metadata: Prisma.JsonValue | null;
+    cleanupAttemptInFlight?: boolean;
+    cleanupAttemptCount?: number;
+    cleanupLastAttemptId?: string | null;
+    cleanupLastOutcome?: string | null;
+    cleanupLastProof?: string | null;
+    cleanupLastCause?: string | null;
+    cleanupLastRetryable?: boolean | null;
+    cleanupLastObservedAt?: Date | null;
+    cleanupOrphanConfirmedAt?: Date | null;
   }): SandboxRunOwnerRecord {
     const metadata = SandboxRunOwnerService.toMetadata(run.metadata);
+    const cleanupEvidence = SandboxRunOwnerService.toCleanupEvidence(run);
     return {
       taskId: run.taskId,
       providerId: run.providerId,
@@ -536,7 +992,173 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
       connection: SandboxRunOwnerService.toConnection(run.connectionJson),
       environment: SandboxRunOwnerService.toResolvedEnvironment(metadata?.environment),
       metadata,
+      cleanupAttemptInFlight: run.cleanupAttemptInFlight ?? false,
+      cleanupAttemptCount: run.cleanupAttemptCount ?? 0,
+      ...(run.cleanupOrphanConfirmedAt
+        ? { cleanupOrphanConfirmedAt: new Date(run.cleanupOrphanConfirmedAt) }
+        : {}),
+      ...(cleanupEvidence
+        ? {
+            cleanupLastAttemptId: cleanupEvidence.attemptId,
+            cleanupLastOutcome: cleanupEvidence.outcome,
+            cleanupLastProof: cleanupEvidence.proof,
+            cleanupLastCause: cleanupEvidence.cause,
+            cleanupLastRetryable: cleanupEvidence.retryable,
+            cleanupLastObservedAt: cleanupEvidence.observedAt,
+          }
+        : {}),
     };
+  }
+
+  private static toCleanupAuthorityProjection(
+    owner: SandboxRunOwnerRecord | undefined,
+  ): SandboxRunCleanupAuthorityProjection {
+    const status = owner?.status ?? null;
+    const state =
+      status === 'deleting'
+        ? 'pending'
+        : status === 'removed'
+          ? 'succeeded'
+          : status === 'failed'
+            ? 'failed'
+            : 'not_required';
+    return Object.freeze({
+      state,
+      ownershipKind: owner
+        ? owner.ownership
+          ? 'generation'
+          : 'legacy'
+        : 'none',
+      orphanState:
+        status === 'deleting' || status === 'failed'
+          ? owner?.cleanupOrphanConfirmedAt
+            ? 'confirmed'
+            : 'unknown'
+          : 'none',
+      status,
+      attemptCount: owner?.cleanupAttemptCount ?? 0,
+      lastAttemptOutcome: owner?.cleanupLastOutcome ?? null,
+      lastAttemptProof: owner?.cleanupLastProof ?? null,
+      lastAttemptCause: owner?.cleanupLastCause ?? null,
+      lastAttemptRetryable: owner?.cleanupLastRetryable ?? null,
+      lastAttemptObservedAt: owner?.cleanupLastObservedAt
+        ? new Date(owner.cleanupLastObservedAt)
+        : null,
+    });
+  }
+
+  private static isSettledStatus(
+    status: string,
+  ): status is 'terminal' | 'removed' | 'failed' {
+    return status === 'terminal' || status === 'removed' || status === 'failed';
+  }
+
+  private static toSettledOwnerRecord(
+    run: Parameters<typeof SandboxRunOwnerService.toOwnerRecord>[0],
+  ): SandboxRunOwnerRecord & {
+    readonly status: 'terminal' | 'removed' | 'failed';
+  } {
+    const owner = SandboxRunOwnerService.toOwnerRecord(run);
+    if (!SandboxRunOwnerService.isSettledStatus(owner.status)) {
+      throw new Error('Sandbox cleanup authority is not settled');
+    }
+    return owner as SandboxRunOwnerRecord & {
+      readonly status: 'terminal' | 'removed' | 'failed';
+    };
+  }
+
+  private static legacySettlementStatusMatches(
+    status: SettleLegacySandboxRunCleanupArgs['status'],
+    disposition: SettleLegacySandboxRunCleanupArgs['disposition'],
+    evidence: SandboxCleanupAttemptEvidence,
+  ): boolean {
+    return status ===
+      (disposition === 'superseded-remove' &&
+      evidence.outcome === 'succeeded'
+        ? 'removed'
+        : 'terminal');
+  }
+
+  private static async enableCleanupTransition(
+    client: {
+      readonly $executeRaw?: Prisma.TransactionClient['$executeRaw'];
+    },
+    kind:
+      | 'terminal_policy'
+      | 'legacy_settlement'
+      | 'orphan_confirmation',
+  ): Promise<void> {
+    if (typeof client.$executeRaw !== 'function') return;
+    if (kind === 'terminal_policy') {
+      await client.$executeRaw(
+        Prisma.sql`SET LOCAL cap.sandbox_cleanup_terminal_policy = 'on'`,
+      );
+      return;
+    }
+    if (kind === 'orphan_confirmation') {
+      await client.$executeRaw(
+        Prisma.sql`SET LOCAL cap.sandbox_cleanup_orphan_confirmation = 'on'`,
+      );
+      return;
+    }
+    await client.$executeRaw(
+      Prisma.sql`SET LOCAL cap.sandbox_cleanup_legacy_settlement = 'on'`,
+    );
+  }
+
+  private static sameCleanupEvidence(
+    run: {
+      cleanupLastAttemptId: string | null;
+      cleanupLastOutcome: string | null;
+      cleanupLastProof: string | null;
+      cleanupLastCause: string | null;
+      cleanupLastRetryable: boolean | null;
+      cleanupLastObservedAt: Date | null;
+    },
+    evidence: SandboxCleanupAttemptEvidence,
+  ): boolean {
+    return (
+      run.cleanupLastAttemptId === evidence.attemptId &&
+      run.cleanupLastOutcome === evidence.outcome &&
+      run.cleanupLastProof === evidence.proof &&
+      run.cleanupLastCause === evidence.cause &&
+      run.cleanupLastRetryable === evidence.retryable &&
+      run.cleanupLastObservedAt?.getTime() === evidence.observedAt.getTime()
+    );
+  }
+
+  private static toCleanupEvidence(run: {
+    cleanupAttemptCount?: number;
+    cleanupLastAttemptId?: string | null;
+    cleanupLastOutcome?: string | null;
+    cleanupLastProof?: string | null;
+    cleanupLastCause?: string | null;
+    cleanupLastRetryable?: boolean | null;
+    cleanupLastObservedAt?: Date | null;
+  }): SandboxCleanupAttemptEvidence | null {
+    const attempt = run.cleanupAttemptCount ?? 0;
+    if (attempt === 0) return null;
+    if (
+      run.cleanupLastAttemptId === null ||
+      run.cleanupLastAttemptId === undefined ||
+      run.cleanupLastOutcome === null ||
+      run.cleanupLastOutcome === undefined ||
+      run.cleanupLastRetryable === null ||
+      run.cleanupLastRetryable === undefined ||
+      run.cleanupLastObservedAt === null ||
+      run.cleanupLastObservedAt === undefined
+    ) {
+      throw new Error('Sandbox cleanup evidence is incomplete');
+    }
+    return validateSandboxCleanupAttemptEvidence({
+      attemptId: run.cleanupLastAttemptId,
+      attempt,
+      outcome: run.cleanupLastOutcome as SandboxCleanupAttemptEvidence['outcome'],
+      proof: (run.cleanupLastProof ?? null) as SandboxCleanupAttemptEvidence['proof'],
+      cause: (run.cleanupLastCause ?? null) as SandboxCleanupAttemptEvidence['cause'],
+      retryable: run.cleanupLastRetryable,
+      observedAt: run.cleanupLastObservedAt,
+    });
   }
 
   private static toCreateState(value: string): SandboxRunCreateState {

@@ -204,6 +204,26 @@ test('Zod and runtime-model domain failures normalize without transport coupling
   });
   assert.equal(catalogUnavailable.code, 'runtime_model_catalog_unavailable');
   assert.equal(projectPublicSurfaceErrorToRest(catalogUnavailable).status, 503);
+
+  const diagnosticsUnavailable = normalizePublicSurfaceFailure(
+    new ServiceUnavailableException({
+      code: 'task_provisioning_diagnostics_unavailable',
+      message: 'Task provisioning diagnostics are temporarily unavailable.',
+      retryable: true,
+    }),
+  );
+  assert.equal(
+    diagnosticsUnavailable.code,
+    'task_provisioning_diagnostics_unavailable',
+  );
+  assert.equal(
+    projectPublicSurfaceErrorToRest(diagnosticsUnavailable).status,
+    503,
+  );
+  assert.equal(
+    projectPublicSurfaceErrorToMcp(diagnosticsUnavailable).data.retryable,
+    true,
+  );
 });
 
 test('every registry REST error projector validates its live status, body, and headers', () => {

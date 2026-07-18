@@ -17,7 +17,6 @@ import {
   V1ListReposResponseSchema,
   V1ListScheduleRunsResponseSchema,
   V1ListSchedulesResponseSchema,
-  V1ListTasksResponseSchema,
   type CreateScheduleRequest,
   type CreateTaskBody,
   type PublicErrorCode,
@@ -73,6 +72,72 @@ const OWNER_ID = 'owner-conformance';
 const SECRET_CANARY = 'public-surface-secret-canary';
 const CREATED_AT = new Date('2026-07-14T09:00:00.000Z');
 const UPDATED_AT = new Date('2026-07-14T09:05:00.000Z');
+
+const ORDINARY_TASK_DIAGNOSTIC_EXPANSION = Object.freeze({
+  provisioningDiagnostics: Object.freeze({
+    coverage: 'complete',
+    secretCanary: SECRET_CANARY,
+  }),
+  diagnostics: Object.freeze({
+    coverage: 'complete',
+    providerOperation: 'workspace_materialization',
+    secretCanary: SECRET_CANARY,
+  }),
+  diagnosticAttempts: Object.freeze([
+    Object.freeze({ attempt: 1, secretCanary: SECRET_CANARY }),
+  ]),
+  attempts: Object.freeze([
+    Object.freeze({
+      attempt: 1,
+      cleanupState: 'failed',
+      secretCanary: SECRET_CANARY,
+    }),
+  ]),
+  diagnosticEvents: Object.freeze([
+    Object.freeze({
+      stage: 'workspace_transfer',
+      outcome: 'failed',
+      secretCanary: SECRET_CANARY,
+    }),
+  ]),
+  events: Object.freeze([
+    Object.freeze({
+      stage: 'workspace_transfer',
+      outcome: 'failed',
+      secretCanary: SECRET_CANARY,
+    }),
+  ]),
+  compaction: Object.freeze({
+    compactedEventCount: 9,
+    secretCanary: SECRET_CANARY,
+  }),
+  cleanup: Object.freeze({ state: 'failed', secretCanary: SECRET_CANARY }),
+  providerOperations: Object.freeze([
+    Object.freeze({ operation: 'sandbox_create', secretCanary: SECRET_CANARY }),
+  ]),
+  secretCanary: SECRET_CANARY,
+});
+
+const ORDINARY_TASK_FORBIDDEN_DIAGNOSTIC_FIELDS = Object.freeze([
+  'provisioningDiagnostics',
+  'diagnostics',
+  'diagnosticAttempts',
+  'attempts',
+  'diagnosticEvents',
+  'events',
+  'compaction',
+  'cleanup',
+  'providerOperations',
+  'secretCanary',
+]);
+
+const EXISTING_TASK_PROVISIONING_FIELDS = Object.freeze([
+  'attempt',
+  'resolvedBranch',
+  'stage',
+  'state',
+  'updatedAt',
+]);
 
 const PROVISIONING_FAILURES = [
   {
@@ -328,17 +393,22 @@ function taskRecord(
   };
 }
 
-function unsafeTaskOutput(
+function taskRecordWithDiagnosticExpansion(
   status: TaskResponseRecord['status'],
   failureCode: TaskFailureCode | null = null,
-): TaskResponse {
-  const persisted = {
+): TaskResponseRecord &
+  typeof ORDINARY_TASK_DIAGNOSTIC_EXPANSION & {
+    readonly leaseOwner: string;
+    readonly providerEndpoint: string;
+    readonly authenticatedCommand: string;
+  } {
+  return {
     ...taskRecord(status, failureCode),
+    ...ORDINARY_TASK_DIAGNOSTIC_EXPANSION,
     leaseOwner: SECRET_CANARY,
     providerEndpoint: `https://${SECRET_CANARY}.invalid`,
     authenticatedCommand: `git clone --token ${SECRET_CANARY}`,
   };
-  return taskResponseFromRecord(persisted);
 }
 
 function repoRecord(
@@ -398,6 +468,49 @@ function assertNoSecretCanary(...values: unknown[]): void {
   ]) {
     assert.equal(serialized.includes(field), false, field);
   }
+}
+
+function assertOrdinaryTaskResponseNotExpanded(...values: unknown[]): void {
+  const serialized = JSON.stringify(values);
+  for (const field of ORDINARY_TASK_FORBIDDEN_DIAGNOSTIC_FIELDS) {
+    assert.equal(serialized.includes(`"${field}":`), false, field);
+  }
+  assertNoSecretCanary(...values);
+}
+
+function assertTaskRecordCarriesDiagnosticExpansion(
+  record: object,
+): void {
+  for (const field of ORDINARY_TASK_FORBIDDEN_DIAGNOSTIC_FIELDS) {
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(record, field),
+      true,
+      field,
+    );
+  }
+  assert.equal(JSON.stringify(record).includes(SECRET_CANARY), true);
+}
+
+function assertExistingTaskProvisioningShape(...values: unknown[]): void {
+  let projections = 0;
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+    const record = value as Record<string, unknown>;
+    if (record.provisioning && typeof record.provisioning === 'object') {
+      projections += 1;
+      assert.deepEqual(
+        Object.keys(record.provisioning).sort(),
+        EXISTING_TASK_PROVISIONING_FIELDS,
+      );
+    }
+    Object.values(record).forEach(visit);
+  };
+  values.forEach(visit);
+  assert.ok(projections > 0, 'expected at least one ordinary Task projection');
 }
 
 function captureSyncFailure(run: () => unknown): unknown {
@@ -605,7 +718,10 @@ async function restScheduleCall(
 }
 
 test('initial accepted task has identical secret-free REST and MCP projections', async () => {
-  const unsafeTask = unsafeTaskOutput('pending');
+  const expandedTaskRecord = taskRecordWithDiagnosticExpansion('pending');
+  assertTaskRecordCarriesDiagnosticExpansion(expandedTaskRecord);
+  const serviceTask = taskResponseFromRecord(expandedTaskRecord);
+  assertOrdinaryTaskResponseNotExpanded(serviceTask);
   let restAccepts = 0;
   let restWakes = 0;
   const tasks = {
@@ -632,7 +748,7 @@ test('initial accepted task has identical secret-free REST and MCP projections',
     },
     async acceptPreparedTask() {
       restAccepts += 1;
-      return unsafeTask;
+      return serviceTask;
     },
     async admitCreatedTask() {
       restWakes += 1;
@@ -653,7 +769,7 @@ test('initial accepted task has identical secret-free REST and MCP projections',
   const tools = captureMcpTools({
     async createTask() {
       mcpCreates += 1;
-      return unsafeTask;
+      return serviceTask;
     },
   });
   const mcp = parseMcpSuccess(
@@ -662,10 +778,22 @@ test('initial accepted task has identical secret-free REST and MCP projections',
       ownerExtra(['tasks:write']),
     ),
   );
-  const canonical = TaskResponseSchema.parse(unsafeTask);
+  const canonical = TaskResponseSchema.parse(
+    taskResponseFromRecord(taskRecord('pending')),
+  );
   const canonicalWire = canonicalJson(canonical);
 
-  assert.deepEqual(canonicalJson(TaskResponseSchema.parse(rest)), canonicalWire);
+  assert.deepEqual(
+    canonicalJson(TaskResponseSchema.parse(serviceTask)),
+    canonicalWire,
+    'the production projection must remain valid under the existing Task schema',
+  );
+  assert.deepEqual(
+    canonicalJson(serviceTask),
+    canonicalWire,
+    'taskResponseFromRecord must not expand the ordinary Task shape',
+  );
+  assert.deepEqual(canonicalJson(rest), canonicalWire);
   assert.deepEqual(mcp.structured, canonicalWire);
   assert.deepEqual(mcp.text, {
     id: canonical.id,
@@ -683,18 +811,19 @@ test('initial accepted task has identical secret-free REST and MCP projections',
     { restAccepts, restWakes, mcpCreates },
     { restAccepts: 1, restWakes: 1, mcpCreates: 1 },
   );
-  assertNoSecretCanary(rest, mcp.structured, mcp.text);
+  assertOrdinaryTaskResponseNotExpanded(rest, mcp.structured, mcp.text);
+  assertExistingTaskProvisioningShape(rest, mcp.structured, mcp.text);
 });
 
 test('all provisioning failures round-trip through task create/list/get/stop on REST and MCP', async () => {
   for (const fixture of PROVISIONING_FAILURES) {
-    const unsafeTask = unsafeTaskOutput('failed', fixture.code);
-    const rawRecord = {
-      ...taskRecord('failed', fixture.code),
-      leaseOwner: SECRET_CANARY,
-      providerEndpoint: `https://${SECRET_CANARY}.invalid`,
-      authenticatedCommand: `git -c token=${SECRET_CANARY} fetch`,
-    };
+    const rawRecord = taskRecordWithDiagnosticExpansion(
+      'failed',
+      fixture.code,
+    );
+    assertTaskRecordCarriesDiagnosticExpansion(rawRecord);
+    const serviceTask = taskResponseFromRecord(rawRecord);
+    assertOrdinaryTaskResponseNotExpanded(serviceTask);
     let currentPreparations = 0;
     let currentAdmissions = 0;
     const tasks = {
@@ -710,10 +839,10 @@ test('all provisioning failures round-trip through task create/list/get/stop on 
         throw new Error('an exact replay must not wake admission');
       },
       async findById() {
-        return unsafeTask;
+        return serviceTask;
       },
       async stop() {
-        return unsafeTask;
+        return serviceTask;
       },
     } as unknown as TasksService;
     const prisma = {
@@ -726,7 +855,7 @@ test('all provisioning failures round-trip through task create/list/get/stop on 
     const controller = new V1TasksController(
       tasks,
       prisma,
-      replayIdempotency(unsafeTask),
+      replayIdempotency(serviceTask),
     );
     const restCreate = await restCreateTask(controller, {
       repoId: REPO_ID,
@@ -738,16 +867,16 @@ test('all provisioning failures round-trip through task create/list/get/stop on 
 
     const tools = captureMcpTools({
       async createTask() {
-        return unsafeTask;
+        return serviceTask;
       },
       async listTasks() {
-        return { items: [unsafeTask], nextCursor: null };
+        return { items: [serviceTask], nextCursor: null };
       },
       async getTask() {
-        return unsafeTask;
+        return serviceTask;
       },
       async stopTask() {
-        return unsafeTask;
+        return serviceTask;
       },
     });
     const mcpCreate = parseMcpSuccess(
@@ -766,19 +895,26 @@ test('all provisioning failures round-trip through task create/list/get/stop on 
       await tools.get('stop_task')!({ id: TASK_ID }, ownerExtra(['tasks:write'])),
     );
 
-    const expected = TaskResponseSchema.parse(unsafeTask);
+    const expected = TaskResponseSchema.parse(
+      taskResponseFromRecord(taskRecord('failed', fixture.code)),
+    );
+    assert.deepEqual(
+      canonicalJson(TaskResponseSchema.parse(serviceTask)),
+      canonicalJson(expected),
+      'the production projection must remain valid under the existing Task schema',
+    );
     assert.equal(expected.failure?.code, fixture.code);
     assert.equal(expected.failure?.action, fixture.action);
     const expectedWire = canonicalJson(expected);
     for (const restOutput of [restCreate, restGet, restStop]) {
       assert.deepEqual(
-        canonicalJson(TaskResponseSchema.parse(restOutput)),
+        canonicalJson(restOutput),
         expectedWire,
         fixture.code,
       );
     }
     assert.deepEqual(
-      canonicalJson(V1ListTasksResponseSchema.parse(restList)),
+      canonicalJson(restList),
       { items: [expectedWire], nextCursor: null },
       fixture.code,
     );
@@ -802,7 +938,21 @@ test('all provisioning failures round-trip through task create/list/get/stop on 
       { currentPreparations: 0, currentAdmissions: 0 },
       fixture.code,
     );
-    assertNoSecretCanary(
+    assertOrdinaryTaskResponseNotExpanded(
+      restCreate,
+      restList,
+      restGet,
+      restStop,
+      mcpCreate.structured,
+      mcpCreate.text,
+      mcpList.structured,
+      mcpList.text,
+      mcpGet.structured,
+      mcpGet.text,
+      mcpStop.structured,
+      mcpStop.text,
+    );
+    assertExistingTaskProvisioningShape(
       restCreate,
       restList,
       restGet,
@@ -1193,7 +1343,7 @@ test('the six affected operations deny insufficient scopes on REST and MCP befor
   let dependencyCalls = 0;
   const deniedTask = async () => {
     dependencyCalls += 1;
-    return unsafeTaskOutput('pending');
+    return taskResponseFromRecord(taskRecord('pending'));
   };
   const deniedRepo = async () => {
     dependencyCalls += 1;

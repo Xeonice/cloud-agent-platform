@@ -25,6 +25,7 @@ vi.mock("./capabilities", () => ({
 // Stub both implementations with sentinels so we can assert the chosen side.
 vi.mock("./real", () => ({
   listTasks: vi.fn(async () => "REAL_tasks"),
+  getTaskProvisioningDiagnostics: vi.fn(async () => "REAL_taskDiagnostics"),
   getTask: vi.fn(async () => ({
     id: "task-1",
     repoId: "repo-1",
@@ -54,6 +55,7 @@ vi.mock("./real", () => ({
 
 vi.mock("./mock", () => ({
   mockListTasks: vi.fn(async () => "MOCK_tasks"),
+  mockTaskProvisioningDiagnostics: vi.fn(async () => "MOCK_taskDiagnostics"),
   mockTaskContext: vi.fn(async () => ({
     taskId: "task-1",
     repo: "owner/mock",
@@ -76,6 +78,7 @@ vi.mock("./mock", () => ({
 // declared. `vi.mock` is hoisted, so these resolve to the stubs above.
 import {
   tasksQuery,
+  taskProvisioningDiagnosticsInfiniteQuery,
   taskContextQuery,
   metricsQuery,
   sessionHistoryQuery,
@@ -106,6 +109,14 @@ const cases: Case[] = [
     mockFn: mock.mockListTasks as unknown as Spy,
     realValue: "REAL_tasks",
     mockValue: "MOCK_tasks",
+  },
+  {
+    domain: "taskProvisioningDiagnostics",
+    factory: () => taskProvisioningDiagnosticsInfiniteQuery("task-x"),
+    realFn: real.getTaskProvisioningDiagnostics as unknown as Spy,
+    mockFn: mock.mockTaskProvisioningDiagnostics as unknown as Spy,
+    realValue: "REAL_taskDiagnostics",
+    mockValue: "MOCK_taskDiagnostics",
   },
   {
     domain: "metrics",

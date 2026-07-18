@@ -22,9 +22,9 @@
   "scripts": {
     "build": "pnpm --filter @cap/sandbox-core build && tsc -p tsconfig.json",
     "typecheck": "pnpm --filter @cap/sandbox-core build && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && node test/aio-local-provider.test.mjs && node test/aio-provider-controller.test.mjs && node test/aio-provider.test.mjs && node test/aio-workspace-security.test.mjs && node test/aio-retention-store.test.mjs && node test/aio-select-launch.test.mjs && node test/aio-terminal-runtime.test.mjs && node test/aio-terminal-transport.test.mjs && node test/aio-pty-client-runtime.test.mjs && node test/aio-codex-launch.test.mjs && node test/aio-terminal-cpr.test.mjs && node test/aio-terminal-autostart.test.mjs && node test/tar-extract.test.mjs",
+    "test": "pnpm build && pnpm --filter @cap/sandbox-conformance build && node test/aio-local-provider.test.mjs && node test/aio-provider-controller.test.mjs && node test/aio-provider.test.mjs && node test/aio-diagnostic-conformance.test.mjs && node test/aio-workspace-security.test.mjs && node test/aio-retention-store.test.mjs && node test/aio-select-launch.test.mjs && node test/aio-terminal-runtime.test.mjs && node test/aio-terminal-transport.test.mjs && node test/aio-pty-client-runtime.test.mjs && node test/aio-codex-launch.test.mjs && node test/aio-terminal-cpr.test.mjs && node test/aio-terminal-autostart.test.mjs && node test/tar-extract.test.mjs",
     "test:e2e": "pnpm build && node --test --test-force-exit e2e/*.e2e.mjs",
-    "coverage": "pnpm build && c8 --100 --include=dist/**/*.js --reporter=text sh -c \"node test/aio-local-provider.test.mjs && node test/aio-provider-controller.test.mjs && node test/aio-provider.test.mjs && node test/aio-retention-store.test.mjs && node test/aio-select-launch.test.mjs && node test/aio-terminal-runtime.test.mjs && node test/aio-terminal-transport.test.mjs && node test/aio-pty-client-runtime.test.mjs && node test/aio-codex-launch.test.mjs && node test/aio-terminal-cpr.test.mjs && node test/aio-terminal-autostart.test.mjs && node test/tar-extract.test.mjs\"",
+    "coverage": "pnpm build && pnpm --filter @cap/sandbox-conformance build && c8 --100 --include=dist/**/*.js --reporter=text sh -c \"node test/aio-local-provider.test.mjs && node test/aio-provider-controller.test.mjs && node test/aio-provider.test.mjs && node test/aio-diagnostic-conformance.test.mjs && node test/aio-retention-store.test.mjs && node test/aio-select-launch.test.mjs && node test/aio-terminal-runtime.test.mjs && node test/aio-terminal-transport.test.mjs && node test/aio-pty-client-runtime.test.mjs && node test/aio-codex-launch.test.mjs && node test/aio-terminal-cpr.test.mjs && node test/aio-terminal-autostart.test.mjs && node test/tar-extract.test.mjs\"",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
@@ -34,6 +34,7 @@
   },
   "devDependencies": {
     "@cap/eslint-config": "workspace:*",
+    "@cap/sandbox-conformance": "workspace:*",
     "@cap/tsconfig": "workspace:*",
     "@types/dockerode": "^4.0.1",
     "@types/node": "^20.14.0",

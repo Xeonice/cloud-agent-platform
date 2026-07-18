@@ -476,7 +476,13 @@ test('additive contract: real build() response keeps every prior field name/type
   const parsed = MetricsResponseSchema.parse(res);
 
   // Prior top-level/field names unchanged (nothing renamed or removed)...
-  assert.deepEqual(Object.keys(parsed).sort(), ['capacity', 'occupancy', 'resources', 'runnerMinutes']);
+  assert.deepEqual(Object.keys(parsed).sort(), [
+    'capacity',
+    'occupancy',
+    'provisioningDiagnostics',
+    'resources',
+    'runnerMinutes',
+  ]);
   assert.deepEqual(Object.keys(parsed.capacity).sort(), ['active', 'ceiling', 'free', 'queueDepth']);
   assert.deepEqual(Object.keys(parsed.occupancy).sort(), ['queuedTaskIds', 'slots']);
   assert.deepEqual(Object.keys(parsed.runnerMinutes).sort(), ['available', 'minutes']);
@@ -507,9 +513,65 @@ test('additive contract: real build() response keeps every prior field name/type
   assert.ok(Array.isArray(parsed.resources.containers));
   assert.equal(typeof parsed.resources.aggregateCpuPercent, 'number');
   assert.equal(typeof parsed.resources.aggregateMemoryBytes, 'number');
+  assert.equal(
+    parsed.provisioningDiagnostics.durableGauges.status,
+    'unavailable',
+    'an older/missing collector degrades only the additive diagnostics block',
+  );
+  assert.deepEqual(parsed.provisioningDiagnostics.attemptOutcomes, []);
+  assert.deepEqual(parsed.provisioningDiagnostics.stageOutcomes, []);
 
-  // The ONLY addition: the per-task section, populated for the running task.
+  // The existing per-task addition remains populated for the running task.
   assert.ok(parsed.resources.taskSamples, 'served response carries taskSamples');
   assert.ok(parsed.resources.taskSamples.t1, 'running task present in the section');
   assert.equal(parsed.resources.taskSamples.t1.scope, 'process');
+});
+
+test('additive provisioning diagnostics collector is cache-only and isolated on failure', () => {
+  const sem = makeSemaphore(1, [], []);
+  const guardrails = {
+    semaphoreProjection: () => sem,
+    runnerMinuteIntervals: () => [],
+  };
+  const sampler = makeSampler();
+  const observedSince = new Date(500);
+  const diagnostics = {
+    currentSnapshot(now) {
+      assert.equal(now, 1_000);
+      return {
+        observedSince,
+        attemptOutcomes: [],
+        stageOutcomes: [],
+        retries: [],
+        cleanupOutcomes: [],
+        anomalies: [],
+        durableGauges: {
+          status: 'available',
+          sampledAt: new Date(900),
+          ageMs: 100,
+          activeAttempts: 0,
+          oldestActiveAttemptAgeMs: null,
+          cleanupPendingRuns: 0,
+          confirmedOrphanRuns: 0,
+        },
+      };
+    },
+  };
+
+  const served = new MetricsService(guardrails, sampler, diagnostics).build(1_000);
+  assert.equal(served.provisioningDiagnostics.observedSince, observedSince);
+  assert.equal(served.provisioningDiagnostics.durableGauges.status, 'available');
+
+  const failing = {
+    currentSnapshot() {
+      throw new Error('diagnostics-source-secret');
+    },
+  };
+  const degraded = new MetricsService(guardrails, sampler, failing).build(1_000);
+  assert.equal(
+    degraded.provisioningDiagnostics.durableGauges.status,
+    'unavailable',
+  );
+  assert.deepEqual(degraded.capacity, served.capacity);
+  assert.deepEqual(degraded.resources, served.resources);
 });

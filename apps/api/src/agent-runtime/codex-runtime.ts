@@ -179,6 +179,7 @@ export class CodexRuntime implements AgentRuntime {
     const configToml = credStore + topLevel + trustTable + providerTable;
     const configB64 = Buffer.from(configToml, 'utf8').toString('base64');
     commands.push({
+      descriptor: { commandKind: 'credential_setup', ordinal: 1 },
       command:
         `mkdir -p ${dir} && rm -f ${dir}/hooks.json && printf %s '${configB64}' | base64 -d > ${dir}/config.toml && chmod 600 ${dir}/config.toml` +
         authJsonCommand,
@@ -190,6 +191,7 @@ export class CodexRuntime implements AgentRuntime {
     if (ctx.prompt) {
       const promptB64 = Buffer.from(ctx.prompt, 'utf8').toString('base64');
       commands.push({
+        descriptor: { commandKind: 'runtime_setup', ordinal: 2 },
         command: `mkdir -p ${dir} && printf %s '${promptB64}' | base64 -d > ${CODEX_PROMPT_FILE_PATH} && chmod 600 ${CODEX_PROMPT_FILE_PATH}`,
         tolerateUnresolvedExit: false,
       });
@@ -199,12 +201,36 @@ export class CodexRuntime implements AgentRuntime {
 
   preflightProbes(): readonly SandboxRuntimePreflightProbe[] {
     return [
-      { name: 'codex cli', command: 'command -v codex' },
-      { name: 'git', command: 'command -v git' },
-      { name: 'tmux', command: 'command -v tmux' },
-      { name: 'bash', command: 'command -v bash' },
-      { name: 'tar', command: 'command -v tar' },
-      { name: 'gzip', command: 'command -v gzip' },
+      {
+        name: 'codex cli',
+        command: 'command -v codex',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 1 },
+      },
+      {
+        name: 'git',
+        command: 'command -v git',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 2 },
+      },
+      {
+        name: 'tmux',
+        command: 'command -v tmux',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 3 },
+      },
+      {
+        name: 'bash',
+        command: 'command -v bash',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 4 },
+      },
+      {
+        name: 'tar',
+        command: 'command -v tar',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 5 },
+      },
+      {
+        name: 'gzip',
+        command: 'command -v gzip',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 6 },
+      },
     ];
   }
 

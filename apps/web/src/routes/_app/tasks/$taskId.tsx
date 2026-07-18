@@ -63,6 +63,7 @@ import { formatTaskResource } from "@/components/session/format-resource";
 import { SANDBOX_PROVIDER_PENDING_LABEL } from "@/lib/sandbox-provider-label";
 import { RuntimeCredentialAlert } from "@/components/runtime-credential-alert";
 import { TaskProvisioningStatus } from "@/components/task-provisioning-status";
+import { TaskProvisioningDiagnosticsPanel } from "@/components/task-provisioning-diagnostics-panel";
 import {
   TASK_PROVISIONING_STAGE_LABELS,
   TASK_PROVISIONING_STATE_LABELS,
@@ -124,10 +125,28 @@ function SessionPage(): React.ReactElement {
   const [livePane, setLivePane] = React.useState<"terminal" | "conversation">(
     "terminal",
   );
+  const [sessionPane, setSessionPane] = React.useState<"task" | "diagnostics">(
+    "task",
+  );
 
   React.useEffect(() => {
     setLivePane("terminal");
+    setSessionPane(
+      window.location.hash === "#provisioning-diagnostics"
+        ? "diagnostics"
+        : "task",
+    );
   }, [taskId]);
+
+  function selectSessionPane(pane: "task" | "diagnostics") {
+    setSessionPane(pane);
+    const hash = pane === "diagnostics" ? "#provisioning-diagnostics" : "";
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}${window.location.search}${hash}`,
+    );
+  }
 
   const shortId = shortTaskId(taskId);
 
@@ -223,8 +242,29 @@ function SessionPage(): React.ReactElement {
           the viewport on the session route, see `_app.tsx`), and the single
           `minmax(0,1fr)` row+col lets the child stretch to fill while still
           clamping width so long output can't blow out the column. */}
-      <section className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)] grid-cols-[minmax(0,1fr)]">
-        {(() => {
+      <section className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)] grid-cols-[minmax(0,1fr)] gap-2">
+        <div
+          role="tablist"
+          aria-label="任务详情视图"
+          className="inline-flex w-fit rounded-lg bg-secondary p-[3px]"
+        >
+          <SessionPaneButton
+            active={sessionPane === "task"}
+            onClick={() => selectSessionPane("task")}
+          >
+            任务视图
+          </SessionPaneButton>
+          <SessionPaneButton
+            active={sessionPane === "diagnostics"}
+            onClick={() => selectSessionPane("diagnostics")}
+          >
+            准备诊断
+          </SessionPaneButton>
+        </div>
+        <div className="min-h-0" id="provisioning-diagnostics">
+          {sessionPane === "diagnostics" ? (
+            <TaskProvisioningDiagnosticsPanel taskId={taskId} />
+          ) : (() => {
           // headless-task-conversation-view: branch the session view by
           // status + executionMode (pure `sessionViewMode`, unit-tested):
           //   finished-replay → read-only transcript (NO WS); executionMode flows
@@ -303,7 +343,8 @@ function SessionPage(): React.ReactElement {
               </div>
             </div>
           );
-        })()}
+          })()}
+        </div>
       </section>
     </>
   );
@@ -371,6 +412,32 @@ function LivePaneButton({
   return (
     <button
       type="button"
+      onClick={onClick}
+      className={`min-h-[30px] rounded-md px-3 text-sm transition-colors ${
+        active
+          ? "bg-background text-foreground shadow-sm"
+          : "text-muted-foreground hover:text-foreground"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SessionPaneButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
       onClick={onClick}
       className={`min-h-[30px] rounded-md px-3 text-sm transition-colors ${
         active

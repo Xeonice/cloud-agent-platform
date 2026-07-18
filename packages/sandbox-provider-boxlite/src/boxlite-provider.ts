@@ -9,6 +9,7 @@ import type {
   SandboxExecutionMode,
   SandboxExternalBoundaryAction,
   SandboxOwnershipFence,
+  SandboxPhysicalCleanupResult,
   SandboxRunCleanupAuthorization,
   SandboxTeardownResult,
   SandboxTeardownDisposition,
@@ -16,6 +17,8 @@ import type {
   SandboxProviderCapability,
   SandboxProviderDescriptor,
   SandboxProviderPort,
+  SandboxProvisioningDiagnosticCommandKind,
+  SandboxProvisioningDiagnosticObserver,
   SandboxProvisionContext,
   SandboxReadoptionTarget,
   SandboxReadoptionPort,
@@ -28,6 +31,7 @@ import type {
   SandboxWorkspaceDescriptor,
   SandboxWorkspaceDeliveryHook,
   SandboxWorkspaceMaterializationHook,
+  SandboxWorkspaceMaterializationResult,
   SelectedSandboxRun,
 } from '@cap/sandbox-core';
 import {
@@ -35,11 +39,15 @@ import {
   defineCloudSandboxProvider,
   defineLocalSandboxProvider,
   isSandboxLegacyDeliverWorkspaceArgs,
+  isSandboxRuntimeCommandExecutionError,
   latchSandboxExternalBoundaryGuard,
   redactSandboxProvisioningStageFailure,
   reportSandboxProvisioningProgress,
   resourcesForSandboxProvision,
   runSandboxExternalBoundary,
+  sandboxCommandExecutionDiagnosticFields,
+  isSandboxCleanupCoordinationPendingError,
+  SandboxCleanupCoordinationPendingError,
   SandboxProvisioningCapacityError,
   SandboxProvisioningStageError,
   SandboxProviderConfigurationError,
@@ -69,6 +77,11 @@ import type {
 } from './boxlite-hooks.js';
 import { createBoxLiteCommandExecutor } from './boxlite-command.js';
 import {
+  startBoxLiteNativeExecutionDiagnosticSession,
+  startBoxLiteProvisioningDiagnostic,
+  type BoxLiteNativeExecutionDiagnosticSession,
+} from './boxlite-provisioning-diagnostics.js';
+import {
   createBoxLiteRuntimePreflight,
   requiredToolsForBoxLiteCapabilities,
 } from './boxlite-preflight.js';
@@ -78,8 +91,8 @@ import { buildBoxLiteRetentionPolicy } from './boxlite-retention.js';
 import type { BoxLiteProvisionedRun } from './boxlite-types.js';
 import { probeBoxLiteDiskCapacity } from './boxlite-environment-validation.js';
 import {
+  attemptDeleteBoxLiteSandboxAndConfirm,
   createBoxLiteWorkspaceSecurityAdapter,
-  deleteBoxLiteSandboxAndConfirm,
   resolveBoxLiteGitSecretDirectory,
 } from './boxlite-workspace-security.js';
 
@@ -156,6 +169,8 @@ export class BoxLiteSandboxProvider<
   private readonly workspaceMaterialization?: SandboxWorkspaceMaterializationHook;
   private readonly workspaceDelivery?: SandboxWorkspaceDeliveryHook;
   private readonly runs = new Map<string, BoxLiteProvisionedRun>();
+  /** Credential safety is unresolved; only exact cleanup may observe this run. */
+  private readonly quarantinedRuns = new Map<string, string>();
 
   constructor(options: BoxLiteProviderOptions<TRuntimeId, TTranscriptSource>) {
     this.config = options.config;
@@ -201,12 +216,16 @@ export class BoxLiteSandboxProvider<
   }
 
   async provision(ctx: SandboxProvisionContext<TCloneSpec>): Promise<SandboxConnection> {
+    ctx.diagnostics?.bindProviderFamily('boxlite');
     ctx = snapshotSandboxProvisionContext({
       ...ctx,
       externalBoundaryGuard: latchSandboxExternalBoundaryGuard(
         ctx.externalBoundaryGuard,
       ),
     });
+    if (this.quarantinedRuns.has(ctx.taskId)) {
+      throw new SandboxCleanupCoordinationPendingError();
+    }
     throwIfBoxLiteProvisionCancelled(ctx.cancellationSignal);
     if (
       ctx.workspace !== undefined &&
@@ -235,12 +254,29 @@ export class BoxLiteSandboxProvider<
       resources,
     );
     const wasCached = this.runs.has(ctx.taskId);
-    const existing = await this.resolveExistingRun(
-      ctx.taskId,
-      ctx.ownership,
-      ctx,
-    );
-    if (existing && wasCached) return existing.connection;
+    const existingReadinessDiagnostics =
+      startBoxLiteNativeExecutionDiagnosticSession(
+        ctx.diagnostics,
+        'readiness',
+      );
+    let existing: BoxLiteProvisionedRun | null;
+    try {
+      existing = await this.resolveExistingRun(
+        ctx.taskId,
+        ctx.ownership,
+        ctx,
+        undefined,
+        false,
+        existingReadinessDiagnostics,
+      );
+    } catch (error) {
+      existingReadinessDiagnostics.finish();
+      throw error;
+    }
+    if (existing && wasCached) {
+      existingReadinessDiagnostics.finish();
+      return existing.connection;
+    }
 
     if (existing) {
       try {
@@ -250,6 +286,7 @@ export class BoxLiteSandboxProvider<
           runtimeId,
           environment,
           resources,
+          readinessDiagnosticSession: existingReadinessDiagnostics,
         });
         this.runs.set(ctx.taskId, {
           ...existing,
@@ -265,14 +302,17 @@ export class BoxLiteSandboxProvider<
         return existing.connection;
       } catch (error) {
         this.forgetRun(ctx.taskId, existing.sandbox.id);
-        await this.cleanupFailedSandbox(
+        return this.rethrowAfterFailedSandboxCleanup(
+          error,
           ctx,
           existing.sandbox.id,
           existing.sandbox,
         );
-        throw error;
+      } finally {
+        existingReadinessDiagnostics.finish();
       }
     }
+    existingReadinessDiagnostics.finish();
 
     throwIfBoxLiteProvisionCancelled(ctx.cancellationSignal);
     const sandboxId = this.sandboxIdForTask(ctx.taskId, ctx.ownership);
@@ -328,13 +368,19 @@ export class BoxLiteSandboxProvider<
       externalBoundaryGuard: ctx.externalBoundaryGuard,
       onSandboxCreateObserved: ctx.onSandboxCreateObserved,
       cancellationSignal: ctx.cancellationSignal,
+      diagnostics: ctx.diagnostics,
+      diagnosticScope: boxLiteDiagnosticScope(ctx),
     } as const;
     let createdSandbox: BoxLiteSandbox;
+    let conflictReadinessDiagnostics:
+      | BoxLiteNativeExecutionDiagnosticSession
+      | undefined;
     try {
       createdSandbox = await this.client.createSandbox(createRequest);
     } catch (error) {
       if (error instanceof BoxLitePartialCreateError) {
-        await this.cleanupFailedSandbox(
+        return this.rethrowAfterFailedSandboxCleanup(
+          error,
           ctx,
           error.sandbox.id,
           Object.freeze({
@@ -345,24 +391,63 @@ export class BoxLiteSandboxProvider<
             }),
           }),
         );
+      }
+      if (!isBoxLiteCreateConflict(error)) {
         throw error;
       }
-      if (!isBoxLiteCreateConflict(error)) throw error;
       const raced = await this.runProvisionBoundary(
         ctx,
         'sandbox.inspect',
-        () => this.client.getSandbox(sandboxId),
+        () => this.client.getSandbox(sandboxId, {
+          diagnostics: ctx.diagnostics,
+          cancellationSignal: ctx.cancellationSignal,
+          diagnosticKey: 'sandbox.inspect.conflict',
+          diagnosticScope: boxLiteDiagnosticScope(ctx),
+        }),
       );
-      if (!isUsableSandbox(raced)) throw error;
-      await this.assertResourceGeneration(raced, ctx.ownership, ctx);
+      if (!isUsableSandbox(raced)) {
+        throw error;
+      }
+      conflictReadinessDiagnostics =
+        startBoxLiteNativeExecutionDiagnosticSession(
+          ctx.diagnostics,
+          'readiness',
+        );
+      try {
+        await this.assertResourceGeneration(
+          raced,
+          ctx.ownership,
+          ctx,
+          conflictReadinessDiagnostics,
+        );
+      } catch (generationError) {
+        conflictReadinessDiagnostics.finish();
+        throw generationError;
+      }
       createdSandbox = raced;
     }
     if (
       createdSandbox.diskSizeGb !== undefined &&
       createdSandbox.diskSizeGb !== resources.diskSizeGb
     ) {
-      await this.cleanupFailedSandbox(ctx, createdSandbox.id, createdSandbox);
-      throw new SandboxProvisioningCapacityError();
+      conflictReadinessDiagnostics?.finish();
+      const primary = new SandboxProvisioningCapacityError();
+      const diagnostic = startBoxLiteProvisioningDiagnostic(ctx.diagnostics, {
+        stage: 'readiness',
+        operation: 'runtime_preflight',
+        channel: 'primary',
+      });
+      diagnostic.settle({
+        outcome: 'failed',
+        cause: 'capacity_exhausted',
+        retryable: true,
+      });
+      return this.rethrowAfterFailedSandboxCleanup(
+        primary,
+        ctx,
+        createdSandbox.id,
+        createdSandbox,
+      );
     }
     const sandbox = Object.freeze({
       ...createdSandbox,
@@ -379,6 +464,12 @@ export class BoxLiteSandboxProvider<
         runtimeId,
         environment: resolvedEnvironment,
         resources,
+        ...(conflictReadinessDiagnostics === undefined
+          ? {}
+          : {
+              readinessDiagnosticSession:
+                conflictReadinessDiagnostics,
+            }),
       });
       const run: BoxLiteProvisionedRun = {
         taskId: ctx.taskId,
@@ -391,8 +482,14 @@ export class BoxLiteSandboxProvider<
       return connection;
     } catch (err) {
       this.forgetRun(ctx.taskId, sandbox.id);
-      await this.cleanupFailedSandbox(ctx, sandbox.id, sandbox);
-      throw err;
+      return this.rethrowAfterFailedSandboxCleanup(
+        err,
+        ctx,
+        sandbox.id,
+        sandbox,
+      );
+    } finally {
+      conflictReadinessDiagnostics?.finish();
     }
   }
 
@@ -417,8 +514,9 @@ export class BoxLiteSandboxProvider<
       readonly cleanupAuthorization?: SandboxRunCleanupAuthorization;
       readonly providerSandboxId?: string;
       readonly disposition?: SandboxTeardownDisposition;
+      readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
     } = {},
-  ): Promise<SandboxTeardownResult> {
+  ): Promise<SandboxTeardownResult | SandboxPhysicalCleanupResult> {
     const ownership = this.cleanupOwnershipFor(taskId, options);
     // Always resolve through the provider before destructive work.  A cached
     // object cannot distinguish a replaced resource. Generation-scoped ids
@@ -430,8 +528,12 @@ export class BoxLiteSandboxProvider<
       ownership,
       undefined,
       sandboxId,
+      true,
     );
-    if (!run) return { kind: 'already-absent' };
+    if (!run) {
+      this.confirmRunAbsent(taskId, sandboxId);
+      return { kind: 'already-absent' };
+    }
     await this.assertResourceGeneration(run.sandbox, ownership);
     if (run && this.preStopCleanup) {
       try {
@@ -445,12 +547,18 @@ export class BoxLiteSandboxProvider<
         // Cleanup is best-effort; deletion must still proceed.
       }
     }
-    await deleteBoxLiteSandboxAndConfirm({
+    const physical = await attemptDeleteBoxLiteSandboxAndConfirm({
       client: this.client,
       sandboxId,
+      diagnostics: options.diagnostics,
     });
-    this.forgetRun(taskId, sandboxId);
-    return { kind: 'found-and-cleaned' };
+    if (physical.outcome === 'succeeded') {
+      this.confirmRunAbsent(taskId, sandboxId);
+      return { kind: physical.proof };
+    } else {
+      this.quarantineRun(taskId, sandboxId);
+    }
+    return physical;
   }
 
   async readRolloutFromContainer(
@@ -473,7 +581,9 @@ export class BoxLiteSandboxProvider<
 
   async sandboxExists(taskId: string): Promise<boolean> {
     const sandbox = await this.client.getSandbox(
-      this.runs.get(taskId)?.sandbox.id ?? this.sandboxIdForTask(taskId),
+      this.quarantinedRuns.get(taskId) ??
+        this.runs.get(taskId)?.sandbox.id ??
+        this.sandboxIdForTask(taskId),
     );
     return isUsableSandbox(sandbox);
   }
@@ -503,9 +613,11 @@ export class BoxLiteSandboxProvider<
         error: 'Credentialed delivery requires the staged workspace hook',
       };
     }
+    const workspaceDelivery = this.workspaceDelivery;
     if (
       (args.beforeSandboxCleanup === undefined) !==
-      (args.afterSandboxCleanup === undefined)
+      (args.afterSandboxCleanup === undefined &&
+        args.settleSandboxCleanupAttempt === undefined)
     ) {
       throw new SandboxProviderConfigurationError(
         'BoxLite delivery cleanup callbacks must be provided together',
@@ -513,7 +625,9 @@ export class BoxLiteSandboxProvider<
     }
     if (
       args.ownership &&
-      (!args.beforeSandboxCleanup || !args.afterSandboxCleanup)
+      (!args.beforeSandboxCleanup ||
+        (!args.afterSandboxCleanup &&
+          !args.settleSandboxCleanupAttempt))
     ) {
       throw new SandboxProviderConfigurationError(
         'BoxLite durable delivery cleanup requires owner generation callbacks',
@@ -532,29 +646,42 @@ export class BoxLiteSandboxProvider<
       ),
       beforeSandboxCleanup: args.beforeSandboxCleanup,
       afterSandboxCleanup: args.afterSandboxCleanup,
+      settleSandboxCleanupAttempt: args.settleSandboxCleanupAttempt,
     });
     let result: SandboxDeliverWorkspaceResult;
     try {
-      result = await this.workspaceDelivery({
-        taskId,
-        plan: Object.freeze({
-          branch: args.branch,
-          commitMessage: args.commitMessage,
-          credential: args.credential,
-          deadlineMs: args.deadlineMs ?? this.config.gitCloneTimeoutMs,
-          ...(args.cancellationSignal === undefined
-            ? {}
-            : { cancellationSignal: args.cancellationSignal }),
-        }),
-        workspaceDir: this.config.workspacePath,
-        stageExecutor: adapter.stageExecutor,
-        secretFilePort: adapter.secretFilePort,
+      result = await runWithCredentialSafetySettlement({
+        run: () =>
+          workspaceDelivery({
+            taskId,
+            plan: Object.freeze({
+              branch: args.branch,
+              commitMessage: args.commitMessage,
+              credential: args.credential,
+              deadlineMs: args.deadlineMs ?? this.config.gitCloneTimeoutMs,
+              ...(args.cancellationSignal === undefined
+                ? {}
+                : { cancellationSignal: args.cancellationSignal }),
+            }),
+            workspaceDir: this.config.workspacePath,
+            stageExecutor: adapter.stageExecutor,
+            secretFilePort: adapter.secretFilePort,
+          }),
+        settleCredentialSafety: () => adapter.settleCredentialSafety(),
+        primaryFailure: (candidate) =>
+          candidate.error === null ? null : candidate,
+        isCredentialSafetyConfirmed: () => adapter.wasSandboxFenced(),
+        isCleanupCoordinationAcknowledged: () =>
+          adapter.wasSandboxCleanupAcknowledged(),
+        onSettlementFailure: () =>
+          this.quarantineRun(taskId, run.sandbox.id),
       });
     } finally {
-      try {
-        await adapter.settleCredentialSafety();
-      } finally {
-        if (adapter.wasSandboxFenced()) this.forgetRun(taskId, run.sandbox.id);
+      if (
+        adapter.wasSandboxFenced() &&
+        adapter.wasSandboxCleanupAcknowledged()
+      ) {
+        this.confirmRunAbsent(taskId, run.sandbox.id);
       }
     }
     if (adapter.wasSandboxFenced() && result.error === null) {
@@ -566,7 +693,9 @@ export class BoxLiteSandboxProvider<
   }
 
   async listReadoptable(): Promise<string[]> {
-    return [...this.runs.keys()];
+    return [...this.runs.keys()].filter(
+      (taskId) => !this.quarantinedRuns.has(taskId),
+    );
   }
 
   async reattach(
@@ -662,8 +791,16 @@ export class BoxLiteSandboxProvider<
   private createProvisionCommandExecutor(
     ctx: SandboxProvisionContext<TCloneSpec>,
     sandboxId: string,
+    commandKind?: SandboxProvisioningDiagnosticCommandKind,
+    diagnostics: SandboxProvisioningDiagnosticObserver | undefined =
+      ctx.diagnostics,
   ): SandboxCommandExecutor {
-    const executor = this.createCommandExecutor(sandboxId);
+    const executor = createBoxLiteCommandExecutor({
+      client: this.client,
+      sandboxId,
+      diagnostics,
+      commandKind,
+    });
     return {
       exec: (request) => this.runProvisionBoundary(
         ctx,
@@ -723,60 +860,108 @@ export class BoxLiteSandboxProvider<
     readonly runtimeId: string | null;
     readonly environment: SandboxResolvedEnvironmentMetadata | null;
     readonly resources: SandboxResourceSnapshot;
+    readonly readinessDiagnosticSession?: BoxLiteNativeExecutionDiagnosticSession;
   }): Promise<SandboxPreflightResult> {
     throwIfBoxLiteProvisionCancelled(args.ctx.cancellationSignal);
     reportSandboxProvisioningProgress(args.ctx.onProvisioningProgress, {
       status: 'started',
       stage: 'readiness',
     });
-    const diskSizeGb = args.resources.diskSizeGb;
-    if (diskSizeGb !== undefined) {
-      const capacityProbe = await this.runProvisionBoundary(
-        args.ctx,
-        'sandbox.readiness',
-        () => probeBoxLiteDiskCapacity({
-          client: this.client,
-          sandboxId: args.sandbox.id,
-          diskSizeGb,
-          cwd: this.config.workspacePath,
-        }),
+    const ownsReadinessDiagnosticSession =
+      args.readinessDiagnosticSession === undefined;
+    const readinessDiagnostics =
+      args.readinessDiagnosticSession ??
+      startBoxLiteNativeExecutionDiagnosticSession(
+        args.ctx.diagnostics,
+        'readiness',
       );
-      if (!capacityProbe.ok) {
-        throw new SandboxProvisioningCapacityError();
+    let preflight: SandboxPreflightResult;
+    try {
+      const diskSizeGb = args.resources.diskSizeGb;
+      if (diskSizeGb !== undefined) {
+        const capacityProbe = await this.runProvisionBoundary(
+          args.ctx,
+          'sandbox.readiness',
+          () => probeBoxLiteDiskCapacity({
+            client: this.client,
+            sandboxId: args.sandbox.id,
+            diskSizeGb,
+            cwd: this.config.workspacePath,
+            diagnostics: readinessDiagnostics.diagnostics,
+          }),
+        );
+        if (!capacityProbe.ok) {
+          throw new SandboxProvisioningCapacityError();
+        }
+      }
+
+      throwIfBoxLiteProvisionCancelled(args.ctx.cancellationSignal);
+      preflight = await this.runProvisionBoundary(
+        args.ctx,
+        'runtime.preflight',
+        async () => {
+          const preflightDiagnostic = startBoxLiteProvisioningDiagnostic(
+            args.ctx.diagnostics,
+            {
+              key: 'runtime.preflight',
+              scope: boxLiteDiagnosticScope(args.ctx),
+              stage: 'readiness',
+              operation: 'runtime_preflight',
+              channel: 'primary',
+              commandKind: 'runtime_preflight',
+            },
+          );
+          try {
+            const result = await this.runPreflight(
+              args.ctx.taskId,
+              args.sandbox,
+              args.runtimeId,
+              args.environment,
+              args.ctx,
+              readinessDiagnostics.diagnostics,
+            );
+            if (result.status === 'failed') {
+              preflightDiagnostic.settle({
+                outcome: 'failed',
+                cause: 'command_failed',
+                retryable: false,
+              });
+            } else {
+              preflightDiagnostic.succeed();
+            }
+            return result;
+          } catch (error) {
+            if (isSandboxRuntimeCommandExecutionError(error)) {
+              preflightDiagnostic.settle(
+                sandboxCommandExecutionDiagnosticFields(
+                  error.classification,
+                ),
+              );
+            } else {
+              preflightDiagnostic.fail(error, {
+                signal: args.ctx.cancellationSignal,
+                cause: 'unknown',
+                retryable: false,
+              });
+            }
+            throw redactSandboxProvisioningStageFailure(
+              'runtime_setup',
+              error,
+            );
+          }
+        },
+      );
+    } finally {
+      if (ownsReadinessDiagnosticSession) {
+        readinessDiagnostics.finish();
       }
     }
-
-    throwIfBoxLiteProvisionCancelled(args.ctx.cancellationSignal);
-    const preflight = await this.runProvisionBoundary(
-      args.ctx,
-      'runtime.preflight',
-      async () => {
-        try {
-          return await this.runPreflight(
-            args.ctx.taskId,
-            args.sandbox,
-            args.runtimeId,
-            args.environment,
-            args.ctx,
-          );
-        } catch (error) {
-          throw redactSandboxProvisioningStageFailure(
-            'runtime_setup',
-            error,
-          );
-        }
-      },
-    );
     throwIfBoxLiteProvisionCancelled(args.ctx.cancellationSignal);
     if (preflight.status === 'failed') {
       throw new SandboxProvisioningStageError('runtime_setup');
     }
 
-    await this.runProvisionBoundary(
-      args.ctx,
-      'workspace.materialize',
-      () => this.materializeWorkspace(args.ctx, args.sandbox),
-    );
+    await this.materializeWorkspaceWithDiagnostic(args.ctx, args.sandbox);
     throwIfBoxLiteProvisionCancelled(args.ctx.cancellationSignal);
     await args.ctx.beforeProvisioningBoundary?.({ stage: 'runtime_setup' });
     reportSandboxProvisioningProgress(args.ctx.onProvisioningProgress, {
@@ -785,31 +970,66 @@ export class BoxLiteSandboxProvider<
     });
     const runtimeSetup = this.runtimeSetup;
     if (runtimeSetup) {
-      await this.runProvisionBoundary(
-        args.ctx,
-        'runtime.setup',
-        async () => {
-          try {
-            await runtimeSetup({
-              taskId: args.ctx.taskId,
-              modelIntent: args.ctx.modelIntent,
-              executionMode: args.ctx.executionMode,
-              sandbox: args.sandbox,
-              executor: this.createProvisionCommandExecutor(
-                args.ctx,
-                args.sandbox.id,
-              ),
-              workspacePath: this.config.workspacePath,
-              runtimeId: args.runtimeId,
-            });
-          } catch (error) {
-            throw redactSandboxProvisioningStageFailure(
-              'runtime_setup',
-              error,
-            );
-          }
-        },
+      const runtimeDiagnostics = startBoxLiteNativeExecutionDiagnosticSession(
+        args.ctx.diagnostics,
+        'runtime_setup',
       );
+      try {
+        await this.runProvisionBoundary(
+          args.ctx,
+          'runtime.setup',
+          async () => {
+            const runtimeSetupDiagnostic = startBoxLiteProvisioningDiagnostic(
+              args.ctx.diagnostics,
+              {
+                key: 'runtime.setup',
+                scope: boxLiteDiagnosticScope(args.ctx),
+                stage: 'runtime_setup',
+                operation: 'runtime_setup',
+                channel: 'primary',
+                commandKind: 'runtime_setup',
+              },
+            );
+            try {
+              await runtimeSetup({
+                taskId: args.ctx.taskId,
+                modelIntent: args.ctx.modelIntent,
+                executionMode: args.ctx.executionMode,
+                sandbox: args.sandbox,
+                executor: this.createProvisionCommandExecutor(
+                  args.ctx,
+                  args.sandbox.id,
+                  'runtime_setup',
+                  runtimeDiagnostics.diagnostics,
+                ),
+                workspacePath: this.config.workspacePath,
+                runtimeId: args.runtimeId,
+              });
+              runtimeSetupDiagnostic.succeed();
+            } catch (error) {
+              if (isSandboxRuntimeCommandExecutionError(error)) {
+                runtimeSetupDiagnostic.settle(
+                  sandboxCommandExecutionDiagnosticFields(
+                    error.classification,
+                  ),
+                );
+              } else {
+                runtimeSetupDiagnostic.fail(error, {
+                  signal: args.ctx.cancellationSignal,
+                  cause: 'unknown',
+                  retryable: false,
+                });
+              }
+              throw redactSandboxProvisioningStageFailure(
+                'runtime_setup',
+                error,
+              );
+            }
+          },
+        );
+      } finally {
+        runtimeDiagnostics.finish();
+      }
     }
     throwIfBoxLiteProvisionCancelled(args.ctx.cancellationSignal);
     return preflight;
@@ -818,6 +1038,8 @@ export class BoxLiteSandboxProvider<
   private async materializeWorkspace(
     ctx: SandboxProvisionContext<TCloneSpec>,
     sandbox: BoxLiteSandbox,
+    nativeDiagnostics: SandboxProvisioningDiagnosticObserver | undefined =
+      ctx.diagnostics,
   ): Promise<void> {
     if (ctx.workspace !== undefined) {
       if (ctx.workspace === null) return;
@@ -831,7 +1053,9 @@ export class BoxLiteSandboxProvider<
       const plan = ctx.workspace;
       if (
         ctx.ownership &&
-        (!ctx.beforeSandboxCleanup || !ctx.afterSandboxCleanup)
+        (!ctx.beforeSandboxCleanup ||
+          (!ctx.afterSandboxCleanup &&
+            !ctx.settleSandboxCleanupAttempt))
       ) {
         throw new SandboxProviderConfigurationError(
           'BoxLite durable workspace cleanup requires owner generation callbacks',
@@ -848,32 +1072,65 @@ export class BoxLiteSandboxProvider<
         ),
         beforeSandboxCleanup: ctx.beforeSandboxCleanup,
         afterSandboxCleanup: ctx.afterSandboxCleanup,
+        settleSandboxCleanupAttempt: ctx.settleSandboxCleanupAttempt,
+        diagnostics: nativeDiagnostics,
       });
-      const result = await (async () => {
+      let result: SandboxWorkspaceMaterializationResult;
+      try {
         try {
-          return await hook({
-            taskId: ctx.taskId,
-            plan,
-            workspaceDir: this.config.workspacePath,
-            stageExecutor: adapter.stageExecutor,
-            secretFilePort: adapter.secretFilePort,
-            ...(ctx.cancellationSignal === undefined
-              ? {}
-              : { cancellationSignal: ctx.cancellationSignal }),
-            ...(ctx.onWorkspaceProgress === undefined
-              ? {}
-              : { onProgress: ctx.onWorkspaceProgress }),
-            ...(ctx.beforeWorkspaceBoundary === undefined
-              ? {}
-              : { beforeBoundary: ctx.beforeWorkspaceBoundary }),
+          result = await runWithCredentialSafetySettlement({
+            run: () =>
+              hook({
+                taskId: ctx.taskId,
+                plan,
+                workspaceDir: this.config.workspacePath,
+                stageExecutor: adapter.stageExecutor,
+                secretFilePort: adapter.secretFilePort,
+                ...(ctx.diagnostics === undefined
+                  ? {}
+                  : { diagnostics: ctx.diagnostics }),
+                ...(ctx.cancellationSignal === undefined
+                  ? {}
+                  : { cancellationSignal: ctx.cancellationSignal }),
+                ...(ctx.onWorkspaceProgress === undefined
+                  ? {}
+                  : { onProgress: ctx.onWorkspaceProgress }),
+                ...(ctx.beforeWorkspaceBoundary === undefined
+                  ? {}
+                  : { beforeBoundary: ctx.beforeWorkspaceBoundary }),
+              }),
+            settleCredentialSafety: () => adapter.settleCredentialSafety(),
+            primaryFailure: (candidate) =>
+              candidate.status === 'succeeded'
+                ? null
+                : new SandboxWorkspaceMaterializationError(candidate),
+            isCredentialSafetyConfirmed: () => adapter.wasSandboxFenced(),
+            isCleanupCoordinationAcknowledged: () =>
+              adapter.wasSandboxCleanupAcknowledged(),
+            onSettlementFailure: () =>
+              this.quarantineRun(ctx.taskId, sandbox.id),
           });
-        } finally {
-          await adapter.settleCredentialSafety();
+        } catch (error) {
+          if (adapter.wasSandboxCleanupAttempted()) {
+            throw new BoxLiteProvisioningCleanupAlreadyAttemptedError(error);
+          }
+          throw error;
         }
-      })();
+      } finally {
+        if (
+          adapter.wasSandboxFenced() &&
+          adapter.wasSandboxCleanupAcknowledged()
+        ) {
+          this.confirmRunAbsent(ctx.taskId, sandbox.id);
+        }
+      }
 
       if (result.status !== 'succeeded') {
-        throw new SandboxWorkspaceMaterializationError(result);
+        const primary = new SandboxWorkspaceMaterializationError(result);
+        if (adapter.wasSandboxCleanupAttempted()) {
+          throw new BoxLiteProvisioningCleanupAlreadyAttemptedError(primary);
+        }
+        throw primary;
       }
       if (adapter.wasSandboxFenced()) {
         throw new SandboxProviderConfigurationError(
@@ -885,28 +1142,95 @@ export class BoxLiteSandboxProvider<
 
     if (!ctx.cloneSpec) return;
     await materializeGitWorkspace({
-      executor: this.createProvisionCommandExecutor(ctx, sandbox.id),
+      executor: this.createProvisionCommandExecutor(
+        ctx,
+        sandbox.id,
+        undefined,
+        nativeDiagnostics,
+      ),
       workspacePath: this.config.workspacePath,
       cloneSpec: requireGitCloneSpec(ctx.cloneSpec),
     });
+  }
+
+  private async materializeWorkspaceWithDiagnostic(
+    ctx: SandboxProvisionContext<TCloneSpec>,
+    sandbox: BoxLiteSandbox,
+  ): Promise<void> {
+    const hasCanonicalWorkspace =
+      ctx.workspace !== undefined && ctx.workspace !== null;
+    const hasLegacyClone =
+      ctx.workspace === undefined && ctx.cloneSpec !== undefined;
+    const hasWorkspaceWork = hasCanonicalWorkspace || hasLegacyClone;
+    if (!hasWorkspaceWork) {
+      await this.materializeWorkspace(ctx, sandbox);
+      return;
+    }
+    const nativeDiagnostics = startBoxLiteNativeExecutionDiagnosticSession(
+      ctx.diagnostics,
+      'workspace',
+    );
+    try {
+      await this.runProvisionBoundary(
+        ctx,
+        'workspace.materialize',
+        async () => {
+          // The canonical staged workspace engine already emits its six
+          // primary/cleanup semantic stages. An extra primary wrapper would
+          // misclassify a cleanup-only credential failure. The legacy clone
+          // bridge has no shared stage observer, so it retains one outer pair.
+          const diagnostic = hasLegacyClone
+            ? startBoxLiteProvisioningDiagnostic(ctx.diagnostics, {
+                key: 'workspace.materialize',
+                scope: boxLiteDiagnosticScope(ctx),
+                stage: 'workspace_transfer',
+                operation: 'workspace_materialize',
+                channel: 'primary',
+              })
+            : undefined;
+          try {
+            await this.materializeWorkspace(
+              ctx,
+              sandbox,
+              nativeDiagnostics.diagnostics,
+            );
+            diagnostic?.succeed();
+          } catch (error) {
+            diagnostic?.fail(error, {
+              signal: ctx.cancellationSignal,
+              cause: 'unknown',
+              retryable: false,
+            });
+            throw error;
+          }
+        },
+      );
+    } finally {
+      nativeDiagnostics.finish();
+    }
   }
 
   private async cleanupFailedSandbox(
     ctx: SandboxProvisionContext<TCloneSpec>,
     sandboxId: string,
     knownSandbox?: BoxLiteSandbox,
-  ): Promise<void> {
+  ): Promise<SandboxPhysicalCleanupResult> {
     let cleanupAuthorization: SandboxRunCleanupAuthorization | undefined;
     let cleanupOwnership = ctx.ownership;
     if (ctx.ownership) {
-      if (!ctx.beforeSandboxCleanup || !ctx.afterSandboxCleanup) {
+      if (
+        !ctx.beforeSandboxCleanup ||
+        (!ctx.afterSandboxCleanup && !ctx.settleSandboxCleanupAttempt)
+      ) {
         throw new SandboxProviderConfigurationError(
           'BoxLite durable cleanup requires owner generation callbacks',
         );
       }
       cleanupAuthorization =
         (await ctx.beforeSandboxCleanup()) ?? undefined;
-      if (!cleanupAuthorization) return;
+      if (!cleanupAuthorization) {
+        throw new SandboxCleanupCoordinationPendingError();
+      }
       cleanupOwnership = this.cleanupOwnershipFor(ctx.taskId, {
         ownership: ctx.ownership,
         cleanupAuthorization,
@@ -916,34 +1240,71 @@ export class BoxLiteSandboxProvider<
           'BoxLite durable cleanup requires a generation authorization',
         );
       }
-      const sandbox = knownSandbox ?? await this.client.getSandbox(sandboxId);
+      const sandbox =
+        knownSandbox ??
+        (await this.client.getSandbox(sandboxId, {
+          diagnostics: ctx.diagnostics,
+          channel: 'cleanup',
+          cancellationSignal: ctx.cancellationSignal,
+        }));
       if (isUsableSandbox(sandbox)) {
         await this.assertResourceGeneration(sandbox, cleanupOwnership);
       }
     }
-    try {
-      await deleteBoxLiteSandboxAndConfirm({
-        client: this.client,
-        sandboxId,
-      });
-    } catch {
-      if (ctx.workspace !== undefined && ctx.workspace !== null) {
-        throw new SandboxProviderConfigurationError(
-          'BoxLite staged workspace cleanup could not be confirmed',
-        );
-      }
-      if (ctx.ownership) {
-        throw new SandboxProviderConfigurationError(
-          'BoxLite sandbox cleanup could not be confirmed',
-        );
-      }
-      throw new SandboxProviderConfigurationError(
-        'BoxLite sandbox deletion could not be confirmed',
-      );
+    const physical = await attemptDeleteBoxLiteSandboxAndConfirm({
+      client: this.client,
+      sandboxId,
+      diagnostics: ctx.diagnostics,
+    });
+    if (physical.outcome !== 'succeeded') {
+      this.quarantineRun(ctx.taskId, sandboxId);
     }
     if (cleanupAuthorization) {
-      await ctx.afterSandboxCleanup?.(cleanupAuthorization);
+      try {
+        if (ctx.settleSandboxCleanupAttempt) {
+          await ctx.settleSandboxCleanupAttempt(
+            cleanupAuthorization,
+            physical,
+          );
+        } else if (physical.outcome === 'succeeded') {
+          await ctx.afterSandboxCleanup?.(cleanupAuthorization);
+        } else {
+          throw new SandboxCleanupCoordinationPendingError();
+        }
+      } catch (error) {
+        this.quarantineRun(ctx.taskId, sandboxId);
+        throw error;
+      }
     }
+    if (physical.outcome === 'succeeded') {
+      this.confirmRunAbsent(ctx.taskId, sandboxId);
+    }
+    return physical;
+  }
+
+  private async rethrowAfterFailedSandboxCleanup(
+    primary: unknown,
+    ctx: SandboxProvisionContext<TCloneSpec>,
+    sandboxId: string,
+    knownSandbox?: BoxLiteSandbox,
+  ): Promise<never> {
+    if (primary instanceof BoxLiteProvisioningCleanupAlreadyAttemptedError) {
+      throw primary.primary;
+    }
+    try {
+      await this.cleanupFailedSandbox(ctx, sandboxId, knownSandbox);
+    } catch {
+      if (isSandboxCleanupCoordinationPendingError(primary)) throw primary;
+      throw new SandboxCleanupCoordinationPendingError(primary);
+    }
+    if (
+      isSandboxCleanupCoordinationPendingError(primary) &&
+      !this.quarantinedRuns.has(ctx.taskId) &&
+      primary.primary !== undefined
+    ) {
+      throw primary.primary;
+    }
+    throw primary;
   }
 
   private async runPreflight(
@@ -952,6 +1313,7 @@ export class BoxLiteSandboxProvider<
     runtimeId: string | null,
     environment?: SandboxResolvedEnvironmentMetadata | null,
     ctx?: SandboxProvisionContext<TCloneSpec>,
+    diagnostics?: SandboxProvisioningDiagnosticObserver,
   ): Promise<SandboxPreflightResult> {
     if (!this.preflight) {
       return {
@@ -967,7 +1329,12 @@ export class BoxLiteSandboxProvider<
       provider: this as unknown as BoxLiteSandboxProvider,
       sandbox,
       executor: ctx
-        ? this.createProvisionCommandExecutor(ctx, sandbox.id)
+        ? this.createProvisionCommandExecutor(
+            ctx,
+            sandbox.id,
+            'runtime_preflight',
+            diagnostics,
+          )
         : this.createCommandExecutor(sandbox.id),
       runtimeId,
     });
@@ -992,7 +1359,11 @@ export class BoxLiteSandboxProvider<
     ownership?: SandboxOwnershipFence,
     ctx?: SandboxProvisionContext<TCloneSpec>,
     providerSandboxId?: string,
+    allowQuarantined = false,
+    readinessDiagnosticSession?: BoxLiteNativeExecutionDiagnosticSession,
   ): Promise<BoxLiteProvisionedRun | null> {
+    const quarantinedSandboxId = this.quarantinedRuns.get(taskId);
+    if (quarantinedSandboxId !== undefined && !allowQuarantined) return null;
     const stored = this.runs.get(taskId);
     const cached =
       stored &&
@@ -1004,11 +1375,21 @@ export class BoxLiteSandboxProvider<
         ? await this.runProvisionBoundary(
             ctx,
             'sandbox.inspect',
-            () => this.client.getSandbox(cached.sandbox.id),
+            () => this.client.getSandbox(cached.sandbox.id, {
+              diagnostics: ctx.diagnostics,
+              cancellationSignal: ctx.cancellationSignal,
+              diagnosticKey: 'sandbox.inspect.existing',
+              diagnosticScope: boxLiteDiagnosticScope(ctx),
+            }),
           )
         : await this.client.getSandbox(cached.sandbox.id);
       if (isUsableSandbox(refreshed)) {
-        await this.assertResourceGeneration(refreshed, ownership, ctx);
+        await this.assertResourceGeneration(
+          refreshed,
+          ownership,
+          ctx,
+          readinessDiagnosticSession,
+        );
         if (refreshed === cached.sandbox) return cached;
         const run: BoxLiteProvisionedRun = {
           ...cached,
@@ -1027,16 +1408,32 @@ export class BoxLiteSandboxProvider<
       ? await this.runProvisionBoundary(
           ctx,
           'sandbox.inspect',
-          () => this.client.getSandbox(sandboxId),
+          () => this.client.getSandbox(sandboxId, {
+            diagnostics: ctx.diagnostics,
+            cancellationSignal: ctx.cancellationSignal,
+            diagnosticKey: 'sandbox.inspect.existing',
+            diagnosticScope: boxLiteDiagnosticScope(ctx),
+          }),
         )
       : await this.client.getSandbox(sandboxId);
     if (!isUsableSandbox(sandbox)) {
       if (!stored || stored.sandbox.id === sandboxId) {
         this.runs.delete(taskId);
       }
+      if (
+        allowQuarantined &&
+        quarantinedSandboxId === sandboxId
+      ) {
+        this.quarantinedRuns.delete(taskId);
+      }
       return null;
     }
-    await this.assertResourceGeneration(sandbox, ownership, ctx);
+    await this.assertResourceGeneration(
+      sandbox,
+      ownership,
+      ctx,
+      readinessDiagnosticSession,
+    );
     if (cached && sandbox === cached.sandbox) return cached;
     const connection = this.connectionForSandbox(taskId, sandbox);
     const run: BoxLiteProvisionedRun = {
@@ -1053,7 +1450,9 @@ export class BoxLiteSandboxProvider<
           environment: cached?.environment ?? undefined,
         },
     };
-    this.runs.set(taskId, run);
+    if (quarantinedSandboxId !== sandboxId) {
+      this.runs.set(taskId, run);
+    }
     return run;
   }
 
@@ -1094,6 +1493,18 @@ export class BoxLiteSandboxProvider<
     }
   }
 
+  private quarantineRun(taskId: string, providerSandboxId: string): void {
+    this.forgetRun(taskId, providerSandboxId);
+    this.quarantinedRuns.set(taskId, providerSandboxId);
+  }
+
+  private confirmRunAbsent(taskId: string, providerSandboxId: string): void {
+    this.forgetRun(taskId, providerSandboxId);
+    if (this.quarantinedRuns.get(taskId) === providerSandboxId) {
+      this.quarantinedRuns.delete(taskId);
+    }
+  }
+
   private cleanupOwnershipFor(
     taskId: string,
     options: {
@@ -1129,6 +1540,7 @@ export class BoxLiteSandboxProvider<
     sandbox: BoxLiteSandbox,
     ownership: SandboxOwnershipFence | undefined,
     ctx?: SandboxProvisionContext<TCloneSpec>,
+    readinessDiagnosticSession?: BoxLiteNativeExecutionDiagnosticSession,
   ): Promise<void> {
     if (!ownership) return;
     if (sandbox.metadata?.resourceGeneration !== undefined) {
@@ -1146,13 +1558,33 @@ export class BoxLiteSandboxProvider<
         shellQuote(ownership.resourceGeneration),
       timeoutMs: this.config.timeoutMs,
     } as const;
-    const probe = ctx
-      ? await this.runProvisionBoundary(
+    let probe;
+    if (ctx) {
+      const ownsDiagnosticSession = readinessDiagnosticSession === undefined;
+      const diagnosticSession =
+        readinessDiagnosticSession ??
+        startBoxLiteNativeExecutionDiagnosticSession(
+          ctx.diagnostics,
+          'readiness',
+        );
+      try {
+        probe = await this.runProvisionBoundary(
           ctx,
           'command.execute',
-          () => this.client.exec(probeRequest),
-        )
-      : await this.client.exec(probeRequest);
+          () => this.client.exec({
+            ...probeRequest,
+            diagnostics: diagnosticSession.diagnostics,
+            commandKind: 'runtime_preflight',
+          }),
+        );
+      } finally {
+        if (ownsDiagnosticSession) {
+          diagnosticSession.finish();
+        }
+      }
+    } else {
+      probe = await this.client.exec(probeRequest);
+    }
     if (probe.exitCode !== 0) {
       throw new Error('BoxLite sandbox resource generation mismatch');
     }
@@ -1192,6 +1624,107 @@ export class BoxLiteSandboxProvider<
 
   private hasCapability(capability: SandboxProviderCapability): boolean {
     return this.config.capabilities.includes(capability);
+  }
+}
+
+/**
+ * Credential safety is always settled before the provider returns. A hook
+ * rejection or a stable failed result is already the primary operation fact,
+ * so a later settlement rejection must not replace it. An unconfirmed fence or
+ * rejected durable cleanup acknowledgement quarantines the run. Physical
+ * failure remains secondary and preserves the primary so router recovery can
+ * allocate a later attempt; only ownership/store acknowledgement failure uses
+ * the provider-neutral coordination signal. Without a primary, settlement
+ * remains fail-closed.
+ */
+async function runWithCredentialSafetySettlement<TResult>(options: {
+  readonly run: () => Promise<TResult>;
+  readonly settleCredentialSafety: () => Promise<void>;
+  readonly primaryFailure: (result: TResult) => unknown | null;
+  /** True only after credential-bearing sandbox state is confirmed absent. */
+  readonly isCredentialSafetyConfirmed: () => boolean;
+  /** False while physical cleanup still lacks durable ownership acknowledgement. */
+  readonly isCleanupCoordinationAcknowledged: () => boolean;
+  /** Quarantine the run immediately so it cannot be retained or readopted. */
+  readonly onSettlementFailure: () => void;
+}): Promise<TResult> {
+  let operation:
+    | { readonly kind: 'succeeded'; readonly result: TResult }
+    | { readonly kind: 'failed'; readonly error: unknown };
+  try {
+    operation = { kind: 'succeeded', result: await options.run() };
+  } catch (error) {
+    operation = { kind: 'failed', error };
+  }
+
+  let settlementFailure:
+    | { readonly kind: 'failed'; readonly error: unknown }
+    | undefined;
+  try {
+    await options.settleCredentialSafety();
+  } catch (error) {
+    settlementFailure = { kind: 'failed', error };
+  }
+
+  const cleanupCoordinationAcknowledged =
+    options.isCleanupCoordinationAcknowledged();
+  if (settlementFailure !== undefined || !cleanupCoordinationAcknowledged) {
+    options.onSettlementFailure();
+  }
+
+  if (!cleanupCoordinationAcknowledged) {
+    // A fence can run inside the workspace hook. In that branch its rejected
+    // acknowledgement becomes the hook rejection itself, so never retain that
+    // raw coordination error as the operation's primary diagnostic value.
+    const primaryFailure =
+      operation.kind === 'succeeded'
+        ? options.primaryFailure(operation.result)
+        : settlementFailure === undefined
+          ? null
+          : operation.error;
+    throw new SandboxCleanupCoordinationPendingError(
+      primaryFailure ??
+        new SandboxProviderConfigurationError(
+          'BoxLite credential safety settlement could not be confirmed',
+        ),
+    );
+  }
+
+  if (settlementFailure === undefined) {
+    if (operation.kind === 'failed') throw operation.error;
+    return operation.result;
+  }
+
+  const primaryFailure =
+    operation.kind === 'failed'
+      ? operation.error
+      : options.primaryFailure(operation.result);
+  if (!options.isCredentialSafetyConfirmed()) {
+    if (primaryFailure !== null) throw primaryFailure;
+    throw settlementFailure.error;
+  }
+  if (operation.kind === 'failed') throw operation.error;
+  if (primaryFailure === null) throw settlementFailure.error;
+  return operation.result;
+}
+
+/**
+ * Provider-private control marker: workspace fencing already consumed the
+ * provider-internal cleanup attempt, so the outer provision catch must let the
+ * router allocate the later fallback rather than invoke cleanup twice.
+ */
+class BoxLiteProvisioningCleanupAlreadyAttemptedError extends Error {
+  readonly primary: unknown;
+
+  constructor(primary: unknown) {
+    super('BoxLite provisioning cleanup was already attempted');
+    this.name = 'BoxLiteProvisioningCleanupAlreadyAttemptedError';
+    Object.defineProperty(this, 'primary', {
+      value: primary,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
   }
 }
 
@@ -1288,6 +1821,12 @@ function isBoxLiteCreateConflict(error: unknown): boolean {
     (typeof candidate.message === 'string' &&
       /(?:^|\s)HTTP 409(?:\s|$)/u.test(candidate.message))
   );
+}
+
+function boxLiteDiagnosticScope<TCloneSpec>(
+  ctx: SandboxProvisionContext<TCloneSpec>,
+): string {
+  return ctx.ownership?.resourceGeneration ?? 'legacy';
 }
 
 function shellQuote(value: string): string {

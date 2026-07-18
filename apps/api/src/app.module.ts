@@ -39,6 +39,7 @@ import { SmtpEnvMigrationModule } from './mail/smtp-env-migration.module';
 import { SandboxEnvironmentsModule } from './sandbox-environments/sandbox-environments.module';
 import { ScheduledTasksModule } from './scheduled-tasks/scheduled-tasks.module';
 import { RuntimeModelsModule } from './runtime-models/runtime-models.module';
+import { TaskProvisioningDiagnosticsModule } from './task-provisioning-diagnostics/task-provisioning-diagnostics.module';
 
 /**
  * Root application module.
@@ -116,6 +117,7 @@ import { RuntimeModelsModule } from './runtime-models/runtime-models.module';
     // Logger; main.ts promotes it to the app logger via `useLogger`.
     LoggerModule.forRoot(buildLoggerOptions()),
     PrismaModule,
+    TaskProvisioningDiagnosticsModule,
     CredsModule,
     SandboxModule,
     SandboxEnvironmentsModule,

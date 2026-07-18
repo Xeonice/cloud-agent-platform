@@ -3,12 +3,16 @@ import type {
   SandboxCommandExecutionRequest,
   SandboxDeliverWorkspaceArgs,
   SandboxInventoryReconcileInput,
+  SandboxPhysicalCleanupResult,
   SandboxProviderPrivateSecretFileWriteRequest,
+  SandboxRunCleanupAuthorization,
   SandboxSecretFileWriteRequest,
   SandboxWorkspaceCommandExecutionRequest,
 } from '../src/index.js';
 
 declare const credential: ExactHostGitCredential;
+declare const cleanupAuthorization: SandboxRunCleanupAuthorization;
+declare const physicalCleanup: SandboxPhysicalCleanupResult;
 
 const authorizedReconciliation: SandboxInventoryReconcileInput = {
   protectedTaskIds: [],
@@ -80,8 +84,20 @@ const credentialedDelivery: SandboxDeliverWorkspaceArgs = {
   credential,
   branch: 'master',
   commitMessage: 'Apply task changes',
+  afterSandboxCleanup: async (authorization) => {
+    void authorization;
+  },
+  settleSandboxCleanupAttempt: async (authorization, physical) => {
+    void authorization;
+    void physical;
+  },
 };
 void credentialedDelivery;
+void credentialedDelivery.afterSandboxCleanup?.(cleanupAuthorization);
+void credentialedDelivery.settleSandboxCleanupAttempt?.(
+  cleanupAuthorization,
+  physicalCleanup,
+);
 
 // @ts-expect-error canonical delivery cannot also carry a raw authHeader
 const mixedDelivery: SandboxDeliverWorkspaceArgs = {

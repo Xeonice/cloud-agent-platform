@@ -1,13 +1,18 @@
 import type {
+  NonPersistingSandboxProvisioningDiagnosticObserver,
+  SandboxProvisioningDiagnosticObserver,
   SandboxPreflightProbeResult,
   SandboxResolvedEnvironmentMetadata,
   SandboxResourceSnapshot,
 } from '@cap/sandbox-core';
 import {
+  SandboxProviderConfigurationError,
   SandboxProvisioningStageError,
   snapshotSandboxResources,
 } from '@cap/sandbox-core';
 import type { BoxLiteClient } from './boxlite-client.js';
+import { startBoxLiteNativeExecutionDiagnosticSession } from './boxlite-provisioning-diagnostics.js';
+import { deleteBoxLiteSandboxAndConfirm } from './boxlite-workspace-security.js';
 
 export interface BoxLiteEnvironmentValidationResult {
   readonly status: 'passed' | 'failed';
@@ -22,15 +27,28 @@ export interface BoxLiteEnvironmentValidationResult {
 }
 
 export async function validateBoxLiteEnvironment(args: {
-  readonly taskId?: string;
   readonly environment: SandboxResolvedEnvironmentMetadata;
   readonly client: BoxLiteClient;
+  readonly diagnostics: NonPersistingSandboxProvisioningDiagnosticObserver;
   readonly workspacePath?: string;
   readonly requiredCommands?: readonly BoxLiteEnvironmentValidationCommand[];
   readonly onCleanupError?: (error: unknown) => void;
 }): Promise<BoxLiteEnvironmentValidationResult> {
-  const taskId = args.taskId ?? `env-probe-${Date.now()}`;
-  const sandboxId = `probe-${taskId}`;
+  if (args.diagnostics?.mode !== 'non-persisting') {
+    throw new SandboxProviderConfigurationError(
+      'BoxLite environment validation requires a non-persisting diagnostic observer',
+    );
+  }
+  let probeOperationId: string;
+  try {
+    probeOperationId = args.diagnostics.createOperationId();
+  } catch {
+    throw new SandboxProviderConfigurationError(
+      'BoxLite environment validation could not allocate a CAP probe identity',
+    );
+  }
+  const taskId = `boxlite-probe-${probeOperationId}`;
+  const sandboxId = `probe-${probeOperationId}`;
   const probes: SandboxPreflightProbeResult[] = [];
   const sourceKind = args.environment.sourceKind;
   const resourceSnapshot = snapshotSandboxResources(
@@ -41,6 +59,11 @@ export async function validateBoxLiteEnvironment(args: {
     | { readonly locator: string; readonly digest: string }
     | undefined;
   let outcome: BoxLiteEnvironmentValidationResult;
+  const diagnosticSession = startBoxLiteNativeExecutionDiagnosticSession(
+    args.diagnostics,
+    'environment_probe',
+  );
+  const diagnostics = diagnosticSession.diagnostics;
 
   try {
     resolvedIdentity = resolveBoxLiteValidationImage(args.environment);
@@ -52,10 +75,13 @@ export async function validateBoxLiteEnvironment(args: {
       diskSizeGb: resourceSnapshot?.diskSizeGb,
       metadata: {
         provider: 'boxlite',
-        sandboxEnvironmentId: args.environment.environmentId ?? args.environment.id,
+        sandboxEnvironmentId:
+          args.environment.environmentId ?? args.environment.id,
         sandboxEnvironmentSourceKind: args.environment.sourceKind,
         resources: resourceSnapshot,
       },
+      diagnostics,
+      diagnosticScope: probeOperationId,
     });
     cleanupSandboxId = sandbox.id;
     probes.push({
@@ -70,6 +96,7 @@ export async function validateBoxLiteEnvironment(args: {
         sandboxId: sandbox.id,
         diskSizeGb: resourceSnapshot.diskSizeGb,
         cwd: args.workspacePath,
+        diagnostics,
       });
       probes.push(capacityProbe);
       if (!capacityProbe.ok) {
@@ -84,6 +111,8 @@ export async function validateBoxLiteEnvironment(args: {
         sandboxId: sandbox.id,
         command: 'true',
         cwd: args.workspacePath,
+        diagnostics,
+        commandKind: 'runtime_preflight',
       });
       probes.push({ name: 'start-execution', ok: true, command: 'true' });
     }
@@ -92,6 +121,8 @@ export async function validateBoxLiteEnvironment(args: {
       sandboxId: sandbox.id,
       command: 'true',
       cwd: args.workspacePath,
+      diagnostics,
+      commandKind: 'runtime_preflight',
     });
     const ok = exec.exitCode === 0;
     probes.push({
@@ -101,7 +132,9 @@ export async function validateBoxLiteEnvironment(args: {
       output: exec.output,
     });
     if (!ok) {
-      throw new Error(`BoxLite environment exec probe failed with exit_code ${exec.exitCode}`);
+      throw new Error(
+        `BoxLite environment exec probe failed with exit_code ${exec.exitCode}`,
+      );
     }
 
     for (const probe of args.requiredCommands ?? []) {
@@ -109,6 +142,8 @@ export async function validateBoxLiteEnvironment(args: {
         sandboxId: sandbox.id,
         command: probe.command,
         cwd: args.workspacePath,
+        diagnostics,
+        commandKind: 'runtime_preflight',
       });
       const probeOk = result.exitCode === 0;
       probes.push({
@@ -154,16 +189,24 @@ export async function validateBoxLiteEnvironment(args: {
     };
   }
   try {
-    await args.client.deleteSandbox(cleanupSandboxId);
-  } catch (error) {
-    args.onCleanupError?.(error);
-    if (outcome.status === 'passed') {
-      const message = 'BoxLite environment probe cleanup failed.';
-      probes.push({ name: 'cleanup', ok: false, output: message });
-      outcome = { ...outcome, status: 'failed', probes, error: message };
+    try {
+      await deleteBoxLiteSandboxAndConfirm({
+        client: args.client,
+        sandboxId: cleanupSandboxId,
+        diagnostics,
+      });
+    } catch (error) {
+      args.onCleanupError?.(error);
+      if (outcome.status === 'passed') {
+        const message = 'BoxLite environment probe cleanup failed.';
+        probes.push({ name: 'cleanup', ok: false, output: message });
+        outcome = { ...outcome, status: 'failed', probes, error: message };
+      }
     }
+    return outcome;
+  } finally {
+    diagnosticSession.finish();
   }
-  return outcome;
 }
 
 export async function probeBoxLiteDiskCapacity(args: {
@@ -171,6 +214,7 @@ export async function probeBoxLiteDiskCapacity(args: {
   readonly sandboxId: string;
   readonly diskSizeGb: number;
   readonly cwd?: string;
+  readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
 }): Promise<SandboxPreflightProbeResult> {
   const minimumKiB = Math.floor(args.diskSizeGb * 1024 * 1024 * 0.9);
   const command =
@@ -182,6 +226,8 @@ export async function probeBoxLiteDiskCapacity(args: {
       sandboxId: args.sandboxId,
       command,
       cwd: args.cwd,
+      diagnostics: args.diagnostics,
+      commandKind: 'runtime_preflight',
     });
   } catch {
     // The client error may carry a native endpoint or command response. Expose

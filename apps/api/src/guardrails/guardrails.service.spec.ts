@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { TaskFailureCode, TaskStatus } from '@cap/contracts';
+import {
+  TaskProvisioningDiagnosticEventSchema,
+  type TaskFailureCode,
+  type TaskProvisioningDiagnosticEvent,
+  type TaskStatus,
+} from '@cap/contracts';
 import type { ModuleRef } from '@nestjs/core';
 import type { SessionCredentialsService } from '../creds/session-credentials.service';
 import {
@@ -9,18 +14,27 @@ import {
 } from '../tasks/tasks.service';
 import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
 import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
-import { SandboxRuntimeModelSetupError } from '@cap/sandbox';
+import {
+  SandboxProvisioningStageError,
+  SandboxRuntimeModelSetupError,
+  type AgentTerminalLaunchOutcome,
+  type SandboxProvisionContext,
+} from '@cap/sandbox';
 import { TaskBranchResolutionError } from '../forge/task-branch-resolver';
+import type { TaskProvisioningDiagnosticRecorderPort } from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+import type { TaskProvisioningDiagnosticsWriteGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 import { GuardrailsService, type GuardrailsConfig } from './guardrails.service';
 
 const TASK_ID = '11111111-1111-4111-8111-111111111111';
 const OTHER_TASK_ID = '22222222-2222-4222-8222-222222222222';
 const USER_ID = '33333333-3333-4333-8333-333333333333';
+const DIAGNOSTIC_ATTEMPT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 const CONFIG: GuardrailsConfig = {
   maxConcurrentTasks: 1,
   defaultIdleTimeoutMs: null,
   circuitBreakerThreshold: 3,
+  diagnosticWriteTimeoutMs: 10,
 };
 
 const DEFAULT_PROVISION_LOOKUP: ProvisionLookup = {
@@ -73,6 +87,8 @@ function buildService(
       transitionToken: string,
     ) => Promise<boolean>;
     provisionLookup?: ProvisionLookup;
+    provisioningDiagnosticRecorder?: TaskProvisioningDiagnosticRecorderPort;
+    provisioningDiagnosticWriteGate?: TaskProvisioningDiagnosticsWriteGatePort;
   } = {},
 ): GuardrailsService {
   const service = new GuardrailsService(
@@ -81,6 +97,11 @@ function buildService(
     options.sandbox,
     CONFIG,
     options.provisionLookup ?? DEFAULT_PROVISION_LOOKUP,
+    undefined,
+    undefined,
+    undefined,
+    options.provisioningDiagnosticRecorder,
+    options.provisioningDiagnosticWriteGate,
   );
   Object.assign(service, {
     tasks: {
@@ -116,6 +137,118 @@ function deferred<T = void>(): {
   };
 }
 
+type DiagnosticBeginRecorder = Pick<
+  TaskProvisioningDiagnosticRecorderPort,
+  'beginAttempt' | 'appendEvent'
+>;
+
+function diagnosticRecorder(
+  recorder: DiagnosticBeginRecorder,
+): TaskProvisioningDiagnosticRecorderPort {
+  return recorder as unknown as TaskProvisioningDiagnosticRecorderPort;
+}
+
+function diagnosticWriteGate(
+  enabled: boolean,
+): TaskProvisioningDiagnosticsWriteGatePort {
+  return { isEnabled: () => enabled };
+}
+
+type DiagnosticSettlementStep =
+  | 'append_started'
+  | 'append_terminal'
+  | 'record_primary'
+  | 'record_cleanup'
+  | 'mark_complete';
+
+interface DiagnosticSettlementHarness {
+  readonly recorder: TaskProvisioningDiagnosticRecorderPort;
+  readonly trace: string[];
+  readonly events: TaskProvisioningDiagnosticEvent[];
+  readonly primaryInputs: unknown[];
+  readonly cleanupInputs: unknown[];
+}
+
+function diagnosticSettlementHarness(options: {
+  readonly failAt?: DiagnosticSettlementStep;
+  readonly trace?: string[];
+} = {}): DiagnosticSettlementHarness {
+  const trace = options.trace ?? [];
+  const events: TaskProvisioningDiagnosticEvent[] = [];
+  const primaryInputs: unknown[] = [];
+  const cleanupInputs: unknown[] = [];
+  const failure = {
+    ok: false as const,
+    code: 'diagnostic_write_failed' as const,
+    safeCause: 'diagnostic_write_failed' as const,
+  };
+  const recorder = {
+    async beginAttempt(input) {
+      trace.push('diagnostic_begin');
+      return {
+        ok: true as const,
+        value: begunDiagnosticContext(input.taskId, input.admissionMode),
+      };
+    },
+    async appendEvent(_context, candidate) {
+      const event = TaskProvisioningDiagnosticEventSchema.parse(candidate);
+      const step =
+        event.outcome === 'started'
+          ? ('append_started' as const)
+          : ('append_terminal' as const);
+      trace.push(step);
+      if (options.failAt === step) return failure;
+      events.push(event);
+      return { ok: true as const, value: { event, replayed: false } };
+    },
+    async recordPrimary(_context, input) {
+      trace.push('record_primary');
+      primaryInputs.push(input);
+      if (options.failAt === 'record_primary') return failure;
+      return { ok: true as const, value: undefined as never };
+    },
+    async recordCleanup(_context, input) {
+      trace.push('record_cleanup');
+      cleanupInputs.push(input);
+      if (options.failAt === 'record_cleanup') return failure;
+      return { ok: true as const, value: undefined as never };
+    },
+    async markComplete() {
+      trace.push('mark_complete');
+      if (options.failAt === 'mark_complete') return failure;
+      return { ok: true as const, value: undefined as never };
+    },
+  } satisfies Pick<
+    TaskProvisioningDiagnosticRecorderPort,
+    | 'beginAttempt'
+    | 'appendEvent'
+    | 'recordPrimary'
+    | 'recordCleanup'
+    | 'markComplete'
+  >;
+
+  return {
+    recorder: recorder as unknown as TaskProvisioningDiagnosticRecorderPort,
+    trace,
+    events,
+    primaryInputs,
+    cleanupInputs,
+  };
+}
+
+function begunDiagnosticContext(
+  taskId: string,
+  admissionMode: 'legacy' | 'durable',
+  attempt = 1,
+) {
+  return {
+    taskId,
+    attemptId: DIAGNOSTIC_ATTEMPT_ID,
+    attempt,
+    admissionMode,
+  } as const;
+}
+
 test('duplicate admission is idempotent and preserves owner attribution', async () => {
   const transitions: Array<{ taskId: string; next: TaskStatus; userId?: string }> = [];
   const service = buildService(async (taskId, next, userId) => {
@@ -129,6 +262,1050 @@ test('duplicate admission is idempotent and preserves owner attribution', async 
   assert.deepEqual(transitions, [{ taskId: TASK_ID, next: 'running', userId: USER_ID }]);
   assert.equal(service.runningCount, 1);
   assert.equal(service.queuedCount, 0);
+});
+
+test('legacy diagnostics stay disabled when the deployment write gate is closed', async () => {
+  let beginCalls = 0;
+  const provisionContexts: SandboxProvisionContext[] = [];
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision(context: SandboxProvisionContext) {
+      provisionContexts.push(context);
+      return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const recorder = diagnosticRecorder({
+    async beginAttempt() {
+      beginCalls += 1;
+      return { ok: true, value: begunDiagnosticContext(TASK_ID, 'legacy') };
+    },
+    async appendEvent() {
+      assert.fail('a provider emitted an unexpected diagnostic event');
+    },
+  });
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisioningDiagnosticRecorder: recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(false),
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  assert.equal(beginCalls, 0);
+  assert.equal(provisionContexts.length, 1);
+  assert.equal(provisionContexts[0]?.diagnostics, undefined);
+});
+
+test('legacy samples the diagnostic write gate once per running boundary and ignores gate errors', async () => {
+  for (const gateBehavior of ['enabled', 'throw'] as const) {
+    let gateCalls = 0;
+    let beginCalls = 0;
+    const provisionContexts: SandboxProvisionContext[] = [];
+    const sandbox = {
+      getSandboxMode: () => 'danger-full-access',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision(context: SandboxProvisionContext) {
+        provisionContexts.push(context);
+        return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider;
+    const recorder = diagnosticRecorder({
+      async beginAttempt() {
+        beginCalls += 1;
+        return { ok: true, value: begunDiagnosticContext(TASK_ID, 'legacy') };
+      },
+      async appendEvent() {
+        assert.fail('the focused provider does not emit operation diagnostics');
+      },
+    });
+    const service = buildService(async () => 'transitioned', {
+      sandbox,
+      isCurrent: async () => true,
+      provisioningDiagnosticRecorder: recorder,
+      provisioningDiagnosticWriteGate: {
+        isEnabled() {
+          gateCalls += 1;
+          if (gateBehavior === 'throw') {
+            throw new Error('write gate unavailable');
+          }
+          return true;
+        },
+      },
+    });
+
+    assert.equal(await service.admit(TASK_ID), 'running', gateBehavior);
+    assert.equal(gateCalls, 1, gateBehavior);
+    assert.equal(beginCalls, gateBehavior === 'enabled' ? 1 : 0, gateBehavior);
+    assert.equal(provisionContexts.length, 1, gateBehavior);
+    assert.equal(
+      provisionContexts[0]?.diagnostics?.mode,
+      gateBehavior === 'enabled' ? 'task' : undefined,
+      gateBehavior,
+    );
+  }
+});
+
+test('legacy diagnostics begin after the running fence and before resolution or provider selection', async () => {
+  const events: string[] = [];
+  let runningTransitionCommitted = false;
+  let currentChecks = 0;
+  let provisionContext: SandboxProvisionContext | undefined;
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities() {
+      events.push('provider-select');
+      return ['terminal.websocket'];
+    },
+    async provision(context: SandboxProvisionContext) {
+      events.push('provider-boundary');
+      provisionContext = context;
+      return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const recorder = diagnosticRecorder({
+    async beginAttempt(input) {
+      assert.equal(runningTransitionCommitted, true);
+      assert.ok(currentChecks >= 1);
+      assert.equal(events.includes('resolve-plan'), false);
+      assert.equal(events.includes('provider-select'), false);
+      events.push('diagnostic-begin');
+      assert.deepEqual(input, {
+        taskId: TASK_ID,
+        admissionMode: 'legacy',
+        providerFamily: 'unknown',
+        stage: 'provider_selection',
+      });
+      return { ok: true, value: begunDiagnosticContext(TASK_ID, 'legacy') };
+    },
+    async appendEvent() {
+      assert.fail('a provider emitted an unexpected diagnostic event');
+    },
+  });
+  const service = buildService(
+    async (_taskId, next) => {
+      if (next === 'running') runningTransitionCommitted = true;
+      return 'transitioned';
+    },
+    {
+      sandbox,
+      isCurrent: async () => {
+        currentChecks += 1;
+        return true;
+      },
+      provisionLookup: {
+        ...DEFAULT_PROVISION_LOOKUP,
+        async getTaskLaunchContext() {
+          events.push('resolve-plan');
+          return DEFAULT_PROVISION_LOOKUP.getTaskLaunchContext(TASK_ID);
+        },
+      },
+      provisioningDiagnosticRecorder: recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    },
+  );
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  assert.ok(events.indexOf('diagnostic-begin') < events.indexOf('resolve-plan'));
+  assert.ok(events.indexOf('diagnostic-begin') < events.indexOf('provider-select'));
+  assert.equal(provisionContext?.diagnostics?.mode, 'task');
+  assert.deepEqual(provisionContext?.diagnostics?.attemptContext, {
+    schemaVersion: 1,
+    taskId: TASK_ID,
+    attemptId: DIAGNOSTIC_ATTEMPT_ID,
+    attempt: 1,
+    admissionMode: 'legacy',
+    providerFamily: 'unknown',
+  });
+});
+
+test('a queued legacy task opens exactly one diagnostic attempt only after promotion', async () => {
+  const beginTaskIds: string[] = [];
+  const provisionTaskIds: string[] = [];
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision(context: SandboxProvisionContext) {
+      provisionTaskIds.push(context.taskId);
+      return { taskId: context.taskId, wsUrl: `ws://127.0.0.1/${context.taskId}` };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const recorder = diagnosticRecorder({
+    async beginAttempt(input) {
+      beginTaskIds.push(input.taskId);
+      return {
+        ok: true,
+        value: begunDiagnosticContext(input.taskId, 'legacy'),
+      };
+    },
+    async appendEvent() {
+      assert.fail('a provider emitted an unexpected diagnostic event');
+    },
+  });
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisioningDiagnosticRecorder: recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  assert.equal(await service.admit(OTHER_TASK_ID), 'queued');
+  assert.deepEqual(beginTaskIds, [TASK_ID]);
+  assert.deepEqual(provisionTaskIds, [TASK_ID]);
+
+  await service.onTerminal(TASK_ID);
+  await waitFor(() => beginTaskIds.includes(OTHER_TASK_ID));
+  assert.deepEqual(beginTaskIds, [TASK_ID, OTHER_TASK_ID]);
+  assert.deepEqual(provisionTaskIds, [TASK_ID, OTHER_TASK_ID]);
+});
+
+test('legacy diagnostic begin failure or timeout never blocks provisioning or leaks an unusable emitter', async () => {
+  for (const failure of ['result', 'throw', 'timeout'] as const) {
+    let beginCalls = 0;
+    const provisionContexts: SandboxProvisionContext[] = [];
+    const sandbox = {
+      getSandboxMode: () => 'danger-full-access',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision(context: SandboxProvisionContext) {
+        provisionContexts.push(context);
+        return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider;
+    const recorder = diagnosticRecorder({
+      async beginAttempt() {
+        beginCalls += 1;
+        if (failure === 'throw') throw new Error('diagnostic store unavailable');
+        if (failure === 'timeout') return new Promise<never>(() => {});
+        return {
+          ok: false,
+          code: 'diagnostic_write_failed',
+          safeCause: 'diagnostic_write_failed',
+        } as const;
+      },
+      async appendEvent() {
+        assert.fail('a failed begin cannot emit provider diagnostics');
+      },
+    });
+    const service = buildService(async () => 'transitioned', {
+      sandbox,
+      isCurrent: async () => true,
+      provisioningDiagnosticRecorder: recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    });
+
+    let admissionSettled = false;
+    const admission = service.admit(TASK_ID).then((result) => {
+      admissionSettled = true;
+      return result;
+    });
+    if (failure === 'timeout') {
+      await waitFor(() => admissionSettled);
+    }
+    assert.equal(await admission, 'running', failure);
+    assert.equal(beginCalls, 1, failure);
+    assert.equal(provisionContexts.length, 1, failure);
+    assert.equal(provisionContexts[0]?.diagnostics, undefined, failure);
+  }
+});
+
+test('legacy late diagnostic begin success retires its detached attempt without reaching the provider', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  const lateBegin = deferred<{
+    readonly ok: true;
+    readonly value: ReturnType<typeof begunDiagnosticContext>;
+  }>();
+  const provisionContexts: SandboxProvisionContext[] = [];
+  const recorder = {
+    ...diagnostics.recorder,
+    async beginAttempt() {
+      return lateBegin.promise;
+    },
+  } as TaskProvisioningDiagnosticRecorderPort;
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision(context: SandboxProvisionContext) {
+      provisionContexts.push(context);
+      return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisioningDiagnosticRecorder: recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  });
+
+  const admission = service.admit(TASK_ID);
+  await waitFor(() => provisionContexts.length === 1);
+
+  assert.equal(await admission, 'running');
+  assert.equal(provisionContexts[0]?.diagnostics, undefined);
+  assert.equal(diagnostics.events.length, 0);
+  assert.equal(diagnostics.primaryInputs.length, 0);
+
+  lateBegin.resolve({
+    ok: true,
+    value: begunDiagnosticContext(TASK_ID, 'legacy'),
+  });
+  await waitFor(() => diagnostics.primaryInputs.length === 1);
+
+  assert.deepEqual(
+    diagnostics.events.map((event) => ({
+      stage: event.stage,
+      operation: event.operation,
+      outcome: event.outcome,
+      ...(event.outcome === 'started'
+        ? {}
+        : { cause: event.cause, retryable: event.retryable }),
+    })),
+    [
+      {
+        stage: 'provider_selection',
+        operation: 'provider_select',
+        outcome: 'started',
+      },
+      {
+        stage: 'provider_selection',
+        operation: 'provider_select',
+        outcome: 'indeterminate',
+        cause: 'settlement_unknown',
+        retryable: true,
+      },
+    ],
+  );
+  assert.deepEqual(
+    diagnostics.primaryInputs.map((input) => {
+      const primary = input as {
+        readonly state: string;
+        readonly stage: string;
+        readonly primary: {
+          readonly outcome: string;
+          readonly cause: string | null;
+          readonly retryable: boolean;
+        };
+      };
+      return {
+        state: primary.state,
+        stage: primary.stage,
+        outcome: primary.primary.outcome,
+        cause: primary.primary.cause,
+        retryable: primary.primary.retryable,
+      };
+    }),
+    [
+      {
+        state: 'interrupted',
+        stage: 'provider_selection',
+        outcome: 'indeterminate',
+        cause: 'settlement_unknown',
+        retryable: true,
+      },
+    ],
+  );
+  assert.deepEqual(diagnostics.cleanupInputs, []);
+  assert.equal(diagnostics.trace.includes('mark_complete'), false);
+  assert.equal(
+    diagnostics.trace.filter((step) => step === 'record_primary').length,
+    1,
+  );
+});
+
+test('legacy admission does not await launch proof and records primary success only after launched or attached', async () => {
+  for (const kind of ['launched', 'attached'] as const) {
+    const trace: string[] = [];
+    const diagnostics = diagnosticSettlementHarness({ trace });
+    const decision = deferred<AgentTerminalLaunchOutcome>();
+    const gatewayOpened = deferred<void>();
+    const sandbox = {
+      getSandboxMode: () => 'danger-full-access',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision(context: SandboxProvisionContext) {
+        trace.push('provider');
+        return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider;
+    const service = buildService(async () => 'transitioned', {
+      sandbox,
+      isCurrent: async () => true,
+      provisioningDiagnosticRecorder: diagnostics.recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    });
+    Object.assign(service, {
+      gateway: {
+        openSession() {
+          trace.push('gateway');
+          gatewayOpened.resolve();
+          return { launchDecision: decision.promise };
+        },
+        unregisterSession() {},
+      },
+    });
+
+    let admissionSettled = false;
+    const admission = service.admit(TASK_ID).then((result) => {
+      admissionSettled = true;
+      return result;
+    });
+    await gatewayOpened.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(
+      admissionSettled,
+      true,
+      `${kind}: admission must not wait for launchDecision`,
+    );
+    assert.equal(await admission, 'running', kind);
+    assert.deepEqual(
+      trace,
+      ['diagnostic_begin', 'provider', 'gateway'],
+      `${kind}: session registration is not launch proof`,
+    );
+    assert.equal(diagnostics.primaryInputs.length, 0, kind);
+
+    decision.resolve({ kind });
+    await waitFor(() => diagnostics.primaryInputs.length === 1);
+
+    assert.deepEqual(
+      diagnostics.events.map((event) => ({
+        stage: event.stage,
+        operation: event.operation,
+        outcome: event.outcome,
+        commandKind: event.commandKind,
+        ...(event.outcome === 'started'
+          ? {}
+          : { cause: event.cause, retryable: event.retryable }),
+      })),
+      [
+        {
+          stage: 'agent_launch',
+          operation: 'agent_launch',
+          outcome: 'started',
+          commandKind: 'agent_launch',
+        },
+        {
+          stage: 'agent_launch',
+          operation: 'agent_launch',
+          outcome: 'succeeded',
+          commandKind: 'agent_launch',
+          cause: null,
+          retryable: false,
+        },
+      ],
+      kind,
+    );
+    assert.equal(diagnostics.primaryInputs.length, 1, kind);
+    assert.deepEqual(diagnostics.cleanupInputs, [], kind);
+    assert.equal(diagnostics.trace.includes('mark_complete'), false, kind);
+    assert.equal(service.runningCount, 1, kind);
+  }
+});
+
+test('legacy diagnostic settlement write failure cannot change provider gateway or slot success', async () => {
+  const trace: string[] = [];
+  const diagnostics = diagnosticSettlementHarness({
+    trace,
+    failAt: 'record_primary',
+  });
+  const decision = deferred<AgentTerminalLaunchOutcome>();
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision(context: SandboxProvisionContext) {
+      trace.push('provider');
+      return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisioningDiagnosticRecorder: diagnostics.recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  });
+  Object.assign(service, {
+    gateway: {
+      openSession() {
+        trace.push('gateway');
+        return { launchDecision: decision.promise };
+      },
+      unregisterSession() {},
+    },
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  assert.deepEqual(trace, ['diagnostic_begin', 'provider', 'gateway']);
+  decision.resolve({ kind: 'launched' });
+  await waitFor(() => diagnostics.trace.includes('record_primary'));
+  assert.deepEqual(trace, [
+    'diagnostic_begin',
+    'provider',
+    'gateway',
+    'append_started',
+    'append_terminal',
+    'record_primary',
+  ]);
+  assert.equal(service.runningCount, 1);
+});
+
+test('legacy failed absent or indeterminate launch proof records a partial failure without changing lifecycle ownership', async () => {
+  for (const kind of ['failed', 'absent', 'indeterminate'] as const) {
+    const diagnostics = diagnosticSettlementHarness();
+    const sandbox = {
+      getSandboxMode: () => 'danger-full-access',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision(context: SandboxProvisionContext) {
+        return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider;
+    const service = buildService(async () => 'transitioned', {
+      sandbox,
+      isCurrent: async () => true,
+      provisioningDiagnosticRecorder: diagnostics.recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    });
+    Object.assign(service, {
+      gateway: {
+        openSession() {
+          return { launchDecision: Promise.resolve({ kind }) };
+        },
+        unregisterSession() {},
+      },
+    });
+
+    assert.equal(await service.admit(TASK_ID), 'running', kind);
+    await waitFor(() => diagnostics.primaryInputs.length === 1);
+
+    const terminal = diagnostics.events.find(
+      (event) => event.outcome !== 'started',
+    );
+    assert.deepEqual(
+      terminal && {
+        stage: terminal.stage,
+        operation: terminal.operation,
+        commandKind: terminal.commandKind,
+        outcome: terminal.outcome,
+        cause: terminal.cause,
+      },
+      {
+        stage: 'agent_launch',
+        operation: 'agent_launch',
+        commandKind: 'agent_launch',
+        outcome: kind === 'indeterminate' ? 'indeterminate' : 'failed',
+        cause: 'unknown',
+      },
+      kind,
+    );
+    assert.equal(diagnostics.cleanupInputs.length, 0, kind);
+    assert.equal(diagnostics.trace.includes('mark_complete'), false, kind);
+    assert.equal(service.runningCount, 1, kind);
+    assert.equal(service.connectionFor(TASK_ID)?.taskId, TASK_ID, kind);
+  }
+});
+
+test('legacy fenced launch proof leaves diagnostics unsettled and preserves the running owner', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  const decision = deferred<AgentTerminalLaunchOutcome>();
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision(context: SandboxProvisionContext) {
+      return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisioningDiagnosticRecorder: diagnostics.recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  });
+  Object.assign(service, {
+    gateway: {
+      openSession() {
+        return { launchDecision: decision.promise };
+      },
+      unregisterSession() {},
+    },
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  decision.resolve({ kind: 'fenced' });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(diagnostics.events, []);
+  assert.equal(diagnostics.primaryInputs.length, 0);
+  assert.equal(diagnostics.cleanupInputs.length, 0);
+  assert.equal(diagnostics.trace.includes('mark_complete'), false);
+  assert.equal(service.runningCount, 1);
+  assert.equal(service.connectionFor(TASK_ID)?.taskId, TASK_ID);
+});
+
+test('legacy launch observer does not write success after the running transition fence is superseded', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  const decision = deferred<AgentTerminalLaunchOutcome>();
+  let current = true;
+  let currentChecks = 0;
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision(context: SandboxProvisionContext) {
+      return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => {
+      currentChecks += 1;
+      return current;
+    },
+    provisioningDiagnosticRecorder: diagnostics.recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  });
+  Object.assign(service, {
+    gateway: {
+      openSession() {
+        return { launchDecision: decision.promise };
+      },
+      unregisterSession() {},
+    },
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  const checksBeforeDecision = currentChecks;
+  current = false;
+  decision.resolve({ kind: 'launched' });
+  await waitFor(() => currentChecks > checksBeforeDecision);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(diagnostics.events, []);
+  assert.deepEqual(diagnostics.primaryInputs, []);
+  assert.deepEqual(diagnostics.cleanupInputs, []);
+  assert.equal(diagnostics.trace.includes('mark_complete'), false);
+});
+
+test('legacy missing or synchronously failing terminal gateway records safe partial launch evidence', async () => {
+  for (const variant of ['missing', 'throw'] as const) {
+    const diagnostics = diagnosticSettlementHarness();
+    const sandbox = {
+      getSandboxMode: () => 'danger-full-access',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision(context: SandboxProvisionContext) {
+        return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider;
+    const service = buildService(async () => 'transitioned', {
+      sandbox,
+      isCurrent: async () => true,
+      provisioningDiagnosticRecorder: diagnostics.recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    });
+    if (variant === 'throw') {
+      Object.assign(service, {
+        gateway: {
+          openSession() {
+            throw new Error('gateway transport unavailable');
+          },
+          unregisterSession() {},
+        },
+      });
+    }
+
+    assert.equal(await service.admit(TASK_ID), 'running', variant);
+    await waitFor(() => diagnostics.primaryInputs.length === 1);
+    const terminal = diagnostics.events.find(
+      (event) => event.outcome !== 'started',
+    );
+    assert.deepEqual(
+      terminal && {
+        stage: terminal.stage,
+        operation: terminal.operation,
+        commandKind: terminal.commandKind,
+        outcome: terminal.outcome,
+        cause: terminal.cause,
+      },
+      {
+        stage: 'agent_launch',
+        operation: 'agent_launch',
+        commandKind: 'agent_launch',
+        outcome: 'failed',
+        cause: variant === 'missing' ? 'provider_unavailable' : 'unknown',
+      },
+      variant,
+    );
+    assert.equal(diagnostics.primaryInputs.length, 1, variant);
+    assert.equal(diagnostics.cleanupInputs.length, 0, variant);
+    assert.equal(diagnostics.trace.includes('mark_complete'), false, variant);
+    assert.equal(service.runningCount, 1, variant);
+    assert.equal(service.connectionFor(TASK_ID)?.taskId, TASK_ID, variant);
+  }
+});
+
+test('legacy admission remains authoritative when diagnostic append or primary persistence never settles', async () => {
+  for (const hungAt of ['append_started', 'record_primary'] as const) {
+    const entered = deferred<void>();
+    const neverSettles = new Promise<never>(() => {});
+    const recorder = {
+      async beginAttempt(input) {
+        return {
+          ok: true as const,
+          value: begunDiagnosticContext(input.taskId, input.admissionMode),
+        };
+      },
+      async appendEvent(_context, candidate) {
+        const event = TaskProvisioningDiagnosticEventSchema.parse(candidate);
+        if (hungAt === 'append_started' && event.outcome === 'started') {
+          entered.resolve();
+          return neverSettles;
+        }
+        return { ok: true as const, value: { event, replayed: false } };
+      },
+      async recordPrimary() {
+        if (hungAt === 'record_primary') {
+          entered.resolve();
+          return neverSettles;
+        }
+        assert.fail('recordPrimary cannot follow a hung append');
+      },
+      async recordCleanup() {
+        assert.fail('a partial agent-launch diagnostic cannot record cleanup');
+      },
+      async markComplete() {
+        assert.fail('a partial agent-launch diagnostic cannot mark complete');
+      },
+    } satisfies Pick<
+      TaskProvisioningDiagnosticRecorderPort,
+      | 'beginAttempt'
+      | 'appendEvent'
+      | 'recordPrimary'
+      | 'recordCleanup'
+      | 'markComplete'
+    >;
+    const sandbox = {
+      getSandboxMode: () => 'danger-full-access',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision(context: SandboxProvisionContext) {
+        return { taskId: context.taskId, wsUrl: 'ws://127.0.0.1:1' };
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider;
+    const service = buildService(async () => 'transitioned', {
+      sandbox,
+      isCurrent: async () => true,
+      provisioningDiagnosticRecorder:
+        recorder as unknown as TaskProvisioningDiagnosticRecorderPort,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    });
+
+    let admissionSettled = false;
+    const admission = service.admit(TASK_ID).then((result) => {
+      admissionSettled = true;
+      return result;
+    });
+    await entered.promise;
+    await waitFor(() => admissionSettled);
+
+    assert.equal(admissionSettled, true, hungAt);
+    assert.equal(await admission, 'running', hungAt);
+    assert.equal(service.runningCount, 1, hungAt);
+    assert.equal(service.connectionFor(TASK_ID)?.taskId, TASK_ID, hungAt);
+  }
+});
+
+test('legacy missing sandbox records a complete provider-unavailable selection diagnostic without changing the running slot', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  const service = buildService(async () => 'transitioned', {
+    isCurrent: async () => true,
+    provisioningDiagnosticRecorder: diagnostics.recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  await waitFor(() => diagnostics.trace.includes('mark_complete'));
+  const terminal = diagnostics.events.find(
+    (event) => event.outcome !== 'started',
+  );
+  assert.deepEqual(
+    terminal && {
+      stage: terminal.stage,
+      operation: terminal.operation,
+      commandKind: terminal.commandKind,
+      outcome: terminal.outcome,
+      cause: terminal.cause,
+    },
+    {
+      stage: 'provider_selection',
+      operation: 'provider_select',
+      commandKind: undefined,
+      outcome: 'failed',
+      cause: 'provider_unavailable',
+    },
+  );
+  assert.equal(diagnostics.primaryInputs.length, 1);
+  assert.equal(diagnostics.cleanupInputs.length, 1);
+  assert.equal(diagnostics.trace.includes('mark_complete'), true);
+  assert.equal(service.runningCount, 1);
+  assert.equal(service.connectionFor(TASK_ID), undefined);
+});
+
+test('legacy pre-provider plan and selection failures settle complete evidence without changing Task handling', async () => {
+  for (const variant of ['plan', 'selection'] as const) {
+    const diagnostics = diagnosticSettlementHarness();
+    const taskFailures: string[] = [];
+    let providerCalls = 0;
+    const sandbox = {
+      getSandboxMode: () => 'danger-full-access',
+      getProviderCapabilities() {
+        if (variant === 'selection') throw new Error('selection unavailable');
+        return ['terminal.websocket'];
+      },
+      async provision() {
+        providerCalls += 1;
+        return { taskId: TASK_ID, wsUrl: 'ws://127.0.0.1:1' };
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider;
+    const service = buildService(async () => 'transitioned', {
+      sandbox,
+      isCurrent: async () => true,
+      provisionLookup: {
+        ...DEFAULT_PROVISION_LOOKUP,
+        async getTaskLaunchContext() {
+          if (variant === 'plan') {
+            throw new TaskBranchResolutionError('branch_not_found');
+          }
+          return DEFAULT_PROVISION_LOOKUP.getTaskLaunchContext(TASK_ID);
+        },
+      },
+      provisioningDiagnosticRecorder: diagnostics.recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    });
+    const serviceTasks = (
+      service as unknown as { tasks: Record<string, unknown> }
+    ).tasks;
+    Object.assign(serviceTasks, {
+      async failWithProvisioningFailure(_taskId: string, cause: string) {
+        diagnostics.trace.push('task_failure');
+        taskFailures.push(`provisioning:${cause}`);
+        return {};
+      },
+      async transition(_taskId: string, status: string) {
+        diagnostics.trace.push('task_failure');
+        taskFailures.push(`transition:${status}`);
+      },
+    });
+
+    assert.equal(await service.admit(TASK_ID), 'running', variant);
+    assert.equal(providerCalls, 0, variant);
+    await waitFor(() => diagnostics.trace.includes('mark_complete'));
+    const terminal = diagnostics.events.find(
+      (event) => event.outcome !== 'started',
+    );
+    assert.deepEqual(
+      terminal && {
+        stage: terminal.stage,
+        operation: terminal.operation,
+        commandKind: terminal.commandKind,
+        outcome: terminal.outcome,
+        cause: terminal.cause,
+      },
+      variant === 'plan'
+        ? {
+            stage: 'remote_ref_resolution',
+            operation: 'remote_ref_resolve',
+            commandKind: 'git_remote_ref',
+            outcome: 'failed',
+            cause: 'ref_not_found',
+          }
+        : {
+            stage: 'provider_selection',
+            operation: 'provider_select',
+            commandKind: undefined,
+            outcome: 'failed',
+            cause: 'provider_unavailable',
+          },
+      variant,
+    );
+    assert.equal(diagnostics.cleanupInputs.length, 1, variant);
+    assert.equal(
+      diagnostics.trace.filter((step) => step === 'mark_complete').length,
+      1,
+      variant,
+    );
+    assert.ok(
+      diagnostics.trace.indexOf('record_primary') <
+        diagnostics.trace.indexOf('task_failure'),
+      `${variant}: healthy diagnostic primary precedes Task failure handling`,
+    );
+    assert.deepEqual(
+      taskFailures,
+      variant === 'plan'
+        ? ['provisioning:provisioning_ref_not_found']
+        : ['transition:failed'],
+      variant,
+    );
+  }
+});
+
+test('legacy terminal authority preserves failed or indeterminate physical cleanup diagnostics', async () => {
+  for (const variant of ['typed-throw', 'undefined'] as const) {
+    const diagnostics = diagnosticSettlementHarness({
+      failAt: variant === 'typed-throw' ? 'record_primary' : undefined,
+    });
+    const taskTransitions: string[] = [];
+    let gatewayCalls = 0;
+    const sandbox = {
+      getSandboxMode: () => 'danger-full-access',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision() {
+        if (variant === 'typed-throw') {
+          throw new SandboxProvisioningStageError('runtime_setup');
+        }
+        return undefined;
+      },
+      async teardownSandbox() {
+        return variant === 'typed-throw'
+          ? {
+              outcome: 'failed' as const,
+              proof: null,
+              cause: 'cleanup_failed' as const,
+              retryable: false,
+            }
+          : undefined;
+      },
+      async getSandboxCleanupAuthority() {
+        const failed = variant === 'typed-throw';
+        return {
+          state: 'not_required' as const,
+          ownershipKind: 'legacy' as const,
+          orphanState: 'none' as const,
+          status: 'terminal' as const,
+          attemptCount: 1,
+          lastAttemptOutcome: failed
+            ? ('failed' as const)
+            : ('indeterminate' as const),
+          lastAttemptProof: null,
+          lastAttemptCause: failed
+            ? ('cleanup_failed' as const)
+            : ('cleanup_unconfirmed' as const),
+          lastAttemptRetryable: !failed,
+          lastAttemptObservedAt: new Date('2026-07-18T00:00:00.000Z'),
+        };
+      },
+    } as unknown as SandboxProvider;
+    const service = buildService(async () => 'transitioned', {
+      sandbox,
+      isCurrent: async () => true,
+      provisioningDiagnosticRecorder: diagnostics.recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    });
+    const serviceTasks = (
+      service as unknown as { tasks: Record<string, unknown> }
+    ).tasks;
+    Object.assign(serviceTasks, {
+      async transition(_taskId: string, status: string) {
+        diagnostics.trace.push('task_failure');
+        taskTransitions.push(status);
+      },
+    });
+    Object.assign(service, {
+      gateway: {
+        openSession() {
+          gatewayCalls += 1;
+        },
+        unregisterSession() {},
+      },
+    });
+
+    assert.equal(await service.admit(TASK_ID), 'running', variant);
+    await waitFor(() => diagnostics.primaryInputs.length === 1);
+    const terminal = diagnostics.events.find(
+      (event) => event.outcome !== 'started',
+    );
+    assert.deepEqual(
+      terminal && {
+        stage: terminal.stage,
+        operation: terminal.operation,
+        commandKind: terminal.commandKind,
+        outcome: terminal.outcome,
+        cause: terminal.cause,
+      },
+      variant === 'typed-throw'
+        ? {
+            stage: 'runtime_setup',
+            operation: 'runtime_setup',
+            commandKind: 'runtime_setup',
+            outcome: 'failed',
+            cause: 'command_failed',
+          }
+        : {
+            stage: 'sandbox_creation',
+            operation: 'sandbox_create',
+            commandKind: undefined,
+            outcome: 'failed',
+            cause: 'unknown',
+          },
+      variant,
+    );
+    assert.equal(diagnostics.primaryInputs.length, 1, variant);
+    assert.equal(diagnostics.cleanupInputs.length, 1, variant);
+    assert.deepEqual(
+      diagnostics.cleanupInputs.map((input) => {
+        const cleanup = input as {
+          readonly state: string;
+          readonly cause: string | null;
+          readonly attemptCount: number;
+          readonly lastAttemptOutcome: string | null;
+          readonly observedAt: Date | null;
+        };
+        return {
+          state: cleanup.state,
+          cause: cleanup.cause,
+          attemptCount: cleanup.attemptCount,
+          lastAttemptOutcome: cleanup.lastAttemptOutcome,
+          observed: cleanup.observedAt instanceof Date,
+        };
+      }),
+      [
+        variant === 'typed-throw'
+          ? {
+              state: 'failed',
+              cause: 'cleanup_failed',
+              attemptCount: 1,
+              lastAttemptOutcome: 'failed',
+              observed: true,
+            }
+          : {
+              state: 'pending',
+              cause: 'cleanup_unconfirmed',
+              attemptCount: 1,
+              lastAttemptOutcome: 'indeterminate',
+              observed: true,
+            },
+      ],
+      variant,
+    );
+    assert.equal(diagnostics.trace.includes('mark_complete'), false, variant);
+    assert.deepEqual(taskTransitions, ['failed'], variant);
+    assert.equal(gatewayCalls, 0, variant);
+    assert.equal(service.runningCount, 0, variant);
+    assert.ok(
+      diagnostics.trace.indexOf('record_primary') <
+        diagnostics.trace.indexOf('task_failure'),
+      `${variant}: healthy diagnostic primary precedes force-fail transition`,
+    );
+  }
 });
 
 test('durable terminal cleanup without a sandbox port fails closed and retains the slot', async () => {
@@ -439,19 +1616,80 @@ test('operator stop fenced during the running transition prevents provider start
     },
     async teardownSandbox() {},
   } as unknown as SandboxProvider;
+  let diagnosticBeginCalls = 0;
+  const recorder = diagnosticRecorder({
+    async beginAttempt() {
+      diagnosticBeginCalls += 1;
+      return { ok: true, value: begunDiagnosticContext(TASK_ID, 'legacy') };
+    },
+    async appendEvent() {
+      assert.fail('a superseded running winner cannot emit diagnostics');
+    },
+  });
   const service = buildService(
     async () => {
       transitionStarted = true;
       await transitionGate;
       return 'transitioned';
     },
-    { sandbox, isCurrent: async () => true },
+    {
+      sandbox,
+      isCurrent: async () => true,
+      provisioningDiagnosticRecorder: recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    },
   );
 
   const admission = service.admit(TASK_ID);
   await waitFor(() => transitionStarted);
   await service.onTerminal(TASK_ID);
   releaseTransition?.();
+  assert.equal(await admission, 'running');
+  assert.equal(provisionCalls, 0);
+  assert.equal(diagnosticBeginCalls, 0);
+  assert.equal(service.runningCount, 0);
+});
+
+test('operator stop while diagnostic begin is pending prevents stale provider start', async () => {
+  const beginEntered = deferred<void>();
+  const beginResult = deferred<{
+    readonly ok: true;
+    readonly value: ReturnType<typeof begunDiagnosticContext>;
+  }>();
+  let provisionCalls = 0;
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision() {
+      provisionCalls += 1;
+      return { taskId: TASK_ID, wsUrl: 'ws://127.0.0.1:1' };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const recorder = diagnosticRecorder({
+    async beginAttempt() {
+      beginEntered.resolve();
+      return beginResult.promise;
+    },
+    async appendEvent() {
+      assert.fail('a post-begin superseded admission cannot emit diagnostics');
+    },
+  });
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisioningDiagnosticRecorder: recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  });
+
+  const admission = service.admit(TASK_ID);
+  await beginEntered.promise;
+  await service.onTerminal(TASK_ID);
+  beginResult.resolve({
+    ok: true,
+    value: begunDiagnosticContext(TASK_ID, 'legacy'),
+  });
+
   assert.equal(await admission, 'running');
   assert.equal(provisionCalls, 0);
   assert.equal(service.runningCount, 0);
@@ -486,6 +1724,69 @@ test('operator stop during provision tears down the late sandbox result', async 
   releaseProvision?.();
   assert.equal(await admission, 'running');
   assert.ok(teardownCalls >= 2);
+  assert.equal(service.runningCount, 0);
+});
+
+test('legacy provider rejection after stop does not write a competing diagnostic primary', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  const provisionEntered = deferred<void>();
+  const releaseProvision = deferred<void>();
+  let teardownCalls = 0;
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision() {
+      provisionEntered.resolve();
+      await releaseProvision.promise;
+      throw new SandboxProvisioningStageError('runtime_setup');
+    },
+    async teardownSandbox() {
+      teardownCalls += 1;
+    },
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisioningDiagnosticRecorder: diagnostics.recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  });
+
+  const admission = service.admit(TASK_ID);
+  await provisionEntered.promise;
+  await service.onTerminal(TASK_ID);
+  releaseProvision.resolve();
+
+  assert.equal(await admission, 'running');
+  assert.deepEqual(diagnostics.events, []);
+  assert.deepEqual(diagnostics.primaryInputs, []);
+  assert.equal(diagnostics.cleanupInputs.length, 1);
+  assert.deepEqual(
+    (() => {
+      const cleanup = diagnostics.cleanupInputs[0] as {
+        readonly state: string;
+        readonly cause: string | null;
+        readonly attemptCount: number;
+        readonly lastAttemptOutcome: string | null;
+        readonly observedAt: Date | null;
+      };
+      return {
+        state: cleanup.state,
+        cause: cleanup.cause,
+        attemptCount: cleanup.attemptCount,
+        lastAttemptOutcome: cleanup.lastAttemptOutcome,
+        observed: cleanup.observedAt instanceof Date,
+      };
+    })(),
+    {
+      state: 'pending',
+      cause: 'cleanup_unconfirmed',
+      attemptCount: 1,
+      lastAttemptOutcome: 'indeterminate',
+      observed: true,
+    },
+  );
+  assert.equal(diagnostics.trace.includes('mark_complete'), false);
+  assert.ok(teardownCalls >= 2, 'existing terminal and force-fail cleanup remains');
   assert.equal(service.runningCount, 0);
 });
 

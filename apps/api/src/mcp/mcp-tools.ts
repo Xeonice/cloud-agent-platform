@@ -46,6 +46,8 @@ import {
   type ScheduleResponse,
   type Scope,
   type SessionHistory,
+  type TaskProvisioningDiagnosticsQuery,
+  type TaskProvisioningDiagnosticsResponse,
   type TaskResponse,
   type UpdateScheduleRequest,
   type V1ListQuery,
@@ -119,6 +121,11 @@ export interface McpToolDeps {
     query: RuntimeModelCatalogQuery,
   ): Promise<RuntimeModelCatalog>;
   getTask(id: string): Promise<TaskResponse>;
+  getTaskProvisioningDiagnostics(
+    ownerUserId: string,
+    id: string,
+    query: TaskProvisioningDiagnosticsQuery,
+  ): Promise<TaskProvisioningDiagnosticsResponse>;
   listTasks(query: V1ListQuery): Promise<V1ListTasksResponse>;
   stopTask(id: string, userId?: string): Promise<TaskResponse>;
   getTranscript(id: string): Promise<SessionHistory>;
@@ -263,6 +270,11 @@ export const MCP_ADAPTERS: McpAdapterMap = {
       return deps.getTask(id);
     },
   },
+  'tasks.provisioningDiagnostics': {
+    async execute({ id, ...query }, { deps, ownerUserId }) {
+      return deps.getTaskProvisioningDiagnostics(ownerUserId, id, query);
+    },
+  },
   'tasks.stop': {
     async execute({ id }, { deps, actorUserId }) {
       return deps.stopTask(id, actorUserId);
@@ -362,10 +374,7 @@ export function scopeError(required: Scope): McpError {
 
 function ownerError(): McpError {
   return publicSurfaceMcpError(
-    new PublicSurfaceError({
-      code: 'owner_required',
-      message: 'Schedule tools require an authenticated account owner (403)',
-    }),
+    new PublicSurfaceError({ code: 'owner_required' }),
   );
 }
 

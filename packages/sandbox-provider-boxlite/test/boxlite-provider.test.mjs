@@ -27,6 +27,34 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+async function withDeadline(promise, timeoutMs = 2_000) {
+  let timeout;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error('test operation exceeded its deadline')),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function nonPersistingDiagnostics() {
+  let identity = 0;
+  return core.createNonPersistingSandboxProvisioningDiagnosticObserver({
+    createOperationId: () =>
+      `24000000-0000-4000-8000-${String(++identity).padStart(12, '0')}`,
+  });
+}
+
+const VALIDATION_PROBE_SANDBOX_ID =
+  'probe-24000000-0000-4000-8000-000000000001';
+
 function validEnv(overrides = {}) {
   return {
     BOXLITE_ENDPOINT: 'https://boxlite.example.test',
@@ -626,7 +654,10 @@ await test('BoxLite partial-create cleanup cannot bypass a lost owner fence', as
       },
       afterSandboxCleanup: async () => undefined,
     }),
-    mod.BoxLitePartialCreateError,
+    (error) =>
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error.primary instanceof mod.BoxLitePartialCreateError &&
+      !Object.keys(error).includes('primary'),
   );
 
   assert.equal(cleanupChecks, 1);
@@ -894,6 +925,89 @@ await test('redacts ordinary BoxLite preflight diagnostics', async () => {
   assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-preflight-canary']);
 });
 
+await test('failed-run cleanup is not delayed by stalled primary diagnostics persistence', async () => {
+  const taskId = '25000000-0000-4000-8000-000000000001';
+  const terminalRecordEntered = deferred();
+  const releaseTerminalRecord = deferred();
+  const deleteCompleted = deferred();
+  const recordedEvents = [];
+  let identity = 0;
+  const nextIdentity = (prefix) =>
+    `${prefix}-0000-4000-8000-${String(++identity).padStart(12, '0')}`;
+  const diagnostics = core.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: {
+      schemaVersion: 1,
+      taskId,
+      attemptId: '25000000-0000-4000-8000-000000000002',
+      attempt: 1,
+      admissionMode: 'durable',
+      providerFamily: 'boxlite',
+    },
+    createEventId: () => nextIdentity('26000000'),
+    createOperationId: () => nextIdentity('27000000'),
+    record: async (event) => {
+      recordedEvents.push(event);
+      if (
+        event.channel === 'primary' &&
+        event.operation === 'runtime_setup' &&
+        event.outcome === 'failed'
+      ) {
+        terminalRecordEntered.resolve();
+        await releaseTerminalRecord.promise;
+      }
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+  const client = new mod.FakeBoxLiteClient();
+  const originalDelete = client.deleteSandbox.bind(client);
+  let deleteCalls = 0;
+  client.deleteSandbox = async (sandboxId) => {
+    deleteCalls += 1;
+    await originalDelete(sandboxId);
+    deleteCompleted.resolve();
+  };
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    runtimeSetup: async () => {
+      throw new Error('RAW_DEFERRED_RUNTIME_SETUP_CANARY');
+    },
+  });
+
+  const rejectedProvision = assert.rejects(
+    provider.provision({
+      taskId,
+      cloneSpec: null,
+      diagnostics,
+    }),
+    (error) =>
+      error?.code === 'sandbox_provisioning_stage_error' &&
+      error.stage === 'runtime_setup' &&
+      !error.message.includes('RAW_DEFERRED_RUNTIME_SETUP_CANARY'),
+  );
+
+  await withDeadline(terminalRecordEntered.promise);
+  try {
+    await withDeadline(deleteCompleted.promise);
+    await withDeadline(rejectedProvision);
+    assert.equal(deleteCalls, 1);
+    assert.equal(client.sandboxes.has(`cap-boxlite-${taskId}`), false);
+  } finally {
+    releaseTerminalRecord.resolve();
+  }
+  await withDeadline(diagnostics.flush());
+  assert.equal(deleteCalls, 1);
+  assert.equal(
+    recordedEvents.some(
+      (event) =>
+        event.channel === 'primary' &&
+        event.operation === 'runtime_setup' &&
+        event.outcome === 'failed',
+    ),
+    true,
+  );
+});
+
 await test('BoxLite provider-internal cleanup obeys the owner CAS and cannot delete after transfer', async () => {
   const client = new mod.FakeBoxLiteClient();
   let cleanupChecks = 0;
@@ -923,9 +1037,11 @@ await test('BoxLite provider-internal cleanup obeys the owner CAS and cannot del
       },
     }),
     (error) =>
-      error?.code === 'sandbox_provisioning_stage_error' &&
-      error?.stage === 'runtime_setup' &&
-      !error.message.includes('runtime setup failed after transfer'),
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error.primary?.code === 'sandbox_provisioning_stage_error' &&
+      error.primary?.stage === 'runtime_setup' &&
+      !error.primary.message.includes('runtime setup failed after transfer') &&
+      !Object.keys(error).includes('primary'),
   );
 
   assert.equal(cleanupChecks, 1);
@@ -989,6 +1105,79 @@ await test('task provisioning verifies actual rootfs capacity even when create e
     'cap-boxlite-task-capacity-probe',
   ]);
   assert.equal(await provider.sandboxExists('task-capacity-probe'), false);
+});
+
+await test('capacity remains primary when physical cleanup confirms the sandbox still exists', async () => {
+  const capacityCanary = 'RAW_CAPACITY_PRIMARY_CANARY';
+  const cleanupCanary = 'RAW_CAPACITY_CLEANUP_CANARY';
+  const taskId = 'task-capacity-cleanup-failed';
+  const ownership = {
+    ownerGeneration: 'owner:capacity-cleanup-failed',
+    resourceGeneration: 'resource:capacity-cleanup-failed',
+  };
+  const authorization = {
+    kind: 'generation',
+    taskId,
+    providerId: 'boxlite-test',
+    ownership,
+  };
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: () => ({
+      exitCode: 1,
+      stdout: '',
+      stderr: capacityCanary,
+      output: capacityCanary,
+      timedOut: false,
+    }),
+  });
+  client.deleteSandbox = async (sandboxId) => {
+    client.deletedSandboxIds.push(sandboxId);
+    throw new Error(cleanupCanary);
+  };
+  const physicalResults = [];
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig({ BOXLITE_DISK_SIZE_GB: '9' }),
+    client,
+  });
+
+  let failure;
+  await assert.rejects(
+    () =>
+      provider.provision({
+        taskId,
+        cloneSpec: null,
+        ownership,
+        beforeSandboxCleanup: async () => authorization,
+        settleSandboxCleanupAttempt: async (receivedAuthorization, physical) => {
+          assert.equal(receivedAuthorization, authorization);
+          physicalResults.push(physical);
+        },
+      }),
+    (error) => {
+      failure = error;
+      return (
+        error?.code === 'sandbox_provisioning_capacity_error' &&
+        error.message ===
+          'Sandbox provisioned capacity is below the resolved resource policy' &&
+        error.code !== 'sandbox_cleanup_coordination_pending'
+      );
+    },
+  );
+
+  assert.deepEqual(physicalResults, [
+    {
+      outcome: 'failed',
+      proof: null,
+      cause: 'cleanup_failed',
+      retryable: true,
+    },
+  ]);
+  assert.equal(Object.isFrozen(physicalResults[0]), true);
+  assert.deepEqual(client.deletedSandboxIds, [client.createCalls[0].sandboxId]);
+  assert.equal(await provider.sandboxExists(taskId), true);
+  assert.equal(JSON.stringify(failure).includes(capacityCanary), false);
+  assert.equal(JSON.stringify(failure).includes(cleanupCanary), false);
+  assert.equal(Object.hasOwn(failure, 'primary'), false);
 });
 
 await test('direct BoxLite provisioning rejects canonical credentials before create', async () => {
@@ -1237,8 +1426,8 @@ await test('validates BoxLite environments with create start exec delete probes'
   const client = new mod.FakeBoxLiteClient();
 
   const result = await mod.validateBoxLiteEnvironment({
-    taskId: 'task-boxlite-probe',
     client,
+    diagnostics: nonPersistingDiagnostics(),
     workspacePath: '/workspace',
     environment: {
       environmentId: 'env-boxlite',
@@ -1277,7 +1466,7 @@ await test('validates BoxLite environments with create start exec delete probes'
   assert.match(client.execCalls[0].command, /^df -Pk \/ \| awk/);
   assert.equal(client.execCalls[1].command, 'true');
   assert.equal(client.execCalls[2].command, 'command -v git');
-  assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-probe']);
+  assert.deepEqual(client.deletedSandboxIds, [VALIDATION_PROBE_SANDBOX_ID]);
 });
 
 await test('validation and task provisioning use the same frozen managed disk snapshot', async () => {
@@ -1293,8 +1482,8 @@ await test('validation and task provisioning use the same frozen managed disk sn
   };
   const validationClient = new mod.FakeBoxLiteClient();
   const validation = await mod.validateBoxLiteEnvironment({
-    taskId: 'task-resource-parity-probe',
     client: validationClient,
+    diagnostics: nonPersistingDiagnostics(),
     environment,
   });
   assert.equal(validation.status, 'passed');
@@ -1335,8 +1524,8 @@ await test('BoxLite environment validation cleans up returned provider ids', asy
   };
 
   const result = await mod.validateBoxLiteEnvironment({
-    taskId: 'task-boxlite-generated-id',
     client,
+    diagnostics: nonPersistingDiagnostics(),
     environment: {
       environmentId: 'env-boxlite',
       sourceKind: 'boxlite-image',
@@ -1362,8 +1551,8 @@ await test('BoxLite environment validation fails closed and still deletes probe 
   });
 
   const result = await mod.validateBoxLiteEnvironment({
-    taskId: 'task-boxlite-probe-fail',
     client,
+    diagnostics: nonPersistingDiagnostics(),
     environment: {
       environmentId: 'env-boxlite',
       sourceKind: 'boxlite-image',
@@ -1374,7 +1563,7 @@ await test('BoxLite environment validation fails closed and still deletes probe 
 
   assert.equal(result.status, 'failed');
   assert.match(result.error, /exec probe failed/);
-  assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-probe-fail']);
+  assert.deepEqual(client.deletedSandboxIds, [VALIDATION_PROBE_SANDBOX_ID]);
 });
 
 await test('BoxLite environment validation keeps original failure when cleanup fails', async () => {
@@ -1393,8 +1582,8 @@ await test('BoxLite environment validation keeps original failure when cleanup f
   };
 
   const result = await mod.validateBoxLiteEnvironment({
-    taskId: 'task-boxlite-cleanup-fail',
     client,
+    diagnostics: nonPersistingDiagnostics(),
     environment: {
       environmentId: 'env-boxlite',
       sourceKind: 'boxlite-image',
@@ -1406,7 +1595,7 @@ await test('BoxLite environment validation keeps original failure when cleanup f
   assert.equal(result.status, 'failed');
   assert.match(result.error, /exec probe failed/);
   assert.doesNotMatch(result.error, /delete failed/);
-  assert.deepEqual(client.deletedSandboxIds, ['probe-task-boxlite-cleanup-fail']);
+  assert.deepEqual(client.deletedSandboxIds, [VALIDATION_PROBE_SANDBOX_ID]);
 });
 
 await test('BoxLite environment validation classifies registry pull failures', async () => {
@@ -1435,11 +1624,9 @@ await test('BoxLite environment validation classifies registry pull failures', a
     client.createSandbox = async () => {
       throw new Error(item.message);
     };
-    const taskId = `task-boxlite-${index}`;
-
     const result = await mod.validateBoxLiteEnvironment({
-      taskId,
       client,
+      diagnostics: nonPersistingDiagnostics(),
       environment: {
         environmentId: 'env-boxlite',
         sourceKind: 'boxlite-image',
@@ -1451,15 +1638,15 @@ await test('BoxLite environment validation classifies registry pull failures', a
     assert.equal(result.status, 'failed');
     assert.match(result.error, item.expected);
     assert.match(result.probes.at(-1).output, item.expected);
-    assert.deepEqual(client.deletedSandboxIds, [`probe-${taskId}`]);
+    assert.deepEqual(client.deletedSandboxIds, [VALIDATION_PROBE_SANDBOX_ID]);
   }
 });
 
 await test('BoxLite environment validation rejects mutable tags before creating a probe', async () => {
   const client = new mod.FakeBoxLiteClient();
   const result = await mod.validateBoxLiteEnvironment({
-    taskId: 'task-boxlite-mutable',
     client,
+    diagnostics: nonPersistingDiagnostics(),
     environment: {
       environmentId: 'env-boxlite',
       sourceKind: 'boxlite-image',
@@ -1800,6 +1987,36 @@ await test('command executor and archive helpers normalize BoxLite client operat
   assert.deepEqual([...(await provider.downloadWorkspaceArchive({ taskId: 'task-3' }))], [1, 2, 3]);
 });
 
+await test('command executor preserves a proven native failure without fabricating a numeric exit', async () => {
+  const settlement = new core.SandboxCommandSettlementError(
+    'failed_without_exit',
+  );
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client: new mod.FakeBoxLiteClient({
+      execHandler: async () => {
+        throw settlement;
+      },
+    }),
+  });
+
+  await assert.rejects(
+    () =>
+      provider
+        .createCommandExecutor('cap-boxlite-task-missing-exit')
+        .exec({ command: 'false' }),
+    (error) => error === settlement,
+  );
+  assert.deepEqual(core.classifySandboxCommandExecutionRejection(settlement), {
+    settlement: 'failed_without_exit',
+    outcome: 'failed',
+    cause: 'missing_exit_code',
+    retryable: false,
+    exitCode: null,
+    anomaly: 'missing_exit_code',
+  });
+});
+
 await test('terminal and retention descriptors are capability gated', async () => {
   const noTerminalConfig = validConfig({
     BOXLITE_TERMINAL_MODE: 'none',
@@ -1824,15 +2041,34 @@ await test('terminal and retention descriptors are capability gated', async () =
   assert.equal((await sleepProvider.getRetentionPolicy('task-sleep')).mode, 'provider-native');
 });
 
-await test('provider teardown is idempotent, deletes once, and clears existence', async () => {
+await test('provider teardown does not wait for diagnostics flush and remains idempotent', async () => {
   const client = new mod.FakeBoxLiteClient();
   const provider = new mod.BoxLiteSandboxProvider({
     config: validConfig(),
     client,
   });
+  const flushEntered = deferred();
+  const neverFlushes = new Promise(() => {});
+  let operationIdentity = 0;
+  const diagnostics = {
+    mode: 'non-persisting',
+    createOperationId: () =>
+      `2b000000-0000-4000-8000-${String(++operationIdentity).padStart(12, '0')}`,
+    async emit() {},
+    async flush() {
+      flushEntered.resolve();
+      await neverFlushes;
+    },
+  };
   await provider.provision({ taskId: 'task-4', cloneSpec: null });
-  await provider.teardownSandbox('task-4');
-  await provider.teardownSandbox('task-4');
+  assert.deepEqual(
+    await withDeadline(provider.teardownSandbox('task-4', { diagnostics })),
+    { kind: 'found-and-cleaned' },
+  );
+  await withDeadline(flushEntered.promise);
+  assert.deepEqual(await provider.teardownSandbox('task-4'), {
+    kind: 'already-absent',
+  });
   assert.equal(await provider.sandboxExists('task-4'), false);
   assert.deepEqual(client.deletedSandboxIds, ['cap-boxlite-task-4']);
 });

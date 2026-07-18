@@ -3,11 +3,16 @@ import { posix as guestPosixPath } from 'node:path';
 import {
   createSandboxMode0600FileArchive,
   createSandboxSecretFilePort,
+  normalizeSandboxPhysicalCleanupResult,
+  SandboxCleanupCoordinationPendingError,
   SandboxProviderConfigurationError,
   type SandboxCommandExecutionResult,
   type SandboxGitStageExecution,
   type SandboxGitStageExecutor,
   type SandboxOwnershipFence,
+  type SandboxPhysicalCleanupResult,
+  type SandboxProvisioningDiagnosticCommandKind,
+  type SandboxProvisioningDiagnosticObserver,
   type SandboxProviderPrivateSecretFileDeleteRequest,
   type SandboxProviderPrivateSecretFileTransport,
   type SandboxProviderPrivateSecretFileWriteRequest,
@@ -16,6 +21,8 @@ import {
 } from '@cap/sandbox-core';
 
 import type { BoxLiteClient, BoxLiteExecResult } from './boxlite-client.js';
+import { boxLiteHttpStatusFromError } from './boxlite-client.js';
+import { startBoxLiteProvisioningDiagnostic } from './boxlite-provisioning-diagnostics.js';
 
 const BOXLITE_SECRET_OPERATION_TIMEOUT_MS = 10_000;
 const BOXLITE_SANDBOX_DELETE_CONFIRM_ATTEMPTS = 10;
@@ -56,6 +63,7 @@ export interface BoxLiteSandboxDeletionConfirmationOptions {
   readonly attempts?: number;
   /** Injectable for deterministic tests; called only between failed probes. */
   readonly waitForRetry?: (attempt: number) => Promise<void>;
+  readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
 }
 
 export interface BoxLiteWorkspaceSecurityOptions {
@@ -68,14 +76,20 @@ export interface BoxLiteWorkspaceSecurityOptions {
   readonly createSecretId?: () => string;
   /** Durable cleanup must win the exact owner CAS before deleting the sandbox. */
   readonly beforeSandboxCleanup?: () => Promise<SandboxRunCleanupAuthorization | null>;
-  /** Completes the exact owner cleanup only after absence is confirmed. */
+  /** Legacy completion-only acknowledgement for confirmed absence. */
   readonly afterSandboxCleanup?: (
     authorization: SandboxRunCleanupAuthorization,
   ) => Promise<void>;
+  /** Typed acknowledgement for every physical attempt outcome. */
+  readonly settleSandboxCleanupAttempt?: (
+    authorization: SandboxRunCleanupAuthorization,
+    physical: SandboxPhysicalCleanupResult,
+  ) => Promise<void>;
   readonly deletionConfirmation?: Omit<
     BoxLiteSandboxDeletionConfirmationOptions,
-    'client' | 'sandboxId'
+    'client' | 'sandboxId' | 'diagnostics'
   >;
+  readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
 }
 
 export interface BoxLiteWorkspaceSecurityAdapter {
@@ -85,6 +99,13 @@ export interface BoxLiteWorkspaceSecurityAdapter {
   settleCredentialSafety(): Promise<void>;
   /** True only after sandbox deletion has been confirmed by an absence probe. */
   wasSandboxFenced(): boolean;
+  /** True once this adapter entered its single cleanup/fencing lineage. */
+  wasSandboxCleanupAttempted(): boolean;
+  /**
+   * True unless an authorized physical cleanup is awaiting its durable
+   * acknowledgement.
+   */
+  wasSandboxCleanupAcknowledged(): boolean;
 }
 
 /**
@@ -96,7 +117,8 @@ export function createBoxLiteWorkspaceSecurityAdapter(
 ): BoxLiteWorkspaceSecurityAdapter {
   if (
     (options.beforeSandboxCleanup === undefined) !==
-    (options.afterSandboxCleanup === undefined)
+    (options.afterSandboxCleanup === undefined &&
+      options.settleSandboxCleanupAttempt === undefined)
   ) {
     throw new SandboxProviderConfigurationError(
       'BoxLite cleanup callbacks must be provided together',
@@ -104,7 +126,9 @@ export function createBoxLiteWorkspaceSecurityAdapter(
   }
   if (
     options.ownership &&
-    (!options.beforeSandboxCleanup || !options.afterSandboxCleanup)
+    (!options.beforeSandboxCleanup ||
+      (!options.afterSandboxCleanup &&
+        !options.settleSandboxCleanupAttempt))
   ) {
     throw new SandboxProviderConfigurationError(
       'BoxLite durable workspace cleanup requires owner generation callbacks',
@@ -112,10 +136,19 @@ export function createBoxLiteWorkspaceSecurityAdapter(
   }
   const activeSecretPaths = new Set<string>();
   let sandboxFenced = false;
+  let sandboxFenceRequired = false;
+  let sandboxCleanupAttempted = false;
+  let sandboxCleanupAcknowledged = true;
   let fencePromise: Promise<void> | null = null;
 
   const fenceSandbox = (): Promise<void> => {
     fencePromise ??= (async () => {
+      sandboxCleanupAttempted = true;
+      if (options.beforeSandboxCleanup) {
+        // Until this callback and its matching evidence acknowledgement both
+        // finish, any failure belongs to orchestration coordination.
+        sandboxCleanupAcknowledged = false;
+      }
       const cleanupAuthorization = options.beforeSandboxCleanup
         ? await options.beforeSandboxCleanup()
         : undefined;
@@ -123,6 +156,7 @@ export function createBoxLiteWorkspaceSecurityAdapter(
         // Ownership moved to another worker. It owns subsequent resource and
         // credential cleanup; the stale worker must perform no more I/O.
         activeSecretPaths.clear();
+        sandboxCleanupAcknowledged = true;
         return;
       }
       if (
@@ -140,15 +174,35 @@ export function createBoxLiteWorkspaceSecurityAdapter(
           'BoxLite cleanup authorization does not match the selected run',
         );
       }
-      await deleteBoxLiteSandboxAndConfirm({
+      const physical = await attemptDeleteBoxLiteSandboxAndConfirm({
         client: options.client,
         sandboxId: options.sandboxId,
         ...options.deletionConfirmation,
+        diagnostics: options.diagnostics,
       });
-      sandboxFenced = true;
-      activeSecretPaths.clear();
+      if (physical.outcome === 'succeeded') {
+        // Physical absence is true even if the subsequent durable store
+        // acknowledgement fails; keep those facts in separate state slots.
+        sandboxFenced = true;
+        activeSecretPaths.clear();
+      }
       if (cleanupAuthorization) {
-        await options.afterSandboxCleanup?.(cleanupAuthorization);
+        if (options.settleSandboxCleanupAttempt) {
+          await options.settleSandboxCleanupAttempt(
+            cleanupAuthorization,
+            physical,
+          );
+        } else if (physical.outcome === 'succeeded') {
+          await options.afterSandboxCleanup?.(cleanupAuthorization);
+        } else {
+          throw new SandboxCleanupCoordinationPendingError();
+        }
+        sandboxCleanupAcknowledged = true;
+      }
+      if (physical.outcome !== 'succeeded') {
+        throw new SandboxProviderConfigurationError(
+          'BoxLite credential safety fencing could not be confirmed',
+        );
       }
     })();
     return fencePromise;
@@ -159,7 +213,12 @@ export function createBoxLiteWorkspaceSecurityAdapter(
     sandboxId: options.sandboxId,
     activeSecretPaths,
     wasSandboxFenced: () => sandboxFenced,
+    isSandboxFenceRequired: () => sandboxFenceRequired,
+    requireSandboxFence: () => {
+      sandboxFenceRequired = true;
+    },
     fenceSandbox,
+    diagnostics: options.diagnostics,
   });
 
   return Object.freeze({
@@ -172,14 +231,27 @@ export function createBoxLiteWorkspaceSecurityAdapter(
       client: options.client,
       sandboxId: options.sandboxId,
       fenceSandbox,
+      requireSandboxFence: () => {
+        sandboxFenceRequired = true;
+      },
+      diagnostics: options.diagnostics,
     }),
     async settleCredentialSafety(): Promise<void> {
+      if (sandboxFenceRequired && activeSecretPaths.size === 0) {
+        await fenceSandbox();
+      }
       for (const path of [...activeSecretPaths]) {
         await transport.deleteFile({ path });
       }
     },
     wasSandboxFenced(): boolean {
       return sandboxFenced;
+    },
+    wasSandboxCleanupAttempted(): boolean {
+      return sandboxCleanupAttempted;
+    },
+    wasSandboxCleanupAcknowledged(): boolean {
+      return sandboxCleanupAcknowledged;
     },
   });
 }
@@ -188,20 +260,32 @@ export function createBoxLiteSandboxGitStageExecutor(options: {
   readonly client: Pick<BoxLiteClient, 'exec'>;
   readonly sandboxId: string;
   readonly fenceSandbox: () => Promise<void>;
+  /** Defer fencing until the shared workspace layer has emitted its primary. */
+  readonly requireSandboxFence?: () => void;
+  readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
 }): SandboxGitStageExecutor {
+  const requireSandboxFence = async (): Promise<void> => {
+    if (options.requireSandboxFence) {
+      options.requireSandboxFence();
+      return;
+    }
+    // Compatibility for direct users of this exported adapter. The provider
+    // security bridge always supplies the deferred marker above.
+    await options.fenceSandbox();
+  };
   return Object.freeze({
     async execute(
       execution: SandboxGitStageExecution,
     ): Promise<SandboxCommandExecutionResult> {
       if (execution.signal.aborted) {
-        await options.fenceSandbox();
+        await requireSandboxFence();
         return timedOutResult();
       }
 
       const onAbort = deferredAbort(execution.signal);
       if (execution.signal.aborted) {
         onAbort.dispose();
-        await options.fenceSandbox();
+        await requireSandboxFence();
         return timedOutResult();
       }
       const observedExec = options.client
@@ -210,6 +294,9 @@ export function createBoxLiteSandboxGitStageExecutor(options: {
           command: execution.request.command,
           cwd: execution.request.cwd,
           timeoutMs: execution.remainingTimeoutMs,
+          cancellationSignal: execution.signal,
+          diagnostics: options.diagnostics,
+          commandKind: boxLiteGitCommandKind(execution.stage),
         })
         .then<ObservedExecOutcome, ObservedExecOutcome>(
           (result) => ({ kind: 'result', result }),
@@ -221,11 +308,11 @@ export function createBoxLiteSandboxGitStageExecutor(options: {
       if (outcome.kind === 'abort') {
         // observedExec already owns both fulfillment and rejection handlers, so
         // a late/dropped transport response cannot become an unhandled promise.
-        await options.fenceSandbox();
+        await requireSandboxFence();
         return timedOutResult();
       }
       if (outcome.kind === 'error') {
-        await options.fenceSandbox();
+        await requireSandboxFence();
         if (execution.signal.aborted || isAbortLike(outcome.error)) {
           return timedOutResult();
         }
@@ -236,7 +323,7 @@ export function createBoxLiteSandboxGitStageExecutor(options: {
 
       const result = normalizeExecResult(outcome.result);
       if (result.timedOut || execution.signal.aborted) {
-        await options.fenceSandbox();
+        await requireSandboxFence();
         return execution.signal.aborted ? timedOutResult() : result;
       }
       return result;
@@ -244,10 +331,34 @@ export function createBoxLiteSandboxGitStageExecutor(options: {
   });
 }
 
-/** Delete once, then resolve only after BoxLite reports the sandbox absent. */
-export async function deleteBoxLiteSandboxAndConfirm(
+function boxLiteGitCommandKind(
+  stage: SandboxGitStageExecution['stage'],
+): SandboxProvisioningDiagnosticCommandKind | undefined {
+  switch (stage) {
+    case 'remote_ref_resolution':
+      return 'git_remote_ref';
+    case 'workspace_transfer':
+      return 'git_clone';
+    case 'checkout':
+      return 'git_checkout';
+    case 'submodules':
+      return 'git_submodules';
+    case 'delivery_status':
+    case 'delivery_commit':
+    case 'delivery_push':
+      return undefined;
+  }
+}
+
+/**
+ * Execute one bounded physical delete/confirmation attempt.
+ *
+ * Provider transport values stay private. The result is the only value that
+ * may cross into orchestration cleanup evidence.
+ */
+export async function attemptDeleteBoxLiteSandboxAndConfirm(
   options: BoxLiteSandboxDeletionConfirmationOptions,
-): Promise<void> {
+): Promise<SandboxPhysicalCleanupResult> {
   const attempts =
     options.attempts ?? BOXLITE_SANDBOX_DELETE_CONFIRM_ATTEMPTS;
   if (!Number.isSafeInteger(attempts) || attempts <= 0) {
@@ -256,29 +367,157 @@ export async function deleteBoxLiteSandboxAndConfirm(
     );
   }
 
+  const deleteDiagnostic = startBoxLiteProvisioningDiagnostic(
+    options.diagnostics,
+    {
+      stage: 'cleanup',
+      operation: 'sandbox_delete',
+      channel: 'cleanup',
+      commandKind: 'sandbox_cleanup',
+    },
+  );
+  let deleteRetryable = true;
+  let deleteSucceeded = false;
   try {
     await options.client.deleteSandbox(options.sandboxId);
-  } catch {
-    // A lost delete response is ambiguous. Only a subsequent absence probe can
-    // settle the fence successfully.
+    deleteSucceeded = true;
+    deleteDiagnostic.succeed();
+  } catch (error) {
+    const status = boxLiteHttpStatusFromError(error);
+    if (status === undefined) {
+      deleteDiagnostic.fail(error, {
+        outcome: 'indeterminate',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      });
+    } else {
+      deleteRetryable = status === 408 || status === 429 || status >= 500;
+      deleteDiagnostic.failHttp(status, {
+        cause: status === 408 ? 'cleanup_unconfirmed' : 'cleanup_failed',
+        retryable: deleteRetryable,
+      });
+    }
+    // A rejected or lost delete request cannot prove presence or absence. Only
+    // the subsequent absence probe can settle the fence successfully.
   }
 
+  const confirmDiagnostic = startBoxLiteProvisioningDiagnostic(
+    options.diagnostics,
+    {
+      stage: 'cleanup',
+      operation: 'sandbox_absence_confirm',
+      channel: 'cleanup',
+      commandKind: 'sandbox_cleanup',
+    },
+  );
   const waitForRetry =
     options.waitForRetry ??
     (() => wait(BOXLITE_SANDBOX_DELETE_CONFIRM_DELAY_MS));
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
       if ((await options.client.getSandbox(options.sandboxId)) === null) {
-        return;
+        confirmDiagnostic.succeed();
+        return settleBoxLiteCleanupDiagnostics(
+          options.diagnostics,
+          confirmedBoxLiteCleanup(
+            deleteSucceeded ? 'found-and-cleaned' : 'already-absent',
+          ),
+        );
+      }
+      if (attempt === attempts) {
+        confirmDiagnostic.settle({
+          outcome: 'failed',
+          cause: 'cleanup_failed',
+          retryable: deleteRetryable,
+        });
+        return settleBoxLiteCleanupDiagnostics(
+          options.diagnostics,
+          failedBoxLiteCleanup(deleteRetryable),
+        );
       }
     } catch {
       // A probe error is uncertainty, never proof of absence.
+      if (attempt === attempts) {
+        confirmDiagnostic.settle({
+          outcome: 'indeterminate',
+          cause: 'cleanup_unconfirmed',
+          retryable: true,
+        });
+        return settleBoxLiteCleanupDiagnostics(
+          options.diagnostics,
+          indeterminateBoxLiteCleanup(),
+        );
+      }
     }
-    if (attempt < attempts) await waitForRetry(attempt);
+    if (attempt < attempts) {
+      try {
+        await waitForRetry(attempt);
+      } catch {
+        confirmDiagnostic.settle({
+          outcome: 'indeterminate',
+          cause: 'cleanup_unconfirmed',
+          retryable: true,
+        });
+        return settleBoxLiteCleanupDiagnostics(
+          options.diagnostics,
+          indeterminateBoxLiteCleanup(),
+        );
+      }
+    }
   }
-  throw new SandboxProviderConfigurationError(
-    'BoxLite credential safety fencing could not be confirmed',
+  return settleBoxLiteCleanupDiagnostics(
+    options.diagnostics,
+    indeterminateBoxLiteCleanup(),
   );
+}
+
+/** Delete once, then resolve only after BoxLite reports the sandbox absent. */
+export async function deleteBoxLiteSandboxAndConfirm(
+  options: BoxLiteSandboxDeletionConfirmationOptions,
+): Promise<void> {
+  const result = await attemptDeleteBoxLiteSandboxAndConfirm(options);
+  if (result.outcome !== 'succeeded') {
+    throw new SandboxProviderConfigurationError(
+      'BoxLite credential safety fencing could not be confirmed',
+    );
+  }
+}
+
+function confirmedBoxLiteCleanup(
+  proof: 'found-and-cleaned' | 'already-absent',
+): SandboxPhysicalCleanupResult {
+  return normalizeSandboxPhysicalCleanupResult({ kind: proof });
+}
+
+function failedBoxLiteCleanup(retryable: boolean): SandboxPhysicalCleanupResult {
+  return normalizeSandboxPhysicalCleanupResult({
+    outcome: 'failed',
+    proof: null,
+    cause: 'cleanup_failed',
+    retryable,
+  });
+}
+
+function indeterminateBoxLiteCleanup(): SandboxPhysicalCleanupResult {
+  return normalizeSandboxPhysicalCleanupResult(undefined);
+}
+
+function settleBoxLiteCleanupDiagnostics(
+  diagnostics: SandboxProvisioningDiagnosticObserver | undefined,
+  result: SandboxPhysicalCleanupResult,
+): SandboxPhysicalCleanupResult {
+  void flushProvisioningDiagnostics(diagnostics);
+  return result;
+}
+
+async function flushProvisioningDiagnostics(
+  diagnostics: SandboxProvisioningDiagnosticObserver | undefined,
+): Promise<void> {
+  try {
+    await diagnostics?.flush?.();
+  } catch {
+    // Evidence persistence is never cleanup authority.
+  }
 }
 
 function createBoxLiteSecretFileTransport(options: {
@@ -286,7 +525,10 @@ function createBoxLiteSecretFileTransport(options: {
   readonly sandboxId: string;
   readonly activeSecretPaths: Set<string>;
   readonly wasSandboxFenced: () => boolean;
+  readonly isSandboxFenceRequired: () => boolean;
+  readonly requireSandboxFence: () => void;
   readonly fenceSandbox: () => Promise<void>;
+  readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
 }): SandboxProviderPrivateSecretFileTransport {
   return Object.freeze({
     async writeFile(
@@ -315,6 +557,9 @@ function createBoxLiteSecretFileTransport(options: {
             `chmod 700 -- ${shellQuote(target.directory)} ` +
             `${shellQuote(upload.stagingDirectory)}`,
           timeoutMs: BOXLITE_SECRET_OPERATION_TIMEOUT_MS,
+          cancellationSignal: request.signal,
+          diagnostics: options.diagnostics,
+          commandKind: 'credential_setup',
         }),
       );
       if (
@@ -322,7 +567,7 @@ function createBoxLiteSecretFileTransport(options: {
         prepared.result.exitCode !== 0 ||
         prepared.result.timedOut === true
       ) {
-        await options.fenceSandbox();
+        options.requireSandboxFence();
         throw new SandboxProviderConfigurationError(
           'BoxLite secret file staging could not be prepared safely',
         );
@@ -346,13 +591,13 @@ function createBoxLiteSecretFileTransport(options: {
         archive.fill(0);
       }
       if (uploaded.kind === 'abort') {
-        await options.fenceSandbox();
+        options.requireSandboxFence();
         throw new SandboxProviderConfigurationError(
           'BoxLite secret file upload was cancelled',
         );
       }
       if (uploaded.kind === 'error') {
-        await options.fenceSandbox();
+        options.requireSandboxFence();
         throw new SandboxProviderConfigurationError(
           'BoxLite secret file upload could not be observed safely',
         );
@@ -381,10 +626,13 @@ function createBoxLiteSecretFileTransport(options: {
             `test "$(stat -c %u ${shellQuote(request.path)})" = "$uid" && ` +
             `test "$(stat -c %g ${shellQuote(request.path)})" = "$gid"`,
           timeoutMs: BOXLITE_SECRET_OPERATION_TIMEOUT_MS,
+          cancellationSignal: request.signal,
+          diagnostics: options.diagnostics,
+          commandKind: 'credential_setup',
         }),
       );
       if (verified.kind !== 'result') {
-        await options.fenceSandbox();
+        options.requireSandboxFence();
         throw new SandboxProviderConfigurationError(
           'BoxLite secret file mode could not be verified',
         );
@@ -393,7 +641,7 @@ function createBoxLiteSecretFileTransport(options: {
         verified.result.exitCode !== 0 ||
         verified.result.timedOut === true
       ) {
-        await options.fenceSandbox();
+        options.requireSandboxFence();
         throw new SandboxProviderConfigurationError(
           'BoxLite secret file mode could not be verified',
         );
@@ -407,6 +655,13 @@ function createBoxLiteSecretFileTransport(options: {
       if (options.wasSandboxFenced()) {
         options.activeSecretPaths.delete(request.path);
         return;
+      }
+      if (options.isSandboxFenceRequired()) {
+        await options.fenceSandbox();
+        options.activeSecretPaths.delete(request.path);
+        throw new SandboxProviderConfigurationError(
+          'BoxLite secret file removal required sandbox fencing',
+        );
       }
 
       try {
@@ -430,13 +685,17 @@ function createBoxLiteSecretFileTransport(options: {
             `test ! -e ${shellQuote(request.path)} && ` +
             `test ! -e ${shellQuote(upload.stagingDirectory)}`,
           timeoutMs: BOXLITE_SECRET_OPERATION_TIMEOUT_MS,
+          diagnostics: options.diagnostics,
+          diagnosticChannel: 'cleanup',
+          commandKind: 'credential_cleanup',
         });
         if (deleted.exitCode === 0 && deleted.timedOut !== true) {
           options.activeSecretPaths.delete(request.path);
           return;
         }
       } catch {
-        // A missing exec response cannot prove the file is absent.
+        // The native cleanup aggregate and shared credential-cleanup stage own
+        // the bounded evidence; a missing response still requires fencing.
       }
 
       await options.fenceSandbox();

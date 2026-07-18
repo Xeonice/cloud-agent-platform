@@ -1,18 +1,33 @@
 import type {
   AcquireSandboxRunOwnerArgs,
   AcquireSandboxRunOwnerResult,
+  BeginSandboxCleanupAttemptResult,
   BeginSandboxRunCreateArgs,
   BeginSandboxRunCleanupResult,
   ClaimSandboxRunCleanupResult,
+  ConfirmSandboxRunCleanupOrphanArgs,
+  ConfirmSandboxRunCleanupOrphanResult,
+  FailSandboxRunCleanupByTerminalPolicyResult,
   JoinSandboxRunCleanupArgs,
   JoinSandboxRunCleanupResult,
   ObserveSandboxRunCreateArgs,
   RecordSandboxRunOwnerArgs,
+  SandboxCleanupAttemptEvidence,
   SandboxOwnershipFence,
+  SandboxRunCleanupAuthorityProjection,
   SandboxRunCleanupAuthorization,
   SandboxRunOwnerRecord,
   SandboxRunOwnerStatus,
   SandboxRunOwnerStore,
+  SettleLegacySandboxRunCleanupArgs,
+  SettleLegacySandboxRunCleanupResult,
+  SettleSandboxCleanupAttemptResult,
+} from '@cap/sandbox-core';
+import {
+  SANDBOX_CLEANUP_ATTEMPT_MAX,
+  sandboxCleanupAttemptPlaceholder,
+  validateSandboxCleanupAttemptEvidence,
+  validateSandboxCleanupAttemptId,
 } from '@cap/sandbox-core';
 
 export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
@@ -23,6 +38,12 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     return record && (record.status === 'provisioning' || record.status === 'running')
       ? record
       : null;
+  }
+
+  async getSandboxRunCleanupAuthority(
+    taskId: string,
+  ): Promise<SandboxRunCleanupAuthorityProjection> {
+    return cleanupAuthorityProjection(this.records.get(taskId));
   }
 
   async listActiveSandboxRunOwners(): Promise<readonly SandboxRunOwnerRecord[]> {
@@ -47,12 +68,22 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       throw new Error('Ownerless sandbox records cannot replace a durable owner');
     }
     const { providerSandboxId, ...record } = args;
+    const providerIdentityChanged =
+      providerSandboxId !== undefined &&
+      providerSandboxId !== existing?.providerSandboxId;
     this.records.set(args.taskId, {
       ...existing,
       ...record,
       ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       createState: 'idle',
       status: args.status ?? existing?.status ?? 'running',
+      cleanupAttemptInFlight: existing?.cleanupAttemptInFlight ?? false,
+      cleanupAttemptCount: existing?.cleanupAttemptCount ?? 0,
+      ...(providerIdentityChanged
+        ? { cleanupOrphanConfirmedAt: undefined }
+        : existing?.cleanupOrphanConfirmedAt
+          ? { cleanupOrphanConfirmedAt: existing.cleanupOrphanConfirmedAt }
+          : {}),
     });
   }
 
@@ -85,6 +116,12 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       ownership,
       createState: existing?.createState ?? 'idle',
       status: 'provisioning',
+      cleanupAttemptInFlight: existing?.cleanupAttemptInFlight ?? false,
+      cleanupAttemptCount: existing?.cleanupAttemptCount ?? 0,
+      ...(existing?.ownership?.resourceGeneration ===
+        ownership.resourceGeneration && existing.cleanupOrphanConfirmedAt
+        ? { cleanupOrphanConfirmedAt: existing.cleanupOrphanConfirmedAt }
+        : {}),
     });
     return {
       kind: 'acquired',
@@ -133,6 +170,10 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       ...(args.providerSandboxId === undefined
         ? {}
         : { providerSandboxId: args.providerSandboxId }),
+      ...(args.providerSandboxId !== undefined &&
+      args.providerSandboxId !== existing.providerSandboxId
+        ? { cleanupOrphanConfirmedAt: undefined }
+        : {}),
     });
     return true;
   }
@@ -142,9 +183,10 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     ownership?: SandboxOwnershipFence,
   ): Promise<BeginSandboxRunCleanupResult> {
     const existing = this.records.get(taskId);
-    if (!existing || !['provisioning', 'running', 'deleting'].includes(existing.status)) {
+    if (!existing) {
       return { kind: 'absent' };
     }
+    if (isSettledOwner(existing)) return { kind: 'settled', owner: existing };
     if (
       (ownership &&
         (!existing.ownership ||
@@ -168,19 +210,27 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     ownerGeneration: string,
   ): Promise<ClaimSandboxRunCleanupResult> {
     const existing = this.records.get(taskId);
-    if (!existing || !['provisioning', 'running', 'deleting'].includes(existing.status)) {
+    if (!existing) {
       return { kind: 'absent' };
     }
-    const owner: SandboxRunOwnerRecord = existing.ownership
+    if (isSettledOwner(existing)) return { kind: 'settled', owner: existing };
+    const isTakeover = existing.ownership
+      ? existing.ownership.ownerGeneration !== ownerGeneration
+      : false;
+    const settledExisting =
+      isTakeover && existing.cleanupAttemptInFlight === true
+        ? { ...existing, cleanupAttemptInFlight: false }
+        : existing;
+    const owner: SandboxRunOwnerRecord = settledExisting.ownership
       ? {
-          ...existing,
+          ...settledExisting,
           status: 'deleting',
           ownership: Object.freeze({
             ownerGeneration,
-            resourceGeneration: existing.ownership.resourceGeneration,
+            resourceGeneration: settledExisting.ownership.resourceGeneration,
           }),
         }
-      : { ...existing, status: 'deleting' };
+      : { ...settledExisting, status: 'deleting' };
     this.records.set(taskId, owner);
     return {
       kind: 'authorized',
@@ -193,9 +243,10 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     args: JoinSandboxRunCleanupArgs,
   ): Promise<JoinSandboxRunCleanupResult> {
     const existing = this.records.get(args.taskId);
-    if (!existing || !['provisioning', 'running', 'deleting'].includes(existing.status)) {
+    if (!existing) {
       return { kind: 'absent' };
     }
+    if (isSettledOwner(existing)) return { kind: 'settled', owner: existing };
     if (existing.providerId !== args.providerId || !existing.ownership) {
       return { kind: 'conflict' };
     }
@@ -219,7 +270,7 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
 
   async completeSandboxRunCleanup(
     authorization: SandboxRunCleanupAuthorization,
-    status: 'removed' | 'terminal' | 'failed',
+    status: 'removed' | 'terminal',
   ): Promise<boolean> {
     const existing = this.records.get(authorization.taskId);
     if (
@@ -227,6 +278,8 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       existing.status !== 'deleting' ||
       existing.providerId !== authorization.providerId ||
       (authorization.kind === 'generation' && existing.createState !== 'idle') ||
+      existing.cleanupAttemptInFlight === true ||
+      !hasConfirmedCleanupEvidence(existing) ||
       !cleanupAuthorizationMatches(existing, authorization)
     ) {
       return false;
@@ -235,12 +288,230 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     return true;
   }
 
+  async beginSandboxRunCleanupAttempt(
+    authorization: SandboxRunCleanupAuthorization,
+    attemptId: string,
+  ): Promise<BeginSandboxCleanupAttemptResult> {
+    validateSandboxCleanupAttemptId(attemptId);
+    const existing = this.records.get(authorization.taskId);
+    if (
+      !existing ||
+      existing.status !== 'deleting' ||
+      existing.providerId !== authorization.providerId ||
+      !cleanupAttemptAuthorizationMatches(existing, authorization)
+    ) {
+      return { kind: 'stale' };
+    }
+    const current = cleanupEvidenceForOwner(existing);
+    if (current && current.attemptId === attemptId) {
+      return { kind: 'replayed', evidence: current };
+    }
+    if (existing.cleanupAttemptInFlight === true) {
+      return current
+        ? { kind: 'in-flight', evidence: current }
+        : { kind: 'conflict' };
+    }
+    const attempt = existing.cleanupAttemptCount ?? 0;
+    if (attempt >= SANDBOX_CLEANUP_ATTEMPT_MAX) {
+      return { kind: 'conflict' };
+    }
+    const evidence = sandboxCleanupAttemptPlaceholder(attempt + 1, attemptId);
+    this.records.set(authorization.taskId, {
+      ...existing,
+      cleanupAttemptInFlight: true,
+      cleanupAttemptCount: evidence.attempt,
+      cleanupLastAttemptId: evidence.attemptId,
+      cleanupLastOutcome: evidence.outcome,
+      cleanupLastProof: evidence.proof,
+      cleanupLastCause: evidence.cause,
+      cleanupLastRetryable: evidence.retryable,
+      cleanupLastObservedAt: evidence.observedAt,
+    });
+    return { kind: 'allocated', evidence };
+  }
+
+  async settleSandboxRunCleanupAttempt(
+    authorization: SandboxRunCleanupAuthorization,
+    evidence: SandboxCleanupAttemptEvidence,
+  ): Promise<SettleSandboxCleanupAttemptResult> {
+    const candidate = validateSandboxCleanupAttemptEvidence(evidence);
+    const existing = this.records.get(authorization.taskId);
+    if (
+      !existing ||
+      existing.status !== 'deleting' ||
+      existing.providerId !== authorization.providerId ||
+      !cleanupAttemptAuthorizationMatches(existing, authorization)
+    ) {
+      return { kind: 'stale' };
+    }
+    const attemptCount = existing.cleanupAttemptCount ?? 0;
+    if (candidate.attempt < attemptCount) return { kind: 'stale' };
+    if (
+      candidate.attempt !== attemptCount ||
+      candidate.attemptId !== existing.cleanupLastAttemptId
+    ) {
+      return { kind: 'conflict' };
+    }
+    if (
+      candidate.outcome === 'succeeded' &&
+      existing.createState !== 'idle'
+    ) {
+      return { kind: 'conflict' };
+    }
+    if (existing.cleanupAttemptInFlight !== true) {
+      return sameCleanupEvidence(existing, candidate)
+        ? { kind: 'replayed' }
+        : { kind: 'conflict' };
+    }
+    this.records.set(authorization.taskId, {
+      ...existing,
+      cleanupAttemptInFlight: false,
+      cleanupLastOutcome: candidate.outcome,
+      cleanupLastProof: candidate.proof,
+      cleanupLastCause: candidate.cause,
+      cleanupLastRetryable: candidate.retryable,
+      cleanupLastObservedAt: candidate.observedAt,
+    });
+    return { kind: 'recorded' };
+  }
+
+  async failSandboxRunCleanupByTerminalPolicy(
+    authorization: Extract<
+      SandboxRunCleanupAuthorization,
+      { readonly kind: 'generation' }
+    >,
+    expectedAttempt: number,
+  ): Promise<FailSandboxRunCleanupByTerminalPolicyResult> {
+    if (
+      !Number.isSafeInteger(expectedAttempt) ||
+      expectedAttempt < 1 ||
+      expectedAttempt > SANDBOX_CLEANUP_ATTEMPT_MAX
+    ) {
+      return { kind: 'conflict' };
+    }
+    const existing = this.records.get(authorization.taskId);
+    if (!existing) return { kind: 'stale' };
+    if (existing.status === 'failed') {
+      return terminalPolicyMatches(existing, authorization, expectedAttempt)
+        ? {
+            kind: 'replayed',
+            owner: { ...existing, status: 'failed' as const },
+          }
+        : { kind: 'stale' };
+    }
+    if (
+      existing.status !== 'deleting' ||
+      !terminalPolicyMatches(existing, authorization, expectedAttempt)
+    ) {
+      return { kind: 'stale' };
+    }
+    if (
+      existing.cleanupAttemptInFlight === true ||
+      existing.cleanupLastOutcome === undefined ||
+      existing.cleanupLastOutcome === 'succeeded'
+    ) {
+      return { kind: 'conflict' };
+    }
+    const failed = { ...existing, status: 'failed' as const };
+    this.records.set(authorization.taskId, failed);
+    return { kind: 'failed', owner: failed };
+  }
+
+  async settleLegacySandboxRunCleanup(
+    args: SettleLegacySandboxRunCleanupArgs,
+  ): Promise<SettleLegacySandboxRunCleanupResult> {
+    const evidence = validateSandboxCleanupAttemptEvidence(args.evidence);
+    if (
+      !legacySettlementStatusMatches(
+        args.status,
+        args.disposition,
+        evidence,
+      )
+    ) {
+      return { kind: 'conflict' };
+    }
+    const existing = this.records.get(args.taskId);
+    if (!existing || existing.providerId !== args.providerId) {
+      return { kind: 'stale' };
+    }
+    if (isSettledOwner(existing)) {
+      return existing.status === args.status &&
+        sameCleanupEvidence(existing, evidence)
+        ? { kind: 'replayed', owner: existing }
+        : { kind: 'stale' };
+    }
+    if (
+      existing.ownership ||
+      existing.status === 'deleting' ||
+      existing.cleanupAttemptInFlight === true ||
+      evidence.attempt !== (existing.cleanupAttemptCount ?? 0) + 1
+    ) {
+      return { kind: 'conflict' };
+    }
+    const settled = {
+      ...existing,
+      status: args.status,
+      cleanupAttemptInFlight: false,
+      cleanupAttemptCount: evidence.attempt,
+      cleanupLastAttemptId: evidence.attemptId,
+      cleanupLastOutcome: evidence.outcome,
+      cleanupLastProof: evidence.proof,
+      cleanupLastCause: evidence.cause,
+      cleanupLastRetryable: evidence.retryable,
+      cleanupLastObservedAt: evidence.observedAt,
+    };
+    this.records.set(args.taskId, settled);
+    return { kind: 'recorded', owner: settled };
+  }
+
+  async confirmSandboxRunCleanupOrphan(
+    args: ConfirmSandboxRunCleanupOrphanArgs,
+  ): Promise<ConfirmSandboxRunCleanupOrphanResult> {
+    const existing = this.records.get(args.taskId);
+    if (!existing) return { kind: 'stale' };
+    if (
+      existing.status !== 'deleting' ||
+      !existing.ownership ||
+      existing.providerId !== args.providerId ||
+      existing.providerSandboxId !== args.providerSandboxId
+    ) {
+      return { kind: 'conflict' };
+    }
+    if (existing.cleanupOrphanConfirmedAt) {
+      return { kind: 'replayed', owner: existing };
+    }
+    const confirmed = {
+      ...existing,
+      cleanupOrphanConfirmedAt: new Date(),
+    };
+    this.records.set(args.taskId, confirmed);
+    return { kind: 'recorded', owner: confirmed };
+  }
+
   async markSandboxRunOwnerStatus(
     taskId: string,
     status: SandboxRunOwnerStatus,
   ): Promise<void> {
     const existing = this.records.get(taskId);
     if (!existing) return;
+    // Cleanup entry and terminal-policy failure have dedicated fenced methods.
+    if (status === 'deleting' || status === 'failed') return;
+    if (isSettledOwner(existing)) return;
+    if (
+      existing.status === 'deleting' &&
+      (status === 'removed' || status === 'terminal') &&
+      (existing.createState !== 'idle' ||
+        !hasConfirmedCleanupEvidence(existing))
+    ) {
+      return;
+    }
+    if (
+      existing.status === 'deleting' &&
+      status !== 'removed' &&
+      status !== 'terminal'
+    ) {
+      return;
+    }
     this.records.set(taskId, { ...existing, status });
   }
 }
@@ -262,6 +533,85 @@ function cleanupAuthorizationFor(
       });
 }
 
+function cleanupAuthorityProjection(
+  owner: SandboxRunOwnerRecord | undefined,
+): SandboxRunCleanupAuthorityProjection {
+  const status = owner?.status ?? null;
+  const state =
+    status === 'deleting'
+      ? 'pending'
+      : status === 'removed'
+        ? 'succeeded'
+        : status === 'failed'
+          ? 'failed'
+          : 'not_required';
+  return Object.freeze({
+    state,
+    ownershipKind: owner
+      ? owner.ownership
+        ? 'generation'
+        : 'legacy'
+      : 'none',
+    orphanState:
+      status === 'deleting' || status === 'failed'
+        ? owner?.cleanupOrphanConfirmedAt
+          ? 'confirmed'
+          : 'unknown'
+        : 'none',
+    status,
+    attemptCount: owner?.cleanupAttemptCount ?? 0,
+    lastAttemptOutcome: owner?.cleanupLastOutcome ?? null,
+    lastAttemptProof: owner?.cleanupLastProof ?? null,
+    lastAttemptCause: owner?.cleanupLastCause ?? null,
+    lastAttemptRetryable: owner?.cleanupLastRetryable ?? null,
+    lastAttemptObservedAt: owner?.cleanupLastObservedAt
+      ? new Date(owner.cleanupLastObservedAt)
+      : null,
+  });
+}
+
+function isSettledOwner(
+  owner: SandboxRunOwnerRecord,
+): owner is SandboxRunOwnerRecord & {
+  readonly status: 'terminal' | 'removed' | 'failed';
+} {
+  return (
+    owner.status === 'terminal' ||
+    owner.status === 'removed' ||
+    owner.status === 'failed'
+  );
+}
+
+function terminalPolicyMatches(
+  owner: SandboxRunOwnerRecord,
+  authorization: Extract<
+    SandboxRunCleanupAuthorization,
+    { readonly kind: 'generation' }
+  >,
+  expectedAttempt: number,
+): boolean {
+  return (
+    owner.createState === 'idle' &&
+    owner.providerId === authorization.providerId &&
+    owner.ownership?.ownerGeneration ===
+      authorization.ownership.ownerGeneration &&
+    owner.ownership.resourceGeneration ===
+      authorization.ownership.resourceGeneration &&
+    owner.cleanupAttemptCount === expectedAttempt
+  );
+}
+
+function legacySettlementStatusMatches(
+  status: SettleLegacySandboxRunCleanupArgs['status'],
+  disposition: SettleLegacySandboxRunCleanupArgs['disposition'],
+  evidence: SandboxCleanupAttemptEvidence,
+): boolean {
+  return status ===
+    (disposition === 'superseded-remove' && evidence.outcome === 'succeeded'
+      ? 'removed'
+      : 'terminal');
+}
+
 function cleanupAuthorizationMatches(
   owner: SandboxRunOwnerRecord,
   authorization: SandboxRunCleanupAuthorization,
@@ -269,5 +619,68 @@ function cleanupAuthorizationMatches(
   if (authorization.kind === 'legacy') return owner.ownership === undefined;
   return (
     owner.ownership?.resourceGeneration === authorization.ownership.resourceGeneration
+  );
+}
+
+function cleanupAttemptAuthorizationMatches(
+  owner: SandboxRunOwnerRecord,
+  authorization: SandboxRunCleanupAuthorization,
+): boolean {
+  if (authorization.kind === 'legacy') return owner.ownership === undefined;
+  return (
+    owner.ownership?.ownerGeneration ===
+      authorization.ownership.ownerGeneration &&
+    owner.ownership.resourceGeneration ===
+      authorization.ownership.resourceGeneration
+  );
+}
+
+function cleanupEvidenceForOwner(
+  owner: SandboxRunOwnerRecord,
+): SandboxCleanupAttemptEvidence | null {
+  if (
+    !owner.cleanupAttemptCount ||
+    owner.cleanupLastAttemptId === undefined ||
+    owner.cleanupLastOutcome === undefined ||
+    owner.cleanupLastProof === undefined ||
+    owner.cleanupLastCause === undefined ||
+    owner.cleanupLastRetryable === undefined ||
+    owner.cleanupLastObservedAt === undefined
+  ) {
+    return null;
+  }
+  return validateSandboxCleanupAttemptEvidence({
+    attemptId: owner.cleanupLastAttemptId,
+    attempt: owner.cleanupAttemptCount,
+    outcome: owner.cleanupLastOutcome,
+    proof: owner.cleanupLastProof,
+    cause: owner.cleanupLastCause,
+    retryable: owner.cleanupLastRetryable,
+    observedAt: owner.cleanupLastObservedAt,
+  });
+}
+
+function hasConfirmedCleanupEvidence(owner: SandboxRunOwnerRecord): boolean {
+  const evidence = cleanupEvidenceForOwner(owner);
+  return (
+    evidence?.outcome === 'succeeded' &&
+    (evidence.proof === 'found-and-cleaned' ||
+      evidence.proof === 'already-absent') &&
+    evidence.cause === null &&
+    evidence.retryable === false
+  );
+}
+
+function sameCleanupEvidence(
+  owner: SandboxRunOwnerRecord,
+  evidence: SandboxCleanupAttemptEvidence,
+): boolean {
+  return (
+    owner.cleanupLastOutcome === evidence.outcome &&
+    owner.cleanupLastAttemptId === evidence.attemptId &&
+    (owner.cleanupLastProof ?? null) === evidence.proof &&
+    (owner.cleanupLastCause ?? null) === evidence.cause &&
+    owner.cleanupLastRetryable === evidence.retryable &&
+    owner.cleanupLastObservedAt?.getTime() === evidence.observedAt.getTime()
   );
 }

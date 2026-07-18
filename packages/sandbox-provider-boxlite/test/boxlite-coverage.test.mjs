@@ -120,7 +120,10 @@ await test('REST client covers missing, failed, and invalid edge responses', asy
   });
 
   assert.equal(await client.getSandbox('no-content'), null);
-  assert.equal(await client.getSandbox('bad-json'), null);
+  await assert.rejects(
+    () => client.getSandbox('bad-json'),
+    /did not include a sandbox or explicit null/,
+  );
   await assert.rejects(() => client.getSandbox('fail'), /get sandbox fail failed/);
   await assert.rejects(() => client.exec({ sandboxId: 'detail', command: 'true' }), /server down/);
   await assert.rejects(() => client.exec({ sandboxId: 'text-throws', command: 'true' }), /HTTP 503$/);
@@ -261,6 +264,7 @@ await test('native REST client covers response fallback shapes and polling edges
         stderr: 'bad',
       }),
       'GET /v1/default/boxes/box-name-fallback/executions/exec-output': response(200, {
+        status: 'completed',
         exit_code: 0,
         output: 'native output',
       }),
@@ -289,9 +293,12 @@ await test('native REST client covers response fallback shapes and polling edges
   assert.equal(outputResult.exitCode, 0);
   assert.equal(outputResult.output, 'native output');
 
-  const completedNoCodeResult = await client.exec({ sandboxId: 'box-name-fallback', command: 'true' });
-  assert.equal(completedNoCodeResult.exitCode, 0);
-  assert.equal(completedNoCodeResult.output, '');
+  await assert.rejects(
+    () => client.exec({ sandboxId: 'box-name-fallback', command: 'true' }),
+    (error) =>
+      error?.code === 'sandbox_command_settlement_error' &&
+      error?.settlement === 'protocol',
+  );
 
   const rootPathClient = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
@@ -335,9 +342,12 @@ await test('native REST client covers response fallback shapes and polling edges
       'GET /v1/default/boxes/box/executions/exec-invalid': response(200, null),
     }),
   });
-  const invalidResult = await invalidResultClient.exec({ sandboxId: 'box', command: 'true' });
-  assert.equal(invalidResult.exitCode, 1);
-  assert.equal(invalidResult.output, '');
+  await assert.rejects(
+    () => invalidResultClient.exec({ sandboxId: 'box', command: 'true' }),
+    (error) =>
+      error?.code === 'sandbox_command_settlement_error' &&
+      error?.settlement === 'protocol',
+  );
 
   const nativeFailureClient = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
@@ -372,13 +382,17 @@ await test('native REST client covers response fallback shapes and polling edges
   );
   assert.equal(await nativeFailureClient.downloadArchive({ sandboxId: 'box', path: '/missing' }), null);
   assert.equal(await nativeFailureClient.downloadArchive({ sandboxId: 'box', path: '/empty' }), null);
-  const timedOut = await nativeFailureClient.exec({
-    sandboxId: 'box',
-    command: 'sleep',
-    timeoutMs: 1,
-  });
-  assert.equal(timedOut.exitCode, 124);
-  assert.equal(timedOut.timedOut, true);
+  await assert.rejects(
+    () =>
+      nativeFailureClient.exec({
+        sandboxId: 'box',
+        command: 'sleep',
+        timeoutMs: 1,
+      }),
+    (error) =>
+      error?.code === 'sandbox_command_settlement_error' &&
+      error?.settlement === 'indeterminate',
+  );
   const timeoutNoCode = await nativeFailureClient.exec({
     sandboxId: 'timeout-box',
     command: 'sleep',

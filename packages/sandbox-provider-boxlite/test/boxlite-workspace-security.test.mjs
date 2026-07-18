@@ -28,6 +28,23 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+async function withDeadline(promise, timeoutMs = 2_000) {
+  let timeout;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error('test operation exceeded its deadline')),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 assert.equal(
   mod.resolveBoxLiteGitSecretDirectory('/home/gem/workspace'),
   '/home/gem/.cap-git-credentials',
@@ -332,14 +349,156 @@ assert.throws(
     });
   await execStarted.promise;
   cancellation.abort();
-  await deleteStarted.promise;
-  await Promise.resolve();
-  assert.equal(settled, false);
-  confirmation.resolve(null);
   assert.deepEqual(await running, result({ exitCode: 124, timedOut: true }));
+  assert.equal(settled, true);
+  assert.equal(adapter.wasSandboxFenced(), false);
+  const settlement = adapter.settleCredentialSafety();
+  await deleteStarted.promise;
+  confirmation.resolve(null);
+  await settlement;
   assert.equal(adapter.wasSandboxFenced(), true);
   lateExec.reject(new Error('late dropped exec response'));
   await Promise.resolve();
+}
+
+{
+  const taskId = '28000000-0000-4000-8000-000000000001';
+  const terminalRecordEntered = deferred();
+  const releaseTerminalRecord = deferred();
+  const deleteCompleted = deferred();
+  let identity = 0;
+  const nextIdentity = (prefix) =>
+    `${prefix}-0000-4000-8000-${String(++identity).padStart(12, '0')}`;
+  const diagnostics = core.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: {
+      schemaVersion: 1,
+      taskId,
+      attemptId: '28000000-0000-4000-8000-000000000002',
+      attempt: 1,
+      admissionMode: 'durable',
+      providerFamily: 'boxlite',
+    },
+    createEventId: () => nextIdentity('29000000'),
+    createOperationId: () => nextIdentity('2a000000'),
+    record: async (event) => {
+      if (
+        event.channel === 'primary' &&
+        event.operation === 'provider_select' &&
+        event.outcome === 'failed'
+      ) {
+        terminalRecordEntered.resolve();
+        await releaseTerminalRecord.promise;
+      }
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+  const primaryOperationId = diagnostics.createOperationId();
+  await diagnostics.emit({
+    operationId: primaryOperationId,
+    stage: 'provider_selection',
+    operation: 'provider_select',
+    channel: 'primary',
+    outcome: 'started',
+  });
+  const stalledPrimaryRecord = diagnostics.emit({
+    operationId: primaryOperationId,
+    stage: 'provider_selection',
+    operation: 'provider_select',
+    channel: 'primary',
+    outcome: 'failed',
+    durationMs: 1,
+    cause: 'provider_unavailable',
+    retryable: true,
+  });
+  await withDeadline(terminalRecordEntered.promise);
+
+  let absent = false;
+  let deleteCalls = 0;
+  const adapter = mod.createBoxLiteWorkspaceSecurityAdapter({
+    client: {
+      async exec() {
+        throw new Error('pre-aborted stage must not execute');
+      },
+      async deleteSandbox() {
+        deleteCalls += 1;
+        absent = true;
+        deleteCompleted.resolve();
+      },
+      async getSandbox() {
+        return absent ? null : { id: 'box-stalled-diagnostics' };
+      },
+    },
+    sandboxId: 'box-stalled-diagnostics',
+    diagnostics,
+    deletionConfirmation: { attempts: 1 },
+  });
+  const cancellation = new AbortController();
+  cancellation.abort();
+  assert.deepEqual(
+    await adapter.stageExecutor.execute({
+      stage: 'workspace_transfer',
+      request: { command: 'git clone', timeoutMs: 1_000 },
+      signal: cancellation.signal,
+      remainingTimeoutMs: 1_000,
+    }),
+    result({ exitCode: 124, timedOut: true }),
+  );
+
+  const settlement = adapter.settleCredentialSafety();
+  try {
+    await withDeadline(deleteCompleted.promise);
+    await withDeadline(settlement);
+    assert.equal(deleteCalls, 1);
+    assert.equal(absent, true);
+    assert.equal(adapter.wasSandboxFenced(), true);
+  } finally {
+    releaseTerminalRecord.resolve();
+  }
+  await withDeadline(stalledPrimaryRecord);
+  await withDeadline(diagnostics.flush());
+}
+
+{
+  const flushEntered = deferred();
+  const neverFlushes = new Promise(() => {});
+  let operationIdentity = 0;
+  const diagnostics = {
+    mode: 'non-persisting',
+    createOperationId: () =>
+      `2c000000-0000-4000-8000-${String(++operationIdentity).padStart(12, '0')}`,
+    async emit() {},
+    async flush() {
+      flushEntered.resolve();
+      await neverFlushes;
+    },
+  };
+  let absent = false;
+  let deleteCalls = 0;
+  const physical = await withDeadline(
+    mod.attemptDeleteBoxLiteSandboxAndConfirm({
+      client: {
+        async deleteSandbox() {
+          deleteCalls += 1;
+          absent = true;
+        },
+        async getSandbox() {
+          return absent ? null : { id: 'box-never-flushed-cleanup' };
+        },
+      },
+      sandboxId: 'box-never-flushed-cleanup',
+      attempts: 1,
+      diagnostics,
+    }),
+  );
+  assert.deepEqual(physical, {
+    outcome: 'succeeded',
+    proof: 'found-and-cleaned',
+    cause: null,
+    retryable: false,
+  });
+  await withDeadline(flushEntered.promise);
+  assert.equal(deleteCalls, 1);
+  assert.equal(absent, true);
 }
 
 {
@@ -368,22 +527,239 @@ assert.throws(
   });
   const cancellation = new AbortController();
   cancellation.abort();
+  assert.deepEqual(
+    await adapter.stageExecutor.execute({
+      stage: 'remote_ref_resolution',
+      request: { command: 'git ls-remote', timeoutMs: 1_000 },
+      signal: cancellation.signal,
+      remainingTimeoutMs: 1_000,
+    }),
+    result({ exitCode: 124, timedOut: true }),
+  );
+  assert.equal(execCalls, 0);
+  assert.equal(probes, 0);
+  assert.equal(waits, 0);
+  assert.equal(adapter.wasSandboxFenced(), false);
   await assert.rejects(
-    () =>
-      adapter.stageExecutor.execute({
-        stage: 'remote_ref_resolution',
-        request: { command: 'git ls-remote', timeoutMs: 1_000 },
-        signal: cancellation.signal,
-        remainingTimeoutMs: 1_000,
-      }),
+    () => adapter.settleCredentialSafety(),
     (error) =>
       error?.code === 'sandbox_provider_configuration_error' &&
       error.message === 'BoxLite credential safety fencing could not be confirmed',
   );
-  assert.equal(execCalls, 0);
   assert.equal(probes, 2);
   assert.equal(waits, 1);
   assert.equal(adapter.wasSandboxFenced(), false);
+}
+
+{
+  const scenarios = [
+    {
+      outcome: 'succeeded',
+      probe: 'absent',
+      expected: {
+        outcome: 'succeeded',
+        proof: 'found-and-cleaned',
+        cause: null,
+        retryable: false,
+      },
+    },
+    {
+      outcome: 'failed',
+      probe: 'present',
+      expected: {
+        outcome: 'failed',
+        proof: null,
+        cause: 'cleanup_failed',
+        retryable: true,
+      },
+    },
+    {
+      outcome: 'indeterminate',
+      probe: 'throws',
+      expected: {
+        outcome: 'indeterminate',
+        proof: null,
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      },
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const taskId = `task-physical-${scenario.outcome}`;
+    const sandboxId = `RAW_PHYSICAL_${scenario.outcome.toUpperCase()}_CANARY`;
+    const transportCanary = `RAW_PHYSICAL_${scenario.outcome.toUpperCase()}_TRANSPORT_CANARY`;
+    const ownership = {
+      ownerGeneration: `owner:physical-${scenario.outcome}`,
+      resourceGeneration: `resource:physical-${scenario.outcome}`,
+    };
+    const authorization = {
+      kind: 'generation',
+      taskId,
+      providerId: 'boxlite-test',
+      ownership,
+    };
+    const acknowledgements = [];
+    const adapter = mod.createBoxLiteWorkspaceSecurityAdapter({
+      client: {
+        async exec() {
+          throw new Error('pre-aborted stage must not execute');
+        },
+        async deleteSandbox() {
+          if (scenario.outcome !== 'succeeded') {
+            throw new Error(transportCanary);
+          }
+        },
+        async getSandbox() {
+          if (scenario.probe === 'absent') return null;
+          if (scenario.probe === 'present') {
+            return { id: sandboxId, state: 'running' };
+          }
+          throw new Error(transportCanary);
+        },
+      },
+      sandboxId,
+      taskId,
+      providerId: 'boxlite-test',
+      ownership,
+      beforeSandboxCleanup: async () => authorization,
+      settleSandboxCleanupAttempt: async (receivedAuthorization, physical) => {
+        acknowledgements.push({ receivedAuthorization, physical });
+      },
+      deletionConfirmation: { attempts: 1 },
+    });
+    const cancellation = new AbortController();
+    cancellation.abort();
+    const execution = () =>
+      adapter.stageExecutor.execute({
+        stage: 'workspace_transfer',
+        request: { command: 'git clone', timeoutMs: 1_000 },
+        signal: cancellation.signal,
+        remainingTimeoutMs: 1_000,
+      });
+
+    assert.deepEqual(
+      await execution(),
+      result({ exitCode: 124, timedOut: true }),
+    );
+    assert.equal(acknowledgements.length, 0, scenario.outcome);
+    assert.equal(adapter.wasSandboxFenced(), false, scenario.outcome);
+
+    if (scenario.outcome === 'succeeded') {
+      await adapter.settleCredentialSafety();
+    } else {
+      await assert.rejects(
+        () => adapter.settleCredentialSafety(),
+        (error) =>
+          error?.code === 'sandbox_provider_configuration_error' &&
+          error.code !== 'sandbox_cleanup_coordination_pending',
+      );
+    }
+
+    assert.equal(acknowledgements.length, 1, scenario.outcome);
+    assert.equal(
+      acknowledgements[0].receivedAuthorization,
+      authorization,
+      scenario.outcome,
+    );
+    assert.deepEqual(
+      acknowledgements[0].physical,
+      scenario.expected,
+      scenario.outcome,
+    );
+    assert.equal(
+      Object.isFrozen(acknowledgements[0].physical),
+      true,
+      scenario.outcome,
+    );
+    assert.equal(
+      JSON.stringify(acknowledgements).includes(sandboxId),
+      false,
+      `${scenario.outcome} leaked the provider sandbox id`,
+    );
+    assert.equal(
+      JSON.stringify(acknowledgements).includes(transportCanary),
+      false,
+      `${scenario.outcome} leaked the transport failure`,
+    );
+    assert.equal(
+      adapter.wasSandboxFenced(),
+      scenario.outcome === 'succeeded',
+      scenario.outcome,
+    );
+    assert.equal(adapter.wasSandboxCleanupAcknowledged(), true);
+  }
+}
+
+{
+  const taskId = 'task-cleanup-ack-rejected';
+  const ownership = {
+    ownerGeneration: 'owner:cleanup-ack-rejected',
+    resourceGeneration: 'resource:cleanup-ack-rejected',
+  };
+  const authorization = {
+    kind: 'generation',
+    taskId,
+    providerId: 'boxlite-test',
+    ownership,
+  };
+  const acknowledgementFailure = new Error(
+    'owner-store acknowledgement rejected',
+  );
+  let absent = false;
+  let receivedAuthorization;
+  let receivedPhysical;
+  const adapter = mod.createBoxLiteWorkspaceSecurityAdapter({
+    client: {
+      async exec() {
+        throw new Error('pre-aborted stage must not execute');
+      },
+      async deleteSandbox() {
+        absent = true;
+      },
+      async getSandbox() {
+        return absent ? null : { id: 'box-cleanup-ack-rejected' };
+      },
+    },
+    sandboxId: 'box-cleanup-ack-rejected',
+    taskId,
+    providerId: 'boxlite-test',
+    ownership,
+    beforeSandboxCleanup: async () => authorization,
+    settleSandboxCleanupAttempt: async (nextAuthorization, physical) => {
+      receivedAuthorization = nextAuthorization;
+      receivedPhysical = physical;
+      throw acknowledgementFailure;
+    },
+    deletionConfirmation: { attempts: 1 },
+  });
+  const cancellation = new AbortController();
+  cancellation.abort();
+  assert.equal(adapter.wasSandboxCleanupAcknowledged(), true);
+  assert.deepEqual(
+    await adapter.stageExecutor.execute({
+      stage: 'workspace_transfer',
+      request: { command: 'git clone', timeoutMs: 1_000 },
+      signal: cancellation.signal,
+      remainingTimeoutMs: 1_000,
+    }),
+    result({ exitCode: 124, timedOut: true }),
+  );
+  assert.equal(receivedAuthorization, undefined);
+  assert.equal(receivedPhysical, undefined);
+  await assert.rejects(
+    () => adapter.settleCredentialSafety(),
+    (error) => error === acknowledgementFailure,
+  );
+  assert.equal(adapter.wasSandboxFenced(), true);
+  assert.equal(adapter.wasSandboxCleanupAcknowledged(), false);
+  assert.equal(receivedAuthorization, authorization);
+  assert.deepEqual(receivedPhysical, {
+    outcome: 'succeeded',
+    proof: 'found-and-cleaned',
+    cause: null,
+    retryable: false,
+  });
 }
 
 {
@@ -421,20 +797,22 @@ assert.throws(
   });
   const cancellation = new AbortController();
   cancellation.abort();
-  const staleCleanup = adapter.stageExecutor.execute({
-    stage: 'workspace_transfer',
-    request: { command: 'git clone', timeoutMs: 1_000 },
-    signal: cancellation.signal,
-    remainingTimeoutMs: 1_000,
-  });
+  assert.deepEqual(
+    await adapter.stageExecutor.execute({
+      stage: 'workspace_transfer',
+      request: { command: 'git clone', timeoutMs: 1_000 },
+      signal: cancellation.signal,
+      remainingTimeoutMs: 1_000,
+    }),
+    result({ exitCode: 124, timedOut: true }),
+  );
+  assert.equal(deleteCalls, 0);
+  const staleCleanup = adapter.settleCredentialSafety();
 
   await cleanupAuthorityEntered.promise;
   assert.equal(deleteCalls, 0);
   cleanupAuthorityDecision.resolve(null);
-  assert.deepEqual(
-    await staleCleanup,
-    result({ exitCode: 124, timedOut: true }),
-  );
+  await staleCleanup;
   assert.equal(deleteCalls, 0);
   assert.equal(cleanupCompletions, 0);
   assert.equal(adapter.wasSandboxFenced(), false);

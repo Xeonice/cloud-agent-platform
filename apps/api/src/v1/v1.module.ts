@@ -15,8 +15,10 @@ import { V1TranscriptController } from './v1-transcript.controller';
 import { V1EventsController } from './v1-events.controller';
 import { V1SchedulesController } from './v1-schedules.controller';
 import { V1RuntimeModelsController } from './v1-runtime-models.controller';
+import { V1TaskProvisioningDiagnosticsController } from './v1-task-provisioning-diagnostics.controller';
 import { IdempotencyService } from './idempotency.service';
 import { ScheduledTasksModule } from '../scheduled-tasks/scheduled-tasks.module';
+import { TaskProvisioningDiagnosticsModule } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.module';
 import {
   PublicV1ContractInterceptor,
   PublicV1OperationGuard,
@@ -61,7 +63,12 @@ import {
  * policy is enforced by the registry-driven Public V1 guard/interceptor below.
  */
 @Module({
-  imports: [TasksModule, ReposModule, ScheduledTasksModule],
+  imports: [
+    TasksModule,
+    ReposModule,
+    ScheduledTasksModule,
+    TaskProvisioningDiagnosticsModule,
+  ],
   controllers: [
     V1TasksController,
     V1ReposController,
@@ -69,6 +76,7 @@ import {
     V1EventsController,
     V1SchedulesController,
     V1RuntimeModelsController,
+    V1TaskProvisioningDiagnosticsController,
   ],
   providers: [
     IdempotencyService,

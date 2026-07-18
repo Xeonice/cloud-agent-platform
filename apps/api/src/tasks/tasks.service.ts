@@ -17,6 +17,7 @@ import type {
 } from '../agent-runtime/agent-runtime.port';
 import {
   DEFAULT_TASK_RUNTIME,
+  TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
   GitBranchNameSchema,
   RuntimeModelErrorSchema,
   TaskProvisioningStageSchema,
@@ -562,7 +563,31 @@ export class TasksService
    */
   async listUnfinishedDurableAdmissionTaskIds(): Promise<Set<string>> {
     const rows = await this.prisma.taskAdmissionWork.findMany({
-      where: { state: { in: [...UNFINISHED_TASK_ADMISSION_STATES] } },
+      where: {
+        OR: [
+          { state: { in: [...UNFINISHED_TASK_ADMISSION_STATES] } },
+          {
+            state: 'succeeded',
+            task: {
+              status: {
+                in: [
+                  'completed',
+                  'failed',
+                  'cancelled',
+                  'agent_failed_to_start',
+                ],
+              },
+              sandboxRuns: {
+                some: {
+                  status: { in: ['provisioning', 'running', 'deleting'] },
+                  ownerGeneration: { not: null },
+                  resourceGeneration: { not: null },
+                },
+              },
+            },
+          },
+        ],
+      },
       select: { taskId: true },
     });
     return new Set(rows.map(({ taskId }) => taskId));
@@ -573,19 +598,43 @@ export class TasksService
     if (!restore) return;
     const rows = await this.prisma.taskAdmissionWork.findMany({
       where: {
-        state: { in: [...UNFINISHED_TASK_ADMISSION_STATES] },
-        task: {
-          OR: [
-            { status: { in: ['running', 'awaiting_input'] } },
-            {
+        OR: [
+          {
+            state: { in: [...UNFINISHED_TASK_ADMISSION_STATES] },
+            task: {
+              OR: [
+                { status: { in: ['running', 'awaiting_input'] } },
+                {
+                  sandboxRuns: {
+                    some: {
+                      status: { in: ['provisioning', 'running', 'deleting'] },
+                    },
+                  },
+                },
+              ],
+            },
+          },
+          {
+            state: 'succeeded',
+            task: {
+              status: {
+                in: [
+                  'completed',
+                  'failed',
+                  'cancelled',
+                  'agent_failed_to_start',
+                ],
+              },
               sandboxRuns: {
                 some: {
                   status: { in: ['provisioning', 'running', 'deleting'] },
+                  ownerGeneration: { not: null },
+                  resourceGeneration: { not: null },
                 },
               },
             },
-          ],
-        },
+          },
+        ],
       },
       orderBy: [{ createdAt: 'asc' }, { taskId: 'asc' }],
       select: { taskId: true },
@@ -1282,6 +1331,12 @@ export class TasksService
         repoId: prepared.repoId,
         ownerUserId: prepared.ownerUserId,
         prompt: prepared.body.prompt,
+        // Internal-only expectation marker.  A newly accepted task starts with
+        // no fabricated provider attempt; the recorder atomically consumes the
+        // one-based counter only after running capacity is actually won.
+        provisioningDiagnosticSchemaVersion:
+          TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
+        provisioningDiagnosticNextAttempt: 1,
         // add-claude-code-runtime (4.1): persist the selected runtime so it is
         // durable and readable on every later read path AND so the provider
         // dispatches to the right agent at provision time. Coalesce `undefined`
@@ -1605,6 +1660,12 @@ export class TasksService
       // worker in another replica observes the same version change on its next
       // DB-fenced renewal; both paths feed the provider's cancellation signal.
       this.taskAdmissionCancellation?.abortTask(id);
+      // A normally launched durable task has already settled its admission
+      // work as `succeeded`. The terminal Task CAS makes that row claimable
+      // again only when a generation-fenced SandboxRun still needs cleanup;
+      // wake is merely the low-latency hint and database polling remains the
+      // cross-replica recovery floor.
+      this.taskAdmissionWake?.wake(id);
       if (!this.guardrails) return;
       this.guardrails.fenceTerminal?.(id);
       terminalSettlement = this.guardrails.onTerminal(id).catch((err: unknown) => {

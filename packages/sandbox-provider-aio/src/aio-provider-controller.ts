@@ -7,12 +7,15 @@ import type {
   SandboxOwnershipFence,
   SandboxReadoptionTarget,
   SandboxResolvedEnvironmentMetadata,
+  SandboxProvisioningDiagnosticObserver,
   SandboxTeardownResult,
 } from '@cap/sandbox-core';
 import { Readable } from 'node:stream';
 import {
   normalizeSandboxCommandResult,
   runSandboxExternalBoundary,
+  isSandboxCleanupCoordinationPendingError,
+  SandboxCleanupCoordinationPendingError,
   SandboxProvisioningStageError,
   scrubSandboxCommandOutput,
 } from '@cap/sandbox-core';
@@ -31,6 +34,10 @@ import {
   type AioLocalSandboxProvisionSpec,
 } from './aio-local-provider.js';
 import { extractFilesFromTar } from './tar-extract.js';
+import {
+  aioHttpStatusClass,
+  startAioProvisioningDiagnostic,
+} from './aio-provisioning-diagnostics.js';
 
 export type AioFetch = (
   input: string,
@@ -128,6 +135,7 @@ export interface AioTeardownHooks {
   readonly ownership?: SandboxOwnershipFence;
   /** Immutable Docker container id persisted with the selected run. */
   readonly providerSandboxId?: string;
+  readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
   beforeStop?(args: {
     readonly taskId: string;
     readonly baseUrl: string;
@@ -201,6 +209,8 @@ export class AioSandboxContainerController<
       readonly signal?: AbortSignal;
       readonly ownership?: SandboxOwnershipFence;
       readonly externalBoundaryGuard?: SandboxExternalBoundaryGuard;
+      readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
+      readonly onSandboxCreateBoundaryEntered?: () => void;
       readonly onSandboxCreateObserved?: (
         observation: SandboxCreateObservation,
       ) => Promise<void>;
@@ -226,32 +236,75 @@ export class AioSandboxContainerController<
       resourceGeneration,
       options.externalBoundaryGuard,
       options.onSandboxCreateObserved,
+      options.diagnostics,
     );
     if (existing) return existing;
 
-    const created = await runSandboxExternalBoundary({
-      taskId,
-      action: 'sandbox.create',
-      guard: options.externalBoundaryGuard,
-      signal: options.signal,
-      run: async () => {
-        const result = await settleAioExternalAction(() =>
-          this.docker.createContainer({
-            ...spec.containerConfig,
-            abortSignal: options.signal,
-          }),
-        );
-        if (result.ok) {
-          await options.onSandboxCreateObserved?.({
-            kind: 'created',
-            providerSandboxId: requireCreatedContainerId(result.value),
-          });
-        } else if (isDefinitiveAioCreateWithoutResource(result.error)) {
-          await options.onSandboxCreateObserved?.({ kind: 'not-created' });
-        }
-        return result;
-      },
+    const createDiagnostic = startAioProvisioningDiagnostic(options.diagnostics, {
+      key: `aio:${taskId}:sandbox-create`,
+      stage: 'sandbox_creation',
+      operation: 'sandbox_create',
+      channel: 'primary',
     });
+    let created: SettledAioExternalAction<TContainer>;
+    try {
+      created = await runSandboxExternalBoundary({
+        taskId,
+        action: 'sandbox.create',
+        guard: options.externalBoundaryGuard,
+        signal: options.signal,
+        run: async () => {
+          options.onSandboxCreateBoundaryEntered?.();
+          const result = await settleAioExternalAction(() =>
+            this.docker.createContainer({
+              ...spec.containerConfig,
+              abortSignal: options.signal,
+            }),
+          );
+          if (result.ok) {
+            createDiagnostic.succeed();
+            try {
+              await options.onSandboxCreateObserved?.({
+                kind: 'created',
+                providerSandboxId: requireCreatedContainerId(result.value),
+              });
+            } catch (error) {
+              throw new SandboxCleanupCoordinationPendingError(error);
+            }
+          } else if (isDefinitiveAioCreateWithoutResource(result.error)) {
+            createDiagnostic.fail(result.error, {
+              outcome: 'failed',
+              cause: 'protocol_failed',
+              retryable: false,
+              signal: options.signal,
+            });
+            try {
+              await options.onSandboxCreateObserved?.({ kind: 'not-created' });
+            } catch {
+              throw new SandboxCleanupCoordinationPendingError(result.error);
+            }
+          } else {
+            createDiagnostic.fail(result.error, {
+              outcome: 'indeterminate',
+              cause: 'settlement_unknown',
+              retryable: true,
+              signal: options.signal,
+            });
+          }
+          return result;
+        },
+      });
+    } catch (error) {
+      if (!isSandboxCleanupCoordinationPendingError(error)) {
+        createDiagnostic.fail(error, {
+          outcome: 'indeterminate',
+          cause: 'settlement_unknown',
+          retryable: true,
+          signal: options.signal,
+        });
+      }
+      throw error;
+    }
     if (!created.ok) {
       const { error } = created;
       // Two replicas can both confirm 404 before the deterministic-name create.
@@ -264,6 +317,7 @@ export class AioSandboxContainerController<
           resourceGeneration,
           options.externalBoundaryGuard,
           options.onSandboxCreateObserved,
+          options.diagnostics,
         );
         if (raced) return raced;
       }
@@ -273,6 +327,12 @@ export class AioSandboxContainerController<
     const providerSandboxId = requireCreatedContainerId(container);
     this.containers.set(taskId, container);
     this.providerSandboxIds.set(taskId, providerSandboxId);
+    const startDiagnostic = startAioProvisioningDiagnostic(options.diagnostics, {
+      key: `aio:${taskId}:sandbox-start`,
+      stage: 'sandbox_start',
+      operation: 'sandbox_start',
+      channel: 'primary',
+    });
     let started: SettledAioExternalAction<void>;
     try {
       started = await runSandboxExternalBoundary({
@@ -288,6 +348,7 @@ export class AioSandboxContainerController<
     } catch (error) {
       this.containers.delete(taskId);
       this.providerSandboxIds.delete(taskId);
+      startDiagnostic.fail(error, { signal: options.signal });
       throw error;
     }
     if (!started.ok) {
@@ -296,8 +357,10 @@ export class AioSandboxContainerController<
       if (!options.ownership && !options.externalBoundaryGuard) {
         await container.remove({ force: true }).catch(() => undefined);
       }
+      startDiagnostic.fail(started.error, { signal: options.signal });
       throw started.error;
     }
+    startDiagnostic.succeed();
     this.logger?.debug?.(`provisioned AIO container ${spec.containerName} from ${spec.image}`);
     return {
       spec,
@@ -315,32 +378,59 @@ export class AioSandboxContainerController<
     onSandboxCreateObserved?: (
       observation: SandboxCreateObservation,
     ) => Promise<void>,
+    diagnostics?: SandboxProvisioningDiagnosticObserver,
   ): Promise<AioProvisionedContainer<TContainer> | null> {
     assertAioProvisionSignal(signal);
     const container = this.docker.getContainer(spec.containerName);
-    const inspection = await runSandboxExternalBoundary({
-      taskId: spec.taskId,
-      action: 'sandbox.inspect',
-      guard: externalBoundaryGuard,
-      signal,
-      run: async () => {
-        const result = await settleAioExternalAction(() => container.inspect());
-        if (result.ok) {
-          assertExistingContainerMatchesProvision(
-            spec,
-            result.value,
-            resourceGeneration,
-          );
-          await onSandboxCreateObserved?.({
-            kind: 'created',
-            providerSandboxId: requireInspectedContainerId(result.value),
-          });
-        }
-        return result;
-      },
+    const inspectDiagnostic = startAioProvisioningDiagnostic(diagnostics, {
+      key: `aio:${spec.taskId}:sandbox-inspect`,
+      stage: 'sandbox_inspect',
+      operation: 'sandbox_inspect',
+      channel: 'primary',
     });
+    let inspection: SettledAioExternalAction<unknown>;
+    try {
+      inspection = await runSandboxExternalBoundary({
+        taskId: spec.taskId,
+        action: 'sandbox.inspect',
+        guard: externalBoundaryGuard,
+        signal,
+        run: async () => {
+          const result = await settleAioExternalAction(() => container.inspect());
+          if (result.ok) {
+            assertExistingContainerMatchesProvision(
+              spec,
+              result.value,
+              resourceGeneration,
+            );
+            inspectDiagnostic.succeed();
+            try {
+              await onSandboxCreateObserved?.({
+                kind: 'created',
+                providerSandboxId: requireInspectedContainerId(result.value),
+              });
+            } catch (error) {
+              throw new SandboxCleanupCoordinationPendingError(error);
+            }
+          }
+          return result;
+        },
+      });
+    } catch (error) {
+      if (!isSandboxCleanupCoordinationPendingError(error)) {
+        inspectDiagnostic.fail(error, { signal });
+      }
+      throw error;
+    }
     if (!inspection.ok) {
-      if (isDockerNotFound(inspection.error)) return null;
+      if (isDockerNotFound(inspection.error)) {
+        // A missing pre-create lookup is the expected idempotent-create path.
+        // Keep replay facts identical after the container exists instead of
+        // encoding a transport-specific 404 on only the first observation.
+        inspectDiagnostic.succeed();
+        return null;
+      }
+      inspectDiagnostic.fail(inspection.error, { signal });
       throw inspection.error;
     }
     const inspected = inspection.value;
@@ -349,16 +439,28 @@ export class AioSandboxContainerController<
     this.providerSandboxIds.set(spec.taskId, providerSandboxId);
     if (!isInspectedContainerRunning(inspected)) {
       if (externalBoundaryGuard) {
-        const started = await runSandboxExternalBoundary({
-          taskId: spec.taskId,
-          action: 'sandbox.start',
-          guard: externalBoundaryGuard,
-          signal,
-          run: () =>
-            settleAioExternalAction(() =>
-              container.start({ abortSignal: signal }),
-            ),
+        const startDiagnostic = startAioProvisioningDiagnostic(diagnostics, {
+          key: `aio:${spec.taskId}:sandbox-start`,
+          stage: 'sandbox_start',
+          operation: 'sandbox_start',
+          channel: 'primary',
         });
+        let started: SettledAioExternalAction<void>;
+        try {
+          started = await runSandboxExternalBoundary({
+            taskId: spec.taskId,
+            action: 'sandbox.start',
+            guard: externalBoundaryGuard,
+            signal,
+            run: () =>
+              settleAioExternalAction(() =>
+                container.start({ abortSignal: signal }),
+              ),
+          });
+        } catch (error) {
+          startDiagnostic.fail(error, { signal });
+          throw error;
+        }
         if (!started.ok) {
           const confirmed = await runSandboxExternalBoundary({
             taskId: spec.taskId,
@@ -367,8 +469,12 @@ export class AioSandboxContainerController<
             signal,
             run: () => container.inspect(),
           });
-          if (!isInspectedContainerRunning(confirmed)) throw started.error;
+          if (!isInspectedContainerRunning(confirmed)) {
+            startDiagnostic.fail(started.error, { signal });
+            throw started.error;
+          }
         }
+        startDiagnostic.succeed();
         assertAioProvisionSignal(signal);
         return {
           spec,
@@ -377,13 +483,24 @@ export class AioSandboxContainerController<
           providerSandboxId,
         };
       }
+      const startDiagnostic = startAioProvisioningDiagnostic(diagnostics, {
+        key: `aio:${spec.taskId}:sandbox-start`,
+        stage: 'sandbox_start',
+        operation: 'sandbox_start',
+        channel: 'primary',
+      });
       try {
         await container.start({ abortSignal: signal });
+        startDiagnostic.succeed();
       } catch (error) {
         // A concurrent owner may have started it after our inspect. Accept only
         // a fresh authoritative inspect that confirms Running=true.
         const confirmed = await container.inspect();
-        if (!isInspectedContainerRunning(confirmed)) throw error;
+        if (!isInspectedContainerRunning(confirmed)) {
+          startDiagnostic.fail(error, { signal });
+          throw error;
+        }
+        startDiagnostic.succeed();
       }
     }
     assertAioProvisionSignal(signal);
@@ -406,40 +523,75 @@ export class AioSandboxContainerController<
     readonly timeoutMs: number;
     readonly signal?: AbortSignal;
     readonly externalBoundaryGuard?: SandboxExternalBoundaryGuard;
+    readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
   }): Promise<void> {
     const intervalMs = 250;
     const deadline = Date.now() + args.timeoutMs;
     let lastError: unknown;
+    let lastStatus: number | null = null;
+    const diagnostic = startAioProvisioningDiagnostic(args.diagnostics, {
+      key: `aio:${args.taskId}:readiness`,
+      stage: 'readiness',
+      operation: 'sandbox_inspect',
+      channel: 'primary',
+    });
 
-    while (Date.now() < deadline) {
-      if (args.signal?.aborted) {
-        throw new Error(`AIO sandbox readiness was aborted for task ${args.taskId}`);
+    try {
+      while (Date.now() < deadline) {
+        if (args.signal?.aborted) {
+          throw new Error('AIO sandbox readiness was aborted');
+        }
+        const attempt = await runSandboxExternalBoundary({
+          taskId: args.taskId,
+          action: 'sandbox.readiness',
+          guard: args.externalBoundaryGuard,
+          signal: args.signal,
+          run: () =>
+            settleAioExternalAction(() =>
+              this.fetchImpl(`${args.baseUrl}/v1/docs`, {
+                signal: args.signal,
+              }),
+            ),
+        });
+        if (attempt.ok) {
+          const res = attempt.value;
+          lastStatus = res.status;
+          if (res.ok) {
+            diagnostic.succeed({
+              ...(aioHttpStatusClass(res.status) === undefined
+                ? {}
+                : { httpStatusClass: aioHttpStatusClass(res.status) }),
+            });
+            return;
+          }
+          lastError = Object.assign(new Error('AIO readiness response failed'), {
+            status: res.status,
+          });
+        } else {
+          lastError = attempt.error;
+        }
+        await this.delayImpl(intervalMs);
       }
-      const attempt = await runSandboxExternalBoundary({
-        taskId: args.taskId,
-        action: 'sandbox.readiness',
-        guard: args.externalBoundaryGuard,
+    } catch (error) {
+      diagnostic.fail(error, {
         signal: args.signal,
-        run: () =>
-          settleAioExternalAction(() =>
-            this.fetchImpl(`${args.baseUrl}/v1/docs`, {
-              signal: args.signal,
-            }),
-          ),
+        timeoutMs: args.timeoutMs,
       });
-      if (attempt.ok) {
-        const res = attempt.value;
-        if (res.ok) return;
-        lastError = new Error(`/v1/docs responded with status ${res.status}`);
-      } else {
-        lastError = attempt.error;
-      }
-      await this.delayImpl(intervalMs);
+      throw error;
     }
 
     // Raw HTTP/network diagnostics stay provider-local. Admission needs only
     // the stable, provider-neutral active stage.
     void lastError;
+    diagnostic.settle({
+      outcome: 'timed_out',
+      cause: 'provider_unavailable',
+      retryable: true,
+      timeoutMs: args.timeoutMs,
+      ...(lastStatus === null || aioHttpStatusClass(lastStatus) === undefined
+        ? {}
+        : { httpStatusClass: aioHttpStatusClass(lastStatus) }),
+    });
     throw new SandboxProvisioningStageError('readiness');
   }
 
@@ -452,6 +604,7 @@ export class AioSandboxContainerController<
       taskId,
       hooks.providerSandboxId,
       hooks.ownership,
+      hooks.diagnostics,
     );
     if (!target) {
       this.clearTaskHandles(taskId);
@@ -469,7 +622,23 @@ export class AioSandboxContainerController<
     }
     const baseUrl = connection?.baseUrl ?? buildAioSandboxBaseUrl(taskId);
     await hooks.beforeStop?.({ taskId, baseUrl });
-    await this.stopContainerAndConfirm(container, hooks.ownership);
+    const deleteDiagnostic = startAioProvisioningDiagnostic(hooks.diagnostics, {
+      key: `aio:${taskId}:sandbox-delete`,
+      stage: 'cleanup',
+      operation: 'sandbox_delete',
+      channel: 'cleanup',
+      commandKind: 'sandbox_cleanup',
+    });
+    try {
+      await this.stopContainerAndConfirm(container, hooks.ownership);
+      deleteDiagnostic.succeed();
+    } catch (error) {
+      deleteDiagnostic.fail(error, {
+        cause: 'cleanup_failed',
+        retryable: true,
+      });
+      throw error;
+    }
     return { kind: 'found-and-cleaned' };
   }
 
@@ -479,6 +648,7 @@ export class AioSandboxContainerController<
       readonly bestEffort?: boolean;
       readonly ownership?: SandboxOwnershipFence;
       readonly providerSandboxId?: string;
+      readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
     } = {},
   ): Promise<void> {
     if (options.ownership || options.providerSandboxId) {
@@ -489,11 +659,37 @@ export class AioSandboxContainerController<
       this.containers.get(taskId) ??
       this.docker.getContainer(buildAioSandboxContainerName(taskId));
     this.clearTaskHandles(taskId);
+    const diagnostic = startAioProvisioningDiagnostic(options.diagnostics, {
+      key: `aio:${taskId}:sandbox-delete`,
+      stage: 'cleanup',
+      operation: 'sandbox_delete',
+      channel: 'cleanup',
+      commandKind: 'sandbox_cleanup',
+    });
     if (options.bestEffort === false) {
-      await container.remove({ force: true });
+      try {
+        await container.remove({ force: true });
+        diagnostic.succeed();
+      } catch (error) {
+        diagnostic.fail(error, {
+          outcome: 'indeterminate',
+          cause: 'cleanup_unconfirmed',
+          retryable: true,
+        });
+        throw error;
+      }
       return;
     }
-    await container.remove({ force: true }).catch(() => undefined);
+    try {
+      await container.remove({ force: true });
+      diagnostic.succeed();
+    } catch (error) {
+      diagnostic.fail(error, {
+        outcome: 'indeterminate',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      });
+    }
   }
 
   /**
@@ -521,15 +717,23 @@ export class AioSandboxContainerController<
     taskId: string,
     ownership?: SandboxOwnershipFence,
     providerSandboxId?: string,
+    diagnostics?: SandboxProvisioningDiagnosticObserver,
   ): Promise<SandboxTeardownResult> {
     if (ownership || providerSandboxId) {
       return this.removeTargetContainerAndConfirm(taskId, {
         ownership,
         providerSandboxId,
+        diagnostics,
       });
     }
     try {
-      if (await this.isSandboxConfirmedAbsent(taskId)) {
+      if (
+        await this.isSandboxConfirmedAbsent(
+          taskId,
+          diagnostics,
+          'cleanup-absence-initial',
+        )
+      ) {
         this.clearTaskHandles(taskId);
         return { kind: 'already-absent' };
       }
@@ -537,14 +741,21 @@ export class AioSandboxContainerController<
       // Inspect transport uncertainty must not prevent a force-removal attempt.
     }
     try {
-      await this.removeSandbox(taskId, { bestEffort: false });
+      await this.removeSandbox(taskId, {
+        bestEffort: false,
+        diagnostics,
+      });
     } catch {
       // A lost Docker remove response is ambiguous: the force-removal may have
       // completed. Always use the post-remove inspect as the final authority.
     }
     let confirmedAbsent = false;
     try {
-      confirmedAbsent = await this.isSandboxConfirmedAbsent(taskId);
+      confirmedAbsent = await this.isSandboxConfirmedAbsent(
+        taskId,
+        diagnostics,
+        'cleanup-absence-final',
+      );
     } catch {
       // Only a confirmed Docker 404 may settle credential-bearing cleanup.
     }
@@ -582,12 +793,14 @@ export class AioSandboxContainerController<
     options: {
       readonly ownership?: SandboxOwnershipFence;
       readonly providerSandboxId?: string;
+      readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
     },
   ): Promise<SandboxTeardownResult> {
     const target = await this.inspectSandboxTarget(
       taskId,
       options.providerSandboxId,
       options.ownership,
+      options.diagnostics,
     );
     if (!target) {
       this.clearTaskHandles(taskId);
@@ -596,12 +809,31 @@ export class AioSandboxContainerController<
     const inspected = target.inspected;
     const inspectedId = requireInspectedContainerId(inspected);
     const container = this.docker.getContainer(inspectedId);
+    const deleteDiagnostic = startAioProvisioningDiagnostic(options.diagnostics, {
+      key: `aio:${taskId}:sandbox-delete`,
+      stage: 'cleanup',
+      operation: 'sandbox_delete',
+      channel: 'cleanup',
+      commandKind: 'sandbox_cleanup',
+    });
     try {
       await container.remove({ force: true });
-    } catch {
+      deleteDiagnostic.succeed();
+    } catch (error) {
+      deleteDiagnostic.fail(error, {
+        outcome: 'indeterminate',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      });
       // A lost remove response is ambiguous; the pinned container id below is
       // the only authority for whether this exact incarnation still exists.
     }
+    const confirmDiagnostic = startAioProvisioningDiagnostic(options.diagnostics, {
+      key: `aio:${taskId}:cleanup-absence-final`,
+      stage: 'cleanup',
+      operation: 'sandbox_absence_confirm',
+      channel: 'cleanup',
+    });
     try {
       const remaining = await container.inspect();
       if (options.providerSandboxId !== undefined) {
@@ -617,11 +849,22 @@ export class AioSandboxContainerController<
       }
     } catch (error) {
       if (isDockerNotFound(error)) {
+        confirmDiagnostic.succeed({ httpStatusClass: '4xx' });
         this.clearTaskHandles(taskId);
         return { kind: 'found-and-cleaned' };
       }
+      confirmDiagnostic.fail(error, {
+        outcome: 'indeterminate',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      });
       throw error;
     }
+    confirmDiagnostic.settle({
+      outcome: 'indeterminate',
+      cause: 'cleanup_unconfirmed',
+      retryable: true,
+    });
     throw new Error('AIO sandbox removal could not be confirmed');
   }
 
@@ -629,6 +872,7 @@ export class AioSandboxContainerController<
     taskId: string,
     providerSandboxId?: string,
     ownership?: SandboxOwnershipFence,
+    diagnostics?: SandboxProvisioningDiagnosticObserver,
   ): Promise<{ readonly container: TContainer; readonly inspected: unknown } | null> {
     const deterministicName = buildAioSandboxContainerName(taskId);
     const cachedId = this.providerSandboxIds.get(taskId);
@@ -641,6 +885,12 @@ export class AioSandboxContainerController<
         : [deterministicName];
     for (const reference of references) {
       const container = this.docker.getContainer(reference);
+      const inspectDiagnostic = startAioProvisioningDiagnostic(diagnostics, {
+        key: `aio:${taskId}:cleanup-target-inspect`,
+        stage: 'cleanup',
+        operation: 'sandbox_absence_confirm',
+        channel: 'cleanup',
+      });
       try {
         const inspected = await container.inspect();
         const inspectedId = requireInspectedContainerId(inspected);
@@ -653,9 +903,22 @@ export class AioSandboxContainerController<
           assertInspectedTaskId(inspected, taskId);
         }
         if (ownership) assertInspectedResourceGeneration(inspected, ownership);
+        inspectDiagnostic.settle({
+          outcome: 'indeterminate',
+          cause: 'cleanup_unconfirmed',
+          retryable: true,
+        });
         return { container, inspected };
       } catch (error) {
-        if (!isDockerNotFound(error)) throw error;
+        if (!isDockerNotFound(error)) {
+          inspectDiagnostic.fail(error, {
+            outcome: 'indeterminate',
+            cause: 'cleanup_unconfirmed',
+            retryable: true,
+          });
+          throw error;
+        }
+        inspectDiagnostic.succeed({ httpStatusClass: '4xx' });
       }
     }
     return null;
@@ -668,15 +931,38 @@ export class AioSandboxContainerController<
     this.providerSandboxIds.delete(taskId);
   }
 
-  async isSandboxConfirmedAbsent(taskId: string): Promise<boolean> {
+  async isSandboxConfirmedAbsent(
+    taskId: string,
+    diagnostics?: SandboxProvisioningDiagnosticObserver,
+    operationKey = 'cleanup-absence-confirm',
+  ): Promise<boolean> {
     const container = this.docker.getContainer(
       buildAioSandboxContainerName(taskId),
     );
+    const diagnostic = startAioProvisioningDiagnostic(diagnostics, {
+      key: `aio:${taskId}:${operationKey}`,
+      stage: 'cleanup',
+      operation: 'sandbox_absence_confirm',
+      channel: 'cleanup',
+    });
     try {
       await container.inspect();
+      diagnostic.settle({
+        outcome: 'indeterminate',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      });
       return false;
     } catch (error) {
-      if (isDockerNotFound(error)) return true;
+      if (isDockerNotFound(error)) {
+        diagnostic.succeed({ httpStatusClass: '4xx' });
+        return true;
+      }
+      diagnostic.fail(error, {
+        outcome: 'indeterminate',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      });
       throw error;
     }
   }

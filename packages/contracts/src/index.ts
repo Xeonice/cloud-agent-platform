@@ -9,6 +9,9 @@
 // Repo / Task domain + REST bodies + task-status enum + agent-runtime selector
 export * from './task.js';
 
+// Strict, task-owned provisioning diagnostic event/attempt/query contracts.
+export * from './task-provisioning-diagnostics.js';
+
 // Shared git branch/ref validation used by verified repository import metadata.
 export * from './git-ref.js';
 
@@ -31,6 +34,9 @@ export * from './task-model-capability.js';
 
 // Deployment-wide default-closed capability attestation for durable admission.
 export * from './task-admission-capability.js';
+
+// Deployment-wide API/MCP/Web compatibility gate for provisioning diagnostics.
+export * from './task-provisioning-diagnostics-capability.js';
 
 // Dual-channel WebSocket frame protocol (raw + flow-control frames)
 export * from './ws-frames.js';

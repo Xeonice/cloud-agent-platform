@@ -666,6 +666,7 @@ export class TaskAdmissionWorker
       return this.settleClaim(claim, {
         state: 'retrying',
         stage: classified.stage,
+        causeCode: classified.causeCode,
         availableAfterMs: this.retryPolicy.delayMs(
           claim.taskId,
           claim.attempt,

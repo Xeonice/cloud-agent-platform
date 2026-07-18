@@ -60,10 +60,30 @@ async function withEnv(values, fn) {
 function makeRuntime(id, options = {}) {
   return {
     id,
-    preflightProbes: () => options.probes ?? [],
+    preflightProbes: () =>
+      (options.probes ?? []).map((probe, index) => ({
+        descriptor: {
+          commandKind: 'runtime_preflight',
+          ordinal: index + 1,
+        },
+        ...probe,
+      })),
     sandboxSetupCommands(ctx, material) {
       options.events?.push(['plan', id, ctx.workspaceDir, ctx.prompt, material]);
-      return options.plan ?? { ok: true, commands: [] };
+      const plan = options.plan ?? { ok: true, commands: [] };
+      return plan.ok
+        ? {
+            ...plan,
+            commands: plan.commands.map((command, index) => ({
+              descriptor: {
+                commandKind:
+                  index === 0 ? 'credential_setup' : 'runtime_setup',
+                ordinal: index + 1,
+              },
+              ...command,
+            })),
+          }
+        : plan;
     },
     preStopTrimCommands: () => options.trimCommands ?? [],
     transcriptArtifact(ctx) {
@@ -216,6 +236,17 @@ function onlyProvider(router) {
   const entries = router.registry.list();
   assert.equal(entries.length, 1);
   return entries[0].provider;
+}
+
+function isRuntimeCommandError(error, expected) {
+  return (
+    error?.code === 'sandbox_runtime_command_execution_error' &&
+    error?.descriptor?.commandKind === expected.commandKind &&
+    error?.descriptor?.ordinal === expected.ordinal &&
+    error?.classification?.settlement === expected.settlement &&
+    (expected.exitCode === undefined ||
+      error?.classification?.exitCode === expected.exitCode)
+  );
 }
 
 await test('configured AIO provider hooks delegate runtime, skills, transcript, and trim to the host harness', async () => {
@@ -506,7 +537,15 @@ await test('configured AIO provider hooks fail closed and require an exact runti
           executor,
           runtimeId: 'codex',
         }),
-      /runtime "codex" preflight .*exit_code 2 - fatal https:\/\/\*\*\*:\*\*\*@example\.test/,
+      (error) =>
+        isRuntimeCommandError(error, {
+          commandKind: 'runtime_preflight',
+          ordinal: 1,
+          settlement: 'exit',
+          exitCode: 2,
+        }) &&
+        !error.message.includes('secret') &&
+        !error.message.includes('codex --version'),
     );
     await assert.rejects(
       () =>
@@ -570,7 +609,13 @@ await test('configured AIO hooks cover setup command failures and optional auth/
           executionMode: 'interactive-pty',
           modelIntent: { kind: 'runtime-default' },
         }),
-      /setup for task task-command-fail failed: exit_code NaN - Authorization: Basic \*\*\*/,
+      (error) =>
+        isRuntimeCommandError(error, {
+          commandKind: 'credential_setup',
+          ordinal: 1,
+          settlement: 'indeterminate',
+          exitCode: null,
+        }) && !JSON.stringify(error).includes('Authorization'),
     );
 
     const emptyFailureRuntime = makeRuntime('codex', {
@@ -595,7 +640,13 @@ await test('configured AIO hooks cover setup command failures and optional auth/
           runtimeId: 'codex',
           executor: makeExecutor(async () => ({ exitCode: 1, output: '' })).executor,
         }),
-      /exit_code 1$/,
+      (error) =>
+        isRuntimeCommandError(error, {
+          commandKind: 'runtime_preflight',
+          ordinal: 1,
+          settlement: 'exit',
+          exitCode: 1,
+        }),
     );
     await assert.rejects(
       () =>
@@ -606,7 +657,13 @@ await test('configured AIO hooks cover setup command failures and optional auth/
           executionMode: 'interactive-pty',
           modelIntent: { kind: 'runtime-default' },
         }),
-      /setup for task task-empty-setup failed: exit_code 1$/,
+      (error) =>
+        isRuntimeCommandError(error, {
+          commandKind: 'credential_setup',
+          ordinal: 1,
+          settlement: 'exit',
+          exitCode: 1,
+        }),
     );
 
     const noProbeRuntime = makeRuntime('codex');
@@ -835,6 +892,84 @@ await test('configured AIO hooks cover setup command failures and optional auth/
     assert(
       fallbackTrim.logs.warn.some((line) => line.includes('trim string failure')),
     );
+  });
+});
+
+await test('runtime command failures are classified before provider redaction', async () => {
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const cases = [
+      {
+        settlement: 'timeout',
+        execute: () => {
+          throw Object.assign(new Error('timeout-secret-canary'), {
+            name: 'TimeoutError',
+          });
+        },
+      },
+      {
+        settlement: 'transport',
+        execute: () => {
+          throw new Error('transport-secret-canary');
+        },
+      },
+      {
+        settlement: 'protocol',
+        execute: () => {
+          throw new mod.SandboxCommandSettlementError('protocol');
+        },
+      },
+      {
+        settlement: 'cancellation',
+        execute: () => {
+          throw Object.assign(new Error('cancel-secret-canary'), {
+            name: 'AbortError',
+          });
+        },
+      },
+    ];
+    for (const item of cases) {
+      const runtime = makeRuntime('codex', {
+        plan: {
+          ok: true,
+          commands: [
+            {
+              command: `${item.settlement}-command-secret-canary`,
+              tolerateUnresolvedExit: false,
+            },
+          ],
+        },
+      });
+      const { host } = makeHost({
+        defaultRuntime: runtime,
+        taskRuntime: runtime,
+      });
+      const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
+      const { executor } = makeExecutor(async (request) => {
+        if (request.command.includes('-command-secret-canary')) {
+          return item.execute();
+        }
+        return { exitCode: 0, output: '' };
+      });
+      await assert.rejects(
+        () =>
+          hooks.runtimeSetup({
+            taskId: `task-${item.settlement}`,
+            executor,
+            runtimeId: 'codex',
+            executionMode: 'interactive-pty',
+            modelIntent: { kind: 'runtime-default' },
+          }),
+        (error) =>
+          isRuntimeCommandError(error, {
+            commandKind: 'credential_setup',
+            ordinal: 1,
+            settlement: item.settlement,
+            exitCode: null,
+          }) &&
+          !error.message.includes('secret-canary') &&
+          !JSON.stringify(error).includes('secret-canary'),
+      );
+    }
   });
 });
 

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { BadRequestException } from '@nestjs/common';
 import {
   RuntimeModelEffectiveEnvironmentSchema,
@@ -274,10 +273,9 @@ export class ConfiguredDeploymentRuntimeModelEnvironmentResolver
       input.ownerUserId,
       () =>
         this.options.scheduler.run(input.ownerUserId, async () => {
-          const outcome = await this.options.validationRunner.validate({
-            ...immutableTarget,
-            probeTaskId: `runtime-model-env-probe-${randomUUID()}`,
-          });
+          const outcome = await this.options.validationRunner.validate(
+            immutableTarget,
+          );
           if (outcome.status !== 'passed') {
             throw new RuntimeModelCatalogOperationalError();
           }

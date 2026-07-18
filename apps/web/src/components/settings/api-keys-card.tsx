@@ -31,6 +31,7 @@
  * explicit click (an event, never during render).
  */
 import * as React from "react";
+import type { Scope } from "@cap/contracts";
 
 import { cn } from "@/utils";
 import { StatusPill } from "@/components/status-pill";
@@ -50,19 +51,29 @@ import {
 // contracts track; the page maps the real contract shapes onto these props.
 // ---------------------------------------------------------------------------
 
-/** The shared scope vocabulary (`api-key-auth` spec). */
-export type ApiKeyScope = "tasks:read" | "tasks:write" | "repos:read";
+/** The canonical shared scope vocabulary (`api-key-auth` spec). */
+export type ApiKeyScope = Scope;
 
 /** The selectable scopes, in display order, with operator-facing copy. */
 export const API_KEY_SCOPES: readonly {
   value: ApiKeyScope;
   label: string;
   hint: string;
+  warning?: string;
 }[] = [
   { value: "tasks:read", label: "tasks:read", hint: "读取任务列表与状态" },
   { value: "tasks:write", label: "tasks:write", hint: "创建与停止任务" },
+  {
+    value: "tasks:diagnostics",
+    label: "tasks:diagnostics",
+    hint: "读取任务准备阶段的安全诊断时间线",
+    warning: "包含比普通任务状态更深入的准备证据；仅授予受信任的诊断工具。",
+  },
   { value: "repos:read", label: "repos:read", hint: "读取已导入仓库" },
 ];
+
+/** Least-privilege defaults for a fresh API key; diagnostics stays opt-in. */
+export const DEFAULT_API_KEY_SCOPES: readonly ApiKeyScope[] = ["tasks:read"];
 
 /**
  * A list-item projection of a minted key (the `GET /api-keys` shape). NEVER
@@ -222,7 +233,9 @@ export function ApiKeysCard({
 
   // Mint-form state (cleared whenever the mint dialog (re)opens).
   const [name, setName] = React.useState("");
-  const [scopes, setScopes] = React.useState<ApiKeyScope[]>(["tasks:read"]);
+  const [scopes, setScopes] = React.useState<ApiKeyScope[]>([
+    ...DEFAULT_API_KEY_SCOPES,
+  ]);
   const [expiresAt, setExpiresAt] = React.useState("");
   const [mintError, setMintError] = React.useState<string | null>(null);
 
@@ -232,7 +245,7 @@ export function ApiKeysCard({
   React.useEffect(() => {
     if (mintOpen) {
       setName("");
-      setScopes(["tasks:read"]);
+      setScopes([...DEFAULT_API_KEY_SCOPES]);
       setExpiresAt("");
       setMintError(null);
     }
@@ -406,6 +419,11 @@ export function ApiKeysCard({
                           <span className="block text-xs text-muted-foreground">
                             {scope.hint}
                           </span>
+                          {scope.warning ? (
+                            <span className="mt-1 block text-xs leading-[1.45] text-warning">
+                              {scope.warning}
+                            </span>
+                          ) : null}
                         </span>
                       </label>
                     ))}

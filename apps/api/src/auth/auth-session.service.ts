@@ -41,7 +41,7 @@ export interface McpAuthInfo {
   /** The client id this credential is attributed to (the settings-minted model). */
   readonly clientId: string;
   /** The token's granted scopes, carried onto the resolved `mcp` principal. */
-  readonly scopes: string[];
+  readonly scopes: Scope[];
   /** Absolute expiry in SECONDS since epoch — MANDATORY (G1), never unset. */
   readonly expiresAt: number;
   /** The canonical `/mcp` resource URI this token is valid for. */
@@ -364,7 +364,11 @@ export class AuthSessionService {
     return {
       token: rawToken,
       clientId: 'settings',
-      scopes: record.scopes,
+      // Persisted arrays are populated through the shared ScopeSchema-backed MCP
+      // mint contract. No defaulting or expansion occurs here, so an older token
+      // keeps exactly its stored grants and cannot acquire tasks:diagnostics
+      // merely because the vocabulary learned that value.
+      scopes: record.scopes as Scope[],
       // G1: full AuthInfo with a MANDATORY seconds-since-epoch expiresAt. A
       // never-expiring token gets a far-future bound so requireBearerAuth admits
       // it (its real revocation is the DB allowed re-check + revokedAt above).

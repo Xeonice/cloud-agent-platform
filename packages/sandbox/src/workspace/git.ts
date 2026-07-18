@@ -7,6 +7,10 @@ import {
   type SandboxGitCommandStage,
   type SandboxGitDeliveryResult,
   type SandboxGitStageExecutor,
+  type SandboxProvisioningDiagnosticCause,
+  type SandboxProvisioningDiagnosticCommandKind,
+  type SandboxProvisioningDiagnosticOperation,
+  type SandboxProvisioningDiagnosticReplayKey,
   type SandboxSecretFileHandle,
   type SandboxWorkspaceDeliveryHookContext,
   type SandboxWorkspaceMaterializationHookContext,
@@ -24,6 +28,71 @@ type ActiveWorkspaceStage = Exclude<
   SandboxWorkspaceMaterializationStage,
   'complete'
 >;
+
+type ActiveWorkspaceFailure =
+  | {
+      readonly status: 'failed';
+      readonly stage: ActiveWorkspaceStage;
+      readonly cause: SandboxWorkspaceFailureCause;
+      readonly retryable: boolean;
+    }
+  | {
+      readonly status: 'cancelled';
+      readonly stage: ActiveWorkspaceStage;
+    };
+
+type ActiveWorkspaceTerminalProgress =
+  | {
+      readonly status: 'succeeded';
+      readonly stage: ActiveWorkspaceStage;
+    }
+  | ActiveWorkspaceFailure;
+
+interface WorkspaceDiagnosticDescriptor {
+  readonly replayKey: SandboxProvisioningDiagnosticReplayKey;
+  readonly operation: SandboxProvisioningDiagnosticOperation;
+  readonly channel: 'primary' | 'cleanup';
+  readonly commandKind: SandboxProvisioningDiagnosticCommandKind;
+}
+
+const WORKSPACE_DIAGNOSTIC_DESCRIPTORS = Object.freeze({
+  credential_setup: {
+    replayKey: 'workspace.credential_setup',
+    operation: 'credential_setup',
+    channel: 'primary',
+    commandKind: 'credential_setup',
+  },
+  remote_ref_resolution: {
+    replayKey: 'workspace.remote_ref_resolution',
+    operation: 'remote_ref_resolve',
+    channel: 'primary',
+    commandKind: 'git_remote_ref',
+  },
+  workspace_transfer: {
+    replayKey: 'workspace.workspace_transfer',
+    operation: 'repository_transfer',
+    channel: 'primary',
+    commandKind: 'git_clone',
+  },
+  checkout: {
+    replayKey: 'workspace.checkout',
+    operation: 'checkout',
+    channel: 'primary',
+    commandKind: 'git_checkout',
+  },
+  submodules: {
+    replayKey: 'workspace.submodules',
+    operation: 'submodules',
+    channel: 'primary',
+    commandKind: 'git_submodules',
+  },
+  credential_cleanup: {
+    replayKey: 'workspace.credential_cleanup',
+    operation: 'credential_cleanup',
+    channel: 'cleanup',
+    commandKind: 'credential_cleanup',
+  },
+} as const satisfies Record<ActiveWorkspaceStage, WorkspaceDiagnosticDescriptor>);
 
 export interface SandboxGitFailureClassification {
   readonly cause: SandboxWorkspaceFailureCause;
@@ -133,16 +202,12 @@ export async function materializeSandboxGitWorkspaceStaged(
     cancellationSignal: context.cancellationSignal,
     driver: options.deadlineDriver ?? systemSandboxGitDeadlineDriver,
   });
-  let currentStage: ActiveWorkspaceStage = 'credential_setup';
-  let result: SandboxWorkspaceMaterializationResult | null = null;
+  let result: ActiveWorkspaceFailure | null = null;
   let handle: SandboxSecretFileHandle | null = null;
 
   try {
     await assertWorkspaceBoundary(context, 'credential_setup', 'before');
-    await reportProgress(context, {
-      status: 'started',
-      stage: 'credential_setup',
-    });
+    await reportWorkspaceStageStarted(context, 'credential_setup');
     if (context.plan.credential !== undefined) {
       if (!context.secretFilePort) {
         result = failed('credential_setup', 'unknown', false);
@@ -165,10 +230,10 @@ export async function materializeSandboxGitWorkspaceStaged(
     const credentialInterruption = deadline.interruption('credential_setup');
     if (credentialInterruption !== null) result = credentialInterruption;
     if (result !== null) {
-      await reportProgress(context, result);
+      await reportWorkspaceStageTerminal(context, result);
     }
     if (result === null) {
-      await reportProgress(context, {
+      await reportWorkspaceStageTerminal(context, {
         status: 'succeeded',
         stage: 'credential_setup',
       });
@@ -180,7 +245,6 @@ export async function materializeSandboxGitWorkspaceStaged(
         configPath,
       );
       for (const stage of stages) {
-        currentStage = stage.stage;
         const stageResult = await runMaterializationStage({
           context,
           deadline,
@@ -194,34 +258,32 @@ export async function materializeSandboxGitWorkspaceStaged(
       }
     }
   } finally {
-    currentStage = 'credential_cleanup';
-    await reportProgress(context, {
-      status: 'started',
+    await reportWorkspaceStageStarted(context, 'credential_cleanup');
+    let cleanupResult: ActiveWorkspaceTerminalProgress = {
+      status: 'succeeded',
       stage: 'credential_cleanup',
-    });
+    };
     try {
       if (handle !== null && context.secretFilePort) {
         await context.secretFilePort.deleteSecretFile(handle);
       }
-      await reportProgress(context, {
-        status: 'succeeded',
-        stage: 'credential_cleanup',
-      });
     } catch {
-      result = failed('credential_cleanup', 'unknown', false);
-      await reportProgress(context, result);
+      cleanupResult = failed('credential_cleanup', 'unknown', false);
     }
-    const cleanupInterruption = deadline.interruption(currentStage);
-    if (cleanupInterruption !== null && result === null) {
-      result = cleanupInterruption;
-      await reportProgress(context, result);
+
+    const cleanupInterruption = deadline.interruption('credential_cleanup');
+    if (cleanupInterruption !== null) cleanupResult = cleanupInterruption;
+    await reportWorkspaceStageTerminal(context, cleanupResult);
+    if (cleanupResult.status !== 'succeeded' && result === null) {
+      result = cleanupResult;
     }
     deadline.dispose();
   }
 
   if (result === null) {
-    result = { status: 'succeeded', stage: 'complete' };
-    await reportProgress(context, result);
+    const completed = { status: 'succeeded', stage: 'complete' } as const;
+    await reportProgress(context, completed);
+    return completed;
   }
 
   return result;
@@ -457,14 +519,14 @@ async function runMaterializationStage(args: {
   readonly deadline: OperationDeadline;
   readonly stage: MaterializationCommand['stage'];
   readonly command: string;
-}): Promise<SandboxWorkspaceMaterializationResult | null> {
+}): Promise<ActiveWorkspaceFailure | null> {
   const interruption = args.deadline.interruption(args.stage);
   if (interruption !== null) {
-    await reportProgress(args.context, interruption);
+    await reportWorkspaceStageTerminal(args.context, interruption);
     return interruption;
   }
   await assertWorkspaceBoundary(args.context, args.stage, 'before');
-  await reportProgress(args.context, { status: 'started', stage: args.stage });
+  await reportWorkspaceStageStarted(args.context, args.stage);
   let execution: SandboxCommandExecutionResult | null = null;
   let executionError: unknown;
   try {
@@ -481,7 +543,7 @@ async function runMaterializationStage(args: {
   try {
     const after = args.deadline.interruption(args.stage);
     if (after !== null) {
-      await reportProgress(args.context, after);
+      await reportWorkspaceStageTerminal(args.context, after);
       return after;
     }
     if (executionError !== undefined) throw executionError;
@@ -496,10 +558,10 @@ async function runMaterializationStage(args: {
         classification.cause,
         classification.retryable,
       );
-      await reportProgress(args.context, outcome);
+      await reportWorkspaceStageTerminal(args.context, outcome);
       return outcome;
     }
-    await reportProgress(args.context, {
+    await reportWorkspaceStageTerminal(args.context, {
       status: 'succeeded',
       stage: args.stage,
     });
@@ -507,7 +569,7 @@ async function runMaterializationStage(args: {
   } catch (error) {
     const after = args.deadline.interruption(args.stage);
     if (after !== null) {
-      await reportProgress(args.context, after);
+      await reportWorkspaceStageTerminal(args.context, after);
       return after;
     }
     const classification = classifySandboxGitFailure({
@@ -519,7 +581,7 @@ async function runMaterializationStage(args: {
       classification.cause,
       classification.retryable,
     );
-    await reportProgress(args.context, outcome);
+    await reportWorkspaceStageTerminal(args.context, outcome);
     return outcome;
   }
 }
@@ -652,7 +714,7 @@ async function executeStage(args: {
 interface OperationDeadline {
   readonly signal: AbortSignal;
   remainingTimeoutMs(): number;
-  interruption(stage: ActiveWorkspaceStage): SandboxWorkspaceMaterializationResult | null;
+  interruption(stage: ActiveWorkspaceStage): ActiveWorkspaceFailure | null;
   expire(): void;
   dispose(): void;
 }
@@ -707,7 +769,7 @@ function failed(
   stage: ActiveWorkspaceStage,
   cause: SandboxWorkspaceFailureCause,
   retryable: boolean,
-): SandboxWorkspaceMaterializationResult {
+): ActiveWorkspaceFailure {
   return { status: 'failed', stage, cause, retryable };
 }
 
@@ -719,10 +781,101 @@ async function assertWorkspaceBoundary(
   await context.beforeBoundary?.({ stage, position });
 }
 
+async function reportWorkspaceStageStarted(
+  context: SandboxWorkspaceMaterializationHookContext,
+  stage: ActiveWorkspaceStage,
+): Promise<void> {
+  await reportProgress(context, { status: 'started', stage });
+  emitWorkspaceDiagnostic(context, stage, { outcome: 'started' });
+}
+
+async function reportWorkspaceStageTerminal(
+  context: SandboxWorkspaceMaterializationHookContext,
+  event: ActiveWorkspaceTerminalProgress,
+): Promise<void> {
+  await reportProgress(context, event);
+  if (event.status === 'succeeded') {
+    emitWorkspaceDiagnostic(context, event.stage, {
+      outcome: 'succeeded',
+      cause: null,
+      retryable: false,
+    });
+    return;
+  }
+  if (event.status === 'cancelled') {
+    emitWorkspaceDiagnostic(context, event.stage, {
+      outcome: 'cancelled',
+      cause: 'cancelled',
+      retryable: false,
+    });
+    return;
+  }
+
+  const timedOut = event.cause === 'timeout';
+  emitWorkspaceDiagnostic(context, event.stage, {
+    outcome: timedOut ? 'timed_out' : 'failed',
+    cause: workspaceDiagnosticCause(event.stage, event.cause),
+    retryable: event.retryable,
+    ...(timedOut ? { timeoutMs: context.plan.deadlineMs } : {}),
+  });
+}
+
+function emitWorkspaceDiagnostic(
+  context: SandboxWorkspaceMaterializationHookContext,
+  stage: ActiveWorkspaceStage,
+  terminal:
+    | { readonly outcome: 'started' }
+    | {
+        readonly outcome: 'succeeded' | 'failed' | 'timed_out' | 'cancelled';
+        readonly cause: SandboxProvisioningDiagnosticCause | null;
+        readonly retryable: boolean;
+        readonly timeoutMs?: number;
+      },
+): void {
+  const observer = context.diagnostics;
+  if (observer === undefined) return;
+  try {
+    const descriptor = WORKSPACE_DIAGNOSTIC_DESCRIPTORS[stage];
+    const operationId = observer.createOperationId(descriptor.replayKey);
+    void Promise.resolve(
+      observer.emit({
+        operationId,
+        stage,
+        operation: descriptor.operation,
+        channel: descriptor.channel,
+        commandKind: descriptor.commandKind,
+        ...terminal,
+      }),
+    ).catch(() => undefined);
+  } catch {
+    // Synchronous observer faults are evidence failures, never admission truth.
+  }
+}
+
+function workspaceDiagnosticCause(
+  stage: ActiveWorkspaceStage,
+  cause: SandboxWorkspaceFailureCause,
+): SandboxProvisioningDiagnosticCause {
+  switch (cause) {
+    case 'capacity_exhausted':
+      return 'capacity_exhausted';
+    case 'timeout':
+      return 'workspace_timeout';
+    case 'authentication':
+      return 'authentication_failed';
+    case 'tls_network':
+      return 'tls_network_failed';
+    case 'ref_not_found':
+      return 'ref_not_found';
+    case 'unknown':
+      return stage === 'credential_cleanup' ? 'cleanup_failed' : 'unknown';
+  }
+}
+
 function deliveryInterruption(
   hadChanges: boolean,
   commitSha: string | null,
-  interruption: SandboxWorkspaceMaterializationResult,
+  interruption: ActiveWorkspaceFailure,
 ): SandboxGitDeliveryResult {
   return deliveryFailure(
     hadChanges,

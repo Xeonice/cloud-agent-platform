@@ -10,6 +10,15 @@ import type {
   SandboxReadoptionPort,
   SandboxReadoptionTarget,
   SandboxOwnershipFence,
+  SandboxPhysicalCleanupResult,
+  SandboxProvisioningDiagnosticChannel,
+  SandboxProvisioningDiagnosticCommandKind,
+  SandboxProvisioningDiagnosticFact,
+  SandboxProvisioningDiagnosticHttpStatusClass,
+  SandboxProvisioningDiagnosticObserver,
+  SandboxProvisioningDiagnosticOperation,
+  SandboxProvisioningDiagnosticStage,
+  SandboxProvisioningDiagnosticTerminalFact,
   SandboxRunCleanupAuthorization,
   SandboxSelectedRunPort,
   SandboxTeardownDisposition,
@@ -18,18 +27,34 @@ import type {
   SandboxTranscriptSourceBase,
 } from '@cap/sandbox-core';
 import {
-  SANDBOX_PROVIDER_CAPABILITIES,
   assertSandboxProviderSupportsResources,
+  createNonPersistingSandboxProvisioningDiagnosticObserver,
   defineCloudSandboxProvider,
+  isSandboxCleanupCoordinationPendingError,
   isSandboxLegacyDeliverWorkspaceArgs,
+  normalizeSandboxPhysicalCleanupResult,
   resourcesForSandboxProvision,
   runSandboxExternalBoundary,
+  SandboxCleanupCoordinationPendingError,
   SandboxCleanupPendingError,
   SandboxProviderConfigurationError,
   snapshotSandboxProvisionContext,
   type SelectedSandboxRun,
   type SandboxProviderDescriptor,
 } from '@cap/sandbox-core';
+
+/**
+ * Capabilities backed by the current cloud HTTP adapter without transferring
+ * repository credentials across the control-plane request boundary.
+ *
+ * Workspace materialization/delivery stay deliberately absent until this
+ * provider owns a canonical, bounded secret writer and its cleanup lifecycle.
+ */
+export const HTTP_CLOUD_SANDBOX_PROVIDER_CAPABILITIES = Object.freeze([
+  'terminal.websocket',
+  'transcript.retained-read',
+  'lifecycle.readopt',
+] as const satisfies readonly SandboxProviderCapability[]);
 
 export interface HttpCloudSandboxFetchResponse {
   readonly ok: boolean;
@@ -66,6 +91,15 @@ export interface HttpCloudSandboxProviderDescriptorOptions
   readonly priority?: number;
 }
 
+export interface HttpCloudSandboxTeardownOptions {
+  readonly ownership?: SandboxOwnershipFence;
+  readonly cleanupAuthorization?: SandboxRunCleanupAuthorization;
+  readonly providerSandboxId?: string;
+  readonly disposition?: SandboxTeardownDisposition;
+  /** Optional task-attempt observer; absent callers remain explicitly taskless. */
+  readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
+}
+
 export class HttpCloudSandboxProvider<
   TCloneSpec = GitCloneSpec,
   TRuntimeId = string,
@@ -92,7 +126,12 @@ export class HttpCloudSandboxProvider<
       readonly providerSandboxId?: string;
       readonly ownership?: SandboxOwnershipFence;
       readonly terminal?: SandboxTerminalEndpointDescriptor;
+      readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
     }
+  >();
+  private readonly replayOperationIds = new WeakMap<
+    SandboxProvisioningDiagnosticObserver,
+    Map<string, string>
   >();
 
   constructor(options: HttpCloudSandboxProviderOptions) {
@@ -100,7 +139,7 @@ export class HttpCloudSandboxProvider<
     this.baseUrl = normalizeBaseUrl(options.baseUrl);
     this.apiToken = options.apiToken;
     this.mode = options.mode ?? 'workspace-write';
-    this.capabilities = options.capabilities ?? SANDBOX_PROVIDER_CAPABILITIES;
+    this.capabilities = normalizeHttpCloudCapabilities(options.capabilities);
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.cleanupPollAttempts = normalizePositiveInteger(
       options.cleanupPollAttempts ?? 3,
@@ -128,6 +167,7 @@ export class HttpCloudSandboxProvider<
 
   async provision(ctx: SandboxProvisionContext<TCloneSpec>): Promise<SandboxConnection> {
     ctx = snapshotSandboxProvisionContext(ctx);
+    ctx.diagnostics?.bindProviderFamily('cloud-http');
     if (ctx.workspace?.credential !== undefined) {
       throw new SandboxProviderConfigurationError(
         'HTTP cloud workspace credentials require a provider-local secret writer',
@@ -161,70 +201,152 @@ export class HttpCloudSandboxProvider<
       // non-secret physical incarnation is shared with the remote provider.
       body.resourceGeneration = resourceGeneration;
     }
+    const createDiagnostic = await this.startDiagnostic(
+      ctx.diagnostics,
+      {
+        stage: 'sandbox_creation',
+        operation: 'sandbox_create',
+        channel: 'primary',
+      },
+      `create:${ctx.taskId}`,
+    );
+    let createSettled = false;
+    let createFailure:
+      | { readonly kind: 'http'; readonly status: number }
+      | { readonly kind: 'transport' | 'protocol' }
+      | undefined;
+    let createObservationCoordinationFailed = false;
+    let createObservationPrimary: unknown;
+    let createDefinitivelyNotCreated = false;
     let observedProviderSandboxId: string | undefined;
     try {
-      const raw = await runSandboxExternalBoundary({
+      const created = await runSandboxExternalBoundary({
         taskId: ctx.taskId,
         action: 'sandbox.create',
         guard: ctx.externalBoundaryGuard,
         signal: ctx.cancellationSignal,
         run: async () => {
-          const res = await this.request('/v1/sandboxes', {
-            method: 'POST',
-            body,
-            signal: ctx.cancellationSignal,
-            headers: {
-              // A replay with a transferred owner generation retains the same
-              // physical resource generation and therefore the same remote key.
-              'idempotency-key': resourceGeneration
-                ? `cap-task:${ctx.taskId}:resource:${resourceGeneration}`
-                : `cap-task:${ctx.taskId}`,
-            },
-          });
+          let res: HttpCloudSandboxFetchResponse;
+          try {
+            res = await this.request('/v1/sandboxes', {
+              method: 'POST',
+              body,
+              signal: ctx.cancellationSignal,
+              headers: {
+                // A replay with a transferred owner generation retains the same
+                // physical resource generation and therefore the same remote key.
+                'idempotency-key': resourceGeneration
+                  ? `cap-task:${ctx.taskId}:resource:${resourceGeneration}`
+                  : `cap-task:${ctx.taskId}`,
+              },
+            });
+          } catch (error) {
+            createFailure = { kind: 'transport' };
+            throw error;
+          }
           if (!res.ok) {
-            if (isDefinitiveCloudCreateWithoutResource(res.status)) {
-              await ctx.onSandboxCreateObserved?.({ kind: 'not-created' });
-            }
-            throw new Error(
+            createFailure = { kind: 'http', status: res.status };
+            const providerFailure = new Error(
               `cloud sandbox request POST /v1/sandboxes failed: HTTP ${res.status}`,
             );
+            if (isDefinitiveCloudCreateWithoutResource(res.status)) {
+              createDefinitivelyNotCreated = true;
+              try {
+                await ctx.onSandboxCreateObserved?.({ kind: 'not-created' });
+              } catch (error) {
+                createObservationCoordinationFailed = true;
+                createObservationPrimary = providerFailure;
+                throw error;
+              }
+            }
+            throw providerFailure;
           }
           const raw = await res.json().catch(() => undefined);
-          assertCloudResourceGeneration(raw, resourceGeneration);
-          const providerSandboxId = attestedCloudProviderSandboxId(raw);
+          let connection: SandboxConnection;
+          let providerSandboxId: string | undefined;
+          let terminal: SandboxTerminalEndpointDescriptor | undefined;
+          try {
+            assertCloudResourceGeneration(raw, resourceGeneration);
+            connection = parseConnection(raw, ctx.taskId);
+            providerSandboxId = attestedCloudProviderSandboxId(raw);
+            terminal = parseOptionalTerminalDescriptor(raw);
+          } catch (error) {
+            createFailure = { kind: 'protocol' };
+            throw error;
+          }
           observedProviderSandboxId = providerSandboxId;
-          await ctx.onSandboxCreateObserved?.({
-            kind: 'created',
-            ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
+          await this.settleDiagnostic(createDiagnostic, {
+            outcome: 'succeeded',
+            cause: null,
+            retryable: false,
+            httpStatusClass: httpStatusClass(res.status),
           });
-          return raw;
+          createSettled = true;
+          try {
+            await ctx.onSandboxCreateObserved?.({
+              kind: 'created',
+              ...(providerSandboxId === undefined
+                ? {}
+                : { providerSandboxId }),
+            });
+          } catch (error) {
+            createObservationCoordinationFailed = true;
+            createObservationPrimary = error;
+            throw error;
+          }
+          return { connection, providerSandboxId, terminal };
         },
       });
-      const connection = parseConnection(raw, ctx.taskId);
-      const providerSandboxId = attestedCloudProviderSandboxId(raw);
-      const terminal = parseOptionalTerminalDescriptor(raw);
       this.runs.set(ctx.taskId, {
-        connection,
-        ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
-        ...(terminal === undefined ? {} : { terminal }),
+        connection: created.connection,
+        ...(created.providerSandboxId === undefined
+          ? {}
+          : { providerSandboxId: created.providerSandboxId }),
+        ...(created.terminal === undefined ? {} : { terminal: created.terminal }),
         ownership: ctx.ownership,
+        ...(ctx.diagnostics === undefined
+          ? {}
+          : { diagnostics: ctx.diagnostics }),
       });
-      return connection;
+      return created.connection;
     } catch (error) {
-      await this.cleanupFailedProvision(ctx, observedProviderSandboxId);
-      throw error;
+      if (!createSettled) {
+        await this.settleDiagnostic(
+          createDiagnostic,
+          classifyCloudCreateFailure(
+            error,
+            createFailure,
+            ctx.cancellationSignal,
+            this.timeoutMs,
+          ),
+        );
+      }
+      const primary = createObservationPrimary ?? error;
+      if (!createDefinitivelyNotCreated) {
+        try {
+          await this.cleanupFailedProvision(
+            ctx,
+            observedProviderSandboxId,
+            primary,
+          );
+        } catch (cleanupError) {
+          if (isSandboxCleanupCoordinationPendingError(cleanupError)) {
+            throw cleanupError;
+          }
+          throw new SandboxCleanupCoordinationPendingError(primary);
+        }
+      }
+      if (createObservationCoordinationFailed) {
+        throw new SandboxCleanupCoordinationPendingError(primary);
+      }
+      throw primary;
     }
   }
 
   async teardownSandbox(
     taskId: string,
-    options: {
-      readonly ownership?: SandboxOwnershipFence;
-      readonly cleanupAuthorization?: SandboxRunCleanupAuthorization;
-      readonly providerSandboxId?: string;
-      readonly disposition?: SandboxTeardownDisposition;
-    } = {},
-  ): Promise<SandboxTeardownResult> {
+    options: HttpCloudSandboxTeardownOptions = {},
+  ): Promise<SandboxPhysicalCleanupResult> {
     if (options.cleanupAuthorization) {
       assertCloudCleanupAuthorization(
         options.cleanupAuthorization,
@@ -243,14 +365,41 @@ export class HttpCloudSandboxProvider<
     // Legacy cloud adapters historically treated teardown as removal. The
     // router now always supplies the business disposition explicitly.
     const disposition = options.disposition ?? 'superseded-remove';
-    const result = await this.deleteSandbox(
+    const result = await this.runPhysicalCleanup(
       taskId,
       ownership,
       providerSandboxId,
       disposition,
+      options.diagnostics ?? this.runs.get(taskId)?.diagnostics,
     );
-    this.runs.delete(taskId);
+    if (result.outcome === 'succeeded' && disposition === 'superseded-remove') {
+      this.runs.delete(taskId);
+    }
     return result;
+  }
+
+  private async runPhysicalCleanup(
+    taskId: string,
+    ownership?: SandboxOwnershipFence,
+    providerSandboxId?: string,
+    disposition: SandboxTeardownDisposition = 'superseded-remove',
+    diagnostics?: SandboxProvisioningDiagnosticObserver,
+  ): Promise<SandboxPhysicalCleanupResult> {
+    try {
+      return normalizeSandboxPhysicalCleanupResult(
+        await this.deleteSandbox(
+          taskId,
+          ownership,
+          providerSandboxId,
+          disposition,
+          diagnostics,
+        ),
+      );
+    } catch (error) {
+      if (isSandboxCleanupCoordinationPendingError(error)) throw error;
+      if (error instanceof CloudPhysicalCleanupError) return error.result;
+      return cloudCleanupIndeterminate();
+    }
   }
 
   private async deleteSandbox(
@@ -258,61 +407,85 @@ export class HttpCloudSandboxProvider<
     ownership?: SandboxOwnershipFence,
     providerSandboxId?: string,
     disposition: SandboxTeardownDisposition = 'superseded-remove',
+    diagnostics?: SandboxProvisioningDiagnosticObserver,
   ): Promise<SandboxTeardownResult> {
-    const res = await this.request(`/v1/sandboxes/${encodeURIComponent(taskId)}`, {
-      method: 'DELETE',
-      body: {
-        disposition,
-        ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
-        ...(ownership === undefined
-          ? {}
-          : { resourceGeneration: ownership.resourceGeneration }),
-      },
-      ...(ownership
-        ? {
-            headers: {
-              // The remote control plane must compare this generation before
-              // deleting. A stale worker receives 409/412 and cannot remove a
-              // later incarnation that reused the deterministic task id.
-              'if-match': quoteEntityTag(ownership.resourceGeneration),
-            },
-          }
-        : {}),
+    const deletion = await this.startDiagnostic(diagnostics, {
+      stage: 'cleanup',
+      operation: 'sandbox_delete',
+      channel: 'cleanup',
+      commandKind: 'sandbox_cleanup',
     });
+    let res: HttpCloudSandboxFetchResponse;
+    try {
+      res = await this.request(`/v1/sandboxes/${encodeURIComponent(taskId)}`, {
+        method: 'DELETE',
+        body: {
+          disposition,
+          ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
+          ...(ownership === undefined
+            ? {}
+            : { resourceGeneration: ownership.resourceGeneration }),
+        },
+        ...(ownership
+          ? {
+              headers: {
+                // The remote control plane must compare this generation before
+                // deleting. A stale worker receives 409/412 and cannot remove a
+                // later incarnation that reused the deterministic task id.
+                'if-match': quoteEntityTag(ownership.resourceGeneration),
+              },
+            }
+          : {}),
+      });
+    } catch (error) {
+      const terminal = classifyCloudCleanupTransportFailure(
+        error,
+        this.timeoutMs,
+      );
+      await this.settleDiagnostic(deletion, terminal.fact);
+      throw new CloudPhysicalCleanupError(terminal.result);
+    }
     if (res.status === 409 || res.status === 412) {
-      throw new Error(
-        `cloud sandbox teardown for task ${taskId} was fenced by resource generation`,
-      );
+      await this.settleDiagnostic(deletion, {
+        outcome: 'failed',
+        cause: 'coordination_failed',
+        retryable: true,
+        httpStatusClass: httpStatusClass(res.status),
+      });
+      throw new SandboxCleanupCoordinationPendingError();
     }
-    if (res.status === 202) {
-      return this.confirmAcceptedTeardown(
-        taskId,
-        ownership,
-        providerSandboxId,
-        disposition,
-      );
+    if (res.status === 404) {
+      await this.settleDiagnostic(deletion, {
+        outcome: 'succeeded',
+        cause: null,
+        retryable: false,
+        httpStatusClass: '4xx',
+      });
+      return { kind: 'already-absent' };
     }
-    if (res.status === 404) return { kind: 'already-absent' };
     if (!res.ok) {
-      throw new Error(`cloud sandbox teardown for task ${taskId} failed: HTTP ${res.status}`);
-    }
-    if (disposition === 'terminal-retain') {
-      const raw = await res.json().catch(() => undefined);
-      if (isCloudTeardownTerminal(raw, disposition)) {
-        assertCloudCleanupTarget(raw, ownership, providerSandboxId);
-        return { kind: 'found-and-cleaned' };
-      }
-      // A synchronous 2xx/204 acknowledges the command but does not prove the
-      // retained sandbox is stopped and reattachable. Confirm it exactly like
-      // an asynchronous 202 response.
-      return this.confirmAcceptedTeardown(
-        taskId,
-        ownership,
-        providerSandboxId,
-        disposition,
+      const terminal = classifyCloudCleanupHttpFailure(
+        res.status,
+        this.timeoutMs,
       );
+      await this.settleDiagnostic(deletion, terminal.fact);
+      throw new CloudPhysicalCleanupError(terminal.result);
     }
-    return { kind: 'found-and-cleaned' };
+    await this.settleDiagnostic(deletion, {
+      outcome: 'succeeded',
+      cause: null,
+      retryable: false,
+      httpStatusClass: httpStatusClass(res.status),
+    });
+    // Every DELETE 2xx/202/204 is only an acknowledgement. Success requires a
+    // separate bounded GET that proves absence or the requested retained state.
+    return this.confirmAcceptedTeardown(
+      taskId,
+      ownership,
+      providerSandboxId,
+      disposition,
+      diagnostics,
+    );
   }
 
   private async confirmAcceptedTeardown(
@@ -320,82 +493,162 @@ export class HttpCloudSandboxProvider<
     ownership?: SandboxOwnershipFence,
     providerSandboxId?: string,
     disposition: SandboxTeardownDisposition = 'superseded-remove',
+    diagnostics?: SandboxProvisioningDiagnosticObserver,
   ): Promise<SandboxTeardownResult> {
+    const confirmation = await this.startDiagnostic(diagnostics, {
+      stage: 'cleanup',
+      operation: 'sandbox_absence_confirm',
+      channel: 'cleanup',
+      commandKind: 'sandbox_cleanup',
+    });
     for (let attempt = 0; attempt < this.cleanupPollAttempts; attempt += 1) {
-      const res = await this.request(
-        `/v1/sandboxes/${encodeURIComponent(taskId)}`,
-        {
-          method: 'GET',
-          ...(ownership
-            ? {
-                headers: {
-                  'if-match': quoteEntityTag(ownership.resourceGeneration),
-                },
-              }
-            : {}),
-        },
-      );
+      let res: HttpCloudSandboxFetchResponse;
+      try {
+        res = await this.request(
+          `/v1/sandboxes/${encodeURIComponent(taskId)}`,
+          {
+            method: 'GET',
+            ...(ownership
+              ? {
+                  headers: {
+                    'if-match': quoteEntityTag(ownership.resourceGeneration),
+                  },
+                }
+              : {}),
+          },
+        );
+      } catch (error) {
+        const terminal = classifyCloudCleanupTransportFailure(
+          error,
+          this.timeoutMs,
+        );
+        await this.settleDiagnostic(confirmation, terminal.fact);
+        throw new CloudPhysicalCleanupError(terminal.result);
+      }
       if (res.status === 404) {
         if (disposition === 'superseded-remove') {
+          await this.settleDiagnostic(confirmation, {
+            outcome: 'succeeded',
+            cause: null,
+            retryable: false,
+            httpStatusClass: '4xx',
+          });
           return { kind: 'found-and-cleaned' };
         }
-        throw new Error(
-          `cloud terminal-retain teardown for task ${taskId} removed the retained sandbox`,
-        );
+        await this.settleDiagnostic(confirmation, {
+          outcome: 'failed',
+          cause: 'cleanup_failed',
+          retryable: false,
+          httpStatusClass: '4xx',
+        });
+        throw new CloudPhysicalCleanupError(cloudCleanupFailed(false));
       }
       if (res.status === 409 || res.status === 412) {
-        throw new Error(
-          `cloud sandbox teardown for task ${taskId} was fenced by resource generation`,
-        );
+        await this.settleDiagnostic(confirmation, {
+          outcome: 'failed',
+          cause: 'coordination_failed',
+          retryable: true,
+          httpStatusClass: httpStatusClass(res.status),
+        });
+        throw new SandboxCleanupCoordinationPendingError();
       }
       if (!res.ok) {
-        throw new Error(
-          `cloud sandbox teardown confirmation for task ${taskId} failed: HTTP ${res.status}`,
+        const terminal = classifyCloudCleanupHttpFailure(
+          res.status,
+          this.timeoutMs,
         );
+        await this.settleDiagnostic(confirmation, terminal.fact);
+        throw new CloudPhysicalCleanupError(terminal.result);
       }
       const raw = await res.json().catch(() => undefined);
-      assertCloudCleanupTarget(raw, ownership, providerSandboxId);
+      try {
+        assertCloudCleanupTarget(raw, ownership, providerSandboxId);
+      } catch {
+        await this.settleDiagnostic(confirmation, {
+          outcome: 'failed',
+          cause: 'coordination_failed',
+          retryable: true,
+          httpStatusClass: httpStatusClass(res.status),
+        });
+        throw new SandboxCleanupCoordinationPendingError();
+      }
       if (isCloudTeardownTerminal(raw, disposition)) {
+        await this.settleDiagnostic(confirmation, {
+          outcome: 'succeeded',
+          cause: null,
+          retryable: false,
+          httpStatusClass: httpStatusClass(res.status),
+        });
         return { kind: 'found-and-cleaned' };
       }
       if (attempt + 1 < this.cleanupPollAttempts) {
         await this.delayImpl(this.cleanupPollIntervalMs);
       }
     }
+    await this.settleDiagnostic(confirmation, {
+      outcome: 'indeterminate',
+      cause: 'cleanup_unconfirmed',
+      retryable: true,
+    });
     throw new SandboxCleanupPendingError();
   }
 
   private async cleanupFailedProvision(
     ctx: SandboxProvisionContext<TCloneSpec>,
     observedProviderSandboxId?: string,
+    primary?: unknown,
   ): Promise<void> {
-    const authorization = await ctx.beforeSandboxCleanup?.();
-    if (!authorization) return;
-    assertCloudCleanupAuthorization(
-      authorization,
-      ctx.taskId,
-      this.id,
-    );
-    if (
-      ctx.ownership &&
-      (authorization.kind !== 'generation' ||
-        authorization.ownership.resourceGeneration !==
-          ctx.ownership.resourceGeneration)
-    ) {
-      throw new SandboxProviderConfigurationError(
-        'Cloud cleanup authorization changed physical resource generation',
-      );
+    let authorization: SandboxRunCleanupAuthorization | null | undefined;
+    try {
+      authorization = await ctx.beforeSandboxCleanup?.();
+    } catch {
+      throw new SandboxCleanupCoordinationPendingError(primary);
     }
-    const result = await this.deleteSandbox(
-      ctx.taskId,
-      authorization.kind === 'generation'
-        ? authorization.ownership
-        : undefined,
-      observedProviderSandboxId ?? this.runs.get(ctx.taskId)?.providerSandboxId,
-      'superseded-remove',
-    );
-    if (result.kind === 'found-and-cleaned') {
-      await ctx.afterSandboxCleanup?.(authorization);
+    if (!authorization) {
+      if (ctx.ownership !== undefined) {
+        throw new SandboxCleanupCoordinationPendingError(primary);
+      }
+      return;
+    }
+    try {
+      assertCloudCleanupAuthorization(
+        authorization,
+        ctx.taskId,
+        this.id,
+      );
+      if (
+        ctx.ownership &&
+        (authorization.kind !== 'generation' ||
+          authorization.ownership.resourceGeneration !==
+            ctx.ownership.resourceGeneration)
+      ) {
+        throw new SandboxProviderConfigurationError(
+          'Cloud cleanup authorization changed physical resource generation',
+        );
+      }
+    } catch {
+      throw new SandboxCleanupCoordinationPendingError(primary);
+    }
+    let result: SandboxPhysicalCleanupResult;
+    try {
+      result = await this.runPhysicalCleanup(
+        ctx.taskId,
+        authorization.kind === 'generation'
+          ? authorization.ownership
+          : undefined,
+        observedProviderSandboxId ?? this.runs.get(ctx.taskId)?.providerSandboxId,
+        'superseded-remove',
+        ctx.diagnostics,
+      );
+    } catch {
+      throw new SandboxCleanupCoordinationPendingError(primary);
+    }
+    if (result.outcome === 'succeeded') {
+      try {
+        await ctx.afterSandboxCleanup?.(authorization);
+      } catch {
+        throw new SandboxCleanupCoordinationPendingError(primary);
+      }
     }
   }
 
@@ -417,16 +670,56 @@ export class HttpCloudSandboxProvider<
     return parseOptionalTranscriptSource<TTranscriptSource>(raw);
   }
 
-  async sandboxExists(taskId: string): Promise<boolean> {
-    const res = await this.request(`/v1/sandboxes/${encodeURIComponent(taskId)}`, {
-      method: 'GET',
+  async sandboxExists(
+    taskId: string,
+    diagnostics: SandboxProvisioningDiagnosticObserver =
+      createNonPersistingSandboxProvisioningDiagnosticObserver(),
+  ): Promise<boolean> {
+    const inspection = await this.startDiagnostic(diagnostics, {
+      stage: 'sandbox_inspect',
+      operation: 'sandbox_inspect',
+      channel: 'primary',
     });
-    if (res.status === 404) return false;
+    let res: HttpCloudSandboxFetchResponse;
+    try {
+      res = await this.request(`/v1/sandboxes/${encodeURIComponent(taskId)}`, {
+        method: 'GET',
+      });
+    } catch (error) {
+      await this.settleDiagnostic(
+        inspection,
+        classifyCloudInspectTransportFailure(error, this.timeoutMs),
+      );
+      throw error;
+    }
+    if (res.status === 404) {
+      await this.settleDiagnostic(inspection, {
+        outcome: 'succeeded',
+        cause: null,
+        retryable: false,
+        httpStatusClass: '4xx',
+      });
+      return false;
+    }
     if (!res.ok) {
+      await this.settleDiagnostic(inspection, {
+        outcome: res.status === 408 ? 'timed_out' : 'indeterminate',
+        cause:
+          res.status === 408 ? 'settlement_unknown' : 'provider_unavailable',
+        retryable: true,
+        httpStatusClass: httpStatusClass(res.status),
+        ...(res.status === 408 ? { timeoutMs: this.timeoutMs } : {}),
+      });
       throw new Error(
         `cloud sandbox existence check for task ${taskId} is indeterminate: HTTP ${res.status}`,
       );
     }
+    await this.settleDiagnostic(inspection, {
+      outcome: 'succeeded',
+      cause: null,
+      retryable: false,
+      httpStatusClass: httpStatusClass(res.status),
+    });
     return true;
   }
 
@@ -543,20 +836,40 @@ export class HttpCloudSandboxProvider<
     };
   }
 
-  private async requestJson(
-    path: string,
-    init: {
-      readonly method: string;
-      readonly body?: unknown;
-      readonly signal?: AbortSignal;
-      readonly headers?: Readonly<Record<string, string>>;
-    },
-  ): Promise<unknown> {
-    const res = await this.request(path, init);
-    if (!res.ok) {
-      throw new Error(`cloud sandbox request ${init.method} ${path} failed: HTTP ${res.status}`);
+  private async startDiagnostic(
+    diagnostics: SandboxProvisioningDiagnosticObserver | undefined,
+    descriptor: CloudDiagnosticDescriptor,
+    replayKey?: string,
+  ): Promise<CloudDiagnosticOperation | undefined> {
+    if (diagnostics === undefined) return undefined;
+    try {
+      let operationId: string;
+      if (replayKey === undefined) {
+        operationId = diagnostics.createOperationId();
+      } else {
+        let operations = this.replayOperationIds.get(diagnostics);
+        if (operations === undefined) {
+          operations = new Map();
+          this.replayOperationIds.set(diagnostics, operations);
+        }
+        operationId =
+          operations.get(replayKey) ?? diagnostics.createOperationId();
+        operations.set(replayKey, operationId);
+      }
+      const operation = { diagnostics, operationId, ...descriptor } as const;
+      await emitCloudDiagnostic(operation, { outcome: 'started' });
+      return operation;
+    } catch {
+      return undefined;
     }
-    return res.json().catch(() => undefined);
+  }
+
+  private async settleDiagnostic(
+    operation: CloudDiagnosticOperation | undefined,
+    terminal: CloudDiagnosticTerminal,
+  ): Promise<void> {
+    if (operation === undefined) return;
+    await emitCloudDiagnostic(operation, terminal);
   }
 
   private request(
@@ -593,6 +906,229 @@ export class HttpCloudSandboxProvider<
   }
 }
 
+interface CloudDiagnosticDescriptor {
+  readonly stage: SandboxProvisioningDiagnosticStage;
+  readonly operation: SandboxProvisioningDiagnosticOperation;
+  readonly channel: SandboxProvisioningDiagnosticChannel;
+  readonly commandKind?: SandboxProvisioningDiagnosticCommandKind;
+}
+
+interface CloudDiagnosticOperation extends CloudDiagnosticDescriptor {
+  readonly diagnostics: SandboxProvisioningDiagnosticObserver;
+  readonly operationId: string;
+}
+
+type CloudDiagnosticTerminal = Omit<
+  SandboxProvisioningDiagnosticTerminalFact,
+  'operationId' | 'stage' | 'operation' | 'channel' | 'commandKind'
+>;
+
+type CloudCreateFailureHint =
+  | { readonly kind: 'http'; readonly status: number }
+  | { readonly kind: 'transport' | 'protocol' }
+  | undefined;
+
+class CloudPhysicalCleanupError extends Error {
+  constructor(readonly result: SandboxPhysicalCleanupResult) {
+    super('Cloud sandbox physical cleanup did not settle successfully');
+    this.name = 'CloudPhysicalCleanupError';
+  }
+}
+
+function emitCloudDiagnostic(
+  operation: CloudDiagnosticOperation,
+  fact: { readonly outcome: 'started' } | CloudDiagnosticTerminal,
+): void {
+  try {
+    void operation.diagnostics
+      .emit({
+        operationId: operation.operationId,
+        stage: operation.stage,
+        operation: operation.operation,
+        channel: operation.channel,
+        ...(operation.commandKind === undefined
+          ? {}
+          : { commandKind: operation.commandKind }),
+        ...fact,
+      } as SandboxProvisioningDiagnosticFact)
+      .catch(() => undefined);
+  } catch {
+    // Diagnostic persistence is evidence only; provider control stays authoritative.
+  }
+}
+
+function classifyCloudCreateFailure(
+  error: unknown,
+  hint: CloudCreateFailureHint,
+  cancellationSignal: AbortSignal | undefined,
+  timeoutMs: number,
+): CloudDiagnosticTerminal {
+  if (cancellationSignal?.aborted) {
+    return { outcome: 'cancelled', cause: 'cancelled', retryable: false };
+  }
+  if (isTimeoutLike(error) || (hint?.kind === 'http' && hint.status === 408)) {
+    return {
+      outcome: 'timed_out',
+      cause: 'settlement_unknown',
+      retryable: true,
+      timeoutMs,
+      ...(hint?.kind === 'http'
+        ? { httpStatusClass: httpStatusClass(hint.status) }
+        : {}),
+    };
+  }
+  if (hint?.kind === 'transport') {
+    return {
+      outcome: 'indeterminate',
+      cause: 'transport_failed',
+      retryable: true,
+    };
+  }
+  if (hint?.kind === 'protocol') {
+    return { outcome: 'failed', cause: 'protocol_failed', retryable: false };
+  }
+  if (hint?.kind === 'http') {
+    if (hint.status >= 500) {
+      return {
+        outcome: 'indeterminate',
+        cause: 'provider_unavailable',
+        retryable: true,
+        httpStatusClass: httpStatusClass(hint.status),
+      };
+    }
+    const accessDenied = hint.status === 401 || hint.status === 403;
+    return {
+      outcome: 'failed',
+      cause: accessDenied ? 'access_denied' : 'protocol_failed',
+      retryable: hint.status === 429,
+      httpStatusClass: httpStatusClass(hint.status),
+    };
+  }
+  return { outcome: 'failed', cause: 'unknown', retryable: false };
+}
+
+function classifyCloudCleanupHttpFailure(
+  status: number,
+  timeoutMs: number,
+): Readonly<{
+  fact: CloudDiagnosticTerminal;
+  result: SandboxPhysicalCleanupResult;
+}> {
+  if (status === 408) {
+    return {
+      fact: {
+        outcome: 'timed_out',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+        timeoutMs,
+        httpStatusClass: httpStatusClass(status),
+      },
+      result: cloudCleanupIndeterminate(),
+    };
+  }
+  if (status >= 500) {
+    return {
+      fact: {
+        outcome: 'indeterminate',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+        httpStatusClass: httpStatusClass(status),
+      },
+      result: cloudCleanupIndeterminate(),
+    };
+  }
+  const retryable = status === 429;
+  return {
+    fact: {
+      outcome: 'failed',
+      cause: 'cleanup_failed',
+      retryable,
+      httpStatusClass: httpStatusClass(status),
+    },
+    result: cloudCleanupFailed(retryable),
+  };
+}
+
+function classifyCloudCleanupTransportFailure(
+  error: unknown,
+  timeoutMs: number,
+): Readonly<{
+  fact: CloudDiagnosticTerminal;
+  result: SandboxPhysicalCleanupResult;
+}> {
+  return {
+    fact: isTimeoutLike(error)
+      ? {
+          outcome: 'timed_out',
+          cause: 'cleanup_unconfirmed',
+          retryable: true,
+          timeoutMs,
+        }
+      : {
+          outcome: 'indeterminate',
+          cause: 'cleanup_unconfirmed',
+          retryable: true,
+        },
+    result: cloudCleanupIndeterminate(),
+  };
+}
+
+function classifyCloudInspectTransportFailure(
+  error: unknown,
+  timeoutMs: number,
+): CloudDiagnosticTerminal {
+  return isTimeoutLike(error)
+    ? {
+        outcome: 'timed_out',
+        cause: 'settlement_unknown',
+        retryable: true,
+        timeoutMs,
+      }
+    : {
+        outcome: 'indeterminate',
+        cause: 'transport_failed',
+        retryable: true,
+      };
+}
+
+function cloudCleanupFailed(retryable: boolean): SandboxPhysicalCleanupResult {
+  return Object.freeze({
+    outcome: 'failed',
+    proof: null,
+    cause: 'cleanup_failed',
+    retryable,
+  });
+}
+
+function cloudCleanupIndeterminate(): SandboxPhysicalCleanupResult {
+  return Object.freeze({
+    outcome: 'indeterminate',
+    proof: null,
+    cause: 'cleanup_unconfirmed',
+    retryable: true,
+  });
+}
+
+function isTimeoutLike(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    ((error as { readonly name?: unknown }).name === 'TimeoutError' ||
+      (error as { readonly code?: unknown }).code === 'ETIMEDOUT')
+  );
+}
+
+function httpStatusClass(
+  status: number,
+): SandboxProvisioningDiagnosticHttpStatusClass | null {
+  if (status >= 100 && status < 200) return '1xx';
+  if (status >= 200 && status < 300) return '2xx';
+  if (status >= 300 && status < 400) return '3xx';
+  if (status >= 400 && status < 500) return '4xx';
+  if (status >= 500 && status < 600) return '5xx';
+  return null;
+}
+
 export function defineHttpCloudSandboxProvider<
   TCloneSpec = GitCloneSpec,
   TRuntimeId = string,
@@ -610,6 +1146,24 @@ export function defineHttpCloudSandboxProvider<
     provider,
     priority: options.priority,
   });
+}
+
+function normalizeHttpCloudCapabilities(
+  declared: readonly SandboxProviderCapability[] | undefined,
+): readonly SandboxProviderCapability[] {
+  const capabilities =
+    declared ?? HTTP_CLOUD_SANDBOX_PROVIDER_CAPABILITIES;
+  const unsupportedWorkspaceCapabilities = capabilities.filter(
+    (capability) =>
+      capability === 'workspace.git.materialize' ||
+      capability === 'workspace.git.deliver',
+  );
+  if (unsupportedWorkspaceCapabilities.length > 0) {
+    throw new SandboxProviderConfigurationError(
+      `HTTP cloud provider cannot declare unsupported canonical workspace capabilities: ${unsupportedWorkspaceCapabilities.join(', ')}`,
+    );
+  }
+  return Object.freeze([...capabilities]);
 }
 
 function normalizeBaseUrl(baseUrl: string): string {
@@ -664,11 +1218,9 @@ function assertCloudResourceGeneration(
 }
 
 function attestedCloudProviderSandboxId(raw: unknown): string | undefined {
-  const value = unwrapData(raw);
-  const providerSandboxId =
-    value && typeof value === 'object'
-      ? (value as { readonly providerSandboxId?: unknown }).providerSandboxId
-      : undefined;
+  // Every caller parses the connection from this same object first.
+  const value = unwrapData(raw) as { readonly providerSandboxId?: unknown };
+  const providerSandboxId = value.providerSandboxId;
   return typeof providerSandboxId === 'string' && providerSandboxId.length > 0
     ? providerSandboxId
     : undefined;
@@ -814,9 +1366,9 @@ function parseConnection(raw: unknown, fallbackTaskId: string): SandboxConnectio
 function parseOptionalTerminalDescriptor(
   raw: unknown,
 ): SandboxTerminalEndpointDescriptor | undefined {
-  const value = unwrapData(raw);
-  if (!value || typeof value !== 'object') return undefined;
-  const terminal = (value as Record<string, unknown>).terminal;
+  // Every caller parses the connection from this same object first.
+  const value = unwrapData(raw) as Record<string, unknown>;
+  const terminal = value.terminal;
   if (terminal === undefined || terminal === null) return undefined;
   if (!terminal || typeof terminal !== 'object' || Array.isArray(terminal)) {
     throw new Error('cloud sandbox terminal descriptor is invalid');

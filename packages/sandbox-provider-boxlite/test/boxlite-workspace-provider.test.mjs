@@ -53,9 +53,57 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+function privateCredential() {
+  return core.createExactHostGitCredential(
+    REPOSITORY_URL,
+    `Authorization: Basic ${CANARY}`,
+  );
+}
+
+function credentialSettlementFailingClient() {
+  return new mod.FakeBoxLiteClient({
+    execHandler: (request) => ({
+      exitCode: request.command.includes('rm -f --') ? 1 : 0,
+      stdout: '',
+      stderr: '',
+      output: '',
+      timedOut: false,
+    }),
+  });
+}
+
+function credentialSettlementUnconfirmedClient({
+  cleanupRetrySucceeds = false,
+} = {}) {
+  const client = credentialSettlementFailingClient();
+  let deleteAttempts = 0;
+  client.deleteSandbox = async (sandboxId) => {
+    deleteAttempts += 1;
+    client.deletedSandboxIds.push(sandboxId);
+    if (cleanupRetrySucceeds && deleteAttempts >= 2) {
+      client.sandboxes.delete(sandboxId);
+    }
+  };
+  return client;
+}
+
+async function leaveCredentialForProviderSettlement(workspace) {
+  await workspace.secretFilePort.writeSecretFile({
+    kind: 'git-http-credential',
+    credential: privateCredential(),
+  });
+}
+
 {
   const client = new mod.FakeBoxLiteClient();
   let captured;
+  const diagnostics = Object.freeze({
+    mode: 'task',
+    attemptContext: Object.freeze({ providerFamily: 'unknown' }),
+    createOperationId: () => '24000000-0000-4000-8000-000000000002',
+    bindProviderFamily: () => undefined,
+    emit: async () => undefined,
+  });
   const provider = new mod.BoxLiteSandboxProvider({
     config: validConfig(),
     client,
@@ -73,6 +121,7 @@ function deferred() {
         authHeader: 'Authorization: Basic legacy-secret',
       },
       beforeWorkspaceBoundary: boundary,
+      diagnostics,
     }),
   );
 
@@ -81,6 +130,7 @@ function deferred() {
   assert.equal(captured.plan.callerBranch, null);
   assert.equal(Object.isFrozen(captured.plan), true);
   assert.equal(captured.beforeBoundary, boundary);
+  assert.equal(captured.diagnostics, diagnostics);
   assert.equal(captured.workspaceDir, '/home/gem/workspace');
   assert.equal(
     client.execCalls.some((call) => call.command.includes('legacy.example.test')),
@@ -134,6 +184,166 @@ function deferred() {
   assert.deepEqual(client.deletedSandboxIds, [
     'cap-boxlite-typed-failure',
   ]);
+}
+
+{
+  const primary = new Error('workspace hook primary');
+  const client = credentialSettlementFailingClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceMaterialization: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      throw primary;
+    },
+  });
+  await assert.rejects(
+    () =>
+      provider.provision(
+        context('workspace-thrown-primary', {
+          workspace: plan({ credential: privateCredential() }),
+          cloneSpec: null,
+        }),
+      ),
+    (error) => error === primary,
+  );
+  assert.deepEqual(await provider.listReadoptable(), []);
+}
+
+{
+  const client = credentialSettlementFailingClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceMaterialization: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      return {
+        status: 'failed',
+        stage: 'workspace_transfer',
+        cause: 'authentication',
+        retryable: false,
+      };
+    },
+  });
+  await assert.rejects(
+    () =>
+      provider.provision(
+        context('workspace-result-primary', {
+          workspace: plan({ credential: privateCredential() }),
+          cloneSpec: null,
+        }),
+      ),
+    (error) =>
+      error?.code === 'sandbox_workspace_materialization_error' &&
+      error.failure?.stage === 'workspace_transfer' &&
+      error.failure?.cause === 'authentication',
+  );
+  assert.deepEqual(await provider.listReadoptable(), []);
+}
+
+{
+  const client = credentialSettlementFailingClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceMaterialization: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      return { status: 'succeeded', stage: 'complete' };
+    },
+  });
+  await assert.rejects(
+    () =>
+      provider.provision(
+        context('workspace-cleanup-only-failure', {
+          workspace: plan({ credential: privateCredential() }),
+          cloneSpec: null,
+        }),
+      ),
+    (error) =>
+      error?.code === 'sandbox_provider_configuration_error' &&
+      error.message ===
+        'BoxLite secret file removal required sandbox fencing' &&
+      !error.message.includes(CANARY),
+  );
+  assert.deepEqual(await provider.listReadoptable(), []);
+}
+
+{
+  const client = credentialSettlementUnconfirmedClient({
+    cleanupRetrySucceeds: true,
+  });
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceMaterialization: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      return {
+        status: 'failed',
+        stage: 'workspace_transfer',
+        cause: 'tls_network',
+        retryable: true,
+      };
+    },
+  });
+  await assert.rejects(
+    () =>
+      provider.provision(
+        context('workspace-cleanup-retry-recovers', {
+          workspace: plan({ credential: privateCredential() }),
+          cloneSpec: null,
+        }),
+      ),
+    (error) =>
+      error?.code === 'sandbox_workspace_materialization_error' &&
+      error.failure?.stage === 'workspace_transfer' &&
+      error.failure?.cause === 'tls_network' &&
+      error.failure?.retryable === true,
+  );
+  assert.equal(client.deletedSandboxIds.length, 1);
+  assert.equal(
+    client.sandboxes.has('cap-boxlite-workspace-cleanup-retry-recovers'),
+    true,
+  );
+  assert.deepEqual(await provider.listReadoptable(), []);
+}
+
+{
+  const primary = new Error('workspace primary with pending cleanup');
+  const taskId = 'workspace-cleanup-remains-pending';
+  const client = credentialSettlementUnconfirmedClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceMaterialization: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      throw primary;
+    },
+  });
+  await assert.rejects(
+    () =>
+      provider.provision(
+        context(taskId, {
+          workspace: plan({ credential: privateCredential() }),
+          cloneSpec: null,
+        }),
+      ),
+    (error) => error === primary,
+  );
+  assert.equal(client.deletedSandboxIds.length, 1);
+  assert.equal(client.sandboxes.has(`cap-boxlite-${taskId}`), true);
+  assert.equal(await provider.sandboxExists(taskId), true);
+  assert.deepEqual(await provider.listReadoptable(), []);
+  assert.equal(await provider.reattach(taskId), null);
+  await assert.rejects(
+    () =>
+      provider.provision(
+        context(taskId, {
+          workspace: plan({ credential: privateCredential() }),
+          cloneSpec: null,
+        }),
+      ),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
 }
 
 {
@@ -347,6 +557,428 @@ function deferred() {
     error: null,
   });
   assert.deepEqual(await provider.listReadoptable(), ['delivery-cleanup']);
+}
+
+{
+  const taskId = 'delivery-result-primary';
+  const ownership = {
+    ownerGeneration: 'owner:delivery-result-primary',
+    resourceGeneration: 'resource:delivery-result-primary',
+  };
+  const authorization = {
+    kind: 'generation',
+    taskId,
+    providerId: 'boxlite-workspace-test',
+    ownership,
+  };
+  const cleanupEvents = [];
+  const client = credentialSettlementFailingClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceDelivery: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      return {
+        hadChanges: false,
+        commitSha: null,
+        error: 'delivery_primary_failure',
+      };
+    },
+  });
+  await provider.provision(
+    context(taskId, { workspace: null, cloneSpec: null, ownership }),
+  );
+  const result = await provider.deliverWorkspaceChanges(taskId, {
+    branch: 'cap/delivery-result-primary',
+    commitMessage: 'preserve delivery result',
+    credential: privateCredential(),
+    ownership,
+    beforeSandboxCleanup: async () => {
+      cleanupEvents.push('authorized');
+      return authorization;
+    },
+    afterSandboxCleanup: async (received) => {
+      assert.equal(received, authorization);
+      cleanupEvents.push('completed');
+    },
+  });
+  assert.deepEqual(result, {
+    hadChanges: false,
+    commitSha: null,
+    error: 'delivery_primary_failure',
+  });
+  assert.deepEqual(cleanupEvents, ['authorized', 'completed']);
+  assert.deepEqual(await provider.listReadoptable(), []);
+  await provider.provision(
+    context(taskId, { workspace: null, cloneSpec: null, ownership }),
+  );
+  assert.deepEqual(await provider.listReadoptable(), [taskId]);
+}
+
+for (const primaryKind of ['thrown', 'typed-result']) {
+  const taskId = `delivery-ack-rejected-${primaryKind}`;
+  const ownership = {
+    ownerGeneration: `owner:${primaryKind}`,
+    resourceGeneration: `resource:${primaryKind}`,
+  };
+  const authorization = {
+    kind: 'generation',
+    taskId,
+    providerId: 'boxlite-workspace-test',
+    ownership,
+  };
+  const primary =
+    primaryKind === 'thrown'
+      ? new Error('delivery hook primary')
+      : Object.freeze({
+          hadChanges: false,
+          commitSha: null,
+          error: 'delivery_primary_failure',
+        });
+  const client = credentialSettlementFailingClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceDelivery: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      if (primaryKind === 'thrown') throw primary;
+      return primary;
+    },
+  });
+  await provider.provision(
+    context(taskId, { workspace: null, cloneSpec: null, ownership }),
+  );
+  const sandboxId = client.createCalls[0].sandboxId;
+  let pending;
+  await assert.rejects(
+    () =>
+      provider.deliverWorkspaceChanges(taskId, {
+        branch: `cap/${taskId}`,
+        commitMessage: 'preserve primary across rejected cleanup acknowledgement',
+        credential: privateCredential(),
+        ownership,
+        beforeSandboxCleanup: async () => authorization,
+        afterSandboxCleanup: async () => {
+          throw new Error(`owner-store acknowledgement rejected: ${CANARY}`);
+        },
+      }),
+    (error) => {
+      pending = error;
+      return (
+        error?.code === 'sandbox_cleanup_coordination_pending' &&
+        error.primary === primary &&
+        !Object.keys(error).includes('primary')
+      );
+    },
+  );
+  assert.equal(client.sandboxes.has(sandboxId), false);
+  assert.equal(await provider.sandboxExists(taskId), false);
+  assert.equal(
+    await provider.reattach(taskId, { ownership, providerSandboxId: sandboxId }),
+    null,
+  );
+  assert.deepEqual(await provider.listReadoptable(), []);
+  assert.doesNotMatch(JSON.stringify(pending), new RegExp(CANARY, 'u'));
+  await assert.rejects(
+    () =>
+      provider.provision(
+        context(taskId, { workspace: null, cloneSpec: null, ownership }),
+      ),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+
+  if (primaryKind === 'typed-result') {
+    assert.deepEqual(
+      await provider.teardownSandbox(taskId, {
+        ownership,
+        cleanupAuthorization: authorization,
+        providerSandboxId: sandboxId,
+      }),
+      { kind: 'already-absent' },
+    );
+    await provider.provision(
+      context(taskId, { workspace: null, cloneSpec: null, ownership }),
+    );
+    assert.deepEqual(await provider.listReadoptable(), [taskId]);
+  }
+}
+
+{
+  const taskId = 'delivery-ack-rejected-after-success';
+  const ownership = {
+    ownerGeneration: 'owner:delivery-success',
+    resourceGeneration: 'resource:delivery-success',
+  };
+  const authorization = {
+    kind: 'generation',
+    taskId,
+    providerId: 'boxlite-workspace-test',
+    ownership,
+  };
+  const client = credentialSettlementFailingClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceDelivery: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      return { hadChanges: true, commitSha: 'unsafe-sha', error: null };
+    },
+  });
+  await provider.provision(
+    context(taskId, { workspace: null, cloneSpec: null, ownership }),
+  );
+  const sandboxId = client.createCalls[0].sandboxId;
+  let pending;
+  await assert.rejects(
+    () =>
+      provider.deliverWorkspaceChanges(taskId, {
+        branch: `cap/${taskId}`,
+        commitMessage: 'successful delivery still requires cleanup acknowledgement',
+        credential: privateCredential(),
+        ownership,
+        beforeSandboxCleanup: async () => authorization,
+        afterSandboxCleanup: async () => {
+          throw new Error(`cleanup acknowledgement canary: ${CANARY}`);
+        },
+      }),
+    (error) => {
+      pending = error;
+      return (
+        error?.code === 'sandbox_cleanup_coordination_pending' &&
+        error.primary?.code === 'sandbox_provider_configuration_error' &&
+        error.primary.message ===
+          'BoxLite credential safety settlement could not be confirmed' &&
+        !Object.keys(error).includes('primary')
+      );
+    },
+  );
+  assert.equal(client.sandboxes.has(sandboxId), false);
+  assert.equal(await provider.sandboxExists(taskId), false);
+  assert.equal(await provider.reattach(taskId), null);
+  assert.deepEqual(await provider.listReadoptable(), []);
+  assert.doesNotMatch(JSON.stringify(pending), new RegExp(CANARY, 'u'));
+}
+
+{
+  const taskId = 'delivery-ack-rejected-inside-workspace-run';
+  const ownership = {
+    ownerGeneration: 'owner:delivery-run-fence',
+    resourceGeneration: 'resource:delivery-run-fence',
+  };
+  const authorization = {
+    kind: 'generation',
+    taskId,
+    providerId: 'boxlite-workspace-test',
+    ownership,
+  };
+  const client = new mod.FakeBoxLiteClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceDelivery: async (workspace) => {
+      const cancellation = new AbortController();
+      cancellation.abort();
+      const stage = await workspace.stageExecutor.execute({
+        stage: 'delivery_push',
+        request: { command: 'git push', timeoutMs: 1_000 },
+        signal: cancellation.signal,
+        remainingTimeoutMs: 1_000,
+      });
+      assert.deepEqual(stage, {
+        exitCode: 124,
+        output: '',
+        stdout: '',
+        stderr: '',
+        timedOut: true,
+      });
+      return { hadChanges: false, commitSha: null, error: null };
+    },
+  });
+  await provider.provision(
+    context(taskId, { workspace: null, cloneSpec: null, ownership }),
+  );
+  const sandboxId = client.createCalls[0].sandboxId;
+  let pending;
+  await assert.rejects(
+    () =>
+      provider.deliverWorkspaceChanges(taskId, {
+        branch: `cap/${taskId}`,
+        commitMessage: 'fence inside workspace hook',
+        credential: privateCredential(),
+        ownership,
+        beforeSandboxCleanup: async () => authorization,
+        afterSandboxCleanup: async () => {
+          throw new Error(`in-hook acknowledgement rejected: ${CANARY}`);
+        },
+      }),
+    (error) => {
+      pending = error;
+      return (
+        error?.code === 'sandbox_cleanup_coordination_pending' &&
+        error.primary?.code === 'sandbox_provider_configuration_error' &&
+        error.primary.message ===
+          'BoxLite credential safety settlement could not be confirmed' &&
+        !Object.keys(error).includes('primary')
+      );
+    },
+  );
+  assert.equal(client.sandboxes.has(sandboxId), false);
+  assert.equal(await provider.sandboxExists(taskId), false);
+  assert.equal(await provider.reattach(taskId), null);
+  assert.deepEqual(await provider.listReadoptable(), []);
+  assert.doesNotMatch(JSON.stringify(pending), new RegExp(CANARY, 'u'));
+  await assert.rejects(
+    () =>
+      provider.provision(
+        context(taskId, { workspace: null, cloneSpec: null, ownership }),
+      ),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+}
+
+{
+  const taskId = 'delivery-cleanup-remains-pending';
+  const ownership = {
+    ownerGeneration: 'owner:delivery-cleanup-pending',
+    resourceGeneration: 'resource:delivery-cleanup-pending',
+  };
+  const authorization = {
+    kind: 'generation',
+    taskId,
+    providerId: 'boxlite-workspace-test',
+    ownership,
+  };
+  const primary = Object.freeze({
+    hadChanges: false,
+    commitSha: null,
+    error: 'delivery_primary_failure',
+  });
+  const cleanupEvents = [];
+  let receivedPhysical;
+  const client = credentialSettlementUnconfirmedClient({
+    cleanupRetrySucceeds: true,
+  });
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceDelivery: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      return primary;
+    },
+  });
+  await provider.provision(
+    context(taskId, { workspace: null, cloneSpec: null, ownership }),
+  );
+  const sandboxId = client.createCalls[0].sandboxId;
+  await assert.rejects(
+    () =>
+      provider.deliverWorkspaceChanges(taskId, {
+        branch: 'cap/delivery-cleanup-remains-pending',
+        commitMessage: 'retain cleanup authority',
+        credential: privateCredential(),
+        ownership,
+        beforeSandboxCleanup: async () => {
+          cleanupEvents.push('authorized');
+          return authorization;
+        },
+        settleSandboxCleanupAttempt: async (receivedAuthorization, physical) => {
+          assert.equal(receivedAuthorization, authorization);
+          receivedPhysical = physical;
+          cleanupEvents.push('completed');
+        },
+      }),
+    (error) => error === primary,
+  );
+  assert.deepEqual(cleanupEvents, ['authorized', 'completed']);
+  assert.deepEqual(receivedPhysical, {
+    outcome: 'failed',
+    proof: null,
+    cause: 'cleanup_failed',
+    retryable: true,
+  });
+  assert.equal(client.sandboxes.has(sandboxId), true);
+  assert.equal(await provider.sandboxExists(taskId), true);
+  assert.equal(
+    await provider.reattach(taskId, { ownership, providerSandboxId: sandboxId }),
+    null,
+  );
+  assert.equal(await provider.getSelectedSandboxRun(taskId), null);
+  assert.deepEqual(await provider.listReadoptable(), []);
+
+  assert.deepEqual(
+    await provider.teardownSandbox(taskId, {
+      ownership,
+      cleanupAuthorization: authorization,
+      providerSandboxId: sandboxId,
+    }),
+    { kind: 'found-and-cleaned' },
+  );
+  assert.equal(await provider.sandboxExists(taskId), false);
+  await provider.provision(
+    context(taskId, { workspace: null, cloneSpec: null, ownership }),
+  );
+  assert.deepEqual(await provider.listReadoptable(), [taskId]);
+}
+
+{
+  const primary = new Error('delivery hook primary');
+  const client = credentialSettlementFailingClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceDelivery: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      throw primary;
+    },
+  });
+  await provider.provision(
+    context('delivery-thrown-primary', { workspace: null, cloneSpec: null }),
+  );
+  await assert.rejects(
+    () =>
+      provider.deliverWorkspaceChanges('delivery-thrown-primary', {
+        branch: 'cap/delivery-thrown-primary',
+        commitMessage: 'preserve thrown delivery error',
+        credential: privateCredential(),
+      }),
+    (error) => error === primary,
+  );
+  assert.deepEqual(await provider.listReadoptable(), []);
+}
+
+{
+  const taskId = 'delivery-cleanup-only-failure';
+  const client = credentialSettlementUnconfirmedClient();
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: validConfig(),
+    client,
+    workspaceDelivery: async (workspace) => {
+      await leaveCredentialForProviderSettlement(workspace);
+      return { hadChanges: true, commitSha: 'unsafe-sha', error: null };
+    },
+  });
+  await provider.provision(
+    context(taskId, {
+      workspace: null,
+      cloneSpec: null,
+    }),
+  );
+  await assert.rejects(
+    () =>
+      provider.deliverWorkspaceChanges(taskId, {
+        branch: 'cap/delivery-cleanup-only-failure',
+        commitMessage: 'cleanup must fail closed',
+        credential: privateCredential(),
+      }),
+    (error) =>
+      error?.code === 'sandbox_provider_configuration_error' &&
+      error.message ===
+        'BoxLite credential safety fencing could not be confirmed' &&
+      !error.message.includes(CANARY),
+  );
+  assert.equal(await provider.sandboxExists(taskId), true);
+  assert.equal(await provider.reattach(taskId), null);
+  assert.deepEqual(await provider.listReadoptable(), []);
 }
 
 {

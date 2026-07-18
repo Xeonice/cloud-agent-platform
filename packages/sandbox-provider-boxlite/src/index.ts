@@ -4,6 +4,7 @@ export * from './boxlite-config.js';
 export * from './boxlite-environment-validation.js';
 export * from './boxlite-hooks.js';
 export * from './boxlite-preflight.js';
+export * from './boxlite-provisioning-diagnostics.js';
 export * from './boxlite-provider.js';
 export * from './boxlite-retention.js';
 export * from './boxlite-terminal.js';

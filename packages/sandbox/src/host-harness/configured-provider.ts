@@ -7,8 +7,12 @@ import type {
   SandboxTranscriptSourceBase,
 } from '@cap/sandbox-core';
 import {
+  classifySandboxRuntimeCommandExecution,
+  SandboxRuntimeCommandExecutionError,
   SandboxRuntimeModelSetupError,
   scrubSandboxCommandOutput,
+  validateSandboxRuntimePreflightCommandDescriptor,
+  validateSandboxRuntimeSetupCommandDescriptor,
 } from '@cap/sandbox-core';
 import {
   SANDBOX_METADATA_PATH,
@@ -306,7 +310,6 @@ function createAioProviderDescriptor<
             host,
             logger: host.logger,
             providerLabel: 'AIO',
-            scrubOutput: scrubAioExecSecrets,
           });
         } finally {
           provisionRuntimes.delete(taskId);
@@ -572,17 +575,20 @@ async function runRuntimePreflight<TAuthMaterial>(args: {
     scrubOutput: args.scrubOutput,
   });
   const probes = args.runtime.preflightProbes();
-  for (const probe of probes) {
-    const { exitCode, output } = await runSandboxCommand(
-      args.executor,
-      probe.command,
+  for (const [index, probe] of probes.entries()) {
+    const descriptor = validateSandboxRuntimePreflightCommandDescriptor(
+      probe.descriptor,
+      index + 1,
     );
-    if (exitCode !== 0) {
-      const scrubbed = args.scrubOutput(output).trim();
-      throw new Error(
-        `runtime "${args.runtime.id}" preflight for task ${args.taskId} failed: ` +
-          `${probe.name} (${probe.command}) exit_code ${exitCode}` +
-          (scrubbed ? ` - ${scrubbed}` : ''),
+    const classification = await classifySandboxRuntimeCommandExecution({
+      executor: args.executor,
+      request: { command: probe.command },
+      descriptor,
+    });
+    if (classification.outcome !== 'succeeded') {
+      throw new SandboxRuntimeCommandExecutionError(
+        descriptor,
+        classification,
       );
     }
   }
@@ -646,7 +652,6 @@ async function runRuntimeSetup<
   >;
   readonly logger?: SandboxHostLogger;
   readonly providerLabel: string;
-  readonly scrubOutput: (output: string) => string;
 }): Promise<void> {
   const launchContext = await args.host.provisionLookup.getTaskLaunchContext(
     args.taskId,
@@ -672,13 +677,26 @@ async function runRuntimeSetup<
     );
   }
 
-  for (const { command, tolerateUnresolvedExit } of plan.commands) {
-    const { exitCode, output } = await runSandboxCommand(args.executor, command);
-    if (setupCommandFailed(exitCode, tolerateUnresolvedExit)) {
-      const scrubbed = args.scrubOutput(output).trim();
-      throw new Error(
-        `runtime "${args.runtime.id}" setup for task ${args.taskId} failed: exit_code ${exitCode}` +
-          (scrubbed ? ` - ${scrubbed}` : ''),
+  for (const [index, command] of plan.commands.entries()) {
+    const descriptor = validateSandboxRuntimeSetupCommandDescriptor(
+      command.descriptor,
+      index + 1,
+    );
+    const classification = await classifySandboxRuntimeCommandExecution({
+      executor: args.executor,
+      request: { command: command.command },
+      descriptor,
+    });
+    if (
+      classification.outcome !== 'succeeded' &&
+      !(
+        classification.settlement === 'indeterminate' &&
+        command.tolerateUnresolvedExit
+      )
+    ) {
+      throw new SandboxRuntimeCommandExecutionError(
+        descriptor,
+        classification,
       );
     }
   }
@@ -1041,7 +1059,6 @@ async function runBoxLiteRuntimeSetup<
     host: args.host,
     logger: args.host.logger,
     providerLabel: 'BoxLite',
-    scrubOutput: scrubSandboxCommandOutput,
   });
 }
 

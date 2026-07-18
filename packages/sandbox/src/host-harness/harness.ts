@@ -1,5 +1,7 @@
 import type {
   SandboxEnvironmentProviderFamily,
+  SandboxRuntimePreflightCommandDescriptor,
+  SandboxRuntimeSetupCommandDescriptor,
   SandboxRunOwnerStore,
   SandboxResolvedEnvironmentMetadata,
   SandboxTranscriptSourceBase,
@@ -39,11 +41,15 @@ export interface SandboxHostProvisionLookup<TCloneSpec> {
 export interface SandboxHostRuntimePreflightProbe {
   readonly name: string;
   readonly command: string;
+  /** Safe identity declared independently from the possibly-secret command. */
+  readonly descriptor: SandboxRuntimePreflightCommandDescriptor;
 }
 
 export interface SandboxHostSetupCommand {
   readonly command: string;
   readonly tolerateUnresolvedExit: boolean;
+  /** Safe identity declared independently from the possibly-secret command. */
+  readonly descriptor: SandboxRuntimeSetupCommandDescriptor;
 }
 
 export type SandboxHostSetupPlan =

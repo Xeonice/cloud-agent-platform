@@ -18,6 +18,8 @@
 import {
   ListTasksResponseSchema,
   TaskResponseSchema,
+  TaskProvisioningDiagnosticsQuerySchema,
+  TaskProvisioningDiagnosticsResponseSchema,
   ListReposResponseSchema,
   RepoResponseSchema,
   AuthSessionResponseSchema,
@@ -54,11 +56,14 @@ import {
   RuntimeModelCatalogSchema,
   RuntimeModelErrorSchema,
   RepoImportFailureSchema,
+  ScopeSchema,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
   type UpdateStatus,
   type ListTasksResponse,
   type TaskResponse,
+  type TaskProvisioningDiagnosticsQuery,
+  type TaskProvisioningDiagnosticsResponse,
   type ListReposResponse,
   type RepoResponse,
   type CreateTaskRequest,
@@ -98,6 +103,7 @@ import {
   type RuntimeModelCatalog,
   type RuntimeModelError,
   type RepoImportFailure,
+  type Scope,
 } from "@cap/contracts";
 import { createParser } from "eventsource-parser";
 import {
@@ -167,6 +173,28 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = "ApiError";
+  }
+}
+
+export type TaskProvisioningDiagnosticsClientErrorReason =
+  | "denied"
+  | "not_found"
+  | "unavailable"
+  | "invalid_response"
+  | "request_failed";
+
+/**
+ * Fixed, payload-free diagnostics read error. Query caches may retain errors,
+ * so the raw response body, provider prose, URL, and parser input are reduced
+ * before the error crosses into TanStack Query.
+ */
+export class TaskProvisioningDiagnosticsClientError extends Error {
+  constructor(
+    readonly reason: TaskProvisioningDiagnosticsClientErrorReason,
+    readonly status: number | null,
+  ) {
+    super(`Task provisioning diagnostics ${reason}`);
+    this.name = "TaskProvisioningDiagnosticsClientError";
   }
 }
 
@@ -526,6 +554,41 @@ export async function listTasks(): Promise<ListTasksResponse> {
 /** `GET /tasks/:id` — a single task (session page). */
 export async function getTask(id: string): Promise<TaskResponse> {
   return TaskResponseSchema.parse(await request(`/tasks/${encodeURIComponent(id)}`));
+}
+
+/**
+ * `GET /tasks/:id/provisioning-diagnostics` — Internal Console read. The
+ * response is the same strict canonical projection used by Public V1 and MCP,
+ * while this path accepts only a browser session and applies the Console-only
+ * live administrator recheck on the server.
+ */
+export async function getTaskProvisioningDiagnostics(
+  taskId: string,
+  input: TaskProvisioningDiagnosticsQuery,
+): Promise<TaskProvisioningDiagnosticsResponse> {
+  try {
+    const query = TaskProvisioningDiagnosticsQuerySchema.parse(input);
+    const params = new URLSearchParams({ limit: String(query.limit) });
+    if (query.cursor !== undefined) params.set("cursor", query.cursor);
+    const response = await request(
+      `/tasks/${encodeURIComponent(taskId)}/provisioning-diagnostics?${params.toString()}`,
+    );
+    return TaskProvisioningDiagnosticsResponseSchema.parse(response);
+  } catch (error) {
+    if (error instanceof TaskProvisioningDiagnosticsClientError) throw error;
+    if (error instanceof ApiError) {
+      const reason: TaskProvisioningDiagnosticsClientErrorReason =
+        error.status === 403
+          ? "denied"
+          : error.status === 404
+            ? "not_found"
+            : error.status === 503
+              ? "unavailable"
+              : "request_failed";
+      throw new TaskProvisioningDiagnosticsClientError(reason, error.status);
+    }
+    throw new TaskProvisioningDiagnosticsClientError("invalid_response", null);
+  }
 }
 
 /** `GET /repos` — registered repos for the new-task form. */
@@ -1169,10 +1232,17 @@ export async function getUpdateStatus(): Promise<UpdateStatus> {
 // ---------------------------------------------------------------------------
 
 /** A scope an MCP token may carry (validated against the shared enum server-side). */
-export type McpTokenScope =
-  | "tasks:read"
-  | "tasks:write"
-  | "repos:read";
+export type McpTokenScope = Scope;
+
+function parseMcpTokenScopes(value: unknown): McpTokenScope[] {
+  if (!Array.isArray(value)) return [];
+  const scopes: McpTokenScope[] = [];
+  for (const candidate of value) {
+    const parsed = ScopeSchema.safeParse(candidate);
+    if (parsed.success && !scopes.includes(parsed.data)) scopes.push(parsed.data);
+  }
+  return scopes;
+}
 
 /** A non-secret MCP-token list row — prefix + last4 only, NEVER the raw/hash. */
 export interface McpTokenSummary {
@@ -1240,9 +1310,7 @@ export async function listMcpTokens(): Promise<ListMcpTokensResponse> {
     out.push({
       id: e.id,
       name: e.name,
-      scopes: Array.isArray(e.scopes)
-        ? (e.scopes.filter((s) => typeof s === "string") as McpTokenScope[])
-        : [],
+      scopes: parseMcpTokenScopes(e.scopes),
       prefix: typeof e.prefix === "string" ? e.prefix : "",
       last4: typeof e.last4 === "string" ? e.last4 : "",
       lastUsedAt: typeof e.lastUsedAt === "string" ? e.lastUsedAt : null,
@@ -1272,7 +1340,7 @@ export async function mintMcpToken(
     id: typeof minted.id === "string" ? minted.id : "",
     name: typeof minted.name === "string" ? minted.name : body.name,
     scopes: Array.isArray(minted.scopes)
-      ? (minted.scopes.filter((s) => typeof s === "string") as McpTokenScope[])
+      ? parseMcpTokenScopes(minted.scopes)
       : body.scopes,
     prefix: typeof minted.prefix === "string" ? minted.prefix : "",
     last4: typeof minted.last4 === "string" ? minted.last4 : "",
