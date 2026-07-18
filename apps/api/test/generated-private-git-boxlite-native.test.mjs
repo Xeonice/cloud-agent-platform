@@ -6,8 +6,15 @@ import test from 'node:test';
 import {
   BoxLiteRestClient,
   BoxLiteSandboxProvider,
+  InMemorySandboxRunOwnerStore,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
+  SandboxProviderRouter,
+  classifySandboxRuntimeCommandExecution,
   createBoxLiteRuntimePreflight,
   createExactHostGitCredential,
+  createSandboxProvisioningDiagnosticEmitter,
+  defineLocalSandboxProvider,
   deleteBoxLiteSandboxAndConfirm,
   materializeSandboxGitWorkspaceStaged,
   readBoxLiteProviderConfig,
@@ -111,7 +118,7 @@ class ObservedBoxLiteRestClient extends BoxLiteRestClient {
 }
 
 test(
-  'gated native BoxLite cancels and retries a generated large private Git workspace without leaks',
+  'gated native BoxLite settles cancel/runtime failure/retry diagnostics and durably reconciles a generated private Git workspace without leaks',
   { timeout: STORY_TIMEOUT_MS },
   async (t) => {
     if (!LIVE_ENABLED) {
@@ -125,12 +132,18 @@ test(
       fixture: null,
       client: null,
       provider: null,
-      taskId: `private-git-${randomUUID().slice(0, 8)}`,
+      router: null,
+      ownerStore: null,
+      taskId: randomUUID(),
       storyPrefix: null,
       ownedSandboxIds: new Set(),
       baselineSandboxIds: new Set(),
+      diagnosticHarnesses: [],
+      forbiddenValues: [],
+      rawProviderIds: new Set(),
       retainedSandboxId: null,
       retainedRun: false,
+      retainedDiagnostics: null,
     };
     let storyFailure = null;
 
@@ -183,12 +196,15 @@ async function runLiveStory(t, state) {
     authorizationValue,
     fixture.basicAuth.authorizationHeader,
   ];
+  state.forbiddenValues = forbiddenValues;
+  state.rawProviderIds.add(config.providerId);
   const client = new ObservedBoxLiteRestClient(config, forbiddenValues);
   state.client = client;
   for (const sandbox of await requireSandboxList(client)) {
     state.baselineSandboxIds.add(sandbox.id);
   }
 
+  let failNextRuntimeSetup = true;
   const provider = new BoxLiteSandboxProvider({
     config,
     client,
@@ -209,8 +225,55 @@ async function runLiveStory(t, state) {
       commandTimeoutMs: config.timeoutMs,
     }),
     workspaceMaterialization: materializeSandboxGitWorkspaceStaged,
+    runtimeSetup: async ({ executor, workspacePath }) => {
+      const shouldFail = failNextRuntimeSetup;
+      const classification = await classifySandboxRuntimeCommandExecution({
+        executor,
+        request: {
+          command: shouldFail
+            ? "sh -lc 'exit 23'"
+            : "sh -lc 'test -d .git'",
+          cwd: workspacePath,
+          timeoutMs: config.timeoutMs,
+        },
+        descriptor: { commandKind: 'runtime_setup', ordinal: 1 },
+      });
+      if (shouldFail) {
+        failNextRuntimeSetup = false;
+        assert.deepEqual(
+          {
+            settlement: classification.settlement,
+            outcome: classification.outcome,
+            cause: classification.cause,
+            exitCode: classification.exitCode,
+          },
+          {
+            settlement: 'exit',
+            outcome: 'failed',
+            cause: 'command_failed',
+            exitCode: 23,
+          },
+        );
+        throw new Error('controlled native runtime setup failure');
+      }
+      assert.equal(classification.outcome, 'succeeded');
+      assert.equal(classification.exitCode, 0);
+    },
   });
   state.provider = provider;
+  const ownerStore = new InMemorySandboxRunOwnerStore();
+  const router = new SandboxProviderRouter(
+    [
+      defineLocalSandboxProvider({
+        id: config.providerId,
+        provider,
+        capabilities: config.capabilities,
+      }),
+    ],
+    { ownerStore },
+  );
+  state.ownerStore = ownerStore;
+  state.router = router;
 
   const resources = Object.freeze({ diskSizeGb: config.diskSizeGb });
   const workspace = Object.freeze({
@@ -230,13 +293,23 @@ async function runLiveStory(t, state) {
 
   const cancelledTiming = createStageTimingRecorder('cancelled-attempt');
   const cancelledDisk = [];
+  const cancelledDiagnostics = createLiveDiagnosticHarness(
+    state.taskId,
+    1,
+    'cancelled-attempt',
+  );
+  state.diagnosticHarnesses.push(cancelledDiagnostics);
+  const cancelledOwnership = createOwnershipFence();
+  const sandboxIdsBeforeCancellation = new Set(state.ownedSandboxIds);
   const cancellation = new AbortController();
   fixture.transferBarrier.arm();
-  const firstProvision = provider.provision(
+  const firstProvision = router.provision(
     createProvisionContext({
       state,
       resources,
       workspace,
+      diagnostics: cancelledDiagnostics.diagnostics,
+      ownership: cancelledOwnership,
       cancellationSignal: cancellation.signal,
       timing: cancelledTiming,
       diskSamples: cancelledDisk,
@@ -263,6 +336,7 @@ async function runLiveStory(t, state) {
     BOUNDARY_WATCHDOG_MS,
     'cancelled BoxLite provision did not settle',
   );
+  await cancelledDiagnostics.diagnostics.flush();
   assert.equal(firstFailure?.name, 'AbortError');
   assert.ok(
     cancelledTiming.events.some(
@@ -271,24 +345,148 @@ async function runLiveStory(t, state) {
     ),
     'workspace progress retains the typed cancellation stage',
   );
-  const cancelledSandboxIds = new Set(state.ownedSandboxIds);
+  const cancelledSandboxIds = new Set(
+    [...state.ownedSandboxIds].filter(
+      (sandboxId) => !sandboxIdsBeforeCancellation.has(sandboxId),
+    ),
+  );
+  assert.ok(cancelledSandboxIds.size > 0, 'cancellation created one owned box');
   for (const sandboxId of cancelledSandboxIds) {
+    state.rawProviderIds.add(sandboxId);
     assert.equal(
       await client.getSandbox(sandboxId),
       null,
       'cancellation fences and confirms the first sandbox absent',
     );
   }
+  assertDiagnosticHarness(cancelledDiagnostics, {
+    forbiddenValues,
+    rawProviderIds: state.rawProviderIds,
+  });
+  assertDiagnosticTerminal(
+    cancelledDiagnostics.events,
+    (event) =>
+      event.operation === 'repository_transfer' &&
+      event.outcome === 'cancelled' &&
+      event.cause === 'cancelled',
+    'the slow repository transfer has one controlled cancellation outcome',
+  );
+  assertSeparateSuccessfulCleanup(cancelledDiagnostics.events);
+  await assertDurableAttemptRemoved(router, ownerStore, state.taskId);
   fixture.transferBarrier.release();
 
-  const successfulTiming = createStageTimingRecorder('successful-retry');
-  const successfulDisk = [];
-  const connection = await withinDeadline(
-    provider.provision(
+  const runtimeFailureTiming = createStageTimingRecorder(
+    'runtime-setup-failure',
+  );
+  const runtimeFailureDisk = [];
+  const runtimeFailureDiagnostics = createLiveDiagnosticHarness(
+    state.taskId,
+    2,
+    'runtime-setup-failure',
+  );
+  state.diagnosticHarnesses.push(runtimeFailureDiagnostics);
+  const runtimeFailureOwnership = createOwnershipFence();
+  const sandboxIdsBeforeRuntimeFailure = new Set(state.ownedSandboxIds);
+  const runtimeFailure = await rejectedWithin(
+    router.provision(
       createProvisionContext({
         state,
         resources,
         workspace,
+        diagnostics: runtimeFailureDiagnostics.diagnostics,
+        ownership: runtimeFailureOwnership,
+        timing: runtimeFailureTiming,
+        diskSamples: runtimeFailureDisk,
+        attempt: 'runtime-setup-failure',
+      }),
+    ),
+    BOUNDARY_WATCHDOG_MS,
+    'controlled BoxLite runtime setup failure did not settle',
+  );
+  await runtimeFailureDiagnostics.diagnostics.flush();
+  assert.deepEqual(
+    {
+      code: runtimeFailure?.code,
+      stage: runtimeFailure?.stage,
+      message: runtimeFailure?.message,
+    },
+    {
+      code: 'sandbox_provisioning_stage_error',
+      stage: 'runtime_setup',
+      message: 'Sandbox provisioning failed during runtime_setup',
+    },
+  );
+  assert.equal(
+    JSON.stringify(runtimeFailure).includes('controlled native runtime setup failure'),
+    false,
+    'the provider-private runtime error does not cross the redaction boundary',
+  );
+  assert.equal(
+    runtimeFailureDisk.length,
+    1,
+    'runtime-failure attempt records pre-transfer free space',
+  );
+  const runtimeFailureSandboxIds = new Set(
+    [...state.ownedSandboxIds].filter(
+      (sandboxId) => !sandboxIdsBeforeRuntimeFailure.has(sandboxId),
+    ),
+  );
+  assert.ok(
+    runtimeFailureSandboxIds.size > 0,
+    'runtime setup failure created one owned box',
+  );
+  for (const sandboxId of runtimeFailureSandboxIds) {
+    state.rawProviderIds.add(sandboxId);
+    assert.equal(
+      await client.getSandbox(sandboxId),
+      null,
+      'runtime failure cleanup confirms the owned box absent',
+    );
+  }
+  assertDiagnosticHarness(runtimeFailureDiagnostics, {
+    forbiddenValues,
+    rawProviderIds: state.rawProviderIds,
+  });
+  const runtimeSettlement = assertDiagnosticTerminal(
+    runtimeFailureDiagnostics.events,
+    (event) =>
+      event.operation === 'native_exec_settlement' &&
+      event.commandKind === 'runtime_setup' &&
+      event.outcome === 'failed',
+    'native runtime setup has one proven failed settlement',
+  );
+  assert.deepEqual(
+    {
+      cause: runtimeSettlement.cause,
+      exitCode: runtimeSettlement.exitCode,
+    },
+    { cause: 'command_failed', exitCode: 23 },
+  );
+  assertDiagnosticTerminal(
+    runtimeFailureDiagnostics.events,
+    (event) =>
+      event.operation === 'runtime_setup' && event.outcome === 'failed',
+    'the outer runtime setup operation remains the primary failure',
+  );
+  assertSeparateSuccessfulCleanup(runtimeFailureDiagnostics.events);
+  await assertDurableAttemptRemoved(router, ownerStore, state.taskId);
+
+  const successfulTiming = createStageTimingRecorder('successful-retry');
+  const successfulDisk = [];
+  const successfulDiagnostics = createLiveDiagnosticHarness(
+    state.taskId,
+    3,
+    'successful-retry',
+  );
+  state.diagnosticHarnesses.push(successfulDiagnostics);
+  const connection = await withinDeadline(
+    router.provision(
+      createProvisionContext({
+        state,
+        resources,
+        workspace,
+        diagnostics: successfulDiagnostics.diagnostics,
+        ownership: createOwnershipFence(),
         timing: successfulTiming,
         diskSamples: successfulDisk,
         attempt: 'successful-retry',
@@ -297,13 +495,16 @@ async function runLiveStory(t, state) {
     STORY_TIMEOUT_MS - 30_000,
     'BoxLite retry did not settle within the story deadline',
   );
+  await successfulDiagnostics.diagnostics.flush();
   assert.equal(connection.taskId, state.taskId);
   state.retainedRun = true;
+  state.retainedDiagnostics = successfulDiagnostics;
 
-  const selected = await provider.getSelectedSandboxRun(state.taskId);
+  const selected = await router.getSelectedSandboxRun(state.taskId);
   assert.ok(selected?.providerSandboxId, 'retry retains one selected sandbox');
   state.retainedSandboxId = selected.providerSandboxId;
   state.ownedSandboxIds.add(selected.providerSandboxId);
+  state.rawProviderIds.add(selected.providerSandboxId);
   assert.equal(selected.providerId, config.providerId);
   assert.equal(selected.preflight?.status, 'passed');
   assert.equal(selected.workspace?.git.materialized, true);
@@ -322,7 +523,11 @@ async function runLiveStory(t, state) {
   assert.ok(postDisk.totalKiB >= minimumDiskKiB(resources.diskSizeGb));
   assert.ok(postDisk.availableKiB >= 0);
 
-  assert.equal(client.createRequests.length, 2, 'cancel and retry each create one box');
+  assert.equal(
+    client.createRequests.length,
+    3,
+    'cancel, runtime failure, and successful retry each create one box',
+  );
   assert.ok(
     client.createRequests.every(
       (request) => request.diskSizeGb === resources.diskSizeGb,
@@ -341,11 +546,29 @@ async function runLiveStory(t, state) {
     selected.providerSandboxId,
   );
   assertSuccessfulStageTimings(successfulTiming);
+  assertDiagnosticHarness(successfulDiagnostics, {
+    forbiddenValues,
+    rawProviderIds: state.rawProviderIds,
+  });
+  const successfulRuntimeSettlement = assertDiagnosticTerminal(
+    successfulDiagnostics.events,
+    (event) =>
+      event.operation === 'native_exec_settlement' &&
+      event.commandKind === 'runtime_setup' &&
+      event.outcome === 'succeeded',
+    'successful retry records a proven native runtime settlement',
+  );
+  assert.equal(successfulRuntimeSettlement.exitCode, 0);
   assertAuthorizationIsolation(fixture);
   assert.equal(fixture.diagnostics().crossOriginAuthorizationLeakCount, 0);
   assertForbiddenValuesAbsent(
     JSON.stringify({
-      progress: [cancelledTiming.events, successfulTiming.events],
+      progress: [
+        cancelledTiming.events,
+        runtimeFailureTiming.events,
+        successfulTiming.events,
+      ],
+      diagnostics: state.diagnosticHarnesses.map((harness) => harness.events),
       createRequests: client.createRequests,
       execObservations: client.execObservations,
     }),
@@ -357,6 +580,7 @@ async function runLiveStory(t, state) {
     JSON.stringify({
       requestedDiskSizeGb: resources.diskSizeGb,
       cancelledPreFreeKiB: cancelledDisk[0].availableKiB,
+      runtimeFailurePreFreeKiB: runtimeFailureDisk[0].availableKiB,
       retryPreFreeKiB: successfulDisk[0].availableKiB,
       retryPostFreeKiB: postDisk.availableKiB,
       stageTimingsMs: successfulTiming.durations(),
@@ -371,6 +595,8 @@ function createProvisionContext(args) {
     modelIntent: { kind: 'runtime-default' },
     runtimeId: 'codex',
     executionMode: 'headless-exec',
+    ownership: args.ownership,
+    diagnostics: args.diagnostics,
     resources: args.resources,
     workspace: args.workspace,
     cloneSpec: null,
@@ -397,6 +623,138 @@ function createProvisionContext(args) {
       sampled = true;
     },
   };
+}
+
+function createOwnershipFence() {
+  return Object.freeze({
+    ownerGeneration: randomUUID(),
+    resourceGeneration: randomUUID(),
+  });
+}
+
+function createLiveDiagnosticHarness(taskId, attempt, label) {
+  const events = [];
+  const diagnostics = createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: {
+      schemaVersion: SANDBOX_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
+      taskId,
+      attemptId: randomUUID(),
+      attempt,
+      admissionMode: 'durable',
+      providerFamily: 'unknown',
+    },
+    record: async (event) => {
+      events.push(event);
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+  return { label, diagnostics, events };
+}
+
+function assertDiagnosticHarness(harness, options) {
+  assert.ok(harness.events.length > 0, `${harness.label} records diagnostics`);
+  assert.ok(
+    harness.events.length <=
+      SANDBOX_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT,
+    `${harness.label} stays within the attempt-local diagnostic ceiling`,
+  );
+  assert.deepEqual(
+    harness.events.map((event) => event.sequence),
+    harness.events.map((_, index) => index + 1),
+    `${harness.label} preserves one contiguous canonical sequence`,
+  );
+
+  const byOperationId = new Map();
+  for (const event of harness.events) {
+    const retained = byOperationId.get(event.operationId) ?? [];
+    retained.push(event);
+    byOperationId.set(event.operationId, retained);
+  }
+  for (const [operationId, events] of byOperationId) {
+    assert.equal(
+      events.filter((event) => event.outcome === 'started').length,
+      1,
+      `${harness.label}/${operationId} has exactly one start`,
+    );
+    assert.equal(
+      events.filter((event) => event.outcome !== 'started').length,
+      1,
+      `${harness.label}/${operationId} has exactly one terminal`,
+    );
+  }
+
+  const serialized = JSON.stringify(harness.events);
+  assertForbiddenValuesAbsent(
+    serialized,
+    [...options.forbiddenValues, ...options.rawProviderIds],
+    `${harness.label} diagnostic ledger`,
+  );
+  for (const forbiddenField of [
+    'sandboxId',
+    'resourceId',
+    'providerId',
+    'providerSandboxId',
+    'executionId',
+    'command',
+    'args',
+    'argv',
+    'cwd',
+    'stdout',
+    'stderr',
+    'output',
+    'prompt',
+    'path',
+    'endpoint',
+    'url',
+    'body',
+    'response',
+    'error',
+    'message',
+    'stack',
+    'headers',
+  ]) {
+    assert.equal(
+      serialized.includes(`"${forbiddenField}":`),
+      false,
+      `${harness.label} excludes forbidden field ${forbiddenField}`,
+    );
+  }
+}
+
+function assertDiagnosticTerminal(events, predicate, message) {
+  const matches = events.filter(
+    (event) => event.outcome !== 'started' && predicate(event),
+  );
+  assert.equal(matches.length, 1, message);
+  return matches[0];
+}
+
+function assertSeparateSuccessfulCleanup(events) {
+  const cleanupTerminals = events.filter(
+    (event) => event.channel === 'cleanup' && event.outcome !== 'started',
+  );
+  assert.ok(cleanupTerminals.length > 0, 'cleanup has its own diagnostic channel');
+  assert.ok(
+    cleanupTerminals.some(
+      (event) =>
+        (event.operation === 'sandbox_delete' ||
+          event.operation === 'sandbox_absence_confirm') &&
+        event.outcome === 'succeeded',
+    ),
+    'cleanup records confirmed physical settlement independently',
+  );
+}
+
+async function assertDurableAttemptRemoved(router, ownerStore, taskId) {
+  assert.equal(
+    await ownerStore.getSandboxRunOwner(taskId),
+    null,
+    'failed attempt leaves no active durable owner',
+  );
+  const authority = await router.getSandboxCleanupAuthority(taskId);
+  assert.equal(authority.state, 'succeeded');
+  assert.equal(authority.status, 'removed');
+  assert.equal(authority.lastAttemptOutcome, 'succeeded');
 }
 
 async function assertGeneratedWorkspace(client, sandboxId, workspacePath, fixture) {
@@ -661,20 +1019,61 @@ async function cleanupLiveStory(state) {
   const failures = [];
   state.fixture?.transferBarrier.release();
 
-  if (state.provider && state.retainedRun) {
-    await collectCleanupFailure(failures, 'provider teardown', async () => {
-      const first = await state.provider.teardownSandbox(state.taskId, {
-        ...(state.retainedSandboxId
-          ? { providerSandboxId: state.retainedSandboxId }
+  if (state.router && state.ownerStore && state.retainedRun) {
+    await collectCleanupFailure(failures, 'durable router teardown', async () => {
+      const claim = await state.router.claimSandboxCleanupOwnership(
+        state.taskId,
+        randomUUID(),
+      );
+      assert.equal(claim.kind, 'authorized');
+      const first = await state.router.teardownSandbox(state.taskId, {
+        cleanupAuthorization: claim.authorization,
+        disposition: 'superseded-remove',
+        ...(state.retainedDiagnostics
+          ? { diagnostics: state.retainedDiagnostics.diagnostics }
           : {}),
       });
-      assert.equal(first.kind, 'found-and-cleaned');
-      const repeated = await state.provider.teardownSandbox(state.taskId, {
-        ...(state.retainedSandboxId
-          ? { providerSandboxId: state.retainedSandboxId }
+      assert.equal(first.outcome, 'succeeded');
+      assert.ok(
+        first.proof === 'found-and-cleaned' || first.proof === 'already-absent',
+      );
+      await state.retainedDiagnostics?.diagnostics.flush();
+      const replay = await state.router.claimSandboxCleanupOwnership(
+        state.taskId,
+        randomUUID(),
+      );
+      assert.equal(replay.kind, 'settled');
+      const authority = await state.router.getSandboxCleanupAuthority(
+        state.taskId,
+      );
+      assert.equal(authority.state, 'succeeded');
+      assert.equal(authority.status, 'removed');
+      assert.equal(authority.lastAttemptOutcome, 'succeeded');
+      assert.deepEqual(
+        await state.ownerStore.listActiveSandboxRunOwners(),
+        [],
+        'durable reconciliation leaves no active owner',
+      );
+      if (state.retainedDiagnostics) {
+        assertDiagnosticHarness(state.retainedDiagnostics, {
+          forbiddenValues: state.forbiddenValues,
+          rawProviderIds: state.rawProviderIds,
+        });
+        assertSeparateSuccessfulCleanup(state.retainedDiagnostics.events);
+      }
+      const repeated = await state.router.teardownSandbox(state.taskId, {
+        cleanupAuthorization:
+          claim.authorization,
+        disposition: 'superseded-remove',
+        ...(state.retainedDiagnostics
+          ? { diagnostics: state.retainedDiagnostics.diagnostics }
           : {}),
       });
-      assert.equal(repeated.kind, 'already-absent');
+      assert.equal(repeated.outcome, 'succeeded');
+      assert.ok(
+        repeated.proof === 'found-and-cleaned' ||
+          repeated.proof === 'already-absent',
+      );
       state.retainedRun = false;
     });
   }

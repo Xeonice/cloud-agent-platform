@@ -1,10 +1,17 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { createHash, randomBytes } from 'node:crypto';
 import type {
   McpTokenListItem,
+  McpTokenMintRequest,
   McpTokenMintResponse,
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  assertTaskProvisioningDiagnosticsScopeGrantable,
+  CLOSED_TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
+  TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
+  type TaskProvisioningDiagnosticsCapabilityGatePort,
+} from '../task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
 
 /**
  * The granted-scope element type, derived from the contract list shape so this
@@ -49,7 +56,13 @@ export class McpTokensService {
   /** Bytes of entropy in the random token body (256-bit). */
   private static readonly TOKEN_BYTES = 32;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional()
+    @Inject(TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE)
+    private readonly diagnosticsCapabilityGate: TaskProvisioningDiagnosticsCapabilityGatePort =
+      CLOSED_TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
+  ) {}
 
   /**
    * Mints a new MCP token bound to the owning operator (the account primary key
@@ -67,8 +80,15 @@ export class McpTokensService {
    */
   async mint(
     userId: string,
-    input: { name: string; scopes: string[]; expiresAt?: string | null },
+    input: McpTokenMintRequest,
   ): Promise<McpTokenMintResponse> {
+    // Scope parsing is additive, but mint authority stays closed until the same
+    // deployment gate that protects the public diagnostics read is open.
+    assertTaskProvisioningDiagnosticsScopeGrantable(
+      input.scopes,
+      this.diagnosticsCapabilityGate,
+    );
+
     const body = randomBytes(McpTokensService.TOKEN_BYTES).toString('base64url');
     const raw = `${McpTokensService.TOKEN_PREFIX}${body}`;
     const tokenHash = hashMcpToken(raw);

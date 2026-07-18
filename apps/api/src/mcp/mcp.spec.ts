@@ -57,6 +57,8 @@ import {
   ScheduleResponseSchema,
   ScheduleTaskTemplateCreateSchema,
   SessionHistorySchema,
+  TaskProvisioningDiagnosticsQuerySchema,
+  TaskProvisioningDiagnosticsResponseSchema,
   TaskResponseSchema,
   UpdateScheduleRequestSchema,
   V1CreateTaskRequestSchema,
@@ -75,6 +77,7 @@ import {
   type ScheduleResponse,
   type ScheduleRunResponse,
   type SessionHistory,
+  type TaskProvisioningDiagnosticsResponse,
   type TaskResponse,
   type UpdateScheduleRequest,
 } from '@cap/contracts';
@@ -229,6 +232,92 @@ const TRANSCRIPT: SessionHistory = {
   isInterrupted: false,
 };
 
+const DIAGNOSTICS_ATTEMPT_ID = '00000000-0000-4000-a000-000000000004';
+const DIAGNOSTICS_OPERATION_ID = '00000000-0000-4000-a000-000000000005';
+const DIAGNOSTICS_RESPONSE: TaskProvisioningDiagnosticsResponse =
+  TaskProvisioningDiagnosticsResponseSchema.parse({
+    schemaVersion: 1,
+    taskId: TASK.id,
+    coverage: 'partial',
+    admissionState: null,
+    attempts: [
+      {
+        schemaVersion: 1,
+        id: DIAGNOSTICS_ATTEMPT_ID,
+        taskId: TASK.id,
+        attempt: 1,
+        admissionMode: 'durable',
+        providerFamily: 'boxlite',
+        state: 'failed',
+        stage: 'runtime_setup',
+        coverage: 'partial',
+        primary: {
+          outcome: 'failed',
+          cause: 'command_failed',
+          retryable: false,
+          exitCode: 9,
+          observedAt: new Date('2026-07-18T08:00:02.000Z'),
+        },
+        cleanup: {
+          state: 'succeeded',
+          cause: null,
+          attemptCount: 1,
+          lastAttemptOutcome: 'succeeded',
+          observedAt: new Date('2026-07-18T08:00:03.000Z'),
+        },
+        eventCount: 2,
+        truncated: false,
+        startedAt: new Date('2026-07-18T08:00:00.000Z'),
+        finishedAt: new Date('2026-07-18T08:00:03.000Z'),
+        completenessMarkedAt: null,
+      },
+    ],
+    events: [
+      {
+        schemaVersion: 1,
+        eventId: '00000000-0000-4000-a000-000000000006',
+        idempotencyKey: 'runtime-setup-started',
+        taskId: TASK.id,
+        attemptId: DIAGNOSTICS_ATTEMPT_ID,
+        attempt: 1,
+        sequence: 1,
+        operationId: DIAGNOSTICS_OPERATION_ID,
+        admissionMode: 'durable',
+        providerFamily: 'boxlite',
+        stage: 'runtime_setup',
+        operation: 'runtime_setup',
+        channel: 'primary',
+        commandKind: 'runtime_setup',
+        observedAt: new Date('2026-07-18T08:00:00.000Z'),
+        outcome: 'started',
+      },
+      {
+        schemaVersion: 1,
+        eventId: '00000000-0000-4000-a000-000000000007',
+        idempotencyKey: 'runtime-setup-failed',
+        taskId: TASK.id,
+        attemptId: DIAGNOSTICS_ATTEMPT_ID,
+        attempt: 1,
+        sequence: 2,
+        operationId: DIAGNOSTICS_OPERATION_ID,
+        admissionMode: 'durable',
+        providerFamily: 'boxlite',
+        stage: 'runtime_setup',
+        operation: 'runtime_setup',
+        channel: 'primary',
+        commandKind: 'runtime_setup',
+        observedAt: new Date('2026-07-18T08:00:02.000Z'),
+        outcome: 'failed',
+        durationMs: 2_000,
+        cause: 'command_failed',
+        retryable: false,
+        exitCode: 9,
+      },
+    ],
+    compaction: null,
+    nextCursor: 'diagnostics-next-cursor',
+  });
+
 const SCHEDULE_ID = '00000000-0000-4000-a000-000000000002';
 const SCHEDULE_RUN_ID = '00000000-0000-4000-a000-000000000003';
 
@@ -374,6 +463,20 @@ const MCP_ADAPTER_CONFORMANCE_FIXTURES = {
   'tasks.get': {
     rawInput: { id: TASK.id },
     expectedCall: { method: 'getTask', args: [TASK.id] },
+  },
+  'tasks.provisioningDiagnostics': {
+    rawInput: { id: TASK.id, limit: '17', cursor: ADAPTER_CURSOR },
+    expectedCall: {
+      method: 'getTaskProvisioningDiagnostics',
+      args: [
+        ADAPTER_OWNER_ID,
+        TASK.id,
+        TaskProvisioningDiagnosticsQuerySchema.parse({
+          limit: '17',
+          cursor: ADAPTER_CURSOR,
+        }),
+      ],
+    },
   },
   'tasks.stop': {
     rawInput: { id: TASK.id },
@@ -551,6 +654,12 @@ function recordingDeps(): { deps: McpToolDeps; calls: string[] } {
     async getTask(id) {
       calls.push(`getTask:${id}`);
       return TASK;
+    },
+    async getTaskProvisioningDiagnostics(ownerUserId, id, query) {
+      calls.push(
+        `getTaskProvisioningDiagnostics:${ownerUserId}:${id}:${query.limit}:${query.cursor ?? '-'}`,
+      );
+      return DIAGNOSTICS_RESPONSE;
     },
     async listTasks(query) {
       calls.push(`listTasks:${query.limit}:${query.cursor ?? '-'}`);
@@ -795,7 +904,7 @@ test('MCP boundary failures use stable codes, stay safe, and reject writes befor
   );
   assert.deepEqual(publicErrorEnvelope(ownerResult), {
     code: 'owner_required',
-    message: 'Schedule tools require an authenticated account owner (403)',
+    message: 'An account owner is required.',
     retryable: false,
   });
   assert.equal(
@@ -919,6 +1028,157 @@ test('the read tools gate on their read scopes', async () => {
   );
 });
 
+test('provisioning diagnostics rejects scope, owner, and strict query failures before delegation', async () => {
+  const base = recordingDeps();
+  let diagnosticCalls = 0;
+  const deps: McpToolDeps = {
+    ...base.deps,
+    async getTaskProvisioningDiagnostics(ownerUserId, id, query) {
+      diagnosticCalls += 1;
+      return base.deps.getTaskProvisioningDiagnostics(ownerUserId, id, query);
+    },
+  };
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+  const diagnostics = tools.get('get_task_provisioning_diagnostics')!;
+
+  await expectPublicToolError(
+    () =>
+      diagnostics(
+        { id: 'not-a-uuid', limit: 0 },
+        extraWith(['tasks:read', 'tasks:write']),
+      ),
+    'insufficient_scope',
+    /tasks:diagnostics required \(403\)/,
+  );
+  await expectPublicToolError(
+    () =>
+      diagnostics(
+        { id: 'not-a-uuid', limit: 0 },
+        extraWith(['tasks:diagnostics']),
+      ),
+    'owner_required',
+    /account owner is required/i,
+  );
+
+  const owner = extraWithOwner(['tasks:diagnostics']);
+  for (const invalid of [
+    { id: 'not-a-uuid' },
+    { id: TASK.id, limit: 0 },
+    { id: TASK.id, limit: 201 },
+    { id: TASK.id, limit: 1.5 },
+    { id: TASK.id, cursor: ' ' },
+    { id: TASK.id, ownerUserId: 'attacker' },
+    { id: TASK.id, admin: true },
+  ]) {
+    await expectPublicToolError(
+      () => diagnostics(invalid, owner),
+      'validation_failed',
+    );
+  }
+  assert.equal(
+    diagnosticCalls,
+    0,
+    'scope, owner, and canonical input validation all precede the shared query',
+  );
+});
+
+test('provisioning diagnostics preserves canonical pagination, structured output, and direct JSON text', async () => {
+  const base = recordingDeps();
+  const seen: unknown[] = [];
+  const deps: McpToolDeps = {
+    ...base.deps,
+    async getTaskProvisioningDiagnostics(ownerUserId, id, query) {
+      seen.push({ ownerUserId, id, query });
+      return DIAGNOSTICS_RESPONSE;
+    },
+  };
+  const { server, tools, configs } = captureServer();
+  registerMcpTools(server as never, deps);
+  const diagnostics = tools.get('get_task_provisioning_diagnostics')!;
+  const owner = extraWithOwner(['tasks:diagnostics'], 'diagnostics-owner');
+
+  await diagnostics({ id: TASK.id }, owner);
+  const result = (await diagnostics(
+    { id: TASK.id, limit: '2', cursor: 'diagnostics-cursor' },
+    owner,
+  )) as {
+    content: Array<{ type: string; text: string }>;
+    structuredContent: Record<string, unknown>;
+    isError?: boolean;
+  };
+
+  assert.deepEqual(seen, [
+    {
+      ownerUserId: 'diagnostics-owner',
+      id: TASK.id,
+      query: { limit: 50 },
+    },
+    {
+      ownerUserId: 'diagnostics-owner',
+      id: TASK.id,
+      query: { limit: 2, cursor: 'diagnostics-cursor' },
+    },
+  ]);
+  assert.notEqual(result.isError, true);
+  assert.deepEqual(
+    TaskProvisioningDiagnosticsResponseSchema.parse(result.structuredContent),
+    DIAGNOSTICS_RESPONSE,
+  );
+  assert.deepEqual(result.content.map((item) => item.type), ['text']);
+  assert.equal(
+    result.content[0]?.text,
+    JSON.stringify(result.structuredContent, null, 2),
+    'compatibility text is the direct serialization of canonical structuredContent',
+  );
+
+  const config = configs.get('get_task_provisioning_diagnostics');
+  assert.deepEqual(
+    Object.keys(advertisedInputShape(config?.inputSchema)).sort(),
+    ['cursor', 'id', 'limit'],
+  );
+  assert.equal(config?.outputSchema, TaskProvisioningDiagnosticsResponseSchema);
+  const operation = PUBLIC_V1_OPERATIONS.find(
+    (candidate) => candidate.id === 'tasks.provisioningDiagnostics',
+  );
+  assert.ok(operation && 'tool' in operation.mcp);
+  assert.deepEqual(operation.mcp.differences, []);
+});
+
+test('a closed diagnostics gate returns the declared retryable error without evidence', async () => {
+  const base = recordingDeps();
+  let sharedQueryCalls = 0;
+  const deps: McpToolDeps = {
+    ...base.deps,
+    async getTaskProvisioningDiagnostics() {
+      sharedQueryCalls += 1;
+      throw new ServiceUnavailableException({
+        code: 'task_provisioning_diagnostics_unavailable',
+        message: 'Task provisioning diagnostics are temporarily unavailable.',
+        retryable: true,
+      });
+    },
+  };
+  const { server, tools } = captureServer();
+  registerMcpTools(server as never, deps);
+
+  const result = await tools.get('get_task_provisioning_diagnostics')!(
+    { id: TASK.id },
+    extraWithOwner(['tasks:diagnostics']),
+  );
+  assert.deepEqual(publicErrorEnvelope(result), {
+    code: 'task_provisioning_diagnostics_unavailable',
+    message: 'Task provisioning diagnostics are temporarily unavailable.',
+    retryable: true,
+  });
+  assert.equal(sharedQueryCalls, 1);
+  assert.equal(
+    (result as { structuredContent?: unknown }).structuredContent,
+    undefined,
+  );
+  assert.doesNotMatch(toolErrorText(result), new RegExp(TASK.id, 'u'));
+});
+
 test('the MCP server registers the complete task, repo, and schedule tool surface', () => {
   const { deps } = recordingDeps();
   const { server, tools } = captureServer();
@@ -980,7 +1240,7 @@ test('every mapped MCP adapter delegates once to its declared use-case method wi
       const result = (await tools.get(operation.mcp.tool)!(
         fixture.rawInput,
         extraWithOwner(
-          ['tasks:read', 'tasks:write', 'repos:read'],
+          ['tasks:read', 'tasks:write', 'tasks:diagnostics', 'repos:read'],
           ADAPTER_OWNER_ID,
         ),
       )) as {
@@ -1590,8 +1850,46 @@ test('schedule tools advertise and preserve an exact model selector on create an
   ]);
 });
 
+test('the production MCP factory delegates diagnostics to the shared public query service', async () => {
+  const calls: unknown[] = [];
+  const publicQuery = {
+    async readForOwner(ownerUserId: string, id: string, query: unknown) {
+      calls.push({ ownerUserId, id, query });
+      return DIAGNOSTICS_RESPONSE;
+    },
+  };
+  const factory = new McpServerFactory(
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    publicQuery as never,
+  );
+
+  const response = await factory.getTaskProvisioningDiagnostics(
+    'diagnostics-owner',
+    TASK.id,
+    { limit: 3, cursor: 'factory-cursor' },
+  );
+
+  assert.equal(response, DIAGNOSTICS_RESPONSE);
+  assert.deepEqual(calls, [
+    {
+      ownerUserId: 'diagnostics-owner',
+      id: TASK.id,
+      query: { limit: 3, cursor: 'factory-cursor' },
+    },
+  ]);
+});
+
 test('the production MCP factory advertises exactly the registry tool set', async () => {
   const factory = new McpServerFactory(
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -1729,6 +2027,14 @@ test('the real MCP SDK advertises and validates structured list output', async (
       Object.keys(RuntimeModelCatalogQuerySchema.shape).sort(),
     );
     assert.equal(runtimeModelsTool?.inputSchema.additionalProperties, false);
+    const diagnosticsTool = advertised.tools.find(
+      (tool) => tool.name === 'get_task_provisioning_diagnostics',
+    );
+    assert.deepEqual(
+      Object.keys(diagnosticsTool?.inputSchema.properties ?? {}).sort(),
+      ['cursor', 'id', 'limit'],
+    );
+    assert.equal(diagnosticsTool?.inputSchema.additionalProperties, false);
 
     grantedScopes = ['tasks:read'];
     const scopeFailure = await client.callTool({
@@ -1744,7 +2050,7 @@ test('the real MCP SDK advertises and validates structured list output', async (
       toolErrorText(scopeFailure),
       new RegExp(String(MCP_PUBLIC_ERROR_MAP.insufficient_scope.jsonRpcCode)),
     );
-    grantedScopes = ['tasks:read', 'tasks:write'];
+    grantedScopes = ['tasks:read', 'tasks:write', 'tasks:diagnostics'];
 
     const catalogCallsBeforeInvalid = calls.filter((call) =>
       call.startsWith('queryRuntimeModels:'),
@@ -1774,6 +2080,30 @@ test('the real MCP SDK advertises and validates structured list output', async (
     assert.ok(
       calls.includes('queryRuntimeModels:local-acct-1:codex'),
       'catalog delegation always uses the authenticated token owner',
+    );
+
+    const diagnostics = await client.callTool({
+      name: 'get_task_provisioning_diagnostics',
+      arguments: { id: TASK.id, limit: 2, cursor: 'wire-cursor' },
+    });
+    assert.deepEqual(
+      TaskProvisioningDiagnosticsResponseSchema.parse(
+        diagnostics.structuredContent,
+      ),
+      DIAGNOSTICS_RESPONSE,
+    );
+    const diagnosticsText = (
+      diagnostics.content as Array<{ type: string; text: string }>
+    )[0]?.text;
+    assert.equal(
+      diagnosticsText,
+      JSON.stringify(diagnostics.structuredContent, null, 2),
+      'the real SDK wire carries direct canonical JSON compatibility text',
+    );
+    assert.ok(
+      calls.includes(
+        `getTaskProvisioningDiagnostics:local-acct-1:${TASK.id}:2:wire-cursor`,
+      ),
     );
 
     const result = await client.callTool({
@@ -2035,6 +2365,7 @@ test('McpServerFactory list_tasks uses the canonical persisted failure projectio
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
 
   const page = await factory.listTasks({ limit: 10 });
@@ -2088,7 +2419,7 @@ test('every schedule tool requires authInfo.extra.userId before calling the serv
     await expectPublicToolError(
       () => tools.get(name)!({ id: SCHEDULE_ID }, extraWith(['tasks:read'])),
       'owner_required',
-      /account owner \(403\)/,
+      /account owner is required/i,
     );
   }
   for (const name of [
@@ -2102,7 +2433,7 @@ test('every schedule tool requires authInfo.extra.userId before calling the serv
     await expectPublicToolError(
       () => tools.get(name)!({ id: SCHEDULE_ID }, extraWith(['tasks:write'])),
       'owner_required',
-      /account owner \(403\)/,
+      /account owner is required/i,
     );
   }
   assert.deepEqual(calls, []);
@@ -2768,6 +3099,7 @@ test(
       {} as never,
       {} as never,
       provider as SandboxProvider,
+      {} as never,
     );
     const server = factory.createServer();
     const client = new Client({

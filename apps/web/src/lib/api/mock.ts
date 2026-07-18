@@ -50,6 +50,7 @@ import type {
   SandboxEnvironmentValidation,
   ListSandboxEnvironmentValidationsResponse,
   CreateSandboxEnvironmentRequest,
+  TaskProvisioningDiagnosticsResponse,
 } from "@cap/contracts";
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
@@ -236,6 +237,27 @@ export async function mockGetTask(id: string): Promise<TaskResponse> {
         strategy: "single-pass",
         sandboxProvider: null,
       };
+}
+
+/**
+ * Visual-harness fallback for the diagnostics panel. Production uses the real
+ * session route; the mock deliberately represents unavailable legacy evidence
+ * instead of fabricating a provider failure or timeline.
+ */
+export async function mockTaskProvisioningDiagnostics(
+  taskId: string,
+): Promise<TaskProvisioningDiagnosticsResponse> {
+  await delay();
+  return {
+    schemaVersion: 1,
+    taskId,
+    coverage: "unavailable",
+    admissionState: null,
+    attempts: [],
+    events: [],
+    compaction: null,
+    nextCursor: null,
+  };
 }
 
 // ---------------------------------------------------------------------------

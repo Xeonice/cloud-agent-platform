@@ -640,7 +640,7 @@ await test('a new provider stops a sandbox with no local run or controller map',
     },
   });
 
-  await stoppingProvider.teardownSandbox('task-provider-stop', {
+  const retained = await stoppingProvider.teardownSandbox('task-provider-stop', {
     ownership: ownership('recovered-owner', 'provider-stop-resource'),
     cleanupAuthorization: cleanupAuthorization(
       'task-provider-stop',
@@ -651,6 +651,7 @@ await test('a new provider stops a sandbox with no local run or controller map',
     disposition: 'terminal-retain',
   });
 
+  assert.deepEqual(retained, { kind: 'found-and-cleaned' });
   assert.deepEqual(events, [
     ['runtime-lookup', 'task-provider-stop'],
     [
@@ -851,9 +852,11 @@ await test('failed provisioning cleanup is owner-authorized and settles only aft
         },
       }),
     (error) =>
-      error?.code === 'sandbox_provisioning_stage_error' &&
-      error?.stage === 'runtime_setup' &&
-      !error.message.includes('preflight rejected'),
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error?.primary?.code === 'sandbox_provisioning_stage_error' &&
+      error.primary.stage === 'runtime_setup' &&
+      !error.primary.message.includes('preflight rejected') &&
+      !Object.keys(error).includes('primary'),
   );
   assert.deepEqual(deniedEvents, ['before-cleanup']);
   const deniedContainer = denied.docker.created[0].container;
@@ -975,7 +978,7 @@ await test('deferred AIO create survives an early absent cleanup and the late wo
   ]);
 });
 
-await test('uncertain AIO create followed by 404 keeps cleanup settlement pending', async () => {
+await test('failed uncertain AIO create acknowledges authoritative already-absent cleanup', async () => {
   const taskId = 'task-uncertain-create-cleanup';
   const docker = makeDocker();
   const createEntered = deferred();
@@ -1002,14 +1005,14 @@ await test('uncertain AIO create followed by 404 keeps cleanup settlement pendin
       return authorization;
     },
     afterSandboxCleanup: async () => {
-      events.push('must-not-complete');
+      events.push('cleanup-completed');
     },
   });
 
   await createEntered.promise;
   releaseCreate.resolve();
   await assert.rejects(provisioning, (error) => error === lostResponse);
-  assert.deepEqual(events, ['cleanup-authorized']);
+  assert.deepEqual(events, ['cleanup-authorized', 'cleanup-completed']);
 });
 
 await test('every AIO provision boundary fails closed before or after lease loss or stop without reaching ready', async () => {
@@ -1105,7 +1108,14 @@ await test('every AIO provision boundary fails closed before or after lease loss
       );
       if (failureKind === 'stop') cancellation.abort(failure);
       releaseBoundary.resolve();
-      await assert.rejects(provisioning, (error) => error === failure);
+      await assert.rejects(
+        provisioning,
+        (error) =>
+          error === failure ||
+          (error?.code === 'sandbox_cleanup_coordination_pending' &&
+            error.primary === failure &&
+            !Object.keys(error).includes('primary')),
+      );
       assert.equal(reachedReady, false);
       const targetIndex = events.findIndex(
         ([action, position]) =>
@@ -1351,7 +1361,13 @@ await test('outer hook guards expose lease loss swallowed by degrading command h
         return connection;
       });
 
-    await assert.rejects(provisioning, (error) => error === leaseFailure);
+    await assert.rejects(
+      provisioning,
+      (error) =>
+        error?.code === 'sandbox_cleanup_coordination_pending' &&
+        error.primary === leaseFailure &&
+        !Object.keys(error).includes('primary'),
+    );
     assert.equal(ready, false);
     if (hookName !== 'skillPreinstall') {
       assert.equal(workspaceReached, false);
@@ -1419,6 +1435,13 @@ await test('direct AIO provisioning rejects canonical credentials before create'
 await test('canonical workspace takes precedence over a simultaneous legacy clone spec', async () => {
   const materializations = [];
   const legacyCalls = [];
+  const boundFamilies = [];
+  const diagnostics = Object.freeze({
+    mode: 'task',
+    bindProviderFamily: (family) => boundFamilies.push(family),
+    createOperationId: () => '24000000-0000-4000-8000-000000000001',
+    emit: async () => undefined,
+  });
   const { provider, fetchState } = makeProvider({
     hooks: {
       workspaceMaterialization: async (context) => {
@@ -1442,10 +1465,13 @@ await test('canonical workspace takes precedence over a simultaneous legacy clon
       resolvedBranch: 'master',
       deadlineMs: 900_000,
     },
+    diagnostics,
   });
 
   assert.equal(materializations.length, 1);
   assert.equal(materializations[0].plan.resolvedBranch, 'master');
+  assert.equal(materializations[0].diagnostics, diagnostics);
+  assert.deepEqual(boundFamilies, ['aio']);
   assert.deepEqual(legacyCalls, []);
   assert.equal(
     fetchState.calls.some(

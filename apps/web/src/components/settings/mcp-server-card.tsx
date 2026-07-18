@@ -68,14 +68,26 @@ import { useQueryClient } from "@tanstack/react-query";
 // ---------------------------------------------------------------------------
 
 /** The MCP-token scopes the mint dialog offers, with a human-readable label. */
-const SCOPE_OPTIONS: readonly { scope: McpTokenScope; label: string }[] = [
+export const MCP_TOKEN_SCOPE_OPTIONS: readonly {
+  scope: McpTokenScope;
+  label: string;
+  warning?: string;
+}[] = [
   { scope: "tasks:read", label: "tasks:read · 读取任务" },
   { scope: "tasks:write", label: "tasks:write · 创建 / 停止任务" },
+  {
+    scope: "tasks:diagnostics",
+    label: "tasks:diagnostics · 读取任务准备诊断",
+    warning: "包含比普通任务状态更深入的准备证据；仅授予受信任的诊断工具。",
+  },
   { scope: "repos:read", label: "repos:read · 读取仓库" },
 ];
 
 /** The default scope selection for a fresh mint (read-only, least privilege). */
-const DEFAULT_SCOPES: readonly McpTokenScope[] = ["tasks:read", "repos:read"];
+export const DEFAULT_MCP_TOKEN_SCOPES: readonly McpTokenScope[] = [
+  "tasks:read",
+  "repos:read",
+];
 
 // ---------------------------------------------------------------------------
 // Endpoint URL (guarded — an unset env must NOT crash the settings page)
@@ -136,7 +148,7 @@ function MintDialog({
 }) {
   const [name, setName] = React.useState<string>("");
   const [scopes, setScopes] = React.useState<McpTokenScope[]>([
-    ...DEFAULT_SCOPES,
+    ...DEFAULT_MCP_TOKEN_SCOPES,
   ]);
   const [copied, setCopied] = React.useState<boolean>(false);
 
@@ -144,7 +156,7 @@ function MintDialog({
   React.useEffect(() => {
     if (open) {
       setName("");
-      setScopes([...DEFAULT_SCOPES]);
+      setScopes([...DEFAULT_MCP_TOKEN_SCOPES]);
       setCopied(false);
     }
   }, [open]);
@@ -265,7 +277,7 @@ function MintDialog({
                     权限范围
                   </legend>
                   <div className="grid gap-2">
-                    {SCOPE_OPTIONS.map(({ scope, label }) => (
+                    {MCP_TOKEN_SCOPE_OPTIONS.map(({ scope, label, warning }) => (
                       <label
                         key={scope}
                         className="flex items-center gap-2.5 rounded-md bg-[#fafafa] px-3 py-2.5 text-[13px] text-foreground shadow-ring"
@@ -276,7 +288,14 @@ function MintDialog({
                           onChange={() => toggleScope(scope)}
                           className="size-4"
                         />
-                        <span className="font-mono text-xs">{label}</span>
+                        <span className="min-w-0">
+                          <span className="block font-mono text-xs">{label}</span>
+                          {warning ? (
+                            <span className="mt-1 block text-xs leading-[1.45] text-warning">
+                              {warning}
+                            </span>
+                          ) : null}
+                        </span>
                       </label>
                     ))}
                   </div>

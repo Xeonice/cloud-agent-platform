@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
 
 const CANARY = 'CAP_STAGE_SECRET_CANARY_7f1b9d';
+const RAW_PROVIDER_ID = 'boxlite-native-provider-id-CAP-raw-98f43';
 const REPOSITORY_URL = 'https://gitee.com/acme/private.git';
 const DELIVERY_PENDING_SENTINEL = 'CAP_DELIVERY_PENDING';
 
@@ -73,7 +75,12 @@ function privateSecretPort(options = {}) {
       async deleteFile(request) {
         events.push('credential-cleaned');
         deletes.push(request.path);
-        if (options.deleteFails) throw new Error('provider delete failed');
+        await options.onDelete?.(request);
+        if (options.deleteFails) {
+          throw (
+            options.deleteError ?? new Error('provider delete failed')
+          );
+        }
       },
     },
   });
@@ -98,12 +105,112 @@ function workspaceContext(overrides = {}) {
   };
 }
 
+function diagnosticUuid(index) {
+  return `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+}
+
+function taskDiagnosticHarness(options = {}) {
+  const events = [];
+  let eventIdentity = 100 + (options.identityOffset ?? 0);
+  let operationIdentity = 200 + (options.identityOffset ?? 0);
+  const taskId =
+    options.taskId ?? '11111111-1111-4111-8111-111111111111';
+  const emitter = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: {
+      schemaVersion: 1,
+      taskId,
+      attemptId:
+        options.attemptId ?? '22222222-2222-4222-8222-222222222222',
+      attempt: options.attempt ?? 1,
+      admissionMode: 'durable',
+      providerFamily: 'boxlite',
+    },
+    createEventId: () => diagnosticUuid(eventIdentity++),
+    createOperationId: () => diagnosticUuid(operationIdentity++),
+    now: () => new Date('2026-07-17T06:00:00.000Z'),
+    record: async (event) => {
+      events.push(event);
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+  return { emitter, events, taskId };
+}
+
+function operationEvents(events, operation) {
+  return events.filter((event) => event.operation === operation);
+}
+
+function assertBoundedOperationEvents(events) {
+  const byOperationId = new Map();
+  for (const event of events) {
+    const retained = byOperationId.get(event.operationId) ?? [];
+    retained.push(event);
+    byOperationId.set(event.operationId, retained);
+  }
+  for (const retained of byOperationId.values()) {
+    assert.equal(
+      retained.filter((event) => event.outcome === 'started').length <= 1,
+      true,
+    );
+    assert.equal(
+      retained.filter((event) => event.outcome !== 'started').length <= 1,
+      true,
+    );
+  }
+}
+
+function assertCompleteDiagnosticLifecycles(events) {
+  const byOperationId = new Map();
+  for (const event of events) {
+    const retained = byOperationId.get(event.operationId) ?? [];
+    retained.push(event);
+    byOperationId.set(event.operationId, retained);
+  }
+  for (const [operationId, retained] of byOperationId) {
+    assert.equal(
+      retained.filter((event) => event.outcome === 'started').length,
+      1,
+      `${operationId} must have exactly one start`,
+    );
+    assert.equal(
+      retained.filter((event) => event.outcome !== 'started').length,
+      1,
+      `${operationId} must have exactly one terminal`,
+    );
+  }
+}
+
+function boxLiteResponse(status, body) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() {
+      return body;
+    },
+    async text() {
+      return typeof body === 'string' ? body : JSON.stringify(body);
+    },
+    async arrayBuffer() {
+      return new Uint8Array().buffer;
+    },
+  };
+}
+
+async function flushTaskDiagnostics() {
+  for (let turn = 0; turn < 5; turn += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
 {
   const secrets = privateSecretPort();
+  const diagnostics = taskDiagnosticHarness();
   const calls = [];
   const progress = [];
   const result = await mod.materializeSandboxGitWorkspaceStaged(
     workspaceContext({
+      taskId: diagnostics.taskId,
+      diagnostics: diagnostics.emitter,
       secretFilePort: secrets.port,
       stageExecutor: {
         async execute(execution) {
@@ -148,7 +255,38 @@ function workspaceContext(overrides = {}) {
   assert.match(secrets.writes[0].content, /\[http "https:\/\/gitee\.com\/"\]/u);
   assert.doesNotMatch(secrets.writes[0].content, /gitlab\.com/u);
   assert.equal(secrets.deletes.length, 1);
-  assert.doesNotMatch(JSON.stringify({ result, progress, calls }), new RegExp(CANARY, 'u'));
+  assert.equal(diagnostics.events.length, 12);
+  assert.deepEqual(
+    diagnostics.events.map((event) => [
+      event.stage,
+      event.operation,
+      event.channel,
+      event.outcome,
+    ]),
+    [
+      ['credential_setup', 'credential_setup', 'primary', 'started'],
+      ['credential_setup', 'credential_setup', 'primary', 'succeeded'],
+      ['remote_ref_resolution', 'remote_ref_resolve', 'primary', 'started'],
+      ['remote_ref_resolution', 'remote_ref_resolve', 'primary', 'succeeded'],
+      ['workspace_transfer', 'repository_transfer', 'primary', 'started'],
+      ['workspace_transfer', 'repository_transfer', 'primary', 'succeeded'],
+      ['checkout', 'checkout', 'primary', 'started'],
+      ['checkout', 'checkout', 'primary', 'succeeded'],
+      ['submodules', 'submodules', 'primary', 'started'],
+      ['submodules', 'submodules', 'primary', 'succeeded'],
+      ['credential_cleanup', 'credential_cleanup', 'cleanup', 'started'],
+      ['credential_cleanup', 'credential_cleanup', 'cleanup', 'succeeded'],
+    ],
+  );
+  assertBoundedOperationEvents(diagnostics.events);
+  assert.doesNotMatch(
+    JSON.stringify({ result, progress, calls, diagnostics: diagnostics.events }),
+    new RegExp(CANARY, 'u'),
+  );
+  assert.doesNotMatch(
+    JSON.stringify(diagnostics.events),
+    /gitee\.com|private\.git|Authorization:|cap-secrets/u,
+  );
   assert.ok(
     progress.findIndex(
       (event) =>
@@ -180,6 +318,113 @@ function workspaceContext(overrides = {}) {
 }
 
 {
+  const diagnostics = taskDiagnosticHarness();
+  const secrets = privateSecretPort();
+  const context = workspaceContext({
+    taskId: diagnostics.taskId,
+    diagnostics: diagnostics.emitter,
+    secretFilePort: secrets.port,
+    stageExecutor: { execute: async () => executionResult() },
+  });
+  assert.deepEqual(
+    await mod.materializeSandboxGitWorkspaceStaged(context),
+    { status: 'succeeded', stage: 'complete' },
+  );
+  const firstPass = diagnostics.events.map((event) => ({
+    idempotencyKey: event.idempotencyKey,
+    operationId: event.operationId,
+    outcome: event.outcome,
+  }));
+  assert.equal(firstPass.length, 12);
+  assert.deepEqual(
+    await mod.materializeSandboxGitWorkspaceStaged(context),
+    { status: 'succeeded', stage: 'complete' },
+  );
+  assert.deepEqual(
+    diagnostics.events.map((event) => ({
+      idempotencyKey: event.idempotencyKey,
+      operationId: event.operationId,
+      outcome: event.outcome,
+    })),
+    firstPass,
+  );
+  assertBoundedOperationEvents(diagnostics.events);
+}
+
+{
+  const taskId = '77777777-7777-4777-8777-777777777777';
+  const firstAttempt = taskDiagnosticHarness({
+    taskId,
+    attemptId: '88888888-8888-4888-8888-888888888881',
+    attempt: 1,
+    identityOffset: 1_000,
+  });
+  const retryAttempt = taskDiagnosticHarness({
+    taskId,
+    attemptId: '88888888-8888-4888-8888-888888888882',
+    attempt: 2,
+    identityOffset: 2_000,
+  });
+  const materialize = (diagnostics) =>
+    mod.materializeSandboxGitWorkspaceStaged(
+      workspaceContext({
+        taskId,
+        diagnostics,
+        secretFilePort: privateSecretPort().port,
+        stageExecutor: { execute: async () => executionResult() },
+      }),
+    );
+
+  assert.deepEqual(await materialize(firstAttempt.emitter), {
+    status: 'succeeded',
+    stage: 'complete',
+  });
+  assert.deepEqual(await materialize(retryAttempt.emitter), {
+    status: 'succeeded',
+    stage: 'complete',
+  });
+  assert.equal(firstAttempt.events.length, 12);
+  assert.equal(retryAttempt.events.length, 12);
+  const firstOperationIds = new Set(
+    firstAttempt.events.map((event) => event.operationId),
+  );
+  assert.equal(
+    retryAttempt.events.some((event) => firstOperationIds.has(event.operationId)),
+    false,
+    'a scheduled retry with a new attempt emitter must receive new operation ids',
+  );
+  assert.deepEqual(
+    [...new Set(firstAttempt.events.map((event) => event.attempt))],
+    [1],
+  );
+  assert.deepEqual(
+    [...new Set(retryAttempt.events.map((event) => event.attempt))],
+    [2],
+  );
+  assertBoundedOperationEvents(firstAttempt.events);
+  assertBoundedOperationEvents(retryAttempt.events);
+}
+
+{
+  let operationIdentity = 300;
+  const observer =
+    mod.createNonPersistingSandboxProvisioningDiagnosticObserver({
+      createOperationId: () => diagnosticUuid(operationIdentity++),
+    });
+  const result = await mod.materializeSandboxGitWorkspaceStaged(
+    workspaceContext({
+      diagnostics: observer,
+      secretFilePort: privateSecretPort().port,
+      stageExecutor: { execute: async () => executionResult() },
+    }),
+  );
+  assert.deepEqual(result, { status: 'succeeded', stage: 'complete' });
+  assert.equal(observer.mode, 'non-persisting');
+  assert.equal(Object.hasOwn(observer, 'attemptContext'), false);
+  assert.equal(Object.hasOwn(observer, 'record'), false);
+}
+
+{
   const secrets = privateSecretPort();
   const result = await mod.materializeSandboxGitWorkspaceStaged(
     workspaceContext({
@@ -208,9 +453,12 @@ function workspaceContext(overrides = {}) {
 
 {
   const secrets = privateSecretPort({ deleteFails: true });
+  const diagnostics = taskDiagnosticHarness();
   const progress = [];
   const result = await mod.materializeSandboxGitWorkspaceStaged(
     workspaceContext({
+      taskId: diagnostics.taskId,
+      diagnostics: diagnostics.emitter,
       secretFilePort: secrets.port,
       stageExecutor: { execute: async () => executionResult() },
       onProgress: (event) => progress.push(event),
@@ -223,11 +471,252 @@ function workspaceContext(overrides = {}) {
     retryable: false,
   });
   assert.equal(progress.some((event) => event.stage === 'complete'), false);
+  assert.deepEqual(
+    operationEvents(diagnostics.events, 'credential_cleanup').map((event) => ({
+      outcome: event.outcome,
+      cause: event.cause,
+      channel: event.channel,
+    })),
+    [
+      { outcome: 'started', cause: undefined, channel: 'cleanup' },
+      { outcome: 'failed', cause: 'cleanup_failed', channel: 'cleanup' },
+    ],
+  );
+  assertBoundedOperationEvents(diagnostics.events);
+}
+
+{
+  const diagnostics = taskDiagnosticHarness();
+  const cleanupError = new Error(
+    `${CANARY} ${RAW_PROVIDER_ID} https://provider.invalid/private-delete`,
+  );
+  const secrets = privateSecretPort({
+    deleteFails: true,
+    deleteError: cleanupError,
+  });
+  const progress = [];
+  const result = await mod.materializeSandboxGitWorkspaceStaged(
+    workspaceContext({
+      taskId: diagnostics.taskId,
+      diagnostics: diagnostics.emitter,
+      secretFilePort: secrets.port,
+      stageExecutor: {
+        async execute(execution) {
+          return execution.stage === 'workspace_transfer'
+            ? executionResult({
+                exitCode: 1,
+                stderr: `fatal: No space left on device ${CANARY} ${RAW_PROVIDER_ID}`,
+              })
+            : executionResult();
+        },
+      },
+      onProgress: (event) => progress.push(event),
+    }),
+  );
+  assert.deepEqual(result, {
+    status: 'failed',
+    stage: 'workspace_transfer',
+    cause: 'capacity_exhausted',
+    retryable: false,
+  });
+  assert.deepEqual(
+    operationEvents(diagnostics.events, 'repository_transfer').map(
+      (event) => ({ outcome: event.outcome, cause: event.cause }),
+    ),
+    [
+      { outcome: 'started', cause: undefined },
+      { outcome: 'failed', cause: 'capacity_exhausted' },
+    ],
+  );
+  assert.deepEqual(
+    operationEvents(diagnostics.events, 'credential_cleanup').map((event) => ({
+      outcome: event.outcome,
+      cause: event.cause,
+      channel: event.channel,
+    })),
+    [
+      { outcome: 'started', cause: undefined, channel: 'cleanup' },
+      { outcome: 'failed', cause: 'cleanup_failed', channel: 'cleanup' },
+    ],
+  );
+  assertBoundedOperationEvents(diagnostics.events);
+  const serialized = JSON.stringify({ result, progress, events: diagnostics.events });
+  for (const forbidden of [
+    CANARY,
+    RAW_PROVIDER_ID,
+    REPOSITORY_URL,
+    'provider.invalid',
+    'Authorization:',
+    '/run/cap-secrets',
+  ]) {
+    assert.equal(serialized.includes(forbidden), false);
+  }
+}
+
+{
+  const attemptedDiagnostics = [];
+  let eventIdentity = 400;
+  let operationIdentity = 500;
+  const taskId = '33333333-3333-4333-8333-333333333333';
+  const diagnostics = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: {
+      schemaVersion: 1,
+      taskId,
+      attemptId: '44444444-4444-4444-8444-444444444444',
+      attempt: 1,
+      admissionMode: 'durable',
+      providerFamily: 'boxlite',
+    },
+    createEventId: () => diagnosticUuid(eventIdentity++),
+    createOperationId: () => diagnosticUuid(operationIdentity++),
+    record: async (event) => {
+      attemptedDiagnostics.push(event);
+      throw new Error(
+        `${CANARY} ${RAW_PROVIDER_ID} diagnostic store provider rejection`,
+      );
+    },
+  });
+  const progress = [];
+  const secrets = privateSecretPort({
+    deleteFails: true,
+    deleteError: new Error(`${CANARY} ${RAW_PROVIDER_ID} cleanup rejection`),
+  });
+  let executionCount = 0;
+  const result = await mod.materializeSandboxGitWorkspaceStaged(
+    workspaceContext({
+      taskId,
+      diagnostics,
+      secretFilePort: secrets.port,
+      stageExecutor: {
+        async execute(execution) {
+          executionCount += 1;
+          return execution.stage === 'workspace_transfer'
+            ? executionResult({
+                exitCode: 1,
+                stderr: `No space left on device ${CANARY} ${RAW_PROVIDER_ID}`,
+              })
+            : executionResult();
+        },
+      },
+      onProgress: (event) => progress.push(event),
+    }),
+  );
+  assert.deepEqual(result, {
+    status: 'failed',
+    stage: 'workspace_transfer',
+    cause: 'capacity_exhausted',
+    retryable: false,
+  });
+  assert.equal(executionCount, 2);
+  assert.equal(secrets.deletes.length, 1);
+  assert.equal(
+    progress.some(
+      (event) =>
+        event.stage === 'credential_cleanup' && event.status === 'failed',
+    ),
+    true,
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attemptedDiagnostics.length, 8);
+  const serialized = JSON.stringify({
+    result,
+    progress,
+    attemptedDiagnostics,
+  });
+  assert.equal(serialized.includes(CANARY), false);
+  assert.equal(serialized.includes(RAW_PROVIDER_ID), false);
+  assert.equal(serialized.includes(REPOSITORY_URL), false);
+}
+
+{
+  const timing = manualDeadlineDriver();
+  const firstRecordStarted = deferred();
+  const releaseRecord = deferred();
+  const remoteRefStarted = deferred();
+  const continueBusiness = deferred();
+  const allRecorded = deferred();
+  const recorded = [];
+  let eventIdentity = 600;
+  let operationIdentity = 700;
+  const taskId = '55555555-5555-4555-8555-555555555555';
+  const diagnostics = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: {
+      schemaVersion: 1,
+      taskId,
+      attemptId: '66666666-6666-4666-8666-666666666666',
+      attempt: 1,
+      admissionMode: 'durable',
+      providerFamily: 'boxlite',
+    },
+    createEventId: () => diagnosticUuid(eventIdentity++),
+    createOperationId: () => diagnosticUuid(operationIdentity++),
+    record: async (event) => {
+      firstRecordStarted.resolve();
+      await releaseRecord.promise;
+      recorded.push(event);
+      if (recorded.length === 12) allRecorded.resolve();
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+  const secrets = privateSecretPort();
+  const operation = mod.materializeSandboxGitWorkspaceStaged(
+    workspaceContext({
+      taskId,
+      diagnostics,
+      plan: { ...workspaceContext().plan, deadlineMs: 500 },
+      secretFilePort: secrets.port,
+      stageExecutor: {
+        async execute(execution) {
+          if (execution.stage === 'remote_ref_resolution') {
+            remoteRefStarted.resolve();
+            await continueBusiness.promise;
+          }
+          return executionResult();
+        },
+      },
+    }),
+    { deadlineDriver: timing.driver },
+  );
+
+  await firstRecordStarted.promise;
+  const reachedBusiness = await Promise.race([
+    remoteRefStarted.promise.then(() => true),
+    new Promise((resolve) => setImmediate(() => resolve(false))),
+  ]);
+  assert.equal(reachedBusiness, true, 'diagnostic recorder must not gate Git work');
+  timing.advance(400);
+  continueBusiness.resolve();
+  const business = await Promise.race([
+    operation.then((result) => ({ kind: 'settled', result })),
+    new Promise((resolve) =>
+      setImmediate(() => resolve({ kind: 'diagnostic-blocked' })),
+    ),
+  ]);
+  assert.deepEqual(business, {
+    kind: 'settled',
+    result: { status: 'succeeded', stage: 'complete' },
+  });
+  assert.equal(secrets.deletes.length, 1);
+  assert.equal(recorded.length, 0, 'business settles while recorder is pending');
+
+  releaseRecord.resolve();
+  const drained = await Promise.race([
+    allRecorded.promise.then(() => true),
+    new Promise((resolve) => setImmediate(() => resolve(false))),
+  ]);
+  assert.equal(drained, true);
+  assert.equal(recorded.length, 12);
+  assert.deepEqual(
+    recorded.map((event) => event.sequence),
+    Array.from({ length: 12 }, (_, index) => index + 1),
+  );
+  assertBoundedOperationEvents(recorded);
 }
 
 {
   const events = [];
   const secrets = privateSecretPort({ events });
+  const diagnostics = taskDiagnosticHarness();
   const transferStarted = deferred();
   const transferSettled = deferred();
   const abort = new AbortController();
@@ -235,6 +724,8 @@ function workspaceContext(overrides = {}) {
   const operation = mod
     .materializeSandboxGitWorkspaceStaged(
       workspaceContext({
+        taskId: diagnostics.taskId,
+        diagnostics: diagnostics.emitter,
         secretFilePort: secrets.port,
         cancellationSignal: abort.signal,
         stageExecutor: {
@@ -266,16 +757,32 @@ function workspaceContext(overrides = {}) {
     stage: 'workspace_transfer',
   });
   assert.deepEqual(events.slice(-2), ['runner-stopped', 'credential-cleaned']);
+  assert.deepEqual(
+    operationEvents(diagnostics.events, 'repository_transfer').map(
+      (event) => event.outcome,
+    ),
+    ['started', 'cancelled'],
+  );
+  assert.deepEqual(
+    operationEvents(diagnostics.events, 'credential_cleanup').map(
+      (event) => event.outcome,
+    ),
+    ['started', 'cancelled'],
+  );
+  assertBoundedOperationEvents(diagnostics.events);
 }
 
 {
   const timing = manualDeadlineDriver();
   const events = [];
   const secrets = privateSecretPort({ events });
+  const diagnostics = taskDiagnosticHarness();
   const transferStarted = deferred();
   const transferSettled = deferred();
   const operation = mod.materializeSandboxGitWorkspaceStaged(
     workspaceContext({
+      taskId: diagnostics.taskId,
+      diagnostics: diagnostics.emitter,
       plan: { ...workspaceContext().plan, deadlineMs: 500 },
       secretFilePort: secrets.port,
       stageExecutor: {
@@ -304,6 +811,217 @@ function workspaceContext(overrides = {}) {
     retryable: true,
   });
   assert.deepEqual(events.slice(-2), ['runner-stopped', 'credential-cleaned']);
+  const transferDiagnostics = operationEvents(
+    diagnostics.events,
+    'repository_transfer',
+  );
+  assert.deepEqual(
+    transferDiagnostics.map((event) => event.outcome),
+    ['started', 'timed_out'],
+  );
+  assert.equal(transferDiagnostics[1].cause, 'workspace_timeout');
+  assert.equal(transferDiagnostics[1].timeoutMs, 500);
+  assert.deepEqual(
+    operationEvents(diagnostics.events, 'credential_cleanup').map(
+      (event) => event.outcome,
+    ),
+    ['started', 'timed_out'],
+  );
+  assertBoundedOperationEvents(diagnostics.events);
+}
+
+{
+  const timing = manualDeadlineDriver();
+  const diagnostics = taskDiagnosticHarness();
+  const deleteStarted = deferred();
+  const deleteSettled = deferred();
+  const progress = [];
+  const secrets = privateSecretPort({
+    async onDelete() {
+      deleteStarted.resolve();
+      await deleteSettled.promise;
+    },
+  });
+  const operation = mod.materializeSandboxGitWorkspaceStaged(
+    workspaceContext({
+      taskId: diagnostics.taskId,
+      diagnostics: diagnostics.emitter,
+      plan: { ...workspaceContext().plan, deadlineMs: 500 },
+      secretFilePort: secrets.port,
+      stageExecutor: { execute: async () => executionResult() },
+      onProgress: (event) => progress.push(event),
+    }),
+    { deadlineDriver: timing.driver },
+  );
+  await deleteStarted.promise;
+  timing.advance(500);
+  deleteSettled.reject(new Error('late credential cleanup rejection'));
+  assert.deepEqual(await operation, {
+    status: 'failed',
+    stage: 'credential_cleanup',
+    cause: 'timeout',
+    retryable: true,
+  });
+  assert.deepEqual(
+    progress.filter((event) => event.stage === 'credential_cleanup'),
+    [
+      { status: 'started', stage: 'credential_cleanup' },
+      {
+        status: 'failed',
+        stage: 'credential_cleanup',
+        cause: 'timeout',
+        retryable: true,
+      },
+    ],
+  );
+  const cleanupDiagnostics = operationEvents(
+    diagnostics.events,
+    'credential_cleanup',
+  );
+  assert.deepEqual(
+    cleanupDiagnostics.map((event) => event.outcome),
+    ['started', 'timed_out'],
+  );
+  assert.equal(cleanupDiagnostics[1].cause, 'workspace_timeout');
+  assert.equal(cleanupDiagnostics[1].timeoutMs, 500);
+  assertBoundedOperationEvents(diagnostics.events);
+}
+
+{
+  const timing = manualDeadlineDriver();
+  const diagnostics = taskDiagnosticHarness();
+  const deleteStarted = deferred();
+  const deleteSettled = deferred();
+  const progress = [];
+  const secrets = privateSecretPort({
+    async onDelete() {
+      deleteStarted.resolve();
+      await deleteSettled.promise;
+    },
+  });
+  const operation = mod.materializeSandboxGitWorkspaceStaged(
+    workspaceContext({
+      taskId: diagnostics.taskId,
+      diagnostics: diagnostics.emitter,
+      plan: { ...workspaceContext().plan, deadlineMs: 500 },
+      secretFilePort: secrets.port,
+      stageExecutor: {
+        async execute(execution) {
+          return execution.stage === 'workspace_transfer'
+            ? executionResult({
+                exitCode: 1,
+                stderr: 'fatal: No space left on device',
+              })
+            : executionResult();
+        },
+      },
+      onProgress: (event) => progress.push(event),
+    }),
+    { deadlineDriver: timing.driver },
+  );
+  await deleteStarted.promise;
+  timing.advance(500);
+  deleteSettled.resolve();
+
+  assert.deepEqual(await operation, {
+    status: 'failed',
+    stage: 'workspace_transfer',
+    cause: 'capacity_exhausted',
+    retryable: false,
+  });
+  assert.deepEqual(
+    progress.filter((event) => event.stage === 'credential_cleanup'),
+    [
+      { status: 'started', stage: 'credential_cleanup' },
+      {
+        status: 'failed',
+        stage: 'credential_cleanup',
+        cause: 'timeout',
+        retryable: true,
+      },
+    ],
+  );
+  assert.deepEqual(
+    operationEvents(diagnostics.events, 'repository_transfer').map(
+      (event) => ({ outcome: event.outcome, cause: event.cause }),
+    ),
+    [
+      { outcome: 'started', cause: undefined },
+      { outcome: 'failed', cause: 'capacity_exhausted' },
+    ],
+  );
+  const cleanupDiagnostics = operationEvents(
+    diagnostics.events,
+    'credential_cleanup',
+  );
+  assert.deepEqual(
+    cleanupDiagnostics.map((event) => event.outcome),
+    ['started', 'timed_out'],
+  );
+  assert.equal(cleanupDiagnostics[1].cause, 'workspace_timeout');
+  assert.equal(cleanupDiagnostics[1].timeoutMs, 500);
+  assertBoundedOperationEvents(diagnostics.events);
+}
+
+{
+  const diagnostics = taskDiagnosticHarness();
+  const abort = new AbortController();
+  const deleteStarted = deferred();
+  const deleteSettled = deferred();
+  const progress = [];
+  const secrets = privateSecretPort({
+    async onDelete() {
+      deleteStarted.resolve();
+      await deleteSettled.promise;
+    },
+  });
+  const operation = mod.materializeSandboxGitWorkspaceStaged(
+    workspaceContext({
+      taskId: diagnostics.taskId,
+      diagnostics: diagnostics.emitter,
+      cancellationSignal: abort.signal,
+      secretFilePort: secrets.port,
+      stageExecutor: {
+        async execute(execution) {
+          return execution.stage === 'workspace_transfer'
+            ? executionResult({
+                exitCode: 1,
+                stderr: 'fatal: No space left on device',
+              })
+            : executionResult();
+        },
+      },
+      onProgress: (event) => progress.push(event),
+    }),
+  );
+  await deleteStarted.promise;
+  abort.abort();
+  deleteSettled.resolve();
+
+  assert.deepEqual(await operation, {
+    status: 'failed',
+    stage: 'workspace_transfer',
+    cause: 'capacity_exhausted',
+    retryable: false,
+  });
+  assert.deepEqual(
+    progress.filter((event) => event.stage === 'credential_cleanup'),
+    [
+      { status: 'started', stage: 'credential_cleanup' },
+      { status: 'cancelled', stage: 'credential_cleanup' },
+    ],
+  );
+  assert.deepEqual(
+    operationEvents(diagnostics.events, 'credential_cleanup').map((event) => ({
+      outcome: event.outcome,
+      cause: event.cause,
+    })),
+    [
+      { outcome: 'started', cause: undefined },
+      { outcome: 'cancelled', cause: 'cancelled' },
+    ],
+  );
+  assertBoundedOperationEvents(diagnostics.events);
 }
 
 {
@@ -538,6 +1256,307 @@ function workspaceContext(overrides = {}) {
   assert.ok(push);
   assert.match(push.request.command, /include\.path=/u);
   assert.doesNotMatch(push.request.command, /Authorization:|CAP_STAGE_SECRET/u);
+}
+
+{
+  const baseDiagnostics = taskDiagnosticHarness({
+    taskId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    attemptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    identityOffset: 10_000,
+  });
+  const attemptedDiagnostics = [];
+  const diagnostics = Object.freeze({
+    mode: baseDiagnostics.emitter.mode,
+    bindProviderFamily: (...args) =>
+      baseDiagnostics.emitter.bindProviderFamily(...args),
+    createOperationId: (...args) =>
+      baseDiagnostics.emitter.createOperationId(...args),
+    async emit(fact) {
+      attemptedDiagnostics.push(fact);
+      return baseDiagnostics.emitter.emit(fact);
+    },
+  });
+  const providerId = 'boxlite-budget-provider-RAW_PROVIDER_CANARY';
+  const configResult = mod.readBoxLiteProviderConfig({
+    BOXLITE_ENDPOINT: 'https://boxlite-budget.example.test',
+    BOXLITE_API_TOKEN: 'RAW_BOXLITE_TOKEN_CANARY',
+    BOXLITE_IMAGE: 'cap-boxlite:diagnostic-budget',
+    BOXLITE_PROVIDER_ID: providerId,
+    BOXLITE_PROTOCOL_MODE: 'native',
+    BOXLITE_TERMINAL_MODE: 'none',
+    BOXLITE_CAPABILITIES:
+      'command.exec,lifecycle.readoption,workspace.git.materialize',
+  });
+  assert.equal(configResult.status, 'valid');
+
+  const routeSequence = [];
+  const executedCommands = [];
+  let conflictObserved = false;
+  let deleted = false;
+  let runtimePhase = false;
+  let nativeExecution = 0;
+  let sandboxId = null;
+  const fetch = async (input, init = {}) => {
+    const url = new URL(input);
+    const method = init.method ?? 'GET';
+    const path = `${url.pathname}${url.search}`;
+    if (
+      method === 'GET' &&
+      path.startsWith('/v1/default/boxes/') &&
+      !path.includes('/executions/')
+    ) {
+      if (!conflictObserved) {
+        routeSequence.push('initial-inspect-absent');
+        return boxLiteResponse(404, { error: 'RAW_INITIAL_ABSENCE_CANARY' });
+      }
+      if (deleted) {
+        routeSequence.push('absence-confirmed');
+        return boxLiteResponse(404, { error: 'RAW_FINAL_ABSENCE_CANARY' });
+      }
+      routeSequence.push('conflict-inspect-readopt');
+      return boxLiteResponse(200, {
+        box_id: sandboxId,
+        status: 'running',
+        disk_size_gb: 5,
+        native_message: 'RAW_CONFLICT_NATIVE_PROSE_CANARY',
+      });
+    }
+    if (method === 'POST' && path === '/v1/default/boxes') {
+      const body = JSON.parse(init.body);
+      sandboxId = body.name;
+      conflictObserved = true;
+      routeSequence.push('create-conflict');
+      return boxLiteResponse(409, {
+        error: 'RAW_CREATE_CONFLICT_NATIVE_PROSE_CANARY',
+      });
+    }
+    if (method === 'POST' && path.endsWith('/exec')) {
+      const body = JSON.parse(init.body);
+      executedCommands.push(body.args?.at(-1) ?? '');
+      nativeExecution += 1;
+      return boxLiteResponse(200, {
+        execution_id: `RAW_NATIVE_EXECUTION_ID_CANARY_${nativeExecution}`,
+      });
+    }
+    if (
+      method === 'GET' &&
+      path.includes('/executions/RAW_NATIVE_EXECUTION_ID_CANARY_')
+    ) {
+      return boxLiteResponse(200, {
+        status: 'completed',
+        exit_code: runtimePhase ? 1 : 0,
+        output: 'RAW_NATIVE_POLL_OUTPUT_CANARY',
+      });
+    }
+    if (method === 'PUT' && path.includes('/files?path=')) {
+      return boxLiteResponse(204, null);
+    }
+    if (method === 'DELETE' && path.startsWith('/v1/default/boxes/')) {
+      deleted = true;
+      routeSequence.push('sandbox-delete');
+      return boxLiteResponse(204, null);
+    }
+    return boxLiteResponse(404, {
+      error: 'RAW_UNEXPECTED_ROUTE_NATIVE_PROSE_CANARY',
+    });
+  };
+  const webSocketFactory = () => {
+    const socket = new EventEmitter();
+    socket.close = () => {};
+    setImmediate(() => socket.emit('close'));
+    return socket;
+  };
+  const client = new mod.BoxLiteRestClient({
+    baseUrl: configResult.config.endpoint,
+    apiToken: configResult.config.apiToken,
+    protocolMode: 'native',
+    nativeAttachOutput: true,
+    fetch,
+    webSocketFactory,
+  });
+  const provider = new mod.BoxLiteSandboxProvider({
+    config: configResult.config,
+    client,
+    preflight: async ({ executor }) => {
+      for (let ordinal = 1; ordinal <= 7; ordinal += 1) {
+        await executor.exec({
+          command: `RAW_PREFLIGHT_COMMAND_CANARY_${ordinal}`,
+        });
+      }
+      return {
+        status: 'passed',
+        checkedAt: '2026-07-18T00:00:00.000Z',
+        probes: [],
+      };
+    },
+    workspaceMaterialization: mod.materializeSandboxGitWorkspaceStaged,
+    runtimeSetup: async ({ executor }) => {
+      runtimePhase = true;
+      await executor.exec({ command: 'RAW_RUNTIME_FAILURE_COMMAND_CANARY' });
+      throw new Error('RAW_RUNTIME_FAILURE_NATIVE_PROSE_CANARY');
+    },
+  });
+  const ownership = {
+    ownerGeneration: 'owner:diagnostic-budget',
+    resourceGeneration: 'resource:diagnostic-budget',
+  };
+  const cleanupAuthorization = {
+    kind: 'generation',
+    taskId: baseDiagnostics.taskId,
+    providerId,
+    ownership,
+  };
+
+  await assert.rejects(
+    () =>
+      provider.provision({
+        taskId: baseDiagnostics.taskId,
+        modelIntent: { kind: 'runtime-default' },
+        runtimeId: 'codex',
+        executionMode: 'interactive-pty',
+        cloneSpec: null,
+        ownership,
+        beforeSandboxCleanup: async () => cleanupAuthorization,
+        afterSandboxCleanup: async () => undefined,
+        workspace: {
+          repositoryUrl: REPOSITORY_URL,
+          callerBranch: null,
+          resolvedBranch: 'master',
+          deadlineMs: 60_000,
+          credential: mod.createExactHostGitCredential(
+            REPOSITORY_URL,
+            `Authorization: Basic ${CANARY}`,
+          ),
+        },
+        diagnostics,
+      }),
+    (error) =>
+      error?.code === 'sandbox_provisioning_stage_error' &&
+      error.stage === 'runtime_setup' &&
+      !error.message.includes('RAW_RUNTIME_FAILURE_NATIVE_PROSE_CANARY'),
+  );
+  await flushTaskDiagnostics();
+
+  assert.deepEqual(routeSequence.slice(0, 3), [
+    'initial-inspect-absent',
+    'create-conflict',
+    'conflict-inspect-readopt',
+  ]);
+  assert.deepEqual(routeSequence.slice(-2), [
+    'sandbox-delete',
+    'absence-confirmed',
+  ]);
+  assert.match(executedCommands[0], /CAP_RESOURCE_GENERATION/u);
+  assert(executedCommands.some((command) => /\bls-remote\b/u.test(command)));
+  assert(executedCommands.some((command) => /\bclone\b/u.test(command)));
+  assert(executedCommands.some((command) => /\bcheckout\b/u.test(command)));
+  assert(executedCommands.some((command) => /\bsubmodule\b/u.test(command)));
+  assert.equal(runtimePhase, true);
+  assert.equal(deleted, true);
+
+  const acceptedOperations = new Set(
+    baseDiagnostics.events.map((event) => event.operation),
+  );
+  for (const operation of [
+    'sandbox_inspect',
+    'sandbox_create',
+    'native_exec_start',
+    'native_exec_poll',
+    'native_exec_attach',
+    'native_exec_settlement',
+    'runtime_preflight',
+    'credential_setup',
+    'remote_ref_resolve',
+    'repository_transfer',
+    'checkout',
+    'submodules',
+    'credential_cleanup',
+    'runtime_setup',
+    'sandbox_delete',
+    'sandbox_absence_confirm',
+  ]) {
+    assert(acceptedOperations.has(operation), `${operation} must be diagnosed`);
+  }
+  assert.equal(
+    baseDiagnostics.events.filter(
+      (event) => event.operation === 'sandbox_inspect',
+    ).length,
+    4,
+    'initial-absence and conflict-readoption inspect must each retain a pair',
+  );
+  for (const operation of [
+    'credential_setup',
+    'remote_ref_resolve',
+    'repository_transfer',
+    'checkout',
+    'submodules',
+    'credential_cleanup',
+  ]) {
+    assert(
+      baseDiagnostics.events.some(
+        (event) =>
+          event.operation === operation && event.outcome === 'succeeded',
+      ),
+      `${operation} must preserve the successful private Git stage`,
+    );
+  }
+  const runtimeSettlement = baseDiagnostics.events.find(
+    (event) =>
+      event.operation === 'native_exec_settlement' &&
+      event.commandKind === 'runtime_setup' &&
+      event.outcome !== 'started',
+  );
+  assert.equal(runtimeSettlement?.outcome, 'failed');
+  assert.equal(runtimeSettlement?.exitCode, 1);
+
+  const maxEvents = mod.SANDBOX_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT;
+  assert.ok(
+    attemptedDiagnostics.length <= maxEvents,
+    `BoxLite attempted ${attemptedDiagnostics.length} diagnostics; max is ${maxEvents}`,
+  );
+  assert.ok(
+    baseDiagnostics.events.length <= maxEvents,
+    `BoxLite accepted ${baseDiagnostics.events.length} diagnostics; max is ${maxEvents}`,
+  );
+  assert.equal(
+    baseDiagnostics.events.length,
+    attemptedDiagnostics.length,
+    'the bounded path must not silently drop a diagnostic lifecycle',
+  );
+  assertCompleteDiagnosticLifecycles(attemptedDiagnostics);
+  assertCompleteDiagnosticLifecycles(baseDiagnostics.events);
+
+  for (const operation of ['sandbox_delete', 'sandbox_absence_confirm']) {
+    const lifecycle = baseDiagnostics.events.filter(
+      (event) => event.channel === 'cleanup' && event.operation === operation,
+    );
+    assert.equal(lifecycle.length, 2, `${operation} must retain its pair`);
+    assert.equal(lifecycle[0].outcome, 'started');
+    assert.equal(lifecycle[1].outcome, 'succeeded');
+  }
+  assert.doesNotMatch(
+    JSON.stringify({
+      attempted: attemptedDiagnostics,
+      accepted: baseDiagnostics.events,
+    }),
+    new RegExp(
+      [
+        CANARY,
+        REPOSITORY_URL,
+        sandboxId,
+        providerId,
+        'boxlite-budget.example.test',
+        'RAW_',
+        'Authorization:',
+        'CAP_RESOURCE_GENERATION',
+        '/v1/default/boxes',
+        'git clone',
+      ]
+        .map((value) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+        .join('|'),
+      'u',
+    ),
+  );
 }
 
 console.log('staged workspace git production helper tests passed');

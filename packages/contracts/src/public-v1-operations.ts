@@ -24,6 +24,14 @@ import {
   RuntimeModelCatalogSchema,
   RuntimeModelNotAvailableErrorSchema,
 } from './runtime-model.js';
+import {
+  TaskProvisioningDiagnosticsUnavailableErrorSchema,
+} from './task-provisioning-diagnostics-capability.js';
+import {
+  TaskProvisioningDiagnosticsQuerySchema,
+  TASK_PROVISIONING_DIAGNOSTICS_RESPONSE_EXAMPLES,
+  TaskProvisioningDiagnosticsResponseSchema,
+} from './task-provisioning-diagnostics.js';
 import type { Scope } from './scope.js';
 import {
   V1CreateTaskRequestSchema,
@@ -50,6 +58,7 @@ export const PUBLIC_ERROR_CODES = [
   'temporarily_unavailable',
   'runtime_model_not_available',
   'runtime_model_catalog_unavailable',
+  'task_provisioning_diagnostics_unavailable',
 ] as const;
 export const PublicErrorCodeSchema = z.enum(PUBLIC_ERROR_CODES);
 export type PublicErrorCode = z.infer<typeof PublicErrorCodeSchema>;
@@ -286,6 +295,12 @@ export interface PublicRestErrorProjection {
   readonly reason: string;
 }
 
+/** One JSON response example owned by the canonical operation registry. */
+export interface PublicResponseExample {
+  readonly summary: string;
+  readonly value: unknown;
+}
+
 export type PublicRestOutputProjection =
   | { readonly kind: 'canonical' }
   | {
@@ -302,6 +317,11 @@ export const PUBLIC_V1_LEGACY_REST_SUCCESS_PROJECTION = Object.freeze({
   kind: 'legacy-validated-handler-value',
   reason:
     'Validate the canonical success schema while preserving the established REST handler value.',
+} as const satisfies PublicRestOutputProjection);
+
+/** New operations return their canonical validated contract without legacy framing. */
+export const PUBLIC_V1_CANONICAL_REST_SUCCESS_PROJECTION = Object.freeze({
+  kind: 'canonical',
 } as const satisfies PublicRestOutputProjection);
 
 /**
@@ -334,6 +354,8 @@ export interface PublicV1OperationShape {
   readonly responseDescription: string;
   /** The complete HTTP response body schema, including transport framing. */
   readonly responseSchema: ZodTypeAny | null;
+  /** Canonical examples projected by OpenAPI and the API Playground. */
+  readonly responseExamples?: Readonly<Record<string, PublicResponseExample>>;
   readonly responseContentType?: string;
   /** JSON payload carried by each SSE `data:` field, when streaming. */
   readonly streamEventSchema?: ZodTypeAny;
@@ -550,6 +572,38 @@ export function assertPublicV1OperationUniqueness(
         `Empty REST output projection reason for public operation: ${operation.id}`,
       );
     }
+    const responseExamples = operation.responseExamples ?? {};
+    if (Object.keys(responseExamples).length > 0 && operation.responseSchema === null) {
+      throw new Error(
+        `Response examples require a response schema for public operation: ${operation.id}`,
+      );
+    }
+    for (const [name, example] of Object.entries(responseExamples)) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(name)) {
+        throw new Error(
+          `Invalid response example name for public operation: ${operation.id}/${name}`,
+        );
+      }
+      if (example.summary.trim().length === 0) {
+        throw new Error(
+          `Empty response example summary for public operation: ${operation.id}/${name}`,
+        );
+      }
+      if (!operation.responseSchema?.safeParse(example.value).success) {
+        throw new Error(
+          `Invalid response example for public operation: ${operation.id}/${name}`,
+        );
+      }
+      try {
+        if (JSON.stringify(example.value) === undefined) {
+          throw new TypeError('response example is not JSON serializable');
+        }
+      } catch {
+        throw new Error(
+          `Non-JSON response example for public operation: ${operation.id}/${name}`,
+        );
+      }
+    }
     for (const projection of operation.restErrorProjections ?? []) {
       if (!operation.errors.includes(projection.code)) {
         throw new Error(
@@ -700,6 +754,10 @@ export const PublicV1IdParamsSchema = z.object({
   id: z.string().uuid().describe('The resource id.'),
 });
 
+/** Diagnostics rejects transport-added parameters without changing legacy routes. */
+export const TaskProvisioningDiagnosticsParamsSchema =
+  PublicV1IdParamsSchema.strict();
+
 /** Optional idempotency key accepted by public task creation. */
 export const PublicV1IdempotencyHeadersSchema = z.object({
   'Idempotency-Key': z
@@ -783,6 +841,16 @@ export const V1ScheduleListQuerySchemaPair = definePublicSchemaPair(
   V1ScheduleListQuerySchema,
   V1ScheduleListQuerySchema,
 );
+export const TaskProvisioningDiagnosticsParamsSchemaPair =
+  definePublicSchemaPair(
+    TaskProvisioningDiagnosticsParamsSchema,
+    TaskProvisioningDiagnosticsParamsSchema,
+  );
+export const TaskProvisioningDiagnosticsQuerySchemaPair =
+  definePublicSchemaPair(
+    TaskProvisioningDiagnosticsQuerySchema,
+    TaskProvisioningDiagnosticsQuerySchema,
+  );
 
 export const CreateScheduleRequestSchemaPair = definePublicSchemaPair(
   CreateScheduleRequestWireSchema,
@@ -973,6 +1041,39 @@ const RUNTIME_MODEL_CATALOG_SERVICE_REST_PROJECTION = {
   reason:
     'Catalog service and probe failures keep their established 503 body and optional capacity Retry-After header.',
 } as const satisfies PublicRestErrorProjection;
+const TASK_PROVISIONING_DIAGNOSTICS_OWNER_REQUIRED_BODY = Object.freeze({
+  code: 'owner_required',
+  message:
+    'Task provisioning diagnostics require an authenticated account owner.',
+  retryable: false,
+} as const);
+const TASK_PROVISIONING_DIAGNOSTICS_OWNER_REQUIRED_REST_PROJECTION = {
+  code: 'owner_required',
+  status: 403,
+  responseSchema: PublicErrorEnvelopeSchema,
+  projector: {
+    kind: 'fixed-body',
+    body: TASK_PROVISIONING_DIAGNOSTICS_OWNER_REQUIRED_BODY,
+  },
+  reason:
+    'Identity-less principals fail the required owner boundary before any task lookup.',
+} as const satisfies PublicRestErrorProjection;
+const TASK_PROVISIONING_DIAGNOSTICS_UNAVAILABLE_BODY = Object.freeze({
+  code: 'task_provisioning_diagnostics_unavailable',
+  message: 'Task provisioning diagnostics are temporarily unavailable.',
+  retryable: true,
+} as const);
+const TASK_PROVISIONING_DIAGNOSTICS_UNAVAILABLE_REST_PROJECTION = {
+  code: 'task_provisioning_diagnostics_unavailable',
+  status: 503,
+  responseSchema: TaskProvisioningDiagnosticsUnavailableErrorSchema,
+  projector: {
+    kind: 'fixed-body',
+    body: TASK_PROVISIONING_DIAGNOSTICS_UNAVAILABLE_BODY,
+  },
+  reason:
+    'Mixed API/MCP/Web deployments remain discoverable but return no diagnostic evidence until attested.',
+} as const satisfies PublicRestErrorProjection;
 
 /**
  * Canonical inventory of public `/v1` data operations.
@@ -1160,6 +1261,50 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     mcp: {
       tool: 'get_task',
       inputProjection: PARAMS_INPUT,
+      outputProjection: 'canonical',
+      differences: NO_MCP_DIFFERENCES,
+    },
+  },
+  {
+    id: 'tasks.provisioningDiagnostics',
+    method: 'get',
+    path: '/v1/tasks/{id}/provisioning-diagnostics',
+    summary: 'Get task provisioning diagnostics',
+    description:
+      'Read one owner-scoped, deployment-gated page of canonical secret-free ' +
+      'task provisioning attempt and event evidence. The authenticated account ' +
+      'must own the task; ownerless and cross-owner tasks use non-enumerating ' +
+      'not-found behavior, with no Public V1 administrator exception.',
+    scope: 'tasks:diagnostics',
+    ownerPolicy: 'required',
+    streaming: false,
+    destructive: false,
+    restOutputProjection: PUBLIC_V1_CANONICAL_REST_SUCCESS_PROJECTION,
+    input: {
+      params: TaskProvisioningDiagnosticsParamsSchemaPair,
+      query: TaskProvisioningDiagnosticsQuerySchemaPair,
+    },
+    paramsSchema: TaskProvisioningDiagnosticsParamsSchema,
+    querySchema: TaskProvisioningDiagnosticsQuerySchema,
+    successStatus: 200,
+    responseDescription:
+      'A canonical page of bounded attempt summaries and ordered diagnostic events with explicit coverage and next cursor.',
+    responseSchema: TaskProvisioningDiagnosticsResponseSchema,
+    responseExamples: TASK_PROVISIONING_DIAGNOSTICS_RESPONSE_EXAMPLES,
+    additionalErrorStatuses: [404, 503],
+    errors: [
+      ...COMMON_ERRORS,
+      'owner_required',
+      'not_found',
+      'task_provisioning_diagnostics_unavailable',
+    ],
+    restErrorProjections: [
+      TASK_PROVISIONING_DIAGNOSTICS_OWNER_REQUIRED_REST_PROJECTION,
+      TASK_PROVISIONING_DIAGNOSTICS_UNAVAILABLE_REST_PROJECTION,
+    ],
+    mcp: {
+      tool: 'get_task_provisioning_diagnostics',
+      inputProjection: PARAMS_AND_QUERY_INPUT,
       outputProjection: 'canonical',
       differences: NO_MCP_DIFFERENCES,
     },

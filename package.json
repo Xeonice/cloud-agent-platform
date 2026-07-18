@@ -16,7 +16,7 @@
     "test:public-surface": "node scripts/public-surface-tests.mjs fast",
     "test:public-surface:watch": "node scripts/public-surface-tests.mjs watch",
     "verify:public-surface": "node scripts/public-surface-tests.mjs full",
-    "test:sandbox": "pnpm --filter @cap/sandbox-core test && pnpm --filter @cap/sandbox-cloud-http test && pnpm --filter @cap/sandbox-provider-aio test && pnpm --filter @cap/sandbox-provider-boxlite test && pnpm --filter @cap/sandbox test",
+    "test:sandbox": "pnpm --filter @cap/sandbox-core test && pnpm --filter @cap/sandbox-conformance test && pnpm --filter @cap/sandbox-cloud-http test && pnpm --filter @cap/sandbox-provider-aio test && pnpm --filter @cap/sandbox-provider-boxlite test && pnpm --filter @cap/sandbox test",
     "test:sandbox:e2e": "pnpm --filter @cap/sandbox-provider-aio test:e2e && pnpm --filter @cap/sandbox-provider-boxlite test:e2e",
     "test:integration:schedules": "pnpm --filter @cap/api test:integration:schedules",
     "test:integration:task-model-surfaces": "pnpm --filter @cap/api test:integration:task-model-surfaces",

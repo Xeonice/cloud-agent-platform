@@ -23,9 +23,14 @@ import {
   PublicV1EventHeadersSchema,
   PublicV1IdempotencyHeadersSchema,
   RuntimeModelCatalogQuerySchema,
+  TASK_PROVISIONING_DIAGNOSTIC_DEFAULT_PAGE_SIZE,
+  TASK_PROVISIONING_DIAGNOSTIC_MAX_DETAILED_ATTEMPTS,
+  TASK_PROVISIONING_DIAGNOSTIC_MAX_PAGE_SIZE,
+  TaskProvisioningDiagnosticsResponseSchema,
   type PublicV1OperationShape,
 } from '@cap/contracts';
 import { REST_PUBLIC_ERROR_MAP } from '../public-surface/public-error-mappings';
+import { decodeTaskProvisioningDiagnosticCursor } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.projection';
 
 import {
   buildV1OpenApiDocument,
@@ -61,6 +66,7 @@ type LooseSchema = {
   maximum?: number;
   minLength?: number;
   maxLength?: number;
+  maxItems?: number;
   required?: string[];
   properties?: Record<string, LooseSchema>;
   items?: LooseSchema;
@@ -270,6 +276,259 @@ test('request and success metadata are projected from every exact registry entry
       `${operation.id} output schema projection`,
     );
   }
+});
+
+test('diagnostic OpenAPI is an exact registry projection with canonical examples and fixed error bodies', () => {
+  const doc = buildV1OpenApiDocument();
+  const operation = operationById('tasks.provisioningDiagnostics');
+  const documented = documentedOperation(doc, operation) as {
+    parameters?: Array<{
+      in?: string;
+      name?: string;
+      required?: boolean;
+      schema?: LooseSchema & { default?: unknown; format?: string };
+    }>;
+    responses?: Record<
+      string,
+      {
+        content?: Record<
+          string,
+          {
+            schema?: LooseSchema;
+            examples?: Record<
+              string,
+              { summary?: string; value?: unknown }
+            >;
+          }
+        >;
+      }
+    >;
+    'x-cap-required-scope'?: string;
+    'x-cap-owner-policy'?: string;
+    'x-cap-mcp'?: { status?: string; tool?: string };
+  };
+
+  assert.equal(documented['x-cap-required-scope'], 'tasks:diagnostics');
+  assert.equal(documented['x-cap-owner-policy'], 'required');
+  assert.deepEqual(documented['x-cap-mcp'], {
+    status: 'mapped',
+    tool: 'get_task_provisioning_diagnostics',
+    differences: [],
+  });
+  assert.deepEqual(
+    documented.parameters?.map(({ in: location, name, required, schema }) => ({
+      location,
+      name,
+      required,
+      minimum: schema?.minimum,
+      maximum: schema?.maximum,
+      default: schema?.default,
+      minLength: schema?.minLength,
+      maxLength: schema?.maxLength,
+      format: schema?.format,
+    })),
+    [
+      {
+        location: 'path',
+        name: 'id',
+        required: true,
+        minimum: undefined,
+        maximum: undefined,
+        default: undefined,
+        minLength: undefined,
+        maxLength: undefined,
+        format: 'uuid',
+      },
+      {
+        location: 'query',
+        name: 'limit',
+        required: false,
+        minimum: 1,
+        maximum: TASK_PROVISIONING_DIAGNOSTIC_MAX_PAGE_SIZE,
+        default: TASK_PROVISIONING_DIAGNOSTIC_DEFAULT_PAGE_SIZE,
+        minLength: undefined,
+        maxLength: undefined,
+        format: undefined,
+      },
+      {
+        location: 'query',
+        name: 'cursor',
+        required: false,
+        minimum: undefined,
+        maximum: undefined,
+        default: undefined,
+        minLength: 1,
+        maxLength: 2_048,
+        format: undefined,
+      },
+    ],
+  );
+
+  const success = documented.responses?.['200']?.content?.['application/json'];
+  assert.ok(success?.schema);
+  assert.equal(success.schema.additionalProperties, false);
+  assert.deepEqual(success.schema.properties?.schemaVersion?.enum, [1]);
+  assert.deepEqual(success.schema.properties?.coverage?.enum, [
+    'not_started',
+    'partial',
+    'complete',
+    'unavailable',
+  ]);
+  assert.equal(
+    success.schema.properties?.attempts?.maxItems,
+    TASK_PROVISIONING_DIAGNOSTIC_MAX_DETAILED_ATTEMPTS,
+  );
+  assert.equal(
+    success.schema.properties?.events?.maxItems,
+    TASK_PROVISIONING_DIAGNOSTIC_MAX_PAGE_SIZE,
+  );
+  const eventVariants = success.schema.properties?.events?.items?.oneOf ?? [];
+  assert.deepEqual(
+    eventVariants.map((variant) => variant.properties?.outcome?.enum?.[0]),
+    [
+      'started',
+      'succeeded',
+      'failed',
+      'timed_out',
+      'cancelled',
+      'degraded',
+      'indeterminate',
+    ],
+  );
+  assert.ok(
+    eventVariants.every((variant) => variant.additionalProperties === false),
+    'every event union variant remains strict',
+  );
+  const attempt = success.schema.properties?.attempts?.items;
+  assert.ok(attempt?.properties?.primary);
+  assert.ok(attempt?.properties?.cleanup);
+  assert.equal(attempt.additionalProperties, false);
+
+  assert.deepEqual(success.examples, operation.responseExamples);
+  for (const [name, example] of Object.entries(success.examples ?? {})) {
+    assert.ok(
+      TaskProvisioningDiagnosticsResponseSchema.safeParse(example.value).success,
+      `${name} validates through the canonical response schema`,
+    );
+  }
+  const partial = success.examples?.partialPrimaryAndCleanup?.value as {
+    attempts?: Array<{
+      primary?: { cause?: string };
+      cleanup?: { cause?: string };
+    }>;
+    events?: Array<{ eventId?: string; observedAt?: string }>;
+    nextCursor?: string | null;
+  };
+  assert.equal(partial.attempts?.[0]?.primary?.cause, 'command_failed');
+  assert.equal(partial.attempts?.[0]?.cleanup?.cause, 'cleanup_failed');
+  assert.equal(
+    (partial.attempts?.[0] as { eventCount?: number } | undefined)?.eventCount,
+    5,
+  );
+  assert.equal(typeof partial.nextCursor, 'string');
+  const decodedCursor = decodeTaskProvisioningDiagnosticCursor(
+    partial.nextCursor!,
+  );
+  const lastEvent = partial.events?.[partial.events.length - 1];
+  assert.deepEqual(decodedCursor, {
+    observedAt: new Date('2026-07-18T01:02:04.600Z'),
+    eventId: '00000000-0000-4000-8000-000000000304',
+  });
+  assert.equal(decodedCursor?.eventId, lastEvent?.eventId);
+  assert.equal(decodedCursor?.observedAt.toISOString(), lastEvent?.observedAt);
+
+  for (const { code, status, projector } of operation.restErrorProjections ?? []) {
+    if (projector.kind !== 'fixed-body') continue;
+    const example =
+      documented.responses?.[String(status)]?.content?.['application/json']
+        ?.examples?.[code];
+    assert.deepEqual(
+      example?.value,
+      projector.body,
+      `${status} ${code} body derives from its fixed-body projector`,
+    );
+  }
+  assert.deepEqual(
+    documented.responses?.['403']?.content?.['application/json']?.examples?.[
+      'owner_required'
+    ]?.value,
+    {
+      code: 'owner_required',
+      message:
+        'Task provisioning diagnostics require an authenticated account owner.',
+      retryable: false,
+    },
+  );
+  assert.deepEqual(
+    documented.responses?.['503']?.content?.['application/json']?.examples?.[
+      'task_provisioning_diagnostics_unavailable'
+    ]?.value,
+    {
+      code: 'task_provisioning_diagnostics_unavailable',
+      message: 'Task provisioning diagnostics are temporarily unavailable.',
+      retryable: true,
+    },
+  );
+
+  const serializedPublicDescription = JSON.stringify({
+    schema: success.schema,
+    examples: success.examples,
+    ownerError:
+      documented.responses?.['403']?.content?.['application/json']?.examples,
+    unavailableError:
+      documented.responses?.['503']?.content?.['application/json']?.examples,
+  });
+  for (const forbidden of [
+    'secret-canary',
+    'authenticatedGitCommand',
+    'providerEndpoint',
+    'nativeSandboxId',
+    'credentialPath',
+    'stdout',
+    'stderr',
+    'prompt',
+    'stack',
+    'requestBody',
+    'responseBody',
+  ]) {
+    assert.equal(serializedPublicDescription.includes(forbidden), false, forbidden);
+  }
+});
+
+test('diagnostics adds exactly one OpenAPI operation and one mapped MCP tool', () => {
+  const doc = asLoose(buildV1OpenApiDocument());
+  const diagnosticRegistryEntries = PUBLIC_V1_OPERATIONS.filter(
+    ({ id, path, mcp }) =>
+      id.includes('provisioningDiagnostics') ||
+      path.includes('provisioning-diagnostics') ||
+      ('tool' in mcp && mcp.tool.includes('provisioning_diagnostics')),
+  );
+  assert.deepEqual(
+    diagnosticRegistryEntries.map(({ id, method, path, mcp }) => ({
+      id,
+      method,
+      path,
+      tool: 'tool' in mcp ? mcp.tool : null,
+    })),
+    [
+      {
+        id: 'tasks.provisioningDiagnostics',
+        method: 'get',
+        path: '/v1/tasks/{id}/provisioning-diagnostics',
+        tool: 'get_task_provisioning_diagnostics',
+      },
+    ],
+  );
+  const documented = Object.values(doc.paths ?? {}).flatMap((path) =>
+    Object.values(path ?? {}).filter(
+      (candidate) =>
+        candidate &&
+        typeof candidate === 'object' &&
+        'operationId' in candidate &&
+        candidate.operationId === 'tasks.provisioningDiagnostics',
+    ),
+  );
+  assert.equal(documented.length, 1);
 });
 
 test('the fourteen affected projections keep exact guidance and additive safe schemas', () => {

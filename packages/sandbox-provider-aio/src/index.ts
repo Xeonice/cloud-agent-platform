@@ -2,6 +2,7 @@ export * from './aio-local-provider.js';
 export * from './aio-environment-validation.js';
 export * from './aio-provider.js';
 export * from './aio-provider-controller.js';
+export * from './aio-provisioning-diagnostics.js';
 export * from './aio-pty-client.js';
 export * from './aio-retention-store.js';
 export * from './aio-terminal-runtime.js';

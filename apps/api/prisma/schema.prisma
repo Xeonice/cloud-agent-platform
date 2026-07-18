@@ -111,6 +111,13 @@ model Task {
   /// this value so a superseded worker cannot cross an external boundary.
   lifecycleVersion Int @default(0) @map("lifecycle_version")
 
+  /// Internal-only marker declaring that this task expects durable provisioning
+  /// diagnostics. Both fields remain null for pre-ledger tasks so read paths can
+  /// honestly project `unavailable` instead of fabricating evidence.
+  provisioningDiagnosticSchemaVersion Int? @map("provisioning_diagnostic_schema_version")
+  /// One-based counter atomically consumed when an actual provider attempt starts.
+  provisioningDiagnosticNextAttempt   Int? @map("provisioning_diagnostic_next_attempt")
+
   /// Stable, secret-free runtime failure classification. Written atomically with
   /// the terminal `failed` status so read paths never observe a generic failure
   /// after the classifier has identified an actionable authentication problem.
@@ -218,6 +225,11 @@ model Task {
   /// intentionally have no row; every newly accepted task gets exactly one.
   admissionWork TaskAdmissionWork?
 
+  /// Bounded, secret-free provisioning evidence. These relations are internal
+  /// and never expand the ordinary Task response.
+  provisioningDiagnosticAttempts   TaskProvisioningDiagnosticAttempt[]
+  provisioningDiagnosticCompaction TaskProvisioningDiagnosticCompaction?
+
   @@index([repoId])
   @@index([ownerUserId])
   @@index([sandboxEnvironmentId])
@@ -252,11 +264,11 @@ model TaskAdmissionWork {
 
   /// Write-once recovery snapshots. The database permits initial nulls for
   /// legacy/default-branch resolution, then prevents replacing a resolved value.
-  resolvedBranch   String? @map("resolved_branch")
-  resourceSnapshot Json?   @map("resource_snapshot")
+  resolvedBranch                     String? @map("resolved_branch")
+  resourceSnapshot                   Json?   @map("resource_snapshot")
   /// Immutable workspace materialization deadline selected at admission. Null
   /// is retained only for rolling-upgrade and historical work compatibility.
-  workspaceMaterializationDeadlineMs Int? @map("workspace_materialization_deadline_ms")
+  workspaceMaterializationDeadlineMs Int?    @map("workspace_materialization_deadline_ms")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -431,17 +443,29 @@ model SandboxRun {
   taskId String @map("task_id")
   task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
 
-  providerId        String  @map("provider_id")
-  providerSandboxId String? @map("provider_sandbox_id")
+  providerId         String  @map("provider_id")
+  providerSandboxId  String? @map("provider_sandbox_id")
   /// Admission lease generation currently authorized to operate this run.
   ownerGeneration    String? @map("owner_generation")
   /// Immutable identity of the physical sandbox incarnation.
   resourceGeneration String? @map("resource_generation")
   /// Whether a provider create request may still produce a late resource.
   createState        String  @default("entered") @map("create_state")
-  status            String  @default("running")
-  connectionJson    Json?   @map("connection_json")
-  metadata          Json?   @map("metadata")
+  status             String  @default("running")
+  connectionJson     Json?   @map("connection_json")
+  metadata           Json?   @map("metadata")
+
+  /// Secondary cleanup evidence only. `status` remains the sole cleanup
+  /// authority; these fields must never settle or replace it.
+  cleanupAttemptInFlight Boolean   @default(false) @map("cleanup_attempt_in_flight")
+  cleanupAttemptCount    Int       @default(0) @map("cleanup_attempt_count")
+  cleanupLastAttemptId   String?   @map("cleanup_last_attempt_id")
+  cleanupLastOutcome     String?   @map("cleanup_last_outcome")
+  cleanupLastProof       String?   @map("cleanup_last_proof")
+  cleanupLastCause       String?   @map("cleanup_last_cause")
+  cleanupLastRetryable   Boolean?  @map("cleanup_last_retryable")
+  cleanupLastObservedAt  DateTime? @map("cleanup_last_observed_at")
+  cleanupOrphanConfirmedAt DateTime? @map("cleanup_orphan_confirmed_at")
 
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
@@ -451,7 +475,122 @@ model SandboxRun {
   @@index([taskId, status])
   @@index([providerId, providerSandboxId])
   @@index([taskId, ownerGeneration, resourceGeneration])
+  @@index([status, cleanupOrphanConfirmedAt])
   @@map("sandbox_runs")
+}
+
+/// One bounded, provider-neutral provisioning attempt. Diagnostic attempt
+/// numbering is independent from admission claim counts and is allocated from
+/// the owning Task only after running capacity has been won.
+model TaskProvisioningDiagnosticAttempt {
+  id     String @id @default(uuid())
+  taskId String @map("task_id")
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  schemaVersion  Int     @map("schema_version")
+  attempt        Int     @map("attempt_number")
+  admissionMode  String  @map("admission_mode")
+  providerFamily String? @map("provider_family")
+  state          String
+  stage          String
+  coverage       String
+
+  primaryOutcome    String?   @map("primary_outcome")
+  primaryCause      String?   @map("primary_cause")
+  primaryRetryable  Boolean?  @map("primary_retryable")
+  primaryExitCode   Int?      @map("primary_exit_code")
+  primaryObservedAt DateTime? @map("primary_observed_at")
+
+  cleanupState              String    @default("not_required") @map("cleanup_state")
+  cleanupCause              String?   @map("cleanup_cause")
+  cleanupAttemptCount       Int       @default(0) @map("cleanup_attempt_count")
+  cleanupLastAttemptOutcome String?   @map("cleanup_last_attempt_outcome")
+  cleanupObservedAt         DateTime? @map("cleanup_observed_at")
+
+  eventCount           Int       @default(0) @map("event_count")
+  truncated            Boolean   @default(false)
+  startedAt            DateTime  @default(now()) @map("started_at")
+  finishedAt           DateTime? @map("finished_at")
+  completenessMarkedAt DateTime? @map("completeness_marked_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  events TaskProvisioningDiagnosticEvent[]
+
+  @@unique([taskId, attempt])
+  @@unique([id, taskId])
+  @@index([taskId, startedAt, id])
+  @@index([taskId, state, cleanupState])
+  @@index([state, startedAt])
+  @@map("task_provisioning_diagnostic_attempts")
+}
+
+/// Append-only fixed-schema diagnostic event. Commands, output, URLs, headers,
+/// provider identifiers, arbitrary JSON, and raw errors deliberately have no
+/// persistence field.
+model TaskProvisioningDiagnosticEvent {
+  id        String                            @id @default(uuid())
+  attemptId String                            @map("attempt_id")
+  taskId    String                            @map("task_id")
+  attempt   TaskProvisioningDiagnosticAttempt @relation(fields: [attemptId, taskId], references: [id, taskId], onDelete: Cascade)
+
+  schemaVersion  Int      @map("schema_version")
+  idempotencyKey String   @map("idempotency_key")
+  sequence       Int
+  operationId    String   @map("operation_id")
+  admissionMode  String   @map("admission_mode")
+  providerFamily String   @map("provider_family")
+  stage          String
+  operation      String
+  channel        String
+  commandKind    String?  @map("command_kind")
+  outcome        String
+  observedAt     DateTime @map("observed_at")
+
+  durationMs      Int?     @map("duration_ms")
+  cause           String?
+  retryable       Boolean?
+  httpStatusClass String?  @map("http_status_class")
+  nativeState     String?  @map("native_state")
+  anomaly         String?
+  exitCode        Int?     @map("exit_code")
+  timeoutMs       Int?     @map("timeout_ms")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([attemptId, idempotencyKey])
+  @@unique([attemptId, sequence])
+  @@index([taskId, observedAt, id])
+  @@map("task_provisioning_diagnostic_events")
+}
+
+/// Fixed-schema aggregate written transactionally before old settled attempt
+/// detail is removed. Pending cleanup is never eligible for compaction.
+model TaskProvisioningDiagnosticCompaction {
+  taskId String @id @map("task_id")
+  task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  compactedAttemptFrom  Int @map("compacted_attempt_from")
+  compactedAttemptTo    Int @map("compacted_attempt_to")
+  compactedAttemptCount Int @map("compacted_attempt_count")
+  compactedEventCount   Int @map("compacted_event_count")
+  truncationCount       Int @map("truncation_count")
+
+  primarySucceededCount     Int @default(0) @map("primary_succeeded_count")
+  primaryFailedCount        Int @default(0) @map("primary_failed_count")
+  primaryTimedOutCount      Int @default(0) @map("primary_timed_out_count")
+  primaryCancelledCount     Int @default(0) @map("primary_cancelled_count")
+  primaryDegradedCount      Int @default(0) @map("primary_degraded_count")
+  primaryIndeterminateCount Int @default(0) @map("primary_indeterminate_count")
+
+  cleanupNotRequiredCount Int @default(0) @map("cleanup_not_required_count")
+  cleanupPendingCount     Int @default(0) @map("cleanup_pending_count")
+  cleanupSucceededCount   Int @default(0) @map("cleanup_succeeded_count")
+  cleanupFailedCount      Int @default(0) @map("cleanup_failed_count")
+
+  compactedAt DateTime @map("compacted_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("task_provisioning_diagnostic_compactions")
 }
 
 /// An authenticated GitHub operator identity (multi-user-oauth spec).

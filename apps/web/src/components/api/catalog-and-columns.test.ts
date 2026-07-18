@@ -19,10 +19,12 @@
  *     `_app` shell server-side without crashing).
  */
 import { describe, it, expect } from "vitest";
+import { Buffer } from "node:buffer";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   PUBLIC_V1_OPERATIONS,
+  TaskProvisioningDiagnosticsResponseSchema,
   type PublicV1OperationById,
   type PublicV1OperationId,
   type PublicV1OperationShape,
@@ -155,6 +157,15 @@ const CANONICAL_SCHEDULE_RUN_SAMPLE = {
   updatedAt: CANONICAL_SCHEDULE_SAMPLE.updatedAt,
 };
 
+const PLAYGROUND_SECRET_CANARY = "playground-secret-canary:+/@?=%";
+const PLAYGROUND_SECRET_CANARY_VARIANTS = [
+  PLAYGROUND_SECRET_CANARY,
+  encodeURIComponent(PLAYGROUND_SECRET_CANARY),
+  Buffer.from(PLAYGROUND_SECRET_CANARY, "utf8").toString("base64"),
+  Buffer.from(PLAYGROUND_SECRET_CANARY, "utf8").toString("base64url"),
+] as const;
+const PLAYGROUND_PROVIDER_ID_CANARY = "boxlite-playground-provider-id-canary";
+
 // ── 1. Catalog is non-empty (the rail left column has rows to render) ──────
 
 describe("Catalog column — catalog exists and is non-empty", () => {
@@ -282,6 +293,140 @@ describe("Catalog column — shared public /v1 manifest alignment", () => {
               reason: operation.mcp.excluded,
             };
       expect(endpoint!.mcpProjection, operation.id).toEqual(expectedMcp);
+    }
+  });
+
+  it("projects the diagnostics operation and canonical examples without a Playground copy", () => {
+    const rows = DATA_API_CATALOG.filter(
+      (endpoint) => endpoint.operationId === "tasks.provisioningDiagnostics",
+    );
+    expect(rows).toHaveLength(1);
+
+    const endpoint = rows[0]!;
+    const operation = operationById("tasks.provisioningDiagnostics");
+    expect(endpoint).toMatchObject({
+      method: "GET",
+      pathTemplate: "/v1/tasks/:id/provisioning-diagnostics",
+      requiredScope: "tasks:diagnostics",
+      ownerPolicy: "required",
+      destructive: false,
+      streaming: false,
+    });
+    expect(endpoint.pathParams.map(({ name }) => name)).toEqual(["id"]);
+    expect(endpoint.queryParams).toEqual([
+      {
+        name: "limit",
+        defaultValue: "50",
+        hint: "每页数量（默认 50，最大 200）",
+      },
+      {
+        name: "cursor",
+        defaultValue: "",
+        hint: "分页游标（上一页响应返回）",
+      },
+    ]);
+    expect(endpoint.mcpProjection).toEqual({
+      status: "mapped",
+      tool: "get_task_provisioning_diagnostics",
+      differences: [],
+    });
+
+    expect(endpoint.responseExamples).toBe(operation.responseExamples);
+    expect(Object.keys(endpoint.responseExamples)).toEqual([
+      "notStarted",
+      "partialPrimaryAndCleanup",
+      "historicalUnavailable",
+    ]);
+    for (const [name, example] of Object.entries(endpoint.responseExamples)) {
+      expect(example.summary.trim().length, name).toBeGreaterThan(0);
+      expect(
+        TaskProvisioningDiagnosticsResponseSchema.safeParse(example.value)
+          .success,
+        name,
+      ).toBe(true);
+    }
+
+    const partial = TaskProvisioningDiagnosticsResponseSchema.parse(
+      endpoint.responseExamples.partialPrimaryAndCleanup!.value,
+    );
+    expect(partial.coverage).toBe("partial");
+    expect(partial.attempts.some(({ primary }) => primary !== null)).toBe(true);
+    expect(
+      partial.attempts.some(({ cleanup }) => cleanup.state !== "not_required"),
+    ).toBe(true);
+    expect(new Set(partial.events.map(({ channel }) => channel))).toEqual(
+      new Set(["primary", "cleanup"]),
+    );
+
+    const wire = JSON.stringify(endpoint.responseExamples);
+    for (const canary of [
+      ...PLAYGROUND_SECRET_CANARY_VARIANTS,
+      PLAYGROUND_PROVIDER_ID_CANARY,
+    ]) {
+      expect(wire).not.toContain(canary);
+    }
+    for (const forbiddenField of [
+      "authenticatedGitUrl",
+      "command",
+      "argv",
+      "cwd",
+      "prompt",
+      "stdout",
+      "stderr",
+      "body",
+      "headers",
+      "environment",
+      "credentialPath",
+      "providerEndpoint",
+      "nativeSandboxId",
+      "resourceId",
+      "executionId",
+      "temporaryPath",
+      "stack",
+    ]) {
+      expect(wire, forbiddenField).not.toContain(`"${forbiddenField}":`);
+    }
+  });
+
+  it("keeps the diagnostics owner and deployment-gate error bodies exact", () => {
+    const operation = operationById("tasks.provisioningDiagnostics");
+    const fixed = new Map(
+      (operation.restErrorProjections ?? [])
+        .filter(({ projector }) => projector.kind === "fixed-body")
+        .map((projection) => [projection.code, projection] as const),
+    );
+
+    for (const [code, status] of [
+      ["owner_required", 403],
+      ["task_provisioning_diagnostics_unavailable", 503],
+    ] as const) {
+      const projection = fixed.get(code);
+      expect(projection, code).toBeDefined();
+      expect(projection!.status, code).toBe(status);
+      expect(projection!.projector.kind, code).toBe("fixed-body");
+      if (projection!.projector.kind !== "fixed-body") {
+        throw new TypeError(`Expected fixed body for ${code}`);
+      }
+
+      const payload = projection!.projector.body;
+      const body = JSON.stringify(payload);
+      const rendered = mapSendResult({
+        kind: "response",
+        status,
+        statusText: status === 403 ? "Forbidden" : "Service Unavailable",
+        ok: false,
+        durationMs: 1,
+        sizeBytes: new TextEncoder().encode(body).byteLength,
+        headers: { "content-type": "application/json" },
+        body,
+        json: payload,
+      });
+
+      expect(rendered.status, code).toBe(status);
+      expect(rendered.ok, code).toBe(false);
+      expect(rendered.body, code).toBe(body);
+      expect(rendered.json, code).toEqual(payload);
+      expect(rendered.json, code).toMatchObject({ code });
     }
   });
 

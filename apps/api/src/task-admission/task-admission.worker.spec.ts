@@ -186,7 +186,11 @@ class MemoryTaskAdmissionStore extends TaskAdmissionStore {
       (candidate) =>
         ((candidate.state === 'accepted' ||
           candidate.state === 'queued' ||
-          candidate.state === 'retrying') &&
+          candidate.state === 'retrying' ||
+          (candidate.state === 'succeeded' &&
+            (TERMINAL_TASK_STATUSES as readonly string[]).includes(
+              candidate.taskStatus,
+            ))) &&
           candidate.availableAt <= this.clock.value) ||
         (candidate.state === 'running' &&
           candidate.leaseUntil !== null &&
@@ -195,15 +199,13 @@ class MemoryTaskAdmissionStore extends TaskAdmissionStore {
     if (!row) return null;
 
     const sourceState = row.state as TaskAdmissionClaim['sourceState'];
-    row.attempt =
-      sourceState === 'queued'
+    row.attempt = (TERMINAL_TASK_STATUSES as readonly string[]).includes(
+      row.taskStatus,
+    )
+      ? Math.max(row.attempt, 1)
+      : sourceState === 'queued'
         ? row.attempt
-        : sourceState === 'running' &&
-            (TERMINAL_TASK_STATUSES as readonly string[]).includes(
-              row.taskStatus,
-            )
-          ? Math.max(row.attempt, 1)
-          : row.attempt + 1;
+        : row.attempt + 1;
     row.state = 'running';
     row.leaseToken = request.leaseToken;
     row.leaseUntil = this.clock.value + request.leaseDurationMs;
@@ -253,7 +255,8 @@ class MemoryTaskAdmissionStore extends TaskAdmissionStore {
     row.state = request.settlement.state;
     row.stage = request.settlement.stage;
     row.causeCode =
-      request.settlement.state === 'failed'
+      request.settlement.state === 'failed' ||
+      request.settlement.state === 'retrying'
         ? request.settlement.causeCode
         : null;
     row.availableAt =
@@ -713,8 +716,19 @@ test('only typed transient infrastructure errors retry and retry exhaustion is t
   });
 
   assert.equal((await worker.runOnce()).kind, 'retrying');
+  assert.equal(row.settlement?.state, 'retrying');
+  if (row.settlement?.state === 'retrying') {
+    assert.equal(row.settlement.stage, 'remote_ref_resolution');
+    assert.equal(
+      row.settlement.causeCode,
+      'provisioning_tls_network_failed',
+    );
+    assert.ok(row.settlement.availableAfterMs > 0);
+  }
+  assert.equal(row.causeCode, 'provisioning_tls_network_failed');
   clock.advance(100);
   assert.equal((await worker.runOnce()).kind, 'retrying');
+  assert.equal(row.causeCode, 'provisioning_tls_network_failed');
   clock.advance(100);
   assert.equal((await worker.runOnce()).kind, 'failed');
   assert.equal(calls, 3);
@@ -968,6 +982,43 @@ test('completed terminal recovery settles a proven complete admission as succeed
   const { worker } = createWorker({ store, clock, processor });
 
   assert.equal((await worker.runOnce()).kind, 'succeeded');
+  assert.deepEqual(row.settlement, {
+    state: 'succeeded',
+    stage: 'complete',
+  });
+});
+
+test('a normally succeeded admission is reclaimed only through terminal cleanup recovery without a new attempt', async () => {
+  const clock = new ManualClock();
+  const store = new MemoryTaskAdmissionStore(clock);
+  const row = store.add('terminal-runtime-cleanup', {
+    state: 'succeeded',
+    attempt: 3,
+    taskStatus: 'completed',
+    taskLifecycleVersion: 7,
+    stage: 'complete',
+  });
+  let processCalls = 0;
+  let recoveryCalls = 0;
+  const processor: TaskAdmissionProcessor = {
+    async process() {
+      processCalls += 1;
+      return { kind: 'succeeded' };
+    },
+    async recoverTerminal(context) {
+      recoveryCalls += 1;
+      assert.equal(context.claim.sourceState, 'succeeded');
+      assert.equal(context.claim.attempt, 3);
+      await context.lease.authorize();
+      return { state: 'succeeded', stage: 'complete' };
+    },
+  };
+  const { worker } = createWorker({ store, clock, processor });
+
+  assert.equal((await worker.runOnce()).kind, 'succeeded');
+  assert.equal(processCalls, 0);
+  assert.equal(recoveryCalls, 1);
+  assert.equal(row.attempt, 3);
   assert.deepEqual(row.settlement, {
     state: 'succeeded',
     stage: 'complete',

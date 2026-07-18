@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "change": "harden-task-provisioning-diagnostics",
+  "intent": "public-feature",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "changed",
+      "plannedOperationIds": [
+        "tasks.provisioningDiagnostics"
+      ],
+      "reason": "Adds a deployment-gated, owner-required, separately scoped, secret-free provisioning-attempt and cleanup diagnostic read for one task without widening the ordinary Task response."
+    },
+    "mcp": {
+      "status": "changed",
+      "plannedOperationIds": [
+        "tasks.provisioningDiagnostics"
+      ],
+      "plannedToolIds": [
+        "get_task_provisioning_diagnostics"
+      ],
+      "reason": "Adds the matching gated MCP diagnostic tool over the same canonical contract, required-owner policy, tasks:diagnostics scope, and direct canonical JSON compatibility text."
+    },
+    "openapi": {
+      "status": "derived",
+      "plannedOperationIds": [
+        "tasks.provisioningDiagnostics"
+      ],
+      "reason": "The new scoped diagnostics path, pagination input, strict safe event union, and response examples derive from the canonical public registry and contracts."
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "plannedOperationIds": [
+        "tasks.provisioningDiagnostics"
+      ],
+      "reason": "The Playground derives the diagnostics operation and renders only the canonical secret-free response from the shared registry."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "provisioning-diagnostic-events-provider-settlement-cleanup-metrics-console",
+      "reason": "Adds versioned provider-neutral diagnostic emission across AIO, cloud-http, and BoxLite; bounded persistence and coverage; BoxLite settlement and fallback-cleanup evidence; primary-versus-cleanup preservation; provisioning metrics; and a session-only owner/live-admin Console view."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
+  }
+}

@@ -549,6 +549,9 @@ importers:
       '@cap/eslint-config':
         specifier: workspace:*
         version: link:../eslint-config
+      '@cap/sandbox-conformance':
+        specifier: workspace:*
+        version: link:../sandbox-conformance
       '@cap/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig

@@ -16,6 +16,11 @@ async function test(name, fn) {
   }
 }
 
+function authorizedCleanup(claim) {
+  assert.equal(claim?.kind, 'authorized');
+  return claim.authorization;
+}
+
 function provider(name, capabilities) {
   return {
     getSandboxMode: () => name,
@@ -57,6 +62,7 @@ function routableProvider(name, capabilities, options = {}) {
     },
     async teardownSandbox(taskId, teardownOptions) {
       calls.push(['teardown', taskId, teardownOptions?.ownership ?? null]);
+      return { kind: 'already-absent' };
     },
     async readRolloutFromContainer(taskId, runtimeId) {
       calls.push(['read', taskId, runtimeId ?? null]);
@@ -110,6 +116,38 @@ function deferred() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+let confirmedCleanupAttemptSequence = 0;
+
+async function recordConfirmedCleanup(
+  ownerStore,
+  authorization,
+  proof = 'already-absent',
+) {
+  confirmedCleanupAttemptSequence += 1;
+  const attemptId = `00000000-0000-4000-8000-${confirmedCleanupAttemptSequence
+    .toString(16)
+    .padStart(12, '0')}`;
+  const allocated = await ownerStore.beginSandboxRunCleanupAttempt(
+    authorization,
+    attemptId,
+  );
+  assert.equal(allocated.kind, 'allocated');
+  const settled = await ownerStore.settleSandboxRunCleanupAttempt(
+    authorization,
+    mod.sandboxCleanupAttemptEvidence(
+      allocated.evidence.attempt,
+      allocated.evidence.attemptId,
+      {
+        outcome: 'succeeded',
+        proof,
+        cause: null,
+        retryable: false,
+      },
+    ),
+  );
+  assert.deepEqual(settled, { kind: 'recorded' });
 }
 
 await test('single-provider selector preserves legacy compatibility', () => {
@@ -817,6 +855,127 @@ await test('provider router fences reconciliation candidates against active cros
   assert.deepEqual(upstreamAuthorizations, [orphanCandidate]);
 });
 
+await test('fresh reconciliation confirms only the exact deleting generation orphan', async () => {
+  const exactCandidate = {
+    taskId: 'task-confirmed-cleanup-orphan',
+    providerSandboxId: 'sandbox-confirmed-cleanup-orphan',
+  };
+  const mismatchedCandidate = {
+    taskId: exactCandidate.taskId,
+    providerSandboxId: 'sandbox-different-incarnation',
+  };
+  const provider = routableProvider(
+    'confirmed-cleanup-orphan',
+    ['lifecycle.readopt', 'terminal.websocket'],
+    {
+      reconcileCandidates: [exactCandidate, mismatchedCandidate],
+      reconcileResult: { inspected: 2, reaped: 0 },
+    },
+  );
+  provider.teardownSandbox = async () => ({
+    outcome: 'failed',
+    proof: null,
+    cause: 'cleanup_failed',
+    retryable: false,
+  });
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const ownership = {
+    ownerGeneration: 'owner:confirmed-cleanup-orphan-g1',
+    resourceGeneration: 'resource:confirmed-cleanup-orphan-r1',
+  };
+  await ownerStore.acquireSandboxRunOwner({
+    taskId: exactCandidate.taskId,
+    providerId: 'confirmed-cleanup-orphan',
+    ownerGeneration: ownership.ownerGeneration,
+    proposedResourceGeneration: ownership.resourceGeneration,
+  });
+  await ownerStore.recordSandboxRunOwner({
+    taskId: exactCandidate.taskId,
+    providerId: 'confirmed-cleanup-orphan',
+    providerSandboxId: exactCandidate.providerSandboxId,
+    ownership,
+    status: 'running',
+  });
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-running-snapshot-protected',
+    providerId: 'confirmed-cleanup-orphan',
+    providerSandboxId: 'sandbox-running-snapshot-protected',
+    status: 'running',
+  });
+  const router = new mod.SandboxProviderRouter(
+    [
+      mod.defineLocalSandboxProvider({
+        id: 'confirmed-cleanup-orphan',
+        provider,
+        capabilities: ['lifecycle.readopt', 'terminal.websocket'],
+      }),
+    ],
+    { ownerStore },
+  );
+  const authorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      exactCandidate.taskId,
+      'owner:confirmed-cleanup-orphan-g2',
+    ),
+  );
+  const upstreamCandidates = [];
+  assert.deepEqual(
+    await router.reconcileSandboxInventory({
+      protectedTaskIds: [
+        exactCandidate.taskId,
+        'task-running-snapshot-protected',
+      ],
+      canReap: (candidate) => {
+        upstreamCandidates.push(candidate);
+        return false;
+      },
+    }),
+    { inspected: 2, reaped: 0 },
+  );
+  assert.deepEqual(
+    upstreamCandidates,
+    [],
+    'all candidates for the observed deleting task remain non-reapable',
+  );
+  assert.deepEqual(
+    provider.calls.find(([kind]) => kind === 'reconcileSandboxInventory'),
+    [
+      'reconcileSandboxInventory',
+      ['task-running-snapshot-protected'],
+    ],
+    'only generation deleting leaves the provider snapshot filter; ordinary active tasks stay protected',
+  );
+  let authority = await router.getSandboxCleanupAuthority(
+    exactCandidate.taskId,
+  );
+  assert.equal(authority.status, 'deleting');
+  assert.equal(authority.orphanState, 'confirmed');
+
+  await assert.rejects(
+    router.teardownSandbox(exactCandidate.taskId, {
+      cleanupAuthorization: authorization,
+      disposition: 'superseded-remove',
+    }),
+    (error) => error?.code === 'sandbox_cleanup_pending',
+  );
+  authority = await router.failSandboxCleanupByTerminalPolicy(
+    authorization,
+    1,
+  );
+  assert.equal(authority.status, 'failed');
+  assert.equal(authority.orphanState, 'confirmed');
+
+  await ownerStore.acquireSandboxRunOwner({
+    taskId: exactCandidate.taskId,
+    providerId: 'confirmed-cleanup-orphan',
+    ownerGeneration: 'owner:confirmed-cleanup-orphan-g3',
+    proposedResourceGeneration: 'resource:confirmed-cleanup-orphan-r2',
+  });
+  authority = await router.getSandboxCleanupAuthority(exactCandidate.taskId);
+  assert.equal(authority.status, 'provisioning');
+  assert.equal(authority.orphanState, 'none');
+});
+
 await test('provider router returns capability errors for owned providers missing delivery support', async () => {
   const ownerStore = new mod.InMemorySandboxRunOwnerStore();
   await ownerStore.recordSandboxRunOwner({
@@ -1169,6 +1328,10 @@ await test('durable provider transfer overrides a stale local owner cache and re
     'owner:g2',
   );
   assert.equal(firstCleanup.kind, 'authorized');
+  await recordConfirmedCleanup(
+    ownerStore,
+    firstCleanup.authorization,
+  );
   assert.equal(
     await ownerStore.completeSandboxRunCleanup(
       firstCleanup.authorization,
@@ -1242,11 +1405,1563 @@ await test('a pre-create provider failure abandons an idle generation without st
   assert.equal(teardownOptions.length, 1);
   assert.equal(teardownOptions[0].disposition, 'superseded-remove');
   assert.equal(
-    await router.claimSandboxCleanupOwnership(
+    (await router.claimSandboxCleanupOwnership(
       'task-pre-create-failure',
       'owner:g2',
+    )).kind,
+    'settled',
+  );
+});
+
+await test('an upstream cleanup authority refusal cannot be bypassed by router fallback', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const primary = new Error('provider cleanup remained fenced');
+  let physicalCalls = 0;
+  const provider = routableProvider('upstream-fenced', ['terminal.websocket']);
+  provider.provision = async (ctx) => {
+    assert.equal(await ctx.beforeSandboxCleanup(), null);
+    throw primary;
+  };
+  provider.teardownSandbox = async () => {
+    physicalCalls += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'upstream-fenced', provider })],
+    { ownerStore },
+  );
+
+  await assert.rejects(
+    router.provision({
+      ...provisionContext('task-upstream-fenced'),
+      ownership: {
+        ownerGeneration: 'owner:upstream-g1',
+        resourceGeneration: 'resource:upstream-r1',
+      },
+      beforeSandboxCleanup: async () => null,
+      afterSandboxCleanup: async () => {
+        assert.fail('refused upstream cleanup cannot complete');
+      },
+    }),
+    (error) =>
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error.primary === primary,
+  );
+  assert.equal(physicalCalls, 0);
+});
+
+await test('provider-internal unconfirmed cleanup settles before router fallback allocates the next attempt', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const primary = new Error('provider setup failed');
+  const provider = routableProvider('internal-cleanup-lineage', [
+    'terminal.websocket',
+  ]);
+  provider.provision = async (ctx) => {
+    assert(await ctx.beforeSandboxCleanup());
+    throw primary;
+  };
+  provider.teardownSandbox = async () => {
+    throw new Error('CAP_PRIVATE_INTERNAL_CLEANUP_CANARY');
+  };
+  const router = new mod.SandboxProviderRouter(
+    [
+      mod.defineLocalSandboxProvider({
+        id: 'internal-cleanup-lineage',
+        provider,
+      }),
+    ],
+    { ownerStore },
+  );
+
+  await assert.rejects(
+    router.provision({
+      ...provisionContext('task-internal-cleanup-lineage'),
+      ownership: {
+        ownerGeneration: 'owner:internal-g1',
+        resourceGeneration: 'resource:internal-r1',
+      },
+    }),
+    (error) => error === primary,
+  );
+  const pending = await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-internal-cleanup-lineage',
+    providerId: 'internal-cleanup-lineage',
+    ownerGeneration: 'owner:probe',
+    proposedResourceGeneration: 'resource:probe',
+  });
+  assert.equal(pending.kind, 'cleanup-required');
+  assert.equal(pending.owner.cleanupAttemptCount, 2);
+  assert.equal(pending.owner.cleanupAttemptInFlight, false);
+  assert.equal(pending.owner.cleanupLastOutcome, 'indeterminate');
+  assert.equal(
+    JSON.stringify(pending.owner).includes('CAP_PRIVATE_INTERNAL_CLEANUP_CANARY'),
+    false,
+  );
+});
+
+await test('typed provider-internal cleanup replays one identity and fallback allocates attempt N+1', async () => {
+  const cases = [
+    {
+      label: 'failed',
+      internal: {
+        outcome: 'failed',
+        proof: null,
+        cause: 'cleanup_failed',
+        retryable: false,
+      },
+      fallback: {
+        outcome: 'indeterminate',
+        proof: null,
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      },
+    },
+    {
+      label: 'indeterminate',
+      internal: {
+        outcome: 'indeterminate',
+        proof: null,
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      },
+      fallback: {
+        outcome: 'failed',
+        proof: null,
+        cause: 'cleanup_failed',
+        retryable: true,
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+    const beginAttempt =
+      ownerStore.beginSandboxRunCleanupAttempt.bind(ownerStore);
+    const settleAttempt =
+      ownerStore.settleSandboxRunCleanupAttempt.bind(ownerStore);
+    const attemptIds = [];
+    const settledAttemptIds = [];
+    ownerStore.beginSandboxRunCleanupAttempt = async (authorization, attemptId) => {
+      attemptIds.push(attemptId);
+      return beginAttempt(authorization, attemptId);
+    };
+    ownerStore.settleSandboxRunCleanupAttempt = async (
+      authorization,
+      evidence,
+    ) => {
+      settledAttemptIds.push(evidence.attemptId);
+      return settleAttempt(authorization, evidence);
+    };
+
+    const taskId = `task-typed-cleanup-${scenario.label}`;
+    const primary = new Error(`typed primary ${scenario.label}`);
+    let fallbackCalls = 0;
+    const provider = routableProvider('typed-cleanup-lineage', [
+      'terminal.websocket',
+    ]);
+    provider.provision = async (ctx) => {
+      const authorization = await ctx.beforeSandboxCleanup();
+      assert(authorization);
+      await ctx.settleSandboxCleanupAttempt(authorization, scenario.internal);
+      // Provider callback replay is the same physical attempt and must not
+      // allocate or settle a second durable identity.
+      await ctx.settleSandboxCleanupAttempt(authorization, scenario.internal);
+      throw primary;
+    };
+    provider.teardownSandbox = async () => {
+      fallbackCalls += 1;
+      return scenario.fallback;
+    };
+    const router = new mod.SandboxProviderRouter(
+      [
+        mod.defineLocalSandboxProvider({
+          id: 'typed-cleanup-lineage',
+          provider,
+        }),
+      ],
+      { ownerStore },
+    );
+
+    await assert.rejects(
+      router.provision({
+        ...provisionContext(taskId),
+        ownership: {
+          ownerGeneration: `owner:${scenario.label}:g1`,
+          resourceGeneration: `resource:${scenario.label}:r1`,
+        },
+      }),
+      (error) => error === primary,
+    );
+    assert.equal(fallbackCalls, 1);
+    assert.equal(attemptIds.length, 2);
+    assert.notEqual(attemptIds[0], attemptIds[1]);
+    assert.deepEqual(settledAttemptIds, attemptIds);
+
+    const pending = await ownerStore.acquireSandboxRunOwner({
+      taskId,
+      providerId: 'typed-cleanup-lineage',
+      ownerGeneration: `owner:${scenario.label}:probe`,
+      proposedResourceGeneration: `resource:${scenario.label}:probe`,
+    });
+    assert.equal(pending.kind, 'cleanup-required');
+    assert.equal(pending.owner.status, 'deleting');
+    assert.equal(pending.owner.cleanupAttemptInFlight, false);
+    assert.equal(pending.owner.cleanupAttemptCount, 2);
+    assert.equal(pending.owner.cleanupLastAttemptId, attemptIds[1]);
+    assert.equal(
+      pending.owner.cleanupLastOutcome,
+      scenario.fallback.outcome,
+    );
+  }
+});
+
+await test('real BoxLite runtime failure keeps one primary across internal cleanup and router fallback', async () => {
+  const taskId = '35000000-0000-4000-8000-000000000001';
+  const providerId = 'boxlite-cleanup-lineage';
+  const ownership = {
+    ownerGeneration: 'owner:boxlite-cleanup:g1',
+    resourceGeneration: 'resource:boxlite-cleanup:r1',
+  };
+  const canaries = Object.freeze([
+    'RAW_BOXLITE_API_TOKEN_CANARY',
+    'RAW_BOXLITE_RUNTIME_SETUP_CANARY',
+    'RAW_BOXLITE_INTERNAL_DELETE_CANARY',
+    'RAW_BOXLITE_FALLBACK_DELETE_CANARY',
+    'RAW_BOXLITE_FALLBACK_PROBE_CANARY',
+  ]);
+  const configResult = mod.readBoxLiteProviderConfig({
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: canaries[0],
+    BOXLITE_IMAGE: 'ghcr.io/xeonice/cap-boxlite-sandbox:vtest',
+    BOXLITE_PROVIDER_ID: providerId,
+    BOXLITE_TERMINAL_MODE: 'pty',
+    BOXLITE_CAPABILITIES: 'terminal.websocket',
+  });
+  assert.equal(configResult.status, 'valid');
+
+  class CleanupLineageFakeBoxLiteClient extends mod.FakeBoxLiteClient {
+    cleanupAttempt = 0;
+    recoveryEnabled = false;
+
+    async deleteSandbox(sandboxId) {
+      if (this.recoveryEnabled) {
+        return super.deleteSandbox(sandboxId);
+      }
+      this.cleanupAttempt += 1;
+      this.deletedSandboxIds.push(sandboxId);
+      throw new Error(
+        this.cleanupAttempt === 1 ? canaries[2] : canaries[3],
+      );
+    }
+
+    async getSandbox(sandboxId) {
+      // The provider's first attempt receives definitive positive-presence
+      // probes. Router fallback can still resolve the same run before its own
+      // delete, after which confirmation becomes transport-indeterminate.
+      if (!this.recoveryEnabled && this.cleanupAttempt >= 2) {
+        throw new Error(canaries[4]);
+      }
+      return super.getSandbox(sandboxId);
+    }
+  }
+
+  let boxLitePrimary;
+  class ObservedBoxLiteSandboxProvider extends mod.BoxLiteSandboxProvider {
+    async provision(context) {
+      try {
+        return await super.provision(context);
+      } catch (error) {
+        boxLitePrimary = error;
+        throw error;
+      }
+    }
+  }
+
+  const client = new CleanupLineageFakeBoxLiteClient();
+  const provider = new ObservedBoxLiteSandboxProvider({
+    config: configResult.config,
+    client,
+    runtimeSetup: async () => {
+      throw new Error(`${canaries[1]} ${canaries[0]}`);
+    },
+  });
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const beginAttempt =
+    ownerStore.beginSandboxRunCleanupAttempt.bind(ownerStore);
+  const settleAttempt =
+    ownerStore.settleSandboxRunCleanupAttempt.bind(ownerStore);
+  const attemptIds = [];
+  const settledEvidence = [];
+  ownerStore.beginSandboxRunCleanupAttempt = async (
+    authorization,
+    attemptId,
+  ) => {
+    const allocation = await beginAttempt(authorization, attemptId);
+    if (allocation.kind === 'allocated') attemptIds.push(attemptId);
+    return allocation;
+  };
+  ownerStore.settleSandboxRunCleanupAttempt = async (
+    authorization,
+    evidence,
+  ) => {
+    const result = await settleAttempt(authorization, evidence);
+    if (result.kind === 'recorded') settledEvidence.push(evidence);
+    return result;
+  };
+
+  const diagnosticEvents = [];
+  let diagnosticIdentity = 0;
+  const nextDiagnosticId = () =>
+    `36000000-0000-4000-8000-${String(++diagnosticIdentity).padStart(12, '0')}`;
+  const diagnostics = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: {
+      schemaVersion: 1,
+      taskId,
+      attemptId: '35000000-0000-4000-8000-000000000002',
+      attempt: 1,
+      admissionMode: 'durable',
+      providerFamily: 'unknown',
+    },
+    createEventId: nextDiagnosticId,
+    createOperationId: nextDiagnosticId,
+    now: () => new Date('2026-07-18T00:00:00.000Z'),
+    record: async (event) => {
+      diagnosticEvents.push(event);
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: providerId, provider })],
+    { ownerStore },
+  );
+
+  let routedFailure;
+  await assert.rejects(
+    router.provision({
+      ...provisionContext(taskId),
+      ownership,
+      diagnostics,
+    }),
+    (error) => {
+      routedFailure = error;
+      return (
+        error?.code === 'sandbox_provisioning_stage_error' &&
+        error.stage === 'runtime_setup'
+      );
+    },
+  );
+
+  assert(boxLitePrimary);
+  assert.equal(routedFailure, boxLitePrimary);
+  assert.equal(
+    routedFailure.message,
+    'Sandbox provisioning failed during runtime_setup',
+  );
+  assert.equal(Object.hasOwn(routedFailure, 'primary'), false);
+  assert.equal(client.cleanupAttempt, 2);
+  assert.equal(attemptIds.length, 2);
+  assert.notEqual(attemptIds[0], attemptIds[1]);
+  assert.deepEqual(
+    settledEvidence.map((evidence) => ({
+      attempt: evidence.attempt,
+      attemptId: evidence.attemptId,
+      outcome: evidence.outcome,
+      cause: evidence.cause,
+      retryable: evidence.retryable,
+    })),
+    [
+      {
+        attempt: 1,
+        attemptId: attemptIds[0],
+        outcome: 'failed',
+        cause: 'cleanup_failed',
+        retryable: true,
+      },
+      {
+        attempt: 2,
+        attemptId: attemptIds[1],
+        outcome: 'indeterminate',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      },
+    ],
+  );
+
+  const pending = await ownerStore.acquireSandboxRunOwner({
+    taskId,
+    providerId,
+    ownerGeneration: 'owner:boxlite-cleanup:probe',
+    proposedResourceGeneration: 'resource:boxlite-cleanup:probe',
+  });
+  assert.equal(pending.kind, 'cleanup-required');
+  assert.equal(pending.owner.status, 'deleting');
+  assert.equal(pending.owner.cleanupAttemptInFlight, false);
+  assert.equal(pending.owner.cleanupAttemptCount, 2);
+  assert.equal(pending.owner.cleanupLastAttemptId, attemptIds[1]);
+  assert.equal(pending.owner.cleanupLastOutcome, 'indeterminate');
+  assert.equal(pending.owner.cleanupLastCause, 'cleanup_unconfirmed');
+  assert.equal(
+    diagnosticEvents.some(
+      (event) =>
+        event.channel === 'primary' &&
+        event.operation === 'runtime_setup' &&
+        event.outcome === 'failed',
     ),
+    true,
+  );
+  const visibleFacts = JSON.stringify({
+    primary: {
+      name: routedFailure.name,
+      code: routedFailure.code,
+      stage: routedFailure.stage,
+      message: routedFailure.message,
+    },
+    diagnosticEvents,
+    cleanupEvidence: settledEvidence,
+    owner: pending.owner,
+  });
+  for (const canary of canaries) {
+    assert.equal(visibleFacts.includes(canary), false);
+  }
+
+  // A later owner may safely retry the same physical generation. Confirmed
+  // absence becomes attempt N+2 and is the only point durable authority ends.
+  client.recoveryEnabled = true;
+  const recovery = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      taskId,
+      'owner:boxlite-cleanup:recovery',
+    ),
+  );
+  await router.teardownSandbox(taskId, {
+    cleanupAuthorization: recovery,
+    disposition: 'superseded-remove',
+    diagnostics,
+  });
+  assert.equal(attemptIds.length, 3);
+  assert.equal(new Set(attemptIds).size, 3);
+  assert.equal(settledEvidence[2].attempt, 3);
+  assert.equal(settledEvidence[2].attemptId, attemptIds[2]);
+  assert.equal(settledEvidence[2].outcome, 'succeeded');
+  assert.equal(
+    (await ownerStore.claimSandboxRunCleanup(
+      taskId,
+      'owner:boxlite-cleanup:removed-probe',
+    )).kind,
+    'settled',
+  );
+  assert.equal(
+    await client.getSandbox(client.createCalls[0].sandboxId),
     null,
+  );
+});
+
+await test('typed provider-internal pending cleanup preserves primary while successful fallback removes authority', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const beginAttempt = ownerStore.beginSandboxRunCleanupAttempt.bind(ownerStore);
+  const attemptIds = [];
+  ownerStore.beginSandboxRunCleanupAttempt = async (authorization, attemptId) => {
+    attemptIds.push(attemptId);
+    return beginAttempt(authorization, attemptId);
+  };
+  const primary = new Error('typed cleanup primary survives confirmed fallback');
+  let fallbackCalls = 0;
+  const provider = routableProvider('typed-cleanup-success', [
+    'terminal.websocket',
+  ]);
+  provider.provision = async (ctx) => {
+    const authorization = await ctx.beforeSandboxCleanup();
+    assert(authorization);
+    await ctx.settleSandboxCleanupAttempt(authorization, {
+      outcome: 'indeterminate',
+      proof: null,
+      cause: 'cleanup_unconfirmed',
+      retryable: true,
+    });
+    throw primary;
+  };
+  provider.teardownSandbox = async () => {
+    fallbackCalls += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [
+      mod.defineLocalSandboxProvider({
+        id: 'typed-cleanup-success',
+        provider,
+      }),
+    ],
+    { ownerStore },
+  );
+
+  await assert.rejects(
+    router.provision({
+      ...provisionContext('task-typed-cleanup-success'),
+      ownership: {
+        ownerGeneration: 'owner:typed-success:g1',
+        resourceGeneration: 'resource:typed-success:r1',
+      },
+    }),
+    (error) => error === primary,
+  );
+  assert.equal(fallbackCalls, 1);
+  assert.equal(attemptIds.length, 2);
+  assert.notEqual(attemptIds[0], attemptIds[1]);
+  assert.equal(
+    await ownerStore.getSandboxRunOwner('task-typed-cleanup-success'),
+    null,
+  );
+});
+
+await test('explicit typed upstream cleanup seam does not depend on callback arity', async () => {
+  const physical = {
+    outcome: 'failed',
+    proof: null,
+    cause: 'cleanup_failed',
+    retryable: true,
+  };
+  const cases = [
+    {
+      label: 'default-parameter',
+      createCallback: (calls) =>
+        async (authorization, reportedPhysical = null) => {
+          calls.push([authorization, reportedPhysical]);
+        },
+      expectedLength: 1,
+    },
+    {
+      label: 'rest-parameter',
+      createCallback: (calls) => async (...args) => {
+        calls.push(args);
+      },
+      expectedLength: 0,
+    },
+  ];
+
+  for (const scenario of cases) {
+    const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+    const taskId = `task-explicit-typed-${scenario.label}`;
+    const upstreamAuthorization = {
+      kind: 'generation',
+      taskId,
+      providerId: 'upstream-provider',
+      ownership: {
+        ownerGeneration: `upstream:${scenario.label}:g1`,
+        resourceGeneration: `upstream:${scenario.label}:r1`,
+      },
+    };
+    const typedCalls = [];
+    let legacyCalls = 0;
+    let fallbackCalls = 0;
+    const typedCallback = scenario.createCallback(typedCalls);
+    assert.equal(typedCallback.length, scenario.expectedLength);
+    const primary = new Error(`explicit typed primary ${scenario.label}`);
+    const provider = routableProvider('explicit-typed-cleanup', [
+      'terminal.websocket',
+    ]);
+    provider.provision = async (ctx) => {
+      const authorization = await ctx.beforeSandboxCleanup();
+      assert(authorization);
+      await ctx.settleSandboxCleanupAttempt(authorization, physical);
+      throw primary;
+    };
+    provider.teardownSandbox = async () => {
+      fallbackCalls += 1;
+      return { kind: 'already-absent' };
+    };
+    const router = new mod.SandboxProviderRouter(
+      [
+        mod.defineLocalSandboxProvider({
+          id: 'explicit-typed-cleanup',
+          provider,
+        }),
+      ],
+      { ownerStore },
+    );
+
+    await assert.rejects(
+      router.provision({
+        ...provisionContext(taskId),
+        ownership: {
+          ownerGeneration: `owner:${scenario.label}:g1`,
+          resourceGeneration: `resource:${scenario.label}:r1`,
+        },
+        beforeSandboxCleanup: async () => upstreamAuthorization,
+        afterSandboxCleanup: async () => {
+          legacyCalls += 1;
+        },
+        settleSandboxCleanupAttempt: typedCallback,
+      }),
+      (error) => error === primary,
+    );
+    assert.equal(legacyCalls, 0);
+    assert.equal(fallbackCalls, 1);
+    assert.deepEqual(typedCalls, [[upstreamAuthorization, physical]]);
+    assert.equal(await ownerStore.getSandboxRunOwner(taskId), null);
+  }
+});
+
+await test('legacy or missing upstream acknowledgement fails closed on non-success and remains recoverable', async () => {
+  for (const acknowledgment of ['legacy', 'missing']) {
+    const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+    const taskId = `task-${acknowledgment}-upstream-non-success`;
+    const providerId = `${acknowledgment}-upstream-cleanup`;
+    const upstreamAuthorization = {
+      kind: 'generation',
+      taskId,
+      providerId: 'upstream-provider',
+      ownership: {
+        ownerGeneration: `upstream:${acknowledgment}:g1`,
+        resourceGeneration: `upstream:${acknowledgment}:r1`,
+      },
+    };
+    const primary = new Error(`${acknowledgment} upstream primary`);
+    let legacyCalls = 0;
+    let fallbackCalls = 0;
+    const provider = routableProvider(providerId, ['terminal.websocket']);
+    provider.provision = async (ctx) => {
+      const authorization = await ctx.beforeSandboxCleanup();
+      assert(authorization);
+      await ctx.settleSandboxCleanupAttempt(authorization, {
+        outcome: 'failed',
+        proof: null,
+        cause: 'cleanup_failed',
+        retryable: true,
+      });
+      throw primary;
+    };
+    provider.teardownSandbox = async () => {
+      fallbackCalls += 1;
+      return { kind: 'already-absent' };
+    };
+    const router = new mod.SandboxProviderRouter(
+      [mod.defineLocalSandboxProvider({ id: providerId, provider })],
+      { ownerStore },
+    );
+
+    const context = {
+      ...provisionContext(taskId),
+      ownership: {
+        ownerGeneration: `owner:${acknowledgment}:g1`,
+        resourceGeneration: `resource:${acknowledgment}:r1`,
+      },
+      beforeSandboxCleanup: async () => upstreamAuthorization,
+      ...(acknowledgment === 'legacy'
+        ? {
+            afterSandboxCleanup: async () => {
+              legacyCalls += 1;
+            },
+          }
+        : {}),
+    };
+    await assert.rejects(
+      router.provision(context),
+      (error) =>
+        error?.code === 'sandbox_cleanup_coordination_pending' &&
+        error.primary === primary,
+    );
+    assert.equal(legacyCalls, 0);
+    assert.equal(fallbackCalls, 0);
+
+    const pending = await ownerStore.acquireSandboxRunOwner({
+      taskId,
+      providerId,
+      ownerGeneration: `owner:${acknowledgment}:probe`,
+      proposedResourceGeneration: `resource:${acknowledgment}:probe`,
+    });
+    assert.equal(pending.kind, 'cleanup-required');
+    assert.equal(pending.owner.status, 'deleting');
+    assert.equal(pending.owner.cleanupAttemptInFlight, false);
+    assert.equal(pending.owner.cleanupAttemptCount, 1);
+    assert.equal(pending.owner.cleanupLastOutcome, 'failed');
+
+    const recovery = authorizedCleanup(
+      await router.claimSandboxCleanupOwnership(
+        taskId,
+        `owner:${acknowledgment}:recovery`,
+      ),
+    );
+    await router.teardownSandbox(taskId, {
+      cleanupAuthorization: recovery,
+      disposition: 'superseded-remove',
+    });
+    assert.equal(fallbackCalls, 1);
+    assert.equal(await ownerStore.getSandboxRunOwner(taskId), null);
+  }
+});
+
+await test('router flushes and forwards provisioning diagnostics before immediate fallback teardown', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const primary = new Error('primary fact must drain before fallback');
+  const events = [];
+  const diagnostics = {
+    flush: async () => {
+      events.push('diagnostics-flushed');
+    },
+  };
+  const provider = routableProvider('diagnostic-fallback', [
+    'terminal.websocket',
+  ]);
+  provider.provision = async () => {
+    events.push('primary-enqueued');
+    throw primary;
+  };
+  provider.teardownSandbox = async (_taskId, options) => {
+    assert.equal(options.diagnostics, diagnostics);
+    events.push('physical-fallback');
+    return {
+      outcome: 'indeterminate',
+      proof: null,
+      cause: 'cleanup_unconfirmed',
+      retryable: true,
+    };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [
+      mod.defineLocalSandboxProvider({
+        id: 'diagnostic-fallback',
+        provider,
+      }),
+    ],
+    { ownerStore },
+  );
+
+  await assert.rejects(
+    router.provision({
+      ...provisionContext('task-diagnostic-fallback'),
+      diagnostics,
+      ownership: {
+        ownerGeneration: 'owner:diagnostic:g1',
+        resourceGeneration: 'resource:diagnostic:r1',
+      },
+    }),
+    (error) => error === primary,
+  );
+  assert.deepEqual(events, [
+    'primary-enqueued',
+    'diagnostics-flushed',
+    'physical-fallback',
+  ]);
+});
+
+await test('a hanging diagnostic flush cannot block cleanup authority', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const primary = new Error('primary survives hanging diagnostics');
+  let flushCalls = 0;
+  let cleanupCalls = 0;
+  const diagnostics = {
+    flush: () => {
+      flushCalls += 1;
+      return new Promise(() => undefined);
+    },
+  };
+  const provider = routableProvider('hanging-diagnostic-cleanup', [
+    'terminal.websocket',
+  ]);
+  provider.provision = async () => {
+    throw primary;
+  };
+  provider.teardownSandbox = async () => {
+    cleanupCalls += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [
+      mod.defineLocalSandboxProvider({
+        id: 'hanging-diagnostic-cleanup',
+        provider,
+      }),
+    ],
+    { ownerStore },
+  );
+  await assert.rejects(
+    router.provision({
+      ...provisionContext('task-hanging-diagnostic-cleanup'),
+      diagnostics,
+      ownership: {
+        ownerGeneration: 'owner:hanging-diagnostic:g1',
+        resourceGeneration: 'resource:hanging-diagnostic:r1',
+      },
+    }),
+    (error) => error === primary,
+  );
+  assert.equal(flushCalls, 1);
+  assert.equal(cleanupCalls, 1);
+});
+
+await test('typed physical evidence acknowledgement failure remains coordination and suppresses fallback', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  ownerStore.settleSandboxRunCleanupAttempt = async () => {
+    throw new Error('CAP_PRIVATE_OWNER_STORE_CANARY');
+  };
+  const primary = new Error('provider primary before owner-store acknowledgement');
+  let fallbackCalls = 0;
+  const provider = routableProvider('typed-cleanup-coordination', [
+    'terminal.websocket',
+  ]);
+  provider.provision = async (ctx) => {
+    const authorization = await ctx.beforeSandboxCleanup();
+    assert(authorization);
+    await ctx.settleSandboxCleanupAttempt(authorization, {
+      outcome: 'failed',
+      proof: null,
+      cause: 'cleanup_failed',
+      retryable: false,
+    });
+    throw primary;
+  };
+  provider.teardownSandbox = async () => {
+    fallbackCalls += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [
+      mod.defineLocalSandboxProvider({
+        id: 'typed-cleanup-coordination',
+        provider,
+      }),
+    ],
+    { ownerStore },
+  );
+
+  let pendingError;
+  await assert.rejects(
+    router.provision({
+      ...provisionContext('task-typed-cleanup-coordination'),
+      ownership: {
+        ownerGeneration: 'owner:typed-coordination:g1',
+        resourceGeneration: 'resource:typed-coordination:r1',
+      },
+    }),
+    (error) => {
+      pendingError = error;
+      return (
+        error?.code === 'sandbox_cleanup_coordination_pending' &&
+        error.primary === primary
+      );
+    },
+  );
+  assert.equal(fallbackCalls, 0);
+  assert.equal(
+    JSON.stringify(pendingError).includes('CAP_PRIVATE_OWNER_STORE_CANARY'),
+    false,
+  );
+  const pending = await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-typed-cleanup-coordination',
+    providerId: 'typed-cleanup-coordination',
+    ownerGeneration: 'owner:typed-coordination:probe',
+    proposedResourceGeneration: 'resource:typed-coordination:probe',
+  });
+  assert.equal(pending.kind, 'cleanup-required');
+  const owner = pending.owner;
+  assert.equal(owner.status, 'deleting');
+  assert.equal(owner.cleanupAttemptInFlight, true);
+});
+
+await test('provider fallback preserves the primary while durable cleanup evidence remains pending', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const provider = routableProvider('cleanup-secondary', ['terminal.websocket']);
+  const primary = new Error('primary provisioning failure');
+  provider.provision = async () => {
+    throw primary;
+  };
+  provider.teardownSandbox = async () => {
+    throw new Error(
+      'CAP_PRIVATE_CLEANUP_CANARY https://provider.invalid/private',
+    );
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'cleanup-secondary', provider })],
+    { ownerStore },
+  );
+  await assert.rejects(
+    router.provision({
+      ...provisionContext('task-primary-secondary'),
+      ownership: {
+        ownerGeneration: 'owner:primary-g1',
+        resourceGeneration: 'resource:primary-r1',
+      },
+    }),
+    (error) => error === primary,
+  );
+  let pending = await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-primary-secondary',
+    providerId: 'cleanup-secondary',
+    ownerGeneration: 'owner:probe',
+    proposedResourceGeneration: 'resource:new',
+  });
+  assert.equal(pending.kind, 'cleanup-required');
+  assert.equal(pending.owner.status, 'deleting');
+  assert.equal(pending.owner.cleanupAttemptCount, 1);
+  assert.equal(pending.owner.cleanupLastOutcome, 'indeterminate');
+  assert.equal(pending.owner.cleanupLastCause, 'cleanup_unconfirmed');
+  assert.equal(
+    JSON.stringify(pending.owner).includes('CAP_PRIVATE_CLEANUP_CANARY'),
+    false,
+  );
+
+  const retryAuthorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-primary-secondary',
+      'owner:primary-g2',
+    ),
+  );
+  provider.teardownSandbox = async () => ({
+    outcome: 'failed',
+    proof: null,
+    cause: 'cleanup_failed',
+    retryable: false,
+  });
+  await assert.rejects(
+    router.teardownSandbox('task-primary-secondary', {
+      cleanupAuthorization: retryAuthorization,
+      disposition: 'superseded-remove',
+    }),
+    (error) => error?.code === 'sandbox_cleanup_pending',
+  );
+  pending = await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-primary-secondary',
+    providerId: 'cleanup-secondary',
+    ownerGeneration: 'owner:probe-2',
+    proposedResourceGeneration: 'resource:new-2',
+  });
+  assert.equal(pending.kind, 'cleanup-required');
+  assert.equal(pending.owner.cleanupAttemptCount, 2);
+  assert.equal(pending.owner.cleanupLastOutcome, 'failed');
+  assert.equal(pending.owner.status, 'deleting');
+
+  const confirmedAuthorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-primary-secondary',
+      'owner:primary-g3',
+    ),
+  );
+  provider.teardownSandbox = async () => ({ kind: 'already-absent' });
+  const confirmed = await router.teardownSandbox('task-primary-secondary', {
+    cleanupAuthorization: confirmedAuthorization,
+    disposition: 'superseded-remove',
+  });
+  assert.equal(confirmed.outcome, 'succeeded');
+  assert.equal(confirmed.proof, 'already-absent');
+  assert.equal(
+    (await router.claimSandboxCleanupOwnership(
+      'task-primary-secondary',
+      'owner:primary-g4',
+    )).kind,
+    'settled',
+  );
+});
+
+await test('concurrent replay shares one physical cleanup attempt and one evidence increment', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const ownership = {
+    ownerGeneration: 'owner:replay-g1',
+    resourceGeneration: 'resource:replay-r1',
+  };
+  await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-cleanup-replay',
+    providerId: 'cleanup-replay',
+    ownerGeneration: ownership.ownerGeneration,
+    proposedResourceGeneration: ownership.resourceGeneration,
+  });
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-cleanup-replay',
+    providerId: 'cleanup-replay',
+    providerSandboxId: 'physical-replay-r1',
+    ownership,
+    status: 'running',
+  });
+  const entered = deferred();
+  const release = deferred();
+  let physicalCalls = 0;
+  const provider = routableProvider('cleanup-replay', ['terminal.websocket']);
+  provider.teardownSandbox = async () => {
+    physicalCalls += 1;
+    entered.resolve();
+    await release.promise;
+    return undefined;
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'cleanup-replay', provider })],
+    { ownerStore },
+  );
+  const authorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-cleanup-replay',
+      'owner:replay-g2',
+    ),
+  );
+  const first = router.teardownSandbox('task-cleanup-replay', {
+    cleanupAuthorization: authorization,
+    disposition: 'superseded-remove',
+  });
+  await entered.promise;
+  const replay = router.teardownSandbox('task-cleanup-replay', {
+    cleanupAuthorization: authorization,
+    disposition: 'superseded-remove',
+  });
+  await Promise.resolve();
+  assert.equal(physicalCalls, 1);
+  release.resolve();
+  const settled = await Promise.allSettled([first, replay]);
+  assert.deepEqual(
+    settled.map((result) =>
+      result.status === 'rejected' ? result.reason?.code : result.status,
+    ),
+    ['sandbox_cleanup_pending', 'sandbox_cleanup_pending'],
+  );
+  const pending = await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-cleanup-replay',
+    providerId: 'cleanup-replay',
+    ownerGeneration: 'owner:replay-probe',
+    proposedResourceGeneration: 'resource:replay-r2',
+  });
+  assert.equal(pending.kind, 'cleanup-required');
+  assert.equal(pending.owner.cleanupAttemptCount, 1);
+  assert.equal(pending.owner.cleanupLastOutcome, 'indeterminate');
+});
+
+await test('two routers serialize one durable physical cleanup attempt through the owner store', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const ownership = {
+    ownerGeneration: 'owner:cross-worker-g1',
+    resourceGeneration: 'resource:cross-worker-r1',
+  };
+  await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-cross-worker-cleanup',
+    providerId: 'cross-worker-cleanup',
+    ownerGeneration: ownership.ownerGeneration,
+    proposedResourceGeneration: ownership.resourceGeneration,
+  });
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-cross-worker-cleanup',
+    providerId: 'cross-worker-cleanup',
+    providerSandboxId: 'physical-cross-worker-r1',
+    ownership,
+    status: 'running',
+  });
+  const entered = deferred();
+  const release = deferred();
+  let physicalCalls = 0;
+  const provider = routableProvider('cross-worker-cleanup', [
+    'terminal.websocket',
+  ]);
+  provider.teardownSandbox = async () => {
+    physicalCalls += 1;
+    entered.resolve();
+    await release.promise;
+    return undefined;
+  };
+  const providers = [
+    mod.defineLocalSandboxProvider({ id: 'cross-worker-cleanup', provider }),
+  ];
+  const firstRouter = new mod.SandboxProviderRouter(providers, { ownerStore });
+  const secondRouter = new mod.SandboxProviderRouter(providers, { ownerStore });
+  const authorization = authorizedCleanup(
+    await firstRouter.claimSandboxCleanupOwnership(
+      'task-cross-worker-cleanup',
+      'owner:cross-worker-g2',
+    ),
+  );
+  const first = firstRouter.teardownSandbox('task-cross-worker-cleanup', {
+    cleanupAuthorization: authorization,
+    disposition: 'superseded-remove',
+  });
+  await entered.promise;
+  await assert.rejects(
+    secondRouter.teardownSandbox('task-cross-worker-cleanup', {
+      cleanupAuthorization: authorization,
+      disposition: 'superseded-remove',
+    }),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+  assert.equal(physicalCalls, 1);
+  release.resolve();
+  await assert.rejects(
+    first,
+    (error) => error?.code === 'sandbox_cleanup_pending',
+  );
+  const pending = await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-cross-worker-cleanup',
+    providerId: 'cross-worker-cleanup',
+    ownerGeneration: 'owner:probe',
+    proposedResourceGeneration: 'resource:probe',
+  });
+  assert.equal(pending.kind, 'cleanup-required');
+  assert.equal(pending.owner.cleanupAttemptCount, 1);
+  assert.equal(pending.owner.cleanupAttemptInFlight, false);
+});
+
+await test('cleanup takeover closes a crashed attempt and fences its late settlement', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const ownership = {
+    ownerGeneration: 'owner:crashed-g1',
+    resourceGeneration: 'resource:crashed-r1',
+  };
+  await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-crashed-cleanup',
+    providerId: 'crashed-cleanup',
+    ownerGeneration: ownership.ownerGeneration,
+    proposedResourceGeneration: ownership.resourceGeneration,
+  });
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-crashed-cleanup',
+    providerId: 'crashed-cleanup',
+    providerSandboxId: 'physical-crashed-r1',
+    ownership,
+    status: 'running',
+  });
+  const firstClaim = await ownerStore.claimSandboxRunCleanup(
+    'task-crashed-cleanup',
+    ownership.ownerGeneration,
+  );
+  const firstAttemptId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1';
+  const crashed = await ownerStore.beginSandboxRunCleanupAttempt(
+    firstClaim.authorization,
+    firstAttemptId,
+  );
+  assert.equal(crashed.kind, 'allocated');
+
+  const secondClaim = await ownerStore.claimSandboxRunCleanup(
+    'task-crashed-cleanup',
+    'owner:crashed-g2',
+  );
+  assert.equal(secondClaim.owner.cleanupAttemptInFlight, false);
+  assert.equal(secondClaim.owner.cleanupAttemptCount, 1);
+  assert.equal(secondClaim.owner.cleanupLastOutcome, 'indeterminate');
+
+  const entered = deferred();
+  const release = deferred();
+  const provider = routableProvider('crashed-cleanup', ['terminal.websocket']);
+  provider.teardownSandbox = async () => {
+    entered.resolve();
+    await release.promise;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'crashed-cleanup', provider })],
+    { ownerStore },
+  );
+  const retry = router.teardownSandbox('task-crashed-cleanup', {
+    cleanupAuthorization: secondClaim.authorization,
+    disposition: 'superseded-remove',
+  });
+  await entered.promise;
+  const pending = await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-crashed-cleanup',
+    providerId: 'crashed-cleanup',
+    ownerGeneration: 'owner:probe',
+    proposedResourceGeneration: 'resource:probe',
+  });
+  assert.equal(pending.kind, 'cleanup-required');
+  assert.equal(pending.owner.cleanupAttemptCount, 2);
+  assert.equal(pending.owner.cleanupAttemptInFlight, true);
+  assert.deepEqual(
+    await ownerStore.settleSandboxRunCleanupAttempt(
+      firstClaim.authorization,
+      mod.sandboxCleanupAttemptEvidence(
+        1,
+        firstAttemptId,
+        {
+          outcome: 'succeeded',
+          proof: 'found-and-cleaned',
+          cause: null,
+          retryable: false,
+        },
+      ),
+    ),
+    { kind: 'stale' },
+  );
+  release.resolve();
+  await retry;
+  assert.equal(
+    await ownerStore.getSandboxRunOwner('task-crashed-cleanup'),
+    null,
+  );
+});
+
+await test('settled success resumes the completion CAS without another physical delete', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const ownership = {
+    ownerGeneration: 'owner:complete-replay-g1',
+    resourceGeneration: 'resource:complete-replay-r1',
+  };
+  await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-complete-replay',
+    providerId: 'complete-replay',
+    ownerGeneration: ownership.ownerGeneration,
+    proposedResourceGeneration: ownership.resourceGeneration,
+  });
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-complete-replay',
+    providerId: 'complete-replay',
+    providerSandboxId: 'physical-complete-replay-r1',
+    ownership,
+    status: 'running',
+  });
+  let physicalCalls = 0;
+  const provider = routableProvider('complete-replay', ['terminal.websocket']);
+  provider.teardownSandbox = async () => {
+    physicalCalls += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'complete-replay', provider })],
+    { ownerStore },
+  );
+  const authorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-complete-replay',
+      'owner:complete-replay-g2',
+    ),
+  );
+  const complete = ownerStore.completeSandboxRunCleanup.bind(ownerStore);
+  let loseFirstAcknowledgement = true;
+  ownerStore.completeSandboxRunCleanup = async (...args) => {
+    if (loseFirstAcknowledgement) {
+      loseFirstAcknowledgement = false;
+      return false;
+    }
+    return complete(...args);
+  };
+  await assert.rejects(
+    router.teardownSandbox('task-complete-replay', {
+      cleanupAuthorization: authorization,
+      disposition: 'superseded-remove',
+    }),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+  assert.equal(physicalCalls, 1);
+  const pending = await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-complete-replay',
+    providerId: 'complete-replay',
+    ownerGeneration: 'owner:probe',
+    proposedResourceGeneration: 'resource:probe',
+  });
+  assert.equal(pending.kind, 'cleanup-required');
+  assert.equal(pending.owner.cleanupAttemptInFlight, false);
+  assert.equal(pending.owner.cleanupLastOutcome, 'succeeded');
+  assert.equal(pending.owner.cleanupLastProof, 'already-absent');
+
+  await router.teardownSandbox('task-complete-replay', {
+    cleanupAuthorization: authorization,
+    disposition: 'superseded-remove',
+  });
+  assert.equal(physicalCalls, 1);
+  assert.equal(
+    await ownerStore.getSandboxRunOwner('task-complete-replay'),
+    null,
+  );
+});
+
+await test('durable terminal policy is explicit, exact-owner fenced, and settled is never absence', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const ownership = {
+    ownerGeneration: 'owner:terminal-policy-g1',
+    resourceGeneration: 'resource:terminal-policy-r1',
+  };
+  await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-terminal-policy',
+    providerId: 'terminal-policy',
+    ownerGeneration: ownership.ownerGeneration,
+    proposedResourceGeneration: ownership.resourceGeneration,
+  });
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-terminal-policy',
+    providerId: 'terminal-policy',
+    providerSandboxId: 'physical-terminal-policy-r1',
+    ownership,
+    status: 'running',
+  });
+  const provider = routableProvider('terminal-policy', ['terminal.websocket']);
+  provider.teardownSandbox = async () => ({
+    outcome: 'failed',
+    proof: null,
+    cause: 'cleanup_failed',
+    retryable: false,
+  });
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'terminal-policy', provider })],
+    { ownerStore },
+  );
+  const claim = await router.claimSandboxCleanupOwnership(
+    'task-terminal-policy',
+    'owner:terminal-policy-g2',
+  );
+  const authorization = authorizedCleanup(claim);
+  await assert.rejects(
+    router.teardownSandbox('task-terminal-policy', {
+      cleanupAuthorization: authorization,
+      disposition: 'superseded-remove',
+    }),
+    (error) => error?.code === 'sandbox_cleanup_pending',
+  );
+  assert.deepEqual(await router.getSandboxCleanupAuthority('task-terminal-policy'), {
+    state: 'pending',
+    ownershipKind: 'generation',
+    orphanState: 'unknown',
+    status: 'deleting',
+    attemptCount: 1,
+    lastAttemptOutcome: 'failed',
+    lastAttemptProof: null,
+    lastAttemptCause: 'cleanup_failed',
+    lastAttemptRetryable: false,
+    lastAttemptObservedAt:
+      (await router.getSandboxCleanupAuthority('task-terminal-policy'))
+        .lastAttemptObservedAt,
+  });
+  const failed = await router.failSandboxCleanupByTerminalPolicy(
+    authorization,
+    1,
+  );
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.ownershipKind, 'generation');
+  assert.equal(failed.orphanState, 'unknown');
+  const replay = await router.failSandboxCleanupByTerminalPolicy(
+    authorization,
+    1,
+  );
+  assert.deepEqual(replay, failed);
+  const settled = await router.claimSandboxCleanupOwnership(
+    'task-terminal-policy',
+    'owner:terminal-policy-g3',
+  );
+  assert.equal(settled.kind, 'settled');
+  assert.equal(settled.authority.state, 'failed');
+});
+
+await test('terminal policy cannot relinquish an owner while create may still return', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const ownership = {
+    ownerGeneration: 'owner:terminal-policy-entered-g1',
+    resourceGeneration: 'resource:terminal-policy-entered-r1',
+  };
+  await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-terminal-policy-entered',
+    providerId: 'terminal-policy-entered',
+    ownerGeneration: ownership.ownerGeneration,
+    proposedResourceGeneration: ownership.resourceGeneration,
+  });
+  assert.equal(
+    await ownerStore.beginSandboxRunCreate({
+      taskId: 'task-terminal-policy-entered',
+      providerId: 'terminal-policy-entered',
+      ownership,
+    }),
+    true,
+  );
+  const provider = routableProvider('terminal-policy-entered', [
+    'terminal.websocket',
+  ]);
+  provider.teardownSandbox = async () => ({ kind: 'already-absent' });
+  const router = new mod.SandboxProviderRouter(
+    [
+      mod.defineLocalSandboxProvider({
+        id: 'terminal-policy-entered',
+        provider,
+      }),
+    ],
+    { ownerStore },
+  );
+  const authorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-terminal-policy-entered',
+      'owner:terminal-policy-entered-g2',
+    ),
+  );
+  await assert.rejects(
+    router.teardownSandbox('task-terminal-policy-entered', {
+      cleanupAuthorization: authorization,
+      disposition: 'superseded-remove',
+    }),
+    (error) => error?.code === 'sandbox_cleanup_pending',
+  );
+  await assert.rejects(
+    router.failSandboxCleanupByTerminalPolicy(authorization, 1),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+  const authority = await router.getSandboxCleanupAuthority(
+    'task-terminal-policy-entered',
+  );
+  assert.equal(authority.status, 'deleting');
+  assert.equal(authority.state, 'pending');
+  assert.equal(authority.lastAttemptOutcome, 'indeterminate');
+});
+
+await test('configured owner stores fail closed when cleanup projection is unavailable', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  ownerStore.getSandboxRunCleanupAuthority = undefined;
+  const provider = routableProvider('projection-required', [
+    'terminal.websocket',
+  ]);
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'projection-required', provider })],
+    { ownerStore },
+  );
+  await assert.rejects(
+    router.getSandboxCleanupAuthority('task-projection-required'),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+});
+
+await test('ordinary teardown cannot bypass an existing deleting authority', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const ownership = {
+    ownerGeneration: 'owner:ordinary-pending-g1',
+    resourceGeneration: 'resource:ordinary-pending-r1',
+  };
+  await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-ordinary-pending',
+    providerId: 'ordinary-pending',
+    ownerGeneration: ownership.ownerGeneration,
+    proposedResourceGeneration: ownership.resourceGeneration,
+  });
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-ordinary-pending',
+    providerId: 'ordinary-pending',
+    providerSandboxId: 'physical-ordinary-pending-r1',
+    ownership,
+    status: 'running',
+  });
+  let physicalCalls = 0;
+  const provider = routableProvider('ordinary-pending', [
+    'terminal.websocket',
+  ]);
+  provider.teardownSandbox = async () => {
+    physicalCalls += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'ordinary-pending', provider })],
+    { ownerStore },
+  );
+  const claim = await router.claimSandboxCleanupOwnership(
+    'task-ordinary-pending',
+    'owner:ordinary-pending-g2',
+  );
+  assert.equal(claim.kind, 'authorized');
+
+  await assert.rejects(
+    router.teardownSandbox('task-ordinary-pending'),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+  assert.equal(
+    physicalCalls,
+    0,
+    'only the explicit durable claim may cross the physical cleanup boundary',
+  );
+  const authority = await router.getSandboxCleanupAuthority(
+    'task-ordinary-pending',
+  );
+  assert.equal(authority.state, 'pending');
+  assert.equal(authority.status, 'deleting');
+});
+
+await test('cleanup authority distinguishes retained terminal from confirmed removal', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-authority-terminal',
+    providerId: 'authority-projection',
+    providerSandboxId: 'physical-authority-terminal',
+    status: 'running',
+  });
+  await ownerStore.markSandboxRunOwnerStatus(
+    'task-authority-terminal',
+    'terminal',
+  );
+  const retained = await ownerStore.getSandboxRunCleanupAuthority(
+    'task-authority-terminal',
+  );
+  assert.equal(retained.status, 'terminal');
+  assert.equal(retained.state, 'not_required');
+  assert.equal(retained.lastAttemptProof, null);
+
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-authority-removed',
+    providerId: 'authority-projection',
+    providerSandboxId: 'physical-authority-removed',
+    status: 'running',
+  });
+  await ownerStore.markSandboxRunOwnerStatus(
+    'task-authority-removed',
+    'removed',
+  );
+  const removed = await ownerStore.getSandboxRunCleanupAuthority(
+    'task-authority-removed',
+  );
+  assert.equal(removed.status, 'removed');
+  assert.equal(removed.state, 'succeeded');
+  assert.equal(removed.lastAttemptProof, null);
+});
+
+await test('legacy bounded failure settles atomically without entering durable deleting', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-legacy-terminal-policy',
+    providerId: 'legacy-terminal-policy',
+    providerSandboxId: 'legacy-physical-r1',
+    status: 'running',
+  });
+  let beginCalls = 0;
+  const begin = ownerStore.beginSandboxRunCleanup.bind(ownerStore);
+  ownerStore.beginSandboxRunCleanup = async (...args) => {
+    beginCalls += 1;
+    return begin(...args);
+  };
+  const provider = routableProvider('legacy-terminal-policy', [
+    'terminal.websocket',
+  ]);
+  provider.teardownSandbox = async () => ({
+    outcome: 'indeterminate',
+    proof: null,
+    cause: 'cleanup_unconfirmed',
+    retryable: true,
+  });
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'legacy-terminal-policy', provider })],
+    { ownerStore },
+  );
+  const physical = await router.teardownSandbox('task-legacy-terminal-policy');
+  assert.equal(physical.outcome, 'indeterminate');
+  assert.equal(beginCalls, 0);
+  const authority = await router.getSandboxCleanupAuthority(
+    'task-legacy-terminal-policy',
+  );
+  assert.equal(authority.state, 'not_required');
+  assert.equal(authority.status, 'terminal');
+  assert.equal(authority.ownershipKind, 'legacy');
+  assert.equal(authority.orphanState, 'none');
+  assert.equal(authority.attemptCount, 1);
+  assert.equal(authority.lastAttemptOutcome, 'indeterminate');
+});
+
+await test('legacy cleanup keeps its best-effort control flow while returning honest unconfirmed evidence', async () => {
+  const provider = routableProvider('legacy-cleanup', ['terminal.websocket']);
+  provider.teardownSandbox = async () => undefined;
+  const router = new mod.SandboxProviderRouter([
+    mod.defineLocalSandboxProvider({ id: 'legacy-cleanup', provider }),
+  ]);
+  await router.provision(provisionContext('task-legacy-cleanup'));
+  const cleanup = await router.teardownSandbox('task-legacy-cleanup', {
+    disposition: 'superseded-remove',
+  });
+  assert.deepEqual(cleanup, {
+    outcome: 'indeterminate',
+    proof: null,
+    cause: 'cleanup_unconfirmed',
+    retryable: true,
+  });
+  let reattachCalls = 0;
+  provider.reattach = async () => {
+    reattachCalls += 1;
+    return null;
+  };
+  await router.readRolloutFromContainer('task-legacy-cleanup');
+  assert.equal(
+    reattachCalls,
+    0,
+    'legacy best-effort teardown must clear the old process-local owner route',
   );
 });
 
@@ -1279,11 +2994,11 @@ await test('a definitive no-resource create response returns entered state to id
     /image was rejected/,
   );
   assert.equal(
-    await router.claimSandboxCleanupOwnership(
+    (await router.claimSandboxCleanupOwnership(
       'task-definite-create-rejection',
       'owner:g2',
-    ),
-    null,
+    )).kind,
+    'settled',
   );
 });
 
@@ -1372,7 +3087,14 @@ await test('selected-run failure preserves the exact create observation and neve
   const owner = await ownerStore.getSandboxRunOwner('task-selected-run-failed');
   assert.equal(owner.providerSandboxId, 'physical-r1');
   assert.notEqual(owner.providerSandboxId, owner.connection.taskId);
+  const cleanup = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-selected-run-failed',
+      'owner:g2',
+    ),
+  );
   await router.teardownSandbox('task-selected-run-failed', {
+    cleanupAuthorization: cleanup,
     disposition: 'superseded-remove',
   });
   assert.equal(
@@ -1416,7 +3138,14 @@ await test('selected-run absence preserves the exact create observation and neve
   const owner = await ownerStore.getSandboxRunOwner('task-selected-run-null');
   assert.equal(owner.providerSandboxId, 'physical-null-r1');
   assert.notEqual(owner.providerSandboxId, owner.connection.taskId);
+  const cleanup = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-selected-run-null',
+      'owner:g2',
+    ),
+  );
   await router.teardownSandbox('task-selected-run-null', {
+    cleanupAuthorization: cleanup,
     disposition: 'superseded-remove',
   });
   assert.equal(
@@ -1480,7 +3209,12 @@ await test('a newer owner generation transfers the same resource before stale cl
     },
   });
   releaseOld.resolve();
-  await assert.rejects(first, /old worker aborted/);
+  await assert.rejects(
+    first,
+    (error) =>
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error.primary?.message === 'old worker aborted',
+  );
 
   const owner = await ownerStore.getSandboxRunOwner('task-generation-transfer');
   assert.deepEqual(owner.ownership, {
@@ -1540,7 +3274,12 @@ await test('provider return after ownership transfer cannot record or tear down 
     },
   });
   releaseFirstProvider.resolve();
-  await assert.rejects(first, /owner generation is no longer current/);
+  await assert.rejects(
+    first,
+    (error) =>
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      /owner generation is no longer current/.test(error.primary?.message ?? ''),
+  );
 
   const owner = await ownerStore.getSandboxRunOwner('task-return-after-transfer');
   assert.deepEqual(owner.ownership, {
@@ -1871,17 +3610,24 @@ await test('terminal cleanup takeover wins before stale teardown reaches the pro
     { ownerStore },
   );
 
-  const claimedByFirst = await router.claimSandboxCleanupOwnership(
-    'task-terminal-transfer-first',
-    'owner:g1',
+  const claimedByFirst = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-terminal-transfer-first',
+      'owner:g1',
+    ),
   );
-  const claimedBySecond = await router.claimSandboxCleanupOwnership(
-    'task-terminal-transfer-first',
-    'owner:g2',
+  const claimedBySecond = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-terminal-transfer-first',
+      'owner:g2',
+    ),
   );
-  await router.teardownSandbox('task-terminal-transfer-first', {
-    cleanupAuthorization: claimedByFirst,
-  });
+  await assert.rejects(
+    router.teardownSandbox('task-terminal-transfer-first', {
+      cleanupAuthorization: claimedByFirst,
+    }),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
   assert.deepEqual(teardownCalls, []);
 
   await router.teardownSandbox('task-terminal-transfer-first', {
@@ -1893,7 +3639,7 @@ await test('terminal cleanup takeover wins before stale teardown reaches the pro
   }]);
 });
 
-await test('ordinary terminal teardown claims a generated owner before provider cleanup', async () => {
+await test('ordinary terminal teardown requires an explicit generated-owner claim', async () => {
   const ownerStore = new mod.InMemorySandboxRunOwnerStore();
   const ownership = {
     ownerGeneration: 'owner:runtime',
@@ -1923,13 +3669,21 @@ await test('ordinary terminal teardown claims a generated owner before provider 
     { ownerStore },
   );
 
-  await router.teardownSandbox('task-ordinary-terminal');
+  const cleanup = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-ordinary-terminal',
+      'owner:terminal-cleanup',
+    ),
+  );
+  await router.teardownSandbox('task-ordinary-terminal', {
+    cleanupAuthorization: cleanup,
+  });
   assert.equal(teardownCalls.length, 1);
   assert.equal(
     teardownCalls[0].resourceGeneration,
     ownership.resourceGeneration,
   );
-  assert.match(teardownCalls[0].ownerGeneration, /^cleanup:/);
+  assert.equal(teardownCalls[0].ownerGeneration, 'owner:terminal-cleanup');
   assert.equal(await ownerStore.getSandboxRunOwner('task-ordinary-terminal'), null);
 });
 
@@ -1964,14 +3718,24 @@ await test('generated cleanup rejects a void provider result even with historica
     { ownerStore },
   );
 
+  const firstAuthorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-generated-void-cleanup',
+      'owner:first-cleanup',
+    ),
+  );
   await assert.rejects(
-    router.teardownSandbox('task-generated-void-cleanup'),
+    router.teardownSandbox('task-generated-void-cleanup', {
+      cleanupAuthorization: firstAuthorization,
+    }),
     /cleanup is pending/,
   );
   provider.teardownSandbox = async () => ({ kind: 'found-and-cleaned' });
-  const retryAuthorization = await router.claimSandboxCleanupOwnership(
-    'task-generated-void-cleanup',
-    'owner:g2',
+  const retryAuthorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-generated-void-cleanup',
+      'owner:g2',
+    ),
   );
   await router.teardownSandbox('task-generated-void-cleanup', {
     cleanupAuthorization: retryAuthorization,
@@ -2018,26 +3782,39 @@ await test('exact cleanup completion remains valid when authority transfers duri
     { ownerStore },
   );
 
-  const claimedByFirst = await router.claimSandboxCleanupOwnership(
-    'task-terminal-delete-first',
-    'owner:g1',
+  const claimedByFirst = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-terminal-delete-first',
+      'owner:g1',
+    ),
   );
   const firstCleanup = router.teardownSandbox('task-terminal-delete-first', {
     cleanupAuthorization: claimedByFirst,
   });
   await firstDeleteEntered.promise;
 
-  const claimedBySecond = await router.claimSandboxCleanupOwnership(
-    'task-terminal-delete-first',
-    'owner:g2',
+  const claimedBySecond = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-terminal-delete-first',
+      'owner:g2',
+    ),
   );
   releaseFirstDelete.resolve();
-  await firstCleanup;
+  await assert.rejects(
+    firstCleanup,
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
   await router.teardownSandbox('task-terminal-delete-first', {
     cleanupAuthorization: claimedBySecond,
   });
 
-  assert.deepEqual(teardownCalls, [first]);
+  assert.deepEqual(teardownCalls, [
+    first,
+    {
+      ownerGeneration: 'owner:g2',
+      resourceGeneration: 'resource:r1',
+    },
+  ]);
   assert.equal(await ownerStore.getSandboxRunOwner('task-terminal-delete-first'), null);
 });
 
@@ -2071,9 +3848,11 @@ await test('found cleanup remains pending until an entered create settles and it
     [mod.defineLocalSandboxProvider({ id: 'local', provider })],
     { ownerStore },
   );
-  const firstCleanup = await router.claimSandboxCleanupOwnership(
-    'task-found-before-late-create',
-    'owner:g2',
+  const firstCleanup = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-found-before-late-create',
+      'owner:g2',
+    ),
   );
   await assert.rejects(
     router.teardownSandbox('task-found-before-late-create', {
@@ -2090,9 +3869,11 @@ await test('found cleanup remains pending until an entered create settles and it
     resourceGeneration: ownership.resourceGeneration,
     providerSandboxId: 'late-r1',
   });
-  const retry = await router.claimSandboxCleanupOwnership(
-    'task-found-before-late-create',
-    'owner:g3',
+  const retry = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-found-before-late-create',
+      'owner:g3',
+    ),
   );
   await router.teardownSandbox('task-found-before-late-create', {
     cleanupAuthorization: retry,
@@ -2171,9 +3952,11 @@ await test('an absent cleanup cannot close an in-flight create and the late crea
   });
   await createEntered.promise;
 
-  const terminalAuthorization = await router.claimSandboxCleanupOwnership(
-    'task-inflight-create-cleanup',
-    'owner:g2',
+  const terminalAuthorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-inflight-create-cleanup',
+      'owner:g2',
+    ),
   );
   await assert.rejects(
     router.teardownSandbox('task-inflight-create-cleanup', {
@@ -2193,13 +3976,20 @@ await test('an absent cleanup cannot close an in-flight create and the late crea
 
   releaseCreate.resolve();
   await lateDeleteConfirmed.promise;
-  const transferredDuringDelete = await router.claimSandboxCleanupOwnership(
-    'task-inflight-create-cleanup',
-    'owner:g3',
+  const transferredDuringDelete = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-inflight-create-cleanup',
+      'owner:g3',
+    ),
   );
   assert.equal(transferredDuringDelete.ownership.ownerGeneration, 'owner:g3');
   releaseLateCompletion.resolve();
-  await assert.rejects(first, /late create was fenced/);
+  await assert.rejects(
+    first,
+    (error) =>
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error.primary?.message === 'late create was fenced after the external action',
+  );
   assert.equal(liveSandboxes.size, 0);
   assert.equal(cleanupTokens.length, 1);
   assert.equal(
@@ -2207,11 +3997,31 @@ await test('an absent cleanup cannot close an in-flight create and the late crea
     'owner:g2',
     'late creator must complete with the current cleanup owner, not stale g1',
   );
-  assert.equal(
+  const pendingOwner = await ownerStore.acquireSandboxRunOwner({
+    taskId: 'task-inflight-create-cleanup',
+    providerId: 'local',
+    ownerGeneration: 'owner:pending-probe',
+    proposedResourceGeneration: 'resource:pending-probe',
+  });
+  assert.equal(pendingOwner.kind, 'cleanup-required');
+  const pending = pendingOwner.owner;
+  assert.equal(pending.status, 'deleting');
+  assert.equal(pending.cleanupAttemptCount, 2);
+  assert.equal(pending.cleanupAttemptInFlight, false);
+  assert.equal(pending.cleanupLastOutcome, 'indeterminate');
+
+  const recovery = authorizedCleanup(
     await router.claimSandboxCleanupOwnership(
       'task-inflight-create-cleanup',
       'owner:g4',
     ),
+  );
+  await router.teardownSandbox('task-inflight-create-cleanup', {
+    cleanupAuthorization: recovery,
+    disposition: 'superseded-remove',
+  });
+  assert.equal(
+    await ownerStore.getSandboxRunOwner('task-inflight-create-cleanup'),
     null,
   );
 });
@@ -2257,6 +4067,15 @@ await test('terminal cleanup keeps its work when an absent old resource is repla
         true,
         'the first create must be durably observed before its cleanup can complete',
       );
+      const takeover = await ownerStore.claimSandboxRunCleanup(
+        args.taskId,
+        'owner:replacement-fence',
+      );
+      assert.equal(takeover.kind, 'authorized');
+      await recordConfirmedCleanup(
+        ownerStore,
+        takeover.authorization,
+      );
       assert.equal(
         await ownerStore.completeSandboxRunCleanup(
           firstAuthorization.authorization,
@@ -2301,16 +4120,18 @@ await test('terminal cleanup keeps its work when an absent old resource is repla
     router.teardownSandbox('task-terminal-replaced-after-404', {
       cleanupAuthorization: firstAuthorization.authorization,
     }),
-    /cleanup is pending/,
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
   );
   const replacement = await ownerStore.getSandboxRunOwner(
     'task-terminal-replaced-after-404',
   );
   assert.equal(replacement?.providerSandboxId, 'sandbox-r2');
 
-  const replacementAuthorization = await router.claimSandboxCleanupOwnership(
-    'task-terminal-replaced-after-404',
-    'owner:g4',
+  const replacementAuthorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-terminal-replaced-after-404',
+      'owner:g4',
+    ),
   );
   await router.teardownSandbox('task-terminal-replaced-after-404', {
     cleanupAuthorization: replacementAuthorization,
@@ -2400,9 +4221,11 @@ await test('a historical provider sandbox id cannot settle cleanup for an unreso
     },
   });
   await createEntered.promise;
-  const cleanupAuthorization = await router.claimSandboxCleanupOwnership(
-    'task-recreate-after-loss',
-    'owner:g3',
+  const cleanupAuthorization = authorizedCleanup(
+    await router.claimSandboxCleanupOwnership(
+      'task-recreate-after-loss',
+      'owner:g3',
+    ),
   );
   await assert.rejects(
     router.teardownSandbox('task-recreate-after-loss', {
@@ -2415,15 +4238,15 @@ await test('a historical provider sandbox id cannot settle cleanup for an unreso
   await assert.rejects(recreate, /recreate fenced/);
   assert.equal(liveSandbox, false);
   assert.equal(
-    await router.claimSandboxCleanupOwnership(
+    (await router.claimSandboxCleanupOwnership(
       'task-recreate-after-loss',
       'owner:g4',
-    ),
-    null,
+    )).kind,
+    'settled',
   );
 });
 
-await test('legacy NULL-generation owners are serialized through explicit cleanup', async () => {
+await test('legacy NULL-generation routes preserve retain versus remove disposition', async () => {
   const ownerStore = new mod.InMemorySandboxRunOwnerStore();
   await ownerStore.recordSandboxRunOwner({
     taskId: 'task-legacy-cleanup',
@@ -2441,21 +4264,41 @@ await test('legacy NULL-generation owners are serialized through explicit cleanu
     [mod.defineLocalSandboxProvider({ id: 'local', provider })],
     { ownerStore },
   );
-  const cleanupAuthorization = await router.claimSandboxCleanupOwnership(
-    'task-legacy-cleanup',
-    'owner:new',
-  );
-  assert.deepEqual(cleanupAuthorization, {
-    kind: 'legacy',
-    taskId: 'task-legacy-cleanup',
-    providerId: 'local',
-  });
-  await router.teardownSandbox('task-legacy-cleanup', {
-    cleanupAuthorization,
-  });
+  await router.teardownSandbox('task-legacy-cleanup');
   assert.equal(teardownOptions.length, 1);
   assert.equal(teardownOptions[0].ownership, undefined);
+  assert.equal(teardownOptions[0].disposition, 'terminal-retain');
   assert.equal(await ownerStore.getSandboxRunOwner('task-legacy-cleanup'), null);
+  assert.deepEqual(await router.getSandboxCleanupAuthority('task-legacy-cleanup'), {
+    state: 'not_required',
+    ownershipKind: 'legacy',
+    orphanState: 'none',
+    status: 'terminal',
+    attemptCount: 1,
+    lastAttemptOutcome: 'succeeded',
+    lastAttemptProof: 'already-absent',
+    lastAttemptCause: null,
+    lastAttemptRetryable: false,
+    lastAttemptObservedAt:
+      (await router.getSandboxCleanupAuthority('task-legacy-cleanup'))
+        .lastAttemptObservedAt,
+  });
+
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-legacy-remove',
+    providerId: 'local',
+    providerSandboxId: 'legacy-sandbox-remove',
+    status: 'running',
+  });
+  await router.teardownSandbox('task-legacy-remove', {
+    disposition: 'superseded-remove',
+  });
+  assert.equal(teardownOptions[1].disposition, 'superseded-remove');
+  const removed = await router.getSandboxCleanupAuthority(
+    'task-legacy-remove',
+  );
+  assert.equal(removed.status, 'removed');
+  assert.equal(removed.state, 'succeeded');
 });
 
 await test('restart reattach cannot revive a deleting generated owner as ownerless', async () => {
@@ -2811,7 +4654,7 @@ await test('delivery cleanup completion failure retains the deleting tombstone f
         'Authorization: Basic canary',
       ),
     }),
-    /delivery cleanup generation was superseded/u,
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
   );
   const blocked = await ownerStore.acquireSandboxRunOwner({
     taskId: 'task-delivery-pending',
@@ -2822,6 +4665,9 @@ await test('delivery cleanup completion failure retains the deleting tombstone f
   assert.equal(blocked.kind, 'cleanup-required');
   assert.equal(blocked.owner.status, 'deleting');
   assert.deepEqual(blocked.owner.ownership, ownership);
+  assert.equal(blocked.owner.cleanupAttemptInFlight, false);
+  assert.equal(blocked.owner.cleanupLastOutcome, 'succeeded');
+  assert.equal(blocked.owner.cleanupLastProof, 'already-absent');
 });
 
 await test('credentialed delivery fails closed when the persisted exact target cannot reattach', async () => {
@@ -2925,7 +4771,11 @@ await test('legacy owner delivery fencing settles the owner instead of leaving s
       proposedResourceGeneration: 'resource:replacement',
     });
     assert.equal(blocked.kind, 'cleanup-required');
-    assert.equal(blocked.owner.status, 'deleting');
+    assert.equal(
+      blocked.owner.status,
+      'running',
+      'legacy delivery must not manufacture durable deleting authority',
+    );
     await args.afterSandboxCleanup(authorization);
     return { hadChanges: false, commitSha: null, error: 'delivery_timeout' };
   };
@@ -2964,6 +4814,87 @@ await test('legacy owner delivery fencing settles the owner instead of leaving s
   );
 });
 
+await test('legacy delivery failure records one bounded disposition without durable deleting', async () => {
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  await ownerStore.recordSandboxRunOwner({
+    taskId: 'task-legacy-delivery-failure',
+    providerId: 'local',
+    providerSandboxId: 'sandbox-legacy-delivery-failure',
+    status: 'running',
+  });
+  const beginStatuses = [];
+  const begin = ownerStore.beginSandboxRunCleanup.bind(ownerStore);
+  ownerStore.beginSandboxRunCleanup = async (...args) => {
+    beginStatuses.push(
+      (await ownerStore.getSandboxRunCleanupAuthority(args[0])).status,
+    );
+    return begin(...args);
+  };
+  const primary = new Error('legacy delivery primary');
+  const provider = routableProvider('local', [
+    'workspace.git.deliver',
+    'lifecycle.readopt',
+  ]);
+  provider.reattach = async () => ({
+    taskId: 'task-legacy-delivery-failure',
+    baseUrl: 'http://local/task-legacy-delivery-failure',
+    wsUrl: 'ws://local/task-legacy-delivery-failure',
+  });
+  provider.deliverWorkspaceChanges = async (taskId, args) => {
+    const authorization = await args.beforeSandboxCleanup();
+    assert.deepEqual(authorization, {
+      kind: 'legacy',
+      taskId,
+      providerId: 'local',
+    });
+    const during = await ownerStore.acquireSandboxRunOwner({
+      taskId,
+      providerId: 'local',
+      ownerGeneration: 'owner:legacy-delivery-failure-probe',
+      proposedResourceGeneration: 'resource:legacy-delivery-failure-probe',
+    });
+    assert.equal(during.kind, 'cleanup-required');
+    assert.equal(during.owner.status, 'running');
+    await args.settleSandboxCleanupAttempt(authorization, {
+      outcome: 'failed',
+      proof: null,
+      cause: 'cleanup_failed',
+      retryable: false,
+    });
+    throw primary;
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+
+  await assert.rejects(
+    router.deliverWorkspaceChanges('task-legacy-delivery-failure', {
+      branch: 'cap/task-legacy-delivery-failure',
+      commitMessage: 'legacy delivery failure',
+      credential: mod.createExactHostGitCredential(
+        'https://code.example.test/acme/private.git',
+        'Authorization: Basic canary',
+      ),
+    }),
+    (error) => error === primary,
+  );
+  assert.deepEqual(
+    beginStatuses,
+    ['terminal'],
+    'the only fallback read sees a settled row, never ownerless deleting',
+  );
+  const authority = await router.getSandboxCleanupAuthority(
+    'task-legacy-delivery-failure',
+  );
+  assert.equal(authority.status, 'terminal');
+  assert.equal(authority.state, 'not_required');
+  assert.equal(authority.ownershipKind, 'legacy');
+  assert.equal(authority.orphanState, 'none');
+  assert.equal(authority.attemptCount, 1);
+  assert.equal(authority.lastAttemptOutcome, 'failed');
+});
+
 await test('successful generated-owner delivery does not enter cleanup and keeps the owner running', async () => {
   const ownerStore = new mod.InMemorySandboxRunOwnerStore();
   const ownership = {
@@ -2995,6 +4926,7 @@ await test('successful generated-owner delivery does not enter cleanup and keeps
   provider.deliverWorkspaceChanges = async (_taskId, args) => {
     assert.equal(typeof args.beforeSandboxCleanup, 'function');
     assert.equal(typeof args.afterSandboxCleanup, 'function');
+    assert.equal(typeof args.settleSandboxCleanupAttempt, 'function');
     return {
       hadChanges: true,
       commitSha: 'successful-push-sha',

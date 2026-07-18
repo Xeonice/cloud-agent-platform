@@ -227,6 +227,203 @@ await test('command executor helpers wrap cwd and scrub command output', () => {
   );
 });
 
+await test('runtime command descriptors are strict, allowlisted, and ordered', () => {
+  const setup = mod.validateSandboxRuntimeSetupCommandDescriptor(
+    { commandKind: 'credential_setup', ordinal: 1 },
+    1,
+  );
+  assert.deepEqual(setup, { commandKind: 'credential_setup', ordinal: 1 });
+  assert.equal(Object.isFrozen(setup), true);
+  assert.deepEqual(
+    mod.validateSandboxRuntimePreflightCommandDescriptor(
+      { commandKind: 'runtime_preflight', ordinal: 2 },
+      2,
+    ),
+    { commandKind: 'runtime_preflight', ordinal: 2 },
+  );
+  const invalid = [
+    { commandKind: 'runtime_setup', ordinal: 0 },
+    { commandKind: 'provider-private-command', ordinal: 1 },
+    { commandKind: 'runtime_setup', ordinal: 1, command: 'secret-canary' },
+  ];
+  for (const descriptor of invalid) {
+    assert.throws(
+      () => mod.validateSandboxRuntimeCommandDescriptor(descriptor),
+      (error) =>
+        error?.code === 'sandbox_command_classification_error' &&
+        !error.message.includes('secret-canary'),
+    );
+  }
+  assert.throws(
+    () =>
+      mod.validateSandboxRuntimePreflightCommandDescriptor(
+        { commandKind: 'runtime_setup', ordinal: 1 },
+        1,
+      ),
+    (error) => error?.code === 'sandbox_command_classification_error',
+  );
+  assert.throws(
+    () =>
+      mod.validateSandboxRuntimeSetupCommandDescriptor(
+        { commandKind: 'credential_setup', ordinal: 2 },
+        1,
+      ),
+    (error) => error?.code === 'sandbox_command_classification_error',
+  );
+});
+
+await test('runtime command settlement classifies safe facts without raw material', async () => {
+  const result = (exitCode, timedOut = false) => ({
+    exitCode,
+    output: 'CAP_COMMAND_OUTPUT_SECRET_CANARY',
+    stdout: 'CAP_COMMAND_STDOUT_SECRET_CANARY',
+    stderr: 'CAP_COMMAND_STDERR_SECRET_CANARY',
+    timedOut,
+  });
+  const matrix = [
+    [mod.classifySandboxCommandExecutionResult(result(0)), 'exit', 'succeeded'],
+    [mod.classifySandboxCommandExecutionResult(result(7)), 'exit', 'failed'],
+    [mod.classifySandboxCommandExecutionResult(result(0, true)), 'timeout', 'timed_out'],
+    [mod.classifySandboxCommandExecutionResult(result(Number.NaN)), 'indeterminate', 'indeterminate'],
+    [
+      mod.classifySandboxCommandExecutionRejection(
+        new mod.SandboxCommandSettlementError('failed_without_exit'),
+      ),
+      'failed_without_exit',
+      'failed',
+    ],
+    [
+      mod.classifySandboxCommandExecutionRejection(
+        new mod.SandboxCommandSettlementError('protocol'),
+      ),
+      'protocol',
+      'failed',
+    ],
+    [
+      mod.classifySandboxCommandExecutionRejection(
+        new mod.SandboxCommandSettlementError('indeterminate'),
+      ),
+      'indeterminate',
+      'indeterminate',
+    ],
+    [
+      mod.classifySandboxCommandExecutionRejection(
+        Object.assign(new Error('CAP_RAW_ERROR_SECRET_CANARY'), {
+          name: 'AbortError',
+        }),
+      ),
+      'cancellation',
+      'cancelled',
+    ],
+    [
+      mod.classifySandboxCommandExecutionRejection(
+        Object.assign(new Error('CAP_RAW_ERROR_SECRET_CANARY'), {
+          name: 'TimeoutError',
+        }),
+      ),
+      'timeout',
+      'timed_out',
+    ],
+    [
+      mod.classifySandboxCommandExecutionRejection(
+        new Error('CAP_RAW_ERROR_SECRET_CANARY'),
+      ),
+      'transport',
+      'failed',
+    ],
+  ];
+  for (const [classification, settlement, outcome] of matrix) {
+    assert.equal(classification.settlement, settlement);
+    assert.equal(classification.outcome, outcome);
+    assert.equal(Object.isFrozen(classification), true);
+    const serialized = JSON.stringify(classification);
+    assert(!serialized.includes('SECRET_CANARY'));
+    assert(!('command' in classification));
+    assert(!('output' in classification));
+    assert(!('error' in classification));
+    const diagnosticFields = mod.sandboxCommandExecutionDiagnosticFields(
+      classification,
+    );
+    assert(!('settlement' in diagnosticFields));
+    assert.equal(Object.isFrozen(diagnosticFields), true);
+    assert.deepEqual(
+      mod.validateSandboxProvisioningDiagnosticFact({
+        operationId: '55555555-5555-4555-8555-555555555555',
+        stage: 'runtime_setup',
+        operation: 'runtime_setup',
+        channel: 'primary',
+        commandKind: 'runtime_setup',
+        ...diagnosticFields,
+      }),
+      {
+        operationId: '55555555-5555-4555-8555-555555555555',
+        stage: 'runtime_setup',
+        operation: 'runtime_setup',
+        channel: 'primary',
+        commandKind: 'runtime_setup',
+        ...diagnosticFields,
+      },
+    );
+  }
+
+  const failedWithoutExit = mod.classifySandboxCommandExecutionRejection(
+    new mod.SandboxCommandSettlementError('failed_without_exit'),
+  );
+  assert.deepEqual(failedWithoutExit, {
+    settlement: 'failed_without_exit',
+    outcome: 'failed',
+    cause: 'missing_exit_code',
+    retryable: false,
+    exitCode: null,
+    anomaly: 'missing_exit_code',
+  });
+  assert.deepEqual(
+    mod.sandboxCommandExecutionDiagnosticFields(failedWithoutExit),
+    {
+      outcome: 'failed',
+      cause: 'missing_exit_code',
+      retryable: false,
+      exitCode: null,
+      anomaly: 'missing_exit_code',
+    },
+  );
+
+  let observedRuntimeRequest;
+  const safe = await mod.classifySandboxRuntimeCommandExecution({
+    executor: {
+      exec: async (request) => {
+        observedRuntimeRequest = request;
+        return result(4);
+      },
+    },
+    request: {
+      command: 'CAP_COMMAND_TEXT_SECRET_CANARY',
+      cwd: '/CAP/PATH/SECRET/CANARY',
+    },
+    descriptor: { commandKind: 'runtime_setup', ordinal: 1 },
+  });
+  assert.deepEqual(observedRuntimeRequest?.diagnosticDescriptor, {
+    commandKind: 'runtime_setup',
+    ordinal: 1,
+  });
+  assert.deepEqual(safe, {
+    settlement: 'exit',
+    outcome: 'failed',
+    cause: 'command_failed',
+    retryable: false,
+    exitCode: 4,
+  });
+  assert(!JSON.stringify(safe).includes('SECRET_CANARY'));
+
+  const error = new mod.SandboxRuntimeCommandExecutionError(
+    { commandKind: 'runtime_setup', ordinal: 1 },
+    safe,
+  );
+  assert.equal(mod.isSandboxRuntimeCommandExecutionError(error), true);
+  assert(!error.message.includes('SECRET_CANARY'));
+  assert(!JSON.stringify(error).includes('SECRET_CANARY'));
+});
+
 await test('provider descriptor accepts explicit capabilities for legacy providers', () => {
   const legacy = provider('legacy-local', undefined);
   const descriptor = mod.describeSandboxProvider({
@@ -909,6 +1106,822 @@ await test('latched external-boundary guard preserves the first rejection', asyn
     (error) => error === leaseFailure,
   );
   assert.equal(calls, 1);
+});
+
+const diagnosticIds = {
+  taskId: '11111111-1111-4111-8111-111111111111',
+  attemptId: '22222222-2222-4222-8222-222222222222',
+  operationId: '33333333-3333-4333-8333-333333333333',
+  eventId: '44444444-4444-4444-8444-444444444444',
+};
+
+function diagnosticAttemptContext(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    taskId: diagnosticIds.taskId,
+    attemptId: diagnosticIds.attemptId,
+    attempt: 2,
+    admissionMode: 'durable',
+    providerFamily: 'unknown',
+    ...overrides,
+  };
+}
+
+function startedDiagnosticFact(overrides = {}) {
+  return {
+    operationId: diagnosticIds.operationId,
+    stage: 'provider_selection',
+    operation: 'provider_select',
+    channel: 'primary',
+    outcome: 'started',
+    ...overrides,
+  };
+}
+
+function terminalDiagnosticFact(overrides = {}) {
+  return {
+    operationId: diagnosticIds.operationId,
+    stage: 'provider_selection',
+    operation: 'provider_select',
+    channel: 'primary',
+    outcome: 'failed',
+    durationMs: 25,
+    cause: 'missing_exit_code',
+    retryable: false,
+    httpStatusClass: null,
+    nativeState: 'failed',
+    anomaly: 'missing_exit_code',
+    exitCode: null,
+    timeoutMs: null,
+    ...overrides,
+  };
+}
+
+function indexedDiagnosticUuid(index) {
+  return `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+}
+
+await test('diagnostic emitter injects strict task correlation and serial identities', async () => {
+  const recorded = [];
+  const observedAt = new Date('2026-07-17T04:00:00.000Z');
+  const emitter = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext(),
+    record: async (event) => {
+      recorded.push(event);
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+    createEventId: () => diagnosticIds.eventId,
+    createOperationId: () => diagnosticIds.operationId,
+    now: () => observedAt,
+  });
+
+  assert.equal(Object.isFrozen(emitter), true);
+  assert.equal(emitter.mode, 'task');
+  assert.equal(emitter.createOperationId(), diagnosticIds.operationId);
+  assert.equal(Object.isFrozen(emitter.attemptContext), true);
+  assert.equal(emitter.attemptContext.providerFamily, 'unknown');
+  emitter.bindProviderFamily('boxlite');
+  emitter.bindProviderFamily('boxlite');
+  assert.equal(emitter.attemptContext.providerFamily, 'boxlite');
+  assert.throws(
+    () => emitter.bindProviderFamily('aio'),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+
+  await emitter.emit(startedDiagnosticFact());
+  await assert.rejects(
+    emitter.emit(
+      terminalDiagnosticFact({ operation: 'native_exec_settlement' }),
+    ),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+  await emitter.emit(terminalDiagnosticFact());
+  assert.equal(recorded.length, 2);
+  assert.deepEqual(recorded[0], {
+    schemaVersion: 1,
+    eventId: diagnosticIds.eventId,
+    idempotencyKey: `${diagnosticIds.operationId}:started`,
+    taskId: diagnosticIds.taskId,
+    attemptId: diagnosticIds.attemptId,
+    attempt: 2,
+    sequence: 1,
+    operationId: diagnosticIds.operationId,
+    admissionMode: 'durable',
+    providerFamily: 'boxlite',
+    stage: 'provider_selection',
+    operation: 'provider_select',
+    channel: 'primary',
+    observedAt,
+    outcome: 'started',
+  });
+  assert.equal(Object.isFrozen(recorded[0]), true);
+  assert.equal(recorded[0].observedAt === observedAt, false);
+  assert.equal(recorded[1].sequence, 2);
+  assert.equal(recorded[1].idempotencyKey, `${diagnosticIds.operationId}:terminal`);
+  assert.equal(recorded[1].channel, 'primary');
+  assert.equal(recorded[1].anomaly, 'missing_exit_code');
+  assert(!Object.hasOwn(recorded[0], 'cause'));
+  assert(!Object.hasOwn(recorded[1], 'command'));
+  assert(!Object.hasOwn(recorded[1], 'output'));
+
+  await emitter.emit(startedDiagnosticFact());
+  assert.equal(recorded.length, 2, 'same fact is locally idempotent');
+  await assert.rejects(
+    emitter.emit(startedDiagnosticFact({ stage: 'accepted' })),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+
+  const runtimeOperationId = indexedDiagnosticUuid(10);
+  await emitter.emit(
+    startedDiagnosticFact({
+      operationId: runtimeOperationId,
+      stage: 'runtime_setup',
+      operation: 'runtime_setup',
+      commandKind: 'runtime_setup',
+    }),
+  );
+  await emitter.emit(
+    terminalDiagnosticFact({
+      operationId: runtimeOperationId,
+      stage: 'runtime_setup',
+      operation: 'runtime_setup',
+      commandKind: 'runtime_setup',
+      outcome: 'succeeded',
+      cause: null,
+      nativeState: undefined,
+      anomaly: undefined,
+      exitCode: 0,
+    }),
+  );
+  assert.equal(recorded[2].commandKind, 'runtime_setup');
+  assert.equal(recorded[3].commandKind, 'runtime_setup');
+});
+
+await test('diagnostic workspace replay keys reuse ids only within one observer', () => {
+  let taskIds = 20;
+  const emitter = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext(),
+    record: async (event) => ({ kind: 'recorded', sequence: event.sequence }),
+    createOperationId: () => indexedDiagnosticUuid(taskIds++),
+  });
+  const setup = emitter.createOperationId('workspace.credential_setup');
+  assert.equal(
+    emitter.createOperationId('workspace.credential_setup'),
+    setup,
+  );
+  assert.notEqual(
+    emitter.createOperationId('workspace.workspace_transfer'),
+    setup,
+  );
+  assert.equal(taskIds, 22);
+  assert.throws(
+    () => emitter.createOperationId('workspace.provider-private'),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+
+  let probeIds = 30;
+  const taskless =
+    mod.createNonPersistingSandboxProvisioningDiagnosticObserver({
+      createOperationId: () => indexedDiagnosticUuid(probeIds++),
+    });
+  const cleanup = taskless.createOperationId('workspace.credential_cleanup');
+  assert.equal(
+    taskless.createOperationId('workspace.credential_cleanup'),
+    cleanup,
+  );
+  assert.notEqual(taskless.createOperationId('workspace.checkout'), cleanup);
+  assert.equal(probeIds, 32);
+});
+
+await test('diagnostic emitter preserves sequence across duplicate and failed recorder writes', async () => {
+  const sequences = [];
+  const results = [
+    { kind: 'duplicate', sequence: 2 },
+    new Error('diagnostic store unavailable'),
+    { kind: 'recorded', sequence: 5 },
+    { kind: 'duplicate', sequence: 6 },
+    { kind: 'recorded', sequence: 7 },
+  ];
+  const emitter = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext({ providerFamily: 'aio' }),
+    initialSequence: 4,
+    record: async (event) => {
+      sequences.push(event.sequence);
+      const result = results.shift();
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  });
+
+  await emitter.emit(startedDiagnosticFact());
+  const second = terminalDiagnosticFact({
+    operationId: indexedDiagnosticUuid(7),
+    commandKind: undefined,
+    httpStatusClass: undefined,
+    exitCode: undefined,
+    timeoutMs: undefined,
+  });
+  await assert.rejects(emitter.emit(second), /diagnostic store unavailable/);
+  await emitter.emit(second);
+  await emitter.emit(
+    startedDiagnosticFact({ operationId: indexedDiagnosticUuid(8) }),
+  );
+  await emitter.emit(
+    startedDiagnosticFact({ operationId: indexedDiagnosticUuid(9) }),
+  );
+  assert.deepEqual(sequences, [5, 5, 5, 6, 7]);
+});
+
+await test('diagnostic flush waits for the accepted recorder tail', async () => {
+  let releaseRecord;
+  let markRecorderEntered;
+  const recorderEntered = new Promise((resolve) => {
+    markRecorderEntered = resolve;
+  });
+  const recordReleased = new Promise((resolve) => {
+    releaseRecord = resolve;
+  });
+  const emitter = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext(),
+    record: async (event) => {
+      markRecorderEntered();
+      await recordReleased;
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+
+  const emission = emitter.emit(startedDiagnosticFact());
+  await recorderEntered;
+  let flushed = false;
+  const flush = emitter.flush().then(() => {
+    flushed = true;
+  });
+  await Promise.resolve();
+  assert.equal(flushed, false, 'flush must wait for the recorder barrier');
+
+  releaseRecord();
+  await emission;
+  await flush;
+  assert.equal(flushed, true);
+});
+
+await test('diagnostic flush absorbs recorder failure as non-authoritative evidence', async () => {
+  const recorderFailure = new Error('diagnostic recorder unavailable');
+  const emitter = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext(),
+    record: async () => {
+      throw recorderFailure;
+    },
+  });
+
+  const failedEmission = assert.rejects(
+    emitter.emit(startedDiagnosticFact()),
+    (error) => error === recorderFailure,
+  );
+  await assert.doesNotReject(emitter.flush());
+  await failedEmission;
+});
+
+await test('diagnostic boundary rejects raw fields and unsafe fact shapes without echoing them', async () => {
+  const forbidden = [
+    'command',
+    'argv',
+    'stdout',
+    'stderr',
+    'output',
+    'prompt',
+    'requestBody',
+    'responseBody',
+    'headers',
+    'url',
+    'endpoint',
+    'credentialPath',
+    'token',
+    'environment',
+    'providerResourceId',
+    'providerExecutionId',
+    'leaseOwner',
+    'stack',
+    'message',
+    'metadata',
+    'taskId',
+    'eventId',
+    'observedAt',
+  ];
+  let recordCalls = 0;
+  const emitter = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext(),
+    record: async (event) => {
+      recordCalls += 1;
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+  const canary = 'CAP_DIAGNOSTIC_SECRET_CANARY';
+  for (const field of forbidden) {
+    await assert.rejects(
+      emitter.emit({ ...startedDiagnosticFact(), [field]: canary }),
+      (error) =>
+        error?.code === 'sandbox_provisioning_diagnostic_validation_error' &&
+        !error.message.includes(canary),
+    );
+  }
+  const invalidFacts = [
+    null,
+    [],
+    new Date(),
+    (({ outcome: _outcome, ...withoutOutcome }) => withoutOutcome)(
+      startedDiagnosticFact(),
+    ),
+    startedDiagnosticFact({ operationId: 'not-a-uuid' }),
+    startedDiagnosticFact({ outcome: 'success' }),
+    startedDiagnosticFact({ stage: 'provider-private-stage' }),
+    startedDiagnosticFact({ operation: 'raw-command' }),
+    startedDiagnosticFact({ channel: 'secondary' }),
+    startedDiagnosticFact({ commandKind: 'shell' }),
+    startedDiagnosticFact({ cause: 'unknown' }),
+    terminalDiagnosticFact({ cause: undefined }),
+    terminalDiagnosticFact({ cause: 'provider-message' }),
+    terminalDiagnosticFact({ retryable: 'yes' }),
+    terminalDiagnosticFact({ durationMs: -1 }),
+    terminalDiagnosticFact({ durationMs: Number.MAX_VALUE }),
+    terminalDiagnosticFact({ httpStatusClass: '404' }),
+    terminalDiagnosticFact({ nativeState: 'terminated' }),
+    terminalDiagnosticFact({ anomaly: 'provider_error' }),
+    terminalDiagnosticFact({ exitCode: 1.5 }),
+    terminalDiagnosticFact({ timeoutMs: 0 }),
+  ];
+  for (const invalid of invalidFacts) {
+    await assert.rejects(
+      emitter.emit(invalid),
+      (error) =>
+        error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+    );
+  }
+  assert.equal(recordCalls, 0);
+});
+
+await test('diagnostic emitter enforces the shared per-attempt bound', async () => {
+  let recordCalls = 0;
+  const emitter = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext({ providerFamily: 'cloud-http' }),
+    record: async (event) => {
+      recordCalls += 1;
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+  for (let index = 1; index <= 32; index += 1) {
+    const operationId = indexedDiagnosticUuid(index);
+    await emitter.emit(startedDiagnosticFact({ operationId }));
+    await emitter.emit(
+      terminalDiagnosticFact({
+        operationId,
+        commandKind: undefined,
+        outcome: 'succeeded',
+        durationMs: undefined,
+        cause: null,
+        nativeState: undefined,
+        anomaly: undefined,
+        exitCode: 0,
+      }),
+    );
+  }
+  assert.equal(
+    recordCalls,
+    mod.SANDBOX_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT,
+  );
+  await emitter.emit(startedDiagnosticFact({ operationId: indexedDiagnosticUuid(1) }));
+  assert.equal(recordCalls, 64, 'known replay does not consume the bound');
+  await assert.rejects(
+    emitter.emit(startedDiagnosticFact({ operationId: indexedDiagnosticUuid(99) })),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+  assert.equal(recordCalls, 64, 'overflow is rejected before recorder side effects');
+});
+
+await test('diagnostic emitter reserves the final slot for an accepted start terminal', async () => {
+  const recorded = [];
+  let recordCalls = 0;
+  let failTerminalOnce = true;
+  const finalOperationId = indexedDiagnosticUuid(32);
+  const emitter = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext({ providerFamily: 'boxlite' }),
+    record: async (event) => {
+      recordCalls += 1;
+      if (
+        failTerminalOnce &&
+        event.operationId === finalOperationId &&
+        event.outcome !== 'started'
+      ) {
+        failTerminalOnce = false;
+        throw new Error('diagnostic store unavailable at reserved terminal');
+      }
+      recorded.push(event);
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+
+  for (let index = 1; index <= 31; index += 1) {
+    const operationId = indexedDiagnosticUuid(index);
+    await emitter.emit(startedDiagnosticFact({ operationId }));
+    await emitter.emit(
+      terminalDiagnosticFact({
+        operationId,
+        commandKind: undefined,
+        outcome: 'succeeded',
+        durationMs: undefined,
+        cause: null,
+        nativeState: undefined,
+        anomaly: undefined,
+        exitCode: 0,
+      }),
+    );
+  }
+
+  const finalStart = startedDiagnosticFact({
+    operationId: finalOperationId,
+  });
+  const finalTerminal = terminalDiagnosticFact({
+    operationId: finalOperationId,
+    commandKind: undefined,
+    outcome: 'succeeded',
+    durationMs: undefined,
+    cause: null,
+    nativeState: undefined,
+    anomaly: undefined,
+    exitCode: 0,
+  });
+  await emitter.emit(finalStart);
+  assert.equal(recorded.at(-1).sequence, 63);
+
+  for (const unrelated of [
+    startedDiagnosticFact({ operationId: indexedDiagnosticUuid(99) }),
+    terminalDiagnosticFact({ operationId: indexedDiagnosticUuid(98) }),
+  ]) {
+    await assert.rejects(
+      emitter.emit(unrelated),
+      (error) =>
+        error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+    );
+  }
+  assert.equal(recordCalls, 63, 'unrelated facts cannot steal the terminal slot');
+
+  await assert.rejects(
+    emitter.emit(finalTerminal),
+    /diagnostic store unavailable at reserved terminal/,
+  );
+  assert.equal(recordCalls, 64);
+  await assert.rejects(
+    emitter.emit(
+      terminalDiagnosticFact({ operationId: indexedDiagnosticUuid(97) }),
+    ),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+  assert.equal(
+    recordCalls,
+    64,
+    'recorder failure keeps the reserved slot unavailable to other facts',
+  );
+
+  await emitter.emit(finalTerminal);
+  assert.equal(recordCalls, 65, 'the exact terminal retries the recorder');
+  assert.equal(recorded.length, 64);
+  assert.deepEqual(
+    recorded.map((event) => event.sequence),
+    Array.from({ length: 64 }, (_value, index) => index + 1),
+  );
+
+  await emitter.emit(finalStart);
+  await emitter.emit(finalTerminal);
+  assert.equal(recordCalls, 65, 'accepted phase replay remains local');
+});
+
+await test('taskless diagnostic observer validates but cannot persist task evidence', async () => {
+  const observer = mod.createNonPersistingSandboxProvisioningDiagnosticObserver({
+    createOperationId: () => diagnosticIds.operationId,
+  });
+  assert.equal(observer.mode, 'non-persisting');
+  assert.equal(Object.isFrozen(observer), true);
+  assert.equal(observer.createOperationId(), diagnosticIds.operationId);
+  assert.equal(Object.hasOwn(observer, 'attemptContext'), false);
+  assert.equal(Object.hasOwn(observer, 'record'), false);
+  await observer.flush();
+  await observer.emit(startedDiagnosticFact());
+  await observer.emit(startedDiagnosticFact());
+  await observer.emit(terminalDiagnosticFact());
+  await assert.rejects(
+    observer.emit(terminalDiagnosticFact({ outcome: 'timed_out' })),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+  await assert.rejects(
+    observer.emit({ ...startedDiagnosticFact(), responseBody: 'secret-canary' }),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+
+  const bounded = mod.createNonPersistingSandboxProvisioningDiagnosticObserver();
+  for (let index = 1; index <= 31; index += 1) {
+    const operationId = indexedDiagnosticUuid(index);
+    await bounded.emit(startedDiagnosticFact({ operationId }));
+    await bounded.emit(
+      terminalDiagnosticFact({
+        operationId,
+        commandKind: undefined,
+        outcome: 'succeeded',
+        durationMs: undefined,
+        cause: null,
+        nativeState: undefined,
+        anomaly: undefined,
+        exitCode: 0,
+      }),
+    );
+  }
+  const reservedOperationId = indexedDiagnosticUuid(32);
+  const reservedStart = startedDiagnosticFact({
+    operationId: reservedOperationId,
+  });
+  const reservedTerminal = terminalDiagnosticFact({
+    operationId: reservedOperationId,
+    commandKind: undefined,
+    outcome: 'succeeded',
+    durationMs: undefined,
+    cause: null,
+    nativeState: undefined,
+    anomaly: undefined,
+    exitCode: 0,
+  });
+  await bounded.emit(reservedStart);
+  for (const unrelated of [
+    startedDiagnosticFact({ operationId: indexedDiagnosticUuid(99) }),
+    terminalDiagnosticFact({ operationId: indexedDiagnosticUuid(98) }),
+  ]) {
+    await assert.rejects(
+      bounded.emit(unrelated),
+      (error) =>
+        error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+    );
+  }
+  await bounded.emit(reservedTerminal);
+  await bounded.emit(reservedStart);
+  await bounded.emit(reservedTerminal);
+  await assert.rejects(
+    bounded.emit(
+      terminalDiagnosticFact({ operationId: indexedDiagnosticUuid(97) }),
+    ),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+});
+
+await test('diagnostic attempt context and emitter dependencies fail closed', async () => {
+  const invalidContexts = [
+    null,
+    [],
+    new Date(),
+    diagnosticAttemptContext({ schemaVersion: 2 }),
+    diagnosticAttemptContext({ taskId: 'task-1' }),
+    diagnosticAttemptContext({ attemptId: 'attempt-1' }),
+    diagnosticAttemptContext({ attempt: 0 }),
+    diagnosticAttemptContext({ attempt: 1.5 }),
+    diagnosticAttemptContext({ admissionMode: 'worker' }),
+    diagnosticAttemptContext({ providerFamily: 'custom' }),
+    { ...diagnosticAttemptContext(), metadata: { raw: true } },
+  ];
+  for (const attemptContext of invalidContexts) {
+    assert.throws(
+      () =>
+        mod.createSandboxProvisioningDiagnosticEmitter({
+          attemptContext,
+          record: async (event) => ({ kind: 'recorded', sequence: event.sequence }),
+        }),
+      (error) =>
+        error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+    );
+  }
+  for (const initialSequence of [-1, 65, 1.5]) {
+    assert.throws(
+      () =>
+        mod.createSandboxProvisioningDiagnosticEmitter({
+          attemptContext: diagnosticAttemptContext(),
+          initialSequence,
+          record: async (event) => ({ kind: 'recorded', sequence: event.sequence }),
+        }),
+      (error) =>
+        error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+    );
+  }
+  assert.throws(
+    () =>
+      mod.createSandboxProvisioningDiagnosticEmitter({
+        attemptContext: diagnosticAttemptContext(),
+        record: null,
+      }),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+
+  const invalidEventId = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext(),
+    record: async (event) => ({ kind: 'recorded', sequence: event.sequence }),
+    createEventId: () => 'invalid-event-id',
+  });
+  await assert.rejects(
+    invalidEventId.emit(startedDiagnosticFact()),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+  const invalidTime = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext(),
+    record: async (event) => ({ kind: 'recorded', sequence: event.sequence }),
+    now: () => new Date('invalid'),
+  });
+  await assert.rejects(
+    invalidTime.emit(startedDiagnosticFact()),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+  const invalidResult = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext(),
+    record: async () => ({ kind: 'ignored', sequence: 1 }),
+  });
+  await assert.rejects(
+    invalidResult.emit(startedDiagnosticFact()),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+  const invalidRecordedSequence =
+    mod.createSandboxProvisioningDiagnosticEmitter({
+      attemptContext: diagnosticAttemptContext(),
+      initialSequence: 1,
+      record: async () => ({ kind: 'recorded', sequence: 1 }),
+    });
+  await assert.rejects(
+    invalidRecordedSequence.emit(startedDiagnosticFact()),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+  const invalidOperationId = mod.createNonPersistingSandboxProvisioningDiagnosticObserver({
+    createOperationId: () => 'invalid-operation-id',
+  });
+  assert.throws(
+    () => invalidOperationId.createOperationId(),
+    (error) =>
+      error?.code === 'sandbox_provisioning_diagnostic_validation_error',
+  );
+});
+
+await test('provision context carries diagnostics without breaking legacy callers', () => {
+  const diagnostics = mod.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: diagnosticAttemptContext(),
+    record: async (event) => ({ kind: 'recorded', sequence: event.sequence }),
+  });
+  const context = mod.snapshotSandboxProvisionContext({
+    taskId: diagnosticIds.taskId,
+    diagnostics,
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'headless-exec',
+  });
+  assert.equal(context.diagnostics, diagnostics);
+  assert.equal(context.diagnostics.mode, 'task');
+  const legacy = mod.snapshotSandboxProvisionContext({
+    taskId: 'legacy-task',
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'headless-exec',
+  });
+  assert.equal(legacy.diagnostics, undefined);
+});
+
+await test('physical cleanup seam preserves primary and reduces cleanup to safe secondary facts', async () => {
+  const primary = new Error('primary workspace failure');
+  const confirmed = await mod.runSandboxPhysicalCleanup(async () => ({
+    kind: 'found-and-cleaned',
+  }));
+  const combined = mod.preserveSandboxPrimaryWithCleanup(primary, confirmed);
+  assert.equal(combined.primary, primary);
+  assert.deepEqual(combined.cleanup, {
+    outcome: 'succeeded',
+    proof: 'found-and-cleaned',
+    cause: null,
+    retryable: false,
+  });
+  assert.equal(Object.isFrozen(combined), true);
+  assert.equal(Object.isFrozen(combined.cleanup), true);
+
+  const canary = 'CAP_CLEANUP_PRIVATE_ERROR_CANARY';
+  const rejected = await mod.runSandboxPhysicalCleanup(async () => {
+    throw new Error(`${canary} https://provider.invalid/private`);
+  });
+  assert.deepEqual(rejected, {
+    outcome: 'indeterminate',
+    proof: null,
+    cause: 'cleanup_unconfirmed',
+    retryable: true,
+  });
+  assert.equal(JSON.stringify(rejected).includes(canary), false);
+
+  const definitive = await mod.runSandboxPhysicalCleanup(async () => ({
+    outcome: 'failed',
+    proof: null,
+    cause: 'cleanup_failed',
+    retryable: false,
+  }));
+  assert.deepEqual(definitive, {
+    outcome: 'failed',
+    proof: null,
+    cause: 'cleanup_failed',
+    retryable: false,
+  });
+
+  const unconfirmed = await mod.runSandboxPhysicalCleanup(async () => undefined);
+  assert.deepEqual(unconfirmed, {
+    outcome: 'indeterminate',
+    proof: null,
+    cause: 'cleanup_unconfirmed',
+    retryable: true,
+  });
+
+  const coordination = new mod.SandboxCleanupCoordinationPendingError();
+  await assert.rejects(
+    mod.runSandboxPhysicalCleanup(async () => {
+      throw coordination;
+    }),
+    (error) => error === coordination,
+    'cleanup authority failures must not be downgraded to physical evidence',
+  );
+});
+
+await test('cleanup evidence is strict, bounded, and cannot accept raw provider material', () => {
+  const observedAt = new Date('2026-07-17T08:00:00.000Z');
+  const attemptId = '77777777-7777-4777-8777-777777777777';
+  const evidence = mod.sandboxCleanupAttemptEvidence(
+    2,
+    attemptId,
+    {
+      outcome: 'indeterminate',
+      proof: null,
+      cause: 'cleanup_unconfirmed',
+      retryable: true,
+    },
+    observedAt,
+  );
+  assert.deepEqual(evidence, {
+    attemptId,
+    attempt: 2,
+    outcome: 'indeterminate',
+    proof: null,
+    cause: 'cleanup_unconfirmed',
+    retryable: true,
+    observedAt,
+  });
+  assert.notEqual(evidence.observedAt, observedAt);
+  assert.equal(Object.isFrozen(evidence), true);
+
+  for (const invalid of [
+    { ...evidence, attempt: 0 },
+    { ...evidence, attempt: 1.5 },
+    { ...evidence, attempt: mod.SANDBOX_CLEANUP_ATTEMPT_MAX + 1 },
+    { ...evidence, attemptId: 'provider-native-id' },
+    { ...evidence, cause: 'cleanup_failed' },
+    { ...evidence, proof: 'already-absent' },
+    { ...evidence, retryable: false },
+    { ...evidence, outcome: 'provider-error' },
+    { ...evidence, observedAt: new Date('invalid') },
+    { ...evidence, providerResourceId: 'raw-id' },
+    { ...evidence, message: 'secret-canary' },
+  ]) {
+    assert.throws(
+      () => mod.validateSandboxCleanupAttemptEvidence(invalid),
+      (error) => error?.code === 'sandbox_cleanup_result_validation_error',
+    );
+  }
+  assert.throws(
+    () =>
+      mod.validateSandboxPhysicalCleanupResult({
+        outcome: 'failed',
+        proof: null,
+        cause: 'cleanup_failed',
+        retryable: true,
+        responseBody: 'secret-canary',
+      }),
+    (error) =>
+      error?.code === 'sandbox_cleanup_result_validation_error' &&
+      !error.message.includes('secret-canary'),
+  );
+
+  const coordination = new mod.SandboxCleanupCoordinationPendingError(
+    'exact-primary',
+  );
+  assert.equal(coordination.code, 'sandbox_cleanup_coordination_pending');
+  assert.equal(coordination.primary, 'exact-primary');
+  assert.equal(JSON.stringify(coordination).includes('exact-primary'), false);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

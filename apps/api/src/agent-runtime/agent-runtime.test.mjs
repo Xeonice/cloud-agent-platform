@@ -509,6 +509,11 @@ async function main() {
     cxNull.commands[0].tolerateUnresolvedExit === false,
     'codex config command is strict (fail-closed on unresolved exit)',
   );
+  assert(
+    cxNull.commands[0].descriptor.commandKind === 'credential_setup' &&
+      cxNull.commands[0].descriptor.ordinal === 1,
+    'codex config command declares its safe descriptor',
+  );
 
   // codex: official + prompt → 2 commands; auth.json appended to config command (TRAP-1)
   const cxAuthJson = '{"auth_mode":"chatgpt","tokens":{}}';
@@ -527,6 +532,11 @@ async function main() {
     cxOff.commands[1].command ===
       `mkdir -p ${CXDIR} && printf %s '${toB64(cxPrompt)}' | base64 -d > ${CXDIR}/task-prompt.txt && chmod 600 ${CXDIR}/task-prompt.txt`,
     'codex GOLDEN: prompt-file write byte-exact',
+  );
+  assert(
+    cxOff.commands[1].descriptor.commandKind === 'runtime_setup' &&
+      cxOff.commands[1].descriptor.ordinal === 2,
+    'codex prompt command declares its safe descriptor',
   );
 
   // codex: compatible, no prompt → 1 command, NO auth.json, model_providers.cap TOML
@@ -560,6 +570,16 @@ async function main() {
       'codex cli,git,tmux,bash,tar,gzip',
     'codex preflight declares required image tools',
   );
+  assert(
+    codex
+      .preflightProbes()
+      .every(
+        (probe, index) =>
+          probe.descriptor.commandKind === 'runtime_preflight' &&
+          probe.descriptor.ordinal === index + 1,
+      ),
+    'codex preflight declares safe ordered descriptors',
+  );
 
   // claude: no/blank token → fail closed BEFORE any command (TRAP-3)
   assert(
@@ -577,6 +597,13 @@ async function main() {
   assert(clTok.ok === true && clTok.commands.length === 2, 'claude setup (token + prompt) → 2 commands');
   assert(clTok.commands[0].tolerateUnresolvedExit === true, 'claude auth-env command tolerates unresolved exit');
   assert(clTok.commands[1].tolerateUnresolvedExit === false, 'claude prompt command is strict');
+  assert(
+    clTok.commands[0].descriptor.commandKind === 'credential_setup' &&
+      clTok.commands[0].descriptor.ordinal === 1 &&
+      clTok.commands[1].descriptor.commandKind === 'runtime_setup' &&
+      clTok.commands[1].descriptor.ordinal === 2,
+    'claude setup declares safe ordered descriptors',
+  );
 
   // claude: token, no prompt → 1 command; launch-env.sh + settings.json +
   // .claude.json byte-exact
@@ -625,6 +652,16 @@ async function main() {
     claude.preflightProbes().map((p) => p.name).join(',') ===
       'claude cli,git,tmux,bash,tar,gzip',
     'claude preflight declares required image tools',
+  );
+  assert(
+    claude
+      .preflightProbes()
+      .every(
+        (probe, index) =>
+          probe.descriptor.commandKind === 'runtime_preflight' &&
+          probe.descriptor.ordinal === index + 1,
+      ),
+    'claude preflight declares safe ordered descriptors',
   );
 
   console.log(`\n${passed} passed, ${failed} failed`);

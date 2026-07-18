@@ -419,7 +419,8 @@ class MatrixStore extends TaskAdmissionStore {
     work.state = request.settlement.state;
     work.stage = request.settlement.stage;
     work.causeCode =
-      request.settlement.state === 'failed'
+      request.settlement.state === 'failed' ||
+      request.settlement.state === 'retrying'
         ? request.settlement.causeCode
         : work.causeCode;
     work.availableAtMs =

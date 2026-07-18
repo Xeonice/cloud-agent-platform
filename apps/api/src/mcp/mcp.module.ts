@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TasksModule } from '../tasks/tasks.module';
 import { ReposModule } from '../repos/repos.module';
 import { ScheduledTasksModule } from '../scheduled-tasks/scheduled-tasks.module';
+import { TaskProvisioningDiagnosticsModule } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.module';
 import { SessionTranscriptService } from '../tasks/session-transcript.service';
 import { AuditService } from '../audit/audit.service';
 import {
@@ -23,6 +24,8 @@ import { McpServerFactory } from './mcp.server';
  *   - {@link ReposModule} (imported) exports `ReposService` for repo reads.
  *   - {@link ScheduledTasksModule} (imported) exports `ScheduledTasksService` for
  *     the owner-scoped schedule tools.
+ *   - {@link TaskProvisioningDiagnosticsModule} (imported) exports the same
+ *     owner-scoped, deployment-gated query service used by Public V1.
  *   - `PrismaService` (the `@Global() PrismaModule`) backs the
  *     `SystemSettings.mcpServerEnabled` gate read in {@link McpController} (task
  *     4.3) — read DIRECTLY here, NOT via `settings.service.ts`, so Track 5 stays
@@ -44,7 +47,12 @@ import { McpServerFactory } from './mcp.server';
  * `app.module.ts` edit).
  */
 @Module({
-  imports: [TasksModule, ReposModule, ScheduledTasksModule],
+  imports: [
+    TasksModule,
+    ReposModule,
+    ScheduledTasksModule,
+    TaskProvisioningDiagnosticsModule,
+  ],
   controllers: [McpController],
   providers: [
     McpServerFactory,

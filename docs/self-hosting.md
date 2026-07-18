@@ -26,6 +26,11 @@ the staged enablement plus drain-first rollback in
 [`deploy/TASK_ADMISSION_V2_CUTOVER.md`](../deploy/TASK_ADMISSION_V2_CUTOVER.md)
 before setting `CAP_TASK_ADMISSION_V2_ENABLED=true`.
 
+Task provisioning diagnostics have a separate default-closed rollout and
+credential scope. Follow the staged write/read/grant and gate-first rollback
+procedure in
+[`docs/task-provisioning-diagnostics.md`](task-provisioning-diagnostics.md).
+
 In-app upgrades are a later phase you do not need to self-host today.
 
 > **Trying it on a fresh local host?** The public marketing site hosts a

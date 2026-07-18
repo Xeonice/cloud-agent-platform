@@ -89,7 +89,12 @@ describe("Settings page MCP Server section — data seam", () => {
         {
           id: "mcp-1",
           name: "Cursor",
-          scopes: ["tasks:read"],
+          scopes: [
+            "tasks:read",
+            "tasks:diagnostics",
+            "admin:all",
+            "tasks:diagnostics",
+          ],
           prefix: "mcp_",
           last4: "ab12",
           lastUsedAt: null,
@@ -112,5 +117,7 @@ describe("Settings page MCP Server section — data seam", () => {
     expect(row).not.toHaveProperty("token");
     expect(row).toHaveProperty("prefix");
     expect(row).toHaveProperty("last4");
+    expect(row.scopes).toEqual(["tasks:read", "tasks:diagnostics"]);
+    expect(JSON.stringify(row)).not.toContain("admin:all");
   });
 });

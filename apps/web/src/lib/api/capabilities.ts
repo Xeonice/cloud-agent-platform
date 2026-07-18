@@ -23,6 +23,12 @@
 export interface BackendCapabilities {
   /** `GET /tasks`, `GET /tasks/:id` — the live task list + single task. */
   tasks: boolean;
+  /**
+   * Session-only canonical provisioning diagnostics for one task. The server
+   * independently enforces owner/live-admin authorization and the deployment
+   * capability gate; this flag chooses only the real-vs-visual-mock data seam.
+   */
+  taskProvisioningDiagnostics: boolean;
   /** `GET /repos` — registered platform repos for the new-task form. */
   repos: boolean;
   /** `POST /repos/:repoId/tasks` — create a task under a repo. */
@@ -164,6 +170,7 @@ export interface BackendCapabilities {
 export const BACKEND_CAPABILITIES: BackendCapabilities = {
   // Core REST endpoints the api ships.
   tasks: true,
+  taskProvisioningDiagnostics: true,
   repos: true,
   createTask: true,
 

@@ -1,6 +1,11 @@
-import { Injectable } from '@nestjs/common';
-import type { MetricsResponse, TaskResourceResponse } from '@cap/contracts';
+import { Injectable, Optional } from '@nestjs/common';
+import type {
+  MetricsResponse,
+  ProvisioningDiagnosticsMetrics,
+  TaskResourceResponse,
+} from '@cap/contracts';
 import { GuardrailsService } from '../guardrails/guardrails.service';
+import { TaskProvisioningDiagnosticsMetricsService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service';
 import {
   buildSlotOccupancy,
   foldTaskSamples,
@@ -12,7 +17,7 @@ import { ResourceSamplerService } from './resource-sampler.service';
 /**
  * Composes the `GET /metrics` aggregation response (be-metrics, task 5.5).
  *
- * It assembles, in ONE round trip, two strictly distinguished blocks:
+ * It assembles, in ONE round trip, three strictly distinguished blocks:
  *
  *  - the DERIVED capacity block (`capacity`, `occupancy`, `runnerMinutes`) —
  *    exact, point-in-time, read LIVE from the guardrails semaphore + runner-
@@ -20,17 +25,22 @@ import { ResourceSamplerService } from './resource-sampler.service';
  *  - the SAMPLED resource block (`resources`) — the cadence-bounded CPU/memory
  *    snapshot served from the {@link ResourceSamplerService} cache, self-
  *    describing its freshness via `status`/`sampledAt`/`ageMs`.
+ *  - the PROVISIONING DIAGNOSTICS block — process-window counters plus durable
+ *    current gauges served synchronously from an independently refreshed cache.
  *
- * Crucially, a sampling outage / staleness degrades ONLY the sampled block: the
- * derived capacity block is always present and exact even when `resources.status`
- * is `stale`/`unavailable`. This service performs no IO and never blocks on a
- * live sample, so request latency is decoupled from docker-stats/cgroup cost.
+ * Crucially, an outage / staleness degrades ONLY its owning additive block: the
+ * derived capacity block is always present and exact. This service performs no
+ * IO and never blocks on a live sample or hydration query.
  */
 @Injectable()
 export class MetricsService {
+  private readonly provisioningDiagnosticsObservedSince = new Date();
+
   constructor(
     private readonly guardrails: GuardrailsService,
     private readonly sampler: ResourceSamplerService,
+    @Optional()
+    private readonly provisioningDiagnosticsMetrics?: TaskProvisioningDiagnosticsMetricsService,
   ) {}
 
   /** Builds the composed metrics response at the current instant. */
@@ -56,6 +66,44 @@ export class MetricsService {
       occupancy: buildSlotOccupancy(projection),
       runnerMinutes: deriveRunnerMinutes(this.guardrails.runnerMinuteIntervals(), now),
       resources: { ...resources, taskSamples },
+      provisioningDiagnostics: this.buildProvisioningDiagnostics(now),
+    };
+  }
+
+  private buildProvisioningDiagnostics(
+    now: number,
+  ): ProvisioningDiagnosticsMetrics {
+    try {
+      return (
+        this.provisioningDiagnosticsMetrics?.currentSnapshot(now) ??
+        this.unavailableProvisioningDiagnostics()
+      );
+    } catch {
+      return this.unavailableProvisioningDiagnostics();
+    }
+  }
+
+  /**
+   * Module-compatibility fallback used only when the additive global collector
+   * is absent (for example, an older/mixed Nest composition in rolling tests).
+   */
+  private unavailableProvisioningDiagnostics(): ProvisioningDiagnosticsMetrics {
+    return {
+      observedSince: new Date(this.provisioningDiagnosticsObservedSince),
+      attemptOutcomes: [],
+      stageOutcomes: [],
+      retries: [],
+      cleanupOutcomes: [],
+      anomalies: [],
+      durableGauges: {
+        status: 'unavailable',
+        sampledAt: null,
+        ageMs: null,
+        activeAttempts: null,
+        oldestActiveAttemptAgeMs: null,
+        cleanupPendingRuns: null,
+        confirmedOrphanRuns: null,
+      },
     };
   }
 

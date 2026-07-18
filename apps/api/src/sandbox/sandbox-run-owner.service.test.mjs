@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -105,6 +106,15 @@ class FakeSandboxRunDelegate {
       removedAt: null,
       ownerGeneration: null,
       resourceGeneration: null,
+      cleanupAttemptInFlight: false,
+      cleanupAttemptCount: 0,
+      cleanupLastAttemptId: null,
+      cleanupLastOutcome: null,
+      cleanupLastProof: null,
+      cleanupLastCause: null,
+      cleanupLastRetryable: null,
+      cleanupLastObservedAt: null,
+      cleanupOrphanConfirmedAt: null,
       ...data,
     };
     this.runs.push(run);
@@ -131,8 +141,12 @@ class FakeSandboxRunDelegate {
 
 function matchesWhere(run, where) {
   for (const [key, expected] of Object.entries(where)) {
-    if (expected && typeof expected === 'object' && 'in' in expected) {
+    if (key === 'OR' && Array.isArray(expected)) {
+      if (!expected.some((branch) => matchesWhere(run, branch))) return false;
+    } else if (expected && typeof expected === 'object' && 'in' in expected) {
       if (!expected.in.includes(run[key])) return false;
+    } else if (expected && typeof expected === 'object' && 'gt' in expected) {
+      if (!(run[key] > expected.gt)) return false;
     } else if (run[key] !== expected) {
       return false;
     }
@@ -153,6 +167,32 @@ async function test(name, fn) {
     console.error(`not ok - ${name}`);
     console.error(err);
   }
+}
+
+async function settleConfirmedCleanup(
+  service,
+  authorization,
+  { attemptId = randomUUID(), proof = 'already-absent' } = {},
+) {
+  const allocated = await service.beginSandboxRunCleanupAttempt(
+    authorization,
+    attemptId,
+  );
+  assert.equal(allocated.kind, 'allocated');
+  const evidence = {
+    attemptId,
+    attempt: allocated.evidence.attempt,
+    outcome: 'succeeded',
+    proof,
+    cause: null,
+    retryable: false,
+    observedAt: new Date('2026-07-17T10:00:00.000Z'),
+  };
+  assert.deepEqual(
+    await service.settleSandboxRunCleanupAttempt(authorization, evidence),
+    { kind: 'recorded' },
+  );
+  return evidence;
 }
 
 const { outDir, compiled } = compileService();
@@ -560,6 +600,7 @@ try {
       })).kind,
       'cleanup-required',
     );
+    await settleConfirmedCleanup(service, cleanup.authorization);
     assert.equal(
       await service.completeSandboxRunCleanup(cleanup.authorization, 'removed'),
       true,
@@ -575,6 +616,571 @@ try {
       ownerGeneration: 'owner:g2',
       resourceGeneration: 'resource:r2',
     });
+  });
+
+  await test('physical cleanup evidence is fenced, replay-idempotent, and never settles deleting authority', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    const ownership = {
+      ownerGeneration: 'owner:evidence-g1',
+      resourceGeneration: 'resource:evidence-r1',
+    };
+    await service.acquireSandboxRunOwner({
+      taskId: 'task-cleanup-evidence',
+      providerId: 'boxlite',
+      ownerGeneration: ownership.ownerGeneration,
+      proposedResourceGeneration: ownership.resourceGeneration,
+    });
+    const cleanup = await service.beginSandboxRunCleanup(
+      'task-cleanup-evidence',
+      ownership,
+    );
+    assert.equal(cleanup.kind, 'authorized');
+    assert.equal(
+      await service.completeSandboxRunCleanup(cleanup.authorization, 'removed'),
+      false,
+      'zero physical attempts cannot complete cleanup authority',
+    );
+    const firstAttemptId = '11111111-1111-4111-8111-111111111111';
+    const secondAttemptId = '22222222-2222-4222-8222-222222222222';
+    const allocated = await service.beginSandboxRunCleanupAttempt(
+      cleanup.authorization,
+      firstAttemptId,
+    );
+    assert.equal(allocated.kind, 'allocated');
+    assert.equal(allocated.evidence.attempt, 1);
+    assert.equal(delegate.runs[0].cleanupAttemptInFlight, true);
+    assert.equal(delegate.runs[0].status, 'deleting');
+    assert.deepEqual(
+      await service.beginSandboxRunCleanupAttempt(
+        cleanup.authorization,
+        firstAttemptId,
+      ),
+      { kind: 'replayed', evidence: allocated.evidence },
+    );
+    assert.equal(
+      (await service.beginSandboxRunCleanupAttempt(
+        cleanup.authorization,
+        secondAttemptId,
+      )).kind,
+      'in-flight',
+    );
+    const failedAt = new Date('2026-07-17T09:00:00.000Z');
+    const failed = {
+      attemptId: firstAttemptId,
+      attempt: 1,
+      outcome: 'failed',
+      proof: null,
+      cause: 'cleanup_failed',
+      retryable: false,
+      observedAt: failedAt,
+    };
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(
+        cleanup.authorization,
+        failed,
+      ),
+      { kind: 'recorded' },
+    );
+    assert.equal(delegate.runs[0].status, 'deleting');
+    assert.equal(delegate.runs[0].cleanupAttemptInFlight, false);
+    assert.equal(delegate.runs[0].cleanupAttemptCount, 1);
+    assert.equal(delegate.runs[0].cleanupLastOutcome, 'failed');
+    assert.equal(
+      await service.completeSandboxRunCleanup(cleanup.authorization, 'removed'),
+      false,
+      'failed physical evidence cannot complete cleanup authority',
+    );
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(
+        cleanup.authorization,
+        failed,
+      ),
+      { kind: 'replayed' },
+    );
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(cleanup.authorization, {
+        ...failed,
+        outcome: 'indeterminate',
+        proof: null,
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      }),
+      { kind: 'conflict' },
+    );
+    const second = await service.beginSandboxRunCleanupAttempt(
+      cleanup.authorization,
+      secondAttemptId,
+    );
+    assert.equal(second.kind, 'allocated');
+    assert.equal(second.evidence.attempt, 2);
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(cleanup.authorization, {
+        attemptId: secondAttemptId,
+        attempt: 2,
+        outcome: 'indeterminate',
+        proof: null,
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+        observedAt: new Date('2026-07-17T09:01:00.000Z'),
+      }),
+      { kind: 'recorded' },
+    );
+    assert.equal(delegate.runs[0].status, 'deleting');
+    assert.equal(delegate.runs[0].cleanupAttemptCount, 2);
+    assert.equal(
+      await service.completeSandboxRunCleanup(cleanup.authorization, 'removed'),
+      false,
+      'indeterminate physical evidence cannot complete cleanup authority',
+    );
+
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(
+        {
+          ...cleanup.authorization,
+          ownership: {
+            ownerGeneration: ownership.ownerGeneration,
+            resourceGeneration: 'resource:other',
+          },
+        },
+        {
+          attemptId: '33333333-3333-4333-8333-333333333333',
+          attempt: 3,
+          outcome: 'succeeded',
+          proof: 'already-absent',
+          cause: null,
+          retryable: false,
+          observedAt: new Date('2026-07-17T09:02:00.000Z'),
+        },
+      ),
+      { kind: 'stale' },
+    );
+    assert.equal(delegate.runs[0].status, 'deleting');
+  });
+
+  await test('confirmed cleanup evidence remains secondary until fenced completion', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    const acquired = await service.acquireSandboxRunOwner({
+      taskId: 'task-confirmed-cleanup-evidence',
+      providerId: 'boxlite',
+      ownerGeneration: 'owner:confirmed-g1',
+      proposedResourceGeneration: 'resource:confirmed-r1',
+    });
+    const cleanup = await service.beginSandboxRunCleanup(
+      'task-confirmed-cleanup-evidence',
+      acquired.ownership,
+    );
+    assert.equal(cleanup.kind, 'authorized');
+    const attemptId = '44444444-4444-4444-8444-444444444444';
+    const allocated = await service.beginSandboxRunCleanupAttempt(
+      cleanup.authorization,
+      attemptId,
+    );
+    assert.equal(allocated.kind, 'allocated');
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(cleanup.authorization, {
+        attemptId,
+        attempt: 1,
+        outcome: 'succeeded',
+        proof: 'already-absent',
+        cause: null,
+        retryable: false,
+        observedAt: new Date('2026-07-17T09:03:00.000Z'),
+      }),
+      { kind: 'recorded' },
+    );
+    assert.equal(delegate.runs[0].status, 'deleting');
+    assert.equal(
+      await service.completeSandboxRunCleanup(cleanup.authorization, 'removed'),
+      true,
+    );
+    assert.equal(delegate.runs[0].status, 'removed');
+  });
+
+  await test('terminal policy failure is exact-owner fenced, replayable, and distinct from absence', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    const ownership = {
+      ownerGeneration: 'owner:terminal-policy-g1',
+      resourceGeneration: 'resource:terminal-policy-r1',
+    };
+    await service.acquireSandboxRunOwner({
+      taskId: 'task-terminal-policy',
+      providerId: 'boxlite',
+      ownerGeneration: ownership.ownerGeneration,
+      proposedResourceGeneration: ownership.resourceGeneration,
+    });
+    const cleanup = await service.beginSandboxRunCleanup(
+      'task-terminal-policy',
+      ownership,
+    );
+    assert.equal(cleanup.kind, 'authorized');
+    const allocated = await service.beginSandboxRunCleanupAttempt(
+      cleanup.authorization,
+      '99999999-9999-4999-8999-999999999999',
+    );
+    assert.equal(allocated.kind, 'allocated');
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(cleanup.authorization, {
+        attemptId: allocated.evidence.attemptId,
+        attempt: allocated.evidence.attempt,
+        outcome: 'indeterminate',
+        proof: null,
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+        observedAt: new Date('2026-07-18T00:00:00.000Z'),
+      }),
+      { kind: 'recorded' },
+    );
+    const failed = await service.failSandboxRunCleanupByTerminalPolicy(
+      cleanup.authorization,
+      1,
+    );
+    assert.equal(failed.kind, 'failed');
+    assert.equal(failed.owner.status, 'failed');
+    assert.equal(delegate.runs[0].status, 'failed');
+    assert.deepEqual(
+      await service.failSandboxRunCleanupByTerminalPolicy(
+        cleanup.authorization,
+        1,
+      ),
+      { kind: 'replayed', owner: failed.owner },
+    );
+    assert.equal(
+      (await service.claimSandboxRunCleanup(
+        'task-terminal-policy',
+        'owner:terminal-policy-g2',
+      )).kind,
+      'settled',
+    );
+    const authority = await service.getSandboxRunCleanupAuthority(
+      'task-terminal-policy',
+    );
+    assert.equal(authority.state, 'failed');
+    assert.equal(authority.ownershipKind, 'generation');
+    assert.equal(authority.orphanState, 'unknown');
+    assert.equal(authority.status, 'failed');
+    assert.equal(authority.attemptCount, 1);
+  });
+
+  await test('terminal policy cannot relinquish an owner while create may still return', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    const ownership = {
+      ownerGeneration: 'owner:terminal-policy-entered-g1',
+      resourceGeneration: 'resource:terminal-policy-entered-r1',
+    };
+    await service.acquireSandboxRunOwner({
+      taskId: 'task-terminal-policy-entered',
+      providerId: 'boxlite',
+      ownerGeneration: ownership.ownerGeneration,
+      proposedResourceGeneration: ownership.resourceGeneration,
+    });
+    assert.equal(
+      await service.beginSandboxRunCreate({
+        taskId: 'task-terminal-policy-entered',
+        providerId: 'boxlite',
+        ownership,
+      }),
+      true,
+    );
+    const cleanup = await service.beginSandboxRunCleanup(
+      'task-terminal-policy-entered',
+      ownership,
+    );
+    assert.equal(cleanup.kind, 'authorized');
+    const allocated = await service.beginSandboxRunCleanupAttempt(
+      cleanup.authorization,
+      '88888888-8888-4888-8888-888888888888',
+    );
+    assert.equal(allocated.kind, 'allocated');
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(cleanup.authorization, {
+        attemptId: allocated.evidence.attemptId,
+        attempt: allocated.evidence.attempt,
+        outcome: 'indeterminate',
+        proof: null,
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+        observedAt: new Date('2026-07-18T00:00:30.000Z'),
+      }),
+      { kind: 'recorded' },
+    );
+    assert.deepEqual(
+      await service.failSandboxRunCleanupByTerminalPolicy(
+        cleanup.authorization,
+        1,
+      ),
+      { kind: 'stale' },
+    );
+    assert.equal(delegate.runs[0].createState, 'entered');
+    assert.equal(delegate.runs[0].status, 'deleting');
+  });
+
+  await test('fresh exact inventory confirmation derives orphan state and resets for a new incarnation', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    const ownership = {
+      ownerGeneration: 'owner:confirmed-orphan-g1',
+      resourceGeneration: 'resource:confirmed-orphan-r1',
+    };
+    await service.acquireSandboxRunOwner({
+      taskId: 'task-confirmed-orphan',
+      providerId: 'boxlite',
+      ownerGeneration: ownership.ownerGeneration,
+      proposedResourceGeneration: ownership.resourceGeneration,
+    });
+    await service.recordSandboxRunOwner({
+      taskId: 'task-confirmed-orphan',
+      providerId: 'boxlite',
+      providerSandboxId: 'box-confirmed-orphan-r1',
+      ownership,
+      status: 'running',
+    });
+    const cleanup = await service.beginSandboxRunCleanup(
+      'task-confirmed-orphan',
+      ownership,
+    );
+    assert.equal(cleanup.kind, 'authorized');
+    assert.deepEqual(
+      await service.confirmSandboxRunCleanupOrphan({
+        taskId: 'task-confirmed-orphan',
+        providerId: 'boxlite',
+        providerSandboxId: 'box-wrong-incarnation',
+      }),
+      { kind: 'conflict' },
+    );
+    assert.equal(
+      (await service.getSandboxRunCleanupAuthority('task-confirmed-orphan'))
+        .orphanState,
+      'unknown',
+    );
+    const confirmed = await service.confirmSandboxRunCleanupOrphan({
+      taskId: 'task-confirmed-orphan',
+      providerId: 'boxlite',
+      providerSandboxId: 'box-confirmed-orphan-r1',
+    });
+    assert.equal(confirmed.kind, 'recorded');
+    assert(confirmed.owner.cleanupOrphanConfirmedAt instanceof Date);
+    const replay = await service.confirmSandboxRunCleanupOrphan({
+      taskId: 'task-confirmed-orphan',
+      providerId: 'boxlite',
+      providerSandboxId: 'box-confirmed-orphan-r1',
+    });
+    assert.equal(replay.kind, 'replayed');
+    assert.equal(
+      replay.owner.cleanupOrphanConfirmedAt.getTime(),
+      confirmed.owner.cleanupOrphanConfirmedAt.getTime(),
+    );
+    assert.equal(
+      (await service.getSandboxRunCleanupAuthority('task-confirmed-orphan'))
+        .orphanState,
+      'confirmed',
+    );
+
+    const allocated = await service.beginSandboxRunCleanupAttempt(
+      cleanup.authorization,
+      '77777777-7777-4777-8777-777777777777',
+    );
+    assert.equal(allocated.kind, 'allocated');
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(cleanup.authorization, {
+        attemptId: allocated.evidence.attemptId,
+        attempt: allocated.evidence.attempt,
+        outcome: 'failed',
+        proof: null,
+        cause: 'cleanup_failed',
+        retryable: false,
+        observedAt: new Date('2026-07-18T00:02:00.000Z'),
+      }),
+      { kind: 'recorded' },
+    );
+    assert.equal(
+      (
+        await service.failSandboxRunCleanupByTerminalPolicy(
+          cleanup.authorization,
+          1,
+        )
+      ).kind,
+      'failed',
+    );
+    const failedAuthority = await service.getSandboxRunCleanupAuthority(
+      'task-confirmed-orphan',
+    );
+    assert.equal(failedAuthority.status, 'failed');
+    assert.equal(failedAuthority.orphanState, 'confirmed');
+
+    await service.acquireSandboxRunOwner({
+      taskId: 'task-confirmed-orphan',
+      providerId: 'boxlite',
+      ownerGeneration: 'owner:confirmed-orphan-g2',
+      proposedResourceGeneration: 'resource:confirmed-orphan-r2',
+    });
+    const replacement = await service.getSandboxRunCleanupAuthority(
+      'task-confirmed-orphan',
+    );
+    assert.equal(replacement.status, 'provisioning');
+    assert.equal(replacement.orphanState, 'none');
+  });
+
+  await test('legacy bounded cleanup evidence settles directly without a deleting row', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    await service.recordSandboxRunOwner({
+      taskId: 'task-legacy-bounded',
+      providerId: 'aio',
+      providerSandboxId: 'legacy-aio-r1',
+      status: 'running',
+    });
+    const evidence = {
+      attemptId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      attempt: 1,
+      outcome: 'failed',
+      proof: null,
+      cause: 'cleanup_failed',
+      retryable: false,
+      observedAt: new Date('2026-07-18T00:01:00.000Z'),
+    };
+    assert.deepEqual(
+      await service.settleLegacySandboxRunCleanup({
+        taskId: 'task-legacy-bounded',
+        providerId: 'aio',
+        disposition: 'terminal-retain',
+        evidence,
+        status: 'failed',
+      }),
+      { kind: 'conflict' },
+    );
+    const settled = await service.settleLegacySandboxRunCleanup({
+      taskId: 'task-legacy-bounded',
+      providerId: 'aio',
+      disposition: 'terminal-retain',
+      evidence,
+      status: 'terminal',
+    });
+    assert.equal(settled.kind, 'recorded');
+    assert.equal(delegate.runs[0].status, 'terminal');
+    assert.equal(delegate.runs[0].cleanupAttemptInFlight, false);
+    assert.equal(delegate.runs[0].cleanupAttemptCount, 1);
+    assert.deepEqual(
+      await service.settleLegacySandboxRunCleanup({
+        taskId: 'task-legacy-bounded',
+        providerId: 'aio',
+        disposition: 'terminal-retain',
+        evidence,
+        status: 'terminal',
+      }),
+      { kind: 'replayed', owner: settled.owner },
+    );
+    const authority = await service.getSandboxRunCleanupAuthority(
+      'task-legacy-bounded',
+    );
+    assert.equal(authority.state, 'not_required');
+    assert.equal(authority.ownershipKind, 'legacy');
+    assert.equal(authority.orphanState, 'none');
+    assert.equal(authority.lastAttemptOutcome, 'failed');
+
+    await service.recordSandboxRunOwner({
+      taskId: 'task-legacy-retained-success',
+      providerId: 'aio',
+      providerSandboxId: 'legacy-aio-retained-r1',
+      status: 'running',
+    });
+    const retainedEvidence = {
+      attemptId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      attempt: 1,
+      outcome: 'succeeded',
+      proof: 'found-and-cleaned',
+      cause: null,
+      retryable: false,
+      observedAt: new Date('2026-07-18T00:02:00.000Z'),
+    };
+    assert.deepEqual(
+      await service.settleLegacySandboxRunCleanup({
+        taskId: 'task-legacy-retained-success',
+        providerId: 'aio',
+        disposition: 'terminal-retain',
+        evidence: retainedEvidence,
+        status: 'removed',
+      }),
+      { kind: 'conflict' },
+    );
+    const retained = await service.settleLegacySandboxRunCleanup({
+      taskId: 'task-legacy-retained-success',
+      providerId: 'aio',
+      disposition: 'terminal-retain',
+      evidence: retainedEvidence,
+      status: 'terminal',
+    });
+    assert.equal(retained.kind, 'recorded');
+    assert.equal(retained.owner.status, 'terminal');
+  });
+
+  await test('cleanup takeover closes a crashed in-flight attempt and rejects its late settle', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    const ownership = {
+      ownerGeneration: 'owner:crash-g1',
+      resourceGeneration: 'resource:crash-r1',
+    };
+    await service.acquireSandboxRunOwner({
+      taskId: 'task-cleanup-crash-takeover',
+      providerId: 'boxlite',
+      ownerGeneration: ownership.ownerGeneration,
+      proposedResourceGeneration: ownership.resourceGeneration,
+    });
+    const first = await service.beginSandboxRunCleanup(
+      'task-cleanup-crash-takeover',
+      ownership,
+    );
+    const firstAttemptId = '55555555-5555-4555-8555-555555555555';
+    const allocated = await service.beginSandboxRunCleanupAttempt(
+      first.authorization,
+      firstAttemptId,
+    );
+    assert.equal(allocated.kind, 'allocated');
+    assert.equal(delegate.runs[0].cleanupAttemptInFlight, true);
+
+    const takeover = await service.claimSandboxRunCleanup(
+      'task-cleanup-crash-takeover',
+      'owner:crash-g2',
+    );
+    assert.equal(takeover.kind, 'authorized');
+    assert.equal(takeover.owner.cleanupAttemptInFlight, false);
+    assert.equal(takeover.owner.cleanupLastOutcome, 'indeterminate');
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(first.authorization, {
+        attemptId: firstAttemptId,
+        attempt: 1,
+        outcome: 'succeeded',
+        proof: 'found-and-cleaned',
+        cause: null,
+        retryable: false,
+        observedAt: new Date('2026-07-17T09:04:00.000Z'),
+      }),
+      { kind: 'stale' },
+    );
+
+    const retryAttemptId = '66666666-6666-4666-8666-666666666666';
+    const retry = await service.beginSandboxRunCleanupAttempt(
+      takeover.authorization,
+      retryAttemptId,
+    );
+    assert.equal(retry.kind, 'allocated');
+    assert.equal(retry.evidence.attempt, 2);
+    const sameOwnerClaim = await service.claimSandboxRunCleanup(
+      'task-cleanup-crash-takeover',
+      'owner:crash-g2',
+    );
+    assert.equal(sameOwnerClaim.owner.cleanupAttemptInFlight, true);
+    assert.equal(
+      (await service.beginSandboxRunCleanupAttempt(
+        takeover.authorization,
+        '77777777-7777-4777-8777-777777777777',
+      )).kind,
+      'in-flight',
+    );
   });
 
   await test('cleanup completion is store-fenced while a create may still return', async () => {
@@ -595,6 +1201,42 @@ try {
       'task-entered-completion',
       'owner:g2',
     );
+    const firstAttempt = await service.beginSandboxRunCleanupAttempt(
+      cleanup.authorization,
+      '88888888-8888-4888-8888-888888888888',
+    );
+    assert.equal(firstAttempt.kind, 'allocated');
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(cleanup.authorization, {
+        attemptId: firstAttempt.evidence.attemptId,
+        attempt: firstAttempt.evidence.attempt,
+        outcome: 'succeeded',
+        proof: 'already-absent',
+        cause: null,
+        retryable: false,
+        observedAt: new Date('2026-07-17T10:01:00.000Z'),
+      }),
+      { kind: 'conflict' },
+      'absence observed before create settlement cannot become durable success proof',
+    );
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(cleanup.authorization, {
+        attemptId: firstAttempt.evidence.attemptId,
+        attempt: firstAttempt.evidence.attempt,
+        outcome: 'indeterminate',
+        proof: null,
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+        observedAt: new Date('2026-07-17T10:01:00.000Z'),
+      }),
+      { kind: 'recorded' },
+    );
+    await service.markSandboxRunRemoved('task-entered-completion');
+    assert.equal(
+      delegate.runs[0].status,
+      'deleting',
+      'generic status marking cannot bypass an unresolved create fence',
+    );
     assert.equal(
       await service.completeSandboxRunCleanup(cleanup.authorization, 'removed'),
       false,
@@ -605,10 +1247,26 @@ try {
       resourceGeneration: 'resource:r1',
       providerSandboxId: 'sandbox-r1',
     });
-    assert.equal(
-      await service.completeSandboxRunCleanup(cleanup.authorization, 'removed'),
-      true,
+    const secondAttempt = await service.beginSandboxRunCleanupAttempt(
+      cleanup.authorization,
+      '99999999-9999-4999-8999-999999999999',
     );
+    assert.equal(secondAttempt.kind, 'allocated');
+    assert.equal(secondAttempt.evidence.attempt, 2);
+    assert.deepEqual(
+      await service.settleSandboxRunCleanupAttempt(cleanup.authorization, {
+        attemptId: secondAttempt.evidence.attemptId,
+        attempt: secondAttempt.evidence.attempt,
+        outcome: 'succeeded',
+        proof: 'found-and-cleaned',
+        cause: null,
+        retryable: false,
+        observedAt: new Date('2026-07-17T10:02:00.000Z'),
+      }),
+      { kind: 'recorded' },
+    );
+    await service.markSandboxRunRemoved('task-entered-completion');
+    assert.equal(delegate.runs[0].status, 'removed');
   });
 
   await test('terminal cleanup claim transfers a deleting owner and preserves the resource generation', async () => {
@@ -650,6 +1308,7 @@ try {
       )).kind,
       'authorized',
     );
+    await settleConfirmedCleanup(service, claimed.authorization);
     const transferred = await service.claimSandboxRunCleanup(
       'task-terminal-takeover',
       'owner:g3',
@@ -710,6 +1369,7 @@ try {
       })).kind,
       'stale',
     );
+    await settleConfirmedCleanup(service, joined.authorization);
     assert.equal(
       await service.completeSandboxRunCleanup(joined.authorization, 'removed'),
       true,
@@ -745,6 +1405,7 @@ try {
       providerId: 'boxlite',
     });
     assert.equal(delegate.runs[0].status, 'deleting');
+    await settleConfirmedCleanup(service, claimed.authorization);
     assert.equal(
       await service.completeSandboxRunCleanup(claimed.authorization, 'removed'),
       true,
@@ -797,6 +1458,36 @@ try {
     assert.equal(await service.getSandboxRunOwner('task-1'), null);
     assert.equal(delegate.runs[0].status, 'removed');
     assert(delegate.runs[0].removedAt instanceof Date);
+  });
+
+  await test('cleanup authority distinguishes retained terminal from confirmed removal', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    await service.recordSandboxRunOwner({
+      taskId: 'task-authority-terminal',
+      providerId: 'boxlite',
+      providerSandboxId: 'box-authority-terminal',
+    });
+    await service.markSandboxRunTerminal('task-authority-terminal');
+    const retained = await service.getSandboxRunCleanupAuthority(
+      'task-authority-terminal',
+    );
+    assert.equal(retained.status, 'terminal');
+    assert.equal(retained.state, 'not_required');
+    assert.equal(retained.lastAttemptProof, null);
+
+    await service.recordSandboxRunOwner({
+      taskId: 'task-authority-removed',
+      providerId: 'boxlite',
+      providerSandboxId: 'box-authority-removed',
+    });
+    await service.markSandboxRunRemoved('task-authority-removed');
+    const removed = await service.getSandboxRunCleanupAuthority(
+      'task-authority-removed',
+    );
+    assert.equal(removed.status, 'removed');
+    assert.equal(removed.state, 'succeeded');
+    assert.equal(removed.lastAttemptProof, null);
   });
 
   await test('active owner listing returns only resumable provider owners', async () => {

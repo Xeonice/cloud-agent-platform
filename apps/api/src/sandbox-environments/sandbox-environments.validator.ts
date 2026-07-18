@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import Docker from 'dockerode';
 import { Injectable, Logger } from '@nestjs/common';
 import type {
@@ -15,6 +14,7 @@ import {
   AIO_SANDBOX_WORKSPACE_DIR,
   AioSandboxContainerController,
   BoxLiteRestClient,
+  createNonPersistingSandboxProvisioningDiagnosticObserver,
   readBoxLiteProviderConfig,
   resolveConfiguredProviderProvisioningPolicyForFamily,
   sourceChecksum,
@@ -44,7 +44,6 @@ export interface SandboxEnvironmentValidationTarget {
   readonly runtimeIds?: readonly string[];
   /** @deprecated Single-runtime compatibility input. */
   readonly runtimeId?: string | null;
-  readonly probeTaskId?: string;
   readonly contractVersion?: string | null;
 }
 
@@ -152,9 +151,10 @@ export class DefaultSandboxEnvironmentValidationRunner
         docker: new Docker() as unknown as AioDockerClient,
       });
       const result = await validateAioEnvironment({
-        taskId: target.probeTaskId ?? buildProbeTaskId(),
         environment,
         controller,
+        diagnostics:
+          createNonPersistingSandboxProvisioningDiagnosticObserver(),
         requiredCommands: requiredAioCommands(runtimeIds),
         onCleanupError: () =>
           this.logger.error('AIO environment probe cleanup failed.'),
@@ -178,9 +178,10 @@ export class DefaultSandboxEnvironmentValidationRunner
         pathPrefix: configResult.config.pathPrefix,
       });
       const result = await validateBoxLiteEnvironment({
-        taskId: target.probeTaskId ?? buildProbeTaskId(),
         environment,
         client,
+        diagnostics:
+          createNonPersistingSandboxProvisioningDiagnosticObserver(),
         workspacePath: configResult.config.workspacePath,
         requiredCommands: requiredBoxLiteCommands({
           runtimeIds,
@@ -453,8 +454,4 @@ function validationRuntimeIds(
 
 function normalizeRuntimeId(runtimeId: string): string {
   return runtimeId === 'claude' ? 'claude-code' : runtimeId;
-}
-
-function buildProbeTaskId(): string {
-  return `env-probe-${randomUUID()}`;
 }

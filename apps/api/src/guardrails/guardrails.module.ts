@@ -22,6 +22,14 @@ import {
   AUDIT_RECORDER_TOKEN,
   type AuditRecorderPort,
 } from '../audit/audit-recorder.port';
+import {
+  TASK_PROVISIONING_DIAGNOSTIC_RECORDER,
+  type TaskProvisioningDiagnosticRecorderPort,
+} from '../task-provisioning-diagnostics/task-provisioning-diagnostic-recorder.port';
+import {
+  TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE,
+  type TaskProvisioningDiagnosticsWriteGatePort,
+} from '../task-provisioning-diagnostics/task-provisioning-diagnostics-write-gate.port';
 
 /**
  * Guardrails module (integration 12.1b).
@@ -69,6 +77,8 @@ import {
         // unit context still constructs without it; when absent the terminal
         // chokepoints skip capture and proceed exactly as before.
         { token: TRANSCRIPT_SERVICE_TOKEN, optional: true },
+        { token: TASK_PROVISIONING_DIAGNOSTIC_RECORDER, optional: true },
+        { token: TASK_PROVISIONING_DIAGNOSTICS_WRITE_GATE, optional: true },
       ],
       useFactory: (
         moduleRef: ModuleRef,
@@ -78,6 +88,8 @@ import {
         audit?: AuditRecorderPort,
         prisma?: PrismaService,
         transcripts?: ITranscriptCapture,
+        provisioningDiagnosticRecorder?: TaskProvisioningDiagnosticRecorderPort,
+        provisioningDiagnosticWriteGate?: TaskProvisioningDiagnosticsWriteGatePort,
       ) =>
         new GuardrailsService(
           moduleRef,
@@ -88,6 +100,8 @@ import {
           audit,
           prisma,
           transcripts,
+          provisioningDiagnosticRecorder,
+          provisioningDiagnosticWriteGate,
         ),
     },
     // persist-session-transcripts I.2 — re-provide the durable
@@ -133,6 +147,10 @@ function readGuardrailsConfig(): GuardrailsConfig {
     circuitBreakerThreshold: readPositiveInt(
       process.env.CIRCUIT_BREAKER_THRESHOLD,
       DEFAULT_GUARDRAILS_CONFIG.circuitBreakerThreshold,
+    ),
+    cleanupTerminalPolicyMaxAttempts: readPositiveInt(
+      process.env.SANDBOX_CLEANUP_TERMINAL_POLICY_MAX_ATTEMPTS,
+      DEFAULT_GUARDRAILS_CONFIG.cleanupTerminalPolicyMaxAttempts!,
     ),
   };
 }

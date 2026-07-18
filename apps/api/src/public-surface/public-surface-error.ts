@@ -522,7 +522,9 @@ function inferPublicErrorCode(observed: ObservedFailure): PublicErrorCode {
     case HttpStatus.BAD_GATEWAY:
     case HttpStatus.SERVICE_UNAVAILABLE:
     case HttpStatus.GATEWAY_TIMEOUT:
-      return observed.declaredCode === 'runtime_model_catalog_unavailable'
+      return observed.declaredCode === 'runtime_model_catalog_unavailable' ||
+        observed.declaredCode ===
+          'task_provisioning_diagnostics_unavailable'
         ? observed.declaredCode
         : 'temporarily_unavailable';
     default:

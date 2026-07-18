@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import {
   API_KEY_PREFIX,
@@ -9,6 +14,12 @@ import {
 } from '@cap/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import { hashSessionToken } from '../auth/session-token';
+import {
+  assertTaskProvisioningDiagnosticsScopeGrantable,
+  CLOSED_TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
+  TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
+  type TaskProvisioningDiagnosticsCapabilityGatePort,
+} from '../task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
 
 /**
  * API-key CRUD service (api-key-machine-identity, tasks 5.1 / 5.3).
@@ -38,7 +49,13 @@ import { hashSessionToken } from '../auth/session-token';
  */
 @Injectable()
 export class ApiKeysService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional()
+    @Inject(TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE)
+    private readonly diagnosticsCapabilityGate: TaskProvisioningDiagnosticsCapabilityGatePort =
+      CLOSED_TASK_PROVISIONING_DIAGNOSTICS_CAPABILITY_GATE,
+  ) {}
 
   /**
    * Mints a new API key bound to the caller's own user and returns the raw key
@@ -50,6 +67,14 @@ export class ApiKeysService {
    * is ever transmitted — a later list/read shape can never recover it.
    */
   async mint(userId: string, body: ApiKeyMintRequest): Promise<ApiKeyMintResponse> {
+    // The shared parser learns the additive scope before a mixed deployment may
+    // issue it. The SAME deployment gate used by the diagnostics read
+    // surface must open before this service generates or persists a credential.
+    assertTaskProvisioningDiagnosticsScopeGrantable(
+      body.scopes,
+      this.diagnosticsCapabilityGate,
+    );
+
     // High-entropy random body so the plain SHA-256 storage hash is sound (no slow
     // KDF needed), identical to the session-token justification. The reserved
     // prefix makes the issued key dispatch-routable to the api-key resolver.

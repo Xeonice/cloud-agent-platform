@@ -18,9 +18,15 @@ import { join, relative } from 'node:path';
 import test from 'node:test';
 import { Logger } from '@nestjs/common';
 import {
+  PUBLIC_V1_OPERATIONS,
   RepoResponseSchema,
+  TASK_PROVISIONING_DIAGNOSTICS_RESPONSE_EXAMPLES,
+  TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
+  TaskProvisioningDiagnosticsResponseSchema,
   TaskResponseSchema,
   type TaskProvisioningStage,
+  type TaskProvisioningDiagnosticEvent,
+  type TaskProvisioningDiagnosticsResponse,
   type TaskResponse,
 } from '@cap/contracts';
 import {
@@ -58,11 +64,15 @@ import { GitRemoteRefsProbe } from '../forge/remote-refs-probe';
 import { NodeRemoteRefsSecretStore } from '../forge/remote-refs-secret-store';
 import { TaskBranchResolver } from '../forge/task-branch-resolver';
 import { McpServerFactory } from '../mcp/mcp.server';
+import { buildV1OpenApiDocument } from '../openapi/openapi.registry';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReposController } from '../repos/repos.controller';
 import { ReposService } from '../repos/repos.service';
 import { SandboxRunOwnerService } from '../sandbox/sandbox-run-owner.service';
 import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
+import type { TaskProvisioningDiagnosticsPublicQueryService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
+import { TaskProvisioningDiagnosticsMetricsService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service';
+import { TaskProvisioningDiagnosticsService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.service';
 import { TasksController } from '../tasks/tasks.controller';
 import {
   taskResponseFromRecord,
@@ -70,6 +80,7 @@ import {
 } from '../tasks/task-response';
 import { TasksService } from '../tasks/tasks.service';
 import { IdempotencyService } from '../v1/idempotency.service';
+import { V1TaskProvisioningDiagnosticsController } from '../v1/v1-task-provisioning-diagnostics.controller';
 import { V1TasksController } from '../v1/v1-tasks.controller';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -89,6 +100,11 @@ const SANDBOX_METADATA = Object.freeze({
 });
 const CHECKSUM_A = `sha256:${'a'.repeat(64)}`;
 const CHECKSUM_B = `sha256:${'b'.repeat(64)}`;
+const RAW_PROVIDER_ID_CANARY =
+  'boxlite-native-provider-id-private-git-canary';
+const DIAGNOSTIC_ATTEMPT_ID = '66666666-6666-4666-8666-666666666666';
+const DIAGNOSTIC_EVENT_ID = '77777777-7777-4777-8777-777777777777';
+const DIAGNOSTIC_OPERATION_ID = '88888888-8888-4888-8888-888888888888';
 
 const PRINCIPAL: OperatorPrincipal = {
   kind: 'session',
@@ -188,6 +204,55 @@ class SecretCanaryGuard {
         assert.fail(`${surface} contains forbidden canary form: ${variant.label}`);
       }
     }
+  }
+
+  /**
+   * Deliberately hostile provider/private-Git payload used only as boundary
+   * input. Every value-bearing field is forbidden from diagnostic storage and
+   * public observability; callers must never retain this object.
+   */
+  forbiddenDiagnosticPayload(rawProviderId: string): Record<string, unknown> {
+    const value = (index: number) =>
+      this.variants[index % this.variants.length]!.value;
+    const encoded =
+      this.variants.find(({ label }) => label.includes('uri-component'))
+        ?.value ?? encodeURIComponent(`x-access-token:${this.token}`);
+    const base64 =
+      this.variants.find(({ label }) => label === 'raw-token-base64')?.value ??
+      Buffer.from(this.token, 'utf8').toString('base64');
+    const cause = new Error(`provider cause ${value(2)}`);
+    cause.stack = `Error: provider cause stack ${value(3)}`;
+    const error = new Error(`provider error ${value(4)}`) as Error & {
+      cause?: unknown;
+    };
+    error.cause = cause;
+    error.stack = `Error: provider stack ${value(5)}`;
+
+    return {
+      command: value(0),
+      argv: ['git', value(1), Buffer.from(this.token, 'utf8')],
+      cwd: `/tmp/${encoded}`,
+      prompt: value(2),
+      stdout: value(3),
+      stderr: value(4),
+      error,
+      cause,
+      stack: error.stack,
+      body: {
+        token: value(5),
+        encoded,
+        base64,
+        bytes: new Uint8Array(Buffer.from(this.token, 'utf8')),
+      },
+      wsReason: value(6),
+      tokenUrl: `https://provider.example.test/attach?token=${encoded}`,
+      header: this.giteeAuthorizationHeader,
+      headers: { authorization: this.giteeAuthorizationHeader },
+      temporaryPath: `/tmp/cap-git-credential-${encoded}`,
+      providerSandboxId: rawProviderId,
+      providerResourceId: rawProviderId,
+      executionId: rawProviderId,
+    };
   }
 
   private variant(label: string): string {
@@ -292,6 +357,60 @@ function calibrateCanaryScanner(canary: SecretCanaryGuard): void {
       /contains forbidden canary form/u,
     );
   }
+}
+
+function canonicalDiagnosticsForTask(
+  taskId: string,
+): TaskProvisioningDiagnosticsResponse {
+  const fixture =
+    TASK_PROVISIONING_DIAGNOSTICS_RESPONSE_EXAMPLES
+      .partialPrimaryAndCleanup.value;
+  return TaskProvisioningDiagnosticsResponseSchema.parse({
+    ...fixture,
+    taskId,
+    attempts: fixture.attempts.map((attempt) => ({ ...attempt, taskId })),
+    events: fixture.events.map((event) => ({ ...event, taskId })),
+  });
+}
+
+function pathsContainingString(value: unknown, needle: string): string[] {
+  const paths: string[] = [];
+  const seen = new WeakSet<object>();
+  const visit = (candidate: unknown, path: string): void => {
+    if (typeof candidate === 'string') {
+      if (candidate.includes(needle)) paths.push(path);
+      return;
+    }
+    if (candidate === null || typeof candidate !== 'object') return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    if (candidate instanceof Date) return;
+    if (Buffer.isBuffer(candidate) || candidate instanceof Uint8Array) {
+      if (Buffer.from(candidate).toString('utf8').includes(needle)) {
+        paths.push(path);
+      }
+      return;
+    }
+    if (candidate instanceof Map) {
+      let index = 0;
+      for (const [key, entry] of candidate) {
+        visit(key, `${path}.mapKey[${index}]`);
+        visit(entry, `${path}.mapValue[${index}]`);
+        index += 1;
+      }
+      return;
+    }
+    if (candidate instanceof Set) {
+      let index = 0;
+      for (const entry of candidate) visit(entry, `${path}.set[${index++}]`);
+      return;
+    }
+    for (const [key, entry] of Object.entries(candidate)) {
+      visit(entry, path ? `${path}.${key}` : key);
+    }
+  };
+  visit(value, '');
+  return paths.sort();
 }
 
 interface RepoRow extends Record<string, unknown> {
@@ -849,6 +968,51 @@ class SandboxRunDelegateFixture {
       count += 1;
     }
     return { count };
+  }
+}
+
+class DiagnosticEventStoreFixture {
+  readonly rows: Record<string, unknown>[] = [];
+  readonly prisma: PrismaService;
+  transactionCount = 0;
+  private eventCount = 0;
+
+  constructor() {
+    const transaction = {
+      $queryRaw: async () => [{ acquired: true }],
+      taskProvisioningDiagnosticAttempt: {
+        findFirst: async () => ({
+          id: DIAGNOSTIC_ATTEMPT_ID,
+          taskId: TASK_ID,
+          attempt: 1,
+          admissionMode: 'durable',
+          completenessMarkedAt: null,
+          providerFamily: 'boxlite',
+          state: 'active',
+          eventCount: this.eventCount,
+        }),
+        updateMany: async ({ where }: { where: { eventCount: number } }) => {
+          if (where.eventCount !== this.eventCount) return { count: 0 };
+          this.eventCount += 1;
+          return { count: 1 };
+        },
+      },
+      taskProvisioningDiagnosticEvent: {
+        findFirst: async () => null,
+        create: async ({ data }: { data: Record<string, unknown> }) => {
+          this.rows.push({ ...data });
+          return data;
+        },
+      },
+    };
+    this.prisma = {
+      $transaction: async (
+        operation: (client: typeof transaction) => Promise<unknown>,
+      ) => {
+        this.transactionCount += 1;
+        return operation(transaction);
+      },
+    } as unknown as PrismaService;
   }
 }
 
@@ -1571,6 +1735,133 @@ test(
     );
     assert.ok(logs.entries.length > 0, 'the story must capture a real log call');
 
+    const diagnosticStore = new DiagnosticEventStoreFixture();
+    const diagnosticRecorder = new TaskProvisioningDiagnosticsService(
+      diagnosticStore.prisma,
+    );
+    const diagnosticContext = {
+      taskId: TASK_ID,
+      attemptId: DIAGNOSTIC_ATTEMPT_ID,
+      attempt: 1,
+      admissionMode: 'durable' as const,
+    };
+    const safeDiagnosticEvent: TaskProvisioningDiagnosticEvent = {
+      schemaVersion: TASK_PROVISIONING_DIAGNOSTIC_SCHEMA_VERSION,
+      eventId: DIAGNOSTIC_EVENT_ID,
+      idempotencyKey: 'private-git-canary:runtime-setup:terminal',
+      taskId: TASK_ID,
+      attemptId: DIAGNOSTIC_ATTEMPT_ID,
+      attempt: 1,
+      sequence: 1,
+      operationId: DIAGNOSTIC_OPERATION_ID,
+      admissionMode: 'durable',
+      providerFamily: 'boxlite',
+      stage: 'runtime_setup',
+      operation: 'runtime_setup',
+      channel: 'primary',
+      commandKind: 'runtime_setup',
+      outcome: 'failed',
+      observedAt: CREATED_AT,
+      durationMs: 25,
+      cause: 'command_failed',
+      retryable: false,
+      nativeState: 'failed',
+      exitCode: 9,
+    };
+    const forbiddenDiagnosticInput = {
+      ...safeDiagnosticEvent,
+      ...canary.forbiddenDiagnosticPayload(RAW_PROVIDER_ID_CANARY),
+    };
+    const rejectedDiagnostic = await diagnosticRecorder.appendEvent(
+      diagnosticContext,
+      forbiddenDiagnosticInput,
+    );
+    assert.deepEqual(rejectedDiagnostic, {
+      ok: false,
+      code: 'invalid_evidence',
+      safeCause: 'coordination_failed',
+    });
+    assert.equal(
+      diagnosticStore.transactionCount,
+      0,
+      'forbidden diagnostic fields must be rejected before any Prisma transaction',
+    );
+    assert.equal(diagnosticStore.rows.length, 0);
+
+    const recordedDiagnostic = await diagnosticRecorder.appendEvent(
+      diagnosticContext,
+      safeDiagnosticEvent,
+    );
+    assert.equal(
+      recordedDiagnostic.ok,
+      true,
+      `safe diagnostic event was rejected: ${JSON.stringify(recordedDiagnostic)}`,
+    );
+    assert.equal(diagnosticStore.transactionCount, 1);
+    assert.equal(diagnosticStore.rows.length, 1);
+    canary.assertAbsent(diagnosticStore.rows, 'diagnostic database rows');
+    assert.equal(
+      serializeForLeakScan(diagnosticStore.rows).includes(
+        RAW_PROVIDER_ID_CANARY,
+      ),
+      false,
+    );
+
+    const diagnosticsMetrics = new TaskProvisioningDiagnosticsMetricsService(
+      {} as PrismaService,
+      { now: () => CREATED_AT.getTime() },
+    );
+    const safeMetricEvent = {
+      providerFamily: 'boxlite',
+      stage: 'runtime_setup',
+      operation: 'runtime_setup',
+      outcome: 'failed',
+      durationMs: 25,
+      anomaly: null,
+    } as const;
+    diagnosticsMetrics.observeEvent({
+      ...safeMetricEvent,
+      ...canary.forbiddenDiagnosticPayload(RAW_PROVIDER_ID_CANARY),
+    });
+    diagnosticsMetrics.observeEvent(safeMetricEvent);
+    diagnosticsMetrics.observeAttemptOutcome({
+      providerFamily: 'boxlite',
+      outcome: 'failed',
+      cause: 'command_failed',
+      retryable: false,
+      durationMs: 25,
+      ...canary.forbiddenDiagnosticPayload(RAW_PROVIDER_ID_CANARY),
+    });
+    diagnosticsMetrics.observeAttemptOutcome({
+      providerFamily: 'boxlite',
+      outcome: 'failed',
+      cause: 'command_failed',
+      retryable: false,
+      durationMs: 25,
+    });
+    diagnosticsMetrics.observeCleanupTransition({
+      providerFamily: 'boxlite',
+      cleanupState: 'failed',
+      cause: 'cleanup_failed',
+      ...canary.forbiddenDiagnosticPayload(RAW_PROVIDER_ID_CANARY),
+    });
+    diagnosticsMetrics.observeCleanupTransition({
+      providerFamily: 'boxlite',
+      cleanupState: 'failed',
+      cause: 'cleanup_failed',
+    });
+    const diagnosticMetricsSnapshot = diagnosticsMetrics.currentSnapshot();
+    assert.equal(diagnosticMetricsSnapshot.stageOutcomes[0]?.count, 1);
+    assert.equal(diagnosticMetricsSnapshot.attemptOutcomes[0]?.count, 1);
+    assert.equal(diagnosticMetricsSnapshot.cleanupOutcomes[0]?.count, 1);
+    canary.assertAbsent(diagnosticMetricsSnapshot, 'diagnostic metrics');
+    assert.equal(
+      serializeForLeakScan(diagnosticMetricsSnapshot).includes(
+        RAW_PROVIDER_ID_CANARY,
+      ),
+      false,
+    );
+
     const runDelegate = new SandboxRunDelegateFixture();
     const ownerStore = new SandboxRunOwnerService({
       sandboxRun: runDelegate,
@@ -1578,12 +1869,12 @@ test(
     await ownerStore.recordSandboxRunOwner({
       taskId: TASK_ID,
       providerId: 'boxlite-canary',
-      providerSandboxId: 'box-canary-safe-id',
+      providerSandboxId: RAW_PROVIDER_ID_CANARY,
       status: 'running',
       connection: {
         taskId: TASK_ID,
-        baseUrl: 'https://boxlite.example.test/sandboxes/box-canary-safe-id',
-        wsUrl: 'wss://boxlite.example.test/sandboxes/box-canary-safe-id/ws',
+        baseUrl: 'https://boxlite.example.test/sandboxes/current',
+        wsUrl: 'wss://boxlite.example.test/sandboxes/current/ws',
       },
       metadata: {
         sandboxMetadata: SANDBOX_METADATA,
@@ -1624,6 +1915,14 @@ test(
     assert.deepEqual(owner.metadata?.sandboxMetadata, SANDBOX_METADATA);
     canary.assertAbsent(runDelegate.runs, 'SandboxRun persisted rows');
     canary.assertAbsent(owner, 'SandboxRun owner read projection');
+    assert.deepEqual(
+      pathsContainingString(
+        { persistedRuns: runDelegate.runs, owner },
+        RAW_PROVIDER_ID_CANARY,
+      ),
+      ['owner.providerSandboxId', 'persistedRuns.0.providerSandboxId'],
+      'a raw provider id may survive only in the existing internal ownership column and its internal read projection',
+    );
 
     const taskRecord: TaskResponseRecord = {
       id: TASK_ID,
@@ -1678,6 +1977,22 @@ test(
       {} as PrismaService,
       {} as IdempotencyService,
     );
+    const diagnosticProjection = canonicalDiagnosticsForTask(TASK_ID);
+    const diagnosticsFacade = {
+      async readForOwner(
+        ownerUserId: string,
+        taskId: string,
+        query: { readonly limit: number; readonly cursor?: string },
+      ): Promise<TaskProvisioningDiagnosticsResponse> {
+        assert.equal(ownerUserId, OWNER_ID);
+        assert.equal(taskId, TASK_ID);
+        assert.equal(query.limit, 50);
+        assert.equal(query.cursor, undefined);
+        return diagnosticProjection;
+      },
+    } as unknown as TaskProvisioningDiagnosticsPublicQueryService;
+    const v1DiagnosticsController =
+      new V1TaskProvisioningDiagnosticsController(diagnosticsFacade);
     const mcpFactory = new McpServerFactory(
       taskService,
       repos,
@@ -1688,9 +2003,19 @@ test(
       {} as never,
       {} as never,
       {} as SandboxProvider,
+      diagnosticsFacade,
     );
     const consoleTask = await tasksController.findById(TASK_ID);
     const v1Task = await v1TasksController.findById(TASK_ID, REQUEST);
+    const v1Diagnostics = await v1DiagnosticsController.read(
+      TASK_ID,
+      { limit: 50 },
+      REQUEST,
+    );
+    assert.deepEqual(
+      TaskProvisioningDiagnosticsResponseSchema.parse(v1Diagnostics),
+      diagnosticProjection,
+    );
     const mcpServer = mcpFactory.createServer();
     const mcpClient = new Client({
       name: 'private-git-secret-canary-story',
@@ -1709,7 +2034,7 @@ test(
         authInfo: {
           token: 'safe_mcp_story_token',
           clientId: 'private-git-canary-story',
-          scopes: ['tasks:read', 'repos:read'],
+          scopes: ['tasks:read', 'tasks:diagnostics', 'repos:read'],
           expiresAt: Math.floor(Date.now() / 1_000) + 3_600,
           extra: { userId: OWNER_ID },
         },
@@ -1723,6 +2048,57 @@ test(
     assert.deepEqual(
       TaskResponseSchema.parse(mcpTask.structuredContent),
       projectedTask,
+    );
+    const mcpDiagnostics = await mcpClient.callTool({
+      name: 'get_task_provisioning_diagnostics',
+      arguments: { id: TASK_ID, limit: 50 },
+    });
+    const mcpDiagnosticsStructured =
+      TaskProvisioningDiagnosticsResponseSchema.parse(
+        mcpDiagnostics.structuredContent,
+      );
+    assert.deepEqual(mcpDiagnosticsStructured, diagnosticProjection);
+    assert.ok(Array.isArray(mcpDiagnostics.content));
+    const mcpDiagnosticsText = (
+      mcpDiagnostics.content as Array<{
+        readonly type?: string;
+        readonly text?: string;
+      }>
+    ).find(
+      (content) => content.type === 'text' && typeof content.text === 'string',
+    );
+    assert.ok(
+      mcpDiagnosticsText?.type === 'text' &&
+        typeof mcpDiagnosticsText.text === 'string',
+    );
+    assert.deepEqual(
+      TaskProvisioningDiagnosticsResponseSchema.parse(
+        JSON.parse(mcpDiagnosticsText.text) as unknown,
+      ),
+      diagnosticProjection,
+    );
+
+    const diagnosticsOperation = PUBLIC_V1_OPERATIONS.find(
+      (operation) => operation.id === 'tasks.provisioningDiagnostics',
+    );
+    assert.ok(diagnosticsOperation);
+    const openApiDocument = buildV1OpenApiDocument();
+    const playgroundFixtures = diagnosticsOperation.responseExamples;
+    assert.ok(playgroundFixtures);
+    for (const example of Object.values(playgroundFixtures)) {
+      assert.equal(
+        TaskProvisioningDiagnosticsResponseSchema.safeParse(example.value)
+          .success,
+        true,
+      );
+    }
+    canary.assertAbsent(openApiDocument, 'OpenAPI document and examples');
+    canary.assertAbsent(playgroundFixtures, 'Playground diagnostic fixtures');
+    assert.equal(
+      serializeForLeakScan({ openApiDocument, playgroundFixtures }).includes(
+        RAW_PROVIDER_ID_CANARY,
+      ),
+      false,
     );
 
     const publicArtifacts = {
@@ -1752,11 +2128,19 @@ test(
       executions,
       auditRows: [...auditRows.values()],
       logs: logs.entries,
+      diagnosticDatabaseRows: diagnosticStore.rows,
+      rejectedDiagnostic,
+      recordedDiagnostic,
+      diagnosticMetricsSnapshot,
       sandboxRuns: runDelegate.runs,
       owner,
       consoleTask,
       v1Task,
+      v1Diagnostics,
       mcpTask,
+      mcpDiagnostics,
+      openApiDocument,
+      playgroundFixtures,
       retainedWorkspaceFiles: secrets.retainedWorkspaceFiles,
       retainedGuestFiles: secrets.guestFiles,
       secretBufferZeroed: secrets.contentReferences.map((content) =>
@@ -1764,15 +2148,26 @@ test(
       ),
     };
     canary.assertAbsent(publicArtifacts, 'aggregate canary story artifacts');
+    assert.deepEqual(
+      pathsContainingString(publicArtifacts, RAW_PROVIDER_ID_CANARY),
+      ['owner.providerSandboxId', 'sandboxRuns.0.providerSandboxId'],
+      'only internal SandboxRun ownership may retain a required raw provider id',
+    );
 
     const publicProjection = serializeForLeakScan({
       auditRows: [...auditRows.values()],
       logs: logs.entries,
-      sandboxRuns: runDelegate.runs,
+      diagnosticDatabaseRows: diagnosticStore.rows,
+      diagnosticMetricsSnapshot,
       consoleTask,
       v1Task,
+      v1Diagnostics,
       mcpTask,
+      mcpDiagnostics,
+      openApiDocument,
+      playgroundFixtures,
     });
+    assert.equal(publicProjection.includes(RAW_PROVIDER_ID_CANARY), false);
     for (const credentialPath of [
       ...refsRunner.observations.map((observation) => observation.configPath),
       ...secrets.allPaths,

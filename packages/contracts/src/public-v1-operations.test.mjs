@@ -11,6 +11,7 @@ const contracts = require(path.join(here, '..', 'dist', 'index.js'));
 const {
   PUBLIC_ERROR_CODES,
   PUBLIC_V1_OPERATIONS,
+  PUBLIC_V1_CANONICAL_REST_SUCCESS_PROJECTION,
   PUBLIC_V1_LEGACY_REST_SUCCESS_PROJECTION,
   PUBLIC_V1_REST_ERROR_PROJECTION,
   CreateScheduleRequestSchema,
@@ -23,6 +24,13 @@ const {
   RepoResponseSchema,
   ScheduleResponseSchema,
   TaskResponseSchema,
+  TASK_PROVISIONING_DIAGNOSTIC_MAX_PAGE_SIZE,
+  PublicV1IdParamsSchema,
+  TaskProvisioningDiagnosticsParamsSchema,
+  TaskProvisioningDiagnosticsParamsSchemaPair,
+  TaskProvisioningDiagnosticsQuerySchema,
+  TaskProvisioningDiagnosticsQuerySchemaPair,
+  TaskProvisioningDiagnosticsResponseSchema,
   UpdateScheduleRequestSchema,
   UpdateScheduleRequestSchemaPair,
   UpdateScheduleRequestWireSchema,
@@ -98,8 +106,10 @@ test('every operation declares policy, errors, schemas, and an MCP decision', ()
     assert.ok(entry.ownerPolicy === 'optional' || entry.ownerPolicy === 'required');
     assert.equal(
       entry.restOutputProjection,
-      PUBLIC_V1_LEGACY_REST_SUCCESS_PROJECTION,
-      `${entry.id} explicitly preserves its established REST success value`,
+      entry.id === 'tasks.provisioningDiagnostics'
+        ? PUBLIC_V1_CANONICAL_REST_SUCCESS_PROJECTION
+        : PUBLIC_V1_LEGACY_REST_SUCCESS_PROJECTION,
+      `${entry.id} explicitly declares its REST success projection`,
     );
     assert.ok(entry.errors.length > 0, `${entry.id} must declare public errors`);
     for (const code of entry.errors) {
@@ -526,6 +536,261 @@ test('intentional REST and MCP differences are explicit registry data', () => {
   }
 });
 
+test('task provisioning diagnostics owns one strict canonical Public V1 registry contract', () => {
+  const diagnostics = operation('tasks.provisioningDiagnostics');
+  assert.equal(diagnostics.method, 'get');
+  assert.equal(
+    diagnostics.path,
+    '/v1/tasks/{id}/provisioning-diagnostics',
+  );
+  assert.equal(diagnostics.scope, 'tasks:diagnostics');
+  assert.equal(diagnostics.ownerPolicy, 'required');
+  assert.equal(diagnostics.streaming, false);
+  assert.equal(diagnostics.destructive, false);
+  assert.equal(
+    diagnostics.restOutputProjection,
+    PUBLIC_V1_CANONICAL_REST_SUCCESS_PROJECTION,
+  );
+  assert.equal(
+    diagnostics.input.params,
+    TaskProvisioningDiagnosticsParamsSchemaPair,
+  );
+  assert.equal(
+    diagnostics.paramsSchema,
+    TaskProvisioningDiagnosticsParamsSchema,
+  );
+  assert.equal(
+    TaskProvisioningDiagnosticsParamsSchemaPair.wire,
+    TaskProvisioningDiagnosticsParamsSchema,
+  );
+  assert.equal(
+    TaskProvisioningDiagnosticsParamsSchemaPair.parse,
+    TaskProvisioningDiagnosticsParamsSchema,
+  );
+  assert.equal(
+    diagnostics.input.query,
+    TaskProvisioningDiagnosticsQuerySchemaPair,
+  );
+  assert.equal(
+    TaskProvisioningDiagnosticsQuerySchemaPair.wire,
+    TaskProvisioningDiagnosticsQuerySchema,
+  );
+  assert.equal(
+    TaskProvisioningDiagnosticsQuerySchemaPair.parse,
+    TaskProvisioningDiagnosticsQuerySchema,
+  );
+  assert.equal(
+    diagnostics.responseSchema,
+    TaskProvisioningDiagnosticsResponseSchema,
+  );
+
+  assert.equal(
+    diagnostics.input.params.parse.safeParse({ id: repoId, extra: true })
+      .success,
+    false,
+  );
+  assert.deepEqual(PublicV1IdParamsSchema.parse({ id: repoId, extra: true }), {
+    id: repoId,
+  });
+  assert.equal(operation('tasks.get').paramsSchema, PublicV1IdParamsSchema);
+  assert.deepEqual(diagnostics.input.query.parse.parse({}), { limit: 50 });
+  assert.deepEqual(
+    diagnostics.input.query.parse.parse({ limit: '200', cursor: 'opaque-1' }),
+    { limit: 200, cursor: 'opaque-1' },
+  );
+  for (const invalid of [
+    { limit: 0 },
+    { limit: TASK_PROVISIONING_DIAGNOSTIC_MAX_PAGE_SIZE + 1 },
+    { cursor: '' },
+    { cursor: 'x'.repeat(2_049) },
+    { unexpected: true },
+  ]) {
+    assert.equal(
+      diagnostics.input.query.parse.safeParse(invalid).success,
+      false,
+      JSON.stringify(invalid),
+    );
+  }
+
+  const canonical = {
+    schemaVersion: 1,
+    taskId: repoId,
+    coverage: 'unavailable',
+    admissionState: null,
+    attempts: [],
+    events: [],
+    compaction: null,
+    nextCursor: null,
+  };
+  assert.deepEqual(diagnostics.responseSchema.parse(canonical), canonical);
+
+  assert.deepEqual(diagnostics.additionalErrorStatuses, [404, 503]);
+  assert.deepEqual(diagnostics.errors, [
+    'validation_failed',
+    'insufficient_scope',
+    'owner_required',
+    'not_found',
+    'task_provisioning_diagnostics_unavailable',
+  ]);
+  const ownerRequired = diagnostics.restErrorProjections.find(
+    ({ code }) => code === 'owner_required',
+  );
+  assert.ok(ownerRequired);
+  assert.equal(ownerRequired.status, 403);
+  assert.deepEqual(
+    ownerRequired.responseSchema.parse(ownerRequired.projector.body),
+    {
+      code: 'owner_required',
+      message:
+        'Task provisioning diagnostics require an authenticated account owner.',
+      retryable: false,
+    },
+  );
+  const unavailable = diagnostics.restErrorProjections.find(
+    ({ code }) =>
+      code === 'task_provisioning_diagnostics_unavailable',
+  );
+  assert.ok(unavailable);
+  assert.equal(unavailable.status, 503);
+  assert.deepEqual(
+    unavailable.responseSchema.parse(unavailable.projector.body),
+    {
+      code: 'task_provisioning_diagnostics_unavailable',
+      message: 'Task provisioning diagnostics are temporarily unavailable.',
+      retryable: true,
+    },
+  );
+
+  assert.equal(diagnostics.mcp.tool, 'get_task_provisioning_diagnostics');
+  assert.deepEqual(diagnostics.mcp.inputProjection, {
+    sources: ['params', 'query'],
+  });
+  assert.equal(diagnostics.mcp.outputProjection, 'canonical');
+  assert.deepEqual(diagnostics.mcp.differences, []);
+});
+
+test('diagnostic response examples are canonical, versioned, paginated, and secret-free', () => {
+  const diagnostics = operation('tasks.provisioningDiagnostics');
+  assert.deepEqual(Object.keys(diagnostics.responseExamples), [
+    'notStarted',
+    'partialPrimaryAndCleanup',
+    'historicalUnavailable',
+  ]);
+
+  const parsed = Object.fromEntries(
+    Object.entries(diagnostics.responseExamples).map(([name, example]) => [
+      name,
+      diagnostics.responseSchema.parse(example.value),
+    ]),
+  );
+  assert.deepEqual(
+    Object.values(parsed).map(({ schemaVersion, coverage }) => ({
+      schemaVersion,
+      coverage,
+    })),
+    [
+      { schemaVersion: 1, coverage: 'not_started' },
+      { schemaVersion: 1, coverage: 'partial' },
+      { schemaVersion: 1, coverage: 'unavailable' },
+    ],
+  );
+
+  const partial = parsed.partialPrimaryAndCleanup;
+  assert.deepEqual(
+    JSON.parse(Buffer.from(partial.nextCursor, 'base64url').toString('utf8')),
+    {
+      version: 1,
+      observedAt: '2026-07-18T01:02:04.600Z',
+      eventId: '00000000-0000-4000-8000-000000000304',
+    },
+  );
+  assert.equal(partial.attempts[0].eventCount, 5);
+  assert.equal(partial.events.length, 4);
+  assert.equal(partial.attempts[0].primary.cause, 'command_failed');
+  assert.equal(partial.attempts[0].primary.exitCode, 17);
+  assert.equal(partial.attempts[0].cleanup.cause, 'cleanup_failed');
+  assert.equal(partial.attempts[0].cleanup.state, 'failed');
+  assert.deepEqual(
+    partial.events.map(({ channel, outcome, cause }) => ({
+      channel,
+      outcome,
+      cause: cause ?? null,
+    })),
+    [
+      { channel: 'primary', outcome: 'started', cause: null },
+      { channel: 'primary', outcome: 'failed', cause: 'command_failed' },
+      { channel: 'cleanup', outcome: 'started', cause: null },
+      { channel: 'cleanup', outcome: 'failed', cause: 'cleanup_failed' },
+    ],
+  );
+
+  const wireExamples = JSON.stringify(diagnostics.responseExamples);
+  for (const forbidden of [
+    'secret-canary',
+    'authenticatedGitCommand',
+    'providerEndpoint',
+    'nativeSandboxId',
+    'credentialPath',
+    'stdout',
+    'stderr',
+    'prompt',
+    'stack',
+    'requestBody',
+    'responseBody',
+  ]) {
+    assert.equal(wireExamples.includes(forbidden), false, forbidden);
+  }
+});
+
+test('the registry rejects malformed or independently shaped response examples', () => {
+  const diagnostics = operation('tasks.provisioningDiagnostics');
+  const canonical = diagnostics.responseExamples.notStarted.value;
+  for (const [responseExamples, message] of [
+    [
+      { 'bad name': { summary: 'bad name', value: canonical } },
+      /Invalid response example name/u,
+    ],
+    [
+      { invalidSummary: { summary: '   ', value: canonical } },
+      /Empty response example summary/u,
+    ],
+    [
+      {
+        parallelSchema: {
+          summary: 'invalid independently shaped example',
+          value: { ...canonical, rawProviderResponse: 'secret-canary' },
+        },
+      },
+      /Invalid response example/u,
+    ],
+  ]) {
+    assert.throws(
+      () =>
+        assertPublicV1OperationUniqueness([
+          { ...diagnostics, responseExamples },
+        ]),
+      message,
+    );
+  }
+
+  const deletion = operation('schedules.delete');
+  assert.throws(
+    () =>
+      assertPublicV1OperationUniqueness([
+        {
+          ...deletion,
+          responseExamples: {
+            impossible: {
+              summary: 'A body cannot be documented for a no-content response.',
+              value: { deleted: true },
+            },
+          },
+        },
+      ]),
+    /Response examples require a response schema/u,
+  );
+});
+
 test('the fourteen affected operations retain exact registry identities and canonical projections', () => {
   assert.equal(AFFECTED_OPERATION_BINDINGS.length, 14);
   for (const [id, method, route, scope, tool, responseSchema] of AFFECTED_OPERATION_BINDINGS) {
@@ -608,6 +873,18 @@ test('public error envelopes accept only stable codes and safe details', () => {
       message: 'failure',
       retryable: false,
     }),
+  );
+  assert.deepEqual(
+    PublicErrorEnvelopeSchema.parse({
+      code: 'task_provisioning_diagnostics_unavailable',
+      message: 'Task provisioning diagnostics are temporarily unavailable.',
+      retryable: true,
+    }),
+    {
+      code: 'task_provisioning_diagnostics_unavailable',
+      message: 'Task provisioning diagnostics are temporarily unavailable.',
+      retryable: true,
+    },
   );
   for (const forbiddenDetail of [
     { stack: 'Error: secret' },

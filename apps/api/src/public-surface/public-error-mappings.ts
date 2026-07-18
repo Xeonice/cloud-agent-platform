@@ -53,6 +53,10 @@ export const PUBLIC_ERROR_SEMANTICS = {
     retryable: true,
     defaultMessage: 'The runtime model catalog is temporarily unavailable.',
   },
+  task_provisioning_diagnostics_unavailable: {
+    retryable: true,
+    defaultMessage: 'Task provisioning diagnostics are temporarily unavailable.',
+  },
 } as const satisfies Record<PublicErrorCode, PublicErrorSemantics>;
 
 export type PublicErrorRetryable<Code extends PublicErrorCode> =
@@ -133,6 +137,12 @@ export const REST_PUBLIC_ERROR_MAP = {
     retryable: true,
     projection: PUBLIC_V1_REST_ERROR_PROJECTION,
   },
+  task_provisioning_diagnostics_unavailable: {
+    status: 503,
+    error: 'Service Unavailable',
+    retryable: true,
+    projection: PUBLIC_V1_REST_ERROR_PROJECTION,
+  },
 } as const satisfies Record<PublicErrorCode, RestPublicErrorMapping> &
   RestPublicErrorMap;
 
@@ -164,6 +174,10 @@ export const MCP_PUBLIC_ERROR_MAP = {
   temporarily_unavailable: { jsonRpcCode: -32053, retryable: true },
   runtime_model_not_available: { jsonRpcCode: -32022, retryable: false },
   runtime_model_catalog_unavailable: {
+    jsonRpcCode: -32053,
+    retryable: true,
+  },
+  task_provisioning_diagnostics_unavailable: {
     jsonRpcCode: -32053,
     retryable: true,
   },

@@ -71,7 +71,8 @@ export type V1ScheduleRunListResponse = V1ListScheduleRunsResponse;
  * Backward-compatible registry name. The route inventory itself now lives in
  * `@cap/contracts`, where OpenAPI, Web, and MCP can consume the same manifest.
  */
-export const V1_ROUTES = PUBLIC_V1_OPERATIONS;
+export const V1_ROUTES: readonly PublicV1OperationShape[] =
+  PUBLIC_V1_OPERATIONS;
 
 /** Sorted `(METHOD, path)` keys for the canonical public data operations. */
 export function v1RouteKeys(): string[] {
@@ -92,7 +93,14 @@ function operationErrorResponses(
   number,
   {
     description: string;
-    content?: { 'application/json': { schema: ZodTypeAny } };
+    content?: {
+      'application/json': {
+        schema: ZodTypeAny;
+        examples?: Readonly<
+          Record<string, { readonly summary: string; readonly value: unknown }>
+        >;
+      };
+    };
     headers?: AnyZodObject;
   }
 > {
@@ -116,6 +124,7 @@ function operationErrorResponses(
         const headers = candidates.find(
           (candidate) => candidate.projection?.headersSchema,
         )?.projection?.headersSchema;
+        const examples = fixedBodyErrorExamples(candidates);
         return [
           status,
           {
@@ -125,7 +134,14 @@ function operationErrorResponses(
               candidates.map((candidate) => candidate.code),
             ),
             ...(schema
-              ? { content: { 'application/json': { schema } } }
+              ? {
+                  content: {
+                    'application/json': {
+                      schema,
+                      ...(examples ? { examples } : {}),
+                    },
+                  },
+                }
               : {}),
             ...(headers ? { headers } : {}),
           },
@@ -133,6 +149,31 @@ function operationErrorResponses(
       },
     ),
   );
+}
+
+function fixedBodyErrorExamples(
+  candidates: readonly ErrorResponseCandidate[],
+):
+  | Readonly<
+      Record<string, { readonly summary: string; readonly value: unknown }>
+    >
+  | undefined {
+  const examples = Object.fromEntries(
+    candidates.flatMap((candidate) => {
+      const projector = candidate.projection?.projector;
+      if (projector?.kind !== 'fixed-body') return [];
+      return [
+        [
+          candidate.code,
+          {
+            summary: PUBLIC_ERROR_SEMANTICS[candidate.code].defaultMessage,
+            value: projector.body,
+          },
+        ],
+      ];
+    }),
+  );
+  return Object.keys(examples).length > 0 ? examples : undefined;
 }
 
 interface ErrorResponseCandidate {
@@ -346,6 +387,9 @@ export function buildV1Registry(): OpenAPIRegistry {
                 content: {
                   [responseContentType]: {
                     schema: operation.responseSchema,
+                    ...(operation.responseExamples
+                      ? { examples: operation.responseExamples }
+                      : {}),
                   },
                 },
               }

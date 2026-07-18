@@ -43,6 +43,41 @@ export class SandboxCleanupPendingError extends SandboxCoreError {
 }
 
 /**
+ * Durable cleanup could not be authorized or acknowledged under its exact
+ * owner fence. The fixed error is safe to propagate so orchestration retains
+ * its lease/slot. When cleanup followed a primary provider failure, that exact
+ * primary value is retained in a non-enumerable slot rather than replaced.
+ */
+export class SandboxCleanupCoordinationPendingError extends SandboxCoreError {
+  declare readonly primary: unknown | undefined;
+
+  constructor(primary?: unknown) {
+    super(
+      'Sandbox cleanup coordination is pending recovery',
+      'sandbox_cleanup_coordination_pending',
+    );
+    Object.defineProperty(this, 'primary', {
+      configurable: false,
+      enumerable: false,
+      writable: false,
+      value: primary,
+    });
+  }
+}
+
+export function isSandboxCleanupCoordinationPendingError(
+  error: unknown,
+): error is SandboxCleanupCoordinationPendingError {
+  return (
+    error instanceof SandboxCleanupCoordinationPendingError ||
+    (typeof error === 'object' &&
+      error !== null &&
+      (error as { code?: unknown }).code ===
+        'sandbox_cleanup_coordination_pending')
+  );
+}
+
+/**
  * Stable, secret-free failure emitted when a provider-created sandbox does not
  * actually satisfy the immutable capacity policy resolved before create.
  *

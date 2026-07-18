@@ -20,8 +20,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { ServiceUnavailableException } from '@nestjs/common';
 
 import { McpTokensService } from './mcp-tokens.service';
+import type { TaskProvisioningDiagnosticsCapabilityGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
 
 // The account primary key is the per-account scope key for BOTH a GitHub account
 // (githubId present) and a LOCAL account (githubId null) — the service only ever
@@ -86,8 +88,11 @@ function makePrisma() {
   };
 }
 
-function service(prisma: unknown): McpTokensService {
-  return new McpTokensService(prisma as never);
+function service(
+  prisma: unknown,
+  gate?: TaskProvisioningDiagnosticsCapabilityGatePort,
+): McpTokensService {
+  return new McpTokensService(prisma as never, gate);
 }
 
 test('mint: returns the raw mcp_ token ONCE and persists only its SHA-256 hash', async () => {
@@ -115,6 +120,99 @@ test('mint: returns the raw mcp_ token ONCE and persists only its SHA-256 hash',
   );
   assert.notEqual(stored.tokenHash, res.token, 'the raw token is never stored');
   assert.ok(!('token' in stored), 'no raw-token column on the persisted row');
+});
+
+test('diagnostics grant is default-closed and persists no MCP token', async () => {
+  const prisma = makePrisma();
+
+  await assert.rejects(
+    () =>
+      service(prisma).mint(USER_A, {
+        name: 'too-early diagnostics client',
+        scopes: ['tasks:diagnostics'],
+      }),
+    ServiceUnavailableException,
+  );
+  assert.equal(prisma.rows.length, 0);
+});
+
+test('open shared deployment gate permits explicit MCP diagnostics grant and preserves old scopes exactly', async () => {
+  const prisma = makePrisma();
+  const openGate: TaskProvisioningDiagnosticsCapabilityGatePort = {
+    assertReadOpen: () => undefined,
+    assertScopesGrantable: () => undefined,
+  };
+  const svc = service(prisma, openGate);
+
+  const oldToken = await svc.mint(USER_A, {
+    name: 'existing MCP reader',
+    scopes: ['tasks:read'],
+  });
+  const diagnosticsToken = await svc.mint(USER_A, {
+    name: 'diagnostics MCP reader',
+    scopes: ['tasks:read', 'tasks:diagnostics'],
+  });
+
+  assert.deepEqual(prisma.rows.map((row) => row.scopes), [
+    ['tasks:read'],
+    ['tasks:read', 'tasks:diagnostics'],
+  ]);
+  assert.deepEqual(oldToken.scopes, ['tasks:read']);
+  assert.equal(oldToken.scopes.includes('tasks:diagnostics'), false);
+  assert.deepEqual(diagnosticsToken.scopes, [
+    'tasks:read',
+    'tasks:diagnostics',
+  ]);
+});
+
+test('a failing deployment gate fails closed before MCP-token persistence', async () => {
+  const prisma = makePrisma();
+  const failingGate: TaskProvisioningDiagnosticsCapabilityGatePort = {
+    assertReadOpen: () => {
+      throw new Error('attestation unavailable');
+    },
+    assertScopesGrantable: () => {
+      throw new Error('attestation unavailable');
+    },
+  };
+
+  await assert.rejects(
+    () =>
+      service(prisma, failingGate).mint(USER_A, {
+        name: 'must not exist',
+        scopes: ['tasks:diagnostics'],
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ServiceUnavailableException);
+      assert.deepEqual(error.getResponse(), {
+        code: 'task_provisioning_diagnostics_unavailable',
+        message: 'Task provisioning diagnostics are temporarily unavailable.',
+        retryable: true,
+      });
+      assert.equal(JSON.stringify(error.getResponse()).includes('attestation'), false);
+      return true;
+    },
+  );
+  assert.equal(prisma.rows.length, 0);
+});
+
+test('an unavailable deployment gate does not affect ordinary MCP-token scopes', async () => {
+  const prisma = makePrisma();
+  const unavailableGate: TaskProvisioningDiagnosticsCapabilityGatePort = {
+    assertReadOpen: () => {
+      throw new Error('attestation unavailable');
+    },
+    assertScopesGrantable: () => {
+      throw new Error('attestation unavailable');
+    },
+  };
+
+  const minted = await service(prisma, unavailableGate).mint(USER_A, {
+    name: 'ordinary reader',
+    scopes: ['tasks:read'],
+  });
+  assert.deepEqual(minted.scopes, ['tasks:read']);
+  assert.deepEqual(prisma.rows.map((row) => row.scopes), [['tasks:read']]);
 });
 
 test('mint: a LOCAL account (no GitHub identity) mints bound to its own user row', async () => {

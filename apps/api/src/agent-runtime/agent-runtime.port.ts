@@ -1,4 +1,8 @@
-import type { TaskModelLaunchMaterial } from '@cap/sandbox';
+import type {
+  SandboxRuntimePreflightCommandDescriptor,
+  SandboxRuntimeSetupCommandDescriptor,
+  TaskModelLaunchMaterial,
+} from '@cap/sandbox';
 
 /**
  * AgentRuntime port (add-claude-code-runtime, design D1).
@@ -185,6 +189,8 @@ export interface AuthMaterial {
 export interface SandboxSetupCommand {
   readonly command: string;
   readonly tolerateUnresolvedExit: boolean;
+  /** Stable diagnostic identity; callers never derive it from `command`. */
+  readonly descriptor: SandboxRuntimeSetupCommandDescriptor;
 }
 
 /**
@@ -195,10 +201,12 @@ export interface SandboxSetupCommand {
  * command is executed and how failures abort provisioning.
  */
 export interface SandboxRuntimePreflightProbe {
-  /** Human-readable probe name surfaced in provision failures. */
+  /** Human-readable plan label; never used as diagnostic identity or failure text. */
   readonly name: string;
   /** Shell command that exits 0 only when the required tool/capability exists. */
   readonly command: string;
+  /** Stable diagnostic identity; callers never derive it from `command`. */
+  readonly descriptor: SandboxRuntimePreflightCommandDescriptor;
 }
 
 /**

@@ -9,7 +9,14 @@ export type TaskAdmissionClaimSourceState =
   | 'accepted'
   | 'queued'
   | 'retrying'
-  | 'running';
+  | 'running'
+  /**
+   * A normally launched durable task releases its provisioning lease while the
+   * Task and generation-fenced SandboxRun continue running.  Once that Task is
+   * terminal, the same work row is claimable again solely for exact-owner
+   * cleanup recovery; it is never a new provisioning attempt.
+   */
+  | 'succeeded';
 
 /** Secret-free work snapshot returned by one fenced database claim. */
 export interface TaskAdmissionClaim {
@@ -72,8 +79,15 @@ export type TaskAdmissionSettlement =
       readonly stage: 'complete';
     }
   | {
-      readonly state: 'queued' | 'retrying';
+      readonly state: 'queued';
       readonly stage: TaskProvisioningStage;
+      readonly availableAfterMs: number;
+    }
+  | {
+      readonly state: 'retrying';
+      readonly stage: TaskProvisioningStage;
+      /** Safe closed cause retained so the next claimed retry is observable. */
+      readonly causeCode: ProvisioningTaskFailureCode;
       readonly availableAfterMs: number;
     }
   | {

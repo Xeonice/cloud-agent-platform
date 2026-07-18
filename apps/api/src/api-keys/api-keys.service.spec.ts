@@ -18,7 +18,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { API_KEY_PREFIX } from '@cap/contracts';
 
 import { ApiKeysService } from './api-keys.service';
@@ -26,6 +26,7 @@ import { ApiKeysController } from './api-keys.controller';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
 import type { OperatorPrincipal } from '../auth/operator-principal';
+import type { TaskProvisioningDiagnosticsCapabilityGatePort } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-deployment-gate.port';
 
 // ---------------------------------------------------------------------------
 // Fixtures + fakes
@@ -184,6 +185,110 @@ test('mint returns the raw cap_sk_ key once and persists only its hash', async (
   // Two mints yield two distinct keys (fresh entropy each time).
   const res2 = await service.mint(USER_ID, { name: 'ci2', scopes: ['tasks:read'] });
   assert.notEqual(res2.key, res.key, 'each mint generates a fresh raw key');
+});
+
+test('diagnostics grant is default-closed and persists nothing before deployment compatibility', async () => {
+  const { prisma, rows } = makeFakePrisma();
+  const service = new ApiKeysService(prisma);
+
+  await assert.rejects(
+    () =>
+      service.mint(USER_ID, {
+        name: 'too-early diagnostics key',
+        scopes: ['tasks:diagnostics'],
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ServiceUnavailableException);
+      assert.deepEqual(error.getResponse(), {
+        code: 'task_provisioning_diagnostics_unavailable',
+        message: 'Task provisioning diagnostics are temporarily unavailable.',
+        retryable: true,
+      });
+      return true;
+    },
+  );
+  assert.equal(rows.length, 0, 'no credential exists while the gate is closed');
+});
+
+test('open shared deployment gate permits an explicit diagnostics grant without widening old keys', async () => {
+  const { prisma, rows } = makeFakePrisma();
+  const openGate: TaskProvisioningDiagnosticsCapabilityGatePort = {
+    assertReadOpen: () => undefined,
+    assertScopesGrantable: () => undefined,
+  };
+  const service = new ApiKeysService(prisma, openGate);
+
+  const oldKey = await service.mint(USER_ID, {
+    name: 'old reader',
+    scopes: ['tasks:read'],
+  });
+  const diagnosticsKey = await service.mint(USER_ID, {
+    name: 'diagnostics reader',
+    scopes: ['tasks:read', 'tasks:diagnostics'],
+  });
+
+  assert.deepEqual(rows.map((row) => row.scopes), [
+    ['tasks:read'],
+    ['tasks:read', 'tasks:diagnostics'],
+  ]);
+  assert.deepEqual(oldKey.scopes, ['tasks:read']);
+  assert.equal(oldKey.scopes.includes('tasks:diagnostics'), false);
+  assert.deepEqual(diagnosticsKey.scopes, [
+    'tasks:read',
+    'tasks:diagnostics',
+  ]);
+});
+
+test('a failing deployment gate fails closed before API-key persistence', async () => {
+  const { prisma, rows } = makeFakePrisma();
+  const failingGate: TaskProvisioningDiagnosticsCapabilityGatePort = {
+    assertReadOpen: () => {
+      throw new Error('attestation unavailable');
+    },
+    assertScopesGrantable: () => {
+      throw new Error('attestation unavailable');
+    },
+  };
+  const service = new ApiKeysService(prisma, failingGate);
+
+  await assert.rejects(
+    () =>
+      service.mint(USER_ID, {
+        name: 'must not exist',
+        scopes: ['tasks:diagnostics'],
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof ServiceUnavailableException);
+      assert.deepEqual(error.getResponse(), {
+        code: 'task_provisioning_diagnostics_unavailable',
+        message: 'Task provisioning diagnostics are temporarily unavailable.',
+        retryable: true,
+      });
+      assert.equal(JSON.stringify(error.getResponse()).includes('attestation'), false);
+      return true;
+    },
+  );
+  assert.equal(rows.length, 0);
+});
+
+test('an unavailable deployment gate does not affect ordinary API-key scopes', async () => {
+  const { prisma, rows } = makeFakePrisma();
+  const unavailableGate: TaskProvisioningDiagnosticsCapabilityGatePort = {
+    assertReadOpen: () => {
+      throw new Error('attestation unavailable');
+    },
+    assertScopesGrantable: () => {
+      throw new Error('attestation unavailable');
+    },
+  };
+  const service = new ApiKeysService(prisma, unavailableGate);
+
+  const minted = await service.mint(USER_ID, {
+    name: 'ordinary reader',
+    scopes: ['tasks:read'],
+  });
+  assert.deepEqual(minted.scopes, ['tasks:read']);
+  assert.deepEqual(rows.map((row) => row.scopes), [['tasks:read']]);
 });
 
 // ---------------------------------------------------------------------------

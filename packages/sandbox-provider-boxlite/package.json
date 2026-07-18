@@ -22,9 +22,9 @@
   "scripts": {
     "build": "pnpm --filter @cap/sandbox-core build && tsc -p tsconfig.json",
     "typecheck": "pnpm --filter @cap/sandbox-core build && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm build && pnpm --filter @cap/sandbox-conformance build && node test/boxlite-client.test.mjs && node test/boxlite-workspace-security.test.mjs && node test/boxlite-workspace-provider.test.mjs && node test/boxlite-provider.test.mjs && node test/boxlite-terminal-transport.test.mjs && node test/boxlite-terminal-transport-coverage.test.mjs && node test/boxlite-conformance.test.mjs && node test/boxlite-coverage.test.mjs",
+    "test": "pnpm build && pnpm --filter @cap/sandbox-conformance build && node test/boxlite-client.test.mjs && node test/boxlite-diagnostics.test.mjs && node test/boxlite-workspace-security.test.mjs && node test/boxlite-workspace-provider.test.mjs && node test/boxlite-provider.test.mjs && node test/boxlite-terminal-transport.test.mjs && node test/boxlite-terminal-transport-coverage.test.mjs && node test/boxlite-conformance.test.mjs && node test/boxlite-coverage.test.mjs",
     "test:e2e": "pnpm build && node --test --test-force-exit e2e/*.e2e.mjs",
-    "coverage": "pnpm build && pnpm --filter @cap/sandbox-conformance build && c8 --100 --include=dist/**/*.js --reporter=text sh -c \"node test/boxlite-client.test.mjs && node test/boxlite-workspace-security.test.mjs && node test/boxlite-workspace-provider.test.mjs && node test/boxlite-provider.test.mjs && node test/boxlite-terminal-transport.test.mjs && node test/boxlite-terminal-transport-coverage.test.mjs && node test/boxlite-conformance.test.mjs && node test/boxlite-coverage.test.mjs\"",
+    "coverage": "pnpm build && pnpm --filter @cap/sandbox-conformance build && c8 --100 --include=dist/**/*.js --reporter=text sh -c \"node test/boxlite-client.test.mjs && node test/boxlite-diagnostics.test.mjs && node test/boxlite-workspace-security.test.mjs && node test/boxlite-workspace-provider.test.mjs && node test/boxlite-provider.test.mjs && node test/boxlite-terminal-transport.test.mjs && node test/boxlite-terminal-transport-coverage.test.mjs && node test/boxlite-conformance.test.mjs && node test/boxlite-coverage.test.mjs\"",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {

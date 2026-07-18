@@ -22,6 +22,7 @@ import {
   type PublicErrorCode,
   type PublicOwnerPolicy,
   type PublicProtocolDifference,
+  type PublicResponseExample,
   type PublicV1Operation,
   type PublicV1OperationId,
   type PublicV1OperationShape,
@@ -88,6 +89,8 @@ export interface ApiEndpoint {
   ownerPolicy: PublicOwnerPolicy | null;
   /** Stable public failures declared by the operation. */
   publicErrors: readonly PublicErrorCode[];
+  /** Registry-owned success examples; the Playground never authors a second fixture. */
+  responseExamples: Readonly<Record<string, PublicResponseExample>>;
   /** MCP mapping/exclusion metadata projected without affecting rendering. */
   mcpProjection: ApiMcpProjection | null;
   /** The domain group this endpoint is listed under in the rail. */
@@ -199,6 +202,10 @@ const PAGE_QUERY_HINTS = {
   cursor: { defaultValue: "", hint: "分页游标（上一页响应返回）" },
 } as const;
 
+const NO_RESPONSE_EXAMPLES = Object.freeze({}) as Readonly<
+  Record<string, PublicResponseExample>
+>;
+
 const CREATE_TASK_SAMPLE = JSON.stringify(
   {
     repoId: REPO_ID,
@@ -285,6 +292,13 @@ const ENDPOINT_OVERLAYS = {
     domain: "任务",
     title: "任务详情",
     pathParamHints: TASK_ID_PARAM_HINTS,
+    sampleBody: null,
+  },
+  "tasks.provisioningDiagnostics": {
+    domain: "任务",
+    title: "任务创建诊断",
+    pathParamHints: TASK_ID_PARAM_HINTS,
+    queryParamHints: PAGE_QUERY_HINTS,
     sampleBody: null,
   },
   "tasks.stop": {
@@ -429,6 +443,7 @@ function projectCanonicalFields<T extends { readonly name: string }>(
 /** Data operations are generated from the shared public `/v1` manifest. */
 export const DATA_API_CATALOG: readonly ApiEndpoint[] = PUBLIC_V1_OPERATIONS.map(
   (operation) => {
+    const operationShape: PublicV1OperationShape = operation;
     const overlay = ENDPOINT_OVERLAYS[operation.id];
     return {
       id: operation.id,
@@ -437,6 +452,8 @@ export const DATA_API_CATALOG: readonly ApiEndpoint[] = PUBLIC_V1_OPERATIONS.map
       requiredScope: operation.scope,
       ownerPolicy: operation.ownerPolicy,
       publicErrors: operation.errors,
+      responseExamples:
+        operationShape.responseExamples ?? NO_RESPONSE_EXAMPLES,
       mcpProjection: toMcpProjection(operation),
       domain: overlay.domain,
       method: toApiMethod(operation.method),
@@ -474,6 +491,7 @@ const DOCUMENTATION_CATALOG: readonly ApiEndpoint[] = [
     requiredScope: null,
     ownerPolicy: null,
     publicErrors: [],
+    responseExamples: NO_RESPONSE_EXAMPLES,
     mcpProjection: null,
     domain: "文档",
     method: "GET",
@@ -495,6 +513,7 @@ const DOCUMENTATION_CATALOG: readonly ApiEndpoint[] = [
     requiredScope: null,
     ownerPolicy: null,
     publicErrors: [],
+    responseExamples: NO_RESPONSE_EXAMPLES,
     mcpProjection: null,
     domain: "文档",
     method: "GET",

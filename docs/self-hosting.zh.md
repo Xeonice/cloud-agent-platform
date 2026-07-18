@@ -22,6 +22,10 @@
 [`deploy/TASK_ADMISSION_V2_CUTOVER.md`](../deploy/TASK_ADMISSION_V2_CUTOVER.md)
 中的分阶段启用和「先关闭门禁、排空未完成 admission、再回滚代码」流程。
 
+任务准备诊断使用另一套默认关闭的发布门禁与凭据 scope。分阶段开启写入/读取/授权以及
+「先关门禁」的回滚顺序见
+[`docs/task-provisioning-diagnostics.zh.md`](task-provisioning-diagnostics.zh.md)。
+
 应用内升级是后续阶段，今天自托管并不需要它。
 
 > **想在一台全新的本地主机上试试？** 公开宣传站托管了一个一键安装脚本，运行预构建

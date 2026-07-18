@@ -180,6 +180,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     const claudeJson = ClaudeCodeRuntime.CLAUDE_JSON_PATH;
     const settingsJson = `${dir}/settings.json`;
     commands.push({
+      descriptor: { commandKind: 'credential_setup', ordinal: 1 },
       command:
         `mkdir -p ${dir} && ` +
         `printf %s '${snippetB64}' | base64 -d > ${file} && chmod 600 ${file} && ` +
@@ -194,6 +195,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       const b64 = Buffer.from(ctx.prompt, 'utf8').toString('base64');
       const promptFile = ClaudeCodeRuntime.PROMPT_FILE_PATH;
       commands.push({
+        descriptor: { commandKind: 'runtime_setup', ordinal: 2 },
         command: `mkdir -p ${dir} && printf %s '${b64}' | base64 -d > ${promptFile} && chmod 600 ${promptFile}`,
         tolerateUnresolvedExit: false,
       });
@@ -203,12 +205,36 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 
   preflightProbes(): readonly SandboxRuntimePreflightProbe[] {
     return [
-      { name: 'claude cli', command: 'command -v claude' },
-      { name: 'git', command: 'command -v git' },
-      { name: 'tmux', command: 'command -v tmux' },
-      { name: 'bash', command: 'command -v bash' },
-      { name: 'tar', command: 'command -v tar' },
-      { name: 'gzip', command: 'command -v gzip' },
+      {
+        name: 'claude cli',
+        command: 'command -v claude',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 1 },
+      },
+      {
+        name: 'git',
+        command: 'command -v git',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 2 },
+      },
+      {
+        name: 'tmux',
+        command: 'command -v tmux',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 3 },
+      },
+      {
+        name: 'bash',
+        command: 'command -v bash',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 4 },
+      },
+      {
+        name: 'tar',
+        command: 'command -v tar',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 5 },
+      },
+      {
+        name: 'gzip',
+        command: 'command -v gzip',
+        descriptor: { commandKind: 'runtime_preflight', ordinal: 6 },
+      },
     ];
   }
 

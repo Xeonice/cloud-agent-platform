@@ -77,6 +77,7 @@ test('two real Streamable HTTP clients can initialize and list tools concurrentl
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
   const controller = new McpController(factory, prisma as never);
   const authInfo: AuthInfo = {

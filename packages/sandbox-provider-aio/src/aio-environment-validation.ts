@@ -1,7 +1,9 @@
 import type {
+  NonPersistingSandboxProvisioningDiagnosticObserver,
   SandboxPreflightProbeResult,
   SandboxResolvedEnvironmentMetadata,
 } from '@cap/sandbox-core';
+import { SandboxProviderConfigurationError } from '@cap/sandbox-core';
 import type { AioSandboxContainerController } from './aio-provider-controller.js';
 
 export interface AioEnvironmentValidationCommand {
@@ -19,14 +21,26 @@ export interface AioEnvironmentValidationResult {
   readonly error?: string;
 }
 
+export type AioTasklessProvisioningDiagnosticObserver =
+  NonPersistingSandboxProvisioningDiagnosticObserver;
+
 export async function validateAioEnvironment(args: {
-  readonly taskId?: string;
   readonly environment: SandboxResolvedEnvironmentMetadata;
   readonly controller: AioSandboxContainerController;
+  /** Taskless validation must never manufacture a task attempt or recorder. */
+  readonly diagnostics: AioTasklessProvisioningDiagnosticObserver;
   readonly requiredCommands?: readonly AioEnvironmentValidationCommand[];
   readonly onCleanupError?: (error: unknown) => void;
 }): Promise<AioEnvironmentValidationResult> {
-  const taskId = args.taskId ?? `env-probe-${Date.now()}`;
+  if (args.diagnostics.mode !== 'non-persisting') {
+    throw new SandboxProviderConfigurationError(
+      'AIO environment validation requires a non-persisting diagnostic observer',
+    );
+  }
+  // A transient Docker resource still needs an addressable name. Reuse a CAP
+  // operation id as that ephemeral probe identity without creating task or
+  // attempt evidence.
+  const probeId = args.diagnostics.createOperationId();
   const probes: SandboxPreflightProbeResult[] = [];
   const sourceKind = args.environment.sourceKind;
   let resolvedIdentity:
@@ -44,11 +58,16 @@ export async function validateAioEnvironment(args: {
     resolvedIdentity = await args.controller.resolveImageIdentity(
       args.environment.sourceRef,
     );
-    const provisioned = await args.controller.createAndStart(taskId, {
-      ...args.environment,
-      sourceRef: resolvedIdentity.locator,
-      digest: resolvedIdentity.digest,
-    });
+    const provisioned = await args.controller.createAndStart(
+      probeId,
+      {
+        ...args.environment,
+        sourceRef: resolvedIdentity.locator,
+        digest: resolvedIdentity.digest,
+      },
+      undefined,
+      { diagnostics: args.diagnostics },
+    );
     probes.push({
       name: 'create-container',
       ok: true,
@@ -56,8 +75,9 @@ export async function validateAioEnvironment(args: {
     });
     await args.controller.waitForReadiness({
       baseUrl: provisioned.connection.baseUrl,
-      taskId,
+      taskId: probeId,
       timeoutMs: provisioned.spec.readinessTimeoutMs,
+      diagnostics: args.diagnostics,
     });
     probes.push({
       name: 'http-ready',
@@ -106,7 +126,12 @@ export async function validateAioEnvironment(args: {
     };
   }
   try {
-    await args.controller.removeSandbox(taskId);
+    await args.controller.removeSandboxAndConfirm(
+      probeId,
+      undefined,
+      undefined,
+      args.diagnostics,
+    );
   } catch (error) {
     args.onCleanupError?.(error);
     if (outcome.status === 'passed') {

@@ -1,10 +1,20 @@
 import { z } from 'zod';
 
+import {
+  TaskProvisioningDiagnosticAnomalySchema,
+  TaskProvisioningDiagnosticCauseSchema,
+  TaskProvisioningDiagnosticCleanupStateSchema,
+  TaskProvisioningDiagnosticOperationSchema,
+  TaskProvisioningDiagnosticProviderFamilySchema,
+  TaskProvisioningDiagnosticStageSchema,
+  TaskProvisioningDiagnosticTerminalOutcomeSchema,
+} from './task-provisioning-diagnostics.js';
+
 /**
  * Runtime metrics contract (resource-metrics spec).
  *
  * The orchestrator exposes a single `/metrics` aggregation endpoint composing
- * two strictly distinguished metric kinds:
+ * three strictly distinguished metric kinds:
  *
  *  1. A DERIVED capacity block — exact, point-in-time projections of the live
  *     `ConcurrencySemaphore` state ({@link CapacityMetricsSchema} +
@@ -17,6 +27,11 @@ import { z } from 'zod';
  *     cadence-bounded and possibly slightly stale; each carries a `sampledAt`
  *     timestamp and an availability flag so a sampling outage degrades ONLY this
  *     block while the derived capacity block is still returned.
+ *
+ *  3. A provisioning-diagnostics block — process-window low-cardinality
+ *     counters plus independently refreshed durable current gauges. It carries
+ *     its own observation/freshness provenance and degrades independently from
+ *     both capacity and resource sampling.
  *
  * The console renders these as the dashboard capacity tiles, the `SlotMeter`,
  * the free-slot pills, and the `ResourceMeter`, replacing the prototype's
@@ -221,6 +236,217 @@ export const SampledResourcesSchema = z.object({
 export type SampledResources = z.infer<typeof SampledResourcesSchema>;
 
 // ---------------------------------------------------------------------------
+// Provisioning diagnostics block (process counters + durable current gauges)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every numeric provisioning metric is a non-negative safe integer. Collectors
+ * saturate at `Number.MAX_SAFE_INTEGER` rather than allowing precision loss to
+ * silently rewrite a counter or duration.
+ */
+const NonnegativeSafeIntegerSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .max(Number.MAX_SAFE_INTEGER);
+
+/** Date object or explicit ISO-8601 instant; never coerce null/numeric input. */
+const MetricInstantSchema = z
+  .union([z.date(), z.string().datetime({ offset: true })])
+  .pipe(z.coerce.date());
+
+/**
+ * Bounded duration summary for one closed metric-dimension tuple.
+ *
+ * `count` is the number of observations that carried a duration, which can be
+ * smaller than the surrounding outcome counter. No individual timing sample is
+ * retained, so this block cannot become an unbounded per-operation time series.
+ */
+export const ProvisioningDiagnosticsDurationSummarySchema = z
+  .object({
+    count: NonnegativeSafeIntegerSchema,
+    sumMs: NonnegativeSafeIntegerSchema,
+    maxMs: NonnegativeSafeIntegerSchema,
+  })
+  .strict()
+  .superRefine((summary, context) => {
+    if (summary.maxMs > summary.sumMs) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['maxMs'],
+        message: 'maxMs cannot exceed sumMs',
+      });
+    }
+    if (
+      summary.count === 0 &&
+      (summary.sumMs !== 0 || summary.maxMs !== 0)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['count'],
+        message: 'an empty duration summary must have zero sumMs and maxMs',
+      });
+    }
+  });
+export type ProvisioningDiagnosticsDurationSummary = z.infer<
+  typeof ProvisioningDiagnosticsDurationSummarySchema
+>;
+
+/**
+ * One terminal attempt outcome aggregate. The only dimensions are closed CAP
+ * vocabularies; `null` is the bounded no-cause label for successful outcomes.
+ */
+export const ProvisioningDiagnosticsAttemptOutcomeEntrySchema = z
+  .object({
+    providerFamily: TaskProvisioningDiagnosticProviderFamilySchema,
+    outcome: TaskProvisioningDiagnosticTerminalOutcomeSchema,
+    cause: TaskProvisioningDiagnosticCauseSchema.nullable(),
+    retryable: z.boolean(),
+    count: NonnegativeSafeIntegerSchema,
+    duration: ProvisioningDiagnosticsDurationSummarySchema,
+  })
+  .strict();
+export type ProvisioningDiagnosticsAttemptOutcomeEntry = z.infer<
+  typeof ProvisioningDiagnosticsAttemptOutcomeEntrySchema
+>;
+
+/** One terminal provisioning stage/operation aggregate. */
+export const ProvisioningDiagnosticsStageOutcomeEntrySchema = z
+  .object({
+    providerFamily: TaskProvisioningDiagnosticProviderFamilySchema,
+    stage: TaskProvisioningDiagnosticStageSchema,
+    operation: TaskProvisioningDiagnosticOperationSchema,
+    outcome: TaskProvisioningDiagnosticTerminalOutcomeSchema,
+    count: NonnegativeSafeIntegerSchema,
+    duration: ProvisioningDiagnosticsDurationSummarySchema,
+  })
+  .strict();
+export type ProvisioningDiagnosticsStageOutcomeEntry = z.infer<
+  typeof ProvisioningDiagnosticsStageOutcomeEntrySchema
+>;
+
+/** One observed retry aggregate; attempt identity/number is deliberately absent. */
+export const ProvisioningDiagnosticsRetryEntrySchema = z
+  .object({
+    providerFamily: TaskProvisioningDiagnosticProviderFamilySchema,
+    stage: TaskProvisioningDiagnosticStageSchema,
+    cause: TaskProvisioningDiagnosticCauseSchema,
+    count: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+export type ProvisioningDiagnosticsRetryEntry = z.infer<
+  typeof ProvisioningDiagnosticsRetryEntrySchema
+>;
+
+/**
+ * One historical cleanup outcome aggregate. This remains independent from the
+ * primary attempt outcome and from the current cleanup/orphan gauges below.
+ */
+export const ProvisioningDiagnosticsCleanupOutcomeEntrySchema = z
+  .object({
+    providerFamily: TaskProvisioningDiagnosticProviderFamilySchema,
+    cleanupState: TaskProvisioningDiagnosticCleanupStateSchema,
+    cause: TaskProvisioningDiagnosticCauseSchema.nullable(),
+    count: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+export type ProvisioningDiagnosticsCleanupOutcomeEntry = z.infer<
+  typeof ProvisioningDiagnosticsCleanupOutcomeEntrySchema
+>;
+
+/** One native-settlement anomaly aggregate. */
+export const ProvisioningDiagnosticsAnomalyEntrySchema = z
+  .object({
+    providerFamily: TaskProvisioningDiagnosticProviderFamilySchema,
+    anomaly: TaskProvisioningDiagnosticAnomalySchema,
+    count: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+export type ProvisioningDiagnosticsAnomalyEntry = z.infer<
+  typeof ProvisioningDiagnosticsAnomalyEntrySchema
+>;
+
+const AvailableProvisioningDiagnosticsDurableGaugesSchema = z
+  .object({
+    status: z.enum(['available', 'stale']),
+    sampledAt: MetricInstantSchema,
+    ageMs: NonnegativeSafeIntegerSchema,
+    activeAttempts: NonnegativeSafeIntegerSchema,
+    oldestActiveAttemptAgeMs: NonnegativeSafeIntegerSchema.nullable(),
+    cleanupPendingRuns: NonnegativeSafeIntegerSchema,
+    confirmedOrphanRuns: NonnegativeSafeIntegerSchema,
+  })
+  .strict();
+
+const UnavailableProvisioningDiagnosticsDurableGaugesSchema = z
+  .object({
+    status: z.literal('unavailable'),
+    sampledAt: z.null(),
+    ageMs: z.null(),
+    activeAttempts: z.null(),
+    oldestActiveAttemptAgeMs: z.null(),
+    cleanupPendingRuns: z.null(),
+    confirmedOrphanRuns: z.null(),
+  })
+  .strict();
+
+/**
+ * Reconciled durable current state. Unlike the process-window counters, these
+ * gauges survive process restart by hydration from the database. An unavailable
+ * source reports `null` rather than fabricating zeros; a stale source retains
+ * its last sample with an explicit age.
+ */
+export const ProvisioningDiagnosticsDurableGaugesSchema =
+  z.discriminatedUnion('status', [
+    AvailableProvisioningDiagnosticsDurableGaugesSchema,
+    UnavailableProvisioningDiagnosticsDurableGaugesSchema,
+  ]).superRefine((gauges, context) => {
+    if (
+      gauges.status !== 'unavailable' &&
+      (gauges.activeAttempts === 0) !==
+        (gauges.oldestActiveAttemptAgeMs === null)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['oldestActiveAttemptAgeMs'],
+        message:
+          'oldestActiveAttemptAgeMs must be present exactly when activeAttempts is non-zero',
+      });
+    }
+  });
+export type ProvisioningDiagnosticsDurableGauges = z.infer<
+  typeof ProvisioningDiagnosticsDurableGaugesSchema
+>;
+
+/**
+ * Safe low-cardinality provisioning diagnostics metrics projection.
+ *
+ * All series are arrays of closed enum tuples, emitted in stable lexical tuple
+ * order by the API. There is intentionally no map key or field for task,
+ * attempt, logical operation, provider resource/execution, repository, account,
+ * URL/path, command kind, provider error, or credential-bearing material.
+ */
+export const ProvisioningDiagnosticsMetricsSchema = z
+  .object({
+    /** Process start/reset instant for all historical counters in this block. */
+    observedSince: MetricInstantSchema,
+    attemptOutcomes: z.array(
+      ProvisioningDiagnosticsAttemptOutcomeEntrySchema,
+    ),
+    stageOutcomes: z.array(ProvisioningDiagnosticsStageOutcomeEntrySchema),
+    retries: z.array(ProvisioningDiagnosticsRetryEntrySchema),
+    cleanupOutcomes: z.array(
+      ProvisioningDiagnosticsCleanupOutcomeEntrySchema,
+    ),
+    anomalies: z.array(ProvisioningDiagnosticsAnomalyEntrySchema),
+    durableGauges: ProvisioningDiagnosticsDurableGaugesSchema,
+  })
+  .strict();
+export type ProvisioningDiagnosticsMetrics = z.infer<
+  typeof ProvisioningDiagnosticsMetricsSchema
+>;
+
+// ---------------------------------------------------------------------------
 // Aggregation response
 // ---------------------------------------------------------------------------
 
@@ -228,11 +454,10 @@ export type SampledResources = z.infer<typeof SampledResourcesSchema>;
  * Response body for the session-gated `GET /metrics` aggregation endpoint.
  *
  * Composes the exact derived capacity block (`capacity`, `occupancy`,
- * `runnerMinutes`) with the cadence-bounded sampled resource block
- * (`resources`) in one round trip. The derived block is always present and
- * exact; the sampled block self-describes its freshness via
- * {@link SampledResourcesSchema.status}, so the console can render live capacity
- * even when host sampling is degraded.
+ * `runnerMinutes`), cadence-bounded sampled resource block (`resources`), and
+ * additive provisioning diagnostics block in one round trip. Each sampled or
+ * hydrated block self-describes its own freshness, so one source can degrade
+ * without rewriting the other blocks.
  */
 export const MetricsResponseSchema = z.object({
   /** Exact, semaphore-derived scalar capacity figures. */
@@ -243,6 +468,11 @@ export const MetricsResponseSchema = z.object({
   runnerMinutes: RunnerMinutesSchema,
   /** Cadence-bounded sampled CPU/memory block with freshness/availability. */
   resources: SampledResourcesSchema,
+  /**
+   * Additive provisioning diagnostic counters and durable gauges. Optional only
+   * for rolling compatibility with an older API; a current API always emits it.
+   */
+  provisioningDiagnostics: ProvisioningDiagnosticsMetricsSchema.optional(),
 });
 export type MetricsResponse = z.infer<typeof MetricsResponseSchema>;
 
