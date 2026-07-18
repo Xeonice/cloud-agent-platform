@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.41.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.40.0...v0.41.0) (2026-07-18)
+
+
+### Features
+
+* **tasks:** add durable provisioning diagnostics ([6350cd0](https://github.com/Xeonice/cloud-agent-platform/commit/6350cd01046ce2fdd2bda175a1117e4bd0a1f983))
+* **tasks:** add durable provisioning diagnostics ([38c5183](https://github.com/Xeonice/cloud-agent-platform/commit/38c51835fef9df2ed1f23845df5f5b6bc906daed))
+
 ## [0.40.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.39.1...v0.40.0) (2026-07-16)
 
 
