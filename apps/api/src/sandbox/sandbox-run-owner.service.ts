@@ -12,6 +12,7 @@ import type {
   BeginSandboxRunCreateArgs,
   BeginSandboxRunCleanupResult,
   ClaimSandboxRunCleanupResult,
+  CloseLegacySandboxRunCreateFenceArgs,
   ConfirmSandboxRunCleanupOrphanArgs,
   ConfirmSandboxRunCleanupOrphanResult,
   FailSandboxRunCleanupByTerminalPolicyResult,
@@ -33,6 +34,7 @@ import type {
   SettleLegacySandboxRunCleanupArgs,
   SettleLegacySandboxRunCleanupResult,
   SettleSandboxCleanupAttemptResult,
+  ValidateLegacySandboxRunCreateFenceArgs,
 } from '@cap/sandbox';
 import {
   SANDBOX_CLEANUP_ATTEMPT_MAX,
@@ -123,6 +125,23 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
           cleanupOrphanConfirmedAt: true,
         },
       });
+      if (args.expectedProvisioningFence === 'legacy-create-observed') {
+        if (
+          args.ownership ||
+          (args.status !== undefined && args.status !== 'running') ||
+          !existing ||
+          existing.ownerGeneration !== null ||
+          existing.resourceGeneration !== null ||
+          existing.status !== 'provisioning' ||
+          existing.createState !== 'idle' ||
+          existing.providerId !== args.providerId ||
+          (existing.providerSandboxId !== null &&
+            args.providerSandboxId !== undefined &&
+            existing.providerSandboxId !== args.providerSandboxId)
+        ) {
+          throw new Error('Legacy sandbox provisioning fence is no longer current');
+        }
+      }
       if (args.ownership) {
         if (
           !existing ||
@@ -261,9 +280,40 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
   }
 
   async beginSandboxRunCreate(args: BeginSandboxRunCreateArgs): Promise<boolean> {
-    assertGeneration(args.ownership.ownerGeneration, 'ownerGeneration');
-    assertGeneration(args.ownership.resourceGeneration, 'resourceGeneration');
+    if (args.ownership) {
+      assertGeneration(args.ownership.ownerGeneration, 'ownerGeneration');
+      assertGeneration(args.ownership.resourceGeneration, 'resourceGeneration');
+    }
     return this.withTaskOwnerLock(args.taskId, async (client) => {
+      if (!args.ownership) {
+        const existing = await client.sandboxRun.findFirst({
+          where: { taskId: args.taskId },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (!existing) {
+          await client.sandboxRun.create({
+            data: {
+              taskId: args.taskId,
+              providerId: args.providerId,
+              providerSandboxId: null,
+              ownerGeneration: null,
+              resourceGeneration: null,
+              createState: 'entered',
+              status: 'provisioning',
+              connectionJson: undefined,
+              metadata: undefined,
+              terminalAt: null,
+              removedAt: null,
+            },
+          });
+          return true;
+        }
+        // One ownerless row belongs to exactly one provider invocation. A
+        // second replica cannot prove that it owns an existing `entered` row,
+        // so it must fail closed instead of borrowing the first invocation's
+        // fence.
+        return false;
+      }
       const existing = await client.sandboxRun.findFirst({
         where: {
           taskId: args.taskId,
@@ -285,11 +335,65 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
     });
   }
 
+  async validateLegacySandboxRunCreateFence(
+    args: ValidateLegacySandboxRunCreateFenceArgs,
+  ): Promise<boolean> {
+    const existing = await this.prisma.sandboxRun.findFirst({
+      where: { taskId: args.taskId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        providerId: true,
+        ownerGeneration: true,
+        resourceGeneration: true,
+        createState: true,
+        status: true,
+      },
+    });
+    return (
+      existing !== null &&
+      existing.ownerGeneration === null &&
+      existing.resourceGeneration === null &&
+      existing.status === 'provisioning' &&
+      existing.providerId === args.providerId &&
+      existing.createState === 'entered'
+    );
+  }
+
   async observeSandboxRunCreate(
     args: ObserveSandboxRunCreateArgs,
   ): Promise<boolean> {
-    assertGeneration(args.resourceGeneration, 'resourceGeneration');
+    if (args.resourceGeneration !== undefined) {
+      assertGeneration(args.resourceGeneration, 'resourceGeneration');
+    }
     return this.withTaskOwnerLock(args.taskId, async (client) => {
+      if (args.resourceGeneration === undefined) {
+        const existing = await client.sandboxRun.findFirst({
+          where: {
+            taskId: args.taskId,
+            providerId: args.providerId,
+            ownerGeneration: null,
+            resourceGeneration: null,
+            createState: 'entered',
+            status: { in: ['provisioning', 'deleting'] },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (!existing) return false;
+        await client.sandboxRun.update({
+          where: { id: existing.id },
+          data: {
+            createState: 'idle',
+            ...(args.providerSandboxId === undefined
+              ? {}
+              : { providerSandboxId: args.providerSandboxId }),
+            ...(args.providerSandboxId !== undefined &&
+            args.providerSandboxId !== existing.providerSandboxId
+              ? { cleanupOrphanConfirmedAt: null }
+              : {}),
+          },
+        });
+        return existing.status === 'provisioning';
+      }
       const existing = await client.sandboxRun.findFirst({
         where: {
           taskId: args.taskId,
@@ -322,6 +426,42 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
         },
       });
       return true;
+    });
+  }
+
+  async closeLegacySandboxRunCreateFence(
+    args: CloseLegacySandboxRunCreateFenceArgs,
+  ): Promise<boolean> {
+    return this.withTaskOwnerLock(args.taskId, async (client) => {
+      const existing = await client.sandboxRun.findFirst({
+        where: { taskId: args.taskId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (
+        !existing ||
+        existing.ownerGeneration !== null ||
+        existing.resourceGeneration !== null ||
+        existing.status !== 'deleting' ||
+        existing.providerId !== args.providerId ||
+        (existing.providerSandboxId !== null &&
+          args.providerSandboxId !== undefined &&
+          existing.providerSandboxId !== args.providerSandboxId)
+      ) {
+        return false;
+      }
+      if (existing.createState === 'idle') return true;
+      if (existing.createState !== 'entered') return false;
+      const changed = await client.sandboxRun.updateMany({
+        where: {
+          id: existing.id,
+          status: 'deleting',
+          ownerGeneration: null,
+          resourceGeneration: null,
+          createState: 'entered',
+        },
+        data: { createState: 'idle' },
+      });
+      return changed.count === 1;
     });
   }
 
@@ -516,7 +656,11 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
                 resourceGeneration: authorization.ownership.resourceGeneration,
                 createState: 'idle',
               }
-            : { ownerGeneration: null, resourceGeneration: null }),
+            : {
+                ownerGeneration: null,
+                resourceGeneration: null,
+                createState: 'idle',
+              }),
         },
         data: {
           status,
@@ -778,6 +922,7 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
         existing.ownerGeneration !== null ||
         existing.resourceGeneration !== null ||
         existing.cleanupAttemptInFlight ||
+        (evidence.outcome === 'succeeded' && existing.createState !== 'idle') ||
         evidence.attempt !== existing.cleanupAttemptCount + 1
       ) {
         return { kind: 'conflict' } as const;

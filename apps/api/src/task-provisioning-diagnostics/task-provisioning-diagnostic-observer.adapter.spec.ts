@@ -148,6 +148,8 @@ function settlementRecorder(options: {
   const primaryInputs: unknown[] = [];
   const cleanupInputs: unknown[] = [];
   let canonicalStarted: TaskProvisioningDiagnosticEvent | undefined;
+  let primaryPersisted = false;
+  let persistedCleanup = SETTLED_ATTEMPT.cleanup;
   const failedOnce = new Set<SettlementRecorderStep>();
   const failOrThrow = (step: SettlementRecorderStep) => {
     if (options.throwAt === step) throw new Error(`${RAW_CANARY}:${step}`);
@@ -162,6 +164,19 @@ function settlementRecorder(options: {
     async beginAttempt() {
       trace.push('begin');
       return { ok: true, value: CONTEXT };
+    },
+    async resumeAttempt() {
+      return {
+        ok: true,
+        value: {
+          context: CONTEXT,
+          state: primaryPersisted ? ('failed' as const) : ('active' as const),
+          providerFamily: 'unknown' as const,
+          initialSequence: appended.length,
+          primaryPersisted,
+          cleanup: persistedCleanup,
+        },
+      };
     },
     async appendEvent(_context, candidate) {
       const event = TaskProvisioningDiagnosticEventSchema.parse(candidate);
@@ -196,12 +211,14 @@ function settlementRecorder(options: {
       trace.push('record_primary');
       primaryInputs.push(input);
       if (failOrThrow('record_primary')) return RECORDER_FAILURE;
+      primaryPersisted = true;
       return { ok: true, value: SETTLED_ATTEMPT };
     },
     async recordCleanup(_context, input) {
       trace.push('record_cleanup');
       cleanupInputs.push(input);
       if (failOrThrow('record_cleanup')) return RECORDER_FAILURE;
+      persistedCleanup = input;
       return { ok: true, value: SETTLED_ATTEMPT };
     },
     async markComplete() {
@@ -216,9 +233,22 @@ function settlementRecorder(options: {
 
 function lifecycleRecorderMethods(): Pick<
   TaskProvisioningDiagnosticObserverBeginRecorder,
-  'recordPrimary' | 'recordCleanup' | 'markComplete'
+  'resumeAttempt' | 'recordPrimary' | 'recordCleanup' | 'markComplete'
 > {
   return {
+    async resumeAttempt() {
+      return {
+        ok: true,
+        value: {
+          context: CONTEXT,
+          state: 'active',
+          providerFamily: 'unknown',
+          initialSequence: 0,
+          primaryPersisted: false,
+          cleanup: SETTLED_ATTEMPT.cleanup,
+        },
+      };
+    },
     async recordPrimary() {
       return { ok: true, value: SETTLED_ATTEMPT };
     },
@@ -498,6 +528,8 @@ describe('task provisioning diagnostic observer adapter', () => {
     let receivedResume: unknown;
     let beginCalls = 0;
     const recorder = {
+      ...successfulAppendRecorder({ events }),
+      ...lifecycleRecorderMethods(),
       async resumeAttempt(input: unknown) {
         receivedResume = input;
         return {
@@ -507,6 +539,8 @@ describe('task provisioning diagnostic observer adapter', () => {
             state: 'active' as const,
             providerFamily: 'boxlite' as const,
             initialSequence: 2,
+            primaryPersisted: false,
+            cleanup: SETTLED_ATTEMPT.cleanup,
           },
         };
       },
@@ -514,8 +548,6 @@ describe('task provisioning diagnostic observer adapter', () => {
         beginCalls += 1;
         return { ok: true as const, value: CONTEXT };
       },
-      ...successfulAppendRecorder({ events }),
-      ...lifecycleRecorderMethods(),
     };
 
     const resumed = await tryResumeTaskProvisioningDiagnosticObserver(
@@ -545,10 +577,12 @@ describe('task provisioning diagnostic observer adapter', () => {
     assert.throws(() => resumed.diagnostics.bindProviderFamily('aio'));
   });
 
-  it('resumes terminal evidence without fabricating a provider family and keeps settlement orchestration-only', async () => {
+  it('resumes terminal evidence with its persisted cleanup snapshot without fabricating a provider family', async () => {
     let primaryCalls = 0;
     let cleanupCalls = 0;
     let completeCalls = 0;
+    let retainedCleanup: TaskProvisioningDiagnosticCleanupSummary =
+      SUCCEEDED_CLEANUP;
     const recorder: TaskProvisioningDiagnosticObserverResumeRecorder = {
       async resumeAttempt() {
         return {
@@ -558,6 +592,8 @@ describe('task provisioning diagnostic observer adapter', () => {
             state: 'failed',
             providerFamily: null,
             initialSequence: 2,
+            primaryPersisted: true,
+            cleanup: retainedCleanup,
           },
         };
       },
@@ -566,8 +602,9 @@ describe('task provisioning diagnostic observer adapter', () => {
         primaryCalls += 1;
         return { ok: true, value: SETTLED_ATTEMPT };
       },
-      async recordCleanup() {
+      async recordCleanup(_context, cleanup) {
         cleanupCalls += 1;
+        retainedCleanup = cleanup;
         return { ok: true, value: SETTLED_ATTEMPT };
       },
       async markComplete() {
@@ -595,7 +632,7 @@ describe('task provisioning diagnostic observer adapter', () => {
 
     await resumed.settlement.settleCleanup(SUCCEEDED_CLEANUP);
     assert.equal(primaryCalls, 0);
-    assert.equal(cleanupCalls, 1);
+    assert.equal(cleanupCalls, 0);
     assert.equal(completeCalls, 1);
   });
 
@@ -603,6 +640,8 @@ describe('task provisioning diagnostic observer adapter', () => {
     let resumeCalls = 0;
     let beginCalls = 0;
     const failureRecorder = {
+      ...successfulAppendRecorder(),
+      ...lifecycleRecorderMethods(),
       async resumeAttempt() {
         resumeCalls += 1;
         return {
@@ -615,8 +654,6 @@ describe('task provisioning diagnostic observer adapter', () => {
         beginCalls += 1;
         return { ok: true as const, value: CONTEXT };
       },
-      ...successfulAppendRecorder(),
-      ...lifecycleRecorderMethods(),
     };
 
     assert.equal(
@@ -639,11 +676,11 @@ describe('task provisioning diagnostic observer adapter', () => {
     );
 
     const throwingRecorder: TaskProvisioningDiagnosticObserverResumeRecorder = {
+      ...successfulAppendRecorder(),
+      ...lifecycleRecorderMethods(),
       async resumeAttempt() {
         throw new Error(RAW_CANARY);
       },
-      ...successfulAppendRecorder(),
-      ...lifecycleRecorderMethods(),
     };
     assert.equal(
       await tryResumeTaskProvisioningDiagnosticObserver(throwingRecorder, {
@@ -1012,6 +1049,107 @@ describe('task provisioning diagnostic observer adapter', () => {
       'record_cleanup',
       'mark_complete',
     ]);
+  });
+
+  it('converges primary and cleanup persisted by two controllers through one idempotent completion proof', async () => {
+    const events: unknown[] = [];
+    let primaryPersisted = false;
+    let persistedCleanup: TaskProvisioningDiagnosticCleanupSummary =
+      SETTLED_ATTEMPT.cleanup;
+    let writesArrived = 0;
+    let releaseWrites!: () => void;
+    const writesGate = new Promise<void>((resolve) => {
+      releaseWrites = resolve;
+    });
+    let observeBothWrites!: () => void;
+    const bothWritesObserved = new Promise<void>((resolve) => {
+      observeBothWrites = resolve;
+    });
+    let markCalls = 0;
+    let completionTransitions = 0;
+    let completenessMarked = false;
+
+    const waitAtCrossReplicaBarrier = async (): Promise<void> => {
+      writesArrived += 1;
+      if (writesArrived === 2) observeBothWrites();
+      await writesGate;
+    };
+    const recorder: TaskProvisioningDiagnosticObserverBeginRecorder = {
+      async beginAttempt() {
+        return { ok: true, value: CONTEXT };
+      },
+      async resumeAttempt() {
+        return {
+          ok: true,
+          value: {
+            context: CONTEXT,
+            state: primaryPersisted ? ('failed' as const) : ('active' as const),
+            providerFamily: 'unknown' as const,
+            initialSequence: events.length,
+            primaryPersisted,
+            cleanup: persistedCleanup,
+          },
+        };
+      },
+      ...successfulAppendRecorder({ events }),
+      async recordPrimary() {
+        primaryPersisted = true;
+        await waitAtCrossReplicaBarrier();
+        return { ok: true, value: SETTLED_ATTEMPT };
+      },
+      async recordCleanup(_context, cleanup) {
+        persistedCleanup = cleanup;
+        await waitAtCrossReplicaBarrier();
+        return { ok: true, value: SETTLED_ATTEMPT };
+      },
+      async markComplete() {
+        markCalls += 1;
+        assert.equal(primaryPersisted, true);
+        assert.equal(persistedCleanup.state, 'succeeded');
+        if (!completenessMarked) {
+          completenessMarked = true;
+          completionTransitions += 1;
+        }
+        return { ok: true, value: SETTLED_ATTEMPT };
+      },
+    };
+    const primaryController =
+      await tryBeginTaskProvisioningDiagnosticObserver(recorder, {
+        taskId: TASK_ID,
+        admissionMode: 'durable',
+        expectedAttempt: 3,
+      });
+    const cleanupController =
+      await tryResumeTaskProvisioningDiagnosticObserver(recorder, {
+        taskId: TASK_ID,
+        admissionMode: 'durable',
+        attempt: 3,
+      });
+    assert.ok(primaryController);
+    assert.ok(cleanupController);
+
+    const primary = primaryController.settlement.settlePrimary({
+      ...PRIMARY_SETTLEMENT,
+      completion: 'leave_partial',
+    });
+    const cleanup = cleanupController.settlement.settleCleanup(
+      SUCCEEDED_CLEANUP,
+    );
+    await bothWritesObserved;
+    assert.equal(completenessMarked, false);
+
+    releaseWrites();
+    await Promise.all([primary, cleanup]);
+
+    assert.equal(completenessMarked, true);
+    assert.equal(completionTransitions, 1);
+    assert.equal(markCalls >= 1 && markCalls <= 2, true);
+    assert.equal(
+      JSON.stringify({ primaryPersisted, persistedCleanup }).includes(
+        RAW_CANARY,
+      ),
+      false,
+    );
   });
 
   it('retries cleanup persistence and finalization from exact cleanup replay', async () => {

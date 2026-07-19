@@ -5,6 +5,7 @@ import type {
   BeginSandboxRunCreateArgs,
   BeginSandboxRunCleanupResult,
   ClaimSandboxRunCleanupResult,
+  CloseLegacySandboxRunCreateFenceArgs,
   ConfirmSandboxRunCleanupOrphanArgs,
   ConfirmSandboxRunCleanupOrphanResult,
   FailSandboxRunCleanupByTerminalPolicyResult,
@@ -22,6 +23,7 @@ import type {
   SettleLegacySandboxRunCleanupArgs,
   SettleLegacySandboxRunCleanupResult,
   SettleSandboxCleanupAttemptResult,
+  ValidateLegacySandboxRunCreateFenceArgs,
 } from '@cap/sandbox-core';
 import {
   SANDBOX_CLEANUP_ATTEMPT_MAX,
@@ -54,6 +56,22 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
 
   async recordSandboxRunOwner(args: RecordSandboxRunOwnerArgs): Promise<void> {
     const existing = this.records.get(args.taskId);
+    if (args.expectedProvisioningFence === 'legacy-create-observed') {
+      if (
+        args.ownership ||
+        (args.status !== undefined && args.status !== 'running') ||
+        !existing ||
+        existing.ownership ||
+        existing.status !== 'provisioning' ||
+        existing.createState !== 'idle' ||
+        existing.providerId !== args.providerId ||
+        (existing.providerSandboxId !== undefined &&
+          args.providerSandboxId !== undefined &&
+          existing.providerSandboxId !== args.providerSandboxId)
+      ) {
+        throw new Error('Legacy sandbox provisioning fence is no longer current');
+      }
+    }
     if (args.ownership) {
       if (
         !existing?.ownership ||
@@ -67,7 +85,11 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     } else if (existing && (existing.status === 'deleting' || existing.ownership)) {
       throw new Error('Ownerless sandbox records cannot replace a durable owner');
     }
-    const { providerSandboxId, ...record } = args;
+    const {
+      providerSandboxId,
+      expectedProvisioningFence: _expectedProvisioningFence,
+      ...record
+    } = args;
     const providerIdentityChanged =
       providerSandboxId !== undefined &&
       providerSandboxId !== existing?.providerSandboxId;
@@ -76,7 +98,11 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       ...record,
       ...(providerSandboxId === undefined ? {} : { providerSandboxId }),
       createState: 'idle',
-      status: args.status ?? existing?.status ?? 'running',
+      status:
+        args.status ??
+        (args.expectedProvisioningFence === 'legacy-create-observed'
+          ? 'running'
+          : existing?.status ?? 'running'),
       cleanupAttemptInFlight: existing?.cleanupAttemptInFlight ?? false,
       cleanupAttemptCount: existing?.cleanupAttemptCount ?? 0,
       ...(providerIdentityChanged
@@ -132,6 +158,22 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
 
   async beginSandboxRunCreate(args: BeginSandboxRunCreateArgs): Promise<boolean> {
     const existing = this.records.get(args.taskId);
+    if (!args.ownership) {
+      if (!existing) {
+        this.records.set(args.taskId, {
+          taskId: args.taskId,
+          providerId: args.providerId,
+          createState: 'entered',
+          status: 'provisioning',
+          cleanupAttemptInFlight: false,
+          cleanupAttemptCount: 0,
+        });
+        return true;
+      }
+      // One invocation owns one durable pre-call fence. A second process must
+      // not treat the first invocation's `entered` row as its own admission.
+      return false;
+    }
     if (
       !existing?.ownership ||
       existing.status !== 'provisioning' ||
@@ -148,10 +190,46 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     return true;
   }
 
+  async validateLegacySandboxRunCreateFence(
+    args: ValidateLegacySandboxRunCreateFenceArgs,
+  ): Promise<boolean> {
+    const existing = this.records.get(args.taskId);
+    return (
+      existing !== undefined &&
+      existing.ownership === undefined &&
+      existing.status === 'provisioning' &&
+      existing.providerId === args.providerId &&
+      existing.createState === 'entered'
+    );
+  }
+
   async observeSandboxRunCreate(
     args: ObserveSandboxRunCreateArgs,
   ): Promise<boolean> {
     const existing = this.records.get(args.taskId);
+    if (args.resourceGeneration === undefined) {
+      if (
+        !existing ||
+        existing.ownership ||
+        !['provisioning', 'deleting'].includes(existing.status) ||
+        existing.providerId !== args.providerId ||
+        existing.createState !== 'entered'
+      ) {
+        return false;
+      }
+      this.records.set(args.taskId, {
+        ...existing,
+        createState: 'idle',
+        ...(args.providerSandboxId === undefined
+          ? {}
+          : { providerSandboxId: args.providerSandboxId }),
+        ...(args.providerSandboxId !== undefined &&
+        args.providerSandboxId !== existing.providerSandboxId
+          ? { cleanupOrphanConfirmedAt: undefined }
+          : {}),
+      });
+      return existing.status === 'provisioning';
+    }
     if (
       !existing?.ownership ||
       !['provisioning', 'running', 'deleting'].includes(existing.status) ||
@@ -174,6 +252,30 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       args.providerSandboxId !== existing.providerSandboxId
         ? { cleanupOrphanConfirmedAt: undefined }
         : {}),
+    });
+    return true;
+  }
+
+  async closeLegacySandboxRunCreateFence(
+    args: CloseLegacySandboxRunCreateFenceArgs,
+  ): Promise<boolean> {
+    const existing = this.records.get(args.taskId);
+    if (
+      !existing ||
+      existing.ownership ||
+      existing.status !== 'deleting' ||
+      existing.providerId !== args.providerId ||
+      (existing.providerSandboxId !== undefined &&
+        args.providerSandboxId !== undefined &&
+        existing.providerSandboxId !== args.providerSandboxId)
+    ) {
+      return false;
+    }
+    if (existing.createState === 'idle') return true;
+    if (existing.createState !== 'entered') return false;
+    this.records.set(args.taskId, {
+      ...existing,
+      createState: 'idle',
     });
     return true;
   }
@@ -277,7 +379,7 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       !existing ||
       existing.status !== 'deleting' ||
       existing.providerId !== authorization.providerId ||
-      (authorization.kind === 'generation' && existing.createState !== 'idle') ||
+      existing.createState !== 'idle' ||
       existing.cleanupAttemptInFlight === true ||
       !hasConfirmedCleanupEvidence(existing) ||
       !cleanupAuthorizationMatches(existing, authorization)
@@ -444,6 +546,7 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       existing.ownership ||
       existing.status === 'deleting' ||
       existing.cleanupAttemptInFlight === true ||
+      (evidence.outcome === 'succeeded' && existing.createState !== 'idle') ||
       evidence.attempt !== (existing.cleanupAttemptCount ?? 0) + 1
     ) {
       return { kind: 'conflict' };

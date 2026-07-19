@@ -27,6 +27,16 @@ The existing architecture imposes these constraints:
   output;
 - Public V1, MCP, OpenAPI, API Playground, and persistent schemas do not change.
 
+The first deployment canary proved the output-drain repair, then exposed a
+second race in the same provisioning lifetime. BoxLite may return a successful
+physical create response and invoke `onSandboxCreateObserved` before its
+provider-level `provision()` promise returns. The provider-center currently
+persists legacy ownership only after that promise resolves. If a terminal stop
+wins in between, cleanup sees no owner row and manufactures `already-absent`
+without consulting BoxLite. The late provider continuation can therefore leave
+the exact box running, while Guardrails logs `provision_failed` even though the
+task's cancelled terminal state correctly wins its database compare-and-set.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -41,6 +51,10 @@ The existing architecture imposes these constraints:
   bounded and deterministic.
 - Prove the fix with fake-transport race tests, provider conformance, repeated
   fast commands, real BoxLite E2E, and a final deployment canary.
+- Close the provider-create/owner-persistence window so terminal cleanup always
+  has either an exact observed sandbox id or provider-backed absence evidence.
+- Preserve the first terminal winner across task state, diagnostics, audit, and
+  cleanup-attempt settlement.
 
 **Non-Goals:**
 
@@ -174,6 +188,85 @@ Alternative considered: rely only on the remote canary. It is useful rollout
 evidence but combines provider, host load, forge networking, and credentials,
 making it unsuitable as the deterministic regression gate.
 
+### 6. Fence every legacy provider invocation before it can create
+
+Provider-center SHALL reuse the existing internal `sandbox_runs.create_state`
+protocol for legacy provisioning, without adding a database column or exposing
+new wire state. Before invoking the selected provider, CAP atomically inserts
+one ownerless legacy row in `entered` state. An existing row cannot be borrowed
+by another replica, so one durable pre-call fence identifies one invocation.
+Immediately before every external physical-create boundary, provider-center
+revalidates that the same row remains `provisioning + entered`; a terminal
+winner that changed it to `deleting` therefore prevents later create I/O.
+After publishing the ownerless fence and before invoking the selected provider,
+the Router also re-runs the upstream Task lifecycle guard. This closes the
+interval in which another replica could commit terminal state while no owner row
+was yet visible, and protects compatibility providers that never invoke the
+create-boundary callback themselves. Callback-aware providers repeat the same
+idempotent guard immediately before their physical create.
+
+When the provider observes a definitive create response, it compare-and-sets
+the exact provider sandbox id onto that still-live row before initialization
+continues. Compatibility providers that do not emit create callbacks must pass
+the same observation CAS after `provider.provision()` returns and before owner
+promotion. The final running-owner write is conditional on the same row still
+being live and back in `idle` state. A terminal cleanup that has already fenced
+or settled the row therefore prevents both callback-aware and generic success
+paths from recreating ownership. If observation or completion loses that race,
+the provider's existing partial-create cleanup deletes the exact resource and
+the router preserves cleanup as secondary evidence.
+
+For an `entered` terminal race, cleanup first performs a provider-backed probe,
+then joins the same-process provider invocation for a bounded interval. It may
+atomically close `entered` to `idle` only after that invocation has settled and
+a post-invocation teardown proves the task-derived or exact target absent. A
+join timeout, crashed/unknown invocation, or unconfirmed teardown remains
+`deleting + pending`; it never becomes synthetic success. Ordinary legacy rows
+whose create state is already `idle` retain the existing one-shot legacy
+settlement and do not manufacture a durable cleanup owner.
+
+This is an internal persistence protocol, not a durable-ownership migration:
+legacy rows retain null owner/resource generations, the current schema and
+retention behavior remain valid, and provider implementations keep their
+existing normalized contract.
+
+Alternative considered: record ownership only after `provision()` returns and
+teach `stop()` to retry later. That still leaves an unbounded period with no
+authoritative resource identity, relies on timing, and permits a late success
+write to resurrect a terminal task.
+
+### 7. Physical cleanup evidence, not owner-row absence, proves cleanup
+
+The absence of a legacy owner row is not evidence that no provider resource was
+created. When cleanup cannot resolve an owner, provider-center SHALL execute the
+registered providers' normalized teardown/absence checks for the task and
+aggregate their real outcomes. It SHALL report cleanup succeeded only when all
+eligible providers prove deletion or absence; indeterminate or failed probes
+remain truthful cleanup failures. When an observed owner exists, cleanup uses
+its provider and exact provider sandbox id.
+
+This fallback also repairs pre-change gaps and crash windows without a public
+task-cleanup API. It does not guess a BoxLite id, inspect provider internals, or
+introduce a BoxLite branch into Guardrails.
+
+Alternative considered: keep returning synthetic `already-absent` for a
+missing owner. The canary disproved that inference, so retaining it would make
+both resource safety and diagnostics knowingly false.
+
+### 8. Cancellation remains the truthful terminal winner
+
+After a provider promise settles, Guardrails rechecks the admission transition
+token before emitting provider failure logs, force-failed audit, or diagnostic
+primary failure. If stop/cancel already won, the continuation settles the
+attempt as cancelled/superseded, records the real cleanup result, clears its
+runtime admission state, and does not project a later provisioning failure onto
+the terminal task.
+
+This does not hide genuine failures: the provider failure path remains
+unchanged while the running admission is still authoritative. It only aligns
+structured logs, audit, attempt status, and task state around the same terminal
+compare-and-set winner.
+
 ## Risks / Trade-offs
 
 - **[Attach consumes the remaining command budget]** A command that settles near
@@ -198,6 +291,24 @@ making it unsuitable as the deterministic regression gate.
 - **[Remote canary depends on external systems]** Forge or host failures may
   obscure the regression signal. → Require unit, conformance, stress, and real
   provider E2E first, then interpret remote diagnostics stage-by-stage.
+- **[Terminal cleanup races a late create response]** Cleanup may first prove
+  absence and then a provider may observe a just-created resource. → The
+  unique pre-call fence is revalidated before create, rejects the late
+  observation/promotion if terminal wins later, and BoxLite's partial-create
+  handler deletes the exact returned id before the provider promise settles.
+- **[Provider ignores cancellation or its process disappears]** Terminal cleanup
+  cannot prove that an `entered` invocation has stopped merely from a local
+  timeout. → Bound the local join, retain `deleting + pending`, and close the
+  create fence only after provider settlement plus a final confirmed teardown;
+  never release it from owner-row absence alone.
+- **[Missing-owner fallback touches multiple providers]** A legacy task without
+  ownership cannot identify a single provider. → Use the existing registered
+  provider teardown fan-out, aggregate every outcome, and never infer success
+  from an empty persistence lookup.
+- **[A completion CAS can surface new cleanup work]** A provider may complete
+  after cancellation already settled ownership. → Treat the CAS loss as a
+  superseded create, invoke exact partial cleanup, and retain the original
+  terminal task state.
 
 ## Migration Plan
 
@@ -207,10 +318,14 @@ making it unsuitable as the deterministic regression gate.
    the tests that currently expect poll success to close an incomplete attach.
 3. Run focused BoxLite tests, full sandbox tests and coverage, strict OpenSpec
    validation, and gated native BoxLite E2E.
-4. Deploy the resulting release to a canary environment, create a task matching
+4. Add legacy create-boundary fencing, observed-id compare-and-set, provider-
+   backed no-owner cleanup, and terminal-winner settlement with deterministic
+   interleaving tests.
+5. Deploy the resulting release to a canary environment, create a task matching
    the failed `vibe-zlyan` configuration, and verify metadata preflight advances
-   into workspace/Git provisioning with bounded diagnostics and sandbox cleanup.
-5. Roll out normally once the canary passes. No database, API-client, MCP,
+   into workspace/Git provisioning with bounded diagnostics; cancel during
+   physical creation and prove the exact sandbox is absent afterward.
+6. Roll out normally once the canary passes. No database, API-client, MCP,
    OpenAPI, or Playground migration is required.
 
 Rollback is a normal image/code rollback because no persistent schema changes

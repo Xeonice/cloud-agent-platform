@@ -408,6 +408,8 @@ function diagnosticHarness() {
           state: 'succeeded' as const,
           providerFamily: 'aio' as const,
           initialSequence: 0,
+          primaryPersisted: true,
+          cleanup,
         },
       };
     },
@@ -719,7 +721,7 @@ test('owner-store acknowledgement uncertainty retains the exact durable cleanup 
   assert.deepEqual(destroyedSessions, [TASK_ID]);
   assert.deepEqual(diagnostics.stats(), {
     beginCalls: 1,
-    resumeCalls: 2,
+    resumeCalls: 3,
     appendCalls: 0,
     primaryCalls: 0,
     partialCalls: 0,

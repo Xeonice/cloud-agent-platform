@@ -23,6 +23,14 @@ allowlisted `transport_failed`, `protocol_failed`, or `settlement_unknown` cause
 that matches the failure and SHALL NOT fabricate a non-zero command exit code or
 add a new public diagnostic discriminator.
 
+Task terminal state, primary attempt state, cleanup outcome, and audit SHALL
+agree on the same lifecycle winner. When cancellation wins while provisioning
+is in flight, later provider success or failure SHALL NOT emit a competing
+`provision_failed` log/audit or leave the attempt active. The primary SHALL
+settle as cancelled, while cleanup SHALL remain independently pending until a
+provider confirms deletion or absence. A synthetic success derived only from a
+missing owner row is forbidden.
+
 The envelope SHALL be a strict discriminated union rather than an arbitrary
 metadata or diagnostic bag. A logical provider operation SHALL emit at most one
 start event and one terminal or degraded summary; BoxLite poll ticks, attach
@@ -49,3 +57,15 @@ message string.
 - **WHEN** a provisioning diagnostic event is accepted for durable persistence and mirrored to stdout
 - **THEN** both representations carry the same task id, attempt id, operation id, stage, outcome, safe cause, and event identity
 - **AND** no operator must correlate the records by timestamps or free-form message text alone
+
+#### Scenario: Stop wins over a late provisioning failure
+
+- **WHEN** a task is cancelled while provider provisioning is in flight and that provider later rejects
+- **THEN** the task and diagnostic primary remain cancelled and no later force-failed audit or `provision_failed` terminal claim is emitted
+- **AND** the attempt becomes complete only after its independent cleanup outcome is provider-confirmed
+
+#### Scenario: Cleanup success carries physical evidence
+
+- **WHEN** terminal cleanup runs before legacy ownership has reached running state
+- **THEN** cleanup succeeds only after a provider reports found-and-cleaned or confirmed absence
+- **AND** an empty persistence lookup cannot by itself produce a succeeded cleanup summary

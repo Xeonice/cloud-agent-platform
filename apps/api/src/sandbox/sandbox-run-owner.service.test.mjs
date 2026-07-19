@@ -576,6 +576,226 @@ try {
     assert.equal(settled.providerSandboxId, 'provider-assigned-r1');
   });
 
+  await test('ownerless legacy create is pre-registered and promoted only after exact observation', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+
+    assert.equal(
+      await service.beginSandboxRunCreate({
+        taskId: 'task-legacy-create-fence',
+        providerId: 'boxlite',
+      }),
+      true,
+    );
+    assert.equal(delegate.runs.length, 1);
+    assert.equal(delegate.runs[0].status, 'provisioning');
+    assert.equal(delegate.runs[0].createState, 'entered');
+    assert.equal(delegate.runs[0].ownerGeneration, null);
+    assert.equal(delegate.runs[0].resourceGeneration, null);
+    assert.equal(
+      await service.beginSandboxRunCreate({
+        taskId: 'task-legacy-create-fence',
+        providerId: 'boxlite',
+      }),
+      false,
+      'a second replica cannot borrow the first invocation fence',
+    );
+    assert.equal(
+      await service.beginSandboxRunCreate({
+        taskId: 'task-legacy-create-fence',
+        providerId: 'different-provider',
+      }),
+      false,
+    );
+    assert.equal(
+      await service.validateLegacySandboxRunCreateFence({
+        taskId: 'task-legacy-create-fence',
+        providerId: 'boxlite',
+      }),
+      true,
+    );
+    assert.equal(
+      await service.validateLegacySandboxRunCreateFence({
+        taskId: 'task-legacy-create-fence',
+        providerId: 'different-provider',
+      }),
+      false,
+    );
+    await assert.rejects(
+      service.recordSandboxRunOwner({
+        taskId: 'task-legacy-create-fence',
+        providerId: 'boxlite',
+        providerSandboxId: 'box-before-observation',
+        expectedProvisioningFence: 'legacy-create-observed',
+      }),
+      /Legacy sandbox provisioning fence is no longer current/,
+    );
+    assert.equal(
+      await service.observeSandboxRunCreate({
+        taskId: 'task-legacy-create-fence',
+        providerId: 'different-provider',
+        providerSandboxId: 'box-wrong',
+      }),
+      false,
+    );
+    assert.equal(
+      await service.observeSandboxRunCreate({
+        taskId: 'task-legacy-create-fence',
+        providerId: 'boxlite',
+        providerSandboxId: 'box-observed',
+      }),
+      true,
+    );
+    await service.recordSandboxRunOwner({
+      taskId: 'task-legacy-create-fence',
+      providerId: 'boxlite',
+      providerSandboxId: 'box-observed',
+      expectedProvisioningFence: 'legacy-create-observed',
+    });
+    assert.equal(delegate.runs.length, 1);
+    assert.equal(delegate.runs[0].status, 'running');
+    assert.equal(delegate.runs[0].createState, 'idle');
+    assert.equal(delegate.runs[0].providerSandboxId, 'box-observed');
+  });
+
+  await test('legacy deleting persists a late exact id before cleanup settles and rejects completion', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    await service.beginSandboxRunCreate({
+      taskId: 'task-legacy-late-create',
+      providerId: 'boxlite',
+    });
+    const cleanup = await service.beginSandboxRunCleanup(
+      'task-legacy-late-create',
+    );
+    assert.equal(cleanup.kind, 'authorized');
+
+    assert.deepEqual(
+      await service.settleLegacySandboxRunCleanup({
+        taskId: 'task-legacy-late-create',
+        providerId: 'boxlite',
+        disposition: 'superseded-remove',
+        status: 'removed',
+        evidence: {
+          attemptId: '11111111-1111-4111-8111-111111111111',
+          attempt: 1,
+          outcome: 'succeeded',
+          proof: 'already-absent',
+          cause: null,
+          retryable: false,
+          observedAt: new Date('2026-07-19T14:00:00.000Z'),
+        },
+      }),
+      { kind: 'conflict' },
+    );
+    assert.equal(
+      await service.observeSandboxRunCreate({
+        taskId: 'task-legacy-late-create',
+        providerId: 'boxlite',
+        providerSandboxId: 'box-late',
+      }),
+      false,
+    );
+    assert.equal(delegate.runs[0].status, 'deleting');
+    assert.equal(delegate.runs[0].createState, 'idle');
+    assert.equal(delegate.runs[0].providerSandboxId, 'box-late');
+    const deleting = await service.beginSandboxRunCleanup(
+      'task-legacy-late-create',
+    );
+    assert.equal(deleting.kind, 'authorized');
+    const allocated = await service.beginSandboxRunCleanupAttempt(
+      deleting.authorization,
+      '22222222-2222-4222-8222-222222222222',
+    );
+    assert.equal(allocated.kind, 'allocated');
+    const settled = await service.settleSandboxRunCleanupAttempt(
+      deleting.authorization,
+      {
+        attemptId: allocated.evidence.attemptId,
+        attempt: allocated.evidence.attempt,
+        outcome: 'succeeded',
+        proof: 'found-and-cleaned',
+        cause: null,
+        retryable: false,
+        observedAt: new Date('2026-07-19T14:00:01.000Z'),
+      },
+    );
+    assert.equal(settled.kind, 'recorded');
+    assert.equal(
+      await service.completeSandboxRunCleanup(
+        deleting.authorization,
+        'removed',
+      ),
+      true,
+    );
+    assert.equal(delegate.runs[0].status, 'removed');
+    await assert.rejects(
+      service.recordSandboxRunOwner({
+        taskId: 'task-legacy-late-create',
+        providerId: 'boxlite',
+        providerSandboxId: 'box-late',
+        expectedProvisioningFence: 'legacy-create-observed',
+      }),
+      /Legacy sandbox provisioning fence is no longer current/,
+    );
+    assert.equal(await service.getSandboxRunOwner('task-legacy-late-create'), null);
+    assert.equal(
+      await service.beginSandboxRunCreate({
+        taskId: 'task-legacy-late-create',
+        providerId: 'boxlite',
+      }),
+      false,
+      'a late boundary cannot create a second row after terminal cleanup',
+    );
+    assert.equal(delegate.runs.length, 1);
+  });
+
+  await test('post-invocation absence closes only the matching deleting legacy create fence', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({ sandboxRun: delegate });
+    await service.beginSandboxRunCreate({
+      taskId: 'task-legacy-close-create-fence',
+      providerId: 'boxlite',
+    });
+    const cleanup = await service.beginSandboxRunCleanup(
+      'task-legacy-close-create-fence',
+    );
+    assert.equal(cleanup.kind, 'authorized');
+    assert.equal(
+      await service.validateLegacySandboxRunCreateFence({
+        taskId: 'task-legacy-close-create-fence',
+        providerId: 'boxlite',
+      }),
+      false,
+      'the terminal deleting fence prevents a later physical create',
+    );
+
+    assert.equal(
+      await service.closeLegacySandboxRunCreateFence({
+        taskId: 'task-legacy-close-create-fence',
+        providerId: 'different-provider',
+      }),
+      false,
+    );
+    assert.equal(delegate.runs[0].createState, 'entered');
+    assert.equal(
+      await service.closeLegacySandboxRunCreateFence({
+        taskId: 'task-legacy-close-create-fence',
+        providerId: 'boxlite',
+      }),
+      true,
+    );
+    assert.equal(delegate.runs[0].createState, 'idle');
+    assert.equal(
+      await service.closeLegacySandboxRunCreateFence({
+        taskId: 'task-legacy-close-create-fence',
+        providerId: 'boxlite',
+      }),
+      true,
+      'the exact close is idempotent',
+    );
+  });
+
   await test('cleanup intent blocks takeover until exact generation cleanup completes', async () => {
     const delegate = new FakeSandboxRunDelegate();
     const service = new SandboxRunOwnerService({ sandboxRun: delegate });

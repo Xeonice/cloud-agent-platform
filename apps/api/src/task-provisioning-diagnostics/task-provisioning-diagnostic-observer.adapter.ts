@@ -62,6 +62,7 @@ export type TaskProvisioningDiagnosticObserverRecorder = Pick<
 export type TaskProvisioningDiagnosticObserverBeginRecorder = Pick<
   TaskProvisioningDiagnosticRecorderPort,
   | 'beginAttempt'
+  | 'resumeAttempt'
   | 'appendEvent'
   | 'recordPrimary'
   | 'recordCleanup'
@@ -79,7 +80,11 @@ export type TaskProvisioningDiagnosticObserverResumeRecorder = Pick<
 
 type TaskProvisioningDiagnosticObserverSettlementRecorder = Pick<
   TaskProvisioningDiagnosticRecorderPort,
-  'appendEvent' | 'recordPrimary' | 'recordCleanup' | 'markComplete'
+  | 'resumeAttempt'
+  | 'appendEvent'
+  | 'recordPrimary'
+  | 'recordCleanup'
+  | 'markComplete'
 >;
 
 const TaskProvisioningDiagnosticAttemptContextSchema = z
@@ -153,8 +158,22 @@ const ResumedTaskProvisioningDiagnosticAttemptSchema = z
       .int()
       .nonnegative()
       .max(TASK_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT),
+    primaryPersisted: z.boolean().optional(),
+    cleanup: TaskProvisioningDiagnosticCleanupSummarySchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.primaryPersisted !== undefined &&
+      (value.state !== 'active') !== value.primaryPersisted
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['primaryPersisted'],
+        message: 'primary persistence must match the retained attempt state',
+      });
+    }
+  });
 
 const TaskProvisioningDiagnosticPrimarySettlementInputSchema = z
   .object({
@@ -322,7 +341,10 @@ function createTaskProvisioningDiagnosticSettlementController(
   diagnostics: SandboxProvisioningDiagnosticEmitter,
   recorder: TaskProvisioningDiagnosticObserverSettlementRecorder,
   canonicalTerminalEvents: ReadonlyMap<string, TaskProvisioningDiagnosticEvent>,
-  options: { readonly primaryPersisted?: boolean } = {},
+  options: {
+    readonly primaryPersisted?: boolean;
+    readonly persistedCleanup?: TaskProvisioningDiagnosticCleanupSummary;
+  } = {},
 ): TaskProvisioningDiagnosticSettlementController {
   type ParsedPrimary = z.infer<
     typeof TaskProvisioningDiagnosticPrimarySettlementInputSchema
@@ -340,43 +362,81 @@ function createTaskProvisioningDiagnosticSettlementController(
   let primaryPersisted = options.primaryPersisted ?? false;
   let primaryInFlight: Promise<void> | undefined;
   let cleanupTail: Promise<void> = Promise.resolve();
-  let persistedCleanup: TaskProvisioningDiagnosticCleanupSummary | undefined;
+  let persistedCleanup = options.persistedCleanup;
   const cleanupInFlight = new Map<string, Promise<void>>();
+  let notRequiredCleanupAccepted = false;
   let completionMarked = false;
-  let finalizeInFlight: Promise<void> | undefined;
+  let finalizeTail: Promise<void> = Promise.resolve();
+
+  const refreshPersistedSettlement = async (): Promise<boolean> => {
+    const result = await recorder.resumeAttempt({
+      taskId: context.taskId,
+      admissionMode: context.admissionMode,
+      attempt: context.attempt,
+    });
+    if (!result.ok) return false;
+
+    const parsed = ResumedTaskProvisioningDiagnosticAttemptSchema.safeParse(
+      result.value,
+    );
+    if (
+      !parsed.success ||
+      parsed.data.context.taskId !== context.taskId ||
+      parsed.data.context.attemptId !== context.attemptId ||
+      parsed.data.context.attempt !== context.attempt ||
+      parsed.data.context.admissionMode !== context.admissionMode ||
+      parsed.data.primaryPersisted === undefined ||
+      parsed.data.cleanup === undefined
+    ) {
+      return false;
+    }
+    primaryPersisted = parsed.data.primaryPersisted;
+    persistedCleanup = parsed.data.cleanup;
+    return true;
+  };
 
   const maybeFinalize = (): Promise<void> => {
-    if (
-      !primaryPersisted ||
-      persistedCleanup === undefined ||
-      persistedCleanup.state === 'pending' ||
-      completionMarked
-    ) {
-      return Promise.resolve();
-    }
-    if (finalizeInFlight) return finalizeInFlight;
-
-    const running = runWithTaskProvisioningAttemptLog(context, async () => {
-      try {
-        // Include every provider fact accepted before this completeness fence.
-        await diagnostics.flush();
-        const result = await recorder.markComplete(context);
-        if (result.ok) completionMarked = true;
-      } catch {
-        // A later exact cleanup or primary replay may retry finalization.
-      }
-    });
-    finalizeInFlight = running;
-    void running.finally(() => {
-      if (finalizeInFlight === running) finalizeInFlight = undefined;
-    });
+    if (completionMarked) return Promise.resolve();
+    // Queue rather than coalesce completeness checks. A primary check may read
+    // just before cleanup commits (or vice versa); the later request must get a
+    // fresh authoritative read instead of joining that stale check.
+    const running = finalizeTail.then(() =>
+      runWithTaskProvisioningAttemptLog(context, async () => {
+        try {
+          if (completionMarked) return;
+          // Include every provider fact accepted before this completeness fence.
+          await diagnostics.flush();
+          // Controllers may persist primary and cleanup on different replicas.
+          // Re-read the exact attempt before entering markComplete's atomic DB
+          // proof instead of treating process-local settlement flags as truth.
+          if (!(await refreshPersistedSettlement())) return;
+          if (
+            !primaryPersisted ||
+            persistedCleanup === undefined ||
+            persistedCleanup.state === 'pending' ||
+            (persistedCleanup.state === 'not_required' &&
+              !notRequiredCleanupAccepted)
+          ) {
+            return;
+          }
+          const result = await recorder.markComplete(context);
+          if (result.ok) completionMarked = true;
+        } catch {
+          // A later exact cleanup or primary replay may retry finalization.
+        }
+      }),
+    );
+    finalizeTail = running.catch(() => undefined);
     return running;
   };
 
   const persistCleanup = async (
     cleanup: TaskProvisioningDiagnosticCleanupSummary,
   ): Promise<void> => {
-    if (sameCleanupSummary(persistedCleanup, cleanup)) {
+    if (
+      sameCleanupSummary(persistedCleanup, cleanup) &&
+      (cleanup.state !== 'not_required' || notRequiredCleanupAccepted)
+    ) {
       await maybeFinalize();
       return;
     }
@@ -386,6 +446,12 @@ function createTaskProvisioningDiagnosticSettlementController(
         const result = await recorder.recordCleanup(context, cleanup);
         if (!result.ok) return;
         persistedCleanup = cleanup;
+        if (cleanup.state === 'not_required') {
+          // The row default is also `not_required`; only the recorder's
+          // acknowledgement of an explicit orchestration decision may use it
+          // as completeness evidence.
+          notRequiredCleanupAccepted = true;
+        }
         await maybeFinalize();
       });
     } catch {
@@ -482,11 +548,18 @@ function createTaskProvisioningDiagnosticSettlementController(
       primaryPersisted = true;
     }
 
-    if (
-      primary.completion === 'mark_if_complete' &&
-      persistedCleanup === undefined
-    ) {
-      await settleCleanup(notRequiredCleanup);
+    if (primary.completion === 'mark_if_complete') {
+      // First refresh in case another controller already persisted real
+      // cleanup. Never overwrite pending/terminal physical evidence with the
+      // row's default not-required disposition.
+      await maybeFinalize();
+      if (
+        !completionMarked &&
+        (persistedCleanup === undefined ||
+          persistedCleanup.state === 'not_required')
+      ) {
+        await settleCleanup(notRequiredCleanup);
+      }
       return;
     }
     await maybeFinalize();
@@ -547,9 +620,12 @@ function createOrchestrationTaskProvisioningDiagnosticObserver(
   options: Pick<
     TaskProvisioningDiagnosticObserverInternalOptions,
     'initialSequence' | 'providerFamily'
-  > & { readonly primaryPersisted?: boolean } = {},
+  > & {
+    readonly primaryPersisted?: boolean;
+    readonly persistedCleanup?: TaskProvisioningDiagnosticCleanupSummary;
+  } = {},
 ): BegunTaskProvisioningDiagnosticObserver {
-  const { primaryPersisted, ...emitterOptions } = options;
+  const { primaryPersisted, persistedCleanup, ...emitterOptions } = options;
   const canonicalTerminalEvents = new Map<
     string,
     TaskProvisioningDiagnosticEvent
@@ -574,7 +650,7 @@ function createOrchestrationTaskProvisioningDiagnosticObserver(
       diagnostics,
       recorder,
       canonicalTerminalEvents,
-      { primaryPersisted },
+      { primaryPersisted, persistedCleanup },
     ),
   });
 }
@@ -680,7 +756,9 @@ export async function tryResumeTaskProvisioningDiagnosticObserver(
       {
         providerFamily: resumed.providerFamily,
         initialSequence: resumed.initialSequence,
-        primaryPersisted: resumed.state !== 'active',
+        primaryPersisted:
+          resumed.primaryPersisted ?? resumed.state !== 'active',
+        persistedCleanup: resumed.cleanup,
       },
     );
     return Object.freeze({ ...observer, state: resumed.state });

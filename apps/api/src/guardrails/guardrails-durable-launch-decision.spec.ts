@@ -3,7 +3,10 @@ import test from 'node:test';
 import type { ModuleRef } from '@nestjs/core';
 import {
   TaskProvisioningDiagnosticEventSchema,
+  type TaskProvisioningDiagnosticAttemptState,
+  type TaskProvisioningDiagnosticCleanupSummary,
   type TaskProvisioningDiagnosticEvent,
+  type TaskProvisioningDiagnosticProviderFamily,
 } from '@cap/contracts';
 import {
   SandboxCleanupCoordinationPendingError,
@@ -178,11 +181,21 @@ interface DiagnosticSettlementHarness {
 function diagnosticSettlementHarness(options: {
   readonly failAt?: DiagnosticSettlementStep;
   readonly trace?: string[];
+  readonly initialPrimaryState?: TaskProvisioningDiagnosticAttemptState;
+  readonly providerFamily?: TaskProvisioningDiagnosticProviderFamily | null;
 } = {}): DiagnosticSettlementHarness {
   const trace = options.trace ?? [];
   const events: TaskProvisioningDiagnosticEvent[] = [];
   const primaryInputs: unknown[] = [];
   const cleanupInputs: unknown[] = [];
+  let persistedPrimaryState = options.initialPrimaryState ?? 'active';
+  let persistedCleanup: TaskProvisioningDiagnosticCleanupSummary = {
+    state: 'not_required',
+    cause: null,
+    attemptCount: 0,
+    lastAttemptOutcome: null,
+    observedAt: null,
+  };
   const failure = {
     ok: false as const,
     code: 'diagnostic_write_failed' as const,
@@ -207,16 +220,31 @@ function diagnosticSettlementHarness(options: {
       events.push(event);
       return { ok: true as const, value: { event, replayed: false } };
     },
+    async resumeAttempt(input) {
+      return {
+        ok: true as const,
+        value: {
+          context: begunDiagnosticContext(input.attempt),
+          state: persistedPrimaryState,
+          providerFamily: options.providerFamily ?? 'unknown',
+          initialSequence: events.length,
+          primaryPersisted: persistedPrimaryState !== 'active',
+          cleanup: persistedCleanup,
+        },
+      };
+    },
     async recordPrimary(_context, input) {
       trace.push('record_primary');
       primaryInputs.push(input);
       if (options.failAt === 'record_primary') return failure;
+      persistedPrimaryState = input.state;
       return { ok: true as const, value: undefined as never };
     },
     async recordCleanup(_context, input) {
       trace.push('record_cleanup');
       cleanupInputs.push(input);
       if (options.failAt === 'record_cleanup') return failure;
+      persistedCleanup = input;
       return { ok: true as const, value: undefined as never };
     },
     async markComplete() {
@@ -228,6 +256,7 @@ function diagnosticSettlementHarness(options: {
     TaskProvisioningDiagnosticRecorderPort,
     | 'beginAttempt'
     | 'appendEvent'
+    | 'resumeAttempt'
     | 'recordPrimary'
     | 'recordCleanup'
     | 'markComplete'
@@ -407,13 +436,13 @@ test('one durable claim coalesces concurrent and completed replays without resum
       beginInputs.push(input);
       return { ok: true as const, value: begunDiagnosticContext(1) };
     },
-    async resumeAttempt() {
+    async resumeAttempt(
+      input: Parameters<
+        TaskProvisioningDiagnosticRecorderPort['resumeAttempt']
+      >[0],
+    ) {
       resumeCalls += 1;
-      return {
-        ok: false as const,
-        code: 'attempt_not_found' as const,
-        safeCause: 'coordination_failed' as const,
-      };
+      return diagnostics.recorder.resumeAttempt(input);
     },
   } as TaskProvisioningDiagnosticRecorderPort;
   const gateway = gatewayWithDecision(Promise.resolve({ kind: 'launched' }));
@@ -462,7 +491,7 @@ test('one durable claim coalesces concurrent and completed replays without resum
   assert.equal(await completedReplay, firstResult);
   assert.deepEqual(firstResult, { kind: 'succeeded' });
   assert.equal(beginInputs.length, 1);
-  assert.equal(resumeCalls, 0);
+  assert.equal(resumeCalls, 1);
   assert.equal(provisionCalls, 1);
   assert.equal(sessionCalls, 1);
   assert.deepEqual(checkpoints, [
@@ -545,13 +574,13 @@ test('retry and expired-lease recovery interrupt prior diagnostics, but only a p
         beginInputs.push(input);
         return { ok: true as const, value: begunDiagnosticContext(1) };
       },
-      async resumeAttempt() {
+      async resumeAttempt(
+        input: Parameters<
+          TaskProvisioningDiagnosticRecorderPort['resumeAttempt']
+        >[0],
+      ) {
         resumeCalls += 1;
-        return {
-          ok: false as const,
-          code: 'attempt_not_found' as const,
-          safeCause: 'coordination_failed' as const,
-        };
+        return diagnostics.recorder.resumeAttempt(input);
       },
     } as TaskProvisioningDiagnosticRecorderPort;
     const service = buildService(
@@ -596,7 +625,7 @@ test('retry and expired-lease recovery interrupt prior diagnostics, but only a p
           : {}),
       },
     ]);
-    assert.equal(resumeCalls, 0, scenario.sourceState);
+    assert.equal(resumeCalls, 1, scenario.sourceState);
   }
 });
 
@@ -1031,7 +1060,7 @@ test('durable late diagnostic begin success retires its detached attempt without
   assert.equal(diagnostics.primaryInputs.length, 0);
 
   lateBegin.resolve({ ok: true, value: begunDiagnosticContext() });
-  await waitFor(() => diagnostics.primaryInputs.length === 1);
+  await waitFor(() => diagnostics.trace.includes('mark_complete'));
 
   assert.deepEqual(
     diagnostics.events.map((event) => ({
@@ -1086,8 +1115,13 @@ test('durable late diagnostic begin success retires its detached attempt without
       },
     ],
   );
-  assert.deepEqual(diagnostics.cleanupInputs, []);
-  assert.equal(diagnostics.trace.includes('mark_complete'), false);
+  assert.deepEqual(
+    diagnostics.cleanupInputs.map((input) =>
+      (input as TaskProvisioningDiagnosticCleanupSummary).state,
+    ),
+    ['not_required'],
+  );
+  assert.equal(diagnostics.trace.includes('mark_complete'), true);
   assert.equal(
     diagnostics.trace.filter((step) => step === 'record_primary').length,
     1,
@@ -1835,7 +1869,10 @@ test('durable admission also accepts an attached session', async () => {
 });
 
 test('one terminal claim resumes its exact attempt and passes diagnostics to one cleanup across replays', async () => {
-  const diagnostics = diagnosticSettlementHarness();
+  const diagnostics = diagnosticSettlementHarness({
+    initialPrimaryState: 'failed',
+    providerFamily: 'boxlite',
+  });
   const resumeInputs: unknown[] = [];
   let beginCalls = 0;
   let cleanupClaimCalls = 0;
@@ -1849,17 +1886,13 @@ test('one terminal claim resumes its exact attempt and passes diagnostics to one
       beginCalls += 1;
       return { ok: true as const, value: begunDiagnosticContext(7) };
     },
-    async resumeAttempt(input) {
+    async resumeAttempt(
+      input: Parameters<
+        TaskProvisioningDiagnosticRecorderPort['resumeAttempt']
+      >[0],
+    ) {
       resumeInputs.push(input);
-      return {
-        ok: true as const,
-        value: {
-          context: begunDiagnosticContext(7),
-          state: 'failed' as const,
-          providerFamily: 'boxlite' as const,
-          initialSequence: 2,
-        },
-      };
+      return diagnostics.recorder.resumeAttempt(input);
     },
   } as TaskProvisioningDiagnosticRecorderPort;
   const cleanupAuthorization = {
@@ -1932,6 +1965,7 @@ test('one terminal claim resumes its exact attempt and passes diagnostics to one
     causeCode: 'provisioning_unknown',
   });
   assert.deepEqual(resumeInputs, [
+    { taskId: TASK_ID, admissionMode: 'durable', attempt: 7 },
     { taskId: TASK_ID, admissionMode: 'durable', attempt: 7 },
   ]);
   assert.equal(beginCalls, 0);
