@@ -186,6 +186,9 @@ function createProvider(options = {}) {
           data: { exit_code: 1, output: options.secretOutput ?? 'provider-private' },
         });
       }
+      if (options.shellExecBody !== undefined) {
+        return response(200, options.shellExecBody);
+      }
       return response(200);
     }
     return response(404);
@@ -695,6 +698,55 @@ await test('AIO deterministic transport satisfies the shared provider baseline',
     await scenario.run();
   }
   await teardown?.run();
+});
+
+await test('AIO atomic HTTP executor proves complete output without advertising command.exec', async () => {
+  const taskId = '39000000-0000-4000-8000-000000000001';
+  const fixture = createProvider({
+    shellExecBody: {
+      data: {
+        exit_code: 0,
+        stdout: 'cap-aio-atomic-stdout',
+        stderr: 'cap-aio-atomic-stderr',
+        output: 'cap-aio-atomic-stdoutcap-aio-atomic-stderr',
+      },
+    },
+  });
+
+  assert.equal(
+    fixture.provider.getProviderCapabilities().includes('command.exec'),
+    false,
+  );
+
+  try {
+    const connection = await fixture.provider.provision(
+      provisionContext({ taskId }),
+    );
+    const selectedRun = await fixture.provider.getSelectedSandboxRun(taskId);
+    assert.equal(selectedRun?.command?.protocol, 'aio-http-exec-v1');
+
+    const result = await fixture.provider
+      .createCommandExecutor(connection.baseUrl)
+      .exec({
+        command: 'printf cap-aio-atomic-output',
+        cwd: '/home/gem/workspace',
+        timeoutMs: 30_000,
+      });
+
+    conformance.assertSandboxCommandExecutionResult(result, assert);
+    assert.deepEqual(result, {
+      exitCode: 0,
+      stdout: 'cap-aio-atomic-stdout',
+      stderr: 'cap-aio-atomic-stderr',
+      output: 'cap-aio-atomic-stdoutcap-aio-atomic-stderr',
+      timedOut: false,
+    });
+    assert.deepEqual(fixture.shellCommands, [
+      "cd '/home/gem/workspace' && printf cap-aio-atomic-output",
+    ]);
+  } finally {
+    await fixture.provider.teardownSandbox(taskId);
+  }
 });
 
 await test('AIO behavior conformance drives real workspace and readoption seams', async () => {

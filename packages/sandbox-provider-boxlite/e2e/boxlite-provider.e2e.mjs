@@ -22,6 +22,7 @@ test(
     const provider = descriptor.provider;
     const taskId = `provider-e2e-${randomUUID().slice(0, 8)}`;
     let cleanupProvider = provider;
+    let cleanupRequired = true;
 
     try {
       const connection = await provider.provision({ taskId, cloneSpec: null });
@@ -58,6 +59,60 @@ test(
       assert.equal(exec.exitCode, 0, exec.output);
       assert.equal(exec.output.trim(), marker);
 
+      for (let index = 0; index < 50; index += 1) {
+        const fastMarker = `boxlite-fast-${index}-${randomUUID()}`;
+        const fast = await executor.exec({
+          command: `printf %s ${shellQuote(fastMarker)}`,
+          cwd: config.workspacePath,
+          timeoutMs: 30_000,
+        });
+        assert.equal(fast.exitCode, 0, fast.output);
+        assert.equal(fast.stdout, fastMarker);
+        assert.equal(fast.stderr, '');
+        assert.equal(fast.output, fastMarker);
+      }
+
+      const empty = await executor.exec({
+        command: ':',
+        cwd: config.workspacePath,
+        timeoutMs: 30_000,
+      });
+      assert.equal(empty.exitCode, 0, empty.output);
+      assert.equal(empty.stdout, '');
+      assert.equal(empty.stderr, '');
+      assert.equal(empty.output, '');
+
+      const stderrMarker = `boxlite-stderr-${randomUUID()}`;
+      const nonZero = await executor.exec({
+        command: `printf %s ${shellQuote(stderrMarker)} >&2; exit 7`,
+        cwd: config.workspacePath,
+        timeoutMs: 30_000,
+      });
+      assert.equal(nonZero.exitCode, 7);
+      assert.equal(nonZero.stdout, '');
+      assert.equal(nonZero.stderr, stderrMarker);
+      assert.equal(nonZero.output, stderrMarker);
+
+      const metadataResult = await executor.exec({
+        command: 'cat /etc/cap/sandbox-metadata.json',
+        timeoutMs: 30_000,
+      });
+      assert.equal(metadataResult.exitCode, 0, metadataResult.output);
+      const metadata = JSON.parse(metadataResult.stdout);
+      assert.equal(metadata.schemaVersion, 1);
+      assert.equal(
+        typeof metadata.sandboxVersion === 'string' &&
+          metadata.sandboxVersion.length > 0,
+        true,
+      );
+      assert.equal(
+        metadata.dependencies !== null &&
+          typeof metadata.dependencies === 'object' &&
+          !Array.isArray(metadata.dependencies) &&
+          Object.keys(metadata.dependencies).length > 0,
+        true,
+      );
+
       if (config.capabilities.includes('workspace.archive.transfer')) {
         const archiveName = `provider-e2e-archive-${randomUUID()}.txt`;
         const payload = `boxlite-archive-${randomUUID()}`;
@@ -77,7 +132,6 @@ test(
         );
       }
 
-      cleanupProvider = null;
       const readoptedDescriptor = mod.defineBoxLiteSandboxProvider({ config });
       const readoptedProvider = readoptedDescriptor.provider;
       cleanupProvider = readoptedProvider;
@@ -88,11 +142,17 @@ test(
       assert.equal(readoptedRun.command.protocol, 'boxlite-exec-v1');
 
       await readoptedProvider.teardownSandbox(taskId);
-      cleanupProvider = null;
       assert.equal(await readoptedProvider.sandboxExists(taskId), false);
+      cleanupRequired = false;
+      cleanupProvider = null;
     } finally {
-      if (cleanupProvider) {
-        await cleanupProvider.teardownSandbox(taskId).catch(() => undefined);
+      if (cleanupRequired && cleanupProvider) {
+        await cleanupProvider.teardownSandbox(taskId);
+        assert.equal(
+          await cleanupProvider.sandboxExists(taskId),
+          false,
+          'BoxLite provider e2e probe sandbox must be removed in finally',
+        );
       }
     }
   },
@@ -113,6 +173,11 @@ function requireLiveBoxLiteConfig() {
   if (!result.config.capabilities.includes('command.exec')) {
     throw new Error(
       'BoxLite provider e2e requires BOXLITE_CAPABILITIES to include command.exec; it will not fall back to AIO',
+    );
+  }
+  if (result.config.protocolMode !== 'native') {
+    throw new Error(
+      'BoxLite provider e2e output-drain coverage requires BOXLITE_PROTOCOL_MODE=native',
     );
   }
   return result.config;

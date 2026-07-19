@@ -2966,9 +2966,15 @@ await test('cloud provider passes applicable ownership behavior conformance', as
     baseUrl: 'https://cloud.example.test',
     fetch: state.fetch,
   });
+  assert.equal(
+    provider.getProviderCapabilities().includes('command.exec'),
+    false,
+  );
+  assert.equal(typeof provider.getCommandDescriptor, 'undefined');
   const getSelectedSandboxRun = provider.getSelectedSandboxRun.bind(provider);
   provider.getSelectedSandboxRun = async (selectedTaskId) => {
     const selected = await getSelectedSandboxRun(selectedTaskId);
+    assert.equal(selected?.command, undefined);
     if (trace.length === 0) appendTrace({ kind: 'provider-selected' });
     return selected;
   };

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
 
 let passed = 0;
@@ -43,6 +44,42 @@ function makeFetch(routes) {
     const route = routes[`${init.method ?? 'GET'} ${url.pathname}${url.search}`];
     if (!route) return response(404, { error: 'not found' });
     return typeof route === 'function' ? route({ url, init }) : route;
+  };
+}
+
+function nativeAttachFactory(resolveFrame = () => ({ exitCode: 0 })) {
+  return (url) => {
+    const executionId = decodeURIComponent(
+      new URL(url).pathname.split('/').at(-2),
+    );
+    const frame = resolveFrame(executionId);
+    const socket = new EventEmitter();
+    socket.close = () => socket.emit('close');
+    socket.terminate = () => socket.emit('close');
+    setImmediate(() => {
+      if (frame.stdout) {
+        socket.emit(
+          'message',
+          Buffer.concat([Buffer.from([1]), Buffer.from(frame.stdout)]),
+          true,
+        );
+      }
+      if (frame.stderr) {
+        socket.emit(
+          'message',
+          Buffer.concat([Buffer.from([2]), Buffer.from(frame.stderr)]),
+          true,
+        );
+      }
+      socket.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({ type: 'exit', exit_code: frame.exitCode }),
+        ),
+        false,
+      );
+    });
+    return socket;
   };
 }
 
@@ -229,6 +266,18 @@ await test('native REST client covers response fallback shapes and polling edges
   const client = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'native',
+    webSocketFactory: nativeAttachFactory((executionId) => {
+      switch (executionId) {
+        case 'exec-by-id':
+          return { exitCode: 124 };
+        case 'exec-by-code':
+          return { exitCode: 9, stderr: 'bad' };
+        case 'exec-output':
+          return { exitCode: 0, stdout: 'native output' };
+        default:
+          return { exitCode: 0 };
+      }
+    }),
     fetch: makeFetch({
       'POST /v1/default/boxes': response(200, {
         name: 'box-name-fallback',
@@ -319,7 +368,9 @@ await test('native REST client covers response fallback shapes and polling edges
   });
   await assert.rejects(
     () => invalidStartClient.startExecution({ sandboxId: 'box', command: 'sh' }),
-    /did not include an execution object/,
+    (error) =>
+      error?.code === 'sandbox_command_settlement_error' &&
+      error?.settlement === 'protocol',
   );
 
   const missingExecutionIdClient = new mod.BoxLiteRestClient({
@@ -331,12 +382,15 @@ await test('native REST client covers response fallback shapes and polling edges
   });
   await assert.rejects(
     () => missingExecutionIdClient.startExecution({ sandboxId: 'box', command: 'sh' }),
-    /missing execution id/,
+    (error) =>
+      error?.code === 'sandbox_command_settlement_error' &&
+      error?.settlement === 'protocol',
   );
 
   const invalidResultClient = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'native',
+    webSocketFactory: nativeAttachFactory(),
     fetch: makeFetch({
       'POST /v1/default/boxes/box/exec': response(200, { execution_id: 'exec-invalid' }),
       'GET /v1/default/boxes/box/executions/exec-invalid': response(200, null),
@@ -352,6 +406,9 @@ await test('native REST client covers response fallback shapes and polling edges
   const nativeFailureClient = new mod.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'native',
+    webSocketFactory: nativeAttachFactory((executionId) => ({
+      exitCode: executionId === 'exec-timeout-no-code' ? 124 : 0,
+    })),
     fetch: makeFetch({
       'PUT /v1/default/boxes/box/files?path=%2Fworkspace': response(500, null),
       'GET /v1/default/boxes/box/files?path=%2Fworkspace': response(500, null),
