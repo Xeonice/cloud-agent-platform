@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.41.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.41.1...v0.41.2) (2026-07-19)
+
+
+### Bug Fixes
+
+* fence legacy sandbox provisioning cancellation ([ee2460d](https://github.com/Xeonice/cloud-agent-platform/commit/ee2460d2469781bab26a21d1fee3b673b3a51d45))
+* fence legacy sandbox provisioning cancellation ([6711135](https://github.com/Xeonice/cloud-agent-platform/commit/6711135baa34fe560ebbf57167d470437124efba))
+
 ## [0.41.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.41.0...v0.41.1) (2026-07-19)
 
 
