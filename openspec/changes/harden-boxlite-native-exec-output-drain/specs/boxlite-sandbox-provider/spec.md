@@ -101,3 +101,35 @@ that output or the command that produced it.
 
 - **WHEN** CAP needs to capture or sync provider workspace files from BoxLite
 - **THEN** the provider downloads an archive through the workspace descriptor and CAP consumes it through the provider-neutral workspace bridge
+
+### Requirement: BoxLite cleanup preserves and follows the primary provisioning outcome
+
+The BoxLite provider SHALL preserve the primary failure, execute bounded
+cleanup, and report cleanup as an independent outcome when provisioning fails
+after a box may have been created. A cleanup exception MUST NOT replace the
+primary failure. Delete success SHALL require confirmed sandbox absence.
+BoxLite internal partial-create cleanup and provider-center fallback teardown
+SHALL share one cleanup lineage and remain idempotent.
+
+For task-scoped legacy provisioning, CAP SHALL persist the selected BoxLite
+provider and unique invocation fence before calling its provision path, SHALL
+revalidate that fence immediately before crossing `POST /boxes`, and SHALL
+persist the definitive box id from the create response before runtime setup or
+workspace materialization may continue. If cancellation or cleanup wins that
+race, boundary validation or the observation callback SHALL fail closed so the
+partial-create handler removes the exact returned box. Cleanup invoked without
+an observed id SHALL still probe/delete BoxLite's deterministic task-scoped id
+and confirm physical absence after the invocation settles; a missing CAP owner
+record or an expired local join is not cleanup proof.
+
+#### Scenario: Cancellation after physical create removes the exact box
+
+- **WHEN** BoxLite creates a box and task cancellation wins before provider provisioning returns
+- **THEN** CAP records or consumes the definitive box id and confirms that exact box is removed
+- **AND** runtime setup, workspace materialization, and agent launch do not continue as an authoritative task path
+
+#### Scenario: Cancellation before create acknowledgement remains fail closed
+
+- **WHEN** cancellation occurs after the create boundary while the BoxLite response is unresolved
+- **THEN** the provider request is cancelled and provider-center performs a real deterministic-id teardown/absence check after settlement
+- **AND** a late successful response is handled as a partial create and removed rather than exposed as running

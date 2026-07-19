@@ -105,8 +105,8 @@ export interface IGuardrailsService {
     params?: { deadlineMs?: number; idleTimeoutMs?: number; userId?: string },
   ): Promise<'running' | 'queued'>;
   /** Synchronous cancellation fence invoked immediately after a terminal write. */
-  fenceTerminal?(taskId: string): void;
-  onTerminal(taskId: string): Promise<void>;
+  fenceTerminal?(taskId: string, status?: TaskStatus): void;
+  onTerminal(taskId: string, status?: TaskStatus): Promise<void>;
   /** Strict, retryable cleanup used before durable admission work releases. */
   onDurableAdmissionTerminal?(
     taskId: string,
@@ -1653,7 +1653,8 @@ export class TasksService
       : {};
     let terminalSettlement: Promise<void> | undefined;
     let terminalFenceEstablished = false;
-    const startTerminalSettlement = (): void => {
+    let locallyConfirmedCasWinner = false;
+    const startTerminalSettlement = (confirmedStatus?: TaskStatus): void => {
       if (!isTerminal(next) || terminalFenceEstablished) return;
       terminalFenceEstablished = true;
       // Abort the in-process durable claim immediately after the Task CAS. A
@@ -1667,14 +1668,16 @@ export class TasksService
       // cross-replica recovery floor.
       this.taskAdmissionWake?.wake(id);
       if (!this.guardrails) return;
-      this.guardrails.fenceTerminal?.(id);
-      terminalSettlement = this.guardrails.onTerminal(id).catch((err: unknown) => {
-        this.logger.warn(
-          `guardrails onTerminal for task ${id} failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
+      this.guardrails.fenceTerminal?.(id, confirmedStatus);
+      terminalSettlement = this.guardrails
+        .onTerminal(id, confirmedStatus)
+        .catch((err: unknown) => {
+          this.logger.warn(
+            `guardrails onTerminal for task ${id} failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
     };
 
     let updated;
@@ -1769,6 +1772,9 @@ export class TasksService
         ) {
           throw err;
         }
+        // The requested status is observable, but an acknowledgement failure
+        // cannot prove whether this process or a same-target remote actor won
+        // the CAS. Fence and clean up without granting local failure ownership.
         startTerminalSettlement();
         updated = confirmed;
         break;
@@ -1778,7 +1784,8 @@ export class TasksService
         // The status CAS is the terminal linearization point. Establish the
         // in-process provider fence in this same continuation, before the
         // response-row re-read yields to any admission continuation.
-        startTerminalSettlement();
+        locallyConfirmedCasWinner = true;
+        startTerminalSettlement(next);
         updated = await this.prisma.task.findUnique({
           where: { id },
           include: TASK_RESPONSE_INCLUDE,
@@ -1812,20 +1819,26 @@ export class TasksService
     // started this before its post-CAS response read.
     startTerminalSettlement();
 
-    // 6.2 — the status write was ACCEPTED (an illegal edge would have thrown
-    // above, before any write): record one audit event for this transition,
-    // attributed to the operator's ACCOUNT id when known. Best-effort: never
-    // rolls back or blocks the transition.
+    // Only a locally confirmed count=1 CAS owns the append-only transition
+    // audit. After an acknowledgement failure, the observed target may have
+    // been committed by another replica and ordinary transition audits have no
+    // stable dedupe identity. Cleanup remains fail-closed above, but the
+    // ambiguous actor must not duplicate the remote winner's audit. If the
+    // local commit itself lost its acknowledgement this intentionally accepts
+    // one missing best-effort audit; eliminating that gap requires a durable
+    // lifecycle-version audit identity rather than guessing here.
     const response = taskResponseSchema.parse(taskResponseFromRecord(updated));
     await Promise.all([
-      this.recordAudit(() =>
-        this.audit?.recordTransition(
-          id,
-          next,
-          userId,
-          response.failure ?? undefined,
-        ),
-      ),
+      locallyConfirmedCasWinner
+        ? this.recordAudit(() => {
+            return this.audit?.recordTransition(
+              id,
+              next,
+              userId,
+              response.failure ?? undefined,
+            );
+          })
+        : Promise.resolve(),
       terminalSettlement ?? Promise.resolve(),
     ]);
 

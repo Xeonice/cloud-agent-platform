@@ -97,6 +97,68 @@ test('concurrent terminal transitions use status CAS and cannot overwrite the wi
   assert.deepEqual(settled, [TASK_ID]);
 });
 
+test('same-target terminal loser observes the remote winner without repeating audit or cleanup', async () => {
+  let status: TaskStatus = 'running';
+  let initialReads = 0;
+  let releaseInitialReads: (() => void) | undefined;
+  const initialReadGate = new Promise<void>((resolve) => {
+    releaseInitialReads = resolve;
+  });
+  const prisma = {
+    task: {
+      async findUnique() {
+        if (initialReads < 2) {
+          initialReads += 1;
+          if (initialReads === 2) releaseInitialReads?.();
+          await initialReadGate;
+        }
+        return taskRow(status);
+      },
+      async updateMany({
+        where,
+        data,
+      }: {
+        where: { id: string; status: TaskStatus };
+        data: { status: TaskStatus };
+      }) {
+        if (where.id !== TASK_ID || status !== where.status) return { count: 0 };
+        status = data.status;
+        return { count: 1 };
+      },
+    },
+  } as unknown as PrismaService;
+  let audits = 0;
+  const audit = {
+    async recordTransition() {
+      audits += 1;
+    },
+  } as unknown as AuditRecorderPort;
+  let fences = 0;
+  let settlements = 0;
+  const guardrails = {
+    fenceTerminal() {
+      fences += 1;
+    },
+    async onTerminal() {
+      settlements += 1;
+    },
+  } as unknown as IGuardrailsService;
+  const service = new TasksService(prisma, guardrails, audit);
+
+  const responses = await Promise.all([
+    service.transition(TASK_ID, 'failed'),
+    service.transition(TASK_ID, 'failed'),
+  ]);
+
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    ['failed', 'failed'],
+  );
+  assert.equal(audits, 1);
+  assert.equal(fences, 1);
+  assert.equal(settlements, 1);
+});
+
 test('the real stop path fences and starts teardown immediately after its terminal CAS', async () => {
   let status: TaskStatus = 'running';
   let findCalls = 0;
@@ -166,6 +228,55 @@ test('the real stop path fences and starts teardown immediately after its termin
 
   releaseAudit?.();
   assert.equal((await stopped).status, 'cancelled');
+});
+
+test('terminal acknowledgement uncertainty fences cleanup without claiming a local CAS winner', async () => {
+  const row = taskRow('running');
+  const prisma = {
+    task: {
+      findUnique() {
+        return Promise.resolve({ ...row });
+      },
+      async updateMany({
+        where,
+        data,
+      }: {
+        where: { id: string; status: TaskStatus };
+        data: { status: TaskStatus };
+      }) {
+        assert.equal(where.id, TASK_ID);
+        assert.equal(where.status, 'running');
+        row.status = data.status;
+        throw new Error('terminal CAS acknowledgement unavailable');
+      },
+    },
+  } as unknown as PrismaService;
+  const fencedStatuses: Array<TaskStatus | undefined> = [];
+  const settledStatuses: Array<TaskStatus | undefined> = [];
+  const guardrails = {
+    fenceTerminal(_taskId: string, status?: TaskStatus) {
+      fencedStatuses.push(status);
+    },
+    async onTerminal(_taskId: string, status?: TaskStatus) {
+      settledStatuses.push(status);
+    },
+  } as unknown as IGuardrailsService;
+  let audits = 0;
+  const audit = {
+    async recordTransition() {
+      audits += 1;
+    },
+  } as unknown as AuditRecorderPort;
+  const service = new TasksService(prisma, guardrails, audit);
+
+  assert.equal((await service.transition(TASK_ID, 'failed')).status, 'failed');
+  assert.deepEqual(fencedStatuses, [undefined]);
+  assert.deepEqual(settledStatuses, [undefined]);
+  assert.equal(
+    audits,
+    0,
+    'an acknowledgement-unknown actor cannot duplicate a remote winner audit',
+  );
 });
 
 test('runtime auth failure writes status and structured cause in one terminal CAS', async () => {

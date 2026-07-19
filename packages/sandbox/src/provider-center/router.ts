@@ -116,6 +116,8 @@ export type SandboxProviderRouterOptions = SelectSandboxProviderCandidateOptions
   readonly ownerStore?: SandboxRunOwnerStore;
   /** Persisted task constraint used during restart-time owner recovery. */
   readonly resolveTaskProviderId?: (taskId: string) => Promise<string | null>;
+  /** Maximum same-process wait for a legacy provider invocation to settle. */
+  readonly legacyProvisionJoinTimeoutMs?: number;
 };
 
 type RoutedSandboxCleanupResult =
@@ -160,6 +162,12 @@ interface RoutedSandboxDeliveryContext {
   readonly cleanup?: ProviderContextCleanupCallbacks;
 }
 
+interface LegacyProvisioningInFlight {
+  readonly providerId: string;
+  readonly settled: Promise<void>;
+  settle(): void;
+}
+
 /**
  * Facade over multiple local/cloud sandbox providers.
  *
@@ -185,6 +193,15 @@ export class SandboxProviderRouter<
   private readonly cleanupAttemptsInFlight = new Map<
     string,
     Promise<RoutedSandboxCleanupResult>
+  >();
+  /**
+   * Legacy admission is process-local, but its provider create fence is
+   * persisted. This promise lets a same-process terminal cleanup join the
+   * provider continuation before making its final absence check.
+   */
+  private readonly legacyProvisioningInFlight = new Map<
+    string,
+    LegacyProvisioningInFlight
   >();
   /**
    * Same-process proof that a provider still exposes the exact run persisted
@@ -254,6 +271,15 @@ export class SandboxProviderRouter<
           ctx.ownership,
         )
       : undefined;
+    const legacyCreateFence =
+      ownership === undefined &&
+      this.options.ownerStore?.beginSandboxRunCreate !== undefined &&
+      this.options.ownerStore.observeSandboxRunCreate !== undefined;
+    const legacyProvisioning = legacyCreateFence
+      ? createLegacyProvisioningInFlight(selected.id)
+      : undefined;
+    let legacyCreateBoundaryEntered = false;
+    let legacyCreateObserved = false;
     const providerCleanup = ownership
       ? this.createProviderContextCleanupCallbacks({
           authorize: async () => {
@@ -315,25 +341,42 @@ export class SandboxProviderRouter<
     const providerContext = snapshotSandboxProvisionContext({
       ...ctx,
       ...(ownership ? { ownership } : {}),
-      ...(ownership
+      ...(ownership || legacyCreateFence
         ? {
-            beforeSandboxCleanup: providerCleanup!.beforeSandboxCleanup,
             externalBoundaryGuard: async (event) => {
               await ctx.externalBoundaryGuard?.(event);
               if (
                 event.action === 'sandbox.create' &&
                 event.position === 'before'
               ) {
-                const entered = await this.options.ownerStore
-                  ?.beginSandboxRunCreate?.({
-                    taskId: ctx.taskId,
-                    providerId: selected.id,
-                    ownership,
-                  });
-                if (entered !== true) {
-                  throw new Error(
-                    'Sandbox create owner generation is no longer current',
-                  );
+                if (ownership === undefined) {
+                  if (!legacyCreateBoundaryEntered) {
+                    throw new Error(
+                      'Legacy sandbox invocation fence is not current',
+                    );
+                  }
+                  const current = await this.options.ownerStore
+                    ?.validateLegacySandboxRunCreateFence?.({
+                      taskId: ctx.taskId,
+                      providerId: selected.id,
+                    });
+                  if (current !== true) {
+                    throw new Error(
+                      'Legacy sandbox create fence is no longer current',
+                    );
+                  }
+                } else {
+                  const entered = await this.options.ownerStore
+                    ?.beginSandboxRunCreate?.({
+                      taskId: ctx.taskId,
+                      providerId: selected.id,
+                      ownership,
+                    });
+                  if (entered !== true) {
+                    throw new Error(
+                      'Sandbox create fence is no longer current',
+                    );
+                  }
                 }
               }
             },
@@ -342,7 +385,9 @@ export class SandboxProviderRouter<
                 ?.observeSandboxRunCreate?.({
                   taskId: ctx.taskId,
                   providerId: selected.id,
-                  resourceGeneration: ownership.resourceGeneration,
+                  ...(ownership === undefined
+                    ? {}
+                    : { resourceGeneration: ownership.resourceGeneration }),
                   ...(observation.kind !== 'created' ||
                   observation.providerSandboxId === undefined
                     ? {}
@@ -350,37 +395,97 @@ export class SandboxProviderRouter<
                 });
               if (observed !== true) {
                 throw new Error(
-                  'Sandbox create resource generation is no longer current',
+                  'Sandbox create observation is no longer current',
                 );
               }
+              if (ownership === undefined) legacyCreateObserved = true;
               await ctx.onSandboxCreateObserved?.(observation);
             },
-            afterSandboxCleanup: providerCleanup!.afterSandboxCleanup,
-            settleSandboxCleanupAttempt:
-              providerCleanup!.settleSandboxCleanupAttempt,
+            ...(providerCleanup
+              ? {
+                  beforeSandboxCleanup: providerCleanup.beforeSandboxCleanup,
+                  afterSandboxCleanup: providerCleanup.afterSandboxCleanup,
+                  settleSandboxCleanupAttempt:
+                    providerCleanup.settleSandboxCleanupAttempt,
+                }
+              : {}),
           }
         : {}),
     });
-    let connection: SandboxConnection;
+    if (legacyProvisioning) {
+      if (this.legacyProvisioningInFlight.has(ctx.taskId)) {
+        throw new Error('Task already has an in-flight legacy provision');
+      }
+      this.legacyProvisioningInFlight.set(ctx.taskId, legacyProvisioning);
+    }
     try {
+      if (legacyProvisioning) {
+        const entered = await this.options.ownerStore?.beginSandboxRunCreate?.({
+          taskId: ctx.taskId,
+          providerId: selected.id,
+        });
+        if (entered !== true) {
+          throw new Error('Sandbox create fence is no longer current');
+        }
+        legacyCreateBoundaryEntered = true;
+      }
+      let connection: SandboxConnection;
+    try {
+      if (legacyProvisioning) {
+        // Close the Task-CAS / ownerless-fence insertion interval even for a
+        // compatibility provider that never invokes the create callback. Keep
+        // this check inside the provider-failure cleanup boundary: a rejected
+        // upstream lifecycle check must retire the fence it just published.
+        // Callback-aware providers may invoke the same idempotent boundary
+        // again immediately before their physical I/O.
+        await providerContext.externalBoundaryGuard?.({
+          taskId: ctx.taskId,
+          action: 'sandbox.create',
+          position: 'before',
+        });
+      }
       connection = await selected.provider.provision(providerContext);
     } catch (error) {
       this.owners.delete(ctx.taskId);
+      if (legacyProvisioning) {
+        legacyProvisioning.settle();
+      }
       const finalization =
         (await providerCleanup?.settleIncomplete()) ?? { kind: 'none' as const };
-      if (isSandboxCleanupCoordinationPendingError(error)) throw error;
+      if (
+        isSandboxCleanupCoordinationPendingError(error) &&
+        !legacyProvisioning
+      ) {
+        throw error;
+      }
       if (finalization.kind === 'coordination-pending') {
         throw new SandboxCleanupCoordinationPendingError(error);
       }
       if (ownership) {
-        await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
-          ownership,
-          disposition: 'superseded-remove',
-          diagnostics: ctx.diagnostics,
-        });
+        try {
+          await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
+            ownership,
+            disposition: 'superseded-remove',
+            diagnostics: ctx.diagnostics,
+          });
+        } finally {
+          this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
+        }
       }
+      if (legacyProvisioning) {
+        try {
+          await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
+            disposition: 'superseded-remove',
+            diagnostics: ctx.diagnostics,
+          });
+        } finally {
+          this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
+        }
+      }
+      this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
       throw error;
     }
+    legacyProvisioning?.settle();
     const providerCleanupFinalization =
       (await providerCleanup?.settleIncomplete()) ?? { kind: 'none' as const };
     if (providerCleanupFinalization.kind === 'coordination-pending') {
@@ -410,6 +515,19 @@ export class SandboxProviderRouter<
       if (this.options.ownerStore) {
         const providerRun = await this.selectedRunFor(ctx.taskId, selected);
         const environment = providerRun?.environment ?? ctx.environment ?? undefined;
+        if (legacyProvisioning && !legacyCreateObserved) {
+          const observed = await this.options.ownerStore.observeSandboxRunCreate?.({
+            taskId: ctx.taskId,
+            providerId: selected.id,
+            ...(providerRun?.providerSandboxId === undefined
+              ? {}
+              : { providerSandboxId: providerRun.providerSandboxId }),
+          });
+          if (observed !== true) {
+            throw new Error('Sandbox create observation is no longer current');
+          }
+          legacyCreateObserved = true;
+        }
         await this.options.ownerStore.recordSandboxRunOwner({
           taskId: ctx.taskId,
           providerId: selected.id,
@@ -417,6 +535,9 @@ export class SandboxProviderRouter<
             ? {}
             : { providerSandboxId: providerRun.providerSandboxId }),
           ownership,
+          ...(legacyProvisioning
+            ? { expectedProvisioningFence: 'legacy-create-observed' as const }
+            : {}),
           status: 'running',
           connection,
           environment,
@@ -441,9 +562,25 @@ export class SandboxProviderRouter<
           diagnostics: ctx.diagnostics,
         });
       }
+      if (legacyProvisioning) {
+        try {
+          await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
+            disposition: 'superseded-remove',
+            diagnostics: ctx.diagnostics,
+          });
+        } finally {
+          this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
+        }
+      }
+      this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
       throw error;
     }
+    this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
     return connection;
+    } finally {
+      legacyProvisioning?.settle();
+      this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
+    }
   }
 
   async teardownSandbox(
@@ -729,29 +866,284 @@ export class SandboxProviderRouter<
       readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
     },
   ): Promise<RoutedSandboxCleanupResult> {
+    const disposition = options.disposition ?? 'terminal-retain';
+    const attemptKey = `legacy:${taskId}:${disposition}`;
+    const replay = this.cleanupAttemptsInFlight.get(attemptKey);
+    if (replay) return replay;
+    const attempt = this.runLegacySandboxCleanup(taskId, options);
+    this.cleanupAttemptsInFlight.set(attemptKey, attempt);
+    try {
+      return await attempt;
+    } finally {
+      if (this.cleanupAttemptsInFlight.get(attemptKey) === attempt) {
+        this.cleanupAttemptsInFlight.delete(attemptKey);
+      }
+    }
+  }
+
+  private async runLegacySandboxCleanup(
+    taskId: string,
+    options: {
+      readonly disposition?: SandboxTeardownDisposition;
+      readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
+    },
+  ): Promise<RoutedSandboxCleanupResult> {
     const ownerStore = this.options.ownerStore;
     if (!ownerStore) return coordinationPendingCleanup();
-    const owner = await ownerStore.getSandboxRunOwner(taskId);
+    let resumedDurableLegacy = false;
+    let owner = await ownerStore.getSandboxRunOwner(taskId);
     if (!owner) {
       const authority = await this.getSandboxCleanupAuthority(taskId);
       this.owners.delete(taskId);
+      const inFlight = this.legacyProvisioningInFlight.get(taskId);
       if (authority.status === null) {
-        return routedCleanup(confirmedAbsentCleanup(), false);
+        const physical = await this.runLegacyProviderBackedCleanup(
+          taskId,
+          options,
+          inFlight?.providerId,
+        );
+        if (
+          inFlight &&
+          !(await waitForLegacyProvisioningSettled(
+            inFlight.settled,
+            this.options.legacyProvisionJoinTimeoutMs,
+          ))
+        ) {
+          return coordinationPendingCleanup(
+            physical.outcome === 'succeeded' ? unconfirmedCleanup() : physical,
+          );
+        }
+        if (inFlight) {
+          const refreshedAuthority = await this.getSandboxCleanupAuthority(taskId);
+          if (refreshedAuthority.status !== null) {
+            return this.runLegacySandboxCleanup(taskId, options);
+          }
+        }
+        // A provider invocation may have crossed create after the first probe.
+        // Once it settles, repeat the idempotent check to close that interval.
+        const settledPhysical = inFlight
+          ? await this.runLegacyProviderBackedCleanup(
+              taskId,
+              options,
+              inFlight.providerId,
+            )
+          : physical;
+        return routedCleanup(settledPhysical, false);
       }
-      const physical = physicalCleanupForAuthority(authority);
-      // `getSandboxRunOwner` deliberately excludes deleting rows. Seeing no
-      // active owner therefore does not mean cleanup authority is absent: an
-      // ordinary/legacy caller must not bypass an already-running durable
-      // cleanup or release its slot before the authoritative status settles.
-      return authority.state === 'pending'
-        ? coordinationPendingCleanup(physical)
-        : routedCleanup(physical, false);
+      if (
+        authority.state === 'pending' &&
+        authority.ownershipKind === 'legacy' &&
+        ownerStore.beginSandboxRunCleanup
+      ) {
+        const resumed = await ownerStore.beginSandboxRunCleanup(taskId);
+        if (
+          resumed.kind === 'authorized' &&
+          resumed.authorization.kind === 'legacy'
+        ) {
+          owner = resumed.owner;
+          resumedDurableLegacy = true;
+        } else if (resumed.kind === 'settled') {
+          return routedCleanup(
+            physicalCleanupForSettledOwner(resumed.owner),
+            false,
+          );
+        } else {
+          return coordinationPendingCleanup(
+            physicalCleanupForAuthority(authority),
+          );
+        }
+      }
+      if (owner) {
+        // Continue below with the resumed ownerless deleting authority.
+      } else {
+        const physical = physicalCleanupForAuthority(authority);
+        // `getSandboxRunOwner` deliberately excludes deleting rows. Seeing no
+        // active owner therefore does not mean cleanup authority is absent: an
+        // ordinary caller must not bypass generation-fenced cleanup or release
+        // its slot before the authoritative status settles.
+        return authority.state === 'pending'
+          ? coordinationPendingCleanup(physical)
+          : routedCleanup(physical, false);
+      }
     }
     // A generation owner must be claimed by an admission/reconciliation lease.
     // Never invent a synthetic generation from the ordinary terminal path.
     if (owner.ownership) return coordinationPendingCleanup();
-    const entry = this.registry.get(owner.providerId);
+    if (!resumedDurableLegacy && owner.createState !== 'entered') {
+      return this.runDirectLegacySandboxCleanup(taskId, owner, options);
+    }
+    const beginCleanup = ownerStore.beginSandboxRunCleanup;
+    if (!beginCleanup) return coordinationPendingCleanup();
+    const cleanup = await beginCleanup.call(ownerStore, taskId);
+    if (cleanup.kind === 'settled') {
+      return routedCleanup(physicalCleanupForSettledOwner(cleanup.owner), false);
+    }
+    if (cleanup.kind !== 'authorized' || cleanup.authorization.kind !== 'legacy') {
+      return coordinationPendingCleanup();
+    }
+    owner = cleanup.owner;
+    const initialCleanupOwner = owner;
+    const entry = this.registry.get(initialCleanupOwner.providerId);
     if (!entry) return coordinationPendingCleanup();
+    const disposition = options.disposition ?? 'terminal-retain';
+    let preliminaryPhysical: SandboxPhysicalCleanupResult | undefined;
+    if (initialCleanupOwner.createState === 'entered') {
+      preliminaryPhysical = await runSandboxPhysicalCleanup(() =>
+        entry.provider.teardownSandbox(taskId, {
+          ...(initialCleanupOwner.providerSandboxId === undefined
+            ? {}
+            : { providerSandboxId: initialCleanupOwner.providerSandboxId }),
+          disposition,
+          ...(options.diagnostics === undefined
+            ? {}
+            : { diagnostics: options.diagnostics }),
+        }),
+      );
+      this.owners.delete(taskId);
+      const inFlight = this.legacyProvisioningInFlight.get(taskId);
+      if (!inFlight || inFlight.providerId !== initialCleanupOwner.providerId) {
+        return coordinationPendingCleanup(
+          preliminaryPhysical.outcome === 'succeeded'
+            ? unconfirmedCleanup()
+            : preliminaryPhysical,
+        );
+      }
+      if (
+        !(await waitForLegacyProvisioningSettled(
+          inFlight.settled,
+          this.options.legacyProvisionJoinTimeoutMs,
+        ))
+      ) {
+        return coordinationPendingCleanup(
+          preliminaryPhysical.outcome === 'succeeded'
+            ? unconfirmedCleanup()
+            : preliminaryPhysical,
+        );
+      }
+      const refreshed = await beginCleanup.call(ownerStore, taskId);
+      if (
+        refreshed.kind !== 'authorized' ||
+        refreshed.authorization.kind !== 'legacy'
+      ) {
+        return refreshed.kind === 'settled'
+          ? routedCleanup(
+              physicalCleanupForSettledOwner(refreshed.owner),
+              false,
+            )
+          : coordinationPendingCleanup(preliminaryPhysical);
+      }
+      owner = refreshed.owner;
+    }
+    if (
+      !ownerStore.beginSandboxRunCleanupAttempt ||
+      !ownerStore.settleSandboxRunCleanupAttempt ||
+      !ownerStore.completeSandboxRunCleanup ||
+      (owner.createState === 'entered' &&
+        !ownerStore.closeLegacySandboxRunCreateFence)
+    ) {
+      return coordinationPendingCleanup(preliminaryPhysical);
+    }
+    const authorization = Object.freeze({
+      kind: 'legacy' as const,
+      taskId,
+      providerId: owner.providerId,
+    });
+    const previouslySettled = cleanupEvidenceForOwner(owner);
+    if (
+      owner.cleanupAttemptInFlight !== true &&
+      owner.createState === 'idle' &&
+      previouslySettled?.outcome === 'succeeded'
+    ) {
+      const physical = sandboxPhysicalCleanupResultFromEvidence(
+        previouslySettled,
+      );
+      const completed = await ownerStore.completeSandboxRunCleanup(
+        authorization,
+        disposition === 'superseded-remove' ? 'removed' : 'terminal',
+      );
+      return completed
+        ? routedCleanup(physical, false)
+        : coordinationPendingCleanup(physical);
+    }
+    const allocated = await ownerStore.beginSandboxRunCleanupAttempt(
+      authorization,
+      randomUUID(),
+    );
+    if (allocated.kind !== 'allocated') {
+      return coordinationPendingCleanup(
+        'evidence' in allocated
+          ? sandboxPhysicalCleanupResultFromEvidence(allocated.evidence)
+          : preliminaryPhysical,
+      );
+    }
+    const cleanupOwner = owner;
+    let physical: SandboxPhysicalCleanupResult;
+    try {
+      physical = await runSandboxPhysicalCleanup(() =>
+        entry.provider.teardownSandbox(taskId, {
+          ...(cleanupOwner.providerSandboxId === undefined
+            ? {}
+            : { providerSandboxId: cleanupOwner.providerSandboxId }),
+          disposition,
+          ...(options.diagnostics === undefined
+            ? {}
+            : { diagnostics: options.diagnostics }),
+        }),
+      );
+    } finally {
+      this.owners.delete(taskId);
+    }
+    let effectivePhysical = physical;
+    if (physical.outcome === 'succeeded' && cleanupOwner.createState === 'entered') {
+      const closed = await ownerStore.closeLegacySandboxRunCreateFence?.({
+        taskId,
+        providerId: cleanupOwner.providerId,
+        ...(cleanupOwner.providerSandboxId === undefined
+          ? {}
+          : { providerSandboxId: cleanupOwner.providerSandboxId }),
+      });
+      if (closed !== true) effectivePhysical = unconfirmedCleanup();
+    }
+    const evidence = sandboxCleanupAttemptEvidence(
+      allocated.evidence.attempt,
+      allocated.evidence.attemptId,
+      effectivePhysical,
+    );
+    const settled = await ownerStore.settleSandboxRunCleanupAttempt(
+      authorization,
+      evidence,
+    );
+    if (settled.kind === 'stale' || settled.kind === 'conflict') {
+      return coordinationPendingCleanup(effectivePhysical);
+    }
+    if (effectivePhysical.outcome !== 'succeeded') {
+      // This is the exceptional terminal-winner/create-in-flight path. Keep
+      // its deleting fence until a later bounded attempt can prove absence;
+      // ordinary idle legacy owners use the direct terminal settlement path.
+      return coordinationPendingCleanup(effectivePhysical);
+    }
+    const completed = await ownerStore.completeSandboxRunCleanup(
+      authorization,
+      disposition === 'superseded-remove' ? 'removed' : 'terminal',
+    );
+    return completed
+      ? routedCleanup(effectivePhysical, false)
+      : coordinationPendingCleanup(effectivePhysical);
+  }
+
+  private async runDirectLegacySandboxCleanup(
+    taskId: string,
+    owner: SandboxRunOwnerRecord,
+    options: {
+      readonly disposition?: SandboxTeardownDisposition;
+      readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
+    },
+  ): Promise<RoutedSandboxCleanupResult> {
+    const ownerStore = this.options.ownerStore;
+    const entry = this.registry.get(owner.providerId);
+    if (!ownerStore?.settleLegacySandboxRunCleanup || !entry) {
+      return coordinationPendingCleanup();
+    }
     const disposition = options.disposition ?? 'terminal-retain';
     let physical: SandboxPhysicalCleanupResult;
     try {
@@ -767,12 +1159,7 @@ export class SandboxProviderRouter<
         }),
       );
     } finally {
-      // Legacy owns only the process-local route. Release it after the bounded
-      // physical disposition even if coordination/evidence is indeterminate.
       this.owners.delete(taskId);
-    }
-    if (!ownerStore.settleLegacySandboxRunCleanup) {
-      return coordinationPendingCleanup(physical);
     }
     const evidence = sandboxCleanupAttemptEvidence(
       (owner.cleanupAttemptCount ?? 0) + 1,
@@ -793,6 +1180,50 @@ export class SandboxProviderRouter<
     return settled.kind === 'recorded' || settled.kind === 'replayed'
       ? routedCleanup(physical, false)
       : coordinationPendingCleanup(physical);
+  }
+
+  private async runLegacyProviderBackedCleanup(
+    taskId: string,
+    options: {
+      readonly disposition?: SandboxTeardownDisposition;
+      readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
+    },
+    providerId?: string,
+  ): Promise<SandboxPhysicalCleanupResult> {
+    const selectedEntry =
+      providerId === undefined ? undefined : this.registry.get(providerId);
+    const entries =
+      providerId === undefined
+        ? this.registry.list()
+        : selectedEntry
+          ? [selectedEntry]
+          : [];
+    if (entries.length === 0) return unconfirmedCleanup();
+    const results = await Promise.all(
+      entries.map((entry) =>
+        runSandboxPhysicalCleanup(() =>
+          entry.provider.teardownSandbox(taskId, {
+            disposition: options.disposition ?? 'terminal-retain',
+            ...(options.diagnostics === undefined
+              ? {}
+              : { diagnostics: options.diagnostics }),
+          }),
+        ),
+      ),
+    );
+    return aggregateCleanupResults(results);
+  }
+
+  private forgetLegacyProvisioning(
+    taskId: string,
+    attempt: LegacyProvisioningInFlight | undefined,
+  ): void {
+    if (
+      attempt &&
+      this.legacyProvisioningInFlight.get(taskId) === attempt
+    ) {
+      this.legacyProvisioningInFlight.delete(taskId);
+    }
   }
 
   /**
@@ -2249,6 +2680,50 @@ function confirmedAbsentCleanup(): SandboxPhysicalCleanupResult {
 
 function unconfirmedCleanup(): SandboxPhysicalCleanupResult {
   return normalizeSandboxPhysicalCleanupResult(undefined);
+}
+
+function createLegacyProvisioningInFlight(
+  providerId: string,
+): LegacyProvisioningInFlight {
+  let resolveSettled!: () => void;
+  let didSettle = false;
+  const settled = new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  });
+  return Object.freeze({
+    providerId,
+    settled,
+    settle: () => {
+      if (didSettle) return;
+      didSettle = true;
+      resolveSettled();
+    },
+  });
+}
+
+const DEFAULT_LEGACY_PROVISION_JOIN_TIMEOUT_MS = 1_000;
+
+async function waitForLegacyProvisioningSettled(
+  settled: Promise<void>,
+  configuredTimeoutMs: number | undefined,
+): Promise<boolean> {
+  const timeoutMs =
+    configuredTimeoutMs !== undefined &&
+    Number.isFinite(configuredTimeoutMs) &&
+    configuredTimeoutMs > 0
+      ? Math.floor(configuredTimeoutMs)
+      : DEFAULT_LEGACY_PROVISION_JOIN_TIMEOUT_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      settled.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 function aggregateCleanupResults(

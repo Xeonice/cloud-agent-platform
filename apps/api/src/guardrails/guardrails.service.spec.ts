@@ -113,6 +113,36 @@ function buildService(
   return service;
 }
 
+function installConfirmedTerminalCas(
+  service: GuardrailsService,
+  options: {
+    readonly trace?: string[];
+    readonly statuses?: TaskStatus[];
+    readonly provisioningFailures?: string[];
+  } = {},
+): void {
+  const tasks = (service as unknown as { tasks: Record<string, unknown> }).tasks;
+  const commit = async (taskId: string, status: TaskStatus): Promise<object> => {
+    options.trace?.push('task_cas');
+    options.statuses?.push(status);
+    service.fenceTerminal(taskId, status);
+    await service.onTerminal(taskId, status);
+    return { status };
+  };
+  Object.assign(tasks, {
+    async transition(taskId: string, status: TaskStatus) {
+      return commit(taskId, status);
+    },
+    async failWithProvisioningFailure(taskId: string, cause: string) {
+      options.provisioningFailures?.push(cause);
+      return commit(taskId, 'failed');
+    },
+    async failWithRuntimeFailure(taskId: string) {
+      return commit(taskId, 'failed');
+    },
+  });
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     if (predicate()) return;
@@ -135,6 +165,12 @@ function deferred<T = void>(): {
       resolvePromise(value as T);
     },
   };
+}
+
+function createAbortErrorForTest(): Error {
+  const error = new Error('cancelled');
+  error.name = 'AbortError';
+  return error;
 }
 
 type DiagnosticBeginRecorder = Pick<
@@ -177,6 +213,13 @@ function diagnosticSettlementHarness(options: {
   const events: TaskProvisioningDiagnosticEvent[] = [];
   const primaryInputs: unknown[] = [];
   const cleanupInputs: unknown[] = [];
+  let persistedPrimaryState: Exclude<
+    import('@cap/contracts').TaskProvisioningDiagnosticAttemptState,
+    'active'
+  > | undefined;
+  let persistedCleanup:
+    | import('@cap/contracts').TaskProvisioningDiagnosticCleanupSummary
+    | undefined;
   const failure = {
     ok: false as const,
     code: 'diagnostic_write_failed' as const,
@@ -205,13 +248,30 @@ function diagnosticSettlementHarness(options: {
       trace.push('record_primary');
       primaryInputs.push(input);
       if (options.failAt === 'record_primary') return failure;
+      persistedPrimaryState = input.state;
       return { ok: true as const, value: undefined as never };
     },
     async recordCleanup(_context, input) {
       trace.push('record_cleanup');
       cleanupInputs.push(input);
       if (options.failAt === 'record_cleanup') return failure;
+      persistedCleanup = input;
       return { ok: true as const, value: undefined as never };
+    },
+    async resumeAttempt(input) {
+      return {
+        ok: true as const,
+        value: {
+          context: begunDiagnosticContext(input.taskId, input.admissionMode),
+          state: persistedPrimaryState ?? 'active',
+          providerFamily: 'unknown' as const,
+          initialSequence: events.length,
+          primaryPersisted: persistedPrimaryState !== undefined,
+          ...(persistedCleanup === undefined
+            ? {}
+            : { cleanup: persistedCleanup }),
+        },
+      };
     },
     async markComplete() {
       trace.push('mark_complete');
@@ -224,6 +284,7 @@ function diagnosticSettlementHarness(options: {
     | 'appendEvent'
     | 'recordPrimary'
     | 'recordCleanup'
+    | 'resumeAttempt'
     | 'markComplete'
   >;
 
@@ -610,8 +671,16 @@ test('legacy late diagnostic begin success retires its detached attempt without 
       },
     ],
   );
-  assert.deepEqual(diagnostics.cleanupInputs, []);
-  assert.equal(diagnostics.trace.includes('mark_complete'), false);
+  assert.deepEqual(diagnostics.cleanupInputs, [
+    {
+      state: 'not_required',
+      cause: null,
+      attemptCount: 0,
+      lastAttemptOutcome: null,
+      observedAt: null,
+    },
+  ]);
+  assert.equal(diagnostics.trace.includes('mark_complete'), true);
   assert.equal(
     diagnostics.trace.filter((step) => step === 'record_primary').length,
     1,
@@ -850,7 +919,7 @@ test('legacy fenced launch proof leaves diagnostics unsettled and preserves the 
   assert.equal(service.connectionFor(TASK_ID)?.taskId, TASK_ID);
 });
 
-test('legacy launch observer does not write success after the running transition fence is superseded', async () => {
+test('legacy launch observer retires the attempt without writing success after the running fence is superseded', async () => {
   const diagnostics = diagnosticSettlementHarness();
   const decision = deferred<AgentTerminalLaunchOutcome>();
   let current = true;
@@ -888,8 +957,28 @@ test('legacy launch observer does not write success after the running transition
   await waitFor(() => currentChecks > checksBeforeDecision);
   await new Promise<void>((resolve) => setImmediate(resolve));
 
-  assert.deepEqual(diagnostics.events, []);
-  assert.deepEqual(diagnostics.primaryInputs, []);
+  assert.deepEqual(
+    diagnostics.events.map((event) => ({
+      stage: event.stage,
+      operation: event.operation,
+      outcome: event.outcome,
+      ...(event.outcome === 'started' ? {} : { cause: event.cause }),
+    })),
+    [
+      {
+        stage: 'agent_launch',
+        operation: 'agent_launch',
+        outcome: 'started',
+      },
+      {
+        stage: 'agent_launch',
+        operation: 'agent_launch',
+        outcome: 'indeterminate',
+        cause: 'settlement_unknown',
+      },
+    ],
+  );
+  assert.equal(diagnostics.primaryInputs.length, 1);
   assert.deepEqual(diagnostics.cleanupInputs, []);
   assert.equal(diagnostics.trace.includes('mark_complete'), false);
 });
@@ -1023,13 +1112,14 @@ test('legacy admission remains authoritative when diagnostic append or primary p
   }
 });
 
-test('legacy missing sandbox records a complete provider-unavailable selection diagnostic without changing the running slot', async () => {
+test('legacy missing sandbox records provider-unavailable evidence only after the failed Task CAS', async () => {
   const diagnostics = diagnosticSettlementHarness();
   const service = buildService(async () => 'transitioned', {
     isCurrent: async () => true,
     provisioningDiagnosticRecorder: diagnostics.recorder,
     provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
   });
+  installConfirmedTerminalCas(service, { trace: diagnostics.trace });
 
   assert.equal(await service.admit(TASK_ID), 'running');
   await waitFor(() => diagnostics.trace.includes('mark_complete'));
@@ -1055,14 +1145,19 @@ test('legacy missing sandbox records a complete provider-unavailable selection d
   assert.equal(diagnostics.primaryInputs.length, 1);
   assert.equal(diagnostics.cleanupInputs.length, 1);
   assert.equal(diagnostics.trace.includes('mark_complete'), true);
-  assert.equal(service.runningCount, 1);
+  assert.ok(
+    diagnostics.trace.indexOf('task_cas') <
+      diagnostics.trace.indexOf('record_primary'),
+  );
+  assert.equal(service.runningCount, 0);
   assert.equal(service.connectionFor(TASK_ID), undefined);
 });
 
-test('legacy pre-provider plan and selection failures settle complete evidence without changing Task handling', async () => {
+test('legacy pre-provider plan and selection failures settle complete evidence after the failed Task CAS', async () => {
   for (const variant of ['plan', 'selection'] as const) {
     const diagnostics = diagnosticSettlementHarness();
     const taskFailures: string[] = [];
+    const taskStatuses: TaskStatus[] = [];
     let providerCalls = 0;
     const sandbox = {
       getSandboxMode: () => 'danger-full-access',
@@ -1091,19 +1186,10 @@ test('legacy pre-provider plan and selection failures settle complete evidence w
       provisioningDiagnosticRecorder: diagnostics.recorder,
       provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
     });
-    const serviceTasks = (
-      service as unknown as { tasks: Record<string, unknown> }
-    ).tasks;
-    Object.assign(serviceTasks, {
-      async failWithProvisioningFailure(_taskId: string, cause: string) {
-        diagnostics.trace.push('task_failure');
-        taskFailures.push(`provisioning:${cause}`);
-        return {};
-      },
-      async transition(_taskId: string, status: string) {
-        diagnostics.trace.push('task_failure');
-        taskFailures.push(`transition:${status}`);
-      },
+    installConfirmedTerminalCas(service, {
+      trace: diagnostics.trace,
+      statuses: taskStatuses,
+      provisioningFailures: taskFailures,
     });
 
     assert.equal(await service.admit(TASK_ID), 'running', variant);
@@ -1144,15 +1230,157 @@ test('legacy pre-provider plan and selection failures settle complete evidence w
       variant,
     );
     assert.ok(
-      diagnostics.trace.indexOf('record_primary') <
-        diagnostics.trace.indexOf('task_failure'),
-      `${variant}: healthy diagnostic primary precedes Task failure handling`,
+      diagnostics.trace.indexOf('task_cas') <
+        diagnostics.trace.indexOf('record_primary'),
+      `${variant}: failed Task CAS precedes diagnostic primary`,
     );
     assert.deepEqual(
       taskFailures,
       variant === 'plan'
-        ? ['provisioning:provisioning_ref_not_found']
-        : ['transition:failed'],
+        ? ['provisioning_ref_not_found']
+        : [],
+      variant,
+    );
+    assert.deepEqual(taskStatuses, ['failed'], variant);
+  }
+});
+
+test('remote same-target failed winner releases only the local legacy admission across plan selection and provider failures', async () => {
+  for (const variant of ['plan', 'selection', 'provider'] as const) {
+    const diagnostics = diagnosticSettlementHarness();
+    let terminalTransitionCalls = 0;
+    let providerCalls = 0;
+    let teardownCalls = 0;
+    let unregisterCalls = 0;
+    let forceFailureAuditCalls = 0;
+    const failureLogs: string[] = [];
+    const sandbox = {
+      getSandboxMode: () => 'danger-full-access',
+      getProviderCapabilities() {
+        if (variant === 'selection') throw new Error('selection unavailable');
+        return ['terminal.websocket'];
+      },
+      async provision() {
+        providerCalls += 1;
+        throw new SandboxProvisioningStageError('runtime_setup');
+      },
+      async teardownSandbox() {
+        teardownCalls += 1;
+      },
+    } as unknown as SandboxProvider;
+    const service = buildService(async () => 'transitioned', {
+      sandbox,
+      isCurrent: async () => true,
+      provisionLookup: {
+        ...DEFAULT_PROVISION_LOOKUP,
+        async getTaskLaunchContext() {
+          if (variant === 'plan') {
+            throw new TaskBranchResolutionError('branch_not_found');
+          }
+          return DEFAULT_PROVISION_LOOKUP.getTaskLaunchContext(TASK_ID);
+        },
+      },
+      provisioningDiagnosticRecorder: diagnostics.recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    });
+    const tasks = (service as unknown as { tasks: Record<string, unknown> })
+      .tasks;
+    Object.assign(tasks, {
+      async transition() {
+        terminalTransitionCalls += 1;
+        return { status: 'failed' };
+      },
+      async failWithProvisioningFailure() {
+        terminalTransitionCalls += 1;
+        return { status: 'failed' };
+      },
+    });
+    Object.assign(service, {
+      prisma: {
+        task: {
+          async findUnique() {
+            return { status: 'failed' };
+          },
+        },
+      },
+      audit: {
+        async recordForceFailed() {
+          forceFailureAuditCalls += 1;
+        },
+      },
+      logger: {
+        debug() {},
+        error(message: unknown) {
+          failureLogs.push(String(message));
+        },
+        log() {},
+        warn(message: unknown) {
+          failureLogs.push(String(message));
+        },
+      },
+      gateway: {
+        openSession() {
+          assert.fail('a failed remote winner cannot open a local session');
+        },
+        unregisterSession() {
+          unregisterCalls += 1;
+        },
+        async readSessionLogTail() {
+          return '';
+        },
+      },
+    });
+
+    assert.equal(
+      await service.admit(TASK_ID, {
+        deadlineMs: 60_000,
+        idleTimeoutMs: 30_000,
+      }),
+      'running',
+      variant,
+    );
+
+    const primary = diagnostics.primaryInputs[0] as {
+      readonly state: string;
+      readonly primary: {
+        readonly outcome: string;
+        readonly cause: string | null;
+      };
+    };
+    assert.deepEqual(
+      {
+        state: primary?.state,
+        outcome: primary?.primary.outcome,
+        cause: primary?.primary.cause,
+      },
+      {
+        state: 'interrupted',
+        outcome: 'indeterminate',
+        cause: 'settlement_unknown',
+      },
+      `${variant}: remote winner cannot persist the local provider failure`,
+    );
+    assert.equal(diagnostics.primaryInputs.length, 1, variant);
+    assert.equal(terminalTransitionCalls, 1, variant);
+    assert.equal(providerCalls, variant === 'provider' ? 1 : 0, variant);
+    assert.equal(teardownCalls, 0, variant);
+    assert.equal(forceFailureAuditCalls, 0, variant);
+    assert.deepEqual(failureLogs, [], variant);
+    assert.equal(unregisterCalls, 1, variant);
+    assert.equal(service.runningCount, 0, variant);
+    assert.equal(service.queuedCount, 0, variant);
+    const internals = service as unknown as {
+      idle: { isTracking(taskId: string): boolean };
+      deadlines: { isWatching(taskId: string): boolean };
+      runnerMinutes: { intervals(): Array<{ endedAt: number | null }> };
+    };
+    assert.equal(internals.idle.isTracking(TASK_ID), false, variant);
+    assert.equal(internals.deadlines.isWatching(TASK_ID), false, variant);
+    assert.equal(
+      internals.runnerMinutes
+        .intervals()
+        .some(({ endedAt }) => endedAt === null),
+      false,
       variant,
     );
   }
@@ -1163,7 +1391,7 @@ test('legacy terminal authority preserves failed or indeterminate physical clean
     const diagnostics = diagnosticSettlementHarness({
       failAt: variant === 'typed-throw' ? 'record_primary' : undefined,
     });
-    const taskTransitions: string[] = [];
+    const taskTransitions: TaskStatus[] = [];
     let gatewayCalls = 0;
     const sandbox = {
       getSandboxMode: () => 'danger-full-access',
@@ -1210,14 +1438,9 @@ test('legacy terminal authority preserves failed or indeterminate physical clean
       provisioningDiagnosticRecorder: diagnostics.recorder,
       provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
     });
-    const serviceTasks = (
-      service as unknown as { tasks: Record<string, unknown> }
-    ).tasks;
-    Object.assign(serviceTasks, {
-      async transition(_taskId: string, status: string) {
-        diagnostics.trace.push('task_failure');
-        taskTransitions.push(status);
-      },
+    installConfirmedTerminalCas(service, {
+      trace: diagnostics.trace,
+      statuses: taskTransitions,
     });
     Object.assign(service, {
       gateway: {
@@ -1229,7 +1452,7 @@ test('legacy terminal authority preserves failed or indeterminate physical clean
     });
 
     assert.equal(await service.admit(TASK_ID), 'running', variant);
-    await waitFor(() => diagnostics.primaryInputs.length === 1);
+    await waitFor(() => diagnostics.primaryInputs.length >= 1);
     const terminal = diagnostics.events.find(
       (event) => event.outcome !== 'started',
     );
@@ -1258,7 +1481,11 @@ test('legacy terminal authority preserves failed or indeterminate physical clean
           },
       variant,
     );
-    assert.equal(diagnostics.primaryInputs.length, 1, variant);
+    assert.equal(
+      diagnostics.primaryInputs.length,
+      variant === 'typed-throw' ? 2 : 1,
+      variant,
+    );
     assert.equal(diagnostics.cleanupInputs.length, 1, variant);
     assert.deepEqual(
       diagnostics.cleanupInputs.map((input) => {
@@ -1301,9 +1528,9 @@ test('legacy terminal authority preserves failed or indeterminate physical clean
     assert.equal(gatewayCalls, 0, variant);
     assert.equal(service.runningCount, 0, variant);
     assert.ok(
-      diagnostics.trace.indexOf('record_primary') <
-        diagnostics.trace.indexOf('task_failure'),
-      `${variant}: healthy diagnostic primary precedes force-fail transition`,
+      diagnostics.trace.indexOf('task_cas') <
+        diagnostics.trace.indexOf('record_primary'),
+      `${variant}: failed Task CAS precedes diagnostic primary`,
     );
   }
 });
@@ -1651,6 +1878,7 @@ test('operator stop fenced during the running transition prevents provider start
 });
 
 test('operator stop while diagnostic begin is pending prevents stale provider start', async () => {
+  const diagnostics = diagnosticSettlementHarness();
   const beginEntered = deferred<void>();
   const beginResult = deferred<{
     readonly ok: true;
@@ -1666,15 +1894,13 @@ test('operator stop while diagnostic begin is pending prevents stale provider st
     },
     async teardownSandbox() {},
   } as unknown as SandboxProvider;
-  const recorder = diagnosticRecorder({
+  const recorder = {
+    ...diagnostics.recorder,
     async beginAttempt() {
       beginEntered.resolve();
       return beginResult.promise;
     },
-    async appendEvent() {
-      assert.fail('a post-begin superseded admission cannot emit diagnostics');
-    },
-  });
+  } as TaskProvisioningDiagnosticRecorderPort;
   const service = buildService(async () => 'transitioned', {
     sandbox,
     isCurrent: async () => true,
@@ -1684,13 +1910,34 @@ test('operator stop while diagnostic begin is pending prevents stale provider st
 
   const admission = service.admit(TASK_ID);
   await beginEntered.promise;
-  await service.onTerminal(TASK_ID);
+  await service.onTerminal(TASK_ID, 'cancelled');
   beginResult.resolve({
     ok: true,
     value: begunDiagnosticContext(TASK_ID, 'legacy'),
   });
 
   assert.equal(await admission, 'running');
+  await waitFor(() => diagnostics.primaryInputs.length === 1);
+  const primary = diagnostics.primaryInputs[0] as {
+    readonly state: string;
+    readonly stage: string;
+    readonly primary: { readonly outcome: string; readonly cause: string | null };
+  };
+  assert.deepEqual(
+    {
+      state: primary.state,
+      stage: primary.stage,
+      outcome: primary.primary.outcome,
+      cause: primary.primary.cause,
+    },
+    {
+      state: 'cancelled',
+      stage: 'provider_selection',
+      outcome: 'cancelled',
+      cause: 'cancelled',
+    },
+  );
+  assert.equal(diagnostics.trace.includes('mark_complete'), true);
   assert.equal(provisionCalls, 0);
   assert.equal(service.runningCount, 0);
 });
@@ -1727,38 +1974,148 @@ test('operator stop during provision tears down the late sandbox result', async 
   assert.equal(service.runningCount, 0);
 });
 
-test('legacy provider rejection after stop does not write a competing diagnostic primary', async () => {
+test('legacy provider rejection after stop records cancelled complete evidence without force-fail', async () => {
   const diagnostics = diagnosticSettlementHarness();
   const provisionEntered = deferred<void>();
   const releaseProvision = deferred<void>();
+  let provisionContext: SandboxProvisionContext | undefined;
   let teardownCalls = 0;
   const sandbox = {
     getSandboxMode: () => 'danger-full-access',
     getProviderCapabilities: () => ['terminal.websocket'],
-    async provision() {
+    async provision(context: SandboxProvisionContext) {
+      provisionContext = context;
+      const operationId = context.diagnostics?.createOperationId();
+      if (operationId && context.diagnostics) {
+        await context.diagnostics.emit({
+          operationId,
+          stage: 'runtime_setup',
+          operation: 'runtime_setup',
+          channel: 'primary',
+          commandKind: 'runtime_setup',
+          outcome: 'started',
+        });
+      }
       provisionEntered.resolve();
       await releaseProvision.promise;
       throw new SandboxProvisioningStageError('runtime_setup');
     },
     async teardownSandbox() {
       teardownCalls += 1;
+      return {
+        outcome: 'succeeded',
+        proof: 'already-absent',
+        cause: null,
+        retryable: false,
+      } as const;
     },
   } as unknown as SandboxProvider;
-  const service = buildService(async () => 'transitioned', {
-    sandbox,
-    isCurrent: async () => true,
-    provisioningDiagnosticRecorder: diagnostics.recorder,
-    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  const transitions: string[] = [];
+  const service = buildService(
+    async (_taskId, next) => {
+      transitions.push(next);
+      return 'transitioned';
+    },
+    {
+      sandbox,
+      isCurrent: async () => true,
+      provisioningDiagnosticRecorder: diagnostics.recorder,
+      provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+    },
+  );
+  const errorLogs: string[] = [];
+  let failProvisioningCalls = 0;
+  Object.assign(service, {
+    logger: {
+      debug() {},
+      error(message: unknown) {
+        errorLogs.push(String(message));
+      },
+      log() {},
+      warn() {},
+    },
+    async failProvisioning() {
+      failProvisioningCalls += 1;
+    },
   });
 
   const admission = service.admit(TASK_ID);
   await provisionEntered.promise;
-  await service.onTerminal(TASK_ID);
+  assert.equal(provisionContext?.cancellationSignal?.aborted, false);
+  const terminal = service.onTerminal(TASK_ID, 'cancelled');
+  assert.equal(
+    provisionContext?.cancellationSignal?.aborted,
+    true,
+    'the terminal fence aborts provider work synchronously',
+  );
+  const externalBoundaryGuard = provisionContext?.externalBoundaryGuard;
+  assert.ok(externalBoundaryGuard);
+  await assert.rejects(
+    externalBoundaryGuard({
+      taskId: TASK_ID,
+      action: 'sandbox.create',
+      position: 'before',
+    }),
+    { name: 'AbortError' },
+  );
+  await terminal;
   releaseProvision.resolve();
 
   assert.equal(await admission, 'running');
-  assert.deepEqual(diagnostics.events, []);
-  assert.deepEqual(diagnostics.primaryInputs, []);
+  assert.deepEqual(
+    diagnostics.events.map((event) => ({
+      stage: event.stage,
+      operation: event.operation,
+      outcome: event.outcome,
+      cause: event.outcome === 'started' ? undefined : event.cause,
+    })),
+    [
+      {
+        stage: 'runtime_setup',
+        operation: 'runtime_setup',
+        outcome: 'started',
+        cause: undefined,
+      },
+      {
+        stage: 'runtime_setup',
+        operation: 'runtime_setup',
+        outcome: 'started',
+        cause: undefined,
+      },
+      {
+        stage: 'runtime_setup',
+        operation: 'runtime_setup',
+        outcome: 'cancelled',
+        cause: 'cancelled',
+      },
+    ],
+  );
+  assert.deepEqual(
+    diagnostics.primaryInputs.map((input) => {
+      const primary = input as {
+        readonly state: string;
+        readonly stage: string;
+        readonly primary: {
+          readonly outcome: string;
+          readonly cause: string | null;
+        };
+      };
+      return {
+        state: primary.state,
+        stage: primary.stage,
+        outcome: primary.primary.outcome,
+        cause: primary.primary.cause,
+      };
+    }),
+    [
+      {
+        state: 'cancelled',
+        stage: 'runtime_setup',
+        outcome: 'cancelled',
+        cause: 'cancelled',
+      },
+    ],
+  );
   assert.equal(diagnostics.cleanupInputs.length, 1);
   assert.deepEqual(
     (() => {
@@ -1778,15 +2135,218 @@ test('legacy provider rejection after stop does not write a competing diagnostic
       };
     })(),
     {
-      state: 'pending',
-      cause: 'cleanup_unconfirmed',
+      state: 'succeeded',
+      cause: null,
       attemptCount: 1,
-      lastAttemptOutcome: 'indeterminate',
+      lastAttemptOutcome: 'succeeded',
       observed: true,
     },
   );
-  assert.equal(diagnostics.trace.includes('mark_complete'), false);
-  assert.ok(teardownCalls >= 2, 'existing terminal and force-fail cleanup remains');
+  assert.equal(diagnostics.trace.includes('mark_complete'), true);
+  assert.equal(teardownCalls, 1, 'only the terminal owner performs cleanup');
+  assert.deepEqual(transitions, ['running']);
+  assert.equal(errorLogs.length, 0);
+  assert.equal(failProvisioningCalls, 0);
+  assert.equal(service.runningCount, 0);
+});
+
+test('cancelled Task CAS winner suppresses provision-failure primary log and audit', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  const transitionEntered = deferred<void>();
+  const releaseFailedTransition = deferred<void>();
+  const failureLogs: string[] = [];
+  let forceFailAudits = 0;
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision() {
+      throw new SandboxProvisioningStageError('runtime_setup');
+    },
+    async teardownSandbox() {
+      return {
+        outcome: 'succeeded',
+        proof: 'already-absent',
+        cause: null,
+        retryable: false,
+      } as const;
+    },
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+    provisioningDiagnosticRecorder: diagnostics.recorder,
+    provisioningDiagnosticWriteGate: diagnosticWriteGate(true),
+  });
+  const tasks = (service as unknown as { tasks: Record<string, unknown> }).tasks;
+  Object.assign(tasks, {
+    async transition() {
+      transitionEntered.resolve();
+      await releaseFailedTransition.promise;
+      throw new Error('failed transition lost to cancelled');
+    },
+  });
+  Object.assign(service, {
+    logger: {
+      debug() {},
+      error(message: unknown) {
+        failureLogs.push(String(message));
+      },
+      log() {},
+      warn(message: unknown) {
+        failureLogs.push(String(message));
+      },
+    },
+    audit: {
+      async recordForceFailed() {
+        forceFailAudits += 1;
+      },
+    },
+  });
+
+  const admission = service.admit(TASK_ID);
+  await transitionEntered.promise;
+  service.fenceTerminal(TASK_ID, 'cancelled');
+  const cancelledSettlement = service.onTerminal(TASK_ID, 'cancelled');
+  releaseFailedTransition.resolve();
+
+  assert.equal(await admission, 'running');
+  await cancelledSettlement;
+  assert.equal(diagnostics.primaryInputs.length, 1);
+  const primary = diagnostics.primaryInputs[0] as {
+    readonly state: string;
+    readonly primary: { readonly outcome: string; readonly cause: string | null };
+  };
+  assert.deepEqual(
+    {
+      state: primary.state,
+      outcome: primary.primary.outcome,
+      cause: primary.primary.cause,
+    },
+    { state: 'cancelled', outcome: 'cancelled', cause: 'cancelled' },
+  );
+  assert.equal(forceFailAudits, 0);
+  assert.equal(
+    failureLogs.some((message) => message.includes('provision sandbox')),
+    false,
+  );
+  assert.equal(
+    failureLogs.some((message) => message.includes('force-failing')),
+    false,
+  );
+});
+
+test('legacy provisioning composes the plan cancellation signal with its terminal signal', async () => {
+  const contextEntered = deferred<SandboxProvisionContext>();
+  const releaseProvision = deferred<void>();
+  const planCancellation = new AbortController();
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision(context: SandboxProvisionContext) {
+      contextEntered.resolve(context);
+      await releaseProvision.promise;
+      return { taskId: TASK_ID, wsUrl: 'ws://127.0.0.1:1' };
+    },
+    async teardownSandbox() {
+      return {
+        outcome: 'succeeded',
+        proof: 'found-and-cleaned',
+        cause: null,
+        retryable: false,
+      } as const;
+    },
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+  });
+  Object.assign(service, {
+    async resolveProvisionPlan() {
+      return {
+        cloneSpec: null,
+        modelIntent: { kind: 'runtime-default' as const },
+        runtimeId: 'codex',
+        executionMode: 'interactive-pty' as const,
+        cancellationSignal: planCancellation.signal,
+        requiredCapabilities: ['terminal.websocket'],
+        featureCapabilities: ['terminal.websocket'],
+      };
+    },
+  });
+
+  const admission = service.admit(TASK_ID);
+  const context = await contextEntered.promise;
+  assert.equal(context.cancellationSignal?.aborted, false);
+
+  planCancellation.abort();
+  assert.equal(
+    context.cancellationSignal?.aborted,
+    true,
+    'either source aborts the composed provider signal',
+  );
+
+  releaseProvision.resolve();
+  assert.equal(await admission, 'running');
+  await service.onTerminal(TASK_ID);
+  assert.equal(service.runningCount, 0);
+});
+
+test('legacy external boundary guard aborts immediately while the running-fence read is stalled', async () => {
+  const contextEntered = deferred<SandboxProvisionContext>();
+  const releaseProvision = deferred<void>();
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision(context: SandboxProvisionContext) {
+      contextEntered.resolve(context);
+      await releaseProvision.promise;
+      throw createAbortErrorForTest();
+    },
+    async teardownSandbox() {
+      return {
+        outcome: 'succeeded',
+        proof: 'already-absent',
+        cause: null,
+        retryable: false,
+      } as const;
+    },
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+  });
+
+  const admission = service.admit(TASK_ID);
+  const context = await contextEntered.promise;
+  const tasks = (service as unknown as { tasks: Record<string, unknown> }).tasks;
+  Object.assign(tasks, {
+    async isAdmissionTransitionCurrent() {
+      return new Promise<boolean>(() => undefined);
+    },
+  });
+
+  const guard = context.externalBoundaryGuard;
+  assert.ok(guard);
+  const guarded = guard({
+    taskId: TASK_ID,
+    action: 'sandbox.create',
+    position: 'before',
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const terminal = service.onTerminal(TASK_ID, 'cancelled');
+  await assert.rejects(
+    Promise.race([
+      guarded,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error('boundary guard did not abort')), 100),
+      ),
+    ]),
+    { name: 'AbortError' },
+  );
+
+  releaseProvision.resolve();
+  await terminal;
+  assert.equal(await admission, 'running');
   assert.equal(service.runningCount, 0);
 });
 
@@ -1869,6 +2429,63 @@ test('force-fail releases its terminal fence even when the lifecycle write fails
   assert.equal(internals.terminalTasks.has(TASK_ID), false);
 });
 
+test('natural failed terminal preserves the historical terminal delivery plan', async () => {
+  let deliverCalls = 0;
+  const sessionReasons: string[] = [];
+  const service = buildService(async () => 'transitioned', {
+    sandbox: {
+      getSandboxMode: () => 'danger-full-access',
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider,
+  });
+  Object.assign(service, {
+    creds: {
+      destroyForSession(_taskId: string, reason: string) {
+        sessionReasons.push(reason);
+      },
+    },
+    async deliverResult() {
+      deliverCalls += 1;
+    },
+  });
+
+  await service.onTerminal(TASK_ID, 'failed');
+
+  assert.equal(deliverCalls, 1);
+  assert.deepEqual(sessionReasons, ['completed']);
+});
+
+test('guardrail failed CAS uses failed teardown semantics and never delivers workspace changes', async () => {
+  let deliverCalls = 0;
+  const sessionReasons: string[] = [];
+  const service = buildService(async () => 'transitioned', {
+    sandbox: {
+      getSandboxMode: () => 'danger-full-access',
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider,
+  });
+  Object.assign(service, {
+    creds: {
+      destroyForSession(_taskId: string, reason: string) {
+        sessionReasons.push(reason);
+      },
+    },
+    async deliverResult() {
+      deliverCalls += 1;
+    },
+  });
+  installConfirmedTerminalCas(service);
+
+  await (
+    service as unknown as {
+      forceFail(taskId: string, cause: 'deadline'): Promise<TaskStatus | undefined>;
+    }
+  ).forceFail(TASK_ID, 'deadline');
+
+  assert.equal(deliverCalls, 0);
+  assert.deepEqual(sessionReasons, ['failed']);
+});
+
 test('structured model setup errors persist the dedicated safe failure before generic provisioning failure', async () => {
   const service = buildService(async () => 'transitioned');
   const failures: TaskFailureCode[] = [];
@@ -1943,6 +2560,7 @@ test('legacy provisioning logs redact provider failure details', async () => {
       warn: record,
     },
   });
+  installConfirmedTerminalCas(service);
 
   assert.equal(await service.admit(TASK_ID), 'running');
 

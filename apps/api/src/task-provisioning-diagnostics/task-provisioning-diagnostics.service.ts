@@ -474,6 +474,8 @@ export class TaskProvisioningDiagnosticsService
         state: attempt.state,
         providerFamily: attempt.providerFamily,
         initialSequence: attempt.eventCount,
+        primaryPersisted: attempt.primary !== null,
+        cleanup: attempt.cleanup,
       });
     } catch {
       return this.storeFailure('resume_attempt');

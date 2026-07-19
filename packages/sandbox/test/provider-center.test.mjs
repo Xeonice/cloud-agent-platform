@@ -4301,6 +4301,590 @@ await test('legacy NULL-generation routes preserve retain versus remove disposit
   assert.equal(removed.state, 'succeeded');
 });
 
+await test('legacy create fencing joins terminal cleanup before a late create can escape', async () => {
+  const taskId = 'task-legacy-create-race';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const createEntered = deferred();
+  const firstCleanupObserved = deferred();
+  const releaseCreate = deferred();
+  let physicalExists = false;
+  let teardownCount = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async (ctx) => {
+    await ctx.externalBoundaryGuard?.({
+      taskId,
+      action: 'sandbox.create',
+      position: 'before',
+    });
+    createEntered.resolve();
+    await releaseCreate.promise;
+    physicalExists = true;
+    await ctx.onSandboxCreateObserved?.({
+      kind: 'created',
+      providerSandboxId: 'legacy-create-race-box',
+    });
+    return {
+      taskId,
+      baseUrl: 'http://local/legacy-create-race',
+      wsUrl: 'ws://local/legacy-create-race',
+    };
+  };
+  provider.teardownSandbox = async (_taskId, options) => {
+    teardownCount += 1;
+    assert.equal(options.ownership, undefined);
+    const result = physicalExists
+      ? { kind: 'found-and-cleaned' }
+      : { kind: 'already-absent' };
+    physicalExists = false;
+    firstCleanupObserved.resolve();
+    return result;
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+
+  const provisioning = router.provision(provisionContext(taskId));
+  await createEntered.promise;
+  const cleanup = router.teardownSandbox(taskId, {
+    disposition: 'superseded-remove',
+  });
+  await firstCleanupObserved.promise;
+  const pendingCleanup = await ownerStore.beginSandboxRunCleanup(taskId);
+  assert.equal(pendingCleanup.kind, 'authorized');
+  assert.equal(
+    pendingCleanup.owner.createState,
+    'entered',
+    'an absent first delete must not close a create that can still return',
+  );
+
+  releaseCreate.resolve();
+  await cleanup;
+  await assert.rejects(provisioning, /no longer current/);
+  assert.equal(physicalExists, false);
+  assert.equal(teardownCount >= 2, true);
+  assert.equal(await ownerStore.getSandboxRunOwner(taskId), null);
+  const authority = await router.getSandboxCleanupAuthority(taskId);
+  assert.equal(authority.state, 'succeeded');
+  assert.equal(authority.lastAttemptOutcome, 'succeeded');
+});
+
+await test('legacy cross-replica cleanup converges after the originating invocation settles', async () => {
+  const taskId = 'task-legacy-cross-replica-create-race';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const createEntered = deferred();
+  const releaseCreate = deferred();
+  let physicalExists = false;
+  let teardownCount = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async (ctx) => {
+    await ctx.externalBoundaryGuard?.({
+      taskId,
+      action: 'sandbox.create',
+      position: 'before',
+    });
+    createEntered.resolve();
+    await releaseCreate.promise;
+    physicalExists = true;
+    await ctx.onSandboxCreateObserved?.({
+      kind: 'created',
+      providerSandboxId: 'legacy-cross-replica-box',
+    });
+    return {
+      taskId,
+      baseUrl: 'http://local/legacy-cross-replica',
+      wsUrl: 'ws://local/legacy-cross-replica',
+    };
+  };
+  provider.teardownSandbox = async () => {
+    teardownCount += 1;
+    const result = physicalExists
+      ? { kind: 'found-and-cleaned' }
+      : { kind: 'already-absent' };
+    physicalExists = false;
+    return result;
+  };
+  const entries = [
+    mod.defineLocalSandboxProvider({ id: 'local', provider }),
+  ];
+  const originatingRouter = new mod.SandboxProviderRouter(entries, {
+    ownerStore,
+  });
+  const terminalRouter = new mod.SandboxProviderRouter(entries, {
+    ownerStore,
+  });
+
+  const provisioning = originatingRouter.provision(provisionContext(taskId));
+  await createEntered.promise;
+  await assert.rejects(
+    terminalRouter.teardownSandbox(taskId, {
+      disposition: 'superseded-remove',
+    }),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+  const pending = await ownerStore.beginSandboxRunCleanup(taskId);
+  assert.equal(pending.kind, 'authorized');
+  assert.equal(pending.owner.status, 'deleting');
+  assert.equal(pending.owner.createState, 'entered');
+  assert.equal((await terminalRouter.getSandboxCleanupAuthority(taskId)).state, 'pending');
+
+  releaseCreate.resolve();
+  await assert.rejects(provisioning, /no longer current/);
+  assert.equal(physicalExists, false);
+  assert.equal(
+    teardownCount >= 2,
+    true,
+    'cleanup must probe before settlement and remove the late-created sandbox afterward',
+  );
+  assert.equal(await ownerStore.getSandboxRunOwner(taskId), null);
+  const authority = await terminalRouter.getSandboxCleanupAuthority(taskId);
+  assert.equal(authority.status, 'removed');
+  assert.equal(authority.state, 'succeeded');
+  assert.equal(authority.lastAttemptOutcome, 'succeeded');
+});
+
+await test('legacy cleanup without the originating invocation keeps the create fence pending', async () => {
+  const taskId = 'task-legacy-origin-invocation-unavailable';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  assert.equal(
+    await ownerStore.beginSandboxRunCreate({ taskId, providerId: 'local' }),
+    true,
+  );
+  let teardownCount = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.teardownSandbox = async () => {
+    teardownCount += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+
+  await assert.rejects(
+    router.teardownSandbox(taskId, { disposition: 'superseded-remove' }),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+  const pending = await ownerStore.beginSandboxRunCleanup(taskId);
+  assert.equal(pending.kind, 'authorized');
+  assert.equal(pending.owner.status, 'deleting');
+  assert.equal(pending.owner.createState, 'entered');
+  assert.equal(pending.owner.cleanupAttemptCount, 0);
+  assert.equal((await router.getSandboxCleanupAuthority(taskId)).state, 'pending');
+  assert.equal(
+    await ownerStore.beginSandboxRunCreate({ taskId, providerId: 'local' }),
+    false,
+    'an unknown invocation must retain the non-borrowable create fence',
+  );
+  assert.equal(teardownCount, 1);
+});
+
+await test('legacy router rechecks Task authority after publishing its fence and before a generic provider call', async () => {
+  const taskId = 'task-legacy-post-fence-task-recheck';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const fenceWriteStarted = deferred();
+  const releaseFenceWrite = deferred();
+  const beginSandboxRunCreate =
+    ownerStore.beginSandboxRunCreate.bind(ownerStore);
+  let delayFirstFence = true;
+  ownerStore.beginSandboxRunCreate = async (args) => {
+    if (delayFirstFence) {
+      delayFirstFence = false;
+      fenceWriteStarted.resolve();
+      await releaseFenceWrite.promise;
+    }
+    return beginSandboxRunCreate(args);
+  };
+  let taskRunning = true;
+  let boundaryChecks = 0;
+  let providerInvocations = 0;
+  let teardownCount = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async () => {
+    providerInvocations += 1;
+    return {
+      taskId,
+      baseUrl: 'http://local/post-fence-task-recheck',
+      wsUrl: 'ws://local/post-fence-task-recheck',
+    };
+  };
+  provider.teardownSandbox = async () => {
+    teardownCount += 1;
+    return { kind: 'already-absent' };
+  };
+  const entries = [
+    mod.defineLocalSandboxProvider({ id: 'local', provider }),
+  ];
+  const originatingRouter = new mod.SandboxProviderRouter(entries, {
+    ownerStore,
+  });
+  const terminalRouter = new mod.SandboxProviderRouter(entries, {
+    ownerStore,
+  });
+
+  const provisioning = originatingRouter.provision({
+    ...provisionContext(taskId),
+    externalBoundaryGuard: async () => {
+      boundaryChecks += 1;
+      if (!taskRunning) throw new Error('Task is no longer running');
+    },
+  });
+  await fenceWriteStarted.promise;
+  taskRunning = false;
+  await terminalRouter.teardownSandbox(taskId, {
+    disposition: 'superseded-remove',
+  });
+  releaseFenceWrite.resolve();
+
+  await assert.rejects(provisioning, /Task is no longer running/);
+  assert.equal(boundaryChecks, 1);
+  assert.equal(providerInvocations, 0);
+  assert.equal(teardownCount >= 2, true);
+  assert.equal(await ownerStore.getSandboxRunOwner(taskId), null);
+  const authority = await terminalRouter.getSandboxCleanupAuthority(taskId);
+  assert.equal(authority.status, 'removed');
+  assert.equal(authority.state, 'succeeded');
+});
+
+await test('legacy pre-call fence blocks generic success promotion when terminal wins before provider callbacks', async () => {
+  const taskId = 'task-legacy-generic-success-race';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const invocationStarted = deferred();
+  const firstCleanupObserved = deferred();
+  const releaseProvider = deferred();
+  let physicalExists = false;
+  let teardownCount = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async () => {
+    invocationStarted.resolve();
+    await releaseProvider.promise;
+    physicalExists = true;
+    // Compatibility provider: no create guard/observation callbacks. The
+    // Router's pre-call fence must still make generic success promotion a CAS.
+    return {
+      taskId,
+      baseUrl: 'http://local/legacy-generic-success-race',
+      wsUrl: 'ws://local/legacy-generic-success-race',
+    };
+  };
+  provider.teardownSandbox = async () => {
+    teardownCount += 1;
+    const result = physicalExists
+      ? { kind: 'found-and-cleaned' }
+      : { kind: 'already-absent' };
+    physicalExists = false;
+    firstCleanupObserved.resolve();
+    return result;
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+
+  const provisioning = router.provision(provisionContext(taskId));
+  await invocationStarted.promise;
+  const cleanup = router.teardownSandbox(taskId, {
+    disposition: 'superseded-remove',
+  });
+  await firstCleanupObserved.promise;
+  releaseProvider.resolve();
+
+  await cleanup;
+  await assert.rejects(provisioning, /no longer current/);
+  assert.equal(physicalExists, false);
+  assert.equal(teardownCount >= 2, true);
+  assert.equal(await ownerStore.getSandboxRunOwner(taskId), null);
+  assert.equal((await router.getSandboxCleanupAuthority(taskId)).status, 'removed');
+});
+
+await test('legacy provider create guard revalidates durable authority after another terminal winner', async () => {
+  const taskId = 'task-legacy-durable-revalidation';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const providerInvoked = deferred();
+  const releaseCreateBoundary = deferred();
+  let physicalCreateCount = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async (ctx) => {
+    providerInvoked.resolve();
+    await releaseCreateBoundary.promise;
+    await ctx.externalBoundaryGuard?.({
+      taskId,
+      action: 'sandbox.create',
+      position: 'before',
+    });
+    physicalCreateCount += 1;
+    return {
+      taskId,
+      baseUrl: 'http://local/legacy-durable-revalidation',
+      wsUrl: 'ws://local/legacy-durable-revalidation',
+    };
+  };
+  provider.teardownSandbox = async () => ({ kind: 'already-absent' });
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+
+  const provisioning = router.provision(provisionContext(taskId));
+  await providerInvoked.promise;
+  const terminalWinner = await ownerStore.beginSandboxRunCleanup(taskId);
+  assert.equal(terminalWinner.kind, 'authorized');
+  releaseCreateBoundary.resolve();
+
+  await assert.rejects(provisioning, /create fence is no longer current/);
+  assert.equal(physicalCreateCount, 0);
+  assert.equal((await router.getSandboxCleanupAuthority(taskId)).status, 'removed');
+});
+
+await test('legacy post-invocation absence closes an unobserved create fence without fabrication', async () => {
+  const taskId = 'task-legacy-indeterminate-create';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  let teardownCount = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async (ctx) => {
+    await ctx.externalBoundaryGuard?.({
+      taskId,
+      action: 'sandbox.create',
+      position: 'before',
+    });
+    throw new Error('indeterminate create transport');
+  };
+  provider.teardownSandbox = async () => {
+    teardownCount += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+
+  await assert.rejects(
+    router.provision(provisionContext(taskId)),
+    /indeterminate create transport/,
+  );
+  assert.equal(teardownCount >= 2, true);
+  const authority = await router.getSandboxCleanupAuthority(taskId);
+  assert.equal(authority.state, 'succeeded');
+  assert.equal(authority.status, 'removed');
+  assert.equal(authority.lastAttemptProof, 'already-absent');
+});
+
+await test('legacy deleting resumes settled success at completion without another provider delete', async () => {
+  const taskId = 'task-legacy-resume-success';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  await ownerStore.beginSandboxRunCreate({ taskId, providerId: 'local' });
+  const cleanup = await ownerStore.beginSandboxRunCleanup(taskId);
+  assert.equal(cleanup.kind, 'authorized');
+  assert.equal(
+    await ownerStore.closeLegacySandboxRunCreateFence({
+      taskId,
+      providerId: 'local',
+    }),
+    true,
+  );
+  await recordConfirmedCleanup(ownerStore, cleanup.authorization);
+
+  let teardownCount = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.teardownSandbox = async () => {
+    teardownCount += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+
+  const physical = await router.teardownSandbox(taskId, {
+    disposition: 'superseded-remove',
+  });
+  assert.equal(physical.outcome, 'succeeded');
+  assert.equal(teardownCount, 0);
+  assert.equal((await router.getSandboxCleanupAuthority(taskId)).status, 'removed');
+});
+
+await test('legacy unobserved create remains deleting when post-invocation absence is unconfirmed', async () => {
+  const taskId = 'task-legacy-unconfirmed-create';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async (ctx) => {
+    await ctx.externalBoundaryGuard?.({
+      taskId,
+      action: 'sandbox.create',
+      position: 'before',
+    });
+    throw new Error('create response lost');
+  };
+  provider.teardownSandbox = async () => undefined;
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+
+  await assert.rejects(
+    router.provision(provisionContext(taskId)),
+    (error) =>
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error.primary?.message === 'create response lost',
+  );
+  const pending = await ownerStore.beginSandboxRunCleanup(taskId);
+  assert.equal(pending.kind, 'authorized');
+  assert.equal(pending.owner.createState, 'entered');
+  assert.equal(pending.owner.cleanupAttemptInFlight, false);
+  assert.equal(pending.owner.cleanupLastOutcome, 'indeterminate');
+  assert.equal((await router.getSandboxCleanupAuthority(taskId)).state, 'pending');
+});
+
+await test('legacy terminal cleanup bounds its provider join and leaves the entered fence pending', async () => {
+  const taskId = 'task-legacy-bounded-join';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const invocationEntered = deferred();
+  const releaseInvocation = deferred();
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async (ctx) => {
+    await ctx.externalBoundaryGuard?.({
+      taskId,
+      action: 'sandbox.create',
+      position: 'before',
+    });
+    invocationEntered.resolve();
+    await releaseInvocation.promise;
+    await ctx.onSandboxCreateObserved?.({
+      kind: 'created',
+      providerSandboxId: 'legacy-bounded-join-box',
+    });
+    return {
+      taskId,
+      baseUrl: 'http://local/legacy-bounded-join',
+      wsUrl: 'ws://local/legacy-bounded-join',
+    };
+  };
+  provider.teardownSandbox = async () => ({ kind: 'already-absent' });
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore, legacyProvisionJoinTimeoutMs: 5 },
+  );
+
+  const provisioning = router.provision(provisionContext(taskId));
+  await invocationEntered.promise;
+  await assert.rejects(
+    router.teardownSandbox(taskId, { disposition: 'superseded-remove' }),
+    (error) => error?.code === 'sandbox_cleanup_coordination_pending',
+  );
+  const pending = await ownerStore.beginSandboxRunCleanup(taskId);
+  assert.equal(pending.kind, 'authorized');
+  assert.equal(pending.owner.createState, 'entered');
+  assert.equal(pending.owner.cleanupAttemptCount, 0);
+
+  releaseInvocation.resolve();
+  await assert.rejects(provisioning, /no longer current/);
+  assert.equal((await router.getSandboxCleanupAuthority(taskId)).status, 'removed');
+});
+
+await test('legacy synchronous context snapshot failure never leaks its in-flight registration', async () => {
+  const taskId = 'task-legacy-context-snapshot';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  let provisionCalls = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async (ctx) => {
+    provisionCalls += 1;
+    return {
+      taskId: ctx.taskId,
+      baseUrl: `http://local/${ctx.taskId}`,
+      wsUrl: `ws://local/${ctx.taskId}`,
+    };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+  const brokenContext = provisionContext(taskId);
+  Object.defineProperty(brokenContext, 'onSandboxCreateObserved', {
+    enumerable: true,
+    get() {
+      throw new Error('context snapshot exploded');
+    },
+  });
+
+  await assert.rejects(
+    router.provision(brokenContext),
+    /context snapshot exploded/,
+  );
+  await router.provision(provisionContext(taskId));
+  assert.equal(provisionCalls, 1);
+  assert.equal((await ownerStore.getSandboxRunOwner(taskId)).status, 'running');
+});
+
+await test('legacy observed create cannot be promoted after terminal cleanup wins', async () => {
+  const taskId = 'task-legacy-observed-stop';
+  const ownerStore = new mod.InMemorySandboxRunOwnerStore();
+  const observed = deferred();
+  const releaseProvider = deferred();
+  let physicalExists = false;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.provision = async (ctx) => {
+    await ctx.externalBoundaryGuard?.({
+      taskId,
+      action: 'sandbox.create',
+      position: 'before',
+    });
+    physicalExists = true;
+    await ctx.onSandboxCreateObserved?.({
+      kind: 'created',
+      providerSandboxId: 'legacy-observed-box',
+    });
+    observed.resolve();
+    await releaseProvider.promise;
+    return {
+      taskId,
+      baseUrl: 'http://local/legacy-observed-stop',
+      wsUrl: 'ws://local/legacy-observed-stop',
+    };
+  };
+  provider.teardownSandbox = async () => {
+    const result = physicalExists
+      ? { kind: 'found-and-cleaned' }
+      : { kind: 'already-absent' };
+    physicalExists = false;
+    return result;
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore },
+  );
+
+  const provisioning = router.provision(provisionContext(taskId));
+  await observed.promise;
+  await router.teardownSandbox(taskId, { disposition: 'superseded-remove' });
+  releaseProvider.resolve();
+  await assert.rejects(provisioning, /no longer current/);
+  assert.equal(physicalExists, false);
+  assert.equal(await ownerStore.getSandboxRunOwner(taskId), null);
+  assert.equal((await router.getSandboxCleanupAuthority(taskId)).status, 'removed');
+});
+
+await test('missing legacy ownership performs provider-backed absence checks', async () => {
+  let teardownCount = 0;
+  const provider = routableProvider('local', ['terminal.websocket']);
+  provider.teardownSandbox = async () => {
+    teardownCount += 1;
+    return { kind: 'already-absent' };
+  };
+  const router = new mod.SandboxProviderRouter(
+    [mod.defineLocalSandboxProvider({ id: 'local', provider })],
+    { ownerStore: new mod.InMemorySandboxRunOwnerStore() },
+  );
+
+  const physical = await router.teardownSandbox('task-ownerless-probe');
+  assert.equal(teardownCount, 1);
+  assert.deepEqual(physical, {
+    outcome: 'succeeded',
+    proof: 'already-absent',
+    cause: null,
+    retryable: false,
+  });
+});
+
 await test('restart reattach cannot revive a deleting generated owner as ownerless', async () => {
   const ownerStore = new mod.InMemorySandboxRunOwnerStore();
   await ownerStore.acquireSandboxRunOwner({

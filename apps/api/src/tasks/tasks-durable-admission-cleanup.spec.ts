@@ -447,6 +447,8 @@ function terminalCleanupDiagnosticHarness() {
           state: 'failed' as const,
           providerFamily: 'aio' as const,
           initialSequence: events.length,
+          primaryPersisted: true,
+          cleanup,
         },
       };
     },
@@ -1268,7 +1270,7 @@ test('succeeded durable work defers ordinary terminal cleanup and recovers the o
   assert.equal(provisionCalls, 1, 'terminal recovery must never reprovision');
   assert.deepEqual(diagnosticHarness.stats(), {
     beginCalls: 0,
-    resumeCalls: 2,
+    resumeCalls: 4,
     appendCalls: 0,
     primaryCalls: 0,
     partialCalls: 0,
@@ -1480,7 +1482,7 @@ test('real terminal policy releases one durable slot only after bounded physical
   assert.equal(auditRows.size, 1);
   assert.deepEqual(diagnosticHarness.stats(), {
     beginCalls: 0,
-    resumeCalls: 2,
+    resumeCalls: 4,
     appendCalls: 0,
     primaryCalls: 0,
     partialCalls: 0,

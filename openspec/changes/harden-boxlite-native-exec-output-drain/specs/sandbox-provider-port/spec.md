@@ -65,6 +65,23 @@ deterministic and SHALL NOT establish correctness through fixed sleeps. When a
 real provider integration is available, its gated conformance story SHALL also
 repeat fast-output commands against the supported provider protocol.
 
+Task-scoped provisioning conformance SHALL also cover a terminal transition
+that races the provider's physical create response. When an owner store is
+available, orchestration SHALL persist a unique provider-selected legacy
+invocation fence before calling the provider, SHALL revalidate it immediately
+after publication against upstream Task authority and again before physical
+create, SHALL persist an observed provider sandbox id before
+the provider may continue initialization, and SHALL reject a late success
+transition after cleanup has won. Absence of an active owner row alone SHALL
+NOT prove physical absence; cleanup SHALL invoke the selected provider or the
+provider registry's normalized teardown/absence checks and aggregate their
+actual evidence. A create observation that loses to terminal cleanup SHALL
+trigger exact partial-create cleanup rather than resurrecting a running owner.
+An unresolved `entered` invocation SHALL remain pending when its bounded join
+or post-invocation absence proof is unavailable. A compatibility provider that
+does not invoke create callbacks SHALL still be blocked by the Router-owned
+post-fence Task-authority recheck before its provider method is called.
+
 #### Scenario: Terminal capability requires terminal conformance
 
 - **WHEN** a provider declares interactive terminal capability
@@ -92,6 +109,24 @@ repeat fast-output commands against the supported provider protocol.
 - **WHEN** conformance injects an operation failure followed by a cleanup failure
 - **THEN** the provider returns the operation failure as primary and cleanup as secondary
 - **AND** no cleanup exception replaces the primary failure
+
+#### Scenario: Cancellation fences a legacy create before provider completion
+
+- **WHEN** a task becomes terminal after the provider crosses its physical create boundary but before legacy `provision()` returns
+- **THEN** cleanup obtains provider-backed deletion or absence evidence and the late provider continuation cannot recreate a running owner
+- **AND** an observed late resource is removed by its exact provider identity
+
+#### Scenario: Terminal winner prevents a later create boundary
+
+- **WHEN** terminal cleanup changes the unique legacy invocation fence to deleting before the provider reaches physical create
+- **THEN** provider-center's boundary revalidation rejects create I/O
+- **AND** neither a callback-free success path nor a second replica can borrow the stale fence or recreate running ownership
+
+#### Scenario: Missing ownership is not physical absence proof
+
+- **WHEN** terminal cleanup finds no active owner while a task-scoped provider create may have been in flight
+- **THEN** provider-center executes normalized provider teardown or absence checks
+- **AND** it never reports confirmed absence solely from the empty owner lookup
 
 #### Scenario: Every eligible provider family passes diagnostic conformance
 

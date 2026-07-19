@@ -492,6 +492,14 @@ describe('TaskProvisioningDiagnosticsService', () => {
         state: 'active',
         providerFamily: null,
         initialSequence: 0,
+        primaryPersisted: false,
+        cleanup: {
+          state: 'not_required',
+          cause: null,
+          attemptCount: 0,
+          lastAttemptOutcome: null,
+          observedAt: null,
+        },
       },
       {
         admissionMode: 'durable' as const,
@@ -500,6 +508,14 @@ describe('TaskProvisioningDiagnosticsService', () => {
         state: 'failed',
         providerFamily: 'boxlite',
         initialSequence: 2,
+        primaryPersisted: true,
+        cleanup: {
+          state: 'succeeded',
+          cause: null,
+          attemptCount: 1,
+          lastAttemptOutcome: 'succeeded',
+          observedAt: NOW,
+        },
       },
       {
         admissionMode: 'legacy' as const,
@@ -508,6 +524,14 @@ describe('TaskProvisioningDiagnosticsService', () => {
         state: 'failed',
         providerFamily: 'cloud-http',
         initialSequence: 4,
+        primaryPersisted: true,
+        cleanup: {
+          state: 'succeeded',
+          cause: null,
+          attemptCount: 1,
+          lastAttemptOutcome: 'succeeded',
+          observedAt: NOW,
+        },
       },
     ];
     for (const expected of cases) {
@@ -528,6 +552,8 @@ describe('TaskProvisioningDiagnosticsService', () => {
           state: expected.state,
           providerFamily: expected.providerFamily,
           initialSequence: expected.initialSequence,
+          primaryPersisted: expected.primaryPersisted,
+          cleanup: expected.cleanup,
         },
       });
     }

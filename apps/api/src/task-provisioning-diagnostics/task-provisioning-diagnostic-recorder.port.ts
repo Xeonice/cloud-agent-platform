@@ -73,6 +73,13 @@ export interface ResumedTaskProvisioningDiagnosticAttempt {
   readonly state: TaskProvisioningDiagnosticAttemptState;
   readonly providerFamily: TaskProvisioningDiagnosticProviderFamily | null;
   readonly initialSequence: number;
+  /**
+   * Safe persisted settlement facts used to converge controllers/replicas.
+   * Optionality preserves compatibility with pre-convergence recorder doubles;
+   * the Prisma recorder always returns both fields.
+   */
+  readonly primaryPersisted?: boolean;
+  readonly cleanup?: TaskProvisioningDiagnosticCleanupSummary;
 }
 
 export interface RecordTaskProvisioningDiagnosticPrimary {

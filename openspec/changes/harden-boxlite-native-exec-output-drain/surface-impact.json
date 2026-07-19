@@ -6,11 +6,11 @@
   "surfaces": {
     "publicV1": {
       "status": "not-applicable",
-      "reason": "The fix changes only the internal BoxLite native command synchronization path and does not add or alter any Public V1 operation, schema, status code, or error body."
+      "reason": "The fix changes internal BoxLite command synchronization plus provider-center provisioning ownership and cleanup fencing; it does not add or alter any Public V1 operation, schema, status code, or error body."
     },
     "mcp": {
       "status": "not-applicable",
-      "reason": "No MCP tool, argument, result, registration, or transport behavior changes because MCP does not expose the provider-native execution protocol."
+      "reason": "No MCP tool, argument, result, registration, or transport behavior changes because MCP does not expose provider-native execution, internal sandbox ownership, or terminal cleanup fencing."
     },
     "openapi": {
       "status": "not-applicable",
@@ -22,8 +22,8 @@
     },
     "internalOnly": {
       "status": "changed",
-      "scope": "boxlite-native-exec-output-drain-and-provider-validation",
-      "reason": "Changes the internal BoxLite provider state machine so process settlement and output-drain completion are synchronized under one deadline, with deterministic failure semantics, bounded diagnostics, and real-provider regression coverage."
+      "scope": "boxlite-native-exec-output-drain-and-legacy-provisioning-cleanup-fencing",
+      "reason": "Changes the internal BoxLite provider state machine and provider-center ownership protocol so output settlement is complete, physical creation is fenced before exposure, cleanup is provider-confirmed, and cancellation remains the truthful terminal winner."
     }
   },
   "protocolDifferences": [],

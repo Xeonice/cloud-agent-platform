@@ -333,6 +333,12 @@ export interface RecordSandboxRunOwnerArgs {
   readonly connection?: SandboxConnection;
   readonly environment?: SandboxResolvedEnvironmentMetadata;
   readonly metadata?: SandboxDescriptorMetadata;
+  /**
+   * Require promotion of the ownerless legacy create fence that was observed
+   * for this task/provider. This prevents a provision result that returns
+   * after terminal cleanup from recreating an active routing owner.
+   */
+  readonly expectedProvisioningFence?: 'legacy-create-observed';
 }
 
 export interface AcquireSandboxRunOwnerArgs {
@@ -345,13 +351,33 @@ export interface AcquireSandboxRunOwnerArgs {
 export interface BeginSandboxRunCreateArgs {
   readonly taskId: string;
   readonly providerId: string;
-  readonly ownership: SandboxOwnershipFence;
+  /** Omitted for the ownerless legacy provisioning path. */
+  readonly ownership?: SandboxOwnershipFence;
+}
+
+export interface ValidateLegacySandboxRunCreateFenceArgs {
+  readonly taskId: string;
+  readonly providerId: string;
 }
 
 export interface ObserveSandboxRunCreateArgs {
   readonly taskId: string;
   readonly providerId: string;
-  readonly resourceGeneration: string;
+  /** Omitted for the ownerless legacy provisioning path. */
+  readonly resourceGeneration?: string;
+  readonly providerSandboxId?: string;
+}
+
+/**
+ * Atomically close an ownerless create fence after the provider invocation has
+ * ended and a post-invocation cleanup proved the task-derived or exact
+ * provider target absent. This operation is intentionally limited to a
+ * terminal-winner `deleting` row; ordinary provider observations use
+ * `observeSandboxRunCreate` instead.
+ */
+export interface CloseLegacySandboxRunCreateFenceArgs {
+  readonly taskId: string;
+  readonly providerId: string;
   readonly providerSandboxId?: string;
 }
 
@@ -486,15 +512,30 @@ export interface SandboxRunOwnerStore {
   ): Promise<AcquireSandboxRunOwnerResult>;
   /**
    * Linearize immediately before the provider's physical create boundary.
-   * Returns false when the task/provider/owner/resource is no longer current.
+   * Ownerless legacy callers atomically pre-register a provisioning fence;
+   * durable callers validate their generation fence. Returns false when the
+   * task/provider/owner/resource is no longer current.
    */
   beginSandboxRunCreate?(args: BeginSandboxRunCreateArgs): Promise<boolean>;
+  /** Revalidate the unique ownerless invocation immediately before create I/O. */
+  validateLegacySandboxRunCreateFence?(
+    args: ValidateLegacySandboxRunCreateFenceArgs,
+  ): Promise<boolean>;
   /**
    * Persist that the provider received a definitive create response. This is
-   * resource-scoped because cleanup authority may transfer while the request is
-   * in flight.
+   * resource-scoped for durable owners because cleanup authority may transfer
+   * while the request is in flight. Ownerless legacy callers must still match
+   * the live task/provider provisioning fence.
    */
   observeSandboxRunCreate?(args: ObserveSandboxRunCreateArgs): Promise<boolean>;
+  /**
+   * Close a legacy `entered` fence only after its provider invocation has
+   * settled and a final provider cleanup proved the same target absent.
+   * Returns false when the deleting legacy authority or exact target changed.
+   */
+  closeLegacySandboxRunCreateFence?(
+    args: CloseLegacySandboxRunCreateFenceArgs,
+  ): Promise<boolean>;
   /**
    * Transfers cleanup authority to a durable admission lease while preserving
    * the physical resource generation.  Unlike provisioning acquisition this

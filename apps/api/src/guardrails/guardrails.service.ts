@@ -8,7 +8,11 @@ import {
 } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type {
+  TaskProvisioningDiagnosticCommandKind,
   TaskProvisioningDiagnosticCleanupSummary,
+  TaskProvisioningDiagnosticOperation,
+  TaskProvisioningDiagnosticProviderFamily,
+  TaskProvisioningDiagnosticStage,
   TaskProvisioningStage,
   TaskStatus,
 } from '@cap/contracts';
@@ -43,6 +47,8 @@ import {
   normalizeSandboxPhysicalCleanupResult,
   type AgentTerminalLaunchOutcome,
   type SandboxPhysicalCleanupResult,
+  type SandboxProvisioningDiagnosticEmitter,
+  type SandboxProvisioningDiagnosticFact,
   type SandboxTerminalPtyMode,
   type SandboxSettlePlan,
   type SandboxRunCleanupAuthorityProjection,
@@ -141,6 +147,17 @@ interface DurableTerminalTaskSnapshot {
     | 'cancelled'
     | 'agent_failed_to_start';
   readonly failureCode: string | null;
+}
+
+interface LegacyProvisioningDiagnosticPosition {
+  readonly stage: TaskProvisioningDiagnosticStage;
+  readonly operation: TaskProvisioningDiagnosticOperation;
+  readonly commandKind?: TaskProvisioningDiagnosticCommandKind | null;
+}
+
+interface LegacyProvisioningFailureCandidate {
+  readonly settlement: TaskProvisioningDiagnosticPrimarySettlementInput;
+  readonly providerBoundaryCrossed: boolean;
 }
 
 type RecoveredFailedAdmission =
@@ -422,8 +439,33 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     string,
     BegunTaskProvisioningDiagnosticObserver
   >();
+  /** Last successfully accepted provider fact for terminal-winner settlement. */
+  private readonly legacyDiagnosticPositions = new Map<
+    string,
+    LegacyProvisioningDiagnosticPosition
+  >();
+  /**
+   * Provider failures are staged here before attempting the Task terminal CAS,
+   * but are not persisted or logged until that CAS has confirmed `failed`.
+   */
+  private readonly legacyProvisioningFailureCandidates = new Map<
+    string,
+    LegacyProvisioningFailureCandidate
+  >();
+  /** The provider promise was invoked; terminal cleanup must be observed. */
+  private readonly legacyProviderBoundariesCrossed = new Set<string>();
   /** Provider boundary was never crossed; the primary already owns not_required. */
   private readonly legacyCleanupNotRequired = new Set<string>();
+  /**
+   * Legacy admission has no durable lease signal, so each in-flight provider
+   * call owns one process-local cancellation source. The Task terminal fence
+   * aborts it synchronously; provider boundary guards still re-read the
+   * persisted running transition for cross-replica cancellation.
+   */
+  private readonly legacyProvisioningAbortControllers = new Map<
+    string,
+    AbortController
+  >();
   /** Coalesces duplicate startup readoption and keeps terminal fences live. */
   private readonly readoptionsInFlight = new Map<
     string,
@@ -443,6 +485,16 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private readonly terminalSettlementsInFlight = new Map<string, number>();
   /** Per-process terminal fence retained only while an admission flow is in flight. */
   private readonly terminalTasks = new Set<string>();
+  /** Known local Task-CAS winner used to avoid projecting every supersession as cancellation. */
+  private readonly terminalTaskStatuses = new Map<string, TaskStatus>();
+  /** Desired guardrail plan, consumed only if the matching Task CAS wins. */
+  private readonly forcedTerminalPlans = new Map<
+    string,
+    {
+      readonly status: 'completed' | 'failed';
+      readonly plan: SandboxSettlePlan;
+    }
+  >();
 
   /**
    * Per-process ledger of task running intervals (admission→terminal), the
@@ -1746,22 +1798,30 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    * which admits the next queued task if any (12.1 slot-release; session-end
    * teardown). Idempotent.
    */
-  fenceTerminal(taskId: string): void {
+  fenceTerminal(taskId: string, status?: TaskStatus): void {
     this.terminalTasks.add(taskId);
+    if (status !== undefined) this.terminalTaskStatuses.set(taskId, status);
+    this.abortLegacyProvisioning(taskId);
     this.clearTimers(taskId);
     this.runnerMinutes.recordEnd(taskId);
   }
 
-  async onTerminal(taskId: string): Promise<void> {
+  async onTerminal(taskId: string, status?: TaskStatus): Promise<void> {
     this.beginTerminalSettlement(taskId);
     // Idempotently establish the fence even for callers that bypass TasksService.
-    this.fenceTerminal(taskId);
+    this.fenceTerminal(taskId, status);
     try {
       if (await this.deferTerminalSettlementToDurableRecovery(taskId)) {
         return;
       }
-      await this.settleTask(taskId, terminalSettlePlan());
+      const forced = this.forcedTerminalPlans.get(taskId);
+      const plan =
+        forced && forced.status === status
+          ? forced.plan
+          : terminalSettlePlan();
+      await this.settleTask(taskId, plan, status);
     } finally {
+      this.forcedTerminalPlans.delete(taskId);
       this.readoptionAuthorityChecks.delete(taskId);
       this.endTerminalSettlement(taskId);
       this.releaseTerminalFenceIfIdle(taskId);
@@ -1989,19 +2049,41 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async settleTask(
     taskId: string,
     plan: SandboxSettlePlan,
+    terminalStatus?: TaskStatus,
   ): Promise<void> {
     const diagnosticAttempt = await this.resolveLegacyTerminalDiagnosticAttempt(
       taskId,
     );
-    const cleanupNotRequired = this.legacyCleanupNotRequired.has(taskId);
     let cleanupAuthority: SandboxRunCleanupAuthorityProjection | undefined;
-    try {
-      cleanupAuthority =
-        await this.sandbox?.getSandboxCleanupAuthority?.(taskId);
-    } catch {
-      // The ordinary compatibility path remains legacy best-effort. A durable
-      // succeeded work row fails closed before reaching this method.
+    let providerBoundaryCrossed =
+      this.legacyProviderBoundariesCrossed.has(taskId);
+    const getCleanupAuthority = this.sandbox?.getSandboxCleanupAuthority;
+    if (getCleanupAuthority) {
+      try {
+        cleanupAuthority = await getCleanupAuthority.call(
+          this.sandbox,
+          taskId,
+        );
+        // A persisted owner/create fence may belong to another replica. Only an
+        // explicit null status proves that no provider boundary needs cleanup;
+        // an undefined/malformed projection remains fail-closed.
+        if (cleanupAuthority?.status !== null) providerBoundaryCrossed = true;
+      } catch {
+        // Cross-replica cleanup authority is load-bearing for diagnostic
+        // completeness. Read uncertainty must never become not_required.
+        providerBoundaryCrossed = true;
+      }
     }
+    if (diagnosticAttempt) {
+      await this.settleLegacyTerminalPrimary(
+        taskId,
+        diagnosticAttempt,
+        terminalStatus ?? (await this.terminalTaskStatus(taskId)),
+        createLegacyProvisioningCancellationError(),
+        providerBoundaryCrossed,
+      );
+    }
+    const cleanupNotRequired = this.legacyCleanupNotRequired.has(taskId);
     if (
       cleanupAuthority?.ownershipKind === 'generation' &&
       (cleanupAuthority.status === 'provisioning' ||
@@ -2054,19 +2136,20 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
     if (!cleanupNotRequired) {
       const cleanupSummary =
-        cleanupAuthority?.ownershipKind === 'legacy' && physicalCleanup
-          ? cleanupSummaryFromPhysicalAttempt(physicalCleanup)
-          : cleanupAuthority?.status
-            ? cleanupSummaryFromAuthority(cleanupAuthority)
-            : physicalCleanup
-              ? cleanupSummaryFromPhysicalAttempt(physicalCleanup)
-              : noCleanupRequiredSummary();
+        cleanupAuthority?.status
+          ? cleanupSummaryFromAuthority(cleanupAuthority)
+          : physicalCleanup
+            ? cleanupSummaryFromPhysicalAttempt(physicalCleanup)
+            : noCleanupRequiredSummary();
       await this.settleCleanupDiagnostics(
         diagnosticAttempt?.settlement,
         cleanupSummary,
       );
     }
     this.legacyDiagnosticAttempts.delete(taskId);
+    this.legacyDiagnosticPositions.delete(taskId);
+    this.legacyProvisioningFailureCandidates.delete(taskId);
+    this.legacyProviderBoundariesCrossed.delete(taskId);
     this.legacyCleanupNotRequired.delete(taskId);
     if (
       cleanupAuthority?.ownershipKind === 'generation' &&
@@ -2272,6 +2355,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     // crossing a provider boundary so an operator terminal transition that won
     // during that window cannot start stale provisioning work.
     if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+      await this.settleLegacyProvisioningSupersession(
+        taskId,
+        diagnosticAttempt,
+        undefined,
+        false,
+      );
       return 'superseded';
     }
     const processRunning = () =>
@@ -2323,79 +2412,133 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       try {
         provisionPlan = await this.resolveProvisionPlan(taskId);
       } catch (err) {
-        if (
-          await this.isRunningAdmissionCurrentForDiagnostics(
+        if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+          await this.settleLegacyProvisioningSupersession(
             taskId,
-            transitionToken,
-          )
-        ) {
-          await this.settleProvisioningDiagnostics(diagnosticAttempt, {
-            ...classifyTaskProvisioningDiagnosticPrimaryFailure(
-              err,
-              'provider_selection',
-            ),
-            completion: 'mark_if_complete',
-          });
+            diagnosticAttempt,
+            err,
+            false,
+          );
+          this.clearAdmissionRuntime(taskId);
+          return 'superseded';
         }
-        this.logger.error(
-          `resolve sandbox requirements for task ${taskId} failed (provider details redacted)`,
+        this.rememberLegacyProvisioningFailure(
+          taskId,
+          err,
+          'provider_selection',
+          false,
         );
-        await this.failProvisioning(taskId, err);
-        return 'transitioned';
+        const winner = await this.failProvisioning(taskId, err);
+        await this.settleLegacyProvisioningSupersession(
+          taskId,
+          diagnosticAttempt,
+          err,
+          false,
+        );
+        if (
+          winner === 'failed' &&
+          this.terminalTaskStatuses.get(taskId) === 'failed'
+        ) {
+          this.logger.error(
+            `resolve sandbox requirements for task ${taskId} failed (provider details redacted)`,
+          );
+        }
+        return this.finishLegacyProvisioningFailure(taskId, winner);
       }
       if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+        await this.settleLegacyProvisioningSupersession(
+          taskId,
+          diagnosticAttempt,
+          undefined,
+          false,
+        );
         this.clearAdmissionRuntime(taskId);
         return 'superseded';
       }
-      const selected = await Promise.resolve()
-        .then(() =>
-          selectSandboxProvider(sandbox, provisionPlan.requiredCapabilities),
-        )
-        .catch(() => {
-          this.logger.error(
-            `select sandbox provider for task ${taskId} failed (provider details redacted)`,
-          );
-          return undefined;
-        });
+      let selected;
+      let selectionError: unknown;
+      try {
+        selected = selectSandboxProvider(
+          sandbox,
+          provisionPlan.requiredCapabilities,
+        );
+      } catch (error) {
+        selectionError = error;
+      }
       if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+        await this.settleLegacyProvisioningSupersession(
+          taskId,
+          diagnosticAttempt,
+          selectionError,
+          false,
+        );
         this.clearAdmissionRuntime(taskId);
         return 'superseded';
       }
       if (this.terminalTasks.has(taskId)) {
+        await this.settleLegacyProvisioningSupersession(
+          taskId,
+          diagnosticAttempt,
+          selectionError,
+          false,
+        );
         this.clearAdmissionRuntime(taskId);
         return 'superseded';
       }
       if (!selected) {
-        await this.settleProvisioningDiagnostics(diagnosticAttempt, {
-          state: 'failed',
-          stage: 'provider_selection',
-          operation: 'provider_select',
-          outcome: 'failed',
-          cause: 'provider_unavailable',
-          retryable: false,
-          exitCode: null,
-          completion: 'mark_if_complete',
-        });
-        await this.forceFail(taskId, 'provision_failed');
-        return 'transitioned';
+        const error = selectionError ?? new Error('Sandbox provider unavailable');
+        this.rememberLegacyProviderUnavailable(taskId, false);
+        const winner = await this.forceFail(taskId, 'provision_failed');
+        await this.settleLegacyProvisioningSupersession(
+          taskId,
+          diagnosticAttempt,
+          error,
+          false,
+        );
+        if (
+          winner === 'failed' &&
+          this.terminalTaskStatuses.get(taskId) === 'failed'
+        ) {
+          this.logger.error(
+            `select sandbox provider for task ${taskId} failed (provider details redacted)`,
+          );
+        }
+        return this.finishLegacyProvisioningFailure(taskId, winner);
       }
 
-      // The synchronous fence immediately precedes the provider invocation. Once
-      // this check passes, JavaScript cannot run an in-process terminal callback
-      // until provision() has returned its promise; the post-await token check
-      // below handles a stop that occurs while provisioning is in progress.
+      // The synchronous fence immediately precedes the provider invocation.
+      // Legacy admission has no lease-owned signal, so retain one task-owned
+      // controller for this provider call and combine it with any plan signal.
+      // The persisted transition guard closes the same race across replicas.
       if (this.terminalTasks.has(taskId)) {
+        await this.settleLegacyProvisioningSupersession(
+          taskId,
+          diagnosticAttempt,
+          undefined,
+          false,
+        );
         this.clearAdmissionRuntime(taskId);
         return 'superseded';
       }
       let connection: SandboxConnection | undefined;
+      const provisioningCancellation = this.beginLegacyProvisioning(taskId);
+      const providerCancellationSignal = combineCancellationSignals(
+        provisionPlan.cancellationSignal,
+        provisioningCancellation.signal,
+      );
       try {
+        this.legacyProviderBoundariesCrossed.add(taskId);
         connection = await selected.provider.provision(
           snapshotSandboxProvisionContext({
             taskId,
             ...(diagnosticAttempt === undefined
               ? {}
-              : { diagnostics: diagnosticAttempt.diagnostics }),
+              : {
+                  diagnostics: this.observeLegacyProvisioningDiagnostics(
+                    taskId,
+                    diagnosticAttempt.diagnostics,
+                  ),
+                }),
             cloneSpec: provisionPlan.cloneSpec,
             modelIntent: provisionPlan.modelIntent,
             runtimeId: provisionPlan.runtimeId,
@@ -2403,32 +2546,72 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
             environment: provisionPlan.environment,
             resources: provisionPlan.resources,
             workspace: provisionPlan.workspace,
-            cancellationSignal: provisionPlan.cancellationSignal,
+            cancellationSignal: providerCancellationSignal,
+            externalBoundaryGuard: async () => {
+              if (
+                await this.waitForRunningAdmission(
+                  taskId,
+                  transitionToken,
+                  providerCancellationSignal,
+                )
+              ) {
+                return;
+              }
+              if (!provisioningCancellation.signal.aborted) {
+                provisioningCancellation.abort(
+                  createLegacyProvisioningCancellationError(),
+                );
+              }
+              throw (
+                provisioningCancellation.signal.reason ??
+                createLegacyProvisioningCancellationError()
+              );
+            },
             onWorkspaceProgress: provisionPlan.onWorkspaceProgress,
           }),
         );
       } catch (err) {
-        if (
-          await this.isRunningAdmissionCurrentForDiagnostics(
+        if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+          await this.settleLegacyProvisioningSupersession(
             taskId,
-            transitionToken,
-          )
-        ) {
-          await this.settleProvisioningDiagnostics(diagnosticAttempt, {
-            ...classifyTaskProvisioningDiagnosticPrimaryFailure(
-              err,
-              'sandbox_creation',
-            ),
-            completion: 'leave_partial',
-          });
+            diagnosticAttempt,
+            err,
+          );
+          this.clearAdmissionRuntime(taskId);
+          return 'superseded';
         }
-        this.logger.error(
-          `provision sandbox for task ${taskId} failed (provider details redacted)`,
+        this.rememberLegacyProvisioningFailure(
+          taskId,
+          err,
+          'sandbox_creation',
+          true,
         );
-        await this.failProvisioning(taskId, err);
-        return 'transitioned';
+        const winner = await this.failProvisioning(taskId, err);
+        await this.settleLegacyProvisioningSupersession(
+          taskId,
+          diagnosticAttempt,
+          err,
+          true,
+        );
+        if (
+          winner === 'failed' &&
+          this.terminalTaskStatuses.get(taskId) === 'failed'
+        ) {
+          this.logger.error(
+            `provision sandbox for task ${taskId} failed (provider details redacted)`,
+          );
+        }
+        return this.finishLegacyProvisioningFailure(taskId, winner);
+      } finally {
+        this.releaseLegacyProvisioning(taskId, provisioningCancellation);
       }
       if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+        await this.settleLegacyProvisioningSupersession(
+          taskId,
+          diagnosticAttempt,
+          createLegacyProvisioningCancellationError(),
+          true,
+        );
         await selected.provider.teardownSandbox(taskId, {
           disposition: 'superseded-remove',
         }).catch(() => {
@@ -2443,6 +2626,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         this.connections.set(taskId, connection);
         const selectedRun = await this.resolveSelectedRun(taskId);
         if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+          await this.settleLegacyProvisioningSupersession(
+            taskId,
+            diagnosticAttempt,
+            undefined,
+            true,
+          );
           await selected.provider.teardownSandbox(taskId, {
             disposition: 'superseded-remove',
           }).catch(() => {
@@ -2454,6 +2643,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           return 'superseded';
         }
         if (this.terminalTasks.has(taskId)) {
+          await this.settleLegacyProvisioningSupersession(
+            taskId,
+            diagnosticAttempt,
+            undefined,
+            true,
+          );
           await selected.provider.teardownSandbox(taskId, {
             disposition: 'superseded-remove',
           }).catch(() => {
@@ -2471,6 +2666,11 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         const gateway = this.gateway;
         if (gateway) {
           try {
+            this.legacyDiagnosticPositions.set(taskId, {
+              stage: 'agent_launch',
+              operation: 'agent_launch',
+              commandKind: 'agent_launch',
+            });
             const session = gateway.openSession(connection, selectedRun);
             this.observeLegacyAgentLaunchDiagnostics(
               taskId,
@@ -2515,29 +2715,33 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         // RELEASES the run slot (admitting the next queued task). Without this
         // the slot stays held until idle-timeout, starving the queue whenever a
         // provision fails (e.g. codex auth / clone fail-closed).
-        await this.settleProvisioningDiagnostics(diagnosticAttempt, {
-          state: 'failed',
-          stage: 'sandbox_creation',
-          operation: 'sandbox_create',
-          outcome: 'failed',
-          cause: 'unknown',
-          retryable: false,
-          exitCode: null,
-          completion: 'leave_partial',
-        });
-        await this.forceFail(taskId, 'provision_failed');
+        const error = new Error('Sandbox provider returned no connection');
+        this.rememberLegacyProvisioningFailure(
+          taskId,
+          error,
+          'sandbox_creation',
+          true,
+        );
+        const winner = await this.forceFail(taskId, 'provision_failed');
+        await this.settleLegacyProvisioningSupersession(
+          taskId,
+          diagnosticAttempt,
+          error,
+          true,
+        );
+        return this.finishLegacyProvisioningFailure(taskId, winner);
       }
     } else {
-      await this.settleProvisioningDiagnostics(diagnosticAttempt, {
-        state: 'failed',
-        stage: 'provider_selection',
-        operation: 'provider_select',
-        outcome: 'failed',
-        cause: 'provider_unavailable',
-        retryable: false,
-        exitCode: null,
-        completion: 'mark_if_complete',
-      });
+      const error = new Error('Sandbox provider unavailable');
+      this.rememberLegacyProviderUnavailable(taskId, false);
+      const winner = await this.forceFail(taskId, 'provision_failed');
+      await this.settleLegacyProvisioningSupersession(
+        taskId,
+        diagnosticAttempt,
+        error,
+        false,
+      );
+      return this.finishLegacyProvisioningFailure(taskId, winner);
     }
     return 'transitioned';
   }
@@ -2556,6 +2760,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     void launchDecision
       .then(async (decision) => {
         if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+          await this.settleLegacyProvisioningSupersession(
+            taskId,
+            attempt,
+            undefined,
+            true,
+          );
           return;
         }
         if (decision.kind === 'fenced') return;
@@ -2588,6 +2798,12 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       })
       .catch(async (error: unknown) => {
         if (!(await this.waitForRunningAdmission(taskId, transitionToken))) {
+          await this.settleLegacyProvisioningSupersession(
+            taskId,
+            attempt,
+            error,
+            true,
+          );
           return;
         }
         await this.settleProvisioningDiagnostics(attempt, {
@@ -2628,7 +2844,18 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         'task provisioning diagnostic begin',
       );
       if (attempt && input.admissionMode === 'legacy') {
-        this.legacyDiagnosticAttempts.set(input.taskId, attempt);
+        // A terminal CAS may have completed while the recorder allocated this
+        // attempt. Never re-attach that late controller after the terminal
+        // owner has already drained the process-local maps; the admission
+        // continuation will settle it directly from the retained terminal
+        // fence before returning.
+        if (!this.terminalTasks.has(input.taskId)) {
+          this.legacyDiagnosticAttempts.set(input.taskId, attempt);
+          this.legacyDiagnosticPositions.set(input.taskId, {
+            stage: 'provider_selection',
+            operation: 'provider_select',
+          });
+        }
       }
       return attempt;
     } catch {
@@ -2639,8 +2866,17 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       // The emitter is intentionally not attached to provider work that has
       // already continued past this best-effort boundary.
       void begin
-        .then((lateAttempt) => {
-          return this.settleProvisioningDiagnostics(lateAttempt, {
+        .then(async (lateAttempt) => {
+          if (input.admissionMode === 'legacy' && this.terminalTasks.has(input.taskId)) {
+            await this.settleLegacyProvisioningSupersession(
+              input.taskId,
+              lateAttempt,
+              undefined,
+              false,
+            );
+            return;
+          }
+          await this.settleProvisioningDiagnostics(lateAttempt, {
             state: 'interrupted',
             stage: 'provider_selection',
             operation: 'provider_select',
@@ -2648,7 +2884,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
             cause: 'settlement_unknown',
             retryable: true,
             exitCode: null,
-            completion: 'leave_partial',
+            completion: 'mark_if_complete',
           });
         })
         .catch(() => undefined);
@@ -2738,9 +2974,15 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     ) {
       this.legacyCleanupNotRequired.add(attempt.context.taskId);
     }
-    const settlement = Promise.resolve().then(() =>
-      attempt.settlement.settlePrimary(input),
-    );
+    // `settlePrimary` selects its immutable first winner synchronously. Invoke
+    // it directly so a Task-CAS terminal continuation cannot overtake an
+    // already-authorized settlement between this call and a queued microtask.
+    let settlement: Promise<void>;
+    try {
+      settlement = attempt.settlement.settlePrimary(input);
+    } catch {
+      return;
+    }
     try {
       await this.withTimeout(
         settlement,
@@ -2852,23 +3094,34 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async waitForRunningAdmission(
     taskId: string,
     transitionToken: string,
+    signal?: AbortSignal,
   ): Promise<boolean> {
     let attempt = 0;
     for (;;) {
-      if (this.terminalTasks.has(taskId)) return false;
+      if (this.terminalTasks.has(taskId) || signal?.aborted) return false;
       const checker = this.tasks.isAdmissionTransitionCurrent;
       // Guardrails-only tests may provide the historical narrow mock. Production
       // always resolves the concrete TasksService with the durable token check.
       if (typeof checker !== 'function') return true;
       try {
-        const current = await checker.call(
-          this.tasks,
-          taskId,
-          'running',
-          transitionToken,
+        const current = await raceWithAbortSignal(
+          Promise.resolve().then(() =>
+            checker.call(
+              this.tasks,
+              taskId,
+              'running',
+              transitionToken,
+            ),
+          ),
+          signal,
         );
-        return current && !this.terminalTasks.has(taskId);
+        return (
+          current === true &&
+          !this.terminalTasks.has(taskId) &&
+          !signal?.aborted
+        );
       } catch (err) {
+        if (signal?.aborted) return false;
         attempt += 1;
         if (attempt === 1 || attempt % 10 === 0) {
           this.logger.warn(
@@ -2877,35 +3130,287 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
             }`,
           );
         }
-        await delay(Math.min(5_000, 50 * 2 ** Math.min(attempt - 1, 7)));
+        try {
+          await delay(
+            Math.min(5_000, 50 * 2 ** Math.min(attempt - 1, 7)),
+            undefined,
+            signal ? { signal } : undefined,
+          );
+        } catch {
+          if (signal?.aborted) return false;
+        }
       }
     }
   }
 
-  /**
-   * One-shot, bounded fence used only before projecting a legacy primary.
-   * Unlike the provider-start fence above, diagnostic evidence must never wait
-   * indefinitely for the database or delay the authoritative Task result.
-   */
-  private async isRunningAdmissionCurrentForDiagnostics(
-    taskId: string,
-    transitionToken: string,
-  ): Promise<boolean> {
-    if (this.terminalTasks.has(taskId)) return false;
-    const checker = this.tasks.isAdmissionTransitionCurrent;
-    if (typeof checker !== 'function') return true;
-    try {
-      const current = await this.withTimeout(
-        Promise.resolve().then(() =>
-          checker.call(this.tasks, taskId, 'running', transitionToken),
-        ),
-        this.diagnosticWriteTimeoutMs,
-        'task provisioning diagnostic running fence',
-      );
-      return current && !this.terminalTasks.has(taskId);
-    } catch {
-      return false;
+  private beginLegacyProvisioning(taskId: string): AbortController {
+    this.abortLegacyProvisioning(taskId);
+    const controller = new AbortController();
+    this.legacyProvisioningAbortControllers.set(taskId, controller);
+    return controller;
+  }
+
+  private abortLegacyProvisioning(taskId: string): void {
+    const controller = this.legacyProvisioningAbortControllers.get(taskId);
+    if (!controller) return;
+    this.legacyProvisioningAbortControllers.delete(taskId);
+    if (!controller.signal.aborted) {
+      controller.abort(createLegacyProvisioningCancellationError());
     }
+  }
+
+  private releaseLegacyProvisioning(
+    taskId: string,
+    controller: AbortController,
+  ): void {
+    if (this.legacyProvisioningAbortControllers.get(taskId) === controller) {
+      this.legacyProvisioningAbortControllers.delete(taskId);
+    }
+  }
+
+  private observeLegacyProvisioningDiagnostics(
+    taskId: string,
+    diagnostics: SandboxProvisioningDiagnosticEmitter,
+  ): SandboxProvisioningDiagnosticEmitter {
+    return Object.freeze({
+      mode: 'task' as const,
+      get attemptContext() {
+        return diagnostics.attemptContext;
+      },
+      createOperationId(replayKey?: Parameters<typeof diagnostics.createOperationId>[0]) {
+        return diagnostics.createOperationId(replayKey);
+      },
+      emit: async (fact: SandboxProvisioningDiagnosticFact): Promise<void> => {
+        await diagnostics.emit(fact);
+        this.legacyDiagnosticPositions.set(taskId, {
+          stage: fact.stage,
+          operation: fact.operation,
+          ...(fact.commandKind === undefined
+            ? {}
+            : { commandKind: fact.commandKind }),
+        });
+      },
+      flush(): Promise<void> {
+        return diagnostics.flush();
+      },
+      bindProviderFamily(
+        providerFamily: TaskProvisioningDiagnosticProviderFamily,
+      ) {
+        diagnostics.bindProviderFamily(providerFamily);
+      },
+    });
+  }
+
+  private rememberLegacyProvisioningFailure(
+    taskId: string,
+    error: unknown,
+    fallbackStage: TaskProvisioningDiagnosticStage,
+    providerBoundaryCrossed: boolean,
+  ): void {
+    this.legacyProvisioningFailureCandidates.set(taskId, {
+      settlement: {
+        ...classifyTaskProvisioningDiagnosticPrimaryFailure(
+          error,
+          fallbackStage,
+        ),
+        completion: providerBoundaryCrossed
+          ? 'leave_partial'
+          : 'mark_if_complete',
+      },
+      providerBoundaryCrossed,
+    });
+  }
+
+  private rememberLegacyProviderUnavailable(
+    taskId: string,
+    providerBoundaryCrossed: boolean,
+  ): void {
+    this.legacyProvisioningFailureCandidates.set(taskId, {
+      settlement: {
+        state: 'failed',
+        stage: 'provider_selection',
+        operation: 'provider_select',
+        outcome: 'failed',
+        cause: 'provider_unavailable',
+        retryable: false,
+        exitCode: null,
+        completion: providerBoundaryCrossed
+          ? 'leave_partial'
+          : 'mark_if_complete',
+      },
+      providerBoundaryCrossed,
+    });
+  }
+
+  private async terminalTaskStatus(
+    taskId: string,
+  ): Promise<TaskStatus | undefined> {
+    const retained = this.terminalTaskStatuses.get(taskId);
+    if (retained !== undefined) return retained;
+    if (!this.prisma) return undefined;
+    try {
+      const status = (
+        await this.prisma.task.findUnique({
+          where: { id: taskId },
+          select: { status: true },
+        })
+      )?.status as TaskStatus | undefined;
+      return status !== undefined && isTerminalTaskStatus(status)
+        ? status
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private cancellationSettlementForLegacyAttempt(
+    taskId: string,
+    error: unknown,
+    providerBoundaryCrossed: boolean,
+    completion: 'mark_if_complete' | 'leave_partial',
+  ): TaskProvisioningDiagnosticPrimarySettlementInput {
+    const classified = classifyTaskProvisioningDiagnosticPrimaryFailure(
+      error,
+      providerBoundaryCrossed
+        ? 'sandbox_creation'
+        : 'provider_selection',
+    );
+    const position = this.legacyDiagnosticPositions.get(taskId);
+    return {
+      ...classified,
+      ...(position === undefined
+        ? {}
+        : {
+            stage: position.stage,
+            operation: position.operation,
+            ...(position.commandKind === undefined
+              ? { commandKind: null }
+              : { commandKind: position.commandKind }),
+          }),
+      state: 'cancelled',
+      outcome: 'cancelled',
+      cause: 'cancelled',
+      retryable: false,
+      exitCode: null,
+      completion,
+    };
+  }
+
+  private async settleLegacyTerminalPrimary(
+    taskId: string,
+    diagnosticAttempt: BegunTaskProvisioningDiagnosticObserver | undefined,
+    status: TaskStatus | undefined,
+    error: unknown,
+    providerBoundaryCrossed: boolean,
+  ): Promise<void> {
+    if (!diagnosticAttempt) return;
+    const candidate = this.legacyProvisioningFailureCandidates.get(taskId);
+    if (
+      status === 'failed' &&
+      candidate &&
+      this.terminalTaskStatuses.get(taskId) === 'failed'
+    ) {
+      await this.settleProvisioningDiagnostics(
+        diagnosticAttempt,
+        candidate.settlement,
+      );
+      return;
+    }
+    if (status === 'cancelled') {
+      await this.settleProvisioningDiagnostics(
+        diagnosticAttempt,
+        this.cancellationSettlementForLegacyAttempt(
+          taskId,
+          error,
+          providerBoundaryCrossed,
+          providerBoundaryCrossed ? 'leave_partial' : 'mark_if_complete',
+        ),
+      );
+      return;
+    }
+
+    const position = this.legacyDiagnosticPositions.get(taskId);
+    const classified = classifyTaskProvisioningDiagnosticPrimaryFailure(
+      error,
+      providerBoundaryCrossed
+        ? 'sandbox_creation'
+        : 'provider_selection',
+    );
+    await this.settleProvisioningDiagnostics(diagnosticAttempt, {
+      ...classified,
+      ...(position === undefined
+        ? {}
+        : {
+            stage: position.stage,
+            operation: position.operation,
+            ...(position.commandKind === undefined
+              ? { commandKind: null }
+              : { commandKind: position.commandKind }),
+          }),
+      state: 'interrupted',
+      outcome: 'indeterminate',
+      cause: 'settlement_unknown',
+      retryable: true,
+      exitCode: null,
+      completion: providerBoundaryCrossed
+        ? 'leave_partial'
+        : 'mark_if_complete',
+    });
+  }
+
+  private async settleLegacyProvisioningSupersession(
+    taskId: string,
+    diagnosticAttempt: BegunTaskProvisioningDiagnosticObserver | undefined,
+    error: unknown = createLegacyProvisioningCancellationError(),
+    providerBoundaryCrossed = true,
+  ): Promise<void> {
+    await this.settleLegacyTerminalPrimary(
+      taskId,
+      diagnosticAttempt,
+      await this.terminalTaskStatus(taskId),
+      error,
+      providerBoundaryCrossed,
+    );
+    if (!providerBoundaryCrossed || !diagnosticAttempt) return;
+    const getCleanupAuthority = this.sandbox?.getSandboxCleanupAuthority;
+    if (!getCleanupAuthority) return;
+    try {
+      const authority = await getCleanupAuthority.call(this.sandbox, taskId);
+      if (authority.status === null) return;
+      // A provider continuation may be the only replica that can close its
+      // entered create fence. Once that continuation has durably converged the
+      // cleanup, advance the same task attempt from the terminal replica's
+      // pending evidence. A still-pending attempt is retained too: it carries
+      // exact failed/indeterminate evidence without manufacturing completeness.
+      await this.settleCleanupDiagnostics(
+        diagnosticAttempt.settlement,
+        authority,
+      );
+    } catch {
+      // Cleanup authority remains owned by the persistent fence. An uncertain
+      // read cannot manufacture terminal cleanup or diagnostic completeness.
+    }
+  }
+
+  /**
+   * TasksService returns the already-committed row when another replica wins
+   * the same `failed` transition. With no local terminal callback, that replica
+   * owns audit and physical settlement; this process must retire only its local
+   * timers/session mirror and report supersession so admitUntracked releases its
+   * exact semaphore reservation.
+   */
+  private finishLegacyProvisioningFailure(
+    taskId: string,
+    winner: TaskStatus | undefined,
+  ): 'transitioned' | 'superseded' {
+    if (
+      winner !== 'failed' ||
+      this.terminalTaskStatuses.get(taskId) === 'failed'
+    ) {
+      return 'transitioned';
+    }
+    this.clearAdmissionRuntime(taskId);
+    return 'superseded';
   }
 
   private clearAdmissionRuntime(taskId: string): void {
@@ -2945,6 +3450,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       !this.terminalSettlementsInFlight.has(taskId)
     ) {
       this.terminalTasks.delete(taskId);
+      this.terminalTaskStatuses.delete(taskId);
     }
   }
 
@@ -3037,37 +3543,51 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     }
   }
 
-  private async failProvisioning(taskId: string, error: unknown): Promise<void> {
-    if (isTaskBranchResolutionError(error)) {
-      try {
-        await this.tasks.failWithProvisioningFailure(
-          taskId,
-          error.failureCode,
-        );
-        return;
-      } catch (persistError) {
-        this.logger.debug(
-          `branch resolution failure transition for task ${taskId} skipped: ${
-            persistError instanceof Error
-              ? persistError.message
-              : String(persistError)
-          }`,
-        );
+  private async failProvisioning(
+    taskId: string,
+    error: unknown,
+  ): Promise<TaskStatus | undefined> {
+    // This is only an in-process provider fence. The terminal status remains
+    // unknown until TasksService confirms the lifecycle CAS winner.
+    this.fenceTerminal(taskId);
+    this.forcedTerminalPlans.set(taskId, {
+      status: 'failed',
+      plan: forceFailSettlePlan({ terminal: 'failed' }),
+    });
+    try {
+      if (isTaskBranchResolutionError(error)) {
+        try {
+          await this.tasks.failWithProvisioningFailure(
+            taskId,
+            error.failureCode,
+          );
+          return await this.terminalTaskStatus(taskId);
+        } catch (persistError) {
+          this.logger.debug(
+            `branch resolution failure transition for task ${taskId} skipped: ${
+              persistError instanceof Error
+                ? persistError.message
+                : String(persistError)
+            }`,
+          );
+        }
       }
-    }
-    if (isSandboxRuntimeModelSetupError(error)) {
-      if (
-        await this.failRuntime(
-          taskId,
-          'runtime_model_setup_failed',
-          null,
-          false,
-        )
-      ) {
-        return;
+      if (isSandboxRuntimeModelSetupError(error)) {
+        if (
+          await this.failRuntime(
+            taskId,
+            'runtime_model_setup_failed',
+            null,
+            false,
+          )
+        ) {
+          return await this.terminalTaskStatus(taskId);
+        }
       }
+      return await this.forceFail(taskId, 'provision_failed');
+    } finally {
+      this.forcedTerminalPlans.delete(taskId);
     }
-    await this.forceFail(taskId, 'provision_failed');
   }
 
   /**
@@ -3081,43 +3601,65 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   private async forceFail(
     taskId: string,
     cause: 'deadline' | 'idle' | 'circuit_breaker' | 'provision_failed' | 'abnormal_exit',
-  ): Promise<void> {
+  ): Promise<TaskStatus | undefined> {
+    this.beginTerminalSettlement(taskId);
+    // Abort provider work synchronously, but do not speculate about the
+    // lifecycle result. TasksService feeds the confirmed CAS winner back via
+    // fenceTerminal(taskId, status).
     this.fenceTerminal(taskId);
+    const desiredTerminal: 'completed' | 'failed' =
+      cause === 'idle' ? 'completed' : 'failed';
+    this.forcedTerminalPlans.set(taskId, {
+      status: desiredTerminal,
+      plan: forceFailSettlePlan({ terminal: desiredTerminal }),
+    });
     // structured-logging: bind taskId for all force-fail logs (incl. timer-driven
     // deadline/idle/circuit_breaker entrypoints that run outside any request).
     return runWithTaskLog(taskId, async () => {
+      let transitionOutcome:
+        | 'transitioned'
+        | 'skipped'
+        | 'superseded-readoption'
+        | undefined;
       try {
         // An idle ceiling on a RESIDENT session is a graceful end of life —
         // reclaim it as `completed`, not a force-`failed`. Every other cause stays
         // a failure. The capture / stop-only teardown / slot-release below is
         // identical for both.
-        const terminal: 'completed' | 'failed' =
-          cause === 'idle' ? 'completed' : 'failed';
-        this.logger.warn(
-          `${terminal === 'completed' ? 'reclaiming idle task' : 'force-failing task'} ${taskId} (${cause})`,
-        );
-        this.clearTimers(taskId);
-        // Close the runner-minutes interval on the forced-failure terminal too (5.4).
-        this.runnerMinutes.recordEnd(taskId);
-        // 6.2 — record the force-fail naming its CAUSE (deadline / idle /
-        // circuit_breaker), so the timeline shows WHY the task was reclaimed. The
-        // generic `task.failed` transition is also recorded centrally by the tasks
-        // service when the `failed` write below is accepted; the two are distinct
-        // events (the terminal transition + its cause).
-        // The cause-specific `recordForceFailed` event is only for actual failures;
-        // an idle reclamation to `completed` relies on the central `task.completed`
-        // audit emitted by the status-write chokepoint.
-        if (terminal === 'failed') {
-          await this.recordAudit(() => this.audit?.recordForceFailed(taskId, cause));
-        }
+        const terminal = desiredTerminal;
         const transition = await this.safeTransition(taskId, terminal);
-        if (transition === 'superseded-readoption') return;
-        if (await this.deferTerminalSettlementToDurableRecovery(taskId)) {
-          return;
+        transitionOutcome = transition;
+        const winner = await this.terminalTaskStatus(taskId);
+        if (winner !== terminal) return winner;
+
+        // Only the callback from a locally confirmed TasksService CAS may own
+        // the cause-specific log/audit. A cross-replica same-status observation
+        // has already emitted those effects at its own linearization point.
+        if (this.terminalTaskStatuses.get(taskId) === terminal) {
+          this.logger.warn(
+            `${terminal === 'completed' ? 'reclaiming idle task' : 'force-failing task'} ${taskId} (${cause})`,
+          );
+          if (terminal === 'failed') {
+            await this.recordAudit(() =>
+              this.audit?.recordForceFailed(taskId, cause),
+            );
+          }
         }
-        await this.settleTask(taskId, forceFailSettlePlan({ terminal }));
+        if (transition === 'superseded-readoption') return winner;
+        return winner;
       } finally {
-        this.readoptionAuthorityChecks.delete(taskId);
+        this.forcedTerminalPlans.delete(taskId);
+        this.endTerminalSettlement(taskId);
+        const remoteSameTargetCleared =
+          transitionOutcome === 'transitioned' &&
+          this.terminalTaskStatuses.get(taskId) === undefined &&
+          this.clearReadoptionAfterTerminalObservation(taskId);
+        if (
+          !remoteSameTargetCleared &&
+          !(await this.clearSupersededReadoption(taskId))
+        ) {
+          this.readoptionAuthorityChecks.delete(taskId);
+        }
         this.releaseTerminalFenceIfIdle(taskId);
       }
     });
@@ -3539,6 +4081,31 @@ function noCleanupRequiredSummary(): TaskProvisioningDiagnosticCleanupSummary {
 function cleanupSummaryFromAuthority(
   authority: SandboxRunCleanupAuthorityProjection,
 ): TaskProvisioningDiagnosticCleanupSummary {
+  if (
+    authority.ownershipKind === 'legacy' &&
+    authority.attemptCount > 0 &&
+    authority.lastAttemptOutcome !== null
+  ) {
+    // Legacy terminal-retain is projected as `not_required` by SandboxRun
+    // because no retry authority remains, but its retained attempt evidence is
+    // still the authoritative diagnostic cleanup result. This also lets an
+    // originating continuation recover the exact physical fact if the
+    // terminal replica stopped after settling SandboxRun but before recording
+    // diagnostics.
+    const state =
+      authority.lastAttemptOutcome === 'succeeded'
+        ? 'succeeded'
+        : authority.lastAttemptOutcome === 'failed'
+          ? 'failed'
+          : 'pending';
+    return {
+      state,
+      cause: state === 'succeeded' ? null : authority.lastAttemptCause,
+      attemptCount: authority.attemptCount,
+      lastAttemptOutcome: authority.lastAttemptOutcome,
+      observedAt: authority.lastAttemptObservedAt,
+    };
+  }
   if (authority.state === 'not_required') {
     return noCleanupRequiredSummary();
   }
@@ -3600,4 +4167,55 @@ function isTaskAdmissionControlSignal(error: unknown): boolean {
     error instanceof TaskAdmissionCoordinationError ||
     error instanceof TaskAdmissionLeaseLostError
   );
+}
+
+function combineCancellationSignals(
+  ...signals: Array<AbortSignal | undefined>
+): AbortSignal | undefined {
+  const defined = signals.filter(
+    (signal): signal is AbortSignal => signal !== undefined,
+  );
+  if (defined.length === 0) return undefined;
+  if (defined.length === 1) return defined[0];
+  return AbortSignal.any(defined);
+}
+
+function createLegacyProvisioningCancellationError(): Error {
+  const error = new Error('Legacy sandbox provisioning was cancelled');
+  error.name = 'AbortError';
+  return error;
+}
+
+function isTerminalTaskStatus(status: TaskStatus): boolean {
+  return (
+    status === 'completed' ||
+    status === 'failed' ||
+    status === 'cancelled' ||
+    status === 'agent_failed_to_start'
+  );
+}
+
+function raceWithAbortSignal<T>(
+  promise: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T | undefined> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise<T | undefined>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(undefined);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
 }
