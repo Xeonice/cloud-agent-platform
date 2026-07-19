@@ -1362,15 +1362,27 @@ async function flushTaskDiagnostics() {
   };
   const webSocketFactory = () => {
     const socket = new EventEmitter();
-    socket.close = () => {};
-    setImmediate(() => socket.emit('close'));
+    const exitCode = runtimePhase ? 1 : 0;
+    socket.readyState = 1;
+    socket.close = () => {
+      if (socket.readyState === 3) return;
+      socket.readyState = 3;
+      socket.emit('close');
+    };
+    socket.terminate = socket.close;
+    setImmediate(() => {
+      socket.emit(
+        'message',
+        Buffer.from(JSON.stringify({ type: 'exit', exit_code: exitCode })),
+        false,
+      );
+    });
     return socket;
   };
   const client = new mod.BoxLiteRestClient({
     baseUrl: configResult.config.endpoint,
     apiToken: configResult.config.apiToken,
     protocolMode: 'native',
-    nativeAttachOutput: true,
     fetch,
     webSocketFactory,
   });

@@ -23,6 +23,9 @@ The stable contracts are:
 - execution modes, provider locations, and provider descriptors;
 - `SandboxProviderPort` and optional descriptor/readoption ports;
 - selected-run, terminal, command, workspace, retention, and preflight descriptors;
-- normalized command executor result shapes;
+- normalized command executor result shapes whose success proves process
+  settlement and complete stdout/stderr drain, including zero-byte output;
+- typed output-settlement rejections that map to the existing safe command
+  transport, protocol, timeout, and cancellation classifications;
 - secret-free ordinary/workspace command request types;
 - provider-neutral configuration, selection, and capability errors.

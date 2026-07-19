@@ -1,4 +1,5 @@
 import { StringDecoder } from 'node:string_decoder';
+import { performance } from 'node:perf_hooks';
 import WebSocket from 'ws';
 import type {
   SandboxCreateObservation,
@@ -12,6 +13,7 @@ import {
   classifySandboxCommandExecutionResult,
   runSandboxExternalBoundary,
   sandboxCommandExecutionDiagnosticFields,
+  SandboxCommandOutputSettlementError,
   SandboxCommandSettlementError,
 } from '@cap/sandbox-core';
 import {
@@ -121,31 +123,48 @@ export interface BoxLiteNativeExecutionOutput {
   readonly output: string;
 }
 
-/**
- * Supplemental attach outcome. Poll settlement remains authoritative for the
- * command result; attach only contributes bounded output and its own status.
- */
 export type BoxLiteNativeExecutionAttachResult =
   | {
       readonly kind: 'success';
+      readonly exitCode: number;
       readonly output: BoxLiteNativeExecutionOutput;
     }
   | {
       readonly kind: 'degraded';
-      readonly output: BoxLiteNativeExecutionOutput;
+      readonly settlement: 'transport' | 'protocol';
     }
   | {
       readonly kind: 'timed_out';
-      readonly output: BoxLiteNativeExecutionOutput;
+      readonly settlement: 'timeout';
+    }
+  | {
+      readonly kind: 'cancelled';
+      readonly settlement: 'cancellation';
+    }
+  | {
+      /** Poll failed first, so output observation was intentionally stopped. */
+      readonly kind: 'stopped';
     };
 
 interface BoxLiteNativeExecutionAttachHandle {
   readonly result: Promise<BoxLiteNativeExecutionAttachResult>;
-  /**
-   * Polling has finished, so attach gets one event-loop turn to drain an
-   * already queued exit/frame before it is closed as supplemental degradation.
-   */
-  finishAfterPoll(): Promise<BoxLiteNativeExecutionAttachResult>;
+  stopAfterProcessFailure(): Promise<BoxLiteNativeExecutionAttachResult>;
+}
+
+type BoxLiteNativeExecutionBudgetReason = 'deadline' | 'cancellation';
+
+interface BoxLiteNativeExecutionBudget {
+  readonly timeoutMs: number;
+  readonly signal: AbortSignal;
+  remainingMs(): number;
+  reason(): BoxLiteNativeExecutionBudgetReason | null;
+  dispose(): void;
+}
+
+/** @internal Deterministic monotonic clock seam for native-exec conformance. */
+export interface BoxLiteNativeExecutionDeadlineDriver {
+  now(): number;
+  schedule(delayMs: number, trigger: () => void): () => void;
 }
 
 /**
@@ -264,12 +283,13 @@ export interface BoxLiteRestClientOptions {
   readonly protocolMode?: 'native' | 'cap-rest';
   readonly pathPrefix?: string;
   readonly fetch?: BoxLiteFetch;
-  readonly nativeAttachOutput?: boolean;
   /** Deterministic transport seam; production defaults to the ws client. */
   readonly webSocketFactory?: (
     url: string,
     options: { readonly headers: Readonly<Record<string, string>> },
   ) => WebSocket;
+  /** @internal Deterministic deadline seam; production uses the monotonic clock. */
+  readonly nativeExecutionDeadlineDriver?: BoxLiteNativeExecutionDeadlineDriver;
 }
 
 export class BoxLiteRestClient implements BoxLiteClient {
@@ -279,10 +299,10 @@ export class BoxLiteRestClient implements BoxLiteClient {
   private readonly protocolMode: 'native' | 'cap-rest';
   private readonly pathPrefix: string;
   private readonly fetchImpl: BoxLiteFetch;
-  private readonly nativeAttachOutput: boolean;
   private readonly webSocketFactory: NonNullable<
     BoxLiteRestClientOptions['webSocketFactory']
   >;
+  private readonly nativeExecutionDeadlineDriver: BoxLiteNativeExecutionDeadlineDriver;
 
   constructor(options: BoxLiteRestClientOptions) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl);
@@ -290,10 +310,12 @@ export class BoxLiteRestClient implements BoxLiteClient {
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.protocolMode = options.protocolMode ?? 'native';
     this.pathPrefix = normalizePathPrefix(options.pathPrefix ?? 'default');
-    this.nativeAttachOutput = options.nativeAttachOutput ?? options.fetch === undefined;
     this.webSocketFactory =
       options.webSocketFactory ??
       ((url, socketOptions) => new WebSocket(url, socketOptions));
+    this.nativeExecutionDeadlineDriver =
+      options.nativeExecutionDeadlineDriver ??
+      systemNativeExecutionDeadlineDriver;
     this.fetchImpl =
       options.fetch ??
       ((input, init) => {
@@ -611,45 +633,89 @@ export class BoxLiteRestClient implements BoxLiteClient {
 
   async exec(request: BoxLiteExecRequest): Promise<BoxLiteExecResult> {
     if (this.protocolMode === 'native') {
-      const started = await this.startExecution({
-        sandboxId: request.sandboxId,
-        command: 'sh',
-        args: ['-lc', request.command],
-        cwd: request.cwd,
-        tty: false,
-        timeoutMs: request.timeoutMs,
-        cancellationSignal: request.cancellationSignal,
-        diagnostics: request.diagnostics,
-        diagnosticChannel: request.diagnosticChannel,
-        commandKind: request.commandKind,
-      });
-      const attach = this.nativeAttachOutput
-        ? this.collectNativeExecutionOutput(
-            started.sandboxId,
-            started.id,
-            request.timeoutMs,
-            request.diagnostics,
-            request.diagnosticChannel,
-            request.commandKind,
-          )
-        : undefined;
-      let polled: BoxLiteExecResult;
+      const budget = createNativeExecutionBudget(
+        request.timeoutMs ?? this.timeoutMs,
+        request.cancellationSignal,
+        this.nativeExecutionDeadlineDriver,
+      );
+      const settlementDiagnostic = startBoxLiteProvisioningDiagnostic(
+        request.diagnostics,
+        {
+          stage: 'settlement',
+          operation: 'native_exec_settlement',
+          channel: request.diagnosticChannel ?? 'primary',
+          ...(request.commandKind === undefined
+            ? {}
+            : { commandKind: request.commandKind }),
+        },
+      );
       try {
-        polled = await this.waitForNativeExecution(
+        throwIfNativeExecutionBudgetEnded(budget);
+        let started: BoxLiteStartedExecution;
+        try {
+          started = await this.startNativeExecution(
+            {
+              sandboxId: request.sandboxId,
+              command: 'sh',
+              args: ['-lc', request.command],
+              cwd: request.cwd,
+              tty: false,
+              timeoutMs: request.timeoutMs,
+              cancellationSignal: request.cancellationSignal,
+              diagnostics: request.diagnostics,
+              diagnosticChannel: request.diagnosticChannel,
+              commandKind: request.commandKind,
+            },
+            budget.signal,
+            null,
+            budget,
+          );
+        } catch (error) {
+          throw mapNativeExecutionBudgetRejection(error, budget);
+        }
+        const attach = this.collectNativeExecutionOutput(
           started.sandboxId,
           started.id,
-          request.timeoutMs,
+          budget,
           request.diagnostics,
           request.diagnosticChannel,
           request.commandKind,
-          request.cancellationSignal,
         );
+        throwIfNativeExecutionBudgetEnded(budget);
+        let polled: BoxLiteExecResult;
+        try {
+          polled = await this.waitForNativeExecution(
+            started.sandboxId,
+            started.id,
+            budget,
+            request.diagnostics,
+            request.diagnosticChannel,
+            request.commandKind,
+            request.cancellationSignal,
+          );
+        } catch (error) {
+          await attach.stopAfterProcessFailure();
+          throw error;
+        }
+        const attached = await attach.result;
+        const result = mergeExecOutput(polled, attached);
+        settleBoxLiteExecResultDiagnostic(
+          settlementDiagnostic,
+          result,
+          budget.timeoutMs,
+        );
+        return result;
       } catch (error) {
-        await attach?.finishAfterPoll();
+        settleBoxLiteCommandRejectionDiagnostic(
+          settlementDiagnostic,
+          error,
+          request.cancellationSignal,
+          budget.timeoutMs,
+        );
         throw error;
+      } finally {
+        budget.dispose();
       }
-      const attached = await attach?.finishAfterPoll();
-      return mergeExecOutput(polled, attached);
     }
     const startDiagnostic = startBoxLiteProvisioningDiagnostic(
       request.diagnostics,
@@ -780,6 +846,20 @@ export class BoxLiteRestClient implements BoxLiteClient {
   async startExecution(
     request: BoxLiteStartExecutionRequest,
   ): Promise<BoxLiteStartedExecution> {
+    return this.startNativeExecution(
+      request,
+      request.cancellationSignal,
+      undefined,
+      undefined,
+    );
+  }
+
+  private async startNativeExecution(
+    request: BoxLiteStartExecutionRequest,
+    transportSignal: AbortSignal | undefined,
+    requestTimeoutMs: number | null | undefined,
+    sharedBudget: BoxLiteNativeExecutionBudget | undefined,
+  ): Promise<BoxLiteStartedExecution> {
     const diagnostic = startBoxLiteProvisioningDiagnostic(
       request.diagnostics,
       {
@@ -791,12 +871,14 @@ export class BoxLiteRestClient implements BoxLiteClient {
           : { commandKind: request.commandKind }),
       },
     );
+    let raw: unknown;
     try {
-      const raw = await this.requestJson(
+      raw = await this.requestJson(
         `${this.sandboxPath(request.sandboxId)}/exec`,
         {
           method: 'POST',
-          signal: request.cancellationSignal,
+          signal: transportSignal,
+          timeoutMs: requestTimeoutMs,
           body: {
             command: request.command,
             args: request.args,
@@ -809,15 +891,52 @@ export class BoxLiteRestClient implements BoxLiteClient {
           },
         },
       );
-      const started = parseStartedExecution(raw, request.sandboxId);
-      diagnostic.succeed();
-      return started;
     } catch (error) {
+      const budgetError = nativeExecutionBudgetError(sharedBudget);
+      if (budgetError !== null && sharedBudget !== undefined) {
+        settleNativeExecutionStartBudgetDiagnostic(
+          diagnostic,
+          budgetError,
+          sharedBudget,
+        );
+        throw budgetError;
+      }
       settleBoxLiteRequestDiagnostic(diagnostic, error, {
         signal: request.cancellationSignal,
         outcome: 'indeterminate',
         cause: 'settlement_unknown',
         retryable: true,
+      });
+      throw error;
+    }
+    const postRequestBudgetError = nativeExecutionBudgetError(sharedBudget);
+    if (postRequestBudgetError !== null && sharedBudget !== undefined) {
+      settleNativeExecutionStartBudgetDiagnostic(
+        diagnostic,
+        postRequestBudgetError,
+        sharedBudget,
+      );
+      throw postRequestBudgetError;
+    }
+    try {
+      const started = parseStartedExecution(raw, request.sandboxId);
+      diagnostic.succeed();
+      return started;
+    } catch {
+      const budgetError = nativeExecutionBudgetError(sharedBudget);
+      if (budgetError !== null && sharedBudget !== undefined) {
+        settleNativeExecutionStartBudgetDiagnostic(
+          diagnostic,
+          budgetError,
+          sharedBudget,
+        );
+        throw budgetError;
+      }
+      const error = new SandboxCommandSettlementError('protocol');
+      settleBoxLiteRequestDiagnostic(diagnostic, error, {
+        outcome: 'failed',
+        cause: 'protocol_failed',
+        retryable: false,
       });
       throw error;
     }
@@ -830,6 +949,8 @@ export class BoxLiteRestClient implements BoxLiteClient {
       readonly body?: unknown;
       readonly onDefinitiveRejection?: () => Promise<void>;
       readonly signal?: AbortSignal;
+      /** null means an outer operation already owns the only deadline timer. */
+      readonly timeoutMs?: number | null;
     },
   ): Promise<unknown> {
     const res = await this.request(path, init);
@@ -856,6 +977,7 @@ export class BoxLiteRestClient implements BoxLiteClient {
       readonly method: string;
       readonly body?: unknown;
       readonly signal?: AbortSignal;
+      readonly timeoutMs?: number | null;
     },
   ): Promise<BoxLiteFetchResponse> {
     const headers: Record<string, string> = {
@@ -879,7 +1001,13 @@ export class BoxLiteRestClient implements BoxLiteClient {
         method: init.method,
         headers,
         body,
-        signal: combineRequestSignal(this.timeoutMs, init.signal),
+        signal:
+          init.timeoutMs === null
+            ? init.signal
+            : combineRequestSignal(
+                init.timeoutMs ?? this.timeoutMs,
+                init.signal,
+              ),
       });
     } catch (error) {
       markBoxLiteTransportRequestFailure(error);
@@ -908,31 +1036,24 @@ export class BoxLiteRestClient implements BoxLiteClient {
   private async waitForNativeExecution(
     sandboxId: string,
     executionId: string,
-    timeoutMs: number | undefined,
+    budget: BoxLiteNativeExecutionBudget,
     diagnostics: SandboxProvisioningDiagnosticObserver | undefined,
     diagnosticChannel: SandboxProvisioningDiagnosticChannel | undefined,
     commandKind: SandboxProvisioningDiagnosticCommandKind | undefined,
     cancellationSignal: AbortSignal | undefined,
   ): Promise<BoxLiteExecResult> {
-    const effectiveTimeoutMs = timeoutMs ?? this.timeoutMs;
     const pollDiagnostic = startBoxLiteProvisioningDiagnostic(diagnostics, {
       stage: 'settlement',
       operation: 'native_exec_poll',
       channel: diagnosticChannel ?? 'primary',
       ...(commandKind === undefined ? {} : { commandKind }),
     });
-    const settlementDiagnostic = startBoxLiteProvisioningDiagnostic(
-      diagnostics,
-      {
-        stage: 'settlement',
-        operation: 'native_exec_settlement',
-        channel: diagnosticChannel ?? 'primary',
-        ...(commandKind === undefined ? {} : { commandKind }),
-      },
-    );
-    const deadline = Date.now() + effectiveTimeoutMs;
-    while (Date.now() <= deadline) {
-      if (cancellationSignal?.aborted === true) {
+    while (true) {
+      const budgetReason = budget.reason();
+      if (
+        budgetReason === 'cancellation' ||
+        cancellationSignal?.aborted === true
+      ) {
         const terminal = {
           outcome: 'cancelled',
           cause: 'cancelled',
@@ -940,17 +1061,22 @@ export class BoxLiteRestClient implements BoxLiteClient {
           exitCode: null,
         } as const;
         pollDiagnostic.settle(terminal);
-        settlementDiagnostic.settle(terminal);
         throw new SandboxCommandSettlementError('cancellation');
       }
+      if (budgetReason === 'deadline') break;
+      if (budget.remainingMs() <= 0) break;
       let raw: unknown;
       try {
         raw = await this.requestJson(
           this.nativeExecutionPath(sandboxId, executionId),
-          { method: 'GET', signal: cancellationSignal },
+          { method: 'GET', signal: budget.signal, timeoutMs: null },
         );
       } catch (error) {
-        if (isSignalAborted(cancellationSignal)) {
+        const failureReason = budget.reason();
+        if (
+          failureReason === 'cancellation' ||
+          isSignalAborted(cancellationSignal)
+        ) {
           const terminal = {
             outcome: 'cancelled',
             cause: 'cancelled',
@@ -958,23 +1084,34 @@ export class BoxLiteRestClient implements BoxLiteClient {
             exitCode: null,
           } as const;
           pollDiagnostic.settle(terminal);
-          settlementDiagnostic.settle(terminal);
           throw new SandboxCommandSettlementError('cancellation');
         }
+        if (failureReason === 'deadline') break;
         settleBoxLiteRequestDiagnostic(pollDiagnostic, error, {
           anomaly: 'poll_transport_failure',
           retryable: true,
         });
-        settlementDiagnostic.settle({
-          outcome: 'indeterminate',
-          cause: 'settlement_unknown',
-          retryable: true,
-          nativeState: 'unknown',
-          anomaly: 'poll_transport_failure',
-          exitCode: null,
-        });
         // Provider request details and raw failures stay below this boundary.
         throw new SandboxCommandSettlementError('transport');
+      }
+      const postRequestReason = budget.reason();
+      if (
+        postRequestReason === 'cancellation' ||
+        isSignalAborted(cancellationSignal)
+      ) {
+        pollDiagnostic.settle({
+          outcome: 'cancelled',
+          cause: 'cancelled',
+          retryable: false,
+          exitCode: null,
+        });
+        throw new SandboxCommandSettlementError('cancellation');
+      }
+      if (
+        postRequestReason === 'deadline' ||
+        budget.remainingMs() <= 0
+      ) {
+        break;
       }
       const result = parseBoxLiteNativeExecutionPollResult(raw);
       if (result.kind !== 'pending') {
@@ -988,27 +1125,18 @@ export class BoxLiteRestClient implements BoxLiteClient {
             exitCode: result.exitCode,
           } as const;
           pollDiagnostic.settle(terminal);
-          settlementDiagnostic.settle(terminal);
         } else {
           pollDiagnostic.succeed({
             nativeState: result.nativeState,
             exitCode: result.exitCode,
           });
-          settlementDiagnostic.settle({
-            outcome: result.outcome,
-            cause: result.cause,
-            retryable: result.retryable,
-            nativeState: result.nativeState,
-            anomaly: result.anomaly,
-            exitCode: result.exitCode,
-            ...(result.outcome === 'timed_out'
-              ? { timeoutMs: effectiveTimeoutMs }
-              : {}),
-          });
         }
         return adaptBoxLiteNativeExecutionResult(result);
       }
-      await sleep(250);
+      await waitForNativePollInterval(
+        Math.min(250, budget.remainingMs()),
+        budget.signal,
+      );
     }
     const terminal = {
       outcome: 'indeterminate',
@@ -1017,10 +1145,9 @@ export class BoxLiteRestClient implements BoxLiteClient {
       nativeState: 'unknown',
       anomaly: 'poll_timeout',
       exitCode: null,
-      timeoutMs: effectiveTimeoutMs,
+      timeoutMs: budget.timeoutMs,
     } as const;
     pollDiagnostic.settle(terminal);
-    settlementDiagnostic.settle(terminal);
     // A poll deadline is absence of terminal proof, not a provider timeout or
     // an invented numeric exit code.
     throw new SandboxCommandSettlementError('indeterminate');
@@ -1029,7 +1156,7 @@ export class BoxLiteRestClient implements BoxLiteClient {
   private collectNativeExecutionOutput(
     sandboxId: string,
     executionId: string,
-    timeoutMs: number | undefined,
+    budget: BoxLiteNativeExecutionBudget,
     diagnostics: SandboxProvisioningDiagnosticObserver | undefined,
     diagnosticChannel: SandboxProvisioningDiagnosticChannel | undefined,
     commandKind: SandboxProvisioningDiagnosticCommandKind | undefined,
@@ -1040,7 +1167,7 @@ export class BoxLiteRestClient implements BoxLiteClient {
       channel: diagnosticChannel ?? 'primary',
       ...(commandKind === undefined ? {} : { commandKind }),
     });
-    let finishAfterPoll: () => Promise<BoxLiteNativeExecutionAttachResult>;
+    let stopAfterProcessFailure: () => Promise<BoxLiteNativeExecutionAttachResult>;
     const result = new Promise<BoxLiteNativeExecutionAttachResult>((resolve) => {
       const stdoutDecoder = new StringDecoder('utf8');
       const stderrDecoder = new StringDecoder('utf8');
@@ -1048,69 +1175,221 @@ export class BoxLiteRestClient implements BoxLiteClient {
       let stderr = '';
       let settled = false;
       let socket: WebSocket | null = null;
-      let timeout: ReturnType<typeof setTimeout> | null = null;
-      let pollDrain: ReturnType<typeof setImmediate> | null = null;
-      const effectiveTimeoutMs = timeoutMs ?? this.timeoutMs;
       const finish = (
         settlement:
           | 'success'
-          | 'degraded_transport'
-          | 'degraded_unsettled'
-          | 'timed_out',
+          | 'transport'
+          | 'protocol'
+          | 'timed_out'
+          | 'cancelled'
+          | 'stopped',
+        exitCode?: number,
+        socketAlreadyClosed = false,
       ) => {
         if (settled) return;
         settled = true;
-        if (timeout !== null) clearTimeout(timeout);
-        if (pollDrain !== null) clearImmediate(pollDrain);
-        stdout += stdoutDecoder.end();
-        stderr += stderrDecoder.end();
-        try {
-          socket?.close();
-        } catch {
-          // Best-effort; closed sockets may throw.
-        }
-        const output = { stdout, stderr, output: `${stdout}${stderr}` };
+        budget.signal.removeEventListener('abort', onBudgetAbort);
+        const finalStdout = stdout + stdoutDecoder.end();
+        const finalStderr = stderr + stderrDecoder.end();
+        stdout = '';
+        stderr = '';
+        let successfulDrain = false;
         if (settlement === 'timed_out') {
           diagnostic.settle({
             outcome: 'timed_out',
             cause: 'settlement_unknown',
             retryable: true,
             anomaly: 'attach_degraded',
-            timeoutMs: effectiveTimeoutMs,
+            timeoutMs: budget.timeoutMs,
           });
-          resolve({ kind: 'timed_out', output });
-        } else if (settlement === 'degraded_transport') {
+          resolve({ kind: 'timed_out', settlement: 'timeout' });
+        } else if (settlement === 'transport') {
           diagnostic.settle({
             outcome: 'degraded',
             cause: 'transport_failed',
             retryable: true,
             anomaly: 'attach_degraded',
           });
-          resolve({ kind: 'degraded', output });
-        } else if (settlement === 'degraded_unsettled') {
+          resolve({ kind: 'degraded', settlement: 'transport' });
+        } else if (settlement === 'protocol') {
+          diagnostic.settle({
+            outcome: 'degraded',
+            cause: 'protocol_failed',
+            retryable: false,
+            anomaly: 'attach_degraded',
+          });
+          resolve({ kind: 'degraded', settlement: 'protocol' });
+        } else if (settlement === 'cancelled') {
+          diagnostic.settle({
+            outcome: 'cancelled',
+            cause: 'cancelled',
+            retryable: false,
+            anomaly: 'attach_degraded',
+          });
+          resolve({ kind: 'cancelled', settlement: 'cancellation' });
+        } else if (settlement === 'stopped') {
           diagnostic.settle({
             outcome: 'degraded',
             cause: 'settlement_unknown',
             retryable: true,
             anomaly: 'attach_degraded',
           });
-          resolve({ kind: 'degraded', output });
+          resolve({ kind: 'stopped' });
         } else {
-          diagnostic.succeed();
-          resolve({ kind: 'success', output });
+          if (!Number.isSafeInteger(exitCode)) {
+            diagnostic.settle({
+              outcome: 'degraded',
+              cause: 'protocol_failed',
+              retryable: false,
+              anomaly: 'attach_degraded',
+            });
+            resolve({ kind: 'degraded', settlement: 'protocol' });
+          } else {
+            const settledExitCode = exitCode as number;
+            successfulDrain = true;
+            diagnostic.succeed({ exitCode: settledExitCode });
+            resolve({
+              kind: 'success',
+              exitCode: settledExitCode,
+              output: {
+                stdout: finalStdout,
+                stderr: finalStderr,
+                output: `${finalStdout}${finalStderr}`,
+              },
+            });
+          }
+        }
+        if (socketAlreadyClosed) {
+          detachSocketListeners(socket);
+          socket = null;
+        } else {
+          shutdownSocket(successfulDrain ? 'graceful' : 'force');
         }
       };
 
-      timeout = setTimeout(() => finish('timed_out'), effectiveTimeoutMs);
-      finishAfterPoll = () => {
-        if (!settled && pollDrain === null) {
-          pollDrain = setImmediate(() => {
-            pollDrain = null;
-            finish('degraded_unsettled');
-          });
+      function detachSocketListeners(target: WebSocket | null): void {
+        if (target === null) return;
+        target.off('message', onMessage);
+        target.off('close', onClose);
+        target.off('error', onError);
+      }
+
+      function shutdownSocket(mode: 'graceful' | 'force'): void {
+        const target = socket;
+        if (target === null) return;
+        detachSocketListeners(target);
+        const needsShutdownGuard =
+          typeof target.readyState === 'number' &&
+          target.readyState !== WebSocket.CLOSED;
+        const removeShutdownGuards = (): void => {
+          target.off('error', onShutdownError);
+          target.off('close', onShutdownClose);
+          if (socket === target) socket = null;
+        };
+        const onShutdownError = (): void => {};
+        const onShutdownClose = (): void => removeShutdownGuards();
+        // ws can emit one or more transport errors while CONNECTING, OPEN, or
+        // CLOSING. Keep the no-op error guard until close owns final cleanup.
+        if (needsShutdownGuard) {
+          target.on('error', onShutdownError);
+          target.once('close', onShutdownClose);
+        }
+        try {
+          if (mode === 'force' && typeof target.terminate === 'function') {
+            target.terminate();
+          } else {
+            target.close();
+          }
+        } catch {
+          removeShutdownGuards();
+          socket = null;
+          return;
+        }
+        if (
+          !needsShutdownGuard ||
+          Number(target.readyState) === WebSocket.CLOSED
+        ) {
+          removeShutdownGuards();
+        }
+      }
+
+      function onMessage(raw: WebSocket.RawData, isBinary: boolean): void {
+        if (settled) return;
+        const messageBudgetReason = budget.reason();
+        if (messageBudgetReason !== null) {
+          finish(
+            messageBudgetReason === 'cancellation'
+              ? 'cancelled'
+              : 'timed_out',
+          );
+          return;
+        }
+        try {
+          if (!isBinary) {
+            const text = rawToBuffer(raw).toString('utf8');
+            const frame = parseControlFrame(text);
+            if (frame === null) {
+              finish('protocol');
+            } else {
+              finish('success', frame.exitCode);
+            }
+            return;
+          }
+          const buffer = rawToBuffer(raw);
+          if (buffer.length === 0) {
+            finish('protocol');
+            return;
+          }
+          const channel = buffer[0];
+          const payload = buffer.subarray(1);
+          if (channel === 1) {
+            stdout += stdoutDecoder.write(payload);
+          } else if (channel === 2) {
+            stderr += stderrDecoder.write(payload);
+          } else {
+            finish('protocol');
+          }
+        } catch {
+          finish('protocol');
+        }
+      }
+
+      function onClose(): void {
+        if (!settled) finish('transport', undefined, true);
+        detachSocketListeners(socket);
+        socket = null;
+      }
+
+      function onError(): void {
+        if (!settled) finish('transport');
+      }
+
+      function onBudgetAbort(): void {
+        finish(
+          budget.reason() === 'cancellation' ? 'cancelled' : 'timed_out',
+        );
+      }
+
+      stopAfterProcessFailure = () => {
+        if (!settled) {
+          const reason = budget.reason();
+          finish(
+            reason === 'cancellation'
+              ? 'cancelled'
+              : reason === 'deadline'
+                ? 'timed_out'
+                : 'stopped',
+          );
         }
         return result;
       };
+
+      budget.signal.addEventListener('abort', onBudgetAbort, { once: true });
+      const initialReason = budget.reason();
+      if (initialReason !== null) {
+        onBudgetAbort();
+        return;
+      }
 
       try {
         socket = this.webSocketFactory(
@@ -1118,41 +1397,26 @@ export class BoxLiteRestClient implements BoxLiteClient {
           { headers: this.authHeaders() },
         );
       } catch {
-        finish('degraded_transport');
+        finish('transport');
+        return;
+      }
+
+      if (settled) {
+        shutdownSocket('force');
         return;
       }
 
       try {
-        socket.on('message', (raw, isBinary) => {
-          try {
-            if (!isBinary) {
-              const text = rawToBuffer(raw).toString('utf8');
-              const frame = parseControlFrame(text);
-              if (frame?.type === 'exit') finish('success');
-              return;
-            }
-            const buffer = rawToBuffer(raw);
-            if (buffer.length === 0) return;
-            const channel = buffer[0];
-            const payload = buffer.subarray(1);
-            if (channel === 1) {
-              stdout += stdoutDecoder.write(payload);
-            } else if (channel === 2) {
-              stderr += stderrDecoder.write(payload);
-            }
-          } catch {
-            finish('degraded_transport');
-          }
-        });
-        socket.on('close', () => finish('degraded_transport'));
-        socket.on('error', () => finish('degraded_transport'));
+        socket.on('message', onMessage);
+        socket.on('close', onClose);
+        socket.on('error', onError);
       } catch {
-        finish('degraded_transport');
+        finish('transport');
       }
     });
     return Object.freeze({
       result,
-      finishAfterPoll: () => finishAfterPoll(),
+      stopAfterProcessFailure: () => stopAfterProcessFailure(),
     });
   }
 
@@ -1755,18 +2019,29 @@ function hasOwn(record: Record<string, unknown>, key: string): boolean {
 
 function mergeExecOutput(
   polled: BoxLiteExecResult,
-  attached: BoxLiteNativeExecutionAttachResult | undefined,
+  attached: BoxLiteNativeExecutionAttachResult,
 ): BoxLiteExecResult {
-  if (attached === undefined) return polled;
-  const stdout = attached.output.stdout || polled.stdout;
-  const stderr = attached.output.stderr || polled.stderr;
-  const output =
-    attached.output.output || polled.output || `${stdout}${stderr}`;
+  if (attached.kind !== 'success') {
+    const settlement =
+      attached.kind === 'degraded'
+        ? attached.settlement
+        : attached.kind === 'timed_out'
+          ? 'timeout'
+          : attached.kind === 'cancelled'
+            ? 'cancellation'
+            : 'protocol';
+    throw new SandboxCommandOutputSettlementError(settlement);
+  }
+  if (
+    polled.nativeExitCode !== undefined &&
+    polled.nativeExitCode !== null &&
+    polled.nativeExitCode !== attached.exitCode
+  ) {
+    throw new SandboxCommandOutputSettlementError('protocol');
+  }
   return {
     ...polled,
-    stdout,
-    stderr,
-    output,
+    ...attached.output,
   };
 }
 
@@ -1777,11 +2052,17 @@ function rawToBuffer(raw: WebSocket.RawData): Buffer {
   return Buffer.from(raw);
 }
 
-function parseControlFrame(text: string): { readonly type?: unknown } | null {
+function parseControlFrame(
+  text: string,
+): { readonly type: 'exit'; readonly exitCode: number } | null {
   try {
     const parsed = JSON.parse(text);
-    return parsed && typeof parsed === 'object'
-      ? (parsed as { readonly type?: unknown })
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    const frame = parsed as Record<string, unknown>;
+    return frame.type === 'exit' && Number.isSafeInteger(frame.exit_code)
+      ? { type: 'exit', exitCode: frame.exit_code as number }
       : null;
   } catch {
     return null;
@@ -1839,10 +2120,153 @@ function combineRequestSignal(
   return abortSignal?.any?.([signal, timeout]) ?? signal;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function isSignalAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
+}
+
+function createNativeExecutionBudget(
+  timeoutMs: number,
+  cancellationSignal: AbortSignal | undefined,
+  deadlineDriver: BoxLiteNativeExecutionDeadlineDriver,
+): BoxLiteNativeExecutionBudget {
+  const normalizedTimeoutMs =
+    Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.max(1, Math.floor(timeoutMs))
+      : 1;
+  const deadlineAt = deadlineDriver.now() + normalizedTimeoutMs;
+  const controller = new AbortController();
+  let terminalReason: BoxLiteNativeExecutionBudgetReason | null = null;
+  let disposed = false;
+  let cancelDeadline: (() => void) | null = null;
+
+  const settle = (reason: BoxLiteNativeExecutionBudgetReason): void => {
+    if (disposed || terminalReason !== null) return;
+    terminalReason = reason;
+    controller.abort(
+      new DOMException(
+        reason === 'cancellation'
+          ? 'BoxLite native execution cancelled'
+          : 'BoxLite native execution deadline elapsed',
+        reason === 'cancellation' ? 'AbortError' : 'TimeoutError',
+      ),
+    );
+  };
+  const onCancellation = (): void => settle('cancellation');
+  const refreshDeadline = (): void => {
+    if (terminalReason === null && deadlineDriver.now() >= deadlineAt) {
+      settle('deadline');
+    }
+  };
+
+  if (cancellationSignal?.aborted === true) {
+    settle('cancellation');
+  } else {
+    cancellationSignal?.addEventListener('abort', onCancellation, {
+      once: true,
+    });
+    cancelDeadline = deadlineDriver.schedule(normalizedTimeoutMs, () =>
+      settle('deadline'),
+    );
+  }
+
+  return Object.freeze({
+    timeoutMs: normalizedTimeoutMs,
+    signal: controller.signal,
+    remainingMs() {
+      refreshDeadline();
+      return terminalReason === null
+        ? Math.max(0, deadlineAt - deadlineDriver.now())
+        : 0;
+    },
+    reason() {
+      refreshDeadline();
+      return terminalReason;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      cancelDeadline?.();
+      cancelDeadline = null;
+      cancellationSignal?.removeEventListener('abort', onCancellation);
+    },
+  });
+}
+
+const systemNativeExecutionDeadlineDriver: BoxLiteNativeExecutionDeadlineDriver =
+  Object.freeze({
+    now: () => performance.now(),
+    schedule(delayMs: number, trigger: () => void) {
+      const timer = setTimeout(trigger, delayMs);
+      return () => clearTimeout(timer);
+    },
+  });
+
+function throwIfNativeExecutionBudgetEnded(
+  budget: BoxLiteNativeExecutionBudget,
+): void {
+  const error = nativeExecutionBudgetError(budget);
+  if (error !== null) throw error;
+}
+
+function mapNativeExecutionBudgetRejection(
+  error: unknown,
+  budget: BoxLiteNativeExecutionBudget,
+): unknown {
+  return nativeExecutionBudgetError(budget) ?? error;
+}
+
+function nativeExecutionBudgetError(
+  budget: BoxLiteNativeExecutionBudget | undefined,
+): SandboxCommandSettlementError | null {
+  const reason = budget?.reason() ?? null;
+  return reason === 'cancellation'
+    ? new SandboxCommandSettlementError('cancellation')
+    : reason === 'deadline'
+      ? new SandboxCommandSettlementError('timeout')
+      : null;
+}
+
+function settleNativeExecutionStartBudgetDiagnostic(
+  diagnostic: BoxLiteProvisioningDiagnosticLifecycle,
+  error: SandboxCommandSettlementError,
+  budget: BoxLiteNativeExecutionBudget,
+): void {
+  if (error.settlement === 'cancellation') {
+    diagnostic.settle({
+      outcome: 'cancelled',
+      cause: 'cancelled',
+      retryable: false,
+    });
+    return;
+  }
+  diagnostic.settle({
+    outcome: 'timed_out',
+    cause: 'settlement_unknown',
+    retryable: true,
+    timeoutMs: budget.timeoutMs,
+  });
+}
+
+function waitForNativePollInterval(
+  delayMs: number,
+  signal: AbortSignal,
+): Promise<void> {
+  if (delayMs <= 0 || signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    signal.addEventListener('abort', finish, { once: true });
+    if (signal.aborted) {
+      finish();
+      return;
+    }
+    timer = setTimeout(finish, delayMs);
+  });
 }

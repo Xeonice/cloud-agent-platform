@@ -54,6 +54,67 @@ function makeFetch(routes) {
   return { fetch, calls };
 }
 
+function successfulNativeAttachFactory(exitCode = 0) {
+  return (url) => {
+    const resolvedExitCode =
+      typeof exitCode === 'function' ? exitCode(url) : exitCode;
+    const socket = new EventEmitter();
+    socket.close = () => socket.emit('close');
+    socket.terminate = () => socket.emit('close');
+    setImmediate(() => {
+      socket.emit(
+        'message',
+        Buffer.from(
+          JSON.stringify({ type: 'exit', exit_code: resolvedExitCode }),
+        ),
+        false,
+      );
+    });
+    return socket;
+  };
+}
+
+function nativeDeadlineHarness() {
+  let now = 0;
+  const scheduled = new Set();
+  const driver = {
+    now: () => now,
+    schedule(delayMs, trigger) {
+      const entry = {
+        at: now + delayMs,
+        cancelled: false,
+        trigger,
+      };
+      scheduled.add(entry);
+      return () => {
+        entry.cancelled = true;
+        scheduled.delete(entry);
+      };
+    },
+  };
+  const runDue = () => {
+    for (const entry of [...scheduled].sort((left, right) => left.at - right.at)) {
+      if (entry.cancelled || entry.at > now) continue;
+      entry.cancelled = true;
+      scheduled.delete(entry);
+      entry.trigger();
+    }
+  };
+  return {
+    driver,
+    advance(elapsedMs) {
+      now += elapsedMs;
+      runDue();
+    },
+    elapseWithoutTimer(elapsedMs) {
+      now += elapsedMs;
+    },
+    activeDeadlineCount() {
+      return scheduled.size;
+    },
+  };
+}
+
 function diagnosticsHarness(identityOffset = 0) {
   const events = [];
   let identity = identityOffset * 1_000;
@@ -456,8 +517,8 @@ await test('long native poll remains bounded and missing exit emits only safe fa
   const client = new boxlite.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'native',
-    nativeAttachOutput: false,
     fetch,
+    webSocketFactory: successfulNativeAttachFactory(),
   });
 
   await assert.rejects(
@@ -489,11 +550,12 @@ await test('long native poll remains bounded and missing exit emits only safe fa
   );
   assert.equal(polled[1].nativeState, 'failed');
   assert.equal(polled[1].exitCode, null);
-  assert.equal(settled[1].nativeState, 'failed');
+  assert.equal(settled[1].nativeState, undefined);
   assert.equal(settled[1].exitCode, null);
   assert.equal(settled[1].cause, 'missing_exit_code');
   assert.equal(settled[1].anomaly, 'missing_exit_code');
-  assert.equal(harness.events.length, 6);
+  assertLifecycle(harness.events, 'native_exec_attach', 'succeeded');
+  assert.equal(harness.events.length, 8);
   assert.ok(
     harness.events.length <=
       core.SANDBOX_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT,
@@ -535,7 +597,7 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
         outcome: 'failed',
         cause: 'missing_exit_code',
         retryable: false,
-        nativeState: 'killed',
+        nativeState: null,
         anomaly: 'missing_exit_code',
         httpStatusClass: null,
         exitCode: null,
@@ -572,8 +634,8 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
         outcome: 'failed',
         cause: 'protocol_failed',
         retryable: false,
-        nativeState: 'completed',
-        anomaly: 'invalid_poll_settlement',
+        nativeState: null,
+        anomaly: null,
         httpStatusClass: null,
         exitCode: null,
         timeoutMs: null,
@@ -601,11 +663,11 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
         timeoutMs: null,
       },
       settlementEvent: {
-        outcome: 'indeterminate',
-        cause: 'settlement_unknown',
+        outcome: 'failed',
+        cause: 'transport_failed',
         retryable: true,
-        nativeState: 'unknown',
-        anomaly: 'poll_transport_failure',
+        nativeState: null,
+        anomaly: null,
         httpStatusClass: null,
         exitCode: null,
         timeoutMs: null,
@@ -635,11 +697,11 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
         timeoutMs: null,
       },
       settlementEvent: {
-        outcome: 'indeterminate',
-        cause: 'settlement_unknown',
+        outcome: 'failed',
+        cause: 'transport_failed',
         retryable: true,
-        nativeState: 'unknown',
-        anomaly: 'poll_transport_failure',
+        nativeState: null,
+        anomaly: null,
         httpStatusClass: null,
         exitCode: null,
         timeoutMs: null,
@@ -672,11 +734,11 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
         outcome: 'indeterminate',
         cause: 'settlement_unknown',
         retryable: true,
-        nativeState: 'unknown',
-        anomaly: 'poll_timeout',
+        nativeState: null,
+        anomaly: null,
         httpStatusClass: null,
         exitCode: null,
-        timeoutMs: 1,
+        timeoutMs: null,
       },
     },
   ];
@@ -700,8 +762,8 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
     const client = new boxlite.BoxLiteRestClient({
       baseUrl: 'https://boxlite.example.test',
       protocolMode: 'native',
-      nativeAttachOutput: false,
       fetch,
+      webSocketFactory: successfulNativeAttachFactory(),
     });
     let rejection;
 
@@ -745,9 +807,14 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
       'native_exec_settlement',
       scenario.settlementEvent.outcome,
     );
+    assert.equal(
+      operationEvents(harness.events, 'native_exec_attach').length,
+      2,
+      scenario.name,
+    );
     assertNativeTerminalFacts(polled[1], scenario.poll);
     assertNativeTerminalFacts(settled[1], scenario.settlementEvent);
-    assert.equal(harness.events.length, 6, scenario.name);
+    assert.equal(harness.events.length, 8, scenario.name);
     assert.ok(
       harness.events.length <=
         core.SANDBOX_PROVISIONING_DIAGNOSTIC_MAX_EVENTS_PER_ATTEMPT,
@@ -764,6 +831,296 @@ await test('native poll fault table keeps settlement typed bounded and secret-fr
       false,
       scenario.name,
     );
+  }
+});
+
+await test('native start shares the command deadline and maps cancellation and protocol failures', async () => {
+  for (const mode of ['deadline', 'cancellation']) {
+    const harness = diagnosticsHarness(mode === 'deadline' ? 90 : 91);
+    const controller = new AbortController();
+    let fetchCalls = 0;
+    let webSocketCalls = 0;
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch: async (_input, init = {}) => {
+        fetchCalls += 1;
+        return new Promise((_, reject) => {
+          const rejectAbort = () => reject(init.signal.reason);
+          init.signal.addEventListener('abort', rejectAbort, { once: true });
+          if (init.signal.aborted) rejectAbort();
+        });
+      },
+      webSocketFactory: () => {
+        webSocketCalls += 1;
+        throw new Error('attach must not begin before start settles');
+      },
+    });
+    const startedAt = Date.now();
+    const execution = client.exec({
+      sandboxId: `START_${mode.toUpperCase()}_RESOURCE_CANARY`,
+      command: `printf START_${mode.toUpperCase()}_COMMAND_CANARY`,
+      timeoutMs: mode === 'deadline' ? 30 : 1_000,
+      cancellationSignal: controller.signal,
+      diagnostics: harness.diagnostics,
+      commandKind: 'runtime_setup',
+    });
+    if (mode === 'cancellation') {
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort();
+    }
+    await assert.rejects(
+      () => withDeadline(execution, 500),
+      (error) =>
+        error?.code === 'sandbox_command_settlement_error' &&
+        error?.settlement ===
+          (mode === 'deadline' ? 'timeout' : 'cancellation'),
+    );
+    await flushDiagnostics();
+    assert.equal(fetchCalls, 1);
+    assert.equal(webSocketCalls, 0);
+    assert.ok(Date.now() - startedAt < 500, 'start must consume one budget only');
+    const expectedOutcome =
+      mode === 'deadline' ? 'timed_out' : 'cancelled';
+    const started = assertLifecycle(
+      harness.events,
+      'native_exec_start',
+      expectedOutcome,
+    );
+    const settled = assertLifecycle(
+      harness.events,
+      'native_exec_settlement',
+      expectedOutcome,
+    );
+    assert.equal(started[1].cause, mode === 'deadline' ? 'settlement_unknown' : 'cancelled');
+    assert.equal(settled[1].cause, mode === 'deadline' ? 'settlement_unknown' : 'cancelled');
+    assertNoRawMaterial(harness.events, [
+      `START_${mode.toUpperCase()}_RESOURCE_CANARY`,
+      `START_${mode.toUpperCase()}_COMMAND_CANARY`,
+    ]);
+  }
+
+  const harness = diagnosticsHarness(92);
+  const responseCanary = 'RAW_START_PROTOCOL_RESPONSE_CANARY';
+  const client = new boxlite.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    fetch: async () => response(200, { unexpected: responseCanary }),
+    webSocketFactory: () => {
+      throw new Error('attach must not begin after malformed start');
+    },
+  });
+  await assert.rejects(
+    () =>
+      client.exec({
+        sandboxId: 'START_PROTOCOL_RESOURCE_CANARY',
+        command: 'printf START_PROTOCOL_COMMAND_CANARY',
+        diagnostics: harness.diagnostics,
+        commandKind: 'runtime_setup',
+      }),
+    (error) =>
+      error?.code === 'sandbox_command_settlement_error' &&
+      error?.settlement === 'protocol' &&
+      !JSON.stringify(error).includes(responseCanary),
+  );
+  await flushDiagnostics();
+  const started = assertLifecycle(
+    harness.events,
+    'native_exec_start',
+    'failed',
+  );
+  const settled = assertLifecycle(
+    harness.events,
+    'native_exec_settlement',
+    'failed',
+  );
+  assert.equal(started[1].cause, 'protocol_failed');
+  assert.equal(settled[1].cause, 'protocol_failed');
+  assertNoRawMaterial(harness.events, [
+    responseCanary,
+    'START_PROTOCOL_RESOURCE_CANARY',
+    'START_PROTOCOL_COMMAND_CANARY',
+  ]);
+});
+
+await test('native start preserves one deadline across transport response and parse boundaries', async () => {
+  const scenarios = [
+    {
+      name: 'transport-before-deadline',
+      expectedSettlement: null,
+      fetch: async () => {
+        throw new Error('native start transport unavailable');
+      },
+    },
+    {
+      name: 'response-after-deadline',
+      expectedSettlement: 'timeout',
+      fetch: async ({ clock }) => {
+        clock.advance(100);
+        return response(200, { execution_id: 'late-response-execution' });
+      },
+    },
+    {
+      name: 'response-after-cancellation',
+      expectedSettlement: 'cancellation',
+      fetch: async ({ controller }) => {
+        controller.abort();
+        return response(200, { execution_id: 'cancelled-response-execution' });
+      },
+    },
+    {
+      name: 'parse-crosses-deadline',
+      expectedSettlement: 'timeout',
+      fetch: async ({ clock }) =>
+        response(
+          200,
+          new Proxy(
+            {},
+            {
+              get(_target, property) {
+                if (property === 'execution_id') {
+                  clock.elapseWithoutTimer(100);
+                }
+                return undefined;
+              },
+            },
+          ),
+        ),
+    },
+  ];
+
+  for (const [offset, scenario] of scenarios.entries()) {
+    const clock = nativeDeadlineHarness();
+    const harness = diagnosticsHarness(120 + offset);
+    const controller = new AbortController();
+    let socketCalls = 0;
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      nativeExecutionDeadlineDriver: clock.driver,
+      fetch: async () => scenario.fetch({ clock, controller }),
+      webSocketFactory: () => {
+        socketCalls += 1;
+        throw new Error('attach must not start after native start rejection');
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        client.exec({
+          sandboxId: `START_BOUNDARY_${scenario.name}_RESOURCE_CANARY`,
+          command: `printf START_BOUNDARY_${scenario.name}_COMMAND_CANARY`,
+          timeoutMs: 100,
+          cancellationSignal: controller.signal,
+          diagnostics: harness.diagnostics,
+          commandKind: 'runtime_setup',
+        }),
+      (error) =>
+        scenario.expectedSettlement === null
+          ? error?.message === 'native start transport unavailable'
+          : error?.code === 'sandbox_command_settlement_error' &&
+            error?.settlement === scenario.expectedSettlement,
+      scenario.name,
+    );
+    await flushDiagnostics();
+
+    assert.equal(socketCalls, 0, scenario.name);
+    assert.equal(clock.activeDeadlineCount(), 0, scenario.name);
+    const timedOut = scenario.expectedSettlement === 'timeout';
+    const cancelled = scenario.expectedSettlement === 'cancellation';
+    assertLifecycle(
+      harness.events,
+      'native_exec_start',
+      timedOut ? 'timed_out' : cancelled ? 'cancelled' : 'indeterminate',
+    );
+    assertLifecycle(
+      harness.events,
+      'native_exec_settlement',
+      timedOut ? 'timed_out' : cancelled ? 'cancelled' : 'failed',
+    );
+    assertNoRawMaterial(harness.events, [
+      `START_BOUNDARY_${scenario.name}_RESOURCE_CANARY`,
+      `START_BOUNDARY_${scenario.name}_COMMAND_CANARY`,
+      'late-response-execution',
+      'cancelled-response-execution',
+    ]);
+  }
+});
+
+await test('native poll rejects evidence that arrives after the shared deadline', async () => {
+  for (const [offset, mode] of ['response', 'transport-rejection'].entries()) {
+    const sandboxId = `POLL_DEADLINE_${mode}_RESOURCE_CANARY`;
+    const executionId = `POLL_DEADLINE_${mode}_EXECUTION_CANARY`;
+    const clock = nativeDeadlineHarness();
+    const harness = diagnosticsHarness(130 + offset);
+    let socket;
+    const { fetch } = makeFetch({
+      [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+        execution_id: executionId,
+      }),
+      [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]: () => {
+        // Model a fetch implementation that settles at the same instant as the
+        // command deadline. The coordinator must inspect the shared monotonic
+        // budget again before trusting either a response or a rejection.
+        clock.elapseWithoutTimer(100);
+        if (mode === 'transport-rejection') {
+          throw new Error('late poll transport rejection');
+        }
+        return response(200, { status: 'completed', exit_code: 0 });
+      },
+    });
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      nativeExecutionDeadlineDriver: clock.driver,
+      fetch,
+      webSocketFactory: () => {
+        socket = new EventEmitter();
+        socket.readyState = 1;
+        socket.close = () => {
+          socket.readyState = 3;
+          socket.emit('close');
+        };
+        socket.terminate = socket.close;
+        return socket;
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        client.exec({
+          sandboxId,
+          command: `printf POLL_DEADLINE_${mode}_COMMAND_CANARY`,
+          timeoutMs: 100,
+          diagnostics: harness.diagnostics,
+          commandKind: 'runtime_setup',
+        }),
+      (error) =>
+        error?.code === 'sandbox_command_settlement_error' &&
+        error?.settlement === 'indeterminate',
+      mode,
+    );
+    await flushDiagnostics();
+
+    assert.equal(clock.activeDeadlineCount(), 0, mode);
+    assert.equal(socket.listenerCount('message'), 0, mode);
+    assert.equal(socket.listenerCount('close'), 0, mode);
+    assert.equal(socket.listenerCount('error'), 0, mode);
+    const poll = assertLifecycle(
+      harness.events,
+      'native_exec_poll',
+      'indeterminate',
+    );
+    assert.equal(poll[1].cause, 'settlement_unknown');
+    assert.equal(poll[1].anomaly, 'poll_timeout');
+    assert.equal(poll[1].timeoutMs, 100);
+    assertLifecycle(harness.events, 'native_exec_attach', 'timed_out');
+    assertNoRawMaterial(harness.events, [
+      sandboxId,
+      executionId,
+      `POLL_DEADLINE_${mode}_COMMAND_CANARY`,
+      'late poll transport rejection',
+    ]);
   }
 });
 
@@ -793,7 +1150,11 @@ await test('native attach folds output frames into one safe lifecycle', async ()
         Buffer.concat([Buffer.from([1]), Buffer.from(output)]),
         true,
       );
-      socket.emit('message', Buffer.from('{"type":"exit"}'), false);
+      socket.emit(
+        'message',
+        Buffer.from('{"type":"exit","exit_code":0}'),
+        false,
+      );
       socket.emit('close');
     });
     return socket;
@@ -801,7 +1162,6 @@ await test('native attach folds output frames into one safe lifecycle', async ()
   const client = new boxlite.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'native',
-    nativeAttachOutput: true,
     fetch,
     webSocketFactory,
   });
@@ -826,7 +1186,196 @@ await test('native attach folds output frames into one safe lifecycle', async ()
   ]);
 });
 
-await test('native attach transport failures degrade without masking poll settlement', async () => {
+await test('native attach joins poll-first replay and attach-first fragmented output', async () => {
+  {
+    const sandboxId = 'POLL_FIRST_REPLAY_RESOURCE_CANARY';
+    const executionId = 'POLL_FIRST_REPLAY_EXECUTION_CANARY';
+    let socket;
+    let pollCalls = 0;
+    const { fetch } = makeFetch({
+      [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+        execution_id: executionId,
+      }),
+      [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]: () => {
+        pollCalls += 1;
+        return response(200, { status: 'completed', exit_code: 0 });
+      },
+    });
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch,
+      webSocketFactory: () => {
+        socket = new EventEmitter();
+        socket.close = () => {};
+        return socket;
+      },
+    });
+
+    let resolved = false;
+    const execution = client
+      .exec({
+        sandboxId,
+        command: 'true',
+        timeoutMs: 1_000,
+      })
+      .then((value) => {
+        resolved = true;
+        return value;
+      });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(pollCalls >= 1);
+    assert.equal(resolved, false, 'poll settlement must not fabricate empty output');
+    socket.emit(
+      'message',
+      Buffer.from('{"type":"exit","exit_code":0}'),
+      false,
+    );
+    const result = await execution;
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, '');
+    assert.equal(result.stderr, '');
+    assert.equal(result.output, '');
+  }
+
+  {
+    const sandboxId = 'ATTACH_FIRST_FRAGMENT_RESOURCE_CANARY';
+    const executionId = 'ATTACH_FIRST_FRAGMENT_EXECUTION_CANARY';
+    let socket;
+    let resolvePoll;
+    const { fetch } = makeFetch({
+      [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+        execution_id: executionId,
+      }),
+      [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]: () =>
+        new Promise((resolve) => {
+          resolvePoll = resolve;
+        }),
+    });
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch,
+      webSocketFactory: () => {
+        socket = new EventEmitter();
+        socket.close = () => {};
+        return socket;
+      },
+    });
+    let resolved = false;
+    const execution = client
+      .exec({
+        sandboxId,
+        command: 'printf fragmented',
+        timeoutMs: 1_000,
+      })
+      .then((value) => {
+        resolved = true;
+        return value;
+      });
+    await new Promise((resolve) => setImmediate(resolve));
+    const stdout = Buffer.from('A😀');
+    const stderr = Buffer.from('错误');
+    socket.emit(
+      'message',
+      Buffer.concat([Buffer.from([1]), stdout.subarray(0, 3)]),
+      true,
+    );
+    socket.emit(
+      'message',
+      Buffer.concat([Buffer.from([2]), stderr.subarray(0, 2)]),
+      true,
+    );
+    socket.emit(
+      'message',
+      Buffer.concat([Buffer.from([1]), stdout.subarray(3)]),
+      true,
+    );
+    socket.emit(
+      'message',
+      Buffer.concat([Buffer.from([2]), stderr.subarray(2)]),
+      true,
+    );
+    socket.emit(
+      'message',
+      Buffer.from('{"type":"exit","exit_code":0}'),
+      false,
+    );
+    await Promise.resolve();
+    assert.equal(resolved, false, 'attach exit must not replace poll authority');
+    resolvePoll(response(200, { status: 'completed', exit_code: 0 }));
+    const result = await execution;
+    assert.equal(result.stdout, 'A😀');
+    assert.equal(result.stderr, '错误');
+    assert.equal(result.output, 'A😀错误');
+  }
+});
+
+await test('native attach validates terminal control and poll exit consistency', async () => {
+  const run = async ({ pollExitCode, attachFrame, stderr = '' }) => {
+    const sandboxId = `TERMINAL_MATCH_${pollExitCode}_RESOURCE_CANARY`;
+    const executionId = `TERMINAL_MATCH_${pollExitCode}_EXECUTION_CANARY`;
+    const { fetch } = makeFetch({
+      [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+        execution_id: executionId,
+      }),
+      [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]:
+        response(200, {
+          status: 'completed',
+          exit_code: pollExitCode,
+        }),
+    });
+    return new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch,
+      webSocketFactory: () => {
+        const socket = new EventEmitter();
+        socket.close = () => {};
+        setImmediate(() => {
+          if (stderr) {
+            socket.emit(
+              'message',
+              Buffer.concat([Buffer.from([2]), Buffer.from(stderr)]),
+              true,
+            );
+          }
+          socket.emit('message', Buffer.from(attachFrame), false);
+        });
+        return socket;
+      },
+    }).exec({
+      sandboxId,
+      command: 'false',
+      timeoutMs: 1_000,
+    });
+  };
+
+  const nonZero = await run({
+    pollExitCode: 7,
+    attachFrame: '{"type":"exit","exit_code":7}',
+    stderr: 'expected failure',
+  });
+  assert.equal(nonZero.exitCode, 7);
+  assert.equal(nonZero.stderr, 'expected failure');
+
+  for (const attachFrame of [
+    '{"type":"exit","exit_code":9}',
+    '{"type":"exit"}',
+    '{"type":"error","message":"RAW_CONTROL_ERROR_CANARY"}',
+    'RAW_MALFORMED_CONTROL_CANARY',
+  ]) {
+    await assert.rejects(
+      () => run({ pollExitCode: 0, attachFrame }),
+      (error) =>
+        error?.code === 'sandbox_command_output_settlement_error' &&
+        error?.settlement === 'protocol' &&
+        !JSON.stringify(error).includes('RAW_'),
+    );
+  }
+});
+
+await test('native attach transport failures fail closed without masking poll settlement', async () => {
   const failureCases = [
     [
       'constructor',
@@ -881,28 +1430,48 @@ await test('native attach transport failures degrade without masking poll settle
     const client = new boxlite.BoxLiteRestClient({
       baseUrl: 'https://boxlite.example.test',
       protocolMode: 'native',
-      nativeAttachOutput: true,
       fetch,
       webSocketFactory,
     });
 
-    const result = await client.exec({
-      sandboxId,
-      command: `printf RAW_ATTACH_${failureKind}_COMMAND_CANARY`,
-      diagnostics: harness.diagnostics,
-      commandKind: 'runtime_setup',
-    });
+    await assert.rejects(
+      () =>
+        client.exec({
+          sandboxId,
+          command: `printf RAW_ATTACH_${failureKind}_COMMAND_CANARY`,
+          diagnostics: harness.diagnostics,
+          commandKind: 'runtime_setup',
+        }),
+      (error) =>
+        error?.code === 'sandbox_command_output_settlement_error' &&
+        error?.settlement ===
+          (failureKind === 'malformed-frame' ? 'protocol' : 'transport'),
+    );
     await flushDiagnostics();
 
-    assert.equal(result.exitCode, 0);
     const attach = assertLifecycle(
       harness.events,
       'native_exec_attach',
       'degraded',
     );
-    assert.equal(attach[1].cause, 'transport_failed');
+    assert.equal(
+      attach[1].cause,
+      failureKind === 'malformed-frame'
+        ? 'protocol_failed'
+        : 'transport_failed',
+    );
     assert.equal(attach[1].anomaly, 'attach_degraded');
-    assertLifecycle(harness.events, 'native_exec_settlement', 'succeeded');
+    const settlement = assertLifecycle(
+      harness.events,
+      'native_exec_settlement',
+      'failed',
+    );
+    assert.equal(
+      settlement[1].cause,
+      failureKind === 'malformed-frame'
+        ? 'protocol_failed'
+        : 'transport_failed',
+    );
     assertNoRawMaterial(harness.events, [
       sandboxId,
       executionId,
@@ -913,7 +1482,250 @@ await test('native attach transport failures degrade without masking poll settle
   }
 });
 
-await test('proven poll settlement closes a hanging attach without a second timeout', async () => {
+await test('native attach rejects invalid binary channels and closes setup failures', async () => {
+  const cases = [
+    {
+      name: 'empty-binary',
+      settlement: 'protocol',
+      configure(socket) {
+        setImmediate(() => socket.emit('message', Buffer.alloc(0), true));
+      },
+    },
+    {
+      name: 'unknown-channel',
+      settlement: 'protocol',
+      configure(socket) {
+        setImmediate(() =>
+          socket.emit('message', Buffer.from([9, 1, 2, 3]), true),
+        );
+      },
+    },
+    {
+      name: 'listener-registration',
+      settlement: 'transport',
+      configure(socket) {
+        const register = socket.on.bind(socket);
+        socket.on = (event, listener) => {
+          if (event === 'close') {
+            throw new Error('attach close-listener registration failed');
+          }
+          return register(event, listener);
+        };
+      },
+    },
+    {
+      name: 'terminate-throws',
+      settlement: 'protocol',
+      configure(socket) {
+        socket.readyState = 1;
+        socket.terminate = () => {
+          throw new Error('attach terminate failed');
+        };
+        setImmediate(() => socket.emit('message', Buffer.alloc(0), true));
+      },
+    },
+  ];
+
+  for (const scenario of cases) {
+    const sandboxId = `ATTACH_EDGE_${scenario.name}_RESOURCE_CANARY`;
+    const executionId = `ATTACH_EDGE_${scenario.name}_EXECUTION_CANARY`;
+    let socket;
+    const { fetch } = makeFetch({
+      [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+        execution_id: executionId,
+      }),
+      [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]:
+        response(200, { status: 'completed', exit_code: 0 }),
+    });
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch,
+      webSocketFactory: () => {
+        socket = new EventEmitter();
+        socket.close = () => socket.emit('close');
+        socket.terminate = () => socket.emit('close');
+        scenario.configure(socket);
+        return socket;
+      },
+    });
+
+    await assert.rejects(
+      () =>
+        client.exec({
+          sandboxId,
+          command: `printf ATTACH_EDGE_${scenario.name}_COMMAND_CANARY`,
+          timeoutMs: 1_000,
+        }),
+      (error) =>
+        error?.code === 'sandbox_command_output_settlement_error' &&
+        error?.settlement === scenario.settlement,
+      scenario.name,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(socket.listenerCount('message'), 0, scenario.name);
+    assert.equal(socket.listenerCount('close'), 0, scenario.name);
+    assert.equal(socket.listenerCount('error'), 0, scenario.name);
+  }
+});
+
+await test('native attach accepts ArrayBuffer and chunk-array output without truncation', async () => {
+  const sandboxId = 'ATTACH_RAW_SHAPES_RESOURCE_CANARY';
+  const executionId = 'ATTACH_RAW_SHAPES_EXECUTION_CANARY';
+  const { fetch } = makeFetch({
+    [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+      execution_id: executionId,
+    }),
+    [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]:
+      response(200, { status: 'completed', exit_code: 0 }),
+  });
+  const client = new boxlite.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    fetch,
+    webSocketFactory: () => {
+      const socket = new EventEmitter();
+      socket.close = () => socket.emit('close');
+      socket.terminate = () => socket.emit('close');
+      setImmediate(() => {
+        socket.emit(
+          'message',
+          Uint8Array.from([1, ...Buffer.from('stdout')]).buffer,
+          true,
+        );
+        socket.emit(
+          'message',
+          [Buffer.from([2]), Buffer.from('stderr')],
+          true,
+        );
+        socket.emit(
+          'message',
+          Buffer.from('{"type":"exit","exit_code":0}'),
+          false,
+        );
+      });
+      return socket;
+    },
+  });
+
+  const result = await client.exec({
+    sandboxId,
+    command: 'printf raw-shapes',
+    timeoutMs: 1_000,
+  });
+  assert.equal(result.stdout, 'stdout');
+  assert.equal(result.stderr, 'stderr');
+  assert.equal(result.output, 'stdoutstderr');
+});
+
+await test('native attach terminal paths dispose named listeners and choose close versus terminate', async () => {
+  for (const mode of [
+    'success',
+    'protocol',
+    'timeout',
+    'cancellation',
+    'stopped',
+  ]) {
+    const sandboxId = `DISPOSE_${mode.toUpperCase()}_RESOURCE_CANARY`;
+    const executionId = `DISPOSE_${mode.toUpperCase()}_EXECUTION_CANARY`;
+    const controller = new AbortController();
+    let socket;
+    let closeCalls = 0;
+    let terminateCalls = 0;
+    const { fetch } = makeFetch({
+      [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+        execution_id: executionId,
+      }),
+      [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]: () => {
+        if (mode === 'stopped') {
+          throw new Error('RAW_DISPOSAL_POLL_ERROR_CANARY');
+        }
+        return response(200, { status: 'completed', exit_code: 0 });
+      },
+    });
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch,
+      webSocketFactory: () => {
+        socket = new EventEmitter();
+        socket.readyState = 1;
+        const finishShutdown = () => {
+          socket.readyState = 2;
+          socket.emit('error', new Error('LATE_SHUTDOWN_ERROR_ONE_CANARY'));
+          socket.emit('error', new Error('LATE_SHUTDOWN_ERROR_TWO_CANARY'));
+          socket.readyState = 3;
+          socket.emit('close');
+        };
+        socket.close = () => {
+          closeCalls += 1;
+          finishShutdown();
+        };
+        socket.terminate = () => {
+          terminateCalls += 1;
+          finishShutdown();
+        };
+        if (mode === 'success' || mode === 'protocol') {
+          setImmediate(() =>
+            socket.emit(
+              'message',
+              Buffer.from(
+                mode === 'success'
+                  ? '{"type":"exit","exit_code":0}'
+                  : '{"type":"exit"}',
+              ),
+              false,
+            ),
+          );
+        }
+        return socket;
+      },
+    });
+    const execution = client.exec({
+      sandboxId,
+      command: 'true',
+      timeoutMs: mode === 'timeout' ? 30 : 1_000,
+      cancellationSignal: controller.signal,
+    });
+    if (mode === 'cancellation') {
+      await new Promise((resolve) => setImmediate(resolve));
+      controller.abort();
+    }
+
+    if (mode === 'success') {
+      assert.equal((await withDeadline(execution, 500)).exitCode, 0);
+    } else {
+      await assert.rejects(
+        () => withDeadline(execution, 500),
+        (error) => {
+          if (mode === 'stopped') {
+            return (
+              error?.code === 'sandbox_command_settlement_error' &&
+              error?.settlement === 'transport'
+            );
+          }
+          return (
+            error?.code === 'sandbox_command_output_settlement_error' &&
+            error?.settlement ===
+              (mode === 'protocol'
+                ? 'protocol'
+                : mode === 'timeout'
+                  ? 'timeout'
+                  : 'cancellation')
+          );
+        },
+      );
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(socket.listenerCount('message'), 0, mode);
+    assert.equal(socket.listenerCount('close'), 0, mode);
+    assert.equal(socket.listenerCount('error'), 0, mode);
+    assert.equal(closeCalls, mode === 'success' ? 1 : 0, mode);
+    assert.equal(terminateCalls, mode === 'success' ? 0 : 1, mode);
+  }
+});
+
+await test('proven poll settlement waits only for the shared attach deadline', async () => {
   const sandboxId = 'RAW_ATTACH_HANG_RESOURCE_CANARY';
   const executionId = 'RAW_ATTACH_HANG_EXECUTION_CANARY';
   const harness = diagnosticsHarness(104);
@@ -928,7 +1740,6 @@ await test('proven poll settlement closes a hanging attach without a second time
   const client = new boxlite.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'native',
-    nativeAttachOutput: true,
     fetch,
     webSocketFactory: () => {
       const socket = new EventEmitter();
@@ -939,28 +1750,39 @@ await test('proven poll settlement closes a hanging attach without a second time
     },
   });
 
-  const result = await withDeadline(
-    client.exec({
-      sandboxId,
-      command: 'printf RAW_ATTACH_HANG_COMMAND_CANARY',
-      timeoutMs: 5_000,
-      diagnostics: harness.diagnostics,
-      commandKind: 'runtime_setup',
-    }),
-    250,
+  await assert.rejects(
+    () =>
+      withDeadline(
+        client.exec({
+          sandboxId,
+          command: 'printf RAW_ATTACH_HANG_COMMAND_CANARY',
+          timeoutMs: 30,
+          diagnostics: harness.diagnostics,
+          commandKind: 'runtime_setup',
+        }),
+        500,
+      ),
+    (error) =>
+      error?.code === 'sandbox_command_output_settlement_error' &&
+      error?.settlement === 'timeout',
   );
   await flushDiagnostics();
 
-  assert.equal(result.exitCode, 0);
   assert.equal(socketClosed, true);
   const attach = assertLifecycle(
     harness.events,
     'native_exec_attach',
-    'degraded',
+    'timed_out',
   );
   assert.equal(attach[1].cause, 'settlement_unknown');
   assert.equal(attach[1].anomaly, 'attach_degraded');
-  assertLifecycle(harness.events, 'native_exec_settlement', 'succeeded');
+  assert.equal(attach[1].timeoutMs, 30);
+  const settlement = assertLifecycle(
+    harness.events,
+    'native_exec_settlement',
+    'timed_out',
+  );
+  assert.equal(settlement[1].cause, 'settlement_unknown');
   assertNoRawMaterial(harness.events, [
     sandboxId,
     executionId,
@@ -968,7 +1790,7 @@ await test('proven poll settlement closes a hanging attach without a second time
   ]);
 });
 
-await test('native attach timeout stays distinct while later polling proves success', async () => {
+await test('early attach failure still waits for later polling process truth', async () => {
   const sandboxId = 'RAW_ATTACH_TIMEOUT_RESOURCE_CANARY';
   const executionId = 'RAW_ATTACH_TIMEOUT_EXECUTION_CANARY';
   const harness = diagnosticsHarness(105);
@@ -986,51 +1808,296 @@ await test('native attach timeout stays distinct while later polling proves succ
   const client = new boxlite.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'native',
-    nativeAttachOutput: true,
     fetch,
     webSocketFactory: () => {
       const socket = new EventEmitter();
       socket.close = () => {
         socketClosed = true;
       };
+      setImmediate(() =>
+        socket.emit('error', new Error('RAW_ATTACH_EARLY_ERROR_CANARY')),
+      );
       return socket;
     },
   });
 
-  const result = await withDeadline(
-    client.exec({
-      sandboxId,
-      command: 'printf RAW_ATTACH_TIMEOUT_COMMAND_CANARY',
-      timeoutMs: 5,
-      diagnostics: harness.diagnostics,
-      commandKind: 'runtime_setup',
-    }),
-    1_000,
+  await assert.rejects(
+    () =>
+      withDeadline(
+        client.exec({
+          sandboxId,
+          command: 'printf RAW_ATTACH_TIMEOUT_COMMAND_CANARY',
+          timeoutMs: 250,
+          diagnostics: harness.diagnostics,
+          commandKind: 'runtime_setup',
+        }),
+        1_000,
+      ),
+    (error) =>
+      error?.code === 'sandbox_command_output_settlement_error' &&
+      error?.settlement === 'transport',
   );
   await flushDiagnostics();
 
-  assert.equal(result.exitCode, 0);
   assert.equal(socketClosed, true);
   const attach = assertLifecycle(
     harness.events,
     'native_exec_attach',
-    'timed_out',
+    'degraded',
   );
-  assert.equal(attach[1].cause, 'settlement_unknown');
+  assert.equal(attach[1].cause, 'transport_failed');
   assert.equal(attach[1].anomaly, 'attach_degraded');
-  assert.equal(attach[1].timeoutMs, 5);
+  assert.equal(attach[1].timeoutMs, undefined);
+  const poll = assertLifecycle(
+    harness.events,
+    'native_exec_poll',
+    'succeeded',
+  );
+  assert.equal(poll[1].nativeState, 'completed');
+  assert.equal(poll[1].exitCode, 0);
   const settlement = assertLifecycle(
     harness.events,
     'native_exec_settlement',
-    'succeeded',
+    'failed',
   );
-  assert.equal(settlement[1].nativeState, 'completed');
-  assert.equal(settlement[1].exitCode, 0);
+  assert.equal(settlement[1].cause, 'transport_failed');
   assertNoRawMaterial(harness.events, [
     sandboxId,
     executionId,
     'RAW_ATTACH_TIMEOUT_COMMAND_CANARY',
   ]);
+});
+
+await test('native execution cancellation closes the pending settlement channel at each join order', async () => {
+  {
+    const sandboxId = 'CANCEL_AFTER_POLL_RESOURCE_CANARY';
+    const executionId = 'CANCEL_AFTER_POLL_EXECUTION_CANARY';
+    const controller = new AbortController();
+    let socketClosed = false;
+    const { fetch } = makeFetch({
+      [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+        execution_id: executionId,
+      }),
+      [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]:
+        response(200, { status: 'completed', exit_code: 0 }),
+    });
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch,
+      webSocketFactory: () => {
+        const socket = new EventEmitter();
+        socket.close = () => {
+          socketClosed = true;
+        };
+        return socket;
+      },
+    });
+    const execution = client.exec({
+      sandboxId,
+      command: 'true',
+      timeoutMs: 1_000,
+      cancellationSignal: controller.signal,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await assert.rejects(
+      () => execution,
+      (error) =>
+        error?.code === 'sandbox_command_output_settlement_error' &&
+        error?.settlement === 'cancellation',
+    );
+    assert.equal(socketClosed, true);
+  }
+
+  {
+    const sandboxId = 'CANCEL_AFTER_ATTACH_RESOURCE_CANARY';
+    const executionId = 'CANCEL_AFTER_ATTACH_EXECUTION_CANARY';
+    const controller = new AbortController();
+    let socket;
+    const { fetch } = makeFetch({
+      [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+        execution_id: executionId,
+      }),
+      [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]: ({
+        init,
+      }) =>
+        new Promise((_, reject) => {
+          const rejectCancellation = () => reject(init.signal.reason);
+          init.signal.addEventListener('abort', rejectCancellation, {
+            once: true,
+          });
+          if (init.signal.aborted) rejectCancellation();
+        }),
+    });
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch,
+      webSocketFactory: () => {
+        socket = new EventEmitter();
+        socket.close = () => {};
+        return socket;
+      },
+    });
+    const execution = client.exec({
+      sandboxId,
+      command: 'true',
+      timeoutMs: 1_000,
+      cancellationSignal: controller.signal,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    socket.emit(
+      'message',
+      Buffer.from('{"type":"exit","exit_code":0}'),
+      false,
+    );
+    controller.abort();
+    await assert.rejects(
+      () => execution,
+      (error) =>
+        error?.code === 'sandbox_command_settlement_error' &&
+        error?.settlement === 'cancellation',
+    );
+  }
+
+  {
+    const sandboxId = 'CANCEL_AFTER_POLL_RESPONSE_RESOURCE_CANARY';
+    const executionId = 'CANCEL_AFTER_POLL_RESPONSE_EXECUTION_CANARY';
+    const controller = new AbortController();
+    let resolvePoll;
+    let socket;
+    const { fetch } = makeFetch({
+      [`POST /v1/default/boxes/${sandboxId}/exec`]: response(200, {
+        execution_id: executionId,
+      }),
+      [`GET /v1/default/boxes/${sandboxId}/executions/${executionId}`]: () =>
+        new Promise((resolve) => {
+          resolvePoll = resolve;
+        }),
+    });
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch,
+      webSocketFactory: () => {
+        socket = new EventEmitter();
+        socket.close = () => {};
+        return socket;
+      },
+    });
+    const execution = client.exec({
+      sandboxId,
+      command: 'true',
+      timeoutMs: 1_000,
+      cancellationSignal: controller.signal,
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    socket.emit(
+      'message',
+      Buffer.from('{"type":"exit","exit_code":0}'),
+      false,
+    );
+    resolvePoll(response(200, { status: 'completed', exit_code: 0 }));
+    controller.abort();
+    await assert.rejects(
+      () => execution,
+      (error) =>
+        error?.code === 'sandbox_command_settlement_error' &&
+        error?.settlement === 'cancellation',
+    );
+  }
+
+  {
+    const controller = new AbortController();
+    controller.abort();
+    let fetchCalls = 0;
+    const client = new boxlite.BoxLiteRestClient({
+      baseUrl: 'https://boxlite.example.test',
+      protocolMode: 'native',
+      fetch: async () => {
+        fetchCalls += 1;
+        return response(500, null);
+      },
+    });
+    await assert.rejects(
+      () =>
+        client.exec({
+          sandboxId: 'CANCEL_BEFORE_START_RESOURCE_CANARY',
+          command: 'true',
+          cancellationSignal: controller.signal,
+        }),
+      (error) =>
+        error?.code === 'sandbox_command_settlement_error' &&
+        error?.settlement === 'cancellation',
+    );
+    assert.equal(fetchCalls, 0);
+  }
+});
+
+await test('native execution repeatedly drains fast attach replay without races', async () => {
+  const sandboxId = 'FAST_REPLAY_RESOURCE_CANARY';
+  const outputs = new Map();
+  let starts = 0;
+  let closedSockets = 0;
+  const fetch = async (input, init = {}) => {
+    const url = new URL(input);
+    const path = url.pathname;
+    if (init.method === 'POST' && path.endsWith('/exec')) {
+      starts += 1;
+      const executionId = `fast-exec-${starts}`;
+      outputs.set(executionId, `fast-output-${starts}`);
+      return response(200, { execution_id: executionId });
+    }
+    if (init.method === 'GET' && path.includes('/executions/fast-exec-')) {
+      return response(200, { status: 'completed', exit_code: 0 });
+    }
+    return response(404, null);
+  };
+  const client = new boxlite.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    fetch,
+    webSocketFactory: (url) => {
+      const executionId = decodeURIComponent(
+        new URL(url).pathname.split('/').at(-2),
+      );
+      const output = outputs.get(executionId);
+      const socket = new EventEmitter();
+      socket.close = () => {
+        closedSockets += 1;
+      };
+      setImmediate(() => {
+        socket.emit(
+          'message',
+          Buffer.concat([Buffer.from([1]), Buffer.from(output)]),
+          true,
+        );
+        socket.emit(
+          'message',
+          Buffer.from('{"type":"exit","exit_code":0}'),
+          false,
+        );
+      });
+      return socket;
+    },
+  });
+
+  const results = await Promise.all(
+    Array.from({ length: 75 }, (_, index) =>
+      client.exec({
+        sandboxId,
+        command: `printf fast-output-${index + 1}`,
+        timeoutMs: 1_000,
+      }),
+    ),
+  );
+  assert.equal(results.length, 75);
+  for (const [index, result] of results.entries()) {
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.output, `fast-output-${index + 1}`);
+  }
+  assert.equal(closedSockets, 75);
 });
 
 await test('a later native failure in the same command group retains its own trace', async () => {
@@ -1056,8 +2123,8 @@ await test('a later native failure in the same command group retains its own tra
   const client = new boxlite.BoxLiteRestClient({
     baseUrl: 'https://boxlite.example.test',
     protocolMode: 'native',
-    nativeAttachOutput: false,
     fetch,
+    webSocketFactory: successfulNativeAttachFactory(),
   });
   const diagnosticSession =
     boxlite.startBoxLiteNativeExecutionDiagnosticSession(
@@ -1178,14 +2245,20 @@ await test('a normal multi-command provision stays within the attempt event boun
   const webSocketFactory = () => {
     const socket = new EventEmitter();
     socket.close = () => {};
-    setImmediate(() => socket.emit('close'));
+    setImmediate(() => {
+      socket.emit(
+        'message',
+        Buffer.from('{"type":"exit","exit_code":0}'),
+        false,
+      );
+      socket.emit('close');
+    });
     return socket;
   };
   const client = new boxlite.BoxLiteRestClient({
     baseUrl: configResult.config.endpoint,
     apiToken: configResult.config.apiToken,
     protocolMode: 'native',
-    nativeAttachOutput: true,
     fetch,
     webSocketFactory,
   });
@@ -1389,8 +2462,11 @@ await test('cleanup-only workspace failure never fabricates a primary failure', 
     baseUrl: configResult.config.endpoint,
     apiToken: configResult.config.apiToken,
     protocolMode: 'native',
-    nativeAttachOutput: false,
     fetch,
+    webSocketFactory: successfulNativeAttachFactory((url) => {
+      const executionId = new URL(url).pathname.split('/').at(-2);
+      return executionResults.get(executionId)?.exit_code ?? 0;
+    }),
   });
   const provider = new boxlite.BoxLiteSandboxProvider({
     config: configResult.config,

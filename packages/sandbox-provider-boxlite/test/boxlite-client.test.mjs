@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
 const core = await import(new URL('../../sandbox-core/dist/index.js', import.meta.url).href);
 
@@ -54,6 +55,40 @@ function makeFetch(routes) {
     return typeof route === 'function' ? route({ url, init, body }) : route;
   };
   return { fetch, calls };
+}
+
+function nativeExecWebSocketFactory({
+  exitCode = 0,
+  stdout = '',
+  stderr = '',
+} = {}) {
+  return () => {
+    const socket = new EventEmitter();
+    socket.close = () => socket.emit('close');
+    socket.terminate = () => socket.emit('close');
+    setImmediate(() => {
+      if (stdout) {
+        socket.emit(
+          'message',
+          Buffer.concat([Buffer.from([1]), Buffer.from(stdout)]),
+          true,
+        );
+      }
+      if (stderr) {
+        socket.emit(
+          'message',
+          Buffer.concat([Buffer.from([2]), Buffer.from(stderr)]),
+          true,
+        );
+      }
+      socket.emit(
+        'message',
+        Buffer.from(JSON.stringify({ type: 'exit', exit_code: exitCode })),
+        false,
+      );
+    });
+    return socket;
+  };
 }
 
 await test('REST client creates a sandbox with bearer auth and normalized URL', async () => {
@@ -529,6 +564,7 @@ await test('native REST client uses BoxLite 0.9 routes for boxes exec and files'
     protocolMode: 'native',
     pathPrefix: 'default',
     fetch,
+    webSocketFactory: nativeExecWebSocketFactory({ stdout: 'ok' }),
   });
 
   const sandbox = await client.createSandbox({
@@ -635,10 +671,21 @@ await test('native execution settlement keeps terminal state separate from nulla
           ? pollResponse
           : response(200, pollResponse),
     });
+    const attachExitCode =
+      typeof pollResponse === 'object' &&
+      pollResponse !== null &&
+      Number.isSafeInteger(pollResponse.exit_code)
+        ? pollResponse.exit_code
+        : pollResponse?.status === 'timed_out'
+          ? 124
+          : 0;
     return new mod.BoxLiteRestClient({
       baseUrl: 'https://boxlite.example.test',
       protocolMode: 'native',
       fetch,
+      webSocketFactory: nativeExecWebSocketFactory({
+        exitCode: attachExitCode,
+      }),
     }).exec({
       sandboxId: 'box',
       command: 'CAP_NATIVE_COMMAND_SECRET_CANARY',

@@ -200,6 +200,92 @@ await test('command executor helpers normalize provider command results', async 
   assert.equal(result.output, 'pwd @ /home/gem/workspace');
 });
 
+await test('command executor success requires settled output and output rejection stays safe', () => {
+  const provenEmptyOutput = mod.normalizeSandboxCommandResult({
+    exit_code: 0,
+    stdout: '',
+    stderr: '',
+    output: '',
+  });
+  assert.deepEqual(provenEmptyOutput, {
+    exitCode: 0,
+    output: '',
+    stdout: '',
+    stderr: '',
+    timedOut: false,
+  });
+  assert(!('outputComplete' in provenEmptyOutput));
+
+  const knownProcessDiagnostic = mod.sandboxCommandExecutionDiagnosticFields(
+    mod.classifySandboxCommandExecutionResult(provenEmptyOutput),
+  );
+  assert.deepEqual(knownProcessDiagnostic, {
+    outcome: 'succeeded',
+    cause: null,
+    retryable: false,
+    exitCode: 0,
+  });
+
+  const matrix = [
+    ['transport', 'failed', 'transport_failed', true],
+    ['protocol', 'failed', 'protocol_failed', false],
+    ['timeout', 'timed_out', 'settlement_unknown', true],
+    ['cancellation', 'cancelled', 'cancelled', false],
+  ];
+  for (const [settlement, outcome, cause, retryable] of matrix) {
+    const rejection = new mod.SandboxCommandOutputSettlementError(settlement);
+    assert.equal(Object.isFrozen(rejection), true);
+    assert.deepEqual(Object.keys(rejection).sort(), ['code', 'name', 'settlement']);
+    assert.equal(rejection.code, 'sandbox_command_output_settlement_error');
+    assert(!('exitCode' in rejection));
+    assert(!('nativeState' in rejection));
+    assert(!('processSettlement' in rejection));
+    assert(!('command' in rejection));
+    assert(!('output' in rejection));
+    assert(!('providerId' in rejection));
+    assert(!('rawError' in rejection));
+
+    const classification = mod.classifySandboxCommandExecutionRejection(rejection);
+    assert.deepEqual(classification, {
+      settlement,
+      outcome,
+      cause,
+      retryable,
+      exitCode: null,
+    });
+    assert(!JSON.stringify(classification).includes('output_unavailable'));
+  }
+
+  // A separately recorded process fact remains truthful and is not promoted
+  // into the output rejection or its consuming-operation classification.
+  assert.equal(knownProcessDiagnostic.exitCode, 0);
+  assert.throws(
+    () => new mod.SandboxCommandOutputSettlementError('UNSAFE_SECRET_CANARY'),
+    (error) =>
+      error?.code === 'sandbox_command_classification_error' &&
+      !error.message.includes('UNSAFE_SECRET_CANARY') &&
+      !JSON.stringify(error).includes('UNSAFE_SECRET_CANARY'),
+  );
+
+  const forged = {
+    code: 'sandbox_command_output_settlement_error',
+    settlement: 'UNSAFE_SETTLEMENT_SECRET_CANARY',
+    command: 'UNSAFE_COMMAND_SECRET_CANARY',
+    output: 'UNSAFE_OUTPUT_SECRET_CANARY',
+    providerId: 'UNSAFE_PROVIDER_SECRET_CANARY',
+    rawError: 'UNSAFE_RAW_ERROR_SECRET_CANARY',
+  };
+  const forgedClassification = mod.classifySandboxCommandExecutionRejection(forged);
+  assert.deepEqual(forgedClassification, {
+    settlement: 'transport',
+    outcome: 'failed',
+    cause: 'transport_failed',
+    retryable: true,
+    exitCode: null,
+  });
+  assert(!JSON.stringify(forgedClassification).includes('SECRET_CANARY'));
+});
+
 await test('command executor helpers wrap cwd and scrub command output', () => {
   assert.equal(mod.buildSandboxCommandLine({ command: 'pwd' }), 'pwd');
   assert.equal(

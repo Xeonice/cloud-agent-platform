@@ -41,6 +41,13 @@ export interface SandboxCommandExecutionRequest {
 export type SandboxWorkspaceCommandExecutionRequest =
   SandboxCommandExecutionRequest;
 
+/**
+ * A resolved command result proves both process settlement and complete drain
+ * of every promised stdout/stderr source. Empty strings therefore mean proven
+ * zero-byte output, never an output channel that is still pending or degraded.
+ * Providers that cannot prove output settlement must reject instead of
+ * returning a partial result.
+ */
 export interface SandboxCommandExecutionResult {
   readonly exitCode: number;
   readonly output: string;
@@ -157,6 +164,12 @@ type SandboxCommandNonExitSettlement = Exclude<
   'exit'
 >;
 
+export type SandboxCommandOutputSettlementFailure =
+  | 'transport'
+  | 'protocol'
+  | 'timeout'
+  | 'cancellation';
+
 /**
  * Provider adapters use this fixed-shape error when they can safely identify a
  * non-exit settlement. The raw provider error is deliberately not retained.
@@ -170,6 +183,25 @@ export class SandboxCommandSettlementError extends SandboxCoreError {
     if (!SANDBOX_COMMAND_NON_EXIT_SETTLEMENTS.includes(settlement)) {
       throw new SandboxCommandClassificationError();
     }
+  }
+}
+
+/**
+ * Provider adapters use this fixed-shape rejection when process settlement may
+ * already be known but promised command output did not settle. Known process
+ * facts remain on the provider's bounded diagnostic channel; this error retains
+ * neither those facts nor command, output, provider identity, or raw failures.
+ */
+export class SandboxCommandOutputSettlementError extends SandboxCoreError {
+  constructor(readonly settlement: SandboxCommandOutputSettlementFailure) {
+    super(
+      `Sandbox command output settlement is ${settlement}`,
+      'sandbox_command_output_settlement_error',
+    );
+    if (!SANDBOX_COMMAND_OUTPUT_SETTLEMENT_FAILURES.includes(settlement)) {
+      throw new SandboxCommandClassificationError();
+    }
+    Object.freeze(this);
   }
 }
 
@@ -316,6 +348,8 @@ export function classifySandboxCommandExecutionRejection(
   error: unknown,
   cancellationSignal?: AbortSignal,
 ): SandboxCommandExecutionClassification {
+  const outputSettlement = sandboxCommandOutputSettlementFromError(error);
+  if (outputSettlement) return classificationForSettlement(outputSettlement);
   const typedSettlement = sandboxCommandSettlementFromError(error);
   if (typedSettlement) return classificationForSettlement(typedSettlement);
   if (cancellationSignal?.aborted || errorHasNameOrCode(error, 'AbortError', 'ABORT_ERR')) {
@@ -484,6 +518,13 @@ const SANDBOX_COMMAND_NON_EXIT_SETTLEMENTS = [
   'indeterminate',
 ] as const satisfies readonly SandboxCommandNonExitSettlement[];
 
+const SANDBOX_COMMAND_OUTPUT_SETTLEMENT_FAILURES = [
+  'transport',
+  'protocol',
+  'timeout',
+  'cancellation',
+] as const satisfies readonly SandboxCommandOutputSettlementFailure[];
+
 function classificationForSettlement(
   settlement: SandboxCommandNonExitSettlement,
 ): SandboxCommandExecutionClassification {
@@ -554,6 +595,22 @@ function sandboxCommandSettlementFromError(
     return null;
   }
   return error.settlement as SandboxCommandNonExitSettlement;
+}
+
+function sandboxCommandOutputSettlementFromError(
+  error: unknown,
+): SandboxCommandOutputSettlementFailure | null {
+  if (
+    !isObjectRecord(error) ||
+    error.code !== 'sandbox_command_output_settlement_error' ||
+    typeof error.settlement !== 'string' ||
+    !SANDBOX_COMMAND_OUTPUT_SETTLEMENT_FAILURES.includes(
+      error.settlement as SandboxCommandOutputSettlementFailure,
+    )
+  ) {
+    return null;
+  }
+  return error.settlement as SandboxCommandOutputSettlementFailure;
 }
 
 function validateSandboxCommandExecutionClassification(

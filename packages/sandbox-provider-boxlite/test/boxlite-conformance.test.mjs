@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 const boxlite = await import(new URL('../dist/index.js', import.meta.url).href);
 const conformance = await import(new URL('../../sandbox-conformance/dist/index.js', import.meta.url).href);
 const core = await import(new URL('../../sandbox-core/dist/index.js', import.meta.url).href);
@@ -78,6 +79,113 @@ function parseBoxLiteRequestBody(rawBody) {
   if (typeof rawBody === 'string') return JSON.parse(rawBody);
   if (rawBody instanceof Uint8Array) return rawBody;
   return rawBody;
+}
+
+class ProtocolGatedBoxLiteSocket extends EventEmitter {
+  constructor(onReady) {
+    super();
+    this.onReady = onReady;
+    this.readyState = 1;
+    this.started = false;
+    this.closed = false;
+    this.driver = Promise.resolve();
+    this.closedPromise = new Promise((resolve) => {
+      this.resolveClosed = resolve;
+    });
+  }
+
+  on(eventName, listener) {
+    super.on(eventName, listener);
+    this.startWhenProtocolReady();
+    return this;
+  }
+
+  startWhenProtocolReady() {
+    if (
+      this.started ||
+      this.closed ||
+      this.listenerCount('message') === 0 ||
+      this.listenerCount('close') === 0 ||
+      this.listenerCount('error') === 0
+    ) {
+      return;
+    }
+    this.started = true;
+    try {
+      const driving = this.onReady(this);
+      if (driving instanceof Promise) {
+        this.driver = driving.catch((error) => {
+          if (!this.closed) this.emit('error', error);
+        });
+      }
+    } catch (error) {
+      if (!this.closed) this.emit('error', error);
+    }
+  }
+
+  emitOutput(channel, chunk) {
+    if (this.closed) return;
+    this.emit(
+      'message',
+      Buffer.concat([Buffer.from([channel]), Buffer.from(chunk)]),
+      true,
+    );
+  }
+
+  emitExit(exitCode) {
+    if (this.closed) return;
+    this.emit(
+      'message',
+      Buffer.from(JSON.stringify({ type: 'exit', exit_code: exitCode })),
+      false,
+    );
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.readyState = 3;
+    this.resolveClosed();
+    this.emit('close');
+  }
+
+  terminate() {
+    this.close();
+  }
+
+  waitForClose() {
+    return this.closedPromise;
+  }
+
+  waitForDriver() {
+    return this.driver;
+  }
+}
+
+function completedNativeAttachFactory(state) {
+  return (input) =>
+    new ProtocolGatedBoxLiteSocket((socket) => {
+      const url = new URL(input);
+      const match = url.pathname.match(
+        /^\/v1\/default\/boxes\/([^/]+)\/executions\/([^/]+)\/attach$/u,
+      );
+      assert.notEqual(match, null);
+      const sandboxId = decodeURIComponent(match[1]);
+      const executionId = decodeURIComponent(match[2]);
+      const terminal = state.executions.get(`${sandboxId}\0${executionId}`) ?? {
+        status: 'completed',
+        exit_code: 0,
+      };
+      if (typeof terminal.stdout === 'string' && terminal.stdout.length > 0) {
+        socket.emitOutput(1, Buffer.from(terminal.stdout));
+      }
+      if (typeof terminal.stderr === 'string' && terminal.stderr.length > 0) {
+        socket.emitOutput(2, Buffer.from(terminal.stderr));
+      }
+      socket.emitExit(
+        Number.isSafeInteger(terminal.exit_code) ? terminal.exit_code : 0,
+      );
+    });
 }
 
 /**
@@ -190,8 +298,9 @@ function createNativeDiagnosticFixture(options = {}) {
     apiToken: options.apiToken,
     protocolMode: 'native',
     pathPrefix: 'default',
-    nativeAttachOutput: false,
     fetch,
+    webSocketFactory:
+      options.webSocketFactory ?? completedNativeAttachFactory(state),
   });
   const provider = new boxlite.BoxLiteSandboxProvider({
     config: fakeConfig({
@@ -240,9 +349,8 @@ async function runNativeDiagnosticCleanup(fixture, diagnostics, options = {}) {
   );
 }
 
-async function flushBoxLiteDiagnostics() {
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
+async function flushBoxLiteDiagnostics(diagnostics) {
+  await diagnostics?.flush();
 }
 
 function createBoxLiteBehaviorFixture() {
@@ -467,6 +575,160 @@ function createBoxLiteBehaviorFixture() {
   };
 }
 
+function createCommandOutputDiagnosticHarness() {
+  const events = [];
+  let identity = 0;
+  const nextIdentity = (prefix) =>
+    `${prefix}-0000-4000-8000-${String(++identity).padStart(12, '0')}`;
+  const diagnostics = core.createSandboxProvisioningDiagnosticEmitter({
+    attemptContext: {
+      schemaVersion: 1,
+      taskId: '41000000-0000-4000-8000-000000000001',
+      attemptId: '42000000-0000-4000-8000-000000000001',
+      attempt: 1,
+      admissionMode: 'durable',
+      providerFamily: 'boxlite',
+    },
+    createEventId: () => nextIdentity('43000000'),
+    createOperationId: () => nextIdentity('44000000'),
+    record: async (event) => {
+      events.push(event);
+      return { kind: 'recorded', sequence: event.sequence };
+    },
+  });
+  return { diagnostics, events };
+}
+
+function commandOutputAttachFactory(protocol, calls, observeSocket) {
+  return () => {
+    calls.attaches += 1;
+    const socket = new ProtocolGatedBoxLiteSocket(async (activeSocket) => {
+      let iterator;
+      try {
+        const handshake = await Promise.race([
+          protocol.output.waitForHandshake().then(() => 'ready'),
+          activeSocket.waitForClose().then(() => 'closed'),
+        ]);
+        if (handshake === 'closed') return;
+        iterator = protocol.output.events()[Symbol.asyncIterator]();
+        for (;;) {
+          const observed = await Promise.race([
+            iterator.next().then((result) => ({ kind: 'event', result })),
+            activeSocket.waitForClose().then(() => ({ kind: 'closed' })),
+          ]);
+          if (observed.kind === 'closed') return;
+          if (observed.result.done) return;
+          const event = observed.result.value;
+          if (event.kind === 'stdout') {
+            activeSocket.emitOutput(1, event.chunk);
+            continue;
+          }
+          if (event.kind === 'stderr') {
+            activeSocket.emitOutput(2, event.chunk);
+            continue;
+          }
+          if (event.kind === 'exit') {
+            activeSocket.emitExit(event.exitCode);
+          } else if (event.kind === 'close') {
+            activeSocket.close();
+          } else {
+            activeSocket.emit('error', new Error(event.rawErrorCanary));
+          }
+          protocol.output.acknowledgeTerminalConsumed(event.receipt);
+          return;
+        }
+      } finally {
+        await iterator?.return?.();
+        protocol.output.acknowledgeDriverSettled();
+      }
+    });
+    observeSocket(socket);
+    return socket;
+  };
+}
+
+async function exerciseBoxLiteCommandOutputConformance(input, observations) {
+  const calls = { executions: 0, polls: 0, attaches: 0 };
+  let outputSocket;
+  const diagnosticHarness = createCommandOutputDiagnosticHarness();
+  const fetch = async (rawUrl, init = {}) => {
+    const url = new URL(rawUrl);
+    const method = init.method ?? 'GET';
+    if (
+      method === 'POST' &&
+      url.pathname === '/v1/default/boxes/command-output-conformance/exec'
+    ) {
+      calls.executions += 1;
+      return boxLiteResponse(200, {
+        execution_id: 'command-output-conformance-execution',
+      });
+    }
+    if (
+      method === 'GET' &&
+      url.pathname ===
+        '/v1/default/boxes/command-output-conformance/executions/command-output-conformance-execution'
+    ) {
+      calls.polls += 1;
+      const process = await input.protocol.process.waitForSettlement();
+      const responseBody = {
+        status: process.exitCode === 0 ? 'completed' : 'failed',
+      };
+      Object.defineProperty(responseBody, 'exit_code', {
+        enumerable: true,
+        get() {
+          input.protocol.process.acknowledgeConsumed();
+          return process.exitCode;
+        },
+      });
+      return boxLiteResponse(200, responseBody);
+    }
+    return boxLiteResponse(404, { error: 'unhandled conformance route' });
+  };
+  const client = new boxlite.BoxLiteRestClient({
+    baseUrl: 'https://boxlite.example.test',
+    protocolMode: 'native',
+    pathPrefix: 'default',
+    fetch,
+    webSocketFactory: commandOutputAttachFactory(
+      input.protocol,
+      calls,
+      (socket) => {
+        outputSocket = socket;
+      },
+    ),
+    nativeExecutionDeadlineDriver: input.deadlineDriver,
+  });
+  const executor = boxlite.createBoxLiteCommandExecutor({
+    client,
+    sandboxId: 'command-output-conformance',
+    diagnostics: diagnosticHarness.diagnostics,
+    commandKind: 'runtime_setup',
+  });
+
+  let observation;
+  try {
+    observation = {
+      kind: 'resolved',
+      executionCount: calls.executions,
+      result: await executor.exec(input.request),
+    };
+  } catch (rejection) {
+    observation = {
+      kind: 'rejected',
+      executionCount: calls.executions,
+      rejection,
+    };
+  }
+  await outputSocket?.waitForDriver();
+  await diagnosticHarness.diagnostics.flush();
+  observations.set(input.scenario, { ...calls });
+  return {
+    ...observation,
+    executionCount: calls.executions,
+    diagnostics: diagnosticHarness.events,
+  };
+}
+
 await test('fake BoxLite provider satisfies provider conformance for declared features', async () => {
   const provider = new boxlite.BoxLiteSandboxProvider({
     config: fakeConfig(),
@@ -548,6 +810,33 @@ await test('BoxLite behavior conformance drives real provider-owned executor, wo
   } finally {
     await fixture.provider.teardownSandbox(fixture.taskId);
   }
+});
+
+await test('BoxLite native executor satisfies split command-output conformance without fallback execution', async () => {
+  const observations = new Map();
+  const scenarios = conformance.createSandboxCommandOutputConformanceScenarios(
+    {
+      exercise: (input) =>
+        exerciseBoxLiteCommandOutputConformance(input, observations),
+    },
+    assert,
+  );
+
+  assert.deepEqual(
+    scenarios.map((scenario) => scenario.name),
+    conformance.SANDBOX_SPLIT_COMMAND_OUTPUT_CONFORMANCE_CASES.map(
+      (scenario) => `command output settlement: ${scenario}`,
+    ),
+  );
+  for (const scenario of scenarios) await scenario.run();
+  assert.deepEqual(
+    Object.fromEntries(observations),
+    Object.fromEntries(
+      conformance.SANDBOX_SPLIT_COMMAND_OUTPUT_CONFORMANCE_CASES.map(
+        (scenario) => [scenario, { executions: 1, polls: 1, attaches: 1 }],
+      ),
+    ),
+  );
 });
 
 await test('BoxLite remains the real primary-cleanup comparator when cleanup acknowledgement fails', async () => {
@@ -685,14 +974,14 @@ async function exerciseBoxLiteDiagnosticConformance(input) {
       },
     });
     assert.equal(result.status, 'passed');
-    await flushBoxLiteDiagnostics();
+    await flushBoxLiteDiagnostics(input.diagnostics);
     return { probe: input.probeResult };
   }
 
   if (input.scenario === 'bounded-start-terminal') {
     const fixture = createNativeDiagnosticFixture();
     await fixture.provider.provision(diagnosticProvisionContext(input));
-    await flushBoxLiteDiagnostics();
+    await flushBoxLiteDiagnostics(input.diagnostics);
     return;
   }
 
@@ -701,7 +990,7 @@ async function exerciseBoxLiteDiagnosticConformance(input) {
     const context = diagnosticProvisionContext(input);
     await fixture.provider.provision(context);
     await fixture.provider.provision(context);
-    await flushBoxLiteDiagnostics();
+    await flushBoxLiteDiagnostics(input.diagnostics);
     return;
   }
 
@@ -715,7 +1004,7 @@ async function exerciseBoxLiteDiagnosticConformance(input) {
     await cleanupNativeDiagnosticFixture(fixture, input.diagnostics, {
       taskId: input.taskId,
     });
-    await flushBoxLiteDiagnostics();
+    await flushBoxLiteDiagnostics(input.diagnostics);
     return;
   }
 
@@ -742,7 +1031,7 @@ async function exerciseBoxLiteDiagnosticConformance(input) {
     await cleanupNativeDiagnosticFixture(fixture, input.diagnostics, {
       taskId: input.taskId,
     });
-    await flushBoxLiteDiagnostics();
+    await flushBoxLiteDiagnostics(input.diagnostics);
     return;
   }
 
@@ -758,7 +1047,7 @@ async function exerciseBoxLiteDiagnosticConformance(input) {
     await cleanupNativeDiagnosticFixture(fixture, input.diagnostics, {
       taskId: input.taskId,
     });
-    await flushBoxLiteDiagnostics();
+    await flushBoxLiteDiagnostics(input.diagnostics);
     return;
   }
 
@@ -784,7 +1073,7 @@ async function exerciseBoxLiteDiagnosticConformance(input) {
       input.diagnostics,
       { taskId: input.taskId },
     );
-    await flushBoxLiteDiagnostics();
+    await flushBoxLiteDiagnostics(input.diagnostics);
     return { primary, cleanup };
   }
 
@@ -849,7 +1138,7 @@ async function exerciseBoxLiteDiagnosticConformance(input) {
       },
     );
     assert.equal(fixture.state.boxes.size, 0);
-    await flushBoxLiteDiagnostics();
+    await flushBoxLiteDiagnostics(input.diagnostics);
     return { primary };
   }
 
@@ -891,7 +1180,7 @@ async function exerciseBoxLiteDiagnosticConformance(input) {
         secret: input.canaries.secret,
       }),
     );
-    await flushBoxLiteDiagnostics();
+    await flushBoxLiteDiagnostics(input.diagnostics);
     return { primary, cleanup };
   }
 

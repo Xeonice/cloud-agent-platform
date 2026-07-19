@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "harden-boxlite-native-exec-output-drain",
+  "intent": "runtime-reliability",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "not-applicable",
+      "reason": "The fix changes only the internal BoxLite native command synchronization path and does not add or alter any Public V1 operation, schema, status code, or error body."
+    },
+    "mcp": {
+      "status": "not-applicable",
+      "reason": "No MCP tool, argument, result, registration, or transport behavior changes because MCP does not expose the provider-native execution protocol."
+    },
+    "openapi": {
+      "status": "not-applicable",
+      "reason": "No public HTTP contract changes, so there is no OpenAPI operation or schema projection to regenerate."
+    },
+    "apiPlayground": {
+      "status": "not-applicable",
+      "reason": "The API Playground has no BoxLite native execution surface and therefore requires no catalog or rendering change."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "boxlite-native-exec-output-drain-and-provider-validation",
+      "reason": "Changes the internal BoxLite provider state machine so process settlement and output-drain completion are synchronized under one deadline, with deterministic failure semantics, bounded diagnostics, and real-provider regression coverage."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "api-mcp",
+    "requiresWireCompatibilityFixture": false
+  }
+}

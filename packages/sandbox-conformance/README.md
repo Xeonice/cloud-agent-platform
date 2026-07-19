@@ -35,3 +35,19 @@ cleanup; providers without both capabilities instead prove canonical credentials
 are rejected before any external boundary, with no synthetic diagnostic events.
 Provider-family adoption stays separate so adapters without diagnostic wiring
 continue to use the baseline suite.
+
+Split-channel command providers opt into
+`createSandboxCommandOutputConformanceScenarios`. The adapter binds its
+authoritative process settlement and output transport to separate protocol
+gates; the shared suite then drives process-first, output-first, late replay,
+proven empty output, fragmented UTF-8, early close/error, one shared deadline,
+cancellation, and channel mismatch. Ordering is released only by terminal
+protocol facts rather than fixed sleeps. Process, output-terminal, and driver
+settlement acknowledgements prove that an adapter consumed those facts and
+finished transport cleanup. Every terminal-correctness/deadline timer is
+required to bind to the provider-neutral monotonic driver. The deadline and
+late-replay cases advance that driver and require every such timer to share the
+original absolute command deadline, so an early grace or restarted post-poll
+timeout cannot satisfy the contract. Each scenario also requires exactly one
+command execution, a fully normalized result or safe typed rejection, and
+bounded diagnostics with no command, output, raw-error, or secret canaries.

@@ -1415,6 +1415,362 @@ await test('boundary-rejected credential conformance rejects canary leakage', as
   );
 });
 
+function collectSplitCommandOutput(input) {
+  const stdoutDecoder = new TextDecoder('utf-8');
+  const stderrDecoder = new TextDecoder('utf-8');
+  let stdout = '';
+  let stderr = '';
+  const deadlineController = new AbortController();
+  const deadlineAt = input.deadlineDriver.now() + input.request.timeoutMs;
+  const cancelDeadline = input.deadlineDriver.schedule(
+    Math.max(0, deadlineAt - input.deadlineDriver.now()),
+    () => deadlineController.abort(),
+  );
+  let iterator;
+
+  const nextEvent = async () => {
+    const signals = [input.request.signal, deadlineController.signal].filter(
+      Boolean,
+    );
+    if (signals.some((signal) => signal.aborted)) return { kind: 'aborted' };
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const removeAbortListeners = () => {
+        for (const signal of signals) {
+          signal.removeEventListener('abort', onAbort);
+        }
+      };
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        removeAbortListeners();
+        resolve(result);
+      };
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        removeAbortListeners();
+        reject(error);
+      };
+      const onAbort = () => finish({ kind: 'aborted' });
+      for (const signal of signals) {
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      iterator.next().then(
+        (result) => finish({ kind: 'event', result }),
+        fail,
+      );
+    });
+  };
+
+  return (async () => {
+    try {
+      await input.protocol.output.waitForHandshake();
+      iterator = input.protocol.output.events()[Symbol.asyncIterator]();
+      for (;;) {
+        const observed = await nextEvent();
+        if (observed.kind === 'aborted') {
+          throw new core.SandboxCommandOutputSettlementError(
+            input.request.signal?.aborted ? 'cancellation' : 'timeout',
+          );
+        }
+        const next = observed.kind === 'event' ? observed.result : observed;
+        if (next.done) {
+          throw new core.SandboxCommandOutputSettlementError('transport');
+        }
+        const event = next.value;
+        if (event.kind === 'stdout') {
+          stdout += stdoutDecoder.decode(event.chunk, { stream: true });
+        } else if (event.kind === 'stderr') {
+          stderr += stderrDecoder.decode(event.chunk, { stream: true });
+        } else if (event.kind === 'close' || event.kind === 'error') {
+          input.protocol.output.acknowledgeTerminalConsumed(event.receipt);
+          throw new core.SandboxCommandOutputSettlementError('transport');
+        } else {
+          stdout += stdoutDecoder.decode();
+          stderr += stderrDecoder.decode();
+          input.protocol.output.acknowledgeTerminalConsumed(event.receipt);
+          assert.equal((await iterator.next()).done, true);
+          assert.equal((await iterator.next()).done, true);
+          return { stdout, stderr, exitCode: event.exitCode };
+        }
+      }
+    } finally {
+      cancelDeadline();
+      await iterator?.return?.();
+      input.protocol.output.acknowledgeDriverSettled();
+    }
+  })();
+}
+
+async function exerciseSplitCommandOutput(input, calls) {
+  calls.set(input.scenario, (calls.get(input.scenario) ?? 0) + 1);
+  try {
+    const [process, output] = await Promise.all([
+      input.protocol.process.waitForSettlement().then((settlement) => {
+        input.protocol.process.acknowledgeConsumed();
+        return settlement;
+      }),
+      collectSplitCommandOutput(input),
+    ]);
+    if (process.exitCode !== output.exitCode) {
+      throw new core.SandboxCommandOutputSettlementError('protocol');
+    }
+    return {
+      kind: 'resolved',
+      executionCount: 1,
+      result: {
+        exitCode: process.exitCode,
+        stdout: output.stdout,
+        stderr: output.stderr,
+        output: `${output.stdout}${output.stderr}`,
+        timedOut: false,
+      },
+      diagnostics: [],
+    };
+  } catch (rejection) {
+    return {
+      kind: 'rejected',
+      executionCount: 1,
+      rejection,
+      diagnostics: [],
+    };
+  }
+}
+
+await test('split command output conformance drives every protocol ordering exactly once', async () => {
+  const calls = new Map();
+  const scenarios = mod.createSandboxCommandOutputConformanceScenarios(
+    {
+      exercise: (input) => exerciseSplitCommandOutput(input, calls),
+    },
+    assert,
+  );
+  assert.deepEqual(
+    scenarios.map((scenario) => scenario.name),
+    mod.SANDBOX_SPLIT_COMMAND_OUTPUT_CONFORMANCE_CASES.map(
+      (scenario) => `command output settlement: ${scenario}`,
+    ),
+  );
+  for (const scenario of scenarios) await scenario.run();
+  assert.deepEqual(
+    Object.fromEntries(calls),
+    Object.fromEntries(
+      mod.SANDBOX_SPLIT_COMMAND_OUTPUT_CONFORMANCE_CASES.map((scenario) => [
+        scenario,
+        1,
+      ]),
+    ),
+  );
+});
+
+await test('split command output conformance rejects adapters that bypass protocol gates', async () => {
+  const scenario = mod.createSandboxCommandOutputConformanceScenarios(
+    {
+      async exercise() {
+        return {
+          kind: 'resolved',
+          executionCount: 1,
+          result: {
+            exitCode: 0,
+            stdout: '',
+            stderr: '',
+            output: '',
+            timedOut: false,
+          },
+          diagnostics: [],
+        };
+      },
+    },
+    assert,
+  )[0];
+  await assert.rejects(
+    () => scenario.run(),
+    /settled before both protocol channels were observed/u,
+  );
+});
+
+await test('split command output conformance propagates an exercise rejection before readiness', async () => {
+  const scenario = mod.createSandboxCommandOutputConformanceScenarios(
+    {
+      async exercise() {
+        throw new Error('controlled command-output exercise rejection');
+      },
+    },
+    assert,
+  )[0];
+  await assert.rejects(
+    () => scenario.run(),
+    /controlled command-output exercise rejection/u,
+  );
+});
+
+await test('split command output conformance rejects one-turn early-empty late replay adapters', async () => {
+  const scenario = mod.createSandboxCommandOutputConformanceScenarios(
+    {
+      async exercise(input) {
+        input.deadlineDriver.schedule(input.request.timeoutMs, () => {});
+        void input.protocol.output.waitForHandshake();
+        input.protocol.output.events();
+        const process = await input.protocol.process.waitForSettlement();
+        input.protocol.process.acknowledgeConsumed();
+        await new Promise((resolve) => setImmediate(resolve));
+        input.protocol.output.acknowledgeDriverSettled();
+        return {
+          kind: 'resolved',
+          executionCount: 1,
+          result: {
+            exitCode: process.exitCode,
+            stdout: '',
+            stderr: '',
+            output: '',
+            timedOut: false,
+          },
+          diagnostics: [],
+        };
+      },
+    },
+    assert,
+  ).find((entry) => entry.name.endsWith('late-replay'));
+  await assert.rejects(
+    () => scenario.run(),
+    /settled before the output terminal fact/u,
+  );
+});
+
+await test('split command output conformance rejects a controlled fixed late-replay grace', async () => {
+  const scenario = mod.createSandboxCommandOutputConformanceScenarios(
+    {
+      async exercise(input) {
+        input.deadlineDriver.schedule(input.request.timeoutMs, () => {});
+        void input.protocol.output.waitForHandshake();
+        input.protocol.output.events();
+        const process = await input.protocol.process.waitForSettlement();
+        input.protocol.process.acknowledgeConsumed();
+        await new Promise((resolve) => {
+          input.deadlineDriver.schedule(25, resolve);
+        });
+        input.protocol.output.acknowledgeDriverSettled();
+        return {
+          kind: 'resolved',
+          executionCount: 1,
+          result: {
+            exitCode: process.exitCode,
+            stdout: '',
+            stderr: '',
+            output: '',
+            timedOut: false,
+          },
+          diagnostics: [],
+        };
+      },
+    },
+    assert,
+  ).find((entry) => entry.name.endsWith('late-replay'));
+  await assert.rejects(
+    () => scenario.run(),
+    /must share the absolute command deadline/u,
+  );
+});
+
+await test('split command output conformance rejects fabricated pre-acknowledgement of empty output', async () => {
+  const scenario = mod.createSandboxCommandOutputConformanceScenarios(
+    {
+      async exercise(input) {
+        const processPromise = input.protocol.process.waitForSettlement();
+        await input.protocol.output.waitForHandshake();
+        input.protocol.output.events();
+        const process = await processPromise;
+        input.protocol.process.acknowledgeConsumed();
+        input.protocol.output.acknowledgeTerminalConsumed(Object.freeze({}));
+        input.protocol.output.acknowledgeDriverSettled();
+        return {
+          kind: 'resolved',
+          executionCount: 1,
+          result: {
+            exitCode: process.exitCode,
+            stdout: '',
+            stderr: '',
+            output: '',
+            timedOut: false,
+          },
+          diagnostics: [],
+        };
+      },
+    },
+    assert,
+  ).find((entry) => entry.name.endsWith('valid-empty'));
+  await assert.rejects(
+    () => scenario.run(),
+    /output terminal fact was not consumed/u,
+  );
+});
+
+await test('split command output conformance rejects a restarted output deadline', async () => {
+  const scenario = mod.createSandboxCommandOutputConformanceScenarios(
+    {
+      async exercise(input) {
+        input.deadlineDriver.schedule(input.request.timeoutMs, () => {});
+        const processPromise = input.protocol.process.waitForSettlement();
+        await input.protocol.output.waitForHandshake();
+        input.protocol.output.events();
+        await processPromise;
+        input.protocol.process.acknowledgeConsumed();
+        await new Promise((resolve) => {
+          input.deadlineDriver.schedule(input.request.timeoutMs, resolve);
+        });
+        throw new Error('restarted deadline unexpectedly elapsed');
+      },
+    },
+    assert,
+  ).find((entry) => entry.name.endsWith('shared-deadline'));
+  await assert.rejects(
+    () => scenario.run(),
+    /must share the absolute command deadline/u,
+  );
+});
+
+await test('split command output conformance rejects a missing absolute deadline', async () => {
+  const scenario = mod.createSandboxCommandOutputConformanceScenarios(
+    {
+      async exercise(input) {
+        const processPromise = input.protocol.process.waitForSettlement();
+        await input.protocol.output.waitForHandshake();
+        input.protocol.output.events();
+        await processPromise;
+        input.protocol.process.acknowledgeConsumed();
+        await new Promise(() => {});
+      },
+    },
+    assert,
+  ).find((entry) => entry.name.endsWith('shared-deadline'));
+  await assert.rejects(
+    () => scenario.run(),
+    /observed none/u,
+  );
+});
+
+await test('split command output conformance fails fast when the original deadline is ignored', async () => {
+  const scenario = mod.createSandboxCommandOutputConformanceScenarios(
+    {
+      async exercise(input) {
+        input.deadlineDriver.schedule(input.request.timeoutMs, () => {});
+        const processPromise = input.protocol.process.waitForSettlement();
+        await input.protocol.output.waitForHandshake();
+        input.protocol.output.events();
+        await processPromise;
+        input.protocol.process.acknowledgeConsumed();
+        await new Promise(() => {});
+      },
+    },
+    assert,
+  ).find((entry) => entry.name.endsWith('shared-deadline'));
+  await assert.rejects(
+    () => scenario.run(),
+    /did not settle at the original command deadline/u,
+  );
+});
+
 await test('generated private Git fixture rejects wildcard and unsafe URL hosts', async () => {
   await assert.rejects(
     () => mod.createGeneratedPrivateGitFixture({ listenHost: '0.0.0.0' }),
