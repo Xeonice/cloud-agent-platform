@@ -104,7 +104,7 @@ function service(
   };
   const transactionClient = {
     repo: repoDelegate,
-    $queryRaw: async () => [],
+    $executeRaw: async () => 1,
   };
   const prisma = {
     repo: repoDelegate,
@@ -524,16 +524,16 @@ test('concurrent duplicate imports serialize on the database lock and create exa
     $transaction: async <T>(
       callback: (tx: {
         repo: typeof repoDelegate;
-        $queryRaw: (
+        $executeRaw: (
           strings: TemplateStringsArray,
           ...values: unknown[]
-        ) => Promise<unknown[]>;
+        ) => Promise<number>;
       }) => Promise<T>,
     ): Promise<T> => {
       const releases: Array<() => void> = [];
       const tx = {
         repo: repoDelegate,
-        $queryRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        $executeRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
           const key = String(values[0]);
           const prior = lockTails.get(key) ?? Promise.resolve();
           let release!: () => void;
@@ -546,7 +546,7 @@ test('concurrent duplicate imports serialize on the database lock and create exa
             release();
             if (lockTails.get(key) === tail) lockTails.delete(key);
           });
-          return [];
+          return 1;
         },
       };
       try {

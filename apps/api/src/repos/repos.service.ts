@@ -280,7 +280,9 @@ export class ReposService {
     // are sorted to keep multi-key imports deadlock-free across API instances.
     return this.prisma.$transaction(async (tx) => {
       for (const lockKey of lockKeys) {
-        await tx.$queryRaw`
+        // Advisory lock functions return PostgreSQL `void`; discard the result
+        // so Prisma does not try to deserialize it as a query row.
+        await tx.$executeRaw`
           SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))
         `;
       }

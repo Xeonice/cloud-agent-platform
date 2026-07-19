@@ -492,8 +492,8 @@ class RepoPrismaFixture {
     };
     const transactionClient = {
       repo,
-      async $queryRaw(_query: unknown): Promise<readonly unknown[]> {
-        return [];
+      async $executeRaw(_query: unknown): Promise<number> {
+        return 1;
       },
     };
     this.prisma = {

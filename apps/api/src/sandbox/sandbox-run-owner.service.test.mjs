@@ -200,6 +200,70 @@ const { outDir, compiled } = compileService();
 try {
   const { SandboxRunOwnerService } = await import(pathToFileURL(compiled).href);
 
+  await test('transaction owner locks discard the PostgreSQL void result before writing', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const operations = [];
+    const findFirst = delegate.findFirst.bind(delegate);
+    const create = delegate.create.bind(delegate);
+    delegate.findFirst = async (args) => {
+      operations.push('find-first');
+      return findFirst(args);
+    };
+    delegate.create = async (args) => {
+      operations.push('create');
+      return create(args);
+    };
+    const transactionClient = {
+      sandboxRun: delegate,
+      $executeRaw: async () => {
+        operations.push('lock');
+        return 1;
+      },
+      $queryRaw: async () => {
+        throw new Error('PostgreSQL void results must not be deserialized');
+      },
+    };
+    const service = new SandboxRunOwnerService({
+      sandboxRun: delegate,
+      $transaction: async (operation) => operation(transactionClient),
+    });
+
+    assert.equal(
+      await service.beginSandboxRunCreate({
+        taskId: 'task-advisory-lock',
+        providerId: 'boxlite',
+      }),
+      true,
+    );
+    assert.deepEqual(operations, ['lock', 'find-first', 'create']);
+    assert.equal(delegate.runs.length, 1);
+    assert.equal(delegate.runs[0].taskId, 'task-advisory-lock');
+    assert.equal(delegate.runs[0].createState, 'entered');
+  });
+
+  await test('a rejected transaction owner lock never reaches the owner delegate', async () => {
+    const delegate = new FakeSandboxRunDelegate();
+    const service = new SandboxRunOwnerService({
+      sandboxRun: delegate,
+      $transaction: async (operation) =>
+        operation({
+          sandboxRun: delegate,
+          $executeRaw: async () => {
+            throw new Error('lock unavailable');
+          },
+        }),
+    });
+
+    await assert.rejects(
+      service.beginSandboxRunCreate({
+        taskId: 'task-advisory-lock-rejected',
+        providerId: 'boxlite',
+      }),
+      /lock unavailable/,
+    );
+    assert.equal(delegate.runs.length, 0);
+  });
+
   await test('owner store records and resolves the active provider owner', async () => {
     const delegate = new FakeSandboxRunDelegate();
     const service = new SandboxRunOwnerService({ sandboxRun: delegate });

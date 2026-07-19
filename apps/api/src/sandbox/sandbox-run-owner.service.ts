@@ -1084,7 +1084,12 @@ export class SandboxRunOwnerService implements SandboxRunOwnerStore {
       return operation(this.prisma);
     }
     return this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw(Prisma.sql`
+      // `pg_advisory_xact_lock` returns PostgreSQL `void`. Prisma attempts to
+      // deserialize every result column from `$queryRaw`, which turns this
+      // otherwise-successful lock acquisition into P2010 before the owner
+      // operation can run. `$executeRaw` deliberately discards the SELECT row
+      // while retaining the transaction-scoped lock until this callback ends.
+      await tx.$executeRaw(Prisma.sql`
         SELECT pg_advisory_xact_lock(hashtextextended(${taskId}, 0))
       `);
       return operation(tx);
