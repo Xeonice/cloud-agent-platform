@@ -26,6 +26,7 @@ class SharedAdmissionDb {
   readonly work = new Map<string, WorkRow>();
   readonly activeSandboxOwners = new Set<string>();
   ceiling: number | null = null;
+  lockCalls = 0;
   private transactionTail: Promise<void> = Promise.resolve();
 
   prisma(): PrismaService {
@@ -51,6 +52,9 @@ class SharedAdmissionDb {
     const workRows = this.work;
     const activeSandboxOwners = this.activeSandboxOwners;
     const readCeiling = () => this.ceiling;
+    const recordLock = () => {
+      this.lockCalls += 1;
+    };
     return {
       systemSettings: {
         async findUnique() {
@@ -84,10 +88,19 @@ class SharedAdmissionDb {
           return { count: 1 };
         },
       },
+      async $executeRaw(query: {
+        strings?: readonly string[];
+        values?: readonly unknown[];
+      }) {
+        const sql = (query.strings ?? []).join('?');
+        assert.match(sql, /pg_advisory_xact_lock/);
+        recordLock();
+        return 1;
+      },
       async $queryRaw(query: { strings?: readonly string[]; values?: readonly unknown[] }) {
         const sql = (query.strings ?? []).join('?');
         const values = query.values ?? [];
-        if (sql.includes('pg_advisory_xact_lock')) return [];
+        assert.doesNotMatch(sql, /pg_advisory_xact_lock/);
         if (sql.includes('AS "blocked"')) {
           const taskId = values.find(
             (value): value is string =>
@@ -199,6 +212,7 @@ test('shared SystemSettings ceiling wins over a stale replica fallback inside th
 
   assert.equal(result.outcome, 'queued');
   assert.equal(db.tasks.get('candidate')?.status, 'queued');
+  assert.equal(db.lockCalls, 1);
 });
 
 test('an out-of-contract persisted ceiling cannot over-admit and falls back consistently', async () => {

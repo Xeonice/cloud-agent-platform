@@ -1874,7 +1874,9 @@ export class TasksService
       // terminal transitions do not need this lock: a concurrent release either
       // becomes visible before the count or makes this reservation conservatively
       // queue until the durable poll retries it.
-      await tx.$queryRaw(Prisma.sql`
+      // Advisory lock functions return PostgreSQL `void`; `$executeRaw` keeps
+      // the transaction lock without asking Prisma to deserialize a result row.
+      await tx.$executeRaw(Prisma.sql`
         SELECT pg_advisory_xact_lock(1128353875, 1)
       `);
 
