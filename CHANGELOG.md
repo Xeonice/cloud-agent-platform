@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.41.0...v0.41.1) (2026-07-19)
+
+
+### Bug Fixes
+
+* **sandbox:** require complete BoxLite command output ([#149](https://github.com/Xeonice/cloud-agent-platform/issues/149)) ([fbd8f51](https://github.com/Xeonice/cloud-agent-platform/commit/fbd8f518723ca03760363869a266132aaae260e0))
+
 ## [0.41.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.40.0...v0.41.0) (2026-07-18)
 
 
