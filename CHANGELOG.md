@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.41.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.41.2...v0.41.3) (2026-07-19)
+
+
+### Bug Fixes
+
+* **api:** execute advisory locks without decoding void ([#153](https://github.com/Xeonice/cloud-agent-platform/issues/153)) ([78fc6aa](https://github.com/Xeonice/cloud-agent-platform/commit/78fc6aae2519ad5e9a1da38c6895d384d53468e6))
+
 ## [0.41.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.41.1...v0.41.2) (2026-07-19)
 
 
