@@ -7,6 +7,7 @@ import {
   BookOpen,
   ChevronDown,
   Copy,
+  Pencil,
   Play,
   Plus,
   Trash2,
@@ -15,6 +16,7 @@ import {
 import type {
   CreateSandboxEnvironmentRequest,
   SandboxEnvironment,
+  UpdateSandboxEnvironmentParametersRequest,
 } from "@cap/contracts";
 import { Panel, PanelHead } from "@/components/settings/panel";
 import { Badge } from "@/components/ui/badge";
@@ -29,14 +31,24 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  queryKeys,
   sandboxEnvironmentValidationsQuery,
   sandboxEnvironmentsQuery,
 } from "@/lib/api/queries";
 import {
   createSandboxEnvironmentMutation,
   retireSandboxEnvironmentMutation,
+  updateSandboxEnvironmentParametersMutation,
   validateSandboxEnvironmentMutation,
 } from "@/lib/api/mutations";
+import {
+  Dialog,
+  DialogBody,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export type SandboxImageProvider = "aio" | "boxlite";
 
@@ -45,6 +57,52 @@ type ImageParameterDraft = {
   readonly value: string;
   readonly secret: boolean;
 };
+
+export type EditParameterDraft = {
+  readonly name: string;
+  readonly value: string;
+  readonly secret: boolean;
+  /**
+   * True while an existing secret's stored value is retained. Secrets are
+   * write-only, so a kept row carries no value and submits as `{name, keep}`.
+   */
+  readonly keepExisting: boolean;
+};
+
+/** Prefill edit drafts from the redacted read model: secret rows carry no value. */
+export function draftsFromParameters(
+  parameters: SandboxEnvironment["parameters"],
+): EditParameterDraft[] {
+  return (parameters ?? []).map((parameter) =>
+    parameter.secret
+      ? { name: parameter.name, value: "", secret: true, keepExisting: true }
+      : {
+          name: parameter.name,
+          value: parameter.value ?? "",
+          secret: false,
+          keepExisting: false,
+        },
+  );
+}
+
+/** Untouched secret rows become keep entries; plaintext never round-trips. */
+export function buildUpdateParametersBody(
+  drafts: readonly EditParameterDraft[],
+): UpdateSandboxEnvironmentParametersRequest {
+  return {
+    parameters: drafts
+      .filter((draft) => draft.name.trim().length > 0)
+      .map((draft) =>
+        draft.keepExisting
+          ? { name: draft.name.trim(), keep: true as const }
+          : {
+              name: draft.name.trim(),
+              value: draft.value,
+              secret: draft.secret || undefined,
+            },
+      ),
+  };
+}
 
 export const SANDBOX_IMAGE_REGISTRATION_COPY = {
   kicker: "Image references",
@@ -107,6 +165,11 @@ export function SandboxEnvironmentsCard() {
   const createEnv = useMutation(createSandboxEnvironmentMutation(queryClient));
   const validateEnv = useMutation(validateSandboxEnvironmentMutation(queryClient));
   const retireEnv = useMutation(retireSandboxEnvironmentMutation(queryClient));
+  const updateParams = useMutation(
+    updateSandboxEnvironmentParametersMutation(queryClient),
+  );
+  const [editingEnvironment, setEditingEnvironment] =
+    React.useState<SandboxEnvironment | null>(null);
   const environments = visibleSandboxEnvironments(data?.environments ?? []);
   const operationError =
     createEnv.error?.message ?? validateEnv.error?.message ?? retireEnv.error?.message;
@@ -385,6 +448,10 @@ export function SandboxEnvironmentsCard() {
               validating={validateEnv.isPending && validateEnv.variables === environment.id}
               onValidate={() => validateEnv.mutate(environment.id)}
               retiring={retireEnv.isPending && retireEnv.variables === environment.id}
+              onEditParameters={() => {
+                updateParams.reset();
+                setEditingEnvironment(environment);
+              }}
               onRetire={() => {
                 const ok = window.confirm(
                   `停用镜像「${environment.name}」？这只会让 CAP 不再选择该镜像，不会删除 registry 或 BoxLite 上的镜像内容。`,
@@ -395,6 +462,36 @@ export function SandboxEnvironmentsCard() {
           ))
         )}
       </div>
+      {editingEnvironment ? (
+        <EditParametersDialog
+          environment={editingEnvironment}
+          saving={updateParams.isPending}
+          error={updateParams.error?.message ?? null}
+          onClose={() => {
+            setEditingEnvironment(null);
+            updateParams.reset();
+          }}
+          onSubmit={(body) => {
+            updateParams.mutate(
+              { id: editingEnvironment.id, body },
+              {
+                onSuccess: () => {
+                  setEditingEnvironment(null);
+                },
+                onError: (error) => {
+                  // A kept secret can disappear under a concurrent edit; refetch
+                  // so the dialog reopens against the current parameter set.
+                  if (error.message.includes("unknown_keep_parameter")) {
+                    void queryClient.invalidateQueries({
+                      queryKey: queryKeys.sandboxEnvironments,
+                    });
+                  }
+                },
+              },
+            );
+          }}
+        />
+      ) : null}
     </Panel>
   );
 }
@@ -404,12 +501,14 @@ function EnvironmentRow({
   validating,
   retiring,
   onValidate,
+  onEditParameters,
   onRetire,
 }: {
   environment: SandboxEnvironment;
   validating: boolean;
   retiring: boolean;
   onValidate: () => void;
+  onEditParameters: () => void;
   onRetire: () => void;
 }) {
   const [expanded, setExpanded] = React.useState(false);
@@ -452,6 +551,17 @@ function EnvironmentRow({
         >
           <Play className="size-3.5" />
           验证
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={onEditParameters}
+          disabled={retiring}
+          className="gap-2"
+        >
+          <Pencil className="size-3.5" />
+          参数
         </Button>
         <Button
           type="button"
@@ -528,6 +638,157 @@ function EnvironmentRow({
         </div>
       ) : null}
     </div>
+  );
+}
+
+export function EditParametersFields({
+  drafts,
+  onReplace,
+  onRemove,
+  onAdd,
+}: {
+  drafts: readonly EditParameterDraft[];
+  onReplace: (index: number, next: EditParameterDraft) => void;
+  onRemove: (index: number) => void;
+  onAdd: () => void;
+}) {
+  return (
+    <>
+      {drafts.length === 0 ? (
+        <p className="text-xs text-muted-foreground">暂无参数，点击下方添加。</p>
+      ) : null}
+      {drafts.map((draft, index) => (
+        <div
+          key={index}
+          className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto_auto] items-center gap-2"
+        >
+          <Input
+            value={draft.name}
+            readOnly={draft.keepExisting}
+            aria-label="参数名"
+            placeholder="PARAM_NAME"
+            onChange={(event) =>
+              onReplace(index, { ...draft, name: event.target.value })
+            }
+            className="font-mono text-xs"
+          />
+          <Input
+            type={draft.secret ? "password" : "text"}
+            value={draft.value}
+            aria-label="参数值"
+            placeholder={draft.keepExisting ? "已保存 · 留空保留现有值" : "参数值"}
+            onChange={(event) =>
+              onReplace(index, {
+                ...draft,
+                value: event.target.value,
+                keepExisting:
+                  draft.keepExisting && event.target.value.length === 0,
+              })
+            }
+            className="font-mono text-xs"
+          />
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Checkbox
+              checked={draft.secret}
+              disabled={draft.keepExisting}
+              onCheckedChange={(checked) =>
+                onReplace(index, { ...draft, secret: checked === true })
+              }
+            />
+            secret
+          </label>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label={`移除参数 ${draft.name || index + 1}`}
+            onClick={() => onRemove(index)}
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </div>
+      ))}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="justify-self-start gap-2"
+        onClick={onAdd}
+      >
+        <Plus className="size-3.5" />
+        添加参数
+      </Button>
+    </>
+  );
+}
+
+export function EditParametersDialog({
+  environment,
+  saving,
+  error,
+  onClose,
+  onSubmit,
+}: {
+  environment: SandboxEnvironment;
+  saving: boolean;
+  error: string | null;
+  onClose: () => void;
+  onSubmit: (body: UpdateSandboxEnvironmentParametersRequest) => void;
+}) {
+  const [drafts, setDrafts] = React.useState<EditParameterDraft[]>(() =>
+    draftsFromParameters(environment.parameters),
+  );
+
+  function replaceDraft(index: number, next: EditParameterDraft) {
+    setDrafts((items) =>
+      items.map((item, itemIndex) => (itemIndex === index ? next : item)),
+    );
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => (!open ? onClose() : undefined)}>
+      <DialogContent className="max-w-[min(640px,100vw-32px)]">
+        <DialogTitle>编辑运行时参数</DialogTitle>
+        <DialogDescription>
+          「{environment.name}」的镜像参数。secret 保存后不回显：留空即保留现有值，输入新值即轮换。修改无需重新验证镜像，仅对之后新建的任务生效，运行中的任务不受影响。
+        </DialogDescription>
+        <DialogBody className="grid gap-2">
+          <EditParametersFields
+            drafts={drafts}
+            onReplace={replaceDraft}
+            onRemove={(index) =>
+              setDrafts((items) =>
+                items.filter((_, itemIndex) => itemIndex !== index),
+              )
+            }
+            onAdd={() =>
+              setDrafts((items) => [
+                ...items,
+                { name: "", value: "", secret: false, keepExisting: false },
+              ])
+            }
+          />
+          {error ? (
+            <p role="alert" className="text-xs text-danger">
+              保存失败：{error}
+            </p>
+          ) : null}
+        </DialogBody>
+        <div className="flex items-center justify-end gap-2 border-t border-border px-[22px] py-3.5">
+          <DialogClose className="inline-flex min-h-8 items-center rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary">
+            取消
+          </DialogClose>
+          <Button
+            type="button"
+            size="sm"
+            disabled={saving}
+            onClick={() => onSubmit(buildUpdateParametersBody(drafts))}
+          >
+            {saving ? "保存中…" : "保存参数"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

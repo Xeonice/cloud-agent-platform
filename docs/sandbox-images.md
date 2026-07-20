@@ -109,6 +109,15 @@ stop or teardown. If the image has no parameters, the file is absent; if a token
 lacks external permissions, the tool fails on its own. This is separate from
 image validation.
 
+Parameters stay editable after registration. Each registered environment card in
+Image Management has a `参数` action that opens an edit dialog prefilled from the
+stored set: plain parameters show their values, secret parameters show the name
+only. Leave a secret row empty to keep its stored value, or type a new value to
+rotate it — the old plaintext is never shown or resent. Editing parameters does
+not change validation status and never requires re-validating the image; the
+edited set applies to tasks provisioned after the save, while already-running
+sandboxes keep the values they started with.
+
 ## Build And Push
 
 AIO currently runs on Linux/amd64 Docker hosts in the supported local provider

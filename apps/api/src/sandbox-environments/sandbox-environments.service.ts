@@ -12,7 +12,9 @@ import {
   SandboxMetadataSchema,
   SandboxEnvironmentSourceSchema,
   SandboxEnvironmentValidationSchema,
+  UpdateSandboxEnvironmentParametersRequestSchema,
   type CreateSandboxEnvironmentRequest,
+  type UpdateSandboxEnvironmentParametersRequest,
   type SandboxEnvironment,
   type SandboxEnvironmentParameter,
   type SandboxEnvironmentParameterInput,
@@ -138,6 +140,52 @@ export class SandboxEnvironmentsService {
       data: {
         status: 'disabled',
         isDefault: false,
+      },
+      include: latestValidationInclude(),
+    });
+    return this.toEnvironment(updated);
+  }
+
+  /**
+   * Replaces the image parameter set of a registered environment. Secrets stay
+   * write-only: keep entries copy the stored ciphertext envelope verbatim (no
+   * decrypt/re-encrypt round trip), set entries encrypt fresh values. Only the
+   * parameter columns are written — status, validation records, contract
+   * version, and the default flag are untouched, so no re-validation occurs.
+   */
+  async updateParameters(
+    id: string,
+    input: UpdateSandboxEnvironmentParametersRequest,
+  ): Promise<SandboxEnvironment> {
+    const request = UpdateSandboxEnvironmentParametersRequestSchema.parse(input);
+    const current = await this.requireEnvironmentRow(id);
+    if (current.status === 'disabled') {
+      throw new BadRequestException({
+        error: 'sandbox_environment_retired',
+        message: `Sandbox environment ${id} is retired; parameters cannot be edited.`,
+      });
+    }
+    const setEntries = request.parameters.filter(
+      (entry): entry is SandboxEnvironmentParameterInput => !('keep' in entry),
+    );
+    const encoded = this.encodeParameters(setEntries);
+    const storedSecrets = readStringRecord(current.secretEnvVars);
+    for (const entry of request.parameters) {
+      if (!('keep' in entry)) continue;
+      const stored = storedSecrets[entry.name];
+      if (stored === undefined) {
+        throw new BadRequestException({
+          error: 'sandbox_environment_unknown_keep_parameter',
+          message: `Cannot keep unknown secret parameter: ${entry.name}`,
+        });
+      }
+      encoded.secret[entry.name] = stored;
+    }
+    const updated = await this.prisma.sandboxEnvironment.update({
+      where: { id },
+      data: {
+        envVars: encoded.plain as unknown as Prisma.InputJsonObject,
+        secretEnvVars: encoded.secret as unknown as Prisma.InputJsonObject,
       },
       include: latestValidationInclude(),
     });

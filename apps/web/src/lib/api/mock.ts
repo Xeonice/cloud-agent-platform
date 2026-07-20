@@ -50,6 +50,7 @@ import type {
   SandboxEnvironmentValidation,
   ListSandboxEnvironmentValidationsResponse,
   CreateSandboxEnvironmentRequest,
+  UpdateSandboxEnvironmentParametersRequest,
   TaskProvisioningDiagnosticsResponse,
 } from "@cap/contracts";
 import { getState } from "../store";
@@ -930,6 +931,41 @@ export async function mockSetDefaultSandboxEnvironment(
   const env = mockSandboxEnvironments.find((candidate) => candidate.id === id);
   if (!env) throw new Error(`mock sandbox environment not found: ${id}`);
   return { ...env };
+}
+
+export async function mockUpdateSandboxEnvironmentParameters(
+  id: string,
+  body: UpdateSandboxEnvironmentParametersRequest,
+): Promise<SandboxEnvironmentResponse> {
+  await delay();
+  const index = mockSandboxEnvironments.findIndex((env) => env.id === id);
+  if (index < 0) throw new Error(`mock sandbox environment not found: ${id}`);
+  const existing = mockSandboxEnvironments[index]!;
+  const existingSecrets = new Set(
+    (existing.parameters ?? [])
+      .filter((parameter) => parameter.secret)
+      .map((parameter) => parameter.name),
+  );
+  const parameters = body.parameters.map((entry) => {
+    if ("keep" in entry) {
+      if (!existingSecrets.has(entry.name)) {
+        throw new Error(`cannot keep unknown secret parameter: ${entry.name}`);
+      }
+      return { name: entry.name, secret: true as const };
+    }
+    return entry.secret
+      ? { name: entry.name, secret: true as const }
+      : { name: entry.name, value: entry.value, secret: false as const };
+  });
+  const updated: SandboxEnvironment = {
+    ...existing,
+    parameters,
+    updatedAt: new Date(),
+  };
+  mockSandboxEnvironments = mockSandboxEnvironments.map((env) =>
+    env.id === id ? updated : env,
+  );
+  return { ...updated };
 }
 
 export async function mockRetireSandboxEnvironment(

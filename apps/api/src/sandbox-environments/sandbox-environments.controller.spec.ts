@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 
-import type { CreateSandboxEnvironmentRequest } from '@cap/contracts';
+import type {
+  CreateSandboxEnvironmentRequest,
+  UpdateSandboxEnvironmentParametersRequest,
+} from '@cap/contracts';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
 import { SandboxEnvironmentsController } from './sandbox-environments.controller';
@@ -32,12 +35,21 @@ function requestFor(userId: string | null): AuthenticatedRequest {
 
 function buildController(): {
   controller: SandboxEnvironmentsController;
-  calls: { create: CreateSandboxEnvironmentRequest[]; list: number; retire: string[] };
+  calls: {
+    create: CreateSandboxEnvironmentRequest[];
+    list: number;
+    retire: string[];
+    updateParameters: { id: string; body: UpdateSandboxEnvironmentParametersRequest }[];
+  };
 } {
   const calls = {
     create: [] as CreateSandboxEnvironmentRequest[],
     list: 0,
     retire: [] as string[],
+    updateParameters: [] as {
+      id: string;
+      body: UpdateSandboxEnvironmentParametersRequest;
+    }[],
   };
   const environments = {
     async list() {
@@ -56,6 +68,32 @@ function buildController(): {
         lastValidationId: null,
         lastValidatedAt: null,
         contractVersion: 'sandbox-environment-v1',
+        createdAt: new Date('2026-07-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-07-01T00:00:00.000Z'),
+      };
+    },
+    async updateParameters(id: string, body: UpdateSandboxEnvironmentParametersRequest) {
+      calls.updateParameters.push({ id, body });
+      if (id === 'env-missing') {
+        throw new NotFoundException(`Sandbox environment not found: ${id}`);
+      }
+      if (id === 'env-retired') {
+        throw new BadRequestException({ error: 'sandbox_environment_retired' });
+      }
+      return {
+        id,
+        name: 'BoxLite gcode',
+        status: 'ready',
+        source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+        compatibility: { providerFamilies: ['boxlite'] },
+        parameters: [
+          { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v6', secret: false },
+          { name: 'GCODE_TOKEN', secret: true },
+        ],
+        isDefault: true,
+        lastValidationId: null,
+        lastValidatedAt: null,
+        contractVersion: 'sandbox-environment-v2',
         createdAt: new Date('2026-07-01T00:00:00.000Z'),
         updatedAt: new Date('2026-07-01T00:00:00.000Z'),
       };
@@ -144,4 +182,56 @@ test('admin sessions can retire sandbox environments', async () => {
 
   assert.equal(response.status, 'disabled');
   assert.deepEqual(calls.retire, ['env-1']);
+});
+
+test('non-admin sessions cannot edit image parameters', async () => {
+  const { controller, calls } = buildController();
+
+  await assert.rejects(
+    () =>
+      controller.updateParameters(requestFor(MEMBER_USER_ID), 'env-1', {
+        parameters: [{ name: 'GCODE_TOKEN', keep: true }],
+      }),
+    (err: unknown) => err instanceof ForbiddenException,
+  );
+  assert.deepEqual(calls.updateParameters, []);
+});
+
+test('admin edits return the redacted environment read shape', async () => {
+  const { controller, calls } = buildController();
+  const body: UpdateSandboxEnvironmentParametersRequest = {
+    parameters: [
+      { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v6' },
+      { name: 'GCODE_TOKEN', keep: true },
+    ],
+  };
+
+  const response = await controller.updateParameters(
+    requestFor(ADMIN_USER_ID),
+    'env-1',
+    body,
+  );
+
+  assert.deepEqual(calls.updateParameters, [{ id: 'env-1', body }]);
+  assert.deepEqual(response.parameters, [
+    { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v6', secret: false },
+    { name: 'GCODE_TOKEN', secret: true },
+  ]);
+  assert.equal(JSON.stringify(response).includes('gcode-secret'), false);
+});
+
+test('unknown and retired environments propagate their service errors', async () => {
+  const { controller } = buildController();
+  const body: UpdateSandboxEnvironmentParametersRequest = {
+    parameters: [{ name: 'GCODE_TOKEN', value: 'x', secret: true }],
+  };
+
+  await assert.rejects(
+    () => controller.updateParameters(requestFor(ADMIN_USER_ID), 'env-missing', body),
+    (err: unknown) => err instanceof NotFoundException,
+  );
+  await assert.rejects(
+    () => controller.updateParameters(requestFor(ADMIN_USER_ID), 'env-retired', body),
+    (err: unknown) => err instanceof BadRequestException,
+  );
 });

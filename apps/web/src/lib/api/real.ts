@@ -93,6 +93,7 @@ import {
   type SandboxEnvironmentResponse,
   type ListSandboxEnvironmentValidationsResponse,
   type CreateSandboxEnvironmentRequest,
+  type UpdateSandboxEnvironmentParametersRequest,
   type CreateScheduleRequest,
   type DispatchScheduleRequest,
   type UpdateScheduleRequest,
@@ -1162,6 +1163,24 @@ export async function validateSandboxEnvironment(
   return ValidateSandboxEnvironmentResponseSchema.parse(
     await request(`/sandbox-environments/${encodeURIComponent(id)}/validate`, {
       method: "POST",
+    }),
+  );
+}
+
+/**
+ * `PATCH /sandbox-environments/:id/parameters` — replace the image parameter
+ * set. Untouched secrets travel as `{name, keep: true}` so plaintext never
+ * round-trips through the client.
+ */
+export async function updateSandboxEnvironmentParameters(
+  id: string,
+  body: UpdateSandboxEnvironmentParametersRequest,
+): Promise<SandboxEnvironmentResponse> {
+  return SandboxEnvironmentResponseSchema.parse(
+    await request(`/sandbox-environments/${encodeURIComponent(id)}/parameters`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     }),
   );
 }

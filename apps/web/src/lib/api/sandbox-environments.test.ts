@@ -23,6 +23,10 @@ vi.mock("./real", () => ({
   })),
   setDefaultSandboxEnvironment: vi.fn(async (id) => ({ id, isDefault: true })),
   retireSandboxEnvironment: vi.fn(async (id) => ({ id, status: "disabled" })),
+  updateSandboxEnvironmentParameters: vi.fn(async (id, body) => ({
+    id,
+    parameters: body.parameters,
+  })),
 }));
 
 vi.mock("./mock", () => ({
@@ -46,6 +50,10 @@ vi.mock("./mock", () => ({
     id,
     status: "disabled",
   })),
+  mockUpdateSandboxEnvironmentParameters: vi.fn(async (id, body) => ({
+    id,
+    parameters: body.parameters,
+  })),
 }));
 
 import {
@@ -57,6 +65,7 @@ import {
   createSandboxEnvironmentMutation,
   retireSandboxEnvironmentMutation,
   setDefaultSandboxEnvironmentMutation,
+  updateSandboxEnvironmentParametersMutation,
   validateSandboxEnvironmentMutation,
 } from "./mutations";
 import * as real from "./real";
@@ -198,5 +207,50 @@ describe("sandbox environment api seam", () => {
     expect(client.invalidateQueries).toHaveBeenNthCalledWith(3, {
       queryKey: queryKeys.runtimeModels,
     });
+  });
+});
+
+describe("update-parameters mutation seam", () => {
+  beforeEach(() => {
+    for (const key of Object.keys(flags)) delete flags[key];
+    vi.clearAllMocks();
+  });
+
+  it("routes through the settings capability and invalidates the list", async () => {
+    const body = {
+      parameters: [
+        { name: "GCODE_API_BASE_URL", value: "https://code.example/api/v6" },
+        { name: "GCODE_TOKEN", keep: true as const },
+      ],
+    };
+
+    flags.settings = true;
+    const client = queryClientStub();
+    const opts = updateSandboxEnvironmentParametersMutation(client);
+    await (opts.mutationFn as (vars: unknown) => Promise<unknown>)({
+      id: "env-1",
+      body,
+    });
+    expect(real.updateSandboxEnvironmentParameters).toHaveBeenCalledWith(
+      "env-1",
+      body,
+    );
+    (opts.onSuccess as () => void)();
+    expect(client.invalidateQueries).toHaveBeenCalledWith({
+      queryKey: queryKeys.sandboxEnvironments,
+    });
+
+    vi.clearAllMocks();
+
+    flags.settings = false;
+    await (opts.mutationFn as (vars: unknown) => Promise<unknown>)({
+      id: "env-1",
+      body,
+    });
+    expect(mock.mockUpdateSandboxEnvironmentParameters).toHaveBeenCalledWith(
+      "env-1",
+      body,
+    );
+    expect(real.updateSandboxEnvironmentParameters).not.toHaveBeenCalled();
   });
 });

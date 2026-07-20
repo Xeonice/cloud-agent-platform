@@ -1442,3 +1442,156 @@ test('v2 contract marks v1 ready environments stale and preserves current or dra
   assert.equal(rows.find((row) => row.id === ENV_C)?.status, 'stale');
   assert.equal(rows.find((row) => row.id === ENV_D)?.status, 'draft');
 });
+
+test('updateParameters replaces the set, keeps stored secret ciphertext verbatim, and leaves validation state untouched', async () => {
+  const keptCiphertext = encryptForTest('gcode-secret');
+  const { service, rows, validations } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      isDefault: true,
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+      providerFamilies: ['boxlite'],
+      runtimeIds: ['codex'],
+      envVars: { GCODE_API_BASE_URL: 'https://code.example/api/v5' },
+      secretEnvVars: { GCODE_TOKEN: keptCiphertext, OLD_TOKEN: encryptForTest('old') },
+      lastValidationId: VALIDATION_A,
+    }),
+  ]);
+  const validationCountBefore = validations.length;
+
+  const updated = await service.updateParameters(ENV_A, {
+    parameters: [
+      { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v6' },
+      { name: 'GCODE_TOKEN', keep: true },
+      { name: 'ROTATED_TOKEN', value: 'fresh-secret', secret: true },
+    ],
+  });
+
+  const row = rows.find((candidate) => candidate.id === ENV_A)!;
+  assert.deepEqual(row.envVars, { GCODE_API_BASE_URL: 'https://code.example/api/v6' });
+  assert.equal(row.secretEnvVars.GCODE_TOKEN, keptCiphertext);
+  assert.equal(row.secretEnvVars.OLD_TOKEN, undefined);
+  assert.equal(decryptStored(row.secretEnvVars.ROTATED_TOKEN as string, TEST_ENV), 'fresh-secret');
+  assert.equal(JSON.stringify(row.secretEnvVars).includes('fresh-secret'), false);
+
+  assert.equal(row.status, 'ready');
+  assert.equal(row.isDefault, true);
+  assert.equal(row.contractVersion, SANDBOX_ENVIRONMENT_CONTRACT_VERSION);
+  assert.equal(row.lastValidationId, VALIDATION_A);
+  assert.equal(validations.length, validationCountBefore);
+
+  const response = JSON.stringify(updated);
+  assert.equal(response.includes('fresh-secret'), false);
+  assert.equal(response.includes('gcode-secret'), false);
+  assert.deepEqual(
+    updated.parameters,
+    [
+      { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v6', secret: false },
+      { name: 'GCODE_TOKEN', secret: true },
+      { name: 'ROTATED_TOKEN', secret: true },
+    ],
+  );
+
+  const profile = await service.resolveImageParameterProfileForTask({
+    requestedEnvironmentId: null,
+    runtimeId: 'codex',
+    providerFamily: 'boxlite',
+  });
+  assert.deepEqual(profile, {
+    parameters: [
+      { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v6', secret: false },
+      { name: 'GCODE_TOKEN', value: 'gcode-secret', secret: true },
+      { name: 'ROTATED_TOKEN', value: 'fresh-secret', secret: true },
+    ],
+  });
+});
+
+test('updateParameters rejects keep-references to unknown secrets without changing state', async () => {
+  const { service, rows } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'ready',
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+      providerFamilies: ['boxlite'],
+      envVars: { GCODE_API_BASE_URL: 'https://code.example/api/v5' },
+      secretEnvVars: { GCODE_TOKEN: encryptForTest('gcode-secret') },
+    }),
+  ]);
+  const before = JSON.stringify(rows);
+
+  await assert.rejects(
+    () =>
+      service.updateParameters(ENV_A, {
+        parameters: [{ name: 'NEVER_STORED', keep: true }],
+      }),
+    (error: unknown) => {
+      if (!(error instanceof BadRequestException)) return false;
+      const response = error.getResponse();
+      return (
+        typeof response === 'object' &&
+        response !== null &&
+        'error' in response &&
+        response.error === 'sandbox_environment_unknown_keep_parameter'
+      );
+    },
+  );
+  // A plain parameter is not a keepable secret either.
+  await assert.rejects(() =>
+    service.updateParameters(ENV_A, {
+      parameters: [{ name: 'GCODE_API_BASE_URL', keep: true }],
+    }),
+  );
+  // Duplicate names are rejected at the schema boundary.
+  await assert.rejects(() =>
+    service.updateParameters(ENV_A, {
+      parameters: [
+        { name: 'GCODE_TOKEN', keep: true },
+        { name: 'GCODE_TOKEN', value: 'again', secret: true },
+      ],
+    }),
+  );
+  assert.equal(JSON.stringify(rows), before);
+});
+
+test('updateParameters is permitted on a failed environment but rejected on a retired one', async () => {
+  const { service, rows } = buildService([
+    makeEnvironment({
+      id: ENV_A,
+      status: 'failed',
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:gcode' },
+      providerFamilies: ['boxlite'],
+      secretEnvVars: { GCODE_TOKEN: encryptForTest('stale-secret') },
+    }),
+    makeEnvironment({
+      id: ENV_B,
+      status: 'disabled',
+      source: { kind: 'boxlite-image', image: 'cap/boxlite:old' },
+      providerFamilies: ['boxlite'],
+    }),
+  ]);
+
+  await service.updateParameters(ENV_A, {
+    parameters: [{ name: 'GCODE_TOKEN', value: 'rotated', secret: true }],
+  });
+  const failedRow = rows.find((candidate) => candidate.id === ENV_A)!;
+  assert.equal(failedRow.status, 'failed');
+  assert.equal(decryptStored(failedRow.secretEnvVars.GCODE_TOKEN as string, TEST_ENV), 'rotated');
+
+  await assert.rejects(
+    () =>
+      service.updateParameters(ENV_B, {
+        parameters: [{ name: 'GCODE_TOKEN', value: 'x', secret: true }],
+      }),
+    (error: unknown) => {
+      if (!(error instanceof BadRequestException)) return false;
+      const response = error.getResponse();
+      return (
+        typeof response === 'object' &&
+        response !== null &&
+        'error' in response &&
+        response.error === 'sandbox_environment_retired'
+      );
+    },
+  );
+});
