@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { VERIFIER_ALLOWLIST } from './openspec-metadata.mjs';
+import { cleanGitEnv } from './git-env.mjs';
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(SCRIPT_DIRECTORY, '..');
@@ -95,6 +96,7 @@ export const WORKFLOW_TEST_FILES = Object.freeze([
   'scripts/public-surface-hook.test.mjs',
   'scripts/public-surface-pre-push.test.mjs',
   'scripts/public-surface-tests.test.mjs',
+  'scripts/git-env.test.mjs',
 ]);
 
 export const WORKFLOW_TEST_STEP = Object.freeze({
@@ -122,6 +124,8 @@ function runGit(args, { cwd, spawnSyncImpl, nulSeparated = false }) {
     encoding: 'utf8',
     maxBuffer: GIT_OUTPUT_MAX_BUFFER,
     shell: false,
+    // Resolve the repository from cwd only (isolate-fixture-git-env).
+    env: cleanGitEnv(),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) return null;
@@ -254,7 +258,9 @@ export function runStep(
   process.stdout.write(`\n[public-surface] ${step.name}\n`);
   const result = spawnSyncImpl(step.command, [...step.args], {
     cwd,
-    env,
+    // Defense in depth: suite children (and their spawned git) never inherit
+    // hook-exported GIT_* locator variables (isolate-fixture-git-env).
+    env: cleanGitEnv(env),
     stdio: 'inherit',
     shell: false,
   });

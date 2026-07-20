@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { cleanGitEnv } from './git-env.mjs';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ZERO_SHA = /^0+$/u;
 
@@ -32,6 +33,9 @@ function gitOutput(args, { cwd, spawnSyncImpl }) {
     cwd,
     encoding: 'utf8',
     shell: false,
+    // Resolve the repository from cwd only; pre-push hook env must not
+    // redirect base resolution (isolate-fixture-git-env).
+    env: cleanGitEnv(),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) return undefined;
@@ -79,7 +83,7 @@ export function runPrePush({
   const base = resolvePushBase({ input, remoteName, cwd, spawnSyncImpl });
   const result = spawnSyncImpl('pnpm', ['verify:public-surface'], {
     cwd,
-    env: { ...env, CAP_PUBLIC_SURFACE_BASE_SHA: base },
+    env: { ...cleanGitEnv(env), CAP_PUBLIC_SURFACE_BASE_SHA: base },
     stdio: 'inherit',
     shell: false,
   });
