@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.42.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.42.1...v0.42.2) (2026-07-20)
+
+
+### Bug Fixes
+
+* **self-update:** make BoxLite rootfs extraction portable across shared-mount hosts ([dc6c573](https://github.com/Xeonice/cloud-agent-platform/commit/dc6c57358da080582bec85561a3b4cefebdbbf47))
+* **self-update:** make BoxLite rootfs extraction portable across shared-mount hosts ([f4d02c0](https://github.com/Xeonice/cloud-agent-platform/commit/f4d02c08f4b52f09ad1ff9f42b86649ee5bd2c1f))
+
 ## [0.42.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.42.0...v0.42.1) (2026-07-20)
 
 
