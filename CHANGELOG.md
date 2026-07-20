@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.42.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.41.3...v0.42.0) (2026-07-20)
+
+
+### Features
+
+* edit sandbox environment image parameters after registration ([e0c8d78](https://github.com/Xeonice/cloud-agent-platform/commit/e0c8d78f4ec61f9bddadf6842188deda34ce904b))
+* edit sandbox environment image parameters after registration ([5403a61](https://github.com/Xeonice/cloud-agent-platform/commit/5403a6157627eb0189b1182162c07784f069989e))
+
 ## [0.41.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.41.2...v0.41.3) (2026-07-19)
 
 
