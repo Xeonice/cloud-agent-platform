@@ -12,6 +12,7 @@ import {
   validateChangeMetadata,
 } from './openspec-metadata.mjs';
 import { classifyPublicSurfaceFiles } from './public-surface-files.mjs';
+import { cleanGitEnv } from './git-env.mjs';
 
 /** Task surfaces that require observable cross-surface verification. */
 export const DYNAMIC_PUBLIC_TASK_SURFACES = Object.freeze([
@@ -77,6 +78,9 @@ function gitValues(
     encoding: 'utf8',
     maxBuffer: PROCESS_OUTPUT_MAX_BUFFER,
     shell: false,
+    // Hook-exported GIT_* locator variables must never redirect these reads;
+    // the repository is resolved from cwd only (isolate-fixture-git-env).
+    env: cleanGitEnv(),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) return null;

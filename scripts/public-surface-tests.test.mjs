@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { fixtureGitEnv } from './git-env.mjs';
 import {
   FAST_STEP,
   FULL_PREREQUISITE_STEPS,
@@ -92,6 +93,7 @@ test('full gate declares build/codegen and downstream typecheck before fast reus
     'scripts/public-surface-hook.test.mjs',
     'scripts/public-surface-pre-push.test.mjs',
     'scripts/public-surface-tests.test.mjs',
+    'scripts/git-env.test.mjs',
   ]);
   assert.equal(WORKFLOW_TEST_STEP.command, process.execPath);
   assert.deepEqual(WORKFLOW_TEST_STEP.args, [
@@ -273,6 +275,7 @@ test('real Git discovery preserves spaced paths and never returns ignored change
       cwd: root,
       encoding: 'utf8',
       shell: false,
+      env: fixtureGitEnv(),
     });
     assert.equal(init.status, 0, init.stderr);
     writeFileSync(

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "isolate-fixture-git-env",
+  "intent": "developer-workflow-safety",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "not-applicable",
+      "reason": "Only scripts/public-surface-*.mjs test tooling changes; no /v1 operation, schema, status code, or error body is touched and no product code path changes."
+    },
+    "mcp": {
+      "status": "not-applicable",
+      "reason": "No MCP tool, argument, result, registration, or transport behavior changes; the change hardens local test tooling only."
+    },
+    "openapi": {
+      "status": "not-applicable",
+      "reason": "The OpenAPI projection and its generator are untouched; no operation or schema changes exist to project."
+    },
+    "apiPlayground": {
+      "status": "not-applicable",
+      "reason": "The Playground catalog and rendering are untouched; the change is confined to repository test scripts."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "public-surface-fixture-git-env-isolation",
+      "reason": "Sanitizes hook-exported GIT_* environment variables out of every git subprocess the public-surface fixture and workflow-invariant tests spawn, so pre-commit/pre-push runs can no longer commit fixture state onto the real repository branch or replace the real index."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "workflow-gates",
+    "requiresWireCompatibilityFixture": false
+  }
+}

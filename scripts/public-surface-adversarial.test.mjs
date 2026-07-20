@@ -29,6 +29,7 @@ import {
   verifyPublicSurfaceChange,
 } from './public-surface-adversarial.mjs';
 import { classifyPublicSurfaceFiles } from './public-surface-files.mjs';
+import { fixtureGitEnv } from './git-env.mjs';
 
 const FIXTURE_CHANGE = 'public-surface-fixture';
 const FIXTURE_REQUIREMENT = 'sample/public-widget-contract';
@@ -360,6 +361,10 @@ function runGit(cwd, args) {
     cwd,
     encoding: 'utf8',
     shell: false,
+    // Fixture repositories must be self-contained even when this suite runs
+    // inside a git hook whose environment carries GIT_DIR/GIT_INDEX_FILE
+    // pointing at the real repository (isolate-fixture-git-env).
+    env: fixtureGitEnv(),
   });
   assert.equal(
     result.status,
@@ -941,4 +946,49 @@ test('an extra MCP internalFlag forwarded outside the registry exact set becomes
   assert.equal(verify.pass, false);
   assert.equal(verify.unmet, 1);
   assert.ok(verify.reopenedTasks.includes(leaked.requirementIds[0]));
+});
+
+test('fixture repository lifecycle cannot touch a bystander repo named by hook env', () => {
+  // A stand-in for the REAL repository that git hooks would point at via the
+  // exported GIT_* locator variables. On pre-fix behavior (inherited env) the
+  // fixture's init/add/commit land here — exactly the 2026-07-20 incident.
+  const bystander = mkdtempSync(join(tmpdir(), 'cap-bystander-repo-'));
+  const poisoned = ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE'];
+  const saved = new Map(poisoned.map((key) => [key, process.env[key]]));
+  try {
+    runGit(bystander, ['init', '--quiet']);
+    runGit(bystander, ['config', 'user.email', 'bystander@example.invalid']);
+    runGit(bystander, ['config', 'user.name', 'Bystander']);
+    writeFileSync(join(bystander, 'protected.txt'), 'do not touch\n');
+    runGit(bystander, ['add', '.']);
+    runGit(bystander, ['commit', '--quiet', '-m', 'bystander baseline']);
+    const headBefore = runGit(bystander, ['rev-parse', 'HEAD']);
+    const refsBefore = runGit(bystander, ['for-each-ref']);
+    const indexBefore = runGit(bystander, ['ls-files', '-s']);
+
+    process.env.GIT_DIR = join(bystander, '.git');
+    process.env.GIT_INDEX_FILE = join(bystander, '.git', 'index');
+    process.env.GIT_WORK_TREE = bystander;
+
+    const fixtureBase = withPublicSurfaceFixture((root, base) => {
+      // The fixture committed inside ITS OWN temp repository...
+      assert.match(base, /^[0-9a-f]{40}$/u);
+      assert.notEqual(base, headBefore);
+      assert.equal(runGit(root, ['rev-parse', 'HEAD']), base);
+      return base;
+    });
+    assert.match(fixtureBase, /^[0-9a-f]{40}$/u);
+
+    // ...and the bystander repository is byte-identical: no fixture commit on
+    // its branch, no ref churn, no index replacement.
+    assert.equal(runGit(bystander, ['rev-parse', 'HEAD']), headBefore);
+    assert.equal(runGit(bystander, ['for-each-ref']), refsBefore);
+    assert.equal(runGit(bystander, ['ls-files', '-s']), indexBefore);
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(bystander, { recursive: true, force: true });
+  }
 });

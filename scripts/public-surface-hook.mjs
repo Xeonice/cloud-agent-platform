@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { classifyPublicSurfaceFiles } from './public-surface-files.mjs';
 import { VERIFIER_ALLOWLIST } from './openspec-metadata.mjs';
+import { cleanGitEnv } from './git-env.mjs';
 
 const SCRIPT_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(SCRIPT_DIRECTORY, '..');
@@ -88,7 +89,7 @@ export function readStagedFiles({ cwd = REPO_ROOT, spawnSyncImpl = spawnSync } =
   const result = spawnSyncImpl(
     'git',
     ['diff', '--cached', '--name-only', '--diff-filter=ACMRD', '-z'],
-    { cwd, encoding: 'utf8', shell: false },
+    { cwd, encoding: 'utf8', shell: false, env: cleanGitEnv() },
   );
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -109,7 +110,9 @@ export function runHookPlan(
     process.stdout.write(`\n[public-surface hook] ${step.name}\n`);
     const result = spawnSyncImpl(step.command, [...step.args], {
       cwd,
-      env,
+      // Defense in depth: hook children never inherit GIT_* locator variables
+      // (isolate-fixture-git-env).
+      env: cleanGitEnv(env),
       stdio: 'inherit',
       shell: false,
     });
