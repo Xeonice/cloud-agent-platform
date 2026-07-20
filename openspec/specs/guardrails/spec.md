@@ -403,6 +403,17 @@ disconnect SHALL NOT cancel, discard, or detach diagnostic settlement from the
 accepted task. Task cancellation SHALL fence subsequent provider work and SHALL
 settle the attempt as cancelled only after cleanup has been attempted.
 
+Task cancellation SHALL synchronously fence later provider boundaries and
+signal task-owned in-flight provider work to stop. The committed Task terminal
+transition SHALL be the linearization point for choosing the diagnostic primary,
+structured failure log, and audit projection. After provider settlement,
+Guardrails SHALL revalidate that terminal winner before projecting any
+provisioning failure. If cancellation won, Guardrails SHALL settle the primary
+as cancelled, preserve cleanup as an independent outcome, clear runtime state,
+and SHALL NOT force-fail, launch an agent, or emit a competing terminal audit.
+Cleanup SHALL use provider-backed evidence even when the legacy owner has not
+yet reached running state.
+
 Committed/unclaimed and capacity-queued durable work SHALL remain observable
 through the canonical admission state and task diagnostic-version expectation
 with `coverage = not_started`; Guardrails SHALL NOT fabricate a provider attempt.
@@ -435,3 +446,14 @@ SHALL continue existing evidence or report it partial/unavailable.
 - **THEN** the task exposes its accepted/queued admission state and not-started diagnostic coverage
 - **AND** Guardrails opens no provider attempt until running capacity is won
 
+#### Scenario: Cancellation wins while legacy provisioning is active
+
+- **WHEN** task cancellation commits while a legacy provider create or workspace operation is active
+- **THEN** Guardrails aborts the task-owned provider signal, fences every later external boundary, and retains cancelled as the only terminal lifecycle outcome
+- **AND** late provider success or failure cannot launch runtime, force-fail the task, or overwrite its diagnostic primary
+
+#### Scenario: Cancellation settles diagnostics after truthful cleanup
+
+- **WHEN** the cancelled provider continuation and terminal cleanup converge
+- **THEN** the attempt records one cancelled primary plus the provider-confirmed cleanup outcome
+- **AND** it does not remain active or report cleanup succeeded before physical evidence exists

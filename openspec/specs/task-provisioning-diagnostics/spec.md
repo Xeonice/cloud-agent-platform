@@ -186,6 +186,18 @@ SHALL remain orchestration coordination outcomes so the durable worker keeps its
 lease/recovery semantics; they SHALL NOT erase the already-persisted primary
 causal fact or be misreported as an ordinary physical delete failure.
 
+For legacy provisioning, cancellation that wins the Task transition SHALL
+settle the primary as cancelled even if the provider promise later succeeds or
+rejects. Cleanup SHALL remain pending across the physical-create/owner-record
+window and SHALL become succeeded only from provider-confirmed removal or
+absence. An `entered` create fence has not yet reached the bounded legacy
+teardown disposition described above: it SHALL remain a transient cleanup and
+capacity fence until the provider invocation settles and removal or absence is
+proven, and it SHALL NOT be closed merely because a local join timed out. The
+attempt SHALL receive its explicit completeness marker only after the cancelled
+primary and non-pending cleanup are both durable; owner-row absence alone SHALL
+NOT provide that cleanup or completeness evidence.
+
 #### Scenario: Runtime setup and cleanup both fail
 
 - **WHEN** runtime setup produces a primary failure and deleting the provider sandbox also fails
@@ -203,6 +215,18 @@ causal fact or be misreported as an ordinary physical delete failure.
 - **WHEN** bounded reconciliation reaches its configured terminal policy without confirming removal
 - **THEN** it atomically moves the authoritative SandboxRun to failed, records canonical cleanup failed, and relinquishes its durable lease and slot exactly once
 - **AND** the primary provisioning outcome remains unchanged
+
+#### Scenario: Late provider rejection does not replace cancellation
+
+- **WHEN** a cancelled legacy task's provider promise later rejects
+- **THEN** the attempt primary remains cancelled with the last authoritative stage
+- **AND** no provisioning failure replaces it or leaves the attempt active
+
+#### Scenario: Cancelled attempt waits for physical cleanup proof
+
+- **WHEN** cancellation races a physical sandbox create before running ownership is recorded
+- **THEN** the attempt cleanup remains pending until the provider confirms removal or absence
+- **AND** only then may the cancelled attempt be marked complete
 
 ### Requirement: Diagnostic evidence outlives ephemeral operational logs without replacing audit
 
