@@ -48,6 +48,11 @@ const EXPECTED_WORK_COLUMNS = [
     'integer',
     'YES',
   ],
+  ['progress_percent', 'integer', 'YES'],
+  ['progress_received_objects', 'bigint', 'YES'],
+  ['progress_total_objects', 'bigint', 'YES'],
+  ['progress_received_bytes', 'bigint', 'YES'],
+  ['progress_throughput_bytes_per_second', 'bigint', 'YES'],
 ];
 const EXPECTED_WORK_CONSTRAINTS = [
   ['task_admission_work_attempt_check', 'c'],
@@ -56,6 +61,7 @@ const EXPECTED_WORK_CONSTRAINTS = [
   ['task_admission_work_lease_owner_check', 'c'],
   ['task_admission_work_lease_shape_check', 'c'],
   ['task_admission_work_pkey', 'p'],
+  ['task_admission_work_progress_snapshot_check', 'c'],
   ['task_admission_work_resolved_branch_check', 'c'],
   ['task_admission_work_resource_snapshot_check', 'c'],
   ['task_admission_work_stage_check', 'c'],

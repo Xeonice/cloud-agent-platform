@@ -63,6 +63,7 @@ import { formatTaskResource } from "@/components/session/format-resource";
 import { SANDBOX_PROVIDER_PENDING_LABEL } from "@/lib/sandbox-provider-label";
 import { RuntimeCredentialAlert } from "@/components/runtime-credential-alert";
 import { TaskProvisioningStatus } from "@/components/task-provisioning-status";
+import { TaskProvisioningTimeline } from "@/components/task-provisioning-timeline";
 import { TaskProvisioningDiagnosticsPanel } from "@/components/task-provisioning-diagnostics-panel";
 import {
   TASK_PROVISIONING_STAGE_LABELS,
@@ -228,6 +229,10 @@ function SessionPage(): React.ReactElement {
         announce
         className="mb-3"
       />
+
+      {/* Stage checklist + live transfer progress over the SAME 4s task poll
+          (taskDetailPollingInterval) — no new transport. */}
+      <TaskProvisioningTimeline task={task} className="mb-3" />
 
       <RuntimeCredentialAlert
         failure={task?.failure}

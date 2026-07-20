@@ -11,6 +11,15 @@ export type TaskAdmissionClaimSourceState =
   | 'retrying'
   | 'running'
   /**
+   * A detached workspace transfer released its worker slot while the clone
+   * continues inside the sandbox. A parked row stays leased: the retained
+   * lease owner is the parked ownership generation and lease expiry is the
+   * recovery horizon, so resume and restart recovery both ride the existing
+   * expired-lease claim branch. Claiming parked work never burns, increments,
+   * or resets the attempt counter — parking is not a retry event.
+   */
+  | 'parked'
+  /**
    * A normally launched durable task releases its provisioning lease while the
    * Task and generation-fenced SandboxRun continue running.  Once that Task is
    * terminal, the same work row is claimable again solely for exact-owner
@@ -34,6 +43,13 @@ export interface TaskAdmissionClaim {
   readonly workspaceMaterializationDeadlineMs: number | null;
   readonly taskStatus: TaskStatus;
   readonly taskLifecycleVersion: number;
+  /**
+   * Present only when this claim resumed a parked row: the previous parked
+   * ownership generation (the parking worker's lease token). Guardrails uses
+   * it as the conditional compare value when re-stamping `ownerGeneration`
+   * to this claim's new lease token, so exactly one waker can succeed.
+   */
+  readonly parkedLeaseToken?: string | null;
 }
 
 export interface TaskAdmissionClaimRequest {
@@ -100,9 +116,86 @@ export type TaskAdmissionSettlement =
       readonly stage: TaskProvisioningStage;
     };
 
+/**
+ * The `parked` swimlane of the settlement union. Parked is the only
+ * settlement that retains the lease pair (the settling worker's token becomes
+ * the parked ownership generation), so it carries its own request shape and
+ * travels through `TaskAdmissionStore.park` rather than the lease-releasing
+ * `settle` states above. Parking never burns or resets the attempt counter.
+ */
+export interface TaskAdmissionParkedSettlement {
+  readonly state: 'parked';
+  readonly stage: TaskProvisioningStage;
+  /**
+   * Parked lease horizon; the parked poll loop extends it while the job is
+   * provably alive, and its expiry is the recovery path through the existing
+   * expired-lease claim branch.
+   */
+  readonly leaseDurationMs: number;
+}
+
+export interface TaskAdmissionParkRequest
+  extends TaskAdmissionAuthorityRequest {
+  readonly settlement: TaskAdmissionParkedSettlement;
+}
+
 export interface TaskAdmissionSettleRequest
   extends TaskAdmissionAuthorityRequest {
   readonly settlement: TaskAdmissionSettlement;
+}
+
+/**
+ * Numeric-only workspace-transfer progress snapshot. `null` fields model an
+ * indeterminate/unknown phase explicitly (AIP-151): unknown is never 0%.
+ * Free-form text is deliberately impossible so raw git/provider diagnostics
+ * can never become durable state.
+ */
+export interface TaskAdmissionTransferProgress {
+  readonly percent: number | null;
+  readonly receivedObjects: number | null;
+  readonly totalObjects: number | null;
+  readonly receivedBytes: number | null;
+  readonly throughputBytesPerSecond: number | null;
+}
+
+/**
+ * Marker observation of a parked detached job. The exit marker is the only
+ * settlement proof: `exited` and `unknown` both hand the row back to the
+ * admission claim path, which triages and settles; the parked loop itself
+ * never settles provider work.
+ */
+export type TaskAdmissionParkedJobObservation =
+  | {
+      readonly kind: 'alive';
+      readonly progress?: TaskAdmissionTransferProgress | null;
+    }
+  | { readonly kind: 'exited' }
+  | { readonly kind: 'unknown' };
+
+/**
+ * Marker-probe seam a processor hands over when it parks a claim. Both
+ * operations are cheap, short-lived marker interactions — never long-held
+ * execs. `kill` targets the pid marker and must be idempotent: killing an
+ * already-exited job is a safe no-op.
+ */
+export interface TaskAdmissionParkedJobPort {
+  probe(): Promise<TaskAdmissionParkedJobObservation>;
+  kill(): Promise<void>;
+}
+
+export interface TaskAdmissionParkedHeartbeatRequest {
+  readonly taskId: string;
+  /** The parked ownership generation (the token that settled `parked`). */
+  readonly leaseToken: string;
+  readonly leaseDurationMs: number;
+  /** Latest snapshot to persist; omitted/null leaves the stored one intact. */
+  readonly progress?: TaskAdmissionTransferProgress | null;
+}
+
+export interface TaskAdmissionParkedReleaseRequest {
+  readonly taskId: string;
+  /** The parked ownership generation (the token that settled `parked`). */
+  readonly leaseToken: string;
 }
 
 /** Database authority for the admission worker. Every mutator is lease-fenced. */
@@ -124,6 +217,52 @@ export abstract class TaskAdmissionStore {
 
   /** False is a lost lease. A thrown write failure leaves the lease for recovery. */
   abstract settle(request: TaskAdmissionSettleRequest): Promise<boolean>;
+
+  /**
+   * Settle a running claim as `parked` while retaining the lease pair as the
+   * parked ownership generation. False is a lost lease, exactly like
+   * `settle`; a thrown write failure leaves the lease for recovery.
+   *
+   * Non-abstract for additive rollout: stores that support parking override
+   * it. The fail-closed default can never strand a claim as silently parked.
+   */
+  park(_request: TaskAdmissionParkRequest): Promise<boolean> {
+    return Promise.reject(
+      new Error('Task admission store does not support parked work'),
+    );
+  }
+
+  /**
+   * Extend a live parked lease and persist the latest progress snapshot.
+   * False means the parked row was resumed, superseded, or expired — the
+   * caller must stop observing; it never resurrects an expired parked lease.
+   *
+   * Non-abstract for additive rollout: stores that support parking override
+   * it. The fail-closed default keeps a non-parking store from ever
+   * pretending a parked lease is alive.
+   */
+  parkedHeartbeat(
+    _request: TaskAdmissionParkedHeartbeatRequest,
+  ): Promise<boolean> {
+    return Promise.reject(
+      new Error('Task admission store does not support parked work'),
+    );
+  }
+
+  /**
+   * Hand a parked row back to the admission claim path by expiring its lease
+   * in place. The row is then claimable through the existing expired-lease
+   * branch only — this method performs no admission and no settlement.
+   *
+   * Non-abstract for additive rollout; see `parkedHeartbeat`.
+   */
+  releaseParked(
+    _request: TaskAdmissionParkedReleaseRequest,
+  ): Promise<boolean> {
+    return Promise.reject(
+      new Error('Task admission store does not support parked work'),
+    );
+  }
 }
 
 export type TaskAdmissionProcessResult =
@@ -136,6 +275,16 @@ export type TaskAdmissionProcessResult =
   | {
       readonly kind: 'cancelled';
       readonly stage?: TaskProvisioningStage;
+    }
+  | {
+      /**
+       * The workspace transfer continues as a detached job in the sandbox.
+       * The worker settles the claim as `parked` (releasing its slot) and
+       * registers `job` with the lightweight parked poll loop.
+       */
+      readonly kind: 'parked';
+      readonly stage: TaskProvisioningStage;
+      readonly job: TaskAdmissionParkedJobPort;
     };
 
 /**
@@ -216,6 +365,14 @@ export const TASK_ADMISSION_PROCESSOR_TOKEN = Symbol(
 /** Same-process fast cancellation; DB fence renewal remains cross-replica floor. */
 export interface TaskAdmissionCancellationPort {
   abortTask(taskId: string): void;
+  /**
+   * Parked-aware stop seam for the tasks layer: kill the parked detached job
+   * via its pid marker (idempotent) and hand the row back to the claim path
+   * so the fence/cleanup chain settles it. Returns false when this process
+   * observes no parked claim for the task (another replica, or recovery will
+   * ride the expired-lease branch); stop must then rely on durable state.
+   */
+  killParkedTask(taskId: string): Promise<boolean>;
 }
 
 export const TASK_ADMISSION_CANCELLATION_TOKEN = Symbol(
@@ -271,6 +428,7 @@ export type TaskAdmissionRunOutcome =
         | 'succeeded'
         | 'queued'
         | 'retrying'
+        | 'parked'
         | 'failed'
         | 'cancelled'
         | 'lease-lost';

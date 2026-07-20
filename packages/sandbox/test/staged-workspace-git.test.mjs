@@ -1091,14 +1091,19 @@ async function flushTaskDiagnostics() {
 }
 
 {
+  // detach-workspace-clone: a `workspace_transfer` exec that outlives the
+  // deadline is a dropped control exec, never settlement evidence — BoxLite
+  // must NOT fence the whole sandbox for it (marker probes own settlement in
+  // the detached path; the dual-gate liveness policy owns transfer timeout
+  // semantics). The stage still fails as a retryable timeout, and the late
+  // transport response stays absorbed. Non-transfer stages keep the fencing
+  // boundary — see the credential_setup block above.
   const timing = manualDeadlineDriver();
   const transferStarted = deferred();
   const lateTransfer = deferred();
-  const deleteStarted = deferred();
-  const absenceConfirmed = deferred();
   const uploads = [];
   let execCount = 0;
-  let fenceStarted = false;
+  let deleteCalls = 0;
   const adapter = mod.createBoxLiteWorkspaceSecurityAdapter({
     sandboxId: 'box-manual-deadline',
     createSecretId: () => 'manual-deadline',
@@ -1109,52 +1114,39 @@ async function flushTaskDiagnostics() {
       },
       async exec() {
         execCount += 1;
-        if (execCount < 4) return executionResult();
+        if (execCount !== 4) return executionResult();
         transferStarted.resolve();
         return lateTransfer.promise;
       },
       async deleteSandbox() {
-        fenceStarted = true;
-        deleteStarted.resolve();
+        deleteCalls += 1;
       },
       async getSandbox() {
-        return fenceStarted
-          ? absenceConfirmed.promise
-          : { id: 'box-manual-deadline', state: 'running' };
+        return { id: 'box-manual-deadline', state: 'running' };
       },
     },
   });
-  let settled = false;
-  const operation = mod
-    .materializeSandboxGitWorkspaceStaged(
-      workspaceContext({
-        plan: { ...workspaceContext().plan, deadlineMs: 500 },
-        secretFilePort: adapter.secretFilePort,
-        stageExecutor: adapter.stageExecutor,
-      }),
-      { deadlineDriver: timing.driver },
-    )
-    .finally(() => {
-      settled = true;
-    });
+  const operation = mod.materializeSandboxGitWorkspaceStaged(
+    workspaceContext({
+      plan: { ...workspaceContext().plan, deadlineMs: 500 },
+      secretFilePort: adapter.secretFilePort,
+      stageExecutor: adapter.stageExecutor,
+    }),
+    { deadlineDriver: timing.driver },
+  );
 
   await transferStarted.promise;
-  timing.advance(500);
-  await deleteStarted.promise;
-  await Promise.resolve();
-  assert.equal(settled, false);
-  assert.equal(adapter.wasSandboxFenced(), false);
   assert.equal(uploads[0].subarray(0, 512).includes(CANARY), false);
   assert(uploads[0].indexOf(CANARY) >= 512);
-
-  absenceConfirmed.resolve(null);
+  timing.advance(500);
   assert.deepEqual(await operation, {
     status: 'failed',
     stage: 'workspace_transfer',
     cause: 'timeout',
     retryable: true,
   });
-  assert.equal(adapter.wasSandboxFenced(), true);
+  assert.equal(deleteCalls, 0);
+  assert.equal(adapter.wasSandboxFenced(), false);
   await adapter.settleCredentialSafety();
   lateTransfer.reject(new Error('late BoxLite transfer response'));
   await Promise.resolve();

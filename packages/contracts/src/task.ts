@@ -129,6 +129,34 @@ export type TaskProvisioningStage = z.infer<
 >;
 
 /**
+ * Numeric-only live transfer progress for the `workspace_transfer` stage
+ * (detach-workspace-clone).
+ *
+ * Strict and numeric by design: free text, URLs, or raw git output must fail
+ * validation instead of leaking onto public task reads. Unknown values are
+ * modeled EXPLICITLY as `null` (AIP-151): clone phases before object-transfer
+ * counts exist report `percent: null` (indeterminate), never `0`, so consumers
+ * can distinguish "not yet measurable" from an actual 0% transfer.
+ */
+export const TaskProvisioningProgressSchema = z
+  .object({
+    /** 0-100 when derivable from parsed object counts; null while unknown. */
+    percent: z.number().min(0).max(100).nullable(),
+    /** Objects received so far, when git has reported transfer counts. */
+    receivedObjects: z.number().int().nonnegative().nullable(),
+    /** Total objects expected, when git has reported transfer counts. */
+    totalObjects: z.number().int().nonnegative().nullable(),
+    /** Bytes received so far, when git has reported transfer counts. */
+    receivedBytes: z.number().int().nonnegative().nullable(),
+    /** Transfer throughput in bytes per second; null when not measurable. */
+    throughput: z.number().nonnegative().nullable(),
+  })
+  .strict();
+export type TaskProvisioningProgress = z.infer<
+  typeof TaskProvisioningProgressSchema
+>;
+
+/**
  * Secret-free task provisioning projection shared by Console, Public V1, MCP,
  * OpenAPI, and the API Playground.
  *
@@ -145,6 +173,12 @@ export const TaskProvisioningSummarySchema = z
     /** Provider-neutral checkout branch snapshot, once it has been resolved. */
     resolvedBranch: z.string().min(1).nullable(),
     updatedAt: z.coerce.date(),
+    /**
+     * OPTIONAL nullable live transfer progress (additive, contracts-first):
+     * payloads produced before this field existed still parse, and emission
+     * stays behind the deployment capability gate for mixed-version rollout.
+     */
+    progress: TaskProvisioningProgressSchema.nullable().optional(),
   })
   .strict();
 export type TaskProvisioningSummary = z.infer<
@@ -158,6 +192,8 @@ export const ProvisioningStageSchema = TaskProvisioningStageSchema;
 export type ProvisioningStage = TaskProvisioningStage;
 export const ProvisioningSummarySchema = TaskProvisioningSummarySchema;
 export type ProvisioningSummary = TaskProvisioningSummary;
+export const ProvisioningProgressSchema = TaskProvisioningProgressSchema;
+export type ProvisioningProgress = TaskProvisioningProgress;
 
 // ---------------------------------------------------------------------------
 // Per-task runtime model selector (add-task-model-selection)

@@ -2,6 +2,7 @@ import {
   DEFAULT_TASK_RUNTIME,
   SandboxMetadataSchema,
   TaskProvisioningSummarySchema,
+  isTaskProvisioningProgressEmissionOpen,
   sandboxProviderLabel,
   type Deliver,
   type DeliverStatus,
@@ -23,6 +24,15 @@ export const TASK_RESPONSE_INCLUDE = {
       attempt: true,
       resolvedBranch: true,
       updatedAt: true,
+      // detach-workspace-clone (D6): latest detached-transfer progress
+      // persisted by the parked marker-watching loop into the discrete
+      // admission-parking 5.1 columns. Read here once so the single projection
+      // below fans the same progress object out to Console, Public V1, and MCP.
+      progressPercent: true,
+      progressReceivedObjects: true,
+      progressTotalObjects: true,
+      progressReceivedBytes: true,
+      progressThroughputBytesPerSecond: true,
     },
   },
   sandboxRuns: {
@@ -78,6 +88,19 @@ export interface TaskResponseRecord {
     attempt: number;
     resolvedBranch: string | null;
     updatedAt: Date;
+    /**
+     * Already-assembled transfer-progress snapshot (adapter/fixture input).
+     * Treated as untrusted and re-filtered before emission. When absent, the
+     * projection derives the snapshot from the discrete persisted columns
+     * below — the shape Prisma rows actually carry.
+     */
+    progressSnapshot?: unknown;
+    /** Discrete persisted progress columns (admission-parking 5.1). */
+    progressPercent?: number | null;
+    progressReceivedObjects?: bigint | number | null;
+    progressTotalObjects?: bigint | number | null;
+    progressReceivedBytes?: bigint | number | null;
+    progressThroughputBytesPerSecond?: bigint | number | null;
   } | null;
   sandboxRuns?: readonly { providerId: string; metadata?: unknown }[];
   sandboxEnvironment?: {
@@ -131,20 +154,102 @@ export function taskResponseFromRecord(task: TaskResponseRecord): TaskResponse {
   };
 }
 
-function taskProvisioningSummary(
+/**
+ * Single projection point for the public provisioning summary (detach-workspace-
+ * clone D6): Console REST, Public V1, and MCP all read tasks through
+ * {@link taskResponseFromRecord}, so the progress object is mapped here exactly
+ * once and no surface computes its own divergent shape. Exported so projection
+ * shapes can be pinned directly by tests.
+ */
+export function taskProvisioningSummary(
   work: TaskResponseRecord['admissionWork'],
 ): TaskResponse['provisioning'] {
   if (!work) return null;
+  // Emission is behind the deployment capability gate: while closed (default,
+  // or during a rollback) the progress key is omitted entirely so strict
+  // pre-progress readers keep parsing every task response.
+  const progress = isTaskProvisioningProgressEmissionOpen(process.env)
+    ? taskProvisioningProgress(
+        work.progressSnapshot !== undefined
+          ? work.progressSnapshot
+          : progressSnapshotFromColumns(work),
+      )
+    : null;
   const parsed = TaskProvisioningSummarySchema.safeParse({
-    state: work.state,
+    // `parked` is an internal admission swimlane (the claim released its worker
+    // slot while the detached clone runs); publicly the provisioning attempt is
+    // still running its transfer, so it projects through the stable state
+    // vocabulary instead of leaking the coordination state.
+    state: work.state === 'parked' ? 'running' : work.state,
     stage: work.stage,
     attempt: work.attempt,
     resolvedBranch: work.resolvedBranch,
     updatedAt: work.updatedAt,
+    ...(progress ? { progress } : {}),
   });
   // Persisted work is schema/check constrained, but a mixed-version or corrupt
   // row must still fail closed instead of leaking an internal coordination bag.
   return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Assemble the snapshot object from the discrete persisted progress columns —
+ * the shape a Prisma admission-work row actually carries. BigInt columns are
+ * narrowed to number here; the numeric-only filter below still owns the
+ * finite/non-negative gate, so an unsafe conversion can never leak.
+ */
+function progressSnapshotFromColumns(
+  work: NonNullable<TaskResponseRecord['admissionWork']>,
+): Record<string, number> | null {
+  const columns = {
+    percent: work.progressPercent,
+    receivedObjects: work.progressReceivedObjects,
+    totalObjects: work.progressTotalObjects,
+    receivedBytes: work.progressReceivedBytes,
+    throughput: work.progressThroughputBytesPerSecond,
+  } as const;
+  const snapshot: Record<string, number> = {};
+  for (const [field, value] of Object.entries(columns)) {
+    if (value === null || value === undefined) continue;
+    snapshot[field] = typeof value === 'bigint' ? Number(value) : value;
+  }
+  return Object.keys(snapshot).length > 0 ? snapshot : null;
+}
+
+/** Numeric-only fields the public transfer-progress object may carry (W2). */
+const TASK_PROVISIONING_PROGRESS_FIELDS = [
+  'percent',
+  'receivedObjects',
+  'totalObjects',
+  'receivedBytes',
+  'throughput',
+] as const;
+
+/**
+ * Map the persisted snapshot into the additive nullable numeric-only progress
+ * object. Only finite non-negative numbers under the known field names survive:
+ * free text, URLs, raw git output, or any other key is dropped, and an unknown
+ * value is OMITTED — never fabricated as 0 — so consumers can distinguish an
+ * indeterminate phase (AIP-151) from an actual 0% transfer. Returns null (no
+ * progress key emitted) when nothing numeric is known.
+ */
+function taskProvisioningProgress(
+  snapshot: unknown,
+): Partial<Record<(typeof TASK_PROVISIONING_PROGRESS_FIELDS)[number], number>> | null {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    return null;
+  }
+  const source = snapshot as Record<string, unknown>;
+  const progress: Partial<
+    Record<(typeof TASK_PROVISIONING_PROGRESS_FIELDS)[number], number>
+  > = {};
+  for (const field of TASK_PROVISIONING_PROGRESS_FIELDS) {
+    const value = source[field];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      progress[field] = value;
+    }
+  }
+  return Object.keys(progress).length > 0 ? progress : null;
 }
 
 function sandboxProviderSummary(task: {

@@ -1,6 +1,7 @@
 export * from './capabilities.js';
 export * from './cleanup.js';
 export * from './command-executor.js';
+export * from './detached-jobs.js';
 export * from './errors.js';
 export * from './external-boundary.js';
 export * from './git-credential.js';

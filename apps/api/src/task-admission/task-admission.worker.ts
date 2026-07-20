@@ -27,6 +27,7 @@ import {
   type TaskAdmissionClaim,
   type TaskAdmissionCancellationPort,
   type TaskAdmissionLeaseControls,
+  type TaskAdmissionParkedJobPort,
   type TaskAdmissionProcessResult,
   type TaskAdmissionProcessor,
   type TaskAdmissionProcessorContext,
@@ -104,6 +105,14 @@ export class UnboundTaskAdmissionProcessor implements TaskAdmissionProcessor {
  * TasksService owns the ordered startup coordinator and starts polling only
  * after readoption, orphan reconciliation, ceiling restore, and legacy FIFO
  * recovery have completed.
+ *
+ * Parked detached-transfer recovery (detach-workspace-clone D9) deliberately
+ * rides this same claim query: a parked row becomes claimable when its job
+ * settles or its lease/liveness gates expire, and the claimed processor — not
+ * any bootstrap hook — performs the marker probe triage (alive keeps it
+ * parked, exit marker settles, unprovable fails the attempt). Boot recovery of
+ * parked work therefore needs no ordering guarantee relative to provider
+ * re-adoption scans.
  */
 @Injectable()
 export class TaskAdmissionWorker
@@ -124,6 +133,24 @@ export class TaskAdmissionWorker
       readonly operation: Promise<TaskAdmissionRunOutcome>;
     }
   >();
+  /**
+   * Parked detached-transfer claims observed by the lightweight marker poll
+   * loop. Deliberately outside drainClaims' maxInFlight accounting and the
+   * activeClaimRuns dispatch pool: the loop observes markers, heartbeats the
+   * parked lease, and re-enqueues via the expired-lease branch + wake(). It
+   * never admits, never touches slots, and never reads the DB on the offer()
+   * hot path. Entries do not survive a restart — recovery rides lease expiry.
+   */
+  private readonly parkedClaims = new Map<
+    string,
+    {
+      readonly taskId: string;
+      readonly leaseToken: string;
+      readonly job: TaskAdmissionParkedJobPort;
+    }
+  >();
+  private parkedTimer: TaskAdmissionTimer | null = null;
+  private parkedTick: Promise<void> | null = null;
   private readonly options: TaskAdmissionWorkerOptions;
   private readonly retryPolicy: TaskAdmissionRetryPolicy;
   private lastBackgroundFailure: unknown = null;
@@ -164,6 +191,35 @@ export class TaskAdmissionWorker
     }
   }
 
+  /**
+   * Parked-aware stop seam (kill via pid marker). Best-effort in-process fast
+   * path: kill the detached job, then hand the row back to the claim path so
+   * the standard fence/cleanup chain settles the stop. Never settles here.
+   */
+  async killParkedTask(taskId: string): Promise<boolean> {
+    const parked = this.parkedClaims.get(taskId);
+    if (!parked) return false;
+    this.parkedClaims.delete(taskId);
+    try {
+      // Idempotent by the detached-job contract: killing an already-exited
+      // job is a safe no-op and settlement still reads the exit marker.
+      await parked.job.kill();
+    } catch (error) {
+      this.errorReporter?.report(error);
+    }
+    try {
+      await this.store.releaseParked({
+        taskId: parked.taskId,
+        leaseToken: parked.leaseToken,
+      });
+    } catch (error) {
+      // The parked lease still expires on its own; recovery is only delayed.
+      this.errorReporter?.report(error);
+    }
+    this.wake(taskId);
+    return true;
+  }
+
   start(): void {
     if (this.started) return;
     this.started = true;
@@ -178,11 +234,17 @@ export class TaskAdmissionWorker
     this.drainRequested = false;
     this.cancelTimer('kick');
     this.cancelTimer('poll');
+    this.parkedTimer?.cancel();
+    this.parkedTimer = null;
     for (const { controller } of this.activeClaimRuns.values()) {
       abortLease(controller, new TaskAdmissionLeaseLostError('shutdown'));
     }
     await this.waitForBackgroundIdle();
     await this.waitForClaimRunsIdle();
+    await this.parkedTick;
+    // Parked rows stay durable and leased; after a restart they are recovered
+    // through the expired-lease claim branch, never from process memory.
+    this.parkedClaims.clear();
   }
 
   /** Claim and process at most one row; useful for deterministic/manual runs. */
@@ -643,6 +705,29 @@ export class TaskAdmissionWorker
         stage: safeStageAtOrAfter(result.stage, authority.stage),
       }, authority);
     }
+    if (result?.kind === 'parked') {
+      // A thrown database failure escapes like settle: the row stays
+      // running/leased and DB-time expiry recovers it.
+      const parked = await this.store.park({
+        taskId: claim.taskId,
+        leaseToken: claim.leaseToken,
+        taskFences: [authority.currentFence],
+        settlement: {
+          state: 'parked',
+          stage: safeStageAtOrAfter(result.stage, authority.stage),
+          leaseDurationMs: this.options.leaseDurationMs,
+        },
+      });
+      if (!parked) return leaseLostOutcome(claim);
+      // Registration is synchronous after the durable settlement so the
+      // marker loop can only ever observe a row that is truly parked.
+      this.registerParkedClaim(claim, result.job);
+      return {
+        kind: 'parked',
+        taskId: claim.taskId,
+        attempt: claim.attempt,
+      };
+    }
     // Invalid/unknown processor results are terminal and contain no raw detail.
     return this.settleClaim(claim, {
       state: 'failed',
@@ -732,6 +817,99 @@ export class TaskAdmissionWorker
       taskId: claim.taskId,
       attempt: claim.attempt,
     };
+  }
+
+  private registerParkedClaim(
+    claim: TaskAdmissionClaim,
+    job: TaskAdmissionParkedJobPort,
+  ): void {
+    // One admission-work row per task: a re-parked task replaces its entry.
+    this.parkedClaims.set(claim.taskId, {
+      taskId: claim.taskId,
+      leaseToken: claim.leaseToken,
+      job,
+    });
+    this.armParkedPolling();
+  }
+
+  private armParkedPolling(): void {
+    // Deliberately not gated on `started`: a claim parked through a manual
+    // runOnce() is still observed. stop() cancels the timer and clears the
+    // watch set; durable recovery then rides parked lease expiry.
+    if (this.parkedTimer || this.parkedTick || this.parkedClaims.size === 0) {
+      return;
+    }
+    this.parkedTimer = this.scheduler.schedule(
+      this.options.renewIntervalMs,
+      () => {
+        this.parkedTimer = null;
+        const tick = this.runParkedTick().finally(() => {
+          if (this.parkedTick === tick) this.parkedTick = null;
+          this.armParkedPolling();
+        });
+        this.parkedTick = tick;
+      },
+    );
+  }
+
+  private async runParkedTick(): Promise<void> {
+    for (const parked of [...this.parkedClaims.values()]) {
+      if (this.parkedClaims.get(parked.taskId) !== parked) continue;
+      await this.observeParkedClaim(parked);
+    }
+  }
+
+  /**
+   * One marker observation. Alive extends the parked lease and persists the
+   * latest progress snapshot; exited/unknown hands the row back to the claim
+   * path (exit marker = settlement proof, and only the claimed processor may
+   * settle — success is never inferred here, least of all from silence).
+   */
+  private async observeParkedClaim(parked: {
+    readonly taskId: string;
+    readonly leaseToken: string;
+    readonly job: TaskAdmissionParkedJobPort;
+  }): Promise<void> {
+    let observation;
+    try {
+      observation = await parked.job.probe();
+    } catch (error) {
+      // A transient probe failure keeps the entry; a persistent one lets the
+      // parked lease expire so the claim path recovers the row durably.
+      this.errorReporter?.report(error);
+      return;
+    }
+    if (observation.kind === 'alive') {
+      let alive: boolean;
+      try {
+        alive = await this.store.parkedHeartbeat({
+          taskId: parked.taskId,
+          leaseToken: parked.leaseToken,
+          leaseDurationMs: this.options.leaseDurationMs,
+          progress: observation.progress ?? null,
+        });
+      } catch (error) {
+        this.errorReporter?.report(error);
+        return;
+      }
+      // A refused heartbeat means the row was resumed or superseded; this
+      // watcher must never resurrect it.
+      if (!alive) this.parkedClaims.delete(parked.taskId);
+      return;
+    }
+    try {
+      await this.store.releaseParked({
+        taskId: parked.taskId,
+        leaseToken: parked.leaseToken,
+      });
+    } catch (error) {
+      this.errorReporter?.report(error);
+      return;
+    }
+    this.parkedClaims.delete(parked.taskId);
+    // Re-entry happens only through the semaphore/worker claim path under a
+    // new lease token; the parked loop performs no admission of its own.
+    this.wake(parked.taskId);
   }
 
   private requestBackgroundDrain(): void {

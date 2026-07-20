@@ -47,6 +47,7 @@ import {
   runSandboxExternalBoundary,
   sandboxCommandExecutionDiagnosticFields,
   isSandboxCleanupCoordinationPendingError,
+  isSandboxWorkspaceTransferDetachedSignal,
   SandboxCleanupCoordinationPendingError,
   SandboxProvisioningCapacityError,
   SandboxProvisioningStageError,
@@ -301,6 +302,10 @@ export class BoxLiteSandboxProvider<
         });
         return existing.connection;
       } catch (error) {
+        // A detaching workspace transfer is a control-flow signal, not a
+        // provisioning failure: the sandbox and its detached clone job MUST
+        // survive parking, so no cleanup/quarantine funnel may run.
+        if (isSandboxWorkspaceTransferDetachedSignal(error)) throw error;
         this.forgetRun(ctx.taskId, existing.sandbox.id);
         return this.rethrowAfterFailedSandboxCleanup(
           error,
@@ -481,6 +486,11 @@ export class BoxLiteSandboxProvider<
       this.runs.set(ctx.taskId, run);
       return connection;
     } catch (err) {
+      // A detaching workspace transfer is a control-flow signal, not a
+      // provisioning failure: the sandbox and its detached clone job MUST
+      // survive parking, so no cleanup/quarantine funnel may run. Resume
+      // re-enters provision and readopts this sandbox via resolveExistingRun.
+      if (isSandboxWorkspaceTransferDetachedSignal(err)) throw err;
       this.forgetRun(ctx.taskId, sandbox.id);
       return this.rethrowAfterFailedSandboxCleanup(
         err,
@@ -1098,6 +1108,9 @@ export class BoxLiteSandboxProvider<
                 ...(ctx.beforeWorkspaceBoundary === undefined
                   ? {}
                   : { beforeBoundary: ctx.beforeWorkspaceBoundary }),
+                ...(ctx.workspaceTransferDetachment === undefined
+                  ? {}
+                  : { detachment: ctx.workspaceTransferDetachment }),
               }),
             settleCredentialSafety: () => adapter.settleCredentialSafety(),
             primaryFailure: (candidate) =>

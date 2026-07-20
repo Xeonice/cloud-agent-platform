@@ -44,24 +44,32 @@ import {
   isSandboxProvisioningStageError,
   isSandboxWorkspaceMaterializationError,
   isSandboxCleanupCoordinationPendingError,
+  isSandboxWorkspaceTransferDetachedSignal,
   normalizeSandboxPhysicalCleanupResult,
   type AgentTerminalLaunchOutcome,
+  type SandboxDetachedWorkspaceTransferJob,
+  type SandboxWorkspaceTransferDetachment,
   type SandboxPhysicalCleanupResult,
   type SandboxProvisioningDiagnosticEmitter,
   type SandboxProvisioningDiagnosticFact,
   type SandboxTerminalPtyMode,
   type SandboxSettlePlan,
   type SandboxRunCleanupAuthorityProjection,
+  type SandboxWorkspaceProgressEvent,
+  type SandboxWorkspaceProgressReporter,
 } from '@cap/sandbox';
 import {
   TaskAdmissionCoordinationError,
   TaskAdmissionLeaseLostError,
   TaskAdmissionProcessingError,
+  type TaskAdmissionClaim,
+  type TaskAdmissionParkedJobPort,
   type TaskAdmissionProcessorContext,
   type TaskAdmissionProcessResult,
   type TaskAdmissionTerminalFailure,
   type TaskAdmissionTerminalRecovery,
 } from '../task-admission/task-admission.types';
+import { triageParkedAdmissionMarkers } from '../task-admission/parked-admission-triage';
 import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
 import {
   AUDIT_RECORDER_TOKEN,
@@ -844,8 +852,18 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
               ? { activeDisposition: 'interrupt' as const }
               : {}),
           };
+    // A parked resume continues the SAME diagnostic attempt it parked under
+    // (spec: a park/resume cycle within one transfer appears within one
+    // diagnostic attempt): resume the persisted attempt instead of beginning
+    // one, which would conflict with the attempt left active while parked.
     const diagnosticAttempt =
-      await this.tryBeginProvisioningDiagnostics(diagnosticBeginInput);
+      claim.sourceState === 'parked'
+        ? await this.tryResumeProvisioningDiagnostics({
+            taskId,
+            admissionMode: 'durable',
+            attempt: claim.attempt,
+          })
+        : await this.tryBeginProvisioningDiagnostics(diagnosticBeginInput);
     const processRunning = () =>
       this.processDurableAdmissionAfterCapacity(context, diagnosticAttempt);
     return diagnosticAttempt
@@ -888,6 +906,13 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     try {
       await lease.checkpoint('sandbox_creation');
       await lease.authorize();
+      // detach-workspace-clone D4: a claim resuming work behind an existing
+      // live SandboxRun (parked-transfer resume or expired-lease re-claim)
+      // must win the atomic conditional ownership re-stamp at this reclaim
+      // checkpoint boundary — where the durable checkpoint write above has
+      // just fenced any superseded lease token — before any provider boundary
+      // is crossed. A stale waker fails the compare and self-terminates.
+      await this.restampSandboxOwnershipAtReclaim(taskId, claim.leaseToken);
       const provisionPlan = await this.resolveProvisionPlan(taskId);
       await lease.authorize();
       this.assertDurableClaimMatchesProvisionPlan(claim, provisionPlan);
@@ -938,11 +963,14 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
             ),
           );
         },
-        onWorkspaceProgress: async (event) => {
-          if (event.status === 'started') {
-            await lease.checkpoint(event.stage);
-          }
-        },
+        onWorkspaceProgress: this.buildWorkspaceProgressChain({
+          // detach-workspace-clone D11: same shared chain as the legacy
+          // provisioning context. The durable checkpoint hook is the only
+          // load-bearing step; a rejected checkpoint write fences a
+          // superseded holder at the write point and must propagate.
+          checkpoint: (stage) => lease.checkpoint(stage),
+          forward: provisionPlan.onWorkspaceProgress,
+        }),
         beforeWorkspaceBoundary: async (event) => {
           if (event.position === 'before') {
             await lease.checkpoint(event.stage);
@@ -950,6 +978,13 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
             await lease.authorize();
           }
         },
+        // detach-workspace-clone D3/D9: opt the durable chain into
+        // cooperative parking. A detaching transfer unwinds provision with
+        // the typed signal caught below; a parked resume additionally routes
+        // marker evidence through the claim-path-owned three-way triage
+        // before any relaunch.
+        workspaceTransferDetachment:
+          this.buildWorkspaceTransferDetachment(claim),
       });
       providerBoundaryCrossed = true;
       const connection = await selected.provider.provision(provisionContext);
@@ -1015,6 +1050,21 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
       });
       return { kind: 'succeeded' };
     } catch (error) {
+      // detach-workspace-clone D3: a detaching workspace transfer is a typed
+      // control-flow signal, not a failure. The sandbox and its detached
+      // clone job survive; the worker settles this claim as `parked`
+      // (releasing its maxInFlight slot) and registers the probe/kill seam
+      // with the lightweight parked observer loop. The diagnostic attempt is
+      // deliberately left open: the park/resume cycle continues it, and the
+      // durable store's park CAS remains the sole authority on whether this
+      // worker still held the lease.
+      if (isSandboxWorkspaceTransferDetachedSignal(error)) {
+        return {
+          kind: 'parked',
+          stage: 'workspace_transfer',
+          job: wrapDetachedWorkspaceTransferJob(error.job),
+        };
+      }
       // A DB/lease acknowledgement failure aborts the worker signal as well,
       // but it is not proof that ownership was superseded. Preserve the live
       // resource for expiry replay instead of deleting it as lease-lost work.
@@ -1793,6 +1843,145 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   }
 
   /**
+   * detach-workspace-clone D4: sandbox ownership survives parking by
+   * re-stamping the persisted `ownerGeneration` to the resuming claim's lease
+   * token at re-claim. The write is one atomic conditional compare against the
+   * observed parked generation, so exactly one waker can ever take over a
+   * given generation (Temporal stale-task-token pattern): a stale waker fails
+   * the compare and self-terminates as a lost lease before crossing the
+   * provider boundary, never re-acquiring or tearing down the winner's
+   * sandbox. Every other strict `ownerGeneration === leaseToken` equality site
+   * is intentionally untouched — after the re-stamp the invariant "current
+   * owner generation === current lease token" holds again, so the resumed
+   * worker survives the existing post-provision verification unchanged.
+   */
+  private async restampSandboxOwnershipAtReclaim(
+    taskId: string,
+    leaseToken: string,
+  ): Promise<void> {
+    // Prisma-less (or partially stubbed) harnesses keep the historical
+    // provider-side owner acquire as the re-stamp authority; production always
+    // has the full durable write surface.
+    const sandboxRuns = (
+      this.prisma as { sandboxRun?: PrismaService['sandboxRun'] } | undefined
+    )?.sandboxRun;
+    if (
+      typeof sandboxRuns?.findFirst !== 'function' ||
+      typeof sandboxRuns.updateMany !== 'function'
+    ) {
+      return;
+    }
+    // Observe the parked generation on exactly the durable row the conditional
+    // write below targets — never through provider/router lookups, which may
+    // carry reattach side effects. Atomicity comes from the compare in the
+    // UPDATE itself, not from this read.
+    let parkedGeneration: string | null | undefined;
+    try {
+      const liveRun = await sandboxRuns.findFirst({
+        where: { taskId, status: { in: ['provisioning', 'running'] } },
+        orderBy: { createdAt: 'desc' },
+        select: { ownerGeneration: true },
+      });
+      parkedGeneration = liveRun?.ownerGeneration;
+    } catch (error) {
+      // An indeterminate owner lookup can neither prove nor disprove a parked
+      // predecessor. Keep the lease recoverable instead of failing the task.
+      throw new TaskAdmissionCoordinationError('checkpoint', taskId, error);
+    }
+    if (
+      parkedGeneration === undefined ||
+      parkedGeneration === null ||
+      parkedGeneration === leaseToken
+    ) {
+      return;
+    }
+    let restamped: { count: number };
+    try {
+      restamped = await sandboxRuns.updateMany({
+        where: {
+          taskId,
+          ownerGeneration: parkedGeneration,
+          status: { in: ['provisioning', 'running'] },
+        },
+        data: { ownerGeneration: leaseToken },
+      });
+    } catch (error) {
+      // A failed durable write is indeterminate, not proof of supersession:
+      // leave the lease for recovery rather than settling anything locally.
+      throw new TaskAdmissionCoordinationError('checkpoint', taskId, error);
+    }
+    if (restamped.count !== 1) {
+      // The conditional compare lost: another waker already re-stamped this
+      // generation (or the run settled). Self-terminate as a superseded holder
+      // without crossing the provider boundary; the winning attempt's state
+      // and events are preserved unmerged.
+      throw new TaskAdmissionLeaseLostError(taskId);
+    }
+  }
+
+  /**
+   * detach-workspace-clone D11: the durable admission chain and the legacy
+   * provisioning chain share exactly this workspace-progress handler so
+   * additive progress variants (e.g. the detached clone percent/objects/bytes
+   * event) always flow through both chains identically and can never drift.
+   * Apply-time decision per D11: the legacy chain is kept — it still has live
+   * callers — and routed through this shared chain rather than retired.
+   * Forwarding is best-effort by contract (a dropped progress write is never
+   * an error); the optional durable checkpoint hook is the only load-bearing
+   * step and fires only for stage `started` events, exactly as before.
+   */
+  private buildWorkspaceProgressChain(options: {
+    readonly checkpoint?: (stage: TaskProvisioningStage) => Promise<void>;
+    readonly forward?: SandboxWorkspaceProgressReporter;
+  }): SandboxWorkspaceProgressReporter {
+    return async (event: SandboxWorkspaceProgressEvent) => {
+      if (event.status === 'started' && options.checkpoint) {
+        await options.checkpoint(event.stage);
+      }
+      if (options.forward) {
+        try {
+          await options.forward(event);
+        } catch {
+          // Best-effort: durable admission state remains authoritative.
+        }
+      }
+    };
+  }
+
+  /**
+   * detach-workspace-clone D3/D9: cooperative parking seam for the durable
+   * admission chain only (the legacy chain deliberately passes none and keeps
+   * the inline blocking await of the detached job — D11). `park` opts the
+   * staged materialization into handing back the probe/kill seam instead of
+   * holding this worker slot through the transfer. For a claim that resumed a
+   * parked row (`claim.parkedLeaseToken` present — both same-process resume
+   * and API-restart recovery ride the same expired-lease claim branch), the
+   * seam additionally routes the marker evidence gathered in the sandbox
+   * through {@link triageParkedAdmissionMarkers}, keeping the three-way
+   * decision (alive -> keep parked / exit marker -> settle stage from it /
+   * unprovable -> fail the attempt) owned by the claim/processor path with no
+   * bootstrap-ordering dependence.
+   */
+  private buildWorkspaceTransferDetachment(
+    claim: TaskAdmissionClaim,
+  ): SandboxWorkspaceTransferDetachment {
+    return Object.freeze({
+      park: true,
+      ...(claim.parkedLeaseToken == null
+        ? {}
+        : {
+            resume: Object.freeze({
+              triage: (probe: {
+                readonly pidAlive: boolean;
+                readonly exitMarker: { readonly exitCode: number } | null;
+                readonly progressObserved?: boolean;
+              }) => triageParkedAdmissionMarkers(probe),
+            }),
+          }),
+    });
+  }
+
+  /**
    * A task reached a terminal state on its own (completion/failure). Clear its
    * guardrail timers, tear down its session credentials, and release its slot —
    * which admits the next queued task if any (12.1 slot-release; session-end
@@ -2567,7 +2756,20 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
                 createLegacyProvisioningCancellationError()
               );
             },
-            onWorkspaceProgress: provisionPlan.onWorkspaceProgress,
+            // detach-workspace-clone D11: the legacy chain is kept (it still
+            // has live callers) but routed through the same shared workspace
+            // progress chain as durable admission, so additive progress
+            // variants can never drift between the two chains. Legacy has no
+            // durable lease, so no checkpoint hook is supplied — and for the
+            // same reason it deliberately passes NO workspaceTransferDetachment:
+            // without a parked settlement/lease to hand the claim to, the
+            // legacy chain explicitly and consistently keeps the inline
+            // (blocking) await of the detached transfer, which still runs as
+            // a detached job under dual-gate liveness — never the old
+            // single-deadline blocking exec, and never a half-parked state.
+            onWorkspaceProgress: this.buildWorkspaceProgressChain({
+              forward: provisionPlan.onWorkspaceProgress,
+            }),
           }),
         );
       } catch (err) {
@@ -3994,6 +4196,33 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
   runnerMinuteIntervals(): RunningInterval[] {
     return this.runnerMinutes.intervals();
   }
+}
+
+/**
+ * Adapt the sandbox-layer detached-job seam to the admission worker's parked
+ * job port. Probe and kill both go through the sandbox exec channel captured
+ * by the materialization; a thrown probe is transient (the parked observer
+ * keeps watching under the durable lease horizon), while `unknown` hands the
+ * row back to the claim path for the authoritative three-way triage.
+ */
+function wrapDetachedWorkspaceTransferJob(
+  job: SandboxDetachedWorkspaceTransferJob,
+): TaskAdmissionParkedJobPort {
+  return Object.freeze({
+    async probe() {
+      const observation = await job.probe();
+      if (observation.kind === 'alive') {
+        return {
+          kind: 'alive' as const,
+          progress: observation.progress ?? null,
+        };
+      }
+      return { kind: observation.kind };
+    },
+    kill() {
+      return job.kill();
+    },
+  });
 }
 
 function classifyDurableAdmissionError(

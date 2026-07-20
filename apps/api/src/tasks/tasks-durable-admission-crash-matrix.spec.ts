@@ -38,6 +38,11 @@ import {
   type TaskAdmissionCheckpointRequest,
   type TaskAdmissionClaim,
   type TaskAdmissionClaimRequest,
+  type TaskAdmissionParkRequest,
+  type TaskAdmissionParkedHeartbeatRequest,
+  type TaskAdmissionParkedJobObservation,
+  type TaskAdmissionParkedJobPort,
+  type TaskAdmissionParkedReleaseRequest,
   type TaskAdmissionProcessor,
   type TaskAdmissionProcessorContext,
   type TaskAdmissionRenewRequest,
@@ -62,6 +67,7 @@ type MatrixWorkState =
   | 'accepted'
   | 'queued'
   | 'running'
+  | 'parked'
   | 'retrying'
   | 'succeeded'
   | 'failed'
@@ -86,6 +92,10 @@ interface MatrixWork {
   resolvedBranch: string | null;
   resourceSnapshot: Record<string, unknown>;
   workspaceMaterializationDeadlineMs: number;
+  /** detach-workspace-clone: the parked ownership generation while parked. */
+  parkedLeaseOwner: string | null;
+  /** detach-workspace-clone: latest transfer progress persisted by the poll loop. */
+  progressSnapshot: Record<string, unknown> | null;
   updatedAt: Date;
 }
 
@@ -187,6 +197,8 @@ class MatrixDatabase {
             workspaceMaterializationDeadlineMs: Number(
               data.workspaceMaterializationDeadlineMs,
             ),
+            parkedLeaseOwner: null,
+            progressSnapshot: null,
             updatedAt: FIXED_TIME,
           };
           target.works.push(row);
@@ -344,7 +356,7 @@ class MatrixStore extends TaskAdmissionStore {
           candidate.state === 'queued' ||
           candidate.state === 'retrying') &&
           candidate.availableAtMs <= this.clock.value) ||
-        (candidate.state === 'running' &&
+        ((candidate.state === 'running' || candidate.state === 'parked') &&
           candidate.leaseUntilMs !== null &&
           candidate.leaseUntilMs <= this.clock.value),
     );
@@ -355,15 +367,21 @@ class MatrixStore extends TaskAdmissionStore {
       sourceState === 'accepted' ||
         sourceState === 'queued' ||
         sourceState === 'retrying' ||
-        sourceState === 'running',
+        sourceState === 'running' ||
+        sourceState === 'parked',
     );
+    // detach-workspace-clone: resuming a parked row carries the parked
+    // ownership generation and never burns/increments the attempt counter.
+    const parkedLeaseToken =
+      sourceState === 'parked' ? work.parkedLeaseOwner : null;
     work.state = 'running';
     work.attempt =
-      sourceState === 'queued'
+      sourceState === 'queued' || sourceState === 'parked'
         ? work.attempt
         : sourceState === 'running' && isTerminalTaskStatus(task.status)
           ? Math.max(work.attempt, 1)
           : work.attempt + 1;
+    work.parkedLeaseOwner = null;
     work.leaseToken = request.leaseToken;
     work.leaseUntilMs = this.clock.value + request.leaseDurationMs;
     work.updatedAt = this.clock.now();
@@ -381,7 +399,68 @@ class MatrixStore extends TaskAdmissionStore {
         work.workspaceMaterializationDeadlineMs,
       taskStatus: task.status,
       taskLifecycleVersion: task.lifecycleVersion,
+      ...(parkedLeaseToken === null ? {} : { parkedLeaseToken }),
     };
+  }
+
+  /**
+   * detach-workspace-clone: settle a running claim as `parked` while
+   * retaining the lease pair as the parked ownership generation, mirroring
+   * the production CTE semantics (parking never releases the token and never
+   * touches the attempt counter).
+   */
+  override async park(request: TaskAdmissionParkRequest): Promise<boolean> {
+    if (!(await this.authorize(request))) return false;
+    const work = this.work(request.taskId);
+    work.state = 'parked';
+    work.stage = request.settlement.stage;
+    work.parkedLeaseOwner = request.leaseToken;
+    work.leaseUntilMs = this.clock.value + request.settlement.leaseDurationMs;
+    work.updatedAt = this.clock.now();
+    return true;
+  }
+
+  /** Extend a live parked lease and persist the latest progress snapshot. */
+  override async parkedHeartbeat(
+    request: TaskAdmissionParkedHeartbeatRequest,
+  ): Promise<boolean> {
+    const work = this.state.works.find(
+      (row) => row.taskId === request.taskId,
+    );
+    if (
+      !work ||
+      work.state !== 'parked' ||
+      work.parkedLeaseOwner !== request.leaseToken ||
+      work.leaseUntilMs === null ||
+      work.leaseUntilMs <= this.clock.value
+    ) {
+      return false;
+    }
+    work.leaseUntilMs = this.clock.value + request.leaseDurationMs;
+    if (request.progress !== undefined && request.progress !== null) {
+      work.progressSnapshot = { ...request.progress };
+    }
+    work.updatedAt = this.clock.now();
+    return true;
+  }
+
+  /** Expire a parked lease in place so only the expired-lease claim branch resumes it. */
+  override async releaseParked(
+    request: TaskAdmissionParkedReleaseRequest,
+  ): Promise<boolean> {
+    const work = this.state.works.find(
+      (row) => row.taskId === request.taskId,
+    );
+    if (
+      !work ||
+      work.state !== 'parked' ||
+      work.parkedLeaseOwner !== request.leaseToken
+    ) {
+      return false;
+    }
+    work.leaseUntilMs = this.clock.value;
+    work.updatedAt = this.clock.now();
+    return true;
   }
 
   async authorize(request: TaskAdmissionAuthorityRequest): Promise<boolean> {
@@ -750,6 +829,7 @@ function realProvisionLookup(): ProvisionLookup {
 function realGuardrailsProcessor(
   sandbox: SandboxProvider,
   audit: AuditService,
+  prisma?: PrismaService,
 ): {
   readonly guardrails: GuardrailsService;
   readonly processor: FencedTaskAdmissionProcessor;
@@ -767,6 +847,7 @@ function realGuardrailsProcessor(
     REAL_GUARDRAILS_CONFIG,
     realProvisionLookup(),
     audit,
+    prisma,
   );
   const gateway: ITerminalGateway = {
     openSession(_connection, _selectedRun, options) {
@@ -1246,5 +1327,373 @@ test('durable admission crash matrix recovers every boundary without fixed sleep
       null,
       'recovery is system-attributed because the operator actor was not persisted',
     );
+  });
+
+  // detach-workspace-clone 9.1: cross-track re-proof of the guardrails
+  // scenario set over the merged parked-transfer machinery. Contention,
+  // expired-lease, restart, and cancel keep their existing sub-tests above;
+  // this scenario adds the parked lifecycle: slot release while parked,
+  // exit-marker resume through the claim path only, attempt preservation,
+  // real-GuardrailsService ownership re-stamp, stale-waker fencing at the
+  // durable write point, and the bounded-ledger rule (per-poll progress never
+  // enters the audit/diagnostic event ledger).
+  await t.test('parked transfer parks without burning the slot, resumes through one re-stamped waker, and keeps the ledger bounded', async () => {
+    const harness = new CrashMatrixHarness('success');
+    const parkedTaskId = await harness.accept();
+    const bystanderTaskId = await harness.accept();
+    for (const id of [parkedTaskId, bystanderTaskId]) {
+      const task = harness.task(id);
+      task.status = 'running';
+      task.lifecycleVersion = 1;
+    }
+
+    const probeQueue: TaskAdmissionParkedJobObservation[] = [
+      {
+        kind: 'alive',
+        progress: {
+          percent: null,
+          receivedObjects: null,
+          totalObjects: null,
+          receivedBytes: null,
+          throughputBytesPerSecond: null,
+        },
+      },
+      {
+        kind: 'alive',
+        progress: {
+          percent: 60,
+          receivedObjects: 60,
+          totalObjects: 100,
+          receivedBytes: 4096,
+          throughputBytesPerSecond: 1024,
+        },
+      },
+      { kind: 'exited' },
+    ];
+    let killCalls = 0;
+    const job: TaskAdmissionParkedJobPort = {
+      async probe() {
+        const next = probeQueue.shift();
+        assert.ok(next, 'the parked loop probed more often than scripted');
+        return next;
+      },
+      async kill() {
+        killCalls += 1;
+      },
+    };
+    const parkingProcessor: TaskAdmissionProcessor = {
+      async process(context) {
+        await context.lease.authorize();
+        if (context.claim.taskId === parkedTaskId) {
+          await context.lease.checkpoint('workspace_transfer');
+          return { kind: 'parked', stage: 'workspace_transfer', job };
+        }
+        return { kind: 'succeeded' };
+      },
+    };
+
+    const parkWorker = harness.worker(parkingProcessor);
+    assert.equal((await parkWorker.runOnce()).kind, 'parked');
+    const parkedWork = harness.work(parkedTaskId);
+    const parkedGeneration = parkedWork.parkedLeaseOwner;
+    assert.equal(parkedWork.state, 'parked');
+    assert.equal(parkedWork.stage, 'workspace_transfer');
+    assert.equal(parkedWork.attempt, 1, 'parking never burns the attempt');
+    assert.equal(parkedGeneration, 'matrix-lease:1');
+
+    // Slot release: with the transfer parked, the same worker path admits the
+    // next accepted task instead of blocking on the in-flight clone.
+    assert.equal((await parkWorker.runOnce()).kind, 'succeeded');
+    assert.equal(harness.work(bystanderTaskId).state, 'succeeded');
+
+    // Parked poll loop: alive observations extend the lease and persist the
+    // progress snapshot; nothing enters the audit/diagnostic event ledger
+    // (bounded-ceiling rule — the snapshot column is the only durable trace).
+    const auditEntriesBeforePolling = harness.database.state.audits.size;
+    const flush = () => new Promise((resolve) => setImmediate(resolve));
+    for (const expectedPercent of [null, 60]) {
+      harness.clock.advanceBy(25);
+      harness.scheduler.runDue();
+      await flush();
+      assert.equal(parkedWork.state, 'parked');
+      assert.equal(
+        (parkedWork.progressSnapshot as { percent: number | null } | null)
+          ?.percent ?? null,
+        expectedPercent,
+        'indeterminate progress stays explicitly unknown, never 0%',
+      );
+    }
+    assert.ok(
+      parkedWork.leaseUntilMs !== null &&
+        parkedWork.leaseUntilMs > harness.clock.value,
+      'alive heartbeats extend the parked lease',
+    );
+
+    // Exit marker: the loop only expires the lease in place and wakes the
+    // claim path — it never admits or settles by itself.
+    harness.clock.advanceBy(25);
+    harness.scheduler.runDue();
+    await flush();
+    assert.equal(parkedWork.state, 'parked', 'the parked loop settles nothing');
+    assert.ok(
+      parkedWork.leaseUntilMs !== null &&
+        parkedWork.leaseUntilMs <= harness.clock.value,
+      'job exit hands the row back through the expired-lease branch',
+    );
+    assert.equal(
+      harness.database.state.audits.size,
+      auditEntriesBeforePolling,
+      'per-poll progress observations never become ledger events',
+    );
+
+    const auditKeysBeforeResume = new Set(
+      harness.database.state.audits.keys(),
+    );
+
+    // Resume through the real GuardrailsService: the new claim carries the
+    // parked generation and the durable conditional write re-stamps sandbox
+    // ownership to the resuming lease token exactly once.
+    const sandboxRunRow = {
+      taskId: parkedTaskId,
+      status: 'provisioning',
+      ownerGeneration: parkedGeneration as string,
+    };
+    const scriptedGenerationReads: string[] = [];
+    const restampWrites: Array<{
+      readonly compare: string;
+      readonly to: string;
+      readonly count: number;
+    }> = [];
+    const prismaWithSandboxRun = {
+      ...(harness.database.prisma as unknown as Record<string, unknown>),
+      sandboxRun: {
+        async findFirst() {
+          const scripted = scriptedGenerationReads.shift();
+          return { ownerGeneration: scripted ?? sandboxRunRow.ownerGeneration };
+        },
+        async updateMany({
+          where,
+          data,
+        }: {
+          where: { taskId: string; ownerGeneration: string };
+          data: { ownerGeneration: string };
+        }) {
+          const matched =
+            where.taskId === sandboxRunRow.taskId &&
+            where.ownerGeneration === sandboxRunRow.ownerGeneration;
+          if (matched) sandboxRunRow.ownerGeneration = data.ownerGeneration;
+          const result = { count: matched ? 1 : 0 };
+          restampWrites.push({
+            compare: where.ownerGeneration,
+            to: data.ownerGeneration,
+            count: result.count,
+          });
+          return result;
+        },
+      },
+    } as unknown as PrismaService;
+
+    const ownerStore = new InMemorySandboxRunOwnerStore();
+    const providerContexts: SandboxProvisionContext[] = [];
+    const connection = {
+      taskId: parkedTaskId,
+      baseUrl: `http://real-router/${parkedTaskId}`,
+      wsUrl: `ws://real-router/${parkedTaskId}`,
+    };
+    const provider = {
+      getSandboxMode: () => 'workspace-write' as const,
+      getProviderCapabilities: () =>
+        [
+          'terminal.websocket',
+          'lifecycle.readopt',
+          'workspace.git.materialize',
+          'resource.disk-size-gb',
+        ] as const,
+      async provision(context: SandboxProvisionContext) {
+        providerContexts.push(context);
+        await context.onSandboxCreateObserved?.({
+          kind: 'created',
+          providerSandboxId: `physical:${context.ownership?.resourceGeneration}`,
+        });
+        return connection;
+      },
+      async reattach() {
+        return connection;
+      },
+      async getSelectedSandboxRun() {
+        const ownership = providerContexts.at(-1)?.ownership;
+        if (!ownership) return null;
+        return {
+          taskId: parkedTaskId,
+          providerId: 'local-real-seam',
+          provider: provider as never,
+          providerSandboxId: `physical:${ownership.resourceGeneration}`,
+          capabilities: [
+            'terminal.websocket',
+            'lifecycle.readopt',
+            'workspace.git.materialize',
+            'resource.disk-size-gb',
+          ],
+          connection,
+        };
+      },
+      async teardownSandbox() {
+        return { kind: 'found-and-cleaned' as const };
+      },
+      async readRolloutFromContainer() {
+        return null;
+      },
+      async sandboxExists() {
+        return providerContexts.length > 0;
+      },
+      async deliverWorkspaceChanges() {
+        return { hadChanges: false, commitSha: null, error: null };
+      },
+    };
+    const router = new SandboxProviderRouter(
+      [
+        defineLocalSandboxProvider({
+          id: 'local-real-seam',
+          provider: provider as never,
+          capabilities: [
+            'terminal.websocket',
+            'lifecycle.readopt',
+            'workspace.git.materialize',
+            'resource.disk-size-gb',
+          ],
+        }),
+      ],
+      { ownerStore },
+    );
+    const winner = realGuardrailsProcessor(
+      router as unknown as SandboxProvider,
+      harness.audit,
+      prismaWithSandboxRun,
+    );
+    const resumedClaims: TaskAdmissionClaim[] = [];
+    const resumeProcessor: TaskAdmissionProcessor = {
+      process(context) {
+        resumedClaims.push(context.claim);
+        return winner.processor.process(context);
+      },
+      settleTerminalFailure(context, failure) {
+        return winner.processor.settleTerminalFailure(context, failure);
+      },
+      recoverTerminal(context) {
+        return winner.processor.recoverTerminal(context);
+      },
+    };
+    assert.equal(
+      (await harness.worker(resumeProcessor).runOnce()).kind,
+      'succeeded',
+    );
+    assert.equal(resumedClaims.length, 1);
+    const resumedClaim = resumedClaims[0];
+    assert.ok(resumedClaim);
+    assert.equal(resumedClaim.sourceState, 'parked');
+    assert.equal(resumedClaim.parkedLeaseToken, parkedGeneration);
+    assert.notEqual(resumedClaim.leaseToken, parkedGeneration);
+    assert.equal(
+      resumedClaim.attempt,
+      1,
+      'a park/resume cycle continues the same attempt',
+    );
+    assert.equal(harness.work(parkedTaskId).state, 'succeeded');
+    assert.deepEqual(restampWrites, [
+      {
+        compare: parkedGeneration,
+        to: resumedClaim.leaseToken,
+        count: 1,
+      },
+    ]);
+    assert.equal(sandboxRunRow.ownerGeneration, resumedClaim.leaseToken);
+    assert.equal(providerContexts.length, 1);
+    assert.equal(
+      providerContexts[0]?.ownership?.ownerGeneration,
+      resumedClaim.leaseToken,
+      'the resumed worker provisions under its own re-stamped generation',
+    );
+    assert.equal(killCalls, 0, 'a healthy resume never kills the job');
+
+    // Stale waker after re-claim: a second holder that observed the old
+    // parked generation loses the conditional compare at the durable write
+    // point, self-terminates before any provider boundary, and cannot steal
+    // or tear down the winner's ownership.
+    scriptedGenerationReads.push(parkedGeneration as string);
+    const stale = realGuardrailsProcessor(
+      router as unknown as SandboxProvider,
+      harness.audit,
+      prismaWithSandboxRun,
+    );
+    const parkedTask = harness.task(parkedTaskId);
+    const staleContext: TaskAdmissionProcessorContext = {
+      claim: {
+        taskId: parkedTaskId,
+        leaseToken: 'stale-waker-lease',
+        leaseUntil: new Date(harness.clock.value + 1_000),
+        sourceState: 'parked',
+        attempt: 1,
+        stage: 'workspace_transfer',
+        causeCode: null,
+        resolvedBranch: 'master',
+        resourceSnapshot: { diskSizeGb: 8 },
+        workspaceMaterializationDeadlineMs: 900_000,
+        taskStatus: parkedTask.status,
+        taskLifecycleVersion: parkedTask.lifecycleVersion,
+        parkedLeaseToken: parkedGeneration,
+      },
+      lease: {
+        currentTaskFence: () => ({
+          status: parkedTask.status,
+          lifecycleVersion: parkedTask.lifecycleVersion,
+        }),
+        beginTaskTransition: () => parkedTask.lifecycleVersion + 1,
+        commitTaskTransition() {},
+        rollbackTaskTransition() {},
+        async authorize() {},
+        async renew() {},
+        async checkpoint() {},
+      },
+      signal: new AbortController().signal,
+    };
+    await assert.rejects(
+      stale.processor.process(staleContext),
+      TaskAdmissionLeaseLostError,
+      'the stale waker fails the compare and self-terminates',
+    );
+    assert.deepEqual(
+      restampWrites.at(-1),
+      {
+        compare: parkedGeneration,
+        to: 'stale-waker-lease',
+        count: 0,
+      },
+      'the losing write is rejected at the durable write point',
+    );
+    assert.equal(
+      sandboxRunRow.ownerGeneration,
+      resumedClaim.leaseToken,
+      'the winning generation is preserved unmerged',
+    );
+    assert.equal(
+      providerContexts.length,
+      1,
+      'the fenced waker never crosses the provider boundary',
+    );
+    assert.equal(harness.work(parkedTaskId).state, 'succeeded');
+    // Bounded-ceiling rule: the resume adds only deduped per-stage lifecycle
+    // entries for this attempt — never per-poll progress observations, and the
+    // fenced stale waker adds nothing at all.
+    const ledgerEntriesAddedByResume = [
+      ...harness.database.state.audits.keys(),
+    ].filter((dedupeKey) => !auditKeysBeforeResume.has(dedupeKey));
+    assert.ok(ledgerEntriesAddedByResume.length > 0);
+    for (const dedupeKey of ledgerEntriesAddedByResume) {
+      assert.match(
+        dedupeKey,
+        new RegExp(`^task\\.provisioning:${parkedTaskId}:1:`, 'u'),
+        'only attempt-1 stage lifecycle events may enter the ledger',
+      );
+    }
   });
 });

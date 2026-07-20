@@ -1,8 +1,22 @@
 import {
+  buildSandboxDetachedJobKillCommand,
+  buildSandboxDetachedJobLaunchCommand,
+  buildSandboxDetachedJobProbeCommand,
   normalizeSandboxCommandResult,
+  resolveSandboxDetachedJobLivenessPolicy,
+  sandboxDetachedJobMarkerPaths,
   SandboxProviderConfigurationError,
+  SandboxWorkspaceTransferDetachedSignal,
   scrubSandboxCommandOutput,
+  snapshotSandboxWorkspaceTransferProgress,
+  triageSandboxDetachedJobProbeOutput,
   type GitCloneSpec,
+  type SandboxDetachedJobProgressStat,
+  type SandboxDetachedTransferOptions,
+  type SandboxDetachedWorkspaceTransferJob,
+  type SandboxDetachedWorkspaceTransferObservation,
+  type SandboxDetachedWorkspaceTransferProbe,
+  type SandboxWorkspaceTransferProgressSnapshot,
   type SandboxCommandExecutionResult,
   type SandboxGitCommandStage,
   type SandboxGitDeliveryResult,
@@ -23,6 +37,25 @@ import {
 const DELIVERY_PENDING_MARKER = 'cap-delivery-base';
 const DELIVERY_PENDING_SENTINEL = 'CAP_DELIVERY_PENDING';
 const DELIVERY_COMMIT_MESSAGE_PATH = '/tmp/cap-delivery-commit-message';
+
+/**
+ * Defense-in-depth stall abort on the detached clone itself: git aborts the
+ * transfer into a clean nonzero exit marker when throughput stays below the
+ * limit for the configured time, so the external heartbeat gate is a backstop
+ * rather than the only line of defense.
+ */
+export const GIT_HTTP_LOW_SPEED_LIMIT_BYTES_PER_SECOND = 1024;
+export const GIT_HTTP_LOW_SPEED_TIME_SECONDS = 60;
+
+/** Cadence of the short marker-probe polling execs for a detached transfer. */
+export const DEFAULT_SANDBOX_TRANSFER_POLL_INTERVAL_MS = 2_000;
+/** Timeout for the short detached-transfer control execs (launch/probe/kill). */
+export const SANDBOX_TRANSFER_CONTROL_EXEC_TIMEOUT_MS = 30_000;
+/** Bytes of progress-marker tail carried back by each polling exec. */
+const TRANSFER_PROGRESS_TAIL_BYTES = 4_096;
+const TRANSFER_PROGRESS_TAIL_SENTINEL = 'CAP_TRANSFER_PROGRESS_TAIL';
+/** Sibling staging suffix; the tree flips to the workspace dir atomically. */
+const TRANSFER_STAGING_SUFFIX = '.cap-stage';
 
 type ActiveWorkspaceStage = Exclude<
   SandboxWorkspaceMaterializationStage,
@@ -238,6 +271,7 @@ export async function materializeSandboxGitWorkspaceStaged(
         stage: 'credential_setup',
       });
       const configPath = handle?.path;
+      const driver = options.deadlineDriver ?? systemSandboxGitDeadlineDriver;
       const stages = materializationCommands(
         context.plan.repositoryUrl,
         context.plan.resolvedBranch,
@@ -245,12 +279,34 @@ export async function materializeSandboxGitWorkspaceStaged(
         configPath,
       );
       for (const stage of stages) {
-        const stageResult = await runMaterializationStage({
-          context,
-          deadline,
-          stage: stage.stage,
-          command: stage.command,
-        });
+        let stageResult: ActiveWorkspaceFailure | null;
+        if (
+          stage.stage === 'workspace_transfer' &&
+          context.detachedTransfer !== undefined
+        ) {
+          // Dual-gate liveness replaces the wall clock for this stage only:
+          // pause the operation deadline so transfer time never burns the
+          // other stages' budget, then resume it for checkout onwards.
+          deadline.pause();
+          try {
+            stageResult = await runDetachedWorkspaceTransfer({
+              context,
+              deadline,
+              driver,
+              configPath,
+              options: context.detachedTransfer,
+            });
+          } finally {
+            deadline.resume();
+          }
+        } else {
+          stageResult = await runMaterializationStage({
+            context,
+            deadline,
+            stage: stage.stage,
+            command: stage.command,
+          });
+        }
         if (stageResult !== null) {
           result = stageResult;
           break;
@@ -586,6 +642,534 @@ async function runMaterializationStage(args: {
   }
 }
 
+/**
+ * Deterministic detached-job id for a task's workspace transfer so probe/kill
+ * callers (admission parking, stop) can re-derive the marker paths from the
+ * task id alone.
+ */
+export function sandboxWorkspaceTransferJobId(taskId: string): string {
+  const sanitized = taskId.replace(/[^A-Za-z0-9._-]/gu, '-');
+  const id = `ws-transfer-${sanitized}`.slice(0, 128);
+  if (!/^[A-Za-z0-9]/u.test(id)) {
+    throw new SandboxProviderConfigurationError(
+      'Sandbox workspace transfer job id must start alphanumeric',
+    );
+  }
+  return id;
+}
+
+/**
+ * Detached clone child command (spec: workspace transfer reports parsed clone
+ * progress): `--progress` on a stderr that the job wrapper redirects into the
+ * progress marker, plus git-native low-speed stall abort as defense in depth.
+ * The clone materializes into a sibling staging path; the wrapper's atomic
+ * publish flips it to the workspace dir before the exit marker.
+ */
+function detachedTransferCloneCommand(args: {
+  readonly repositoryUrl: string;
+  readonly branch: string;
+  readonly workspaceDir: string;
+  readonly stagingDir: string;
+  readonly configPath: string | undefined;
+}): string {
+  return (
+    `rm -rf -- ${shellQuote(args.stagingDir)} ${shellQuote(args.workspaceDir)} && ` +
+    `mkdir -p -- ${shellQuote(dirname(args.workspaceDir))} && ` +
+    `env GIT_HTTP_LOW_SPEED_LIMIT=${GIT_HTTP_LOW_SPEED_LIMIT_BYTES_PER_SECOND} ` +
+    `GIT_HTTP_LOW_SPEED_TIME=${GIT_HTTP_LOW_SPEED_TIME_SECONDS} ` +
+    gitCommand(
+      args.configPath,
+      `clone --progress --no-checkout --single-branch --branch ${shellQuote(
+        args.branch,
+      )} -- ${shellQuote(args.repositoryUrl)} ${shellQuote(args.stagingDir)}`,
+    )
+  );
+}
+
+/** Marker probe plus a bounded tail of the progress stream in one short exec. */
+function detachedTransferProbeCommand(
+  jobId: string,
+  markerRoot: string | undefined,
+): string {
+  const progressPath = sandboxDetachedJobMarkerPaths(jobId, markerRoot).progress;
+  return (
+    `${buildSandboxDetachedJobProbeCommand(jobId, markerRoot)}; ` +
+    `printf '%s\\n' ${shellQuote(TRANSFER_PROGRESS_TAIL_SENTINEL)}; ` +
+    `tail -c ${TRANSFER_PROGRESS_TAIL_BYTES} -- ${shellQuote(progressPath)} 2>/dev/null || :`
+  );
+}
+
+function splitDetachedProbeOutput(output: string): {
+  readonly triageText: string;
+  readonly progressTail: string;
+} {
+  const index = output.indexOf(TRANSFER_PROGRESS_TAIL_SENTINEL);
+  if (index < 0) return { triageText: output, progressTail: '' };
+  return {
+    triageText: output.slice(0, index),
+    progressTail: output.slice(
+      index + TRANSFER_PROGRESS_TAIL_SENTINEL.length,
+    ),
+  };
+}
+
+const GIT_RECEIVING_OBJECTS_PATTERN =
+  /Receiving objects:\s+(\d+)%\s+\((\d+)\/(\d+)\)(?:,\s+([\d.]+)\s+(B|KiB|MiB|GiB|TiB))?(?:\s*\|\s*([\d.]+)\s+(B|KiB|MiB|GiB|TiB)\/s)?/u;
+const GIT_INDETERMINATE_PHASE_PATTERN =
+  /(?:remote:\s*)?(?:Enumerating|Counting|Compressing) objects:|Resolving deltas:|Updating files:/u;
+
+const GIT_SIZE_UNIT_BYTES: Readonly<Record<string, number>> = Object.freeze({
+  B: 1,
+  KiB: 1024,
+  MiB: 1024 ** 2,
+  GiB: 1024 ** 3,
+  TiB: 1024 ** 4,
+});
+
+/**
+ * Host-side parser for git's clone stderr progress stream. Tolerates multiple
+ * phases (Counting/Compressing/Receiving objects/Resolving deltas) and
+ * CR-delimited lines. Phases before "Receiving objects" — and any unparsed
+ * content — report an explicitly indeterminate snapshot (never 0%); only a
+ * completely empty stream returns null ("no observation yet").
+ */
+export function parseGitTransferProgress(
+  text: string,
+): SandboxWorkspaceTransferProgressSnapshot | null {
+  const lines = text
+    .split(/[\r\n]+/u)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return null;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]!;
+    const receiving = GIT_RECEIVING_OBJECTS_PATTERN.exec(line);
+    if (receiving !== null) {
+      try {
+        return snapshotSandboxWorkspaceTransferProgress({
+          percent: Number(receiving[1]),
+          receivedObjects: Number(receiving[2]),
+          totalObjects: Number(receiving[3]),
+          receivedBytes: gitSizeToBytes(receiving[4], receiving[5]),
+          throughputBytesPerSecond: gitSizeToBytes(
+            receiving[6],
+            receiving[7],
+          ),
+        });
+      } catch {
+        return INDETERMINATE_TRANSFER_PROGRESS;
+      }
+    }
+    if (GIT_INDETERMINATE_PHASE_PATTERN.test(line)) {
+      return INDETERMINATE_TRANSFER_PROGRESS;
+    }
+  }
+  // Unparsed-but-present output counts as "unknown phase, still alive".
+  return INDETERMINATE_TRANSFER_PROGRESS;
+}
+
+const INDETERMINATE_TRANSFER_PROGRESS: SandboxWorkspaceTransferProgressSnapshot =
+  Object.freeze({
+    percent: null,
+    receivedObjects: null,
+    totalObjects: null,
+    receivedBytes: null,
+    throughputBytesPerSecond: null,
+  });
+
+function gitSizeToBytes(
+  value: string | undefined,
+  unit: string | undefined,
+): number | null {
+  if (value === undefined || unit === undefined) return null;
+  const scale = GIT_SIZE_UNIT_BYTES[unit];
+  const parsed = Number(value);
+  if (scale === undefined || !Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return Math.round(parsed * scale);
+}
+
+function transferProgressEquals(
+  left: SandboxWorkspaceTransferProgressSnapshot | null,
+  right: SandboxWorkspaceTransferProgressSnapshot,
+): boolean {
+  return (
+    left !== null &&
+    left.percent === right.percent &&
+    left.receivedObjects === right.receivedObjects &&
+    left.totalObjects === right.totalObjects &&
+    left.receivedBytes === right.receivedBytes &&
+    left.throughputBytesPerSecond === right.throughputBytesPerSecond
+  );
+}
+
+/**
+ * Detached workspace-transfer stage: setsid launch + short polling execs
+ * through the same stage executor replace the single long-held exec. Liveness
+ * is governed by dual gates (no-progress heartbeat on progress-marker
+ * byte-growth/mtime advance, absolute cap backstop) instead of the operation
+ * deadline; the deadline is paused for this stage only, so the transfer's
+ * duration never burns the other stages' wall clock. Settlement always comes
+ * from markers: exit marker = proof, progress = output stream, and an
+ * unprovable job is a typed failure — never success, never indefinite waiting.
+ *
+ * Diagnostics stay bounded (spec: detached-job lifecycle is bounded events):
+ * exactly one started and one terminal `git_clone` event per job through the
+ * existing observer; per-poll observations never reach the event ledger.
+ */
+async function runDetachedWorkspaceTransfer(args: {
+  readonly context: SandboxWorkspaceMaterializationHookContext;
+  readonly deadline: OperationDeadline;
+  readonly driver: SandboxGitDeadlineDriver;
+  readonly configPath: string | undefined;
+  readonly options: SandboxDetachedTransferOptions;
+}): Promise<ActiveWorkspaceFailure | null> {
+  const { context, deadline, driver } = args;
+  const stage = 'workspace_transfer' as const;
+  const before = deadline.interruption(stage);
+  if (before !== null) {
+    await reportWorkspaceStageTerminal(context, before);
+    return before;
+  }
+  await assertWorkspaceBoundary(context, stage, 'before');
+  await reportWorkspaceStageStarted(context, stage);
+
+  const liveness = resolveSandboxDetachedJobLivenessPolicy(
+    args.options.liveness ?? undefined,
+  );
+  const pollIntervalMs =
+    args.options.pollIntervalMs ?? DEFAULT_SANDBOX_TRANSFER_POLL_INTERVAL_MS;
+  const markerRoot = args.options.markerRoot;
+  const jobId = sandboxWorkspaceTransferJobId(context.taskId);
+  const stagingDir = `${context.workspaceDir}${TRANSFER_STAGING_SUFFIX}`;
+  const launchCommand = buildSandboxDetachedJobLaunchCommand({
+    jobId,
+    command: detachedTransferCloneCommand({
+      repositoryUrl: context.plan.repositoryUrl,
+      branch: context.plan.resolvedBranch,
+      workspaceDir: context.workspaceDir,
+      stagingDir,
+      configPath: args.configPath,
+    }),
+    publish: { stagingPath: stagingDir, finalPath: context.workspaceDir },
+    ...(markerRoot === undefined ? {} : { markerRoot }),
+  });
+  const probeCommand = detachedTransferProbeCommand(jobId, markerRoot);
+  const jobPort = createDetachedTransferJobPort({
+    context,
+    jobId,
+    probeCommand,
+    markerRoot,
+  });
+
+  const settle = async (
+    outcome: ActiveWorkspaceFailure | null,
+    diagnosticTimeoutMs?: number,
+  ): Promise<ActiveWorkspaceFailure | null> => {
+    await assertWorkspaceBoundary(context, stage, 'after');
+    await reportWorkspaceStageTerminal(
+      context,
+      outcome ?? { status: 'succeeded', stage },
+      diagnosticTimeoutMs === undefined
+        ? undefined
+        : { timeoutMs: diagnosticTimeoutMs },
+    );
+    return outcome;
+  };
+  const killAndSettle = async (
+    outcome: ActiveWorkspaceFailure,
+    diagnosticTimeoutMs?: number,
+  ): Promise<ActiveWorkspaceFailure | null> => {
+    await killDetachedTransferJob(context, jobId, markerRoot);
+    return settle(outcome, diagnosticTimeoutMs);
+  };
+
+  const detachment = context.detachment;
+  if (detachment?.resume !== undefined) {
+    // Resume of previously parked work (detach-workspace-clone D9): gather
+    // marker evidence through the sandbox exec seam and delegate the
+    // three-way decision to the caller-owned (admission claim path) triage
+    // BEFORE any relaunch. A finished clone settles from its exit marker and
+    // is never re-run from scratch; an unprovable job fails the attempt.
+    let probeExec: SandboxCommandExecutionResult | null = null;
+    try {
+      probeExec = await transferControlExec(
+        context,
+        probeCommand,
+        deadline.signal,
+      );
+    } catch {
+      probeExec = null;
+    }
+    let evidence: SandboxDetachedWorkspaceTransferProbe = {
+      pidAlive: false,
+      exitMarker: null,
+      progressObserved: false,
+    };
+    let progressTail = '';
+    if (probeExec !== null && !probeExec.timedOut && probeExec.exitCode === 0) {
+      const split = splitDetachedProbeOutput(probeExec.output);
+      progressTail = split.progressTail;
+      const triaged = triageSandboxDetachedJobProbeOutput(split.triageText);
+      evidence = {
+        pidAlive: triaged.state === 'alive',
+        exitMarker:
+          triaged.state === 'exited'
+            ? { exitCode: triaged.exitCode }
+            : null,
+        progressObserved:
+          progressTail.trim().length > 0 ||
+          (triaged.state !== 'unknown' && triaged.progress !== undefined),
+      };
+    }
+    const decision = detachment.resume.triage(evidence);
+    if (decision === 'settle_from_exit') {
+      const exitCode = evidence.exitMarker?.exitCode ?? 1;
+      if (exitCode === 0) return settle(null);
+      const classification = classifySandboxGitFailure({
+        stage,
+        result: {
+          exitCode,
+          output: progressTail,
+          stdout: '',
+          stderr: '',
+          timedOut: false,
+        },
+      });
+      return settle(
+        failed(stage, classification.cause, classification.retryable),
+      );
+    }
+    if (decision === 'fail_attempt') {
+      // Neither pid liveness nor an exit marker is provable: typed failure,
+      // never success, never a from-scratch transfer re-run.
+      return settle(failed(stage, 'unknown', false));
+    }
+    // keep_parked: the job is provably still running. A parking caller takes
+    // the seam back; a blocking caller falls through to the poll loop below
+    // WITHOUT relaunching.
+    if (detachment.park === true) {
+      throw new SandboxWorkspaceTransferDetachedSignal(jobPort);
+    }
+  } else {
+    // Launch: a short exec that returns once the pid marker is readable.
+    let launch: SandboxCommandExecutionResult;
+    try {
+      launch = await transferControlExec(
+        context,
+        launchCommand,
+        deadline.signal,
+      );
+    } catch (error) {
+      const interrupted = deadline.interruption(stage);
+      if (interrupted !== null) return killAndSettle(interrupted);
+      const classification = classifySandboxGitFailure({ stage, error });
+      return settle(
+        failed(stage, classification.cause, classification.retryable),
+      );
+    }
+    if (launch.timedOut || launch.exitCode !== 0) {
+      const interrupted = deadline.interruption(stage);
+      if (interrupted !== null) return killAndSettle(interrupted);
+      const classification = classifySandboxGitFailure({
+        stage,
+        result: launch,
+      });
+      return settle(
+        failed(stage, classification.cause, classification.retryable),
+      );
+    }
+    if (detachment?.park === true) {
+      // Cooperative parking (D3): the detached job is launched and its marker
+      // layout is known. Hand the probe/kill seam back to the caller instead
+      // of blocking this slot through the poll loop. The stage stays open —
+      // settlement later comes from the markers via the resume triage.
+      throw new SandboxWorkspaceTransferDetachedSignal(jobPort);
+    }
+  }
+
+  const startedAtMs = driver.now();
+  let lastAdvanceAtMs = startedAtMs;
+  let lastProgressStat: SandboxDetachedJobProgressStat | null = null;
+  let lastEmittedProgress: SandboxWorkspaceTransferProgressSnapshot | null =
+    null;
+
+  for (;;) {
+    const interrupted = deadline.interruption(stage);
+    if (interrupted !== null) return killAndSettle(interrupted);
+    await sleepWithDriver(driver, pollIntervalMs);
+    const afterSleep = deadline.interruption(stage);
+    if (afterSleep !== null) return killAndSettle(afterSleep);
+
+    let probe: SandboxCommandExecutionResult | null = null;
+    try {
+      probe = await transferControlExec(context, probeCommand, deadline.signal);
+    } catch {
+      // A dropped poll is never settlement evidence; the job settles from its
+      // markers on a later poll, or the host-clock gates fire below.
+      probe = null;
+    }
+    const nowMs = driver.now();
+    if (probe !== null && !probe.timedOut && probe.exitCode === 0) {
+      const { triageText, progressTail } = splitDetachedProbeOutput(
+        probe.output,
+      );
+      const triage = triageSandboxDetachedJobProbeOutput(triageText);
+      if (triage.state === 'exited') {
+        if (triage.exitCode === 0) return settle(null);
+        const classification = classifySandboxGitFailure({
+          stage,
+          result: {
+            exitCode: triage.exitCode,
+            output: progressTail,
+            stdout: '',
+            stderr: '',
+            timedOut: false,
+          },
+        });
+        return settle(
+          failed(stage, classification.cause, classification.retryable),
+        );
+      }
+      if (triage.state === 'unknown') {
+        // Neither pid liveness nor an exit marker is provable: typed failure,
+        // never success and never indefinite parking.
+        return settle(failed(stage, 'unknown', false));
+      }
+      const stat = triage.progress;
+      if (
+        stat !== undefined &&
+        (lastProgressStat === null ||
+          stat.sizeBytes !== lastProgressStat.sizeBytes ||
+          stat.mtimeEpochSeconds !== lastProgressStat.mtimeEpochSeconds)
+      ) {
+        lastProgressStat = stat;
+        lastAdvanceAtMs = nowMs;
+      }
+      const snapshot = parseGitTransferProgress(progressTail);
+      if (
+        snapshot !== null &&
+        !transferProgressEquals(lastEmittedProgress, snapshot)
+      ) {
+        lastEmittedProgress = snapshot;
+        await reportProgress(context, {
+          status: 'progress',
+          stage,
+          progress: snapshot,
+        });
+      }
+    }
+
+    // Dual gates run on the host clock regardless of poll delivery.
+    if (nowMs - startedAtMs >= liveness.absoluteCapMs) {
+      return killAndSettle(
+        failed(stage, 'timeout', true),
+        liveness.absoluteCapMs,
+      );
+    }
+    if (nowMs - lastAdvanceAtMs >= liveness.heartbeatWindowMs) {
+      return killAndSettle(
+        failed(stage, 'timeout', true),
+        liveness.heartbeatWindowMs,
+      );
+    }
+  }
+}
+
+async function transferControlExec(
+  context: SandboxWorkspaceMaterializationHookContext,
+  command: string,
+  signal: AbortSignal,
+): Promise<SandboxCommandExecutionResult> {
+  return context.stageExecutor.execute({
+    stage: 'workspace_transfer',
+    request: {
+      command,
+      timeoutMs: SANDBOX_TRANSFER_CONTROL_EXEC_TIMEOUT_MS,
+      signal,
+    },
+    signal,
+    remainingTimeoutMs: SANDBOX_TRANSFER_CONTROL_EXEC_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Probe/kill seam handed to a parking caller (detach-workspace-clone D3).
+ * Both operations are short marker execs through the SAME stage executor —
+ * i.e. the sandbox exec channel for this task — created with fresh abort
+ * signals because the materialization's operation deadline is disposed once
+ * provisioning unwinds on the detach signal. `probe` throws on transport
+ * failure (transient — the parked observer keeps the entry and durable lease
+ * expiry remains the recovery horizon) and reports `unknown` only when the
+ * exec itself succeeded without proving pid liveness or an exit marker.
+ */
+function createDetachedTransferJobPort(args: {
+  readonly context: SandboxWorkspaceMaterializationHookContext;
+  readonly jobId: string;
+  readonly probeCommand: string;
+  readonly markerRoot: string | undefined;
+}): SandboxDetachedWorkspaceTransferJob {
+  const { context, jobId, probeCommand, markerRoot } = args;
+  return Object.freeze({
+    taskId: context.taskId,
+    jobId,
+    async probe(): Promise<SandboxDetachedWorkspaceTransferObservation> {
+      const execution = await transferControlExec(
+        context,
+        probeCommand,
+        new AbortController().signal,
+      );
+      if (execution.timedOut || execution.exitCode !== 0) {
+        throw new Error(
+          `Sandbox detached transfer probe for job ${jobId} did not complete`,
+        );
+      }
+      const { triageText, progressTail } = splitDetachedProbeOutput(
+        execution.output,
+      );
+      const triage = triageSandboxDetachedJobProbeOutput(triageText);
+      if (triage.state === 'exited') return { kind: 'exited' };
+      if (triage.state === 'alive') {
+        return {
+          kind: 'alive',
+          progress: parseGitTransferProgress(progressTail),
+        };
+      }
+      return { kind: 'unknown' };
+    },
+    kill(): Promise<void> {
+      return killDetachedTransferJob(context, jobId, markerRoot);
+    },
+  });
+}
+
+/** Best-effort, idempotent kill via the pid marker; never replaces settlement. */
+async function killDetachedTransferJob(
+  context: SandboxWorkspaceMaterializationHookContext,
+  jobId: string,
+  markerRoot: string | undefined,
+): Promise<void> {
+  try {
+    await transferControlExec(
+      context,
+      buildSandboxDetachedJobKillCommand(jobId, markerRoot),
+      new AbortController().signal,
+    );
+  } catch {
+    // The kill contract is idempotent and best-effort from the host side.
+  }
+}
+
+function sleepWithDriver(
+  driver: SandboxGitDeadlineDriver,
+  delayMs: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    driver.schedule(delayMs, resolve);
+  });
+}
+
 type DeliveryCommandOutcome =
   | {
       readonly ok: true;
@@ -716,6 +1300,13 @@ interface OperationDeadline {
   remainingTimeoutMs(): number;
   interruption(stage: ActiveWorkspaceStage): ActiveWorkspaceFailure | null;
   expire(): void;
+  /**
+   * Suspend the wall clock while a detached transfer runs under dual-gate
+   * liveness. Cancellation keeps firing while paused; only the deadline's
+   * clock stops advancing.
+   */
+  pause(): void;
+  resume(): void;
   dispose(): void;
 }
 
@@ -725,7 +1316,8 @@ function createOperationDeadline(args: {
   readonly driver: SandboxGitDeadlineDriver;
 }): OperationDeadline {
   const startedAt = args.driver.now();
-  const deadlineAt = startedAt + args.deadlineMs;
+  let deadlineAt = startedAt + args.deadlineMs;
+  let pausedAt: number | null = null;
   const controller = new AbortController();
   let source: 'cancellation' | 'deadline' | null = null;
 
@@ -737,19 +1329,20 @@ function createOperationDeadline(args: {
   const onCancellation = () => interrupt('cancellation');
   if (args.cancellationSignal?.aborted) onCancellation();
   else args.cancellationSignal?.addEventListener('abort', onCancellation);
-  const cancelDeadline = args.driver.schedule(args.deadlineMs, () =>
+  let cancelDeadline = args.driver.schedule(args.deadlineMs, () =>
     interrupt('deadline'),
   );
 
   return {
     signal: controller.signal,
     remainingTimeoutMs() {
-      return Math.max(0, Math.floor(deadlineAt - args.driver.now()));
+      const reference = pausedAt ?? args.driver.now();
+      return Math.max(0, Math.floor(deadlineAt - reference));
     },
     interruption(stage) {
       if (source === 'cancellation') return { status: 'cancelled', stage };
       if (source === 'deadline') return failed(stage, 'timeout', true);
-      if (args.driver.now() >= deadlineAt) {
+      if (pausedAt === null && args.driver.now() >= deadlineAt) {
         interrupt('deadline');
         return failed(stage, 'timeout', true);
       }
@@ -757,6 +1350,22 @@ function createOperationDeadline(args: {
     },
     expire() {
       interrupt('deadline');
+    },
+    pause() {
+      if (pausedAt !== null || source !== null) return;
+      pausedAt = args.driver.now();
+      cancelDeadline();
+    },
+    resume() {
+      if (pausedAt === null) return;
+      const pausedFor = Math.max(0, args.driver.now() - pausedAt);
+      pausedAt = null;
+      deadlineAt += pausedFor;
+      if (source !== null) return;
+      cancelDeadline = args.driver.schedule(
+        Math.max(0, deadlineAt - args.driver.now()),
+        () => interrupt('deadline'),
+      );
     },
     dispose() {
       cancelDeadline();
@@ -792,6 +1401,14 @@ async function reportWorkspaceStageStarted(
 async function reportWorkspaceStageTerminal(
   context: SandboxWorkspaceMaterializationHookContext,
   event: ActiveWorkspaceTerminalProgress,
+  diagnosticOptions?: {
+    /**
+     * Safe numeric gate fact for detached-transfer liveness timeouts (the
+     * fired gate's configured window/cap in ms) replacing the operation
+     * deadline in the terminal diagnostic event.
+     */
+    readonly timeoutMs?: number;
+  },
 ): Promise<void> {
   await reportProgress(context, event);
   if (event.status === 'succeeded') {
@@ -816,7 +1433,9 @@ async function reportWorkspaceStageTerminal(
     outcome: timedOut ? 'timed_out' : 'failed',
     cause: workspaceDiagnosticCause(event.stage, event.cause),
     retryable: event.retryable,
-    ...(timedOut ? { timeoutMs: context.plan.deadlineMs } : {}),
+    ...(timedOut
+      ? { timeoutMs: diagnosticOptions?.timeoutMs ?? context.plan.deadlineMs }
+      : {}),
   });
 }
 

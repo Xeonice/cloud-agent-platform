@@ -19,9 +19,13 @@ import {
   type TaskAdmissionClaimSourceState,
   type TaskAdmissionAuthorityRequest,
   type TaskAdmissionCheckpointRequest,
+  type TaskAdmissionParkRequest,
+  type TaskAdmissionParkedHeartbeatRequest,
+  type TaskAdmissionParkedReleaseRequest,
   type TaskAdmissionRenewRequest,
   type TaskAdmissionSettleRequest,
   type TaskAdmissionSettlement,
+  type TaskAdmissionTransferProgress,
 } from './task-admission.types';
 
 const CLAIM_SOURCE_STATES = new Set<TaskAdmissionClaimSourceState>([
@@ -29,6 +33,7 @@ const CLAIM_SOURCE_STATES = new Set<TaskAdmissionClaimSourceState>([
   'queued',
   'retrying',
   'running',
+  'parked',
   'succeeded',
 ]);
 
@@ -70,6 +75,7 @@ interface ClaimedRow {
   readonly workspaceMaterializationDeadlineMs: number | null;
   readonly taskStatus: string;
   readonly taskLifecycleVersion: number;
+  readonly parkedLeaseToken?: string | null;
 }
 
 interface AuthorizedRow {
@@ -88,6 +94,7 @@ export function buildTaskAdmissionClaimQuery(
       SELECT
         w."task_id",
         w."state" AS "source_state",
+        w."lease_owner" AS "parked_lease_owner",
         t."status"::text IN (
           'completed',
           'failed',
@@ -103,6 +110,14 @@ export function buildTaskAdmissionClaimQuery(
         )
         OR (
           w."state" = 'running'
+          AND w."lease_until" <= clock_timestamp()
+        )
+        OR (
+          -- Parked work resumes only through this expired-lease branch: the
+          -- parked poll loop expires the lease in place on job exit, and an
+          -- abandoned parked row (crash, rollback) expires by itself. The
+          -- retained lease_owner travels along as the parked generation.
+          w."state" = 'parked'
           AND w."lease_until" <= clock_timestamp()
         )
         OR (
@@ -130,7 +145,7 @@ export function buildTaskAdmissionClaimQuery(
         )
       ORDER BY
         CASE
-          WHEN w."state" = 'running' THEN w."lease_until"
+          WHEN w."state" IN ('running', 'parked') THEN w."lease_until"
           ELSE w."available_at"
         END ASC,
         w."created_at" ASC,
@@ -150,6 +165,9 @@ export function buildTaskAdmissionClaimQuery(
           -- work, and none of those paths starts a new attempt.
           WHEN c."task_terminal" THEN GREATEST(w."attempt", 1)
           WHEN w."state" = 'queued' THEN w."attempt"
+          -- Parking is not a retry event: a park/resume cycle continues the
+          -- same attempt it parked under.
+          WHEN w."state" = 'parked' THEN w."attempt"
           ELSE w."attempt" + 1
         END,
         "lease_owner" = ${request.leaseToken},
@@ -163,6 +181,7 @@ export function buildTaskAdmissionClaimQuery(
         w."lease_owner",
         w."lease_until",
         c."source_state",
+        c."parked_lease_owner",
         w."attempt",
         w."stage",
         w."cause_code",
@@ -175,6 +194,10 @@ export function buildTaskAdmissionClaimQuery(
       c."lease_owner" AS "leaseToken",
       c."lease_until" AS "leaseUntil",
       c."source_state" AS "sourceState",
+      CASE
+        WHEN c."source_state" = 'parked' THEN c."parked_lease_owner"
+        ELSE NULL
+      END AS "parkedLeaseToken",
       c."attempt" AS "attempt",
       c."stage" AS "stage",
       c."cause_code" AS "causeCode",
@@ -276,6 +299,47 @@ export class PrismaTaskAdmissionStore extends TaskAdmissionStore {
     return count === 1;
   }
 
+  async park(request: TaskAdmissionParkRequest): Promise<boolean> {
+    assertLeaseToken(request.leaseToken);
+    const stage = TaskProvisioningStageSchema.parse(request.settlement.stage);
+    assertPositiveDuration(
+      request.settlement.leaseDurationMs,
+      'leaseDurationMs',
+    );
+    const taskFence = buildTaskFenceExistsPredicate(request.taskFences, 'w');
+    // Parking is the one settlement that keeps the lease pair: the settling
+    // worker's token stays on the row as the parked ownership generation,
+    // and lease expiry is the recovery horizon for resume/restart/rollback
+    // through the expired-lease claim branch.
+    const count = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "task_admission_work" AS w
+      SET
+        "state" = 'parked',
+        "stage" = CASE
+          WHEN array_position(
+            ${TASK_ADMISSION_STAGE_ORDER_SQL},
+            w."stage"
+          ) <= array_position(
+            ${TASK_ADMISSION_STAGE_ORDER_SQL},
+            ${stage}
+          ) THEN ${stage}
+          ELSE w."stage"
+        END,
+        "cause_code" = NULL,
+        "available_at" = clock_timestamp(),
+        "lease_until" = clock_timestamp()
+          + (${request.settlement.leaseDurationMs}::bigint * interval '1 millisecond'),
+        "updated_at" = clock_timestamp()
+      WHERE
+        "task_id" = ${request.taskId}
+        AND "state" = 'running'
+        AND "lease_owner" = ${request.leaseToken}
+        AND "lease_until" > clock_timestamp()
+        AND ${taskFence}
+    `);
+    return count === 1;
+  }
+
   async settle(request: TaskAdmissionSettleRequest): Promise<boolean> {
     assertLeaseToken(request.leaseToken);
     const settlement = normalizeSettlement(request.settlement);
@@ -314,6 +378,59 @@ export class PrismaTaskAdmissionStore extends TaskAdmissionStore {
         AND "lease_owner" = ${request.leaseToken}
         AND "lease_until" > clock_timestamp()
         AND ${taskFence}
+    `);
+    return count === 1;
+  }
+
+  async parkedHeartbeat(
+    request: TaskAdmissionParkedHeartbeatRequest,
+  ): Promise<boolean> {
+    assertLeaseToken(request.leaseToken);
+    assertPositiveDuration(request.leaseDurationMs, 'leaseDurationMs');
+    const progress = normalizeTransferProgress(request.progress ?? null);
+    const progressAssignments =
+      progress === null
+        ? Prisma.empty
+        : Prisma.sql`,
+        "progress_percent" = ${progress.percent},
+        "progress_received_objects" = ${progress.receivedObjects},
+        "progress_total_objects" = ${progress.totalObjects},
+        "progress_received_bytes" = ${progress.receivedBytes},
+        "progress_throughput_bytes_per_second" = ${progress.throughputBytesPerSecond}`;
+    // Requiring an unexpired parked lease means a late poll tick can never
+    // resurrect a row that the claim path already recovered or resumed.
+    const count = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "task_admission_work" AS w
+      SET
+        "lease_until" = clock_timestamp()
+          + (${request.leaseDurationMs}::bigint * interval '1 millisecond'),
+        "updated_at" = clock_timestamp()${progressAssignments}
+      WHERE
+        w."task_id" = ${request.taskId}
+        AND w."state" = 'parked'
+        AND w."lease_owner" = ${request.leaseToken}
+        AND w."lease_until" > clock_timestamp()
+    `);
+    return count === 1;
+  }
+
+  async releaseParked(
+    request: TaskAdmissionParkedReleaseRequest,
+  ): Promise<boolean> {
+    assertLeaseToken(request.leaseToken);
+    // Expire the parked lease in place; the row becomes claimable through the
+    // existing expired-lease branch only. No admission, no settlement, and no
+    // attempt mutation happen here.
+    const count = await this.prisma.$executeRaw(Prisma.sql`
+      UPDATE "task_admission_work" AS w
+      SET
+        "lease_until" = clock_timestamp(),
+        "available_at" = clock_timestamp(),
+        "updated_at" = clock_timestamp()
+      WHERE
+        w."task_id" = ${request.taskId}
+        AND w."state" = 'parked'
+        AND w."lease_owner" = ${request.leaseToken}
     `);
     return count === 1;
   }
@@ -388,6 +505,18 @@ function parseClaimedRow(row: ClaimedRow): TaskAdmissionClaim {
     );
   }
   assertLeaseToken(row.leaseToken);
+  const parkedLeaseToken =
+    row.sourceState === 'parked' &&
+    typeof row.parkedLeaseToken === 'string' &&
+    row.parkedLeaseToken.length > 0
+      ? row.parkedLeaseToken
+      : null;
+  if (parkedLeaseToken !== null) assertLeaseToken(parkedLeaseToken);
+  if (row.sourceState === 'parked' && parkedLeaseToken === null) {
+    throw new Error(
+      'Task admission parked claim is missing its parked generation',
+    );
+  }
   const resources = snapshotSandboxResources(
     row.resourceSnapshot as { readonly diskSizeGb?: number } | null,
   );
@@ -413,6 +542,7 @@ function parseClaimedRow(row: ClaimedRow): TaskAdmissionClaim {
       row.workspaceMaterializationDeadlineMs,
     taskStatus: TaskStatusSchema.parse(row.taskStatus),
     taskLifecycleVersion: row.taskLifecycleVersion,
+    ...(parkedLeaseToken === null ? {} : { parkedLeaseToken }),
   });
 }
 
@@ -442,6 +572,46 @@ function normalizeSettlement(
     return { ...settlement, stage };
   }
   return { state: 'cancelled', stage };
+}
+
+/** Numeric-only snapshot validation; null fields model indeterminate phases. */
+function normalizeTransferProgress(
+  progress: TaskAdmissionTransferProgress | null,
+): TaskAdmissionTransferProgress | null {
+  if (progress === null) return null;
+  const percent = boundedProgressNumber(progress.percent, 'percent', 100);
+  return {
+    percent,
+    receivedObjects: boundedProgressNumber(
+      progress.receivedObjects,
+      'receivedObjects',
+    ),
+    totalObjects: boundedProgressNumber(progress.totalObjects, 'totalObjects'),
+    receivedBytes: boundedProgressNumber(
+      progress.receivedBytes,
+      'receivedBytes',
+    ),
+    throughputBytesPerSecond: boundedProgressNumber(
+      progress.throughputBytesPerSecond,
+      'throughputBytesPerSecond',
+    ),
+  };
+}
+
+function boundedProgressNumber(
+  value: number | null,
+  name: string,
+  max?: number,
+): number | null {
+  if (value === null || value === undefined) return null;
+  if (
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    (max !== undefined && value > max)
+  ) {
+    throw new Error(`Task admission transfer progress ${name} is invalid`);
+  }
+  return value;
 }
 
 function assertLeaseToken(value: string): void {

@@ -45,10 +45,14 @@ import {
   SandboxProviderRouter,
   type RoutableSandboxProvider,
 } from '../provider-center/router.js';
+import type {
+  SandboxWorkspaceMaterializationHook,
+} from '@cap/sandbox-core';
 import {
   deliverSandboxGitWorkspaceStaged,
   materializeSandboxGitWorkspaceStaged,
 } from '../workspace/git.js';
+import { readConfiguredWorkspaceTransferLiveness } from './deployment-environment.js';
 import type {
   SandboxHostHarness,
   SandboxHostLogger,
@@ -88,12 +92,16 @@ export function createConfiguredSandboxProvider<
   >,
 ): SandboxProviderRouter<TCloneSpec, TRuntimeId, TTranscriptSource> {
   const providerFamily = readConfiguredSandboxProviderFamily();
+  // Shared hook seam (design D1): both BoxLite and AIO inherit the detached
+  // workspace-transfer path and the deployment's dual-gate liveness knobs
+  // from this single wiring point; provider packages stay detach-agnostic.
+  const workspaceMaterialization = createConfiguredWorkspaceMaterializationHook();
   const providers: SandboxProviderDescriptor<
     HarnessRoutableSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>
   >[] = [];
 
   if (providerFamilyAllowsAio(providerFamily)) {
-    providers.push(createAioProviderDescriptor(host));
+    providers.push(createAioProviderDescriptor(host, workspaceMaterialization));
   }
 
   const cloudBaseUrl = readOptionalEnv('CAP_SANDBOX_CLOUD_HTTP_BASE_URL');
@@ -191,7 +199,7 @@ export function createConfiguredSandboxProvider<
             'boxlite',
             runtimeId ?? null,
           )) ?? null,
-        workspaceMaterialization: materializeSandboxGitWorkspaceStaged,
+        workspaceMaterialization,
         workspaceDelivery: deliverSandboxGitWorkspaceStaged,
       }),
     );
@@ -216,6 +224,25 @@ export function createConfiguredSandboxProvider<
   );
 }
 
+/**
+ * Wrap the staged materialization helper with the deployment's detached
+ * workspace-transfer options: the `workspace_transfer` stage runs as a
+ * detached supervised job (launch + short polling execs) under the configured
+ * dual-gate liveness knobs. Knob validation fails fast at provider
+ * construction, mirroring the other config readers.
+ */
+function createConfiguredWorkspaceMaterializationHook(): SandboxWorkspaceMaterializationHook {
+  const liveness = readConfiguredWorkspaceTransferLiveness();
+  return (context) =>
+    materializeSandboxGitWorkspaceStaged({
+      ...context,
+      detachedTransfer: {
+        ...(context.detachedTransfer ?? {}),
+        liveness,
+      },
+    });
+}
+
 function createAioProviderDescriptor<
   TCloneSpec,
   TRuntimeId,
@@ -228,6 +255,7 @@ function createAioProviderDescriptor<
     TTranscriptSource,
     TAuthMaterial
   >,
+  workspaceMaterialization: SandboxWorkspaceMaterializationHook,
 ): SandboxProviderDescriptor<
   HarnessRoutableSandboxProvider<TCloneSpec, TRuntimeId, TTranscriptSource>
 > {
@@ -341,7 +369,7 @@ function createAioProviderDescriptor<
           taskId,
         });
       },
-      workspaceMaterialization: materializeSandboxGitWorkspaceStaged,
+      workspaceMaterialization,
       workspaceDelivery: deliverSandboxGitWorkspaceStaged,
     },
   });

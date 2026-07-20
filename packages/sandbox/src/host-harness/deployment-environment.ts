@@ -13,7 +13,9 @@ import {
   missingCapabilities,
   resolveSandboxResources,
   sandboxResourceRequiredCapabilities,
+  snapshotSandboxDetachedJobLivenessPolicy,
   snapshotSandboxProvisioningPolicy,
+  type SandboxDetachedJobLivenessPolicySnapshot,
   type SandboxEnvironmentProviderFamily,
   type SandboxProvisioningPolicySnapshot,
   type SandboxProviderCapability,
@@ -48,6 +50,42 @@ export interface ConfiguredProviderProvisioningPolicy
   readonly providerId: string;
   readonly providerFamily: SandboxEnvironmentProviderFamily;
   readonly capabilities: readonly SandboxProviderCapability[];
+  /**
+   * Dual-gate liveness knobs for the detached `workspace_transfer` stage,
+   * plumbed through the same deployment-environment path as
+   * `gitCloneTimeoutMs`. Absent fields fall back to the sandbox-core
+   * defaults (~90s no-progress heartbeat, ~1h absolute cap).
+   */
+  readonly workspaceTransferLiveness?: SandboxDetachedJobLivenessPolicySnapshot;
+}
+
+/** Env knobs governing detached workspace-transfer liveness (design D5). */
+export const CAP_SANDBOX_TRANSFER_HEARTBEAT_WINDOW_MS_ENV =
+  'CAP_SANDBOX_TRANSFER_HEARTBEAT_WINDOW_MS';
+export const CAP_SANDBOX_TRANSFER_ABSOLUTE_CAP_MS_ENV =
+  'CAP_SANDBOX_TRANSFER_ABSOLUTE_CAP_MS';
+
+/**
+ * Read and validate the deployment's dual-gate transfer-liveness knobs.
+ * Validation follows the `snapshotSandboxProvisioningPolicy` min/max pattern
+ * (delegated to `snapshotSandboxDetachedJobLivenessPolicy`); out-of-range or
+ * non-numeric values fail closed rather than running with an unvalidated gate.
+ */
+export function readConfiguredWorkspaceTransferLiveness(
+  env: NodeJS.ProcessEnv = process.env,
+): SandboxDetachedJobLivenessPolicySnapshot {
+  const heartbeatWindowMs = optionalIntegerFromEnv(
+    env,
+    CAP_SANDBOX_TRANSFER_HEARTBEAT_WINDOW_MS_ENV,
+  );
+  const absoluteCapMs = optionalIntegerFromEnv(
+    env,
+    CAP_SANDBOX_TRANSFER_ABSOLUTE_CAP_MS_ENV,
+  );
+  return snapshotSandboxDetachedJobLivenessPolicy({
+    ...(heartbeatWindowMs === undefined ? {} : { heartbeatWindowMs }),
+    ...(absoluteCapMs === undefined ? {} : { absoluteCapMs }),
+  });
 }
 
 interface ConfiguredTaskPolicyCandidate
@@ -70,6 +108,7 @@ export function resolveConfiguredProviderProvisioningPolicyForFamily(
   env: NodeJS.ProcessEnv = process.env,
 ): ConfiguredProviderProvisioningPolicy {
   const configuredFamily = readConfiguredSandboxProviderFamily(env);
+  const transferLiveness = workspaceTransferLivenessSpread(env);
   if (
     args.providerFamily === 'aio' &&
     providerFamilyAllowsAio(configuredFamily)
@@ -87,6 +126,7 @@ export function resolveConfiguredProviderProvisioningPolicyForFamily(
       providerFamily: 'aio',
       capabilities: SANDBOX_PROVIDER_CAPABILITIES,
       ...policy,
+      ...transferLiveness,
     });
   }
   if (
@@ -113,6 +153,7 @@ export function resolveConfiguredProviderProvisioningPolicyForFamily(
       providerFamily: 'boxlite',
       capabilities: result.config.capabilities,
       ...policy,
+      ...transferLiveness,
     });
   }
   throw new Error('Configured provider family is unavailable.');
@@ -267,7 +308,10 @@ export function resolveConfiguredTaskProvisioningPolicy(
       available: _available,
       ...policy
     } = candidate;
-    return Object.freeze(policy);
+    return Object.freeze({
+      ...policy,
+      ...workspaceTransferLivenessSpread(env),
+    });
   }
 
   const family = explicitProviderFamilyLabel(configuredFamily);
@@ -433,6 +477,28 @@ export function resolveConfiguredDeploymentEnvironmentTarget(
     throw new Error('Deployment provider cannot prove an immutable runtime source.');
   }
   return selected.target;
+}
+
+function workspaceTransferLivenessSpread(
+  env: NodeJS.ProcessEnv,
+): Pick<ConfiguredProviderProvisioningPolicy, 'workspaceTransferLiveness'> {
+  const liveness = readConfiguredWorkspaceTransferLiveness(env);
+  return Object.keys(liveness).length === 0
+    ? {}
+    : { workspaceTransferLiveness: liveness };
+}
+
+function optionalIntegerFromEnv(
+  env: NodeJS.ProcessEnv,
+  name: string,
+): number | undefined {
+  const raw = readOptionalEnv(name, env);
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`${name} must be an integer number of milliseconds`);
+  }
+  return value;
 }
 
 function stringFromEnv(

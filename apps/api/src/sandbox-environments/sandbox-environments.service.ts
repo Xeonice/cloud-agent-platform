@@ -784,6 +784,11 @@ export class SandboxEnvironmentsService {
         providerFamily: resolved.providerFamily,
         capabilities: resolved.capabilities,
         ...provisioningPolicy,
+        // Detached workspace-transfer dual-gate knobs travel with the policy
+        // exactly like gitCloneTimeoutMs; consumption stays host-side.
+        ...(resolved.workspaceTransferLiveness === undefined
+          ? {}
+          : { workspaceTransferLiveness: resolved.workspaceTransferLiveness }),
       });
     } catch (error) {
       throw new BadRequestException({

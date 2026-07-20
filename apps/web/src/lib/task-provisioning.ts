@@ -1,4 +1,5 @@
 import {
+  TASK_PROVISIONING_STAGES,
   isReplayableStatus,
   type TaskProvisioningStage,
   type TaskProvisioningState,
@@ -148,6 +149,137 @@ export function provisioningAttemptLabel(
     return `自动重试中 · 第 ${provisioning.attempt} 次处理尝试`;
   }
   return `第 ${provisioning.attempt} 次处理尝试`;
+}
+
+// ---------------------------------------------------------------------------
+// Provisioning stage timeline (detach-workspace-clone)
+// ---------------------------------------------------------------------------
+
+export type ProvisioningStageStatus = "completed" | "current" | "pending";
+
+export interface ProvisioningTimelineEntry {
+  stage: TaskProvisioningStage;
+  label: string;
+  status: ProvisioningStageStatus;
+}
+
+/**
+ * Derive the stage checklist purely from the shared `TASK_PROVISIONING_STAGES`
+ * order vs the summary's current stage — no new backend vocabulary. A
+ * succeeded summary marks every stage completed regardless of its last
+ * reported stage.
+ */
+export function provisioningTimelineEntries(
+  provisioning: Pick<
+    NonNullable<TaskResponse["provisioning"]>,
+    "stage" | "state"
+  >,
+): ProvisioningTimelineEntry[] {
+  const currentIndex = TASK_PROVISIONING_STAGES.indexOf(provisioning.stage);
+  const succeeded = provisioning.state === "succeeded";
+  return TASK_PROVISIONING_STAGES.map((stage, index) => ({
+    stage,
+    label: TASK_PROVISIONING_STAGE_LABELS[stage],
+    status:
+      succeeded || index < currentIndex
+        ? "completed"
+        : index === currentIndex
+          ? "current"
+          : "pending",
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Transfer progress (detach-workspace-clone): numeric-only, unknown ≠ 0%
+// ---------------------------------------------------------------------------
+
+/**
+ * Numeric-only clone transfer progress projected from the provisioning
+ * summary. Every field is nullable: unknown is modeled explicitly (AIP-151)
+ * and is never rendered as 0%.
+ */
+export interface TaskTransferProgress {
+  percent: number | null;
+  receivedObjects: number | null;
+  totalObjects: number | null;
+  receivedBytes: number | null;
+  throughput: number | null;
+}
+
+function readNonNegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : null;
+}
+
+/**
+ * Defensive reader for the summary's additive nullable `progress` object.
+ * Old backends omit the field entirely; a null/absent/malformed value reads
+ * as "no progress object" so the UI degrades to the existing state/stage
+ * presentation instead of fabricating a bar.
+ */
+export function taskTransferProgress(
+  provisioning: TaskResponse["provisioning"],
+): TaskTransferProgress | null {
+  if (!provisioning) return null;
+  const raw = (provisioning as { progress?: unknown }).progress;
+  if (raw === null || raw === undefined || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const percent = readNonNegativeNumber(record.percent);
+  return {
+    percent: percent === null ? null : Math.min(percent, 100),
+    receivedObjects: readNonNegativeNumber(record.receivedObjects),
+    totalObjects: readNonNegativeNumber(record.totalObjects),
+    receivedBytes: readNonNegativeNumber(record.receivedBytes),
+    throughput: readNonNegativeNumber(record.throughput),
+  };
+}
+
+/**
+ * Display percent for a KNOWN transfer percent; null when the percent is
+ * unknown/indeterminate. Unknown progress must never surface as "0%".
+ */
+export function transferPercentLabel(
+  progress: TaskTransferProgress | null,
+): string | null {
+  if (progress === null || progress.percent === null) return null;
+  return `${Math.round(progress.percent)}%`;
+}
+
+const BYTE_UNITS = ["B", "KiB", "MiB", "GiB", "TiB"] as const;
+
+export function formatTransferBytes(bytes: number): string {
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const rendered = unit === 0 ? String(Math.round(value)) : value.toFixed(1);
+  return `${rendered} ${BYTE_UNITS[unit]}`;
+}
+
+/**
+ * Compact numeric facts line for a transfer in flight (objects, bytes,
+ * throughput) — only the numeric fields the summary actually carries; no raw
+ * git output ever reaches this surface.
+ */
+export function transferProgressDetail(
+  progress: TaskTransferProgress,
+): string | null {
+  const parts: string[] = [];
+  if (progress.receivedObjects !== null && progress.totalObjects !== null) {
+    parts.push(`对象 ${progress.receivedObjects}/${progress.totalObjects}`);
+  } else if (progress.receivedObjects !== null) {
+    parts.push(`对象 ${progress.receivedObjects}`);
+  }
+  if (progress.receivedBytes !== null) {
+    parts.push(`已接收 ${formatTransferBytes(progress.receivedBytes)}`);
+  }
+  if (progress.throughput !== null) {
+    parts.push(`${formatTransferBytes(progress.throughput)}/s`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 /** Stable, locale-independent timestamp for polling progress and render tests. */

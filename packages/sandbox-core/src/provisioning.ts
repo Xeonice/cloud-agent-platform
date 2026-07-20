@@ -294,16 +294,105 @@ export type SandboxWorkspaceMaterializationResult =
       readonly stage: Exclude<SandboxWorkspaceMaterializationStage, 'complete'>;
     };
 
+/**
+ * Numeric-only clone transfer progress. `null` models an explicitly unknown /
+ * indeterminate value (AIP-151): pre-"Receiving objects" phases report
+ * `percent: null`, never 0%, so consumers can distinguish indeterminate from
+ * zero.
+ */
+export interface SandboxWorkspaceTransferProgressSnapshot {
+  readonly percent: number | null;
+  readonly receivedObjects: number | null;
+  readonly totalObjects: number | null;
+  readonly receivedBytes: number | null;
+  readonly throughputBytesPerSecond: number | null;
+}
+
+const SANDBOX_WORKSPACE_TRANSFER_PROGRESS_FIELDS = [
+  'percent',
+  'receivedObjects',
+  'totalObjects',
+  'receivedBytes',
+  'throughputBytesPerSecond',
+] as const;
+
+/**
+ * Validate and freeze a numeric-only transfer progress snapshot. Progress is
+ * an output stream, never a settlement source: durable admission state stays
+ * authoritative regardless of these values.
+ */
+export function snapshotSandboxWorkspaceTransferProgress(
+  progress: SandboxWorkspaceTransferProgressSnapshot,
+): SandboxWorkspaceTransferProgressSnapshot {
+  const unknown = Object.keys(progress).filter(
+    (key) =>
+      !(SANDBOX_WORKSPACE_TRANSFER_PROGRESS_FIELDS as readonly string[]).includes(
+        key,
+      ),
+  );
+  if (unknown.length > 0) {
+    throw new SandboxProviderConfigurationError(
+      `Unsupported sandbox transfer progress keys: ${unknown.join(', ')}`,
+    );
+  }
+  for (const field of SANDBOX_WORKSPACE_TRANSFER_PROGRESS_FIELDS) {
+    const value = progress[field];
+    if (value === null) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new SandboxProviderConfigurationError(
+        `Sandbox transfer progress ${field} must be null or a non-negative finite number`,
+      );
+    }
+  }
+  if (progress.percent !== null && progress.percent > 100) {
+    throw new SandboxProviderConfigurationError(
+      'Sandbox transfer progress percent must be null or within 0-100',
+    );
+  }
+  return Object.freeze({
+    percent: progress.percent,
+    receivedObjects: progress.receivedObjects,
+    totalObjects: progress.totalObjects,
+    receivedBytes: progress.receivedBytes,
+    throughputBytesPerSecond: progress.throughputBytesPerSecond,
+  });
+}
+
 export type SandboxWorkspaceProgressEvent =
   | {
       readonly status: 'started' | 'succeeded';
       readonly stage: Exclude<SandboxWorkspaceMaterializationStage, 'complete'>;
+    }
+  | {
+      /** Additive clone-progress variant; best-effort, audit/UX only. */
+      readonly status: 'progress';
+      readonly stage: 'workspace_transfer';
+      readonly progress: SandboxWorkspaceTransferProgressSnapshot;
     }
   | SandboxWorkspaceMaterializationResult;
 
 export type SandboxWorkspaceProgressReporter = (
   event: SandboxWorkspaceProgressEvent,
 ) => void | Promise<void>;
+
+/**
+ * Dispatch workspace progress without letting reporter latency or failure
+ * block or fail the materialization: a dropped progress write is never an
+ * error; durable work state stays authoritative.
+ */
+export function reportSandboxWorkspaceProgress(
+  reporter: SandboxWorkspaceProgressReporter | undefined,
+  event: SandboxWorkspaceProgressEvent,
+): void {
+  if (!reporter) return;
+  try {
+    void Promise.resolve(reporter(Object.freeze({ ...event }))).catch(
+      () => undefined,
+    );
+  } catch {
+    // Progress is best-effort; durable admission work remains authoritative.
+  }
+}
 
 /**
  * Composite provider phases whose physical order may differ by provider.

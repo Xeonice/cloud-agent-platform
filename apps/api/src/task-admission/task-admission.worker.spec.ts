@@ -1,10 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import type { ModuleRef } from '@nestjs/core';
 import {
   TERMINAL_TASK_STATUSES,
   type TaskProvisioningStage,
 } from '@cap/contracts';
+import {
+  SandboxWorkspaceTransferDetachedSignal,
+  type SandboxDetachedWorkspaceTransferJob,
+  type SandboxProvisionContext,
+} from '@cap/sandbox';
 import type { AuditRecorderPort } from '../audit/audit-recorder.port';
+import type { SessionCredentialsService } from '../creds/session-credentials.service';
+import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
+import { GuardrailsService } from '../guardrails/guardrails.service';
+import { FencedTaskAdmissionProcessor } from './fenced-task-admission.processor';
 import {
   DEFAULT_TASK_ADMISSION_WORKER_OPTIONS,
   TaskAdmissionClock,
@@ -23,11 +33,17 @@ import {
   type TaskAdmissionCheckpointRequest,
   type TaskAdmissionClaim,
   type TaskAdmissionClaimRequest,
+  type TaskAdmissionParkRequest,
+  type TaskAdmissionParkedHeartbeatRequest,
+  type TaskAdmissionParkedJobObservation,
+  type TaskAdmissionParkedJobPort,
+  type TaskAdmissionParkedReleaseRequest,
   type TaskAdmissionProcessor,
   type TaskAdmissionProcessorContext,
   type TaskAdmissionRenewRequest,
   type TaskAdmissionSettleRequest,
   type TaskAdmissionSettlement,
+  type TaskAdmissionTransferProgress,
 } from './task-admission.types';
 import {
   TaskAdmissionWorker,
@@ -59,6 +75,7 @@ interface MemoryWork {
     | 'accepted'
     | 'queued'
     | 'running'
+    | 'parked'
     | 'retrying'
     | 'succeeded'
     | 'failed'
@@ -72,6 +89,7 @@ interface MemoryWork {
   taskStatus: TaskAdmissionClaim['taskStatus'];
   taskLifecycleVersion: number;
   settlement: TaskAdmissionSettlement | null;
+  progress: TaskAdmissionTransferProgress | null;
 }
 
 class ManualClock extends TaskAdmissionClock {
@@ -175,6 +193,7 @@ class MemoryTaskAdmissionStore extends TaskAdmissionStore {
       taskStatus: 'pending',
       taskLifecycleVersion: 0,
       settlement: null,
+      progress: null,
       ...overrides,
     };
     this.rows.push(row);
@@ -192,18 +211,20 @@ class MemoryTaskAdmissionStore extends TaskAdmissionStore {
               candidate.taskStatus,
             ))) &&
           candidate.availableAt <= this.clock.value) ||
-        (candidate.state === 'running' &&
+        ((candidate.state === 'running' || candidate.state === 'parked') &&
           candidate.leaseUntil !== null &&
           candidate.leaseUntil <= this.clock.value),
     );
     if (!row) return null;
 
     const sourceState = row.state as TaskAdmissionClaim['sourceState'];
+    const parkedLeaseToken =
+      sourceState === 'parked' ? row.leaseToken : null;
     row.attempt = (TERMINAL_TASK_STATUSES as readonly string[]).includes(
       row.taskStatus,
     )
       ? Math.max(row.attempt, 1)
-      : sourceState === 'queued'
+      : sourceState === 'queued' || sourceState === 'parked'
         ? row.attempt
         : row.attempt + 1;
     row.state = 'running';
@@ -216,6 +237,7 @@ class MemoryTaskAdmissionStore extends TaskAdmissionStore {
       leaseToken: request.leaseToken,
       leaseUntil: new Date(row.leaseUntil),
       sourceState,
+      ...(parkedLeaseToken === null ? {} : { parkedLeaseToken }),
       attempt: row.attempt,
       stage: row.stage,
       causeCode: row.causeCode,
@@ -268,6 +290,55 @@ class MemoryTaskAdmissionStore extends TaskAdmissionStore {
     row.leaseUntil = null;
     row.settlement = request.settlement;
     return true;
+  }
+
+  async park(request: TaskAdmissionParkRequest): Promise<boolean> {
+    const row = this.authorizedRow(request);
+    if (!row) return false;
+    // The one settlement that retains the lease pair: the settling worker's
+    // token stays on the row as the parked ownership generation.
+    row.state = 'parked';
+    if (stageIndex(request.settlement.stage) >= stageIndex(row.stage)) {
+      row.stage = request.settlement.stage;
+    }
+    row.causeCode = null;
+    row.availableAt = this.clock.value;
+    row.leaseUntil = this.clock.value + request.settlement.leaseDurationMs;
+    row.settlement = null;
+    return true;
+  }
+
+  async parkedHeartbeat(
+    request: TaskAdmissionParkedHeartbeatRequest,
+  ): Promise<boolean> {
+    const row = this.parkedRow(request.taskId, request.leaseToken);
+    if (!row || row.leaseUntil === null || row.leaseUntil <= this.clock.value) {
+      return false;
+    }
+    row.leaseUntil = this.clock.value + request.leaseDurationMs;
+    if (request.progress) row.progress = request.progress;
+    return true;
+  }
+
+  async releaseParked(
+    request: TaskAdmissionParkedReleaseRequest,
+  ): Promise<boolean> {
+    const row = this.parkedRow(request.taskId, request.leaseToken);
+    if (!row) return false;
+    row.leaseUntil = this.clock.value;
+    row.availableAt = this.clock.value;
+    return true;
+  }
+
+  private parkedRow(taskId: string, leaseToken: string): MemoryWork | null {
+    return (
+      this.rows.find(
+        (row) =>
+          row.taskId === taskId &&
+          row.state === 'parked' &&
+          row.leaseToken === leaseToken,
+      ) ?? null
+    );
   }
 
   async authorize(request: TaskAdmissionAuthorityRequest): Promise<boolean> {
@@ -1391,4 +1462,408 @@ test('retry jitter is deterministic, bounded, and task-attempt specific', () => 
   assert.ok(policy.delayMs('same-task', 2) >= 1);
   assert.equal(policy.canRetry(2), true);
   assert.equal(policy.canRetry(3), false);
+});
+
+function flushAsync(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+interface RecordedParkedClaim {
+  readonly sourceState: TaskAdmissionClaim['sourceState'];
+  readonly attempt: number;
+  readonly leaseToken: string;
+  readonly parkedLeaseToken: string | null;
+}
+
+function recordClaim(context: TaskAdmissionProcessorContext): RecordedParkedClaim {
+  return {
+    sourceState: context.claim.sourceState,
+    attempt: context.claim.attempt,
+    leaseToken: context.claim.leaseToken,
+    parkedLeaseToken: context.claim.parkedLeaseToken ?? null,
+  };
+}
+
+test('a parked transfer frees the slot, heartbeats progress, and resumes through the claim path within one attempt', async () => {
+  const clock = new ManualClock();
+  const store = new MemoryTaskAdmissionStore(clock);
+  const row = store.add('parked-task');
+  const other = store.add('other-task');
+  const snapshot = {
+    percent: 42,
+    receivedObjects: 420,
+    totalObjects: 1000,
+    receivedBytes: 65_536,
+    throughputBytesPerSecond: 8_192,
+  } satisfies TaskAdmissionTransferProgress;
+  let observation: TaskAdmissionParkedJobObservation = {
+    kind: 'alive',
+    progress: snapshot,
+  };
+  const job: TaskAdmissionParkedJobPort = {
+    probe: async () => observation,
+    kill: async () => undefined,
+  };
+  const seenClaims: RecordedParkedClaim[] = [];
+  const processor = new FunctionProcessor(async (context) => {
+    if (context.claim.taskId !== 'parked-task') {
+      return { kind: 'succeeded' } as const;
+    }
+    seenClaims.push(recordClaim(context));
+    if (seenClaims.length === 1) {
+      return { kind: 'parked', stage: 'workspace_transfer', job } as const;
+    }
+    return { kind: 'succeeded' } as const;
+  });
+  const { worker, scheduler } = createWorker({ store, clock, processor });
+
+  const parkedOutcome = await worker.runOnce();
+  assert.equal(parkedOutcome.kind, 'parked');
+  assert.equal(row.state, 'parked');
+  assert.equal(row.stage, 'workspace_transfer');
+  assert.equal(row.attempt, 1);
+  // The parked ownership generation is the parking worker's retained token.
+  const parkedGeneration = row.leaseToken;
+  assert.equal(parkedGeneration, seenClaims[0]?.leaseToken);
+
+  // The slot is free: another accepted task is claimable while the row parks,
+  // and the parked row itself is not claimable under a live parked lease.
+  const otherOutcome = await worker.runOnce();
+  assert.equal(otherOutcome.kind, 'succeeded');
+  assert.equal(other.state, 'succeeded');
+  assert.equal((await worker.runOnce()).kind, 'idle');
+
+  // Marker loop heartbeat: extends the parked lease and persists progress.
+  const leaseBeforeHeartbeat = row.leaseUntil;
+  scheduler.advance(25);
+  await flushAsync();
+  assert.ok(row.leaseUntil !== null && leaseBeforeHeartbeat !== null);
+  assert.ok(row.leaseUntil > leaseBeforeHeartbeat);
+  assert.deepEqual(row.progress, snapshot);
+  assert.equal(row.state, 'parked');
+  assert.equal(row.attempt, 1);
+
+  // Job exit: the loop only releases the lease and wakes; it never settles.
+  observation = { kind: 'exited' };
+  scheduler.advance(25);
+  await flushAsync();
+  assert.equal(row.state, 'parked');
+  assert.ok(row.leaseUntil !== null && row.leaseUntil <= clock.value);
+
+  const resumedOutcome = await worker.runOnce();
+  assert.equal(resumedOutcome.kind, 'succeeded');
+  assert.equal(row.state, 'succeeded');
+  const resumed = seenClaims[1];
+  assert.ok(resumed);
+  assert.equal(resumed.sourceState, 'parked');
+  // Park/resume stays inside one attempt: parking is not a retry event.
+  assert.equal(resumed.attempt, 1);
+  assert.equal(row.attempt, 1);
+  // Resume runs under a new lease token while carrying the parked generation.
+  assert.notEqual(resumed.leaseToken, parkedGeneration);
+  assert.equal(resumed.parkedLeaseToken, parkedGeneration);
+  await worker.stop();
+});
+
+test('an unknown parked observation is handed back to the claim path instead of being settled locally', async () => {
+  const clock = new ManualClock();
+  const store = new MemoryTaskAdmissionStore(clock);
+  const row = store.add('unprovable-task');
+  const job: TaskAdmissionParkedJobPort = {
+    probe: async () => ({ kind: 'unknown' }) as const,
+    kill: async () => undefined,
+  };
+  const processor = new FunctionProcessor(async () => {
+    return { kind: 'parked', stage: 'workspace_transfer', job } as const;
+  });
+  const { worker, scheduler } = createWorker({ store, clock, processor });
+
+  assert.equal((await worker.runOnce()).kind, 'parked');
+  scheduler.advance(25);
+  await flushAsync();
+  // Success is never inferred and no settlement happens in the loop; the row
+  // is merely claimable again for the processor's three-way marker triage.
+  assert.equal(row.state, 'parked');
+  assert.ok(row.leaseUntil !== null && row.leaseUntil <= clock.value);
+  await worker.stop();
+});
+
+test('restart recovers a parked row only through the expired-lease claim branch without burning the attempt', async () => {
+  const clock = new ManualClock();
+  clock.advance(1_000);
+  const store = new MemoryTaskAdmissionStore(clock);
+  const row = store.add('restart-task', {
+    state: 'parked',
+    attempt: 2,
+    stage: 'workspace_transfer',
+    leaseToken: 'pre-restart:parked-generation',
+    leaseUntil: clock.value + 5_000,
+  });
+  const seenClaims: RecordedParkedClaim[] = [];
+  const processor = new FunctionProcessor(async (context) => {
+    seenClaims.push(recordClaim(context));
+    return { kind: 'succeeded' } as const;
+  });
+  const { worker } = createWorker({ store, clock, processor });
+
+  // A live parked lease is not claimable: no watcher exists after a restart,
+  // so recovery must wait for durable lease expiry, never process memory.
+  assert.equal((await worker.runOnce()).kind, 'idle');
+
+  clock.advance(5_000);
+  assert.equal((await worker.runOnce()).kind, 'succeeded');
+  const resumed = seenClaims[0];
+  assert.ok(resumed);
+  assert.equal(resumed.sourceState, 'parked');
+  assert.equal(resumed.attempt, 2);
+  assert.equal(resumed.parkedLeaseToken, 'pre-restart:parked-generation');
+  assert.equal(row.attempt, 2);
+  assert.equal(row.state, 'succeeded');
+});
+
+test('killParkedTask kills via the pid-marker seam and hands the row back to the claim path', async () => {
+  const clock = new ManualClock();
+  const store = new MemoryTaskAdmissionStore(clock);
+  const row = store.add('stop-task');
+  let kills = 0;
+  const job: TaskAdmissionParkedJobPort = {
+    probe: async () => ({ kind: 'alive' }) as const,
+    kill: async () => {
+      kills += 1;
+    },
+  };
+  const seenClaims: RecordedParkedClaim[] = [];
+  const processor = new FunctionProcessor(async (context) => {
+    seenClaims.push(recordClaim(context));
+    if (seenClaims.length === 1) {
+      return { kind: 'parked', stage: 'workspace_transfer', job } as const;
+    }
+    return { kind: 'cancelled', stage: 'workspace_transfer' } as const;
+  });
+  const { worker } = createWorker({ store, clock, processor });
+
+  assert.equal((await worker.runOnce()).kind, 'parked');
+  assert.equal(await worker.killParkedTask('unrelated-task'), false);
+  assert.equal(await worker.killParkedTask('stop-task'), true);
+  assert.equal(kills, 1);
+  // The stop seam never settles: it releases the parked lease so the claim
+  // path runs the standard fence/cleanup chain.
+  assert.equal(row.state, 'parked');
+  assert.ok(row.leaseUntil !== null && row.leaseUntil <= clock.value);
+  // The watcher entry is gone, so a second stop is a durable-state concern.
+  assert.equal(await worker.killParkedTask('stop-task'), false);
+
+  assert.equal((await worker.runOnce()).kind, 'cancelled');
+  assert.equal(row.state, 'cancelled');
+  assert.equal(seenClaims[1]?.sourceState, 'parked');
+  await worker.stop();
+});
+
+test('a refused parked heartbeat drops the superseded watcher without resurrecting the row', async () => {
+  const clock = new ManualClock();
+  const store = new MemoryTaskAdmissionStore(clock);
+  const row = store.add('superseded-task');
+  let probes = 0;
+  const job: TaskAdmissionParkedJobPort = {
+    probe: async () => {
+      probes += 1;
+      return { kind: 'alive' } as const;
+    },
+    kill: async () => undefined,
+  };
+  const processor = new FunctionProcessor(async () => {
+    return { kind: 'parked', stage: 'workspace_transfer', job } as const;
+  });
+  const { worker, scheduler } = createWorker({ store, clock, processor });
+
+  assert.equal((await worker.runOnce()).kind, 'parked');
+  // Another actor resumed the row: the parked generation no longer owns it.
+  row.leaseToken = 'resumed:new-generation';
+  const leaseBefore = (row.leaseUntil = clock.value + 60_000);
+
+  scheduler.advance(25);
+  await flushAsync();
+  assert.equal(probes, 1);
+  assert.equal(row.leaseUntil, leaseBefore);
+
+  // The watcher is gone: further ticks stop probing entirely.
+  scheduler.advance(25);
+  await flushAsync();
+  assert.equal(probes, 1);
+  await worker.stop();
+});
+
+/**
+ * Minimal production-shaped GuardrailsService for the end-to-end parked
+ * wiring proof: worker -> FencedTaskAdmissionProcessor ->
+ * GuardrailsService.processDurableAdmission -> provider detach signal.
+ * Only provider-independent internals (plan/run lookups, runtime arming,
+ * terminal gateway) are stubbed; the admission chain itself is the real one.
+ */
+function buildParkedGuardrails(sandbox: SandboxProvider): GuardrailsService {
+  const service = new GuardrailsService(
+    {} as ModuleRef,
+    { destroyForSession() {} } as unknown as SessionCredentialsService,
+    sandbox,
+    {
+      maxConcurrentTasks: 2,
+      defaultIdleTimeoutMs: null,
+      circuitBreakerThreshold: 3,
+      diagnosticWriteTimeoutMs: 10,
+    },
+  );
+  Object.assign(service, {
+    gateway: {
+      openSession() {
+        return { launchDecision: Promise.resolve({ kind: 'launched' }) };
+      },
+      unregisterSession() {},
+      async readSessionLogTail() {
+        return '';
+      },
+    },
+    armDurableRuntime: async () => {},
+    resolveProvisionPlan: async () => ({
+      cloneSpec: null,
+      modelIntent: { kind: 'runtime-default' as const },
+      runtimeId: 'codex',
+      executionMode: 'interactive-pty' as const,
+      // Must match the memory store's claim snapshot: the durable chain
+      // asserts claim/plan consistency before crossing the provider boundary.
+      resources: { diskSizeGb: 12 },
+      workspace: {
+        repositoryUrl: 'https://example.test/repo.git',
+        callerBranch: null,
+        resolvedBranch: 'master',
+        deadlineMs: 900_000,
+      },
+      requiredCapabilities: [],
+    }),
+  });
+  return service;
+}
+
+test('production guardrails chain parks a detaching transfer and restart-recovers it through the expired-lease claim + marker triage', async () => {
+  const clock = new ManualClock();
+  const store = new MemoryTaskAdmissionStore(clock);
+  // The task already won durable running capacity; the claim enters the
+  // provisioning chain directly (no lifecycle reservation in this harness).
+  const row = store.add('detach-task', {
+    taskStatus: 'running',
+    taskLifecycleVersion: 1,
+  });
+
+  const progress = {
+    percent: 42,
+    receivedObjects: 420,
+    totalObjects: 1000,
+    receivedBytes: 65_536,
+    throughputBytesPerSecond: 8_192,
+  } satisfies TaskAdmissionTransferProgress;
+  let jobProbes = 0;
+  const fakeJob: SandboxDetachedWorkspaceTransferJob = {
+    taskId: 'detach-task',
+    jobId: 'ws-transfer-detach-task',
+    probe: async () => {
+      jobProbes += 1;
+      return { kind: 'alive', progress };
+    },
+    kill: async () => undefined,
+  };
+  const seams: Array<
+    SandboxProvisionContext['workspaceTransferDetachment'] | undefined
+  > = [];
+  const triageDecisions: string[] = [];
+  let lastOwnership: SandboxProvisionContext['ownership'];
+  let provisionCalls = 0;
+  const sandbox = {
+    getSandboxMode: () => 'workspace-write',
+    getProviderCapabilities: () => ['terminal.websocket'],
+    async provision(context: SandboxProvisionContext) {
+      provisionCalls += 1;
+      lastOwnership = context.ownership;
+      seams.push(context.workspaceTransferDetachment);
+      if (provisionCalls === 1) {
+        // The detached clone job launched; the materialization hands the
+        // marker seam back instead of blocking through the poll loop.
+        throw new SandboxWorkspaceTransferDetachedSignal(fakeJob);
+      }
+      // Resume against the SAME sandbox: the claim-path triage adjudicates
+      // the recorded exit marker before any transfer work re-runs.
+      const seam = context.workspaceTransferDetachment;
+      assert.ok(seam?.resume, 'resume claims must carry the triage seam');
+      triageDecisions.push(
+        seam.resume.triage({ pidAlive: false, exitMarker: { exitCode: 0 } }),
+      );
+      return {
+        taskId: 'detach-task',
+        baseUrl: 'http://sandbox.test/detach-task',
+        wsUrl: 'ws://sandbox.test/detach-task/ws',
+      };
+    },
+    async teardownSandbox() {
+      assert.fail('parking and resume must never tear the sandbox down');
+    },
+  } as unknown as SandboxProvider;
+  const service = buildParkedGuardrails(sandbox);
+  Object.assign(service, {
+    resolveSelectedRunStrict: async () => ({
+      connection: {
+        taskId: 'detach-task',
+        baseUrl: 'http://sandbox.test/detach-task',
+        wsUrl: 'ws://sandbox.test/detach-task/ws',
+      },
+      owner: {
+        taskId: 'detach-task',
+        providerId: 'sandbox-test',
+        providerSandboxId: 'detach-task',
+        ownership: lastOwnership,
+        status: 'running',
+      },
+    }),
+  });
+  const processor = new FencedTaskAdmissionProcessor({
+    get: () => service,
+  } as unknown as ModuleRef);
+
+  const first = createWorker({ store, clock, processor, tokenPrefix: 'first' });
+  const parked = await first.worker.runOnce();
+  assert.equal(parked.kind, 'parked');
+  assert.equal(row.state, 'parked');
+  assert.equal(row.stage, 'workspace_transfer');
+  assert.equal(row.attempt, 1);
+  const parkedGeneration = row.leaseToken;
+  assert.ok(parkedGeneration);
+  assert.deepEqual(seams[0], { park: true });
+
+  // Worker registration is live: the parked observer loop probes through the
+  // handed-back seam, heartbeats the parked lease and persists progress.
+  const leaseBeforeHeartbeat = row.leaseUntil;
+  first.scheduler.advance(25);
+  await flushAsync();
+  assert.equal(jobProbes, 1);
+  assert.ok(row.leaseUntil !== null && leaseBeforeHeartbeat !== null);
+  assert.ok(row.leaseUntil > leaseBeforeHeartbeat);
+  assert.deepEqual(row.progress, progress);
+  assert.equal(row.state, 'parked');
+
+  // API restart: in-process watchers vanish; only durable state survives.
+  await first.worker.stop();
+  const revived = createWorker({
+    store,
+    clock,
+    processor,
+    tokenPrefix: 'revived',
+  });
+  clock.advance(10_000);
+  const resumed = await revived.worker.runOnce();
+  assert.equal(resumed.kind, 'succeeded');
+  assert.equal(row.state, 'succeeded');
+  assert.equal(row.stage, 'complete');
+  // Parking never burns attempts, across the restart included.
+  assert.equal(row.attempt, 1);
+  assert.equal(provisionCalls, 2);
+  assert.deepEqual(triageDecisions, ['settle_from_exit']);
+  assert.ok(seams[1]?.resume, 'restart recovery must reach the marker triage');
+  await revived.worker.stop();
 });

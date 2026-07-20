@@ -45,6 +45,7 @@ import {
   resourcesForSandboxProvision,
   runSandboxExternalBoundary,
   isSandboxCleanupCoordinationPendingError,
+  isSandboxWorkspaceTransferDetachedSignal,
   SandboxCleanupCoordinationPendingError,
   SandboxProvisioningStageError,
   SandboxProviderConfigurationError,
@@ -427,6 +428,11 @@ export class AioSandboxProvider<
       });
     } catch (err) {
       this.runs.delete(ctx.taskId);
+      // A detaching workspace transfer is a control-flow signal, not a
+      // provisioning failure: the container and its detached clone job MUST
+      // survive parking, so the cleanup funnel below must not run. Resume
+      // re-enters provision and readopts the container idempotently.
+      if (isSandboxWorkspaceTransferDetachedSignal(err)) throw err;
       if (!resourceMayExist) throw err;
       let cleanupAuthorization: SandboxRunCleanupAuthorization | null = null;
       try {
@@ -944,6 +950,9 @@ export class AioSandboxProvider<
         ...(ctx.beforeWorkspaceBoundary === undefined
           ? {}
           : { beforeBoundary: ctx.beforeWorkspaceBoundary }),
+        ...(ctx.workspaceTransferDetachment === undefined
+          ? {}
+          : { detachment: ctx.workspaceTransferDetachment }),
       });
       if (result.status !== 'succeeded') {
         throw new SandboxWorkspaceMaterializationError(result);
