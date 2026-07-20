@@ -505,10 +505,18 @@ esac
 asset="cap-boxlite-sandbox-$target-$slug.oci.tar.zst"
 asset_source="$(cap_fetch_and_verify_asset "$target" "$asset_dir" "$asset_base" "$asset")" || exit 1
 rootfs_dir="$asset_dir/boxlite/cap-boxlite-sandbox/$target/$slug/oci"
+# Sweep stale temp dirs from previously failed attempts (pid-named, so the
+# per-pid reset below never catches them). The glob is anchored to this
+# version's rootfs path; sibling versions and the live oci dir are untouched.
+rm -rf "$rootfs_dir".captmp.*
 tmp_dir="$rootfs_dir.captmp.$$"
 rm -rf "$tmp_dir"
 mkdir -p "$tmp_dir" "$(dirname "$rootfs_dir")"
-cap_stream_asset "$asset_source" | zstd -dc | tar -C "$tmp_dir" -xf -
+# tar -o (= GNU --no-same-owner): never restore the archive's uid/gid. The
+# rootfs has no consumer of archive ownership, and chown is forbidden on
+# shared bind mounts (macOS/colima, virtiofs), where restoring it aborts the
+# whole staging pipeline. -o is the spelling both busybox and GNU tar accept.
+cap_stream_asset "$asset_source" | zstd -dc | tar -C "$tmp_dir" -o -xf -
 rm -rf "$rootfs_dir"
 mv "$tmp_dir" "$rootfs_dir"
 cap_set_env_value ${SANDBOX_IMAGE_DELIVERY_ENV} release-assets

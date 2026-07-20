@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "harden-updater-rootfs-extract",
+  "intent": "self-update-reliability",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "not-applicable",
+      "reason": "Only the internal self-update staging shell script text changes (apps/api/src/self-update, outside every public-surface path category); no /v1 operation, schema, status code, or error body is touched."
+    },
+    "mcp": {
+      "status": "not-applicable",
+      "reason": "No MCP tool, argument, result, registration, or transport behavior changes; MCP has no self-update surface."
+    },
+    "openapi": {
+      "status": "not-applicable",
+      "reason": "The OpenAPI projection covers Public V1 only; nothing it projects changes."
+    },
+    "apiPlayground": {
+      "status": "not-applicable",
+      "reason": "The Playground catalogs Public V1 operations only and gains no entry from an internal updater script fix."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "self-update-boxlite-rootfs-extraction-portability",
+      "reason": "Makes the BoxLite release-asset staging extraction ownership-independent (tar no longer restores archive uid/gid, which chown-restricted shared mounts such as colima/virtiofs forbid) and sweeps stale temp extraction directories before staging, so one-click self-update no longer dies at the extract step on macOS/colima hosts."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "api-mcp",
+    "requiresWireCompatibilityFixture": false
+  }
+}
