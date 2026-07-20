@@ -386,15 +386,18 @@ await test('retrying the same workspace plan is idempotent and cleans each crede
   assert.equal(harness.state.absent, false);
 });
 
-await test('cancellation waits for fencing and leaves no retained credential', async () => {
+await test('cancellation settles without whole-sandbox fencing and leaves no retained credential', async () => {
+  // detach-workspace-clone: a cancelled `workspace_transfer` exec is a
+  // dropped control exec, never settlement evidence — BoxLite no longer
+  // fences (deletes) the whole sandbox for it. The operation still settles
+  // as cancelled at the transfer stage, and credential safety is proven
+  // through the exec seam (cleanup + absence probe) instead of sandbox
+  // deletion.
   const cancellation = new AbortController();
   const transferStarted = deferred();
   const lateTransfer = deferred();
-  const deleteStarted = deferred();
-  const absenceConfirmed = deferred();
   let deletionRequested = false;
   const harness = createWorkspaceHarness({
-    deletionConfirmation: { attempts: 1 },
     async onGitCommand(request) {
       if (request.command.includes('clone --no-checkout')) {
         transferStarted.resolve();
@@ -404,49 +407,30 @@ await test('cancellation waits for fencing and leaves no retained credential', a
     },
     async deleteSandbox(_sandboxId, state) {
       deletionRequested = true;
-      deleteStarted.resolve(state.secretContent);
-    },
-    async getSandbox(sandboxId, state) {
-      if (!deletionRequested) return { id: sandboxId, state: 'running' };
-      const confirmed = await absenceConfirmed.promise;
-      if (confirmed) {
-        state.absent = true;
-        state.secretPath = null;
-        state.secretContent = null;
-        return null;
-      }
-      return { id: sandboxId, state: 'running' };
+      state.absent = true;
+      state.secretPath = null;
+      state.secretContent = null;
     },
   });
-  let settled = false;
-  const operation = mod
-    .materializeSandboxGitWorkspaceStaged(
-      materializationContext(
-        harness.adapter,
-        workspacePlan({ credential: exactHostCredential() }),
-        { cancellationSignal: cancellation.signal },
-      ),
-    )
-    .finally(() => {
-      settled = true;
-    });
+  const operation = mod.materializeSandboxGitWorkspaceStaged(
+    materializationContext(
+      harness.adapter,
+      workspacePlan({ credential: exactHostCredential() }),
+      { cancellationSignal: cancellation.signal },
+    ),
+  );
 
   await transferStarted.promise;
   cancellation.abort();
-  const credentialAtDelete = await deleteStarted.promise;
-  assert.match(credentialAtDelete, new RegExp(CANARY, 'u'));
-  await Promise.resolve();
-  assert.equal(settled, false);
-  assert.equal(harness.adapter.wasSandboxFenced(), false);
-  absenceConfirmed.resolve(true);
-
   assert.deepEqual(await operation, {
     status: 'cancelled',
     stage: 'workspace_transfer',
   });
-  assert.equal(harness.adapter.wasSandboxFenced(), true);
-  assert.equal(harness.state.absent, true);
+  assert.equal(deletionRequested, false);
+  assert.equal(harness.adapter.wasSandboxFenced(), false);
+  await harness.adapter.settleCredentialSafety();
   assert.equal(harness.state.secretContent, null);
+  assert.equal(harness.state.absent, false);
   lateTransfer.reject(new Error('late cancelled transfer response'));
   await Promise.resolve();
 });

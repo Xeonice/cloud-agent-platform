@@ -18,6 +18,7 @@ const {
   TASK_PROVISIONING_STAGES,
   TASK_PROVISIONING_STATES,
   TaskFailureSchema,
+  TaskProvisioningProgressSchema,
   TaskProvisioningSummarySchema,
   TaskResponseSchema,
   V1ListReposResponseSchema,
@@ -128,6 +129,119 @@ test('TaskResponse provisioning is optional and nullable for legacy task rows', 
   const parsed = TaskResponseSchema.parse({ ...taskRow, provisioning });
   assert.equal(parsed.provisioning.state, 'running');
   assert.equal(parsed.provisioning.stage, 'workspace_transfer');
+});
+
+test('summary progress is additive: absent, null, populated, and indeterminate shapes all round-trip strictly', () => {
+  // Absent (old payload, contracts-first rollout safety): parses, progress undefined.
+  const legacy = TaskProvisioningSummarySchema.parse(provisioning);
+  assert.equal(legacy.progress, undefined);
+  assert.equal(
+    TaskResponseSchema.parse({ ...taskRow, provisioning }).provisioning.progress,
+    undefined,
+  );
+
+  // Explicit null: the emitter knows there is no transfer progress to report.
+  assert.equal(
+    TaskProvisioningSummarySchema.parse({ ...provisioning, progress: null })
+      .progress,
+    null,
+  );
+
+  // Populated numeric shape during an active object transfer.
+  const populated = {
+    percent: 42.5,
+    receivedObjects: 425,
+    totalObjects: 1000,
+    receivedBytes: 7_340_032,
+    throughput: 1_048_576,
+  };
+  const parsed = TaskProvisioningSummarySchema.parse({
+    ...provisioning,
+    progress: populated,
+  });
+  assert.deepEqual(parsed.progress, populated);
+  assert.deepEqual(Object.keys(parsed.progress).sort(), [
+    'percent',
+    'receivedBytes',
+    'receivedObjects',
+    'throughput',
+    'totalObjects',
+  ]);
+
+  // Indeterminate phase (before "Receiving objects"): unknown is explicit null,
+  // never 0% — a consumer can distinguish it from an actual 0% transfer.
+  const indeterminate = {
+    percent: null,
+    receivedObjects: null,
+    totalObjects: null,
+    receivedBytes: null,
+    throughput: null,
+  };
+  const parsedIndeterminate = TaskProvisioningProgressSchema.parse(indeterminate);
+  assert.equal(parsedIndeterminate.percent, null);
+  assert.notEqual(parsedIndeterminate.percent, 0);
+  const zeroPercent = TaskProvisioningProgressSchema.parse({
+    ...indeterminate,
+    percent: 0,
+    receivedObjects: 0,
+    totalObjects: 1000,
+  });
+  assert.equal(zeroPercent.percent, 0);
+  assert.notEqual(zeroPercent.percent, parsedIndeterminate.percent);
+  assert.equal(
+    TaskProvisioningSummarySchema.parse({
+      ...provisioning,
+      progress: indeterminate,
+    }).progress.percent,
+    null,
+  );
+});
+
+test('summary progress stays numeric-only and strict', () => {
+  const populated = {
+    percent: 42.5,
+    receivedObjects: 425,
+    totalObjects: 1000,
+    receivedBytes: 7_340_032,
+    throughput: 1_048_576,
+  };
+
+  // Strictness: free text, URLs, or raw git output must fail validation.
+  for (const leak of [
+    { phase: 'Receiving objects' },
+    { rawLine: 'Receiving objects:  42% (425/1000), 7.00 MiB | 1.00 MiB/s' },
+    { remoteUrl: 'https://forge.internal/group/repo.git' },
+  ]) {
+    assert.throws(() =>
+      TaskProvisioningProgressSchema.parse({ ...populated, ...leak }),
+    );
+    assert.throws(() =>
+      TaskProvisioningSummarySchema.parse({
+        ...provisioning,
+        progress: { ...populated, ...leak },
+      }),
+    );
+  }
+
+  // Numeric bounds: percent is 0-100, counts are non-negative integers.
+  assert.throws(() =>
+    TaskProvisioningProgressSchema.parse({ ...populated, percent: 101 }),
+  );
+  assert.throws(() =>
+    TaskProvisioningProgressSchema.parse({ ...populated, percent: -1 }),
+  );
+  assert.throws(() =>
+    TaskProvisioningProgressSchema.parse({ ...populated, receivedObjects: -1 }),
+  );
+  assert.throws(() =>
+    TaskProvisioningProgressSchema.parse({ ...populated, receivedBytes: 1.5 }),
+  );
+  assert.throws(() =>
+    TaskProvisioningProgressSchema.parse({ ...populated, percent: '42%' }),
+  );
+
+  // Partial progress objects are rejected: every field is present, null when unknown.
+  assert.throws(() => TaskProvisioningProgressSchema.parse({ percent: 42.5 }));
 });
 
 test('every existing runtime failure keeps its exact production shape and action', () => {

@@ -295,6 +295,9 @@ test('bootstrap protects unfinished durable work, restores legacy survivors, rec
             where: {
               OR: [
                 {
+                  // Deliberately WITHOUT `parked`: a parked claim released its
+                  // slot before the restart, so restoring one would leak
+                  // capacity (detach-workspace-clone D9).
                   state: { in: ['accepted', 'queued', 'running', 'retrying'] },
                   task: {
                     OR: [
@@ -350,7 +353,15 @@ test('bootstrap protects unfinished durable work, restores legacy survivors, rec
         assert.deepEqual(args, {
           where: {
             OR: [
-              { state: { in: ['accepted', 'queued', 'running', 'retrying'] } },
+              // Includes `parked` (detach-workspace-clone D9): a parked
+              // detached transfer is unfinished durable work and must be
+              // protected from legacy re-adoption/reclaim, while its recovery
+              // is owned by the claim/processor marker probe.
+              {
+                state: {
+                  in: ['accepted', 'queued', 'running', 'retrying', 'parked'],
+                },
+              },
               {
                 state: 'succeeded',
                 task: {
@@ -429,7 +440,15 @@ test('bootstrap protects unfinished durable work, restores legacy survivors, rec
                 admissionWork: {
                   is: {
                     state: {
-                      notIn: ['accepted', 'queued', 'running', 'retrying'],
+                      // `parked` counts as unfinished: a parked task is never
+                      // reclaimed as a startup orphan.
+                      notIn: [
+                        'accepted',
+                        'queued',
+                        'running',
+                        'retrying',
+                        'parked',
+                      ],
                     },
                   },
                 },

@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "change": "detach-workspace-clone",
+  "intent": "public-feature",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "changed",
+      "operationIds": ["tasks.create", "tasks.list", "tasks.get", "tasks.stop"],
+      "reason": "Task reads gain the additive nullable provisioning.progress object (percent, receivedObjects/totalObjects, receivedBytes, throughput) on TaskProvisioningSummary; emission stays behind the deployment capability gate for mixed-version rollout and payloads without the field still parse."
+    },
+    "mcp": {
+      "status": "changed",
+      "operationIds": ["tasks.create", "tasks.list", "tasks.get", "tasks.stop"],
+      "toolIds": ["create_task", "list_tasks", "get_task", "stop_task"],
+      "reason": "MCP task tools project the same canonical Task response, so the additive provisioning.progress object surfaces identically through create/list/get/stop task reads with no tool-specific divergence."
+    },
+    "openapi": {
+      "status": "derived",
+      "operationIds": ["tasks.create", "tasks.list", "tasks.get", "tasks.stop"],
+      "reason": "The OpenAPI document derives the additive TaskProvisioningProgress schema and its nullable projection on task responses from the shared public contract manifest."
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "operationIds": ["tasks.create", "tasks.list", "tasks.get", "tasks.stop"],
+      "reason": "The API Playground derives request and response rendering for the additive progress object from the public contract manifest."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "detached-clone-parking-and-dual-gate-liveness",
+      "reason": "Adds the sandbox-core detached-job primitive (setsid launch, wrapper wait, pid/progress/exit markers, atomic workspace publish, kill contract), detached workspace transfer with polling execs, admission claim parking with new-lease re-claim fencing, dual-gate liveness for the transfer stage, boot marker-probe triage split from tmux re-adoption, and parked-aware stop."
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Idempotency-Key remains an HTTP-only retry contract and is not an MCP argument."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "MCP structured output matches the canonical Task while compatibility text retains its historical task handle."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "The MCP description explains asynchronous polling without claiming support for the HTTP-only idempotency header."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST keeps its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    }
+  ],
+  "verification": {
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
+  }
+}

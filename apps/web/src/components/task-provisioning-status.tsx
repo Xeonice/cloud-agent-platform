@@ -11,6 +11,8 @@ import {
   isProvisioningTaskFailure,
   provisioningAttemptLabel,
   provisioningFailurePresentation,
+  taskTransferProgress,
+  transferPercentLabel,
   type ProvisioningTaskFailure,
 } from "@/lib/task-provisioning";
 import { cn } from "@/utils";
@@ -45,6 +47,15 @@ export function TaskProvisioningStatus({
     : null;
 
   if (!provisioning && !failure) return null;
+
+  // Transfer percent rides alongside the stage label ONLY when the summary
+  // carries a known percent during workspace_transfer. Unknown progress is
+  // never rendered as 0%, and an absent progress object (legacy backend or
+  // non-transfer stage) leaves the card's rendering unchanged.
+  const transferPercent =
+    provisioning?.stage === "workspace_transfer"
+      ? transferPercentLabel(taskTransferProgress(provisioning))
+      : null;
 
   return (
     <div className={cn("grid gap-3", className)}>
@@ -84,7 +95,11 @@ export function TaskProvisioningStatus({
           <dl className="grid gap-x-5 gap-y-2 text-xs min-[641px]:grid-cols-2">
             <ProvisioningFact
               label="当前阶段"
-              value={TASK_PROVISIONING_STAGE_LABELS[provisioning.stage]}
+              value={
+                transferPercent !== null
+                  ? `${TASK_PROVISIONING_STAGE_LABELS[provisioning.stage]} · ${transferPercent}`
+                  : TASK_PROVISIONING_STAGE_LABELS[provisioning.stage]
+              }
             />
             <ProvisioningFact
               label="解析分支"

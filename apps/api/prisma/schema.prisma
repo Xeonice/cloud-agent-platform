@@ -253,7 +253,9 @@ model TaskAdmissionWork {
   /// Earliest instant at which a fresh/retry claim may be acquired.
   availableAt DateTime  @default(now()) @map("available_at")
   /// Opaque worker identity and lease expiry. They are present as a pair only
-  /// while the work item is in its active `running` state.
+  /// while the work item is in its active `running` or `parked` state. A
+  /// parked row retains the parking worker's token as the ownership
+  /// generation; its lease expiry is the parked recovery horizon.
   leaseOwner  String?   @map("lease_owner")
   leaseUntil  DateTime? @map("lease_until")
 
@@ -269,6 +271,16 @@ model TaskAdmissionWork {
   /// Immutable workspace materialization deadline selected at admission. Null
   /// is retained only for rolling-upgrade and historical work compatibility.
   workspaceMaterializationDeadlineMs Int?    @map("workspace_materialization_deadline_ms")
+
+  /// Latest detached workspace-transfer progress snapshot persisted by the
+  /// parked poll loop; source for the provisioning-summary projection.
+  /// Numeric-only by CHECK constraint. Null percent models an indeterminate
+  /// phase explicitly and is never rendered as 0%.
+  progressPercent                  Int?    @map("progress_percent")
+  progressReceivedObjects          BigInt? @map("progress_received_objects")
+  progressTotalObjects             BigInt? @map("progress_total_objects")
+  progressReceivedBytes            BigInt? @map("progress_received_bytes")
+  progressThroughputBytesPerSecond BigInt? @map("progress_throughput_bytes_per_second")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

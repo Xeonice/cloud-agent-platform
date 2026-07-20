@@ -50,6 +50,7 @@ import {
   sandboxCleanupAttemptEvidence,
   sandboxPhysicalCleanupResultFromEvidence,
   isSandboxCleanupCoordinationPendingError,
+  isSandboxWorkspaceTransferDetachedSignal,
   validateSandboxCleanupAttemptEvidence,
   validateSandboxPhysicalCleanupResult,
 } from '@cap/sandbox-core';
@@ -446,6 +447,11 @@ export class SandboxProviderRouter<
       }
       connection = await selected.provider.provision(providerContext);
     } catch (error) {
+      // A detaching workspace transfer is a control-flow signal, not a
+      // provisioning failure: the sandbox and its detached clone job survive
+      // parking, so the router-level cleanup funnel must not run and the
+      // durable owner record stays live for the resuming claim's re-stamp.
+      if (isSandboxWorkspaceTransferDetachedSignal(error)) throw error;
       this.owners.delete(ctx.taskId);
       if (legacyProvisioning) {
         legacyProvisioning.settle();

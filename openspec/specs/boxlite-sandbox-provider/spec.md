@@ -485,12 +485,17 @@ come from the immutable managed-environment resource snapshot or the validated
 BoxLite deployment fallback, and invalid or unsupported values SHALL make
 BoxLite ineligible before task admission consumes a long-running slot.
 
-BoxLite repository materialization SHALL use a validated Git-specific deadline
-separate from its native REST control-plane timeout. A successful repository
-transfer that exceeds the control-plane timeout but remains within the Git
-deadline SHALL not be aborted, while an operation exceeding the Git deadline
-SHALL return a typed materialization timeout and clean up its sandbox-owned
-temporary state.
+BoxLite repository materialization SHALL execute the workspace transfer stage
+as a detached supervised job polled through short control-plane execs rather
+than one blocking exec held open for the whole transfer. Each poll SHALL use
+the native REST control-plane timeout; transfer liveness SHALL be governed by
+the dual-gate policy (no-progress heartbeat plus absolute cap) rather than a
+single Git wall-clock deadline. A dropped or timed-out poll response SHALL NOT
+force whole-sandbox fencing: the job's pid and exit markers provide settlement
+proof, and a subsequent probe SHALL settle the stage from them. A transfer
+failing either liveness gate SHALL return a typed materialization timeout and
+clean up its sandbox-owned temporary state. AIO stage execution SHALL inherit
+the identical detached path through the shared workspace-materialization hook.
 
 #### Scenario: Native create receives the resolved disk size
 
@@ -504,11 +509,23 @@ temporary state.
 - **THEN** provisioning uses the validated BoxLite deployment fallback and snapshots it on the run
 - **AND** it does not fall back to an unobserved BoxLite SDK default
 
-#### Scenario: Clone can outlive short REST requests
+#### Scenario: Transfer outlives every individual poll exec
 
-- **WHEN** a repository transfer takes longer than the BoxLite control-plane timeout and less than the Git materialization deadline
-- **THEN** the transfer is allowed to complete
-- **AND** short native REST requests continue to use the control-plane timeout
+- **WHEN** a repository transfer takes longer than the BoxLite control-plane timeout while its progress stream keeps advancing
+- **THEN** the transfer completes via repeated short polling execs
+- **AND** no single exec request is held open for the transfer's full duration
+
+#### Scenario: Dropped poll does not fence the sandbox
+
+- **WHEN** one polling exec's HTTP response is dropped mid-transfer
+- **THEN** the provider does not force-remove the sandbox
+- **AND** the next marker probe settles the stage from the pid/exit markers (continue polling if alive, settle from the exit code if exited)
+
+#### Scenario: Liveness-gate timeout stays typed
+
+- **WHEN** a BoxLite transfer fails the no-progress heartbeat gate or the absolute cap
+- **THEN** materialization returns the typed timeout result for the transfer stage
+- **AND** sandbox-owned temporary state (including credential files) is cleaned up
 
 ### Requirement: BoxLite Git credentials are ephemeral and exact-host scoped
 

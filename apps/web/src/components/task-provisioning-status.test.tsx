@@ -197,6 +197,73 @@ describe("TaskProvisioningStatus", () => {
     });
   }
 
+  it("shows the transfer percent alongside the stage label when the summary carries a known percent", () => {
+    const provisioning = {
+      state: "running",
+      stage: "workspace_transfer",
+      attempt: 1,
+      resolvedBranch: "main",
+      updatedAt: new Date("2026-07-16T08:03:04.000Z"),
+      // Additive nullable progress object (lands contracts-first); this
+      // surface reads it defensively, so the fixture attaches it structurally.
+      progress: { percent: 47, receivedObjects: 1200, totalObjects: 2400 },
+    } as unknown as NonNullable<TaskResponse["provisioning"]>;
+    const html = renderToStaticMarkup(
+      <TaskProvisioningStatus task={task({ provisioning })} />,
+    );
+
+    expect(html).toContain("传输仓库工作区 · 47%");
+    // State pill and attempt presentation stay unchanged.
+    expect(html).toContain(TASK_PROVISIONING_STATE_LABELS.running);
+    expect(html).toContain("第 1 次处理尝试");
+  });
+
+  it("renders unchanged — never 0% — when progress is absent or its percent is unknown", () => {
+    const base = {
+      state: "running",
+      stage: "workspace_transfer",
+      attempt: 1,
+      resolvedBranch: "main",
+      updatedAt: new Date("2026-07-16T08:03:04.000Z"),
+    } satisfies NonNullable<TaskResponse["provisioning"]>;
+
+    // Old backend: no progress field at all.
+    const withoutProgress = renderToStaticMarkup(
+      <TaskProvisioningStatus task={task({ provisioning: base })} />,
+    );
+    expect(withoutProgress).toContain("传输仓库工作区");
+    expect(withoutProgress).not.toContain("传输仓库工作区 ·");
+    expect(withoutProgress).not.toContain("0%");
+
+    // Progress present but percent unknown (pre-transfer phase).
+    const unknownPercent = renderToStaticMarkup(
+      <TaskProvisioningStatus
+        task={task({
+          provisioning: {
+            ...base,
+            progress: { percent: null, receivedObjects: 12 },
+          } as unknown as NonNullable<TaskResponse["provisioning"]>,
+        })}
+      />,
+    );
+    expect(unknownPercent).not.toContain("传输仓库工作区 ·");
+    expect(unknownPercent).not.toContain("0%");
+
+    // Known percent outside the transfer stage never decorates other stages.
+    const otherStage = renderToStaticMarkup(
+      <TaskProvisioningStatus
+        task={task({
+          provisioning: {
+            ...base,
+            stage: "checkout",
+            progress: { percent: 47 },
+          } as unknown as NonNullable<TaskResponse["provisioning"]>,
+        })}
+      />,
+    );
+    expect(otherStage).not.toContain("47%");
+  });
+
   it("does not misclassify runtime failures as provisioning failures", () => {
     const failure = {
       code: "runtime_auth_rejected",

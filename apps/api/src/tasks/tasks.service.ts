@@ -279,7 +279,53 @@ export interface ISandboxReadoption {
   }): Promise<{ readonly inspected: number; readonly reaped: number }>;
 }
 
+/**
+ * detach-workspace-clone (D10 / admission-parking 5.5): parked-claim kill seam
+ * on the admission cancellation port. While a task is parked behind a detached
+ * workspace transfer there is no in-process claim run for `abortTask()` to
+ * reach, so stop must additionally kill the detached job through its pid
+ * marker via {@link TaskAdmissionCancellationPort.killParkedTask}. The port is
+ * consumed optionally (the injection itself is optional), so this file
+ * compiles and behaves both with and without the admission binding: without
+ * it, terminal settlement degrades to the existing abort + fence/teardown
+ * chain.
+ *
+ * Contract provided by the binding (`TaskAdmissionWorker.killParkedTask`):
+ * kill via the pid marker, idempotent, a safe no-op for tasks with no parked
+ * detached job (returns false), and never able to resurrect ownership after
+ * terminal settlement (kill-after-terminal is the no-resurrection guarantee's
+ * easy direction — the job's late exit marker is simply ignored by the fenced
+ * claim path).
+ */
+export type TaskAdmissionParkedJobCancellation = TaskAdmissionCancellationPort;
+
+/**
+ * Admission-work states whose task/sandbox the durable worker path exclusively
+ * owns during startup recovery. `parked` (detach-workspace-clone D9) is
+ * unfinished work too: the claim released its worker slot while the detached
+ * clone job runs inside the sandbox, so the durable-protection snapshot must
+ * cover it BEFORE any provider inventory runs — a parked pre-agent sandbox has
+ * no tmux session and must never be treated as a legacy orphan or re-adoption
+ * candidate. Parked recovery itself is owned by the admission claim/processor
+ * path (marker probe: alive keeps it parked, an exit marker settles it,
+ * unprovable fails the attempt) riding the claim query started at the end of
+ * bootstrap, so recovery is correct regardless of provider bootstrap ordering.
+ */
 const UNFINISHED_TASK_ADMISSION_STATES = [
+  'accepted',
+  'queued',
+  'running',
+  'retrying',
+  'parked',
+] as const;
+
+/**
+ * The subset of unfinished states that actually occupy compatibility capacity
+ * at boot. A `parked` claim released its slot before the restart by design
+ * (that IS the slot-starvation fix), so restoring a slot for it would leak
+ * capacity; it re-enters admission only through the ordinary claim path.
+ */
+const SLOT_OCCUPYING_TASK_ADMISSION_STATES = [
   'accepted',
   'queued',
   'running',
@@ -477,6 +523,18 @@ export class TasksService
    * 4. Start the polling worker last. Its claim query recovers both accepted
    *    work and expired leases without depending on an in-process wake signal.
    *
+   * Boot-scan ownership split (detach-workspace-clone D9): each recovering task
+   * has exactly one scan owner. Tasks parked or in pre-agent provisioning are
+   * owned by the admission claim/processor path, which probes the detached
+   * job's markers (alive keeps it parked, an exit marker settles the stage from
+   * its recorded code, an unprovable job fails the attempt — success is never
+   * inferred from progress-file contents or silence); tasks at agent_launch or
+   * later remain owned by {@link readoptSurvivorsOnStartup}, unchanged. Neither
+   * owner depends on `onApplicationBootstrap` ordering between providers
+   * (042c8ea class): the durable-protection snapshot in step 1 already covers
+   * parked work, and parked recovery rides the claim query started in step 4,
+   * so the outcome is identical in either scan order.
+   *
    * Any provider/terminal/DB uncertainty in the destructive portions aborts
    * bootstrap closed. Loading the persisted ceiling remains the one deliberate
    * best-effort step: the environment seed is still a valid conservative
@@ -600,7 +658,9 @@ export class TasksService
       where: {
         OR: [
           {
-            state: { in: [...UNFINISHED_TASK_ADMISSION_STATES] },
+            // Deliberately the slot-occupying subset: parked work released its
+            // slot during the detached transfer and must not restore one here.
+            state: { in: [...SLOT_OCCUPYING_TASK_ADMISSION_STATES] },
             task: {
               OR: [
                 { status: { in: ['running', 'awaiting_input'] } },
@@ -1661,6 +1721,34 @@ export class TasksService
       // worker in another replica observes the same version change on its next
       // DB-fenced renewal; both paths feed the provider's cancellation signal.
       this.taskAdmissionCancellation?.abortTask(id);
+      // detach-workspace-clone 7.3: a parked task has no in-process claim run
+      // for abortTask to reach, so additionally kill its detached job via the
+      // pid marker. Ordering is deliberate — the terminal Task CAS above IS the
+      // persisted stop fence, so the physical boundary is only crossed after
+      // the fence is durable. The kill is idempotent and a no-op for tasks
+      // without a parked detached job; once terminal settlement has won, a late
+      // exit marker or resumed claim is fenced out and can never resurrect the
+      // task, its admission, or its sandbox ownership. Best-effort: a kill
+      // failure is logged and never replaces the primary terminal cause.
+      try {
+        void Promise.resolve(
+          this.taskAdmissionCancellation?.killParkedTask(id),
+        ).catch(
+          (err: unknown) => {
+            this.logger.warn(
+              `parked detached-job kill for task ${id} failed (teardown continues): ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          },
+        );
+      } catch (err) {
+        this.logger.warn(
+          `parked detached-job kill for task ${id} failed (teardown continues): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
       // A normally launched durable task has already settled its admission
       // work as `succeeded`. The terminal Task CAS makes that row claimable
       // again only when a generation-fenced SandboxRun still needs cleanup;
@@ -2387,6 +2475,15 @@ export class TasksService
    * credential destruction, and concurrency-slot release (admitting the next
    * queued task). This is the deliberate, operator-driven mechanism that replaces
    * automatic idle reclamation as the routine way to free a slot.
+   *
+   * Parked-aware (detach-workspace-clone D10): a task parked behind a detached
+   * workspace transfer has no in-process claim run, but stop still reaches it —
+   * the terminal CAS persists the stop fence first, then the same terminal
+   * settlement kills the detached job via its pid marker (see
+   * {@link TaskAdmissionParkedJobCancellation}) and runs the existing
+   * fence/cleanup chain. Resource observation stays compare-and-set, so a late
+   * clone success or a parked resume can never resurrect ownership after the
+   * stop has won.
    *
    * Idempotent: stopping a task already in a terminal state is a safe no-op that
    * returns the task unchanged rather than corrupting state or double-releasing a

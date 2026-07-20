@@ -316,8 +316,8 @@ function deferred() {
   });
   await assert.rejects(
     executor.execute({
-      stage: 'workspace_transfer',
-      request: { command: 'git clone', timeoutMs: 1_000 },
+      stage: 'checkout',
+      request: { command: 'git checkout', timeoutMs: 1_000 },
       signal: new AbortController().signal,
       remainingTimeoutMs: 1_000,
     }),
@@ -360,8 +360,8 @@ function deferred() {
   });
   await assert.rejects(
     executor.execute({
-      stage: 'workspace_transfer',
-      request: { command: 'git clone', timeoutMs: 1_000 },
+      stage: 'checkout',
+      request: { command: 'git checkout', timeoutMs: 1_000 },
       signal: new AbortController().signal,
       remainingTimeoutMs: 1_000,
     }),
@@ -410,8 +410,8 @@ function deferred() {
   });
   await assert.rejects(
     executor.execute({
-      stage: 'workspace_transfer',
-      request: { command: 'git clone', timeoutMs: 1_000 },
+      stage: 'checkout',
+      request: { command: 'git checkout', timeoutMs: 1_000 },
       signal: new AbortController().signal,
       remainingTimeoutMs: 1_000,
     }),
@@ -423,6 +423,115 @@ function deferred() {
     'exact-sandbox-removed',
     'cleanup-settled',
   ]);
+}
+
+{
+  // Detached transfer (inherited through the shared configured-provider
+  // hook): a dropped polling exec is never settlement evidence and must not
+  // force whole-sandbox fencing — the next marker probe settles the stage
+  // from the job's pid/exit markers.
+  const events = [];
+  let execCount = 0;
+  const executor = createAioSandboxGitStageExecutor({
+    taskId: 'task-aio-detached-drop',
+    controller: {
+      async removeSandboxAndConfirm() {
+        events.push('sandbox-removed');
+        return { kind: 'found-and-cleaned' };
+      },
+    },
+    executor: {
+      async exec() {
+        execCount += 1;
+        if (execCount === 1) {
+          events.push('poll-dropped');
+          throw new Error('connection disappeared');
+        }
+        events.push('marker-probe');
+        return result({ output: 'exit 0\nprogress 4096 1750000000\n' });
+      },
+    },
+  });
+  const signal = new AbortController().signal;
+  const dropped = await executor.execute({
+    stage: 'workspace_transfer',
+    request: { command: 'probe transfer markers', timeoutMs: 30_000 },
+    signal,
+    remainingTimeoutMs: 30_000,
+  });
+  assert.deepEqual(dropped, result({ exitCode: 124, timedOut: true }));
+  assert.deepEqual(events, ['poll-dropped']);
+  const settledProbe = await executor.execute({
+    stage: 'workspace_transfer',
+    request: { command: 'probe transfer markers', timeoutMs: 30_000 },
+    signal,
+    remainingTimeoutMs: 30_000,
+  });
+  assert.equal(settledProbe.exitCode, 0);
+  assert.match(settledProbe.output, /^exit 0$/mu);
+  // Transient exec loss never reached the sandbox-removal path.
+  assert.deepEqual(events, ['poll-dropped', 'marker-probe']);
+}
+
+{
+  // Detached transfer: a timed-out polling exec result is returned as-is
+  // (dual-gate liveness owns transfer timeout semantics), a pre-aborted
+  // control exec settles as timed out, and neither removes the sandbox; the
+  // kill exec then reaches the guest job through the same stage seam.
+  const events = [];
+  const commands = [];
+  let execCount = 0;
+  const executor = createAioSandboxGitStageExecutor({
+    taskId: 'task-aio-detached-kill',
+    controller: {
+      async removeSandboxAndConfirm() {
+        events.push('sandbox-removed');
+        return { kind: 'found-and-cleaned' };
+      },
+    },
+    executor: {
+      async exec(request) {
+        commands.push(request.command);
+        execCount += 1;
+        if (execCount === 1) return result({ exitCode: 124, timedOut: true });
+        return result();
+      },
+    },
+  });
+  const timedOut = await executor.execute({
+    stage: 'workspace_transfer',
+    request: { command: 'probe transfer markers', timeoutMs: 30_000 },
+    signal: new AbortController().signal,
+    remainingTimeoutMs: 30_000,
+  });
+  assert.deepEqual(timedOut, result({ exitCode: 124, timedOut: true }));
+  assert.deepEqual(events, []);
+  const aborted = new AbortController();
+  aborted.abort();
+  assert.deepEqual(
+    await executor.execute({
+      stage: 'workspace_transfer',
+      request: { command: 'probe transfer markers', timeoutMs: 30_000 },
+      signal: aborted.signal,
+      remainingTimeoutMs: 30_000,
+    }),
+    result({ exitCode: 124, timedOut: true }),
+  );
+  assert.deepEqual(events, []);
+  const killResult = await executor.execute({
+    stage: 'workspace_transfer',
+    request: {
+      command:
+        `kill -TERM -- "-$(cat '/tmp/cap-jobs/ws-transfer-task/pid')" 2>/dev/null; exit 0`,
+      timeoutMs: 30_000,
+    },
+    signal: new AbortController().signal,
+    remainingTimeoutMs: 30_000,
+  });
+  assert.equal(killResult.exitCode, 0);
+  assert.equal(killResult.timedOut, false);
+  assert.match(commands[1], /kill -TERM/u);
+  assert.deepEqual(events, []);
 }
 
 console.log('aio workspace security tests passed');

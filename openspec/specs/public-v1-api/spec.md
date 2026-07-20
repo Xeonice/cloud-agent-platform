@@ -485,7 +485,16 @@ secret-free task provisioning summary and structured failure variants for
 `tasks.create`, `tasks.list`, `tasks.get`, and `tasks.stop` that are used by the
 runtime contracts, including
 `provisioning_platform_dependency_unavailable` with
-`repair_deployment`. The same canonical Task failure is nested by the existing
+`repair_deployment`. The projected summary SHALL include the additive nullable
+numeric-only transfer-progress object (percent, receivedObjects, totalObjects,
+receivedBytes, throughput; unknown modeled explicitly, never as 0) defined once
+on the shared strict `TaskProvisioningSummary` contract schema. The contracts
+change SHALL land before any projection emits the field — the strict schema
+rejects an early emitter — and the summary SHALL be projected in the single
+shared task-response projection so Console, Public V1, and MCP receive
+identical shapes. The progress field SHALL follow the deployment
+capability-gate discipline for mixed-version rollout, and rollback SHALL close
+the gate before downgrading. The same canonical Task failure is nested by the existing
 `schedules.list`, `schedules.create`, `schedules.get`, `schedules.update`,
 `schedules.pause`, `schedules.resume`, `schedules.dispatch`, and
 `schedules.runs` outputs, so those operations SHALL project the new variant
@@ -507,8 +516,20 @@ a strict N-1 client can parse the new discriminator.
 #### Scenario: Registry-derived task response includes safe progress
 
 - **WHEN** a Public V1 client creates or reads a task during workspace transfer
-- **THEN** the response validates against the canonical Task schema and includes the safe transfer stage
+- **THEN** the response validates against the canonical Task schema and includes the safe transfer stage with the numeric progress object when known
 - **AND** the matching OpenAPI operation and MCP structured output use that same schema
+
+#### Scenario: One projection fans out to every surface
+
+- **WHEN** the shared task-response projection maps a persisted progress snapshot
+- **THEN** Console REST, Public V1, and MCP task reads all expose the identical progress object from that single projection point
+- **AND** no surface computes its own divergent progress shape
+
+#### Scenario: Progress is capability-gated for mixed versions
+
+- **WHEN** the deployment progress capability gate is closed (or a rollback is in progress)
+- **THEN** task responses omit or null the progress object and still validate against the schema
+- **AND** legacy pre-progress payloads remain accepted by current readers
 
 #### Scenario: Public task failure distinguishes a platform dependency
 

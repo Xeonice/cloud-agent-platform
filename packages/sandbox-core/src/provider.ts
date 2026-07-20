@@ -22,7 +22,10 @@ import type {
   SandboxWorkspaceProgressReporter,
   SandboxWorkspaceBoundaryGuard,
 } from './provisioning.js';
-import type { SandboxGitDeliveryResult } from './workspace-git.js';
+import type {
+  SandboxGitDeliveryResult,
+  SandboxWorkspaceTransferDetachment,
+} from './workspace-git.js';
 import {
   snapshotSandboxResources,
   snapshotSandboxWorkspacePlan,
@@ -649,6 +652,13 @@ export interface SandboxProvisionContext<TCloneSpec = GitCloneSpec> {
   readonly cancellationSignal?: AbortSignal;
   /** Provider-neutral progress callback for durable admission projection. */
   readonly onWorkspaceProgress?: SandboxWorkspaceProgressReporter;
+  /**
+   * Cooperative parking/resume seam for the detached workspace transfer
+   * (detach-workspace-clone D3). Providers thread it verbatim into the staged
+   * materialization hook context; callers that omit it keep the inline
+   * (blocking) dual-gate await of the detached job.
+   */
+  readonly workspaceTransferDetachment?: SandboxWorkspaceTransferDetachment;
   /** Best-effort audit progress for provider-composite setup/readiness phases. */
   readonly onProvisioningProgress?: SandboxProvisioningProgressReporter;
   /** Load-bearing canonical checkpoint, separate from best-effort progress. */

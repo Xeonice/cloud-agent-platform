@@ -339,8 +339,8 @@ assert.throws(
   let settled = false;
   const running = adapter.stageExecutor
     .execute({
-      stage: 'workspace_transfer',
-      request: { command: 'git clone', timeoutMs: 5_000 },
+      stage: 'checkout',
+      request: { command: 'git checkout', timeoutMs: 5_000 },
       signal: cancellation.signal,
       remainingTimeoutMs: 5_000,
     })
@@ -436,8 +436,8 @@ assert.throws(
   cancellation.abort();
   assert.deepEqual(
     await adapter.stageExecutor.execute({
-      stage: 'workspace_transfer',
-      request: { command: 'git clone', timeoutMs: 1_000 },
+      stage: 'checkout',
+      request: { command: 'git checkout', timeoutMs: 1_000 },
       signal: cancellation.signal,
       remainingTimeoutMs: 1_000,
     }),
@@ -632,8 +632,8 @@ assert.throws(
     cancellation.abort();
     const execution = () =>
       adapter.stageExecutor.execute({
-        stage: 'workspace_transfer',
-        request: { command: 'git clone', timeoutMs: 1_000 },
+        stage: 'checkout',
+        request: { command: 'git checkout', timeoutMs: 1_000 },
         signal: cancellation.signal,
         remainingTimeoutMs: 1_000,
       });
@@ -738,8 +738,8 @@ assert.throws(
   assert.equal(adapter.wasSandboxCleanupAcknowledged(), true);
   assert.deepEqual(
     await adapter.stageExecutor.execute({
-      stage: 'workspace_transfer',
-      request: { command: 'git clone', timeoutMs: 1_000 },
+      stage: 'checkout',
+      request: { command: 'git checkout', timeoutMs: 1_000 },
       signal: cancellation.signal,
       remainingTimeoutMs: 1_000,
     }),
@@ -799,8 +799,8 @@ assert.throws(
   cancellation.abort();
   assert.deepEqual(
     await adapter.stageExecutor.execute({
-      stage: 'workspace_transfer',
-      request: { command: 'git clone', timeoutMs: 1_000 },
+      stage: 'checkout',
+      request: { command: 'git checkout', timeoutMs: 1_000 },
       signal: cancellation.signal,
       remainingTimeoutMs: 1_000,
     }),
@@ -816,6 +816,148 @@ assert.throws(
   assert.equal(deleteCalls, 0);
   assert.equal(cleanupCompletions, 0);
   assert.equal(adapter.wasSandboxFenced(), false);
+}
+
+{
+  // Detached transfer: a dropped polling exec is never settlement evidence
+  // and must not force whole-sandbox fencing — the next marker probe settles
+  // the stage from the job's pid/exit markers.
+  let deleteCalls = 0;
+  let execCount = 0;
+  const adapter = mod.createBoxLiteWorkspaceSecurityAdapter({
+    client: {
+      async exec() {
+        execCount += 1;
+        if (execCount === 1) {
+          throw new Error('poll response dropped mid-transfer');
+        }
+        return result({ output: 'exit 0\nprogress 4096 1750000000\n' });
+      },
+      async deleteSandbox() {
+        deleteCalls += 1;
+      },
+      async getSandbox() {
+        return { id: 'box-detached-drop', state: 'running' };
+      },
+    },
+    sandboxId: 'box-detached-drop',
+  });
+  const signal = new AbortController().signal;
+  const dropped = await adapter.stageExecutor.execute({
+    stage: 'workspace_transfer',
+    request: { command: 'probe transfer markers', timeoutMs: 30_000 },
+    signal,
+    remainingTimeoutMs: 30_000,
+  });
+  assert.deepEqual(dropped, result({ exitCode: 124, timedOut: true }));
+  assert.equal(adapter.wasSandboxFenced(), false);
+  assert.equal(adapter.wasSandboxCleanupAttempted(), false);
+  const settledProbe = await adapter.stageExecutor.execute({
+    stage: 'workspace_transfer',
+    request: { command: 'probe transfer markers', timeoutMs: 30_000 },
+    signal,
+    remainingTimeoutMs: 30_000,
+  });
+  assert.equal(settledProbe.exitCode, 0);
+  assert.match(settledProbe.output, /^exit 0$/mu);
+  // Transient exec loss requires no fencing lineage at settlement time.
+  await adapter.settleCredentialSafety();
+  assert.equal(deleteCalls, 0);
+  assert.equal(adapter.wasSandboxFenced(), false);
+  assert.equal(adapter.wasSandboxCleanupAttempted(), false);
+}
+
+{
+  // Detached transfer: a timed-out polling exec result is returned as-is
+  // (the dual-gate liveness policy owns transfer timeout semantics) and does
+  // not trigger sandbox fencing.
+  let deleteCalls = 0;
+  const adapter = mod.createBoxLiteWorkspaceSecurityAdapter({
+    client: {
+      async exec() {
+        return result({ exitCode: 124, timedOut: true });
+      },
+      async deleteSandbox() {
+        deleteCalls += 1;
+      },
+      async getSandbox() {
+        return { id: 'box-detached-timeout', state: 'running' };
+      },
+    },
+    sandboxId: 'box-detached-timeout',
+  });
+  const timedOut = await adapter.stageExecutor.execute({
+    stage: 'workspace_transfer',
+    request: { command: 'probe transfer markers', timeoutMs: 30_000 },
+    signal: new AbortController().signal,
+    remainingTimeoutMs: 30_000,
+  });
+  assert.deepEqual(timedOut, result({ exitCode: 124, timedOut: true }));
+  await adapter.settleCredentialSafety();
+  assert.equal(deleteCalls, 0);
+  assert.equal(adapter.wasSandboxFenced(), false);
+  assert.equal(adapter.wasSandboxCleanupAttempted(), false);
+}
+
+{
+  // Detached transfer: after a cancelled control exec whose transport
+  // response is lost, the kill exec still travels the stage seam with a
+  // fresh signal and reaches the guest job instead of a fenced sandbox.
+  const execCommands = [];
+  let deleteCalls = 0;
+  const lateExec = deferred();
+  let execCount = 0;
+  const adapter = mod.createBoxLiteWorkspaceSecurityAdapter({
+    client: {
+      async exec(request) {
+        execCommands.push(request.command);
+        execCount += 1;
+        if (execCount === 1) return lateExec.promise;
+        return result();
+      },
+      async deleteSandbox() {
+        deleteCalls += 1;
+      },
+      async getSandbox() {
+        return { id: 'box-detached-kill', state: 'running' };
+      },
+    },
+    sandboxId: 'box-detached-kill',
+  });
+  const cancellation = new AbortController();
+  const running = adapter.stageExecutor.execute({
+    stage: 'workspace_transfer',
+    request: {
+      command: 'probe transfer markers',
+      timeoutMs: 30_000,
+      signal: cancellation.signal,
+    },
+    signal: cancellation.signal,
+    remainingTimeoutMs: 30_000,
+  });
+  await Promise.resolve();
+  cancellation.abort();
+  assert.deepEqual(await running, result({ exitCode: 124, timedOut: true }));
+  assert.equal(adapter.wasSandboxFenced(), false);
+  const killResult = await adapter.stageExecutor.execute({
+    stage: 'workspace_transfer',
+    request: {
+      command:
+        `kill -TERM -- "-$(cat '/tmp/cap-jobs/ws-transfer-task/pid')" 2>/dev/null; exit 0`,
+      timeoutMs: 30_000,
+    },
+    signal: new AbortController().signal,
+    remainingTimeoutMs: 30_000,
+  });
+  assert.equal(killResult.exitCode, 0);
+  assert.equal(killResult.timedOut, false);
+  assert.equal(execCommands.length, 2);
+  assert.match(execCommands[1], /kill -TERM/u);
+  await adapter.settleCredentialSafety();
+  assert.equal(deleteCalls, 0);
+  assert.equal(adapter.wasSandboxFenced(), false);
+  lateExec.resolve(result());
+  await Promise.resolve();
 }
 
 console.log('BoxLite workspace security tests passed');

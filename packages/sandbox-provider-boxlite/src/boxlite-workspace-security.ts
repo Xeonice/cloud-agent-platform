@@ -256,6 +256,14 @@ export function createBoxLiteWorkspaceSecurityAdapter(
   });
 }
 
+/**
+ * BoxLite bridge for the shared staged Git engine. Non-transfer stages treat
+ * exec resolution as a process-settlement boundary and fence the sandbox when
+ * settlement cannot be observed. The `workspace_transfer` stage instead runs
+ * as a detached supervised job driven by short polling execs: a dropped poll
+ * settles from the job's pid/exit markers on a later probe rather than
+ * forcing whole-sandbox fencing.
+ */
 export function createBoxLiteSandboxGitStageExecutor(options: {
   readonly client: Pick<BoxLiteClient, 'exec'>;
   readonly sandboxId: string;
@@ -277,15 +285,26 @@ export function createBoxLiteSandboxGitStageExecutor(options: {
     async execute(
       execution: SandboxGitStageExecution,
     ): Promise<SandboxCommandExecutionResult> {
+      // Detached workspace-transfer settlement (spec: BoxLite detached
+      // supervised transfer): every `workspace_transfer` exec is a short
+      // control-plane exec (launch/marker probe/kill) against a detached
+      // supervised job, so a dropped, timed-out, or cancelled response is
+      // never settlement evidence and MUST NOT force whole-sandbox fencing.
+      // The job's pid/exit markers carry the settlement proof and a
+      // subsequent probe settles the stage from them; the kill path travels
+      // this same seam and must reach the guest job, not a fenced sandbox.
+      // All other stages keep the process-settlement boundary: an
+      // unobservable exec still fences the sandbox.
+      const markerSettled = execution.stage === 'workspace_transfer';
       if (execution.signal.aborted) {
-        await requireSandboxFence();
+        if (!markerSettled) await requireSandboxFence();
         return timedOutResult();
       }
 
       const onAbort = deferredAbort(execution.signal);
       if (execution.signal.aborted) {
         onAbort.dispose();
-        await requireSandboxFence();
+        if (!markerSettled) await requireSandboxFence();
         return timedOutResult();
       }
       const observedExec = options.client
@@ -308,10 +327,15 @@ export function createBoxLiteSandboxGitStageExecutor(options: {
       if (outcome.kind === 'abort') {
         // observedExec already owns both fulfillment and rejection handlers, so
         // a late/dropped transport response cannot become an unhandled promise.
-        await requireSandboxFence();
+        if (!markerSettled) await requireSandboxFence();
         return timedOutResult();
       }
       if (outcome.kind === 'error') {
+        if (markerSettled) {
+          // A dropped poll settles nothing: report it as a timed-out control
+          // exec and let the next marker probe settle the stage.
+          return timedOutResult();
+        }
         await requireSandboxFence();
         if (execution.signal.aborted || isAbortLike(outcome.error)) {
           return timedOutResult();
@@ -323,7 +347,7 @@ export function createBoxLiteSandboxGitStageExecutor(options: {
 
       const result = normalizeExecResult(outcome.result);
       if (result.timedOut || execution.signal.aborted) {
-        await requireSandboxFence();
+        if (!markerSettled) await requireSandboxFence();
         return execution.signal.aborted ? timedOutResult() : result;
       }
       return result;

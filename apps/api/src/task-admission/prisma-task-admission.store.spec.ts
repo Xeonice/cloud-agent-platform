@@ -379,3 +379,253 @@ test('settlement accepts only safe causes and never interpolates them into SQL',
     }),
   );
 });
+
+test('claim resumes parked work only through the expired-lease branch, preserving attempt and generation', () => {
+  const sql = sqlText(
+    buildTaskAdmissionClaimQuery({
+      leaseToken: 'parked-resume-claim',
+      leaseDurationMs: 30_000,
+    }),
+  );
+
+  // Parked rows are never claimable by available_at: only their expired lease
+  // (poll-loop release, crash, or rollback) makes them candidates.
+  assert.match(
+    sql,
+    /w\."state" = 'parked'\s+AND w\."lease_until" <= clock_timestamp\(\)/,
+  );
+  assert.match(
+    sql,
+    /w\."state" IN \('accepted', 'queued', 'retrying'\)\s+AND w\."available_at" <= clock_timestamp\(\)/,
+  );
+  // Parking is not a retry event: resume keeps the parked attempt.
+  assert.match(sql, /WHEN w\."state" = 'parked' THEN w\."attempt"/);
+  // Ordering treats parked like an expired running lease.
+  assert.match(
+    sql,
+    /WHEN w\."state" IN \('running', 'parked'\) THEN w\."lease_until"/,
+  );
+  // The retained parked generation travels with the claim for the ownership
+  // re-stamp compare, and only for parked source rows.
+  assert.match(sql, /w\."lease_owner" AS "parked_lease_owner"/);
+  assert.match(
+    sql,
+    /WHEN c\."source_state" = 'parked' THEN c\."parked_lease_owner"\s+ELSE NULL/,
+  );
+});
+
+test('a parked claim surfaces the parked generation without burning the attempt', async () => {
+  const prisma = {
+    async $queryRaw() {
+      return [
+        claimedRow({
+          sourceState: 'parked',
+          attempt: 3,
+          stage: 'workspace_transfer',
+          parkedLeaseToken: 'parked:generation',
+        }),
+      ];
+    },
+  } as unknown as PrismaService;
+  const store = new PrismaTaskAdmissionStore(prisma);
+
+  const claim = await store.claim({
+    leaseToken: 'parked-resume:one',
+    leaseDurationMs: 30_000,
+  });
+
+  assert.equal(claim?.sourceState, 'parked');
+  assert.equal(claim?.attempt, 3);
+  assert.equal(claim?.stage, 'workspace_transfer');
+  assert.equal(claim?.parkedLeaseToken, 'parked:generation');
+});
+
+test('a parked claim without its retained generation fails closed', async () => {
+  const prisma = {
+    async $queryRaw() {
+      return [
+        claimedRow({
+          sourceState: 'parked',
+          attempt: 1,
+          stage: 'workspace_transfer',
+          parkedLeaseToken: null,
+        }),
+      ];
+    },
+  } as unknown as PrismaService;
+  const store = new PrismaTaskAdmissionStore(prisma);
+
+  await assert.rejects(() =>
+    store.claim({ leaseToken: 'parked-resume:two', leaseDurationMs: 30_000 }),
+  );
+});
+
+test('non-parked claims never surface a parked generation', async () => {
+  const prisma = {
+    async $queryRaw() {
+      return [claimedRow({ parkedLeaseToken: null })];
+    },
+  } as unknown as PrismaService;
+  const store = new PrismaTaskAdmissionStore(prisma);
+
+  const claim = await store.claim({
+    leaseToken: 'accepted:one',
+    leaseDurationMs: 30_000,
+  });
+
+  assert.equal(claim?.sourceState, 'accepted');
+  assert.equal(claim?.parkedLeaseToken ?? null, null);
+});
+
+test('park settles from the running lease but retains the lease pair as the parked generation', async () => {
+  let statement: unknown;
+  const prisma = {
+    async $executeRaw(value: unknown) {
+      statement = value;
+      return 1;
+    },
+  } as unknown as PrismaService;
+  const store = new PrismaTaskAdmissionStore(prisma);
+
+  assert.equal(
+    await store.park({
+      taskId: '11111111-1111-4111-8111-111111111111',
+      leaseToken: 'lease:parking',
+      taskFences: PENDING_TASK_FENCES,
+      settlement: {
+        state: 'parked',
+        stage: 'workspace_transfer',
+        leaseDurationMs: 60_000,
+      },
+    }),
+    true,
+  );
+
+  const sql = sqlText(statement);
+  // Fenced exactly like settle: only the live running owner may park.
+  assert.match(sql, /"state" = 'running'/);
+  assert.match(sql, /"lease_owner" = \?/);
+  assert.match(sql, /"lease_until" > clock_timestamp\(\)/);
+  assert.match(sql, /"state" = 'parked'/);
+  // The lease pair is retained, not released: the token stays as the parked
+  // ownership generation and the expiry becomes the recovery horizon.
+  assert.doesNotMatch(sql, /"lease_owner" = NULL/);
+  assert.match(
+    sql,
+    /"lease_until" = clock_timestamp\(\)\s+\+ \(\?::bigint \* interval '1 millisecond'\)/,
+  );
+  assert.equal(sqlValues(statement).includes(60_000), true);
+  assert.equal(sql.includes('60000'), false);
+
+  await assert.rejects(() =>
+    store.park({
+      taskId: '11111111-1111-4111-8111-111111111111',
+      leaseToken: 'lease:parking',
+      taskFences: PENDING_TASK_FENCES,
+      settlement: {
+        state: 'parked',
+        stage: 'workspace_transfer',
+        leaseDurationMs: 0,
+      },
+    }),
+  );
+});
+
+test('parked heartbeat extends only a live parked lease and persists the numeric snapshot', async () => {
+  const statements: unknown[] = [];
+  const prisma = {
+    async $executeRaw(value: unknown) {
+      statements.push(value);
+      return 1;
+    },
+  } as unknown as PrismaService;
+  const store = new PrismaTaskAdmissionStore(prisma);
+  const request = {
+    taskId: '11111111-1111-4111-8111-111111111111',
+    leaseToken: 'lease:parked-generation',
+    leaseDurationMs: 30_000,
+  };
+
+  assert.equal(
+    await store.parkedHeartbeat({
+      ...request,
+      progress: {
+        percent: 42,
+        receivedObjects: 420,
+        totalObjects: 1000,
+        receivedBytes: 65_536,
+        throughputBytesPerSecond: 8_192,
+      },
+    }),
+    true,
+  );
+  const withProgress = sqlText(statements[0]);
+  assert.match(withProgress, /"state" = 'parked'/);
+  assert.match(withProgress, /"lease_owner" = \?/);
+  // A late tick can never resurrect an already-expired parked lease.
+  assert.match(withProgress, /"lease_until" > clock_timestamp\(\)/);
+  assert.match(withProgress, /"progress_percent" = \?/);
+  assert.match(withProgress, /"progress_throughput_bytes_per_second" = \?/);
+  assert.equal(sqlValues(statements[0]).includes(42), true);
+
+  // An omitted snapshot leaves the stored progress columns untouched.
+  assert.equal(await store.parkedHeartbeat(request), true);
+  const withoutProgress = sqlText(statements[1]);
+  assert.doesNotMatch(withoutProgress, /progress_percent/);
+
+  // Numeric-only, bounded: indeterminate is null, never an out-of-range value.
+  await assert.rejects(() =>
+    store.parkedHeartbeat({
+      ...request,
+      progress: {
+        percent: 101,
+        receivedObjects: null,
+        totalObjects: null,
+        receivedBytes: null,
+        throughputBytesPerSecond: null,
+      },
+    }),
+  );
+  await assert.rejects(() =>
+    store.parkedHeartbeat({
+      ...request,
+      progress: {
+        percent: null,
+        receivedObjects: null,
+        totalObjects: null,
+        receivedBytes: -1,
+        throughputBytesPerSecond: null,
+      },
+    }),
+  );
+});
+
+test('releaseParked expires the parked lease in place without admission or settlement', async () => {
+  let statement: unknown;
+  const prisma = {
+    async $executeRaw(value: unknown) {
+      statement = value;
+      return 1;
+    },
+  } as unknown as PrismaService;
+  const store = new PrismaTaskAdmissionStore(prisma);
+
+  assert.equal(
+    await store.releaseParked({
+      taskId: '11111111-1111-4111-8111-111111111111',
+      leaseToken: 'lease:parked-generation',
+    }),
+    true,
+  );
+
+  const sql = sqlText(statement);
+  assert.match(sql, /"state" = 'parked'/);
+  assert.match(sql, /"lease_owner" = \?/);
+  assert.match(sql, /"lease_until" = clock_timestamp\(\)/);
+  assert.match(sql, /"available_at" = clock_timestamp\(\)/);
+  // No state transition, attempt mutation, or cause writing happens here: the
+  // row re-enters only through the expired-lease claim branch.
+  assert.doesNotMatch(sql, /"state" =\s*\?/);
+  assert.doesNotMatch(sql, /"attempt"/);
+  assert.doesNotMatch(sql, /"cause_code"/);
+});

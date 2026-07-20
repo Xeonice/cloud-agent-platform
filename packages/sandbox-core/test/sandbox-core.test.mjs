@@ -2012,3 +2012,5 @@ await test('cleanup evidence is strict, bounded, and cannot accept raw provider 
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
+
+await import('./detached-jobs.test.mjs');

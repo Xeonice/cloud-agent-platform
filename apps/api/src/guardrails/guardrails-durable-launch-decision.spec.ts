@@ -12,7 +12,9 @@ import {
   SandboxCleanupCoordinationPendingError,
   SandboxCleanupPendingError,
   SandboxProvisioningStageError,
+  SandboxWorkspaceTransferDetachedSignal,
   type AgentTerminalLaunchOutcome,
+  type SandboxDetachedWorkspaceTransferJob,
   type SandboxProvisionContext,
   type SandboxRunCleanupAuthorityProjection,
 } from '@cap/sandbox';
@@ -3353,3 +3355,522 @@ for (const outcome of ['fenced', 'failed'] as const) {
     }
   });
 }
+
+test('resumed claim re-stamps parked sandbox ownership with one conditional write before the provider boundary', async () => {
+  const checkpoints: string[] = [];
+  const trace: string[] = [];
+  const restampWrites: unknown[] = [];
+  const ownership = {
+    ownerGeneration: 'parked-generation',
+    resourceGeneration: 'resource-generation',
+  };
+  const prisma = {
+    sandboxRun: {
+      async findFirst() {
+        trace.push('probe');
+        return { ownerGeneration: ownership.ownerGeneration };
+      },
+      async updateMany(args: {
+        readonly where: { readonly ownerGeneration: string };
+        readonly data: { readonly ownerGeneration: string };
+      }) {
+        trace.push('restamp');
+        restampWrites.push(args);
+        assert.equal(args.where.ownerGeneration, ownership.ownerGeneration);
+        ownership.ownerGeneration = args.data.ownerGeneration;
+        return { count: 1 };
+      },
+    },
+  } as unknown as PrismaService;
+  const service = buildService(
+    gatewayWithDecision(Promise.resolve({ kind: 'launched' })),
+    undefined,
+    prisma,
+  );
+  Object.assign(service, {
+    sandbox: {
+      getSandboxMode: () => 'workspace-write',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision() {
+        trace.push('provision');
+        return CONNECTION;
+      },
+      async teardownSandbox() {
+        trace.push('teardown');
+      },
+    } as unknown as SandboxProvider,
+    resolveSelectedRunStrict: async () => ({
+      connection: CONNECTION,
+      owner: {
+        taskId: TASK_ID,
+        providerId: 'sandbox-test',
+        providerSandboxId: TASK_ID,
+        ownership: { ...ownership },
+        status: 'running',
+      },
+    }),
+  });
+  const base = buildContext({ checkpoints });
+  const context: TaskAdmissionProcessorContext = {
+    ...base,
+    claim: { ...base.claim, leaseToken: 'resumed-lease-token' },
+  };
+
+  assert.deepEqual(await service.processDurableAdmission(context), {
+    kind: 'succeeded',
+  });
+  // Exactly one atomic conditional compare-and-set against the parked
+  // generation, inside the reclaim checkpoint boundary and before provision.
+  assert.deepEqual(restampWrites, [
+    {
+      where: {
+        taskId: TASK_ID,
+        ownerGeneration: 'parked-generation',
+        status: { in: ['provisioning', 'running'] },
+      },
+      data: { ownerGeneration: 'resumed-lease-token' },
+    },
+  ]);
+  assert.ok(trace.indexOf('restamp') < trace.indexOf('provision'));
+  assert.equal(trace.includes('teardown'), false);
+  // The strict post-provision equality check is untouched and accepts the
+  // resumed worker only because the re-stamp restored the invariant.
+  assert.equal(ownership.ownerGeneration, 'resumed-lease-token');
+  assert.deepEqual(checkpoints, [
+    'sandbox_creation',
+    'runtime_setup',
+    'readiness',
+    'agent_launch',
+    'complete',
+  ]);
+});
+
+test('fresh and same-generation claims perform no ownership re-stamp write', async () => {
+  for (const liveRun of [null, { ownerGeneration: 'lease-token' }]) {
+    let restampCalls = 0;
+    const prisma = {
+      sandboxRun: {
+        async findFirst() {
+          return liveRun;
+        },
+        async updateMany() {
+          restampCalls += 1;
+          return { count: 1 };
+        },
+      },
+    } as unknown as PrismaService;
+    const service = buildService(
+      gatewayWithDecision(Promise.resolve({ kind: 'launched' })),
+      undefined,
+      prisma,
+    );
+
+    assert.deepEqual(
+      await service.processDurableAdmission(buildContext({ checkpoints: [] })),
+      { kind: 'succeeded' },
+    );
+    // An absent live run (fresh claim) and a generation already equal to the
+    // claim's lease token (ordinary continuation) must never write.
+    assert.equal(restampCalls, 0);
+  }
+});
+
+test('a stale waker failing the ownership re-stamp compare self-terminates before the provider boundary', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  let provisionCalls = 0;
+  let teardownCalls = 0;
+  const prisma = {
+    sandboxRun: {
+      async findFirst() {
+        return { ownerGeneration: 'parked-generation' };
+      },
+      async updateMany() {
+        // The winner already re-stamped this generation: the conditional
+        // compare matches zero rows.
+        return { count: 0 };
+      },
+    },
+  } as unknown as PrismaService;
+  const service = buildService(
+    gatewayWithDecision(Promise.resolve({ kind: 'launched' })),
+    undefined,
+    prisma,
+    diagnostics.recorder,
+    diagnosticWriteGate(true),
+  );
+  Object.assign(service, {
+    sandbox: {
+      getSandboxMode: () => 'workspace-write',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision() {
+        provisionCalls += 1;
+        return CONNECTION;
+      },
+      async teardownSandbox() {
+        teardownCalls += 1;
+      },
+    } as unknown as SandboxProvider,
+    resolveSelectedRunStrict: async () => ({
+      connection: CONNECTION,
+      owner: {
+        taskId: TASK_ID,
+        providerId: 'sandbox-test',
+        providerSandboxId: TASK_ID,
+        ownership: {
+          ownerGeneration: 'parked-generation',
+          resourceGeneration: 'resource-generation',
+        },
+        status: 'running',
+      },
+    }),
+  });
+  const base = buildContext({ checkpoints: [] });
+  const context: TaskAdmissionProcessorContext = {
+    ...base,
+    claim: { ...base.claim, leaseToken: 'stale-waker-lease-token' },
+  };
+
+  await assert.rejects(
+    service.processDurableAdmission(context),
+    TaskAdmissionLeaseLostError,
+  );
+  // Self-termination: no provider boundary, no teardown of the winner's
+  // sandbox, and no diagnostic settlement (lease loss is never a primary).
+  assert.equal(provisionCalls, 0);
+  assert.equal(teardownCalls, 0);
+  assert.deepEqual(diagnostics.events, []);
+  assert.deepEqual(diagnostics.primaryInputs, []);
+  assert.deepEqual(diagnostics.cleanupInputs, []);
+});
+
+test('an indeterminate ownership re-stamp write keeps the lease recoverable instead of settling', async () => {
+  let provisionCalls = 0;
+  const prisma = {
+    sandboxRun: {
+      async findFirst() {
+        return { ownerGeneration: 'parked-generation' };
+      },
+      async updateMany() {
+        throw new Error('database acknowledgement unavailable');
+      },
+    },
+  } as unknown as PrismaService;
+  const service = buildService(
+    gatewayWithDecision(Promise.resolve({ kind: 'launched' })),
+    undefined,
+    prisma,
+  );
+  Object.assign(service, {
+    sandbox: {
+      getSandboxMode: () => 'workspace-write',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision() {
+        provisionCalls += 1;
+        return CONNECTION;
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider,
+    resolveSelectedRunStrict: async () => ({
+      connection: CONNECTION,
+      owner: {
+        taskId: TASK_ID,
+        providerId: 'sandbox-test',
+        providerSandboxId: TASK_ID,
+        ownership: {
+          ownerGeneration: 'parked-generation',
+          resourceGeneration: 'resource-generation',
+        },
+        status: 'running',
+      },
+    }),
+  });
+  const base = buildContext({ checkpoints: [] });
+  const context: TaskAdmissionProcessorContext = {
+    ...base,
+    claim: { ...base.claim, leaseToken: 'resumed-lease-token' },
+  };
+
+  await assert.rejects(
+    service.processDurableAdmission(context),
+    (error: unknown) =>
+      error instanceof TaskAdmissionCoordinationError &&
+      error.operation === 'checkpoint',
+  );
+  assert.equal(provisionCalls, 0);
+});
+
+test('a superseded holder rejected at the durable checkpoint write self-terminates without provider work', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  let provisionCalls = 0;
+  let teardownCalls = 0;
+  const service = buildService(
+    gatewayWithDecision(Promise.resolve({ kind: 'launched' })),
+    undefined,
+    undefined,
+    diagnostics.recorder,
+    diagnosticWriteGate(true),
+  );
+  Object.assign(service, {
+    sandbox: {
+      getSandboxMode: () => 'workspace-write',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision() {
+        provisionCalls += 1;
+        return CONNECTION;
+      },
+      async teardownSandbox() {
+        teardownCalls += 1;
+      },
+    } as unknown as SandboxProvider,
+  });
+  const base = buildContext({ checkpoints: [] });
+  const context: TaskAdmissionProcessorContext = {
+    ...base,
+    lease: {
+      ...base.lease,
+      // Lease fencing at the DB checkpoint-write point (Temporal
+      // stale-task-token pattern): the store rejects the stale token.
+      checkpoint: async () => {
+        throw new TaskAdmissionLeaseLostError(TASK_ID);
+      },
+    },
+  };
+
+  await assert.rejects(
+    service.processDurableAdmission(context),
+    TaskAdmissionLeaseLostError,
+  );
+  assert.equal(provisionCalls, 0);
+  assert.equal(teardownCalls, 0);
+  assert.deepEqual(diagnostics.events, []);
+  assert.deepEqual(diagnostics.primaryInputs, []);
+  assert.deepEqual(diagnostics.cleanupInputs, []);
+});
+
+test('the durable workspace progress chain checkpoints started stages and forwards every variant best-effort', async () => {
+  const checkpoints: string[] = [];
+  const forwarded: unknown[] = [];
+  const service = buildService(
+    gatewayWithDecision(Promise.resolve({ kind: 'launched' })),
+  );
+  Object.assign(service, {
+    resolveProvisionPlan: async () => ({
+      cloneSpec: null,
+      modelIntent: { kind: 'runtime-default' },
+      runtimeId: 'codex',
+      executionMode: 'interactive-pty',
+      resources: {},
+      workspace: {
+        repositoryUrl: 'https://example.test/repo.git',
+        callerBranch: null,
+        resolvedBranch: 'main',
+        deadlineMs: 900_000,
+      },
+      requiredCapabilities: [],
+      onWorkspaceProgress: async (event: unknown) => {
+        forwarded.push(event);
+        // Forwarding is best-effort by contract: a throwing reporter must
+        // never fail the materialization or the admission.
+        throw new Error('progress reporter unavailable');
+      },
+    }),
+    sandbox: {
+      getSandboxMode: () => 'workspace-write',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision(context: SandboxProvisionContext) {
+        await context.onWorkspaceProgress?.({
+          status: 'started',
+          stage: 'workspace_transfer',
+        });
+        // Additive variants (the detached clone percent/objects/bytes event)
+        // must flow through the shared chain without checkpointing and
+        // without throwing.
+        await context.onWorkspaceProgress?.({
+          status: 'progress',
+          stage: 'workspace_transfer',
+          percent: 42,
+        } as never);
+        await context.onWorkspaceProgress?.({
+          status: 'succeeded',
+          stage: 'workspace_transfer',
+        });
+        return CONNECTION;
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider,
+  });
+
+  assert.deepEqual(
+    await service.processDurableAdmission(buildContext({ checkpoints })),
+    { kind: 'succeeded' },
+  );
+  assert.deepEqual(
+    checkpoints.filter((stage) => stage === 'workspace_transfer'),
+    ['workspace_transfer'],
+    'only the started event is a load-bearing durable checkpoint',
+  );
+  assert.deepEqual(forwarded, [
+    { status: 'started', stage: 'workspace_transfer' },
+    { status: 'progress', stage: 'workspace_transfer', percent: 42 },
+    { status: 'succeeded', stage: 'workspace_transfer' },
+  ]);
+});
+
+test('a detaching workspace transfer settles the durable claim as parked with the marker seam', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  const seams: unknown[] = [];
+  let kills = 0;
+  const fakeJob: SandboxDetachedWorkspaceTransferJob = {
+    taskId: TASK_ID,
+    jobId: `ws-transfer-${TASK_ID}`,
+    probe: async () => ({
+      kind: 'alive',
+      progress: {
+        percent: 42,
+        receivedObjects: 42,
+        totalObjects: 100,
+        receivedBytes: 65_536,
+        throughputBytesPerSecond: 8_192,
+      },
+    }),
+    kill: async () => {
+      kills += 1;
+    },
+  };
+  const service = buildService(
+    gatewayWithDecision(Promise.resolve({ kind: 'launched' })),
+    undefined,
+    undefined,
+    diagnostics.recorder,
+    diagnosticWriteGate(true),
+  );
+  Object.assign(service, {
+    sandbox: {
+      getSandboxMode: () => 'workspace-write',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision(context: SandboxProvisionContext) {
+        seams.push(context.workspaceTransferDetachment);
+        throw new SandboxWorkspaceTransferDetachedSignal(fakeJob);
+      },
+      async teardownSandbox() {
+        assert.fail('parking must never tear the sandbox down');
+      },
+    } as unknown as SandboxProvider,
+  });
+  const checkpoints: string[] = [];
+
+  const result = await service.processDurableAdmission(
+    buildContext({ checkpoints }),
+  );
+  assert.equal(result.kind, 'parked');
+  if (result.kind !== 'parked') return;
+  assert.equal(result.stage, 'workspace_transfer');
+
+  // The durable chain opted into parking; a non-resume claim carries no
+  // resume triage.
+  assert.deepEqual(seams, [{ park: true }]);
+  assert.deepEqual(checkpoints, ['sandbox_creation']);
+
+  // The handed-back port delegates probe/kill to the sandbox-layer job seam.
+  assert.deepEqual(await result.job.probe(), {
+    kind: 'alive',
+    progress: {
+      percent: 42,
+      receivedObjects: 42,
+      totalObjects: 100,
+      receivedBytes: 65_536,
+      throughputBytesPerSecond: 8_192,
+    },
+  });
+  await result.job.kill();
+  assert.equal(kills, 1);
+
+  // Park/resume stays within one diagnostic attempt: parking settles nothing.
+  assert.equal(diagnostics.trace.includes('record_primary'), false);
+  assert.equal(diagnostics.trace.includes('mark_complete'), false);
+  assert.deepEqual(diagnostics.primaryInputs, []);
+  assert.deepEqual(diagnostics.cleanupInputs, []);
+});
+
+test('a resumed parked claim routes marker evidence through the claim-path triage within the same attempt', async () => {
+  const diagnostics = diagnosticSettlementHarness();
+  let beginCalls = 0;
+  let resumeCalls = 0;
+  const recorder = {
+    ...diagnostics.recorder,
+    async beginAttempt(
+      input: Parameters<
+        TaskProvisioningDiagnosticRecorderPort['beginAttempt']
+      >[0],
+    ) {
+      beginCalls += 1;
+      return diagnostics.recorder.beginAttempt(input);
+    },
+    async resumeAttempt(
+      input: Parameters<
+        TaskProvisioningDiagnosticRecorderPort['resumeAttempt']
+      >[0],
+    ) {
+      resumeCalls += 1;
+      return diagnostics.recorder.resumeAttempt(input);
+    },
+  } as TaskProvisioningDiagnosticRecorderPort;
+  const triages: string[] = [];
+  const service = buildService(
+    gatewayWithDecision(Promise.resolve({ kind: 'launched' })),
+    undefined,
+    undefined,
+    recorder,
+    diagnosticWriteGate(true),
+  );
+  Object.assign(service, {
+    sandbox: {
+      getSandboxMode: () => 'workspace-write',
+      getProviderCapabilities: () => ['terminal.websocket'],
+      async provision(context: SandboxProvisionContext) {
+        const seam = context.workspaceTransferDetachment;
+        assert.ok(seam, 'resumed parked claims must carry the detachment seam');
+        assert.equal(seam.park, true);
+        assert.ok(
+          seam.resume,
+          'resumed parked claims must carry the claim-path triage',
+        );
+        // The production triage (triageParkedAdmissionMarkers) adjudicates the
+        // marker evidence three ways; the exit marker is the only settlement
+        // proof and progress silence never implies success.
+        triages.push(
+          seam.resume.triage({ pidAlive: false, exitMarker: { exitCode: 0 } }),
+          seam.resume.triage({
+            pidAlive: true,
+            exitMarker: null,
+            progressObserved: false,
+          }),
+          seam.resume.triage({ pidAlive: false, exitMarker: null }),
+        );
+        return CONNECTION;
+      },
+      async teardownSandbox() {},
+    } as unknown as SandboxProvider,
+  });
+  const base = buildContext({ checkpoints: [] });
+  const context: TaskAdmissionProcessorContext = {
+    ...base,
+    claim: {
+      ...base.claim,
+      sourceState: 'parked',
+      parkedLeaseToken: 'parked-generation',
+      stage: 'workspace_transfer',
+    },
+  };
+
+  assert.deepEqual(await service.processDurableAdmission(context), {
+    kind: 'succeeded',
+  });
+  assert.deepEqual(triages, ['settle_from_exit', 'keep_parked', 'fail_attempt']);
+  // The park/resume cycle continues the SAME diagnostic attempt: the resumed
+  // claim resumes the persisted attempt rather than beginning a new one (the
+  // second resume is the ordinary success-settlement writer, exactly as on a
+  // non-parked success).
+  assert.equal(beginCalls, 0);
+  assert.equal(resumeCalls, 2);
+});

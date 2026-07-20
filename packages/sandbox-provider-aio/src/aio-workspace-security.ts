@@ -97,8 +97,19 @@ export function createAioSandboxGitStageExecutor(
     async execute(
       execution: SandboxGitStageExecution,
     ): Promise<SandboxCommandExecutionResult> {
+      // Detached workspace-transfer settlement (inherited through the shared
+      // configured-provider hook, identical to BoxLite): every
+      // `workspace_transfer` exec is a short control exec (launch/marker
+      // probe/kill) against a detached supervised job. A dropped, timed-out,
+      // or cancelled response is never settlement evidence and MUST NOT
+      // force whole-sandbox fencing — the job's pid/exit markers carry the
+      // settlement proof and a later probe settles the stage from them; the
+      // kill path travels this same seam and must reach the guest job, not
+      // a removed sandbox. All other stages keep the process-settlement
+      // boundary and fence when settlement cannot be observed.
+      const markerSettled = execution.stage === 'workspace_transfer';
       if (execution.signal.aborted) {
-        await fenceSandboxAndConfirm(options);
+        if (!markerSettled) await fenceSandboxAndConfirm(options);
         return timedOutResult();
       }
       try {
@@ -107,11 +118,16 @@ export function createAioSandboxGitStageExecutor(
           signal: execution.signal,
           timeoutMs: execution.remainingTimeoutMs,
         });
-        if (result.timedOut) {
+        if (result.timedOut && !markerSettled) {
           await fenceSandboxAndConfirm(options);
         }
         return result;
       } catch (error) {
+        if (markerSettled) {
+          // A dropped poll settles nothing: report it as a timed-out control
+          // exec and let the next marker probe settle the stage.
+          return timedOutResult();
+        }
         // A dropped/aborted HTTP response cannot prove the guest git process
         // stopped. Force-remove and verify absence before the stage settles.
         await fenceSandboxAndConfirm(options);

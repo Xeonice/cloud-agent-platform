@@ -1671,6 +1671,81 @@ test('provision forwards the canonical resolved branch workspace plan to the pro
   assert.equal(Object.isFrozen(context.workspace), true);
 });
 
+test('legacy provisioning forwards workspace progress through the same shared chain as durable admission', async () => {
+  const provisionContexts: unknown[] = [];
+  const forwarded: unknown[] = [];
+  const sandbox = {
+    getSandboxMode: () => 'danger-full-access',
+    getProviderCapabilities: () => [
+      'terminal.websocket',
+      'workspace.git.materialize',
+    ],
+    async provision(context: unknown) {
+      provisionContexts.push(context);
+      return {
+        taskId: TASK_ID,
+        baseUrl: 'http://sandbox.test/task',
+        wsUrl: 'ws://sandbox.test/task/ws',
+      };
+    },
+    async teardownSandbox() {},
+  } as unknown as SandboxProvider;
+  const service = buildService(async () => 'transitioned', {
+    sandbox,
+    isCurrent: async () => true,
+  });
+  Object.assign(service, {
+    resolveProvisionPlan: async () => ({
+      cloneSpec: null,
+      modelIntent: { kind: 'runtime-default' },
+      runtimeId: 'codex',
+      executionMode: 'interactive-pty',
+      resources: {},
+      workspace: {
+        repositoryUrl: 'https://example.test/repo.git',
+        callerBranch: null,
+        resolvedBranch: 'main',
+        deadlineMs: 900_000,
+      },
+      requiredCapabilities: [],
+      onWorkspaceProgress: async (event: unknown) => {
+        forwarded.push(event);
+        // Best-effort forwarding: a throwing reporter never fails the chain.
+        throw new Error('progress reporter unavailable');
+      },
+    }),
+  });
+
+  assert.equal(await service.admit(TASK_ID), 'running');
+  assert.equal(provisionContexts.length, 1);
+  const context = provisionContexts[0] as {
+    onWorkspaceProgress?: (event: unknown) => void | Promise<void>;
+  };
+  // detach-workspace-clone D11: the legacy chain no longer forwards the raw
+  // plan reporter — it carries the same shared workspace-progress chain as the
+  // durable admission context, so additive progress variants (the detached
+  // clone percent/objects/bytes event) flow through both without drift.
+  assert.equal(typeof context.onWorkspaceProgress, 'function');
+  await context.onWorkspaceProgress?.({
+    status: 'started',
+    stage: 'workspace_transfer',
+  });
+  await context.onWorkspaceProgress?.({
+    status: 'progress',
+    stage: 'workspace_transfer',
+    percent: 42,
+  });
+  await context.onWorkspaceProgress?.({
+    status: 'succeeded',
+    stage: 'workspace_transfer',
+  });
+  assert.deepEqual(forwarded, [
+    { status: 'started', stage: 'workspace_transfer' },
+    { status: 'progress', stage: 'workspace_transfer', percent: 42 },
+    { status: 'succeeded', stage: 'workspace_transfer' },
+  ]);
+});
+
 test('failed running transition releases the reserved semaphore slot', async () => {
   let failTransition = true;
   const service = buildService(async () => {
