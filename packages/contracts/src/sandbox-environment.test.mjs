@@ -21,6 +21,7 @@ const {
   SandboxEnvironmentValidationSchema,
   SandboxEnvironmentSourceKindSchema,
   SandboxEnvironmentSourceSchema,
+  UpdateSandboxEnvironmentParametersRequestSchema,
 } = require(path.join(here, '..', 'dist', 'sandbox-environment.js'));
 
 test('source kind schema exposes only managed AIO and BoxLite image sources', () => {
@@ -223,4 +224,63 @@ test('environment response can expose secret parameter keys without values', () 
     updatedAt: new Date('2026-07-01T00:00:00.000Z'),
   });
   assert.equal(parsed.parameters[1].value, undefined);
+});
+
+test('update-parameters request accepts set entries and keep entries', () => {
+  const parsed = UpdateSandboxEnvironmentParametersRequestSchema.parse({
+    parameters: [
+      { name: 'GCODE_API_BASE_URL', value: 'https://code.example/api/v5' },
+      { name: 'GCODE_TOKEN', keep: true },
+      { name: 'GCODE_SECONDARY_TOKEN', value: 'rotated', secret: true },
+    ],
+  });
+  assert.equal(parsed.parameters.length, 3);
+  assert.equal(parsed.parameters[1].keep, true);
+  assert.equal(parsed.parameters[1].value, undefined);
+});
+
+test('update-parameters request rejects a keep entry carrying a value', () => {
+  assert.throws(() =>
+    UpdateSandboxEnvironmentParametersRequestSchema.parse({
+      parameters: [{ name: 'GCODE_TOKEN', keep: true, value: 'leak' }],
+    }),
+  );
+});
+
+test('update-parameters request rejects a set entry carrying keep', () => {
+  assert.throws(() =>
+    UpdateSandboxEnvironmentParametersRequestSchema.parse({
+      parameters: [{ name: 'GCODE_TOKEN', value: 'v', secret: true, keep: true }],
+    }),
+  );
+});
+
+test('update-parameters request rejects duplicate parameter names', () => {
+  assert.throws(() =>
+    UpdateSandboxEnvironmentParametersRequestSchema.parse({
+      parameters: [
+        { name: 'GCODE_TOKEN', keep: true },
+        { name: 'GCODE_TOKEN', value: 'again', secret: true },
+      ],
+    }),
+  );
+});
+
+test('update-parameters request rejects unknown fields and invalid names', () => {
+  assert.throws(() =>
+    UpdateSandboxEnvironmentParametersRequestSchema.parse({
+      parameters: [],
+      extra: true,
+    }),
+  );
+  assert.throws(() =>
+    UpdateSandboxEnvironmentParametersRequestSchema.parse({
+      parameters: [{ name: 'BAD NAME', value: 'x' }],
+    }),
+  );
+  assert.throws(() =>
+    UpdateSandboxEnvironmentParametersRequestSchema.parse({
+      parameters: [{ name: 'GCODE_TOKEN', keep: false }],
+    }),
+  );
 });

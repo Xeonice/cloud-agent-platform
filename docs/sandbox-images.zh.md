@@ -81,6 +81,8 @@ exec /opt/gcode/gcode "$@"
 
 CAP 写参数文件的顺序是：仓库 workspace materialize 完成之后，agent runtime setup / launch 之前。任务停止或 sandbox 清理前会 best-effort 删除 `/home/gem/.cap/image-env`。如果镜像没有配置参数，文件会缺省；如果 token 权限不足，工具调用自己失败，这应该和镜像验证失败区分开。
 
+参数注册后可以继续编辑。`镜像管理` 里每个已注册镜像卡片有 `参数` 入口，打开的编辑框会预填当前参数：普通参数带值，密钥参数只显示名字。密钥行留空即保留已存的值，输入新值即完成轮换——旧明文不会回显也不需要重新提交。编辑参数不会改变验证状态，也不需要重新验证镜像；保存后仅对之后新建的任务生效，运行中的沙箱继续使用启动时的值。
+
 ## 构建并推送
 
 AIO 本地 provider 的受支持路径通常是 Linux/amd64 Docker host：

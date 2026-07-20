@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "change": "edit-sandbox-environment-parameters",
+  "intent": "admin-operability",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "changed",
+      "scope": "shared-contracts-module-admin-parameter-schemas-no-v1-operation",
+      "reason": "The shared @cap/contracts module the Public V1 surface consumes gains the admin-console-only UpdateSandboxEnvironmentParameters schemas; no /v1 operation, request/response schema, status code, or error body is added or altered, and the public-surface parity suite passes with zero drift."
+    },
+    "mcp": {
+      "status": "changed",
+      "scope": "shared-contracts-module-admin-parameter-schemas-no-tool-change",
+      "reason": "The same shared contracts module change is visible to the MCP surface's package dependency, but no MCP tool, argument, result shape, registration, or transport behavior changes; tools/list and adapter parity evidence is unchanged."
+    },
+    "openapi": {
+      "status": "changed",
+      "scope": "shared-contracts-module-admin-parameter-schemas-no-projection-change",
+      "reason": "The OpenAPI document projects only registry operations; the new admin-console schemas are not registered, so the generated document is byte-identical and only the shared contracts source module changed."
+    },
+    "apiPlayground": {
+      "status": "changed",
+      "scope": "shared-contracts-module-admin-parameter-schemas-no-catalog-change",
+      "reason": "The API Playground catalogs Public V1 operations only; it gains no entry because the parameter-edit endpoint is admin-console scoped, and only the shared contracts source module it transitively consumes changed."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "sandbox-environment-parameter-editing",
+      "reason": "Adds an admin-gated console API endpoint to replace the image parameter set of a registered sandbox environment, extends the shared contracts package with the request schema, and adds an edit dialog to the Image Management web console; secret values stay write-only through the existing settings/secret-storage encryption path."
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Each MCP tool call is already a distinct invocation; HTTP retry deduplication via Idempotency-Key remains REST-only."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "Preserve the historical MCP text handle while structuredContent remains the canonical task."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "Explain asynchronous polling and the HTTP-only idempotency header without claiming MCP accepts that header."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST keeps its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    },
+    {
+      "operation": "runtimeModels.query",
+      "kind": "rate-limit-policy",
+      "detail": "REST applies a dedicated per-principal catalog throttle while MCP remains subject to the MCP transport limiter; both retain the shared catalog-service capacity controls."
+    },
+    {
+      "operation": "tasks.transcript",
+      "kind": "mcp-output-schema-relaxation",
+      "detail": "The MCP SDK high-level registrar accepts only a root object output schema; derive its advertised fields from the canonical SessionHistory discriminated union while validating every structured result against that canonical union."
+    },
+    {
+      "operation": "tasks.events",
+      "kind": "mcp-exclusion",
+      "detail": "MCP tools use request/response transport; lifecycle SSE is REST-only."
+    },
+    {
+      "operation": "schedules.delete",
+      "kind": "success-projection",
+      "detail": "REST returns 204 without a body; MCP requires a structured tool result."
+    }
+  ],
+  "verification": {
+    "id": "api-mcp",
+    "requiresWireCompatibilityFixture": false
+  }
+}

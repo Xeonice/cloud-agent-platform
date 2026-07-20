@@ -42,6 +42,7 @@ import type {
   AdminCreateAccountRequest,
   Role,
   CreateSandboxEnvironmentRequest,
+  UpdateSandboxEnvironmentParametersRequest,
   SandboxEnvironmentResponse,
   ValidateSandboxEnvironmentResponse,
   CreateScheduleRequest,
@@ -572,6 +573,25 @@ export function validateSandboxEnvironmentMutation(
       void queryClient.invalidateQueries({
         queryKey: queryKeys.sandboxEnvironmentValidations(id),
       });
+      invalidateRuntimeModelCatalogs(queryClient);
+    },
+  };
+}
+
+export function updateSandboxEnvironmentParametersMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<
+  SandboxEnvironmentResponse,
+  Error,
+  { id: string; body: UpdateSandboxEnvironmentParametersRequest }
+> {
+  return {
+    mutationFn: ({ id, body }) =>
+      isCapable("settings")
+        ? real.updateSandboxEnvironmentParameters(id, body)
+        : mock.mockUpdateSandboxEnvironmentParameters(id, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sandboxEnvironments });
       invalidateRuntimeModelCatalogs(queryClient);
     },
   };

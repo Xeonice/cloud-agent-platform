@@ -77,6 +77,8 @@ exec /opt/gcode/gcode "$@"
 
 CAP 会在 workspace materialize 之后、agent runtime setup 之前写入这些文件，并在 sandbox 停止或清理前 best-effort 删除。镜像验证只检查基础工具；真实参数是否可用，需要创建使用该镜像的任务后验证。
 
+参数注册后可以继续编辑：每个已注册镜像卡片上的 `参数` 按钮会打开编辑框，普通参数预填当前值，密钥参数只显示名字。密钥行留空即保留已存的值，输入新值即轮换。编辑参数不需要重新验证镜像，保存后仅对之后新建的任务生效，运行中的任务不受影响。
+
 ## 4. 构建并推送
 
 AIO 本地 provider 通常运行在 Linux/amd64 Docker host：

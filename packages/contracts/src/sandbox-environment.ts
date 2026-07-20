@@ -190,6 +190,46 @@ export type CreateSandboxEnvironmentRequest = z.infer<
   typeof CreateSandboxEnvironmentRequestSchema
 >;
 
+/**
+ * One entry of an update-parameters request. Secrets are write-only, so an
+ * edit that retains an existing secret cannot resubmit its value: it sends a
+ * keep entry (`{name, keep: true}`) and the server copies the stored
+ * ciphertext verbatim. Both variants are strict so a keep entry can never
+ * smuggle a value and a set entry can never carry `keep`.
+ */
+export const UpdateSandboxEnvironmentParameterEntrySchema = z.union([
+  SandboxEnvironmentParameterInputSchema,
+  z.object({
+    name: SandboxEnvironmentParameterNameSchema,
+    keep: z.literal(true),
+  }).strict(),
+]);
+export type UpdateSandboxEnvironmentParameterEntry = z.infer<
+  typeof UpdateSandboxEnvironmentParameterEntrySchema
+>;
+
+export const UpdateSandboxEnvironmentParametersRequestSchema = z
+  .object({
+    parameters: z.array(UpdateSandboxEnvironmentParameterEntrySchema),
+  })
+  .strict()
+  .superRefine((request, ctx) => {
+    const seen = new Set<string>();
+    for (const entry of request.parameters) {
+      if (seen.has(entry.name)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['parameters'],
+          message: `duplicate parameter name: ${entry.name}`,
+        });
+      }
+      seen.add(entry.name);
+    }
+  });
+export type UpdateSandboxEnvironmentParametersRequest = z.infer<
+  typeof UpdateSandboxEnvironmentParametersRequestSchema
+>;
+
 export const SandboxEnvironmentResponseSchema = SandboxEnvironmentSchema;
 export type SandboxEnvironmentResponse = z.infer<
   typeof SandboxEnvironmentResponseSchema

@@ -13,10 +13,12 @@ import {
 } from '@nestjs/common';
 import {
   CreateSandboxEnvironmentRequestSchema,
+  UpdateSandboxEnvironmentParametersRequestSchema,
   type CreateSandboxEnvironmentRequest,
   type ListSandboxEnvironmentValidationsResponse,
   type ListSandboxEnvironmentsResponse,
   type SandboxEnvironmentResponse,
+  type UpdateSandboxEnvironmentParametersRequest,
   type ValidateSandboxEnvironmentResponse,
 } from '@cap/contracts';
 import type { AuthenticatedRequest } from '../auth/auth.guard';
@@ -55,6 +57,18 @@ export class SandboxEnvironmentsController {
   ): Promise<ValidateSandboxEnvironmentResponse> {
     await this.requireAdmin(req);
     return this.environments.validate(id);
+  }
+
+  @Patch(':id/parameters')
+  @HttpCode(HttpStatus.OK)
+  @UsePipes(new ZodValidationPipe(UpdateSandboxEnvironmentParametersRequestSchema))
+  async updateParameters(
+    @Req() req: AuthenticatedRequest,
+    @Param('id') id: string,
+    @Body() body: UpdateSandboxEnvironmentParametersRequest,
+  ): Promise<SandboxEnvironmentResponse> {
+    await this.requireAdmin(req);
+    return this.environments.updateParameters(id, body);
   }
 
   @Patch(':id/default')
