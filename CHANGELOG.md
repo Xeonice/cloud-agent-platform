@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.43.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.42.2...v0.43.0) (2026-07-20)
+
+
+### Features
+
+* **sandbox:** detach workspace clone into a supervised job with admission parking and live progress ([17fe27e](https://github.com/Xeonice/cloud-agent-platform/commit/17fe27e87654a2175ce0cd179c6ac4f2e1452331))
+* **sandbox:** detach workspace clone into a supervised job with admission parking and live progress ([d1e7f73](https://github.com/Xeonice/cloud-agent-platform/commit/d1e7f73df486fccb7a39a67273f8fd24e918d5dc))
+
 ## [0.42.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.42.1...v0.42.2) (2026-07-20)
 
 
