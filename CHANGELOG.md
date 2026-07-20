@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.42.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.42.0...v0.42.1) (2026-07-20)
+
+
+### Bug Fixes
+
+* **scripts:** isolate git env in public-surface suites so hooks cannot corrupt the repo ([0c208b3](https://github.com/Xeonice/cloud-agent-platform/commit/0c208b34f78acd505058b115d1b36da2949eea3b))
+* **scripts:** isolate git env in public-surface suites so hooks cannot corrupt the repo ([917b29e](https://github.com/Xeonice/cloud-agent-platform/commit/917b29e33ae29b30649ccdb27a22f19152a1e3ef))
+
 ## [0.42.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.41.3...v0.42.0) (2026-07-20)
 
 
