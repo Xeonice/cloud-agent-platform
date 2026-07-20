@@ -555,8 +555,19 @@ test('release-assets BoxLite self-update extracts rootfs and persists BOXLITE_RO
   assert.deepEqual(plan.pullServices, ['api'], 'BoxLite asset mode does not pull the AIO stager service');
   assert.ok(plan.script.includes('cap-boxlite-sandbox-$target-$slug.oci.tar.zst'), 'the updater selects a platform BoxLite OCI asset');
   assert.ok(
-    plan.script.includes('cap_stream_asset "$asset_source" | zstd -dc | tar -C "$tmp_dir" -xf -'),
+    plan.script.includes('cap_stream_asset "$asset_source" | zstd -dc | tar -C "$tmp_dir" -o -xf -'),
     'the updater streams either a direct or split OCI archive locally',
+  );
+  assert.ok(
+    plan.script.includes('tar -C "$tmp_dir" -o -xf -'),
+    'extraction disables ownership restore (-o = --no-same-owner; both busybox ' +
+      'and GNU tar) so chown-restricted shared mounts (macOS/colima) can stage',
+  );
+  assert.ok(
+    plan.script.indexOf('rm -rf "$rootfs_dir".captmp.*') <
+      plan.script.indexOf('mkdir -p "$tmp_dir"'),
+    'stale temp extraction dirs from prior failed attempts are swept before ' +
+      'the new temp dir is created',
   );
   assert.ok(plan.script.includes('cap_unset_env_value BOXLITE_IMAGE'), 'BoxLite rootfs mode removes image env');
   assert.ok(plan.script.includes('cap_unset_env_value BOXLITE_IMAGE_MAP'), 'BoxLite rootfs mode removes image map env');
