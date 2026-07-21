@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.43.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.2...v0.43.3) (2026-07-21)
+
+
+### Bug Fixes
+
+* **sandbox:** transfer retry must wrap the detached dual-gate path, not only the inline exec ([428052a](https://github.com/Xeonice/cloud-agent-platform/commit/428052ab95d81783e582f12d74bde5968bb438be))
+* **sandbox:** transfer retry must wrap the detached dual-gate path, not only the inline exec ([062284f](https://github.com/Xeonice/cloud-agent-platform/commit/062284f0d8fd11438223de171fed3ac74ced5705))
+
 ## [0.43.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.1...v0.43.2) (2026-07-21)
 
 
