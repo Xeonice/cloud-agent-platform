@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { ClaudeCodeRuntime } from './claude-code-runtime';
 import { CodexRuntime } from './codex-runtime';
+import { claudeTuiAuthRejectedSessionBytes } from './claude-tui-session.fixture';
 
 const codex = new CodexRuntime();
 const claude = new ClaudeCodeRuntime();
@@ -127,6 +128,30 @@ test('Claude recognizes official refresh-token and API-key recovery prompts', ()
   );
   assert.deepEqual(
     claude.classifyOutputFailure('Invalid API key · Please run /login\n'),
+    { code: 'runtime_auth_rejected' },
+  );
+});
+
+test('Claude classifies the REAL cursor-positioned TUI byte stream (production fixture)', () => {
+  // The wire format: rows painted via ESC[r;cH cursor jumps, ● separated from
+  // the text by ESC[C, zero newlines around the message. v0.43.1 returned null
+  // on exactly these bytes.
+  const raw = claudeTuiAuthRejectedSessionBytes();
+  assert.deepEqual(claude.classifyOutputFailure(raw), {
+    code: 'runtime_auth_rejected',
+  });
+  // The gateway inspects an 8 KiB rolling tail — the classification must hold
+  // on that window too, not only on the full stream.
+  assert.deepEqual(claude.classifyOutputFailure(raw.slice(-8 * 1024)), {
+    code: 'runtime_auth_rejected',
+  });
+});
+
+test('Claude classifies the OAuth-access-token-invalid inline variant', () => {
+  assert.deepEqual(
+    claude.classifyOutputFailure(
+      '● Please run /login · API Error: 401 OAuth access token is invalid.\r\n',
+    ),
     { code: 'runtime_auth_rejected' },
   );
 });

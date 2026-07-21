@@ -7,7 +7,16 @@ import type { RuntimeOutputFailure } from './agent-runtime.port';
  */
 export function normalizeRuntimeOutput(output: string): string {
   /* eslint-disable no-control-regex -- terminal output contains ANSI/C0 bytes by definition. */
+  // Interactive TUIs (claude) paint screen rows via cursor positioning with NO
+  // newlines on the wire (live-verified against a production session.log, task
+  // a8b7648a). Convert cursor motion into whitespace BEFORE the generic CSI
+  // strip so visually distinct rows become distinct lines for the line-anchored
+  // patterns: absolute positioning + vertical moves → newline, horizontal
+  // moves → space. Codex prints plain lines and is unaffected.
   return output
+    .replace(/\x1b\[[0-9;]*[Hf]/g, '\n')
+    .replace(/\x1b\[[0-9]*[ABEFd]/g, '\n')
+    .replace(/\x1b\[[0-9]*[CG]/g, ' ')
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
     .replace(/\x1b[@-Z\\-_]/g, '')
