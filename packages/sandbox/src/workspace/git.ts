@@ -41,11 +41,18 @@ const DELIVERY_COMMIT_MESSAGE_PATH = '/tmp/cap-delivery-commit-message';
 /**
  * Defense-in-depth stall abort on the detached clone itself: git aborts the
  * transfer into a clean nonzero exit marker when throughput stays below the
- * limit for the configured time, so the external heartbeat gate is a backstop
- * rather than the only line of defense.
+ * limit for the configured time. The window is deliberately LONG (5 minutes):
+ * live-verified 2026-07-21 that congested cross-network links (box →
+ * code.iflytek.com at CN evening peak) dip below 1 KB/s for >60 s while still
+ * making progress, and a 60 s window killed every clone attempt at ~62 s. The
+ * dual liveness gates remain the real sentinels — a slow-but-alive transfer
+ * keeps writing progress (heartbeat survives), a genuinely dead stream stops
+ * advancing the marker and the ~90 s no-progress heartbeat fires first — so
+ * this git-side abort only backstops streams that libcurl still considers
+ * open while the marker pipeline is somehow wedged.
  */
 export const GIT_HTTP_LOW_SPEED_LIMIT_BYTES_PER_SECOND = 1024;
-export const GIT_HTTP_LOW_SPEED_TIME_SECONDS = 60;
+export const GIT_HTTP_LOW_SPEED_TIME_SECONDS = 300;
 
 /** Cadence of the short marker-probe polling execs for a detached transfer. */
 export const DEFAULT_SANDBOX_TRANSFER_POLL_INTERVAL_MS = 2_000;
