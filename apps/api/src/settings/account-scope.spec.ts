@@ -28,6 +28,7 @@ import { CodexDeviceLoginService } from './codex-device-login.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { ModelDiscoveryClient } from './model-discovery.client';
 import type { GuardrailsService } from '../guardrails/guardrails.service';
+import type { ClaudeCredentialProbe } from './claude-credential-probe';
 import type { DefaultForgeRegistry } from '../forge/forge-registry';
 
 /** AES key so a forge `connect`/codex compatible save can encrypt at rest. */
@@ -164,9 +165,13 @@ const GUARDRAILS = { setMaxConcurrentTasks: () => undefined } as unknown as Guar
 const DISCOVERY = {} as unknown as ModelDiscoveryClient;
 /** Forge registry is only hit by listAvailableRepos; unused here. */
 const REGISTRY = {} as unknown as DefaultForgeRegistry;
+/** Claude probe accepts everything here; save-time verification has its own spec. */
+const CLAUDE_PROBE = {
+  probe: async () => 'accepted' as const,
+} as unknown as ClaudeCredentialProbe;
 
 function settingsOf(prisma: PrismaService): SettingsService {
-  return new SettingsService(prisma, DISCOVERY, GUARDRAILS);
+  return new SettingsService(prisma, DISCOVERY, GUARDRAILS, CLAUDE_PROBE);
 }
 function forgeOf(prisma: PrismaService): ForgeCredentialService {
   return new ForgeCredentialService(prisma, REGISTRY);

@@ -134,10 +134,47 @@ function ClaudeEntry({
   );
 }
 
+/**
+ * Save-outcome notice rendered inside the dialog
+ * (fix-claude-onboarding-and-token-verify): `error` — the live Anthropic probe
+ * definitively rejected the pasted credential (nothing was saved); `warn` — the
+ * credential was saved but verification was network-indeterminate.
+ */
+export interface ClaudeCredentialNotice {
+  kind: "error" | "warn";
+  text: string;
+}
+
+/**
+ * The save-outcome alert rendered inside the dialog body. Exported so the
+ * outcome rendering is testable without mounting the portal-based Dialog.
+ */
+export function ClaudeCredentialNoticeAlert({
+  notice,
+}: {
+  notice: ClaudeCredentialNotice | null;
+}) {
+  if (!notice) return null;
+  return (
+    <p
+      role="alert"
+      className={cn(
+        "rounded-md px-3 py-2 text-xs leading-[1.55]",
+        notice.kind === "error"
+          ? "bg-destructive/10 text-destructive"
+          : "bg-warning-soft text-foreground",
+      )}
+    >
+      {notice.text}
+    </p>
+  );
+}
+
 export interface ClaudeCredentialDialogProps {
   open: boolean;
   mode: ClaudeCredentialMode;
   saving: boolean;
+  notice?: ClaudeCredentialNotice | null;
   onOpenChange: (open: boolean) => void;
   onSave: (body: SaveClaudeCredentialRequest) => void;
 }
@@ -147,6 +184,7 @@ export function ClaudeCredentialDialog({
   open,
   mode,
   saving,
+  notice,
   onOpenChange,
   onSave,
 }: ClaudeCredentialDialogProps) {
@@ -205,6 +243,7 @@ export function ClaudeCredentialDialog({
               保存后只显示后四位，不再回显明文。
             </span>
           </label>
+          <ClaudeCredentialNoticeAlert notice={notice ?? null} />
         </DialogBody>
         <div className="flex items-center justify-end gap-2 border-t border-border px-[22px] py-3.5">
           <DialogClose className="inline-flex min-h-8 items-center rounded-md border border-border bg-card px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary">

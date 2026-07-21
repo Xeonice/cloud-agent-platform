@@ -625,21 +625,25 @@ async function main() {
   });
   assert(
     clNoP.commands[0].command ===
-      `mkdir -p /home/gem/.claude && printf %s '${toB64(clSnippet)}' | base64 -d > /home/gem/.claude/launch-env.sh && chmod 600 /home/gem/.claude/launch-env.sh && printf %s '${toB64(clSettings)}' | base64 -d > /home/gem/.claude/settings.json && chmod 600 /home/gem/.claude/settings.json && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude.json && chmod 600 /home/gem/.claude.json`,
-    'claude GOLDEN: launch-env.sh + settings.json + .claude.json command byte-exact',
+      `mkdir -p /home/gem/.claude && printf %s '${toB64(clSnippet)}' | base64 -d > /home/gem/.claude/launch-env.sh && chmod 600 /home/gem/.claude/launch-env.sh && printf %s '${toB64(clSettings)}' | base64 -d > /home/gem/.claude/settings.json && chmod 600 /home/gem/.claude/settings.json && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude.json && chmod 600 /home/gem/.claude.json && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude/.claude.json && chmod 600 /home/gem/.claude/.claude.json`,
+    'claude GOLDEN: launch-env.sh + settings.json + dual-path .claude.json command byte-exact',
   );
   assert(
     clNoP.commands[0].command.includes('/home/gem/.claude/settings.json'),
     'claude GUARD: user settings suppress the dangerous-mode confirmation prompt',
   );
-  // REGRESSION GUARD (fix-claude-onboarding-seed-path): the onboarding pre-seed MUST
-  // land in the HOME-root `.claude.json` (the file Claude actually reads), NOT inside
-  // `$CLAUDE_CONFIG_DIR`. Claude 2.1.x reads `$HOME/.claude.json` regardless of
-  // CLAUDE_CONFIG_DIR, so a config-dir seed is silently ignored and onboarding blocks.
+  // REGRESSION GUARD (fix-claude-onboarding-and-token-verify): the onboarding
+  // pre-seed MUST land in BOTH main-config locations, because upstream flipped which
+  // one is read when CLAUDE_CONFIG_DIR is set: 2.1.181 read only `$HOME/.claude.json`
+  // (config-dir copy ignored); 2.1.207 reads only `$CLAUDE_CONFIG_DIR/.claude.json`
+  // (HOME-root copy ignored — live-verified 2026-07-21). Seeding a single path is a
+  // version cliff that blocks tasks on the first-run wizard.
+  const clPreseedWrite = (path) =>
+    `printf %s '${toB64(clPreseed)}' | base64 -d > ${path} && chmod 600 ${path}`;
   assert(
-    clNoP.commands[0].command.includes('> /home/gem/.claude.json &&') &&
-      !clNoP.commands[0].command.includes('> /home/gem/.claude/.claude.json'),
-    'claude GUARD: pre-seed .claude.json targets HOME root, not $CLAUDE_CONFIG_DIR',
+    clNoP.commands[0].command.includes(clPreseedWrite('/home/gem/.claude.json')) &&
+      clNoP.commands[0].command.includes(clPreseedWrite('/home/gem/.claude/.claude.json')),
+    'claude GUARD: identical pre-seed .claude.json written to HOME root AND $CLAUDE_CONFIG_DIR, both chmod 600',
   );
 
   // claude trim — keeps projects/

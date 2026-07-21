@@ -38,6 +38,8 @@ import {
   AccountSettingsSchema,
   CodexCredentialSchema,
   ClaudeCredentialSchema,
+  ClaudeCredentialRejectedErrorSchema,
+  type ClaudeCredentialRejectedError,
   CodexDeviceLoginStartResponseSchema,
   CodexDeviceLoginStatusSchema,
   ListAvailableGithubReposResponseSchema,
@@ -214,6 +216,19 @@ export function repoImportFailureFromApiError(
 ): RepoImportFailure | null {
   if (!(error instanceof ApiError)) return null;
   const parsed = RepoImportFailureSchema.safeParse(error.body);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Parse only the canonical Claude save-time rejection body
+ * (fix-claude-onboarding-and-token-verify): the 4xx the API returns when the
+ * live Anthropic probe definitively rejected the pasted credential.
+ */
+export function claudeCredentialRejectionFromApiError(
+  error: unknown,
+): ClaudeCredentialRejectedError | null {
+  if (!(error instanceof ApiError)) return null;
+  const parsed = ClaudeCredentialRejectedErrorSchema.safeParse(error.body);
   return parsed.success ? parsed.data : null;
 }
 

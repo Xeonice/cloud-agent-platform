@@ -67,7 +67,11 @@ import {
   saveCodexCredentialMutation,
   saveSettingsMutation,
 } from "@/lib/api/mutations";
-import { ClaudeCredentialDialog } from "@/components/settings/claude-credential";
+import {
+  ClaudeCredentialDialog,
+  type ClaudeCredentialNotice,
+} from "@/components/settings/claude-credential";
+import { claudeCredentialRejectionFromApiError } from "@/lib/api/real";
 import {
   parseCredentialIssue,
   parseCredentialRuntime,
@@ -145,6 +149,11 @@ function SettingsPage() {
   // Which Claude Code configuration dialog is open (client-only view state).
   const [claudeDialogMode, setClaudeDialogMode] =
     React.useState<ClaudeCredentialMode | null>(null);
+  // Save-time verification outcome shown inside the Claude dialog
+  // (fix-claude-onboarding-and-token-verify): probe rejection or the
+  // saved-but-unverified warning. Cleared on close/reopen.
+  const [claudeNotice, setClaudeNotice] =
+    React.useState<ClaudeCredentialNotice | null>(null);
 
   // Data is loader-ensured; guard for the brief hydration window / mock null.
   if (!settings || !cred) return null;
@@ -297,14 +306,40 @@ function SettingsPage() {
         open={claudeDialogMode !== null}
         mode={claudeDialogMode ?? "subscription"}
         saving={saveClaude.isPending}
+        notice={claudeNotice}
         onOpenChange={(open) => {
-          if (!open) setClaudeDialogMode(null);
+          if (!open) {
+            setClaudeDialogMode(null);
+            setClaudeNotice(null);
+          }
         }}
-        onSave={(body) =>
+        onSave={(body) => {
+          setClaudeNotice(null);
           saveClaude.mutate(body, {
-            onSuccess: () => setClaudeDialogMode(null),
-          })
-        }
+            onSuccess: (saved) => {
+              if (saved && saved.verification === "indeterminate") {
+                // Saved, but the live probe could not reach Anthropic — keep the
+                // dialog open with the warning instead of silently closing.
+                setClaudeNotice({
+                  kind: "warn",
+                  text: "凭据已保存，但无法连接 Anthropic 完成验证（请检查服务端到 api.anthropic.com 的出网）。任务运行时若凭据无效会以认证失败终止。",
+                });
+                return;
+              }
+              setClaudeDialogMode(null);
+              setClaudeNotice(null);
+            },
+            onError: (error) => {
+              const rejection = claudeCredentialRejectionFromApiError(error);
+              setClaudeNotice({
+                kind: "error",
+                text:
+                  rejection?.message ??
+                  "保存失败，请稍后重试。",
+              });
+            },
+          });
+        }}
       />
     </>
   );

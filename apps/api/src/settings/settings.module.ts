@@ -8,6 +8,7 @@ import { GuardrailsModule } from '../guardrails/guardrails.module';
 import { SettingsController } from './settings.controller';
 import { SettingsService } from './settings.service';
 import { ModelDiscoveryClient } from './model-discovery.client';
+import { ClaudeCredentialProbe } from './claude-credential-probe';
 import { CodexDeviceLoginService } from './codex-device-login.service';
 import { ForgeCredentialService } from './forge-credential.service';
 import { ForgeModule } from '../forge/forge.module';
@@ -40,6 +41,7 @@ import { DeviceLoginNoStoreMiddleware } from './device-login-no-store.middleware
   providers: [
     SettingsService,
     ModelDiscoveryClient,
+    ClaudeCredentialProbe,
     DockerCodexDeviceLoginRunner,
     {
       provide: CODEX_DEVICE_LOGIN_RUNNER,

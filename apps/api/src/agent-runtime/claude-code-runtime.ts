@@ -71,14 +71,19 @@ export class ClaudeCodeRuntime implements AgentRuntime {
    * the theme screen blocking). So this seeds both the global onboarding keys AND the
    * per-project trust entry for the canonical workspace.
    *
-   * CRITICAL — this MUST be the HOME-root `.claude.json` (`$HOME/.claude.json`), NOT
-   * `$CLAUDE_CONFIG_DIR/.claude.json`. `CLAUDE_CONFIG_DIR` relocates only the `.claude`
-   * DIRECTORY (settings.json, cache, `projects/` transcripts); Claude (verified on
-   * 2.1.181 in a live sandbox) reads/writes its MAIN config at `$HOME/.claude.json`
-   * regardless. Seeding it inside the config dir is silently ignored — Claude creates a
-   * fresh un-onboarded `$HOME/.claude.json` and runs the full theme/auth onboarding.
+   * The identical pre-seed is written to BOTH candidate main-config locations,
+   * because upstream flipped which one is read when `CLAUDE_CONFIG_DIR` is set:
+   * 2.1.181 (live-sandbox observation, 2026-06-20) read ONLY `$HOME/.claude.json`
+   * and ignored the config-dir copy; 2.1.207 (live-sandbox observation, 2026-07-21,
+   * matching current official docs — "every ~/.claude path lives under
+   * CLAUDE_CONFIG_DIR") reads ONLY `$CLAUDE_CONFIG_DIR/.claude.json` and ignores the
+   * HOME root. Images pin different claude versions, so seeding a single path is a
+   * version cliff; whichever copy the pinned version ignores is inert.
    */
   static readonly CLAUDE_JSON_PATH = '/home/gem/.claude.json';
+
+  /** The config-dir sibling of {@link CLAUDE_JSON_PATH} (read by claude ≥ 2.1.207). */
+  static readonly CLAUDE_CONFIG_DIR_JSON_PATH = '/home/gem/.claude/.claude.json';
 
   /** The canonical workspace path the per-project trust entry is keyed on. */
   static readonly WORKSPACE_DIR = '/home/gem/workspace';
@@ -178,6 +183,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     });
     const settingsB64 = Buffer.from(settings, 'utf8').toString('base64');
     const claudeJson = ClaudeCodeRuntime.CLAUDE_JSON_PATH;
+    const configDirClaudeJson = ClaudeCodeRuntime.CLAUDE_CONFIG_DIR_JSON_PATH;
     const settingsJson = `${dir}/settings.json`;
     commands.push({
       descriptor: { commandKind: 'credential_setup', ordinal: 1 },
@@ -185,7 +191,8 @@ export class ClaudeCodeRuntime implements AgentRuntime {
         `mkdir -p ${dir} && ` +
         `printf %s '${snippetB64}' | base64 -d > ${file} && chmod 600 ${file} && ` +
         `printf %s '${settingsB64}' | base64 -d > ${settingsJson} && chmod 600 ${settingsJson} && ` +
-        `printf %s '${preseedB64}' | base64 -d > ${claudeJson} && chmod 600 ${claudeJson}`,
+        `printf %s '${preseedB64}' | base64 -d > ${claudeJson} && chmod 600 ${claudeJson} && ` +
+        `printf %s '${preseedB64}' | base64 -d > ${configDirClaudeJson} && chmod 600 ${configDirClaudeJson}`,
       tolerateUnresolvedExit: true,
     });
 
