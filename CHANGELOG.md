@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.43.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.1...v0.43.2) (2026-07-21)
+
+
+### Bug Fixes
+
+* **sandbox:** retry transient clone failures and classify claude TUI output on real PTY bytes ([c43c321](https://github.com/Xeonice/cloud-agent-platform/commit/c43c3210b3b33f5894bb7a6b6a3192ac4d815dc5))
+* **sandbox:** retry transient clone failures and classify claude TUI output on real PTY bytes ([412c5b7](https://github.com/Xeonice/cloud-agent-platform/commit/412c5b75f95ce51d1a72c2a08915839fcfd78d55))
+
 ## [0.43.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.0...v0.43.1) (2026-07-21)
 
 
