@@ -290,30 +290,12 @@ export async function materializeSandboxGitWorkspaceStaged(
       );
       for (const stage of stages) {
         let stageResult: ActiveWorkspaceFailure | null;
-        if (
-          stage.stage === 'workspace_transfer' &&
-          context.detachedTransfer !== undefined
-        ) {
-          // Dual-gate liveness replaces the wall clock for this stage only:
-          // pause the operation deadline so transfer time never burns the
-          // other stages' budget, then resume it for checkout onwards.
-          deadline.pause();
-          try {
-            stageResult = await runDetachedWorkspaceTransfer({
-              context,
-              deadline,
-              driver,
-              configPath,
-              options: context.detachedTransfer,
-            });
-          } finally {
-            deadline.resume();
-          }
-        } else if (stage.stage === 'workspace_transfer') {
-          stageResult = await runInlineTransferWithRetries({
+        if (stage.stage === 'workspace_transfer') {
+          stageResult = await runTransferWithRetries({
             context,
             deadline,
             driver,
+            configPath,
             stage: stage.stage,
             command: stage.command,
           });
@@ -609,31 +591,57 @@ const TRANSFER_RETRY_MIN_BUDGET_MS = 60_000;
 const TRANSFER_RETRYABLE_CAUSES: ReadonlySet<SandboxWorkspaceFailureCause> =
   new Set(['tls_network', 'unknown']);
 
-async function runInlineTransferWithRetries(args: {
+async function runTransferWithRetries(args: {
   readonly context: SandboxWorkspaceMaterializationHookContext;
   readonly deadline: OperationDeadline;
   readonly driver: SandboxGitDeadlineDriver;
+  readonly configPath: string | undefined;
   readonly stage: MaterializationCommand['stage'];
   readonly command: string;
 }): Promise<ActiveWorkspaceFailure | null> {
+  const detached = args.context.detachedTransfer;
   for (let attempt = 1; attempt <= TRANSFER_MAX_ATTEMPTS; attempt += 1) {
     const anotherAttemptPossible =
       attempt < TRANSFER_MAX_ATTEMPTS &&
       args.deadline.remainingTimeoutMs() >
         TRANSFER_RETRY_MIN_BUDGET_MS + TRANSFER_RETRY_BACKOFF_MS;
-    const outcome = await runMaterializationStage({
-      context: args.context,
-      deadline: args.deadline,
-      stage: args.stage,
-      command: args.command,
-      plannedRetryCauses: anotherAttemptPossible
-        ? TRANSFER_RETRYABLE_CAUSES
-        : undefined,
-      // Attempts after the first mint a fresh operation identity so each
-      // attempt's start/terminal pair survives replay-key idempotency.
-      attemptOperationId:
-        attempt > 1 ? args.context.diagnostics?.createOperationId() : undefined,
-    });
+    // Attempts after the first mint a fresh operation identity so each
+    // attempt's start/terminal pair survives replay-key idempotency.
+    const attemptOperationId =
+      attempt > 1 ? args.context.diagnostics?.createOperationId() : undefined;
+    let outcome: ActiveWorkspaceFailure | null;
+    if (detached !== undefined) {
+      // Dual-gate liveness replaces the wall clock for this stage only:
+      // pause the operation deadline so transfer time never burns the
+      // other stages' budget, then resume it between attempts and for
+      // checkout onwards. Both the git-side low-speed abort (observed live:
+      // throughput collapse below 1 KB/s for 60 s kills the clone at ~62 s)
+      // and mid-transfer stream death land here as retryable tls_network.
+      args.deadline.pause();
+      try {
+        outcome = await runDetachedWorkspaceTransfer({
+          context: args.context,
+          deadline: args.deadline,
+          driver: args.driver,
+          configPath: args.configPath,
+          options: detached,
+          attemptOperationId,
+        });
+      } finally {
+        args.deadline.resume();
+      }
+    } else {
+      outcome = await runMaterializationStage({
+        context: args.context,
+        deadline: args.deadline,
+        stage: args.stage,
+        command: args.command,
+        plannedRetryCauses: anotherAttemptPossible
+          ? TRANSFER_RETRYABLE_CAUSES
+          : undefined,
+        attemptOperationId,
+      });
+    }
     if (outcome === null) return null;
     const willRetry =
       anotherAttemptPossible &&
@@ -947,16 +955,23 @@ async function runDetachedWorkspaceTransfer(args: {
   readonly driver: SandboxGitDeadlineDriver;
   readonly configPath: string | undefined;
   readonly options: SandboxDetachedTransferOptions;
+  /** Distinct operation identity for retry attempts (attempt > 1). */
+  readonly attemptOperationId?: string;
 }): Promise<ActiveWorkspaceFailure | null> {
   const { context, deadline, driver } = args;
   const stage = 'workspace_transfer' as const;
   const before = deadline.interruption(stage);
   if (before !== null) {
-    await reportWorkspaceStageTerminal(context, before);
+    await reportWorkspaceStageTerminal(
+      context,
+      before,
+      undefined,
+      args.attemptOperationId,
+    );
     return before;
   }
   await assertWorkspaceBoundary(context, stage, 'before');
-  await reportWorkspaceStageStarted(context, stage);
+  await reportWorkspaceStageStarted(context, stage, args.attemptOperationId);
 
   const liveness = resolveSandboxDetachedJobLivenessPolicy(
     args.options.liveness ?? undefined,
@@ -997,6 +1012,7 @@ async function runDetachedWorkspaceTransfer(args: {
       diagnosticTimeoutMs === undefined
         ? undefined
         : { timeoutMs: diagnosticTimeoutMs },
+      args.attemptOperationId,
     );
     return outcome;
   };

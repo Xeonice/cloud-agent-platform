@@ -852,5 +852,84 @@ await test('task provisioning policy carries the transfer-liveness knobs alongsi
   assert.equal(unset.workspaceTransferLiveness, undefined);
 });
 
+// --- fix-clone-retry-and-tui-classifier: detached transfer retry ---
+
+await test('detached transfer retries a transient network failure and succeeds on the next attempt', async () => {
+  const clock = manualDriver();
+  const diagnostics = diagnosticsRecorder();
+  const executor = detachedExecutor((index) => {
+    if (index === 1) {
+      // Attempt 1: the git-side low-speed abort — the live 2026-07-21
+      // signature (throughput collapse kills the clone at ~62 s).
+      return executionResult({
+        output: probeOutput({
+          state: 'exited',
+          exitCode: 128,
+          sizeBytes: 10,
+          tail: 'fatal: early EOF\nerror: RPC failed; operation too slow. Less than 1024 bytes/sec',
+        }),
+      });
+    }
+    return executionResult({
+      output: probeOutput({ state: 'exited', exitCode: 0, sizeBytes: 9_000 }),
+    });
+  });
+  const operation = mod.materializeSandboxGitWorkspaceStaged(
+    detachedContext(executor, {
+      plan: { deadlineMs: 900_000 },
+      diagnostics: diagnostics.observer,
+    }),
+    { deadlineDriver: clock.driver },
+  );
+  await pump();
+  // Attempt 1 probe → failure, 5 s retry backoff, attempt 2 launch + probe.
+  for (let index = 0; index < 10; index += 1) await tick(clock, 2_000);
+  const result = await operation;
+  assert.deepEqual(result, { status: 'succeeded', stage: 'complete' });
+  assert.equal(executor.launches.length, 2, 'transfer job launched twice');
+  const transfer = diagnostics.events.filter(
+    (event) => event.stage === 'workspace_transfer',
+  );
+  assert.deepEqual(
+    transfer.map((event) => event.outcome),
+    ['started', 'failed', 'started', 'succeeded'],
+  );
+  assert.equal(transfer[1].cause, 'tls_network_failed');
+  assert.equal(transfer[1].retryable, true);
+  assert.notEqual(
+    transfer[2].operationId,
+    transfer[0].operationId,
+    'retry attempt carries its own operation identity',
+  );
+});
+
+await test('detached transfer does not retry a deterministic authentication failure', async () => {
+  const clock = manualDriver();
+  const executor = detachedExecutor(() =>
+    executionResult({
+      output: probeOutput({
+        state: 'exited',
+        exitCode: 128,
+        sizeBytes: 10,
+        tail: "fatal: Authentication failed for 'https://gitee.com/acme/public.git'",
+      }),
+    }),
+  );
+  const operation = mod.materializeSandboxGitWorkspaceStaged(
+    detachedContext(executor, { plan: { deadlineMs: 900_000 } }),
+    { deadlineDriver: clock.driver },
+  );
+  await pump();
+  for (let index = 0; index < 4; index += 1) await tick(clock, 2_000);
+  const result = await operation;
+  assert.deepEqual(result, {
+    status: 'failed',
+    stage: 'workspace_transfer',
+    cause: 'authentication',
+    retryable: false,
+  });
+  assert.equal(executor.launches.length, 1, 'no retry for deterministic causes');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
