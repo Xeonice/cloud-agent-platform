@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.43.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.3...v0.43.4) (2026-07-21)
+
+
+### Bug Fixes
+
+* **sandbox:** relax the git low-speed abort window to 5 minutes ([329b7cc](https://github.com/Xeonice/cloud-agent-platform/commit/329b7cc5083567bbc833fe53e73422b6a144c1c6))
+* **sandbox:** relax the git low-speed abort window to 5 minutes ([1fbd1cd](https://github.com/Xeonice/cloud-agent-platform/commit/1fbd1cd51b5829be0a7492b9f41c147fa1e1f6e8))
+
 ## [0.43.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.2...v0.43.3) (2026-07-21)
 
 
