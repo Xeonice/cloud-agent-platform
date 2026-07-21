@@ -21,7 +21,9 @@ it defaults to BoxLite and requires `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and
 > is not rolling-upgrade safe with N-1 writers. Follow
 > [TASK_MODEL_SELECTION_CUTOVER.md](./TASK_MODEL_SELECTION_CUTOVER.md) before
 > publishing its Web/API/MCP contract. The ordinary upgrade script is only a
-> staging sub-step inside that maintenance window.
+> staging sub-step inside that maintenance window. Single-instance deployments
+> upgraded through the official seams get the release's CI-built attestation
+> applied automatically — see §11.6.
 
 > **Durable admission cutover:** keep `CAP_TASK_ADMISSION_V2_ENABLED=false`
 > while deploying the additive admission worker. Before opening it, verify the
@@ -539,6 +541,53 @@ ad-hoc `--profile` flags).
   so it needs the stock json-file logging driver at the default Docker data-root. On rootless
   Docker / a remapped data-root / Podman it ships nothing — just leave the profile off there.
 - **Compose floor:** inline `configs.content:` needs **Docker Compose ≥ v2.23.1**.
+
+### 11.6 Task-model selection gate — attestation rides the upgrade (single instance)
+
+Every Release (from the one shipping `automate-task-model-attestation-in-ci`
+onward) attaches `cap-task-model-attestation-<version>.json` + `.sha256`: a
+`task-model-selection-v1` deployment attestation whose `buildIdentity` equals
+the `GIT_SHA` baked into that release's `cap-api` image. Both official upgrade
+seams consume it automatically on SINGLE-INSTANCE deployments (exactly one cap
+api instance, no N-1 cap containers, `CAP_INSTANCE_ID` unset or exactly
+`cap-api-1`); multi-instance / custom `CAP_INSTANCE_ID` deployments stay on the
+manual runbook ([TASK_MODEL_SELECTION_CUTOVER.md](./TASK_MODEL_SELECTION_CUTOVER.md)).
+
+- **Gate env keys.** After checksum verification and the local preconditions,
+  `scripts/upgrade.sh` (in its step-1 `.env` rewrite) and the in-app
+  self-update (atomically, alongside the `CAP_VERSION` pin) write:
+
+  ```
+  CAP_TASK_MODEL_SELECTION_ENABLED=true
+  CAP_TASK_MODEL_SELECTION_ATTESTATION_JSON=<verified asset content>
+  ```
+
+  On a failed precondition or a missing / checksum-failed asset the writeback
+  is skipped or fails closed WITH the reason surfaced — the rest of the
+  upgrade proceeds unchanged and the gate simply stays closed (the pre-change
+  behavior). Because gate config is read at startup, the keys take effect on
+  the api recreate the upgrade already performs.
+
+- **Acceptance check (diagnostics).** After an attested upgrade, verify the
+  gate actually opened using the protected diagnostics endpoint:
+
+  ```bash
+  curl -fsS -H "Authorization: Bearer <short-lived operator bearer>" \
+    http://127.0.0.1:8080/deployment-capabilities/task-model-selection-v1
+  # require gate.open === true; /v1/runtime-models/query must return a catalog, not 503
+  ```
+
+  `upgrade.sh`'s post-upgrade smoke runs this catalog success check itself when
+  it has a usable credential (loud warning + skip when it does not); when the
+  writeback was intentionally skipped, the check reports the gate as expectedly
+  closed instead of failing the upgrade.
+
+- **One-release chicken-and-egg lag.** The upgrade TO the first release
+  shipping this mechanism (call it N) still runs the OLD upgrade logic — the
+  seam performing the upgrade predates the change. The gate therefore opens
+  automatically starting with the N→N+1 upgrade for the in-app self-update. On
+  the manual path you can skip the lag by downloading `scripts/upgrade.sh`
+  from release N itself and running that copy for the N upgrade.
 
 ---
 

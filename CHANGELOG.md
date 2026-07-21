@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.44.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.4...v0.44.0) (2026-07-22)
+
+
+### Features
+
+* **release:** generate task-model attestation in CI and apply it through both upgrade seams ([#171](https://github.com/Xeonice/cloud-agent-platform/issues/171)) ([55d2ebf](https://github.com/Xeonice/cloud-agent-platform/commit/55d2ebf64fbba67a4c2d7e5fc3b633330533cb53))
+
 ## [0.43.4](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.3...v0.43.4) (2026-07-21)
 
 

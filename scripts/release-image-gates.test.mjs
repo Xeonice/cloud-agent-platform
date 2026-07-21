@@ -331,11 +331,77 @@ test('deployable Release assets wait for the complete-set latest promotion gate'
   const sandboxAssets = workflowJob('attach-sandbox-image-assets');
   assert.match(
     runAssets,
-    /^    needs: \[verify-run-package, promote-latest\]$/mu,
+    /^    needs: \[verify-run-package, resolve-release, promote-latest\]$/mu,
   );
-  assert.match(runAssets, /^    timeout-minutes: 10$/mu);
+  assert.match(runAssets, /^    timeout-minutes: 20$/mu);
   assert.match(sandboxAssets, /^    needs: promote-latest$/mu);
   assert.match(sandboxAssets, /^    timeout-minutes: 60$/mu);
+});
+
+test('release identity resolves GIT_SHA once and every image build-arg consumes it', () => {
+  const resolve = workflowJob('resolve-release');
+  assert.match(resolve, /^\s+git_sha: \$\{\{ steps\.version\.outputs\.git_sha \}\}$/mu);
+  assert.match(resolve, /echo "git_sha=\$\{GITHUB_SHA\}" >> "\$GITHUB_OUTPUT"/u);
+  // Both image build jobs take GIT_SHA from the single resolve-release source
+  // of truth — a directly-resolved `github.sha` build-arg would reopen the
+  // SHA-context drift the attestation buildIdentity binding guards against.
+  for (const job of ['build-smoke-push-api', 'build-push']) {
+    assert.match(
+      workflowJob(job),
+      /^\s+GIT_SHA=\$\{\{ needs\.resolve-release\.outputs\.git_sha \}\}$/mu,
+      job,
+    );
+  }
+  assert.doesNotMatch(RELEASE_WORKFLOW, /GIT_SHA=\$\{\{ github\.sha \}\}/u);
+});
+
+test('attestation is generated only from verified check-run evidence, drift-guarded, and uploaded', () => {
+  const runAssets = workflowJob('attach-run-assets');
+
+  // Honesty split (D1): the verified-compat gate runs BEFORE generation, and
+  // the drift-guard assertion runs BEFORE upload.
+  const verify = runAssets.indexOf('name: Verify task model N-1 compatibility check-run');
+  const generate = runAssets.indexOf('name: Generate task model attestation asset');
+  const drift = runAssets.indexOf(
+    'name: Assert attested buildIdentity matches the api image GIT_SHA build-arg',
+  );
+  const upload = runAssets.indexOf(
+    'name: Attach source-free run package and task-model attestation to the Release',
+  );
+  assert.ok(verify >= 0 && generate > verify && drift > generate && upload > drift);
+
+  // The compat evidence is queried from the release commit's check-runs API —
+  // never assumed from workflow adjacency — and anything but completed:success
+  // fails the step closed.
+  assert.match(runAssets, /^      checks: read$/mu);
+  assert.match(
+    runAssets,
+    /gh api -X GET[\s\S]*\/check-runs[\s\S]*check_name='task model N-1 compatibility'/u,
+  );
+  assert.match(runAssets, /if \[ "\$result" != "completed:success" \]; then/u);
+
+  // The generator consumes the SAME resolve-release git_sha the api image was
+  // built with, and only ever a verified `--compat-verified true`.
+  assert.match(
+    runAssets,
+    /RELEASE_GIT_SHA: \$\{\{ needs\.resolve-release\.outputs\.git_sha \}\}/u,
+  );
+  assert.match(
+    runAssets,
+    /node scripts\/generate-task-model-attestation\.mjs \\\n\s+--version "\$\{\{ github\.event\.release\.tag_name \}\}" \\\n\s+--git-sha "\$\{RELEASE_GIT_SHA\}" \\\n\s+--compat-verified true \\\n\s+--out dist\/task-model-attestation/u,
+  );
+
+  // SHA-context drift guard: attested buildIdentity === api GIT_SHA build-arg.
+  assert.match(
+    runAssets,
+    /jq -e --arg sha "\$RELEASE_GIT_SHA"[\s\S]*all\(\. == \$sha\)/u,
+  );
+
+  // Both the JSON and its .sha256 companion ride the existing upload path.
+  assert.match(
+    runAssets,
+    /gh release upload "\$\{\{ github\.event\.release\.tag_name \}\}"[\s\S]*dist\/task-model-attestation\/\*/u,
+  );
 });
 
 test('every release job has an explicit hard workflow timeout', () => {
@@ -345,7 +411,7 @@ test('every release job has an explicit hard workflow timeout', () => {
     ['build-smoke-push-api', 45],
     ['build-push', 90],
     ['promote-latest', 15],
-    ['attach-run-assets', 10],
+    ['attach-run-assets', 20],
     ['attach-sandbox-image-assets', 60],
   ]);
   for (const [job, minutes] of expectedMinutes) {
