@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.43.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.0...v0.43.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* **claude:** dual-path onboarding pre-seed, 2.1.207 auth-failure classification, save-time token verification ([9cf3d3d](https://github.com/Xeonice/cloud-agent-platform/commit/9cf3d3db098f0c3ffede1d4591b4168ca249b2f6))
+* **claude:** dual-path onboarding pre-seed, 2.1.207 auth-failure classification, save-time token verification ([dcfe3e3](https://github.com/Xeonice/cloud-agent-platform/commit/dcfe3e34b1068d58254e72ae9f6c578a8180d573))
+
 ## [0.43.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.42.2...v0.43.0) (2026-07-20)
 
 
