@@ -131,6 +131,56 @@ test('Claude recognizes official refresh-token and API-key recovery prompts', ()
   );
 });
 
+test('Claude classifies the 2.1.207 inline TUI auth-error line', () => {
+  // Live-captured on claude-code 2.1.207 (vibe-zlyan sandbox, 2026-07-21): token
+  // rejection surfaces as ONE bullet-prefixed status line, not the standalone shapes.
+  assert.deepEqual(
+    claude.classifyOutputFailure(
+      '● Please run /login · API Error: 401 Invalid bearer token\r\n',
+    ),
+    { code: 'runtime_auth_rejected' },
+  );
+  assert.deepEqual(
+    claude.classifyOutputFailure(
+      '● Please run /login · API Error: 401 OAuth token has expired\n',
+    ),
+    { code: 'runtime_auth_expired' },
+  );
+});
+
+test('Claude classifies the first-run onboarding wizard screen as auth-rejected', () => {
+  // Live-captured 2.1.207 first-run wizard (the screen a task blocks on forever when
+  // onboarding suppression fails). Both anchors present → fail closed.
+  const wizard = [
+    'Welcome to Claude Code v2.1.207',
+    '',
+    ' Claude Code can be used with your Claude subscription or billed based on API usage through your Console account.',
+    '',
+    ' Select login method:',
+    '',
+    ' ❯ 1. Claude account with subscription · Pro, Max, Team, or Enterprise',
+    '   2. Anthropic Console account · API usage billing',
+    '   3. 3rd-party platform · Amazon Bedrock, Microsoft Foundry, or Vertex AI',
+  ].join('\r\n');
+  assert.deepEqual(claude.classifyOutputFailure(wizard), {
+    code: 'runtime_auth_rejected',
+  });
+});
+
+test('Claude does not classify single wizard anchors or quoted inline errors', () => {
+  const ordinary = [
+    // one wizard anchor alone (prose/transcript quoting) must not classify
+    'The terminal showed "Select login method" before I cancelled.',
+    'Welcome to Claude Code v2.1.207',
+    // prose-prefixed quote of the inline line is not a standalone status line
+    'Example: Please run /login · API Error: 401 Invalid bearer token',
+    'The docs mention API Error: 401 handling and the Please run /login hint in one paragraph.',
+  ];
+  for (const output of ordinary) {
+    assert.equal(claude.classifyOutputFailure(output), null, output);
+  }
+});
+
 test('Claude does not classify generic HTTP/rate-limit output or quoted prose', () => {
   const ordinary = [
     'API Error: 401 Unauthorized',

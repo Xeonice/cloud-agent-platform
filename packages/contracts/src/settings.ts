@@ -264,6 +264,36 @@ export const ClaudeCredentialStateSchema = z.enum([
 export type ClaudeCredentialState = z.infer<typeof ClaudeCredentialStateSchema>;
 
 /**
+ * Save-time verification outcome for a Claude credential
+ * (fix-claude-onboarding-and-token-verify): `verified` — the live Anthropic
+ * probe accepted the credential's authentication; `indeterminate` — the probe
+ * could not reach Anthropic (timeout / network failure / 5xx), the credential
+ * was persisted anyway, and the console surfaces a warning. A definitive
+ * rejection never produces this marker — the save is refused with the
+ * `claude_credential_rejected` error shape instead.
+ */
+export const ClaudeCredentialVerificationSchema = z.enum([
+  'verified',
+  'indeterminate',
+]);
+export type ClaudeCredentialVerification = z.infer<
+  typeof ClaudeCredentialVerificationSchema
+>;
+
+/**
+ * The 4xx error body returned when the save-time probe definitively rejects the
+ * pasted credential (Anthropic 401/403 authentication_error). Nothing was
+ * persisted; any prior credential state is untouched.
+ */
+export const ClaudeCredentialRejectedErrorSchema = z.object({
+  error: z.literal('claude_credential_rejected'),
+  message: z.string().min(1),
+});
+export type ClaudeCredentialRejectedError = z.infer<
+  typeof ClaudeCredentialRejectedErrorSchema
+>;
+
+/**
  * Claude Code credential READ shape. Neither secret is ever returned: each is
  * represented only by a non-reversible presence boolean and an optional masked
  * suffix for display.
@@ -283,6 +313,12 @@ export const ClaudeCredentialSchema = z.object({
   apiKeySuffix: z.string().min(1).nullable().optional(),
   /** Selected default Claude model persisted with the credential (non-secret). */
   defaultModel: z.string().min(1).nullable().optional(),
+  /**
+   * Present only on a SAVE response that ran the live Anthropic probe: how the
+   * verification concluded. Absent on plain reads and on saves that did not
+   * probe (no new secret supplied).
+   */
+  verification: ClaudeCredentialVerificationSchema.optional(),
 });
 export type ClaudeCredential = z.infer<typeof ClaudeCredentialSchema>;
 

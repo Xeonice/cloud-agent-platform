@@ -95,6 +95,19 @@ export function classifyClaudeOutputFailure(
       output,
     );
 
+  // Current claude (observed live on 2.1.207) surfaces auth failures as ONE inline
+  // TUI status line \u2014 `\u25cf Please run /login \u00b7 API Error: 401 Invalid bearer token` \u2014
+  // instead of the standalone shapes below. Match a standalone line carrying BOTH the
+  // /login instruction and the 401-class rejection (order-independent); an expired
+  // variant on the same line shape classifies as expired.
+  // The line must BEGIN with one of the two anchors (after visual-prefix stripping)
+  // so prose that merely quotes the message (`Example: Please run /login · …`) does
+  // not classify — the same standalone-line discipline as the shapes below.
+  const inlineRejected401 =
+    /^(?:please run \/login\b.*\bapi error\s*:\s*401\b|api error\s*:\s*401\b.*\bplease run \/login\b).*$/i;
+  const inlineExpired401 =
+    /^(?=.*\bexpired\b)(?:please run \/login\b.*\bapi error\s*:\s*401\b|api error\s*:\s*401\b.*\bplease run \/login\b).*$/i;
+
   if (
     hasStandaloneTerminalLine(
       output,
@@ -104,6 +117,7 @@ export function classifyClaudeOutputFailure(
       output,
       /^oauth refresh token is no longer valid(?:\s*[.:\u00b7-]\s*please run \/login(?: to sign in again)?\.?)?$/i,
     ) ||
+    hasStandaloneTerminalLine(output, inlineExpired401) ||
     (authEnvelope && /\boauth token has expired\b/i.test(collapsed))
   ) {
     return { code: 'runtime_auth_expired' };
@@ -122,7 +136,19 @@ export function classifyClaudeOutputFailure(
       output,
       /^invalid api key(?:\s*[.:\u00b7-]\s*|\s+)please run \/login(?: to (?:authenticate|sign in again))?\.?$/i,
     ) ||
+    hasStandaloneTerminalLine(output, inlineRejected401) ||
     (authEnvelope && rejectedMessage)
+  ) {
+    return { code: 'runtime_auth_rejected' };
+  }
+
+  // First-run onboarding wizard: onboarding suppression failed, so claude blocks on
+  // interactive setup and the task can never proceed. Both stable anchors are required
+  // (welcome banner AND the login-method prompt) so prose quoting one fragment does
+  // not classify. Live-captured on 2.1.207.
+  if (
+    /\bwelcome to claude code\b/i.test(collapsed) &&
+    /\bselect login method\b/i.test(collapsed)
   ) {
     return { code: 'runtime_auth_rejected' };
   }
@@ -143,7 +169,7 @@ function hasStandaloneTerminalLine(output: string, expected: RegExp): boolean {
   return output.split('\n').some((rawLine) => {
     const line = rawLine
       .trim()
-      .replace(/^(?:[>!*-]|\u2022|\u25a0|\u23bf)\s*/u, '')
+      .replace(/^(?:[>!*-]|\u2022|\u25a0|\u25cf|\u23bf)\s*/u, '')
       .trim();
     return expected.test(line);
   });

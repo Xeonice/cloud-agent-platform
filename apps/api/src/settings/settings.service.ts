@@ -25,6 +25,7 @@ import {
   ModelDiscoveryClient,
   type ModelDiscoveryResult,
 } from './model-discovery.client';
+import { ClaudeCredentialProbe } from './claude-credential-probe';
 import {
   applySettingsUpdate,
   DEFAULT_RETENTION_DAYS,
@@ -99,6 +100,12 @@ export class SettingsService {
      * the upsert so the new ceiling takes effect without a process restart.
      */
     private readonly guardrails: GuardrailsService,
+    /**
+     * Save-time Claude credential verification probe
+     * (fix-claude-onboarding-and-token-verify): a newly pasted secret must
+     * survive a live Anthropic auth check before it can reach `connected`.
+     */
+    private readonly claudeProbe: ClaudeCredentialProbe,
   ) {}
 
   /**
@@ -522,10 +529,19 @@ export class SettingsService {
    * two modes are MUTUALLY EXCLUSIVE: saving one clears the other mode's secret.
    * The active mode's secret is encrypted at rest (AES-256-GCM, reusing the
    * codex credential server key); with no server key configured this FAILS CLOSED
-   * (no row written). Unlike the codex compatible path there is no live discovery
-   * probe — `connected` means the active mode's secret is stored (a `setup-token`
-   * has no cheap validation endpoint). Secrets are preserved-by-omission on a
-   * re-save of the same mode. Returns the secret-free read shape.
+   * (no row written). Secrets are preserved-by-omission on a re-save of the same
+   * mode. Returns the secret-free read shape.
+   *
+   * fix-claude-onboarding-and-token-verify — a NEWLY SUPPLIED secret is verified
+   * against Anthropic BEFORE anything is persisted (a zero-cost auth-only probe,
+   * single attempt): a definitive 401/403 rejection refuses the save with the
+   * `claude_credential_rejected` error and leaves any prior credential state
+   * untouched; an accepted probe persists as `connected` with
+   * `verification: 'verified'`; an unreachable probe persists as `connected`
+   * with `verification: 'indeterminate'` so restricted-egress self-hosts are
+   * never blocked from saving. Preserved-by-omission re-saves (no new secret)
+   * skip the probe — the stored secret was verified when first saved, and the
+   * task-time output classifier remains the backstop.
    */
   async saveClaudeCredential(
     operator: SessionUser,
@@ -536,6 +552,24 @@ export class SettingsService {
     const existing = await this.prisma.claudeCredential.findUnique({
       where: { userId },
     });
+
+    // Verify a newly supplied active-mode secret before any persistence.
+    const newSecret =
+      request.mode === 'subscription' ? request.setupToken : request.apiKey;
+    let verification: 'verified' | 'indeterminate' | undefined;
+    if (typeof newSecret === 'string' && newSecret.length > 0) {
+      const outcome = await this.claudeProbe.probe(request.mode, newSecret);
+      if (outcome === 'rejected') {
+        throw new BadRequestException({
+          error: 'claude_credential_rejected',
+          message:
+            request.mode === 'subscription'
+              ? 'Anthropic rejected this setup-token (authentication_error). Re-mint one with `claude setup-token` and paste it again.'
+              : 'Anthropic rejected this API key (authentication_error). Check the key and paste it again.',
+        });
+      }
+      verification = outcome === 'accepted' ? 'verified' : 'indeterminate';
+    }
 
     // Encrypt a plaintext secret into the joined `ciphertext.iv.authTag` storage
     // string. FAIL CLOSED when no server key is configured — a secret is never
@@ -623,7 +657,8 @@ export class SettingsService {
       },
     });
 
-    return this.readClaudeCredential(operator);
+    const saved = await this.readClaudeCredential(operator);
+    return verification === undefined ? saved : { ...saved, verification };
   }
 
   /**
