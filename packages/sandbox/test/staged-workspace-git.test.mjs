@@ -1563,4 +1563,202 @@ async function flushTaskDiagnostics() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Inline repository-transfer retry (fix-clone-retry-and-tui-classifier D1).
+// ---------------------------------------------------------------------------
+
+/**
+ * Drive a staged materialization whose retry backoffs await the manual
+ * deadline driver: pump the microtask queue and advance manual time in
+ * backoff-sized steps until the materialization settles. Total advanced time
+ * stays far below the workspace deadline, so only backoff triggers fire.
+ */
+async function settleWithManualTime(promise, manual) {
+  let done = false;
+  const tracked = promise.finally(() => {
+    done = true;
+  });
+  while (!done) {
+    await new Promise((resolve) => setImmediate(resolve));
+    manual.advance(5_000);
+  }
+  return tracked;
+}
+
+function transferStageEvents(events) {
+  return events.filter((event) => event.stage === 'workspace_transfer');
+}
+
+{
+  // Transient network failure → retried from a clean slate → succeeds, with
+  // per-attempt observable diagnostics (failed attempt settles retryable).
+  const secrets = privateSecretPort();
+  const diagnostics = taskDiagnosticHarness();
+  const calls = [];
+  let transferAttempts = 0;
+  const manual = manualDeadlineDriver();
+  const result = await settleWithManualTime(
+    mod.materializeSandboxGitWorkspaceStaged(
+      workspaceContext({
+        taskId: diagnostics.taskId,
+        diagnostics: diagnostics.emitter,
+        secretFilePort: secrets.port,
+        plan: {
+          ...workspaceContext().plan,
+          deadlineMs: 900_000,
+        },
+        stageExecutor: {
+          async execute(execution) {
+            calls.push(execution.stage);
+            if (execution.stage === 'workspace_transfer') {
+              transferAttempts += 1;
+              if (transferAttempts === 1) {
+                return executionResult({
+                  exitCode: 128,
+                  stderr:
+                    'error: RPC failed; curl 56 OpenSSL SSL_read: Connection reset by peer\nfatal: early EOF',
+                });
+              }
+            }
+            return executionResult();
+          },
+        },
+      }),
+      { deadlineDriver: manual.driver },
+    ),
+    manual,
+  );
+  assert.deepEqual(result, { status: 'succeeded', stage: 'complete' });
+  assert.deepEqual(calls, [
+    'remote_ref_resolution',
+    'workspace_transfer',
+    'workspace_transfer',
+    'checkout',
+    'submodules',
+  ]);
+  await flushTaskDiagnostics();
+  const transfer = transferStageEvents(diagnostics.events);
+  assert.deepEqual(
+    transfer.map((event) => event.outcome),
+    ['started', 'failed', 'started', 'succeeded'],
+  );
+  assert.equal(transfer[1].retryable, true, 'non-final attempt settles retryable');
+  assert.equal(transfer[1].cause, 'tls_network_failed');
+  assertBoundedOperationEvents(diagnostics.events);
+  assertCompleteDiagnosticLifecycles(diagnostics.events);
+}
+
+{
+  // Deterministic authentication failure settles immediately — no retry.
+  const secrets = privateSecretPort();
+  const diagnostics = taskDiagnosticHarness({ identityOffset: 100 });
+  let transferAttempts = 0;
+  const manual = manualDeadlineDriver();
+  const result = await settleWithManualTime(
+    mod.materializeSandboxGitWorkspaceStaged(
+      workspaceContext({
+        taskId: diagnostics.taskId,
+        diagnostics: diagnostics.emitter,
+        secretFilePort: secrets.port,
+        plan: { ...workspaceContext().plan, deadlineMs: 900_000 },
+        stageExecutor: {
+          async execute(execution) {
+            if (execution.stage === 'workspace_transfer') {
+              transferAttempts += 1;
+              return executionResult({
+                exitCode: 128,
+                stderr: 'fatal: Authentication failed for repository',
+              });
+            }
+            return executionResult();
+          },
+        },
+      }),
+      { deadlineDriver: manual.driver },
+    ),
+    manual,
+  );
+  assert.equal(result.status, 'failed');
+  assert.equal(result.cause, 'authentication');
+  assert.equal(transferAttempts, 1);
+}
+
+{
+  // The unknown fallback (lost output) retries up to the attempt cap, then
+  // settles unknown with final (non-retryable) semantics.
+  const secrets = privateSecretPort();
+  const diagnostics = taskDiagnosticHarness({ identityOffset: 200 });
+  let transferAttempts = 0;
+  const manual = manualDeadlineDriver();
+  const result = await settleWithManualTime(
+    mod.materializeSandboxGitWorkspaceStaged(
+      workspaceContext({
+        taskId: diagnostics.taskId,
+        diagnostics: diagnostics.emitter,
+        secretFilePort: secrets.port,
+        plan: { ...workspaceContext().plan, deadlineMs: 900_000 },
+        stageExecutor: {
+          async execute(execution) {
+            if (execution.stage === 'workspace_transfer') {
+              transferAttempts += 1;
+              return executionResult({ exitCode: 1, stderr: '' });
+            }
+            return executionResult();
+          },
+        },
+      }),
+      { deadlineDriver: manual.driver },
+    ),
+    manual,
+  );
+  assert.equal(result.status, 'failed');
+  assert.equal(result.cause, 'unknown');
+  assert.equal(transferAttempts, 3, 'bounded at the attempt cap');
+  await flushTaskDiagnostics();
+  const transfer = transferStageEvents(diagnostics.events);
+  assert.deepEqual(
+    transfer.map((event) => event.outcome),
+    ['started', 'failed', 'started', 'failed', 'started', 'failed'],
+  );
+  assert.equal(transfer[1].retryable, true);
+  assert.equal(transfer[3].retryable, true);
+  assert.equal(transfer[5].retryable, false, 'final attempt is not retryable');
+}
+
+{
+  // Remaining-deadline budget floor: no second attempt when the budget after
+  // backoff would drop under the safe floor.
+  const secrets = privateSecretPort();
+  const diagnostics = taskDiagnosticHarness({ identityOffset: 300 });
+  let transferAttempts = 0;
+  const manual = manualDeadlineDriver();
+  const result = await settleWithManualTime(
+    mod.materializeSandboxGitWorkspaceStaged(
+      workspaceContext({
+        taskId: diagnostics.taskId,
+        diagnostics: diagnostics.emitter,
+        secretFilePort: secrets.port,
+        plan: { ...workspaceContext().plan, deadlineMs: 64_000 },
+        stageExecutor: {
+          async execute(execution) {
+            if (execution.stage === 'workspace_transfer') {
+              transferAttempts += 1;
+              return executionResult({
+                exitCode: 128,
+                stderr: 'fatal: the remote end hung up unexpectedly',
+              });
+            }
+            return executionResult();
+          },
+        },
+      }),
+      { deadlineDriver: manual.driver },
+    ),
+    manual,
+  );
+  assert.equal(result.status, 'failed');
+  assert.equal(result.cause, 'tls_network');
+  assert.equal(transferAttempts, 1, 'no retry without deadline budget');
+}
+
 console.log('staged workspace git production helper tests passed');

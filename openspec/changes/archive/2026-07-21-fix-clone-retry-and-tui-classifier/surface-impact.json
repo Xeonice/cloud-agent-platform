@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "fix-clone-retry-and-tui-classifier",
+  "intent": "provisioning-and-classifier-reliability",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "not-applicable",
+      "reason": "Only the internal workspace-materialization retry loop (packages/sandbox/src/workspace/git.ts) and the internal terminal-output failure classifier (apps/api/src/agent-runtime) change; no /v1 operation, schema, status code, or error body is touched — task failure codes reuse the existing enum values."
+    },
+    "mcp": {
+      "status": "not-applicable",
+      "reason": "No MCP tool, argument, result, registration, or transport behavior changes."
+    },
+    "openapi": {
+      "status": "not-applicable",
+      "reason": "The OpenAPI projection covers Public V1 only; nothing it projects changes."
+    },
+    "apiPlayground": {
+      "status": "not-applicable",
+      "reason": "The Playground catalogs Public V1 operations only and gains no entry from internal provisioning/classifier fixes."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "workspace-transfer-retry-and-tui-output-classification",
+      "reason": "Repository transfer retries transient network failures (bounded attempts inside the unchanged materialization deadline, per-attempt diagnostics with distinct operation identities); git stderr signatures map to the existing typed causes instead of unknown; runtime output normalization converts TUI cursor-positioning into line structure so the claude auth classifier fires on real PTY bytes (pinned by the captured production session fixture)."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "api-mcp",
+    "requiresWireCompatibilityFixture": false
+  }
+}

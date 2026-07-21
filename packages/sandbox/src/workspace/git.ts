@@ -216,10 +216,20 @@ export function classifySandboxGitFailure(
     text.includes('failed to connect') ||
     text.includes('connection refused') ||
     text.includes('connection reset') ||
+    text.includes('connection timed out') ||
     text.includes('network is unreachable') ||
     text.includes('ssl certificate') ||
     text.includes('certificate verify') ||
-    text.includes('tls')
+    text.includes('tls') ||
+    // Mid-transfer stream death signatures (live incident 2026-07-21: an
+    // 818 MB pack over an unstable link dies with these long-stable git/curl
+    // phrasings; previously they fell into the unknown bucket).
+    text.includes('rpc failed') ||
+    text.includes('unexpected disconnect') ||
+    text.includes('early eof') ||
+    text.includes('transfer closed') ||
+    text.includes('operation too slow') ||
+    text.includes('the remote end hung up')
   ) {
     return { cause: 'tls_network', retryable: true };
   }
@@ -299,6 +309,14 @@ export async function materializeSandboxGitWorkspaceStaged(
           } finally {
             deadline.resume();
           }
+        } else if (stage.stage === 'workspace_transfer') {
+          stageResult = await runInlineTransferWithRetries({
+            context,
+            deadline,
+            driver,
+            stage: stage.stage,
+            command: stage.command,
+          });
         } else {
           stageResult = await runMaterializationStage({
             context,
@@ -570,19 +588,97 @@ function materializationCommands(
   ];
 }
 
+/**
+ * Bounded automatic retry for the INLINE repository-transfer stage
+ * (fix-clone-retry-and-tui-classifier, design D1). Live incident 2026-07-21:
+ * an 818 MB pack over an intermittently unstable link failed 3 of 6 platform
+ * clones; a single retry would have recovered every one. Only transient causes
+ * retry (tls_network, plus the unknown fallback that mid-transfer stream death
+ * collapses into when the exec output is lost); deterministic causes
+ * (authentication, missing ref, capacity, timeout) settle immediately. Each
+ * attempt is independently observable: a non-final failure settles
+ * `retryable: true` and the next attempt emits its own start — never a silent
+ * in-place retry. The stage command starts with `rm -rf`, so every attempt is
+ * a clean slate. The detached dual-gate transfer path has its own liveness
+ * model and is untouched.
+ */
+const TRANSFER_MAX_ATTEMPTS = 3;
+const TRANSFER_RETRY_BACKOFF_MS = 5_000;
+/** No attempt starts with less remaining deadline budget than this. */
+const TRANSFER_RETRY_MIN_BUDGET_MS = 60_000;
+const TRANSFER_RETRYABLE_CAUSES: ReadonlySet<SandboxWorkspaceFailureCause> =
+  new Set(['tls_network', 'unknown']);
+
+async function runInlineTransferWithRetries(args: {
+  readonly context: SandboxWorkspaceMaterializationHookContext;
+  readonly deadline: OperationDeadline;
+  readonly driver: SandboxGitDeadlineDriver;
+  readonly stage: MaterializationCommand['stage'];
+  readonly command: string;
+}): Promise<ActiveWorkspaceFailure | null> {
+  for (let attempt = 1; attempt <= TRANSFER_MAX_ATTEMPTS; attempt += 1) {
+    const anotherAttemptPossible =
+      attempt < TRANSFER_MAX_ATTEMPTS &&
+      args.deadline.remainingTimeoutMs() >
+        TRANSFER_RETRY_MIN_BUDGET_MS + TRANSFER_RETRY_BACKOFF_MS;
+    const outcome = await runMaterializationStage({
+      context: args.context,
+      deadline: args.deadline,
+      stage: args.stage,
+      command: args.command,
+      plannedRetryCauses: anotherAttemptPossible
+        ? TRANSFER_RETRYABLE_CAUSES
+        : undefined,
+      // Attempts after the first mint a fresh operation identity so each
+      // attempt's start/terminal pair survives replay-key idempotency.
+      attemptOperationId:
+        attempt > 1 ? args.context.diagnostics?.createOperationId() : undefined,
+    });
+    if (outcome === null) return null;
+    const willRetry =
+      anotherAttemptPossible &&
+      outcome.status === 'failed' &&
+      TRANSFER_RETRYABLE_CAUSES.has(outcome.cause) &&
+      args.deadline.interruption(args.stage) === null;
+    if (!willRetry) return outcome;
+    await sleepWithDriver(args.driver, TRANSFER_RETRY_BACKOFF_MS);
+    if (args.deadline.remainingTimeoutMs() <= TRANSFER_RETRY_MIN_BUDGET_MS) {
+      return outcome;
+    }
+  }
+  // Unreachable: the final loop iteration always returns.
+  return failed(args.stage, 'unknown', false);
+}
+
 async function runMaterializationStage(args: {
   readonly context: SandboxWorkspaceMaterializationHookContext;
   readonly deadline: OperationDeadline;
   readonly stage: MaterializationCommand['stage'];
   readonly command: string;
+  /**
+   * When set, a failure whose cause is in this set is emitted `retryable: true`
+   * (the caller intends another attempt); absent = final-attempt semantics.
+   */
+  readonly plannedRetryCauses?: ReadonlySet<SandboxWorkspaceFailureCause>;
+  /** Distinct operation identity for retry attempts (attempt > 1). */
+  readonly attemptOperationId?: string;
 }): Promise<ActiveWorkspaceFailure | null> {
   const interruption = args.deadline.interruption(args.stage);
   if (interruption !== null) {
-    await reportWorkspaceStageTerminal(args.context, interruption);
+    await reportWorkspaceStageTerminal(
+      args.context,
+      interruption,
+      undefined,
+      args.attemptOperationId,
+    );
     return interruption;
   }
   await assertWorkspaceBoundary(args.context, args.stage, 'before');
-  await reportWorkspaceStageStarted(args.context, args.stage);
+  await reportWorkspaceStageStarted(
+    args.context,
+    args.stage,
+    args.attemptOperationId,
+  );
   let execution: SandboxCommandExecutionResult | null = null;
   let executionError: unknown;
   try {
@@ -599,7 +695,12 @@ async function runMaterializationStage(args: {
   try {
     const after = args.deadline.interruption(args.stage);
     if (after !== null) {
-      await reportWorkspaceStageTerminal(args.context, after);
+      await reportWorkspaceStageTerminal(
+        args.context,
+        after,
+        undefined,
+        args.attemptOperationId,
+      );
       return after;
     }
     if (executionError !== undefined) throw executionError;
@@ -612,20 +713,36 @@ async function runMaterializationStage(args: {
       const outcome = failed(
         args.stage,
         classification.cause,
-        classification.retryable,
+        classification.retryable ||
+          (args.plannedRetryCauses?.has(classification.cause) ?? false),
       );
-      await reportWorkspaceStageTerminal(args.context, outcome);
+      await reportWorkspaceStageTerminal(
+        args.context,
+        outcome,
+        undefined,
+        args.attemptOperationId,
+      );
       return outcome;
     }
-    await reportWorkspaceStageTerminal(args.context, {
-      status: 'succeeded',
-      stage: args.stage,
-    });
+    await reportWorkspaceStageTerminal(
+      args.context,
+      {
+        status: 'succeeded',
+        stage: args.stage,
+      },
+      undefined,
+      args.attemptOperationId,
+    );
     return null;
   } catch (error) {
     const after = args.deadline.interruption(args.stage);
     if (after !== null) {
-      await reportWorkspaceStageTerminal(args.context, after);
+      await reportWorkspaceStageTerminal(
+        args.context,
+        after,
+        undefined,
+        args.attemptOperationId,
+      );
       return after;
     }
     const classification = classifySandboxGitFailure({
@@ -635,9 +752,15 @@ async function runMaterializationStage(args: {
     const outcome = failed(
       args.stage,
       classification.cause,
-      classification.retryable,
+      classification.retryable ||
+        (args.plannedRetryCauses?.has(classification.cause) ?? false),
     );
-    await reportWorkspaceStageTerminal(args.context, outcome);
+    await reportWorkspaceStageTerminal(
+      args.context,
+      outcome,
+      undefined,
+      args.attemptOperationId,
+    );
     return outcome;
   }
 }
@@ -1393,9 +1516,10 @@ async function assertWorkspaceBoundary(
 async function reportWorkspaceStageStarted(
   context: SandboxWorkspaceMaterializationHookContext,
   stage: ActiveWorkspaceStage,
+  operationId?: string,
 ): Promise<void> {
   await reportProgress(context, { status: 'started', stage });
-  emitWorkspaceDiagnostic(context, stage, { outcome: 'started' });
+  emitWorkspaceDiagnostic(context, stage, { outcome: 'started' }, operationId);
 }
 
 async function reportWorkspaceStageTerminal(
@@ -1409,34 +1533,50 @@ async function reportWorkspaceStageTerminal(
      */
     readonly timeoutMs?: number;
   },
+  operationId?: string,
 ): Promise<void> {
   await reportProgress(context, event);
   if (event.status === 'succeeded') {
-    emitWorkspaceDiagnostic(context, event.stage, {
-      outcome: 'succeeded',
-      cause: null,
-      retryable: false,
-    });
+    emitWorkspaceDiagnostic(
+      context,
+      event.stage,
+      {
+        outcome: 'succeeded',
+        cause: null,
+        retryable: false,
+      },
+      operationId,
+    );
     return;
   }
   if (event.status === 'cancelled') {
-    emitWorkspaceDiagnostic(context, event.stage, {
-      outcome: 'cancelled',
-      cause: 'cancelled',
-      retryable: false,
-    });
+    emitWorkspaceDiagnostic(
+      context,
+      event.stage,
+      {
+        outcome: 'cancelled',
+        cause: 'cancelled',
+        retryable: false,
+      },
+      operationId,
+    );
     return;
   }
 
   const timedOut = event.cause === 'timeout';
-  emitWorkspaceDiagnostic(context, event.stage, {
-    outcome: timedOut ? 'timed_out' : 'failed',
-    cause: workspaceDiagnosticCause(event.stage, event.cause),
-    retryable: event.retryable,
-    ...(timedOut
-      ? { timeoutMs: diagnosticOptions?.timeoutMs ?? context.plan.deadlineMs }
-      : {}),
-  });
+  emitWorkspaceDiagnostic(
+    context,
+    event.stage,
+    {
+      outcome: timedOut ? 'timed_out' : 'failed',
+      cause: workspaceDiagnosticCause(event.stage, event.cause),
+      retryable: event.retryable,
+      ...(timedOut
+        ? { timeoutMs: diagnosticOptions?.timeoutMs ?? context.plan.deadlineMs }
+        : {}),
+    },
+    operationId,
+  );
 }
 
 function emitWorkspaceDiagnostic(
@@ -1450,12 +1590,17 @@ function emitWorkspaceDiagnostic(
         readonly retryable: boolean;
         readonly timeoutMs?: number;
       },
+  operationIdOverride?: string,
 ): void {
   const observer = context.diagnostics;
   if (observer === undefined) return;
   try {
     const descriptor = WORKSPACE_DIAGNOSTIC_DESCRIPTORS[stage];
-    const operationId = observer.createOperationId(descriptor.replayKey);
+    // Retry attempts carry their own operation identity so each attempt keeps
+    // the one-start/one-terminal invariant instead of colliding on the
+    // replay-key-cached operation of attempt 1.
+    const operationId =
+      operationIdOverride ?? observer.createOperationId(descriptor.replayKey);
     void Promise.resolve(
       observer.emit({
         operationId,
