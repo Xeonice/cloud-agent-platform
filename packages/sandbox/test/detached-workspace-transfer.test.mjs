@@ -269,7 +269,7 @@ await test('detached transfer launches setsid job with --progress, low-speed abo
   assert.ok(launch.includes('setsid'));
   assert.ok(launch.includes('--progress'));
   assert.ok(launch.includes('GIT_HTTP_LOW_SPEED_LIMIT=1024'));
-  assert.ok(launch.includes('GIT_HTTP_LOW_SPEED_TIME=60'));
+  assert.ok(launch.includes('GIT_HTTP_LOW_SPEED_TIME=300'));
   assert.ok(launch.includes(STAGING_DIR));
   // The wrapper is nested one shell-quote level deep; unescape to assert the
   // atomic staging→workspace publish step.
