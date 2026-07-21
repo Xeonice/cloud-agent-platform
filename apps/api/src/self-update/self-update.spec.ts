@@ -48,6 +48,12 @@ import {
   SANDBOX_ENVIRONMENT_TARGET_CONTRACT_ENV,
   SANDBOX_ASSET_DIR_ENV,
   RELEASE_ASSET_BASE_ENV,
+  TASK_MODEL_SELECTION_ENABLED_ENV,
+  TASK_MODEL_SELECTION_ATTESTATION_JSON_ENV,
+  CAP_INSTANCE_ID_ENV,
+  TASK_MODEL_ATTESTATION_INSTANCE_ID,
+  taskModelAttestationAssetName,
+  type CapContainerSnapshot,
   type UpdatePlan,
   type UpdaterLauncher,
   type UpdateTopology,
@@ -75,6 +81,24 @@ const FAKE_TOPO: UpdateTopology = {
 /** A resolver that returns a fixed topology (or null to exercise the fallback). */
 function fakeResolver(topo: UpdateTopology | null): TopologyResolver {
   return { resolve: async () => topo };
+}
+
+/** The healthy single-instance enumeration: exactly one running cap api container. */
+const CAP_API_RUNNING: CapContainerSnapshot = {
+  image: 'ghcr.io/xeonice/cap-api:v1.3.0',
+  project: FAKE_TOPO.project,
+  service: 'api',
+};
+
+/**
+ * A resolver that ALSO enumerates running cap containers, so the task-model
+ * attestation preconditions can be exercised (null = enumeration unavailable).
+ */
+function attestingResolver(
+  containers: readonly CapContainerSnapshot[] | null,
+  topo: UpdateTopology = FAKE_TOPO,
+): TopologyResolver {
+  return { resolve: async () => topo, listCapContainers: async () => containers };
 }
 
 /** A fake UpdateStatusService that reports a fixed latest (or "up to date"). */
@@ -114,6 +138,7 @@ function makeService(opts: {
   updateAvailable?: boolean;
   launcher: UpdaterLauncher;
   topology?: UpdateTopology | null; // undefined → FAKE_TOPO; null → fallback path
+  resolver?: TopologyResolver; // overrides topology when given (e.g. attestingResolver)
   env?: NodeJS.ProcessEnv;
   sandboxEnvironments?: { markCustomEnvironmentsStale(contractVersion: string): Promise<number> };
 }): SelfUpdateService {
@@ -129,7 +154,7 @@ function makeService(opts: {
     }),
     opts.launcher,
     env,
-    fakeResolver(topo),
+    opts.resolver ?? fakeResolver(topo),
     opts.sandboxEnvironments,
   );
 }
@@ -596,6 +621,305 @@ test('registry-backed self-update preserves the existing pull-only stager behavi
   assert.deepEqual(plan.pullServices, FAKE_TOPO.pullServices, 'registry mode keeps the existing pull set');
   assert.ok(plan.commands[0].endsWith('pull api aio-sandbox-image'), 'registry mode still pulls the stager service');
   assert.ok(!plan.script.includes('cap-image-assets.json'), 'registry mode does not fetch Release assets');
+});
+
+// ---------------------------------------------------------------------------
+// Task-model attestation staging (automate-task-model-attestation-in-ci):
+// checksum-verified writeback behind single-instance preconditions, skip-with-
+// reason on any defect, never failing the update.
+// ---------------------------------------------------------------------------
+
+const ATTESTATION_ASSET = taskModelAttestationAssetName(LATEST);
+/** Compact single-line JSON, the shape the CI generator emits for .env persist. */
+const ATTESTATION_CONTENT =
+  '{"schemaVersion":1,"instances":[{"instanceId":"cap-api-1"}]}';
+
+/**
+ * Execute a full updater script end-to-end with faked curl/sha256sum/docker:
+ * `verified` serves a checksum-matching attestation asset, `missing-asset`
+ * serves nothing (404), `checksum-mismatch` serves the asset with a wrong
+ * `.sha256` companion.
+ */
+async function runAttestationUpdate(
+  variant: 'verified' | 'missing-asset' | 'checksum-mismatch',
+): Promise<{
+  readonly plan: UpdatePlan;
+  readonly status: number | null;
+  readonly stderr: string;
+  readonly log: string;
+  readonly envFile: string;
+}> {
+  const root = mkdtempSync(join(tmpdir(), 'cap-self-update-attest-'));
+  const binDir = join(root, 'bin');
+  const releaseDir = join(root, 'release');
+  const logPath = join(root, 'commands.log');
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(releaseDir, { recursive: true });
+  writeFileSync(join(root, '.env'), 'EXISTING=value\n', 'utf8');
+
+  if (variant !== 'missing-asset') {
+    const body = `${ATTESTATION_CONTENT}\n`;
+    writeFileSync(join(releaseDir, ATTESTATION_ASSET), body, 'utf8');
+    const digest = variant === 'checksum-mismatch' ? sha256('tampered') : sha256(body);
+    writeFileSync(
+      join(releaseDir, `${ATTESTATION_ASSET}.sha256`),
+      `${digest}  ${ATTESTATION_ASSET}\n`,
+      'utf8',
+    );
+  }
+
+  writeTestCommand(binDir, 'curl', [
+    'out=""',
+    'url=""',
+    'prev=""',
+    'for arg in "$@"; do',
+    '  if [ "$prev" = "-o" ]; then out="$arg"; fi',
+    '  prev="$arg"',
+    '  url="$arg"',
+    'done',
+    'name="${url##*/}"',
+    'echo "curl $name" >> "$CAP_TEST_LOG"',
+    'cp "$CAP_FAKE_RELEASE_DIR/$name" "$out"',
+  ]);
+  writeTestCommand(binDir, 'sh', ['exec /bin/bash "$@"']);
+  writeTestCommand(binDir, 'sha256sum', ['exec shasum -a 256 "$@"']);
+  writeTestCommand(binDir, 'docker', [
+    'echo "docker $*" >> "$CAP_TEST_LOG"',
+    'exit 0',
+  ]);
+
+  const { launcher } = capturingLauncher();
+  const service = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    resolver: attestingResolver([CAP_API_RUNNING]),
+    env: { [RELEASE_ASSET_BASE_ENV]: 'https://release.example.test' },
+  });
+  const plan = await service.requestUpdate(LATEST);
+  const result = spawnSync('sh', ['-c', plan.script], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PATH: `${binDir}:/usr/bin:/bin`,
+      CAP_TEST_LOG: logPath,
+      CAP_FAKE_RELEASE_DIR: releaseDir,
+    },
+    encoding: 'utf8',
+  });
+  return {
+    plan,
+    status: result.status,
+    stderr: result.stderr ?? '',
+    log: readFileSync(logPath, 'utf8'),
+    envFile: readFileSync(join(root, '.env'), 'utf8'),
+  };
+}
+
+test('task-model attestation: passing preconditions stage the checksum-verified writeback via the SAME atomic env seam (pinned script)', async () => {
+  const { launcher } = capturingLauncher();
+  const svc = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    resolver: attestingResolver([CAP_API_RUNNING]),
+  });
+
+  const plan = await svc.requestUpdate(LATEST);
+
+  assert.deepEqual(
+    plan.taskModelAttestation,
+    { staged: true, skipReason: null },
+    'a single-api, no-stray, default-instance-id deployment stages the writeback',
+  );
+  assert.ok(plan.script.includes(ATTESTATION_ASSET), 'the script fetches the versioned attestation asset');
+  assert.ok(
+    plan.script.includes('cap_download_asset "$asset.sha256" "$checksum_path"'),
+    'the script downloads the .sha256 companion',
+  );
+  // Checksum verification PRECEDES any gate-env persist (never persist unverified content).
+  const verifyAt = plan.script.indexOf('cap_verify_file "$asset_path" "$checksum_path"');
+  const enabledPersistAt = plan.script.indexOf(
+    `cap_set_env_value ${TASK_MODEL_SELECTION_ENABLED_ENV} true`,
+  );
+  const jsonPersistAt = plan.script.indexOf(
+    `cap_set_env_value ${TASK_MODEL_SELECTION_ATTESTATION_JSON_ENV} "$attestation"`,
+  );
+  assert.ok(verifyAt >= 0 && enabledPersistAt >= 0 && jsonPersistAt >= 0, 'verify + both persists are pinned in the script');
+  assert.ok(verifyAt < enabledPersistAt && verifyAt < jsonPersistAt, 'checksum verification precedes the gate-env persist');
+  // The persist is CONDITIONAL on the verified download (if/else with a loud skip).
+  const ifAt = plan.script.indexOf('if cap_prepare_attestation_tools');
+  assert.ok(ifAt >= 0 && ifAt < enabledPersistAt, 'the persist is inside the verified-download conditional');
+  assert.ok(
+    plan.script.includes('task-model attestation writeback skipped'),
+    'the else branch surfaces the skip reason in the updater log',
+  );
+  // Same atomic KEY=VALUE persist mechanism as the CAP_VERSION pin (grep -v + mv seam).
+  assert.ok(
+    plan.script.includes('grep -v "^$key="') && plan.script.includes('mv "$tmp" .env'),
+    'gate env keys ride the cap_set_env_value grep-v + mv helper',
+  );
+  // The gate env keys land ALONGSIDE the CAP_VERSION pin, in the same run, before it.
+  assert.ok(
+    jsonPersistAt < plan.script.indexOf(`CAP_VERSION=${LATEST}`),
+    'the attestation persist lands with (before) the CAP_VERSION pin',
+  );
+});
+
+test('task-model attestation: a second cap api container skips the writeback with a NAMED reason — the update still launches', async () => {
+  const { launcher, launched } = capturingLauncher();
+  const svc = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    resolver: attestingResolver([
+      CAP_API_RUNNING,
+      { image: 'ghcr.io/xeonice/cap-api:v1.3.0', project: FAKE_TOPO.project, service: 'api-standby' },
+    ]),
+  });
+
+  const plan = await svc.requestUpdate(LATEST);
+
+  assert.equal(plan.taskModelAttestation.staged, false, 'two api containers fail the single-instance precondition');
+  assert.match(
+    plan.taskModelAttestation.skipReason ?? '',
+    /exactly one running cap api container, found 2/,
+    'the skip reason NAMES the failed precondition',
+  );
+  assert.ok(!plan.script.includes(TASK_MODEL_SELECTION_ENABLED_ENV), 'no gate env key is written on a precondition skip');
+  assert.ok(!plan.script.includes(TASK_MODEL_SELECTION_ATTESTATION_JSON_ENV), 'no attestation content is persisted');
+  assert.ok(plan.script.includes('task-model attestation writeback skipped'), 'the skip reason rides the updater log');
+  assert.equal(launched().length, 1, 'the update itself still launches — a skipped writeback never fails the update');
+});
+
+test('task-model attestation: a stray N-1 cap container skips; a stray already AT the target passes', async () => {
+  const { launcher } = capturingLauncher();
+  const strayOld: CapContainerSnapshot = {
+    image: 'ghcr.io/xeonice/cap-web:v1.2.0',
+    project: null,
+    service: null,
+  };
+  const svcWithStray = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    resolver: attestingResolver([CAP_API_RUNNING, strayOld]),
+  });
+  const skipped = await svcWithStray.requestUpdate(LATEST);
+  assert.equal(skipped.taskModelAttestation.staged, false, 'an out-of-project cap container at another version fails closed');
+  assert.match(
+    skipped.taskModelAttestation.skipReason ?? '',
+    /outside this upgrade/,
+    'the reason identifies the would-be N-1 container',
+  );
+  assert.ok(
+    (skipped.taskModelAttestation.skipReason ?? '').includes(strayOld.image),
+    'the reason names the offending container image',
+  );
+
+  const strayAtTarget: CapContainerSnapshot = { ...strayOld, image: `ghcr.io/xeonice/cap-web:${LATEST}` };
+  const svcAtTarget = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    resolver: attestingResolver([CAP_API_RUNNING, strayAtTarget]),
+  });
+  const staged = await svcAtTarget.requestUpdate(LATEST);
+  assert.equal(staged.taskModelAttestation.staged, true, 'a cap container already at the target version is not an N-1 container');
+});
+
+test('task-model attestation: CAP_INSTANCE_ID other than cap-api-1 skips; unset or cap-api-1 passes', async () => {
+  const { launcher } = capturingLauncher();
+
+  const custom = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    resolver: attestingResolver([CAP_API_RUNNING]),
+    env: { [CAP_INSTANCE_ID_ENV]: 'cap-api-9' },
+  });
+  const skipped = await custom.requestUpdate(LATEST);
+  assert.equal(skipped.taskModelAttestation.staged, false, 'a custom instance id fails closed');
+  assert.match(
+    skipped.taskModelAttestation.skipReason ?? '',
+    new RegExp(`${CAP_INSTANCE_ID_ENV}.*${TASK_MODEL_ATTESTATION_INSTANCE_ID}`),
+    'the reason names CAP_INSTANCE_ID and the sole attested instance id',
+  );
+
+  const canonical = makeService({
+    enabled: true,
+    latestVersion: LATEST,
+    launcher,
+    resolver: attestingResolver([CAP_API_RUNNING]),
+    env: { [CAP_INSTANCE_ID_ENV]: TASK_MODEL_ATTESTATION_INSTANCE_ID },
+  });
+  const staged = await canonical.requestUpdate(LATEST);
+  assert.equal(staged.taskModelAttestation.staged, true, 'the shipped cap-api-1 convention passes');
+});
+
+test('task-model attestation: an unavailable cap-container enumeration skips with a reason (fail closed, update unaffected)', async () => {
+  const { launcher, launched } = capturingLauncher();
+
+  // A resolver WITHOUT the enumeration (every pre-change fake) and one that
+  // returns null (docker unreachable) both skip the same way.
+  for (const svc of [
+    makeService({ enabled: true, latestVersion: LATEST, launcher }),
+    makeService({ enabled: true, latestVersion: LATEST, launcher, resolver: attestingResolver(null) }),
+  ]) {
+    const plan = await svc.requestUpdate(LATEST);
+    assert.equal(plan.taskModelAttestation.staged, false, 'no enumeration → the preconditions cannot be proven → skip');
+    assert.match(
+      plan.taskModelAttestation.skipReason ?? '',
+      /enumeration unavailable/,
+      'the reason says WHY the writeback was skipped',
+    );
+    assert.ok(plan.script.includes('task-model attestation writeback skipped'), 'the reason also rides the updater log');
+    assert.ok(!plan.script.includes(TASK_MODEL_SELECTION_ENABLED_ENV), 'no gate env key in the script');
+  }
+  assert.equal(launched().length, 2, 'both updates still launch');
+});
+
+test('task-model attestation e2e: a verified asset persists BOTH gate env keys alongside the CAP_VERSION pin', async () => {
+  const result = await runAttestationUpdate('verified');
+
+  assert.equal(result.status, 0, 'the update completes');
+  assert.match(result.log, /curl cap-task-model-attestation-/, 'the attestation asset was fetched');
+  assert.match(
+    result.envFile,
+    new RegExp(`^${TASK_MODEL_SELECTION_ENABLED_ENV}=true$`, 'm'),
+    'the enable key is persisted',
+  );
+  assert.ok(
+    result.envFile.includes(`${TASK_MODEL_SELECTION_ATTESTATION_JSON_ENV}=${ATTESTATION_CONTENT}`),
+    'the attestation JSON is persisted equal to the verified asset content (compact, single line)',
+  );
+  assert.match(result.envFile, new RegExp(`^CAP_VERSION=${LATEST}$`, 'm'), 'the version pin lands in the same run');
+  assert.match(result.envFile, /^EXISTING=value$/m, 'other env lines are preserved (atomic KEY=VALUE seam)');
+  assert.match(result.log, /docker compose .* pull api/, 'the update proceeds to pull');
+  assert.match(result.log, /docker compose .* up -d api/, 'the update proceeds to recreate');
+});
+
+test('task-model attestation e2e: a MISSING asset skips with a surfaced reason and the update completes', async () => {
+  const result = await runAttestationUpdate('missing-asset');
+
+  assert.equal(result.status, 0, 'a missing attestation asset NEVER fails the update');
+  assert.match(result.stderr, /task-model attestation writeback skipped/, 'the skip reason is surfaced');
+  assert.doesNotMatch(result.envFile, /^CAP_TASK_MODEL_SELECTION_/m, 'no gate env key is written');
+  assert.match(result.envFile, new RegExp(`^CAP_VERSION=${LATEST}$`, 'm'), 'the version pin still lands');
+  assert.match(result.log, /docker compose .* up -d api/, 'the rest of the update proceeds');
+});
+
+test('task-model attestation e2e: a CHECKSUM-FAILED asset is never persisted and the update completes', async () => {
+  const result = await runAttestationUpdate('checksum-mismatch');
+
+  assert.equal(result.status, 0, 'a checksum mismatch NEVER fails the update');
+  assert.match(result.stderr, /task-model attestation writeback skipped/, 'the skip reason is surfaced');
+  assert.doesNotMatch(
+    result.envFile,
+    /^CAP_TASK_MODEL_SELECTION_/m,
+    'unverified attestation content is NEVER persisted',
+  );
+  assert.match(result.envFile, new RegExp(`^CAP_VERSION=${LATEST}$`, 'm'), 'the version pin still lands');
 });
 
 test('labels-absent FALLBACK: resolver returns null → documented literals (source overlay)', async () => {

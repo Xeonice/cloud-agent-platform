@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "change": "automate-task-model-attestation-in-ci",
+  "intent": "release-and-upgrade-automation",
+  "runtimeWireBehavior": "unchanged",
+  "surfaces": {
+    "publicV1": {
+      "status": "unchanged",
+      "reason": "No /v1 operation, request/response schema, status code, or error body changes. /v1/runtime-models/query stops recurring 503 only because the deployment gate env (CAP_TASK_MODEL_SELECTION_ENABLED / CAP_TASK_MODEL_SELECTION_ATTESTATION_JSON) is now populated by the upgrade seams; the gate evaluator, RuntimeModelPreflightError projection, and every wire contract are untouched."
+    },
+    "mcp": {
+      "status": "unchanged",
+      "reason": "No MCP tool, argument, result, registration, or transport change. The model-aware MCP paths keep their existing gate assertion; only the deployment-side probability of the gate being open changes."
+    },
+    "openapi": {
+      "status": "not-applicable",
+      "reason": "The OpenAPI projection covers Public V1 only and nothing it projects changes; release assets and upgrade scripts are outside the projection."
+    },
+    "apiPlayground": {
+      "status": "not-applicable",
+      "reason": "The Playground catalogs Public V1 operations only and gains no entry from CI attestation generation or upgrade-seam consumption."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "ci-attestation-asset-and-upgrade-seam-consumption",
+      "reason": "Adds scripts/generate-task-model-attestation.mjs (single-instance cap-api-1 attestation bound to the release GIT_SHA, honesty split: only compatibilityChecksPassed from the verified N-1 compat check-run), wires generation + fail-closed verification into release.yml/release.sh, and teaches both upgrade seams (scripts/upgrade.sh and apps/api/src/self-update) to download, checksum-verify, precondition-check, and atomically persist the gate env keys so the task-model-selection gate stays open across upgrades."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "api-mcp",
+    "requiresWireCompatibilityFixture": false
+  }
+}

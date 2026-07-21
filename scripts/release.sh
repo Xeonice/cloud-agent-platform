@@ -3,7 +3,8 @@
 # release.sh — the post-merge MECHANICAL TAIL of a release (add-release-upgrade-scripts,
 # design D3). Given a target version (arg or the bumped manifest), it: creates the
 # GitHub Release (so release.yml fires), watches the image build to success, and
-# verifies all release images and sandbox image assets are present at the tag.
+# verifies all release images, sandbox image assets, AND the build-matched
+# task-model attestation asset are present (and the attestation valid) at the tag.
 #
 # It does NOT pick changes / bump the version / write the CHANGELOG / open the PR —
 # those need judgment and stay with the `release-pr-bundle` skill. This script only
@@ -163,5 +164,73 @@ while IFS=$'\t' read -r asset expected_digest expected_size; do
 done <<< "$manifest_data_assets"
 [[ -z "$fail" ]] || { echo "error: not all sandbox image Release assets are present at $VERSION" >&2; exit 1; }
 
-echo "==> release $VERSION done — all release images and sandbox image assets present"
+# Fail-closed task-model attestation verification (automate-task-model-
+# attestation-in-ci): the release images were proven present above, so the
+# build-matched attestation asset MUST be present, checksum-clean, valid
+# against the unchanged contracts schema, and carry a buildIdentity equal to
+# the GIT_SHA baked into the published cap-api image.
+echo "==> verify task-model attestation asset at $VERSION"
+attestation_asset="cap-task-model-attestation-${VERSION}.json"
+attestation_checksum_asset="${attestation_asset}.sha256"
+for asset in "$attestation_asset" "$attestation_checksum_asset"; do
+  if printf '%s\n' "$asset_names" | grep -Fxq "$asset"; then
+    echo "    $asset -> present"
+  else
+    echo "    $asset -> missing" >&2
+    fail=1
+  fi
+done
+[[ -z "$fail" ]] || {
+  echo "error: release images are present but the task-model attestation asset is missing at $VERSION" >&2
+  exit 1
+}
+
+gh release download "$VERSION" -R "$REPO" \
+  --pattern "$attestation_asset" --pattern "$attestation_checksum_asset" \
+  --dir "$manifest_dir" --clobber >/dev/null
+
+# The attested buildIdentity must match the GIT_SHA the published cap-api image
+# actually bakes (the value `GET /version` reports as gitSha) — read it from
+# the exact versioned tag already pulled by the image smoke above.
+image_git_sha="$(docker run --rm --pull=never --platform linux/amd64 \
+  --entrypoint /usr/local/bin/node "ghcr.io/${OWNER}/cap-api:${VERSION}" \
+  -e 'process.stdout.write(process.env.GIT_SHA ?? "")')" || {
+  echo "error: could not read the baked GIT_SHA from published cap-api:${VERSION}" >&2
+  exit 1
+}
+
+CAP_ATTESTATION_PATH="$manifest_dir/$attestation_asset" \
+CAP_ATTESTATION_CHECKSUM_PATH="$manifest_dir/$attestation_checksum_asset" \
+CAP_EXPECTED_BUILD_IDENTITY="$image_git_sha" \
+node --input-type=module - <<'NODE' || { echo "error: task-model attestation asset for $VERSION failed verification (checksum/schema/buildIdentity)" >&2; exit 1; }
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const assetPath = process.env.CAP_ATTESTATION_PATH;
+const bytes = readFileSync(assetPath);
+const digest = createHash('sha256').update(bytes).digest('hex');
+const checksumLine = readFileSync(process.env.CAP_ATTESTATION_CHECKSUM_PATH, 'utf8').trim();
+if (checksumLine !== `${digest}  ${basename(assetPath)}`) {
+  console.error(`attestation checksum mismatch for ${basename(assetPath)}`);
+  process.exit(1);
+}
+const { validateAttestation } = await import(
+  new URL('scripts/generate-task-model-attestation.mjs', pathToFileURL(`${process.cwd()}/`)).href
+);
+const attestation = await validateAttestation(JSON.parse(bytes.toString('utf8')));
+const expected = process.env.CAP_EXPECTED_BUILD_IDENTITY ?? '';
+if (!/^[0-9a-f]{40}$/.test(expected)) {
+  console.error(`published cap-api did not report a full 40-hex baked GIT_SHA: ${JSON.stringify(expected)}`);
+  process.exit(1);
+}
+if (attestation.reports.some((report) => report.buildIdentity !== expected)) {
+  console.error('attestation buildIdentity does not match the published cap-api baked GIT_SHA');
+  process.exit(1);
+}
+console.log(`    ${basename(assetPath)} -> checksum, schema, and buildIdentity verified`);
+NODE
+
+echo "==> release $VERSION done — release images, sandbox image assets, and task-model attestation verified"
 echo "    next: on the prod host run  scripts/upgrade.sh $VERSION"

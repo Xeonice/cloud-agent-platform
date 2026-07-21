@@ -86,6 +86,28 @@ const CAP_IMAGE_RE = /(^|\/)ghcr\.io\/[^/]+\/cap-[^/:@\s]+/i;
 export const CAP_VERSION_ENV = 'CAP_VERSION';
 
 /**
+ * Task-model-selection gate env keys (automate-task-model-attestation-in-ci, D5).
+ * Persisted alongside the `CAP_VERSION` pin — via the SAME atomic KEY=VALUE
+ * grep-v + mv env-persist helper — when the target release's attestation asset
+ * checksum-verifies AND the local single-instance preconditions hold.
+ */
+export const TASK_MODEL_SELECTION_ENABLED_ENV = 'CAP_TASK_MODEL_SELECTION_ENABLED';
+export const TASK_MODEL_SELECTION_ATTESTATION_JSON_ENV =
+  'CAP_TASK_MODEL_SELECTION_ATTESTATION_JSON';
+/** The operator override the attestation preconditions inspect (unset or `cap-api-1` passes). */
+export const CAP_INSTANCE_ID_ENV = 'CAP_INSTANCE_ID';
+/** The sole instanceId the CI-built single-instance attestation covers (design D3). */
+export const TASK_MODEL_ATTESTATION_INSTANCE_ID = 'cap-api-1';
+
+/** The release-asset name of the CI-built task-model attestation for a target version. */
+export function taskModelAttestationAssetName(target: string): string {
+  return `cap-task-model-attestation-${target}.json`;
+}
+
+/** Matches the cap api image specifically (`ghcr.io/<owner>/cap-api[:@…]`). */
+const CAP_API_IMAGE_RE = /(^|\/)ghcr\.io\/[^/]+\/cap-api(?=$|[:@])/i;
+
+/**
  * The image the detached one-shot updater runs (a compose-capable helper). It is
  * a fixed server-side literal — never derived from the request — overridable for
  * an operator whose host stages a different compose image via
@@ -147,6 +169,41 @@ export interface UpdateTopology {
 export const TOPOLOGY_RESOLVER = Symbol('SELF_UPDATE_TOPOLOGY_RESOLVER');
 export interface TopologyResolver {
   resolve(): Promise<UpdateTopology | null>;
+  /**
+   * OPTIONAL cap-container enumeration for the task-model attestation
+   * preconditions: every RUNNING container on the host whose image is in the
+   * ghcr cap-* namespace (NOT scoped to the compose project — a stray cap
+   * container outside the upgraded project is exactly what the precondition
+   * must detect). `null` / absent means the enumeration is unavailable, which
+   * fails the attestation preconditions closed (skip with reason) without
+   * affecting the rest of the update.
+   */
+  listCapContainers?(): Promise<readonly CapContainerSnapshot[] | null>;
+}
+
+/** A RUNNING cap-namespace container as seen by the attestation preconditions. */
+export interface CapContainerSnapshot {
+  /** The full image ref (e.g. `ghcr.io/xeonice/cap-api:v1.3.0`). */
+  readonly image: string;
+  /** The `com.docker.compose.project` label, or null when not compose-managed. */
+  readonly project: string | null;
+  /** The `com.docker.compose.service` label, or null when not compose-managed. */
+  readonly service: string | null;
+}
+
+/**
+ * The plan-time outcome of the task-model attestation preconditions
+ * (automate-task-model-attestation-in-ci): whether the updater script includes
+ * the checksum-verified attestation staging + gate-env persist, and — when it
+ * does not — the NAMED reason, surfaced in the update result and the updater
+ * log. A skip NEVER fails the update (design D5: an auto-updater must not
+ * brick upgrades over an optional capability).
+ */
+export interface TaskModelAttestationDecision {
+  /** True when the plan's script stages + persists the attestation gate env keys. */
+  readonly staged: boolean;
+  /** The named failed precondition when `staged` is false; null when staged. */
+  readonly skipReason: string | null;
 }
 
 /**
@@ -181,6 +238,13 @@ export interface UpdatePlan {
    * manual `up`), then `pull && up -d`.
    */
   readonly script: string;
+  /**
+   * The task-model attestation outcome decided at plan time: staged (script
+   * downloads + checksum-verifies the release attestation asset and persists
+   * the gate env keys alongside the pin) or skipped with a NAMED reason
+   * (failed single-instance precondition / enumeration unavailable).
+   */
+  readonly taskModelAttestation: TaskModelAttestationDecision;
 }
 
 /**
@@ -321,7 +385,21 @@ export class SelfUpdateService {
       );
     }
 
-    return this.buildPlan(status.latestVersion, topology);
+    // Task-model attestation preconditions (automate-task-model-attestation-in-ci):
+    // evaluated at plan time from the resolver's cap-container enumeration. A
+    // failed precondition SKIPS the attestation writeback with a named reason —
+    // it never refuses the update itself.
+    const capContainers = this.topologyResolver.listCapContainers
+      ? await this.topologyResolver.listCapContainers().catch(() => null)
+      : null;
+    const attestation = evaluateTaskModelAttestationPreconditions({
+      target: status.latestVersion,
+      topology,
+      containers: capContainers,
+      env: this.env,
+    });
+
+    return this.buildPlan(status.latestVersion, topology, attestation);
   }
 
   /**
@@ -346,6 +424,15 @@ export class SelfUpdateService {
       this.log.warn(
         `self-update: marked ${staleCount} custom sandbox environment(s) stale ` +
           `for contract ${this.targetSandboxEnvironmentContractVersion()}`,
+      );
+    }
+    if (!plan.taskModelAttestation.staged) {
+      // Surfaced skip reason (design D5): the update proceeds; only the
+      // attestation writeback is skipped, and the operator can see why.
+      this.log.warn(
+        `self-update: task-model attestation writeback SKIPPED — ` +
+          `${plan.taskModelAttestation.skipReason}; the gate env keys are left ` +
+          `unmodified (see deploy/TASK_MODEL_SELECTION_CUTOVER.md for the manual path)`,
       );
     }
     await launcher.launch(plan);
@@ -393,7 +480,11 @@ export class SelfUpdateService {
    * atomically, (3) `pull` THEN (4) `up -d` — pull before recreate so a failed pull
    * leaves the prior version running (design D4).
    */
-  private buildPlan(target: string, topo: UpdateTopology): UpdatePlan {
+  private buildPlan(
+    target: string,
+    topo: UpdateTopology,
+    attestation: TaskModelAttestationDecision,
+  ): UpdatePlan {
     const projArgs = topo.project ? ['-p', topo.project] : [];
     const fileArgs = topo.composeFiles.flatMap((f) => ['-f', f]);
     const services = [...topo.services];
@@ -422,7 +513,23 @@ export class SelfUpdateService {
     const pin =
       `( grep -v '^${CAP_VERSION_ENV}=' .env 2>/dev/null || true; ` +
       `echo '${CAP_VERSION_ENV}=${target}' ) > .env.captmp && mv .env.captmp .env`;
-    const script = [ensure, assetStaging, pin, pull, up]
+    // Task-model attestation (automate-task-model-attestation-in-ci): when the
+    // plan-time single-instance preconditions passed, stage + checksum-verify
+    // the release attestation asset and persist the gate env keys BEFORE the
+    // CAP_VERSION pin (same run, same atomic env seam). The step NEVER fails
+    // the update: asset-missing / checksum-mismatch degrade to a logged skip.
+    // On a plan-time skip, only the surfaced reason rides the updater log.
+    const attestationStep = attestation.staged
+      ? buildTaskModelAttestationStagingScript({
+          target,
+          releaseAssetBase: this.releaseAssetBase(target),
+        })
+      : `echo ${shQuote(
+          `self-update: task-model attestation writeback skipped: ${
+            attestation.skipReason ?? 'unknown reason'
+          }`,
+        )} >&2`;
+    const script = [ensure, assetStaging, attestationStep, pin, pull, up]
       .filter((part): part is string => typeof part === 'string' && part.length > 0)
       .join(' && ');
     return {
@@ -434,7 +541,23 @@ export class SelfUpdateService {
       pullServices,
       commands: [pull, up],
       script,
+      taskModelAttestation: attestation,
     };
+  }
+
+  /**
+   * The base URL release assets are fetched from for `target`: the existing
+   * `releases/download/<target>/<asset>` convention, overridable via
+   * `CAP_RELEASE_ASSET_BASE` — shared by the sandbox-image staging and the
+   * task-model attestation staging.
+   */
+  private releaseAssetBase(target: string): string {
+    const releasesRepo =
+      nonEmptyEnv(this.env[RELEASES_REPO_ENV]) ?? 'Xeonice/cloud-agent-platform';
+    return (
+      nonEmptyEnv(this.env[RELEASE_ASSET_BASE_ENV]) ??
+      `https://github.com/${releasesRepo}/releases/download/${target}`
+    );
   }
 
   /**
@@ -457,11 +580,7 @@ export class SelfUpdateService {
     const assetDir =
       nonEmptyEnv(this.env[SANDBOX_ASSET_DIR_ENV]) ??
       `${topo.workingDir.replace(/\/+$/, '')}/sandbox-assets`;
-    const releasesRepo =
-      nonEmptyEnv(this.env[RELEASES_REPO_ENV]) ?? 'Xeonice/cloud-agent-platform';
-    const releaseAssetBase =
-      nonEmptyEnv(this.env[RELEASE_ASSET_BASE_ENV]) ??
-      `https://github.com/${releasesRepo}/releases/download/${target}`;
+    const releaseAssetBase = this.releaseAssetBase(target);
     return provider === 'boxlite'
       ? buildBoxLiteAssetStagingScript({ target, assetDir, releaseAssetBase })
       : buildAioAssetStagingScript({ target, assetDir, releaseAssetBase });
@@ -546,29 +665,11 @@ cap_prepare_asset_tools() {
   fi
   command -v sha256sum >/dev/null 2>&1 || apk add --no-cache coreutils
 }
-cap_download_asset() {
-  name="$1"
-  out="$2"
-  tmp="$out.captmp"
-  mkdir -p "$(dirname "$out")"
-  rm -f "$tmp"
-  curl -fL --retry 3 -o "$tmp" "$asset_base/$name" || {
-    rm -f "$tmp"
-    return 1
-  }
-  mv "$tmp" "$out" || return 1
-}
+${assetTransferShell()}
 cap_manifest_has_asset() {
   manifest="$1"
   name="$2"
   grep -F '"asset"' "$manifest" | grep -Fq "\\"$name\\""
-}
-cap_verify_file() {
-  path="$1"
-  checksum="$2"
-  expected="$(awk '{ print $1; exit }' "$checksum")"
-  actual="$(sha256sum "$path" | awk '{ print $1; exit }')"
-  [ -n "$expected" ] && [ "$expected" = "$actual" ]
 }
 cap_stream_asset() {
   source="$1"
@@ -627,6 +728,161 @@ cap_fetch_and_verify_asset() {
   printf '%s\n' "$asset_path"
 }
 `.trim();
+}
+
+/**
+ * The shared release-asset transfer helpers (the EXISTING staging path's
+ * download + `.sha256` verification discipline), reused by both the
+ * sandbox-image staging and the task-model attestation staging.
+ */
+function assetTransferShell(): string {
+  return `
+cap_download_asset() {
+  name="$1"
+  out="$2"
+  tmp="$out.captmp"
+  mkdir -p "$(dirname "$out")"
+  rm -f "$tmp"
+  curl -fL --retry 3 -o "$tmp" "$asset_base/$name" || {
+    rm -f "$tmp"
+    return 1
+  }
+  mv "$tmp" "$out" || return 1
+}
+cap_verify_file() {
+  path="$1"
+  checksum="$2"
+  expected="$(awk '{ print $1; exit }' "$checksum")"
+  actual="$(sha256sum "$path" | awk '{ print $1; exit }')"
+  [ -n "$expected" ] && [ "$expected" = "$actual" ]
+}
+`.trim();
+}
+
+/**
+ * Build the task-model attestation staging step
+ * (automate-task-model-attestation-in-ci, D4/D5): download the target's
+ * `cap-task-model-attestation-<version>.json` + `.sha256` via the existing
+ * release-asset conventions, verify the checksum, and ONLY THEN persist the
+ * gate env keys through the SAME atomic KEY=VALUE seam as the `CAP_VERSION`
+ * pin (`cap_set_env_value`). A missing asset (404) or a checksum mismatch
+ * degrades to a loud skip — the step always exits 0 so the rest of the update
+ * (pin, pull, up -d) proceeds, and unverified content is NEVER persisted.
+ */
+function buildTaskModelAttestationStagingScript(options: {
+  readonly target: string;
+  readonly releaseAssetBase: string;
+}): string {
+  const asset = taskModelAttestationAssetName(options.target);
+  const body = `
+target=${shQuote(options.target)}
+asset_base=${shQuote(options.releaseAssetBase)}
+asset=${shQuote(asset)}
+staging_dir=".cap-attestation.captmp.$$"
+asset_path="$staging_dir/$asset"
+checksum_path="$asset_path.sha256"
+if cap_prepare_attestation_tools \\
+  && cap_download_asset "$asset" "$asset_path" \\
+  && cap_download_asset "$asset.sha256" "$checksum_path" \\
+  && cap_verify_file "$asset_path" "$checksum_path"; then
+  attestation="$(tr -d '\\n' < "$asset_path")"
+  cap_set_env_value ${TASK_MODEL_SELECTION_ENABLED_ENV} true
+  cap_set_env_value ${TASK_MODEL_SELECTION_ATTESTATION_JSON_ENV} "$attestation"
+  echo "self-update: task-model attestation for $target checksum-verified and persisted"
+else
+  echo "self-update: task-model attestation writeback skipped: release asset $asset is missing or failed its .sha256 verification — gate env keys left unmodified" >&2
+fi
+rm -rf "$staging_dir" || true
+`.trim();
+  return `sh -eu -c ${shQuote(`${taskModelAttestationShell()}\n${body}`)}`;
+}
+
+/** The helper preamble for the attestation staging step (no zstd/tar needed). */
+function taskModelAttestationShell(): string {
+  return `
+${envFileShell()}
+cap_prepare_attestation_tools() {
+  command -v curl >/dev/null 2>&1 || apk add --no-cache curl
+  command -v sha256sum >/dev/null 2>&1 || apk add --no-cache coreutils
+}
+${assetTransferShell()}
+`.trim();
+}
+
+/**
+ * The local single-instance preconditions the attestation writeback is gated
+ * on (automate-task-model-attestation-in-ci, D1/D3) — the SAME checks as the
+ * manual upgrade.sh path, evaluated from the updater's cap-container
+ * enumeration:
+ *
+ *   1. exactly ONE running cap api container;
+ *   2. NO cap-namespace container that this upgrade leaves at a version other
+ *      than the target (i.e. every running cap container is either in the
+ *      derived recreate set — so this run recreates it AT the target — or is
+ *      already at the target version). Anything else is a would-be N-1 cap
+ *      container and fails closed;
+ *   3. `CAP_INSTANCE_ID` unset or exactly `cap-api-1` (the attestation's sole
+ *      instanceId).
+ *
+ * A failed precondition SKIPS the writeback with a NAMED reason; it never
+ * fails the update.
+ */
+export function evaluateTaskModelAttestationPreconditions(options: {
+  readonly target: string;
+  readonly topology: UpdateTopology;
+  readonly containers: readonly CapContainerSnapshot[] | null;
+  readonly env: NodeJS.ProcessEnv;
+}): TaskModelAttestationDecision {
+  const skip = (skipReason: string): TaskModelAttestationDecision => ({
+    staged: false,
+    skipReason,
+  });
+  const instanceId = nonEmptyEnv(options.env[CAP_INSTANCE_ID_ENV]);
+  if (instanceId !== null && instanceId !== TASK_MODEL_ATTESTATION_INSTANCE_ID) {
+    return skip(
+      `${CAP_INSTANCE_ID_ENV} is ${JSON.stringify(instanceId)} but the release ` +
+        `attestation covers only ${TASK_MODEL_ATTESTATION_INSTANCE_ID}`,
+    );
+  }
+  if (options.containers === null) {
+    return skip(
+      'cap-container enumeration unavailable — cannot prove the single-instance preconditions',
+    );
+  }
+  const apiContainers = options.containers.filter((c) =>
+    CAP_API_IMAGE_RE.test(c.image),
+  );
+  if (apiContainers.length !== 1) {
+    return skip(
+      `expected exactly one running cap api container, found ${apiContainers.length}`,
+    );
+  }
+  for (const container of options.containers) {
+    const recreatedByThisRun =
+      container.project === options.topology.project &&
+      container.service !== null &&
+      options.topology.services.includes(container.service);
+    if (recreatedByThisRun) {
+      continue; // `up -d` brings it to the target version in this same run
+    }
+    const tag = imageTag(container.image);
+    if (tag !== null && versionsMatch(tag, options.target)) {
+      continue; // already at the target version
+    }
+    return skip(
+      `running cap container ${container.image} is outside this upgrade and would ` +
+        `remain at a version other than ${options.target} (N-1 cap container)`,
+    );
+  }
+  return { staged: true, skipReason: null };
+}
+
+/** The tag of an image ref (`ghcr.io/x/cap-api:v1.3.0` → `v1.3.0`), or null when untagged. */
+function imageTag(image: string): string | null {
+  const withoutDigest = image.split('@')[0];
+  const slash = withoutDigest.lastIndexOf('/');
+  const colon = withoutDigest.lastIndexOf(':');
+  return colon > slash ? withoutDigest.slice(colon + 1) : null;
 }
 
 function envFileShell(): string {
@@ -761,6 +1017,29 @@ export class DockerTopologyResolver implements TopologyResolver {
     const { services, pullServices } = resolveServiceSets(runningCapServices, this.env);
 
     return { project, composeFiles, workingDir, services, pullServices };
+  }
+
+  /**
+   * The attestation-precondition enumeration: every RUNNING cap-namespace
+   * container on the host, deliberately NOT filtered by compose project — a
+   * stray cap container outside the upgraded project is exactly the N-1 case
+   * the precondition must fail closed on. `null` when docker is unreachable
+   * (the caller then skips the attestation writeback with a reason).
+   */
+  async listCapContainers(): Promise<readonly CapContainerSnapshot[] | null> {
+    const containers = await this.docker
+      .listContainers({ all: false })
+      .catch(() => null);
+    if (containers === null) {
+      return null;
+    }
+    return containers
+      .filter((c) => CAP_IMAGE_RE.test(c.Image ?? ''))
+      .map((c) => ({
+        image: c.Image ?? '',
+        project: c.Labels?.['com.docker.compose.project'] ?? null,
+        service: c.Labels?.['com.docker.compose.service'] ?? null,
+      }));
   }
 }
 

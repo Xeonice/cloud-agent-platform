@@ -206,6 +206,7 @@ jobs:
         run: |
           bash -n scripts/release.sh scripts/quick-deploy.sh scripts/scheduled-tasks-live-e2e.sh
           node scripts/release-image-assets.test.mjs
+          node scripts/generate-task-model-attestation.test.mjs
           node scripts/release-tail.test.mjs
           node scripts/quick-deploy-preflight.test.mjs
           node scripts/docker-compose.deploy-config.test.mjs

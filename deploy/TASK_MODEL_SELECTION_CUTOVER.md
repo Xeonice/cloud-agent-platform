@@ -10,6 +10,42 @@ Use this maintenance-window procedure for the first model-aware release. Do not
 publish the matching Web client, re-enable MCP, or reopen task/schedule write
 ingress until every check below succeeds.
 
+## Automated single-instance alternative (CI-attested releases)
+
+Every GitHub Release now attaches a build-matched attestation asset,
+`cap-task-model-attestation-<version>.json` plus a `.sha256` companion. CI
+attests only the facts it witnessed: `buildIdentity` derived from the same
+`GIT_SHA` build-arg baked into the released `cap-api` image, and
+`compatibilityChecksPassed` verified against the release commit's actual
+`task model N-1 compatibility` check-run (never assumed). The asset carries the
+codified single-instance shape: exactly one instanceId, `cap-api-1`, with the
+four role reports (`api`, `admission`, `scheduler`, `runtime`).
+
+Both official upgrade seams — `scripts/upgrade.sh` and the in-app self-update —
+download and checksum-verify that asset and write
+`CAP_TASK_MODEL_SELECTION_ENABLED=true` /
+`CAP_TASK_MODEL_SELECTION_ATTESTATION_JSON` automatically, but ONLY after local
+single-instance preconditions prove the deployment-time cutover facts the
+attestation carries (those four booleans are asserted consumer-side after the
+prechecks, never claimed as CI-witnessed):
+
+- exactly one running cap api instance (no second api container);
+- no N-1 cap containers at a version other than the target being staged;
+- `CAP_INSTANCE_ID` unset or exactly `cap-api-1`.
+
+For such a deployment the stop-the-world compose upgrade structurally satisfies
+the write-ingress / MCP-writer / legacy-worker facts, so no manual
+re-attestation step is needed: renewal rides the upgrade itself, and each new
+release ships a fresh attestation matching its new build identity.
+
+**This is an alternative, not a replacement.** This manual runbook remains the
+authoritative procedure for multi-instance deployments and for any deployment
+with a custom `CAP_INSTANCE_ID`. On a failed precondition (or a missing /
+checksum-failed asset) both seams fail closed on the attestation writeback
+ONLY, with the failed precondition or asset defect named — the rest of the
+upgrade completes, the gate stays closed with the existing safe retryable
+semantics, and opening it is the procedure below.
+
 ## Preconditions
 
 - Run the required `task model N-1 compatibility` CI job. Its successful
@@ -190,8 +226,11 @@ file.
     new complete attestation and process recreate.
 
 `scripts/upgrade.sh` may stage/recreate images inside this window, but it does
-not close ingress, disable MCP, enumerate N-1 workers, generate an attestation,
-or enforce rollback blockers. It is not a complete cutover procedure.
+not close ingress, disable MCP, enumerate N-1 workers beyond its local
+single-instance preconditions, generate an attestation of its own, or enforce
+rollback blockers. Its automatic writeback applies only the release's CI-built
+single-instance attestation (see the alternative above) and fails closed for
+anything else. It is not a complete multi-instance cutover procedure.
 
 ## Rollback: drain model-aware state before N-1 starts
 

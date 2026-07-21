@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  attestationAssetName,
+  attestationChecksumAssetName,
+  writeAttestationAsset,
+} from './generate-task-model-attestation.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const releaseScript = join(repoRoot, 'scripts', 'release.sh');
@@ -13,6 +25,43 @@ const metadata = {
   sandboxVersion: version,
   dependencies: { 'claude-code': '2.1.207', codex: '0.144.1', openspec: '1.4.1' },
 };
+// The GIT_SHA the fake published cap-api image "bakes" — the attestation
+// fixture is generated against it so the buildIdentity verification passes.
+const imageGitSha = 'a1b2c3d4'.repeat(5);
+
+// release.sh validates the attestation against the REAL contracts schema via
+// the generator module; build the dist output when absent (CI runs this after
+// `pnpm turbo build`, so this is a no-op there).
+const contractsDistModule = join(
+  repoRoot,
+  'packages/contracts/dist/task-model-capability.js',
+);
+if (!existsSync(contractsDistModule)) {
+  const build = spawnSync('pnpm', ['--filter', '@cap/contracts', 'build'], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+  });
+  assert.equal(build.status, 0, 'could not build @cap/contracts for attestation validation');
+}
+
+// Valid attestation fixture (build-matched to the fake image GIT_SHA) plus a
+// tampered copy whose bytes no longer match the checksum companion.
+const attestationDir = mkdtempSync(join(tmpdir(), 'cap-release-tail-attestation-'));
+const attestationFixture = await writeAttestationAsset({
+  version,
+  gitSha: imageGitSha,
+  compatVerified: true,
+  outDir: attestationDir,
+});
+const attestationPath = attestationFixture.assetPath;
+const attestationChecksumPath = join(attestationDir, attestationChecksumAssetName(version));
+const tamperedDir = mkdtempSync(join(tmpdir(), 'cap-release-tail-attestation-bad-'));
+const tamperedAttestationPath = join(tamperedDir, attestationAssetName(version));
+writeFileSync(
+  tamperedAttestationPath,
+  `${readFileSync(attestationPath, 'utf8').trimEnd()} \n`,
+  'utf8',
+);
 
 function writeCommand(binDir, name, body) {
   const path = join(binDir, name);
@@ -58,6 +107,7 @@ function makeFixture() {
   const manifestPath = join(root, 'cap-image-assets.json');
   const releaseAssetsPath = join(root, 'release-assets.json');
   const badReleaseAssetsPath = join(root, 'release-assets-bad.json');
+  const noAttestationAssetsPath = join(root, 'release-assets-no-attestation.json');
 
   const manifest = {
     schemaVersion: 2,
@@ -111,6 +161,8 @@ function makeFixture() {
     'docker-compose.prod.yml',
     'docker-compose.prod.env.example',
     'cap-image-assets.json',
+    attestationAssetName(version),
+    attestationChecksumAssetName(version),
   ];
   const dataAssets = [];
   for (const asset of manifest.assets) {
@@ -133,6 +185,16 @@ function makeFixture() {
   const badAssets = structuredClone(assets);
   badAssets.find((asset) => asset.name.endsWith('.part-0002')).digest = `sha256:${'0'.repeat(64)}`;
   writeFileSync(badReleaseAssetsPath, JSON.stringify({ assets: badAssets }), 'utf8');
+  // Images and sandbox assets are all present, but the attestation asset is
+  // absent — release verification must fail closed on it.
+  const withoutAttestation = assets.filter(
+    (asset) => !asset.name.startsWith('cap-task-model-attestation-'),
+  );
+  writeFileSync(
+    noAttestationAssetsPath,
+    JSON.stringify({ assets: withoutAttestation }),
+    'utf8',
+  );
 
   writeCommand(binDir, 'gh', `
 echo "gh $*" >> "$CAP_TEST_LOG"
@@ -151,7 +213,13 @@ case "$1 $2" in
       if [ "$prev" = "--dir" ]; then out="$arg"; fi
       prev="$arg"
     done
-    cp "$CAP_FAKE_MANIFEST" "$out/cap-image-assets.json"
+    case "$*" in
+      *"cap-task-model-attestation-"*)
+        cp "$CAP_FAKE_ATTESTATION" "$out/cap-task-model-attestation-\${CAP_TEST_VERSION}.json"
+        cp "$CAP_FAKE_ATTESTATION_CHECKSUM" "$out/cap-task-model-attestation-\${CAP_TEST_VERSION}.json.sha256"
+        ;;
+      *) cp "$CAP_FAKE_MANIFEST" "$out/cap-image-assets.json" ;;
+    esac
     ;;
   "run list") echo 123 ;;
   "run watch") exit 0 ;;
@@ -177,6 +245,7 @@ case "$1" in
         fi
         echo "git version 2.39.5"
         ;;
+      *"process.env.GIT_SHA"*) printf '%s' "$CAP_FAKE_IMAGE_GIT_SHA" ;;
       *"--entrypoint /usr/local/bin/node"*) exit 0 ;;
       *) exit 1 ;;
     esac
@@ -186,7 +255,15 @@ esac
 `);
   writeCommand(binDir, 'sleep', 'exit 0');
 
-  return { root, binDir, logPath, manifestPath, releaseAssetsPath, badReleaseAssetsPath };
+  return {
+    root,
+    binDir,
+    logPath,
+    manifestPath,
+    releaseAssetsPath,
+    badReleaseAssetsPath,
+    noAttestationAssetsPath,
+  };
 }
 
 function runRelease(fixture, releaseAssetsPath, extraEnv = {}) {
@@ -196,8 +273,12 @@ function runRelease(fixture, releaseAssetsPath, extraEnv = {}) {
       ...process.env,
       PATH: `${fixture.binDir}:${process.env.PATH}`,
       CAP_TEST_LOG: fixture.logPath,
+      CAP_TEST_VERSION: version,
       CAP_FAKE_MANIFEST: fixture.manifestPath,
       CAP_FAKE_RELEASE_ASSETS: releaseAssetsPath,
+      CAP_FAKE_ATTESTATION: attestationPath,
+      CAP_FAKE_ATTESTATION_CHECKSUM: attestationChecksumPath,
+      CAP_FAKE_IMAGE_GIT_SHA: imageGitSha,
       ...extraEnv,
     },
     encoding: 'utf8',
@@ -210,6 +291,18 @@ assert.equal(success.status, 0, success.stderr || success.stdout);
 assert.match(success.stdout, /part-0001 -> digest and size verified/);
 assert.match(success.stdout, /part-0002 -> digest and size verified/);
 assert.match(success.stdout, /cap-api image smoke passed: Git and startup preflight verified/);
+assert.match(
+  success.stdout,
+  /cap-task-model-attestation-v1\.2\.3\.json -> present/,
+);
+assert.match(
+  success.stdout,
+  /cap-task-model-attestation-v1\.2\.3\.json\.sha256 -> present/,
+);
+assert.match(
+  success.stdout,
+  /cap-task-model-attestation-v1\.2\.3\.json -> checksum, schema, and buildIdentity verified/,
+);
 assert.doesNotMatch(success.stdout, /cap-aio-sandbox-v1\.2\.3-linux-amd64\.docker\.tar\.zst -> present/);
 const commands = readFileSync(fixture.logPath, 'utf8');
 assert.match(commands, /run list .*--branch v1\.2\.3 .*--event release/);
@@ -243,4 +336,37 @@ const failure = runRelease(fixture, fixture.badReleaseAssetsPath);
 assert.notEqual(failure.status, 0);
 assert.match(`${failure.stdout}\n${failure.stderr}`, /part-0002 -> digest\/size mismatch/);
 
-console.log('release tail split-asset verification passed');
+// Fail closed: images and sandbox assets present, attestation asset absent.
+const missingAttestation = runRelease(fixture, fixture.noAttestationAssetsPath);
+assert.notEqual(missingAttestation.status, 0);
+assert.match(
+  `${missingAttestation.stdout}\n${missingAttestation.stderr}`,
+  /release images are present but the task-model attestation asset is missing at v1\.2\.3/,
+);
+
+// Fail closed: attestation bytes do not match the .sha256 companion.
+const tampered = runRelease(fixture, fixture.releaseAssetsPath, {
+  CAP_FAKE_ATTESTATION: tamperedAttestationPath,
+});
+assert.notEqual(tampered.status, 0);
+assert.match(
+  `${tampered.stdout}\n${tampered.stderr}`,
+  /attestation checksum mismatch/,
+);
+assert.match(
+  `${tampered.stdout}\n${tampered.stderr}`,
+  /task-model attestation asset for v1\.2\.3 failed verification/,
+);
+
+// Fail closed: attested buildIdentity differs from the published cap-api
+// image's baked GIT_SHA.
+const identityMismatch = runRelease(fixture, fixture.releaseAssetsPath, {
+  CAP_FAKE_IMAGE_GIT_SHA: 'f'.repeat(40),
+});
+assert.notEqual(identityMismatch.status, 0);
+assert.match(
+  `${identityMismatch.stdout}\n${identityMismatch.stderr}`,
+  /attestation buildIdentity does not match the published cap-api baked GIT_SHA/,
+);
+
+console.log('release tail split-asset and attestation verification passed');

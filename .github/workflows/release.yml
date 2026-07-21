@@ -68,8 +68,11 @@ jobs:
         run: node deploy/observability/gen-prod-observability-configs.mjs --check
 
   # Resolve one release identity once so every image receives the exact same
-  # version and build timestamp. The API image gate and the remaining image
-  # matrix consume these immutable outputs rather than resolving independently.
+  # version, build timestamp, and GIT_SHA. The API image gate, the remaining
+  # image matrix, AND the task-model attestation all consume these immutable
+  # outputs rather than resolving independently — the single source of truth
+  # that guards against SHA-context drift between the image build-arg and the
+  # attested buildIdentity (automate-task-model-attestation-in-ci, design D1).
   resolve-release:
     needs: verify-run-package
     runs-on: ubuntu-latest
@@ -77,6 +80,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       build_time: ${{ steps.version.outputs.build_time }}
+      git_sha: ${{ steps.version.outputs.git_sha }}
     steps:
       - name: Resolve release version
         id: version
@@ -91,6 +95,7 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "git_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
   # Build the production API artifact into the local Docker image store, prove
   # both its packaged Git executable and its real startup preflight, and only
@@ -122,7 +127,7 @@ jobs:
           tags: ghcr.io/xeonice/cap-api:${{ needs.resolve-release.outputs.version }}
           build-args: |
             CAP_VERSION=${{ needs.resolve-release.outputs.version }}
-            GIT_SHA=${{ github.sha }}
+            GIT_SHA=${{ needs.resolve-release.outputs.git_sha }}
             BUILD_TIME=${{ needs.resolve-release.outputs.build_time }}
             CODEX_VERSION=${{ env.CODEX_VERSION }}
             CLAUDE_CODE_VERSION=${{ env.CLAUDE_CODE_VERSION }}
@@ -212,7 +217,7 @@ jobs:
           # docker/aio-sandbox.Dockerfile (never overridden to :latest here).
           build-args: |
             CAP_VERSION=${{ needs.resolve-release.outputs.version }}
-            GIT_SHA=${{ github.sha }}
+            GIT_SHA=${{ needs.resolve-release.outputs.git_sha }}
             BUILD_TIME=${{ needs.resolve-release.outputs.build_time }}
             VITE_BUILD_ID=${{ needs.resolve-release.outputs.version }}
             CODEX_VERSION=${{ env.CODEX_VERSION }}
@@ -276,22 +281,100 @@ jobs:
   # prebuilt images WITHOUT cloning: download these two files, fill .env, and
   # `docker compose -f docker-compose.prod.yml up -d` (release-and-versioning,
   # decision ④/⑤ — build/run split). Only on a real Release (not workflow_dispatch).
+  #
+  # This job ALSO generates and attaches the build-matched task-model attestation
+  # asset (automate-task-model-attestation-in-ci): it runs after promote-latest,
+  # so the image identity is final, and it derives the attested buildIdentity
+  # from the SAME resolve-release `git_sha` output that was passed as the
+  # cap-api GIT_SHA build-arg — never a separately-resolved SHA context.
+  # `compatibilityChecksPassed` is attested only after the release commit's
+  # "task model N-1 compatibility" check-run is verified successful via the
+  # check-runs API (honesty split, design D1) — never assumed from workflow
+  # adjacency.
   attach-run-assets:
-    needs: [verify-run-package, promote-latest]
+    needs: [verify-run-package, resolve-release, promote-latest]
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: write
+      checks: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Attach source-free run package to the Release
+
+      # Fail the attestation path closed unless the release commit's N-1
+      # compatibility check-run ACTUALLY concluded successfully. release.yml
+      # triggers on release:published while the compat job lives in ci.yml on
+      # the merged commit, so adjacency proves nothing — query the evidence.
+      - name: Verify task model N-1 compatibility check-run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_GIT_SHA: ${{ needs.resolve-release.outputs.git_sha }}
+        run: |
+          result="$(gh api -X GET \
+            "repos/${{ github.repository }}/commits/${RELEASE_GIT_SHA}/check-runs" \
+            -f check_name='task model N-1 compatibility' \
+            --jq '[.check_runs[]] | sort_by(.id) | last | if . == null then "absent" else "\(.status):\(.conclusion)" end')" || {
+            echo "error: could not query check-runs for ${RELEASE_GIT_SHA} — refusing to attest compatibilityChecksPassed" >&2
+            exit 1
+          }
+          echo "task model N-1 compatibility check-run for ${RELEASE_GIT_SHA}: ${result}"
+          if [ "$result" != "completed:success" ]; then
+            echo "error: the release commit's 'task model N-1 compatibility' check-run is ${result} — refusing to attest compatibilityChecksPassed" >&2
+            exit 1
+          fi
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The generator validates its output against the UNCHANGED contracts
+      # attestation schema, which it loads from the built dist output.
+      - name: Build contracts schema for attestation validation
+        run: pnpm --filter @cap/contracts build
+
+      - name: Generate task model attestation asset
+        env:
+          RELEASE_GIT_SHA: ${{ needs.resolve-release.outputs.git_sha }}
+        run: |
+          node scripts/generate-task-model-attestation.mjs \
+            --version "${{ github.event.release.tag_name }}" \
+            --git-sha "${RELEASE_GIT_SHA}" \
+            --compat-verified true \
+            --out dist/task-model-attestation
+
+      # SHA-context drift guard: the attested buildIdentity must equal the
+      # GIT_SHA build-arg baked into the released cap-api image (both come from
+      # resolve-release, and this assertion keeps that invariant from silently
+      # regressing if either side is ever rewired).
+      - name: Assert attested buildIdentity matches the api image GIT_SHA build-arg
+        env:
+          RELEASE_GIT_SHA: ${{ needs.resolve-release.outputs.git_sha }}
+        run: |
+          asset="dist/task-model-attestation/cap-task-model-attestation-${{ github.event.release.tag_name }}.json"
+          jq -e --arg sha "$RELEASE_GIT_SHA" \
+            '(.reports | length) == 4 and ([.reports[].buildIdentity] | all(. == $sha))' \
+            "$asset" >/dev/null || {
+            echo "error: attested buildIdentity drifted from the cap-api GIT_SHA build-arg (${RELEASE_GIT_SHA})" >&2
+            exit 1
+          }
+
+      - name: Attach source-free run package and task-model attestation to the Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
             docker-compose.prod.yml docker-compose.prod.env.example \
+            dist/task-model-attestation/* \
             --clobber --repo "${{ github.repository }}"
 
   attach-sandbox-image-assets:
