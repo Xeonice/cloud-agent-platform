@@ -35,6 +35,11 @@
 services:
   api:
     image: ghcr.io/xeonice/cap-api:${CAP_VERSION}
+    # NOTE: this override only swaps images/tags. The base compose's api volumes —
+    # including the `repo-store` named volume that holds the per-Repo bare mirrors
+    # (add-repo-content-store) — and its CAP_REPO_STORE_DIR literal MERGE in
+    # unchanged, so a prebuilt-image deploy gets the same repo-store wiring as a
+    # source build. Add local-path-import bind mounts in the BASE compose, not here.
     environment:
       # Point the orchestrator at the PULLED, version-matched per-task sandbox
       # image instead of the locally-built cap-aio-sandbox:pinned tag, so newly

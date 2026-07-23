@@ -7,6 +7,7 @@ import type {
 } from '@cap/sandbox-core';
 import {
   SANDBOX_PROVIDER_CAPABILITIES,
+  SANDBOX_REPO_SOURCE_MOUNT_DIR,
   defineLocalSandboxProvider,
 } from '@cap/sandbox-core';
 
@@ -42,6 +43,23 @@ export interface AioLocalSandboxConfig {
   readonly approvalsBase: string;
 }
 
+/**
+ * Read-only per-repo mount of the shared repo-store volume
+ * (add-repo-content-store D4, aio row). `VolumeOptions.Subpath` scopes the
+ * mount to ONE repo's bare mirror, so a task can neither write the stored copy
+ * nor enumerate other repos' copies. Subpath mounts require Docker Engine >= 26
+ * (production and dev are both 29.x, API 1.54).
+ */
+export interface AioLocalSandboxVolumeMount {
+  Type: 'volume';
+  Source: string;
+  Target: string;
+  ReadOnly: true;
+  VolumeOptions: {
+    Subpath: string;
+  };
+}
+
 export interface AioLocalSandboxHostConfig {
   SecurityOpt: string[];
   ShmSize: number;
@@ -54,6 +72,23 @@ export interface AioLocalSandboxHostConfig {
       'max-file': string;
     };
   };
+  Mounts?: AioLocalSandboxVolumeMount[];
+}
+
+/**
+ * Container-side mount point of the task's injected repo copy. Alias of the
+ * provider-neutral constant so orchestration and this provider cannot drift.
+ */
+export const AIO_SANDBOX_REPO_SOURCE_MOUNT_DIR = SANDBOX_REPO_SOURCE_MOUNT_DIR;
+
+/** The repo-copy mount a provision may attach to the sandbox container. */
+export interface AioLocalSandboxRepoMount {
+  /** Docker named volume holding the repo-store. */
+  readonly volumeName: string;
+  /** Path of the copy relative to the volume root, e.g. `<repoId>.git`. */
+  readonly subpath: string;
+  /** Absolute container path the copy is exposed at (read-only). */
+  readonly mountPath: string;
 }
 
 export interface AioLocalSandboxContainerConfig {
@@ -125,6 +160,8 @@ export function buildAioLocalSandboxProvisionSpec(args: {
   readonly env?: AioLocalSandboxEnv;
   readonly environment?: SandboxResolvedEnvironmentMetadata | null;
   readonly labels?: Readonly<Record<string, string>>;
+  /** Repo-copy injection mount; absent keeps the container mount-free. */
+  readonly repoMount?: AioLocalSandboxRepoMount | null;
 }): AioLocalSandboxProvisionSpec {
   const config = args.config ?? readAioLocalSandboxConfig(args.env);
   const image = resolveAioSandboxImage({
@@ -162,9 +199,47 @@ export function buildAioLocalSandboxProvisionSpec(args: {
           Type: 'json-file',
           Config: { 'max-size': '20m', 'max-file': '5' },
         },
+        ...(args.repoMount
+          ? { Mounts: [buildAioRepoSourceMount(args.repoMount)] }
+          : {}),
       },
     },
   };
+}
+
+/**
+ * Docker mount descriptor for the task's repo copy. Read-only and subpath
+ * scoped by construction: the sandbox may read exactly one bare mirror.
+ */
+export function buildAioRepoSourceMount(
+  mount: AioLocalSandboxRepoMount,
+): AioLocalSandboxVolumeMount {
+  assertAioRepoMountSubpath(mount.subpath);
+  if (!mount.volumeName.trim()) {
+    throw new Error('AIO repo-store mount requires a volume name');
+  }
+  if (!mount.mountPath.startsWith('/')) {
+    throw new Error('AIO repo-store mount path must be absolute');
+  }
+  return {
+    Type: 'volume',
+    Source: mount.volumeName,
+    Target: mount.mountPath,
+    ReadOnly: true,
+    VolumeOptions: { Subpath: mount.subpath },
+  };
+}
+
+function assertAioRepoMountSubpath(subpath: string): void {
+  if (
+    subpath.length === 0 ||
+    subpath.startsWith('/') ||
+    subpath.split('/').includes('..')
+  ) {
+    throw new Error(
+      'AIO repo-store mount subpath must be relative to the volume root without parent segments',
+    );
+  }
 }
 
 function resolveAioSandboxImage(args: {

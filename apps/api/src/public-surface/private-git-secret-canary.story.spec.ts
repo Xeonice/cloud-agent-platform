@@ -67,7 +67,9 @@ import { McpServerFactory } from '../mcp/mcp.server';
 import { buildV1OpenApiDocument } from '../openapi/openapi.registry';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReposController } from '../repos/repos.controller';
+import type { RepoResponse } from '@cap/contracts';
 import { ReposService } from '../repos/repos.service';
+import type { RepoCopyService } from '../repos/repo-copy.service';
 import { SandboxRunOwnerService } from '../sandbox/sandbox-run-owner.service';
 import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
 import type { TaskProvisioningDiagnosticsPublicQueryService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-public-query.service';
@@ -1155,6 +1157,17 @@ test(
       forgeTargetResolver,
       refsProbe,
       forgeRegistry,
+      // add-repo-content-store: the import now also acquires a content copy. The
+      // credential reaches that seam ONLY as the ephemeral exact-host
+      // `Authorization:` header — never inside the recorded git source — which is
+      // asserted here before the (stubbed) acquisition returns.
+      {
+        acquireOnImport: async (repo: RepoResponse, authHeader?: string) => {
+          canary.assertAbsent(repo.gitSource, 'repo-store acquisition git source');
+          assert.equal(authHeader, canary.giteeAuthorizationHeader);
+          return repo;
+        },
+      } as RepoCopyService,
     );
     const reposController = new ReposController(repos);
     const importedRepo = RepoResponseSchema.parse(

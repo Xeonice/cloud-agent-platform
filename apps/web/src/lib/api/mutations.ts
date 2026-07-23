@@ -24,6 +24,7 @@ import type {
   TaskResponse,
   ImportRepoRequest,
   RepoResponse,
+  LocalRepoImportRequest,
   VerifiedRepoImportResponse,
   SetDefaultRepoRequest,
   DefaultRepoResponse,
@@ -183,6 +184,103 @@ export function replaceRefreshedRepo(
 ): ListReposResponse | undefined {
   if (!current || !current.some((item) => item.id === repo.id)) return current;
   return current.map((item) => (item.id === repo.id ? repo : item));
+}
+
+/**
+ * Mark one cached Repo as `refreshing` while its copy acquisition is in flight,
+ * so the list badge reports the true in-progress state instead of the stale
+ * `missing`/`failed` it is being refreshed away from. PURE. Only an already
+ * cached id is touched — the refresh never fabricates a repository row, and the
+ * server response (or the invalidation read) remains authoritative.
+ */
+export function markRepoCopyRefreshing(
+  current: ListReposResponse | undefined,
+  repoId: string,
+): ListReposResponse | undefined {
+  if (!current || !current.some((item) => item.id === repoId)) return current;
+  return current.map((item) =>
+    item.id === repoId ? { ...item, copyStatus: "refreshing" as const } : item,
+  );
+}
+
+/**
+ * Acquire or refresh a repository's repo-store content copy
+ * (`POST /repos/:repoId/refresh-copy`, add-repo-content-store). The SAME action
+ * covers both remedies a non-`ready` repo needs (build the missing copy / retry
+ * a failed one), which is why task-creation guidance points at exactly this one
+ * button.
+ *
+ * The optimistic write is deliberately narrow: only `copyStatus: "refreshing"`
+ * on an already cached id. Every other field — including `copyUpdatedAt`, which
+ * a FAILED refresh keeps at its last-good value — comes from the server. On
+ * failure the cache is restored, so a failed refresh never leaves the list
+ * claiming an acquisition is still running.
+ */
+export function refreshRepoCopyMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<
+  RepoResponse,
+  Error,
+  string,
+  { previous: ListReposResponse | undefined }
+> {
+  return {
+    mutationFn: (repoId) => real.refreshRepoCopy(repoId),
+    onMutate: (repoId) => {
+      const previous = queryClient.getQueryData<ListReposResponse>(
+        queryKeys.repos,
+      );
+      queryClient.setQueryData<ListReposResponse>(queryKeys.repos, (current) =>
+        markRepoCopyRefreshing(current, repoId),
+      );
+      return { previous };
+    },
+    onError: (_error, _repoId, context) => {
+      if (context) {
+        queryClient.setQueryData<ListReposResponse>(
+          queryKeys.repos,
+          context.previous,
+        );
+      }
+    },
+    onSuccess: (repo) => {
+      queryClient.setQueryData<ListReposResponse>(queryKeys.repos, (current) =>
+        replaceRefreshedRepo(current, repo),
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.repos,
+        exact: true,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.defaultRepo,
+        exact: true,
+      });
+    },
+  };
+}
+
+/**
+ * Import a git repository from a filesystem path the api process can see
+ * (`POST /repos/local-import`, local-repo-import). Path containment in the
+ * allowlist root and the "is a git repository" check are SERVER-side; this
+ * mutation only forwards the operator's input and publishes the canonical Repo
+ * response into the shared repo list.
+ */
+export function importLocalRepoMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<RepoResponse, Error, LocalRepoImportRequest> {
+  return {
+    mutationFn: (body) => real.importLocalRepo(body),
+    onSuccess: (repo) => {
+      queryClient.setQueryData<ListReposResponse>(queryKeys.repos, (current) =>
+        current ? [repo, ...current.filter((item) => item.id !== repo.id)] : current,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.repos,
+        exact: true,
+      });
+    },
+  };
 }
 
 /**

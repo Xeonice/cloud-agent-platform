@@ -60,4 +60,63 @@ for (const forbidden of [
   );
 }
 
+// add-repo-content-store Track 4 — the injection seam must stay REACHABLE.
+// The previous attempt at this change died as "built but unreachable": the
+// components existed and nothing wired them together. These assertions fail the
+// build if the workspace-source resolver is dropped from the DI graph, if the
+// repo-store module stops being imported where the seam consumes it, or if the
+// Prisma lookup stops receiving the resolver.
+assert.match(
+  moduleSource,
+  /imports:\s*\[[^\]]*RepoStoreModule/,
+  'SandboxModule must import RepoStoreModule so the injection seam can read repo copies',
+);
+assert.match(
+  moduleSource,
+  /provide:\s*WorkspaceSourceResolver/,
+  'SandboxModule must provide WorkspaceSourceResolver',
+);
+assert.match(
+  moduleSource,
+  /inject:\s*\[PrismaService,\s*RepoStoreService,\s*REPO_STORE_VOLUME_INSPECTOR\]/,
+  'WorkspaceSourceResolver must receive prisma, the repo store, and the volume inspector',
+);
+assert.match(
+  moduleSource,
+  /provide:\s*REPO_STORE_VOLUME_INSPECTOR/,
+  'SandboxModule must bind the repo-store volume inspector seam',
+);
+
+const lookupSource = readFileSync(
+  join(apiRoot, 'src', 'sandbox', 'prisma-provision-lookup.ts'),
+  'utf8',
+);
+assert.match(
+  lookupSource,
+  /workspaceSourceResolver\?:\s*WorkspaceSourceResolver/,
+  'PrismaProvisionLookup must accept the workspace-source resolver',
+);
+assert.match(
+  lookupSource,
+  /this\.getTaskWorkspaceSource\s*=/,
+  'PrismaProvisionLookup must expose getTaskWorkspaceSource when a resolver is injected',
+);
+
+const guardrailsSource = readFileSync(
+  join(apiRoot, 'src', 'guardrails', 'guardrails.service.ts'),
+  'utf8',
+);
+assert.equal(
+  (guardrailsSource.match(/this\.resolveWorkspaceSource\(/g) ?? []).length,
+  2,
+  'both provisioning paths (durable + legacy) must resolve a workspace source',
+);
+assert.equal(
+  (guardrailsSource.match(/workspaceSource === undefined \? \{\} : \{ workspaceSource \}/g) ?? [])
+    .length,
+  2,
+  'both provision contexts must carry the resolved workspace source to the provider',
+);
+
 console.log('ok - SandboxModule exposes only the neutral sandbox host harness');
+console.log('ok - repo-copy injection seam is wired end to end');

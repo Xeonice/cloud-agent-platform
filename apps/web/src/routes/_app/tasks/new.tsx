@@ -46,6 +46,11 @@ import {
   settingsQuery,
 } from "@/lib/api/queries";
 import type { RuntimeId } from "@/lib/api/real";
+import { taskRepoCopyNotReadyFromApiError } from "@/lib/api/real";
+import {
+  repoCopyBlockedGuidance,
+  repoCopyBlockingStatus,
+} from "@/lib/repo-copy-status";
 import {
   createScheduleMutation,
   createTaskMutation,
@@ -449,6 +454,21 @@ function NewTaskPage() {
 
   const createdTask = mutation.data;
 
+  // add-repo-content-store: only a repo whose content copy is `ready` can start a
+  // task. The api enforces it (409 `task_repo_copy_not_ready`); this is the local
+  // pre-submit guidance. A SCHEDULE is not gated here — it dispatches later and is
+  // gated server-side per run.
+  const copyBlockingStatus = selectedRepo
+    ? repoCopyBlockingStatus(selectedRepo)
+    : null;
+  const copyBlocksImmediateRun = mode === "once" && copyBlockingStatus !== null;
+  const rejectedCopyStatus = taskRepoCopyNotReadyFromApiError(mutation.error);
+  const copyBlockedMessage = copyBlocksImmediateRun
+    ? repoCopyBlockedGuidance(copyBlockingStatus!)
+    : rejectedCopyStatus
+      ? repoCopyBlockedGuidance(rejectedCopyStatus.copyStatus)
+      : null;
+
   function handleRecurrenceChange(patch: Partial<RecurrenceFieldsValue>) {
     if (patch.recurrenceKind !== undefined) {
       setRecurrenceKind(patch.recurrenceKind);
@@ -479,6 +499,8 @@ function NewTaskPage() {
     if (!isRuntimeReady(runtime)) return;
     if (accountDefaultUnavailable) return;
     if (!modelSelectionValid) return;
+    // No copy, no run: the api would reject this create anyway (409).
+    if (copyBlocksImmediateRun) return;
     const taskForm: TaskTemplateFormState = {
       repoId,
       runtime,
@@ -571,6 +593,7 @@ function NewTaskPage() {
     !isRuntimeReady(runtime) ||
     accountDefaultUnavailable ||
     !modelSelectionValid ||
+    copyBlocksImmediateRun ||
     (mode === "repeated" && recurrenceKind === "custom" && !editingSchedule);
   const submitting =
     mutation.isPending || createSchedule.isPending || updateSchedule.isPending;
@@ -790,6 +813,28 @@ function NewTaskPage() {
             <small className="text-xs text-muted-foreground">
               仓库列表来自已导入仓库。
             </small>
+            {copyBlockedMessage ? (
+              <div
+                role="alert"
+                data-repo-copy-blocked={
+                  copyBlockingStatus ?? rejectedCopyStatus?.copyStatus
+                }
+                className="grid gap-1.5 rounded-md bg-warning-soft px-3 py-2.5"
+              >
+                <StatusPill variant="warn" className="justify-self-start">
+                  副本未就绪
+                </StatusPill>
+                <p className="m-0 text-[13px] leading-relaxed text-foreground">
+                  {copyBlockedMessage}
+                </p>
+                <Link
+                  to="/repositories"
+                  className="w-fit text-xs font-medium text-foreground underline underline-offset-2"
+                >
+                  前往仓库范围刷新副本
+                </Link>
+              </div>
+            ) : null}
           </div>
 
           <div className="grid gap-2">
@@ -964,7 +1009,11 @@ function NewTaskPage() {
             </Link>
           </div>
 
-          {mutation.isError || createSchedule.isError || updateSchedule.isError ? (
+          {/* A copy-readiness rejection has its own classified alert next to the
+              repo select; never ALSO print its raw body here. */}
+          {(mutation.isError && !rejectedCopyStatus) ||
+          createSchedule.isError ||
+          updateSchedule.isError ? (
             <p className="text-xs text-danger" role="alert">
               创建失败：
               {mutation.error?.message ??

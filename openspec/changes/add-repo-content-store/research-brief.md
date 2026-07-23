@@ -40,7 +40,8 @@
 1. 命名卷内写 bare repo（模拟 api 写 repo-store）✔
 2. 兄弟容器只读挂载整卷 + 容器内 `git clone /repo-store/demo.git`（本地 clone，秒级）✔
 3. **卷 subpath 挂载**（`Mounts` + `VolumeOptions.Subpath=demo.git`, ro）——任务只见自己的 repo ✔
-4. 非 root（uid 1000 ≙ AIO gem 用户）：git `safe.directory` 所有权校验拦截，`git -c safe.directory=<path> clone` 解决 ✔
+4. 非 root（uid 1000 ≙ AIO gem 用户）：git `safe.directory` 所有权校验拦截，本机实验用 `git -c safe.directory=<path> clone` 解决 ✔
+   - **apply 期修正（2026-07-23，Track 4 真镜像 e2e 实证）**：沙箱镜像内的 git 2.34.1 **忽略命令行 `-c safe.directory` 与 `GIT_CONFIG_*` 环境注入**（safe.directory 只认 protected scope），按上行写法生产上会 100% 失败。落地实现改为：每条触碰副本的命令 `mktemp` 写 `[safe] directory=<path>` 临时配置文件，经 `GIT_CONFIG_GLOBAL` 引用，命令结束删除并保留退出码。本条为准。
 
 ### BoxLite——挂载路线被 REST API schema 判死，走 uploadArchive(tar)
 

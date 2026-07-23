@@ -1,5 +1,7 @@
 import type {
   GitCloneSpec,
+  SandboxProviderCapability,
+  WorkspaceSource,
   SandboxEnvironmentProviderFamily,
   SandboxHostImageParameterProfile,
   SandboxResolvedEnvironmentMetadata,
@@ -82,6 +84,23 @@ export interface ProvisionLookup {
   getTaskWorkspacePlan?(
     taskId: string,
   ): Promise<SandboxWorkspaceMaterializationPlan>;
+
+  /**
+   * Canonical workspace ORIGIN for `taskId` (add-repo-content-store D5): which
+   * injection variant the selected provider receives, given the capabilities it
+   * declared. Resolution is fail-closed — an unsupported provider, a copy that
+   * is not ready, or an undetectable repo-store volume throws an actionable
+   * typed error instead of degrading to a network clone.
+   *
+   * Optional at the port level only so legacy/test adapters that predate the
+   * content store keep working (omitting it selects the legacy clone path). The
+   * production Prisma lookup implements it and must return a concrete source or
+   * throw.
+   */
+  getTaskWorkspaceSource?(
+    taskId: string,
+    declaredCapabilities: readonly SandboxProviderCapability[],
+  ): Promise<WorkspaceSource>;
 
   /**
    * Resolve `taskId`'s operator-supplied prompt (`task.prompt`) — the goal the

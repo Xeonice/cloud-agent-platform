@@ -4,6 +4,7 @@ import test from 'node:test';
 import type { ModuleRef } from '@nestjs/core';
 import {
   RepoResponseSchema,
+  type RepoResponse,
   TaskResponseSchema,
   type TaskProvisioningStage,
   type TaskStatus,
@@ -47,6 +48,7 @@ import { McpServerFactory } from '../mcp/mcp.server';
 import { PrismaService } from '../prisma/prisma.service';
 import { ReposController } from '../repos/repos.controller';
 import { ReposService } from '../repos/repos.service';
+import type { RepoCopyService } from '../repos/repo-copy.service';
 import type { SandboxEnvironmentsService } from '../sandbox-environments/sandbox-environments.service';
 import { PrismaProvisionLookup } from '../sandbox/prisma-provision-lookup';
 import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
@@ -1021,6 +1023,9 @@ class StoryHarness {
       this.forgeResolver,
       remoteRefs,
       this.forgeRegistry,
+      // add-repo-content-store: this story exercises admission across surfaces,
+      // not content acquisition, so the copy seam is a pass-through.
+      { acquireOnImport: async (repo: RepoResponse) => repo } as RepoCopyService,
     );
     this.branchResolver = new TaskBranchResolver(
       this.database.prisma,

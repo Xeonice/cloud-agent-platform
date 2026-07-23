@@ -52,7 +52,9 @@ import type {
   CreateSandboxEnvironmentRequest,
   UpdateSandboxEnvironmentParametersRequest,
   TaskProvisioningDiagnosticsResponse,
+  LocalRepoImportAvailability,
 } from "@cap/contracts";
+import { LOCAL_REPO_IMPORT_ROOT_ENV } from "@cap/contracts";
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
 import { forceMock } from "./capabilities";
@@ -300,6 +302,18 @@ const SEED_REPOS: ListReposResponse = [
 export async function mockListRepos(): Promise<ListReposResponse> {
   await delay();
   return buildRepoList();
+}
+
+/**
+ * Local-path import availability (local-repo-import). The mock seam reports the
+ * feature OFF and NEVER fabricates an allowlist root: without a running api
+ * there is no filesystem to import from, and the spec requires the mode to be
+ * absent whenever it is not genuinely configured. So the third import mode never
+ * appears in mock/visual-harness mode — fail-closed by construction.
+ */
+export async function mockLocalRepoImportAvailability(): Promise<LocalRepoImportAvailability> {
+  await delay();
+  return { enabled: false, root: null, envVar: LOCAL_REPO_IMPORT_ROOT_ENV };
 }
 
 export async function mockGetDefaultRepo(): Promise<DefaultRepoResponse> {

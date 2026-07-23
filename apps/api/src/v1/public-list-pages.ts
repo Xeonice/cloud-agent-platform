@@ -1,7 +1,6 @@
 import {
   V1ListReposResponseSchema,
   V1ListTasksResponseSchema,
-  repoResponseSchema,
   taskResponseSchema,
   type V1ListQuery,
   type V1ListReposResponse,
@@ -12,6 +11,7 @@ import {
   TASK_RESPONSE_INCLUDE,
   taskResponseFromRecord,
 } from '../tasks/task-response';
+import { repoRowToResponse } from '../repos/repo-response';
 import {
   buildPage,
   cursorWhere,
@@ -56,7 +56,10 @@ export async function listRepoPage(
   });
   const page = buildPage(rows, limit);
   return V1ListReposResponseSchema.parse({
-    items: page.items.map((row) => repoResponseSchema.parse(row)),
+    // Shaped through the SAME projection the by-id read uses, so a repo's list
+    // entry and its fetch-by-id body are identical field for field — including
+    // the additive repo-store `copyStatus`/`copyUpdatedAt` (add-repo-content-store).
+    items: page.items.map((row) => repoRowToResponse(row)),
     nextCursor: page.nextCursor,
   });
 }

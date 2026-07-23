@@ -44,6 +44,7 @@ import {
   normalizeSandboxPhysicalCleanupResult,
   resourcesForSandboxProvision,
   sandboxResourceRequiredCapabilities,
+  workspaceSourceRequiredCapabilities,
   snapshotSandboxProvisionContext,
   preserveSandboxPrimaryWithCleanup,
   runSandboxPhysicalCleanup,
@@ -250,6 +251,16 @@ export class SandboxProviderRouter<
     );
     for (const capability of sandboxResourceRequiredCapabilities(
       resourcesForSandboxProvision(ctx),
+    )) {
+      requiredCapabilities.add(capability);
+    }
+    // add-repo-content-store D5: orchestration selects the injection variant
+    // from the ROUTER's declared union, so the concrete provider this router
+    // routes to must itself declare that variant. Requiring it here keeps a
+    // multi-provider deployment from routing a `volume` source to a provider
+    // that can only take an `archive` — and fails closed when none can.
+    for (const capability of workspaceSourceRequiredCapabilities(
+      ctx.workspaceSource,
     )) {
       requiredCapabilities.add(capability);
     }

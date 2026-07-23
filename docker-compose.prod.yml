@@ -72,6 +72,14 @@ services:
     environment:
       PORT: "8080"
       WORKSPACES_DIR: /data/workspaces
+      # add-repo-content-store: per-Repo bare mirrors live at
+      # <CAP_REPO_STORE_DIR>/<repoId>.git on the `repo-store` named volume mounted
+      # below. Fixed literal (like WORKSPACES_DIR) — it MUST match that mount target.
+      # CAP_LOCAL_IMPORT_ROOT and CAP_WORKSPACE_GIT_FALLBACK_ENABLED are operator
+      # config and flow through the env files above; do NOT redeclare them here as
+      # ${VAR:-} (an empty value would clobber the file value, and an empty
+      # CAP_LOCAL_IMPORT_ROOT must stay indistinguishable from unset = disabled).
+      CAP_REPO_STORE_DIR: /repo-store
       DATABASE_URL: ${DATABASE_URL:-postgresql://cap:cap@postgres:5432/cap?schema=public}
       # The pulled, version-matched per-task sandbox image (decision ⑤): newly
       # provisioned cap-aio-<taskId> run the SAME release as the api. Pinned tag.
@@ -99,6 +107,13 @@ services:
       - cap-net
     volumes:
       - workspaces:/data/workspaces
+      # Repo content copies (add-repo-content-store). Docker-managed named volume so
+      # per-task AIO sandboxes can mount a single <repoId>.git out of it read-only.
+      - repo-store:/repo-store
+      # LOCAL-PATH IMPORT — OPT-IN. "Local" is a path inside THIS container, so add a
+      # bind mount here and point CAP_LOCAL_IMPORT_ROOT at the container-side path:
+      #   - /srv/git:/local-repos:ro      # then CAP_LOCAL_IMPORT_ROOT=/local-repos
+      # Unset CAP_LOCAL_IMPORT_ROOT disables local import end to end (fail-closed).
       - /var/run/docker.sock:/var/run/docker.sock
 
   # OPTIONAL in-compose web console (`web` profile). The release web image now
@@ -245,6 +260,9 @@ networks:
 
 volumes:
   workspaces:
+  # One bare git mirror per imported Repo (add-repo-content-store); shared by the
+  # api (writer) and per-task AIO sandboxes (read-only subpath mounts).
+  repo-store:
   pgdata:
   # Observability stack state — only materialized when the observability/grafana profiles are on.
   loki-data:

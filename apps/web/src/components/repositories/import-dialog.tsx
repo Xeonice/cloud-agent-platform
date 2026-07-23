@@ -40,6 +40,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import {
+  LOCAL_REPO_IMPORT_ROOT_ENV,
   type RepoImportFailureCode,
   type AvailableGithubRepo,
   type AvailableForgeRepo,
@@ -47,9 +48,14 @@ import {
   type ForgeKind,
   type Repo,
 } from "@cap/contracts";
-import { availableForgeReposQuery, githubReposQuery } from "@/lib/api/queries";
+import {
+  availableForgeReposQuery,
+  githubReposQuery,
+  localRepoImportAvailabilityQuery,
+} from "@/lib/api/queries";
 import {
   createRepoMutation,
+  importLocalRepoMutation,
   importRepoMutation,
   refreshRepoDefaultBranchMutation,
 } from "@/lib/api/mutations";
@@ -220,6 +226,76 @@ const REPO_IMPORT_FAILURE_PRESENTATIONS = {
     variant: "danger",
     message: "该 URL 与已有仓库身份不一致，请检查导入来源或联系管理员。",
   },
+  // add-repo-content-store：内容副本获取 / 刷新失败。与上面的元数据码分开，
+  // 因为此时仓库本身已注册（或可注册），只是副本没就绪，补救动作是「刷新副本」。
+  repo_copy_authentication_failed: {
+    pill: "副本获取认证失败",
+    variant: "danger",
+    message: "拉取仓库内容时凭据认证失败，请更新代码托管凭据后重新刷新副本。",
+    action: "forges",
+  },
+  repo_copy_access_denied: {
+    pill: "副本获取被拒绝",
+    variant: "danger",
+    message: "当前凭据无权拉取该仓库内容，请检查令牌范围和仓库成员权限后重试。",
+    action: "forges",
+  },
+  repo_copy_network_unavailable: {
+    pill: "副本网络不可用",
+    variant: "warn",
+    message: "拉取仓库内容时无法连接远端，请检查服务端网络与代理后重试刷新副本。",
+  },
+  repo_copy_source_invalid: {
+    pill: "副本来源无效",
+    variant: "danger",
+    message: "仓库来源地址无法用于拉取内容，请检查仓库来源后重新导入。",
+  },
+  repo_copy_missing: {
+    pill: "副本尚未建立",
+    variant: "warn",
+    message: "该仓库还没有内容副本，请先刷新副本完成补建，再创建任务。",
+  },
+  repo_copy_store_unavailable: {
+    pill: "副本存储不可用",
+    variant: "danger",
+    message: "服务端副本存储卷不可写或未挂载，请检查 API 部署的 repo-store 卷后重试。",
+  },
+  repo_copy_platform_dependency_unavailable: {
+    pill: "部署依赖不可用",
+    variant: "danger",
+    message: "服务端缺少拉取仓库内容所需的运行依赖，请修复或升级 API 部署后重试。",
+  },
+  repo_copy_acquisition_aborted: {
+    pill: "副本获取中断",
+    variant: "warn",
+    message: "本次副本获取被中断（超时或传输中止），已保留上一份可用副本，可重新刷新。",
+  },
+  // local-repo-import：本地路径导入的门禁失败。
+  repo_local_import_disabled: {
+    pill: "本地导入未启用",
+    variant: "danger",
+    message: `本地路径导入未启用，请在 API 端配置 ${LOCAL_REPO_IMPORT_ROOT_ENV} 允许根目录后重试。`,
+  },
+  repo_local_import_path_invalid: {
+    pill: "路径无效",
+    variant: "danger",
+    message: "请填写允许根目录下的有效路径（不接受空值或非法字符）。",
+  },
+  repo_local_import_path_outside_root: {
+    pill: "路径超出允许范围",
+    variant: "danger",
+    message: "该路径解析后不在允许根目录内（含 .. 或软链接逃逸），请改用根目录内的路径。",
+  },
+  repo_local_import_path_not_found: {
+    pill: "路径不存在",
+    variant: "danger",
+    message: "允许根目录下找不到该路径，请确认路径已挂载进 API 容器后重试。",
+  },
+  repo_local_import_not_a_git_repository: {
+    pill: "不是 git 仓库",
+    variant: "danger",
+    message: "该目录不是 git 仓库（既非含 .git 的工作区，也非 bare 仓库），请改选仓库目录。",
+  },
 } satisfies Record<
   RepoImportFailureCode,
   Omit<RepoImportFailurePresentation, "code">
@@ -354,6 +430,14 @@ export function findImportedForgeRepo(
   );
 }
 
+/**
+ * The import sources the dialog switches between. `local` is the third mode
+ * (add-repo-content-store / local-repo-import): it is offered ONLY when the api
+ * reports the allowlist root configured, and is never a forge — it imports a git
+ * repository from a path the api process can see.
+ */
+export type ImportSourceKind = ForgeKind | "local";
+
 /** The 仓库导入 dialog. */
 export function ImportDialog({
   open,
@@ -370,7 +454,8 @@ export function ImportDialog({
   const [search, setSearch] = React.useState("");
   const [importingId, setImportingId] = React.useState<number | null>(null);
   // add-multi-forge-task-delivery: the selected import source (the picker switch).
-  const [source, setSource] = React.useState<ForgeKind>("github");
+  // add-repo-content-store: `local` joins it as the third mode when enabled.
+  const [source, setSource] = React.useState<ImportSourceKind>("github");
   const [importingPath, setImportingPath] = React.useState<string | null>(null);
   const [refreshingRepoId, setRefreshingRepoId] = React.useState<string | null>(
     null,
@@ -379,15 +464,36 @@ export function ImportDialog({
   const [urlName, setUrlName] = React.useState("");
   const [urlFailure, setUrlFailure] =
     React.useState<RepoImportFailurePresentation | null>(null);
+  const [localPath, setLocalPath] = React.useState("");
+  const [localName, setLocalName] = React.useState("");
+  const [localFailure, setLocalFailure] =
+    React.useState<RepoImportFailurePresentation | null>(null);
   const urlImportFence = React.useRef(false);
+  const localImportFence = React.useRef(false);
   const refreshFence = React.useRef<string | null>(null);
 
-  const githubRepos = useQuery({ ...githubReposQuery(), enabled: armed });
+  // Local-path import is FAIL-CLOSED: the mode exists only when the api reports
+  // an allowlist root configured. Probed while the dialog is open so a freshly
+  // configured root surfaces without a reload; an unavailable/erroring probe
+  // simply leaves the mode unoffered.
+  const localAvailability = useQuery({
+    ...localRepoImportAvailabilityQuery(),
+    enabled: open,
+  });
+  const localEnabled = localAvailability.data?.enabled === true;
+  const localRoot = localAvailability.data?.root ?? null;
+  const isLocal = source === "local";
+  // The forge the forge-scoped reads/writes use; `local` is not a forge, so it
+  // never selects one (the local panel replaces those reads entirely).
+  const forgeSource: ForgeKind = isLocal ? "github" : source;
+
+  const githubRepos = useQuery({ ...githubReposQuery(), enabled: armed && !isLocal });
   const importMutation = useMutation(importRepoMutation(queryClient));
+  const localImportMutation = useMutation(importLocalRepoMutation(queryClient));
   // The connected non-github forge's repos (lists via GET /settings/forges/repos).
   const forgeRepos = useQuery({
-    ...availableForgeReposQuery(source),
-    enabled: armed && source !== "github",
+    ...availableForgeReposQuery(forgeSource),
+    enabled: armed && !isLocal && forgeSource !== "github",
   });
   const createMutation = useMutation(createRepoMutation(queryClient));
   const refreshMutation = useMutation(
@@ -409,7 +515,18 @@ export function ImportDialog({
     setUrlValue("");
     setUrlName("");
     setUrlFailure(null);
+    setLocalPath("");
+    setLocalName("");
+    setLocalFailure(null);
   }, [open]);
+
+  // The local mode can disappear between opens (the api root was unconfigured);
+  // never leave the dialog stranded on a mode that is no longer offered.
+  React.useEffect(() => {
+    if (isLocal && localAvailability.isSuccess && !localEnabled) {
+      setSource("github");
+    }
+  }, [isLocal, localAvailability.isSuccess, localEnabled]);
 
   const candidates = githubRepos.data ?? [];
 
@@ -507,7 +624,7 @@ export function ImportDialog({
     setUrlFailure(null);
     urlImportFence.current = true;
     createMutation.mutate(
-      buildUrlImportRequest(parsed, urlName, source),
+      buildUrlImportRequest(parsed, urlName, forgeSource),
       {
         onSuccess: (repo) => {
           toast.success(
@@ -528,6 +645,47 @@ export function ImportDialog({
     );
   }
 
+  /**
+   * Import a git repository from a path the api process can see. The console
+   * only forwards what the operator typed — containment in the allowlist root,
+   * symlink resolution and the "is a git repository" check are SERVER-side, and
+   * every rejection is classified from its stable code (never raw prose).
+   */
+  function handleImportLocal() {
+    if (localImportFence.current || localImportMutation.isPending) return;
+    const path = localPath.trim();
+    if (path.length === 0) {
+      setLocalFailure({
+        code: "repo_local_import_path_invalid",
+        pill: "路径无效",
+        variant: "danger",
+        message: "请填写要导入的仓库路径。",
+      });
+      return;
+    }
+    const name = localName.trim();
+    setLocalFailure(null);
+    localImportFence.current = true;
+    localImportMutation.mutate(
+      name ? { path, name } : { path },
+      {
+        onSuccess: (repo) => {
+          toast.success(`已导入本地仓库 ${repo.name}`);
+          setLocalPath("");
+          setLocalName("");
+        },
+        onError: (error) => {
+          const failure = repoImportFailurePresentation(error);
+          setLocalFailure(failure);
+          toast.error(failure.pill);
+        },
+        onSettled: () => {
+          localImportFence.current = false;
+        },
+      },
+    );
+  }
+
   // Distinguish the failure modes honestly (task 14.2). A PAT signal (401/403)
   // prompts a settings-side token refresh; everything else is a transient/unknown
   // listing error. An empty-but-successful list is NOT an error.
@@ -537,7 +695,7 @@ export function ImportDialog({
     (fetchError.status === 401 || fetchError.status === 403);
 
   const isGithub = source === "github";
-  const showEmptyState = !armed;
+  const showEmptyState = !armed && !isLocal;
   const showLoadingState = armed && isGithub && githubRepos.isLoading;
   const showError = armed && isGithub && !githubRepos.isLoading && fetchError != null;
   const showList =
@@ -548,13 +706,18 @@ export function ImportDialog({
   // forge (gitlab/gitee) source states.
   const forgeError = forgeRepos.error;
   const forgeErrorCopy =
-    forgeError instanceof Error ? forgeListErrorCopy(forgeError.message, source) : null;
-  const showForgeLoading = armed && !isGithub && forgeRepos.isLoading;
-  const showForgeError = armed && !isGithub && !forgeRepos.isLoading && forgeError != null;
+    forgeError instanceof Error
+      ? forgeListErrorCopy(forgeError.message, forgeSource)
+      : null;
+  const isForgePicker = !isGithub && !isLocal;
+  const showForgeLoading = armed && isForgePicker && forgeRepos.isLoading;
+  const showForgeError =
+    armed && isForgePicker && !forgeRepos.isLoading && forgeError != null;
   const showForgeList =
-    armed && !isGithub && !forgeRepos.isLoading && forgeError == null && forgeCandidates.length > 0;
+    armed && isForgePicker && !forgeRepos.isLoading && forgeError == null && forgeCandidates.length > 0;
   const showForgeNone =
-    armed && !isGithub && !forgeRepos.isLoading && forgeError == null && forgeCandidates.length === 0;
+    armed && isForgePicker && !forgeRepos.isLoading && forgeError == null && forgeCandidates.length === 0;
+  const importingLocal = localImportMutation.isPending;
 
   const SOURCES: ReadonlyArray<{ kind: ForgeKind; label: string }> = [
     { kind: "github", label: "GitHub" },
@@ -623,8 +786,137 @@ export function ImportDialog({
                 {s.label}
               </button>
             ))}
+            {/* The third mode (local-repo-import). Rendered only once the
+                availability probe has answered: enabled ⇒ a real tab; disabled ⇒
+                a non-actionable disabled tab, with the enabling configuration
+                named below so the operator knows what would turn it on. */}
+            {localAvailability.isSuccess ? (
+              <button
+                type="button"
+                role="tab"
+                data-import-source="local"
+                aria-selected={isLocal}
+                disabled={!localEnabled}
+                title={
+                  localEnabled
+                    ? undefined
+                    : `未启用：需在 API 端配置 ${LOCAL_REPO_IMPORT_ROOT_ENV}`
+                }
+                onClick={() => {
+                  if (!localEnabled) return;
+                  setSource("local");
+                  setSearch("");
+                  setUrlFailure(null);
+                }}
+                className={`inline-flex h-8 items-center rounded-md px-3 text-[13px] font-medium disabled:pointer-events-none disabled:opacity-50 ${
+                  isLocal
+                    ? "bg-foreground text-background"
+                    : "bg-secondary text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                本地路径
+              </button>
+            ) : null}
           </div>
 
+          {localAvailability.isSuccess && !localEnabled ? (
+            <p
+              data-local-import-disabled
+              className="m-0 text-xs leading-[1.5] text-muted-foreground"
+            >
+              本地路径导入未启用：在 API 端配置 {LOCAL_REPO_IMPORT_ROOT_ENV}
+              （允许导入的根目录）后，这里会出现第三种导入方式。
+            </p>
+          ) : null}
+
+          {/* Local-path import (add-repo-content-store / local-repo-import) */}
+          {isLocal ? (
+            <div
+              data-local-import-panel
+              className="grid gap-3 rounded-lg bg-secondary/40 p-3.5 shadow-ring"
+            >
+              <div className="grid gap-1">
+                <h3 className="m-0 text-[14px] font-semibold text-ink">
+                  从本地路径导入
+                </h3>
+                <p className="m-0 text-xs leading-[1.5] text-muted-foreground">
+                  导入 API 进程可见、且位于允许根目录
+                  {localRoot ? (
+                    <>
+                      {" "}
+                      <code className="font-mono">{localRoot}</code>{" "}
+                    </>
+                  ) : (
+                    "内"
+                  )}
+                  的 git 仓库；导入时会在服务端建立内容副本，本地仓库不提供 PR / MR 回写。
+                </p>
+              </div>
+              <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_180px_auto] md:items-end">
+                <label className="grid min-w-0 gap-2">
+                  <span className="text-[13px] font-semibold text-ink">仓库路径</span>
+                  <input
+                    data-local-import-path
+                    value={localPath}
+                    onChange={(e) => {
+                      setLocalPath(e.target.value);
+                      setLocalFailure(null);
+                    }}
+                    placeholder={localRoot ? `${localRoot}/my-repo` : "my-repo"}
+                    className="min-h-10 w-full min-w-0 rounded-md bg-card px-3 font-mono text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none placeholder:text-muted-foreground focus-visible:shadow-[inset_0_0_0_1px_var(--foreground),0_0_0_3px_rgba(10,114,239,0.12)]"
+                  />
+                </label>
+                <label className="grid min-w-0 gap-2">
+                  <span className="text-[13px] font-semibold text-ink">显示名称</span>
+                  <input
+                    value={localName}
+                    onChange={(e) => setLocalName(e.target.value)}
+                    placeholder="自动推断"
+                    className="min-h-10 w-full min-w-0 rounded-md bg-card px-3 text-sm text-foreground shadow-[inset_0_0_0_1px_var(--border)] outline-none placeholder:text-muted-foreground focus-visible:shadow-[inset_0_0_0_1px_var(--foreground),0_0_0_3px_rgba(10,114,239,0.12)]"
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={importingLocal || localPath.trim().length === 0}
+                  onClick={handleImportLocal}
+                  className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-60"
+                >
+                  {importingLocal ? "导入中…" : "验证并导入"}
+                </button>
+              </div>
+              {importingLocal ? (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground"
+                >
+                  <StatusPill variant="neutral">正在导入</StatusPill>
+                  <span>
+                    正在校验路径并建立内容副本；大仓库可能需要数分钟，请保持页面打开。
+                  </span>
+                </div>
+              ) : null}
+              {localFailure ? (
+                <div
+                  role="alert"
+                  data-repo-import-failure={localFailure.code}
+                  className="grid gap-2 rounded-md bg-danger-soft px-3 py-2.5"
+                >
+                  <StatusPill
+                    variant={localFailure.variant}
+                    className="justify-self-start"
+                  >
+                    {localFailure.pill}
+                  </StatusPill>
+                  <p className="m-0 text-[13px] leading-relaxed text-foreground">
+                    {localFailure.message}
+                  </p>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {isLocal ? null : (
           <div className="grid gap-3 rounded-lg bg-secondary/40 p-3.5 shadow-ring">
             <div className="grid gap-1">
               <h3 className="m-0 text-[14px] font-semibold text-ink">通过 URL 导入</h3>
@@ -707,6 +999,7 @@ export function ImportDialog({
               </div>
             ) : null}
           </div>
+          )}
 
           {/* State 1: 待拉取 (empty) */}
           {showEmptyState ? (

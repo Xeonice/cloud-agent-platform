@@ -2797,6 +2797,12 @@ class McpDurableCreateDatabase {
     githubId: null,
     isDefault: false,
     forge: 'gitee',
+    // add-repo-content-store: the repo-store copy state every read path projects.
+    // `ready` because this fixture also drives the real `create_task` path, and
+    // task creation is gated on copy readiness (see the dedicated gate coverage
+    // in tasks/task-repo-copy-gate.spec.ts for the rejection projections).
+    copyStatus: 'ready',
+    copyUpdatedAt: null,
   };
 
   readonly prisma = {
@@ -3087,6 +3093,9 @@ test(
       database.prisma,
       {} as never,
       {} as never,
+      {} as never,
+      // add-repo-content-store: the repo READ projection under test never
+      // acquires a content copy, so the copy seam stays unused here.
       {} as never,
     );
     const factory = new McpServerFactory(

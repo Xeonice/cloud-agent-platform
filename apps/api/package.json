@@ -35,7 +35,9 @@
     "pretest:integration:schedules": "pnpm -w exec turbo run build --filter=@cap/api",
     "pretest:integration:task-model-surfaces": "pnpm -w exec turbo run build --filter=@cap/api",
     "test:e2e:schedules": "pnpm run test:integration:schedules",
-    "test:e2e:aio": "bash ../../scripts/aio-e2e.sh"
+    "test:e2e:aio": "bash ../../scripts/aio-e2e.sh",
+    "pretest:e2e:repo-copy-injection": "pnpm -w exec turbo run build --filter=@cap/sandbox",
+    "test:e2e:repo-copy-injection": "node --test --test-force-exit test/repo-copy-injection-e2e.mjs"
   },
   "prisma": {
     "schema": "prisma/schema.prisma"

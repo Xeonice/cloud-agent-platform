@@ -35,6 +35,9 @@ await test('exports concrete capability and location vocabularies', () => {
     'terminal.interactive',
     'command.exec',
     'workspace.archive.transfer',
+    'workspace.source.volume',
+    'workspace.source.archive',
+    'workspace.source.git',
     'transcript.retained-source',
     'lifecycle.readoption',
     'lifecycle.sleep',
@@ -51,6 +54,9 @@ await test('exports concrete capability and location vocabularies', () => {
     'terminal.interactive',
     'command.exec',
     'workspace.archive.transfer',
+    'workspace.source.volume',
+    'workspace.source.archive',
+    'workspace.source.git',
     'transcript.retained-source',
     'lifecycle.readoption',
     'lifecycle.sleep',
@@ -989,6 +995,184 @@ await test('provision context normalization preserves legacy input and snapshots
     mod.hasSandboxWorkspaceMaterialization({
       workspace: null,
       cloneSpec: { url: 'https://legacy.example.test/repo.git' },
+    }),
+    false,
+  );
+});
+
+const volumeSource = () => ({
+  kind: 'volume',
+  repoId: 'repo-1',
+  volumeName: 'repo-store',
+  subpath: 'repo-1.git',
+  mountPath: '/repo-store/repo-1.git',
+  gitSource: 'https://example.test/repo.git',
+});
+
+const archiveSource = () => ({
+  kind: 'archive',
+  repoId: 'repo-1',
+  storePath: '/repo-store/repo-1.git',
+  gitSource: 'https://example.test/repo.git',
+});
+
+const gitSource = () => ({
+  kind: 'git',
+  spec: { url: 'https://example.test/repo.git', authHeader: 'Authorization: x' },
+});
+
+await test('workspace source vocabulary, guards, and capability mapping', () => {
+  assert.deepEqual(mod.WORKSPACE_SOURCE_KINDS, ['volume', 'archive', 'git']);
+  assert.deepEqual(mod.WORKSPACE_SOURCE_CAPABILITY_BY_KIND, {
+    volume: 'workspace.source.volume',
+    archive: 'workspace.source.archive',
+    git: 'workspace.source.git',
+  });
+  assert.equal(Object.isFrozen(mod.WORKSPACE_SOURCE_CAPABILITY_BY_KIND), true);
+  for (const kind of mod.WORKSPACE_SOURCE_KINDS) {
+    assert.equal(
+      mod.workspaceSourceCapability(kind),
+      mod.WORKSPACE_SOURCE_CAPABILITY_BY_KIND[kind],
+    );
+    assert.ok(
+      mod.SANDBOX_PROVIDER_KNOWN_CAPABILITIES.includes(
+        mod.workspaceSourceCapability(kind),
+      ),
+      'each workspace source capability must be a known provider capability',
+    );
+    assert.equal(
+      mod.SANDBOX_PROVIDER_CAPABILITIES.includes(
+        mod.workspaceSourceCapability(kind),
+      ),
+      false,
+      'injection variants must stay opt-in feature capabilities',
+    );
+  }
+
+  assert.equal(mod.isVolumeWorkspaceSource(volumeSource()), true);
+  assert.equal(mod.isVolumeWorkspaceSource(archiveSource()), false);
+  assert.equal(mod.isVolumeWorkspaceSource(null), false);
+  assert.equal(mod.isArchiveWorkspaceSource(archiveSource()), true);
+  assert.equal(mod.isArchiveWorkspaceSource(gitSource()), false);
+  assert.equal(mod.isArchiveWorkspaceSource(undefined), false);
+  assert.equal(mod.isGitWorkspaceSource(gitSource()), true);
+  assert.equal(mod.isGitWorkspaceSource(volumeSource()), false);
+  assert.equal(mod.isGitWorkspaceSource(null), false);
+});
+
+await test('workspace source snapshots round-trip and freeze every variant', () => {
+  const volume = mod.snapshotWorkspaceSource(volumeSource());
+  assert.deepEqual(volume, volumeSource());
+  assert.equal(Object.isFrozen(volume), true);
+
+  const archive = mod.snapshotWorkspaceSource(archiveSource());
+  assert.deepEqual(archive, archiveSource());
+  assert.equal(Object.isFrozen(archive), true);
+
+  const git = mod.snapshotWorkspaceSource(gitSource());
+  assert.deepEqual(git, gitSource());
+  assert.equal(Object.isFrozen(git), true);
+  assert.equal(Object.isFrozen(git.spec), true);
+
+  assert.equal(mod.snapshotWorkspaceSource(null), null);
+  assert.equal(mod.snapshotWorkspaceSource(undefined), undefined);
+});
+
+await test('workspace source snapshots reject malformed input', () => {
+  const rejects = (source, pattern) =>
+    assert.throws(
+      () => mod.snapshotWorkspaceSource(source),
+      (err) =>
+        err?.code === 'sandbox_provider_configuration_error' &&
+        pattern.test(err.message),
+    );
+
+  rejects({ ...volumeSource(), repoId: '' }, /repoId/);
+  rejects({ ...volumeSource(), volumeName: ' repo-store' }, /volumeName/);
+  rejects({ ...volumeSource(), mountPath: undefined }, /mountPath/);
+  rejects({ ...volumeSource(), gitSource: 42 }, /gitSource/);
+  rejects({ ...volumeSource(), subpath: '/repo-1.git' }, /relative/);
+  rejects({ ...volumeSource(), subpath: '../repo-2.git' }, /parent-directory/);
+  rejects({ ...archiveSource(), storePath: '' }, /storePath/);
+  rejects({ kind: 'git', spec: undefined }, /spec\.url/);
+  rejects({ kind: 'git', spec: { url: '' } }, /spec\.url/);
+  rejects({ kind: 'bundle' }, /Unsupported workspace source kind: bundle/);
+});
+
+await test('workspace source variants are gated by declared capabilities', () => {
+  assert.deepEqual(mod.workspaceSourceRequiredCapabilities(volumeSource()), [
+    'workspace.source.volume',
+  ]);
+  assert.deepEqual(mod.workspaceSourceRequiredCapabilities(archiveSource()), [
+    'workspace.source.archive',
+  ]);
+  assert.deepEqual(mod.workspaceSourceRequiredCapabilities(gitSource()), [
+    'workspace.source.git',
+  ]);
+  assert.deepEqual(mod.workspaceSourceRequiredCapabilities(null), []);
+  assert.deepEqual(mod.workspaceSourceRequiredCapabilities(undefined), []);
+
+  assert.equal(
+    mod.supportsWorkspaceSource(['workspace.source.volume'], volumeSource()),
+    true,
+  );
+  assert.equal(
+    mod.supportsWorkspaceSource(['workspace.source.volume'], archiveSource()),
+    false,
+  );
+  assert.equal(mod.supportsWorkspaceSource(undefined, null), true);
+
+  assert.doesNotThrow(() =>
+    mod.assertSandboxProviderSupportsWorkspaceSource(
+      ['workspace.source.archive'],
+      archiveSource(),
+    ),
+  );
+  assert.throws(
+    () =>
+      mod.assertSandboxProviderSupportsWorkspaceSource(
+        ['workspace.source.archive'],
+        volumeSource(),
+      ),
+    (err) =>
+      err?.code === 'sandbox_provider_capability_error' &&
+      err.missingCapabilities.length === 1 &&
+      err.missingCapabilities[0] === 'workspace.source.volume',
+  );
+});
+
+await test('provision context carries a snapshotted workspace source', () => {
+  const context = mod.snapshotSandboxProvisionContext({
+    taskId: 'task-source',
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'interactive-pty',
+    workspaceSource: volumeSource(),
+  });
+  assert.deepEqual(context.workspaceSource, volumeSource());
+  assert.equal(Object.isFrozen(context.workspaceSource), true);
+  assert.equal(mod.hasSandboxWorkspaceMaterialization(context), true);
+
+  const legacyOnly = mod.snapshotSandboxProvisionContext({
+    taskId: 'task-source-legacy',
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'interactive-pty',
+    cloneSpec: { url: 'https://example.test/repo.git' },
+  });
+  assert.equal(Object.hasOwn(legacyOnly, 'workspaceSource'), false);
+  assert.equal(mod.hasSandboxWorkspaceMaterialization(legacyOnly), true);
+
+  assert.equal(
+    mod.hasSandboxWorkspaceMaterialization({
+      workspaceSource: null,
+      workspace: {
+        repositoryUrl: 'https://example.test/repo.git',
+        callerBranch: null,
+        resolvedBranch: 'main',
+        deadlineMs: 900_000,
+      },
+      cloneSpec: { url: 'https://example.test/repo.git' },
     }),
     false,
   );

@@ -18,6 +18,10 @@ import {
   type TaskBranchResolutionError,
 } from '../forge/task-branch-resolver';
 import { TaskAdmissionProcessingError } from '../task-admission/task-admission.types';
+import {
+  isWorkspaceSourceResolutionError,
+  type WorkspaceSourceResolutionError,
+} from '../sandbox/workspace-source-resolver';
 import type { ProvisioningTaskFailureCode } from '../tasks/task-failure';
 
 type ClassifiedPrimaryOutcome = 'failed' | 'timed_out' | 'cancelled';
@@ -159,6 +163,10 @@ function classifyKnownTaskProvisioningDiagnosticPrimaryFailure(
     if (classified !== undefined) return classified;
   }
 
+  if (isWorkspaceSourceResolutionError(error)) {
+    return classifyWorkspaceSourceResolutionFailure(error);
+  }
+
   if (isProviderAvailabilityError(error)) {
     return primaryFailure(
       'provider_selection',
@@ -210,6 +218,62 @@ function classifyKnownTaskProvisioningDiagnosticPrimaryFailure(
   }
 
   return unknownPrimaryFailure(fallbackStage);
+}
+
+/**
+ * Workspace-source selection failures (add-repo-content-store Track 4.5).
+ *
+ * These happen BEFORE any provider boundary, so they must still land on a
+ * distinguishable durable stage/cause. The mapping keeps the closed diagnostic
+ * vocabulary and separates the three selection failures from an in-sandbox
+ * materialization failure:
+ *
+ *   copy_not_ready          -> workspace_transfer + ref_not_found
+ *                              (the recorded content copy is absent/not ready;
+ *                               the operator action is "refresh the repo")
+ *   unsupported_provider    -> provider_selection + provider_unavailable
+ *                              (no declared injection variant, fallback gate off)
+ *   store_volume_unresolved -> workspace_transfer + protocol_failed
+ *                              (deployment wiring: the repo-store volume name)
+ *   repo_unavailable        -> remote_ref_resolution + unknown
+ */
+function classifyWorkspaceSourceResolutionFailure(
+  error: WorkspaceSourceResolutionError,
+): ClassifiedTaskProvisioningDiagnosticPrimaryFailure {
+  switch (error.reason) {
+    case 'copy_not_ready':
+      return primaryFailure(
+        'workspace_transfer',
+        DIAGNOSTIC_STAGE_DESCRIPTORS.workspace_transfer,
+        'failed',
+        'ref_not_found',
+        false,
+      );
+    case 'unsupported_provider':
+      return primaryFailure(
+        'provider_selection',
+        PROVIDER_SELECTION_DESCRIPTOR,
+        'failed',
+        'provider_unavailable',
+        false,
+      );
+    case 'store_volume_unresolved':
+      return primaryFailure(
+        'workspace_transfer',
+        DIAGNOSTIC_STAGE_DESCRIPTORS.workspace_transfer,
+        'failed',
+        'protocol_failed',
+        false,
+      );
+    default:
+      return primaryFailure(
+        'remote_ref_resolution',
+        DIAGNOSTIC_STAGE_DESCRIPTORS.remote_ref_resolution,
+        'failed',
+        'unknown',
+        false,
+      );
+  }
 }
 
 function classifyBranchResolutionFailure(

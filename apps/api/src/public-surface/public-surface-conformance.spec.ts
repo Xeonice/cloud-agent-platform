@@ -427,6 +427,10 @@ function repoRecord(
     githubId: null,
     isDefault: false,
     forge: null,
+    // add-repo-content-store: rows carry the repo-store copy state, which every
+    // read path projects; these fixtures predate any acquisition.
+    copyStatus: 'missing',
+    copyUpdatedAt: null,
     credential: SECRET_CANARY,
     providerEndpoint: `https://${SECRET_CANARY}.invalid`,
   };
@@ -994,6 +998,9 @@ test('GitHub trunk, GitLab develop, Gitee master, and legacy null repos match ac
     prisma,
     {} as never,
     {} as never,
+    {} as never,
+    // add-repo-content-store: read-surface conformance never imports, so the
+    // content-copy seam is unused here.
     {} as never,
   );
   const controller = new V1ReposController(reposService, prisma);

@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 import { GithubImportService } from './github-import.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { GithubReposClient } from './github-repos.client';
+import type { RepoResponse } from '@cap/contracts';
+import type { RepoCopyService } from './repo-copy.service';
 import type { ReposService, VerifiedRepoImport } from './repos.service';
 import { encryptToStored } from '../settings/secret-storage';
 
@@ -73,7 +75,20 @@ test('private GitHub picker persists server-verified master with the current own
       };
     },
   } as ReposService;
-  const svc = new GithubImportService(prisma, github, repos);
+  // add-repo-content-store: the picker import also acquires the repo-store copy.
+  // Record what the copy seam is handed so the spec can prove the import passes
+  // the account's OWN PAT as an http auth header (never in the clone URL).
+  const acquisitions: Array<{ gitSource: string; authHeader?: string }> = [];
+  const copies = {
+    acquireOnImport: async (repo: RepoResponse, authHeader?: string) => {
+      acquisitions.push({
+        gitSource: repo.gitSource,
+        ...(authHeader === undefined ? {} : { authHeader }),
+      });
+      return { ...repo, copyStatus: 'ready' as const, copyUpdatedAt: new Date(1) };
+    },
+  } as RepoCopyService;
+  const svc = new GithubImportService(prisma, github, repos, copies);
 
   const response = await svc.importRepoForOperator('owner-a', {
     id: 5,
@@ -102,4 +117,19 @@ test('private GitHub picker persists server-verified master with the current own
   assert.equal(captured?.gitSource, 'https://github.com/o/r.git');
   assert.equal(response.defaultBranch, 'master');
   assert.equal(response.forge, 'github');
+
+  // add-repo-content-store (3.1): the GitHub picker import completes only with a
+  // ready content copy, cloned from the canonical https source with the SAME
+  // account PAT the listing was authorized by — carried as an http auth header,
+  // never embedded in the clone URL.
+  assert.deepEqual(acquisitions, [
+    {
+      gitSource: 'https://github.com/o/r.git',
+      authHeader: `Authorization: Basic ${Buffer.from(
+        'x-access-token:owner-a-github-pat',
+      ).toString('base64')}`,
+    },
+  ]);
+  assert.equal(acquisitions[0].authHeader?.includes('owner-a-github-pat'), false);
+  assert.equal(response.copyStatus, 'ready');
 });

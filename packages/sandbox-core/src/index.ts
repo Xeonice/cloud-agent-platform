@@ -12,3 +12,4 @@ export * from './provider.js';
 export * from './secret-archive.js';
 export * from './terminal.js';
 export * from './workspace-git.js';
+export * from './workspace-source.js';

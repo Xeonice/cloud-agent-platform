@@ -14,7 +14,12 @@ import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { ForbiddenException } from '@nestjs/common';
 
-import type { AvailableGithubRepo, SessionUser } from '@cap/contracts';
+import type {
+  AvailableGithubRepo,
+  RepoResponse,
+  SessionUser,
+} from '@cap/contracts';
+import type { RepoCopyService } from './repo-copy.service';
 
 import { GithubImportController } from './github-import.controller';
 import {
@@ -151,7 +156,14 @@ function githubService(
     },
   } as Pick<ReposService, 'reconcileVerifiedImport'>,
 ): GithubImportService {
-  return new GithubImportService(prisma, client, repos as ReposService);
+  return new GithubImportService(
+    prisma,
+    client,
+    repos as ReposService,
+    // add-repo-content-store: these tests cover the identity gate, so the
+    // content-copy seam is a pass-through.
+    { acquireOnImport: async (repo: RepoResponse) => repo } as RepoCopyService,
+  );
 }
 
 // --- tests -----------------------------------------------------------------

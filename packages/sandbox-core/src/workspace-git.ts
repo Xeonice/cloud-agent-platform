@@ -12,6 +12,7 @@ import type {
   SandboxWorkspaceTransferProgressSnapshot,
 } from './provisioning.js';
 import type { ExactHostGitCredential } from './git-credential.js';
+import type { WorkspaceSource } from './workspace-source.js';
 import type { SandboxProvisioningDiagnosticObserver } from './provisioning-diagnostics.js';
 
 export const SANDBOX_GIT_COMMAND_STAGES = [
@@ -171,12 +172,40 @@ export function isSandboxWorkspaceTransferDetachedSignal(
   );
 }
 
+/**
+ * One streamed archive delivery into a running sandbox (add-repo-content-store
+ * D4, archive variant). The provider owns the transport (BoxLite
+ * `uploadArchive` today); the shared materialization engine owns what is sent
+ * and where. `archive` is an async byte stream on purpose: a bare mirror is
+ * never buffered wholesale in the API process.
+ */
+export interface SandboxWorkspaceArchiveUploadRequest {
+  /** Absolute directory inside the sandbox the tar is unpacked into. */
+  readonly path: string;
+  readonly archive: AsyncIterable<Uint8Array>;
+  readonly signal?: AbortSignal;
+}
+
+export interface SandboxWorkspaceArchiveTransferPort {
+  uploadArchive(request: SandboxWorkspaceArchiveUploadRequest): Promise<void>;
+}
+
 export interface SandboxWorkspaceMaterializationHookContext {
   readonly taskId: string;
   readonly plan: SandboxWorkspaceMaterializationPlan;
   readonly workspaceDir: string;
   readonly stageExecutor: SandboxGitStageExecutor;
   readonly secretFilePort?: SandboxSecretFilePort;
+  /**
+   * Typed workspace origin selected by orchestration (add-repo-content-store
+   * D5). Absent/`git` keeps the legacy in-sandbox network clone; `volume` and
+   * `archive` inject the Repo's stored bare mirror instead.
+   */
+  readonly source?: WorkspaceSource | null;
+  /**
+   * Provider-supplied archive transport, required by the `archive` variant.
+   */
+  readonly archiveTransfer?: SandboxWorkspaceArchiveTransferPort;
   readonly cancellationSignal?: AbortSignal;
   /** Task attempts persist through their emitter; probes use non-persisting. */
   readonly diagnostics?: SandboxProvisioningDiagnosticObserver;

@@ -728,6 +728,84 @@ tag, and a task that was running survived the recreate.
 
 ---
 
+## 13. Repo content copies (`repo-store`) — upgrade, rollback, local import
+
+`add-repo-content-store` moves repository content acquisition from task start to
+IMPORT time. Importing a Repo now clones a bare mirror on the api host into the
+new `repo-store` named volume (`<CAP_REPO_STORE_DIR>/<repoId>.git`, mounted at
+`/repo-store`), and a task materializes its workspace from that local copy — the
+AIO provider mounts just that repo read-only into the sandbox (subpath mount,
+Docker Engine ≥ 26) and clones locally; BoxLite/remote providers receive it as an
+archive upload. No public `git clone` runs inside the sandbox on the normal path.
+
+Both compose targets already declare the volume — `docker compose ... up -d api`
+creates it. It is docker-managed and rebuildable from the forge, so unlike the
+`workspaces` volume (§9) it does NOT have to be in your backup policy; losing it
+costs a refresh per Repo, not data.
+
+### After upgrading: existing Repos come up `missing` and need a per-repo refresh
+
+The upgrade deliberately does NOT mass-backfill copies (that would fire an
+uncontrolled burst of public clones at boot). Every pre-existing Repo therefore
+reports copy status `missing` until an operator triggers it:
+
+1. Upgrade the stack as usual (§11.3 / §11.4 / §12).
+2. In the console **Repos** list, press **Refresh** on each Repo and wait for its
+   copy status to reach `ready`. Large repos take as long as the clone takes.
+3. Only then create new tasks for those Repos: task creation is gated on copy
+   readiness and a `missing` / `refreshing` / `failed` Repo is rejected with a
+   pointer to the refresh action.
+
+Tasks that were ALREADY RUNNING across the upgrade are unaffected — their
+workspaces exist and copy status is only consulted when a NEW task is created.
+Practically: upgrade, refresh the Repos you are about to use, then resume.
+
+### Rollback: re-open the git fallback
+
+If injection is broken for your provider, put workspace materialization back on
+the legacy in-sandbox network clone WITHOUT downgrading:
+
+```bash
+# in the api env file (apps/api/.env, ../files/api.env, or the run-package .env)
+CAP_WORKSPACE_GIT_FALLBACK_ENABLED=true
+
+docker compose -p cloud-agent-platform -f docker-compose.prod.yml up -d api
+```
+
+The gate is read at startup, so the api must be recreated. With it OFF (the
+default) a provider that supports no injection variant fails closed with an
+actionable error instead of silently falling back. The `repo-store` volume can
+stay mounted while the fallback is on — it is inert, and turning the gate back off
+resumes injection from the copies already there.
+
+### Local-path import (optional): mount the host directory, then set the root
+
+Local import reads paths inside the **api container**, so it needs two things —
+and stays completely off until BOTH are present:
+
+```yaml
+# docker-compose.prod.yml (or docker-compose.yml), api service
+    volumes:
+      - workspaces:/data/workspaces
+      - repo-store:/repo-store
+      - /srv/git:/local-repos:ro        # <- the host dir you want to import from
+```
+
+```bash
+# api env file — the CONTAINER-side path, not the host path
+CAP_LOCAL_IMPORT_ROOT=/local-repos
+```
+
+Read-only is enough: the importer only clones FROM the path. With
+`CAP_LOCAL_IMPORT_ROOT` unset the mode is disabled end to end (API rejects, the
+console does not offer it). When set, a requested path must resolve (realpath,
+symlinks followed) inside the root and must be a git repository — everything
+outside the root, and every non-git target, is rejected. Choose the mounted
+directory deliberately: it is the entire exposure surface, and every console user
+who can import can read any git repo under it.
+
+---
+
 ## Local dev (unaffected)
 
 ```bash

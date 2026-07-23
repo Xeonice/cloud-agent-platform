@@ -14,6 +14,7 @@ import { createRepoBodySchema, type CreateRepoBody, type RepoResponse } from '@c
 import { type AuthenticatedRequest } from '../auth/auth.guard';
 import { hasScope } from '../auth/operator-principal';
 import { ReposService } from './repos.service';
+import { requireConsoleAccountId } from './console-account';
 import { ZodValidationPipe } from './zod-validation.pipe';
 
 /**
@@ -77,15 +78,12 @@ export class ReposController {
    * MCP principals are rejected even when they resolve to an account and carry
    * that read scope. The owner id therefore comes only from a human Console
    * session and cannot be selected by the request body.
+   *
+   * Delegates to the shared {@link requireConsoleAccountId} so every repository
+   * write surface — including the content-copy routes in
+   * `repo-copy.controller.ts` — enforces the identical boundary.
    */
   private requireConsoleAccountId(req: AuthenticatedRequest): string {
-    const principal = req.operatorPrincipal;
-    if (principal?.kind !== 'session' || !principal.user?.id) {
-      throw new ForbiddenException({
-        error: 'session_operator_required',
-        message: 'Repository import requires an authenticated Console session.',
-      });
-    }
-    return principal.user.id;
+    return requireConsoleAccountId(req);
   }
 }

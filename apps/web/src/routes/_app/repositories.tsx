@@ -32,9 +32,11 @@ import { toast } from "sonner";
 
 import { reposQuery } from "@/lib/api/queries";
 import {
+  refreshRepoCopyMutation,
   refreshRepoDefaultBranchMutation,
   setDefaultRepoMutation,
 } from "@/lib/api/mutations";
+import { repoCopyUpdatedCaption } from "@/lib/repo-copy-status";
 import {
   claimRepoRefreshSubmission,
   releaseRepoRefreshSubmission,
@@ -58,15 +60,29 @@ export const Route = createFileRoute("/_app/repositories")({
 
 function RepositoriesPage() {
   const queryClient = useQueryClient();
-  const { data: repos } = useQuery(reposQuery());
+  // Poll ONLY while a copy acquisition is actually in flight (possibly started
+  // by another session/tab, whose completion this tab would otherwise never
+  // see). Idle lists keep the default no-polling behavior.
+  const { data: repos } = useQuery({
+    ...reposQuery(),
+    refetchInterval: (query) =>
+      query.state.data?.some((repo) => repo.copyStatus === "refreshing")
+        ? 5_000
+        : false,
+  });
   const setDefault = useMutation(setDefaultRepoMutation(queryClient));
   const refreshDefaultBranch = useMutation(
     refreshRepoDefaultBranchMutation(queryClient),
   );
+  const refreshCopy = useMutation(refreshRepoCopyMutation(queryClient));
   const refreshFence = React.useRef<string | null>(null);
+  const copyRefreshFence = React.useRef<string | null>(null);
   const [refreshingRepoId, setRefreshingRepoId] = React.useState<string | null>(
     null,
   );
+  const [refreshingCopyRepoId, setRefreshingCopyRepoId] = React.useState<
+    string | null
+  >(null);
 
   const [dialogOpen, setDialogOpen] = React.useState(false);
 
@@ -104,6 +120,33 @@ function RepositoriesPage() {
       onSettled: () => {
         releaseRepoRefreshSubmission(refreshFence, repoId);
         setRefreshingRepoId(null);
+      },
+    });
+  }
+
+  /**
+   * Acquire (when `missing`) or refresh the repo's repo-store content copy. The
+   * request blocks on a real mirror clone/fetch — possibly minutes — so the row
+   * shows an explicit in-flight state and every other copy action is fenced.
+   * Failures are classified from their stable code, never from raw git output.
+   */
+  function handleRefreshCopy(repoId: string) {
+    if (!claimRepoRefreshSubmission(copyRefreshFence, repoId)) return;
+    setRefreshingCopyRepoId(repoId);
+    toast.message("正在刷新仓库副本", {
+      description: "大仓库可能需要数分钟，完成后状态会自动更新。",
+    });
+    refreshCopy.mutate(repoId, {
+      onSuccess: (repo) => {
+        toast.success(`${repo.name} 的副本已就绪（${repoCopyUpdatedCaption(repo)}）`);
+      },
+      onError: (error) => {
+        const failure = repoImportFailurePresentation(error);
+        toast.error(`${failure.pill}：${failure.message}`);
+      },
+      onSettled: () => {
+        releaseRepoRefreshSubmission(copyRefreshFence, repoId);
+        setRefreshingCopyRepoId(null);
       },
     });
   }
@@ -169,6 +212,8 @@ function RepositoriesPage() {
           pendingDefaultId={setDefault.variables?.repoId ?? null}
           onRefreshDefaultBranch={handleRefreshDefaultBranch}
           refreshingRepoId={refreshingRepoId}
+          onRefreshCopy={handleRefreshCopy}
+          refreshingCopyRepoId={refreshingCopyRepoId}
         />
       </section>
 

@@ -188,6 +188,24 @@ GitHub 使用 Personal Access Token：
 GitLab / Gitee 使用各自平台的 PAT，并可填写自托管实例地址。PAT 按账号保存，仅用于仓库列表、
 导入、clone、push 和 PR/MR 操作。
 
+### 仓库内容副本（`repo-store` 卷）
+
+导入仓库时会一并取回内容：api 在**导入时刻**把仓库以 bare mirror 形式 clone 到 `repo-store`
+命名卷（`/repo-store/<repoId>.git`），之后每个任务都从这份本地副本物化 workspace，而不再在沙箱
+里走公网 `git clone`。两个 compose 文件都已声明该卷，`up -d` 时自动创建。
+
+日常需要知道的：
+
+- 副本是快照，**不会**自动刷新——需要 forge 上的最新提交时，在 Repo 上按**刷新**。
+- 任务创建以副本 `ready` 为前置：副本处于 `missing` / `refreshing` / `failed` 的 Repo 无法创建
+  新任务；**已在运行的任务不受影响**。
+- **升级既有部署**：本功能之前导入的仓库升级后状态为 `missing`——这是有意为之，不做自动批量回填。
+  对你要用的每个 Repo 按一次**刷新**补建副本，然后再继续创建任务。
+- 该卷可从 forge 重建，因此不必纳入备份策略；丢失的代价只是每个 Repo 刷新一次。
+- 若你的沙箱 provider 注入链路出问题，可在 api 环境变量里设
+  `CAP_WORKSPACE_GIT_FALLBACK_ENABLED=true` 并重建 api，退回旧的沙箱内网络 clone。该开关在进程
+  启动时读取，默认关闭。
+
 ## 2.5. 连接官方 Codex 订阅
 
 控制台身份、仓库凭据和 Codex 模型凭据是三个独立概念。每个操作者在
@@ -432,6 +450,32 @@ CAP_HEALTH_TIMEOUT_SECONDS=600 scripts/quick-deploy.sh   # 慢速 Docker emulati
 设置 `RUN_GITHUB_VALIDATION=1` 会在 pull 前增加 GitHub API 可达/鉴权冒烟检查。它从进程环境或运行包旁边被忽略的 `.env.github-validation` 读取 `GITHUB_VALIDATION_TOKEN`，日志只打印已脱敏的 token 来源；没有 token 时退化为未鉴权可达性检查。
 
 > 这条路径**等同于主机 root**（它挂载主机的 `docker.sock`），所以谁能登录，谁就能在主机上以 root 身份运行——请收紧账号访问。打印的密码是初始管理员凭据，首次登录会要求修改。预构建的 `cap-web` **仅限 localhost**（其 `VITE_*` 烤死为 localhost）；要用真实域名，请按上文配置本地账号、域名和 cookie。
+
+## 可选：从本地路径导入仓库（`CAP_LOCAL_IMPORT_ROOT`，默认 OFF）
+
+除 forge picker 与按 URL 导入外，cap 还能从文件系统路径导入现有 git 仓库。这里的"本地"指
+**api 容器**可见的路径，因此需要两个显式步骤，两步都做到之前功能完全关闭。
+
+1. 把主机目录挂进 api 服务（只读即可——导入器只从该路径 clone）：
+
+```yaml
+# docker-compose.yml / docker-compose.prod.yml 的 api 服务
+    volumes:
+      - workspaces:/data/workspaces
+      - repo-store:/repo-store
+      - /srv/git:/local-repos:ro
+```
+
+2. 在 api 环境变量（`apps/api/.env`，或运行包的 `.env`）里把白名单根指向**容器内**路径，然后重建 api：
+
+```bash
+CAP_LOCAL_IMPORT_ROOT=/local-repos
+```
+
+不设 `CAP_LOCAL_IMPORT_ROOT` 时该模式端到端关闭：API 拒绝本地导入，控制台也不会出现第三种导入
+模式。设置之后，请求路径必须解析（realpath，跟随 symlink）后落在该根内，且必须是 git 仓库——
+逃逸出根的路径与非 git 目标一律拒绝。挂哪个目录要慎重：它就是全部暴露面，任何能导入的控制台
+用户都能读到该目录下的任意 git 仓库。
 
 ## 可选：应用内一键自更新（`SELF_UPDATE_ENABLED`，默认 OFF）
 

@@ -7,6 +7,7 @@ export * from './terminal/snapshot.js';
 export * from './terminal/transport.js';
 export * from './lifecycle/settle-plan.js';
 export * from './workspace/git.js';
+export * from './workspace/repo-archive.js';
 export * from '@cap/sandbox-cloud-http';
 export * from '@cap/sandbox-provider-aio';
 export * from '@cap/sandbox-provider-boxlite';

@@ -93,6 +93,9 @@ export * from './control-frame.js';
 // GitHub repository import: available-GitHub-repo + import request shapes
 export * from './github-import.js';
 
+// Local-path repository import (console-internal): request + availability probe
+export * from './local-repo-import.js';
+
 // Account settings preferences + Codex execution credential (read/write shapes)
 // + admin-managed SMTP config DTOs (add-smtp-config-ui): masked read, save
 // (write-only password), and the test-send request/{ ok, message } response

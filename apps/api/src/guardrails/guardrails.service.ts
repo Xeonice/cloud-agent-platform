@@ -55,8 +55,10 @@ import {
   type SandboxTerminalPtyMode,
   type SandboxSettlePlan,
   type SandboxRunCleanupAuthorityProjection,
+  type SandboxProviderCapability,
   type SandboxWorkspaceProgressEvent,
   type SandboxWorkspaceProgressReporter,
+  type WorkspaceSource,
 } from '@cap/sandbox';
 import {
   TaskAdmissionCoordinationError,
@@ -83,6 +85,7 @@ import {
   TaskBranchResolver,
   isTaskBranchResolutionError,
 } from '../forge/task-branch-resolver';
+import { isWorkspaceSourceResolutionError } from '../sandbox/workspace-source-resolver';
 import { ConcurrencySemaphore } from './semaphore';
 import { DeadlineWatcher } from './deadline-watcher';
 import { IdleTracker } from './idle-tracker';
@@ -932,12 +935,22 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         }
       })();
       await lease.authorize();
+      // add-repo-content-store: the workspace origin is selected from the
+      // SELECTED provider's declared capabilities, so it must be resolved after
+      // selection and before the provision boundary.
+      const workspaceSource = await this.resolveWorkspaceSource(
+        taskId,
+        provisionPlan,
+        selected.capabilities,
+      );
+      await lease.authorize();
       const provisionContext = snapshotSandboxProvisionContext({
         taskId,
         ...(diagnosticAttempt === undefined
           ? {}
           : { diagnostics: diagnosticAttempt.diagnostics }),
         cloneSpec: provisionPlan.cloneSpec,
+        ...(workspaceSource === undefined ? {} : { workspaceSource }),
         modelIntent: provisionPlan.modelIntent,
         runtimeId: provisionPlan.runtimeId,
         executionMode: provisionPlan.executionMode,
@@ -2716,10 +2729,19 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         provisioningCancellation.signal,
       );
       try {
+        // Resolved BEFORE the provider boundary is marked: a fail-closed
+        // workspace-source error (copy not ready / unsupported provider) is a
+        // provisioning failure that crossed no provider boundary.
+        const workspaceSource = await this.resolveWorkspaceSource(
+          taskId,
+          provisionPlan,
+          selected.capabilities,
+        );
         this.legacyProviderBoundariesCrossed.add(taskId);
         connection = await selected.provider.provision(
           snapshotSandboxProvisionContext({
             taskId,
+            ...(workspaceSource === undefined ? {} : { workspaceSource }),
             ...(diagnosticAttempt === undefined
               ? {}
               : {
@@ -3669,6 +3691,35 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
     else this.terminalSettlementsInFlight.delete(taskId);
   }
 
+  /**
+   * add-repo-content-store D4/D5 — the injection seam. Once a provider is
+   * selected, its DECLARED capabilities decide which workspace-source variant
+   * this task materializes from (repo-store volume mount / archive transfer /
+   * the gated legacy clone). Resolution is fail-closed inside the lookup; a
+   * failure surfaces as a provisioning failure rather than a silent fallback.
+   *
+   * Returns `undefined` only for lookup adapters that predate the content store
+   * (legacy/test doubles that do not implement the method), which keeps the
+   * pre-injection behavior exactly as it was.
+   */
+  private async resolveWorkspaceSource(
+    taskId: string,
+    plan: { readonly workspace?: unknown; readonly cloneSpec?: unknown },
+    capabilities: readonly SandboxProviderCapability[],
+  ): Promise<WorkspaceSource | undefined> {
+    const resolver = this.provisionLookup?.getTaskWorkspaceSource;
+    if (typeof resolver !== 'function' || !this.provisionLookup) {
+      return undefined;
+    }
+    // No workspace to materialize (terminal-only sandbox) -> no source.
+    const materializes =
+      plan.workspace !== undefined
+        ? plan.workspace !== null
+        : plan.cloneSpec !== null && plan.cloneSpec !== undefined;
+    if (!materializes) return undefined;
+    return resolver.call(this.provisionLookup, taskId, capabilities);
+  }
+
   private async resolveProvisionPlan(taskId: string) {
     if (!this.provisionLookup) {
       throw new Error('Provision lookup is not configured');
@@ -4265,6 +4316,19 @@ function classifyDurableAdmissionError(
       cause[failure.cause],
       failure.stage,
       failure.retryable && failure.cause === 'tls_network',
+    );
+  }
+  // add-repo-content-store: workspace-source selection fails BEFORE the
+  // provider boundary. `copy_not_ready` is the operator-actionable one (refresh
+  // the Repo's copy); the deployment-wiring failures stay `unknown` but keep
+  // their finer identity in the durable diagnostic classifier.
+  if (isWorkspaceSourceResolutionError(error)) {
+    return new TaskAdmissionProcessingError(
+      error.reason === 'copy_not_ready'
+        ? 'provisioning_ref_not_found'
+        : 'provisioning_unknown',
+      'workspace_transfer',
+      false,
     );
   }
   if (isSandboxProvisioningStageError(error)) {

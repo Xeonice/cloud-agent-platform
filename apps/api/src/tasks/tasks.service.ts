@@ -71,6 +71,7 @@ import {
 import { RuntimeModelPreflightService } from '../runtime-models/runtime-model-preflight.service';
 import { RuntimeModelPreflightError } from '../runtime-models/runtime-model-preflight.error';
 import type { PreparedTaskCreate } from './prepared-task-create';
+import { assertRepoCopyReadyForTaskCreate } from './task-repo-copy-gate';
 import { TaskModelCapabilityService } from '../runtime-models/task-model-capability.service';
 import {
   TASK_ADMISSION_CANCELLATION_TOKEN,
@@ -2565,6 +2566,15 @@ export class TasksService
   ): Promise<Runtime> {
     const repo = await client.repo.findUnique({ where: { id: repoId } });
     if (!repo) throw new NotFoundException(`Repo not found: ${repoId}`);
+
+    // add-repo-content-store (5.1): FAIL CLOSED before any task row, credential
+    // resolution, or provider work when the Repo's content copy cannot serve a
+    // start. This is the single shared foundation of every create path (Console
+    // `create`, `/v1` + MCP `prepareTaskCreate`, and the durable schedule
+    // occurrence), so the gate is applied exactly once for all surfaces. It is
+    // NOT applied to supply/re-adoption: an already-accepted task is unaffected
+    // by its Repo's copy status moving afterwards.
+    assertRepoCopyReadyForTaskCreate(repo);
 
     // add-claude-code-runtime (4.1): the runtime this create dispatches to. The
     // contract pipe has already rejected any value outside the allowed set with

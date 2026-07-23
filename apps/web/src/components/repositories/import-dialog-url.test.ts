@@ -236,6 +236,21 @@ const failureCases = {
   repo_default_branch_unresolved: ["默认分支未解析", undefined],
   repo_picker_candidate_not_accessible: ["仓库已不可访问", undefined],
   repo_import_identity_conflict: ["仓库身份冲突", undefined],
+  // add-repo-content-store — content-copy acquisition/refresh failures.
+  repo_copy_authentication_failed: ["副本获取认证失败", "forges"],
+  repo_copy_access_denied: ["副本获取被拒绝", "forges"],
+  repo_copy_network_unavailable: ["副本网络不可用", undefined],
+  repo_copy_source_invalid: ["副本来源无效", undefined],
+  repo_copy_missing: ["副本尚未建立", undefined],
+  repo_copy_store_unavailable: ["副本存储不可用", undefined],
+  repo_copy_platform_dependency_unavailable: ["部署依赖不可用", undefined],
+  repo_copy_acquisition_aborted: ["副本获取中断", undefined],
+  // local-repo-import — local-path import gate failures.
+  repo_local_import_disabled: ["本地导入未启用", undefined],
+  repo_local_import_path_invalid: ["路径无效", undefined],
+  repo_local_import_path_outside_root: ["路径超出允许范围", undefined],
+  repo_local_import_path_not_found: ["路径不存在", undefined],
+  repo_local_import_not_a_git_repository: ["不是 git 仓库", undefined],
 } as const;
 
 describe("repoImportFailurePresentation", () => {

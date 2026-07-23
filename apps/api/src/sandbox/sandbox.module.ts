@@ -41,6 +41,15 @@ import {
 } from './runtime-material-resolver';
 import { resolveSkillInstaller } from './skill-allowlist';
 import { SandboxEnvironmentsModule } from '../sandbox-environments/sandbox-environments.module';
+import { PrismaService } from '../prisma/prisma.service';
+import { RepoStoreModule } from '../repo-store/repo-store.module';
+import { RepoStoreService } from '../repo-store/repo-store.service';
+import {
+  createDefaultRepoStoreVolumeInspector,
+  REPO_STORE_VOLUME_INSPECTOR,
+  WorkspaceSourceResolver,
+  type RepoStoreVolumeInspector,
+} from './workspace-source-resolver';
 
 const sandboxHostHarnessLogger = new Logger('SandboxHostHarness');
 
@@ -65,8 +74,25 @@ const sandboxHostHarnessLogger = new Logger('SandboxHostHarness');
  */
 @Global()
 @Module({
-  imports: [ForgeModule, SandboxEnvironmentsModule],
+  // add-repo-content-store Track 4: the injection seam needs the repo-store
+  // service (copy layout + readiness). RepoStoreModule is deliberately imported
+  // where it is CONSUMED (here and in the import flows) instead of in
+  // app.module.ts; Nest de-duplicates repeated imports.
+  imports: [ForgeModule, SandboxEnvironmentsModule, RepoStoreModule],
   providers: [
+    // Workspace-source selection (repo-store volume mount / archive transfer /
+    // gated legacy clone) + the docker seam that detects the repo-store volume
+    // name from the api's own container mounts.
+    {
+      provide: REPO_STORE_VOLUME_INSPECTOR,
+      useFactory: createDefaultRepoStoreVolumeInspector,
+    },
+    {
+      provide: WorkspaceSourceResolver,
+      useFactory: (prisma: PrismaService, repoStore: RepoStoreService, volumes: RepoStoreVolumeInspector) =>
+        new WorkspaceSourceResolver(prisma, repoStore, volumes),
+      inject: [PrismaService, RepoStoreService, REPO_STORE_VOLUME_INSPECTOR],
+    },
     // Settings-backed codex auth source the provider injects into each sandbox:
     // resolves the OFFICIAL ChatGPT login the operator connected via the Settings
     // page (encrypted at rest), falling back to the legacy deployment env var
