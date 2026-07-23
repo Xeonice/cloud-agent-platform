@@ -5,12 +5,12 @@
 
 ### Features
 
-* acquire repo content copies at import time and inject them into sandboxes ([7f885bb](https://github.com/Xeonice/cloud-agent-platform/commit/7f885bb684842d200d5453dfaf002902b0ba27a6))
+* acquire repo content copies at import time and inject them into sandboxes ([#173](https://github.com/Xeonice/cloud-agent-platform/issues/173)) ([7f885bb](https://github.com/Xeonice/cloud-agent-platform/commit/7f885bb684842d200d5453dfaf002902b0ba27a6))
 
 
 ### Bug Fixes
 
-* wire repo deletion cascade and name the injection variant in diagnostics ([06a1be4](https://github.com/Xeonice/cloud-agent-platform/commit/06a1be498d59366e9dcb416fcd4afb39f076fd41))
+* wire repo deletion cascade and name the injection variant in diagnostics ([#173](https://github.com/Xeonice/cloud-agent-platform/issues/173)) ([06a1be4](https://github.com/Xeonice/cloud-agent-platform/commit/06a1be498d59366e9dcb416fcd4afb39f076fd41))
 
 ## [0.44.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.43.4...v0.44.0) (2026-07-22)
 
