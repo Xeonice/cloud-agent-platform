@@ -1980,11 +1980,24 @@ await test('command executor and archive helpers normalize BoxLite client operat
   assert.equal(result.exitCode, 0);
   assert.equal(result.output, '/workspace');
 
+  // The daemon EXTRACTS uploaded bodies (native /files semantics), so the
+  // helper round-trips a single-entry tar envelope, not raw bytes.
   await provider.uploadWorkspaceArchive({
     taskId: 'task-3',
-    archive: new Uint8Array([1, 2, 3]),
+    archive: core.createSandboxMode0600FileArchive(
+      'payload.bin',
+      new Uint8Array([1, 2, 3]),
+    ),
   });
-  assert.deepEqual([...(await provider.downloadWorkspaceArchive({ taskId: 'task-3' }))], [1, 2, 3]);
+  assert.deepEqual(
+    [
+      ...(await provider.downloadWorkspaceArchive({
+        taskId: 'task-3',
+        path: '/home/gem/workspace/payload.bin',
+      })),
+    ],
+    [1, 2, 3],
+  );
 });
 
 await test('command executor preserves a proven native failure without fabricating a numeric exit', async () => {

@@ -1734,7 +1734,23 @@ export class FakeBoxLiteClient implements BoxLiteClient {
           'Failed to buffer the request body: length limit exceeded',
       );
     }
-    this.archives.set(archiveKey(request.sandboxId, request.path), bytes);
+    // The real daemon EXTRACTS the uploaded body at `path` (proven live on
+    // 0.9.5: a non-tar body is rejected with 400 `failed to extract tar`,
+    // extracted entries land under `path`, missing parents are created). The
+    // fake mirrors that contract so tests cannot regress to raw-byte uploads.
+    const entries = parseFakeTarEntries(bytes);
+    if (entries === null) {
+      throw new Error(
+        `BoxLite file upload for sandbox ${request.sandboxId} failed: HTTP 400 ` +
+          'failed to extract tar: failed to iterate over archive',
+      );
+    }
+    for (const entry of entries) {
+      this.archives.set(
+        archiveKey(request.sandboxId, `${request.path}/${entry.name}`),
+        entry.content,
+      );
+    }
   }
 
   /** Uploaded archive paths for one sandbox, in upload order (test helper). */
@@ -2203,6 +2219,50 @@ function parseExecResult(raw: unknown): BoxLiteExecResult {
 
 function archiveKey(sandboxId: string, path: string): string {
   return `${sandboxId}\0${path}`;
+}
+
+/**
+ * Minimal ustar reader for {@link FakeBoxLiteClient}: regular-file entries
+ * only, `null` when the body is not a tar (the daemon's 400 case).
+ */
+function parseFakeTarEntries(
+  bytes: Uint8Array,
+): { readonly name: string; readonly content: Uint8Array }[] | null {
+  const BLOCK = 512;
+  if (bytes.byteLength < BLOCK) return null;
+  const entries: { name: string; content: Uint8Array }[] = [];
+  let offset = 0;
+  while (offset + BLOCK <= bytes.byteLength) {
+    const header = bytes.subarray(offset, offset + BLOCK);
+    if (header.every((value) => value === 0)) break;
+    const magic = readFakeTarString(header, 257, 6);
+    if (!magic.startsWith('ustar')) return null;
+    const name = readFakeTarString(header, 0, 100);
+    const size = parseInt(readFakeTarString(header, 124, 12).trim() || '0', 8);
+    if (Number.isNaN(size) || name.length === 0) return null;
+    const typeflag = header[156];
+    offset += BLOCK;
+    const dataEnd = offset + size;
+    if (dataEnd > bytes.byteLength) return null;
+    if (typeflag === 0 || typeflag === 0x30) {
+      // A REAL copy: `bytes` may be a Node Buffer, whose `.slice` is a view —
+      // callers zero their upload payloads after the call (secret discipline).
+      entries.push({ name, content: new Uint8Array(bytes.subarray(offset, dataEnd)) });
+    }
+    offset += Math.ceil(size / BLOCK) * BLOCK;
+  }
+  return entries.length > 0 ? entries : null;
+}
+
+function readFakeTarString(
+  block: Uint8Array,
+  start: number,
+  length: number,
+): string {
+  let end = start;
+  const limit = start + length;
+  while (end < limit && block[end] !== 0) end += 1;
+  return Buffer.from(block.subarray(start, end)).toString('utf8');
 }
 
 function combineRequestSignal(

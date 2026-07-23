@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.45.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.45.1...v0.45.2) (2026-07-24)
+
+
+### Bug Fixes
+
+* **boxlite:** wrap each archive part in a single-entry tar envelope ([#176](https://github.com/Xeonice/cloud-agent-platform/issues/176)) ([34c8611](https://github.com/Xeonice/cloud-agent-platform/commit/34c8611e57992220a9b9d9634c93b209def5d97a))
+
 ## [0.45.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.45.0...v0.45.1) (2026-07-24)
 
 
