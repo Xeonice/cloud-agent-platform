@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
 /**
  * Host-side tar producer for the `archive` workspace-source variant
@@ -54,6 +56,38 @@ export function splitRepoStorePath(storePath: string): {
     );
   }
   return { directory, name };
+}
+
+/**
+ * Best-effort size estimate of a repo-store copy, used only to derive a
+ * transfer percent for the provisioning progress snapshot. The archive is an
+ * uncompressed tar of these files, so the file-size sum tracks the stream
+ * length closely (tar headers add noise; percent is capped below 100 by the
+ * caller). Returns `null` when the copy cannot be walked — consumers then
+ * report the existing indeterminate (`percent: null`) semantics.
+ */
+export async function estimateRepoStoreCopyBytes(
+  storePath: string,
+): Promise<number | null> {
+  try {
+    let total = 0;
+    const pending: string[] = [storePath];
+    while (pending.length > 0) {
+      const directory = pending.pop() as string;
+      const entries = await readdir(directory, { withFileTypes: true });
+      for (const entry of entries) {
+        const entryPath = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          pending.push(entryPath);
+        } else if (entry.isFile()) {
+          total += (await stat(entryPath)).size;
+        }
+      }
+    }
+    return total;
+  } catch {
+    return null;
+  }
 }
 
 export function createRepoStoreArchiveStream(

@@ -760,6 +760,25 @@ Tasks that were ALREADY RUNNING across the upgrade are unaffected — their
 workspaces exist and copy status is only consulted when a NEW task is created.
 Practically: upgrade, refresh the Repos you are about to use, then resume.
 
+### BoxLite: chunked archive delivery and the daemon body limit
+
+BoxLite serve buffers each file upload wholesale and rejects request bodies
+above ~2MB (`413 length limit exceeded`, observed on 0.9.5). Archive injection
+therefore delivers the repo copy as ordered parts (default 1.5MB each),
+reassembles them inside the box, and verifies byte count + SHA-256 before
+extracting. `CAP_BOXLITE_ARCHIVE_PART_BYTES` tunes the part size (64KiB–1.9MB);
+lower it if a future daemon build enforces a smaller limit — a single part
+rejected with `length limit exceeded` is the signal.
+
+### Transfer progress on the task page
+
+During archive injection the task page shows the `workspace_transfer` stage with
+a live percent (bytes uploaded against a disk-usage estimate of the copy,
+snapshotted at most once per second). This progress feed requires **durable
+admission (v2)** — see `deploy/TASK_ADMISSION_V2_CUTOVER.md`. On legacy
+admission the transfer still works and its stages remain visible in the task's
+provisioning diagnostics timeline, but there is no live percent.
+
 ### Rollback: re-open the git fallback
 
 If injection is broken for your provider, put workspace materialization back on
@@ -777,6 +796,20 @@ default) a provider that supports no injection variant fails closed with an
 actionable error instead of silently falling back. The `repo-store` volume can
 stay mounted while the fallback is on — it is inert, and turning the gate back off
 resumes injection from the copies already there.
+
+### Post-upgrade checklist for BoxLite deployments (first release with chunked injection)
+
+1. Upgrade the stack and refresh the Repos you use (see above).
+2. Optional but recommended: enable durable admission per
+   `deploy/TASK_ADMISSION_V2_CUTOVER.md` so the task page shows live transfer
+   percent during archive injection.
+3. Run one task against a refreshed Repo and confirm in its provisioning
+   diagnostics that the workspace-materialization events carry
+   `workspaceSourceKind: "archive"` and the task reaches its runtime — that is
+   the end-to-end witness that chunked injection works against your daemon.
+4. If the transfer fails with `length limit exceeded` on a single part, lower
+   `CAP_BOXLITE_ARCHIVE_PART_BYTES`; if injection is otherwise broken, use the
+   git-fallback rollback below and file the diagnostics.
 
 ### Local-path import (optional): mount the host directory, then set the root
 

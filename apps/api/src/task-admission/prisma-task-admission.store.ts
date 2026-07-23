@@ -274,11 +274,21 @@ export class PrismaTaskAdmissionStore extends TaskAdmissionStore {
     assertLeaseToken(request.leaseToken);
     const stage = TaskProvisioningStageSchema.parse(request.stage);
     const taskFence = buildTaskFenceExistsPredicate(request.taskFences, 'w');
+    const progress = normalizeTransferProgress(request.progress ?? null);
+    const progressAssignments =
+      progress === null
+        ? Prisma.empty
+        : Prisma.sql`,
+        "progress_percent" = ${progress.percent},
+        "progress_received_objects" = ${progress.receivedObjects},
+        "progress_total_objects" = ${progress.totalObjects},
+        "progress_received_bytes" = ${progress.receivedBytes},
+        "progress_throughput_bytes_per_second" = ${progress.throughputBytesPerSecond}`;
     const count = await this.prisma.$executeRaw(Prisma.sql`
       UPDATE "task_admission_work" AS w
       SET
         "stage" = ${stage},
-        "updated_at" = clock_timestamp()
+        "updated_at" = clock_timestamp()${progressAssignments}
       WHERE
         "task_id" = ${request.taskId}
         AND "state" = 'running'

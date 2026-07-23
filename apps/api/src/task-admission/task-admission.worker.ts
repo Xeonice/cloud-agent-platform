@@ -535,6 +535,24 @@ export class TaskAdmissionWorker
         }
         assertLeaseSignal(controller.signal, claim.taskId);
       },
+      transferProgress: async (stage, progress) => {
+        // Best-effort (chunk-archive-injection-with-progress D2): progress is
+        // an output stream, never authority. A fenced or failed write is
+        // swallowed — unlike `checkpoint`, it must not abort the lease.
+        try {
+          const parsedStage = TaskProvisioningStageSchema.parse(stage);
+          if (stageIndex(parsedStage) < stageIndex(authority.stage)) return;
+          await this.store.checkpoint({
+            taskId: claim.taskId,
+            leaseToken: claim.leaseToken,
+            stage: parsedStage,
+            taskFences: [authority.currentFence],
+            progress,
+          });
+        } catch {
+          // Durable admission state stays authoritative without the snapshot.
+        }
+      },
       checkpoint: async (stage) => {
         assertLeaseSignal(controller.signal, claim.taskId);
         const parsedStage = TaskProvisioningStageSchema.parse(stage);

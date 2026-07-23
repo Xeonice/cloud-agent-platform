@@ -225,20 +225,42 @@ try {
 
   const { calls, executor } = recordingExecutor();
   const uploads = [];
+  const progressEvents = [];
   const result = await mod.materializeSandboxGitWorkspaceStaged(
     context({
       source: archiveSource,
       stageExecutor: executor,
+      onProgress: (event) => {
+        if (event.status === 'progress') progressEvents.push(event);
+      },
       archiveTransfer: {
         async uploadArchive(request) {
           const chunks = [];
-          for await (const chunk of request.archive) chunks.push(chunk);
+          let delivered = 0;
+          for await (const chunk of request.archive) {
+            chunks.push(chunk);
+            delivered += chunk.length;
+            // Transports report monotonically increasing delivered bytes
+            // (chunk-archive-injection-with-progress D2).
+            request.onBytesUploaded?.(delivered);
+          }
           uploads.push({ path: request.path, tar: Buffer.concat(chunks) });
         },
       },
     }),
   );
   assert.deepEqual(result, { status: 'succeeded', stage: 'complete' });
+  check(
+    progressEvents.length >= 1 &&
+      progressEvents.every(
+        (event) =>
+          event.stage === 'workspace_transfer' &&
+          event.progress.receivedBytes > 0 &&
+          (event.progress.percent === null ||
+            (event.progress.percent >= 0 && event.progress.percent <= 99)),
+      ),
+    'archive transfer emits byte-based workspace_transfer progress capped below 100',
+  );
   assert.deepEqual(
     calls.map((call) => call.stage),
     ['workspace_transfer', 'checkout'],
@@ -387,18 +409,29 @@ try {
     });
 
     const sandboxId = [...client.sandboxes.keys()][0];
-    const uploaded = await client.downloadArchive({
-      sandboxId,
-      path: REPO_SOURCE_DIR,
-    });
+    // chunk-archive-injection-with-progress: the daemon buffers uploads under
+    // a ~2MB body limit (modeled by FakeBoxLiteClient), so the mirror arrives
+    // as ordered limit-safe parts that reassemble byte-identically.
+    const partPaths = client
+      .archivePaths(sandboxId)
+      .filter((path) => path.startsWith(`${REPO_SOURCE_DIR}/.parts/`))
+      .sort();
     check(
-      uploaded !== null && uploaded.byteLength > 512,
-      'the provider uploaded the mirror archive through the archive contract',
+      partPaths.length >= 1,
+      'the provider uploaded the mirror as ordered parts under .parts/',
     );
+    const partBuffers = [];
+    for (const path of partPaths) {
+      const part = await client.downloadArchive({ sandboxId, path });
+      check(part !== null, `part ${path} was stored by the daemon`);
+      partBuffers.push(Buffer.from(part));
+    }
+    const reassembled = Buffer.concat(partBuffers);
+    check(reassembled.length > 512, 'the reassembled parts carry the archive');
     const providerTar = join(scratch, 'provider-upload.tar');
     const providerUnpack = join(scratch, 'provider-unpacked');
     mkdirSync(providerUnpack);
-    writeFileSync(providerTar, Buffer.from(uploaded));
+    writeFileSync(providerTar, reassembled);
     execFileSync('tar', ['-C', providerUnpack, '-xf', providerTar], {
       stdio: 'pipe',
     });
@@ -416,10 +449,34 @@ try {
     ).toString();
     check(
       providerRefs.includes('refs/heads/main'),
-      'the uploaded archive is the bare mirror, refs included',
+      'the reassembled archive is the bare mirror, refs included',
     );
 
     const commands = client.execCalls.map((call) => call.command);
+    check(
+      commands.some(
+        (command) =>
+          command.includes(
+            `cat '${REPO_SOURCE_DIR}/.parts'/* > '${REPO_SOURCE_DIR}/.cap-archive.tar'`,
+          ) && command.includes(`rm -rf -- '${REPO_SOURCE_DIR}/.parts'`),
+      ),
+      'the box reassembled the parts before extraction',
+    );
+    check(
+      commands.some(
+        (command) =>
+          command.includes('sha256sum') && command.includes('wc -c'),
+      ),
+      'the box verified byte count and SHA-256 before extracting',
+    );
+    check(
+      commands.some((command) =>
+        command.includes(
+          `tar -xf '${REPO_SOURCE_DIR}/.cap-archive.tar' -C '${REPO_SOURCE_DIR}'`,
+        ),
+      ),
+      'the box extracted the verified archive at the repo-source directory',
+    );
     check(
       commands.some((command) =>
         command.includes(`mkdir -p -- '${REPO_SOURCE_DIR}'`),

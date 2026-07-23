@@ -1625,7 +1625,17 @@ function isBoxLiteTransportRequestFailure(error: unknown): boolean {
 
 export interface FakeBoxLiteClientOptions {
   readonly execHandler?: (request: BoxLiteExecRequest) => BoxLiteExecResult | Promise<BoxLiteExecResult>;
+  /**
+   * Modeled daemon request-body limit. BoxLite serve buffers each file upload
+   * wholesale and rejects bodies above ~2MB with 413 `length limit exceeded`
+   * (observed on 0.9.5, chunk-archive-injection-with-progress); the fake
+   * enforces the same ceiling so tests cannot regress to single oversized
+   * uploads. Override only to model a different daemon build.
+   */
+  readonly uploadBodyLimitBytes?: number;
 }
+
+export const FAKE_BOXLITE_UPLOAD_BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 
 export class FakeBoxLiteClient implements BoxLiteClient {
   readonly sandboxes = new Map<string, BoxLiteSandbox>();
@@ -1635,9 +1645,12 @@ export class FakeBoxLiteClient implements BoxLiteClient {
   readonly deletedSandboxIds: string[] = [];
   private readonly archives = new Map<string, Uint8Array>();
   private readonly execHandler?: FakeBoxLiteClientOptions['execHandler'];
+  private readonly uploadBodyLimitBytes: number;
 
   constructor(options: FakeBoxLiteClientOptions = {}) {
     this.execHandler = options.execHandler;
+    this.uploadBodyLimitBytes =
+      options.uploadBodyLimitBytes ?? FAKE_BOXLITE_UPLOAD_BODY_LIMIT_BYTES;
   }
 
   async createSandbox(request: BoxLiteCreateSandboxRequest): Promise<BoxLiteSandbox> {
@@ -1714,10 +1727,22 @@ export class FakeBoxLiteClient implements BoxLiteClient {
   }
 
   async uploadArchive(request: BoxLiteArchiveUploadRequest): Promise<void> {
-    this.archives.set(
-      archiveKey(request.sandboxId, request.path),
-      await collectBoxLiteArchiveBytes(request.archive),
-    );
+    const bytes = await collectBoxLiteArchiveBytes(request.archive);
+    if (bytes.byteLength > this.uploadBodyLimitBytes) {
+      throw new Error(
+        `BoxLite file upload for sandbox ${request.sandboxId} failed: HTTP 413 ` +
+          'Failed to buffer the request body: length limit exceeded',
+      );
+    }
+    this.archives.set(archiveKey(request.sandboxId, request.path), bytes);
+  }
+
+  /** Uploaded archive paths for one sandbox, in upload order (test helper). */
+  archivePaths(sandboxId: string): readonly string[] {
+    const prefix = archiveKey(sandboxId, '');
+    return [...this.archives.keys()]
+      .filter((key) => key.startsWith(prefix))
+      .map((key) => key.slice(prefix.length));
   }
 
   async downloadArchive(

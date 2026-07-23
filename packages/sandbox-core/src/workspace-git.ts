@@ -184,6 +184,13 @@ export interface SandboxWorkspaceArchiveUploadRequest {
   readonly path: string;
   readonly archive: AsyncIterable<Uint8Array>;
   readonly signal?: AbortSignal;
+  /**
+   * Best-effort transfer feedback: invoked with the monotonically increasing
+   * total of archive bytes the transport has delivered so far. Transports
+   * batching the stream (e.g. body-limit-safe parts) report after each batch.
+   * Never load-bearing — a throwing callback must not fail the upload.
+   */
+  readonly onBytesUploaded?: (uploadedBytes: number) => void;
 }
 
 export interface SandboxWorkspaceArchiveTransferPort {
