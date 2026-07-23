@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { createSandboxMode0600FileArchive } from '@cap/sandbox-core';
 
 /**
  * Body-limit-safe archive delivery (chunk-archive-injection-with-progress D1).
@@ -6,16 +7,19 @@ import { createHash } from 'node:crypto';
  * BoxLite serve buffers each file upload wholesale and rejects request bodies
  * above ~2MB (413 `length limit exceeded`, observed on 0.9.5), so one streamed
  * PUT of a repo mirror dies on any real repository. The tar stream is instead
- * re-chunked into fixed-size parts uploaded as ordered files under
- * `<dir>/.parts/`, then reassembled INSIDE the box with `cat` and verified
- * (byte count + SHA-256, both accumulated while streaming on the api side)
- * before extraction. The box-side extraction also removes the previous
- * dependence on daemon-side tar semantics: the daemon only ever stores small
- * opaque part files.
+ * re-chunked into fixed-size parts, each delivered as its OWN single-entry tar
+ * (the daemon's `/files` endpoint EXTRACTS the uploaded body at `path` —
+ * proven live: a raw byte body is rejected with `failed to extract tar`, a
+ * single-entry tar lands as a file and missing parent directories are
+ * created). The extracted parts under `<dir>/.parts/` are reassembled INSIDE
+ * the box with `cat` and verified (byte count + SHA-256, both accumulated
+ * while streaming on the api side) before the mirror tar itself is extracted
+ * by an explicit in-box `tar -xf`.
  *
- * Parts are uploaded as `Uint8Array` payloads on purpose: each PUT carries a
+ * Each per-part envelope is a `Uint8Array` on purpose: every PUT carries a
  * Content-Length and stays on the transport path the daemon demonstrably
- * accepts, avoiding chunked-transfer edge cases entirely.
+ * accepts, avoiding chunked-transfer edge cases entirely. The ~2KB tar
+ * envelope overhead keeps a 1.5MB part safely under the 2MB body limit.
  */
 
 export interface BoxLiteArchivePartUploadClient {
@@ -161,11 +165,14 @@ export async function uploadBoxLiteArchiveInParts(
       hash.update(part);
       const name = partName(partIndex);
       partIndex += 1;
+      // The daemon extracts the body at `path`, so the raw part bytes travel
+      // inside a single-entry tar envelope that materializes `<partsDir>/<name>`.
+      const envelope = createSandboxMode0600FileArchive(name, part);
       try {
         await args.client.uploadArchive({
           sandboxId: args.sandboxId,
-          path: `${partsDir}/${name}`,
-          archive: part,
+          path: partsDir,
+          archive: envelope,
           ...(args.signal === undefined ? {} : { signal: args.signal }),
         });
       } catch (error) {

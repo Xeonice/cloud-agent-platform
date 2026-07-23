@@ -58,6 +58,20 @@ async function collect(iterable) {
 }
 
 // -------------------------------------------- parts upload against the limit
+// The daemon EXTRACTS each uploaded body at `path`, so every part arrives as a
+// single-entry tar envelope. Unwrap it the same way the daemon would.
+function unwrapEnvelope(envelope) {
+  const header = envelope.subarray(0, 512);
+  const magic = header.subarray(257, 262).toString('utf8');
+  assert.equal(magic, 'ustar', 'each part travels as a ustar envelope');
+  const name = header.subarray(0, 100).toString('utf8').replace(/\0+$/u, '');
+  const size = parseInt(
+    header.subarray(124, 136).toString('utf8').replace(/\0.*$/u, '').trim(),
+    8,
+  );
+  return { name, content: envelope.subarray(512, 512 + size) };
+}
+
 function fakePartsClient({ execHandler } = {}) {
   const uploads = [];
   const execs = [];
@@ -71,7 +85,13 @@ function fakePartsClient({ execHandler } = {}) {
             'HTTP 413 Failed to buffer the request body: length limit exceeded',
           );
         }
-        uploads.push({ path: request.path, bytes: Buffer.from(request.archive) });
+        const entry = unwrapEnvelope(Buffer.from(request.archive));
+        uploads.push({
+          path: request.path,
+          envelopeBytes: request.archive.byteLength,
+          name: entry.name,
+          bytes: Buffer.from(entry.content),
+        });
       },
       async exec(request) {
         execs.push(request.command);
@@ -98,17 +118,19 @@ function fakePartsClient({ execHandler } = {}) {
   check(uploads.length === 4, 'a 5MB payload splits into four ordered parts');
   check(
     uploads.every(
-      (upload) => upload.bytes.length <= mod.FAKE_BOXLITE_UPLOAD_BODY_LIMIT_BYTES,
+      (upload) => upload.envelopeBytes <= mod.FAKE_BOXLITE_UPLOAD_BODY_LIMIT_BYTES,
     ),
-    'every uploaded part stays under the modeled daemon body limit',
+    'every uploaded envelope stays under the modeled daemon body limit',
+  );
+  check(
+    uploads.every((upload) => upload.path === '/home/gem/.cap-repo-source/.parts'),
+    'every envelope extracts at the parts directory',
   );
   check(
     uploads
-      .map((upload) => upload.path)
-      .every((path, index) =>
-        path === `/home/gem/.cap-repo-source/.parts/${String(index).padStart(6, '0')}`,
-      ),
-    'parts land under .parts/ with zero-padded lexicographic names',
+      .map((upload) => upload.name)
+      .every((name, index) => name === String(index).padStart(6, '0')),
+    'extracted parts carry zero-padded lexicographic names',
   );
   check(
     Buffer.concat(uploads.map((upload) => upload.bytes)).equals(

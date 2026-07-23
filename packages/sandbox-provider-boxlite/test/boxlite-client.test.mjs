@@ -914,7 +914,12 @@ await test('fake client is deterministic and records calls', async () => {
   assert.equal(result.exitCode, 1);
   assert.deepEqual(client.execCalls.map((call) => call.command), ['false']);
 
-  const uploaded = new Uint8Array([4, 5]);
+  // Native daemon semantics: the body is a tar extracted at `path`.
+  const uploadedContent = new Uint8Array([4, 5]);
+  const uploaded = core.createSandboxMode0600FileArchive(
+    'blob.bin',
+    uploadedContent,
+  );
   await client.uploadArchive({
     sandboxId: 'box-task-1',
     path: '/workspace',
@@ -923,7 +928,7 @@ await test('fake client is deterministic and records calls', async () => {
   uploaded.fill(0);
   assert.deepEqual([...await client.downloadArchive({
     sandboxId: 'box-task-1',
-    path: '/workspace',
+    path: '/workspace/blob.bin',
   })], [4, 5]);
 
   await client.deleteSandbox('box-task-1');
