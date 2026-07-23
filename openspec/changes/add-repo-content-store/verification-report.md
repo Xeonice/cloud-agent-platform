@@ -1,6 +1,7 @@
 # Verification Report — add-repo-content-store
 
 Verify pass: 2026-07-23（三向路由裁定，非 raw skeptic 计数）。
+Re-verify pass: 2026-07-23（修复后复核，见文末「Re-verify pass」节）：V.1/V.2 已实现并重判 MET，public-surface 元数据阻塞项已解除，**18/18 MET，无阻塞项**。
 
 裁定口径：skeptic 对全部 18 条 requirement 打了 raw-unmet，但其动态 refutation 全部源自同一条 **metadata-validation-failed**（public-surface base diff 不可解析，见 design.md Open Questions 的阻塞项）——那是核验工具链/元数据缺陷，不是对实现的反驳。逐条对照真实代码重走后：**16 条重判 MET**（下表），**2 条确认为真实代码缺口**重开任务（tasks.md `## Track: verify-reopened`），**18 条全部**因 public-surface 元数据不可判定而记为阻塞归档的 spec-defect（design.md Open Questions）。
 
@@ -55,8 +56,38 @@ Verify pass: 2026-07-23（三向路由裁定，非 raw skeptic 计数）。
 
 置信说明：三条均为「第三模式 UX / Repo 行 parity」上可辩护的实现细节而非功能蔓延；~9000 行 diff 其余部分（repo-store 服务、workspace-source 联合、AIO 挂载注入、BoxLite 归档流式、任务闸门、诊断分类器、部署文档/compose、console UI）均可直接追溯到 tasks.md 条目与其引用的 requirement，未发现无关功能、多余端点或投机能力。
 
-## 三向 tally
+## 三向 tally（首轮 verify pass）
 
 - reclassifiedMet：16
 - reopenedTasks：2（V.1 / V.2）
 - specDefects（含 blocking）：18（全部 requirement 的 public-surface 核验元数据不可判定，metadata-validation-failed；详见 design.md Open Questions，归档前必须修正并重跑）
+
+---
+
+## Re-verify pass（2026-07-23，修复后复核）
+
+本轮 skeptic raw-unmet 为空、机器路由的 public findings 为空（首轮的 metadata-validation-failed 未再出现）。逐条对照真实代码重走后裁定如下。
+
+### V.1 / V.2 重判 MET（修复 commit `06a1be4 fix: wire repo deletion cascade and name the injection variant in diagnostics`）
+
+17. **repo-content-store/copy-lifecycle-follows-the-repo** — MET（原 V.1，tasks.md 8.1 [x]）。删除面已真实可达：`DELETE /repos/:repoId`（repo-copy.controller.ts:100-108，console-internal、`requireConsoleAccountId` 人类会话闸、刻意不进 /v1 与 MCP）→ `RepoCopyService.deleteRepo()`（repo-copy.service.ts:148-186）：`repo_has_tasks` 409 引用守卫（tasks+schedules 计数 fail-closed）→ `deleteMany` 幂等删行 → 清 `AccountSettings.defaultRepoId` 悬挂引用 → `RepoStoreService.remove()` 级联删副本。console 入口齐备（imported-repos-panel.tsx 删除按钮 + repositories.tsx confirm 弹窗 + mutations.ts:618 `deleteRepoMutation`）。集成断言在 apps/api/src/repos/repo-delete.spec.ts + apps/web/src/lib/api/repo-delete-mutation.test.ts。场景 1「Repo deletion removes the copy」在运行系统中真实可发生；场景 2（升级不批量补建）首轮已成立。
+18. **task-provisioning-diagnostics/workspace-materialization-diagnostics-identify-the-injection-variant-and-its-stages** — MET（原 V.2，tasks.md 8.2 [x]）。诊断词汇新增显式变体字段 `workspaceSourceKind`（'volume'|'archive'|'git'，additive、可空），贯通 emit→classifier→durable 列→读投影：packages/sandbox-core/src/provisioning-diagnostics.ts:223,284,631,718,860,925 + packages/contracts/src/task-provisioning-diagnostics.ts:256 + task-provisioning-diagnostic-primary.classifier.ts。sidecar publicV1/mcp/openapi/apiPlayground 四面均已申报该 additive 字段。typed-cause 区分（transfer vs local-clone）首轮已成立。
+
+### Public-surface 阻塞项解除
+
+首轮 18 条 blocking spec-defect 的唯一根因是 deterministic-public-surface-cli 的 base diff 不可解析（metadata-validation-failed），非实现缺陷。本轮机器 public-surface 路由产出为空（无 metadata 失败、无 undeclared-impact、无 false-exclusion 发现），且人工比对 sidecar 与代码一致：DELETE /repos/:repoId 与 `repo_has_tasks` 守卫、级联在 `internalOnly.reason` 中明文申报且实际不在 /v1 registry / MCP 工具面（controller 注释 + 无 /v1 路由注册，已核）；`workspaceSourceKind` 在 publicV1 申报为 additive optional nullable，与 schema 实现吻合；4 条 protocolDifferences（均 tasks.create，承自 T0）与现状无冲突。design.md Open Questions 的阻塞项已标记解除。
+
+### Gap finding（本轮复核）
+
+18/18 requirement 均可追溯到真实实现，无 built-but-unreachable 残留。残余软点（不构成 UNMET、不阻塞）：「Acquisition progress is observable」的字节级 `onProgress` 回调未从 `RepoCopyService.acquireOnImport` 贯通到生产路径，导入进度观测仍是粗粒度 `copyStatus` 状态迁移（missing→refreshing→ready/failed，5s 轮询）——这是首轮第 10 条已记录的 met-as-written minor gap 的同一事实，状态迁移本身即进度报告的一种实现，主场景不受阻。
+
+### Scope findings（本轮复核：删除面 7 项全部收编，非蔓延）
+
+首轮 scope 3 项维持原判（可辩护实现细节）。本轮 skeptic 另列 7 项「超 spec」删除面代码（DELETE 端点 / `repo_has_tasks` 守卫 / defaultRepoId 清理 / contracts 失败码 / console 删除按钮 / route confirm 接线 / mutation+双侧测试）——**逐项复核后全部裁定为重开任务 8.1 的授权实现，而非无来源蔓延**：8.1 原文明确要求「新增操作者可达的 Repo 删除面（API 端点 + console 入口）…并补集成级联断言」，spec 场景「Repo deletion removes the copy」预设删除面存在，建面即为修复方式。守卫（`repo_has_tasks`）与 defaultRepoId 清理是删除面 fail-closed / 一致性的必要配套，均在 sidecar `internalOnly` 申报。不重开任务、不记 spec-defect。
+
+## 三向 tally（本轮，最终）
+
+- reclassifiedMet：2（repo-content-store/copy-lifecycle-follows-the-repo、task-provisioning-diagnostics/workspace-materialization-diagnostics-identify-the-injection-variant-and-its-stages）→ 累计 18/18 MET
+- reopenedTasks：0
+- specDefects：0
+- blockingSpecDefects：0（首轮 18 条 metadata 阻塞已随 public-surface 核验通过而解除）
