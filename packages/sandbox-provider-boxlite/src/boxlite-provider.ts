@@ -88,6 +88,7 @@ import {
   createBoxLiteRuntimePreflight,
   requiredToolsForBoxLiteCapabilities,
 } from './boxlite-preflight.js';
+import { uploadBoxLiteArchiveInParts } from './boxlite-archive-parts.js';
 import { materializeGitWorkspace, requireGitCloneSpec } from './boxlite-workspace.js';
 import { buildBoxLiteTerminalDescriptor } from './boxlite-terminal.js';
 import { buildBoxLiteRetentionPolicy } from './boxlite-retention.js';
@@ -1070,16 +1071,30 @@ export class BoxLiteSandboxProvider<
   ): SandboxWorkspaceArchiveTransferPort {
     return {
       uploadArchive: async (request) => {
-        if (!this.client.uploadArchive) {
+        const upload = this.client.uploadArchive;
+        if (!upload) {
           throw new SandboxProviderConfigurationError(
             'BoxLite archive workspace injection requires archive upload support',
           );
         }
-        await this.client.uploadArchive({
+        // Delivered as ordered body-limit-safe parts and reassembled in-box
+        // (chunk-archive-injection-with-progress D1): the daemon buffers each
+        // upload wholesale under a ~2MB body limit, so one streamed PUT can
+        // never carry a real repo mirror.
+        await uploadBoxLiteArchiveInParts({
+          client: {
+            uploadArchive: (part) => upload.call(this.client, part),
+            exec: (exec) => this.client.exec(exec),
+          },
           sandboxId,
           path: request.path,
           archive: request.archive,
+          partBytes: this.config.archivePartBytes,
+          execTimeoutMs: this.config.timeoutMs,
           ...(request.signal === undefined ? {} : { signal: request.signal }),
+          ...(request.onBytesUploaded === undefined
+            ? {}
+            : { onBytesUploaded: request.onBytesUploaded }),
         });
       },
     };

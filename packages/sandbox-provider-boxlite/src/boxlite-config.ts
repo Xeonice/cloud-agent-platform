@@ -22,6 +22,14 @@ export const BOXLITE_SANDBOX_PROVIDER_ID = 'boxlite';
 export const BOXLITE_DEFAULT_WORKSPACE_PATH = '/home/gem/workspace';
 export const BOXLITE_DEFAULT_SANDBOX_ID_PREFIX = 'cap-boxlite-';
 export const BOXLITE_DEFAULT_TIMEOUT_MS = 30_000;
+/**
+ * Archive-injection part size. BoxLite serve buffers file uploads wholesale
+ * with a 2MB request-body limit (413 above it, observed on 0.9.5), so the
+ * repo-copy tar is delivered as ordered parts safely below that limit.
+ */
+export const BOXLITE_DEFAULT_ARCHIVE_PART_BYTES = 1_572_864;
+export const BOXLITE_ARCHIVE_PART_BYTES_MIN = 64 * 1024;
+export const BOXLITE_ARCHIVE_PART_BYTES_MAX = 1_900_000;
 /** Incident-verified capacity that completed the observed large-repo checkout. */
 export const BOXLITE_DEFAULT_DISK_SIZE_GB = 5;
 export const BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS =
@@ -61,6 +69,7 @@ export interface BoxLiteProviderEnv {
   readonly BOXLITE_TIMEOUT_MS?: string;
   readonly BOXLITE_DISK_SIZE_GB?: string;
   readonly BOXLITE_GIT_CLONE_TIMEOUT_MS?: string;
+  readonly CAP_BOXLITE_ARCHIVE_PART_BYTES?: string;
 }
 
 export interface BoxLiteProviderConfig {
@@ -86,6 +95,8 @@ export interface BoxLiteProviderConfig {
   readonly diskSizeGb: number;
   /** Workspace Git deadline, deliberately separate from timeoutMs. */
   readonly gitCloneTimeoutMs: number;
+  /** Upper bound for one archive-injection part upload, body-limit safe. */
+  readonly archivePartBytes: number;
   /** Short REST/native BoxLite control-plane request timeout only. */
   readonly timeoutMs: number;
 }
@@ -165,6 +176,14 @@ export function readBoxLiteProviderConfig(
     BOXLITE_GIT_CLONE_TIMEOUT_MS_MAX,
     errors,
   );
+  const archivePartBytes = parseStrictBoundedInteger(
+    env.CAP_BOXLITE_ARCHIVE_PART_BYTES,
+    BOXLITE_DEFAULT_ARCHIVE_PART_BYTES,
+    'CAP_BOXLITE_ARCHIVE_PART_BYTES',
+    BOXLITE_ARCHIVE_PART_BYTES_MIN,
+    BOXLITE_ARCHIVE_PART_BYTES_MAX,
+    errors,
+  );
   const location = parseLocation(env.BOXLITE_PROVIDER_LOCATION, errors);
   const sandboxMode = parseSandboxMode(env.BOXLITE_SANDBOX_MODE, errors);
   const clientMode = parseClientMode(env.BOXLITE_CLIENT_MODE, errors);
@@ -225,6 +244,7 @@ export function readBoxLiteProviderConfig(
       terminalMode,
       diskSizeGb,
       gitCloneTimeoutMs,
+      archivePartBytes,
       timeoutMs,
     },
   };

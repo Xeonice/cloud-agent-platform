@@ -1653,6 +1653,7 @@ test('durable admission crash matrix recovers every boundary without fixed sleep
         async authorize() {},
         async renew() {},
         async checkpoint() {},
+        async transferProgress() {},
       },
       signal: new AbortController().signal,
     };

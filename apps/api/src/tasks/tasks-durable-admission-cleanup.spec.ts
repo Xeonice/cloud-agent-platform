@@ -755,6 +755,7 @@ test('terminal recovery retries audit durability before any cleanup action', asy
       async authorize() { authorizations += 1; },
       async renew() {},
       async checkpoint() {},
+      async transferProgress() {},
     },
     signal: new AbortController().signal,
   } as TaskAdmissionProcessorContext;
@@ -804,6 +805,7 @@ test('terminal recovery without an audit recorder remains reclaimable', async ()
       async authorize() { authorizations += 1; },
       async renew() {},
       async checkpoint() {},
+      async transferProgress() {},
     },
     signal: new AbortController().signal,
   } as TaskAdmissionProcessorContext;
@@ -1011,6 +1013,7 @@ test('real Tasks, Guardrails and router retain work and slot until an in-flight 
       async authorize() { authorizations += 1; },
       async renew() {},
       async checkpoint() {},
+      async transferProgress() {},
     },
     signal: new AbortController().signal,
   } as TaskAdmissionProcessorContext;

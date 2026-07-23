@@ -87,6 +87,12 @@ export interface TaskAdmissionRenewRequest
 export interface TaskAdmissionCheckpointRequest
   extends TaskAdmissionAuthorityRequest {
   readonly stage: TaskProvisioningStage;
+  /**
+   * Optional transfer progress persisted with the checkpoint
+   * (chunk-archive-injection-with-progress D2). Numeric-only like the parked
+   * heartbeat path; omitted/null leaves the stored snapshot intact.
+   */
+  readonly progress?: TaskAdmissionTransferProgress | null;
 }
 
 export type TaskAdmissionSettlement =
@@ -309,6 +315,15 @@ export interface TaskAdmissionLeaseControls {
   authorize(): Promise<void>;
   renew(): Promise<void>;
   checkpoint(stage: TaskProvisioningStage): Promise<void>;
+  /**
+   * Best-effort transfer-progress write for the CURRENT stage. Unlike
+   * `checkpoint`, a failed or fenced write never aborts the lease: progress is
+   * an output stream, durable admission state stays authoritative.
+   */
+  transferProgress(
+    stage: TaskProvisioningStage,
+    progress: TaskAdmissionTransferProgress,
+  ): Promise<void>;
 }
 
 export interface TaskAdmissionProcessorContext {

@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "change": "chunk-archive-injection-with-progress",
+  "intent": "bug-fix",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "changed",
+      "operationIds": [
+        "tasks.list",
+        "tasks.get"
+      ],
+      "reason": "No schema, status-code, or error-body change: the provisioning progress fields (TaskProvisioningProgressSchema) have been declared on task reads since fix-large-repo-task-provisioning. What changes is observable wire BEHAVIOR: during archive-variant workspace transfer those fields now carry real byte-based values (receivedBytes/percent/throughput, 1s-throttled), where the injection path previously always projected them as null/absent."
+    },
+    "mcp": {
+      "status": "changed",
+      "operationIds": [
+        "tasks.list",
+        "tasks.get"
+      ],
+      "toolIds": [
+        "list_tasks",
+        "get_task"
+      ],
+      "reason": "list_tasks/get_task inherit the same runtime-populated progress values through the canonical output projection; tool schemas, registration, and transports are untouched."
+    },
+    "openapi": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.list",
+        "tasks.get"
+      ],
+      "reason": "The OpenAPI projection derives from the unchanged canonical response schema; the already-declared progress fields simply become populated at runtime during archive transfer."
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "operationIds": [
+        "tasks.list",
+        "tasks.get"
+      ],
+      "reason": "The playground renders the same derived task-read schema; live progress values now appear in responses during archive transfer with no rendering or catalog change."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "boxlite-archive-chunked-upload-and-progress-snapshot-feed",
+      "reason": "Splits the boxlite archive-injection tar stream into daemon-body-limit-safe ordered parts (default 1.5MB, CAP_BOXLITE_ARCHIVE_PART_BYTES override) with in-box cat reassembly gated on byte-count plus SHA-256 verification, feeds byte-based transfer progress into the existing task_admission_work progress columns at a >=1s write throttle (du-estimated total, percent capped at 99, null when unestimable, silent skip under legacy admission), and hardens the injection integration fake daemon with the real 2MB body limit that the v0.45.0 tests failed to model."
+    }
+  },
+  "protocolDifferences": [],
+  "verification": {
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
+  }
+}

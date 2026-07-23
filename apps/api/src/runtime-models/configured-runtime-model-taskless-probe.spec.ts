@@ -87,6 +87,7 @@ const BOXLITE_CONFIG = {
   diskSizeGb: BOXLITE_DEFAULT_DISK_SIZE_GB,
   gitCloneTimeoutMs: BOXLITE_DEFAULT_GIT_CLONE_TIMEOUT_MS,
   timeoutMs: 10_000,
+  archivePartBytes: 1_572_864,
 } as const satisfies BoxLiteProviderConfig;
 
 function createInput(

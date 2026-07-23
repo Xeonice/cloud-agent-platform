@@ -39,7 +39,10 @@ import {
   type SandboxWorkspaceFailureCause,
   type SandboxWorkspaceProgressEvent,
 } from '@cap/sandbox-core';
-import { createRepoStoreArchiveStream } from './repo-archive.js';
+import {
+  createRepoStoreArchiveStream,
+  estimateRepoStoreCopyBytes,
+} from './repo-archive.js';
 
 const DELIVERY_PENDING_MARKER = 'cap-delivery-base';
 const DELIVERY_PENDING_SENTINEL = 'CAP_DELIVERY_PENDING';
@@ -746,6 +749,16 @@ function archiveInjectionSteps(
             `repo copy staging directory could not be prepared: exit_code ${prepared.exitCode}`,
           );
         }
+        // Byte-based transfer feedback for the provisioning progress snapshot
+        // (chunk-archive-injection-with-progress D2). The total is a
+        // best-effort disk-usage estimate of the copy, so percent caps at 99
+        // until the stage completes; with no estimate the snapshot keeps the
+        // explicit indeterminate `percent: null` semantics.
+        const estimatedTotalBytes = await estimateRepoStoreCopyBytes(
+          source.storePath,
+        );
+        let lastEmitAtMs = 0;
+        let lastEmitBytes = 0;
         await transfer.uploadArchive({
           path: sourceRoot,
           archive: createRepoStoreArchiveStream({
@@ -753,6 +766,37 @@ function archiveInjectionSteps(
             signal: deadline.signal,
           }),
           signal: deadline.signal,
+          onBytesUploaded: (uploadedBytes) => {
+            const now = Date.now();
+            if (lastEmitAtMs !== 0 && now - lastEmitAtMs < 500) return;
+            const windowMs = lastEmitAtMs === 0 ? null : now - lastEmitAtMs;
+            const throughput =
+              windowMs === null || windowMs <= 0
+                ? null
+                : Math.round(
+                    ((uploadedBytes - lastEmitBytes) * 1000) / windowMs,
+                  );
+            lastEmitAtMs = now;
+            lastEmitBytes = uploadedBytes;
+            void reportProgress(context, {
+              status: 'progress',
+              stage: 'workspace_transfer',
+              progress: snapshotSandboxWorkspaceTransferProgress({
+                percent:
+                  estimatedTotalBytes === null || estimatedTotalBytes <= 0
+                    ? null
+                    : Math.min(
+                        99,
+                        Math.floor((uploadedBytes * 100) / estimatedTotalBytes),
+                      ),
+                receivedObjects: null,
+                totalObjects: null,
+                receivedBytes: uploadedBytes,
+                throughputBytesPerSecond:
+                  throughput === null || throughput < 0 ? null : throughput,
+              }),
+            });
+          },
         });
       },
     },

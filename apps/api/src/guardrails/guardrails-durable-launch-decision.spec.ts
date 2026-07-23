@@ -314,6 +314,7 @@ function buildContext(options: {
       },
       authorize: options.authorize ?? (async () => {}),
       renew: async () => {},
+      transferProgress: async () => {},
       checkpoint: async (stage) => {
         options.checkpoints.push(stage);
       },

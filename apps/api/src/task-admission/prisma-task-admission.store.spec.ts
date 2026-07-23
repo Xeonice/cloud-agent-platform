@@ -309,6 +309,72 @@ test('renew, checkpoint, and settle all require the current unexpired running le
   assert.match(sqlText(statements[2]), /credential_cleanup/);
 });
 
+// chunk-archive-injection-with-progress: the checkpoint write optionally
+// persists the transfer-progress snapshot exactly like the parked heartbeat.
+test('checkpoint persists an optional transfer-progress snapshot', async () => {
+  const statements: unknown[] = [];
+  const prisma = {
+    async $executeRaw(statement: unknown) {
+      statements.push(statement);
+      return 1;
+    },
+  } as unknown as PrismaService;
+  const store = new PrismaTaskAdmissionStore(prisma);
+  const lease = {
+    taskId: '11111111-1111-4111-8111-111111111111',
+    leaseToken: 'lease:progress',
+  };
+
+  assert.equal(
+    await store.checkpoint({
+      ...lease,
+      stage: 'workspace_transfer',
+      taskFences: PENDING_TASK_FENCES,
+      progress: {
+        percent: 37,
+        receivedObjects: null,
+        totalObjects: null,
+        receivedBytes: 322_961_408,
+        throughputBytesPerSecond: 3_500_000,
+      },
+    }),
+    true,
+  );
+  const withProgress = sqlText(statements[0]);
+  assert.match(withProgress, /"stage" = \?/);
+  assert.match(withProgress, /"progress_percent" = \?/);
+  assert.match(withProgress, /"progress_received_bytes" = \?/);
+  assert.match(withProgress, /"progress_throughput_bytes_per_second" = \?/);
+  assert.equal(sqlValues(statements[0]).includes(322_961_408), true);
+
+  // An omitted snapshot keeps the plain stage-only checkpoint shape.
+  assert.equal(
+    await store.checkpoint({
+      ...lease,
+      stage: 'workspace_transfer',
+      taskFences: PENDING_TASK_FENCES,
+    }),
+    true,
+  );
+  assert.doesNotMatch(sqlText(statements[1]), /progress_percent/);
+
+  // Numeric-only, bounded: the shared normalization guards this path too.
+  await assert.rejects(() =>
+    store.checkpoint({
+      ...lease,
+      stage: 'workspace_transfer',
+      taskFences: PENDING_TASK_FENCES,
+      progress: {
+        percent: 101,
+        receivedObjects: null,
+        totalObjects: null,
+        receivedBytes: null,
+        throughputBytesPerSecond: null,
+      },
+    }),
+  );
+});
+
 test('settlement accepts only safe causes and never interpolates them into SQL', async () => {
   let statement: unknown;
   const prisma = {

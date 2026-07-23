@@ -71,6 +71,10 @@ import {
   type TaskAdmissionTerminalFailure,
   type TaskAdmissionTerminalRecovery,
 } from '../task-admission/task-admission.types';
+import {
+  createThrottledTransferProgressWriter,
+  type ThrottledTransferProgressWriter,
+} from '../task-admission/transfer-progress-throttle';
 import { triageParkedAdmissionMarkers } from '../task-admission/parked-admission-triage';
 import type { ProvisionLookup } from '../sandbox/provision-lookup.port';
 import {
@@ -987,6 +991,9 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           // load-bearing step; a rejected checkpoint write fences a
           // superseded holder at the write point and must propagate.
           checkpoint: (stage) => lease.checkpoint(stage),
+          transferProgress: createThrottledTransferProgressWriter({
+            write: (stage, progress) => lease.transferProgress(stage, progress),
+          }),
           forward: provisionPlan.onWorkspaceProgress,
         }),
         beforeWorkspaceBoundary: async (event) => {
@@ -1952,11 +1959,20 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
    */
   private buildWorkspaceProgressChain(options: {
     readonly checkpoint?: (stage: TaskProvisioningStage) => Promise<void>;
+    /**
+     * Best-effort transfer-progress sink (chunk-archive-injection-with-progress
+     * D2). Only the durable chain supplies one; legacy admission has no work
+     * row, so progress events are silently dropped there by construction.
+     */
+    readonly transferProgress?: ThrottledTransferProgressWriter;
     readonly forward?: SandboxWorkspaceProgressReporter;
   }): SandboxWorkspaceProgressReporter {
     return async (event: SandboxWorkspaceProgressEvent) => {
       if (event.status === 'started' && options.checkpoint) {
         await options.checkpoint(event.stage);
+      }
+      if (event.status === 'progress' && options.transferProgress) {
+        await options.transferProgress(event.stage, event.progress);
       }
       if (options.forward) {
         try {
