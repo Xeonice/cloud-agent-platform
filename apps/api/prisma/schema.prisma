@@ -569,6 +569,10 @@ model TaskProvisioningDiagnosticEvent {
   operation      String
   channel        String
   commandKind    String?  @map("command_kind")
+  /// Workspace-source variant (volume/archive/git) named by workspace
+  /// materialization evidence; null for operations that materialize nothing
+  /// and for events retained before the field existed.
+  workspaceSourceKind String? @map("workspace_source_kind")
   outcome        String
   observedAt     DateTime @map("observed_at")
 

@@ -681,6 +681,20 @@ export async function refreshRepoCopy(repoId: string): Promise<RepoResponse> {
 }
 
 /**
+ * `DELETE /repos/:repoId` — retire a repository AND its repo-store content copy
+ * (add-repo-content-store, "copy lifecycle follows the Repo"). Console-internal:
+ * it requires a human session and has no `/v1` or MCP counterpart.
+ *
+ * Responds `204` with no body, so nothing is parsed. A repository that still has
+ * tasks or schedules is refused with `409` + the stable `repo_has_tasks` code,
+ * which the caller classifies through `repoImportFailurePresentation` rather than
+ * from raw error prose.
+ */
+export async function deleteRepo(repoId: string): Promise<void> {
+  await request(`/repos/${encodeURIComponent(repoId)}`, { method: "DELETE" });
+}
+
+/**
  * `GET /repos/local-import/availability` — the console-internal, read-only probe
  * telling the import dialog whether local-path import is configured at all. The
  * feature is fail-closed: when the api has no allowlist root, `enabled` is false

@@ -91,6 +91,9 @@ test('repo import failure codes are complete, bounded, and reject diagnostic fie
     'repo_copy_store_unavailable',
     'repo_copy_platform_dependency_unavailable',
     'repo_copy_acquisition_aborted',
+    // add-repo-content-store: repo DELETION refused while tasks/schedules still
+    // reference the repo (the DB cascade would silently take them along).
+    'repo_has_tasks',
     // local-repo-import: the fail-closed local-path gate.
     'repo_local_import_disabled',
     'repo_local_import_path_invalid',

@@ -883,6 +883,11 @@ export const REPO_IMPORT_FAILURE_CODES = [
   'repo_copy_store_unavailable',
   'repo_copy_platform_dependency_unavailable',
   'repo_copy_acquisition_aborted',
+  // add-repo-content-store — Console repo DELETION refused because the Repo is
+  // still referenced. The database cascade would silently take the referencing
+  // tasks/schedules with it, so the delete surface fails closed and names the
+  // reference instead; the operator removes the tasks/schedules first.
+  'repo_has_tasks',
   // add-repo-content-store / local-repo-import — local-path import gate failures.
   'repo_local_import_disabled',
   'repo_local_import_path_invalid',

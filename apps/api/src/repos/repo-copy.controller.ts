@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -35,6 +36,9 @@ import { ZodValidationPipe } from './zod-validation.pipe';
  *                                              copy, or a typed gate/copy failure.
  * - `POST /repos/:repoId/refresh-copy`      -> 200 the Repo after re-acquiring or
  *                                              fetching its content copy.
+ * - `DELETE /repos/:repoId`                 -> 204 after deleting the Repo AND its
+ *                                              content copy, 409 `repo_has_tasks`
+ *                                              while anything still references it.
  *
  * These stay OUT of `/v1` and the MCP tool surface on purpose: copy freshness is
  * user-managed operator work, not a machine-surface capability. Every route is
@@ -79,5 +83,27 @@ export class RepoCopyController {
     @Param('repoId') repoId: string,
   ): Promise<RepoResponse> {
     return this.copies.refreshCopy(requireConsoleAccountId(req), repoId);
+  }
+
+  /**
+   * Retire a Repo and its repo-store content copy in one operator action.
+   *
+   * Lives on THIS controller because deletion is the other half of the copy
+   * lifecycle: the same seam that acquires and refreshes a copy is the one that
+   * removes it, so the store can never be reached from two places with different
+   * policies. Like every write here it requires a human Console session and is
+   * absent from `/v1` and MCP — machine principals stay read-only for repos.
+   *
+   * `204` on success, `404` when the repo does not exist, `409`
+   * (`repo_has_tasks`) when tasks or schedules still reference it.
+   */
+  @Delete(':repoId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(
+    @Req() req: AuthenticatedRequest,
+    @Param('repoId') repoId: string,
+  ): Promise<void> {
+    requireConsoleAccountId(req);
+    await this.copies.deleteRepo(repoId);
   }
 }

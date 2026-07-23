@@ -232,6 +232,22 @@ export class ProviderTerminalStoryService {
     return repo.id;
   }
 
+  /**
+   * Removes the throwaway fixture Repo created by {@link createBackingTask}.
+   *
+   * Deliberately does NOT cascade into the repo-store (add-repo-content-store).
+   * This row is a story-harness fixture, gated behind `CAP_PROVIDER_TERMINAL_STORY`
+   * and written straight through Prisma: it never passes an import surface, so
+   * `RepoStoreService.acquire()` is never called for it and no `<repoId>.git`
+   * mirror can exist on the volume. Wiring `remove()` in here would add a
+   * guaranteed no-op (plus a repo-store dependency) to a harness path. The
+   * operator-reachable delete cascade lives on `DELETE /repos/:repoId`
+   * (`RepoCopyService.deleteRepo`), which is what real Repos are deleted through.
+   *
+   * It also intentionally keeps using `deleteMany` rather than that service: the
+   * fixture repo OWNS a running story task, which the real delete surface refuses
+   * (`repo_has_tasks`) — here the cascade to that one task IS the teardown.
+   */
   private async deleteBackingRepo(repoId: string): Promise<void> {
     await this.prisma.repo.deleteMany({ where: { id: repoId } });
   }

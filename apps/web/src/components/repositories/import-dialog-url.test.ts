@@ -245,6 +245,8 @@ const failureCases = {
   repo_copy_store_unavailable: ["副本存储不可用", undefined],
   repo_copy_platform_dependency_unavailable: ["部署依赖不可用", undefined],
   repo_copy_acquisition_aborted: ["副本获取中断", undefined],
+  // add-repo-content-store — repo deletion refused while tasks/schedules reference it.
+  repo_has_tasks: ["仓库仍被引用", undefined],
   // local-repo-import — local-path import gate failures.
   repo_local_import_disabled: ["本地导入未启用", undefined],
   repo_local_import_path_invalid: ["路径无效", undefined],

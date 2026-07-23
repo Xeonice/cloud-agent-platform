@@ -30,6 +30,7 @@ import {
   type SandboxProvisioningDiagnosticCommandKind,
   type SandboxProvisioningDiagnosticOperation,
   type SandboxProvisioningDiagnosticReplayKey,
+  type SandboxProvisioningDiagnosticWorkspaceSourceKind,
   type SandboxSecretFileHandle,
   type SandboxWorkspaceDeliveryHookContext,
   type SandboxWorkspaceMaterializationHookContext,
@@ -627,6 +628,19 @@ function materializationCommands(
  */
 export function sandboxRepoSourceDir(workspaceDir: string): string {
   return `${dirname(workspaceDir)}/.cap-repo-source`;
+}
+
+/**
+ * The variant named by workspace-materialization diagnostics. An absent source
+ * and the explicit `git` variant are the same legacy in-sandbox network clone,
+ * so both report `git` rather than leaving the evidence unattributed.
+ */
+function workspaceDiagnosticSourceKind(
+  source: WorkspaceSource | null | undefined,
+): SandboxProvisioningDiagnosticWorkspaceSourceKind {
+  if (isVolumeWorkspaceSource(source)) return 'volume';
+  if (isArchiveWorkspaceSource(source)) return 'archive';
+  return 'git';
 }
 
 /** The injection variant in force, or null for the legacy git clone path. */
@@ -1963,6 +1977,10 @@ function emitWorkspaceDiagnostic(
         operation: descriptor.operation,
         channel: descriptor.channel,
         commandKind: descriptor.commandKind,
+        // The three variants share this closed stage/operation vocabulary, so
+        // the variant itself is the only thing that tells a mount preparation
+        // from a network clone in retained evidence.
+        workspaceSourceKind: workspaceDiagnosticSourceKind(context.source),
         ...terminal,
       }),
     ).catch(() => undefined);

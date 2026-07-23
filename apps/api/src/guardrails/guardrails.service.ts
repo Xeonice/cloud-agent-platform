@@ -906,6 +906,10 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
 
     let providerBoundaryCrossed = false;
     let providerSelectionFailed = false;
+    // add-repo-content-store: the resolved workspace-source variant is ambient
+    // evidence the failure classifier cannot recover from an error value, so it
+    // is retained here for the catch below. Never provisioning authority.
+    let workspaceSourceKind: WorkspaceSource['kind'] | undefined;
     try {
       await lease.checkpoint('sandbox_creation');
       await lease.authorize();
@@ -943,6 +947,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
         provisionPlan,
         selected.capabilities,
       );
+      workspaceSourceKind = workspaceSource?.kind;
       await lease.authorize();
       const provisionContext = snapshotSandboxProvisionContext({
         taskId,
@@ -1097,6 +1102,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
             ...classifyTaskProvisioningDiagnosticPrimaryFailure(
               primary,
               claim.stage,
+              { ...(workspaceSourceKind === undefined ? {} : { workspaceSourceKind }) },
             ),
             completion: 'leave_partial',
           });
@@ -1132,6 +1138,7 @@ export class GuardrailsService implements OnModuleInit, OnApplicationBootstrap {
           : classifyTaskProvisioningDiagnosticPrimaryFailure(
               error,
               classified.stage,
+              { ...(workspaceSourceKind === undefined ? {} : { workspaceSourceKind }) },
             )),
         completion: providerBoundaryCrossed
           ? 'leave_partial'

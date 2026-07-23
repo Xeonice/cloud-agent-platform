@@ -323,15 +323,43 @@ export async function mockGetDefaultRepo(): Promise<DefaultRepoResponse> {
 }
 
 /**
+ * Repo ids retired through `mockDeleteRepo` this session (add-repo-content-store).
+ *
+ * Session-scoped and deliberately NOT persisted to the store: the seeded repos
+ * come back on reload, which is the behavior a visual harness wants. Kept here
+ * rather than in `store.ts` because deletion is a mock-seam concern, not a
+ * console preference (same shape as the other module-level mock stores).
+ */
+let mockDeletedRepoIds: string[] = [];
+
+/**
+ * Delete a repository in the mock seam (`DELETE /repos/:repoId`). Mirrors the
+ * real endpoint at the only level the mock has: the repo disappears from every
+ * repo read. Like the real endpoint it resolves with no body. Clearing a default
+ * selection that pointed at it belongs to the mutation (mock.ts only READS the
+ * persisted store; every store write lives in mutations.ts).
+ */
+export async function mockDeleteRepo(repoId: string): Promise<void> {
+  await delay();
+  if (!mockDeletedRepoIds.includes(repoId)) {
+    mockDeletedRepoIds = [...mockDeletedRepoIds, repoId];
+  }
+}
+
+/**
  * Build the merged repo list (seed fixtures ∪ locally-imported repos), without
  * the artificial delay. Marks the store's `selectedRepo` as `isDefault` so
  * `setDefaultRepoMutation` is reflected; PURE w.r.t. the network.
  */
 function buildRepoList(): ListReposResponse {
   const { importedRepos, selectedRepo } = getState();
+  const deleted = new Set(mockDeletedRepoIds);
   const seen = new Set(SEED_REPOS.map((r) => r.id));
-  const merged: Repo[] = SEED_REPOS.map((r) => ({ ...r }));
+  const merged: Repo[] = SEED_REPOS.filter((r) => !deleted.has(r.id)).map((r) => ({
+    ...r,
+  }));
   for (const imp of importedRepos) {
+    if (deleted.has(imp.id)) continue;
     if (seen.has(imp.id)) continue;
     seen.add(imp.id);
     merged.push({

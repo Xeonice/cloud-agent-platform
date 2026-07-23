@@ -179,6 +179,21 @@ export type TaskProvisioningDiagnosticCommandKind = z.infer<
   typeof TaskProvisioningDiagnosticCommandKindSchema
 >;
 
+/**
+ * Which workspace-source variant materialized the workspace for an operation
+ * (add-repo-content-store): the repo-store volume mount, the repo-store
+ * archive transfer, or the legacy in-sandbox network clone. Additive and
+ * optional: evidence written before this field existed stays valid.
+ */
+export const TaskProvisioningDiagnosticWorkspaceSourceKindSchema = z.enum([
+  'volume',
+  'archive',
+  'git',
+]);
+export type TaskProvisioningDiagnosticWorkspaceSourceKind = z.infer<
+  typeof TaskProvisioningDiagnosticWorkspaceSourceKindSchema
+>;
+
 export const TaskProvisioningDiagnosticNativeStateSchema = z.enum([
   'pending',
   'running',
@@ -238,6 +253,8 @@ const DiagnosticEventIdentityFields = {
   operation: TaskProvisioningDiagnosticOperationSchema,
   channel: TaskProvisioningDiagnosticChannelSchema,
   commandKind: TaskProvisioningDiagnosticCommandKindSchema.nullable().optional(),
+  workspaceSourceKind:
+    TaskProvisioningDiagnosticWorkspaceSourceKindSchema.nullable().optional(),
   observedAt: z.coerce.date(),
 } as const;
 

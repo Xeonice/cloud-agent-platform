@@ -141,3 +141,16 @@
   - requirements: ["repo-content-store/copy-lifecycle-follows-the-repo", "local-repo-import/local-path-import-is-fail-closed-behind-a-configured-allowlist-root"]
   - surfaces: ["docs", "developer-workflow"]
   - verify: "docs"
+
+## 8. Track: verify-reopened (depends: none)
+
+<!-- verify pass 2026-07-23：两条 requirement 复核后确认为真实代码缺口（built-but-unreachable / 词汇缺字段），重开实现任务。 -->
+
+- [x] 8.1 打通「删除 Repo 级联删除副本」的真实调用链：`RepoStoreService.remove()`（apps/api/src/repo-store/repo-store.service.ts:303-319）现无任何生产调用点——repos.controller.ts / repo-copy.controller.ts 均无 `@Delete` 路由，apps/web 无删除 UI，唯一的 `prisma.repo.deleteMany`（provider-terminal-story.service.ts:236）也未级联清理副本。需新增操作者可达的 Repo 删除面（API 端点 + console 入口，或至少把既有删除点接上 remove()），使 spec 场景「Repo deletion removes the copy」在运行系统中可发生，并补集成级联断言
+  - requirements: ["repo-content-store/copy-lifecycle-follows-the-repo"]
+  - surfaces: ["contracts"]
+  - verify: "api-mcp"
+- [x] 8.2 诊断事件补「workspace source 变体命名」：spec 要求 workspace-materialization 诊断 SHALL name 所用变体（volume/archive/git），但封闭词汇（packages/sandbox-core/src/provisioning-diagnostics.ts、packages/contracts/src/task-provisioning-diagnostics.ts 的 `.strict()` schema）无任何 volume/archive/git 取值或变体字段，packages/sandbox/src/workspace/git.ts 的 WORKSPACE_DIAGNOSTIC_DESCRIPTORS 对三变体发同名 stage/operation，emitWorkspaceDiagnostic 从不读取 WorkspaceSource.kind。需在诊断词汇中加显式变体字段（additive、保持有界/无密钥约束），贯通 emit→classifier→durable 存储→读投影，并把 repo-copy-injection.test.mjs 的断言升级为断言事件字段等于变体名
+  - requirements: ["task-provisioning-diagnostics/workspace-materialization-diagnostics-identify-the-injection-variant-and-its-stages"]
+  - surfaces: ["contracts"]
+  - verify: "api-mcp"

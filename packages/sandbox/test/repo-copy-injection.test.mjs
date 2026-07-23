@@ -552,31 +552,40 @@ try {
 }
 
 // ----------------------------------------------------------- diagnostics ---
-// Track 4.5: the durable evidence must identify the injection stages and keep
-// a transfer failure distinguishable from an in-sandbox local-clone failure,
-// inside the existing closed diagnostic vocabulary.
-{
+// Track 4.5: the durable evidence must NAME the variant it materialized from
+// and identify the injection stages, keeping a transfer failure
+// distinguishable from an in-sandbox local-clone failure, inside the existing
+// closed diagnostic vocabulary.
+function diagnosticsRecorder(seed) {
   const events = [];
-  let eventId = 100;
-  let operationId = 200;
-  const uuid = (index) => `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
-  const diagnostics = mod.createSandboxProvisioningDiagnosticEmitter({
-    attemptContext: {
-      schemaVersion: 1,
-      taskId: '11111111-1111-4111-8111-111111111111',
-      attemptId: '22222222-2222-4222-8222-222222222222',
-      attempt: 1,
-      admissionMode: 'durable',
-      providerFamily: 'aio',
-    },
-    createEventId: () => uuid(eventId++),
-    createOperationId: () => uuid(operationId++),
-    now: () => new Date('2026-07-23T06:00:00.000Z'),
-    record: async (event) => {
-      events.push(event);
-      return { kind: 'recorded', sequence: event.sequence };
-    },
-  });
+  let eventId = seed;
+  let operationId = seed + 50;
+  const uuid = (index) =>
+    `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`;
+  return {
+    events,
+    diagnostics: mod.createSandboxProvisioningDiagnosticEmitter({
+      attemptContext: {
+        schemaVersion: 1,
+        taskId: '11111111-1111-4111-8111-111111111111',
+        attemptId: '22222222-2222-4222-8222-222222222222',
+        attempt: 1,
+        admissionMode: 'durable',
+        providerFamily: 'aio',
+      },
+      createEventId: () => uuid(eventId++),
+      createOperationId: () => uuid(operationId++),
+      now: () => new Date('2026-07-23T06:00:00.000Z'),
+      record: async (event) => {
+        events.push(event);
+        return { kind: 'recorded', sequence: event.sequence };
+      },
+    }),
+  };
+}
+
+{
+  const { events, diagnostics } = diagnosticsRecorder(100);
   const { executor } = recordingExecutor();
   await mod.materializeSandboxGitWorkspaceStaged(
     context({ source: volumeSource, stageExecutor: executor, diagnostics }),
@@ -597,12 +606,99 @@ try {
     `volume injection emits its stages durably (got ${operations.join(',')})`,
   );
   check(
+    events.length > 0 &&
+      events.every((event) => event.workspaceSourceKind === 'volume'),
+    'every volume-injection event names the volume variant',
+  );
+  check(
     events.every((event) => event.stage !== 'submodules'),
     'injection never claims the network-only submodule stage',
   );
   check(
     events.length <= 12,
     'diagnostic events stay bounded for an injected materialization',
+  );
+}
+
+// archive: the same closed stage vocabulary, named as the `archive` variant.
+{
+  const { events, diagnostics } = diagnosticsRecorder(300);
+  const { executor } = recordingExecutor();
+  const result = await mod.materializeSandboxGitWorkspaceStaged(
+    context({
+      // The transfer body is exercised by the real-tar cases above; this case
+      // only pins the evidence, so the transport may ignore the stream.
+      source: {
+        kind: 'archive',
+        repoId: REPO_ID,
+        storePath: `/var/lib/cap/repo-store/${REPO_ID}.git`,
+        gitSource: GIT_SOURCE,
+      },
+      stageExecutor: executor,
+      diagnostics,
+      archiveTransfer: {
+        async uploadArchive() {},
+      },
+    }),
+  );
+  assert.deepEqual(result, { status: 'succeeded', stage: 'complete' });
+  await diagnostics.flush();
+  check(
+    events.length > 0 &&
+      events.every((event) => event.workspaceSourceKind === 'archive'),
+    'every archive-injection event names the archive variant',
+  );
+  check(
+    events.some(
+      (event) =>
+        event.operation === 'repository_transfer' &&
+        event.workspaceSourceKind === 'archive',
+    ) &&
+      events.some(
+        (event) =>
+          event.operation === 'checkout' &&
+          event.workspaceSourceKind === 'archive',
+      ),
+    'the archive transfer and the in-sandbox local clone are separately named',
+  );
+}
+
+// git: the legacy network-clone fallback is named too, so no workspace
+// materialization evidence is left unattributed.
+{
+  const { events, diagnostics } = diagnosticsRecorder(500);
+  const { executor } = recordingExecutor();
+  const secrets = secretPortSpy();
+  await mod.materializeSandboxGitWorkspaceStaged(
+    context({
+      source: { kind: 'git', spec: { url: GIT_SOURCE } },
+      stageExecutor: executor,
+      secretFilePort: secrets.port,
+      diagnostics,
+    }),
+  );
+  await diagnostics.flush();
+  check(
+    events.length > 0 &&
+      events.every((event) => event.workspaceSourceKind === 'git'),
+    'every legacy network-clone event names the git variant',
+  );
+
+  // An ABSENT source is the same legacy clone and must not be unattributed.
+  const fallback = diagnosticsRecorder(700);
+  const plain = recordingExecutor();
+  await mod.materializeSandboxGitWorkspaceStaged(
+    context({
+      stageExecutor: plain.executor,
+      secretFilePort: secretPortSpy().port,
+      diagnostics: fallback.diagnostics,
+    }),
+  );
+  await fallback.diagnostics.flush();
+  check(
+    fallback.events.length > 0 &&
+      fallback.events.every((event) => event.workspaceSourceKind === 'git'),
+    'an absent workspace source still reports the git variant',
   );
 }
 

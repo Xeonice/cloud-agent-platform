@@ -155,6 +155,22 @@ export const SANDBOX_PROVISIONING_DIAGNOSTIC_COMMAND_KINDS = [
 export type SandboxProvisioningDiagnosticCommandKind =
   (typeof SANDBOX_PROVISIONING_DIAGNOSTIC_COMMAND_KINDS)[number];
 
+/**
+ * Which workspace-source variant materialized the workspace for this
+ * operation (add-repo-content-store): the repo-store volume mount, the
+ * repo-store archive transfer, or the legacy in-sandbox network clone. The
+ * vocabulary mirrors `WORKSPACE_SOURCE_KINDS` and the shared wire contract;
+ * it is optional so every pre-existing emission and retained event stays
+ * valid.
+ */
+export const SANDBOX_PROVISIONING_DIAGNOSTIC_WORKSPACE_SOURCE_KINDS = [
+  'volume',
+  'archive',
+  'git',
+] as const;
+export type SandboxProvisioningDiagnosticWorkspaceSourceKind =
+  (typeof SANDBOX_PROVISIONING_DIAGNOSTIC_WORKSPACE_SOURCE_KINDS)[number];
+
 export const SANDBOX_PROVISIONING_DIAGNOSTIC_NATIVE_STATES = [
   'pending',
   'running',
@@ -203,6 +219,8 @@ interface SandboxProvisioningDiagnosticFactBase {
   readonly operation: SandboxProvisioningDiagnosticOperation;
   readonly channel: SandboxProvisioningDiagnosticChannel;
   readonly commandKind?: SandboxProvisioningDiagnosticCommandKind | null;
+  /** Names the workspace-source variant when the operation materialized one. */
+  readonly workspaceSourceKind?: SandboxProvisioningDiagnosticWorkspaceSourceKind | null;
 
   /** Correlation and timestamps are injected by the attempt-scoped emitter. */
   readonly schemaVersion?: never;
@@ -263,6 +281,7 @@ interface SandboxProvisioningDiagnosticEventIdentity {
   readonly operation: SandboxProvisioningDiagnosticOperation;
   readonly channel: SandboxProvisioningDiagnosticChannel;
   readonly commandKind?: SandboxProvisioningDiagnosticCommandKind | null;
+  readonly workspaceSourceKind?: SandboxProvisioningDiagnosticWorkspaceSourceKind | null;
   readonly observedAt: Date;
 }
 
@@ -607,6 +626,11 @@ export function validateSandboxProvisioningDiagnosticFact(
       'commandKind',
       SANDBOX_PROVISIONING_DIAGNOSTIC_COMMAND_KINDS,
     ),
+    ...optionalNullableEnum(
+      input,
+      'workspaceSourceKind',
+      SANDBOX_PROVISIONING_DIAGNOSTIC_WORKSPACE_SOURCE_KINDS,
+    ),
   };
 
   if (outcome === 'started') {
@@ -691,6 +715,7 @@ const STARTED_FACT_KEYS = new Set([
   'operation',
   'channel',
   'commandKind',
+  'workspaceSourceKind',
   'outcome',
 ]);
 const TERMINAL_FACT_KEYS = new Set([
@@ -832,6 +857,7 @@ function diagnosticOperationShapeFingerprint(
     operation: fact.operation,
     channel: fact.channel,
     commandKind: fact.commandKind ?? null,
+    workspaceSourceKind: fact.workspaceSourceKind ?? null,
   });
 }
 
@@ -896,6 +922,9 @@ function buildDiagnosticEvent(args: {
     ...(args.fact.commandKind === undefined
       ? {}
       : { commandKind: args.fact.commandKind }),
+    ...(args.fact.workspaceSourceKind === undefined
+      ? {}
+      : { workspaceSourceKind: args.fact.workspaceSourceKind }),
     observedAt: args.observedAt,
   };
   if (args.fact.outcome === 'started') {

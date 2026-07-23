@@ -79,6 +79,16 @@ export interface ImportedReposPanelProps {
   onRefreshCopy?: (repoId: string) => void;
   /** The Repo id whose copy acquisition/refresh request is in flight. */
   refreshingCopyRepoId?: string | null;
+  /**
+   * Delete a repository and its repo-store content copy
+   * (add-repo-content-store, "copy lifecycle follows the Repo"). Omitted ⇒ the
+   * delete affordance is not rendered at all. Destructive: the page owns the
+   * confirmation prompt, matching how the other destructive console actions
+   * (retiring a sandbox image) are confirmed at their call site.
+   */
+  onDelete?: (repoId: string) => void;
+  /** The Repo id whose deletion is in flight (fences every delete button). */
+  deletingRepoId?: string | null;
 }
 
 /** The 已导入仓库 panel. */
@@ -91,6 +101,8 @@ export function ImportedReposPanel({
   refreshingRepoId = null,
   onRefreshCopy,
   refreshingCopyRepoId = null,
+  onDelete,
+  deletingRepoId = null,
 }: ImportedReposPanelProps) {
   return (
     <article
@@ -135,6 +147,7 @@ export function ImportedReposPanel({
               copyStatus === null ? null : REPO_COPY_STATUS_PRESENTATION[copyStatus];
             const refreshingCopy = refreshingCopyRepoId === repo.id;
             const copyBusy = refreshingCopy || copyStatus === "refreshing";
+            const deleting = deletingRepoId === repo.id;
             return (
               <RepoRow
                 key={repo.id}
@@ -210,6 +223,22 @@ export function ImportedReposPanel({
                         {pending ? "设置中…" : "设为默认"}
                       </button>
                     )}
+                    {onDelete ? (
+                      <button
+                        type="button"
+                        data-delete-repo-id={repo.id}
+                        disabled={
+                          deletingRepoId !== null ||
+                          settingDefault ||
+                          refreshingRepoId !== null ||
+                          refreshingCopyRepoId !== null
+                        }
+                        onClick={() => onDelete(repo.id)}
+                        className="inline-flex h-[30px] items-center justify-center whitespace-nowrap rounded-md bg-[#f6f8fa] px-[7px] text-[13px] font-medium text-danger shadow-[0_0_0_1px_var(--border)] hover:bg-secondary disabled:pointer-events-none disabled:opacity-60"
+                      >
+                        {deleting ? "删除中…" : "删除仓库"}
+                      </button>
+                    ) : null}
                   </div>
                 }
               />

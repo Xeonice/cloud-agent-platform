@@ -270,6 +270,13 @@ const REPO_IMPORT_FAILURE_PRESENTATIONS = {
     variant: "warn",
     message: "本次副本获取被中断（超时或传输中止），已保留上一份可用副本，可重新刷新。",
   },
+  // add-repo-content-store：删除仓库被引用拦下。数据库层是级联删除，所以这里
+  // 失败关闭并点名引用，而不是让操作者在不知情的情况下丢掉任务历史与定时任务。
+  repo_has_tasks: {
+    pill: "仓库仍被引用",
+    variant: "warn",
+    message: "该仓库下还有任务或定时任务，请先删除它们，再删除仓库。",
+  },
   // local-repo-import：本地路径导入的门禁失败。
   repo_local_import_disabled: {
     pill: "本地导入未启用",

@@ -32,6 +32,7 @@ import { toast } from "sonner";
 
 import { reposQuery } from "@/lib/api/queries";
 import {
+  deleteRepoMutation,
   refreshRepoCopyMutation,
   refreshRepoDefaultBranchMutation,
   setDefaultRepoMutation,
@@ -75,8 +76,13 @@ function RepositoriesPage() {
     refreshRepoDefaultBranchMutation(queryClient),
   );
   const refreshCopy = useMutation(refreshRepoCopyMutation(queryClient));
+  const deleteRepo = useMutation(deleteRepoMutation(queryClient));
   const refreshFence = React.useRef<string | null>(null);
   const copyRefreshFence = React.useRef<string | null>(null);
+  const deleteFence = React.useRef<string | null>(null);
+  const [deletingRepoId, setDeletingRepoId] = React.useState<string | null>(
+    null,
+  );
   const [refreshingRepoId, setRefreshingRepoId] = React.useState<string | null>(
     null,
   );
@@ -151,6 +157,41 @@ function RepositoriesPage() {
     });
   }
 
+  /**
+   * Delete a repository AND its repo-store content copy (add-repo-content-store,
+   * "copy lifecycle follows the Repo"). Destructive and irreversible from the
+   * console, so it is confirmed first — `window.confirm` is the established
+   * console convention for a destructive action (see the sandbox-image retire
+   * action) rather than a bespoke dialog.
+   *
+   * The server REFUSES (409 `repo_has_tasks`) while tasks or schedules still
+   * reference the repo; that is surfaced from the stable code, never from raw
+   * error prose.
+   */
+  function handleDelete(repoId: string) {
+    const repo = repoList.find((r) => r.id === repoId);
+    const name = repo?.name ?? "该仓库";
+    const ok = window.confirm(
+      `删除仓库「${name}」？这会同时删除服务端为它保存的仓库内容副本；如果之后还要用，需要重新导入。`,
+    );
+    if (!ok) return;
+    if (!claimRepoRefreshSubmission(deleteFence, repoId)) return;
+    setDeletingRepoId(repoId);
+    deleteRepo.mutate(repoId, {
+      onSuccess: () => {
+        toast.success(`已删除仓库 ${name} 及其内容副本`);
+      },
+      onError: (error) => {
+        const failure = repoImportFailurePresentation(error);
+        toast.error(`${failure.pill}：${failure.message}`);
+      },
+      onSettled: () => {
+        releaseRepoRefreshSubmission(deleteFence, repoId);
+        setDeletingRepoId(null);
+      },
+    });
+  }
+
   return (
     <>
       {/* Screen header */}
@@ -214,6 +255,8 @@ function RepositoriesPage() {
           refreshingRepoId={refreshingRepoId}
           onRefreshCopy={handleRefreshCopy}
           refreshingCopyRepoId={refreshingCopyRepoId}
+          onDelete={handleDelete}
+          deletingRepoId={deletingRepoId}
         />
       </section>
 

@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -33,6 +34,8 @@ import { throwLocalImportRejection } from './local-import-errors';
  */
 @Injectable()
 export class RepoCopyService {
+  private readonly logger = new Logger(RepoCopyService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly store: RepoStoreService,
@@ -114,6 +117,87 @@ export class RepoCopyService {
       throw new NotFoundException(`Repo not found: ${repoId}`);
     }
     return repoRowToResponse(refreshed);
+  }
+
+  /**
+   * Console-internal Repo deletion (`DELETE /repos/:repoId`).
+   *
+   * This is the ONLY operator-reachable path that retires a Repo, and therefore
+   * the only place the spec's "copy lifecycle follows the Repo" cascade can
+   * happen: the metadata row and its repo-store bare mirror are removed by the
+   * same action, so a deleted Repo never leaves content behind that no surface
+   * can see, refresh, or delete.
+   *
+   * Fails closed on references. `Task.repoId` / `TaskSchedule.repoId` are
+   * `onDelete: Cascade` at the database level, so an unguarded delete would
+   * silently take an operator's task history and schedules with it. A referenced
+   * Repo is therefore refused with the stable `repo_has_tasks` code instead; the
+   * operator removes the tasks/schedules first and retries.
+   *
+   * Ordering / partial-failure policy — the DB row goes FIRST, and a failing
+   * `remove()` is logged but does NOT roll it back:
+   *   - the Repo row is what every surface reads, so once it is gone the repo is
+   *     consistently absent everywhere even if the volume is unreachable;
+   *   - the reverse order has a strictly worse failure mode: the copy would be
+   *     gone while a row still advertises `copyStatus: ready`, i.e. a repo that
+   *     looks task-ready but has no content;
+   *   - a leftover `<repoId>.git` directory is inert. Repo ids are freshly
+   *     generated uuids, so a later import can never be handed the orphan's path,
+   *     and an operator can delete it from the volume at any time.
+   */
+  async deleteRepo(repoId: string): Promise<void> {
+    const existing = await this.prisma.repo.findUnique({
+      where: { id: repoId },
+      select: { id: true, name: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Repo not found: ${repoId}`);
+    }
+
+    const [tasks, schedules] = await Promise.all([
+      this.prisma.task.count({ where: { repoId } }),
+      this.prisma.taskSchedule.count({ where: { repoId } }),
+    ]);
+    if (tasks > 0 || schedules > 0) {
+      throw new ConflictException({
+        error: 'repo_has_tasks',
+        message:
+          `Repository "${existing.name}" still has ${tasks} task(s) and ` +
+          `${schedules} schedule(s). Delete or archive them first, then delete the repository.`,
+      });
+    }
+
+    // `deleteMany` (not `delete`) so a concurrent delete of the same row is a
+    // count of 0 rather than a thrown Prisma error; the copy cleanup below still
+    // runs, which keeps the cascade idempotent under a double submit.
+    const deleted = await this.prisma.repo.deleteMany({ where: { id: repoId } });
+
+    // A stored per-account default preference pointing at a repo that no longer
+    // exists is inert but stale. Clear it in the same action so the settings
+    // surface does not keep reporting a deleted selection. Deliberately NOT a DB
+    // foreign key (see the schema note on `AccountSettings.defaultRepoId`).
+    await this.prisma.accountSettings.updateMany({
+      where: { defaultRepoId: repoId },
+      data: { defaultRepoId: null },
+    });
+
+    try {
+      await this.store.remove(repoId);
+    } catch (error) {
+      // The row is already gone and the caller's delete SUCCEEDED. Surface the
+      // orphaned copy as an operator-visible warning instead of failing a delete
+      // that cannot be retried (the row no longer exists to re-delete).
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Repo ${repoId} was deleted but its repo-store copy could not be removed: ${detail}`,
+      );
+    }
+
+    if (deleted.count === 0) {
+      // Another request won the race between the read above and this delete. The
+      // repo is still gone, and its copy has now been cleaned up either way.
+      throw new NotFoundException(`Repo not found: ${repoId}`);
+    }
   }
 
   /**

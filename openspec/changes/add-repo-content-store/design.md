@@ -83,3 +83,4 @@
 ## Open Questions
 
 - （无阻塞项）BoxLite 未来版本 REST API 若增加 volumes 字段，可加 capability 探测升级为挂载注入——不影响本轮设计。
+- **【阻塞归档】public-surface 验证元数据不可判定（verify pass 2026-07-23，metadata-validation-failed）**：本 change 全部 18 条 requirement 的 deterministic-public-surface-cli 动态核验因「Unable to resolve a complete public-surface base diff. Set CAP_PUBLIC_SURFACE_BASE_SHA or configure a branch upstream.」而无法执行——当前工作树处于 detached HEAD 且无 branch upstream，任务元数据声明的 public-surface 核验面（surface-impact.json / tasks.md 的 `verify:` 标注）在此环境下不可测试。这是规格/元数据缺陷而非实现缺陷：要么补齐 `CAP_PUBLIC_SURFACE_BASE_SHA`（或配置 branch upstream）使基线 diff 可解析，要么修正各任务的 verify 元数据使其在 detached 工作树下可判定。在该缺陷修正并重跑 public-surface 核验之前，archive 不得接受 sidecar 的 public-surface 声明（false claim 风险）。涉及全部 18 个 requirement id（aio-sandbox-execution 1、boxlite-sandbox-provider 1、local-repo-import 4、multi-forge-repo-import 1、repo-and-task-management 1、repo-content-store 5、sandbox-detached-jobs 1、sandbox-provider-port 3、task-provisioning-diagnostics 1）。

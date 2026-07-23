@@ -7,10 +7,12 @@ import {
   isSandboxProvisioningStageError,
   isSandboxRuntimeModelSetupError,
   isSandboxWorkspaceMaterializationError,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_WORKSPACE_SOURCE_KINDS,
   type SandboxProvisioningDiagnosticCause,
   type SandboxProvisioningDiagnosticCommandKind,
   type SandboxProvisioningDiagnosticOperation,
   type SandboxProvisioningDiagnosticStage,
+  type SandboxProvisioningDiagnosticWorkspaceSourceKind,
 } from '@cap/sandbox';
 
 import {
@@ -36,11 +38,32 @@ export interface ClassifiedTaskProvisioningDiagnosticPrimaryFailure {
   readonly stage: SandboxProvisioningDiagnosticStage;
   readonly operation: SandboxProvisioningDiagnosticOperation;
   readonly commandKind?: SandboxProvisioningDiagnosticCommandKind;
+  /**
+   * Workspace-source variant in force when the failure happened, carried only
+   * for workspace-materialization stages (add-repo-content-store). Absent for
+   * every other stage: those operations materialize no workspace and must not
+   * claim a variant.
+   */
+  readonly workspaceSourceKind?: SandboxProvisioningDiagnosticWorkspaceSourceKind;
   readonly outcome: ClassifiedPrimaryOutcome;
   readonly cause: SandboxProvisioningDiagnosticCause;
   readonly retryable: boolean;
   readonly exitCode: null;
 }
+
+/** Ambient facts the caller already knows; never derived from raw error text. */
+export interface TaskProvisioningDiagnosticPrimaryClassificationContext {
+  readonly workspaceSourceKind?: SandboxProvisioningDiagnosticWorkspaceSourceKind;
+}
+
+const WORKSPACE_MATERIALIZATION_STAGES: ReadonlySet<string> = new Set([
+  'credential_setup',
+  'remote_ref_resolution',
+  'workspace_transfer',
+  'checkout',
+  'submodules',
+  'credential_cleanup',
+]);
 
 interface StageDescriptor {
   readonly operation: SandboxProvisioningDiagnosticOperation;
@@ -113,17 +136,48 @@ const PROVIDER_SELECTION_DESCRIPTOR =
 export function classifyTaskProvisioningDiagnosticPrimaryFailure(
   error: unknown,
   fallbackStage: SandboxProvisioningDiagnosticStage,
+  classificationContext: TaskProvisioningDiagnosticPrimaryClassificationContext = {},
 ): ClassifiedTaskProvisioningDiagnosticPrimaryFailure {
-  try {
-    return classifyKnownTaskProvisioningDiagnosticPrimaryFailure(
-      error,
-      fallbackStage,
-    );
-  } catch {
-    // A malformed cross-bundle value (including an accessor that throws) is
-    // still only unknown evidence; classification must never become authority.
-    return unknownPrimaryFailure(fallbackStage);
+  const classified = (() => {
+    try {
+      return classifyKnownTaskProvisioningDiagnosticPrimaryFailure(
+        error,
+        fallbackStage,
+      );
+    } catch {
+      // A malformed cross-bundle value (including an accessor that throws) is
+      // still only unknown evidence; classification must never become authority.
+      return unknownPrimaryFailure(fallbackStage);
+    }
+  })();
+  return withWorkspaceSourceKind(
+    classified,
+    classificationContext.workspaceSourceKind,
+  );
+}
+
+/**
+ * Name the workspace-source variant on workspace-materialization evidence only.
+ * The three variants share one closed stage vocabulary, so without this the
+ * synthesized primary cannot say whether a `workspace_transfer` failure was a
+ * mount preparation, an archive transfer, or a network clone.
+ */
+function withWorkspaceSourceKind(
+  classified: ClassifiedTaskProvisioningDiagnosticPrimaryFailure,
+  workspaceSourceKind:
+    | SandboxProvisioningDiagnosticWorkspaceSourceKind
+    | undefined,
+): ClassifiedTaskProvisioningDiagnosticPrimaryFailure {
+  if (
+    workspaceSourceKind === undefined ||
+    !SANDBOX_PROVISIONING_DIAGNOSTIC_WORKSPACE_SOURCE_KINDS.includes(
+      workspaceSourceKind,
+    ) ||
+    !WORKSPACE_MATERIALIZATION_STAGES.has(classified.stage)
+  ) {
+    return classified;
   }
+  return Object.freeze({ ...classified, workspaceSourceKind });
 }
 
 function classifyKnownTaskProvisioningDiagnosticPrimaryFailure(

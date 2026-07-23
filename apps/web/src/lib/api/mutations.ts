@@ -587,6 +587,72 @@ export function setDefaultRepoMutation(
   };
 }
 
+/**
+ * Remove one repo id from a cached repo list. PURE. An unloaded cache stays
+ * undefined; a cache that never held the id is returned unchanged, so the delete
+ * never fabricates (or re-orders) a repository list client-side.
+ */
+export function removeDeletedRepo(
+  current: ListReposResponse | undefined,
+  repoId: string,
+): ListReposResponse | undefined {
+  if (!current) return undefined;
+  return current.filter((item) => item.id !== repoId);
+}
+
+/**
+ * Delete a repository AND its repo-store content copy
+ * (`DELETE /repos/:repoId`, add-repo-content-store). This is the operator-facing
+ * half of "copy lifecycle follows the Repo": the same action that retires the
+ * metadata row retires the bare mirror on the api host.
+ *
+ * Destructive and NOT optimistic: the row is dropped from the cache only after
+ * the server confirms, because the server can legitimately REFUSE (409
+ * `repo_has_tasks` when tasks/schedules still reference the repo) and an
+ * optimistic removal would flash a repo out of the list that is still there.
+ *
+ * Invalidates the repo list AND the default-repo key: deleting the current
+ * default legitimately leaves the deployment with no default repo, and the
+ * DEFAULT tile must re-derive rather than keep naming a repo that is gone.
+ */
+export function deleteRepoMutation(
+  queryClient: QueryClient,
+): UseMutationOptions<void, Error, string> {
+  return {
+    mutationFn: async (repoId) => {
+      if (isCapable("githubImport")) {
+        await real.deleteRepo(repoId);
+      } else {
+        await mock.mockDeleteRepo(repoId);
+        // mock.ts only READS the persisted store; clearing a default selection
+        // that pointed at the deleted repo is this mutation's job.
+        setState((prev) =>
+          prev.selectedRepo === repoId
+            ? {
+                selectedRepo: null,
+                settings: { ...prev.settings, defaultRepoId: null },
+              }
+            : {},
+        );
+      }
+    },
+    onSuccess: (_result, repoId) => {
+      queryClient.setQueryData<ListReposResponse>(queryKeys.repos, (current) =>
+        removeDeletedRepo(current, repoId),
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.repos,
+        exact: true,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.defaultRepo,
+        exact: true,
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.settings });
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Save settings (store-write today; real PATCH once settings flips)
 // ---------------------------------------------------------------------------

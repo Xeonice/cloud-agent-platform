@@ -863,6 +863,9 @@ function operationShape(event: SandboxProvisioningDiagnosticEvent): object {
     operation: event.operation,
     channel: event.channel,
     commandKind: event.commandKind ?? null,
+    // add-repo-content-store: the named workspace-source variant is part of an
+    // operation's stable shape, so a start/terminal pair may not disagree.
+    workspaceSourceKind: event.workspaceSourceKind ?? null,
   };
 }
 
