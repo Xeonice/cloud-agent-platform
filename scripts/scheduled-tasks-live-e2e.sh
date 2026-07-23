@@ -502,6 +502,7 @@ nohup env -i \
   SCHEDULED_TASKS_CLAIM_LEASE_MS=5000 \
   MAX_CONCURRENT_TASKS=2 \
   METRICS_SAMPLING_ENABLED=false \
+  CAP_WORKSPACE_GIT_FALLBACK_ENABLED=true \
   WORKSPACES_DIR="$ARTIFACT_DIR/workspaces" \
   node test/scheduled-tasks-live-e2e-server.mjs \
   >"$API_LOG" 2>&1 </dev/null &
