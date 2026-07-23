@@ -20,7 +20,7 @@
 // self-update) running local single-instance preconditions BEFORE any env
 // writeback — structurally true for a stop-the-world compose upgrade of one
 // `cap-api-1` instance, and never claimed as CI-witnessed facts.
-import { renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { finalizeReleaseAsset, normalizeVersion } from './release-image-assets.mjs';
@@ -175,7 +175,11 @@ export async function writeAttestationAsset({ version, gitSha, compatVerified, o
   });
   await validateAttestation(attestation);
   const asset = attestationAssetName(version);
-  const assetPath = join(resolve(outDir), asset);
+  const resolvedOutDir = resolve(outDir);
+  // release.yml passes a fresh `dist/...` path that no earlier step creates;
+  // the v0.44.0 release run died here on ENOENT for the .captmp temp file.
+  mkdirSync(resolvedOutDir, { recursive: true });
+  const assetPath = join(resolvedOutDir, asset);
   const tempPath = `${assetPath}.captmp`;
   rmSync(tempPath, { force: true });
   // Compact single-line JSON: consumers write the verbatim asset content into

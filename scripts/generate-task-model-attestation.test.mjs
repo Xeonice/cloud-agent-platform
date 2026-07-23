@@ -241,3 +241,21 @@ test('CLI fails closed and writes nothing when compat is unverified or flags are
 
   assert.deepEqual(readdirSync(outDir), []);
 });
+
+test('writeAttestationAsset creates a missing out directory (v0.44.0 release regression)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cap-attestation-outdir-'));
+  try {
+    const outDir = join(dir, 'nested', 'never-created');
+    const { assetPath } = await writeAttestationAsset({
+      version: 'v9.9.9',
+      gitSha: 'f'.repeat(40),
+      compatVerified: true,
+      outDir,
+    });
+    assert.equal(existsSync(assetPath), true);
+    assert.equal(existsSync(`${assetPath}.sha256`), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
