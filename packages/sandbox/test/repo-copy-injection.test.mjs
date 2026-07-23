@@ -457,10 +457,14 @@ try {
       commands.some(
         (command) =>
           command.includes(
-            `cat '${REPO_SOURCE_DIR}/.parts'/* > '${REPO_SOURCE_DIR}/.cap-archive.tar'`,
-          ) && command.includes(`rm -rf -- '${REPO_SOURCE_DIR}/.parts'`),
+            `if test -d '${REPO_SOURCE_DIR}/.parts/extracted'; then parts_src='${REPO_SOURCE_DIR}/.parts/extracted'; fi`,
+          ) &&
+          command.includes(
+            `cat "$parts_src"/* > '${REPO_SOURCE_DIR}/.cap-archive.tar'`,
+          ) &&
+          command.includes(`rm -rf -- '${REPO_SOURCE_DIR}/.parts'`),
       ),
-      'the box reassembled the parts before extraction',
+      'the box resolved the extraction layout and reassembled the parts before extraction',
     );
     check(
       commands.some(
