@@ -5,8 +5,8 @@
 
 ### Bug Fixes
 
-* **boxlite:** chunk archive injection under the daemon body limit and surface transfer progress ([1d64a01](https://github.com/Xeonice/cloud-agent-platform/commit/1d64a01923e4518cad3307be95d858fcacfa5d31))
-* resolve verify findings for chunk-archive-injection-with-progress ([1dbbfbe](https://github.com/Xeonice/cloud-agent-platform/commit/1dbbfbe5bc4c5613b8f0b43c5f3419c4a33dcab5))
+* **boxlite:** chunk archive injection under the daemon body limit and surface transfer progress ([#175](https://github.com/Xeonice/cloud-agent-platform/issues/175)) ([1d64a01](https://github.com/Xeonice/cloud-agent-platform/commit/1d64a01923e4518cad3307be95d858fcacfa5d31))
+* resolve verify findings for chunk-archive-injection-with-progress ([#175](https://github.com/Xeonice/cloud-agent-platform/issues/175)) ([1dbbfbe](https://github.com/Xeonice/cloud-agent-platform/commit/1dbbfbe5bc4c5613b8f0b43c5f3419c4a33dcab5))
 
 ## [0.45.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.44.0...v0.45.0) (2026-07-23)
 
