@@ -5,7 +5,7 @@
 
 ### Bug Fixes
 
-* **boxlite:** resolve the daemon's nested extraction layout before part reassembly ([378362c](https://github.com/Xeonice/cloud-agent-platform/commit/378362ce8060f4bb1d28e6b9b3085ea911ac495d))
+* **boxlite:** resolve the daemon's nested extraction layout before part reassembly ([#177](https://github.com/Xeonice/cloud-agent-platform/issues/177)) ([378362c](https://github.com/Xeonice/cloud-agent-platform/commit/378362ce8060f4bb1d28e6b9b3085ea911ac495d))
 
 ## [0.45.2](https://github.com/Xeonice/cloud-agent-platform/compare/v0.45.1...v0.45.2) (2026-07-24)
 
