@@ -90,6 +90,10 @@ test('a slow in-flight write suppresses concurrent reports instead of stacking',
   (resolveWrite as unknown as () => void)();
   await first;
   nowMs = TRANSFER_PROGRESS_WRITE_INTERVAL_MS * 3;
-  await writer('workspace_transfer', snapshot(3));
+  // The third report starts a fresh write whose promise must be resolved
+  // before awaiting it — the mock hands back a new pending promise each time.
+  const third = writer('workspace_transfer', snapshot(3));
   assert.deepEqual(writes, [1, 3]);
+  (resolveWrite as unknown as () => void)();
+  await third;
 });

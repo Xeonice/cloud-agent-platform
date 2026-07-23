@@ -2,23 +2,43 @@
   "version": 1,
   "change": "chunk-archive-injection-with-progress",
   "intent": "bug-fix",
-  "runtimeWireBehavior": "unchanged",
+  "runtimeWireBehavior": "changed",
   "surfaces": {
     "publicV1": {
-      "status": "unchanged",
-      "reason": "No /v1 operation, request/response schema, status code, or error body changes. The provisioning progress fields (TaskProvisioningProgressSchema) already exist on task reads since fix-large-repo-task-provisioning; this change only feeds real byte data into those existing fields during archive-variant workspace transfer. Stage vocabulary and failure projections are untouched."
+      "status": "changed",
+      "operationIds": [
+        "tasks.list",
+        "tasks.get"
+      ],
+      "reason": "No schema, status-code, or error-body change: the provisioning progress fields (TaskProvisioningProgressSchema) have been declared on task reads since fix-large-repo-task-provisioning. What changes is observable wire BEHAVIOR: during archive-variant workspace transfer those fields now carry real byte-based values (receivedBytes/percent/throughput, 1s-throttled), where the injection path previously always projected them as null/absent."
     },
     "mcp": {
-      "status": "unchanged",
-      "reason": "No MCP tool, argument, result, registration, or transport change. get_task inherits the already-declared progress fields through the canonical projection; only their runtime population changes."
+      "status": "changed",
+      "operationIds": [
+        "tasks.list",
+        "tasks.get"
+      ],
+      "toolIds": [
+        "list_tasks",
+        "get_task"
+      ],
+      "reason": "list_tasks/get_task inherit the same runtime-populated progress values through the canonical output projection; tool schemas, registration, and transports are untouched."
     },
     "openapi": {
-      "status": "not-applicable",
-      "reason": "The OpenAPI projection is unchanged because no registry operation or schema changes; part-size tuning and box-side reassembly are outside the projection."
+      "status": "derived",
+      "operationIds": [
+        "tasks.list",
+        "tasks.get"
+      ],
+      "reason": "The OpenAPI projection derives from the unchanged canonical response schema; the already-declared progress fields simply become populated at runtime during archive transfer."
     },
     "apiPlayground": {
-      "status": "not-applicable",
-      "reason": "The Playground catalogs Public V1 operations only and gains no entry; existing task reads render the already-declared progress fields."
+      "status": "derived",
+      "operationIds": [
+        "tasks.list",
+        "tasks.get"
+      ],
+      "reason": "The playground renders the same derived task-read schema; live progress values now appear in responses during archive transfer with no rendering or catalog change."
     },
     "internalOnly": {
       "status": "changed",
@@ -28,7 +48,7 @@
   },
   "protocolDifferences": [],
   "verification": {
-    "id": "api-mcp",
-    "requiresWireCompatibilityFixture": false
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
   }
 }

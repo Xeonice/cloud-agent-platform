@@ -60,3 +60,19 @@
 ## Open Questions
 
 （无阻塞项）BoxLite 上游是否愿意提高/流式化 files 端点限额——可提 issue，与本修复解耦。
+
+### 【已处置 2026-07-24】Verify-routed spec defects（原阻塞归档：surface-impact.json 声明与代码证据冲突）
+
+处置结果：sidecar 已更正——`runtimeWireBehavior: changed`；publicV1/mcp 声明 `changed`（operationIds tasks.list/tasks.get，toolIds list_tasks/get_task；理由=schema 不变但 wire 行为变化：progress 字段从注入路径恒空变为真实字节数据）；openapi/apiPlayground 声明 `derived`（同 ops）。registry 中两 op 均 NO_MCP_DIFFERENCES，protocolDifferences 保持空。待 re-verify 复核。原始裁定存档如下：
+
+opsx-verify 公共面检查（deterministic-public-surface-cli lens）对以下两条 requirement 判定 undeclared-impact，四项均为 sidecar 假声明（false sidecar claim），归档在 sidecar 更正前被 gate：
+
+- `boxlite-sandbox-provider/boxlite-archive-injection-chunks-uploads-under-the-daemon-body-limit-with-verified-reassembly`
+- `sandbox-provider-port/archive-workspace-transfer-feeds-the-provisioning-progress-snapshot`
+
+1. **apiPlayground**：代码证据显示改动触及 apiPlayground 面，但 surface-impact.json 声明 `not-applicable`。需重审：若 Playground 渲染的任务读投影确因 progress 字段被真实喂数而改变可见行为，声明应为 `changed`（或给出可检验的排除理由）；`not-applicable` 与证据矛盾。
+2. **mcp**：代码证据显示改动触及 mcp 面（`get_task` 经 canonical projection 继承 progress 字段的运行时取值变化），但声明为 `unchanged`。需明确"仅运行时填充、schema 不变"是否满足本仓库对 `unchanged` 的定义——当前声明与 verify 证据冲突，属歧义/不可测声明。
+3. **openapi**：代码证据显示改动触及 openapi 面，但声明 `not-applicable`。同上需重审投影是否真的零变化，并让声明与证据一致。
+4. **publicV1**：代码证据显示改动触及 publicV1 面（/v1 任务读的 provisioning progress 字段从恒 null/缺省变为有真实数据流），但声明 `unchanged`。"字段已存在、仅数据源接通"是否构成 wire 行为变化，spec/sidecar 未给出可判定标准——须在 sidecar 中更正或补充可检验的判定依据。
+
+处置：更正 surface-impact.json 四处声明（或按仓库公共面协议给出可机检的排除依据）后方可归档。这是声明缺陷而非实现缺陷——两条 requirement 的实现代码本身已端到端可追（见 verification-report.md）。
