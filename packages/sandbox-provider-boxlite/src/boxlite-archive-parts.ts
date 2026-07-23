@@ -194,10 +194,15 @@ export async function uploadBoxLiteArchiveInParts(
     const sha256Hex = hash.digest('hex');
     // Reassemble, drop the parts before extracting to halve peak disk usage,
     // verify byte count + checksum, then extract at the target directory.
-    // `.parts/*` globs lexicographically, matching the zero-padded upload order.
+    // Some daemon builds extract uploads into an `extracted/` subdirectory of
+    // `path` (proven live on 0.9.5) while others land entries directly, so the
+    // actual parts directory is resolved in-box first. The glob remains
+    // lexicographic either way, matching the zero-padded upload order.
     const reassemble = await exec(
       [
-        `cat ${shellQuote(partsDir)}/* > ${shellQuote(assembled)}`,
+        `parts_src=${shellQuote(partsDir)}`,
+        `if test -d ${shellQuote(`${partsDir}/extracted`)}; then parts_src=${shellQuote(`${partsDir}/extracted`)}; fi`,
+        `cat "$parts_src"/* > ${shellQuote(assembled)}`,
         `rm -rf -- ${shellQuote(partsDir)}`,
       ].join(' && '),
     );

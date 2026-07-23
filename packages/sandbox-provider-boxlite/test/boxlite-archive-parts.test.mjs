@@ -149,9 +149,13 @@ function fakePartsClient({ execHandler } = {}) {
   const joined = execs.join('\n');
   check(
     joined.includes(
-      `cat '/home/gem/.cap-repo-source/.parts'/* > '/home/gem/.cap-repo-source/.cap-archive.tar'`,
-    ) && joined.includes(`rm -rf -- '/home/gem/.cap-repo-source/.parts'`),
-    'the box reassembles via lexicographic cat and drops the parts first',
+      `if test -d '/home/gem/.cap-repo-source/.parts/extracted'; then parts_src='/home/gem/.cap-repo-source/.parts/extracted'; fi`,
+    ) &&
+      joined.includes(
+        `cat "$parts_src"/* > '/home/gem/.cap-repo-source/.cap-archive.tar'`,
+      ) &&
+      joined.includes(`rm -rf -- '/home/gem/.cap-repo-source/.parts'`),
+    'the box resolves the daemon extraction layout, cats lexicographically, and drops the parts first',
   );
   check(
     joined.includes(`test "$actual_bytes" -eq ${payload.length}`) &&
