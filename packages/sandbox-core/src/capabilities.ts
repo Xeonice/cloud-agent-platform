@@ -13,6 +13,13 @@ export type SandboxProviderCapability =
   | 'workspace.git.materialize'
   | 'workspace.git.deliver'
   | 'workspace.archive.transfer'
+  /**
+   * Workspace-source injection variants (see `workspace-source.ts`). A provider
+   * declares one entry per `WorkspaceSource` kind it can materialize.
+   */
+  | 'workspace.source.volume'
+  | 'workspace.source.archive'
+  | 'workspace.source.git'
   | 'transcript.retained-read'
   | 'transcript.retained-source'
   | 'lifecycle.readopt'
@@ -45,6 +52,9 @@ export const SANDBOX_PROVIDER_FEATURE_CAPABILITIES: readonly SandboxProviderCapa
   'terminal.interactive',
   'command.exec',
   'workspace.archive.transfer',
+  'workspace.source.volume',
+  'workspace.source.archive',
+  'workspace.source.git',
   'transcript.retained-source',
   'lifecycle.readoption',
   'lifecycle.sleep',

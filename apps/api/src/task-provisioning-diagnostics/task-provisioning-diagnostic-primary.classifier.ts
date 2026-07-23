@@ -7,10 +7,12 @@ import {
   isSandboxProvisioningStageError,
   isSandboxRuntimeModelSetupError,
   isSandboxWorkspaceMaterializationError,
+  SANDBOX_PROVISIONING_DIAGNOSTIC_WORKSPACE_SOURCE_KINDS,
   type SandboxProvisioningDiagnosticCause,
   type SandboxProvisioningDiagnosticCommandKind,
   type SandboxProvisioningDiagnosticOperation,
   type SandboxProvisioningDiagnosticStage,
+  type SandboxProvisioningDiagnosticWorkspaceSourceKind,
 } from '@cap/sandbox';
 
 import {
@@ -18,6 +20,10 @@ import {
   type TaskBranchResolutionError,
 } from '../forge/task-branch-resolver';
 import { TaskAdmissionProcessingError } from '../task-admission/task-admission.types';
+import {
+  isWorkspaceSourceResolutionError,
+  type WorkspaceSourceResolutionError,
+} from '../sandbox/workspace-source-resolver';
 import type { ProvisioningTaskFailureCode } from '../tasks/task-failure';
 
 type ClassifiedPrimaryOutcome = 'failed' | 'timed_out' | 'cancelled';
@@ -32,11 +38,32 @@ export interface ClassifiedTaskProvisioningDiagnosticPrimaryFailure {
   readonly stage: SandboxProvisioningDiagnosticStage;
   readonly operation: SandboxProvisioningDiagnosticOperation;
   readonly commandKind?: SandboxProvisioningDiagnosticCommandKind;
+  /**
+   * Workspace-source variant in force when the failure happened, carried only
+   * for workspace-materialization stages (add-repo-content-store). Absent for
+   * every other stage: those operations materialize no workspace and must not
+   * claim a variant.
+   */
+  readonly workspaceSourceKind?: SandboxProvisioningDiagnosticWorkspaceSourceKind;
   readonly outcome: ClassifiedPrimaryOutcome;
   readonly cause: SandboxProvisioningDiagnosticCause;
   readonly retryable: boolean;
   readonly exitCode: null;
 }
+
+/** Ambient facts the caller already knows; never derived from raw error text. */
+export interface TaskProvisioningDiagnosticPrimaryClassificationContext {
+  readonly workspaceSourceKind?: SandboxProvisioningDiagnosticWorkspaceSourceKind;
+}
+
+const WORKSPACE_MATERIALIZATION_STAGES: ReadonlySet<string> = new Set([
+  'credential_setup',
+  'remote_ref_resolution',
+  'workspace_transfer',
+  'checkout',
+  'submodules',
+  'credential_cleanup',
+]);
 
 interface StageDescriptor {
   readonly operation: SandboxProvisioningDiagnosticOperation;
@@ -109,17 +136,48 @@ const PROVIDER_SELECTION_DESCRIPTOR =
 export function classifyTaskProvisioningDiagnosticPrimaryFailure(
   error: unknown,
   fallbackStage: SandboxProvisioningDiagnosticStage,
+  classificationContext: TaskProvisioningDiagnosticPrimaryClassificationContext = {},
 ): ClassifiedTaskProvisioningDiagnosticPrimaryFailure {
-  try {
-    return classifyKnownTaskProvisioningDiagnosticPrimaryFailure(
-      error,
-      fallbackStage,
-    );
-  } catch {
-    // A malformed cross-bundle value (including an accessor that throws) is
-    // still only unknown evidence; classification must never become authority.
-    return unknownPrimaryFailure(fallbackStage);
+  const classified = (() => {
+    try {
+      return classifyKnownTaskProvisioningDiagnosticPrimaryFailure(
+        error,
+        fallbackStage,
+      );
+    } catch {
+      // A malformed cross-bundle value (including an accessor that throws) is
+      // still only unknown evidence; classification must never become authority.
+      return unknownPrimaryFailure(fallbackStage);
+    }
+  })();
+  return withWorkspaceSourceKind(
+    classified,
+    classificationContext.workspaceSourceKind,
+  );
+}
+
+/**
+ * Name the workspace-source variant on workspace-materialization evidence only.
+ * The three variants share one closed stage vocabulary, so without this the
+ * synthesized primary cannot say whether a `workspace_transfer` failure was a
+ * mount preparation, an archive transfer, or a network clone.
+ */
+function withWorkspaceSourceKind(
+  classified: ClassifiedTaskProvisioningDiagnosticPrimaryFailure,
+  workspaceSourceKind:
+    | SandboxProvisioningDiagnosticWorkspaceSourceKind
+    | undefined,
+): ClassifiedTaskProvisioningDiagnosticPrimaryFailure {
+  if (
+    workspaceSourceKind === undefined ||
+    !SANDBOX_PROVISIONING_DIAGNOSTIC_WORKSPACE_SOURCE_KINDS.includes(
+      workspaceSourceKind,
+    ) ||
+    !WORKSPACE_MATERIALIZATION_STAGES.has(classified.stage)
+  ) {
+    return classified;
   }
+  return Object.freeze({ ...classified, workspaceSourceKind });
 }
 
 function classifyKnownTaskProvisioningDiagnosticPrimaryFailure(
@@ -157,6 +215,10 @@ function classifyKnownTaskProvisioningDiagnosticPrimaryFailure(
   if (isSandboxWorkspaceMaterializationError(error)) {
     const classified = classifyWorkspaceMaterializationFailure(error.failure);
     if (classified !== undefined) return classified;
+  }
+
+  if (isWorkspaceSourceResolutionError(error)) {
+    return classifyWorkspaceSourceResolutionFailure(error);
   }
 
   if (isProviderAvailabilityError(error)) {
@@ -210,6 +272,62 @@ function classifyKnownTaskProvisioningDiagnosticPrimaryFailure(
   }
 
   return unknownPrimaryFailure(fallbackStage);
+}
+
+/**
+ * Workspace-source selection failures (add-repo-content-store Track 4.5).
+ *
+ * These happen BEFORE any provider boundary, so they must still land on a
+ * distinguishable durable stage/cause. The mapping keeps the closed diagnostic
+ * vocabulary and separates the three selection failures from an in-sandbox
+ * materialization failure:
+ *
+ *   copy_not_ready          -> workspace_transfer + ref_not_found
+ *                              (the recorded content copy is absent/not ready;
+ *                               the operator action is "refresh the repo")
+ *   unsupported_provider    -> provider_selection + provider_unavailable
+ *                              (no declared injection variant, fallback gate off)
+ *   store_volume_unresolved -> workspace_transfer + protocol_failed
+ *                              (deployment wiring: the repo-store volume name)
+ *   repo_unavailable        -> remote_ref_resolution + unknown
+ */
+function classifyWorkspaceSourceResolutionFailure(
+  error: WorkspaceSourceResolutionError,
+): ClassifiedTaskProvisioningDiagnosticPrimaryFailure {
+  switch (error.reason) {
+    case 'copy_not_ready':
+      return primaryFailure(
+        'workspace_transfer',
+        DIAGNOSTIC_STAGE_DESCRIPTORS.workspace_transfer,
+        'failed',
+        'ref_not_found',
+        false,
+      );
+    case 'unsupported_provider':
+      return primaryFailure(
+        'provider_selection',
+        PROVIDER_SELECTION_DESCRIPTOR,
+        'failed',
+        'provider_unavailable',
+        false,
+      );
+    case 'store_volume_unresolved':
+      return primaryFailure(
+        'workspace_transfer',
+        DIAGNOSTIC_STAGE_DESCRIPTORS.workspace_transfer,
+        'failed',
+        'protocol_failed',
+        false,
+      );
+    default:
+      return primaryFailure(
+        'remote_ref_resolution',
+        DIAGNOSTIC_STAGE_DESCRIPTORS.remote_ref_resolution,
+        'failed',
+        'unknown',
+        false,
+      );
+  }
 }
 
 function classifyBranchResolutionFailure(

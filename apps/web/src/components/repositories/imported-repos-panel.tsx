@@ -19,15 +19,23 @@
  */
 import * as React from "react";
 
-import type { Repo } from "@cap/contracts";
+import { repoOffersForgeDelivery, type Repo } from "@cap/contracts";
 import { StatusPill } from "@/components/status-pill";
+import {
+  REPO_COPY_STATUS_PRESENTATION,
+  repoCopyStatus,
+  repoCopyUpdatedCaption,
+} from "@/lib/repo-copy-status";
 import { RepoRow, RepoListHead, repoFullName } from "./repo-row";
 
 /**
  * The permission label shown for every scoped imported repo. GitHub-imported
- * repos use the operator's connected GitHub PAT server-side.
+ * repos use the operator's connected GitHub PAT server-side; a LOCALLY imported
+ * repo (local-repo-import) is never connected to a forge, so it is labeled as
+ * the local source it is rather than borrowing a forge credential's name.
  */
 function permissionLabel(repo: Repo): string {
+  if (!repoOffersForgeDelivery(repo)) return "本地路径";
   switch (repo.forge) {
     case "gitlab":
       return "GitLab 凭据";
@@ -38,6 +46,17 @@ function permissionLabel(repo: Repo): string {
     case undefined:
       return "GitHub PAT";
   }
+}
+
+/**
+ * The second policy line. A locally imported repo states the delivery boundary
+ * honestly: forge PR/MR push-back is NOT offered for it (spec "No forge delivery
+ * offered"), while in-sandbox git work against the recorded path is unchanged.
+ */
+function permissionCaption(repo: Repo): string {
+  return repoOffersForgeDelivery(repo)
+    ? "使用已连接 PAT 授权 clone/push。"
+    : "本地导入仓库，不提供 PR / MR 回写。";
 }
 
 export interface ImportedReposPanelProps {
@@ -53,6 +72,23 @@ export interface ImportedReposPanelProps {
   onRefreshDefaultBranch: (repoId: string) => void;
   /** The Repo id whose server-side symbolic-HEAD probe is in flight. */
   refreshingRepoId?: string | null;
+  /**
+   * Acquire/refresh one repository's repo-store content copy
+   * (add-repo-content-store). Omitted ⇒ the copy affordance is not rendered.
+   */
+  onRefreshCopy?: (repoId: string) => void;
+  /** The Repo id whose copy acquisition/refresh request is in flight. */
+  refreshingCopyRepoId?: string | null;
+  /**
+   * Delete a repository and its repo-store content copy
+   * (add-repo-content-store, "copy lifecycle follows the Repo"). Omitted ⇒ the
+   * delete affordance is not rendered at all. Destructive: the page owns the
+   * confirmation prompt, matching how the other destructive console actions
+   * (retiring a sandbox image) are confirmed at their call site.
+   */
+  onDelete?: (repoId: string) => void;
+  /** The Repo id whose deletion is in flight (fences every delete button). */
+  deletingRepoId?: string | null;
 }
 
 /** The 已导入仓库 panel. */
@@ -63,6 +99,10 @@ export function ImportedReposPanel({
   pendingDefaultId = null,
   onRefreshDefaultBranch,
   refreshingRepoId = null,
+  onRefreshCopy,
+  refreshingCopyRepoId = null,
+  onDelete,
+  deletingRepoId = null,
 }: ImportedReposPanelProps) {
   return (
     <article
@@ -100,6 +140,14 @@ export function ImportedReposPanel({
             const isDefault = repo.isDefault === true;
             const pending = settingDefault && pendingDefaultId === repo.id;
             const refreshing = refreshingRepoId === repo.id;
+            // The copy affordance exists only where the api actually reports a
+            // copy state (an older api sends none — see lib/repo-copy-status).
+            const copyStatus = repoCopyStatus(repo);
+            const copyPresentation =
+              copyStatus === null ? null : REPO_COPY_STATUS_PRESENTATION[copyStatus];
+            const refreshingCopy = refreshingCopyRepoId === repo.id;
+            const copyBusy = refreshingCopy || copyStatus === "refreshing";
+            const deleting = deletingRepoId === repo.id;
             return (
               <RepoRow
                 key={repo.id}
@@ -118,7 +166,21 @@ export function ImportedReposPanel({
                 policy={
                   <>
                     <p className="m-0 truncate">{permissionLabel(repo)}</p>
-                    <p className="m-0 truncate text-xs">使用已连接 PAT 授权 clone/push。</p>
+                    <p className="m-0 truncate text-xs">{permissionCaption(repo)}</p>
+                    {copyPresentation ? (
+                      <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                        <StatusPill
+                          variant={copyPresentation.variant}
+                          data-repo-copy-status={copyStatus}
+                          className="h-[22px] shrink-0 px-[7px] text-[11px] leading-[22px]"
+                        >
+                          {copyPresentation.label}
+                        </StatusPill>
+                        <small className="min-w-0 truncate text-xs">
+                          {repoCopyUpdatedCaption(repo)}
+                        </small>
+                      </span>
+                    ) : null}
                   </>
                 }
                 sync={
@@ -140,6 +202,17 @@ export function ImportedReposPanel({
                     >
                       {refreshing ? "刷新中…" : "刷新分支"}
                     </button>
+                    {onRefreshCopy && copyPresentation ? (
+                      <button
+                        type="button"
+                        data-refresh-copy-repo-id={repo.id}
+                        disabled={copyBusy || refreshingCopyRepoId !== null}
+                        onClick={() => onRefreshCopy(repo.id)}
+                        className="inline-flex h-[30px] items-center justify-center whitespace-nowrap rounded-md bg-[#f6f8fa] px-[7px] text-[13px] font-medium text-foreground shadow-[0_0_0_1px_var(--border)] hover:bg-secondary disabled:pointer-events-none disabled:opacity-60"
+                      >
+                        {copyBusy ? "副本刷新中…" : "刷新副本"}
+                      </button>
+                    ) : null}
                     {isDefault ? null : (
                       <button
                         type="button"
@@ -150,6 +223,22 @@ export function ImportedReposPanel({
                         {pending ? "设置中…" : "设为默认"}
                       </button>
                     )}
+                    {onDelete ? (
+                      <button
+                        type="button"
+                        data-delete-repo-id={repo.id}
+                        disabled={
+                          deletingRepoId !== null ||
+                          settingDefault ||
+                          refreshingRepoId !== null ||
+                          refreshingCopyRepoId !== null
+                        }
+                        onClick={() => onDelete(repo.id)}
+                        className="inline-flex h-[30px] items-center justify-center whitespace-nowrap rounded-md bg-[#f6f8fa] px-[7px] text-[13px] font-medium text-danger shadow-[0_0_0_1px_var(--border)] hover:bg-secondary disabled:pointer-events-none disabled:opacity-60"
+                      >
+                        {deleting ? "删除中…" : "删除仓库"}
+                      </button>
+                    ) : null}
                   </div>
                 }
               />

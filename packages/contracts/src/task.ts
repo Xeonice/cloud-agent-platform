@@ -464,6 +464,115 @@ export type TaskFailure = z.infer<typeof TaskFailureSchema>;
 // ---------------------------------------------------------------------------
 
 /**
+ * Repo-store content-copy state (add-repo-content-store).
+ *
+ * - `missing` — no copy exists (a Repo imported before the content store, or one
+ *   whose copy was never acquired). This is the durable default after upgrade.
+ * - `refreshing` — an acquisition/refresh is in flight.
+ * - `ready` — a bare-mirror copy is materialized and usable for task start.
+ * - `failed` — the last acquisition/refresh failed. A failed REFRESH still has
+ *   its previous (last-good) copy on disk; a failed initial acquisition has none.
+ */
+export const RepoCopyStatusSchema = z.enum([
+  'missing',
+  'refreshing',
+  'ready',
+  'failed',
+]);
+export type RepoCopyStatus = z.infer<typeof RepoCopyStatusSchema>;
+
+/**
+ * Stable error code a TASK CREATE is rejected with when the selected Repo's
+ * content copy is not `ready` (add-repo-content-store D6).
+ *
+ * DELIBERATELY NOT one of the `repo_copy_*` {@link REPO_IMPORT_FAILURE_CODES}:
+ * those say "acquiring/refreshing the copy FAILED". This one says "the Repo row
+ * is fine, but no usable copy exists yet, so no task may start against it" — a
+ * different audience (task creation) and a different remedy (run the refresh).
+ */
+export const TASK_REPO_COPY_NOT_READY_ERROR = 'task_repo_copy_not_ready';
+
+/**
+ * The blocking copy state named by a rejection. Every {@link RepoCopyStatus}
+ * except `ready`, plus `unknown` for a stored value this build does not
+ * recognize — such a row is refused (fail closed) rather than admitted.
+ */
+export const TaskRepoCopyBlockingStatusSchema = z.enum([
+  'missing',
+  'refreshing',
+  'failed',
+  'unknown',
+]);
+export type TaskRepoCopyBlockingStatus = z.infer<
+  typeof TaskRepoCopyBlockingStatusSchema
+>;
+
+/** REST path (relative to the api root) that acquires/refreshes a repo copy. */
+export const REPO_COPY_REFRESH_PATH_TEMPLATE = 'POST /repos/:repoId/refresh-copy';
+
+/**
+ * Operator-facing rejection copy. Shared so the console, `/v1`, and MCP all
+ * name the SAME remedy, and so a client that prefers its own wording can still
+ * branch on {@link TASK_REPO_COPY_NOT_READY_ERROR} + the blocking status.
+ *
+ * Every variant names `refresh-copy` — it is the single entry point that also
+ * acquires a `missing` copy, so it is the one action that unblocks the create.
+ */
+export function taskRepoCopyNotReadyMessage(
+  repoId: string,
+  copyStatus: TaskRepoCopyBlockingStatus,
+): string {
+  const path = `POST /repos/${repoId}/refresh-copy`;
+  switch (copyStatus) {
+    case 'missing':
+      return (
+        'This repo has no content copy yet, so a task cannot be started against ' +
+        `it (copyStatus "missing"). Acquire the copy with \`${path}\`, then ` +
+        'create the task again.'
+      );
+    case 'refreshing':
+      return (
+        'This repo\'s content copy is being refreshed right now, so a task ' +
+        'cannot be started against it (copyStatus "refreshing"). Wait for the ' +
+        `refresh to finish — re-run \`${path}\` if it stalls — then create the ` +
+        'task again.'
+      );
+    case 'failed':
+      return (
+        'The last content-copy acquisition for this repo failed, so a task ' +
+        'cannot be started against it (copyStatus "failed"). Retry it with ' +
+        `\`${path}\` (or re-import the repo), then create the task again.`
+      );
+    case 'unknown':
+      return (
+        'This repo\'s content copy state is not recognized, so a task cannot be ' +
+        `started against it (copyStatus "unknown"). Re-acquire the copy with ` +
+        `\`${path}\`, then create the task again.`
+      );
+  }
+}
+
+/**
+ * Rejection body for a create blocked on copy readiness. Shape follows the
+ * existing `{ error, message }` failure texture (see
+ * {@link RepoImportFailureSchema}) and adds the two fields a client needs to
+ * render the remedy without a second read.
+ */
+export const TaskRepoCopyNotReadyErrorSchema = z
+  .object({
+    error: z.literal(TASK_REPO_COPY_NOT_READY_ERROR),
+    /** The Repo whose copy blocked the create. */
+    repoId: z.string().min(1),
+    copyStatus: TaskRepoCopyBlockingStatusSchema,
+    /** Bounded, server-safe operator copy naming the refresh path. */
+    message: z.string().trim().min(1).max(1_024),
+  })
+  .strict();
+export type TaskRepoCopyNotReadyError = z.infer<
+  typeof TaskRepoCopyNotReadyErrorSchema
+>;
+
+/**
  * A registered git repository the operator can launch tasks against.
  *
  * Import metadata is OPTIONAL and NULLABLE for legacy rows. `defaultBranch` is
@@ -505,8 +614,53 @@ export const RepoSchema = z.object({
    * (inferred from `gitSource` host at use). Drives change-request push-back.
    */
   forge: ForgeKindSchema.nullable().optional(),
+  /**
+   * Repo-store content-copy state (add-repo-content-store). ADDITIVE and
+   * OPTIONAL: a payload produced before the content store existed carries no
+   * such field and MUST still parse. A row that predates the store reads as
+   * `missing` until an operator triggers acquisition; task creation is gated on
+   * `ready`.
+   */
+  copyStatus: RepoCopyStatusSchema.optional(),
+  /**
+   * When the bare-mirror content copy was last successfully materialized
+   * (import acquisition or an explicit refresh). Null/absent while no copy has
+   * ever completed. A FAILED refresh keeps the previous timestamp, because the
+   * last-good copy is still the one on disk.
+   */
+  copyUpdatedAt: z.coerce.date().nullable().optional(),
 });
 export type Repo = z.infer<typeof RepoSchema>;
+
+/**
+ * Whether a repo's recorded `gitSource` is a local filesystem path rather than
+ * an `http(s)` remote (local-repo-import). Pure and shared so the api and the
+ * console classify a repo identically without a second wire field: a locally
+ * imported Repo records the source PATH as its git source and is never
+ * connected to a forge.
+ */
+export function isLocalRepoGitSource(gitSource: string): boolean {
+  // A locally imported Repo records an ABSOLUTE POSIX path (the api container is
+  // the only filesystem a local import can name). Everything else — including a
+  // relative or scheme-bearing string — is treated as a remote source, so this
+  // never misclassifies an existing repo into "local".
+  return /^\/(?!\/)/u.test(gitSource.trim());
+}
+
+/**
+ * Whether forge-side delivery (opening a PR/MR) can be offered for a repo.
+ *
+ * A locally imported Repo (`gitSource` is a filesystem path) is NEVER treated as
+ * connected to a forge, regardless of the `forge` column, so console/API
+ * delivery-option reads must not offer PR/MR for it. A remote repo with a null
+ * `forge` stays eligible: the forge is inferred from the host at use.
+ */
+export function repoOffersForgeDelivery(repo: {
+  readonly gitSource: string;
+  readonly forge?: string | null;
+}): boolean {
+  return !isLocalRepoGitSource(repo.gitSource);
+}
 
 // ---------------------------------------------------------------------------
 // Task result delivery (add-multi-forge-task-delivery)
@@ -717,6 +871,29 @@ export const REPO_IMPORT_FAILURE_CODES = [
   'repo_default_branch_unresolved',
   'repo_picker_candidate_not_accessible',
   'repo_import_identity_conflict',
+  // add-repo-content-store — content-copy acquisition/refresh failures. These are
+  // DISTINCT from the metadata codes above so the console can tell "the repo could
+  // not be verified" from "the repo is registered but its content copy is not
+  // ready"; the latter leaves a retryable Repo row whose copy status is visible.
+  'repo_copy_authentication_failed',
+  'repo_copy_access_denied',
+  'repo_copy_network_unavailable',
+  'repo_copy_source_invalid',
+  'repo_copy_missing',
+  'repo_copy_store_unavailable',
+  'repo_copy_platform_dependency_unavailable',
+  'repo_copy_acquisition_aborted',
+  // add-repo-content-store — Console repo DELETION refused because the Repo is
+  // still referenced. The database cascade would silently take the referencing
+  // tasks/schedules with it, so the delete surface fails closed and names the
+  // reference instead; the operator removes the tasks/schedules first.
+  'repo_has_tasks',
+  // add-repo-content-store / local-repo-import — local-path import gate failures.
+  'repo_local_import_disabled',
+  'repo_local_import_path_invalid',
+  'repo_local_import_path_outside_root',
+  'repo_local_import_path_not_found',
+  'repo_local_import_not_a_git_repository',
 ] as const;
 export const RepoImportFailureCodeSchema = z.enum(REPO_IMPORT_FAILURE_CODES);
 export type RepoImportFailureCode = z.infer<

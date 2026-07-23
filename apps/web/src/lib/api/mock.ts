@@ -52,7 +52,9 @@ import type {
   CreateSandboxEnvironmentRequest,
   UpdateSandboxEnvironmentParametersRequest,
   TaskProvisioningDiagnosticsResponse,
+  LocalRepoImportAvailability,
 } from "@cap/contracts";
+import { LOCAL_REPO_IMPORT_ROOT_ENV } from "@cap/contracts";
 import { getState } from "../store";
 import { ALLOWED_ACCOUNT } from "../mock-session";
 import { forceMock } from "./capabilities";
@@ -302,10 +304,46 @@ export async function mockListRepos(): Promise<ListReposResponse> {
   return buildRepoList();
 }
 
+/**
+ * Local-path import availability (local-repo-import). The mock seam reports the
+ * feature OFF and NEVER fabricates an allowlist root: without a running api
+ * there is no filesystem to import from, and the spec requires the mode to be
+ * absent whenever it is not genuinely configured. So the third import mode never
+ * appears in mock/visual-harness mode — fail-closed by construction.
+ */
+export async function mockLocalRepoImportAvailability(): Promise<LocalRepoImportAvailability> {
+  await delay();
+  return { enabled: false, root: null, envVar: LOCAL_REPO_IMPORT_ROOT_ENV };
+}
+
 export async function mockGetDefaultRepo(): Promise<DefaultRepoResponse> {
   await delay();
   const def = buildRepoList().find((r) => r.isDefault) ?? null;
   return { repo: def };
+}
+
+/**
+ * Repo ids retired through `mockDeleteRepo` this session (add-repo-content-store).
+ *
+ * Session-scoped and deliberately NOT persisted to the store: the seeded repos
+ * come back on reload, which is the behavior a visual harness wants. Kept here
+ * rather than in `store.ts` because deletion is a mock-seam concern, not a
+ * console preference (same shape as the other module-level mock stores).
+ */
+let mockDeletedRepoIds: string[] = [];
+
+/**
+ * Delete a repository in the mock seam (`DELETE /repos/:repoId`). Mirrors the
+ * real endpoint at the only level the mock has: the repo disappears from every
+ * repo read. Like the real endpoint it resolves with no body. Clearing a default
+ * selection that pointed at it belongs to the mutation (mock.ts only READS the
+ * persisted store; every store write lives in mutations.ts).
+ */
+export async function mockDeleteRepo(repoId: string): Promise<void> {
+  await delay();
+  if (!mockDeletedRepoIds.includes(repoId)) {
+    mockDeletedRepoIds = [...mockDeletedRepoIds, repoId];
+  }
 }
 
 /**
@@ -315,9 +353,13 @@ export async function mockGetDefaultRepo(): Promise<DefaultRepoResponse> {
  */
 function buildRepoList(): ListReposResponse {
   const { importedRepos, selectedRepo } = getState();
+  const deleted = new Set(mockDeletedRepoIds);
   const seen = new Set(SEED_REPOS.map((r) => r.id));
-  const merged: Repo[] = SEED_REPOS.map((r) => ({ ...r }));
+  const merged: Repo[] = SEED_REPOS.filter((r) => !deleted.has(r.id)).map((r) => ({
+    ...r,
+  }));
   for (const imp of importedRepos) {
+    if (deleted.has(imp.id)) continue;
     if (seen.has(imp.id)) continue;
     seen.add(imp.id);
     merged.push({

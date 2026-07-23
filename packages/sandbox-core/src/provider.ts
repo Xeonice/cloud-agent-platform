@@ -26,6 +26,8 @@ import type {
   SandboxGitDeliveryResult,
   SandboxWorkspaceTransferDetachment,
 } from './workspace-git.js';
+import type { WorkspaceSource } from './workspace-source.js';
+import { snapshotWorkspaceSource } from './workspace-source.js';
 import {
   snapshotSandboxResources,
   snapshotSandboxWorkspacePlan,
@@ -696,6 +698,13 @@ export interface SandboxProvisionContext<TCloneSpec = GitCloneSpec> {
    * object: exact selected workspace input the provider must use.
    */
   readonly cloneSpec?: TCloneSpec | null;
+  /**
+   * Typed workspace origin selected by orchestration (repo-store volume mount,
+   * repo-store archive transfer, or the gated legacy git clone). It coexists
+   * with `cloneSpec` while providers migrate to the injection contract; the
+   * variant a provider may receive is gated by its declared capabilities.
+   */
+  readonly workspaceSource?: WorkspaceSource | null;
 }
 
 /** Resolve the explicit provision snapshot before the environment fallback. */
@@ -707,8 +716,14 @@ export function resourcesForSandboxProvision(
 
 /** New workspace plans and legacy clone specs both require materialization. */
 export function hasSandboxWorkspaceMaterialization(
-  context: Pick<SandboxProvisionContext<unknown>, 'workspace' | 'cloneSpec'>,
+  context: Pick<
+    SandboxProvisionContext<unknown>,
+    'workspace' | 'cloneSpec' | 'workspaceSource'
+  >,
 ): boolean {
+  if (context.workspaceSource !== undefined) {
+    return context.workspaceSource !== null;
+  }
   if (context.workspace !== undefined) return context.workspace !== null;
   return context.cloneSpec !== undefined && context.cloneSpec !== null;
 }
@@ -722,6 +737,7 @@ export function snapshotSandboxProvisionContext<TCloneSpec>(
 ): SandboxProvisionContext<TCloneSpec> {
   const resources = snapshotSandboxResources(resourcesForSandboxProvision(context));
   const workspace = snapshotSandboxWorkspacePlan(context.workspace);
+  const workspaceSource = snapshotWorkspaceSource(context.workspaceSource);
   const environment =
     context.environment === null || context.environment === undefined
       ? context.environment
@@ -734,6 +750,7 @@ export function snapshotSandboxProvisionContext<TCloneSpec>(
     ...(environment === undefined ? {} : { environment }),
     ...(resources === undefined ? {} : { resources }),
     ...(workspace === undefined ? {} : { workspace }),
+    ...(workspaceSource === undefined ? {} : { workspaceSource }),
   });
 }
 

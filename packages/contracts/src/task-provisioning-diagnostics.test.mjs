@@ -109,6 +109,45 @@ test('versioned diagnostic event and canonical response round-trip', () => {
   assert.equal(response.attempts[0].primary.cause, 'missing_exit_code');
 });
 
+test('workspace-source kind is an additive, closed, optional event field', () => {
+  // add-repo-content-store: evidence written before the field existed must
+  // still parse unchanged.
+  const legacy = event();
+  delete legacy.workspaceSourceKind;
+  const parsedLegacy = TaskProvisioningDiagnosticEventSchema.parse(legacy);
+  assert.equal(parsedLegacy.workspaceSourceKind, undefined);
+  assert.equal(
+    TaskProvisioningDiagnosticEventSchema.parse({
+      ...event(),
+      workspaceSourceKind: null,
+    }).workspaceSourceKind,
+    null,
+  );
+
+  for (const kind of ['volume', 'archive', 'git']) {
+    const parsed = TaskProvisioningDiagnosticEventSchema.parse({
+      ...event(),
+      stage: 'workspace_transfer',
+      operation: 'repository_transfer',
+      commandKind: 'git_clone',
+      workspaceSourceKind: kind,
+    });
+    assert.equal(parsed.workspaceSourceKind, kind);
+  }
+
+  // The vocabulary stays closed: no free-form variant name may be smuggled in.
+  for (const invalid of ['mount', 'tarball', 'https://example.test', '']) {
+    assert.equal(
+      TaskProvisioningDiagnosticEventSchema.safeParse({
+        ...event(),
+        workspaceSourceKind: invalid,
+      }).success,
+      false,
+      `event must reject workspaceSourceKind ${JSON.stringify(invalid)}`,
+    );
+  }
+});
+
 test('diagnostic boundaries reject every forbidden raw or arbitrary field', () => {
   const forbidden = [
     'command',

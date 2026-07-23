@@ -1,6 +1,16 @@
 import {
   SANDBOX_PROVIDER_CAPABILITIES,
   SANDBOX_EXECUTION_MODES,
+  WORKSPACE_SOURCE_CAPABILITY_BY_KIND,
+  WORKSPACE_SOURCE_KINDS,
+  isArchiveWorkspaceSource,
+  isGitWorkspaceSource,
+  isVolumeWorkspaceSource,
+  type ArchiveWorkspaceSource,
+  type GitWorkspaceSource,
+  type VolumeWorkspaceSource,
+  type WorkspaceSource,
+  type WorkspaceSourceKind,
   type SandboxConnection,
   type SandboxDeliverWorkspaceArgs,
   type SandboxDeliverWorkspaceResult,
@@ -45,6 +55,26 @@ export type {
   SandboxConnection,
   SandboxProviderCapability,
   SelectedSandboxRun,
+};
+
+/**
+ * Typed workspace origin vocabulary (repo-content-store D5). The union and its
+ * guards are owned by `@cap/sandbox-core`; re-exported here so API-side callers
+ * keep using the local sandbox port import path.
+ */
+export {
+  WORKSPACE_SOURCE_CAPABILITY_BY_KIND,
+  WORKSPACE_SOURCE_KINDS,
+  isArchiveWorkspaceSource,
+  isGitWorkspaceSource,
+  isVolumeWorkspaceSource,
+};
+export type {
+  ArchiveWorkspaceSource,
+  GitWorkspaceSource,
+  VolumeWorkspaceSource,
+  WorkspaceSource,
+  WorkspaceSourceKind,
 };
 
 export type ProvisionContext = SandboxProvisionContext<CloneSpec>;

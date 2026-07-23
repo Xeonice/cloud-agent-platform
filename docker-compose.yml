@@ -9,6 +9,14 @@
 # reconnect snapshot + tail-replay still works (design D5/D10, multi-target
 # "session.log survives an orchestrator restart" scenario).
 #
+# The named volume `repo-store` (add-repo-content-store) holds one bare git mirror
+# per imported Repo at CAP_REPO_STORE_DIR/<repoId>.git. The api writes it AT IMPORT
+# TIME (`git clone --mirror` on the host side, where the network is) and injects it
+# into per-task sandboxes locally — read-only subpath mount for the AIO provider,
+# archive upload for BoxLite/remote — so starting a task no longer runs a public
+# `git clone` inside the sandbox. It follows the same shared-named-volume pattern
+# as `workspaces`.
+#
 # == Per-task execution topology (DooD self-host; design D) ==
 #
 # This compose self-host topology is the ONLY per-task EXECUTION target. The
@@ -79,6 +87,19 @@ services:
       PORT: "8080"
       # session.log lives under here, on the persistent named volume below.
       WORKSPACES_DIR: /data/workspaces
+      # add-repo-content-store: where the per-Repo bare mirrors live inside the api
+      # container (<CAP_REPO_STORE_DIR>/<repoId>.git). A FIXED literal, exactly like
+      # WORKSPACES_DIR above — it MUST equal the mount target of the `repo-store`
+      # named volume in the volumes block below, or the copies land on the container
+      # filesystem and vanish on recreate.
+      CAP_REPO_STORE_DIR: /repo-store
+      # CAP_LOCAL_IMPORT_ROOT (local-path import allowlist root) and
+      # CAP_WORKSPACE_GIT_FALLBACK_ENABLED (the default-off rollback switch that
+      # puts workspace materialization back on the legacy in-sandbox network clone)
+      # are OPERATOR config that flows in through the env_file above. They are
+      # deliberately NOT redeclared here as ${VAR:-}: an empty shell value would
+      # clobber the env_file value, and an EMPTY CAP_LOCAL_IMPORT_ROOT must stay
+      # indistinguishable from unset (unset = local import disabled, fail-closed).
       # Env-overridable so a self-hoster can point at an EXTERNAL Postgres (or
       # different credentials); leaving it unset uses the compose-internal
       # `postgres` service default below (design D2 — no maintainer-hardcoded DB).
@@ -139,6 +160,19 @@ services:
       # Persistent named volume backing workspaces/<id>/session.log so it
       # survives `docker compose restart api` / a container recreate (4.2).
       - workspaces:/data/workspaces
+      # Persistent named volume holding the per-Repo bare mirrors (the repo-store,
+      # CAP_REPO_STORE_DIR above). Docker-managed, so per-task sandboxes can mount
+      # a single repo out of it read-only by subpath (VolumeOptions.Subpath).
+      - repo-store:/repo-store
+      # LOCAL-PATH IMPORT (add-repo-content-store) — OPT-IN, off unless configured.
+      # "Local" means a path visible INSIDE this api container, so importing from a
+      # host directory requires an explicit bind mount here PLUS the allowlist root:
+      #
+      #   - /srv/git:/local-repos:ro      # then CAP_LOCAL_IMPORT_ROOT=/local-repos
+      #
+      # Read-only is enough (the importer only clones FROM the path). With
+      # CAP_LOCAL_IMPORT_ROOT unset the feature is disabled end to end, and with no
+      # mount there is nothing outside the container to reach in the first place.
       # Docker-out-of-Docker: mount the host docker socket so the orchestrator
       # can provision SIBLING AIO sandbox containers (design D). HOST-ROOT-
       # EQUIVALENT — accepted for single-user self-host only (see header).
@@ -345,6 +379,10 @@ networks:
 volumes:
   # Named volume so session.log persists across orchestrator restarts.
   workspaces:
+  # Named volume holding one bare git mirror per imported Repo
+  # (<CAP_REPO_STORE_DIR>/<repoId>.git). Shared: the api writes copies at import
+  # time and per-task AIO sandboxes mount a single repo out of it read-only.
+  repo-store:
   pgdata:
   # Observability stack state (observability-stack); only used when the
   # observability/grafana profiles are enabled.

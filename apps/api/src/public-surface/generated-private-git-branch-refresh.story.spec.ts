@@ -19,7 +19,9 @@ import {
   type GuardrailsConfig,
 } from '../guardrails/guardrails.service';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { RepoResponse } from '@cap/contracts';
 import { ReposService } from '../repos/repos.service';
+import type { RepoCopyService } from '../repos/repo-copy.service';
 import type { SandboxProvider } from '../sandbox/sandbox-provider.port';
 
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
@@ -259,6 +261,9 @@ test(
       forgeTargets,
       remoteRefs,
       registry,
+      // add-repo-content-store: branch verification is the subject here; the
+      // content-copy seam is a pass-through so no clone runs in this story.
+      { acquireOnImport: async (repo: RepoResponse) => repo } as RepoCopyService,
     );
     const branchResolver = new TaskBranchResolver(
       database.prisma,

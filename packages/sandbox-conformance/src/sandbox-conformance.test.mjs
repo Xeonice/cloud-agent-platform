@@ -172,6 +172,68 @@ await test('conformance carries immutable resources, branch facts, deadline, and
   );
 });
 
+await test('conformance gates the workspace source variant on declared capabilities', async () => {
+  let received;
+  const workspaceSource = {
+    kind: 'volume',
+    repoId: 'repo-1',
+    volumeName: 'repo-store',
+    subpath: 'repo-1.git',
+    mountPath: '/repo-store/repo-1.git',
+    gitSource: 'https://example.test/repo.git',
+  };
+
+  const baseline = mod.createSandboxProviderConformanceScenarios(
+    {
+      provider: makeProvider(),
+      taskId: 'task-no-source',
+      cloneSpec: { url: 'https://example.test/repo.git' },
+    },
+    assert,
+  );
+  assert.equal(baseline.length, 8, 'the source scenario stays opt-in');
+
+  const scenarios = mod.createSandboxProviderConformanceScenarios(
+    {
+      provider: makeProvider({
+        capabilities: [
+          ...core.SANDBOX_PROVIDER_CAPABILITIES,
+          'workspace.source.volume',
+        ],
+        onProvision: (context) => (received = context),
+      }),
+      taskId: 'task-source',
+      workspaceSource,
+      expectTranscriptSource: false,
+      expectReadoption: false,
+    },
+    assert,
+  );
+  assert.equal(scenarios.length, 9);
+  const sourceScenario = scenarios.find((scenario) =>
+    scenario.name.includes('workspace source variant'),
+  );
+  await sourceScenario.run();
+  assert.deepEqual(received.workspaceSource, workspaceSource);
+  assert.notEqual(received.workspaceSource, workspaceSource);
+  assert.equal(Object.isFrozen(received.workspaceSource), true);
+
+  const undeclared = mod
+    .createSandboxProviderConformanceScenarios(
+      {
+        provider: makeProvider({ capabilities: core.SANDBOX_PROVIDER_CAPABILITIES }),
+        taskId: 'task-source-undeclared',
+        workspaceSource,
+      },
+      assert,
+    )
+    .find((scenario) => scenario.name.includes('workspace source variant'));
+  await assert.rejects(
+    () => undeclared.run(),
+    /capability for the selected workspace source variant/,
+  );
+});
+
 await test('conformance supports absent transcript and disabled readoption scenarios', async () => {
   const scenarios = mod.createSandboxProviderConformanceScenarios(
     {

@@ -1407,7 +1407,9 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     description:
       'Keyset-paginated repos ordered by `(createdAt, id)`. `defaultBranch` is ' +
       'the persisted verified forge default, preserves arbitrary valid branch names ' +
-      'without substituting `main` or `master`, and remains optional/nullable for legacy rows.',
+      'without substituting `main` or `master`, and remains optional/nullable for legacy rows. ' +
+      '`copyStatus`/`copyUpdatedAt` report the repo-store content copy that task ' +
+      'creation gates on; refreshing a copy is a Console-internal action.',
     scope: 'repos:read',
     ownerPolicy: 'optional',
     streaming: false,
@@ -1435,7 +1437,9 @@ export const PUBLIC_V1_OPERATIONS = definePublicV1Operations([
     description:
       'Fetch a repo by id. `defaultBranch` is its persisted verified forge ' +
       'default, preserves arbitrary valid branch names without substituting a ' +
-      'conventional default, and remains optional/nullable for a legacy unverified row.',
+      'conventional default, and remains optional/nullable for a legacy unverified row. ' +
+      '`copyStatus`/`copyUpdatedAt` report the repo-store content copy that task ' +
+      'creation gates on; refreshing a copy is a Console-internal action.',
     scope: 'repos:read',
     ownerPolicy: 'optional',
     streaming: false,

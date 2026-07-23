@@ -8,7 +8,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { ForgeKind } from '@cap/contracts';
+import type { ForgeKind, RepoResponse } from '@cap/contracts';
 
 import { normalizeRepoGitSource, ReposService } from './repos.service';
 import type {
@@ -22,6 +22,7 @@ import type {
 import type { AvailableRepo } from '../forge/forge.port';
 import type { DefaultForgeRegistry } from '../forge/forge-registry';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { RepoCopyService } from './repo-copy.service';
 
 function repoRow(overrides: Partial<{
   id: string;
@@ -57,6 +58,8 @@ function service(
     defaultBranch: 'master',
   },
   pickerCandidates: AvailableRepo[] = [],
+  /** When set, content acquisition fails with this error after the row lands. */
+  copyFailure: Error | null = null,
 ) {
   let captured:
     | {
@@ -162,16 +165,34 @@ function service(
         pickerTokens.push(target.token);
         return pickerCandidates;
       },
+      // add-repo-content-store: the import path derives the repo-store clone
+      // header from the SAME resolved forge target the metadata probe used.
+      cloneAuthHeader: (target: { token: string }) =>
+        `Authorization: Basic ${target.token}`,
     }),
   } as unknown as DefaultForgeRegistry;
+  const acquisitions: Array<{ repoId: string; gitSource: string; authHeader?: string }> =
+    [];
+  const copies = {
+    acquireOnImport: async (repo: RepoResponse, authHeader?: string) => {
+      acquisitions.push({
+        repoId: repo.id,
+        gitSource: repo.gitSource,
+        ...(authHeader === undefined ? {} : { authHeader }),
+      });
+      if (copyFailure) throw copyFailure;
+      return { ...repo, copyStatus: 'ready' as const, copyUpdatedAt: new Date(1) };
+    },
+  } as RepoCopyService;
   return {
-    svc: new ReposService(prisma, forgeTargets, remoteRefs, forgeRegistry),
+    svc: new ReposService(prisma, forgeTargets, remoteRefs, forgeRegistry, copies),
     captured: () => captured,
     createAttempts: () => createAttempts,
     updateAttempts: () => updateAttempts,
     probeAttempts: () => probeAttempts,
     probeTokens,
     pickerTokens,
+    acquisitions,
     resolvedInput: () => resolvedInput,
   };
 }
@@ -561,6 +582,9 @@ test('concurrent duplicate imports serialize on the database lock and create exa
     {} as ForgeTargetResolver,
     {} as RemoteRefsProbePort,
     {} as DefaultForgeRegistry,
+    // `reconcileVerifiedImport` persists metadata only; content acquisition is
+    // the caller's next step, so the copy seam is unused here.
+    {} as RepoCopyService,
   );
   const verified = {
     name: 'private',
@@ -770,6 +794,7 @@ function refreshHarness(options: RefreshHarnessOptions = {}) {
     forgeTargets,
     remoteRefs,
     {} as DefaultForgeRegistry,
+    { acquireOnImport: async (repo: RepoResponse) => repo } as RepoCopyService,
   );
   return {
     svc,
@@ -973,4 +998,130 @@ test('concurrent refreshes of one identity use the last completed verified resul
 
   assert.equal(harness.row()?.defaultBranch, 'trunk');
   assert.equal(harness.writes.length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// add-repo-content-store (3.1) — import-time content acquisition
+// ---------------------------------------------------------------------------
+
+test('a URL import acquires the content copy with the owner credential and reports it ready', async () => {
+  const { svc, acquisitions } = service();
+
+  const response = await svc.create('owner-a', {
+    name: 'team/private',
+    gitSource: 'https://gitee.com/team/private.git',
+    forge: 'gitee',
+    importSource: 'url',
+  });
+
+  // Import completion = verified metadata AND a ready copy.
+  assert.equal(response.copyStatus, 'ready');
+  assert.deepEqual(response.copyUpdatedAt, new Date(1));
+  assert.deepEqual(acquisitions, [
+    {
+      repoId: response.id,
+      gitSource: 'https://gitee.com/team/private.git',
+      // The clone header is derived from the SAME owner-resolved forge target
+      // the metadata probe used — never a credential in the clone URL.
+      authHeader: 'Authorization: Basic owner-only-test-secret',
+    },
+  ]);
+});
+
+test('a forge-picker import acquires the copy for the server-verified candidate', async () => {
+  const candidate: AvailableRepo = {
+    forge: 'gitee',
+    fullPath: 'team/private',
+    gitSource: 'https://gitee.com/team/private.git',
+    visibility: 'private',
+    defaultBranch: 'master',
+  };
+  const { svc, acquisitions } = service(null, undefined, undefined, [candidate]);
+
+  const response = await svc.create('owner-a', {
+    name: candidate.fullPath,
+    gitSource: candidate.gitSource,
+    forge: 'gitee',
+    importSource: 'picker',
+  });
+
+  assert.equal(response.copyStatus, 'ready');
+  assert.deepEqual(acquisitions, [
+    {
+      repoId: response.id,
+      gitSource: candidate.gitSource,
+      authHeader: 'Authorization: Basic owner-only-test-secret',
+    },
+  ]);
+});
+
+test('a failed acquisition surfaces the failure but keeps the verified Repo row', async () => {
+  const copyFailure = new Error('content copy failed');
+  const { svc, acquisitions, createAttempts } = service(
+    null,
+    undefined,
+    undefined,
+    [],
+    copyFailure,
+  );
+
+  await assert.rejects(
+    () =>
+      svc.create('owner-a', {
+        name: 'team/private',
+        gitSource: 'https://gitee.com/team/private.git',
+        forge: 'gitee',
+        importSource: 'url',
+      }),
+    copyFailure,
+  );
+
+  // The metadata row is deliberately NOT rolled back: "repo exists, copy not
+  // ready" is the visible, retryable state the spec requires.
+  assert.equal(createAttempts(), 1);
+  assert.equal(acquisitions.length, 1);
+});
+
+test('repo reads project the persisted copy status and timestamp', async () => {
+  const copyUpdatedAt = new Date('2026-07-23T01:02:03.000Z');
+  const stored = {
+    ...repoRow(),
+    copyStatus: 'ready',
+    copyUpdatedAt,
+  };
+  const prisma = {
+    repo: {
+      findMany: async () => [stored],
+      findUnique: async () => stored,
+    },
+  } as unknown as PrismaService;
+  const svc = new ReposService(
+    prisma,
+    {} as ForgeTargetResolver,
+    {} as RemoteRefsProbePort,
+    {} as DefaultForgeRegistry,
+    {} as RepoCopyService,
+  );
+
+  const [listed] = await svc.list();
+  const fetched = await svc.findById(stored.id);
+  for (const repo of [listed, fetched]) {
+    assert.equal(repo.copyStatus, 'ready');
+    assert.deepEqual(repo.copyUpdatedAt, copyUpdatedAt);
+  }
+
+  // A row that predates the migration reads as `missing`, never as a copy that
+  // exists.
+  const legacyPrisma = {
+    repo: { findUnique: async () => repoRow() },
+  } as unknown as PrismaService;
+  const legacy = await new ReposService(
+    legacyPrisma,
+    {} as ForgeTargetResolver,
+    {} as RemoteRefsProbePort,
+    {} as DefaultForgeRegistry,
+    {} as RepoCopyService,
+  ).findById(stored.id);
+  assert.equal(legacy.copyStatus, 'missing');
+  assert.equal(legacy.copyUpdatedAt, null);
 });

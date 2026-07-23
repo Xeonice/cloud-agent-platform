@@ -27,6 +27,11 @@ interface TaskProvisioningDiagnosticLogIdentity {
   readonly operation: TaskProvisioningDiagnosticEvent['operation'];
   readonly channel: TaskProvisioningDiagnosticEvent['channel'];
   readonly commandKind: TaskProvisioningDiagnosticEvent['commandKind'] | null;
+  /**
+   * Present only when the operation named a workspace-source variant, so the
+   * stdout shape of every other operation stays byte-identical.
+   */
+  readonly workspaceSourceKind?: TaskProvisioningDiagnosticEvent['workspaceSourceKind'];
   readonly observedAt: string;
 }
 
@@ -79,6 +84,10 @@ export function toTaskProvisioningDiagnosticLogRecord(
     operation: diagnosticEvent.operation,
     channel: diagnosticEvent.channel,
     commandKind: diagnosticEvent.commandKind ?? null,
+    ...(diagnosticEvent.workspaceSourceKind === undefined ||
+    diagnosticEvent.workspaceSourceKind === null
+      ? {}
+      : { workspaceSourceKind: diagnosticEvent.workspaceSourceKind }),
     observedAt: diagnosticEvent.observedAt.toISOString(),
   };
 

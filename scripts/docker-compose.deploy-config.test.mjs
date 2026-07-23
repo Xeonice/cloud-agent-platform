@@ -124,6 +124,50 @@ assert(
   '4.2: workspaces mount source is a named volume, not a host bind path',
 );
 
+// ── add-repo-content-store: the repo-store named volume (7.1) ────────────────
+// Repo content copies (bare mirrors, one per Repo) are written by the api at
+// import time and injected into sandboxes at task start, so they MUST live on a
+// docker-managed named volume mounted at the SAME path the api reads from
+// (CAP_REPO_STORE_DIR) — otherwise the copies land on the container filesystem
+// and every recreate silently drops every Repo back to `missing`.
+for (const [label, text] of [
+  ['dev', compose],
+  ['prod', prodCompose],
+]) {
+  const service = apiServiceBlock(text);
+  const storeDir = (service.match(/^\s*CAP_REPO_STORE_DIR:\s*(\S+)\s*$/m) ?? [])[1];
+  assert(Boolean(storeDir), `7.1 (${label}): api declares CAP_REPO_STORE_DIR`);
+  const storeMount = storeDir
+    ? service.match(
+        new RegExp(
+          `^\\s*-\\s*([A-Za-z0-9_.-]+):${storeDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`,
+          'm',
+        ),
+      )
+    : null;
+  assert(Boolean(storeMount), `7.1 (${label}): a named volume is mounted at CAP_REPO_STORE_DIR`);
+  const storeVolume = storeMount ? storeMount[1] : null;
+  assert(
+    Boolean(storeVolume) && !storeVolume.includes('/'),
+    `7.1 (${label}): the repo-store mount source is a named volume, not a host bind path`,
+  );
+  assert(
+    Boolean(storeVolume) &&
+      new RegExp(`^\\s{2}${storeVolume}:`, 'm').test(topLevelBlock(text, 'volumes')),
+    `7.1 (${label}): the repo-store mount source is a declared top-level named volume`,
+  );
+  // The local-import allowlist root and the git-fallback rollback switch are
+  // operator config that must flow through env_file. Redeclaring either as
+  // `${VAR:-}` would clobber a file-only value — and an EMPTY
+  // CAP_LOCAL_IMPORT_ROOT must stay indistinguishable from unset (= disabled).
+  for (const key of ['CAP_LOCAL_IMPORT_ROOT', 'CAP_WORKSPACE_GIT_FALLBACK_ENABLED']) {
+    assert(
+      !new RegExp(`^\\s+${key}:`, 'm').test(service),
+      `7.1 (${label}): compose does not clobber env-file ${key} in environment`,
+    );
+  }
+}
+
 // ── fix-large-repo-task-provisioning: source-free env-file passthrough ───────
 // The production run package deliberately relies on env_file for these values.
 // Redeclaring them in `environment:` as `${VAR:-}` would replace a Dokploy
@@ -162,6 +206,17 @@ for (const [label, relativePath] of [
   assert(/^BOXLITE_GIT_CLONE_TIMEOUT_MS=900000$/m.test(example), `${label} env example pins the 15-minute Git deadline`);
   assert(/^CAP_TASK_ADMISSION_V2_ENABLED=false$/m.test(example), `${label} env example keeps admission-v2 closed by default`);
   assert(/^# CAP_TASK_ADMISSION_V2_ATTESTATION_JSON=$/m.test(example), `${label} env example documents the staged attestation input`);
+  // add-repo-content-store (7.1): both operator knobs are DOCUMENTED and stay
+  // COMMENTED OUT — local import is fail-closed on an unset allowlist root, and
+  // the git fallback is a rollback switch that must not ship enabled.
+  assert(
+    /^# CAP_LOCAL_IMPORT_ROOT=/m.test(example),
+    `${label} env example documents the local-import allowlist root, disabled by default`,
+  );
+  assert(
+    /^# CAP_WORKSPACE_GIT_FALLBACK_ENABLED=false$/m.test(example),
+    `${label} env example keeps the in-sandbox git-clone fallback closed by default`,
+  );
 }
 
 // ── add-release-upgrade-scripts: force-both + release-image guards ────────────

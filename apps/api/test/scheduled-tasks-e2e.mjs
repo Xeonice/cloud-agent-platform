@@ -46,6 +46,8 @@ async function createFixture(prisma, name) {
     data: {
       name: `${name}-${randomUUID()}`,
       gitSource: 'https://example.invalid/scheduled-task-e2e.git',
+        copyStatus: 'ready',
+        copyUpdatedAt: new Date(),
     },
   });
   return { user, repo };

@@ -27,6 +27,7 @@ import {
   type SandboxWorkspaceProgressReporter,
   type SelectedSandboxRun,
   type TaskModelIntent,
+  type WorkspaceSource,
 } from '@cap/sandbox-core';
 import {
   createExactHostGitCredential,
@@ -34,6 +35,7 @@ import {
   resourcesForSandboxProvision,
   sandboxResourceRequiredCapabilities,
   snapshotSandboxProvisionContext,
+  workspaceSourceRequiredCapabilities,
   type SandboxProviderCapability,
 } from '@cap/sandbox-core';
 
@@ -58,6 +60,11 @@ export interface SandboxProviderConformanceOptions<
   readonly environment?: SandboxResolvedEnvironmentMetadata | null;
   readonly resources?: SandboxResourceSnapshot;
   readonly workspace?: SandboxWorkspaceMaterializationPlan | null;
+  /**
+   * Opt-in typed workspace origin. When supplied, the provider must declare the
+   * capability for that injection variant and receive the source verbatim.
+   */
+  readonly workspaceSource?: WorkspaceSource | null;
   readonly cancellationSignal?: AbortSignal;
   readonly onWorkspaceProgress?: SandboxWorkspaceProgressReporter;
   readonly deliverArgs?: SandboxDeliverWorkspaceArgs;
@@ -255,6 +262,7 @@ export function createSandboxProviderConformanceScenarios<
     environment: options.environment,
     resources: options.resources,
     workspace: options.workspace,
+    workspaceSource: options.workspaceSource,
     cancellationSignal: options.cancellationSignal,
     onWorkspaceProgress: options.onWorkspaceProgress,
   });
@@ -368,6 +376,31 @@ export function createSandboxProviderConformanceScenarios<
       },
     },
   ];
+
+  const workspaceSource = options.workspaceSource;
+  if (workspaceSource !== undefined && workspaceSource !== null) {
+    scenarios.push({
+      name: 'declared workspace source variant reaches the provider verbatim',
+      async run() {
+        const declared = options.provider.getProviderCapabilities?.() ?? [];
+        assert.deepEqual(
+          missingCapabilities(
+            declared,
+            workspaceSourceRequiredCapabilities(workspaceSource),
+          ),
+          [],
+          'provider must declare the capability for the selected workspace source variant',
+        );
+        assert.deepEqual(
+          provisionContext.workspaceSource,
+          workspaceSource,
+          'provision context must carry the selected workspace source unchanged',
+        );
+        const connection = await options.provider.provision(provisionContext);
+        assertSandboxConnection(connection, taskId, assert);
+      },
+    });
+  }
 
   scenarios.push(...createFeatureConformanceScenarios(options, assert));
 

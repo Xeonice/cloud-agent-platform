@@ -215,7 +215,14 @@ export interface BoxLiteExecResult {
 export interface BoxLiteArchiveUploadRequest {
   readonly sandboxId: string;
   readonly path: string;
-  readonly archive: Uint8Array;
+  /**
+   * Archive bytes. An async iterable is streamed to the daemon as it is
+   * produced (add-repo-content-store D4: a repo mirror is never buffered
+   * wholesale in the API process); a `Uint8Array` keeps the existing
+   * small-payload callers (secret files) unchanged.
+   */
+  readonly archive: Uint8Array | AsyncIterable<Uint8Array>;
+  readonly signal?: AbortSignal;
 }
 
 export interface BoxLiteArchiveDownloadRequest {
@@ -271,10 +278,63 @@ export type BoxLiteFetch = (
   init?: {
     readonly method?: string;
     readonly headers?: Record<string, string>;
-    readonly body?: string | Uint8Array;
+    readonly body?: string | Uint8Array | ReadableStream<Uint8Array>;
+    /** Set with a streaming body; required by fetch/undici. */
+    readonly duplex?: 'half';
     readonly signal?: unknown;
   },
 ) => Promise<BoxLiteFetchResponse>;
+
+/** Streaming archive bodies arrive as async byte iterables. */
+function isAsyncByteIterable(
+  value: unknown,
+): value is AsyncIterable<Uint8Array> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] ===
+      'function'
+  );
+}
+
+function asByteReadableStream(
+  source: AsyncIterable<Uint8Array>,
+): ReadableStream<Uint8Array> {
+  const iterator = source[Symbol.asyncIterator]();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = await iterator.next();
+      if (next.done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(next.value);
+    },
+    async cancel(reason) {
+      await iterator.return?.(reason);
+    },
+  });
+}
+
+/** Buffer an archive body; only for callers that must hold the whole payload. */
+export async function collectBoxLiteArchiveBytes(
+  archive: Uint8Array | AsyncIterable<Uint8Array>,
+): Promise<Uint8Array> {
+  if (archive instanceof Uint8Array) return archive.slice();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of archive) {
+    chunks.push(chunk);
+    total += chunk.byteLength;
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
 
 export interface BoxLiteRestClientOptions {
   readonly baseUrl: string;
@@ -779,13 +839,22 @@ export class BoxLiteRestClient implements BoxLiteClient {
   }
 
   async uploadArchive(request: BoxLiteArchiveUploadRequest): Promise<void> {
+    // A streamed archive owns its own deadline through the caller's signal:
+    // the shared request timeout is sized for control-plane calls, not for
+    // moving a repository-sized tar.
+    const streaming = !(request.archive instanceof Uint8Array);
+    const transfer = {
+      body: request.archive,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(streaming ? { timeoutMs: null as null } : {}),
+    };
     if (this.protocolMode === 'native') {
       const path = encodeURIComponent(request.path);
       const res = await this.request(
         `${this.sandboxPath(request.sandboxId)}/files?path=${path}`,
         {
           method: 'PUT',
-          body: request.archive,
+          ...transfer,
         },
       );
       if (!res.ok) {
@@ -800,7 +869,7 @@ export class BoxLiteRestClient implements BoxLiteClient {
       `/v1/sandboxes/${encodeURIComponent(request.sandboxId)}/archive?path=${path}`,
       {
         method: 'PUT',
-        body: request.archive,
+        ...transfer,
       },
     );
     if (!res.ok) {
@@ -983,12 +1052,19 @@ export class BoxLiteRestClient implements BoxLiteClient {
     const headers: Record<string, string> = {
       accept: 'application/json',
     };
-    let body: string | Uint8Array | undefined;
+    let body: string | Uint8Array | ReadableStream<Uint8Array> | undefined;
+    let streamed = false;
     if (typeof init.body === 'string' || init.body instanceof Uint8Array) {
       body = init.body;
       if (init.body instanceof Uint8Array) {
         headers['content-type'] = 'application/octet-stream';
       }
+    } else if (isAsyncByteIterable(init.body)) {
+      // Streamed archive upload: the bytes are forwarded as they are produced,
+      // so an arbitrarily large repo copy never lands in one buffer.
+      headers['content-type'] = 'application/octet-stream';
+      body = asByteReadableStream(init.body);
+      streamed = true;
     } else if (init.body !== undefined) {
       headers['content-type'] = 'application/json';
       body = JSON.stringify(init.body);
@@ -1001,6 +1077,8 @@ export class BoxLiteRestClient implements BoxLiteClient {
         method: init.method,
         headers,
         body,
+        // Required by fetch (undici) whenever the body is a stream.
+        ...(streamed ? { duplex: 'half' as const } : {}),
         signal:
           init.timeoutMs === null
             ? init.signal
@@ -1638,7 +1716,7 @@ export class FakeBoxLiteClient implements BoxLiteClient {
   async uploadArchive(request: BoxLiteArchiveUploadRequest): Promise<void> {
     this.archives.set(
       archiveKey(request.sandboxId, request.path),
-      request.archive.slice(),
+      await collectBoxLiteArchiveBytes(request.archive),
     );
   }
 

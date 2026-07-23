@@ -28,6 +28,7 @@ import type {
   SandboxSelectedRunPort,
   SandboxTerminalEndpointDescriptor,
   SandboxTranscriptSourceBase,
+  SandboxWorkspaceArchiveTransferPort,
   SandboxWorkspaceDescriptor,
   SandboxWorkspaceDeliveryHook,
   SandboxWorkspaceMaterializationHook,
@@ -36,6 +37,7 @@ import type {
 } from '@cap/sandbox-core';
 import {
   assertSandboxProviderSupportsResources,
+  assertSandboxProviderSupportsWorkspaceSource,
   defineCloudSandboxProvider,
   defineLocalSandboxProvider,
   isSandboxLegacyDeliverWorkspaceArgs,
@@ -169,6 +171,7 @@ export class BoxLiteSandboxProvider<
   private readonly resolveEnvironmentHook?: BoxLiteProviderOptions<TRuntimeId>['resolveEnvironment'];
   private readonly workspaceMaterialization?: SandboxWorkspaceMaterializationHook;
   private readonly workspaceDelivery?: SandboxWorkspaceDeliveryHook;
+  private readonly declaredCapabilities: readonly SandboxProviderCapability[];
   private readonly runs = new Map<string, BoxLiteProvisionedRun>();
   /** Credential safety is unresolved; only exact cleanup may observe this run. */
   private readonly quarantinedRuns = new Map<string, string>();
@@ -194,6 +197,11 @@ export class BoxLiteSandboxProvider<
     this.workspaceMaterialization = options.workspaceMaterialization;
     this.workspaceDelivery = options.workspaceDelivery;
     assertClientSupportsCapabilities(this.client, options.config.capabilities);
+    this.declaredCapabilities = resolveBoxLiteDeclaredCapabilities({
+      configured: options.config.capabilities,
+      client: this.client,
+      hasWorkspaceMaterialization: this.workspaceMaterialization !== undefined,
+    });
     if (
       options.config.capabilities.includes('transcript.retained-read') &&
       !this.transcriptRead
@@ -213,7 +221,7 @@ export class BoxLiteSandboxProvider<
   }
 
   getProviderCapabilities(): readonly SandboxProviderCapability[] {
-    return this.config.capabilities;
+    return this.declaredCapabilities;
   }
 
   async provision(ctx: SandboxProvisionContext<TCloneSpec>): Promise<SandboxConnection> {
@@ -253,6 +261,12 @@ export class BoxLiteSandboxProvider<
     assertSandboxProviderSupportsResources(
       this.getProviderCapabilities(),
       resources,
+    );
+    // Fail closed on an injection variant this provider cannot perform, before
+    // any sandbox exists (add-repo-content-store D5).
+    assertSandboxProviderSupportsWorkspaceSource(
+      this.getProviderCapabilities(),
+      ctx.workspaceSource,
     );
     const wasCached = this.runs.has(ctx.taskId);
     const existingReadinessDiagnostics =
@@ -1045,6 +1059,32 @@ export class BoxLiteSandboxProvider<
     return preflight;
   }
 
+  /**
+   * Provider-side transport for the `archive` workspace source: the shared
+   * materialization engine decides what to send and where, this only moves the
+   * bytes through BoxLite's archive-upload contract. The stream is passed
+   * straight through so a large mirror is never buffered in memory.
+   */
+  private createArchiveTransferPort(
+    sandboxId: string,
+  ): SandboxWorkspaceArchiveTransferPort {
+    return {
+      uploadArchive: async (request) => {
+        if (!this.client.uploadArchive) {
+          throw new SandboxProviderConfigurationError(
+            'BoxLite archive workspace injection requires archive upload support',
+          );
+        }
+        await this.client.uploadArchive({
+          sandboxId,
+          path: request.path,
+          archive: request.archive,
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        });
+      },
+    };
+  }
+
   private async materializeWorkspace(
     ctx: SandboxProvisionContext<TCloneSpec>,
     sandbox: BoxLiteSandbox,
@@ -1096,6 +1136,13 @@ export class BoxLiteSandboxProvider<
                 workspaceDir: this.config.workspacePath,
                 stageExecutor: adapter.stageExecutor,
                 secretFilePort: adapter.secretFilePort,
+                // add-repo-content-store D4: an `archive` source streams the
+                // Repo's bare mirror through the archive-upload contract and
+                // then clones locally inside the box — no network clone.
+                ...(ctx.workspaceSource === undefined
+                  ? {}
+                  : { source: ctx.workspaceSource }),
+                archiveTransfer: this.createArchiveTransferPort(sandbox.id),
                 ...(ctx.diagnostics === undefined
                   ? {}
                   : { diagnostics: ctx.diagnostics }),
@@ -1765,7 +1812,9 @@ export function defineBoxLiteSandboxProvider<
     id,
     provider,
     priority: options.config.priority,
-    capabilities: options.config.capabilities,
+    // The provider's declared set, not the raw configured one: candidate
+    // selection must see the derived workspace-source variants too.
+    capabilities: provider.getProviderCapabilities(),
   };
   return options.config.location === 'local'
     ? defineLocalSandboxProvider(args)
@@ -1785,6 +1834,35 @@ export function defineBoxLiteSandboxProviderFromEnv(
       preflight: options.preflight,
     }),
   };
+}
+
+/**
+ * Declared capabilities = the deployment's configured set PLUS the
+ * workspace-source variants this build can actually perform
+ * (add-repo-content-store D4/D5).
+ *
+ * The variants are derived rather than configured on purpose: BoxLite's create
+ * API exposes no volume-mount field (verified against its create schema), so
+ * `archive` is the only injection variant, and it is available exactly when the
+ * client can upload an archive and the staged workspace hook is wired. Deriving
+ * them keeps existing `BOXLITE_CAPABILITIES` deployments working instead of
+ * failing closed on an env var that predates this contract.
+ */
+function resolveBoxLiteDeclaredCapabilities(args: {
+  readonly configured: readonly SandboxProviderCapability[];
+  readonly client: BoxLiteClient;
+  readonly hasWorkspaceMaterialization: boolean;
+}): readonly SandboxProviderCapability[] {
+  const declared = new Set<SandboxProviderCapability>(args.configured);
+  if (
+    args.hasWorkspaceMaterialization &&
+    declared.has('workspace.git.materialize')
+  ) {
+    // The gated legacy in-sandbox network clone stays available for rollback.
+    declared.add('workspace.source.git');
+    if (args.client.uploadArchive) declared.add('workspace.source.archive');
+  }
+  return Object.freeze([...declared]);
 }
 
 function assertClientSupportsCapabilities(

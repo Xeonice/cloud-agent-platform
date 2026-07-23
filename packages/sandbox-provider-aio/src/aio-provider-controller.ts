@@ -31,6 +31,7 @@ import {
   parseAioTaskIdFromContainerNames,
   type AioLocalSandboxContainerConfig,
   type AioLocalSandboxEnv,
+  type AioLocalSandboxRepoMount,
   type AioLocalSandboxProvisionSpec,
 } from './aio-local-provider.js';
 import { extractFilesFromTar } from './tar-extract.js';
@@ -214,6 +215,13 @@ export class AioSandboxContainerController<
       readonly onSandboxCreateObserved?: (
         observation: SandboxCreateObservation,
       ) => Promise<void>;
+      /**
+       * Read-only repo-copy mount for the `volume` workspace-source variant
+       * (add-repo-content-store D4). It MUST be applied at container creation:
+       * the in-sandbox local clone that materializes the workspace reads from
+       * this mount, so it cannot be attached later.
+       */
+      readonly repoMount?: AioLocalSandboxRepoMount | null;
     } = {},
   ): Promise<AioProvisionedContainer<TContainer>> {
     const resourceGeneration = aioResourceGeneration(options.ownership);
@@ -221,6 +229,7 @@ export class AioSandboxContainerController<
       taskId,
       env: this.env,
       environment,
+      ...(options.repoMount ? { repoMount: options.repoMount } : {}),
       labels:
         resourceGeneration === undefined
           ? labels

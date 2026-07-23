@@ -58,6 +58,9 @@ import {
   RuntimeModelCatalogSchema,
   RuntimeModelErrorSchema,
   RepoImportFailureSchema,
+  LocalRepoImportRequestSchema,
+  LocalRepoImportAvailabilitySchema,
+  TaskRepoCopyNotReadyErrorSchema,
   ScopeSchema,
   type DiscoverModelsRequest,
   type DiscoverModelsResponse,
@@ -106,6 +109,9 @@ import {
   type RuntimeModelCatalog,
   type RuntimeModelError,
   type RepoImportFailure,
+  type LocalRepoImportRequest,
+  type LocalRepoImportAvailability,
+  type TaskRepoCopyNotReadyError,
   type Scope,
 } from "@cap/contracts";
 import { createParser } from "eventsource-parser";
@@ -216,6 +222,21 @@ export function repoImportFailureFromApiError(
 ): RepoImportFailure | null {
   if (!(error instanceof ApiError)) return null;
   const parsed = RepoImportFailureSchema.safeParse(error.body);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Parse only the canonical task-create copy-readiness rejection body
+ * (add-repo-content-store): the 409 the api answers when the selected Repo has
+ * no usable content copy yet. Distinct from {@link repoImportFailureFromApiError}
+ * — that one classifies "acquiring the copy failed", this one "no copy to run
+ * against (yet)", whose remedy is the repo-list refresh action.
+ */
+export function taskRepoCopyNotReadyFromApiError(
+  error: unknown,
+): TaskRepoCopyNotReadyError | null {
+  if (!(error instanceof ApiError)) return null;
+  const parsed = TaskRepoCopyNotReadyErrorSchema.safeParse(error.body);
   return parsed.success ? parsed.data : null;
 }
 
@@ -634,6 +655,73 @@ export async function refreshRepoDefaultBranch(
     );
   }
   return refreshed;
+}
+
+/**
+ * `POST /repos/:repoId/refresh-copy` — acquire (when `missing`) or refresh the
+ * repo-store bare-mirror content copy (add-repo-content-store). It is the SINGLE
+ * entry point that unblocks task creation for a non-`ready` repo, so the console
+ * calls it for both remedies. The request blocks on a real `git clone --mirror`
+ * / `git fetch` and can take minutes; callers must render a pending state rather
+ * than assume a fast reply.
+ */
+export async function refreshRepoCopy(repoId: string): Promise<RepoResponse> {
+  const refreshed = RepoResponseSchema.parse(
+    await request(`/repos/${encodeURIComponent(repoId)}/refresh-copy`, {
+      method: "POST",
+    }),
+  );
+  if (refreshed.id !== repoId) {
+    throw new ApiError(
+      502,
+      "Repository copy refresh returned a mismatched repository identity.",
+    );
+  }
+  return refreshed;
+}
+
+/**
+ * `DELETE /repos/:repoId` — retire a repository AND its repo-store content copy
+ * (add-repo-content-store, "copy lifecycle follows the Repo"). Console-internal:
+ * it requires a human session and has no `/v1` or MCP counterpart.
+ *
+ * Responds `204` with no body, so nothing is parsed. A repository that still has
+ * tasks or schedules is refused with `409` + the stable `repo_has_tasks` code,
+ * which the caller classifies through `repoImportFailurePresentation` rather than
+ * from raw error prose.
+ */
+export async function deleteRepo(repoId: string): Promise<void> {
+  await request(`/repos/${encodeURIComponent(repoId)}`, { method: "DELETE" });
+}
+
+/**
+ * `GET /repos/local-import/availability` — the console-internal, read-only probe
+ * telling the import dialog whether local-path import is configured at all. The
+ * feature is fail-closed: when the api has no allowlist root, `enabled` is false
+ * and `envVar` names the configuration that would enable it.
+ */
+export async function getLocalRepoImportAvailability(): Promise<LocalRepoImportAvailability> {
+  return LocalRepoImportAvailabilitySchema.parse(
+    await request("/repos/local-import/availability"),
+  );
+}
+
+/**
+ * `POST /repos/local-import` — import an existing git repository from a path the
+ * api process can see (local-repo-import). The path is validated + contained in
+ * the allowlist root SERVER-side; the console only forwards what the operator
+ * typed. Like the other import paths this blocks on the content acquisition.
+ */
+export async function importLocalRepo(
+  body: LocalRepoImportRequest,
+): Promise<RepoResponse> {
+  return RepoResponseSchema.parse(
+    await request("/repos/local-import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(LocalRepoImportRequestSchema.parse(body)),
+    }),
+  );
 }
 
 /**

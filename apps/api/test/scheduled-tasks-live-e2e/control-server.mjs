@@ -75,7 +75,11 @@ async function routeControlRequest({
       // loopback-only test control plane, so the production `/repos` boundary
       // keeps requiring the authenticated owner's exact-host forge credential.
       const fixture = parseRepoFixture(await readJsonBody(request));
-      const repo = await prisma.repo.create({ data: fixture });
+      const repo = await prisma.repo.create({
+        // The scheduled-task story is not about repo import: seed the content
+        // copy as ready so task creation passes the copy-readiness gate.
+        data: { ...fixture, copyStatus: 'ready', copyUpdatedAt: new Date() },
+      });
       sendJson(response, 201, { repo: sanitizeRepo(repo) });
       return;
     }

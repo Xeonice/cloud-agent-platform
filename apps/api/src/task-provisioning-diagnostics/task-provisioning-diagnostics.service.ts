@@ -184,6 +184,7 @@ const EVENT_SELECT = {
   operation: true,
   channel: true,
   commandKind: true,
+  workspaceSourceKind: true,
   outcome: true,
   observedAt: true,
   durationMs: true,
@@ -1405,6 +1406,7 @@ export class TaskProvisioningDiagnosticsService
       operation: event.operation,
       channel: event.channel,
       commandKind: event.commandKind ?? null,
+      workspaceSourceKind: event.workspaceSourceKind ?? null,
       outcome: event.outcome,
       observedAt: event.observedAt,
       durationMs: event.outcome === 'started' ? null : event.durationMs ?? null,
@@ -1457,6 +1459,7 @@ export class TaskProvisioningDiagnosticsService
       operation: event.operation,
       channel: event.channel,
       commandKind: event.commandKind ?? null,
+      workspaceSourceKind: event.workspaceSourceKind ?? null,
       outcome: event.outcome,
       durationMs:
         event.outcome === 'started' ? null : event.durationMs ?? null,

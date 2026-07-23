@@ -71,6 +71,30 @@ describe('task provisioning diagnostic structured log projection', () => {
     assert.equal('timeoutMs' in record, false);
   });
 
+  it('projects the workspace-source variant only when the event names one', () => {
+    const injected = toTaskProvisioningDiagnosticLogRecord({
+      ...commonEvent,
+      idempotencyKey: 'workspace_transfer:start',
+      stage: 'workspace_transfer',
+      operation: 'repository_transfer',
+      commandKind: 'git_clone',
+      workspaceSourceKind: 'archive',
+      outcome: 'started',
+    });
+    assert.equal(
+      (injected as { readonly workspaceSourceKind?: string })
+        .workspaceSourceKind,
+      'archive',
+    );
+
+    const unnamed = toTaskProvisioningDiagnosticLogRecord({
+      ...commonEvent,
+      idempotencyKey: 'runtime_setup:start',
+      outcome: 'started',
+    });
+    assert.equal('workspaceSourceKind' in unnamed, false);
+  });
+
   it('projects only explicit safe terminal facts and normalizes time', () => {
     const record = toTaskProvisioningDiagnosticLogRecord({
       ...commonEvent,

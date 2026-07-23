@@ -32,9 +32,12 @@ import { toast } from "sonner";
 
 import { reposQuery } from "@/lib/api/queries";
 import {
+  deleteRepoMutation,
+  refreshRepoCopyMutation,
   refreshRepoDefaultBranchMutation,
   setDefaultRepoMutation,
 } from "@/lib/api/mutations";
+import { repoCopyUpdatedCaption } from "@/lib/repo-copy-status";
 import {
   claimRepoRefreshSubmission,
   releaseRepoRefreshSubmission,
@@ -58,15 +61,34 @@ export const Route = createFileRoute("/_app/repositories")({
 
 function RepositoriesPage() {
   const queryClient = useQueryClient();
-  const { data: repos } = useQuery(reposQuery());
+  // Poll ONLY while a copy acquisition is actually in flight (possibly started
+  // by another session/tab, whose completion this tab would otherwise never
+  // see). Idle lists keep the default no-polling behavior.
+  const { data: repos } = useQuery({
+    ...reposQuery(),
+    refetchInterval: (query) =>
+      query.state.data?.some((repo) => repo.copyStatus === "refreshing")
+        ? 5_000
+        : false,
+  });
   const setDefault = useMutation(setDefaultRepoMutation(queryClient));
   const refreshDefaultBranch = useMutation(
     refreshRepoDefaultBranchMutation(queryClient),
   );
+  const refreshCopy = useMutation(refreshRepoCopyMutation(queryClient));
+  const deleteRepo = useMutation(deleteRepoMutation(queryClient));
   const refreshFence = React.useRef<string | null>(null);
+  const copyRefreshFence = React.useRef<string | null>(null);
+  const deleteFence = React.useRef<string | null>(null);
+  const [deletingRepoId, setDeletingRepoId] = React.useState<string | null>(
+    null,
+  );
   const [refreshingRepoId, setRefreshingRepoId] = React.useState<string | null>(
     null,
   );
+  const [refreshingCopyRepoId, setRefreshingCopyRepoId] = React.useState<
+    string | null
+  >(null);
 
   const [dialogOpen, setDialogOpen] = React.useState(false);
 
@@ -104,6 +126,68 @@ function RepositoriesPage() {
       onSettled: () => {
         releaseRepoRefreshSubmission(refreshFence, repoId);
         setRefreshingRepoId(null);
+      },
+    });
+  }
+
+  /**
+   * Acquire (when `missing`) or refresh the repo's repo-store content copy. The
+   * request blocks on a real mirror clone/fetch — possibly minutes — so the row
+   * shows an explicit in-flight state and every other copy action is fenced.
+   * Failures are classified from their stable code, never from raw git output.
+   */
+  function handleRefreshCopy(repoId: string) {
+    if (!claimRepoRefreshSubmission(copyRefreshFence, repoId)) return;
+    setRefreshingCopyRepoId(repoId);
+    toast.message("正在刷新仓库副本", {
+      description: "大仓库可能需要数分钟，完成后状态会自动更新。",
+    });
+    refreshCopy.mutate(repoId, {
+      onSuccess: (repo) => {
+        toast.success(`${repo.name} 的副本已就绪（${repoCopyUpdatedCaption(repo)}）`);
+      },
+      onError: (error) => {
+        const failure = repoImportFailurePresentation(error);
+        toast.error(`${failure.pill}：${failure.message}`);
+      },
+      onSettled: () => {
+        releaseRepoRefreshSubmission(copyRefreshFence, repoId);
+        setRefreshingCopyRepoId(null);
+      },
+    });
+  }
+
+  /**
+   * Delete a repository AND its repo-store content copy (add-repo-content-store,
+   * "copy lifecycle follows the Repo"). Destructive and irreversible from the
+   * console, so it is confirmed first — `window.confirm` is the established
+   * console convention for a destructive action (see the sandbox-image retire
+   * action) rather than a bespoke dialog.
+   *
+   * The server REFUSES (409 `repo_has_tasks`) while tasks or schedules still
+   * reference the repo; that is surfaced from the stable code, never from raw
+   * error prose.
+   */
+  function handleDelete(repoId: string) {
+    const repo = repoList.find((r) => r.id === repoId);
+    const name = repo?.name ?? "该仓库";
+    const ok = window.confirm(
+      `删除仓库「${name}」？这会同时删除服务端为它保存的仓库内容副本；如果之后还要用，需要重新导入。`,
+    );
+    if (!ok) return;
+    if (!claimRepoRefreshSubmission(deleteFence, repoId)) return;
+    setDeletingRepoId(repoId);
+    deleteRepo.mutate(repoId, {
+      onSuccess: () => {
+        toast.success(`已删除仓库 ${name} 及其内容副本`);
+      },
+      onError: (error) => {
+        const failure = repoImportFailurePresentation(error);
+        toast.error(`${failure.pill}：${failure.message}`);
+      },
+      onSettled: () => {
+        releaseRepoRefreshSubmission(deleteFence, repoId);
+        setDeletingRepoId(null);
       },
     });
   }
@@ -169,6 +253,10 @@ function RepositoriesPage() {
           pendingDefaultId={setDefault.variables?.repoId ?? null}
           onRefreshDefaultBranch={handleRefreshDefaultBranch}
           refreshingRepoId={refreshingRepoId}
+          onRefreshCopy={handleRefreshCopy}
+          refreshingCopyRepoId={refreshingCopyRepoId}
+          onDelete={handleDelete}
+          deletingRepoId={deletingRepoId}
         />
       </section>
 

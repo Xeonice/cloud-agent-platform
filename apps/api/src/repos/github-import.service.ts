@@ -23,7 +23,10 @@ import {
   type ImportedRepoRef,
 } from './github-import.logic';
 import { GithubReposClient } from './github-repos.client';
+import { RepoCopyService } from './repo-copy.service';
+import { repoRowToResponse, type RepoRowProjection } from './repo-response';
 import { ReposService } from './repos.service';
+import { basicAuthHeader } from '../forge/forge.port';
 
 /**
  * GitHub-import orchestration (be-github-import, 4.1–4.5).
@@ -78,6 +81,7 @@ export class GithubImportService {
     private readonly prisma: PrismaService,
     private readonly githubRepos: GithubReposClient,
     private readonly repos: ReposService,
+    private readonly copies: RepoCopyService,
   ) {}
 
   /**
@@ -88,7 +92,18 @@ export class GithubImportService {
    * empty-but-successful listing returns `[]`.
    */
   async listAvailable(operatorId: string): Promise<AvailableGithubRepo[]> {
-    const pat = await this.readOperatorPat(operatorId);
+    return this.listAvailableWithPat(await this.readOperatorPat(operatorId));
+  }
+
+  /**
+   * The listing half of {@link listAvailable}, split out so the import path can
+   * resolve the account's PAT exactly ONCE and reuse it for both the
+   * authorization listing and the repo-store clone header — no second credential
+   * read, no second decryption.
+   */
+  private async listAvailableWithPat(
+    pat: string | null,
+  ): Promise<AvailableGithubRepo[]> {
     const result = await this.githubRepos.listForOperator(pat);
     if (!result.ok) {
       throw result.error.retryable
@@ -129,7 +144,8 @@ export class GithubImportService {
     operatorId: string,
     body: ImportRepoRequest,
   ): Promise<RepoResponse> {
-    const available = await this.listAvailable(operatorId);
+    const pat = await this.readOperatorPat(operatorId);
+    const available = await this.listAvailableWithPat(pat);
     const accessible = available.find(
       (repo) => repo.id === body.id && repo.full_name === body.full_name,
     );
@@ -143,7 +159,7 @@ export class GithubImportService {
     // The browser body selects a candidate; it is not the metadata authority.
     // Persist the freshly owner-authenticated GitHub API result so a forged or
     // stale request cannot replace `master` with `main` (or another branch).
-    return this.repos.reconcileVerifiedImport({
+    const repo = await this.repos.reconcileVerifiedImport({
       name: this.deriveName(accessible.full_name),
       gitSource: this.deriveGitSource(accessible.full_name),
       forge: 'github',
@@ -152,6 +168,16 @@ export class GithubImportService {
       githubId: githubDedupKey(accessible.id),
       legacyGithubId: accessible.full_name,
     });
+
+    // add-repo-content-store: the picker import completes only once the repo
+    // store holds a ready bare mirror, cloned here on the API host with the same
+    // account PAT the listing above was authorized by (as an http auth header —
+    // never in the clone URL). A failure leaves this Repo visible with a
+    // non-ready copy status and the copy-refresh retry path.
+    return this.copies.acquireOnImport(
+      repo,
+      pat === null ? undefined : basicAuthHeader('x-access-token', pat),
+    );
   }
 
   /**
@@ -256,33 +282,13 @@ export class GithubImportService {
     return `https://github.com/${fullName}.git`;
   }
 
-  /** Shapes a Prisma Repo row into the contracts response shape. */
-  private toResponse(repo: {
-    id: string;
-    name: string;
-    gitSource: string;
-    createdAt: Date;
-    description: string | null;
-    defaultBranch: string | null;
-    branchCount: number | null;
-    updatedAt: Date | null;
-    githubId: string | null;
-    isDefault: boolean;
-    forge?: string | null;
-  }): RepoResponse {
-    return {
-      id: repo.id,
-      name: repo.name,
-      gitSource: repo.gitSource,
-      createdAt: repo.createdAt,
-      description: repo.description,
-      defaultBranch: repo.defaultBranch,
-      branchCount: repo.branchCount,
-      updatedAt: repo.updatedAt,
-      githubId: repo.githubId,
-      isDefault: repo.isDefault,
-      // add-multi-forge-task-delivery: echo the source forge on import responses.
-      forge: (repo.forge ?? null) as RepoResponse['forge'],
-    };
+  /**
+   * Shapes a Prisma Repo row into the contracts response shape through the
+   * SHARED projection, so the GitHub surface exposes the same fields as the
+   * console repos surface — including the additive repo-store copy status and
+   * timestamp (add-repo-content-store).
+   */
+  private toResponse(repo: RepoRowProjection): RepoResponse {
+    return repoRowToResponse(repo);
   }
 }

@@ -7,6 +7,11 @@ import {
   sandboxDetachedJobMarkerPaths,
   SandboxProviderConfigurationError,
   SandboxWorkspaceTransferDetachedSignal,
+  isArchiveWorkspaceSource,
+  isVolumeWorkspaceSource,
+  type ArchiveWorkspaceSource,
+  type VolumeWorkspaceSource,
+  type WorkspaceSource,
   scrubSandboxCommandOutput,
   snapshotSandboxWorkspaceTransferProgress,
   triageSandboxDetachedJobProbeOutput,
@@ -25,6 +30,7 @@ import {
   type SandboxProvisioningDiagnosticCommandKind,
   type SandboxProvisioningDiagnosticOperation,
   type SandboxProvisioningDiagnosticReplayKey,
+  type SandboxProvisioningDiagnosticWorkspaceSourceKind,
   type SandboxSecretFileHandle,
   type SandboxWorkspaceDeliveryHookContext,
   type SandboxWorkspaceMaterializationHookContext,
@@ -33,6 +39,7 @@ import {
   type SandboxWorkspaceFailureCause,
   type SandboxWorkspaceProgressEvent,
 } from '@cap/sandbox-core';
+import { createRepoStoreArchiveStream } from './repo-archive.js';
 
 const DELIVERY_PENDING_MARKER = 'cap-delivery-base';
 const DELIVERY_PENDING_SENTINEL = 'CAP_DELIVERY_PENDING';
@@ -254,11 +261,15 @@ export async function materializeSandboxGitWorkspaceStaged(
   });
   let result: ActiveWorkspaceFailure | null = null;
   let handle: SandboxSecretFileHandle | null = null;
+  // add-repo-content-store D4: the injection variants materialize from the
+  // Repo's stored bare mirror, so no git credential is ever staged inside the
+  // sandbox and no network transfer runs there.
+  const injection = injectionWorkspaceSource(context.source);
 
   try {
     await assertWorkspaceBoundary(context, 'credential_setup', 'before');
     await reportWorkspaceStageStarted(context, 'credential_setup');
-    if (context.plan.credential !== undefined) {
+    if (injection === null && context.plan.credential !== undefined) {
       if (!context.secretFilePort) {
         result = failed('credential_setup', 'unknown', false);
       } else {
@@ -289,15 +300,29 @@ export async function materializeSandboxGitWorkspaceStaged(
       });
       const configPath = handle?.path;
       const driver = options.deadlineDriver ?? systemSandboxGitDeadlineDriver;
-      const stages = materializationCommands(
-        context.plan.repositoryUrl,
-        context.plan.resolvedBranch,
-        context.workspaceDir,
-        configPath,
-      );
+      const stages =
+        injection === null
+          ? materializationCommands(
+              context.plan.repositoryUrl,
+              context.plan.resolvedBranch,
+              context.workspaceDir,
+              configPath,
+            )
+          : injectionMaterializationSteps(
+              injection,
+              context.plan.resolvedBranch,
+              context.workspaceDir,
+            );
       for (const stage of stages) {
         let stageResult: ActiveWorkspaceFailure | null;
-        if (stage.stage === 'workspace_transfer') {
+        if (stage.kind === 'action') {
+          stageResult = await runMaterializationAction({
+            context,
+            deadline,
+            stage: stage.stage,
+            run: stage.run,
+          });
+        } else if (injection === null && stage.stage === 'workspace_transfer') {
           stageResult = await runTransferWithRetries({
             context,
             deadline,
@@ -512,13 +537,32 @@ export async function deliverSandboxGitWorkspaceStaged(
   return result;
 }
 
+type MaterializationStageName = Exclude<
+  ActiveWorkspaceStage,
+  'credential_setup' | 'credential_cleanup'
+>;
+
 interface MaterializationCommand {
-  readonly stage: Exclude<
-    ActiveWorkspaceStage,
-    'credential_setup' | 'credential_cleanup'
-  >;
+  readonly kind?: 'command';
+  readonly stage: MaterializationStageName;
   readonly command: string;
 }
+
+/**
+ * A materialization step the host performs itself (archive transfer) instead of
+ * executing inside the sandbox. It settles the same stage semantics so the
+ * durable diagnostics keep one start/one terminal per stage.
+ */
+interface MaterializationAction {
+  readonly kind: 'action';
+  readonly stage: MaterializationStageName;
+  run(args: {
+    readonly context: SandboxWorkspaceMaterializationHookContext;
+    readonly deadline: OperationDeadline;
+  }): Promise<void>;
+}
+
+type MaterializationStep = MaterializationCommand | MaterializationAction;
 
 function materializationCommands(
   repositoryUrl: string,
@@ -574,6 +618,256 @@ function materializationCommands(
           )} submodule update --init --recursive`,
         ),
     },
+  ];
+}
+
+/**
+ * Directory inside the sandbox an `archive` injection unpacks the bare mirror
+ * into. Derived from the provider's workspace directory so it follows the
+ * sandbox user's home instead of hard-coding one image's layout.
+ */
+export function sandboxRepoSourceDir(workspaceDir: string): string {
+  return `${dirname(workspaceDir)}/.cap-repo-source`;
+}
+
+/**
+ * The variant named by workspace-materialization diagnostics. An absent source
+ * and the explicit `git` variant are the same legacy in-sandbox network clone,
+ * so both report `git` rather than leaving the evidence unattributed.
+ */
+function workspaceDiagnosticSourceKind(
+  source: WorkspaceSource | null | undefined,
+): SandboxProvisioningDiagnosticWorkspaceSourceKind {
+  if (isVolumeWorkspaceSource(source)) return 'volume';
+  if (isArchiveWorkspaceSource(source)) return 'archive';
+  return 'git';
+}
+
+/** The injection variant in force, or null for the legacy git clone path. */
+function injectionWorkspaceSource(
+  source: WorkspaceSource | null | undefined,
+): VolumeWorkspaceSource | ArchiveWorkspaceSource | null {
+  if (isVolumeWorkspaceSource(source) || isArchiveWorkspaceSource(source)) {
+    return source;
+  }
+  return null;
+}
+
+/**
+ * Steps for the repo-copy injection variants (add-repo-content-store D4).
+ *
+ * Stage vocabulary is the existing closed durable one; the mapping is fixed so
+ * a failure's stage identifies which injection step broke:
+ *
+ * | variant | remote_ref_resolution | workspace_transfer | checkout |
+ * |---|---|---|---|
+ * | volume  | mount preparation (mount present + branch present in the copy) | in-sandbox local clone from the read-only mount | checkout + origin rewrite |
+ * | archive | (not used) | archive transfer host -> sandbox | in-sandbox local clone + checkout + origin rewrite |
+ *
+ * Every command is local to the sandbox: no remote is contacted, and the
+ * mounted/unpacked mirror is read through `safe.directory` because it is not
+ * owned by the sandbox user.
+ */
+function injectionMaterializationSteps(
+  source: VolumeWorkspaceSource | ArchiveWorkspaceSource,
+  branch: string,
+  workspaceDir: string,
+): readonly MaterializationStep[] {
+  return source.kind === 'volume'
+    ? volumeInjectionSteps(source, branch, workspaceDir)
+    : archiveInjectionSteps(source, branch, workspaceDir);
+}
+
+function volumeInjectionSteps(
+  source: VolumeWorkspaceSource,
+  branch: string,
+  workspaceDir: string,
+): readonly MaterializationStep[] {
+  const mount = shellQuote(source.mountPath);
+  return [
+    {
+      stage: 'remote_ref_resolution',
+      command: withInjectedCopyTrusted(mount, [
+        `test -d ${mount}`,
+        `${TRUSTED_COPY_GIT} -C ${mount} rev-parse --verify --quiet ` +
+          `${shellQuote(`refs/heads/${branch}^{commit}`)} >/dev/null`,
+      ]),
+    },
+    {
+      stage: 'workspace_transfer',
+      command: withInjectedCopyTrusted(
+        mount,
+        localCloneSteps({ sourceExpression: mount, branch, workspaceDir }),
+      ),
+    },
+    {
+      stage: 'checkout',
+      command: checkoutAndOriginSteps(
+        branch,
+        workspaceDir,
+        source.gitSource,
+      ).join(' && '),
+    },
+  ];
+}
+
+function archiveInjectionSteps(
+  source: ArchiveWorkspaceSource,
+  branch: string,
+  workspaceDir: string,
+): readonly MaterializationStep[] {
+  const sourceRoot = sandboxRepoSourceDir(workspaceDir);
+  const copyName = repoStoreCopyName(source.storePath);
+  // The archive endpoint of some BoxLite versions nests the extraction one
+  // level deeper; both layouts resolve to the same bare mirror here.
+  const direct = `${sourceRoot}/${copyName}`;
+  const nested = `${sourceRoot}/extracted/${copyName}`;
+  return [
+    {
+      kind: 'action',
+      stage: 'workspace_transfer',
+      run: async ({ context, deadline }) => {
+        const transfer = context.archiveTransfer;
+        if (!transfer) {
+          throw new SandboxProviderConfigurationError(
+            'Archive workspace injection requires the provider archive transport',
+          );
+        }
+        const prepared = await executeStage({
+          executor: context.stageExecutor,
+          deadline,
+          stage: 'workspace_transfer',
+          command:
+            `rm -rf -- ${shellQuote(sourceRoot)} && ` +
+            `mkdir -p -- ${shellQuote(sourceRoot)}`,
+        });
+        if (prepared.timedOut || prepared.exitCode !== 0) {
+          throw new Error(
+            `repo copy staging directory could not be prepared: exit_code ${prepared.exitCode}`,
+          );
+        }
+        await transfer.uploadArchive({
+          path: sourceRoot,
+          archive: createRepoStoreArchiveStream({
+            storePath: source.storePath,
+            signal: deadline.signal,
+          }),
+          signal: deadline.signal,
+        });
+      },
+    },
+    {
+      stage: 'checkout',
+      command: withInjectedCopyTrusted(
+        '"$src"',
+        [
+          ...localCloneSteps({
+            sourceExpression: '"$src"',
+            branch,
+            workspaceDir,
+          }),
+          ...checkoutAndOriginSteps(branch, workspaceDir, source.gitSource),
+        ],
+        [
+          `if test -d ${shellQuote(direct)}; then src=${shellQuote(direct)}; ` +
+            `elif test -d ${shellQuote(nested)}; then src=${shellQuote(nested)}; ` +
+            'else src=; fi',
+          'test -n "$src"',
+        ],
+      ),
+    },
+  ];
+}
+
+/**
+ * `<repoId>.git` — the copy directory name inside the repo-store, which is also
+ * the top-level entry of the uploaded tar.
+ */
+function repoStoreCopyName(storePath: string): string {
+  const normalized = storePath.replace(/\/+$/u, '');
+  const index = normalized.lastIndexOf('/');
+  const name = index < 0 ? normalized : normalized.slice(index + 1);
+  if (name.length === 0 || name === '.' || name === '..') {
+    throw new SandboxProviderConfigurationError(
+      'Archive workspace source storePath must name a repo copy directory',
+    );
+  }
+  return name;
+}
+
+/**
+ * Shell variable holding the ephemeral git config that marks the injected copy
+ * as trusted, and the `git` invocation that consumes it.
+ *
+ * WHY a config FILE instead of `git -c safe.directory=…`: the stored copy is
+ * owned by root while the sandbox runs as a non-root user, so git's ownership
+ * check ("detected dubious ownership") fires — and `safe.directory` is only
+ * honored from PROTECTED config scopes. Live-verified on the sandbox image
+ * (git 2.34.1, non-root uid 1000): `-c safe.directory=…` and `GIT_CONFIG_*`
+ * environment config are BOTH ignored, while a `GIT_CONFIG_GLOBAL` file works.
+ * The file is per-command and removed again, so nothing persists in the
+ * sandbox and the agent's own git config is untouched.
+ */
+const TRUSTED_COPY_CONFIG_VAR = 'cap_repo_copy_gitconfig';
+const TRUSTED_COPY_GIT = `GIT_CONFIG_GLOBAL="$${TRUSTED_COPY_CONFIG_VAR}" git`;
+
+/**
+ * Wrap `steps` (joined with `&&`) so the injected copy at `pathExpression` is
+ * trusted for their duration. The wrapper preserves the chain's exit status and
+ * always removes the temporary config.
+ */
+function withInjectedCopyTrusted(
+  pathExpression: string,
+  steps: readonly string[],
+  prelude: readonly string[] = [],
+): string {
+  return (
+    [
+      ...prelude,
+      `${TRUSTED_COPY_CONFIG_VAR}=$(mktemp)`,
+      `printf '[safe]\\n\\tdirectory = %s\\n' ${pathExpression} > ` +
+        `"$${TRUSTED_COPY_CONFIG_VAR}"`,
+      ...steps,
+    ].join(' && ') +
+    `; cap_repo_copy_status=$?; rm -f "$${TRUSTED_COPY_CONFIG_VAR}"; ` +
+    'exit $cap_repo_copy_status'
+  );
+}
+
+/**
+ * Local clone out of an already-injected bare mirror. `--no-hardlinks` keeps
+ * the workspace physically independent of the read-only stored copy.
+ */
+function localCloneSteps(args: {
+  readonly sourceExpression: string;
+  readonly branch: string;
+  readonly workspaceDir: string;
+}): readonly string[] {
+  const workspace = shellQuote(args.workspaceDir);
+  return [
+    `rm -rf -- ${workspace}`,
+    `mkdir -p -- ${shellQuote(dirname(args.workspaceDir))}`,
+    `${TRUSTED_COPY_GIT} clone --no-hardlinks --no-checkout --single-branch ` +
+      `--branch ${shellQuote(args.branch)} -- ${args.sourceExpression} ${workspace}`,
+  ];
+}
+
+/**
+ * Convergence step (sandbox-provider-port: injected workspaces converge to the
+ * same git shape as cloned ones): check the resolved branch out and repoint
+ * `origin` at the Repo's recorded git source so delivery pushes upstream, not
+ * back into the injected copy.
+ */
+function checkoutAndOriginSteps(
+  branch: string,
+  workspaceDir: string,
+  gitSource: string,
+): readonly string[] {
+  const workspace = shellQuote(workspaceDir);
+  return [
+    `git -C ${workspace} checkout --force -B ${shellQuote(branch)} ` +
+      `${shellQuote(`refs/remotes/origin/${branch}`)}`,
+    `git -C ${workspace} remote set-url origin ${shellQuote(gitSource)}`,
   ];
 }
 
@@ -663,6 +957,58 @@ async function runTransferWithRetries(args: {
   }
   // Unreachable: the final loop iteration always returns.
   return failed(args.stage, 'unknown', false);
+}
+
+/**
+ * Stage runner for a HOST-side materialization step (the archive transfer).
+ * It mirrors {@link runMaterializationStage}'s stage semantics — boundary
+ * assertions, deadline interruption, one start / one terminal diagnostic — but
+ * the work is an awaited host action rather than a sandbox command, so a
+ * transfer failure settles on its own stage and never looks like a clone.
+ */
+async function runMaterializationAction(args: {
+  readonly context: SandboxWorkspaceMaterializationHookContext;
+  readonly deadline: OperationDeadline;
+  readonly stage: MaterializationStageName;
+  readonly run: MaterializationAction['run'];
+}): Promise<ActiveWorkspaceFailure | null> {
+  const interruption = args.deadline.interruption(args.stage);
+  if (interruption !== null) {
+    await reportWorkspaceStageTerminal(args.context, interruption);
+    return interruption;
+  }
+  await assertWorkspaceBoundary(args.context, args.stage, 'before');
+  await reportWorkspaceStageStarted(args.context, args.stage);
+  let actionError: unknown;
+  try {
+    await args.run({ context: args.context, deadline: args.deadline });
+  } catch (error) {
+    actionError = error;
+  }
+  await assertWorkspaceBoundary(args.context, args.stage, 'after');
+  const after = args.deadline.interruption(args.stage);
+  if (after !== null) {
+    await reportWorkspaceStageTerminal(args.context, after);
+    return after;
+  }
+  if (actionError !== undefined) {
+    const classification = classifySandboxGitFailure({
+      stage: args.stage,
+      error: actionError,
+    });
+    const outcome = failed(
+      args.stage,
+      classification.cause,
+      classification.retryable,
+    );
+    await reportWorkspaceStageTerminal(args.context, outcome);
+    return outcome;
+  }
+  await reportWorkspaceStageTerminal(args.context, {
+    status: 'succeeded',
+    stage: args.stage,
+  });
+  return null;
 }
 
 async function runMaterializationStage(args: {
@@ -1631,6 +1977,10 @@ function emitWorkspaceDiagnostic(
         operation: descriptor.operation,
         channel: descriptor.channel,
         commandKind: descriptor.commandKind,
+        // The three variants share this closed stage/operation vocabulary, so
+        // the variant itself is the only thing that tells a mount preparation
+        // from a network clone in retained evidence.
+        workspaceSourceKind: workspaceDiagnosticSourceKind(context.source),
         ...terminal,
       }),
     ).catch(() => undefined);

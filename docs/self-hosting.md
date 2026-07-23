@@ -230,6 +230,32 @@ For GitHub, create a Personal Access Token with repository access:
 GitLab/Gitee use their own PATs and optional self-hosted instance URL. These PATs
 are stored per account and used only for repository listing/import/clone/push.
 
+### Repo content copies (the `repo-store` volume)
+
+Importing a repository also fetches its content: the api clones a bare mirror
+into the `repo-store` named volume (`/repo-store/<repoId>.git`) at import time,
+and each task materializes its workspace from that local copy instead of running
+a `git clone` over the public network inside the sandbox. Both compose files
+declare the volume, so it is created for you on `up -d`.
+
+What this means day to day:
+
+- The copy is a snapshot. It is **not** auto-refreshed — press **Refresh** on the
+  Repo when you want the latest commits from the forge.
+- Task creation is gated on the copy being `ready`. A Repo whose copy is
+  `missing` / `refreshing` / `failed` cannot start new tasks; already-running
+  tasks are unaffected.
+- **Upgrading an existing install:** repositories imported before this feature
+  come up as `missing` — there is no automatic mass backfill, on purpose. Press
+  **Refresh** on each Repo you intend to use (once) to build its copy, then
+  resume creating tasks.
+- The volume is rebuildable from the forge, so it does not need to be in your
+  backup policy; losing it costs one refresh per Repo.
+- If injection is broken for your sandbox provider, set
+  `CAP_WORKSPACE_GIT_FALLBACK_ENABLED=true` in the api env and recreate the api
+  to go back to the legacy in-sandbox network clone. It is read at startup and
+  defaults to off.
+
 ## Step 2.5 — Connect an official Codex subscription
 
 Console identity, repository credentials, and the Codex model credential are
@@ -615,6 +641,39 @@ reachability check.
 > changing it. The prebuilt `cap-web` supports same-host runtime endpoint
 > discovery; for split-domain production, follow the local-account domain/cookie
 > steps above and set explicit public api/ws endpoints.
+
+## Optional: import repos from a local path (`CAP_LOCAL_IMPORT_ROOT`, default OFF)
+
+Besides the forge picker and by-URL import, cap can import an existing git
+repository from a filesystem path. "Local" means a path visible to the **api
+container**, so this takes two deliberate steps and is completely off until both
+are done.
+
+1. Mount the host directory into the api service (read-only is enough — the
+   importer only clones FROM it):
+
+```yaml
+# docker-compose.yml / docker-compose.prod.yml, api service
+    volumes:
+      - workspaces:/data/workspaces
+      - repo-store:/repo-store
+      - /srv/git:/local-repos:ro
+```
+
+2. Point the allowlist root at the **container-side** path in the api env
+   (`apps/api/.env`, or the run-package `.env`), then recreate the api:
+
+```bash
+CAP_LOCAL_IMPORT_ROOT=/local-repos
+```
+
+With `CAP_LOCAL_IMPORT_ROOT` unset the mode is disabled end to end: the API
+rejects local imports and the console does not offer the third import mode. When
+it is set, a requested path must resolve (realpath, symlinks followed) inside the
+root and must be a git repository — anything escaping the root and any non-git
+target is rejected. Pick the mounted directory deliberately: it is the whole
+exposure surface, and every console user who can import can read any git
+repository under it.
 
 ## Optional: in-app one-click self-update (`SELF_UPDATE_ENABLED`, default OFF)
 

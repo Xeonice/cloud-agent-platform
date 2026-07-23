@@ -18,6 +18,7 @@ import {
   TaskProvisioningDiagnosticProviderFamilySchema,
   TaskProvisioningDiagnosticStageSchema,
   TaskProvisioningDiagnosticTerminalOutcomeSchema,
+  TaskProvisioningDiagnosticWorkspaceSourceKindSchema,
   type TaskProvisioningDiagnosticAttemptState,
   type TaskProvisioningDiagnosticCause,
   type TaskProvisioningDiagnosticCleanupSummary,
@@ -186,6 +187,8 @@ const TaskProvisioningDiagnosticPrimarySettlementInputSchema = z
     exitCode: z.number().int().nullable(),
     commandKind:
       TaskProvisioningDiagnosticCommandKindSchema.nullable().optional(),
+    workspaceSourceKind:
+      TaskProvisioningDiagnosticWorkspaceSourceKindSchema.nullable().optional(),
     durationMs: z.number().int().nonnegative().optional(),
     httpStatusClass:
       TaskProvisioningDiagnosticHttpStatusClassSchema.nullable().optional(),
@@ -503,6 +506,9 @@ function createTaskProvisioningDiagnosticSettlementController(
           ...(primary.commandKind === undefined
             ? {}
             : { commandKind: primary.commandKind }),
+          ...(primary.workspaceSourceKind === undefined
+            ? {}
+            : { workspaceSourceKind: primary.workspaceSourceKind }),
         };
 
         await diagnostics.emit({ ...common, outcome: 'started' });

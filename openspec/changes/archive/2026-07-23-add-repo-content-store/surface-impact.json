@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "change": "add-repo-content-store",
+  "intent": "public-feature",
+  "runtimeWireBehavior": "changed",
+  "surfaces": {
+    "publicV1": {
+      "status": "changed",
+      "operationIds": [
+        "repos.list",
+        "repos.get",
+        "tasks.create",
+        "tasks.provisioningDiagnostics"
+      ],
+      "reason": "Repo reads gain additive content-copy status and copy-timestamp fields; task creation gains a new actionable rejection when the selected repo's content copy is not ready (copy missing/refreshing/failed). No existing field changes shape or meaning; refresh and local-path import stay Console-internal endpoints outside the /v1 registry. Provisioning-diagnostics reads additionally gain an additive optional nullable workspaceSourceKind ('volume'|'archive'|'git') on diagnostic events, naming the workspace-materialization injection variant; absent/null on pre-change rows and non-materialization events."
+    },
+    "mcp": {
+      "status": "changed",
+      "operationIds": [
+        "repos.list",
+        "repos.get",
+        "tasks.create",
+        "tasks.provisioningDiagnostics"
+      ],
+      "toolIds": [
+        "list_repos",
+        "get_repo",
+        "create_task",
+        "get_task_provisioning_diagnostics"
+      ],
+      "reason": "Matching tools inherit the additive repo copy-status fields from the shared contracts and create_task surfaces the same copy-not-ready rejection through the shared task-creation path. get_task_provisioning_diagnostics inherits the additive workspaceSourceKind event field through the canonical output projection."
+    },
+    "openapi": {
+      "status": "derived",
+      "operationIds": [
+        "repos.list",
+        "repos.get",
+        "tasks.create",
+        "tasks.provisioningDiagnostics"
+      ],
+      "reason": "Additive repo copy-status schema fields and the new task-creation rejection derive from the canonical public registry and contracts. The additive workspaceSourceKind diagnostic-event field derives from the same canonical response schema."
+    },
+    "apiPlayground": {
+      "status": "derived",
+      "operationIds": [
+        "repos.list",
+        "repos.get",
+        "tasks.create",
+        "tasks.provisioningDiagnostics"
+      ],
+      "reason": "The playground derives the affected endpoints and response rendering from the same registry, including the additive fields and the new non-2xx rejection body. The additive workspaceSourceKind diagnostic-event field renders through the same derived schema."
+    },
+    "internalOnly": {
+      "status": "changed",
+      "scope": "repo-store-import-time-copies-and-per-provider-workspace-injection",
+      "reason": "Adds the host-side repo-store bare-mirror copy service (import-time acquisition, atomic completion, manual refresh, delete cascade), the fail-closed local-path import behind CAP_LOCAL_IMPORT_ROOT, the WorkspaceSource union with per-provider injection (aio-local read-only volume-subpath mount, BoxLite streamed uploadArchive tar), the gated legacy git fallback, injection-stage provisioning diagnostics, Console import/refresh/gating UI, and the repo-store compose volume. Also adds the console-internal DELETE /repos/:repoId (guarded by repo_has_tasks, cascading the stored copy) and the diagnostics variant plumbing (emitter -> classifier -> durable column migration -> projections)."
+    }
+  },
+  "protocolDifferences": [
+    {
+      "operation": "tasks.create",
+      "kind": "rest-only-header",
+      "detail": "Idempotency-Key remains an HTTP-only retry contract and is not an MCP argument; its durable admission work item is committed with the winning REST task row."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-compatibility-text",
+      "detail": "MCP structured content remains the canonical initial Task while compatibility text retains the historical task handle."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "mcp-description-projection",
+      "detail": "MCP metadata continues to explain immediate asynchronous provisioning and polling without claiming support for the HTTP-only idempotency header."
+    },
+    {
+      "operation": "tasks.create",
+      "kind": "rate-limit-policy",
+      "detail": "REST keeps its dedicated task-create throttle while MCP remains subject to the MCP transport limiter."
+    }
+  ],
+  "verification": {
+    "id": "public-surface-full",
+    "requiresWireCompatibilityFixture": true
+  }
+}

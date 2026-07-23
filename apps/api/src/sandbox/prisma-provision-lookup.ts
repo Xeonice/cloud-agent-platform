@@ -19,9 +19,12 @@ import {
   SandboxResolvedEnvironmentMetadata,
   createExactHostGitCredential,
   snapshotSandboxResources,
+  type SandboxProviderCapability,
   type SandboxResourceSnapshot,
   type SandboxWorkspaceMaterializationPlan,
+  type WorkspaceSource,
 } from '@cap/sandbox';
+import { WorkspaceSourceResolver } from './workspace-source-resolver';
 import { PrismaService } from '../prisma/prisma.service';
 import { ForgeTargetResolver } from '../forge/forge-target-resolver';
 import { DefaultForgeRegistry } from '../forge/forge-registry';
@@ -56,7 +59,36 @@ export class PrismaProvisionLookup implements ProvisionLookup {
      * assembling forge I/O; every production workspace plan passes through it.
      */
     @Optional() private readonly taskBranchResolver?: TaskBranchResolver,
-  ) {}
+    /**
+     * add-repo-content-store Track 4: selects the workspace ORIGIN (repo-store
+     * volume mount / archive transfer / gated legacy clone). Optional only so
+     * model-only unit fixtures can construct this lookup; production wiring
+     * always provides it, and its absence fails closed below rather than
+     * silently reverting to a network clone.
+     */
+    @Optional()
+    workspaceSourceResolver?: WorkspaceSourceResolver,
+  ) {
+    // Structural port compatibility, exactly like `getTaskWorkspacePlan`: an
+    // adapter that cannot select a workspace ORIGIN must OMIT the method rather
+    // than answer with a degraded value, so orchestration can tell "this
+    // deployment has no content store" apart from "selection failed". The
+    // production graph always injects the resolver (asserted by the
+    // sandbox-module wiring test), so production never omits it.
+    if (workspaceSourceResolver) {
+      this.getTaskWorkspaceSource = (taskId, declaredCapabilities) =>
+        workspaceSourceResolver.resolve(taskId, declaredCapabilities);
+    }
+  }
+
+  /**
+   * Present only when a {@link WorkspaceSourceResolver} was injected. See the
+   * constructor note: fail-closed selection lives in the resolver.
+   */
+  readonly getTaskWorkspaceSource?: (
+    taskId: string,
+    declaredCapabilities: readonly SandboxProviderCapability[],
+  ) => Promise<WorkspaceSource>;
 
   async getTaskWorkspacePlan(
     taskId: string,

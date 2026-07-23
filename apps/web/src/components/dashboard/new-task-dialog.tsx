@@ -50,6 +50,11 @@ import {
   settingsQuery,
 } from "@/lib/api/queries";
 import type { CreateTaskBody, RuntimeId } from "@/lib/api/real";
+import { taskRepoCopyNotReadyFromApiError } from "@/lib/api/real";
+import {
+  repoCopyBlockedGuidance,
+  repoCopyBlockingStatus,
+} from "@/lib/repo-copy-status";
 import {
   buildSchedulePayload,
   buildTaskRequest,
@@ -629,6 +634,24 @@ export function NewTaskDialog({
   const createdTask = mutation.data;
   const showScheduleFields = isEditingSchedule || mode === "repeated";
 
+  // add-repo-content-store: a task may only START against a repo whose content
+  // copy is `ready`; the api enforces it (409 `task_repo_copy_not_ready`) and
+  // this is the local pre-submit guidance so the operator is not sent into a
+  // guaranteed rejection. A SCHEDULE is NOT gated here — it dispatches later, by
+  // which time the copy may be ready, and each dispatch is gated server-side.
+  const copyBlockingStatus = selectedRepo
+    ? repoCopyBlockingStatus(selectedRepo)
+    : null;
+  const copyBlocksImmediateRun =
+    !isEditingSchedule && mode === "once" && copyBlockingStatus !== null;
+  // The api's own rejection, when a create raced the copy state going stale.
+  const rejectedCopyStatus = taskRepoCopyNotReadyFromApiError(mutation.error);
+  const copyBlockedMessage = copyBlocksImmediateRun
+    ? repoCopyBlockedGuidance(copyBlockingStatus!)
+    : rejectedCopyStatus
+      ? repoCopyBlockedGuidance(rejectedCopyStatus.copyStatus)
+      : null;
+
   function toggleSkill(id: string) {
     setSkills((cur) =>
       cur.includes(id) ? cur.filter((s) => s !== id) : [...cur, id],
@@ -689,6 +712,8 @@ export function NewTaskDialog({
     if (!isRuntimeReady(runtime)) return;
     if (accountDefaultUnavailable) return;
     if (!modelSelectionValid) return;
+    // No copy, no run: the api would reject this create anyway (409).
+    if (copyBlocksImmediateRun) return;
     const taskForm = currentTaskForm();
     const body: CreateTaskBody = buildTaskRequest(taskForm);
     if (isEditingSchedule && scheduleToEdit) {
@@ -924,6 +949,28 @@ export function NewTaskDialog({
                 </SelectContent>
               </Select>
               <small className="text-xs text-muted-foreground">仓库列表来自已导入仓库。</small>
+              {copyBlockedMessage ? (
+                <div
+                  role="alert"
+                  data-repo-copy-blocked={
+                    copyBlockingStatus ?? rejectedCopyStatus?.copyStatus
+                  }
+                  className="grid gap-1.5 rounded-md bg-warning-soft px-3 py-2.5"
+                >
+                  <StatusPill variant="warn" className="justify-self-start">
+                    副本未就绪
+                  </StatusPill>
+                  <p className="m-0 text-[13px] leading-relaxed text-foreground">
+                    {copyBlockedMessage}
+                  </p>
+                  <Link
+                    to="/repositories"
+                    className="w-fit text-xs font-medium text-foreground underline underline-offset-2"
+                  >
+                    前往仓库范围刷新副本
+                  </Link>
+                </div>
+              ) : null}
             </div>
 
             <div className="grid gap-2">
@@ -1204,7 +1251,11 @@ export function NewTaskDialog({
               />
             ) : null}
 
-            {mutation.isError || scheduleMutation.isError || updateMutation.isError ? (
+            {/* A copy-readiness rejection has its own classified alert next to the
+                repo select; never ALSO print its raw body here. */}
+            {(mutation.isError && !rejectedCopyStatus) ||
+            scheduleMutation.isError ||
+            updateMutation.isError ? (
               <p className="text-xs text-danger" role="alert">
                 {isEditingSchedule ? "保存失败" : "创建失败"}：
                 {mutation.error?.message ??
@@ -1238,7 +1289,8 @@ export function NewTaskDialog({
               (!isEditingSchedule && mode === "once" && createdTaskId !== null) ||
               prompt.trim().length === 0 ||
               accountDefaultUnavailable ||
-              !modelSelectionValid
+              !modelSelectionValid ||
+              copyBlocksImmediateRun
             }
             className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
           >

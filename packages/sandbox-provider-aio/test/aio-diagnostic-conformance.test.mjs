@@ -660,6 +660,11 @@ await test('AIO advertises optional capabilities only with their real provider h
   assert.deepEqual(hooked.getProviderCapabilities(), [
     'terminal.websocket',
     'workspace.git.materialize',
+    // add-repo-content-store: the staged workspace hook is exactly what makes
+    // repo-copy injection (read-only subpath mount) and the gated legacy clone
+    // available, so both variants are declared alongside it.
+    'workspace.source.volume',
+    'workspace.source.git',
     'workspace.git.deliver',
     'transcript.retained-read',
     'lifecycle.readopt',

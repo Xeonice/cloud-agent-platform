@@ -36,6 +36,8 @@ import type {
 } from '@cap/sandbox-core';
 import {
   assertSandboxProviderSupportsResources,
+  assertSandboxProviderSupportsWorkspaceSource,
+  isVolumeWorkspaceSource,
   buildSandboxCommandLine,
   isSandboxLegacyDeliverWorkspaceArgs,
   latchSandboxExternalBoundaryGuard,
@@ -65,6 +67,7 @@ import {
   buildAioSandboxConnection,
   buildAioSandboxContainerName,
   defineAioLocalSandboxProvider,
+  type AioLocalSandboxRepoMount,
 } from './aio-local-provider.js';
 import { createAioWorkspaceSecurityAdapter } from './aio-workspace-security.js';
 
@@ -310,11 +313,22 @@ export class AioSandboxProvider<
         'environment.resolve',
         () => this.resolveEnvironment(ctx, runtimeId),
       );
+      // add-repo-content-store D4: the repo copy is injected as a read-only
+      // subpath mount, and the mount can only be attached while the container
+      // is being created — the workspace materialization below clones out of
+      // it. Capability support is asserted first so an unsupported variant
+      // fails closed BEFORE any physical resource exists.
+      assertSandboxProviderSupportsWorkspaceSource(
+        this.getProviderCapabilities(),
+        ctx.workspaceSource,
+      );
+      const repoMount = aioRepoMountForSource(ctx.workspaceSource);
       const provisioned = await this.controller.createAndStart(
         ctx.taskId,
         environment,
         undefined,
         {
+          ...(repoMount === null ? {} : { repoMount }),
           signal: ctx.cancellationSignal,
           ownership: ctx.ownership,
           externalBoundaryGuard: ctx.externalBoundaryGuard,
@@ -938,6 +952,12 @@ export class AioSandboxProvider<
         workspaceDir: this.workspaceDir,
         stageExecutor: adapter.stageExecutor,
         secretFilePort: adapter.secretFilePort,
+        // add-repo-content-store D4/D5: the selected workspace origin. A
+        // `volume` source makes the engine clone from the read-only mount
+        // attached at container creation instead of cloning over the network.
+        ...(ctx.workspaceSource === undefined
+          ? {}
+          : { source: ctx.workspaceSource }),
         ...(ctx.diagnostics === undefined
           ? {}
           : { diagnostics: ctx.diagnostics }),
@@ -1126,6 +1146,21 @@ function aioCleanupCoordinationPending(
     : new SandboxCleanupCoordinationPendingError(primary);
 }
 
+/**
+ * The container mount that exposes a `volume` workspace source, or null when
+ * the provision uses another variant (archive/git) or no workspace at all.
+ */
+function aioRepoMountForSource(
+  source: SandboxProvisionContext<unknown>['workspaceSource'],
+): AioLocalSandboxRepoMount | null {
+  if (!isVolumeWorkspaceSource(source)) return null;
+  return {
+    volumeName: source.volumeName,
+    subpath: source.subpath,
+    mountPath: source.mountPath,
+  };
+}
+
 function defaultAioProviderCapabilities<
   TCloneSpec,
   TRuntimeId,
@@ -1137,7 +1172,16 @@ function defaultAioProviderCapabilities<
     'terminal.websocket',
     ...(hooks.workspaceMaterialization === undefined
       ? []
-      : (['workspace.git.materialize'] as const)),
+      : ([
+          'workspace.git.materialize',
+          // add-repo-content-store D4/D5: AIO materializes a task workspace
+          // from a read-only repo-store subpath mount (primary path) and keeps
+          // the gated legacy network clone available for rollback. Both run
+          // through the same staged workspace hook, so the declaration is tied
+          // to that hook being present.
+          'workspace.source.volume',
+          'workspace.source.git',
+        ] as const)),
     ...(hooks.workspaceDelivery === undefined
       ? []
       : (['workspace.git.deliver'] as const)),

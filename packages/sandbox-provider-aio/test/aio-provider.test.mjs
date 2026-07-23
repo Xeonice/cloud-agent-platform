@@ -2324,5 +2324,111 @@ await test('covers workspace success, validation, and degradation paths', async 
   );
 });
 
+await test(
+  'repo-copy volume injection attaches a read-only subpath mount and reaches the workspace hook',
+  async () => {
+    // add-repo-content-store D4 (aio row): the mount must exist at CREATE time
+    // because the workspace is produced by a local clone out of it.
+    const captured = [];
+    const { provider, docker } = makeProvider({
+      hooks: {
+        workspaceMaterialization: async (context) => {
+          captured.push(context);
+          return { status: 'succeeded', stage: 'complete' };
+        },
+      },
+    });
+    const workspaceSource = {
+      kind: 'volume',
+      repoId: 'repo-1',
+      volumeName: 'cap_repo-store',
+      subpath: 'repo-1.git',
+      mountPath: mod.AIO_SANDBOX_REPO_SOURCE_MOUNT_DIR,
+      gitSource: 'https://example.invalid/repo.git',
+    };
+    await provider.provision({
+      ...provisionContext('task-volume-injection'),
+      workspace: {
+        repositoryUrl: 'https://example.invalid/repo.git',
+        callerBranch: null,
+        resolvedBranch: 'main',
+        deadlineMs: 60_000,
+      },
+      workspaceSource,
+    });
+    assert.deepEqual(docker.created[0].options.HostConfig.Mounts, [
+      {
+        Type: 'volume',
+        Source: 'cap_repo-store',
+        Target: mod.AIO_SANDBOX_REPO_SOURCE_MOUNT_DIR,
+        ReadOnly: true,
+        VolumeOptions: { Subpath: 'repo-1.git' },
+      },
+    ]);
+    assert.equal(captured.length, 1);
+    assert.deepEqual(captured[0].source, workspaceSource);
+
+    // Declared capabilities are what gate the variant upstream.
+    const capabilities = provider.getProviderCapabilities();
+    assert.equal(capabilities.includes('workspace.source.volume'), true);
+    assert.equal(capabilities.includes('workspace.source.git'), true);
+    assert.equal(capabilities.includes('workspace.source.archive'), false);
+  },
+);
+
+await test('a provision without a volume source creates a mount-free container', async () => {
+  const { provider, docker } = makeProvider({
+    hooks: {
+      workspaceMaterialization: async () => ({
+        status: 'succeeded',
+        stage: 'complete',
+      }),
+    },
+  });
+  await provider.provision({
+    ...provisionContext('task-no-mount'),
+    workspace: {
+      repositoryUrl: 'https://example.invalid/repo.git',
+      callerBranch: null,
+      resolvedBranch: 'main',
+      deadlineMs: 60_000,
+    },
+    workspaceSource: { kind: 'git', spec: { url: 'https://example.invalid/repo.git' } },
+  });
+  assert.equal(docker.created[0].options.HostConfig.Mounts, undefined);
+});
+
+await test('an unsupported workspace source fails closed before any container exists', async () => {
+  const { provider, docker } = makeProvider({
+    hooks: {
+      workspaceMaterialization: async () => ({
+        status: 'succeeded',
+        stage: 'complete',
+      }),
+    },
+  });
+  // A provider that declares no archive variant must refuse an archive source.
+  await assert.rejects(
+    () =>
+      provider.provision({
+        ...provisionContext('task-unsupported-source'),
+        workspace: {
+          repositoryUrl: 'https://example.invalid/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'main',
+          deadlineMs: 60_000,
+        },
+        workspaceSource: {
+          kind: 'archive',
+          repoId: 'repo-1',
+          storePath: '/repo-store/repo-1.git',
+          gitSource: 'https://example.invalid/repo.git',
+        },
+      }),
+    /workspace\.source\.archive/u,
+  );
+  assert.equal(docker.created.length, 0);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -41,6 +41,7 @@ import type {
   ListAvailableGithubReposResponse,
   ListAvailableForgeReposResponse,
   ListForgeCredentialsResponse,
+  LocalRepoImportAvailability,
   ForgeKind,
   UpdateStatus,
   ApiKeyListResponse,
@@ -142,6 +143,13 @@ export const queryKeys = {
     ["forges", "repos", kind] as const,
   /** The operator's connected forges (`GET /settings/forges`). */
   forgeCredentials: ["settings", "forges"] as const,
+  /**
+   * Whether local-path import is configured at all
+   * (`GET /repos/local-import/availability`, local-repo-import). A capability
+   * probe, not a repo read — kept off the `repos` key so a repo-list
+   * invalidation never re-probes deployment configuration.
+   */
+  localRepoImportAvailability: ["local-repo-import", "availability"] as const,
   taskContext: (id: string) => ["tasks", id, "context"] as const,
   taskResource: (id: string) => ["tasks", id, "resource"] as const,
   sessionHistory: (id: string) => ["tasks", id, "session-history"] as const,
@@ -565,6 +573,29 @@ export function availableForgeReposQuery(kind: ForgeKind) {
       isCapable("settings")
         ? real.listAvailableForgeRepos(kind)
         : Promise.resolve([]),
+  });
+}
+
+/**
+ * Whether the api offers local-path repository import at all
+ * (`GET /repos/local-import/availability`, local-repo-import). FAIL-CLOSED at
+ * every layer: the mock seam reports the feature OFF (there is no filesystem to
+ * import from without a running api), and a real deployment reports it on only
+ * when `CAP_LOCAL_IMPORT_ROOT` names an allowlist root. Deployment configuration
+ * changes rarely, so the probe is cached for the session and only re-read when
+ * the import dialog opens (the caller sets `enabled`).
+ */
+export function localRepoImportAvailabilityQuery() {
+  return queryOptions<LocalRepoImportAvailability>({
+    queryKey: queryKeys.localRepoImportAvailability,
+    queryFn: () =>
+      isCapable("repos")
+        ? real.getLocalRepoImportAvailability()
+        : mock.mockLocalRepoImportAvailability(),
+    staleTime: 5 * 60_000,
+    // An api that predates the endpoint answers 404 — that is a definitive
+    // "not offered", not a transient failure worth retrying.
+    retry: false,
   });
 }
 

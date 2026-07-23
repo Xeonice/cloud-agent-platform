@@ -54,6 +54,7 @@ export interface DiagnosticEventRecord {
   readonly operation: string;
   readonly channel: string;
   readonly commandKind: string | null;
+  readonly workspaceSourceKind: string | null;
   readonly outcome: string;
   readonly observedAt: Date;
   readonly durationMs: number | null;
@@ -141,6 +142,7 @@ export function eventFromRecord(
     operation: row.operation,
     channel: row.channel,
     commandKind: row.commandKind,
+    workspaceSourceKind: row.workspaceSourceKind,
     observedAt: row.observedAt,
   };
   const withAttempt = { ...common, attempt: attemptNumber };
@@ -219,6 +221,7 @@ export function hasCompleteEventInvariants(
       operation: string;
       channel: string;
       commandKind: string | null;
+      workspaceSourceKind: string | null;
     }
   >();
   for (const [index, event] of events.entries()) {
@@ -239,13 +242,15 @@ export function hasCompleteEventInvariants(
       operation: event.operation,
       channel: event.channel,
       commandKind: event.commandKind ?? null,
+      workspaceSourceKind: event.workspaceSourceKind ?? null,
     };
     if (
       operation.providerFamily !== event.providerFamily ||
       operation.stage !== event.stage ||
       operation.operation !== event.operation ||
       operation.channel !== event.channel ||
-      operation.commandKind !== (event.commandKind ?? null)
+      operation.commandKind !== (event.commandKind ?? null) ||
+      operation.workspaceSourceKind !== (event.workspaceSourceKind ?? null)
     ) {
       return false;
     }

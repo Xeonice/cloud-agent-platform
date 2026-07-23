@@ -27,6 +27,8 @@ import {
 } from '../forge/remote-refs-probe';
 import { ForgeTargetResolver } from '../forge/forge-target-resolver';
 import { PrismaService } from '../prisma/prisma.service';
+import { RepoCopyService } from './repo-copy.service';
+import { repoRowToResponse, type RepoRowProjection } from './repo-response';
 
 /**
  * Metadata that has already crossed an owner-authenticated verification
@@ -137,6 +139,7 @@ export class ReposService {
     private readonly forgeTargets: ForgeTargetResolver,
     private readonly remoteRefs: RemoteRefsProbePort,
     private readonly forgeRegistry: DefaultForgeRegistry,
+    private readonly copies: RepoCopyService,
   ) {}
 
   async create(ownerUserId: string, body: CreateRepoBody): Promise<RepoResponse> {
@@ -175,13 +178,26 @@ export class ReposService {
       defaultBranch = probe.defaultBranch;
     }
 
-    return this.reconcileVerifiedImport({
+    const repo = await this.reconcileVerifiedImport({
       name: body.name,
       gitSource,
       forge: target.target.kind,
       defaultBranch,
       gitlabProjectId,
     });
+
+    // add-repo-content-store: an import is not complete until the repo-store
+    // holds a ready bare mirror. The clone runs on the API host with THIS
+    // account's forge credential (the same `cloneAuthHeader` value the sandbox
+    // git paths use), so no content acquisition happens on the task-start path.
+    //
+    // On failure the Repo row above deliberately survives with a non-ready copy
+    // status: the operator sees the typed cause and retries via the copy-refresh
+    // endpoint instead of losing verified metadata.
+    return this.copies.acquireOnImport(
+      repo,
+      this.forgeRegistry.forKind(target.target.kind).cloneAuthHeader(target.target),
+    );
   }
 
   /**
@@ -490,45 +506,15 @@ export class ReposService {
   }
 
   /**
-   * Shapes a Prisma `Repo` row into the contracts response shape. The contracts
-   * `RepoSchema.createdAt`/`updatedAt` are `Date`s (`z.coerce.date()`), so the
-   * row's native `Date` is passed through unchanged; the HTTP boundary serializes
-   * it to an ISO string on the way out.
+   * Shapes a Prisma `Repo` row into the contracts response shape.
    *
-   * Import metadata is surfaced on every read path exactly as persisted.
-   * `defaultBranch` is forge-neutral and verified for URL/Gitee/GitLab/GitHub
-   * imports; GitHub-only fields remain nullable. No read path fabricates a
-   * branch for legacy rows whose persisted value is null.
+   * Delegates to the shared {@link repoRowToResponse} projection so the console,
+   * the GitHub import surface, and the content-copy surface cannot drift apart —
+   * in particular every read path exposes the additive repo-store copy status and
+   * copy timestamp (add-repo-content-store). Import metadata is surfaced exactly
+   * as persisted; no read path fabricates a branch for a legacy null.
    */
-  private toResponse(repo: {
-    id: string;
-    name: string;
-    gitSource: string;
-    createdAt: Date;
-    description: string | null;
-    defaultBranch: string | null;
-    branchCount: number | null;
-    updatedAt: Date | null;
-    githubId: string | null;
-    isDefault: boolean;
-    forge?: string | null;
-  }): RepoResponse {
-    return {
-      id: repo.id,
-      name: repo.name,
-      gitSource: repo.gitSource,
-      createdAt: repo.createdAt,
-      description: repo.description,
-      defaultBranch: repo.defaultBranch,
-      branchCount: repo.branchCount,
-      updatedAt: repo.updatedAt,
-      githubId: repo.githubId,
-      // The single-default flag (be-github-import 4.5), surfaced on every read
-      // path so the console can render which imported Repo is the default.
-      isDefault: repo.isDefault,
-      // add-multi-forge-task-delivery: the source forge (null for repos predating
-      // multi-forge / unknown host), echoed so the console renders the source.
-      forge: (repo.forge ?? null) as RepoResponse['forge'],
-    };
+  private toResponse(repo: RepoRowProjection): RepoResponse {
+    return repoRowToResponse(repo);
   }
 }

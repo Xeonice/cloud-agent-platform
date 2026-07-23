@@ -82,6 +82,19 @@ model Repo {
   /// for non-gitlab / uncached.
   gitlabProjectId String? @map("gitlab_project_id")
 
+  /// Repo-store content-copy state (add-repo-content-store):
+  /// `missing` | `refreshing` | `ready` | `failed`.
+  ///
+  /// `missing` is the durable default so Repos that predate the content store
+  /// stay honest after upgrade: no copy exists until an operator triggers an
+  /// acquisition/refresh. The system never mass-backfills copies on boot.
+  copyStatus    String    @default("missing") @map("copy_status")
+  /// When the bare-mirror copy was last successfully materialized (acquire or
+  /// refresh). Null while no copy has ever completed. A failed refresh keeps
+  /// the last-good copy AND this timestamp, so `failed` still means "usable
+  /// content from this instant, just not re-verified".
+  copyUpdatedAt DateTime? @map("copy_updated_at")
+
   tasks     Task[]
   schedules TaskSchedule[]
 
@@ -556,6 +569,10 @@ model TaskProvisioningDiagnosticEvent {
   operation      String
   channel        String
   commandKind    String?  @map("command_kind")
+  /// Workspace-source variant (volume/archive/git) named by workspace
+  /// materialization evidence; null for operations that materialize nothing
+  /// and for events retained before the field existed.
+  workspaceSourceKind String? @map("workspace_source_kind")
   outcome        String
   observedAt     DateTime @map("observed_at")
 
