@@ -327,6 +327,8 @@ test('Console, V1, MCP and schedule recovery preserve one canonical explicit-mod
       data: {
         name: `task-model-cross-surface-${randomUUID()}`,
         gitSource: 'https://example.invalid/task-model-cross-surface.git',
+        copyStatus: 'ready',
+        copyUpdatedAt: new Date(),
       },
     });
     const rawApiKey = `cap_sk_${randomUUID().replaceAll('-', '')}`;
@@ -840,6 +842,8 @@ test('default-closed N gate fences every production write/catalog seam before da
       data: {
         name: `task-model-closed-gate-${randomUUID()}`,
         gitSource: 'https://example.invalid/task-model-closed-gate.git',
+        copyStatus: 'ready',
+        copyUpdatedAt: new Date(),
       },
     });
     const rawApiKey = `cap_sk_${randomUUID().replaceAll('-', '')}`;
