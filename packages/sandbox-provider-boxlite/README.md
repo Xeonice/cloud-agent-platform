@@ -81,9 +81,15 @@ Use `make up-aio`, `make up-boxlite`, or `make up-cp` to force a mode.
   speaks BoxLite 0.9.x box/execution/file routes directly. `cap-rest` is the old
   CAP compatibility adapter contract.
 - `BOXLITE_PATH_PREFIX`: native BoxLite path prefix, default `default`; native
-  requests use `/v1/<prefix>/...`.
+  requests use `/v1/<prefix>/...`. BoxLite 0.9.7 local `boxlite serve` is
+  prefixless, so configure and persist an empty value (`BOXLITE_PATH_PREFIX=`)
+  for that topology.
 - `BOXLITE_TERMINAL_MODE`: `none` or `pty`. Terminal capabilities require
-  `pty`; streaming exec alone must not advertise live terminal support.
+  `pty`; streaming exec alone must not advertise live terminal support. The CAP
+  image must provide executable `/usr/local/bin/cap-pty-byte-bridge`. The bridge
+  owns a child PTY and carries output/input/resize as bounded ASCII protocol
+  lines with canonical base64 byte payloads. This avoids relying on BoxLite's
+  per-chunk UTF-8 decoding, including the lossy behavior observed in 0.9.5.
 - `BOXLITE_DISK_SIZE_GB`: deployment fallback disk capacity for BoxLite
   sandboxes. It must be a base-10 integer from `1` through `1024`. The CAP
   product default is `5` GiB, a capacity verified to complete the observed
@@ -120,9 +126,14 @@ BOXLITE_CAPABILITIES=command.exec,workspace.archive.transfer,lifecycle.readoptio
 ```
 
 Interactive terminal support must be explicit. In native mode CAP uses its own
-`boxlite-v1` terminal transport, attaches to BoxLite executions, and translates
-stdin/stdout/stderr/exit/resize/signal frames; do not advertise terminal support
-unless `BOXLITE_TERMINAL_MODE=pty` and the terminal transport tests pass:
+`boxlite-v1` terminal transport. Each BoxLite execution starts the fixed image
+byte bridge with an outer TTY; CAP waits for its generation-fenced ready frame,
+then translates canonical base64 output back to the original PTY bytes and
+sends input/terminal responses/resize through ASCII `I`/`S` frames. Malformed,
+oversized, stale-generation, wrong-sequence, missing-bridge, and pre-ready exit
+paths fail closed and clean the exact execution with DELETE plus GET-404 proof.
+Do not advertise terminal support unless `BOXLITE_TERMINAL_MODE=pty`, the image
+bridge preflight, and the terminal transport tests pass:
 
 ```sh
 BOXLITE_TERMINAL_MODE=pty
@@ -140,16 +151,17 @@ task rows, audit records, transcript archive, and git delivery as durable truth.
 
 ## REST Client Contract
 
-In the default `native` protocol, the REST client uses BoxLite 0.9.x routes:
+In the default `native` protocol, the REST client uses BoxLite 0.9.x routes.
+`[/<path-prefix>]` is omitted for a prefixless local server:
 
-- `POST /v1/<path-prefix>/boxes`
-- `GET /v1/<path-prefix>/boxes/:box_id`
-- `DELETE /v1/<path-prefix>/boxes/:box_id`
-- `POST /v1/<path-prefix>/boxes/:box_id/exec`
-- `GET /v1/<path-prefix>/executions/:execution_id`
-- `GET /v1/<path-prefix>/executions/:execution_id/attach` (websocket)
-- `PUT /v1/<path-prefix>/boxes/:box_id/files?path=...`
-- `GET /v1/<path-prefix>/boxes/:box_id/files?path=...`
+- `POST /v1[/<path-prefix>]/boxes`
+- `GET /v1[/<path-prefix>]/boxes/:box_id`
+- `DELETE /v1[/<path-prefix>]/boxes/:box_id`
+- `POST /v1[/<path-prefix>]/boxes/:box_id/exec`
+- `GET /v1[/<path-prefix>]/executions/:execution_id`
+- `GET /v1[/<path-prefix>]/executions/:execution_id/attach` (websocket)
+- `PUT /v1[/<path-prefix>]/boxes/:box_id/files?path=...`
+- `GET /v1[/<path-prefix>]/boxes/:box_id/files?path=...`
 
 `BOXLITE_PROTOCOL_MODE=cap-rest` keeps support for the older CAP adapter routes:
 

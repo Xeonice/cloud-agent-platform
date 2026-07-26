@@ -23,13 +23,15 @@ export type TaskModelLaunchMaterial =
 export function taskModelLaunchMaterial(
   intent: TaskModelIntent,
 ): TaskModelLaunchMaterial {
-  if (intent.kind === 'runtime-default') return intent;
+  if (intent.kind === 'runtime-default') {
+    return Object.freeze({ kind: 'runtime-default' });
+  }
   const digest = createHash('sha256')
     .update(Buffer.from(intent.selector, 'utf8'))
     .digest('hex');
-  return {
+  return Object.freeze({
     kind: 'explicit',
     path: TASK_MODEL_MATERIAL_PATH,
     checksum: `sha256:${digest}`,
-  };
+  });
 }

@@ -41,8 +41,14 @@ export * from './task-provisioning-diagnostics-capability.js';
 // Dual-channel WebSocket frame protocol (raw + flow-control frames)
 export * from './ws-frames.js';
 
-// SerializeAddon snapshot + reconnect/tail-replay frames
-export * from './snapshot-frames.js';
+// Fresh viewer attachment + response-profile negotiation/control frames
+export * from './terminal-attachment-frames.js';
+
+// Canonical base64 helpers for opaque terminal input/output bytes
+export * from './terminal-bytes.js';
+
+// Transitional type-only recording helpers; never accepted by live WS schemas
+export type * from './terminal-recording-internal.js';
 
 // Approval contract: decision shape + forward-event + PostToolUse report
 export * from './approvals.js';

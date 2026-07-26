@@ -133,7 +133,7 @@ const ROLLOUT = [
   }),
 ].join('\n');
 
-/** Stub SandboxProvider exposing only `readRolloutFromContainer`. */
+/** Stub SandboxProvider exposing the current runtime-tagged transcript contract. */
 function makeSandbox({ rollout = null, throws = false } = {}) {
   const calls = { readRollout: 0 };
   return {
@@ -142,7 +142,9 @@ function makeSandbox({ rollout = null, throws = false } = {}) {
       async readRolloutFromContainer() {
         calls.readRollout++;
         if (throws) throw new Error('docker getArchive blew up');
-        return rollout;
+        return rollout === null
+          ? null
+          : { format: 'codex-rollout-jsonl', jsonl: rollout };
       },
     },
   };

@@ -8,6 +8,12 @@ import type {
   BoxLiteRuntimePreflightOptions,
 } from './boxlite-hooks.js';
 
+export const BOXLITE_TERMINAL_BYTE_BRIDGE_PATH =
+  '/usr/local/bin/cap-pty-byte-bridge';
+export const BOXLITE_TERMINAL_BYTE_BRIDGE_PROBE_COMMAND =
+  `test -x '${BOXLITE_TERMINAL_BYTE_BRIDGE_PATH}' && ` +
+  `'${BOXLITE_TERMINAL_BYTE_BRIDGE_PATH}' --help >/dev/null`;
+
 export function createBoxLiteRuntimePreflight(
   options: BoxLiteRuntimePreflightOptions,
 ): BoxLiteRuntimePreflight {
@@ -15,11 +21,13 @@ export function createBoxLiteRuntimePreflight(
   const now = options.now ?? (() => new Date());
   return async (context) => {
     const tools = [...options.requiredTools].sort();
+    const requireTerminalByteBridge = options.requireTerminalByteBridge === true;
     const cacheKey = [
       context.provider.getProviderId(),
       sandboxSourceLabel(context.sandbox),
       context.runtimeId ?? 'default-runtime',
       tools.join(','),
+      requireTerminalByteBridge ? 'terminal-byte-bridge-v1' : 'terminal-byte-bridge-off',
     ].join('|');
     const cached = cache.get(cacheKey);
     if (cached) return cached;
@@ -51,6 +59,20 @@ export function createBoxLiteRuntimePreflight(
         output: result.output,
       });
     }
+    if (requireTerminalByteBridge) {
+      const command = BOXLITE_TERMINAL_BYTE_BRIDGE_PROBE_COMMAND;
+      const result = await context.executor.exec({
+        command,
+        timeoutMs: options.commandTimeoutMs,
+      });
+      probes.push({
+        name: 'terminal-byte-bridge',
+        command,
+        ok:
+          result.exitCode === 0 && result.timedOut !== true,
+        output: result.output,
+      });
+    }
     const failed = probes.filter((probe) => !probe.ok);
     const preflight: SandboxPreflightResult = {
       status: failed.length === 0 ? 'passed' : 'failed',
@@ -77,6 +99,7 @@ export function requiredToolsForBoxLiteCapabilities(
     capabilities.includes('terminal.interactive')
   ) {
     out.add('bash');
+    out.add('python3');
   }
   if (
     capabilities.includes('workspace.git.materialize') ||
@@ -96,6 +119,12 @@ function sandboxSourceLabel(sandbox: BoxLiteSandbox): string {
 }
 
 function boxLitePreflightError(failedNames: readonly string[]): string {
+  if (failedNames.includes('terminal-byte-bridge')) {
+    return (
+      'BoxLite terminal byte bridge is unavailable; use the CAP BoxLite image ' +
+      `with executable ${BOXLITE_TERMINAL_BYTE_BRIDGE_PATH}`
+    );
+  }
   const label = failedNames.includes('workspace')
     ? 'required tools or workspace'
     : 'required tools';

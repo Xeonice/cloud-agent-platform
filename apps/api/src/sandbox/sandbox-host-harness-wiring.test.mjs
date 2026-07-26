@@ -27,7 +27,6 @@ for (const requiredKey of [
   'runtimeRegistry: runtimes',
   'materialResolvers',
   'provisionLookup: lookup',
-  'codexAuthSource',
   'skillInstallers: { resolveSkillInstaller }',
   'sessionIdForTask',
 ]) {

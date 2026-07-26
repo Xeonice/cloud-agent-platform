@@ -1,4 +1,8 @@
-import type { SandboxCommandExecutor } from '@cap/sandbox-core';
+import {
+  createSandboxRuntimePrivateFile,
+  type SandboxCommandExecutor,
+  type SandboxRuntimePrivateFile,
+} from '@cap/sandbox-core';
 
 export const SANDBOX_IMAGE_ENV_DIR = '/home/gem/.cap';
 export const SANDBOX_IMAGE_ENV_PATH = `${SANDBOX_IMAGE_ENV_DIR}/image-env`;
@@ -17,6 +21,8 @@ export interface SandboxHostImageParameterProfile {
 export interface SandboxImageParameterSetupCommand {
   readonly command: string;
   readonly tolerateUnresolvedExit: boolean;
+  /** Opaque files consumed only by the selected provider's private archive port. */
+  readonly privateFiles: readonly SandboxRuntimePrivateFile[];
 }
 
 export function buildSandboxImageParameterSetupCommands(
@@ -27,20 +33,24 @@ export function buildSandboxImageParameterSetupCommands(
   const envFile = parameters
     .map((parameter) => `export ${parameter.name}=${shellQuote(parameter.value)}`)
     .join('\n') + '\n';
-  const envB64 = Buffer.from(envFile, 'utf8').toString('base64');
   return [
     {
       command:
-        `mkdir -p '${SANDBOX_IMAGE_ENV_DIR}' && ` +
-        `printf %s '${envB64}' | base64 -d > '${SANDBOX_IMAGE_ENV_PATH}' && ` +
-        `chmod 600 '${SANDBOX_IMAGE_ENV_PATH}'`,
+        `test -s '${SANDBOX_IMAGE_ENV_PATH}' && ` +
+        `test "$(stat -c %a '${SANDBOX_IMAGE_ENV_PATH}')" = 600`,
       tolerateUnresolvedExit: false,
+      privateFiles: [
+        createSandboxRuntimePrivateFile(SANDBOX_IMAGE_ENV_PATH, envFile),
+      ],
     },
   ];
 }
 
 export function buildSandboxImageParameterCleanupCommands(): readonly string[] {
-  return [`rm -f '${SANDBOX_IMAGE_ENV_PATH}' 2>/dev/null; true`];
+  return [
+    `rm -f '${SANDBOX_IMAGE_ENV_PATH}' && ` +
+      `test ! -e '${SANDBOX_IMAGE_ENV_PATH}'`,
+  ];
 }
 
 export function scrubSandboxImageParameterSecrets(
@@ -65,22 +75,41 @@ export async function removeSandboxImageParameterFileBestEffort(args: {
   readonly warn?: (message: string) => void;
   readonly taskId: string;
 }): Promise<void> {
+  try {
+    await removeSandboxImageParameterFile(args);
+  } catch (err) {
+    args.warn?.(
+      `image parameter cleanup for task ${args.taskId} failed (not fatal): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/**
+ * Remove the private image environment and prove absence. AIO retention calls
+ * this strict form: failure must force removal of the whole sandbox instead of
+ * stopping and retaining a token-bearing filesystem.
+ */
+export async function removeSandboxImageParameterFile(args: {
+  readonly executor: SandboxCommandExecutor;
+  readonly taskId: string;
+}): Promise<void> {
   for (const command of buildSandboxImageParameterCleanupCommands()) {
+    let result;
     try {
-      const result = await args.executor.exec({
+      result = await args.executor.exec({
         command,
         timeoutMs: SANDBOX_IMAGE_PARAMETER_TIMEOUT_MS,
       });
-      if (result.exitCode !== 0) {
-        args.warn?.(
-          `image parameter cleanup for task ${args.taskId} exited ${result.exitCode} (not fatal)`,
-        );
-      }
-    } catch (err) {
-      args.warn?.(
-        `image parameter cleanup for task ${args.taskId} failed (not fatal): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+    } catch {
+      throw new Error(
+        `image parameter cleanup for task ${args.taskId} did not settle`,
+      );
+    }
+    if (result.exitCode !== 0 || result.timedOut === true) {
+      throw new Error(
+        `image parameter cleanup for task ${args.taskId} was not confirmed`,
       );
     }
   }

@@ -2,6 +2,7 @@ import { posix as guestPosixPath } from 'node:path';
 
 import {
   createSandboxMode0600FileArchive,
+  createSandboxRuntimePrivateFilePort,
   createSandboxSecretFilePort,
   normalizeSandboxPhysicalCleanupResult,
   SandboxCleanupCoordinationPendingError,
@@ -17,6 +18,7 @@ import {
   type SandboxProviderPrivateSecretFileTransport,
   type SandboxProviderPrivateSecretFileWriteRequest,
   type SandboxRunCleanupAuthorization,
+  type SandboxRuntimePrivateFilePort,
   type SandboxSecretFilePort,
 } from '@cap/sandbox-core';
 
@@ -28,6 +30,7 @@ const BOXLITE_SECRET_OPERATION_TIMEOUT_MS = 10_000;
 const BOXLITE_SANDBOX_DELETE_CONFIRM_ATTEMPTS = 10;
 const BOXLITE_SANDBOX_DELETE_CONFIRM_DELAY_MS = 100;
 const BOXLITE_GIT_SECRET_DIRECTORY_NAME = '.cap-git-credentials';
+const BOXLITE_RUNTIME_PRIVATE_ROOT = '/home/gem';
 
 /**
  * Keep provider-owned credentials on the root filesystem, beside the
@@ -94,6 +97,7 @@ export interface BoxLiteWorkspaceSecurityOptions {
 
 export interface BoxLiteWorkspaceSecurityAdapter {
   readonly secretFilePort: SandboxSecretFilePort;
+  readonly runtimePrivateFiles: SandboxRuntimePrivateFilePort;
   readonly stageExecutor: SandboxGitStageExecutor;
   /** Settles every provider-owned secret path before a run may be retained. */
   settleCredentialSafety(): Promise<void>;
@@ -134,7 +138,12 @@ export function createBoxLiteWorkspaceSecurityAdapter(
       'BoxLite durable workspace cleanup requires owner generation callbacks',
     );
   }
-  const activeSecretPaths = new Set<string>();
+  const activeGitSecretPaths = new Set<string>();
+  const activeRuntimePrivatePaths = new Set<string>();
+  const clearActiveSecretPaths = (): void => {
+    activeGitSecretPaths.clear();
+    activeRuntimePrivatePaths.clear();
+  };
   let sandboxFenced = false;
   let sandboxFenceRequired = false;
   let sandboxCleanupAttempted = false;
@@ -155,7 +164,7 @@ export function createBoxLiteWorkspaceSecurityAdapter(
       if (options.beforeSandboxCleanup && !cleanupAuthorization) {
         // Ownership moved to another worker. It owns subsequent resource and
         // credential cleanup; the stale worker must perform no more I/O.
-        activeSecretPaths.clear();
+        clearActiveSecretPaths();
         sandboxCleanupAcknowledged = true;
         return;
       }
@@ -184,7 +193,7 @@ export function createBoxLiteWorkspaceSecurityAdapter(
         // Physical absence is true even if the subsequent durable store
         // acknowledgement fails; keep those facts in separate state slots.
         sandboxFenced = true;
-        activeSecretPaths.clear();
+        clearActiveSecretPaths();
       }
       if (cleanupAuthorization) {
         if (options.settleSandboxCleanupAttempt) {
@@ -208,10 +217,9 @@ export function createBoxLiteWorkspaceSecurityAdapter(
     return fencePromise;
   };
 
-  const transport = createBoxLiteSecretFileTransport({
+  const transportOptions = {
     client: options.client,
     sandboxId: options.sandboxId,
-    activeSecretPaths,
     wasSandboxFenced: () => sandboxFenced,
     isSandboxFenceRequired: () => sandboxFenceRequired,
     requireSandboxFence: () => {
@@ -219,6 +227,21 @@ export function createBoxLiteWorkspaceSecurityAdapter(
     },
     fenceSandbox,
     diagnostics: options.diagnostics,
+  };
+  const transport = createBoxLiteSecretFileTransport({
+    ...transportOptions,
+    activeSecretPaths: activeGitSecretPaths,
+  });
+  // Runtime-private files already carry mode 0600. Do not chmod an existing
+  // runtime home/config parent: BoxLite 0.9.5 can execute ordinary shell
+  // access through a 0700 /home/gem, but subsequently launched Git processes
+  // fail repository discovery across that boundary. Newly created parents are
+  // still mode 0700 through umask 077, and the provider-owned staging directory
+  // is always explicitly hardened before archive extraction.
+  const runtimePrivateTransport = createBoxLiteSecretFileTransport({
+    ...transportOptions,
+    activeSecretPaths: activeRuntimePrivatePaths,
+    hardenTargetDirectory: false,
   });
 
   return Object.freeze({
@@ -226,6 +249,10 @@ export function createBoxLiteWorkspaceSecurityAdapter(
       directory: options.secretDirectory ?? '/tmp',
       transport,
       createId: options.createSecretId,
+    }),
+    runtimePrivateFiles: createSandboxRuntimePrivateFilePort({
+      rootDirectory: BOXLITE_RUNTIME_PRIVATE_ROOT,
+      transport: runtimePrivateTransport,
     }),
     stageExecutor: createBoxLiteSandboxGitStageExecutor({
       client: options.client,
@@ -237,11 +264,18 @@ export function createBoxLiteWorkspaceSecurityAdapter(
       diagnostics: options.diagnostics,
     }),
     async settleCredentialSafety(): Promise<void> {
-      if (sandboxFenceRequired && activeSecretPaths.size === 0) {
+      if (
+        sandboxFenceRequired &&
+        activeGitSecretPaths.size === 0 &&
+        activeRuntimePrivatePaths.size === 0
+      ) {
         await fenceSandbox();
       }
-      for (const path of [...activeSecretPaths]) {
+      for (const path of [...activeGitSecretPaths]) {
         await transport.deleteFile({ path });
+      }
+      for (const path of [...activeRuntimePrivatePaths]) {
+        await runtimePrivateTransport.deleteFile({ path });
       }
     },
     wasSandboxFenced(): boolean {
@@ -437,7 +471,7 @@ export async function attemptDeleteBoxLiteSandboxAndConfirm(
   const waitForRetry =
     options.waitForRetry ??
     (() => wait(BOXLITE_SANDBOX_DELETE_CONFIRM_DELAY_MS));
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  for (let attempt = 1; attempt < attempts; attempt += 1) {
     try {
       if ((await options.client.getSandbox(options.sandboxId)) === null) {
         confirmDiagnostic.succeed();
@@ -448,51 +482,53 @@ export async function attemptDeleteBoxLiteSandboxAndConfirm(
           ),
         );
       }
-      if (attempt === attempts) {
-        confirmDiagnostic.settle({
-          outcome: 'failed',
-          cause: 'cleanup_failed',
-          retryable: deleteRetryable,
-        });
-        return settleBoxLiteCleanupDiagnostics(
-          options.diagnostics,
-          failedBoxLiteCleanup(deleteRetryable),
-        );
-      }
     } catch {
       // A probe error is uncertainty, never proof of absence.
-      if (attempt === attempts) {
-        confirmDiagnostic.settle({
-          outcome: 'indeterminate',
-          cause: 'cleanup_unconfirmed',
-          retryable: true,
-        });
-        return settleBoxLiteCleanupDiagnostics(
-          options.diagnostics,
-          indeterminateBoxLiteCleanup(),
-        );
-      }
     }
-    if (attempt < attempts) {
-      try {
-        await waitForRetry(attempt);
-      } catch {
-        confirmDiagnostic.settle({
-          outcome: 'indeterminate',
-          cause: 'cleanup_unconfirmed',
-          retryable: true,
-        });
-        return settleBoxLiteCleanupDiagnostics(
-          options.diagnostics,
-          indeterminateBoxLiteCleanup(),
-        );
-      }
+    try {
+      await waitForRetry(attempt);
+    } catch {
+      confirmDiagnostic.settle({
+        outcome: 'indeterminate',
+        cause: 'cleanup_unconfirmed',
+        retryable: true,
+      });
+      return settleBoxLiteCleanupDiagnostics(
+        options.diagnostics,
+        indeterminateBoxLiteCleanup(),
+      );
     }
   }
-  return settleBoxLiteCleanupDiagnostics(
-    options.diagnostics,
-    indeterminateBoxLiteCleanup(),
-  );
+  try {
+    if ((await options.client.getSandbox(options.sandboxId)) === null) {
+      confirmDiagnostic.succeed();
+      return settleBoxLiteCleanupDiagnostics(
+        options.diagnostics,
+        confirmedBoxLiteCleanup(
+          deleteSucceeded ? 'found-and-cleaned' : 'already-absent',
+        ),
+      );
+    }
+    confirmDiagnostic.settle({
+      outcome: 'failed',
+      cause: 'cleanup_failed',
+      retryable: deleteRetryable,
+    });
+    return settleBoxLiteCleanupDiagnostics(
+      options.diagnostics,
+      failedBoxLiteCleanup(deleteRetryable),
+    );
+  } catch {
+    confirmDiagnostic.settle({
+      outcome: 'indeterminate',
+      cause: 'cleanup_unconfirmed',
+      retryable: true,
+    });
+    return settleBoxLiteCleanupDiagnostics(
+      options.diagnostics,
+      indeterminateBoxLiteCleanup(),
+    );
+  }
 }
 
 /** Delete once, then resolve only after BoxLite reports the sandbox absent. */
@@ -553,16 +589,15 @@ function createBoxLiteSecretFileTransport(options: {
   readonly requireSandboxFence: () => void;
   readonly fenceSandbox: () => Promise<void>;
   readonly diagnostics?: SandboxProvisioningDiagnosticObserver;
+  /** Existing runtime homes must retain their image-defined mode. */
+  readonly hardenTargetDirectory?: boolean;
 }): SandboxProviderPrivateSecretFileTransport {
   return Object.freeze({
     async writeFile(
       request: SandboxProviderPrivateSecretFileWriteRequest,
     ): Promise<void> {
-      if (request.mode !== 0o600) {
-        throw new SandboxProviderConfigurationError(
-          'BoxLite secret file mode must be 0600',
-        );
-      }
+      // The private transport is reachable only through the shared secret-file
+      // port, whose unforgeable request value fixes the mode at 0600.
       if (!options.client.uploadArchive) {
         throw new SandboxProviderConfigurationError(
           'BoxLite private secret-file transport requires archive upload support',
@@ -578,7 +613,11 @@ function createBoxLiteSecretFileTransport(options: {
           command:
             `umask 077 && mkdir -p -- ${shellQuote(target.directory)} ` +
             `${shellQuote(upload.stagingDirectory)} && ` +
-            `chmod 700 -- ${shellQuote(target.directory)} ` +
+            `chmod 700 -- ${
+              options.hardenTargetDirectory === false
+                ? ''
+                : `${shellQuote(target.directory)} `
+            }` +
             `${shellQuote(upload.stagingDirectory)}`,
           timeoutMs: BOXLITE_SECRET_OPERATION_TIMEOUT_MS,
           cancellationSignal: request.signal,
@@ -641,8 +680,7 @@ function createBoxLiteSecretFileTransport(options: {
             'else exit 1; fi && ' +
             'chown "$uid:$gid" "$source" && ' +
             'chmod 600 "$source" && ' +
-            `test ! -e ${shellQuote(request.path)} && ` +
-            `mv -- "$source" ${shellQuote(request.path)} && ` +
+            `mv -f -- "$source" ${shellQuote(request.path)} && ` +
             `rm -rf -- ${shellQuote(upload.stagingDirectory)} && ` +
             `test -f ${shellQuote(request.path)} && ` +
             `test -r ${shellQuote(request.path)} && ` +
@@ -780,7 +818,9 @@ function deferredAbort(signal: AbortSignal): {
   readonly promise: Promise<{ readonly kind: 'abort' }>;
   dispose(): void;
 } {
-  let onAbort: () => void = () => undefined;
+  // Promise executors run synchronously, so the listener is assigned before
+  // the returned disposer can be observed.
+  let onAbort!: () => void;
   const promise = new Promise<{ readonly kind: 'abort' }>((resolve) => {
     onAbort = () => resolve({ kind: 'abort' });
     signal.addEventListener('abort', onAbort, { once: true });
@@ -818,18 +858,13 @@ function splitAbsoluteFilePath(path: string): {
   readonly directory: string;
   readonly name: string;
 } {
-  if (!path.startsWith('/') || path.includes('\0')) {
-    throw new SandboxProviderConfigurationError(
-      'BoxLite secret file path must be absolute',
-    );
-  }
+  // The shared secret-file port already validates the configured absolute
+  // directory and appends a strictly validated provider-owned file name.
   const index = path.lastIndexOf('/');
-  if (index <= 0 || index === path.length - 1) {
-    throw new SandboxProviderConfigurationError(
-      'BoxLite secret file path must name a file',
-    );
-  }
-  return { directory: path.slice(0, index), name: path.slice(index + 1) };
+  return {
+    directory: index === 0 ? '/' : path.slice(0, index),
+    name: path.slice(index + 1),
+  };
 }
 
 function secretUploadPaths(target: {
@@ -840,7 +875,8 @@ function secretUploadPaths(target: {
   readonly directCandidate: string;
   readonly nestedCandidate: string;
 } {
-  const stagingDirectory = `${target.directory}/.${target.name}.upload`;
+  const directoryPrefix = target.directory === '/' ? '' : target.directory;
+  const stagingDirectory = `${directoryPrefix}/.${target.name}.upload`;
   return {
     stagingDirectory,
     directCandidate: `${stagingDirectory}/${target.name}`,

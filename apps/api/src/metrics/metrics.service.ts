@@ -3,6 +3,7 @@ import type {
   MetricsResponse,
   ProvisioningDiagnosticsMetrics,
   TaskResourceResponse,
+  TerminalDiagnosticsMetrics,
 } from '@cap/contracts';
 import { GuardrailsService } from '../guardrails/guardrails.service';
 import { TaskProvisioningDiagnosticsMetricsService } from '../task-provisioning-diagnostics/task-provisioning-diagnostics-metrics.service';
@@ -13,11 +14,12 @@ import {
 } from './metrics-projection';
 import { deriveRunnerMinutes } from './runner-minutes';
 import { ResourceSamplerService } from './resource-sampler.service';
+import { TerminalDiagnosticsMetricsService } from './terminal-diagnostics-metrics.service';
 
 /**
  * Composes the `GET /metrics` aggregation response (be-metrics, task 5.5).
  *
- * It assembles, in ONE round trip, three strictly distinguished blocks:
+ * It assembles, in ONE round trip, four strictly distinguished blocks:
  *
  *  - the DERIVED capacity block (`capacity`, `occupancy`, `runnerMinutes`) —
  *    exact, point-in-time, read LIVE from the guardrails semaphore + runner-
@@ -27,6 +29,8 @@ import { ResourceSamplerService } from './resource-sampler.service';
  *    describing its freshness via `status`/`sampledAt`/`ageMs`.
  *  - the PROVISIONING DIAGNOSTICS block — process-window counters plus durable
  *    current gauges served synchronously from an independently refreshed cache.
+ *  - the TERMINAL DIAGNOSTICS block — process-window, identifier-free native
+ *    viewer admission, backpressure, and cleanup gauges/counters.
  *
  * Crucially, an outage / staleness degrades ONLY its owning additive block: the
  * derived capacity block is always present and exact. This service performs no
@@ -41,6 +45,8 @@ export class MetricsService {
     private readonly sampler: ResourceSamplerService,
     @Optional()
     private readonly provisioningDiagnosticsMetrics?: TaskProvisioningDiagnosticsMetricsService,
+    @Optional()
+    private readonly terminalDiagnosticsMetrics?: TerminalDiagnosticsMetricsService,
   ) {}
 
   /** Builds the composed metrics response at the current instant. */
@@ -61,13 +67,24 @@ export class MetricsService {
       resources,
     );
 
+    const terminalDiagnostics = this.buildTerminalDiagnostics();
     return {
       capacity: projectCapacity(projection),
       occupancy: buildSlotOccupancy(projection),
       runnerMinutes: deriveRunnerMinutes(this.guardrails.runnerMinuteIntervals(), now),
       resources: { ...resources, taskSamples },
       provisioningDiagnostics: this.buildProvisioningDiagnostics(now),
+      ...(terminalDiagnostics ? { terminalDiagnostics } : {}),
     };
+  }
+
+  private buildTerminalDiagnostics(): TerminalDiagnosticsMetrics | undefined {
+    try {
+      return this.terminalDiagnosticsMetrics?.currentSnapshot();
+    } catch {
+      // This additive block must never fail the existing capacity/resource read.
+      return undefined;
+    }
   }
 
   private buildProvisioningDiagnostics(

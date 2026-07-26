@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.46.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.45.3...v0.46.0) (2026-07-26)
+
+
+### Features
+
+* **terminal:** restore native live terminal attachments ([#178](https://github.com/Xeonice/cloud-agent-platform/issues/178)) ([68c0907](https://github.com/Xeonice/cloud-agent-platform/commit/68c090745c7ea3d9721db6e54416794534b90c31))
+
 ## [0.45.3](https://github.com/Xeonice/cloud-agent-platform/compare/v0.45.2...v0.45.3) (2026-07-24)
 
 

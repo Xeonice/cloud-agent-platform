@@ -10,11 +10,11 @@ import type {
  * `~/.codex/auth.json` from the env var `CODEX_CHATGPT_AUTH_JSON_B64`, whose
  * value is the BASE64 of that auth.json file.
  *
- * base64 (not raw JSON) so the multi-line document survives the `.env`/process
- * env round-trip with no quoting/newline pain, and so the secret never appears
- * as readable JSON in `docker inspect`/process listings. Returns `null` (the
- * provider then skips injection) when the var is unset/blank, not valid base64,
- * or the decoded value is not a codex auth document.
+ * Base64 is used only to make the multi-line document survive the deployment
+ * env round-trip. It is encoding, not a confidentiality boundary: deployments
+ * using this legacy fallback must treat the API process environment as secret.
+ * Returns `null` when the var is unset/blank, not valid base64, or the decoded
+ * value is not a codex auth document.
  *
  * SINGLE-USER self-host: this carries the one operator's login state, fed via
  * the gitignored `apps/api/.env` alongside the other deploy secrets. A
@@ -76,20 +76,5 @@ export class EnvCodexAuthSource implements CodexAuthSource {
     }
 
     return { kind: 'official', authJson };
-  }
-
-  /**
-   * No-op for the deployment env source (fix-codex-headless-subscription-auth): the credential
-   * lives in a gitignored env var that cannot be rewritten at runtime, so codex's rotated
-   * refresh_token cannot be persisted. Warns so the operator knows the env seed will be revoked
-   * after refresh (~8 days) and must be re-seeded, or migrated to a settings-stored official
-   * credential (which DOES self-heal via the prisma source).
-   */
-  async persistRefreshedAuth(_taskId: string, _authJson: string): Promise<void> {
-    this.logger.warn(
-      `${EnvCodexAuthSource.ENV} is the active codex credential — codex's refreshed token cannot ` +
-        `be persisted to an env var; the seed will be revoked after refresh (~8 days). Re-seed the ` +
-        `env var or store an official credential in Settings (which self-heals across tasks).`,
-    );
   }
 }

@@ -99,7 +99,11 @@ test('runtime model catalog has an independent per-principal 429 tier', async ()
     const limited = await post('/v1/runtime-models/query');
     assert.equal(limited.status, 429);
     assert.ok(Number(limited.headers.get('retry-after')) >= 1);
-    const error = await limited.json();
+    const error = (await limited.json()) as {
+      readonly code?: unknown;
+      readonly retryable?: unknown;
+      readonly capacity: { readonly scope?: unknown };
+    };
     assert.equal(error.code, 'runtime_model_catalog_unavailable');
     assert.equal(error.retryable, true);
     assert.equal(error.capacity.scope, 'principal');

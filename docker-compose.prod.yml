@@ -49,6 +49,9 @@ services:
     image: ghcr.io/xeonice/cap-api:${CAP_VERSION:-latest}
     platform: ${CAP_IMAGE_PLATFORM:-linux/amd64}
     restart: unless-stopped
+    # Gateway terminal cleanup is bounded at 25s; Compose must not SIGKILL the
+    # API before provider-backed owner/viewer absence has been attested.
+    stop_grace_period: 40s
     logging: *default-logging
     # DooD: host-root-equivalent docker.sock access (single-user self-host only).
     # root so the root-owned socket is readable.

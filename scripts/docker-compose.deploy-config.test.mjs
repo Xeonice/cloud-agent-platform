@@ -135,6 +135,10 @@ for (const [label, text] of [
   ['prod', prodCompose],
 ]) {
   const service = apiServiceBlock(text);
+  assert(
+    /^\s*stop_grace_period:\s*40s\s*$/m.test(service),
+    `native terminal cleanup (${label}): api reserves a 40s SIGTERM grace period`,
+  );
   const storeDir = (service.match(/^\s*CAP_REPO_STORE_DIR:\s*(\S+)\s*$/m) ?? [])[1];
   assert(Boolean(storeDir), `7.1 (${label}): api declares CAP_REPO_STORE_DIR`);
   const storeMount = storeDir

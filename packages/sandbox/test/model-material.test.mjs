@@ -98,4 +98,157 @@ test('unresolved and timed-out setup exits fail closed', async () => {
       (error) => error?.code === 'runtime_model_setup_failed',
     );
   }
+
+  let call = 0;
+  await assert.rejects(
+    sandbox.materializeTaskModel(
+      {
+        async exec() {
+          call += 1;
+          return call === 1 ? result(1) : result();
+        },
+      },
+      { kind: 'explicit', selector: 'provider/model:v1' },
+    ),
+    (error) => error?.phase === 'material-write',
+  );
+});
+
+test('invalid explicit model selectors fail before guest execution', async () => {
+  assert.deepEqual(
+    sandbox.buildTaskModelMaterialCommands({ kind: 'runtime-default' }),
+    [],
+  );
+  assert.throws(
+    () => sandbox.buildTaskModelMaterialCommands({ kind: 'explicit', selector: '' }),
+    (error) => error?.phase === 'material-write',
+  );
+
+  let calls = 0;
+  await assert.rejects(
+    sandbox.materializeTaskModel(
+      {
+        async exec() {
+          calls += 1;
+          return result();
+        },
+      },
+      { kind: 'explicit', selector: '\n' },
+    ),
+    (error) => error?.phase === 'material-write',
+  );
+  assert.equal(calls, 0);
+});
+
+test('executor failures are classified by write versus independent verification phase', async () => {
+  for (const failAt of [1, 2]) {
+    let call = 0;
+    await assert.rejects(
+      sandbox.materializeTaskModel(
+        {
+          async exec() {
+            call += 1;
+            if (call === failAt) throw new Error('transport unavailable');
+            return result();
+          },
+        },
+        { kind: 'explicit', selector: 'provider/model:v1' },
+      ),
+      (error) =>
+        error?.phase === (failAt === 1 ? 'material-write' : 'material-verify'),
+    );
+    assert.equal(call, failAt + 1, 'failure cleanup is attempted exactly once');
+  }
+});
+
+test('failed cleanup remains a material-write failure', async () => {
+  for (const cleanupOutcome of [result(1), result(Number.NaN), result(0, true)]) {
+    let call = 0;
+    await assert.rejects(
+      sandbox.materializeTaskModel(
+        {
+          async exec() {
+            call += 1;
+            return call === 1 ? result(1) : cleanupOutcome;
+          },
+        },
+        { kind: 'explicit', selector: 'provider/model:v1' },
+      ),
+      (error) => error?.phase === 'material-write',
+    );
+  }
+
+  let call = 0;
+  await assert.rejects(
+    sandbox.materializeTaskModel(
+      {
+        async exec() {
+          call += 1;
+          if (call === 1) return result(1);
+          throw 'cleanup transport unavailable';
+        },
+      },
+      { kind: 'explicit', selector: 'provider/model:v1' },
+    ),
+    (error) => error?.phase === 'material-write',
+  );
+});
+
+test('existing model material is verified without exposing selector contents', async () => {
+  let calls = 0;
+  const runtimeDefault = await sandbox.verifyTaskModelMaterial(
+    {
+      async exec() {
+        calls += 1;
+        return result();
+      },
+    },
+    { kind: 'runtime-default' },
+  );
+  assert.deepEqual(runtimeDefault, { kind: 'runtime-default' });
+  assert.equal(calls, 0);
+
+  const requests = [];
+  const explicit = await sandbox.verifyTaskModelMaterial(
+    {
+      async exec(request) {
+        requests.push(request);
+        return result();
+      },
+    },
+    { kind: 'explicit', selector: 'provider/model:v1' },
+  );
+  assert.equal(explicit.kind, 'explicit');
+  assert.equal(requests.length, 1);
+  assert.doesNotMatch(requests[0].command, /provider\/model:v1/);
+
+  await assert.rejects(
+    sandbox.verifyTaskModelMaterial({ exec: async () => result() }, {
+      kind: 'explicit',
+      selector: '',
+    }),
+    (error) => error?.phase === 'material-verify',
+  );
+
+  for (const outcome of [result(1), result(Number.NaN), result(0, true)]) {
+    await assert.rejects(
+      sandbox.verifyTaskModelMaterial({ exec: async () => outcome }, {
+        kind: 'explicit',
+        selector: 'provider/model:v1',
+      }),
+      (error) => error?.phase === 'material-verify',
+    );
+  }
+
+  await assert.rejects(
+    sandbox.verifyTaskModelMaterial(
+      {
+        async exec() {
+          throw new Error('transport unavailable');
+        },
+      },
+      { kind: 'explicit', selector: 'provider/model:v1' },
+    ),
+    (error) => error?.phase === 'material-verify',
+  );
 });

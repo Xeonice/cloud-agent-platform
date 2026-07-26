@@ -13,6 +13,97 @@ function assert(condition, label) {
   }
 }
 
+function aioResponse(status, body) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async json() {
+      return body;
+    },
+  };
+}
+
+function fakeAioShell({ execStatus = 200, output = 'remote-ok' } = {}) {
+  const calls = [];
+  const activeSessionIds = new Set();
+  const fetch = async (input, init = {}) => {
+    const url = new URL(input);
+    const body = init.body ? JSON.parse(init.body) : undefined;
+    const call = {
+      input: String(input),
+      path: url.pathname,
+      method: init.method ?? 'GET',
+      body,
+    };
+    calls.push(call);
+
+    if (call.path === '/v1/shell/sessions/create') {
+      if (call.method !== 'POST' || typeof body?.id !== 'string') {
+        throw new Error('invalid fake AIO create request');
+      }
+      activeSessionIds.add(body.id);
+      return aioResponse(200, {
+        success: true,
+        data: { session_id: body.id, working_dir: '/home/gem' },
+      });
+    }
+    if (call.path === '/v1/shell/exec') {
+      if (
+        call.method !== 'POST' ||
+        typeof body?.id !== 'string' ||
+        !activeSessionIds.has(body.id) ||
+        typeof body.command !== 'string' ||
+        body.async_mode !== false
+      ) {
+        throw new Error('invalid fake AIO exec request');
+      }
+      if (execStatus !== 200) return aioResponse(execStatus, { error: 'down' });
+      return aioResponse(200, {
+        success: true,
+        data: {
+          session_id: body.id,
+          command: body.command,
+          status: 'completed',
+          exit_code: 0,
+          output,
+        },
+      });
+    }
+    if (call.method === 'DELETE' && call.path.startsWith('/v1/shell/sessions/')) {
+      const sessionId = decodeURIComponent(
+        call.path.slice('/v1/shell/sessions/'.length),
+      );
+      if (!activeSessionIds.delete(sessionId)) {
+        throw new Error('fake AIO delete did not match an active session');
+      }
+      return aioResponse(200, {
+        success: true,
+        data: { session_id: sessionId },
+      });
+    }
+    throw new Error(`unexpected fake AIO route: ${call.method} ${call.path}`);
+  };
+  return { fetch, calls, activeSessionIds };
+}
+
+function assertExactAioLifecycles(fake, expectedCount, label) {
+  let exact = fake.calls.length === expectedCount * 3;
+  for (let index = 0; index < expectedCount; index += 1) {
+    const [create, exec, cleanup] = fake.calls.slice(index * 3, index * 3 + 3);
+    const sessionId = create?.body?.id;
+    exact &&=
+      create?.path === '/v1/shell/sessions/create' &&
+      create.method === 'POST' &&
+      exec?.path === '/v1/shell/exec' &&
+      exec.method === 'POST' &&
+      exec.body.id === sessionId &&
+      cleanup?.method === 'DELETE' &&
+      cleanup.path === `/v1/shell/sessions/${encodeURIComponent(sessionId)}`;
+  }
+  assert(exact, `${label} pairs every create, exec, and exact delete`);
+  assert(fake.activeSessionIds.size === 0, `${label} leaves no fake AIO session`);
+}
+
 function fakeExecutor(results = []) {
   const calls = [];
   return {
@@ -385,17 +476,8 @@ try {
 assert(missingExecutor, 'workspace helpers require an executor or baseUrl');
 
 const previousFetch = globalThis.fetch;
-const fetchCalls = [];
-globalThis.fetch = async (input, init = {}) => {
-  fetchCalls.push({ input: String(input), body: JSON.parse(init.body) });
-  return {
-    ok: true,
-    status: 200,
-    async json() {
-      return { data: { exit_code: 0, output: 'remote-ok' } };
-    },
-  };
-};
+const successfulAio = fakeAioShell();
+globalThis.fetch = successfulAio.fetch;
 try {
   await mod.materializeSandboxGitWorkspace({
     baseUrl: 'http://aio-shell',
@@ -413,17 +495,13 @@ try {
     'runSandboxAioShellExec returns normalized AIO exec output',
   );
   assert(
-    fetchCalls[0].input === 'http://aio-shell/v1/shell/exec',
+    successfulAio.calls[1].input === 'http://aio-shell/v1/shell/exec',
     'runSandboxAioShellExec posts to AIO shell exec',
   );
+  assertExactAioLifecycles(successfulAio, 2, 'workspace AIO executor');
 
-  globalThis.fetch = async () => ({
-    ok: false,
-    status: 503,
-    async json() {
-      return {};
-    },
-  });
+  const unavailableAio = fakeAioShell({ execStatus: 503 });
+  globalThis.fetch = unavailableAio.fetch;
   let shellError = '';
   try {
     await mod.runSandboxAioShellExec('http://aio-shell', 'echo fail');
@@ -434,6 +512,7 @@ try {
     shellError.includes('/v1/shell/exec responded 503'),
     'runSandboxAioShellExec throws normalized AIO HTTP failures',
   );
+  assertExactAioLifecycles(unavailableAio, 1, '503 workspace AIO executor');
 } finally {
   globalThis.fetch = previousFetch;
 }

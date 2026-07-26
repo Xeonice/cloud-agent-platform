@@ -1,0 +1,49 @@
+{
+  "fixtureSchemaVersion": 1,
+  "buildId": "terminal-native-n-minus-one-compat-v1",
+  "provenance": {
+    "kind": "versioned-compatibility-fixture",
+    "historicalReleaseArtifact": false,
+    "reason": "The repository has no released native-terminal N-1 artifact: every commit reachable before the current uncommitted implementation lacks packages/contracts/src/terminal-attachment-frames.ts. This fixture is an executable two-sided compatibility boundary and must not be reported as a historical release.",
+    "replacementPolicy": "After the first native-terminal release, replace this compatibility fixture with the pinned API/Web image digests and retained wire adapter from that release."
+  },
+  "wire": {
+    "protocolVersion": 1,
+    "responseProfile": {
+      "descriptor": {
+        "schemaVersion": 1,
+        "xtermVersion": "5.4.0",
+        "termName": "xterm",
+        "disableStdin": false,
+        "windowOptions": {
+          "getWinSizePixels": false,
+          "getCellSizePixels": false,
+          "getWinSizeChars": false
+        },
+        "responseAffectingAddons": [
+          {
+            "name": "@xterm/addon-unicode11",
+            "version": "0.7.0",
+            "configuration": "activeVersion=11"
+          }
+        ],
+        "responseClasses": [
+          "da1",
+          "da2",
+          "dsr_status",
+          "cpr",
+          "private_cpr",
+          "decrqm_ansi",
+          "decrqm_private",
+          "decrqss",
+          "osc_4",
+          "osc_10",
+          "osc_11",
+          "osc_12"
+        ]
+      },
+      "fingerprint": "ee24c9657cbe8e444dde7e48fc005b314dcc521f804640617b92d803114620bb",
+      "id": "xterm-response-v1-sha256-ee24c9657cbe8e444dde7e48fc005b314dcc521f804640617b92d803114620bb"
+    }
+  }
+}

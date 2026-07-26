@@ -95,21 +95,22 @@ assert(
   'AIO descriptor falls back to connection wsUrl',
 );
 
+const boxliteSelectedRun = {
+  terminal: {
+    protocol: 'boxlite-v1',
+    wsUrl: 'ws://127.0.0.1:9',
+    metadata: {
+      endpoint: 'http://127.0.0.1:9',
+      sandboxId: 'box-task-2',
+      pathPrefix: 'default',
+      workspacePath: '/workspace',
+    },
+  },
+};
 const boxliteFactory = buildSandboxTerminalTransportFactory({
   taskId: 'task-2',
   connection,
-  selectedRun: {
-    terminal: {
-      protocol: 'boxlite-v1',
-      wsUrl: 'wss://boxlite.example.test',
-      metadata: {
-        endpoint: 'https://boxlite.example.test',
-        sandboxId: 'box-task-2',
-        pathPrefix: 'default',
-        workspacePath: '/workspace',
-      },
-    },
-  },
+  selectedRun: boxliteSelectedRun,
 });
 assert(
   typeof boxliteFactory.open === 'function',
@@ -140,7 +141,61 @@ const pty = mod.openSandboxTerminalPty({
   mode: 'attach-only',
 });
 assert(pty.taskId === 'task-1', 'openSandboxTerminalPty returns a task-bound PTY client');
+assert(
+  pty instanceof mod.SandboxTerminalSession,
+  'AIO descriptors compose the provider-neutral sandbox terminal session engine',
+);
 pty.close?.();
+
+const previousFetch = globalThis.fetch;
+try {
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 503,
+    async json() {
+      return {};
+    },
+  });
+  const boxlitePty = mod.openSandboxTerminalPty({
+    connection: { ...connection, taskId: 'task-2' },
+    selectedRun: {
+      ...boxliteSelectedRun,
+      providerSandboxId: 'box-task-2',
+      command: {
+        protocol: 'boxlite-exec-v1',
+        metadata: { sandboxId: 'box-task-2' },
+      },
+      provider: {
+        createCommandExecutor() {
+          return {
+            async exec() {
+              return {
+                exitCode: 0,
+                output: '',
+                stdout: '',
+                stderr: '',
+                timedOut: false,
+              };
+            },
+          };
+        },
+      },
+    },
+    mode: 'replay-only',
+  });
+  assert(
+    boxlitePty instanceof mod.SandboxTerminalSession,
+    'BoxLite descriptors compose the same provider-neutral terminal session engine',
+  );
+  assert(
+    boxlitePty.resolveProviderExitStatus === undefined,
+    'BoxLite composition does not inherit the AIO wait protocol',
+  );
+  boxlitePty.close?.();
+  await new Promise((resolve) => setImmediate(resolve));
+} finally {
+  globalThis.fetch = previousFetch;
+}
 
 let missingLaunchContext = false;
 try {

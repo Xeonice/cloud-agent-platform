@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { createOpaqueTerminalBase64Schema } from './terminal-bytes.js';
 
 /**
  * Dual-channel WebSocket frame protocol (realtime-terminal spec, D4).
@@ -19,6 +20,12 @@ export const FRAME_CHANNEL = {
   CONTROL: 'control',
 } as const;
 
+/**
+ * The application-layer high-water mark for un-acknowledged raw output, in
+ * bytes. The orchestrator MUST NOT exceed this before calling `pty.pause()`.
+ */
+export const HIGH_WATER_MARK_BYTES = 500_000 as const;
+
 // ---------------------------------------------------------------------------
 // Raw byte frame
 // ---------------------------------------------------------------------------
@@ -27,16 +34,22 @@ export const FRAME_CHANNEL = {
  * A raw PTY-output frame. `data` is the base64 encoding of the opaque byte
  * payload — it is never inspected or parsed as a control frame.
  *
- * `seq` is a monotonically increasing byte offset / sequence used by the ACK
- * protocol to acknowledge drained output.
+ * `seq` is a monotonically increasing connection-local byte sequence used by
+ * the ACK protocol to acknowledge drained output. It is never a reconnect or
+ * durable recording offset.
  */
-export const RawFrameSchema = z.object({
-  channel: z.literal(FRAME_CHANNEL.RAW),
-  /** Base64-encoded opaque PTY bytes. */
-  data: z.string(),
-  /** Cumulative byte sequence offset of the last byte in `data`. */
-  seq: z.number().int().nonnegative(),
-});
+export const RawFrameSchema = z
+  .object({
+    channel: z.literal(FRAME_CHANNEL.RAW),
+    /** Canonical base64 of opaque PTY bytes; never implicitly decoded as UTF-8. */
+    data: createOpaqueTerminalBase64Schema({
+      minBytes: 1,
+      maxBytes: HIGH_WATER_MARK_BYTES,
+    }),
+    /** Connection-scoped cumulative byte sequence; never a reconnect offset. */
+    seq: z.number().int().nonnegative().safe(),
+  })
+  .strict();
 export type RawFrame = z.infer<typeof RawFrameSchema>;
 
 // ---------------------------------------------------------------------------
@@ -75,9 +88,3 @@ export const AckFrameSchema = z.object({
   seq: z.number().int().nonnegative(),
 });
 export type AckFrame = z.infer<typeof AckFrameSchema>;
-
-/**
- * The application-layer high-water mark for un-acknowledged raw output, in
- * bytes. The orchestrator MUST NOT exceed this before calling `pty.pause()`.
- */
-export const HIGH_WATER_MARK_BYTES = 500_000 as const;

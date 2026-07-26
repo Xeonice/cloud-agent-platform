@@ -1,5 +1,6 @@
 import {
   createSandboxSecretFilePort,
+  createSandboxRuntimePrivateFilePort,
   createSandboxMode0600FileArchive,
   SandboxProviderConfigurationError,
   type SandboxCommandExecutionResult,
@@ -10,6 +11,7 @@ import {
   type SandboxProviderPrivateSecretFileDeleteRequest,
   type SandboxProviderPrivateSecretFileTransport,
   type SandboxProviderPrivateSecretFileWriteRequest,
+  type SandboxRuntimePrivateFilePort,
   type SandboxRunCleanupAuthorization,
   type SandboxSecretFilePort,
 } from '@cap/sandbox-core';
@@ -40,6 +42,20 @@ export interface AioWorkspaceSecurityAdapter {
   readonly stageExecutor: SandboxGitStageExecutor;
   /** True only after the selected sandbox was confirmed absent. */
   wasSandboxFenced(): boolean;
+}
+
+/**
+ * Provision-time runtime file channel. Credential, config, and prompt bytes are
+ * copied with Docker archive input and therefore never enter `/v1/shell/exec`
+ * command text or the guest process argv.
+ */
+export function createAioRuntimePrivateFilePort(
+  options: AioWorkspaceSecurityOptions,
+): SandboxRuntimePrivateFilePort {
+  return createSandboxRuntimePrivateFilePort({
+    rootDirectory: '/home/gem',
+    transport: createAioSecretFileTransport(options),
+  });
 }
 
 /**
@@ -150,6 +166,26 @@ function createAioSecretFileTransport(
       request: SandboxProviderPrivateSecretFileWriteRequest,
     ): Promise<void> {
       const target = splitAbsoluteFilePath(request.path);
+      let prepared: SandboxCommandExecutionResult;
+      try {
+        prepared = await options.executor.exec({
+          command:
+            `umask 077 && mkdir -p -- ${shellQuote(target.directory)} && ` +
+            `test -d ${shellQuote(target.directory)}`,
+          timeoutMs: AIO_SECRET_OPERATION_TIMEOUT_MS,
+        });
+      } catch {
+        await fenceSandboxAndConfirm(options);
+        throw new SandboxProviderConfigurationError(
+          'AIO private file directory could not be prepared',
+        );
+      }
+      if (prepared.exitCode !== 0 || prepared.timedOut) {
+        await fenceSandboxAndConfirm(options);
+        throw new SandboxProviderConfigurationError(
+          'AIO private file directory could not be prepared',
+        );
+      }
       const archive = createAioMode0600FileArchive(
         target.name,
         request.content,
@@ -160,6 +196,13 @@ function createAioSecretFileTransport(
           target.directory,
           archive,
         );
+      } catch {
+        // A lost Docker archive response cannot prove that no private bytes
+        // reached the guest. The only safe settlement is exact sandbox absence.
+        await fenceSandboxAndConfirm(options);
+        throw new SandboxProviderConfigurationError(
+          'AIO private file archive transfer could not be confirmed',
+        );
       } finally {
         archive.fill(0);
       }
@@ -167,8 +210,11 @@ function createAioSecretFileTransport(
       try {
         verified = await options.executor.exec({
           command:
+            'uid=$(id -u) && gid=$(id -g) && ' +
             `test -f ${shellQuote(request.path)} && ` +
-            `test "$(stat -c %a ${shellQuote(request.path)})" = 600`,
+            `test "$(stat -c %a ${shellQuote(request.path)})" = 600 && ` +
+            `test "$(stat -c %u ${shellQuote(request.path)})" = "$uid" && ` +
+            `test "$(stat -c %g ${shellQuote(request.path)})" = "$gid"`,
           timeoutMs: AIO_SECRET_OPERATION_TIMEOUT_MS,
         });
       } catch {
@@ -297,25 +343,25 @@ export function createAioMode0600FileArchive(
   name: string,
   content: Uint8Array,
 ): Uint8Array {
-  return createSandboxMode0600FileArchive(name, content);
+  return createSandboxMode0600FileArchive(name, content, {
+    uid: 1000,
+    gid: 1000,
+  });
 }
 
 function splitAbsoluteFilePath(path: string): {
   readonly directory: string;
   readonly name: string;
 } {
-  if (!path.startsWith('/') || path.includes('\0')) {
-    throw new SandboxProviderConfigurationError(
-      'AIO secret file path must be absolute',
-    );
-  }
+  // `createSandboxSecretFilePort` owns path construction: it validates the
+  // absolute directory and the generated filename before this private
+  // transport is invoked. Keep this adapter focused on splitting that closed
+  // contract, including the valid root-directory form `/file`.
   const index = path.lastIndexOf('/');
-  if (index <= 0 || index === path.length - 1) {
-    throw new SandboxProviderConfigurationError(
-      'AIO secret file path must name a file',
-    );
-  }
-  return { directory: path.slice(0, index), name: path.slice(index + 1) };
+  return {
+    directory: index === 0 ? '/' : path.slice(0, index),
+    name: path.slice(index + 1),
+  };
 }
 
 function timedOutResult(): SandboxCommandExecutionResult {

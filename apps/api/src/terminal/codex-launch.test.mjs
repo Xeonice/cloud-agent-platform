@@ -68,17 +68,15 @@ function compile() {
 async function main() {
   const mod = await import(pathToFileURL(compile()).href);
   const {
-    buildAttachSessionCommand,
     buildCodexLaunchLine,
     buildDetachedCodexLaunchLine,
-    buildResizeDetachedSessionCommand,
     detachedSessionName,
     CODEX_PROMPT_FILE_PATH,
     wrapHeadlessDetachedSession,
   } = mod;
 
   const BASE =
-    'codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox';
+    'codex -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox';
 
   // ---- buildCodexLaunchLine: file-based positional, no inlined prompt ---------
   const line = buildCodexLaunchLine(BASE);
@@ -133,7 +131,8 @@ async function main() {
   const GOLDEN_DETACHED =
     `tmux -u new-session -d -s taskb3ee3f63 -c /home/gem/workspace ` +
     `'P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
-    `if [ -n "$P" ]; then ${BASE} "$P"; else ${BASE}; fi'`;
+    `if [ -n "$P" ]; then ${BASE} "$P"; else ${BASE}; fi' ` +
+    `\\; set-option -t taskb3ee3f63: focus-events on`;
   assert(
     detached === GOLDEN_DETACHED,
     '1.1 GOLDEN: detached codex launch line is byte-exact (mechanism wrapper + $(cat) delivery)',
@@ -154,22 +153,19 @@ async function main() {
     'detached launch carries the documented Codex bypass/YOLO flag',
   );
   assert(
+    !detached.includes('--no-alt-screen'),
+    'detached interactive launch leaves Codex in its native terminal mode',
+  );
+  assert(
+    detached.endsWith('\\; set-option -t taskb3ee3f63: focus-events on'),
+    'detached interactive session forwards focus events requested by the native TUI',
+  );
+  assert(
     wrapHeadlessDetachedSession('b3ee3f63', 'codex exec "goal"').startsWith(
       'tmux -u new-session -d -s taskb3ee3f63 ',
     ),
     'headless detached launch also creates the tmux session in UTF-8 mode',
   );
-  assert(
-    buildAttachSessionCommand('b3ee3f63') ===
-      'tmux -u set-option -t taskb3ee3f63 status off \\; attach -t taskb3ee3f63',
-    'attach command uses tmux UTF-8 mode and hides the tmux status line',
-  );
-  assert(
-    buildResizeDetachedSessionCommand('b3ee3f63', 123, 45) ===
-      'tmux -u resize-window -t taskb3ee3f63 -x 123 -y 45',
-    'resize command targets the detached tmux window with browser geometry',
-  );
-
   console.log(`\n${passed} passed, ${failed} failed`);
 }
 

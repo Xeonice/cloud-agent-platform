@@ -141,6 +141,82 @@ function diagnosticsHarness(identityOffset = 0) {
   return { diagnostics, events };
 }
 
+function directDiagnosticsHarness(options = {}) {
+  const facts = [];
+  let identity = 900_000;
+  let flushes = 0;
+  const diagnostics = {
+    mode: 'non-persisting',
+    createOperationId() {
+      if (options.createOperationId !== undefined) {
+        return options.createOperationId();
+      }
+      return `34000000-0000-4000-8000-${String(++identity).padStart(12, '0')}`;
+    },
+    emit(fact) {
+      facts.push(fact);
+      if (options.emit !== undefined) return options.emit(fact);
+      return Promise.resolve();
+    },
+    flush() {
+      flushes += 1;
+      if (options.flush !== undefined) return options.flush();
+      return Promise.resolve();
+    },
+  };
+  return {
+    diagnostics,
+    facts,
+    flushCount: () => flushes,
+  };
+}
+
+function diagnosticOperationId(ordinal) {
+  return `35000000-0000-4000-8000-${String(ordinal).padStart(12, '0')}`;
+}
+
+function nativeStartedFact(operationId, options = {}) {
+  const {
+    stage = 'runtime_setup',
+    operation = 'native_exec_settlement',
+    channel = 'primary',
+  } = options;
+  const commandKind = Object.hasOwn(options, 'commandKind')
+    ? options.commandKind
+    : 'runtime_setup';
+  return {
+    operationId,
+    stage,
+    operation,
+    channel,
+    ...(commandKind === undefined ? {} : { commandKind }),
+    outcome: 'started',
+  };
+}
+
+function nativeTerminalFact(operationId, outcome, options = {}) {
+  const {
+    stage = 'runtime_setup',
+    operation = 'native_exec_settlement',
+    channel = 'primary',
+    cause = outcome === 'succeeded' ? null : 'transport_failed',
+    retryable = outcome !== 'succeeded',
+  } = options;
+  const commandKind = Object.hasOwn(options, 'commandKind')
+    ? options.commandKind
+    : 'runtime_setup';
+  return {
+    operationId,
+    stage,
+    operation,
+    channel,
+    ...(commandKind === undefined ? {} : { commandKind }),
+    outcome,
+    cause,
+    retryable,
+  };
+}
+
 async function flushDiagnostics() {
   // Provider diagnostics are intentionally best-effort and fire-and-forget.
   // Drain both the observer microtask chain and its recorder continuation.
@@ -2786,6 +2862,495 @@ await test('operation replay identity is isolated by scope and observer', async 
   assert.equal(second.events.length, 2);
   assert.notEqual(second.events[0].operationId, replayedOperationId);
   assert.equal(second.events[1].operationId, second.events[0].operationId);
+});
+
+await test('public diagnostic classifiers preserve safe cancellation timeout and HTTP facts', async () => {
+  const aborted = new AbortController();
+  aborted.abort();
+  assert.deepEqual(
+    boxlite.classifyBoxLiteProvisioningDiagnosticFailure('opaque failure', {
+      signal: aborted.signal,
+    }),
+    { outcome: 'cancelled', cause: 'cancelled', retryable: false },
+  );
+
+  for (const error of [
+    { name: 'AbortError' },
+    { code: 'ABORT_ERR' },
+    { code: 'ERR_CANCELED' },
+  ]) {
+    assert.deepEqual(
+      boxlite.classifyBoxLiteProvisioningDiagnosticFailure(error),
+      { outcome: 'cancelled', cause: 'cancelled', retryable: false },
+    );
+  }
+  for (const error of [
+    { name: 'TimeoutError' },
+    { code: 'ETIMEDOUT' },
+    { code: 'UND_ERR_CONNECT_TIMEOUT' },
+  ]) {
+    assert.deepEqual(
+      boxlite.classifyBoxLiteProvisioningDiagnosticFailure(error),
+      {
+        outcome: 'timed_out',
+        cause: 'provider_unavailable',
+        retryable: true,
+      },
+    );
+  }
+
+  assert.deepEqual(
+    boxlite.classifyBoxLiteProvisioningDiagnosticFailure(null),
+    { outcome: 'failed', cause: 'transport_failed', retryable: true },
+  );
+  assert.deepEqual(
+    boxlite.classifyBoxLiteProvisioningDiagnosticFailure('plain failure'),
+    { outcome: 'failed', cause: 'transport_failed', retryable: true },
+  );
+  assert.deepEqual(
+    boxlite.classifyBoxLiteProvisioningDiagnosticFailure(new Error('safe'), {
+      outcome: 'degraded',
+      cause: 'unknown',
+      retryable: false,
+      nativeState: 'running',
+      anomaly: 'attach_degraded',
+      exitCode: 17,
+      timeoutMs: 250,
+    }),
+    {
+      outcome: 'degraded',
+      cause: 'unknown',
+      retryable: false,
+      nativeState: 'running',
+      anomaly: 'attach_degraded',
+      exitCode: 17,
+      timeoutMs: 250,
+    },
+  );
+  assert.deepEqual(
+    boxlite.classifyBoxLiteProvisioningDiagnosticFailure(
+      { name: 'TimeoutError' },
+      { cause: 'workspace_timeout', retryable: false },
+    ),
+    {
+      outcome: 'timed_out',
+      cause: 'workspace_timeout',
+      retryable: false,
+    },
+  );
+
+  const httpCases = [
+    [401, 'failed', 'authentication_failed', false, '4xx'],
+    [403, 'failed', 'access_denied', false, '4xx'],
+    [408, 'timed_out', 'settlement_unknown', true, '4xx'],
+    [429, 'failed', 'provider_unavailable', true, '4xx'],
+    [418, 'failed', 'protocol_failed', false, '4xx'],
+    [400.5, 'failed', 'protocol_failed', false, undefined],
+    [500, 'failed', 'provider_unavailable', true, '5xx'],
+    [200, 'failed', 'transport_failed', false, '2xx'],
+    [99, 'failed', 'transport_failed', false, undefined],
+    [600, 'failed', 'provider_unavailable', true, undefined],
+  ];
+  for (const [
+    status,
+    outcome,
+    cause,
+    retryable,
+    httpStatusClass,
+  ] of httpCases) {
+    assert.deepEqual(
+      boxlite.classifyBoxLiteProvisioningDiagnosticHttpFailure(status),
+      {
+        outcome,
+        cause,
+        retryable,
+        ...(httpStatusClass === undefined ? {} : { httpStatusClass }),
+      },
+    );
+  }
+  assert.deepEqual(
+    boxlite.classifyBoxLiteProvisioningDiagnosticHttpFailure(408, {
+      cause: 'workspace_timeout',
+      retryable: false,
+    }),
+    {
+      outcome: 'timed_out',
+      cause: 'workspace_timeout',
+      retryable: false,
+      httpStatusClass: '4xx',
+    },
+  );
+  assert.deepEqual(
+    boxlite.classifyBoxLiteProvisioningDiagnosticHttpFailure(429, {
+      cause: 'capacity_exhausted',
+      retryable: false,
+    }),
+    {
+      outcome: 'failed',
+      cause: 'capacity_exhausted',
+      retryable: false,
+      httpStatusClass: '4xx',
+    },
+  );
+  assert.deepEqual(
+    boxlite.classifyBoxLiteProvisioningDiagnosticHttpFailure(418, {
+      cause: 'unknown',
+      retryable: true,
+    }),
+    {
+      outcome: 'failed',
+      cause: 'unknown',
+      retryable: true,
+      httpStatusClass: '4xx',
+    },
+  );
+  assert.deepEqual(
+    boxlite.classifyBoxLiteProvisioningDiagnosticHttpFailure(503, {
+      cause: 'settlement_unknown',
+      retryable: false,
+    }),
+    {
+      outcome: 'failed',
+      cause: 'settlement_unknown',
+      retryable: false,
+      httpStatusClass: '5xx',
+    },
+  );
+
+  for (const [status, expected] of [
+    [100, '1xx'],
+    [204, '2xx'],
+    [302, '3xx'],
+    [404, '4xx'],
+    [599, '5xx'],
+    [99, undefined],
+    [600, undefined],
+    [100.5, undefined],
+    [Number.NaN, undefined],
+  ]) {
+    assert.equal(boxlite.boxLiteHttpStatusClass(status), expected);
+  }
+});
+
+await test('diagnostic lifecycle no-ops, emission failures, replay, and settlement stay non-authoritative', async () => {
+  const descriptor = {
+    stage: 'sandbox_creation',
+    operation: 'sandbox_create',
+    channel: 'primary',
+  };
+  const noop = boxlite.startBoxLiteProvisioningDiagnostic(
+    undefined,
+    descriptor,
+  );
+  assert.equal(noop.operationId, null);
+  noop.succeed();
+  noop.settle({ outcome: 'failed', cause: 'unknown', retryable: false });
+  noop.fail(new Error('ignored'));
+  noop.failHttp(500);
+
+  const noopNative = boxlite.startBoxLiteNativeExecutionDiagnosticSession(
+    undefined,
+    'environment_probe',
+  );
+  assert.equal(noopNative.diagnostics, undefined);
+  noopNative.finish();
+  noopNative.finish();
+
+  const operationIdFailure = directDiagnosticsHarness({
+    createOperationId() {
+      throw new Error('operation identity unavailable');
+    },
+  });
+  const failedStart = boxlite.startBoxLiteProvisioningDiagnostic(
+    operationIdFailure.diagnostics,
+    descriptor,
+  );
+  assert.equal(failedStart.operationId, null);
+  failedStart.succeed();
+  failedStart.fail(new Error('ignored'));
+
+  const synchronousFailure = directDiagnosticsHarness({
+    emit() {
+      throw new Error('diagnostic sink failed synchronously');
+    },
+  });
+  const synchronousLifecycle = boxlite.startBoxLiteProvisioningDiagnostic(
+    synchronousFailure.diagnostics,
+    descriptor,
+  );
+  assert.notEqual(synchronousLifecycle.operationId, null);
+  synchronousLifecycle.succeed();
+  synchronousLifecycle.fail(new Error('settlement is already final'));
+  assert.equal(synchronousFailure.facts.length, 2);
+
+  const asynchronousFailure = directDiagnosticsHarness({
+    emit() {
+      return Promise.reject(new Error('diagnostic sink failed asynchronously'));
+    },
+  });
+  const asynchronousLifecycle = boxlite.startBoxLiteProvisioningDiagnostic(
+    asynchronousFailure.diagnostics,
+    { ...descriptor, operation: 'sandbox_start' },
+  );
+  asynchronousLifecycle.failHttp(503);
+  await flushDiagnostics();
+  assert.equal(asynchronousFailure.facts.length, 2);
+
+  const replay = directDiagnosticsHarness();
+  const keyedDescriptor = {
+    ...descriptor,
+    key: 'sandbox.create',
+  };
+  const first = boxlite.startBoxLiteProvisioningDiagnostic(
+    replay.diagnostics,
+    keyedDescriptor,
+  );
+  const second = boxlite.startBoxLiteProvisioningDiagnostic(
+    replay.diagnostics,
+    keyedDescriptor,
+  );
+  assert.equal(first.operationId, second.operationId);
+  first.succeed();
+  second.succeed();
+
+  const cleanup = boxlite.startBoxLiteProvisioningDiagnostic(
+    replay.diagnostics,
+    { ...keyedDescriptor, channel: 'cleanup' },
+  );
+  assert.notEqual(cleanup.operationId, first.operationId);
+  cleanup.succeed();
+
+  const clock = directDiagnosticsHarness();
+  const realDateNow = Date.now;
+  try {
+    let now = 100;
+    Date.now = () => now;
+    const lifecycle = boxlite.startBoxLiteProvisioningDiagnostic(
+      clock.diagnostics,
+      descriptor,
+    );
+    now = 50;
+    lifecycle.succeed();
+    lifecycle.succeed({ timeoutMs: 1 });
+  } finally {
+    Date.now = realDateNow;
+  }
+  assert.equal(clock.facts.length, 2);
+  assert.equal(clock.facts[1].durationMs, 0);
+});
+
+await test('native diagnostic aggregation prioritizes complete facts and flushes late terminal evidence once', async () => {
+  const harness = directDiagnosticsHarness();
+  const session = boxlite.startBoxLiteNativeExecutionDiagnosticSession(
+    harness.diagnostics,
+    'runtime_setup',
+  );
+
+  const passthrough = {
+    operationId: diagnosticOperationId(1),
+    stage: 'sandbox_creation',
+    operation: 'sandbox_create',
+    channel: 'primary',
+    outcome: 'started',
+  };
+  await session.diagnostics.emit(passthrough);
+  assert.deepEqual(harness.facts, [passthrough]);
+
+  const outcomes = [
+    'succeeded',
+    'degraded',
+    'failed',
+    'timed_out',
+    'cancelled',
+    'indeterminate',
+  ];
+  for (const [index, outcome] of outcomes.entries()) {
+    const operationId = diagnosticOperationId(10 + index);
+    await session.diagnostics.emit(nativeStartedFact(operationId));
+    await session.diagnostics.emit(
+      nativeTerminalFact(operationId, outcome, {
+        cause: outcome === 'succeeded' ? null : 'unknown',
+        retryable: outcome !== 'succeeded',
+      }),
+    );
+  }
+
+  const noKindSuccess = diagnosticOperationId(20);
+  await session.diagnostics.emit(
+    nativeStartedFact(noKindSuccess, {
+      operation: 'native_exec_start',
+      commandKind: undefined,
+    }),
+  );
+  await session.diagnostics.emit(
+    nativeTerminalFact(noKindSuccess, 'succeeded', {
+      operation: 'native_exec_start',
+      commandKind: undefined,
+    }),
+  );
+
+  for (const [index, commandKind] of [
+    'runtime_setup',
+    'credential_cleanup',
+  ].entries()) {
+    const operationId = diagnosticOperationId(30 + index);
+    await session.diagnostics.emit(
+      nativeStartedFact(operationId, {
+        operation: 'native_exec_poll',
+        channel: 'cleanup',
+        commandKind,
+      }),
+    );
+    await session.diagnostics.emit(
+      nativeTerminalFact(operationId, 'succeeded', {
+        operation: 'native_exec_poll',
+        channel: 'cleanup',
+        commandKind,
+      }),
+    );
+  }
+
+  const lateOperationId = diagnosticOperationId(40);
+  await session.diagnostics.emit(
+    nativeStartedFact(lateOperationId, {
+      operation: 'native_exec_attach',
+      commandKind: undefined,
+    }),
+  );
+
+  session.finish();
+  session.finish();
+  assert.equal(
+    harness.facts.filter((fact) => fact.operation === 'native_exec_attach')
+      .length,
+    0,
+  );
+
+  await session.diagnostics.emit(
+    nativeTerminalFact(lateOperationId, 'failed', {
+      operation: 'native_exec_attach',
+      commandKind: undefined,
+      cause: 'transport_failed',
+      retryable: true,
+    }),
+  );
+  await session.diagnostics.flush();
+  assert.equal(harness.flushCount(), 1);
+
+  const settlement = harness.facts.filter(
+    (fact) => fact.operation === 'native_exec_settlement',
+  );
+  assert.deepEqual(
+    settlement.map((fact) => fact.outcome),
+    ['started', 'indeterminate'],
+  );
+  assert.equal(settlement[1].commandKind, 'runtime_setup');
+  const start = harness.facts.filter(
+    (fact) => fact.operation === 'native_exec_start',
+  );
+  assert.deepEqual(start.map((fact) => fact.outcome), ['started', 'succeeded']);
+  assert.equal(start[0].commandKind, undefined);
+  const poll = harness.facts.filter(
+    (fact) => fact.operation === 'native_exec_poll',
+  );
+  assert.deepEqual(poll.map((fact) => fact.outcome), ['started', 'succeeded']);
+  assert.equal(poll[0].commandKind, undefined);
+  const attach = harness.facts.filter(
+    (fact) => fact.operation === 'native_exec_attach',
+  );
+  assert.deepEqual(attach.map((fact) => fact.outcome), ['started', 'failed']);
+  assert.equal(attach[0].commandKind, undefined);
+
+  let identityAttempts = 0;
+  const identityFailure = directDiagnosticsHarness({
+    createOperationId() {
+      identityAttempts += 1;
+      throw new Error('aggregate identity unavailable');
+    },
+  });
+  const failedSession = boxlite.startBoxLiteNativeExecutionDiagnosticSession(
+    identityFailure.diagnostics,
+    'readiness',
+  );
+  const failedOperationId = diagnosticOperationId(50);
+  await failedSession.diagnostics.emit(nativeStartedFact(failedOperationId));
+  await failedSession.diagnostics.emit(
+    nativeTerminalFact(failedOperationId, 'succeeded'),
+  );
+  failedSession.finish();
+  failedSession.finish();
+  assert.equal(identityAttempts, 1);
+  assert.equal(identityFailure.facts.length, 0);
+});
+
+await test('native diagnostic observer rejects duplicate orphaned and mismatched lifecycle facts', async () => {
+  const harness = directDiagnosticsHarness();
+  const session = boxlite.startBoxLiteNativeExecutionDiagnosticSession(
+    harness.diagnostics,
+    'workspace',
+  );
+  const invalidLifecycle = (promise) =>
+    assert.rejects(
+      promise,
+      /BoxLite native diagnostic lifecycle is invalid/,
+    );
+
+  const duplicateId = diagnosticOperationId(60);
+  const duplicateStart = nativeStartedFact(duplicateId);
+  await session.diagnostics.emit(duplicateStart);
+  await invalidLifecycle(session.diagnostics.emit(duplicateStart));
+  const duplicateTerminal = nativeTerminalFact(duplicateId, 'succeeded');
+  await session.diagnostics.emit(duplicateTerminal);
+  await invalidLifecycle(session.diagnostics.emit(duplicateTerminal));
+
+  await invalidLifecycle(
+    session.diagnostics.emit(
+      nativeTerminalFact(diagnosticOperationId(61), 'failed'),
+    ),
+  );
+
+  const mismatches = [
+    {
+      started: {},
+      terminal: { stage: 'settlement' },
+    },
+    {
+      started: {},
+      terminal: { operation: 'native_exec_poll' },
+    },
+    {
+      started: {},
+      terminal: { channel: 'cleanup' },
+    },
+    {
+      started: {},
+      terminal: { commandKind: 'agent_launch' },
+    },
+  ];
+  for (const [index, mismatch] of mismatches.entries()) {
+    const operationId = diagnosticOperationId(70 + index);
+    await session.diagnostics.emit(
+      nativeStartedFact(operationId, mismatch.started),
+    );
+    await invalidLifecycle(
+      session.diagnostics.emit(
+        nativeTerminalFact(operationId, 'failed', mismatch.terminal),
+      ),
+    );
+    await session.diagnostics.emit(
+      nativeTerminalFact(operationId, 'failed'),
+    );
+  }
+
+  session.finish();
+  await session.diagnostics.flush();
+  assert.equal(harness.flushCount(), 1);
+  assert.deepEqual(
+    harness.facts
+      .filter((fact) => fact.operation === 'native_exec_settlement')
+      .map((fact) => fact.outcome),
+    ['started', 'failed'],
+  );
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -466,6 +466,7 @@ export function normalizeSandboxCommandResult(
   const stdout = stringValue(data.stdout);
   const stderr = stringValue(data.stderr);
   const rawOutput = stringValue(data.output) || stderr || stdout;
+  const status = stringValue(data.status);
   const output = options.scrubOutput
     ? scrubSandboxCommandOutput(rawOutput)
     : rawOutput;
@@ -477,7 +478,9 @@ export function normalizeSandboxCommandResult(
     timedOut:
       data.timedOut === true ||
       data.timeout === true ||
-      data.timed_out === true,
+      data.timed_out === true ||
+      status === 'no_change_timeout' ||
+      status === 'hard_timeout',
   };
 }
 

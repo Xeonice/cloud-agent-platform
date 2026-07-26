@@ -21,10 +21,46 @@ VITE_AUTH_TOKEN=<operator-token> \
 pnpm --filter @cap/web test:provider-terminal-story
 ```
 
-The live path creates a temporary API-side provider story session, connects the
-browser only to CAP's `/terminal` gateway, and tears the session down at the end.
-The page displays only CAP story fields: provider id, story session id, readiness,
-and teardown state.
+An independent canary that already registered a real task/owner in CAP can mount
+that exact session without using the story lifecycle REST API:
+
+```bash
+VITE_WS_URL=ws://127.0.0.1:8080 \
+VITE_AUTH_TOKEN=<operator-token> \
+pnpm --filter @cap/web provider-terminal-story:dev
+```
+
+Open `/?external=1&sessionId=terminal-story-<id>` (optionally add
+`provider=aio` or `provider=boxlite` for the label). External mode mounts the
+production `SessionTerminal` directly against CAP's `/terminal` WebSocket. It
+does not call readiness, create, lookup, inventory, or teardown REST endpoints,
+does not install the fixture WebSocket even if a `fixture` query is present, and
+disables story-owned lifecycle actions. The canary that registered the session
+remains responsible for exact cleanup.
+
+The live path creates a temporary API-side provider story session with one owner
+and disposable viewer PTYs. Browsers connect only to CAP's `/terminal` gateway;
+the story response and page never expose a provider WebSocket URL, sandbox id, or
+credential. The deterministic fixture writes more than 500 unique history
+markers before entering a styled alternate screen with CJK, live, input, resize,
+and frozen-frame probes.
+
+The first live case freezes the frame, emits one uniquely named live delta, and
+compares uninterrupted versus fresh-attach SerializeAddon state plus unmasked
+screenshots at identical geometry. The second mounts two simultaneous browser
+viewers, proves that only the lease holder can write and resize, disconnects all
+viewers, then opens a third PTY and compares the restored static frame. It also
+checks the provider-side hexadecimal byte oracle for UTF-8 plus legacy X10 mouse
+bytes (including a byte at or above `0x80`). The story-only inventory endpoint,
+`GET /terminal-stories/provider/sessions/:sessionId/inventory`, exposes a bounded,
+explicitly truncated list of exact query, browser-response, actual provider-write,
+attachment, and authoritative-resize events. Query/input/response bytes are
+base64-encoded opaque values.
+
+The gate rejects history-prefix replay, stale input echoes, snapshot/tail
+controls, blank or partial redraws, provider endpoint exposure, duplicated live
+deltas, reader writes/resizes, and non-zero Gateway resources after every viewer
+disconnects.
 
 ## Provider Prerequisites
 
@@ -59,10 +95,20 @@ those values are missing; it does not fall back to AIO.
 
 ## Cleanup
 
-The story API registers a temporary backing task, opens one provider sandbox, and
-sets a short TTL. The Playwright test calls `DELETE
-/terminal-stories/provider/sessions/:sessionId` during teardown. If a run is
-interrupted, inspect leftover sessions in the story UI or by checking containers
-named `cap-aio-terminal-story-*`, then delete the session through the API if the
-API process is still alive. If the API process is gone, use the provider's normal
-sandbox cleanup path for the leftover container or BoxLite sandbox.
+The story API registers a temporary backing task, opens one provider sandbox,
+and sets a short TTL. The Playwright suite tracks the session from its create
+response and calls `DELETE /terminal-stories/provider/sessions/:sessionId`; its
+`afterEach` repeats that idempotent exact-session cleanup after success, assertion
+failure, or timeout and requires evidence that the Gateway owner/viewers,
+telemetry observer, provider sandbox, and backing repo are absent. An aborted
+HTTP create request propagates cancellation to provisioning and removes its
+request listener; cancellation after Gateway registration follows the same exact
+cleanup path.
+
+Graceful `SIGTERM`/`SIGINT` uses Nest's application-shutdown hook to drain every
+live story. TTL is the final in-process timeout fallback. Each cleanup component
+is attempted even if another fails, and any uncertainty is returned as explicit,
+sanitized `teardownError` plus per-resource cleanup evidence. These paths never
+enumerate or delete unrelated sandboxes. A force-kill cannot run in-process
+cleanup; after one, inspect exact story ids and use the provider's normal
+task-scoped cleanup path only when the API cannot be restored.

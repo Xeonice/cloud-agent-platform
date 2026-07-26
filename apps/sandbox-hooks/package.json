@@ -2,7 +2,7 @@
   "name": "@cap/sandbox-hooks",
   "version": "0.0.0",
   "private": true,
-  "description": "Codex approval/report hook scripts baked into the derived AIO sandbox image. Under connect-in each hook makes an OUTBOUND HTTP callback to the orchestrator approvals endpoint over cap-net (no runner dial-back).",
+  "description": "Isolated compatibility implementation of the historical Codex 0.131 approval/report hook adapter; not shipped in bypass-mode AIO or BoxLite images.",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",

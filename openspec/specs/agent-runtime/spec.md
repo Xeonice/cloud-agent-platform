@@ -4,52 +4,91 @@
 TBD - created by archiving change add-claude-code-runtime. Update Purpose after archive.
 ## Requirements
 ### Requirement: AgentRuntime port abstracts per-agent execution seams
+
 The system SHALL define an `AgentRuntime` port that encapsulates the agent-specific
 execution seams as declarative policy — `buildLaunchLine` (contributing `{ argv, env }`),
 `terminalStartup`, `sandboxSetupCommands`, `preStopTrimCommands`, and `detectExit` — with
 two implementations, `CodexRuntime` and `ClaudeCodeRuntime`, selected per task by the
 task's `runtime` value. The port owns no I/O (see "The runtime is a policy object that
-owns no I/O"). The shared execution scaffolding — the per-task AIO Sandbox container, the
-detached tmux session, the `/v1/shell/ws` PTY client, the asciicast capture/replay
-pipeline, the liveness poller, and boot re-adoption — SHALL remain runtime-agnostic and
-SHALL NOT branch on agent identity except through the port. Extracting the existing codex
-logic behind `CodexRuntime` SHALL be behavior-preserving: codex task launch, sandbox
-credential/config setup, prompt submit, exit detection, and transcript capture SHALL
-remain byte-for-byte unchanged.
+owns no I/O"). The shared execution scaffolding — the per-task provider sandbox, the
+detached tmux session, the provider-neutral PTY client, bounded owner failure evidence,
+the optional bounded raw-artifact writers, the liveness poller, and boot re-adoption — SHALL remain runtime-agnostic and
+SHALL NOT branch on agent identity except through the port.
 
-#### Scenario: Codex extraction preserves behavior
-- **WHEN** a `codex` task is provisioned and launched after the refactor
-- **THEN** the codex launch argv, the `auth.json`/`config.toml` sandbox-setup writes, the
-  DSR-gated prompt submit, and the `tmux has-session` exit detection are identical to
-  before, and the existing codex end-to-end suite passes unchanged
+Against the canonical launch policy produced after the prerequisite
+`enable-yolo-agent-launch` change is archived, removing the interactive Codex `--no-alt-screen`
+override is this change's single intentional launch-byte delta. The composed launch
+SHALL retain Codex's `--dangerously-bypass-approvals-and-sandbox` policy. Codex sandbox
+credential/config setup, prompt submit, startup DSR/CPR behavior, exit detection, model
+policy, headless launch, and transcript capture SHALL otherwise remain byte-for-byte
+unchanged. Provider-specific fallback launch lines SHALL consume the same runtime-owned
+interactive argv and SHALL NOT retain either a divergent inline-mode override or the
+pre-YOLO approval/sandbox flags.
+
+#### Scenario: Codex extraction preserves behavior outside native terminal mode
+
+- **WHEN** a `codex` task is provisioned and launched after the native-terminal change
+- **THEN** its interactive argv differs from the composed YOLO launch baseline only by
+  removal of `--no-alt-screen`
+- **AND** the composed argv still contains
+  `--dangerously-bypass-approvals-and-sandbox`
+- **AND** the `auth.json`/`config.toml` sandbox-setup writes, DSR-gated prompt submit,
+  `tmux has-session` exit detection, headless command, and transcript behavior remain
+  identical to before
 
 #### Scenario: Runtime is selected from the task
+
 - **WHEN** a task with `runtime = claude-code` is admitted
 - **THEN** the orchestrator resolves the `ClaudeCodeRuntime` implementation, and a
   task with `runtime = codex` (or absent) resolves `CodexRuntime`
 
 ### Requirement: ClaudeCodeRuntime launch line and sandbox flags
+
 `ClaudeCodeRuntime.buildLaunchLine()` SHALL launch the interactive Claude Code CLI in
 a detached tmux session named `task<taskId>` with working directory the cloned
-workspace, of the form `claude --session-id <uuid> --permission-mode acceptEdits "<prompt>"`,
+workspace, of the form `claude --session-id <uuid> --dangerously-skip-permissions "<prompt>"`,
 where the prompt is delivered via the codex-style `$(cat <prompt-file>)` shape so the
 prompt text is never inlined into the command (shell-injection-safe). The launch
-environment SHALL set `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` (so the TUI renders
-inline in the normal buffer for capture), `CLAUDE_CODE_SANDBOXED=1` (so the workspace
-trust gate is short-circuited), and `CLAUDE_CONFIG_DIR=/home/gem/.claude`. The runtime
-SHALL NOT use `claude attach`, `claude agents`, `--dangerously-skip-permissions`,
-`--bare`, or `--no-session-persistence` (each breaks the inline-buffer, auth, or
-transcript assumptions).
+environment SHALL set `CLAUDE_CODE_SANDBOXED=1` (so the workspace trust gate is
+short-circuited) and `CLAUDE_CONFIG_DIR=/home/gem/.claude`. For an `interactive-pty`
+launch it SHALL NOT set `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`, nor apply an
+equivalent override that forces Claude Code into the normal/inline buffer; Claude Code
+SHALL use its default native terminal mode.
+
+The final launch SHALL retain the prerequisite `enable-yolo-agent-launch` policy:
+provisioning SHALL write
+`/home/gem/.claude/settings.json` with
+`permissions.skipDangerousModePermissionPrompt = true`. The runtime SHALL NOT use
+`claude attach`, `claude agents`, `--bare`, or `--no-session-persistence`. This
+terminal-mode change SHALL NOT otherwise alter authentication, model,
+session-persistence, transcript, or exit behavior; headless Claude SHALL retain the
+same bypass-permissions policy selected by `enable-yolo-agent-launch` without gaining
+an interactive alternate-screen override.
 
 #### Scenario: Claude launches autonomously with no blocking prompt
+
 - **WHEN** a `claude-code` task is launched in a freshly provisioned sandbox
 - **THEN** Claude runs the prompt without a trust dialog, theme/onboarding screen, or
   tool-approval prompt, and executes Bash and edit tools without asking
+- **AND** the launch uses `--dangerously-skip-permissions`, not `acceptEdits`, and the
+  user settings skip its dangerous-mode confirmation prompt
 
-#### Scenario: Inline buffer is pinned for replay
-- **WHEN** the Claude TUI byte stream is captured
-- **THEN** it contains no alternate-screen enter sequence (`ESC[?1049h`) and replays
-  through the existing asciicast pipeline with no buffer-mode branching
+#### Scenario: Claude interactive mode is not pinned to the normal buffer
+
+- **WHEN** a Claude Code task is launched with `executionMode = "interactive-pty"`
+- **THEN** its environment does not contain a truthy
+  `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN`
+- **AND** the CLI may emit its native alternate-screen and terminal-control sequences
+  without a runtime override converting it to inline rendering
+
+#### Scenario: Claude headless execution is unaffected
+
+- **WHEN** `ClaudeCodeRuntime.buildHeadlessLine()` builds the launch specification for
+  a `headless-exec` task
+- **THEN** it retains the headless `--dangerously-skip-permissions` policy and its
+  existing exit, model, session, and transcript behavior
+- **AND** no interactive terminal-mode environment override is added to that headless
+  path
 
 ### Requirement: Provision-time trust and onboarding pre-seed
 At provision time the runtime SHALL pre-seed the Claude global config with the GLOBAL
@@ -338,18 +377,28 @@ move (the gate flips from an identity check to the declared flag).
   and `promptSubmit: 'none'`
 
 ### Requirement: Codex observable outputs are byte-identical and characterization-tested
-This refactor SHALL be behavior-preserving for codex, proven by characterization/golden
-tests pinned on the CURRENT code BEFORE refactoring and asserted unchanged after each
-step. The pinned surfaces SHALL be codex's four deterministic outputs: (1) the detached
-launch-line string, (2) the DSR→CPR injection sequence, (3) the sandbox-setup
-(auth.json/config.toml/prompt) exec command strings, and (4) the pre-stop trim command
-strings. The compose e2e is the final integration confirmation and SHALL NOT be a
-precondition for landing a golden-test-gated step.
 
-#### Scenario: Golden tests pin codex outputs before and after the refactor
-- **WHEN** any refactor step is applied
-- **THEN** the golden tests for the four codex output surfaces still pass byte-for-byte,
-  and they were authored against the pre-refactor code so a deviation fails the step
+Characterization/golden tests SHALL pin Codex's deterministic runtime outputs against
+the baseline composed with `enable-yolo-agent-launch` and SHALL permit exactly one
+terminal-specific difference for this change: the interactive detached launch-line
+string no longer contains `--no-alt-screen` while retaining
+`--dangerously-bypass-approvals-and-sandbox`. The remaining pinned surfaces
+SHALL stay byte-identical: the DSR→CPR injection sequence, sandbox-setup
+(`auth.json`/`config.toml`/prompt) exec command strings, pre-stop trim command strings,
+headless command, model arguments, and transcript declaration. The compose and real
+provider E2E gates are final integration confirmation and SHALL NOT be replaced by a
+golden test that merely accepts arbitrary launch-line changes.
+
+#### Scenario: Golden tests isolate the native-terminal argv delta
+
+- **WHEN** the runtime implementation and all duplicate provider/image fallbacks are
+  updated
+- **THEN** relative to the composed `enable-yolo-agent-launch` baseline, the interactive
+  Codex launch expectation changes only by removing `--no-alt-screen` while retaining
+  `--dangerously-bypass-approvals-and-sandbox`
+- **AND** golden expectations for startup input, setup commands, trim commands,
+  headless execution, model policy, and transcript behavior remain byte-for-byte
+  unchanged
 
 ### Requirement: Persisted task runtime deterministically selects the provisioning runtime, guarded against silent regression
 
@@ -387,37 +436,83 @@ The selection seam SHALL be guarded against silent regression at three layers, b
 - **THEN** the registry logs the fallback to the codex default at `warn` level (it does not swallow the condition silently)
 
 ### Requirement: Execution mode is a declarative, consumer-selected runtime capability
+
 The `AgentRuntime` port SHALL declare which execution modes it supports via
 `executionModes: ReadonlySet<'interactive-pty' | 'headless-exec'>`, and SHALL provide
-`buildHeadlessLine(ctx)` — a one-shot, exit-on-completion launch line — for any runtime that
-supports `headless-exec`. The headless launch line SHALL be a VALID invocation of the runtime's
-NON-INTERACTIVE subcommand and MUST use that subcommand's accepted flag surface — NOT the
-interactive top-level flags — so the agent actually runs to completion and writes its transcript
-artifact. For codex specifically the headless line SHALL use `codex exec` with the
-`exec`-accepted sandbox/approval bypass (`--dangerously-bypass-approvals-and-sandbox`), and SHALL
-NOT pass the interactive top-level flags `--ask-for-approval` / `--sandbox` /
-`--dangerously-bypass-hook-trust` (which `codex exec` rejects, aborting the run before any
-`rollout-*.jsonl` is written). The shared task path SHALL select the execution mode by CONSUMER: a
-console-created task uses `interactive-pty`; a programmatic (MCP / `/v1` API) task uses
-`headless-exec`. The selected mode SHALL be persisted on the task and read back by provisioning,
-exit detection, and transcript read. A runtime MUST NOT branch on the consumer — it only declares
-capability and emits the requested mode's launch line; the shared scaffolding reads the declared mode.
+`buildHeadlessLine(ctx)` - a one-shot, exit-on-completion launch line - for any runtime
+that supports `headless-exec`. The headless launch line SHALL be a valid invocation of
+the runtime's non-interactive subcommand and MUST use that subcommand's accepted flag
+surface, not interactive-only flags, so the agent runs to completion and writes its
+transcript artifact.
+
+For Codex, a new headless run SHALL use `codex exec` with
+`--dangerously-bypass-approvals-and-sandbox`, `--skip-git-repo-check`, and
+`< /dev/null`. It SHALL NOT pass `--ask-for-approval`, `--sandbox`, or
+`--dangerously-bypass-hook-trust` to `codex exec`. A Codex headless resume SHALL repeat
+the same explicit bypass, validate the prior runtime session identifier as a safe shell
+token, and use `--skip-git-repo-check` without `--sandbox`. For Claude Code, a new headless run
+SHALL use `claude -p` with `--output-format stream-json`, `--verbose`,
+`--session-id <uuid>`, `--dangerously-skip-permissions`, and `< /dev/null`; a Claude
+headless resume SHALL use `--resume <id>` with the same bypass-permissions policy.
+Validated explicit per-task model material MAY add its runtime-specific `--model`
+argument without weakening any required or forbidden permission flag.
+
+The shared task path SHALL select execution mode by consumer: a console-created task
+uses `interactive-pty`; a programmatic MCP/`/v1` task uses `headless-exec`. The selected
+mode SHALL be persisted and read back by provisioning, exit detection, and transcript
+read. A runtime MUST NOT branch on consumer identity; it declares capability and emits
+the requested mode's policy while shared scaffolding owns selection and lifecycle.
 
 #### Scenario: Console task runs interactive-pty
+
 - **WHEN** a task is created from the console
-- **THEN** its execution mode is `interactive-pty` and it is launched via the interactive launch line
+- **THEN** its execution mode is `interactive-pty` and it uses the interactive runtime
+  policy
 
 #### Scenario: Programmatic task runs headless-exec
+
 - **WHEN** a task is created via MCP `create_task` or `POST /v1/tasks`
-- **THEN** its execution mode is `headless-exec` and it is launched via `buildHeadlessLine`
+- **THEN** its execution mode is `headless-exec` and it is launched through
+  `buildHeadlessLine`
 
 #### Scenario: A runtime without headless-exec rejects programmatic creation
-- **WHEN** a programmatic task selects a runtime whose `executionModes` excludes `headless-exec`
-- **THEN** creation fails closed with a distinct reason rather than launching an interactive session
 
-#### Scenario: The codex headless line actually runs and writes a rollout
-- **WHEN** a headless-exec codex task launches `buildHeadlessLine`
-- **THEN** the line invokes `codex exec` with `exec`-accepted flags so codex runs to completion and writes a `rollout-*.jsonl`, and `get_transcript` returns readable turns rather than `no-rollout`
+- **WHEN** a programmatic task selects a runtime whose capabilities exclude
+  `headless-exec`
+- **THEN** creation fails closed with a distinct reason instead of launching an
+  interactive session
+
+#### Scenario: Codex headless uses the exec-accepted bypass surface
+
+- **WHEN** a runtime-default Codex headless task starts
+- **THEN** its command contains
+  `codex exec --json --dangerously-bypass-approvals-and-sandbox`
+- **AND** it contains `--skip-git-repo-check`, reads the file-backed prompt, redirects
+  stdin from `/dev/null`, and writes the detached exit sentinel
+- **AND** it does not contain the forbidden interactive-only flags
+
+#### Scenario: Claude headless new and resume both bypass permissions
+
+- **WHEN** a Claude headless task starts or resumes a previous session
+- **THEN** the invocation contains `--dangerously-skip-permissions`, stream JSON, and
+  verbose output
+- **AND** a new run has `--session-id <uuid>` while a resume has `--resume <id>`
+
+#### Scenario: Codex headless resume remains autonomous
+
+- **WHEN** a Codex headless task resumes a transcript-derived session
+- **THEN** its `codex exec resume` invocation contains
+  `--dangerously-bypass-approvals-and-sandbox` and `--skip-git-repo-check`
+- **AND** it omits `--sandbox` and rejects a session identifier containing shell syntax
+
+#### Scenario: Explicit model composes with required permission policy
+
+- **WHEN** validated explicit model material is present for a fresh interactive or fresh
+  headless launch
+- **THEN** the runtime adds its safe `--model` argument while retaining every required
+  bypass flag and every forbidden-flag invariant
+- **AND** a resumed headless session keeps the model recorded by that session rather
+  than applying a newly selected task model
 
 ### Requirement: Headless-exec resolves a task to terminal on process exit
 For a `headless-exec` task the launched agent process SHALL run non-interactively and EXIT when the
@@ -641,4 +736,31 @@ may select the byte-identical default launch branch.
 
 - **WHEN** admission recovery re-adopts a Task that has not started a session and has an explicit persisted model
 - **THEN** it rematerializes and launches that exact selector or fails closed; it never falls back to the runtime default
+
+### Requirement: CodexRuntime interactive launch preserves the native terminal mode
+
+For `executionMode = "interactive-pty"`, `CodexRuntime.buildLaunchLine()` SHALL invoke
+the interactive Codex CLI without `--no-alt-screen` and without any equivalent
+argument, environment variable, or configuration override that forces Codex into the
+normal/inline terminal buffer. Codex SHALL be allowed to select and operate its native
+terminal mode, including entering and leaving the alternate screen and emitting its
+native cursor, style, mouse, focus, clear, and terminal-query control sequences.
+
+This requirement changes only the interactive terminal-mode override. Codex headless
+launch, authentication, sandbox/approval policy, model selection, prompt submission,
+exit detection, and transcript declaration SHALL remain unchanged.
+
+#### Scenario: Interactive Codex starts in its default terminal mode
+
+- **WHEN** `CodexRuntime.buildLaunchLine()` builds the launch specification for an
+  `interactive-pty` task
+- **THEN** the Codex argv does not contain `--no-alt-screen`
+- **AND** no equivalent runtime-owned override forces the CLI into the normal buffer
+
+#### Scenario: Codex headless execution is unaffected
+
+- **WHEN** `CodexRuntime.buildHeadlessLine()` builds the launch specification for a
+  `headless-exec` task
+- **THEN** its command, flags, environment, exit handling, model policy, and transcript
+  behavior are unchanged by the native interactive-terminal requirement
 

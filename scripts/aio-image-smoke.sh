@@ -1,40 +1,17 @@
 #!/usr/bin/env bash
 #
-# Derived AIO sandbox image build/smoke check (harden-aio-execution, integration
-# tasks 6.2 / 6.3 / 6.4). Asserts the final docker/aio-sandbox.Dockerfile (after
-# the codex-version bump + the 6.1 launch/trust edit + the hooks.json rewrite)
-# is correct on two levels:
+# Derived AIO sandbox image contract smoke.
 #
-#   STATIC (always runs; no docker/network needed) — source-level guards:
-#     6.2  the Dockerfile builds on pnpm 10 and does NOT invoke a filtered
-#          `pnpm --filter X prune --prod` (that filtered prune is the D1 failure;
-#          fail the check if it is ever reintroduced).
-#     D4   (close-aio-execution-gaps Gap C) the image is SLIMMED via `pnpm deploy`:
-#          the Dockerfile no longer COPYs the whole `/repo` workspace (~8.97 GB)
-#          into the final stage and no longer aliases /opt/cap/dist via a symlink
-#          into that /repo; it COPYs the deploy output's node_modules instead.
-#          Fail the check if the full-`/repo` COPY is reintroduced.
-#
-#   DYNAMIC (runs only when the derived image is buildable / present) — builds the
-#   image and inspects the BUILT artifact:
-#     6.3  `import 'zod'` and `@cap/contracts` resolve from the compiled
-#          /opt/cap/dist/hooks inside the built image with NO ERR_MODULE_NOT_FOUND
-#          (D4: the `pnpm deploy` node_modules sibling of /opt/cap/dist resolves
-#          every hook dep as a REAL, hoisted entry — no /repo, no symlink farm).
-#     6.4  hooks.json is present at the gem HOME (/home/gem/.codex/hooks.json) and
-#          owned 1000:1000 (D5: codex runs as gem, HOME=/home/gem).
-#
-# CI runs this with docker + network available so the DYNAMIC checks execute. In
-# a network-restricted sandbox the DYNAMIC checks SKIP (clearly logged) while the
-# STATIC guards still run, so a reintroduced filtered prune is always caught.
+# Static checks always run. Dynamic checks reuse/build the exact image when Docker
+# is available. The bypass-mode image intentionally contains no Codex hook runtime;
+# task isolation, not an in-process hook, is the execution boundary.
 #
 # Usage:
 #   scripts/aio-image-smoke.sh
-# Env overrides:
-#   AIO_SANDBOX_IMAGE   derived image tag to build/use (default cap-aio-smoke:test)
-#   AIO_BASE_TAG        ghcr.io/agent-infra/sandbox base tag the image is FROM.
-#                       If unset, any locally present sandbox image is retagged.
-#   SMOKE_REQUIRE_DYNAMIC=1  fail (not skip) if the dynamic build cannot run.
+# Env:
+#   AIO_SANDBOX_IMAGE=cap-aio-smoke:test
+#   AIO_BASE_TAG=<pinned base tag>
+#   SMOKE_REQUIRE_DYNAMIC=1
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -47,60 +24,48 @@ pass() { printf '  PASS  %s\n' "$*"; }
 bad()  { printf '  FAIL  %s\n' "$*"; fail=1; }
 skip() { printf '  SKIP  %s\n' "$*"; }
 
-# ---------------------------------------------------------------------------
-# STATIC — 6.2: no filtered prune; builds on pnpm 10.
-# ---------------------------------------------------------------------------
-log "6.2 STATIC: Dockerfile does not invoke a filtered pnpm prune (D1)"
-
-# A FILTERED prune is the D1 incompatibility: `pnpm --filter <x> prune` (with or
-# without --prod) rejects the implied --recursive on pnpm 10. Match a prune that
-# is scoped by --filter on the same pnpm invocation. A bare `pnpm prune` (no
-# --filter) is fine and not matched. STRIP COMMENT LINES first so the inline doc
-# that NAMES the forbidden command (to warn against it) is not a false positive.
 noncomment="$(grep -vE '^[[:space:]]*#' "$DOCKERFILE")"
-if printf '%s\n' "$noncomment" | grep -Eq 'pnpm[^#]*--filter[^#]*\bprune\b|pnpm[^#]*\bprune\b[^#]*--filter'; then
-  bad "filtered 'pnpm --filter X prune' reintroduced in $DOCKERFILE (D1 regression)"
-  printf '%s\n' "$noncomment" | grep -En 'prune' | sed 's/^/        /'
+
+log "STATIC: pinned CLI image uses a source-free Node donor stage"
+if grep -Eq '^FROM node:\$\{NODE_VERSION\}[^ ]* AS node-toolchain$' "$DOCKERFILE" \
+  && grep -q 'COPY --from=node-toolchain /usr/local/bin/node' "$DOCKERFILE" \
+  && grep -q 'COPY --from=node-toolchain /usr/local/lib/node_modules/npm' "$DOCKERFILE"; then
+  pass "Node/npm are copied from the source-free node-toolchain stage"
 else
-  pass "no filtered 'pnpm --filter X prune' in executable $DOCKERFILE lines"
+  bad "Node donor stage or final Node/npm copies are missing"
 fi
 
-# Sanity: the build still uses pnpm 10 via corepack + frozen lockfile install.
-if grep -q 'pnpm install --frozen-lockfile' "$DOCKERFILE"; then
-  pass "Dockerfile installs with 'pnpm install --frozen-lockfile' (pnpm 10 path)"
+for pin in CODEX_VERSION CLAUDE_CODE_VERSION OPENSPEC_VERSION; do
+  if grep -Eq "^ARG ${pin}=[^[:space:]]+" "$DOCKERFILE"; then
+    pass "$pin is explicitly pinned"
+  else
+    bad "$pin is not explicitly pinned"
+  fi
+done
+
+log "STATIC: bypass launch contract has no legacy approval flags"
+expected='ENV CODEX_LAUNCH_ARGV="codex -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox"'
+if grep -Fqx "$expected" "$DOCKERFILE"; then
+  pass "CODEX_LAUNCH_ARGV matches the composed YOLO/native-terminal policy"
 else
-  bad "Dockerfile no longer does a 'pnpm install --frozen-lockfile'"
+  bad "CODEX_LAUNCH_ARGV does not match the expected native-terminal policy"
+fi
+if printf '%s\n' "$noncomment" | grep -Eq -- '--no-alt-screen|--ask-for-approval|--dangerously-bypass-hook-trust|--full-auto'; then
+  bad "legacy terminal/approval launch flags remain in executable Dockerfile lines"
+else
+  pass "no inline-terminal or legacy approval/hook flags in executable Dockerfile lines"
 fi
 
-# ---------------------------------------------------------------------------
-# STATIC — D4 (close-aio-execution-gaps Gap C): image slimmed via `pnpm deploy`.
-# ---------------------------------------------------------------------------
-log "D4 STATIC: derived image is slimmed via pnpm deploy (no full-/repo COPY)"
-
-# Three load-bearing facts of the slim strategy, all guarded on executable
-# (comment-stripped) lines so the inline docs that NAME the old commands are not
-# false positives: (1) a `pnpm deploy` produces the self-contained tree;
-# (2) the ~8.97 GB full-`/repo` COPY is gone from the final stage; (3) /opt/cap/dist
-# is a real dir, not a symlink into a /repo COPY.
-if printf '%s\n' "$noncomment" | grep -Eq 'pnpm[^#]*\bdeploy\b'; then
-  pass "Dockerfile produces a self-contained tree via 'pnpm deploy'"
+log "STATIC: dormant hook runtime is absent from the final-image definition"
+if printf '%s\n' "$noncomment" | grep -Eq 'sandbox-hooks|hooks\.json|/opt/cap/dist/hooks|pnpm[[:space:]].*deploy'; then
+  bad "AIO Dockerfile still builds or copies the dormant hook runtime"
+  printf '%s\n' "$noncomment" \
+    | grep -En 'sandbox-hooks|hooks\.json|/opt/cap/dist/hooks|pnpm[[:space:]].*deploy' \
+    | sed 's/^/        /'
 else
-  bad "Dockerfile no longer runs 'pnpm deploy' (D4 slim strategy missing)"
-fi
-if printf '%s\n' "$noncomment" | grep -Eq 'COPY[[:space:]].*--from=hooks-build[[:space:]]+/repo[[:space:]]+/opt/cap/repo'; then
-  bad "full-'/repo' COPY reintroduced into the final stage (D4 regression: ~8.97 GB)"
-else
-  pass "no full-'/repo' COPY in the final stage"
-fi
-if printf '%s\n' "$noncomment" | grep -Eq 'ln[[:space:]]+-s[[:space:]]+/opt/cap/repo'; then
-  bad "/opt/cap/dist symlink into /opt/cap/repo reintroduced (D4: should be a real dir)"
-else
-  pass "/opt/cap/dist is not a symlink into a /repo COPY"
+  pass "no hook package, hooks.json, hook dist, or pnpm deploy in executable lines"
 fi
 
-# ---------------------------------------------------------------------------
-# Decide whether the DYNAMIC build/inspect checks can run.
-# ---------------------------------------------------------------------------
 can_dynamic=1
 why_skip=""
 if ! command -v docker >/dev/null 2>&1; then
@@ -109,97 +74,97 @@ elif ! docker info >/dev/null 2>&1; then
   can_dynamic=0; why_skip="docker daemon not reachable"
 fi
 
+build_log="$(mktemp -t cap-aio-image-smoke.XXXXXX)"
+cleanup() { rm -f "$build_log"; }
+trap cleanup EXIT
+
 build_image() {
-  # Reuse an already-present derived image if one was provided.
   if docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    log "dynamic: reusing present derived image $IMAGE"
+    log "DYNAMIC: reusing present image $IMAGE"
     return 0
   fi
-  local base_tag="${AIO_BASE_TAG:-}"
-  if [ -z "$base_tag" ]; then
-    local local_base
-    local_base="$(docker images --format '{{.Repository}}:{{.Tag}}' \
-      | grep '^ghcr.io/agent-infra/sandbox:' | grep -v '<none>' | head -1 || true)"
-    if [ -n "$local_base" ]; then
-      base_tag="smoke-base"
-      docker tag "$local_base" "ghcr.io/agent-infra/sandbox:${base_tag}" || return 1
-    else
-      base_tag="1.0.0.125"
-    fi
+  local base_tag="${AIO_BASE_TAG:-1.0.0.125}"
+  log "DYNAMIC: building $IMAGE from pinned AIO base $base_tag"
+  if ! docker build -f "$DOCKERFILE" --build-arg AIO_SANDBOX_TAG="$base_tag" \
+    -t "$IMAGE" . >"$build_log" 2>&1; then
+    return 1
   fi
-  log "dynamic: building $IMAGE (FROM sandbox:${base_tag})"
-  docker build -f "$DOCKERFILE" --build-arg AIO_SANDBOX_TAG="$base_tag" -t "$IMAGE" . >/tmp/aio-smoke-build.log 2>&1
+
+  # Docker Desktop may acknowledge the build before the exported image becomes
+  # inspectable through the daemon. Do not race straight into `docker run`, and
+  # do not treat a successful build exit alone as proof that the requested tag
+  # exists. Keep the wait bounded so CI still fails deterministically.
+  local attempt
+  for ((attempt = 0; attempt < 30; attempt += 1)); do
+    if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  printf '%s\n' "docker build returned success but $IMAGE was not inspectable after 30s" \
+    >>"$build_log"
+  return 1
 }
 
-if [ "$can_dynamic" = 1 ]; then
-  if ! build_image; then
-    can_dynamic=0; why_skip="derived image build failed (likely no network for base/node pull)"
-    tail -5 /tmp/aio-smoke-build.log 2>/dev/null | sed 's/^/        /' || true
-  fi
+if [ "$can_dynamic" = 1 ] && ! build_image; then
+  can_dynamic=0
+  why_skip="derived image build failed"
+  tail -5 "$build_log" 2>/dev/null | sed 's/^/        /' || true
 fi
 
 if [ "$can_dynamic" != 1 ]; then
-  log "DYNAMIC checks (6.3 / 6.4) skipped: $why_skip"
-  skip "6.3 hook module resolution from /opt/cap/dist (needs a built image)"
-  skip "6.4 hooks.json at /home/gem/.codex owned 1000:1000 (needs a built image)"
+  log "DYNAMIC checks skipped: $why_skip"
+  skip "exact image CLI parser and filesystem checks did not run"
   if [ "${SMOKE_REQUIRE_DYNAMIC:-0}" = 1 ]; then
-    bad "SMOKE_REQUIRE_DYNAMIC=1 but the dynamic build could not run"
+    bad "SMOKE_REQUIRE_DYNAMIC=1 but the dynamic image gate could not run"
   fi
   printf '\n%s\n' "$( [ "$fail" = 0 ] && echo 'STATIC checks passed.' || echo 'SMOKE FAILED.' )"
   exit "$fail"
 fi
 
-# AIO is released as linux/amd64. On arm64 Docker Desktop, omitting --platform
-# emits a warning on stderr; the ownership checks below intentionally capture
-# stderr, so that warning would corrupt an otherwise-correct `1000:1000` value.
-IMAGE_PLATFORM="linux/$(docker image inspect --format '{{.Architecture}}' "$IMAGE")"
-
-# ---------------------------------------------------------------------------
-# DYNAMIC — 6.3: zod + @cap/contracts resolve from the compiled dist/hooks.
-# ---------------------------------------------------------------------------
-log "6.3 DYNAMIC: import 'zod' and '@cap/contracts' resolve from /opt/cap/dist/hooks"
-
-# Run node INSIDE the image, importing the COMPILED hook module the same way
-# codex invokes it (/opt/cap/dist/hooks/*.js). A successful import proves the
-# /repo COPY + /opt/cap/dist symlink farm resolves zod + @cap/contracts with no
-# ERR_MODULE_NOT_FOUND. We import the permission hook entry (which imports both).
-res3="$(docker run --rm --platform "$IMAGE_PLATFORM" --entrypoint node "$IMAGE" -e '
-  import("/opt/cap/dist/hooks/permission-request.hook.js")
-    .then(() => { console.log("RESOLVE_OK"); })
-    .catch((e) => { console.error("RESOLVE_FAIL " + (e && e.code ? e.code : e)); process.exit(3); });
+log "DYNAMIC: exact pinned image parses runtime flags and has required tools"
+# Run the already-inspected local tag directly. Docker Desktop's containerd store can
+# mis-resolve a single-platform local image as a missing remote manifest when the same
+# architecture is redundantly supplied through `--platform`.
+probe="$(docker run --rm --entrypoint sh "$IMAGE" -lc '
+  set -eu
+  node --version
+  npm --version
+  codex --version
+  claude --version
+  openspec --version
+  tmux -V
+  codex --dangerously-bypass-approvals-and-sandbox --help >/dev/null
+  codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --help >/dev/null
+  codex exec resume --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check \
+    00000000-0000-4000-8000-000000000000 --help >/dev/null
+  claude --dangerously-skip-permissions --help >/dev/null
+  claude -p --resume 00000000-0000-4000-8000-000000000000 \
+    --dangerously-skip-permissions --output-format stream-json --verbose --help >/dev/null
+  test -f /etc/cap/sandbox-metadata.json
+  test -d /home/gem/.codex
+  test -d /home/gem/workspace
+  echo CLI_PROBE_OK
 ' 2>&1 || true)"
-if printf '%s' "$res3" | grep -q 'RESOLVE_OK'; then
-  pass "zod + @cap/contracts resolve from the compiled dist/hooks (no ERR_MODULE_NOT_FOUND)"
-elif printf '%s' "$res3" | grep -q 'ERR_MODULE_NOT_FOUND'; then
-  bad "hook import failed with ERR_MODULE_NOT_FOUND (symlink farm / dist not resolving)"
-  printf '%s\n' "$res3" | sed 's/^/        /'
+if printf '%s\n' "$probe" | grep -q 'CLI_PROBE_OK'; then
+  pass "Codex/Claude fresh and resume flags parse; Node/OpenSpec/tmux/metadata/runtime dirs exist"
 else
-  bad "hook import did not resolve cleanly"
-  printf '%s\n' "$res3" | sed 's/^/        /'
+  bad "exact image CLI/tooling probe failed"
+  printf '%s\n' "$probe" | sed 's/^/        /'
 fi
 
-# ---------------------------------------------------------------------------
-# DYNAMIC — 6.4: hooks.json present at gem HOME and owned 1000:1000.
-# ---------------------------------------------------------------------------
-log "6.4 DYNAMIC: /home/gem/.codex/hooks.json present and owned 1000:1000"
-
-owner="$(docker run --rm --platform "$IMAGE_PLATFORM" --entrypoint sh "$IMAGE" -c \
-  'stat -c "%u:%g" /home/gem/.codex/hooks.json 2>/dev/null || echo MISSING' 2>&1 || true)"
-if [ "$owner" = "1000:1000" ]; then
-  pass "hooks.json present at /home/gem/.codex and owned 1000:1000 (gem)"
-elif [ "$owner" = "MISSING" ]; then
-  bad "hooks.json is MISSING at /home/gem/.codex/hooks.json"
+log "DYNAMIC: obsolete hook artifacts are absent"
+hook_probe="$(docker run --rm --entrypoint sh "$IMAGE" -lc '
+  test ! -e /home/gem/.codex/hooks.json
+  test ! -e /opt/cap/dist/hooks
+  test ! -e /opt/cap/node_modules
+  echo NO_HOOK_ARTIFACTS
+' 2>&1 || true)"
+if printf '%s\n' "$hook_probe" | grep -qx 'NO_HOOK_ARTIFACTS'; then
+  pass "hooks.json, hook dist, and hook dependency tree are absent"
 else
-  bad "hooks.json present but owned '$owner' (expected 1000:1000)"
-fi
-
-# Also assert it is the 0.131-format file (matcher/hooks), not the old form.
-fmt="$(docker run --rm --platform "$IMAGE_PLATFORM" --entrypoint sh "$IMAGE" -c \
-  'cat /home/gem/.codex/hooks.json 2>/dev/null' 2>&1 || true)"
-if printf '%s' "$fmt" | grep -q '"matcher"'; then
-  pass "baked hooks.json is in the codex 0.131 format (has a matcher)"
-else
-  bad "baked hooks.json is not in the 0.131 format (no matcher key)"
+  bad "obsolete hook artifacts remain in the exact image"
+  printf '%s\n' "$hook_probe" | sed 's/^/        /'
 fi
 
 printf '\n%s\n' "$( [ "$fail" = 0 ] && echo 'ALL SMOKE CHECKS PASSED.' || echo 'SMOKE FAILED.' )"

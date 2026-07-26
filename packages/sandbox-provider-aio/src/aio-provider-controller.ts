@@ -39,6 +39,12 @@ import {
   aioHttpStatusClass,
   startAioProvisioningDiagnostic,
 } from './aio-provisioning-diagnostics.js';
+import { executeAioShellCommand } from './aio-shell-exec.js';
+import {
+  sweepAioStaleTerminalSessions,
+  type AioStaleTerminalSessionSweepSettlement,
+  type AioTerminalGuestPairReleaser,
+} from './aio-terminal-session-ownership.js';
 
 export type AioFetch = (
   input: string,
@@ -107,6 +113,7 @@ export interface AioProviderControllerLogger {
 export interface AioSandboxExecResult {
   readonly exitCode: number;
   readonly output: string;
+  readonly timedOut: boolean;
 }
 
 export interface AioSandboxContainerControllerOptions<
@@ -117,6 +124,10 @@ export interface AioSandboxContainerControllerOptions<
   readonly env?: AioLocalSandboxEnv;
   readonly logger?: AioProviderControllerLogger;
   readonly delay?: (ms: number) => Promise<void>;
+  /** Deterministic startup sweep seam; production uses one module-global value. */
+  readonly terminalSessionSweepProcessFingerprint?: string;
+  /** Exact guest cleanup seam for tests and alternate AIO-compatible clients. */
+  readonly terminalSessionGuestPairReleaser?: AioTerminalGuestPairReleaser;
 }
 
 export interface AioProvisionedContainer<TContainer extends AioDockerContainer> {
@@ -151,10 +162,16 @@ export class AioSandboxContainerController<
   private readonly env?: AioLocalSandboxEnv;
   private readonly logger?: AioProviderControllerLogger;
   private readonly delayImpl: (ms: number) => Promise<void>;
+  private readonly terminalSessionSweepProcessFingerprint?: string;
+  private readonly terminalSessionGuestPairReleaser?: AioTerminalGuestPairReleaser;
   private readonly containers = new Map<string, TContainer>();
   private readonly connections = new Map<string, SandboxConnection>();
   private readonly readopted = new Set<string>();
   private readonly providerSandboxIds = new Map<string, string>();
+  private readonly terminalSessionSweepDecisions = new Map<
+    string,
+    AioStaleTerminalSessionSweepSettlement
+  >();
   private readoptScan?: Promise<void>;
 
   constructor(options: AioSandboxContainerControllerOptions<TContainer>) {
@@ -164,6 +181,10 @@ export class AioSandboxContainerController<
       ((input, init) => globalThis.fetch(input, init) as ReturnType<AioFetch>);
     this.env = options.env;
     this.logger = options.logger;
+    this.terminalSessionSweepProcessFingerprint =
+      options.terminalSessionSweepProcessFingerprint;
+    this.terminalSessionGuestPairReleaser =
+      options.terminalSessionGuestPairReleaser;
     this.delayImpl =
       options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
@@ -174,6 +195,12 @@ export class AioSandboxContainerController<
 
   getProviderSandboxId(taskId: string): string | undefined {
     return this.providerSandboxIds.get(taskId);
+  }
+
+  getTerminalSessionSweepDecision(
+    taskId: string,
+  ): AioStaleTerminalSessionSweepSettlement | undefined {
+    return this.terminalSessionSweepDecisions.get(taskId);
   }
 
   resolveBaseUrl(taskId: string): string {
@@ -627,7 +654,14 @@ export class AioSandboxContainerController<
     this.clearTaskHandles(taskId);
 
     if (!isInspectedContainerRunning(inspected)) {
-      return { kind: 'found-and-cleaned' };
+      // A container that stopped before the private cleanup hook ran has no
+      // trustworthy retention proof. It cannot execute cleanup now, so remove
+      // the exact inspected incarnation and require Docker 404 confirmation.
+      return this.removeTargetContainerAndConfirm(taskId, {
+        ownership: hooks.ownership,
+        providerSandboxId: inspectedId,
+        diagnostics: hooks.diagnostics,
+      });
     }
     const baseUrl = connection?.baseUrl ?? buildAioSandboxBaseUrl(taskId);
     await hooks.beforeStop?.({ taskId, baseUrl });
@@ -938,6 +972,7 @@ export class AioSandboxContainerController<
     this.connections.delete(taskId);
     this.readopted.delete(taskId);
     this.providerSandboxIds.delete(taskId);
+    this.terminalSessionSweepDecisions.delete(taskId);
   }
 
   async isSandboxConfirmedAbsent(
@@ -1020,16 +1055,20 @@ export class AioSandboxContainerController<
     command: string,
     options: { readonly signal?: AbortSignal } = {},
   ): Promise<AioSandboxExecResult> {
-    const res = await this.fetchImpl(`${baseUrl}/v1/shell/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command }),
-      signal: options.signal,
-    });
+    const res = await executeAioShellCommand(
+      this.fetchImpl,
+      baseUrl,
+      command,
+      options.signal,
+    );
     if (!res.ok) {
-      return { exitCode: Number.NaN, output: `/v1/shell/exec responded ${res.status}` };
+      return {
+        exitCode: Number.NaN,
+        output: `/v1/shell/exec responded ${res.status}`,
+        timedOut: false,
+      };
     }
-    return parseAioExecResult(await res.json().catch(() => undefined));
+    return parseAioExecResult(res.body);
   }
 
   async runShellExecBestEffort(args: {
@@ -1041,12 +1080,12 @@ export class AioSandboxContainerController<
   }): Promise<void> {
     const label = args.label ?? 'AIO shell exec';
     try {
-      const res = await this.fetchImpl(`${args.baseUrl}/v1/shell/exec`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ command: args.command }),
-        signal: AbortSignal.timeout(args.timeoutMs ?? AIO_SANDBOX_TRIM_TIMEOUT_MS),
-      });
+      const res = await executeAioShellCommand(
+        this.fetchImpl,
+        args.baseUrl,
+        args.command,
+        AbortSignal.timeout(args.timeoutMs ?? AIO_SANDBOX_TRIM_TIMEOUT_MS),
+      );
       if (!res.ok) {
         this.logger?.warn?.(
           `${label} for task ${args.taskId} returned HTTP ${res.status} (not fatal)`,
@@ -1211,6 +1250,33 @@ export class AioSandboxContainerController<
       assertInspectedResourceGeneration(inspected, target.ownership);
     }
     if (!isInspectedContainerRunning(inspected)) return null;
+    if (target?.ownership && target.providerSandboxId) {
+      const settlement = await sweepAioStaleTerminalSessions({
+        fetch: this.fetchImpl,
+        baseUrl: buildAioSandboxBaseUrl(taskId),
+        scope: {
+          taskId,
+          providerSandboxId,
+          ownership: target.ownership,
+        },
+        processFingerprint: this.terminalSessionSweepProcessFingerprint,
+        guestPairReleaser: this.terminalSessionGuestPairReleaser,
+      });
+      this.terminalSessionSweepDecisions.set(taskId, settlement);
+      if (settlement.kind === 'indeterminate') {
+        this.logger?.warn?.(
+          `startup terminal-session sweep for task ${taskId} was indeterminate ` +
+            `(cause=${settlement.cause}, inspected=${settlement.inspectedRecords}, ` +
+            `stale=${settlement.staleRecords}, confirmed=${settlement.confirmedIdentities})`,
+        );
+      } else if (settlement.staleRecords > 0) {
+        this.logger?.log?.(
+          `startup terminal-session sweep for task ${taskId} confirmed ` +
+            `${settlement.confirmedIdentities} stale identity cleanup(s) and ` +
+            `${settlement.removedRecords} ownership-record cleanup(s)`,
+        );
+      }
+    }
     container = this.docker.getContainer(providerSandboxId);
     this.containers.set(taskId, container);
     this.providerSandboxIds.set(taskId, providerSandboxId);
@@ -1225,6 +1291,7 @@ export class AioSandboxContainerController<
     this.connections.clear();
     this.readopted.clear();
     this.providerSandboxIds.clear();
+    this.terminalSessionSweepDecisions.clear();
     this.readoptScan = Promise.resolve();
   }
 
@@ -1283,16 +1350,14 @@ export class AioSandboxContainerController<
     return inventory;
   }
 
-  private reregister(taskId: string, providerSandboxId?: string): void {
+  private reregister(taskId: string, providerSandboxId: string): void {
     if (!this.containers.has(taskId)) {
       this.containers.set(
         taskId,
-        this.docker.getContainer(
-          providerSandboxId ?? buildAioSandboxContainerName(taskId),
-        ),
+        this.docker.getContainer(providerSandboxId),
       );
     }
-    if (providerSandboxId) this.providerSandboxIds.set(taskId, providerSandboxId);
+    this.providerSandboxIds.set(taskId, providerSandboxId);
     if (!this.connections.has(taskId)) {
       this.connections.set(taskId, buildAioSandboxConnection(taskId));
     }
@@ -1303,18 +1368,18 @@ export class AioSandboxContainerController<
   ): Promise<'live' | 'dead'> {
     const baseUrl = buildAioSandboxBaseUrl(taskId);
     const command = `tmux has-session -t task${taskId}`;
-    const res = await this.fetchImpl(`${baseUrl}/v1/shell/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command }),
-      signal: AbortSignal.timeout(AIO_SANDBOX_SESSION_PROBE_TIMEOUT_MS),
-    });
+    const res = await executeAioShellCommand(
+      this.fetchImpl,
+      baseUrl,
+      command,
+      AbortSignal.timeout(AIO_SANDBOX_SESSION_PROBE_TIMEOUT_MS),
+    );
     if (!res.ok) {
       throw new Error(
         `AIO session liveness probe for task ${taskId} returned HTTP ${res.status}`,
       );
     }
-    const { exitCode } = parseAioExecResult(await res.json());
+    const { exitCode } = parseAioExecResult(res.body);
     if (exitCode === 0) return 'live';
     if (exitCode === 1) return 'dead';
     throw new Error(
@@ -1342,8 +1407,24 @@ export function scrubAioExecSecrets(output: string): string {
 }
 
 export function parseAioExecResult(raw: unknown): AioSandboxExecResult {
+  const result = normalizeAioShellExecResult(raw);
+  return {
+    exitCode: result.exitCode,
+    output: result.output,
+    timedOut: result.timedOut,
+  };
+}
+
+/**
+ * The pinned AIO/OpenHands shell uses -1 as an unsettled sentinel when final
+ * process metadata is unavailable. It is not a Unix exit status and must not
+ * be classified as a deterministic command failure or retried automatically.
+ */
+export function normalizeAioShellExecResult(raw: unknown) {
   const result = normalizeSandboxCommandResult(raw);
-  return { exitCode: result.exitCode, output: result.output };
+  return result.exitCode === -1
+    ? { ...result, exitCode: Number.NaN }
+    : result;
 }
 
 export async function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
@@ -1510,9 +1591,8 @@ function assertInspectedResourceGeneration(
 }
 
 function assertInspectedTaskId(value: unknown, taskId: string): void {
-  if (!value || typeof value !== 'object') {
-    throw new Error('Existing AIO sandbox inspection is invalid');
-  }
+  // Every call site first requires the immutable inspected container id, which
+  // already rejects non-object Docker responses before task-label validation.
   const env = (value as { Config?: { Env?: unknown } }).Config?.Env;
   if (!Array.isArray(env) || !env.includes(`TASK_ID=${taskId}`)) {
     throw new Error('AIO readoption task id does not match persisted target');

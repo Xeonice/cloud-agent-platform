@@ -8,7 +8,8 @@
  * SUPPRESS the alternate-screen switch and let the same stream play into xterm's
  * NORMAL buffer, every top-anchored scroll (the `1;N` scroll-region + scroll-up
  * that codex/tmux use) pushes the displaced lines into xterm's own scrollback —
- * reconstructing the full linear history for free, no VT simulation.
+ * producing a useful linear view of all retained, observed cast bytes without
+ * claiming the recorder captured every execution byte or event.
  *
  * Flow control (fix-terminal-record-replay-flow-control): casts can be HUGE
  * (measured 137MB for an alt-screen codex run). xterm's `write` is non-blocking,

@@ -311,26 +311,29 @@ export class BoxLiteSandboxProvider<
             environment === null
               ? null
               : Object.freeze({
-                  ...(environment ?? {}),
+                  ...environment,
                   resources,
-                }),
+            }),
         });
-        return existing.connection;
       } catch (error) {
         // A detaching workspace transfer is a control-flow signal, not a
         // provisioning failure: the sandbox and its detached clone job MUST
         // survive parking, so no cleanup/quarantine funnel may run.
-        if (isSandboxWorkspaceTransferDetachedSignal(error)) throw error;
+        if (isSandboxWorkspaceTransferDetachedSignal(error)) {
+          existingReadinessDiagnostics.finish();
+          throw error;
+        }
         this.forgetRun(ctx.taskId, existing.sandbox.id);
+        existingReadinessDiagnostics.finish();
         return this.rethrowAfterFailedSandboxCleanup(
           error,
           ctx,
           existing.sandbox.id,
           existing.sandbox,
         );
-      } finally {
-        existingReadinessDiagnostics.finish();
       }
+      existingReadinessDiagnostics.finish();
+      return existing.connection;
     }
     existingReadinessDiagnostics.finish();
 
@@ -341,7 +344,7 @@ export class BoxLiteSandboxProvider<
       environment === null
         ? null
         : Object.freeze({
-            ...(environment ?? {}),
+            ...environment,
             resources,
           });
     const runMetadata = Object.freeze({
@@ -395,6 +398,9 @@ export class BoxLiteSandboxProvider<
     let conflictReadinessDiagnostics:
       | BoxLiteNativeExecutionDiagnosticSession
       | undefined;
+    const finishConflictReadinessDiagnostics = (): void => {
+      conflictReadinessDiagnostics?.finish();
+    };
     try {
       createdSandbox = await this.client.createSandbox(createRequest);
     } catch (error) {
@@ -450,7 +456,7 @@ export class BoxLiteSandboxProvider<
       createdSandbox.diskSizeGb !== undefined &&
       createdSandbox.diskSizeGb !== resources.diskSizeGb
     ) {
-      conflictReadinessDiagnostics?.finish();
+      finishConflictReadinessDiagnostics();
       const primary = new SandboxProvisioningCapacityError();
       const diagnostic = startBoxLiteProvisioningDiagnostic(ctx.diagnostics, {
         stage: 'readiness',
@@ -499,23 +505,26 @@ export class BoxLiteSandboxProvider<
         environment: resolvedEnvironment,
       };
       this.runs.set(ctx.taskId, run);
-      return connection;
     } catch (err) {
       // A detaching workspace transfer is a control-flow signal, not a
       // provisioning failure: the sandbox and its detached clone job MUST
       // survive parking, so no cleanup/quarantine funnel may run. Resume
       // re-enters provision and readopts this sandbox via resolveExistingRun.
-      if (isSandboxWorkspaceTransferDetachedSignal(err)) throw err;
+      if (isSandboxWorkspaceTransferDetachedSignal(err)) {
+        finishConflictReadinessDiagnostics();
+        throw err;
+      }
       this.forgetRun(ctx.taskId, sandbox.id);
+      finishConflictReadinessDiagnostics();
       return this.rethrowAfterFailedSandboxCleanup(
         err,
         ctx,
         sandbox.id,
         sandbox,
       );
-    } finally {
-      conflictReadinessDiagnostics?.finish();
     }
+    finishConflictReadinessDiagnostics();
+    return connection;
   }
 
   async preflightRuntime(args: {
@@ -709,11 +718,9 @@ export class BoxLiteSandboxProvider<
         this.confirmRunAbsent(taskId, run.sandbox.id);
       }
     }
-    if (adapter.wasSandboxFenced() && result.error === null) {
-      throw new SandboxProviderConfigurationError(
-        'BoxLite workspace delivery cannot retain a fenced sandbox',
-      );
-    }
+    // `runWithCredentialSafetySettlement` cannot return a successful result
+    // after the adapter fenced the sandbox: that fence is itself a settlement
+    // failure and is thrown above.
     return result;
   }
 
@@ -1016,6 +1023,18 @@ export class BoxLiteSandboxProvider<
               },
             );
             try {
+              const runtimeSecurity = createBoxLiteWorkspaceSecurityAdapter({
+                client: this.client,
+                sandboxId: args.sandbox.id,
+                taskId: args.ctx.taskId,
+                providerId: this.providerId,
+                ownership: args.ctx.ownership,
+                beforeSandboxCleanup: args.ctx.beforeSandboxCleanup,
+                afterSandboxCleanup: args.ctx.afterSandboxCleanup,
+                settleSandboxCleanupAttempt:
+                  args.ctx.settleSandboxCleanupAttempt,
+                diagnostics: runtimeDiagnostics.diagnostics,
+              });
               await runtimeSetup({
                 taskId: args.ctx.taskId,
                 modelIntent: args.ctx.modelIntent,
@@ -1029,6 +1048,7 @@ export class BoxLiteSandboxProvider<
                 ),
                 workspacePath: this.config.workspacePath,
                 runtimeId: args.runtimeId,
+                runtimePrivateFiles: runtimeSecurity.runtimePrivateFiles,
               });
               runtimeSetupDiagnostic.succeed();
             } catch (error) {
@@ -1108,12 +1128,10 @@ export class BoxLiteSandboxProvider<
   ): Promise<void> {
     if (ctx.workspace !== undefined) {
       if (ctx.workspace === null) return;
-      const hook = this.workspaceMaterialization;
-      if (!hook) {
-        throw new SandboxProviderConfigurationError(
-          'BoxLite canonical workspace materialization requires the staged workspace hook',
-        );
-      }
+      // `provision()` rejects a canonical workspace before any provider
+      // boundary unless this hook is configured.
+      const hook = this
+        .workspaceMaterialization as SandboxWorkspaceMaterializationHook;
 
       const plan = ctx.workspace;
       if (
@@ -1207,11 +1225,8 @@ export class BoxLiteSandboxProvider<
         }
         throw primary;
       }
-      if (adapter.wasSandboxFenced()) {
-        throw new SandboxProviderConfigurationError(
-          'BoxLite workspace materialization cannot retain a fenced sandbox',
-        );
-      }
+      // A fenced sandbox cannot reach this success return; credential safety
+      // settlement rejects first and the outer cleanup funnel owns the result.
       return;
     }
 
@@ -1288,7 +1303,7 @@ export class BoxLiteSandboxProvider<
   private async cleanupFailedSandbox(
     ctx: SandboxProvisionContext<TCloneSpec>,
     sandboxId: string,
-    knownSandbox?: BoxLiteSandbox,
+    knownSandbox: BoxLiteSandbox,
   ): Promise<SandboxPhysicalCleanupResult> {
     let cleanupAuthorization: SandboxRunCleanupAuthorization | undefined;
     let cleanupOwnership = ctx.ownership;
@@ -1310,20 +1325,10 @@ export class BoxLiteSandboxProvider<
         ownership: ctx.ownership,
         cleanupAuthorization,
       });
-      if (!cleanupOwnership) {
-        throw new SandboxProviderConfigurationError(
-          'BoxLite durable cleanup requires a generation authorization',
-        );
-      }
-      const sandbox =
-        knownSandbox ??
-        (await this.client.getSandbox(sandboxId, {
-          diagnostics: ctx.diagnostics,
-          channel: 'cleanup',
-          cancellationSignal: ctx.cancellationSignal,
-        }));
-      if (isUsableSandbox(sandbox)) {
-        await this.assertResourceGeneration(sandbox, cleanupOwnership);
+      // Generation-owned cleanup cannot produce a legacy/undefined fence:
+      // `cleanupOwnershipFor` rejects that mismatch before returning.
+      if (isUsableSandbox(knownSandbox)) {
+        await this.assertResourceGeneration(knownSandbox, cleanupOwnership);
       }
     }
     const physical = await attemptDeleteBoxLiteSandboxAndConfirm({
@@ -1361,7 +1366,7 @@ export class BoxLiteSandboxProvider<
     primary: unknown,
     ctx: SandboxProvisionContext<TCloneSpec>,
     sandboxId: string,
-    knownSandbox?: BoxLiteSandbox,
+    knownSandbox: BoxLiteSandbox,
   ): Promise<never> {
     if (primary instanceof BoxLiteProvisioningCleanupAlreadyAttemptedError) {
       throw primary.primary;
@@ -1522,7 +1527,9 @@ export class BoxLiteSandboxProvider<
           status: 'skipped',
           checkedAt: new Date().toISOString(),
           image: sandbox.image ?? sandbox.rootfsPath,
-          environment: cached?.environment ?? undefined,
+          // Cached runs always carry a preflight snapshot, so this fallback is
+          // reached only by cacheless readoption and cannot carry environment.
+          environment: undefined,
         },
     };
     if (quarantinedSandboxId !== sandboxId) {
@@ -1635,28 +1642,20 @@ export class BoxLiteSandboxProvider<
     } as const;
     let probe;
     if (ctx) {
-      const ownsDiagnosticSession = readinessDiagnosticSession === undefined;
+      // Every provisioning/readoption caller that supplies `ctx` owns one
+      // readiness session and passes it through this probe. Non-provisioning
+      // callers take the provider-direct branch below.
       const diagnosticSession =
-        readinessDiagnosticSession ??
-        startBoxLiteNativeExecutionDiagnosticSession(
-          ctx.diagnostics,
-          'readiness',
-        );
-      try {
-        probe = await this.runProvisionBoundary(
-          ctx,
-          'command.execute',
-          () => this.client.exec({
-            ...probeRequest,
-            diagnostics: diagnosticSession.diagnostics,
-            commandKind: 'runtime_preflight',
-          }),
-        );
-      } finally {
-        if (ownsDiagnosticSession) {
-          diagnosticSession.finish();
-        }
-      }
+        readinessDiagnosticSession as BoxLiteNativeExecutionDiagnosticSession;
+      probe = await this.runProvisionBoundary(
+        ctx,
+        'command.execute',
+        () => this.client.exec({
+          ...probeRequest,
+          diagnostics: diagnosticSession.diagnostics,
+          commandKind: 'runtime_preflight',
+        }),
+      );
     } else {
       probe = await this.client.exec(probeRequest);
     }
@@ -1751,12 +1750,13 @@ async function runWithCredentialSafetySettlement<TResult>(options: {
     // A fence can run inside the workspace hook. In that branch its rejected
     // acknowledgement becomes the hook rejection itself, so never retain that
     // raw coordination error as the operation's primary diagnostic value.
+    // The adapter can leave acknowledgement false only when its fence promise
+    // rejected, so `settlementFailure` is necessarily present in the failed
+    // operation branch as well.
     const primaryFailure =
       operation.kind === 'succeeded'
         ? options.primaryFailure(operation.result)
-        : settlementFailure === undefined
-          ? null
-          : operation.error;
+        : operation.error;
     throw new SandboxCleanupCoordinationPendingError(
       primaryFailure ??
         new SandboxProviderConfigurationError(
@@ -1820,6 +1820,10 @@ export function defineBoxLiteSandboxProvider<
         createBoxLiteRuntimePreflight({
           requiredTools: requiredToolsForBoxLiteCapabilities(options.config.capabilities),
           workspacePath: options.config.workspacePath,
+          requireTerminalByteBridge:
+            options.config.protocolMode === 'native' &&
+            (options.config.capabilities.includes('terminal.websocket') ||
+              options.config.capabilities.includes('terminal.interactive')),
         }),
     },
   );

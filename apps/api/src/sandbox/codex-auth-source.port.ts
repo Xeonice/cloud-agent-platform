@@ -16,10 +16,10 @@
  * codex auth shapes and the provider branches on `kind` rather than guessing:
  *   - {@link OfficialCodexAuthMaterial} (`kind:'official'`) — the ChatGPT login
  *     `auth.json` written verbatim to `/home/gem/.codex/auth.json` inside the
- *     sandbox (codex's auth-file location for the `gem` user it runs as). codex
- *     then authenticates on launch and refreshes its own tokens in-container;
- *     the file is zeroed before stop / discarded when the container is removed,
- *     so the login state never persists on a shared/host volume.
+ *     sandbox through the provider's opaque private-file transport (codex's
+ *     auth-file location for the `gem` user it runs as). The private file is
+ *     removed and absence-checked before retention; uncertain cleanup fences
+ *     the whole disposable sandbox.
  *   - {@link CompatibleCodexAuthMaterial} (`kind:'compatible'`) — an
  *     operator-configured OpenAI-Responses-API-compatible provider. Its
  *     `baseUrl`/`apiKey`/`model` are written into `~/.codex/config.toml` as a
@@ -43,10 +43,9 @@ export interface OfficialCodexAuthMaterial {
  * Compatible-provider material: the DECRYPTED state needed to point codex at an
  * operator-configured OpenAI-Responses-API-compatible provider. Carried in plain
  * fields here (already decrypted by the source) because it is written into the
- * per-task container — which IS the trust boundary (codex-execution-not-gated) —
- * via the same base64-decode file-injection idiom as `config.toml`, never the
- * launch argv. The provider validates {@link baseUrl} with `assertSafeProviderUrl`
- * before writing it.
+ * per-task container through the provider's opaque private-file transport,
+ * never the launch argv or an ordinary exec request. The provider validates
+ * {@link baseUrl} with `assertSafeProviderUrl` before writing it.
  */
 export interface CompatibleCodexAuthMaterial {
   /** Discriminant: the compatible-provider path (writes a config.toml block). */
@@ -81,21 +80,6 @@ export type CodexAuthMaterial =
  */
 export interface CodexAuthSource {
   getCodexAuth(taskId: string): Promise<CodexAuthMaterial | null>;
-
-  /**
-   * Persist codex's REFRESHED `auth.json` back to the owner's stored OFFICIAL
-   * credential (fix-codex-headless-subscription-auth). ChatGPT `refresh_token`s are
-   * single-use/rotating: codex refreshes in-container and rewrites `auth.json`, so a
-   * static re-injected seed is revoked after first use unless the rotation is persisted.
-   * The provider calls this on teardown — BEFORE the `~/.codex` trim zeroes `auth.json` —
-   * with the captured document.
-   *
-   * Owner-scoped (a task writes only its own owner's credential) and a no-op when the
-   * credential is COMPATIBLE (no `auth.json` to refresh) or was the deployment ENV
-   * fallback (not writable — the env seed cannot self-heal). MUST never throw into the
-   * caller's teardown.
-   */
-  persistRefreshedAuth(taskId: string, authJson: string): Promise<void>;
 }
 
 /**

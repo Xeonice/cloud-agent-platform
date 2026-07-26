@@ -64,6 +64,10 @@ if (!dockerAvailable()) {
     const defaults = render(resolve(repoRoot, file));
     assert(portHost(defaults, 'api', 8080) === '0.0.0.0', `${file}: api binds 0.0.0.0 by default`);
     assert(portHost(defaults, 'web', 3000) === '0.0.0.0', `${file}: web binds 0.0.0.0 by default`);
+    assert(
+      defaults.services?.api?.stop_grace_period === '40s',
+      `${file}: rendered api preserves the 40s terminal-cleanup grace period`,
+    );
 
     const loopback = render(resolve(repoRoot, file), {
       API_HOST_BIND: '127.0.0.1',

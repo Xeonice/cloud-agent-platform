@@ -6,6 +6,7 @@ const dockerfiles = [
   readFileSync(new URL('../docker/aio-sandbox.Dockerfile', import.meta.url), 'utf8'),
   readFileSync(new URL('../docker/boxlite-sandbox.Dockerfile', import.meta.url), 'utf8'),
 ];
+const boxLiteDockerfile = dockerfiles[1];
 
 test('official sandbox Dockerfiles write the same required metadata contract', () => {
   for (const dockerfile of dockerfiles) {
@@ -20,4 +21,12 @@ test('official sandbox Dockerfiles write the same required metadata contract', (
     assert.match(dockerfile, /--dependency "openspec=\$\{OPENSPEC_VERSION\}"/);
     assert.match(dockerfile, /--output \/etc\/cap\/sandbox-metadata\.json/);
   }
+});
+
+test('BoxLite image owns the fixed executable byte-bridge contract', () => {
+  assert.match(
+    boxLiteDockerfile,
+    /COPY --chmod=0755 scripts\/terminal-pty-byte-bridge\.py \/usr\/local\/bin\/cap-pty-byte-bridge/,
+  );
+  assert.match(boxLiteDockerfile, /\n\s+python3 \\\n/);
 });

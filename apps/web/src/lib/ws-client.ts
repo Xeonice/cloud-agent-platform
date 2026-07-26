@@ -25,9 +25,13 @@ import {
   type HeartbeatFrame,
   type TakeoverRequestFrame,
   type DecisionFrame,
-  type ReconnectFrame,
   type ResizeFrame,
+  type TerminalAttachFrame,
+  type TerminalResponseFrame,
   type Decision,
+  MAX_TERMINAL_INPUT_BYTES,
+  TERMINAL_PROTOCOL_VERSION,
+  createCurrentTerminalAttachFrame,
 } from "@cap/contracts";
 import { wsUrl, operatorToken } from "./config";
 
@@ -43,20 +47,6 @@ function bytesToBase64(bytes: Uint8Array): string {
   for (let i = 0; i < bytes.length; i++)
     binary += String.fromCharCode(bytes[i] as number);
   return btoa(binary);
-}
-
-/** Encode a string of raw input as the base64 payload the keystroke frame carries. */
-function encodeInput(input: string): string {
-  const bytes = new TextEncoder().encode(input);
-  return bytesToBase64(bytes);
-}
-
-/**
- * Decode the base64 `data` of a `tail_replay` frame into raw bytes the terminal
- * can render on reconnect. Exposed so the session page can replay the tail.
- */
-export function decodeTailReplay(b64: string): Uint8Array {
-  return base64ToBytes(b64);
 }
 
 /**
@@ -102,9 +92,8 @@ export interface TerminalSocketHandlers {
  * on a transient drop (e.g. Cloudflare closing an idle tunnel after ~100s). A
  * clean close (1000), a policy/auth close (1008), an intentional {@link close},
  * or an exhausted retry budget stops the retries. On every (re)open the
- * consumer's `onOpen` re-sends the reconnect-restoration frame (snapshot + tail
- * from the last ACK'd seq) and re-arms takeover, so the live frame and the write
- * lease are restored without a page reload. A monotonic generation token fences
+ * consumer's `onOpen` sends this physical socket's one fresh-viewer attach
+ * request. A monotonic generation token fences
  * off a superseded socket's late events so a stale connection can never mutate
  * state for the live one. {@link ensureConnected} lets the page recover an
  * idle-dropped socket immediately on tab focus / network return.
@@ -125,6 +114,8 @@ export class TerminalSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** Watchdog timer that abandons a handshake stuck in CONNECTING. */
   private connectWatchdog: ReturnType<typeof setTimeout> | null = null;
+  /** Generation whose sole terminal_attach attempt has already been consumed. */
+  private attachAttemptGeneration: number | null = null;
 
   constructor(
     private readonly taskId: string,
@@ -221,42 +212,73 @@ export class TerminalSocket {
     }
   }
 
+  /**
+   * Consume this physical WebSocket's one attach attempt. The immutable task is
+   * carried only by the socket URL; the frame cannot retarget it.
+   */
+  sendTerminalAttach(cols: number, rows: number): boolean {
+    if (
+      this.socket?.readyState !== WebSocket.OPEN ||
+      this.attachAttemptGeneration === this.generation ||
+      !Number.isInteger(cols) ||
+      !Number.isInteger(rows) ||
+      cols <= 0 ||
+      rows <= 0
+    ) {
+      return false;
+    }
+    // Consume before send so a synchronous/re-entrant caller cannot duplicate
+    // this generation's attach request.
+    this.attachAttemptGeneration = this.generation;
+    const frame: TerminalAttachFrame = createCurrentTerminalAttachFrame(cols, rows);
+    this.sendFrame(frame);
+    return true;
+  }
+
   /** Acknowledge raw output drained up to `seq` (drives server backpressure). */
   sendAck(seq: number): void {
     const frame: AckFrame = { channel: FRAME_CHANNEL.CONTROL, type: "ack", seq };
     this.sendFrame(frame);
   }
 
-  /**
-   * Request reconnect restoration (5.5): ask the server for the latest snapshot
-   * plus the `session.log` tail appended after `lastSeq`, carrying the client's
-   * current geometry so a differently-sized client can reconcile. Sent on
-   * (re)connect so a refreshed tab is restored to the live frame.
-   */
-  sendReconnect(lastSeq?: number, cols?: number, rows?: number): void {
-    const frame: ReconnectFrame = {
-      channel: FRAME_CHANNEL.CONTROL,
-      type: "reconnect",
-      ...(lastSeq !== undefined ? { lastSeq } : {}),
-      ...(cols !== undefined ? { cols } : {}),
-      ...(rows !== undefined ? { rows } : {}),
-    };
-    this.sendFrame(frame);
+  /** Forward UTF-8 text input through the byte-preserving keystroke path. */
+  sendKeystroke(sessionId: string, input: string): void {
+    this.sendKeystrokeBytes(sessionId, new TextEncoder().encode(input));
   }
 
-  /** Forward raw keystroke input — only honored server-side when this client holds the lease. */
-  sendKeystroke(sessionId: string, input: string): void {
-    const frame: KeystrokeFrame = {
+  /**
+   * Forward opaque input bytes. Large bursts are split only at the wire limit;
+   * byte order and values are unchanged across frames.
+   */
+  sendKeystrokeBytes(sessionId: string, bytes: Uint8Array): void {
+    if (sessionId !== this.taskId) return;
+    for (let offset = 0; offset < bytes.length; offset += MAX_TERMINAL_INPUT_BYTES) {
+      const chunk = bytes.subarray(offset, offset + MAX_TERMINAL_INPUT_BYTES);
+      const frame: KeystrokeFrame = {
+        channel: FRAME_CHANNEL.CONTROL,
+        type: "keystroke",
+        sessionId: this.taskId,
+        data: bytesToBase64(chunk),
+      };
+      this.sendFrame(frame);
+    }
+  }
+
+  /** Return one classified automatic response to this socket's own viewer PTY. */
+  sendTerminalResponse(bytes: Uint8Array): void {
+    if (bytes.length === 0) return;
+    const frame: TerminalResponseFrame = {
       channel: FRAME_CHANNEL.CONTROL,
-      type: "keystroke",
-      sessionId,
-      data: encodeInput(input),
+      type: "terminal_response",
+      protocolVersion: TERMINAL_PROTOCOL_VERSION,
+      data: bytesToBase64(bytes),
     };
     this.sendFrame(frame);
   }
 
   /** Renew the write lease for this session. */
   sendHeartbeat(sessionId: string, writerClientId: string): void {
+    if (sessionId !== this.taskId) return;
     const frame: HeartbeatFrame = {
       channel: FRAME_CHANNEL.CONTROL,
       type: "heartbeat",
@@ -268,6 +290,7 @@ export class TerminalSocket {
 
   /** Preemptively take over the write lease, demoting the current holder to reader. */
   sendTakeover(sessionId: string, clientId: string): void {
+    if (sessionId !== this.taskId) return;
     const frame: TakeoverRequestFrame = {
       channel: FRAME_CHANNEL.CONTROL,
       type: "takeover_request",

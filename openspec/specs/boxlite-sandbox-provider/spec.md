@@ -274,20 +274,42 @@ creation is reported usable.
 - **AND** it performs the same start, workspace, and tool checks as image mode
 
 ### Requirement: BoxLite terminal output preserves streaming UTF-8
-The BoxLite terminal transport SHALL decode stdout and stderr as streaming UTF-8 rather than decoding each WebSocket frame independently. It SHALL preserve multibyte code points split across provider frame boundaries before emitting output into CAP's provider-neutral terminal gateway.
 
-#### Scenario: Split stdout character is preserved
-- **WHEN** BoxLite sends stdout bytes for a multibyte UTF-8 character split across two WebSocket frames
-- **THEN** CAP emits the original character in terminal output
-- **AND** the browser terminal does not receive replacement characters for that split sequence
+The BoxLite terminal transport SHALL NOT rely on raw child PTY bytes surviving the
+server's per-chunk UTF-8 conversion. The image-owned bridge SHALL keep the outer TTY
+strictly ASCII and encode bounded child-PTY output chunks as canonical base64 `O`
+frames with one generation and continuous sequence numbers. CAP SHALL strictly decode
+those frames back to the original ordered bytes and expose those bytes to the
+provider-neutral terminal seam. It SHALL use streaming UTF-8 decoding only as a
+compatibility text view of the already recovered bytes; it SHALL NOT guess, replace,
+or repair bytes lost by the provider.
 
-#### Scenario: Split stderr character is preserved independently
-- **WHEN** BoxLite sends stderr bytes for a multibyte UTF-8 character split across two WebSocket frames
-- **THEN** CAP emits the original character in terminal output without mixing stdout and stderr decoder state
+Input and terminal responses SHALL use bounded canonical-base64 `I` frames, and resize
+SHALL use validated ASCII `S` frames. A non-ASCII, malformed, non-canonical, oversized,
+stale-generation, duplicate-ready, or discontinuous-sequence frame SHALL fail closed
+without emitting guessed output.
 
-#### Scenario: Decoder state is flushed on terminal close
-- **WHEN** the BoxLite terminal stream exits or closes with buffered decoder state
-- **THEN** the transport flushes any complete buffered text before closing the CAP terminal stream
+#### Scenario: Split child output character is preserved
+
+- **WHEN** a multibyte UTF-8 character is divided at any child-output chunk boundary
+  and its ASCII protocol lines are independently fragmented or coalesced by BoxLite
+- **THEN** CAP emits the exact original child bytes in order
+- **AND** the browser text view contains the original character without replacement
+  characters
+
+#### Scenario: Every input byte survives the outer UTF-8 boundary
+
+- **WHEN** CAP sends a payload containing every byte from `0x00` through `0xff`
+- **THEN** the bridge decodes one or more canonical `I` frames and writes exactly the
+  original bytes to the child PTY in order
+- **AND** no input byte is converted through a provider or host UTF-8 string
+
+#### Scenario: Incomplete or invalid output is not repaired
+
+- **WHEN** the bridge stream ends or fails with an incomplete or malformed framed
+  payload
+- **THEN** CAP fails or closes the transport according to the framed protocol
+- **AND** it does not synthesize replacement output or infer the missing original bytes
 
 ### Requirement: BoxLite can provision from a local rootfs path
 
@@ -677,4 +699,77 @@ BoxLite archive workspace injection SHALL split the repo-copy tar stream into pa
 #### Scenario: Single-request uploads beyond the limit are a guarded regression
 - **WHEN** the integration fake daemon (enforcing a 2MB body limit) receives a single upload larger than the limit
 - **THEN** the test suite fails that path, keeping the chunked strategy load-bearing
+
+### Requirement: BoxLite provider package owns complete backend lifecycle
+
+`@cap/sandbox-provider-boxlite` SHALL own BoxLite configuration, client protocol, sandbox lifecycle, command execution, terminal descriptor and transport, workspace/archive transfer, runtime preflight, retention descriptors, readoption support, readiness handling, and provider descriptor registration. API code SHALL only pass neutral host harness ports into `@cap/sandbox`; it SHALL NOT call BoxLite provider factories or parse BoxLite env/config directly.
+
+#### Scenario: BoxLite registers through the sandbox host harness
+- **WHEN** BoxLite is configured for CAP
+- **THEN** `@cap/sandbox` registers it through `@cap/sandbox-provider-boxlite` descriptor/factory exports
+- **AND** API-local wiring does not implement BoxLite lifecycle, descriptor assembly, readiness, env parsing, or provider-family fallback behavior
+
+#### Scenario: Runtime setup is injected through hooks
+- **WHEN** BoxLite provisioning needs runtime setup or preflight behavior
+- **THEN** the provider package receives that behavior through explicit hooks
+- **AND** it does not import API runtime registries, Prisma services, or Nest providers directly
+
+#### Scenario: BoxLite terminal transport is not implemented in API
+- **WHEN** a BoxLite-backed interactive terminal is opened
+- **THEN** BoxLite exec/attach, binary channel decoding, resize/control frames, token/header handling, and terminal errors are handled by the BoxLite provider terminal harness
+- **AND** `apps/api/src/terminal` does not instantiate a BoxLite terminal transport or read `BOXLITE_*` env
+
+### Requirement: BoxLite provider e2e runs against real BoxLite without CAP API
+
+The BoxLite provider package SHALL include an e2e suite that provisions real BoxLite sandboxes and validates provider behavior without starting the CAP API backend or production web app.
+
+#### Scenario: BoxLite e2e validates real provision and exec
+- **WHEN** BoxLite provider e2e runs with valid `BOXLITE_ENDPOINT`, `BOXLITE_API_TOKEN`, and sandbox source configuration
+- **THEN** it creates a real BoxLite sandbox through the provider package
+- **AND** it verifies readiness and normalized command execution
+
+#### Scenario: BoxLite e2e validates selected-run descriptors
+- **WHEN** BoxLite provider e2e provisions a sandbox
+- **THEN** it verifies provider id, provider sandbox id, connection, terminal descriptor when advertised, `boxlite-exec-v1` command descriptor, workspace descriptor, capabilities, retention policy, and preflight result
+
+#### Scenario: BoxLite e2e validates workspace transfer
+- **WHEN** BoxLite advertises archive or git workspace capabilities
+- **THEN** the e2e suite verifies materialization and capture or delivery through provider-neutral workspace descriptors
+
+#### Scenario: BoxLite e2e never falls back to AIO
+- **WHEN** BoxLite e2e prerequisites are invalid or the BoxLite sandbox source cannot satisfy required capabilities
+- **THEN** the e2e suite fails or skips with a BoxLite-specific reason
+- **AND** it does not provision AIO as a fallback
+
+### Requirement: BoxLite terminal capability requires an image-owned byte bridge
+
+The selected CAP BoxLite image SHALL contain executable
+`/usr/local/bin/cap-pty-byte-bridge` and its Python runtime whenever BoxLite advertises
+native interactive terminal capability. Runtime preflight SHALL fail before task
+admission when that fixed bridge cannot execute. Every terminal open SHALL start the
+bridge directly in one native BoxLite TTY execution, inherit the configured workspace
+as cwd, and wait for the matching generation/version/mode/initial-geometry `R` frame
+before reporting the normalized transport ready.
+
+#### Scenario: WebSocket open alone is not terminal readiness
+
+- **WHEN** the native execution WebSocket opens but the matching bridge `R` frame has
+  not arrived
+- **THEN** the normalized transport remains connecting and rejects input and resize
+- **AND** a bridge timeout, early exit, or outer stderr produces an explicit
+  identity-free error rather than a blank ready terminal
+
+#### Scenario: Missing bridge blocks native terminal capability
+
+- **WHEN** runtime preflight cannot execute the fixed image bridge
+- **THEN** BoxLite interactive-terminal admission fails with a bridge-specific image
+  readiness error
+- **AND** CAP does not fall back to raw provider output or another sandbox provider
+
+#### Scenario: Bridge failure cleans only the exact execution
+
+- **WHEN** bridge readiness or framed transport validation fails after BoxLite has
+  created an execution
+- **THEN** CAP closes that attachment and deletes only its exact native execution
+- **AND** cleanup is confirmed by a subsequent exact GET returning not-found
 

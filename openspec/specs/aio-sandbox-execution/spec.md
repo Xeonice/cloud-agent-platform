@@ -4,41 +4,68 @@
 TBD - created by applying change migrate-execution-to-aio-sandbox. Update Purpose after archive.
 ## Requirements
 ### Requirement: Per-task AIO Sandbox container provisioning
-The system SHALL provision exactly one AIO Sandbox container per task via dockerode `createContainer`, naming it `cap-aio-<taskId>` from the pinned derived AIO image, configured with `HostConfig.SecurityOpt` containing `seccomp=unconfined`, capable of joining the `cap-net` user-defined network, with `ShmSize` of approximately 2g and `AutoRemove` DISABLED (`HostConfig.AutoRemove: false`), and with NO `PortBindings` so the container publishes no host port. After starting the container the system SHALL poll the sandbox `/v1/docs` endpoint until it responds (readiness) before treating the sandbox as usable.
 
-Because `AutoRemove` is disabled, a terminal task's container SHALL be RETAINED in a stopped state rather than removed: `teardownSandbox` SHALL be a STOP-ONLY operation (it stops the container and SHALL NOT issue a `remove`), so the frozen container filesystem — including the codex `rollout-*.jsonl` session record under `/home/gem/.codex/sessions/` — survives for later read-only replay. BEFORE the stop, while the container is still running and its `/v1/shell/exec` surface is reachable, `teardownSandbox` SHALL trim `/home/gem/.codex` over `/v1/shell/exec` — deleting the codex cache and `logs_*.sqlite` files while KEEPING `/home/gem/.codex/sessions/` and the workspace — and SHALL clear (zero/empty) `/home/gem/.codex/auth.json` as cheap defense-in-depth, so the retained stopped container holds a bounded footprint and no usable credential. A pre-stop trim/clear failure SHALL NOT block the stop+retain. This is a **BREAKING** change for any consumer that assumed a terminal task's `cap-aio-*` container no longer exists.
+The system SHALL provision exactly one AIO Sandbox container per task via dockerode
+`createContainer`, name it `cap-aio-<taskId>`, use the selected pinned image, keep
+`AutoRemove=false`, attach it to the configured AIO network without host port bindings,
+and confirm `/v1/docs` readiness before use. Destructive lifecycle operations SHALL pin
+the freshly inspected immutable container id and, when ownership metadata is present,
+the resource generation.
 
-#### Scenario: Container is created with required security and network options
-- **WHEN** `AioSandboxProvider` provisions a sandbox for a task with id `<taskId>`
-- **THEN** it calls dockerode `createContainer` with name `cap-aio-<taskId>` from the pinned AIO image
-- **AND** `HostConfig.SecurityOpt` includes `seccomp=unconfined`
-- **AND** the container is attached to the `cap-net` network with no `PortBindings` so no host port is published
+A terminal container MAY be stopped and retained only after every runtime-private path
+(including Codex auth/config/prompt, Claude launch env/settings/onboarding/prompt, and
+CAP image parameters) has been removed and absence-checked while the container is
+running. Cache trimming may be non-essential, but private-material cleanup is a strict
+retention gate. A non-zero or unresolved exit, timeout, thrown/lost response, malformed
+result, or a container that was already stopped before cleanup SHALL force-remove the
+exact container id and require authoritative not-found confirmation. The primary task
+outcome remains authoritative, but an unproven credential-bearing filesystem SHALL NOT
+be retained.
 
-#### Scenario: Container is created with AutoRemove disabled
-- **WHEN** `AioSandboxProvider` provisions a sandbox for a task
-- **THEN** `HostConfig.AutoRemove` is `false`, so the Docker daemon does not auto-remove the container when its process exits
+#### Scenario: Container is created with required isolation and readiness options
 
-#### Scenario: Readiness is confirmed by polling /v1/docs
-- **WHEN** the container has been started
-- **THEN** the provider polls `GET /v1/docs` on the sandbox and does not return the sandbox as ready until that endpoint responds successfully
+- **WHEN** AIO provisions `<taskId>`
+- **THEN** it creates `cap-aio-<taskId>` from the selected image with
+  `seccomp=unconfined`, the configured AIO network, `AutoRemove=false`, and no host port
+  bindings
+- **AND** it returns only after `/v1/docs` readiness succeeds
 
-#### Scenario: seccomp=unconfined is required
-- **WHEN** the container is created without `seccomp=unconfined` in `HostConfig.SecurityOpt`
-- **THEN** provisioning is treated as invalid and the sandbox is not used for task execution
+#### Scenario: Confirmed private cleanup permits stopped retention
 
-#### Scenario: Teardown stops and retains the container without removing it
-- **WHEN** a terminal task's `teardownSandbox` runs
-- **THEN** the container is stopped and NOT removed, so `docker inspect cap-aio-<taskId>` after teardown reports an `Exited` (stopped) container rather than "No such container"
+- **WHEN** every selected runtime and image-parameter private path is removed and
+  absence-checked successfully
+- **THEN** AIO may stop and retain the exact container so declared transcript artifacts
+  remain readable
+- **AND** credential/config/prompt files are absent from that retained filesystem
 
-#### Scenario: Pre-stop trim drops caches and clears auth before stopping
-- **WHEN** `teardownSandbox` runs while the container is still running
-- **THEN** it trims `/home/gem/.codex` over `/v1/shell/exec` (deleting the codex cache and `logs_*.sqlite`, keeping `/home/gem/.codex/sessions/` and the workspace) and clears `/home/gem/.codex/auth.json`, BEFORE issuing the container stop
-- **AND** a failure of the trim/clear does not prevent the container from being stopped and retained
+#### Scenario: Unconfirmed cleanup sacrifices retention
+
+- **WHEN** any private cleanup command is non-zero, unresolved, timed out, throws, or
+  loses its response
+- **THEN** AIO force-removes the exact immutable container id and confirms it is absent
+- **AND** it does not stop-retain the container merely to preserve history
+
+#### Scenario: Externally stopped container has no cleanup proof
+
+- **WHEN** teardown finds the exact task container already stopped before its cleanup
+  hook can run
+- **THEN** AIO removes and confirms absence of that container instead of treating the
+  stopped state as cleanup success
 
 ### Requirement: SandboxConnection handle returned from provisioning
-The `AioSandboxProvider.provision()` SHALL return a `SandboxConnection` handle carrying `taskId`, an HTTP `baseUrl` of the form `http://cap-aio-<taskId>:8080`, and a `wsUrl` of the form `ws://cap-aio-<taskId>:8080/v1/shell/ws`, so that the orchestrator can address the sandbox by container name over `cap-net` and open the terminal WebSocket. The provider SHALL also clone the task repository into a DEDICATED, EMPTY workspace directory (e.g. `/home/gem/workspace`) — never into the non-empty `/home/gem` HOME — via `POST /v1/shell/exec` before returning the handle. The provider SHALL PARSE the `/v1/shell/exec` response body, treating a non-zero command `exit_code` (not merely a non-`ok` HTTP status) as a provisioning failure, and SHALL surface a real provision error rather than logging success on a silent clone failure.
+The `AioSandboxProvider.provision()` SHALL accept a provider-neutral provision context carrying the task id and optional clone spec. The clone spec SHALL be resolved before provider selection and passed into the selected provider, so the local AIO provider does not need API-local task lookup logic. The provider SHALL return a `SandboxConnection` handle carrying `taskId`, an HTTP `baseUrl` of the form `http://cap-aio-<taskId>:8080`, and a `wsUrl` of the form `ws://cap-aio-<taskId>:8080/v1/shell/ws`, so that the orchestrator can address the sandbox by container name over `cap-net` and open the terminal WebSocket. The provider SHALL also clone the task repository into a DEDICATED, EMPTY workspace directory (e.g. `/home/gem/workspace`) — never into the non-empty `/home/gem` HOME — via `POST /v1/shell/exec` before returning the handle. The provider SHALL PARSE the `/v1/shell/exec` response body, treating a non-zero command `exit_code` (not merely a non-`ok` HTTP status) as a provisioning failure, and SHALL surface a real provision error rather than logging success on a silent clone failure.
 
 The clone success path and the clone fail-closed path SHALL be VERIFIED END-TO-END on a live compose stack (not merely unit-tested), as fossilized black-box regression scenarios in the compose e2e suite (`apps/api/test/aio-e2e.mjs` + `scripts/aio-e2e.sh`): cloning into the dedicated empty workspace directory SHALL succeed with an asserted zero `exit_code`; a FORCED clone failure (non-empty target directory or bad repository URL) SHALL raise a non-zero exit_code with NO silent success. The `AioApprovalEnforcer` exec-gate is NOT verified end-to-end in this change: the enforcer class is fail-closed (covered by unit tests) but is currently DORMANT — there are no cap-owned gated `/v1/shell/exec` call sites in production code that route through it (it is wired as a DI provider for future use); see the `agent-events-and-approvals` spec for the honest coverage statement.
+
+#### Scenario: Provision receives an explicit clone spec
+- **WHEN** the API admits a task and selects the local AIO provider
+- **THEN** it passes a provision context containing the task id and the resolved clone spec
+- **AND** the provider uses that clone spec for repository setup instead of reading task state through API internals
+
+#### Scenario: AIO remains the default local provider
+- **WHEN** no cloud sandbox provider is configured
+- **THEN** task provisioning uses the local AIO provider through the shared sandbox facade
+- **AND** the returned connection remains addressable by container name over `cap-net`
 
 #### Scenario: Provision returns an addressable connection handle
 - **WHEN** provisioning completes for task `<taskId>`
@@ -70,133 +97,98 @@ The clone success path and the clone fail-closed path SHALL be VERIFIED END-TO-E
 - **AND** this contract is NOT currently exercised end-to-end: there are no cap-owned gated `/v1/shell/exec` call sites in production code that route through the enforcer; it is registered as a DI provider (`AIO_APPROVAL_ENFORCER`) for future use but is dormant
 - **AND** the spec does NOT claim this gate is live in the current production stack
 
-### Requirement: AioPtyClient connects into the sandbox terminal without session_id
-The system SHALL provide an `AioPtyClient` that opens an OUTBOUND WebSocket as a WS client to the sandbox `ws://.../v1/shell/ws` endpoint and SHALL connect WITHOUT any `session_id` query parameter, so the sandbox creates a fresh tmux-backed session per task. The client SHALL treat the server-sent `session_id` then `ready` frames as the session-established signal. The client SHALL NOT attempt to rejoin an existing session by passing `?session_id=`.
-
-#### Scenario: Connect-in opens a new session per task
-- **WHEN** `AioPtyClient` connects for a task
-- **THEN** it opens an outbound WebSocket to `ws://cap-aio-<taskId>:8080/v1/shell/ws` with no `session_id` query parameter
-- **AND** it waits for the server `session_id` frame followed by the `ready` frame before considering the terminal live
-
-#### Scenario: Rejoining an existing session is never attempted
-- **WHEN** `AioPtyClient` establishes its terminal connection
-- **THEN** it does not pass a `?session_id=` parameter to rejoin a prior session
-
-### Requirement: Synthetic CPR injection so codex starts
-The `AioPtyClient` SHALL watch the sandbox output stream and, on observing a DSR cursor-position query (`\x1b[6n` — standard DSR-6, with NO `?`), SHALL immediately send a synthetic CPR reply input frame `{type:"input",data:"\x1b[1;1R"}` to the sandbox, because codex (crossterm) emits the DSR query on startup and aborts with a cursor-position read error if no CPR reply arrives in time. The detector MUST match the no-`?` form exactly; the private-mode `\x1b[?6n` form is NOT what crossterm emits (matching it silently disables CPR injection and codex never starts — verified against the live sandbox: codex emits bytes `1b 5b 36 6e`). This injection SHALL be performed purely in the bridge layer without any AIO or tmux changes.
-
-#### Scenario: CPR is injected on the DSR query
-- **WHEN** the sandbox output stream contains the DSR cursor-position query `\x1b[6n` (standard DSR-6, no `?`)
-- **THEN** `AioPtyClient` immediately sends an input frame with data `\x1b[1;1R` to the sandbox
-
-#### Scenario: codex starts after CPR injection
-- **WHEN** codex launches in the sandbox and the bridge injects the synthetic CPR reply
-- **THEN** codex proceeds past startup and renders its TUI rather than aborting with a cursor-position read error
-
-### Requirement: JSON to cap-frame translation preserving the browser protocol
-The `AioPtyClient` SHALL translate between the sandbox AIO JSON WebSocket frames and the EXISTING base64 raw + control-frame protocol the front-end xterm speaks, leaving the browser-facing protocol unchanged. Sandbox `output` frames SHALL be surfaced as raw output (base64 raw chunks) into the existing terminal pipeline; operator keystrokes SHALL be sent as `{type:"input"}` frames; resize SHALL be sent as `{type:"resize",data:{cols,rows}}` frames; and a sandbox `ping` frame SHALL be answered with an internal `{type:"pong"}` that is distinct from the operator write-lease heartbeat.
-
-#### Scenario: Sandbox output becomes raw browser output
-- **WHEN** the sandbox sends an `{type:"output",data}` frame
-- **THEN** `AioPtyClient` emits that data into the existing raw output pipeline so the browser xterm receives it via the unchanged base64 raw protocol
-
-#### Scenario: Operator input and resize are forwarded as AIO frames
-- **WHEN** an operator keystroke or a resize event reaches `AioPtyClient`
-- **THEN** the keystroke is sent to the sandbox as a `{type:"input"}` frame and the resize as a `{type:"resize",data:{cols,rows}}` frame
-
-#### Scenario: AIO ping is answered internally
-- **WHEN** the sandbox sends a `ping` frame
-- **THEN** `AioPtyClient` replies with an internal `{type:"pong"}` frame
-- **AND** this pong is not conflated with the operator write-lease heartbeat
-
 ### Requirement: codex launched in-shell over the terminal channel
-The system SHALL launch codex INSIDE the AIO shell over the `/v1/shell/ws` terminal channel (execution model A), preserving the interactive TUI, and SHALL NOT run codex via the request/response `exec`/MCP surfaces for the interactive terminal channel. The launch SHALL carry the task's operator-supplied prompt (`task.prompt`) as codex's positional initial-session prompt so the operator never re-enters the goal. The prompt SHALL be made available to the launch via the provisioning lookup (NOT hard-coded, NOT omitted), written into the sandbox at provision time as a FILE under `/home/gem/.codex` using the SAME base64-decode injection idiom used for `config.toml`/`auth.json` (so arbitrary prompt text — quotes, backticks, `$`, newlines — is shell-injection-safe and is NEVER inlined into the launch argv), and passed to codex as the positional `[PROMPT]` argument via a `"$(cat <promptfile>)"` shell expansion. The launch-argv guard that refuses hook-disabling flags (`-s`/`--yolo`/`bypass-approvals`) SHALL inspect ONLY the fixed launch flags, NOT the operator prompt text, so a prompt mentioning those tokens is not falsely rejected. Because codex's positional prompt PRE-FILLS the composer but does NOT auto-submit, the system SHALL auto-submit the pre-filled prompt by injecting a single carriage return EXACTLY ONCE, AFTER the codex-startup DSR (`\x1b[6n`) has been observed AND the terminal output has quiesced — a condition that guarantees codex's TUI (not the shell) is live and the composer is rendered — so zero operator keystrokes are required to begin the run. If the auto-submit misfires it SHALL degrade to a still-pre-filled composer the operator can submit manually, NEVER to a lost goal, and a prompt-file injection failure SHALL fail the provision CLOSED rather than launching goal-less. When the task prompt is empty the launch SHALL open codex with no positional prompt (a blank composer) rather than failing. The system SHALL NOT use `codex exec` for this path (it is non-interactive and can hang on inherited non-TTY stdin). The derived sandbox image SHALL be baked FROM the pinned AIO image with codex, `~/.codex/hooks.json`, and the compiled `dist/hooks` included. The provisioned codex version SHALL be PINNED via a documented `CODEX_VERSION` build-arg to a release compatible with the account model in use (verified working: codex `0.131.0` with model `gpt-5.5`); the prior `0.42.0` pin SHALL NOT be used because it 400s on `gpt-5`/`gpt-5-codex`/`o4-mini` for ChatGPT accounts and is unusable with `gpt-5.5`. The baked `~/.codex/hooks.json` and the compiled `dist/hooks` SHALL conform to the codex `0.131` hook protocol.
 
-The derived image SHALL be SLIMMED: instead of COPYing the whole built `/repo` workspace (so the hooks' pnpm symlink farm resolves at runtime), the build SHALL use `pnpm deploy` (`--prod`; `--legacy` if pnpm 10 requires it) to generate a SELF-CONTAINED `node_modules` tree for `@cap/sandbox-hooks`, and the image SHALL COPY only that self-contained `node_modules` plus the compiled `dist` — dropping the full `/repo` COPY. The slimmed image SHALL still resolve the hook dependencies at runtime: `import zod` and `@cap/contracts` SHALL load without `ERR_MODULE_NOT_FOUND` and the hook SHALL still run.
+For an AIO-backed interactive task, CAP SHALL launch Codex inside the sandbox over the
+AIO `/v1/shell/ws` terminal transport and SHALL NOT substitute request/response exec or
+MCP for the interactive TUI. `CodexRuntime` SHALL contribute
+`--dangerously-bypass-approvals-and-sandbox`; the provider-neutral `@cap/sandbox`
+session engine SHALL build the detached tmux launch, apply the runtime's startup policy,
+and attach; `@cap/sandbox-provider-aio` SHALL own only the AIO transport and command
+execution mechanics. API terminal code SHALL NOT recreate an AIO-specific launch helper.
 
-#### Scenario: codex runs over the interactive terminal channel
-- **WHEN** a task begins execution
-- **THEN** codex is started inside the AIO shell over the `/v1/shell/ws` terminal channel
-- **AND** codex is not launched through the request/response `exec` or MCP surfaces for the interactive terminal channel
+The task's operator prompt SHALL be obtained through the host-harness provisioning
+lookup, written through the selected provider's opaque private-file transport to
+`/home/gem/.codex/task-prompt.txt`, and passed as one positional argument through a
+`$(cat <prompt-file>)` shell expansion. Prompt content, including quotes, substitutions,
+newlines, or flag-like text, SHALL never be inlined into the launch command or ordinary
+exec request. Empty prompt opens a blank composer. A prompt write failure fails
+provisioning closed.
 
-#### Scenario: Derived image bakes a compatible pinned codex and 0.131-format hooks
-- **WHEN** the derived sandbox image is inspected
-- **THEN** it is built FROM the pinned AIO image and includes codex, `~/.codex/hooks.json`, and the compiled `dist/hooks`
-- **AND** the codex version is set from a documented `CODEX_VERSION` build-arg pinned to a release compatible with the account model (e.g. `0.131.0` for `gpt-5.5`), not `0.42.0`
-- **AND** the baked `~/.codex/hooks.json` is in the codex `0.131` hook format
+Because the positional prompt pre-fills rather than submits the Codex composer, the
+shared session engine SHALL inject one carriage return exactly once only after the
+runtime-declared startup DSR has been observed and output has quiesced. A failure to
+auto-submit SHALL degrade to a still-prefilled composer, never a goal silently executed
+by the shell.
 
-#### Scenario: Task prompt is injected as a shell-safe file and passed positionally
-- **WHEN** a task with a non-empty `task.prompt` is provisioned
-- **THEN** the orchestrator writes the prompt into the sandbox at `/home/gem/.codex/task-prompt.txt` via the base64-decode injection idiom (the raw text is never inlined into the launch argv)
-- **AND** codex is launched with the positional prompt supplied as `"$(cat /home/gem/.codex/task-prompt.txt)"`, pre-filling the composer with the operator goal
+The derived AIO image SHALL be built from the pinned AIO base and install the release
+workflow's documented `CODEX_VERSION` (currently 0.144.1 at this change boundary). It
+SHALL expose a compatibility `CODEX_LAUNCH_ARGV` matching the runtime bypass policy, but
+that image ENV SHALL NOT override the selected runtime policy in the orchestrator. The
+image SHALL NOT bake the obsolete `~/.codex/hooks.json`, hook dependency tree, or
+`/opt/cap/dist/hooks`; bypass-mode tasks do not claim hook-based approval or reporting.
 
-#### Scenario: Pre-filled prompt is auto-submitted after the TUI is confirmed started
-- **WHEN** codex has been launched with a pre-filled positional prompt, the codex-startup DSR `\x1b[6n` has been observed, and terminal output has quiesced
-- **THEN** the orchestrator injects a single carriage return exactly once so the pre-filled goal is submitted and the run begins with zero operator keystrokes
-- **AND** the carriage return is never injected while the shell (not codex) holds the terminal, so the goal cannot be silently dropped into the shell
+#### Scenario: AIO interactive Codex uses the provider-neutral launch path
 
-#### Scenario: A prompt mentioning hook-disabling tokens is not rejected
-- **WHEN** `task.prompt` contains text such as `-s`, `--yolo`, or `bypass-approvals`
-- **THEN** the hook-disabling launch guard inspects only the fixed launch flags and launches codex normally, because the prompt is supplied via the injected file rather than inlined into the argv
+- **WHEN** an AIO-backed interactive Codex task begins execution
+- **THEN** the shared session engine starts it over `/v1/shell/ws` in the exact task tmux
+  session
+- **AND** the argv includes `--dangerously-bypass-approvals-and-sandbox`
+- **AND** it does not contain the legacy
+  `--ask-for-approval never --sandbox danger-full-access` combination
+- **AND** API code does not instantiate an AIO-specific launch client
 
-#### Scenario: Empty prompt opens a blank composer
-- **WHEN** a task has an empty `task.prompt`
-- **THEN** codex is launched with no positional prompt and opens a blank composer rather than failing the launch
+#### Scenario: Task prompt is injected as a shell-safe file
 
-#### Scenario: Prompt-file injection failure fails the provision closed
-- **WHEN** writing the prompt file into the sandbox returns a non-zero exit
-- **THEN** the provision fails closed rather than launching codex without the operator goal
+- **WHEN** a non-empty task prompt is provisioned
+- **THEN** it is written through the provider-private file channel at
+  `/home/gem/.codex/task-prompt.txt`
+- **AND** the launch reads it through `$(cat ...)` as one positional prompt argument
+- **AND** prompt text that mentions `-s`, `--yolo`, or bypass flags remains data
 
-#### Scenario: Derived image uses pnpm deploy for a real, self-contained node_modules (no /repo COPY, no symlinks)
-- **WHEN** the derived sandbox image build for `@cap/sandbox-hooks` is inspected
-- **THEN** it uses `pnpm deploy` (`--prod --legacy`) to produce a self-contained `node_modules` tree and COPYs only that tree plus the compiled `dist` into `/opt/cap/`
-- **AND** it does NOT COPY the full built `/repo` workspace into the final stage, and `/opt/cap/dist` is a real directory (no symlink indirection)
-- **AND** the hook deps (`zod`, `@cap/contracts`) resolve as real, hoisted entries in the deploy tree with no dangling symlinks or `ERR_MODULE_NOT_FOUND`
-- **NOTE** the structural change is the goal (real node_modules, no symlink farm, no /repo COPY); the overall image size is comparable to the prior approach because the hooks-build stage was already a selective workspace COPY, not the full host repo
+#### Scenario: Prefilled prompt is auto-submitted after verified startup
 
-#### Scenario: Hook dependencies still resolve at runtime in the slimmed image
-- **WHEN** the slimmed derived image runs the baked hook
-- **THEN** `import zod` and `@cap/contracts` resolve without `ERR_MODULE_NOT_FOUND`
-- **AND** the hook executes successfully
+- **WHEN** the startup DSR has been observed and the initial TUI render quiesces
+- **THEN** the shared mechanism injects exactly one carriage return
+- **AND** it never injects that key while the shell, rather than Codex, owns the terminal
 
-### Requirement: Blocking approval hooks re-homed via outbound HTTP callback
-The blocking approval hooks (`permission_request` and `post_tool_use`) SHALL make an OUTBOUND HTTP callback from the sandbox to `POST /internal/sandbox/approvals` over `cap-net`, reusing the EXISTING `onPermissionRequest`/`onDecision` routing so only the transport changes. This unauthenticated internal callback SHALL accept only a direct loopback, RFC1918, link-local, or IPv6 ULA peer and SHALL reject any request carrying `Forwarded`, `X-Forwarded-For`, or `X-Real-IP`. The public HTTP and HTTPS reverse-proxy servers SHALL return 404 for the exact internal path. The in-sandbox hook adapter SHALL speak the codex `0.131` hook protocol: it SHALL read the `0.131` stdin schema (`{session_id, transcript_path, cwd, hook_event_name, model, permission_mode, turn_id, tool_name, tool_use_id, tool_input}`), translate it to cap's `permission_request` frame, and emit the `0.131` decision form (`{hookSpecificOutput:{hookEventName, permissionDecision:"allow"|"deny", permissionDecisionReason?}}`, or exit `0` for allow / exit `2` + stderr for deny).
+#### Scenario: Derived image pins parsable YOLO launch flags without dead hooks
 
-#### Scenario: Approval request travels over HTTP callback to the orchestrator
-- **WHEN** a hook inside the sandbox fires a `permission_request` or `post_tool_use`
-- **THEN** the sandbox makes an outbound HTTP call to `POST /internal/sandbox/approvals` over `cap-net`
-- **AND** the orchestrator handles it through the existing `onPermissionRequest`/`onDecision` routing
-- **AND** a public or proxy-forwarded caller is rejected before that routing is entered
+- **WHEN** the exact released AIO image is inspected and parser-probed
+- **THEN** its Codex version matches the documented build arg/release workflow
+- **AND** interactive and `codex exec` help accept the required bypass flag
+- **AND** `~/.codex/hooks.json` and `/opt/cap/dist/hooks` are absent from the final image
 
-#### Scenario: Approval routing is unchanged above the transport
-- **WHEN** an approval decision is produced for a re-homed hook
-- **THEN** the decision flows through the same `onDecision` routing used before the migration, with only the sandbox-to-orchestrator transport changed to an HTTP callback
+#### Scenario: Empty prompt and injection failure remain deterministic
 
-#### Scenario: Hook adapter speaks the codex 0.131 stdin/stdout protocol
-- **WHEN** the codex `0.131` hook fires and writes its `0.131` stdin payload to the in-sandbox hook adapter
-- **THEN** the adapter parses the `0.131` stdin schema (including `tool_name` and `tool_input`), translates it to cap's `permission_request` frame, and performs the internal `POST /internal/sandbox/approvals` round-trip
-- **AND** it returns the decision in the codex `0.131` form (`{hookSpecificOutput:{permissionDecision}}`, or exit `0` allow / exit `2` deny)
+- **WHEN** the prompt is empty
+- **THEN** Codex starts with a blank composer and no empty-string positional argument
+- **AND** WHEN a non-empty prompt cannot be written, provisioning fails closed before
+  launch
 
 ### Requirement: Exit detection mapped to guardrails
-The `AioPtyClient` SHALL detect task termination by LIVENESS of the detached codex session — NOT by the terminal WebSocket closing — because once codex runs in a detached named tmux session a WS close no longer means the task ended (the operator merely disconnected, or the api restarted). The system SHALL poll the named tmux session existence (`tmux has-session -t task<taskId>`) and/or the codex process liveness; only when the session/process is GONE SHALL it treat the task as terminated, and SHALL then determine the exit status using `POST /v1/shell/exec` (e.g. a recorded `$?` / a sentinel the session writes on exit) and/or `/v1/shell/wait`, mapping a zero exit status to guardrails `recordSuccess` and a non-zero or abnormal termination to guardrails `recordFailure`. A WS close while the session is still alive SHALL NOT call `recordSuccess`/`recordFailure`. The orchestrator bridge (`AioPtyClient`/gateway) SHALL ALSO persist the raw PTY output stream by appending it to `workspaces/<taskId>/session.log` as it is received, keeping the byte-offset fed to `snapshots.feed` in lockstep with the bytes written to `session.log`, so that reconnect tail-replay has a durable source of prior output.
 
-#### Scenario: Session-gone (not WS close) triggers exit-status resolution
-- **WHEN** the detached codex session for a task is observed to no longer exist (tmux session gone / codex process exited)
-- **THEN** `AioPtyClient` resolves the task exit status via `/v1/shell/exec` and/or `/v1/shell/wait` and reports the terminal outcome to guardrails
+The provider-neutral session engine SHALL determine task termination from the selected
+runtime's exact detached-session liveness and settled exit evidence, not from a provider
+PTY or browser WebSocket close. A disconnect while the detached session is alive SHALL
+not report a terminal outcome. A settled zero exit maps to success; non-zero or abnormal
+termination maps to failure; unresolved settlement SHALL never be promoted to success.
+At this transitional archive boundary, owner PTY output SHALL continue through the
+provider-neutral gateway recording/replay path rather than an AIO-specific client.
 
-#### Scenario: A WS close with a live session does not terminate the task
-- **WHEN** the orchestrator's terminal WebSocket closes (operator disconnect or api restart) while the named tmux session is still alive
-- **THEN** the system does NOT call guardrails `recordSuccess` or `recordFailure`, and the task remains running for re-adoption
+#### Scenario: Transport close does not finish a live task
 
-#### Scenario: Exit status maps to guardrails outcome
-- **WHEN** the resolved exit status is zero
-- **THEN** the system calls guardrails `recordSuccess`
-- **AND** when the resolved exit status is non-zero or the termination is abnormal, the system calls guardrails `recordFailure`
+- **WHEN** a browser or provider PTY closes while the exact detached task session is
+  still alive
+- **THEN** no success or failure is reported and the task remains eligible for
+  re-adoption
 
-#### Scenario: Raw PTY output is persisted to session.log in the orchestrator bridge
-- **WHEN** the sandbox emits raw `output` for a task with id `<taskId>`
-- **THEN** the orchestrator bridge appends those raw bytes to `workspaces/<taskId>/session.log`
-- **AND** the byte-offset advanced in `snapshots.feed` stays in lockstep with the bytes written to `session.log`
+#### Scenario: Settled lifecycle evidence determines the outcome
+
+- **WHEN** the runtime reports the session gone and exit settlement completes
+- **THEN** exit zero reports success and non-zero or abnormal termination reports
+  failure
+- **AND** an unresolved result is not treated as success
 
 ### Requirement: Selected skills are preinstalled into the task workspace at provision time
 When a task selects one or more skills (the optional `skills` run parameter — see `repo-and-task-management`), the orchestrator SHALL preinstall each selected skill into the cloned task workspace at provision time, AFTER the repo clone and BEFORE the codex launch handle is returned, so codex starts already equipped with that workflow. Each skill SHALL be installed by running its OFFICIAL non-interactive installer against `/home/gem/workspace` over the existing `/v1/shell/exec` channel (the same surface used for clone/auth injection) — for example OpenSpec via `openspec init --tools codex --force /home/gem/workspace`. The set of installable skills SHALL be a SERVER-SIDE ALLOWLIST mapping a skill id to a fixed, pinned installer command; the operator only ever submits skill IDS, which the orchestrator validates against the allowlist — raw operator free-text SHALL NEVER be executed as an installer command. When a skill's generated SKILL.md files shell out to that skill's CLI at runtime (OpenSpec's skills invoke the `openspec` CLI), that CLI SHALL be available on the sandbox PATH — and because the `/v1/shell/exec` provision channel runs as the unprivileged `gem` user (which cannot `npm install -g` to the root-owned prefix), such a CLI SHALL be BAKED into the derived image (e.g. `openspec` baked from a pinned `OPENSPEC_VERSION`, mirroring the Codex CLI bake) rather than installed per-task. codex SHALL consume the preinstalled skill through the agent-instruction files the installer drops into the workspace — a workspace-level `.codex/skills/<name>/SKILL.md` (auto-discovered because codex launches with `-C /home/gem/workspace`) and/or `.agents/skills/<name>/SKILL.md` and/or a root `AGENTS.md`. The codex plugin MARKETPLACE is NOT used for per-task preinstall.
@@ -240,34 +232,28 @@ When a task's owning account has an active `compatible`-mode Codex credential, t
 - **THEN** the orchestrator does not write that Base URL into the codex config (the credential is treated as unusable for injection rather than fetched/targeted)
 
 ### Requirement: Provisioning and teardown delegate to the selected AgentRuntime
-Per-task provisioning and pre-stop teardown SHALL delegate credential/config injection
-and the launch command to the task's selected `AgentRuntime` (see `agent-runtime`)
-instead of hard-coding codex auth.json + codex launch. For a `codex` task the behavior
-SHALL be unchanged (inject `/home/gem/.codex/auth.json` + `config.toml`, trim
-`/home/gem/.codex` and clear `auth.json` before stop). For a `claude-code` task,
-provisioning SHALL instead inject the Claude credential as the `CLAUDE_CODE_OAUTH_TOKEN`
-launch env (no auth file) and pre-seed `/home/gem/.claude/.claude.json` (global
-onboarding + per-project trust), and the pre-stop trim SHALL target `/home/gem/.claude`
-(removing cached/credential state while keeping the session transcript under
-`/home/gem/.claude/projects/`) as the defense-in-depth analog of the codex trim. A
-pre-stop trim failure SHALL NOT block the stop+retain.
 
-#### Scenario: Codex provisioning/teardown is unchanged
-- **WHEN** a `codex` task is provisioned and later torn down
-- **THEN** auth.json/config.toml are injected and the `/home/gem/.codex` trim + auth.json
-  clear run before stop, exactly as before
+Per-task provisioning, launch, transcript declaration, and pre-stop cleanup SHALL
+delegate to the task's selected `AgentRuntime` rather than hard-code one agent in the
+provider. Runtime credential, config, onboarding, and prompt bytes SHALL use the
+provider-private one-shot file channel; ordinary exec requests SHALL contain only fixed
+paths, modes, and verification logic. Codex cleanup SHALL preserve `sessions/` while
+removing and proving absence of `auth.json`, `config.toml`, and the prompt. Claude cleanup
+SHALL preserve `projects/` while removing and proving absence of `launch-env.sh`,
+settings/onboarding state, and the prompt. Any failed private cleanup SHALL activate the
+exact-container removal gate.
 
-#### Scenario: Claude provisioning injects an env token and pre-seed, not an auth file
-- **WHEN** a `claude-code` task is provisioned
-- **THEN** the launch env carries `CLAUDE_CODE_OAUTH_TOKEN`, `/home/gem/.claude/.claude.json`
-  is pre-seeded with global onboarding + per-project trust, and no `~/.codex/auth.json`
-  is written
+#### Scenario: Codex and Claude use one strict runtime hook path
 
-#### Scenario: Claude pre-stop trim targets the Claude HOME and keeps the transcript
-- **WHEN** a `claude-code` task reaches a terminal state and the container is stopped+retained
-- **THEN** `/home/gem/.claude` cached/credential state is trimmed while
-  `/home/gem/.claude/projects/<slug>/<session-id>.jsonl` is kept, and a trim failure does
-  not block the stop
+- **WHEN** Codex and Claude tasks provision and later tear down
+- **THEN** the provider invokes each selected runtime's private files, setup commands,
+  transcript artifact, and cleanup commands through the same neutral hook surface
+- **AND** no runtime credential or prompt appears in an ordinary exec request
+
+#### Scenario: Runtime-private cleanup is fail closed
+
+- **WHEN** a selected runtime cannot prove its private paths absent
+- **THEN** the provider removes the exact sandbox instead of retaining it
 
 ### Requirement: The derived AIO image bakes a pinned Claude Code CLI
 The derived AIO Sandbox image SHALL bake the Claude Code CLI at a PINNED version
@@ -281,58 +267,62 @@ without installing the CLI at provision time.
 - **THEN** `claude --version` reports the pinned version and no runtime install step is needed
 
 ### Requirement: Provisioning runs runtime-emitted setup commands uniformly, with no codex-inline code
-Per-task provisioning SHALL obtain the selected runtime's `sandboxSetupCommands` and run
-them via the shared `/v1/shell/exec` surface for EVERY runtime, with no codex-specific
-inline injection in the provider. The provider SHALL NOT retain `injectCodexAuth`,
-`injectTaskPrompt`, a `CODEX_HOME_DIR` constant used for inline writes, or any
-`runtime.id === 'codex'` branch on the provision path. The prompt-file write (from
-`task.prompt`) is shared mechanism applied uniformly; the credential/config bytes are
-whatever the runtime's setup commands write. Provisioning SHALL still FAIL CLOSED on a
-non-zero exit (tearing the container down) exactly as before.
 
-#### Scenario: Codex and claude both provision through the same uniform path
-- **WHEN** a `codex` task and a `claude-code` task are each provisioned
-- **THEN** the provider runs each runtime's emitted setup commands via the same exec
-  helper, the provider source contains no `injectCodexAuth`/`id === 'codex'`, and the
-  exec commands codex produces are byte-identical to the v0.6.0 inline `injectCodexAuth`
-  (golden-tested)
+Per-task provisioning SHALL consume the selected runtime's ordered setup plan through
+one provider-neutral path. Secret-bearing configuration, credential, onboarding, and
+prompt bytes SHALL be emitted as opaque `privateFiles` and transferred only through the
+selected provider's private-file port. The accompanying ordinary setup command SHALL
+contain fixed paths, modes, and verification logic only. Neither AIO nor the shared host
+harness SHALL reconstruct those bytes as base64 shell commands or branch on the runtime
+id. Any private-file or required setup-command failure SHALL fail provisioning closed.
 
-#### Scenario: A broken runtime setup still fails closed
-- **WHEN** a runtime's setup commands exit non-zero (e.g. claude with no token)
-- **THEN** provisioning tears the container down and surfaces the failure rather than
-  starting an unusable sandbox — unchanged from before
+#### Scenario: Both runtimes use the same private setup path
+
+- **WHEN** Codex and Claude Code setup plans are provisioned on AIO
+- **THEN** every private file is consumed by the provider-private transport before its
+  associated ordinary setup command
+- **AND** the ordinary command and serialized plan contain no raw or derived secret
+  material
+
+#### Scenario: A required setup result is unresolved
+
+- **WHEN** a private write, mode verification, or required setup command has a non-zero,
+  timed-out, thrown, malformed, or otherwise unresolved result
+- **THEN** provisioning fails closed and exact sandbox cleanup runs
 
 ### Requirement: Pre-stop trim runs runtime-emitted trim commands uniformly
-Pre-stop teardown SHALL obtain the selected runtime's `preStopTrimCommands` and run them
-via the shared exec for EVERY runtime, with no `runtime.id === 'codex'` branch and no
-inline `trimCodexHomeBeforeStop` in the provider. Codex's trim commands SHALL keep the
-session transcript while removing cache/credential state, byte-identical to the prior
-inline trim (golden-tested); a trim failure SHALL NOT block the stop+retain.
 
-#### Scenario: Trim is uniform and codex-byte-identical
-- **WHEN** a terminal codex task is stopped+retained
-- **THEN** the provider runs codex's emitted trim commands (which match the prior
-  inline trim byte-for-byte) via the shared exec, with no codex-specific branch, and a
-  trim error does not block the stop
+Pre-stop teardown SHALL run every selected runtime's emitted cleanup command through the
+shared command executor. A command succeeds only with a settled, non-timeout exit code
+zero. Arbitrary guest output or transport error text SHALL NOT be copied into persistent
+logs or public errors. A failure SHALL block stopped retention and trigger exact sandbox
+removal; it SHALL NOT be downgraded to a warning.
+
+#### Scenario: Uniform cleanup succeeds before retention
+
+- **WHEN** all runtime cleanup commands settle with exit zero
+- **THEN** teardown may proceed to stop-retain the sandbox
+
+#### Scenario: Uniform cleanup uncertainty removes the sandbox
+
+- **WHEN** a runtime cleanup command fails or its settlement is unknown
+- **THEN** teardown force-removes and confirms absence of the exact sandbox
+- **AND** the surfaced diagnostic contains stable stage/task context but no guest output
 
 ### Requirement: The pty client's terminal mechanism is driven by declared policy
-The pty client SHALL drive its DSR/CPR/output-quiescence handshake from the runtime's
-declared `terminalStartup` policy rather than an agent-identity flag (`launchedCodex` /
-`runtime.id === 'codex'`). The detached-tmux launch wrapper and `$(cat <prompt-file>)`
-positional-prompt delivery SHALL be built once as shared mechanism from the runtime's
-`{ argv, env }`, identically for all runtimes. The completion probe SHALL call only
-`runtime.detectExit` (no inline `hasSession` duplicate of codex's probe).
 
-#### Scenario: One launch mechanism, runtime supplies only argv/env
-- **WHEN** any runtime's task launches
-- **THEN** the pty client wraps the runtime's `{ argv, env }` in the SAME detached-tmux
-  + `$(cat <prompt-file>)` shell line, and the codex launch-line string is byte-identical
-  to v0.6.0 (golden-tested)
+The provider-neutral terminal session engine SHALL drive startup DSR/CPR and prompt
+submission from the selected runtime's declared `terminalStartup` policy. It SHALL build
+the detached tmux launch and file-backed prompt mechanism once for every runtime, and
+SHALL call the runtime's `detectExit` rather than duplicate an agent-specific liveness
+probe. Provider packages SHALL contribute only normalized PTY transport and command
+execution mechanics.
 
-#### Scenario: Liveness uses the runtime's single exit source
-- **WHEN** the liveness poller checks whether a task is done
-- **THEN** it calls `runtime.detectExit` (codex: `tmux has-session`; claude: transcript
-  `end_turn` then `kill-session`) and contains no inline codex has-session duplicate
+#### Scenario: One shared launch mechanism consumes runtime policy
+
+- **WHEN** either supported runtime starts an interactive task
+- **THEN** the shared session engine composes its launch, startup, and liveness policy
+- **AND** neither the AIO transport nor API terminal code branches on the runtime id
 
 ### Requirement: Container transcript read resolves the per-runtime artifact path
 The in-place container transcript read (`readRolloutFromContainer`) SHALL resolve the directory and
@@ -361,50 +351,6 @@ longer report `no-rollout`.
 - **WHEN** the runtime's transcript path is absent (agent never produced one, or the container was reaped)
 - **THEN** the read returns `null` and the caller maps it to an honest `empty`/`expired` state
 
-### Requirement: Codex headless tasks load a file-stored credential and persist its refresh
-A `headless-exec` codex task SHALL authenticate with the task's resolved codex credential via the SAME
-injection path as the interactive runtime, plus two additions REQUIRED to make a non-interactive
-`codex exec` run succeed against a ChatGPT-account (subscription) credential in the keyring-less Linux
-sandbox: a file-store config line, and refresh-persistence of the rotating token.
-
-The codex runtime's emitted `config.toml` SHALL set top-level `cli_auth_credentials_store = "file"` so
-codex loads the injected `~/.codex/auth.json`. Without it codex defaults to `auto` (OS keyring first),
-finds no keyring in the sandbox, attaches NO bearer, and every request fails `401 "Missing bearer"`.
-This line SHALL be emitted for the codex runtime regardless of credential kind (it is inert for the
-compatible/`model_providers` path, which carries no `auth.json`).
-
-For a headless codex task using an OFFICIAL (ChatGPT) credential, the system SHALL capture codex's
-post-run `~/.codex/auth.json` out of the container BEFORE the pre-stop `~/.codex` trim zeroes it, and
-persist the (possibly refreshed) `auth.json` back to the OWNER-SCOPED stored credential. ChatGPT
-`refresh_token`s are single-use/rotating; codex refreshes in place and rewrites `auth.json`, so a static
-re-injected seed is revoked after first use unless the rotation is persisted. The persist SHALL be
-owner-scoped (a task can write only its own owner's credential) and SHALL skip a non-parseable or empty
-`auth.json` (never overwrite a good stored credential with garbage or an already-zeroed file). The
-pre-stop trim SHALL still zero `auth.json` AFTER capture, so a retained container holds no live
-credential. A credential that cannot be persisted back (the env fallback) used for a headless codex
-task SHALL log a warning that it cannot self-heal and must be re-seeded manually.
-
-#### Scenario: Codex headless loads the file-stored credential (no "Missing bearer")
-- **WHEN** a headless-exec codex task provisions with an official ChatGPT credential
-- **THEN** the emitted `config.toml` sets `cli_auth_credentials_store = "file"`, codex loads
-  `~/.codex/auth.json`, and `codex exec` attaches the bearer and routes to `chatgpt.com/backend-api/codex`
-  rather than failing `401 "Missing bearer"`
-
-#### Scenario: A refreshed token is persisted across tasks
-- **WHEN** codex refreshes its ChatGPT token during a headless task run (rotating the single-use refresh_token)
-- **THEN** the post-run `auth.json` is captured before the pre-stop trim and written back to the owner's
-  stored credential, so the next task uses the rotated token instead of a revoked seed
-
-#### Scenario: Capture preserves the retained-container security property
-- **WHEN** a headless codex task tears down
-- **THEN** `auth.json` is captured-then-zeroed (trim still runs after capture), so the retained container
-  holds no live credential
-
-#### Scenario: A non-persistable (env) credential warns
-- **WHEN** a headless codex task uses the env-fallback credential (which cannot be written back)
-- **THEN** a warning is logged that the credential cannot self-heal and must be re-seeded; the task still
-  runs with the seed as-is
-
 ### Requirement: Detached tmux terminal sessions are UTF-8 aware
 The shared terminal launch and attach path SHALL run tmux in UTF-8 mode for interactive detached sessions so multibyte terminal output is preserved even when the sandbox login environment does not expose a UTF-8 locale. This SHALL apply to fresh detached session creation and to attaching or re-attaching the provider terminal bridge to the task's named tmux session.
 
@@ -417,16 +363,17 @@ The shared terminal launch and attach path SHALL run tmux in UTF-8 mode for inte
 - **THEN** the attach command invokes tmux in UTF-8 mode so non-ASCII output is not rendered as underscores
 
 ### Requirement: Browser resize reaches the detached tmux window
-The shared `AioPtyClient` resize path SHALL propagate browser terminal geometry to both the provider PTY transport and the task's detached tmux window. Resizing the detached tmux window SHALL use the task's named session and the browser cols/rows, and SHALL be best-effort so stale-session races do not fail the task.
 
-#### Scenario: Resize updates provider PTY and tmux window
-- **WHEN** the browser sends terminal geometry `{cols, rows}` for a running interactive task
-- **THEN** the provider PTY receives the resize frame
-- **AND** the detached tmux session receives a matching `resize-window` operation for the task session
+The shared provider-neutral session engine SHALL propagate authoritative browser
+geometry to both the selected provider PTY transport and the exact detached tmux window.
+The tmux resize is best-effort for stale-session races and SHALL not introduce an
+AIO-specific browser or launch client.
 
-#### Scenario: Resize failure does not fail the task
-- **WHEN** the provider PTY resize succeeds but the detached tmux resize command cannot find the named session
-- **THEN** the task remains running and the bridge continues normal liveness polling and output streaming
+#### Scenario: Resize updates transport and detached window
+
+- **WHEN** the current writer supplies valid terminal columns and rows
+- **THEN** the selected provider transport receives that geometry
+- **AND** the exact task tmux window receives a matching resize operation
 
 ### Requirement: AIO provisions from a resolved Docker-image environment
 
@@ -465,25 +412,30 @@ metadata for auditability.
 
 ### Requirement: AIO provisions selected image parameters and clears them before retention
 
-The AIO sandbox provisioning path SHALL run the provider-neutral image parameter setup step after the workspace is materialized and before the selected agent runtime is launched. For retained AIO containers, teardown SHALL attempt to remove the CAP image parameter env file before stopping the container, alongside existing runtime credential trimming. A cleanup failure SHALL NOT block container stop or task settlement.
+The AIO provisioning path SHALL write selected image parameters through the opaque
+provider-private file channel to `/home/gem/.cap/image-env` before runtime setup. Neither
+raw values nor derived encodings SHALL enter ordinary exec requests, argv, serialized
+plans, logs, or public errors. Before retention, teardown SHALL remove the file and prove
+it absent; cleanup uncertainty SHALL force exact sandbox removal.
 
-#### Scenario: AIO task receives image parameters before agent launch
+#### Scenario: AIO task receives image parameters privately before agent launch
 
-- **WHEN** an AIO-backed task uses a sandbox environment with image parameters
-- **THEN** AIO provisioning writes `/home/gem/.cap/image-env` inside the task container before the agent runtime launch command runs
-- **AND** the workspace and agent runtime setup remain otherwise unchanged
+- **WHEN** an AIO task has selected image parameters
+- **THEN** the provider-private channel writes mode-0600 `/home/gem/.cap/image-env`
+  before runtime launch
+- **AND** ordinary setup requests contain paths and verification only
 
-#### Scenario: AIO teardown clears materialized image parameters
+#### Scenario: Image parameter cleanup is a retention gate
 
-- **WHEN** an AIO-backed task is being stopped and the container will be retained
-- **THEN** teardown attempts to remove `/home/gem/.cap/image-env` before stopping the container
-- **AND** the retained stopped container does not intentionally keep usable image parameter files
+- **WHEN** `/home/gem/.cap/image-env` deletion or absence verification fails
+- **THEN** the exact AIO sandbox is removed and confirmed absent
 
-#### Scenario: AIO setup output does not leak secret parameters
+#### Scenario: Arbitrary setup diagnostics disclose no parameter material
 
-- **WHEN** AIO image parameter setup fails
-- **THEN** logged setup output is scrubbed or bounded so plaintext secret parameters are not emitted
-- **AND** the failure message contains non-secret task/provider context only
+- **WHEN** private-file transfer, verification, or later setup fails with attacker-chosen
+  output
+- **THEN** raw, base64, base64url, hex, and split parameter sentinels occur zero times in
+  persistent logs, serialized errors, and command requests
 
 ### Requirement: AIO workspace materialization injects the repo copy via read-only subpath mount
 
@@ -497,4 +449,85 @@ The aio-local provider SHALL materialize the task workspace from the Repo's stor
 #### Scenario: Mount grants no write and no cross-repo visibility
 - **WHEN** the agent inspects the mount path
 - **THEN** it is read-only and contains only the task's repo copy
+
+### Requirement: Optional cloud sandbox provider configuration is capability gated
+The API MAY register a managed HTTP sandbox provider when `CAP_SANDBOX_CLOUD_HTTP_BASE_URL` is configured. That provider SHALL advertise only configured capabilities, SHALL default to `terminal.websocket` when no explicit capability list is provided, and SHALL NOT be selected for requirements it does not advertise. Local AIO priority and cloud priority SHALL be configurable, and `CAP_SANDBOX_PREFER_LOCATION` MAY bias equivalent candidates.
+
+#### Scenario: Cloud provider is not registered without a base URL
+- **WHEN** `CAP_SANDBOX_CLOUD_HTTP_BASE_URL` is unset
+- **THEN** no cloud HTTP provider is registered
+- **AND** local AIO remains available as the default provider
+
+#### Scenario: Cloud capabilities gate selection
+- **WHEN** the cloud HTTP provider is configured with a limited capability set
+- **THEN** it is only eligible for tasks whose required capabilities are fully covered by that set
+- **AND** tasks requiring unsupported capabilities select another provider or fail closed
+
+#### Scenario: No eligible provider fails closed
+- **WHEN** task provisioning requires capabilities that no registered provider satisfies
+- **THEN** the task is failed with a provision failure rather than silently falling back to an incompatible provider
+
+### Requirement: AIO provider orchestration lives in the AIO provider package
+
+The full AIO backend implementation SHALL live in `@cap/sandbox-provider-aio`, including Docker lifecycle, readiness, runtime setup hooks, workspace materialization, terminal and command descriptors, AIO transport lifecycle and wire translation, command executor protocol handling, retention behavior, transcript/readoption support, and provider descriptor registration. The provider-neutral agent terminal session engine SHALL live in `@cap/sandbox` and compose the AIO transport through its descriptor. API code SHALL only provide neutral host harness ports such as persistence adapters, runtime registries, auth/material lookup, skill installers, approval sinks, and Nest wiring.
+
+#### Scenario: AIO provision does not require API provider class logic
+- **WHEN** `@cap/sandbox-provider-aio` is built and tested independently
+- **THEN** it can provision, describe, command, retain, readopt, and tear down AIO sandboxes through its exported provider implementation
+- **AND** it does not rely on `apps/api/src/sandbox/aio-sandbox.provider.ts` for lifecycle orchestration
+
+#### Scenario: AIO is registered by the sandbox host harness
+- **WHEN** CAP registers configured sandbox providers
+- **THEN** `@cap/sandbox` creates the AIO descriptor from `@cap/sandbox-provider-aio` using neutral host harness hooks
+- **AND** API code does not import AIO provider factories, controllers, Docker clients, AIO env readers, AIO command executors, or AIO terminal transports
+
+#### Scenario: AIO terminal backend is composed with the shared session engine
+- **WHEN** an AIO-backed task terminal is opened
+- **THEN** `@cap/sandbox` provides launch-or-attach, initial-ready sequencing, runtime-declared DSR/CPR behavior, tmux liveness, and normalized exit handling through its shared session engine
+- **AND** `@cap/sandbox-provider-aio` provides AIO frame translation, provider transport lifecycle, and AIO command/wait protocol handling behind the descriptor factory
+- **AND** `apps/api/src/terminal` does not instantiate an AIO PTY client or AIO terminal transport
+
+### Requirement: AIO provider e2e runs without CAP API backend
+
+The AIO provider package SHALL include an e2e suite that starts real AIO resources and validates the provider lifecycle without starting the CAP API backend or production web app.
+
+#### Scenario: AIO e2e validates real provision and exec
+- **WHEN** AIO provider e2e runs with Docker and the AIO e2e image available
+- **THEN** it creates a real task-scoped AIO container through the provider package
+- **AND** it waits for readiness and verifies command execution inside that container
+
+#### Scenario: AIO e2e validates selected-run descriptors
+- **WHEN** AIO provider e2e provisions a sandbox
+- **THEN** it verifies the selected run contains the AIO provider id, provider sandbox id, connection, `aio-json-v1` terminal descriptor, `aio-http-exec-v1` command descriptor, workspace descriptor, capabilities, and retention policy
+
+#### Scenario: AIO e2e validates readoption after provider instance restart
+- **WHEN** the AIO e2e suite creates a sandbox and then constructs a new provider instance
+- **THEN** the new instance can discover or reattach the existing task sandbox through provider readoption
+- **AND** operations route through the readopted provider owner
+
+#### Scenario: AIO e2e cleans up real resources
+- **WHEN** an AIO provider e2e test completes or fails
+- **THEN** it removes or stops all task-scoped e2e AIO containers and any e2e-only Docker network it created
+
+### Requirement: Codex headless tasks load file-stored credentials without sandbox-to-owner writeback
+
+A `headless-exec` Codex task SHALL set `cli_auth_credentials_store = "file"` and load the
+task owner's resolved official `auth.json` through the same provider-private injection
+path used by interactive Codex. CAP SHALL NOT read a post-run `auth.json` from an
+autonomous YOLO sandbox or persist sandbox-modified credential bytes back to the owner's
+database row. Rotation that requires durable owner credential renewal needs a future
+host-owned auth broker or independently authenticated refresh flow.
+
+#### Scenario: Codex headless loads the file-stored credential
+
+- **WHEN** an official-credential headless Codex task starts
+- **THEN** config selects the file credential store and Codex loads the injected private
+  auth file without a keyring
+
+#### Scenario: Autonomous sandbox cannot overwrite owner credential
+
+- **WHEN** Codex or task code modifies `/home/gem/.codex/auth.json`
+- **THEN** teardown never reads that file into CAP and never updates the owner's stored
+  credential from it
+- **AND** cleanup removes the sandbox copy or removes the whole sandbox
 

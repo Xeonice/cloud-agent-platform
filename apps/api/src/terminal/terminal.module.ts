@@ -13,13 +13,12 @@ import {
 } from '../sandbox/sandbox-approval-enforcer';
 import { ProviderTerminalStoryController } from './provider-terminal-story.controller';
 import { ProviderTerminalStoryService } from './provider-terminal-story.service';
+import { TerminalDiagnosticsMetricsModule } from '../metrics/terminal-diagnostics-metrics.module';
 
 /**
- * DI token for the cap-controlled approval enforcement FALLBACK (6.9). Cap-owned
- * tool-affecting call sites at the `/v1/shell/exec` boundary inject this to gate
- * a command through the existing approval round-trip BEFORE running it, so a
- * non-firing codex hook (codex#16732) cannot let a gated tool call proceed
- * unapproved.
+ * DI token for a dormant fail-closed approval primitive. There is currently no
+ * production `enforce`/`enforceThen` call site; registration MUST NOT be treated
+ * as coverage of provider exec or interactive PTY activity.
  */
 export const SANDBOX_APPROVAL_ENFORCER = Symbol('SandboxApprovalEnforcer');
 
@@ -27,8 +26,8 @@ export const SANDBOX_APPROVAL_ENFORCER = Symbol('SandboxApprovalEnforcer');
  * Realtime terminal feature module.
  *
  * Provides the {@link TerminalGateway}, which streams a task's terminal over a
- * dual-channel WebSocket with application-layer backpressure, the ACK-based
- * pause/resume protocol, and snapshot + tail-replay reconnect.
+ * dual-channel WebSocket with one fresh native viewer attachment per socket,
+ * application-layer backpressure, and the ACK-based pause/resume protocol.
  *
  * The gateway uses the raw `ws` adapter (not socket.io); the integration track
  * registers the `WsAdapter` in `main.ts` and imports this module into
@@ -43,12 +42,9 @@ export const SANDBOX_APPROVAL_ENFORCER = Symbol('SandboxApprovalEnforcer');
  * 7.4). `TasksModule` is still imported for the lifecycle surface the gateway
  * shares with the rest of the app.
  *
- * 5.5: {@link ApprovalsController} is registered here so the sandbox's Codex
- * hooks can call BACK IN over `cap-net` (an OUTBOUND HTTP POST to
- * `/internal/sandbox/approvals`)
- * and have the approval round-trip routed through the gateway's existing
- * `onPermissionRequest` -> operator decision -> `onDecision` logic (transport-only
- * change; approval semantics unchanged).
+ * {@link ApprovalsController} remains registered as an isolated compatibility
+ * callback with its private-peer checks. Current bypass-mode images do not bake
+ * or register a Codex hook that calls it.
  *
  * VR.3: `GuardrailsModule` is imported so the gateway can inject
  * `GuardrailsService` to call `recordActivity()` from the PTY-output path and
@@ -67,7 +63,14 @@ export const SANDBOX_APPROVAL_ENFORCER = Symbol('SandboxApprovalEnforcer');
  * any task stream.
  */
 @Module({
-  imports: [WriteLockModule, TasksModule, GuardrailsModule, AuthModule, SandboxModule],
+  imports: [
+    WriteLockModule,
+    TasksModule,
+    GuardrailsModule,
+    AuthModule,
+    SandboxModule,
+    TerminalDiagnosticsMetricsModule,
+  ],
   controllers: [ApprovalsController, ProviderTerminalStoryController],
   providers: [
     TerminalGateway,
@@ -76,14 +79,9 @@ export const SANDBOX_APPROVAL_ENFORCER = Symbol('SandboxApprovalEnforcer');
     // by, so the guardrails->gateway `openSession` seam (4.2) needs no value
     // import of the concrete gateway class.
     { provide: TERMINAL_GATEWAY_TOKEN, useExisting: TerminalGateway },
-    // 6.9 — the cap-controlled approval enforcement FALLBACK. Bound to the
-    // gateway as its ApprovalRouter so it routes a gate through the SAME
-    // `requestApproval` -> operator decision path the codex-hook callback uses;
-    // only the TRIGGER differs (cap-initiated at the exec boundary). Co-located
-    // here (not in SandboxModule) so the provider->gateway approval dependency
-    // does not re-form a module cycle. Cap-owned `/v1/shell/exec` call sites
-    // inject {@link SANDBOX_APPROVAL_ENFORCER} and `enforceThen(...)` before running
-    // a gated command, so approval never depends solely on codex firing a hook.
+    // Dormant compatibility binding. A future CAP-brokered action may inject this
+    // token and MUST wrap the action with `enforceThen`; no production call site
+    // does so today. Co-located here to avoid a provider->gateway module cycle.
     {
       provide: SANDBOX_APPROVAL_ENFORCER,
       useFactory: (gateway: ApprovalRouter): SandboxApprovalEnforcer =>

@@ -27,10 +27,10 @@ import type {
 } from '@cap/sandbox-core';
 import {
   SANDBOX_CLEANUP_ATTEMPT_MAX,
-  sandboxCleanupAttemptPlaceholder,
   validateSandboxCleanupAttemptEvidence,
   validateSandboxCleanupAttemptId,
 } from '@cap/sandbox-core';
+import { planInMemoryCleanupAttempt } from './cleanup-attempt.js';
 
 export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
   private readonly records = new Map<string, SandboxRunOwnerRecord>();
@@ -107,9 +107,7 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       cleanupAttemptCount: existing?.cleanupAttemptCount ?? 0,
       ...(providerIdentityChanged
         ? { cleanupOrphanConfirmedAt: undefined }
-        : existing?.cleanupOrphanConfirmedAt
-          ? { cleanupOrphanConfirmedAt: existing.cleanupOrphanConfirmedAt }
-          : {}),
+        : {}),
     });
   }
 
@@ -144,10 +142,6 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       status: 'provisioning',
       cleanupAttemptInFlight: existing?.cleanupAttemptInFlight ?? false,
       cleanupAttemptCount: existing?.cleanupAttemptCount ?? 0,
-      ...(existing?.ownership?.resourceGeneration ===
-        ownership.resourceGeneration && existing.cleanupOrphanConfirmedAt
-        ? { cleanupOrphanConfirmedAt: existing.cleanupOrphanConfirmedAt }
-        : {}),
     });
     return {
       kind: 'acquired',
@@ -272,7 +266,6 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       return false;
     }
     if (existing.createState === 'idle') return true;
-    if (existing.createState !== 'entered') return false;
     this.records.set(args.taskId, {
       ...existing,
       createState: 'idle',
@@ -363,10 +356,12 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     }
     const owner = { ...existing, status: 'deleting' as const };
     this.records.set(args.taskId, owner);
-    const authorization = cleanupAuthorizationFor(owner);
-    if (authorization.kind !== 'generation') {
-      return { kind: 'conflict' };
-    }
+    const authorization = Object.freeze({
+      kind: 'generation' as const,
+      taskId: owner.taskId,
+      providerId: owner.providerId,
+      ownership: existing.ownership,
+    });
     return { kind: 'authorized', owner, authorization };
   }
 
@@ -405,31 +400,15 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       return { kind: 'stale' };
     }
     const current = cleanupEvidenceForOwner(existing);
-    if (current && current.attemptId === attemptId) {
-      return { kind: 'replayed', evidence: current };
+    const transition = planInMemoryCleanupAttempt(
+      existing,
+      current,
+      attemptId,
+    );
+    if (transition.nextOwner) {
+      this.records.set(authorization.taskId, transition.nextOwner);
     }
-    if (existing.cleanupAttemptInFlight === true) {
-      return current
-        ? { kind: 'in-flight', evidence: current }
-        : { kind: 'conflict' };
-    }
-    const attempt = existing.cleanupAttemptCount ?? 0;
-    if (attempt >= SANDBOX_CLEANUP_ATTEMPT_MAX) {
-      return { kind: 'conflict' };
-    }
-    const evidence = sandboxCleanupAttemptPlaceholder(attempt + 1, attemptId);
-    this.records.set(authorization.taskId, {
-      ...existing,
-      cleanupAttemptInFlight: true,
-      cleanupAttemptCount: evidence.attempt,
-      cleanupLastAttemptId: evidence.attemptId,
-      cleanupLastOutcome: evidence.outcome,
-      cleanupLastProof: evidence.proof,
-      cleanupLastCause: evidence.cause,
-      cleanupLastRetryable: evidence.retryable,
-      cleanupLastObservedAt: evidence.observedAt,
-    });
-    return { kind: 'allocated', evidence };
+    return transition.result;
   }
 
   async settleSandboxRunCleanupAttempt(
@@ -446,7 +425,7 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
     ) {
       return { kind: 'stale' };
     }
-    const attemptCount = existing.cleanupAttemptCount ?? 0;
+    const attemptCount = existing.cleanupAttemptCount!;
     if (candidate.attempt < attemptCount) return { kind: 'stale' };
     if (
       candidate.attempt !== attemptCount ||
@@ -547,7 +526,7 @@ export class InMemorySandboxRunOwnerStore implements SandboxRunOwnerStore {
       existing.status === 'deleting' ||
       existing.cleanupAttemptInFlight === true ||
       (evidence.outcome === 'succeeded' && existing.createState !== 'idle') ||
-      evidence.attempt !== (existing.cleanupAttemptCount ?? 0) + 1
+      evidence.attempt !== existing.cleanupAttemptCount! + 1
     ) {
       return { kind: 'conflict' };
     }

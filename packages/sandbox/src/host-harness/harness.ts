@@ -1,7 +1,9 @@
 import type {
   SandboxEnvironmentProviderFamily,
   SandboxRuntimePreflightCommandDescriptor,
+  SandboxRuntimePrivateFile,
   SandboxRuntimeSetupCommandDescriptor,
+  SandboxRuntimePrivateFilePort,
   SandboxRunOwnerStore,
   SandboxResolvedEnvironmentMetadata,
   SandboxTranscriptSourceBase,
@@ -48,6 +50,7 @@ export interface SandboxHostRuntimePreflightProbe {
 export interface SandboxHostSetupCommand {
   readonly command: string;
   readonly tolerateUnresolvedExit: boolean;
+  readonly privateFiles?: readonly SandboxRuntimePrivateFile[];
   /** Safe identity declared independently from the possibly-secret command. */
   readonly descriptor: SandboxRuntimeSetupCommandDescriptor;
 }
@@ -82,6 +85,8 @@ export interface SandboxHostRuntime<TAuthMaterial> {
   };
 }
 
+export type SandboxHostRuntimePrivateFilePort = SandboxRuntimePrivateFilePort;
+
 export interface SandboxHostRuntimeRegistry<TRuntimeId, TAuthMaterial> {
   resolve(id?: TRuntimeId | null): SandboxHostRuntime<TAuthMaterial>;
   resolveForTask?(
@@ -94,10 +99,6 @@ export interface SandboxHostMaterialResolvers<TAuthMaterial> {
     runtime: { readonly id: string },
     ctx: { readonly taskId: string; readonly ownerUserId: string | null },
   ): Promise<TAuthMaterial | null>;
-}
-
-export interface SandboxHostCodexAuthSource {
-  persistRefreshedAuth(taskId: string, authJson: string): Promise<void>;
 }
 
 export interface SandboxHostSkillInstaller {
@@ -128,7 +129,6 @@ export interface SandboxHostHarness<
   readonly provisionLookup: SandboxHostProvisionLookup<TCloneSpec>;
   readonly runtimeRegistry: SandboxHostRuntimeRegistry<TRuntimeId, TAuthMaterial>;
   readonly materialResolvers: SandboxHostMaterialResolvers<TAuthMaterial>;
-  readonly codexAuthSource?: SandboxHostCodexAuthSource;
   readonly skillInstallers?: SandboxHostSkillInstallers;
   readonly approvalSink?: SandboxHostApprovalSink;
   readonly sessionIdForTask?: (taskId: string) => string;

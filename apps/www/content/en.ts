@@ -61,7 +61,7 @@ export const en: SiteContent = {
           "# write .env: CAP_VERSION=vX.Y.Z + ADMIN_EMAIL/ADMIN_PASSWORD + PASSWORD_AUTH_ENABLED=true + SESSION_SECRET/CODEX_CRED_ENC_KEY",
           "# macOS/BoxLite also needs: CAP_SANDBOX_PROVIDER=boxlite + BOXLITE_ENDPOINT/BOXLITE_API_TOKEN",
           "# same-host BoxLite: BOXLITE_ENDPOINT=http://host.docker.internal:7331 + BOXLITE_READINESS_ENDPOINT=http://127.0.0.1:7331",
-          "# Optional BoxLite defaults: BOXLITE_PROTOCOL_MODE=native + BOXLITE_PATH_PREFIX=default",
+          "# BoxLite native route: BOXLITE_PROTOCOL_MODE=native; use BOXLITE_PATH_PREFIX=default for prefixed services or BOXLITE_PATH_PREFIX= for 0.9.7 local serve",
           "# Linux/AIO also include: aio-sandbox-image",
           "COMPOSE_PROFILES=web docker compose -f docker-compose.prod.yml up -d api postgres web",
         ],

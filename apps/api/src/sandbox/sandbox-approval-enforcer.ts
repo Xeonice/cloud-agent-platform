@@ -8,45 +8,22 @@ import {
 } from '@cap/contracts';
 
 /**
- * Cap-controlled approval enforcement FALLBACK (harden-aio-execution, integration
- * task 6.9; design D8 ★, codex#16732).
+ * Dormant cap-controlled approval-enforcement primitive.
  *
  * WHY THIS EXISTS:
- *   The codex `0.131` `PreToolUse` hook is the PRIMARY approval path, but it has
- *   been observed to silently NOT fire even with the correct 0.131 format,
- *   `--full-auto`, hook trust, and matcher `.*` (codex#16732 — 0.131 is a
- *   research preview). If approval depended SOLELY on codex firing the hook, a
- *   non-firing hook would fail OPEN: a gated tool call would execute with no
- *   operator decision. That is unacceptable for an approval gate.
+ *   Bypass-mode Codex tasks deliberately do not register the historical
+ *   `PreToolUse` hook, and the interactive provider PTY is not a CAP command
+ *   broker. This class offers a fail-closed wrapper that a future, explicitly
+ *   CAP-brokered action can call before executing.
  *
- *   This enforcer moves the gate to a layer CAP CONTROLS: the
- *   orchestrator–sandbox `/v1/shell/exec` boundary. cap owns this surface (it is
- *   how the orchestrator runs commands inside the per-task sandbox over
- *   `cap-net`), so cap — not codex — decides whether a tool-affecting command
- *   runs. Before executing a gated command in the sandbox, the orchestrator
- *   routes a `permission_request` through the EXISTING approval round-trip
- *   (`requestApproval` -> `onPermissionRequest` fan-out -> operator `onDecision`)
- *   and proceeds ONLY on an explicit `allow`. On `deny`, on an approval error, or
- *   on no decision, the command DOES NOT RUN (fail closed).
+ * CURRENT COVERAGE:
+ *   No production call site invokes `enforce` or `enforceThen`; DI registration
+ *   alone is not enforcement. Ordinary setup `/v1/shell/exec` calls and agent
+ *   commands inside `/v1/shell/ws` are therefore NOT covered by this class.
  *
- * TOOL-SURFACE COVERAGE (and gaps), documented per the task:
- *   - COVERED: every command the orchestrator itself issues into the sandbox via
- *     `/v1/shell/exec` (the cap-owned exec boundary) — e.g. provider-initiated or
- *     orchestrator-mediated shell tool calls. cap mediates these, so the gate is
- *     authoritative for them regardless of codex hook firing.
- *   - GAP: commands codex runs DIRECTLY inside the interactive `/v1/shell/ws` TUI
- *     session (not through cap's `/v1/shell/exec`) are NOT individually mediated
- *     by this enforcer — there cap is a byte pipe, not a command broker. For that
- *     surface the codex hook remains the in-band gate; the network boundary
- *     (`cap-net`, no host port) plus ephemeral per-task creds remain the
- *     containment boundary, and the post-tool-use report still records activity.
- *     Closing this gap (e.g. mediating the interactive channel command-by-command)
- *     is the documented follow-up; this enforcer guarantees the cap-owned
- *     `/v1/shell/exec` surface never fails open on a non-firing codex hook.
- *
- * The enforcer reuses the SAME approval routing as the codex-hook path — only the
- * TRIGGER differs (cap-initiated at the exec boundary vs. codex-hook-initiated),
- * so an operator sees and decides these requests through the same surface.
+ * If a future call site is added, it reuses the existing approval router and MUST
+ * call `enforceThen` around the action; documentation/tests must not infer
+ * coverage merely from the provider binding.
  */
 
 /**
@@ -84,14 +61,13 @@ export interface EnforcementOutcome {
 
 /**
  * Default upper bound on how long the enforcer waits for an operator decision
- * before failing CLOSED. A non-decision is a DENY here (the action must never
- * proceed without an explicit allow), matching the codex-hook fail-closed rule.
+ * before failing CLOSED. A non-decision is a DENY here: an explicitly gated
+ * action must never proceed without an explicit allow.
  */
 const DEFAULT_DECISION_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
- * Enforces operator approval at the cap-owned `/v1/shell/exec` boundary, so a
- * gated tool call never proceeds on a non-firing codex hook (fail closed).
+ * Fail-closed approval primitive for a future explicitly gated CAP-owned action.
  */
 export class SandboxApprovalEnforcer {
   private readonly logger = new Logger(SandboxApprovalEnforcer.name);

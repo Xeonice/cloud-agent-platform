@@ -4,15 +4,17 @@
  * Shows a finished task's `session.cast` as ONE static, scrollable terminal log —
  * NOT a timing player. It feeds the whole recording into a read-only xterm with
  * the alternate-screen switch suppressed (see {@link buildCastOps}/{@link stripAltScreen}),
- * so codex's full-screen TUI plays into the NORMAL buffer and xterm's own
- * scrollback reconstructs the entire session top-to-bottom. After the bulk write
- * the reader is parked at the start of the history.
+ * so the observed codex TUI bytes play into the NORMAL buffer and xterm's own
+ * scrollback presents all retained recorded content top-to-bottom. This is an
+ * honest view of what the owner recorder observed, not a byte-complete execution
+ * audit. After the bulk write the reader is parked at the start of the history.
  *
  * Flow control (fix-terminal-record-replay-flow-control): the cast is written in
  * bounded chunks paced by xterm's write-flush callback (a high/low watermark), so
  * xterm's 50MB write buffer is never overrun (no "write data discarded"). The view
- * shows a loading state until the WHOLE cast has been flushed, then reveals the
- * complete scrollable log — no "one screen now, fills in later" race.
+ * shows a loading state until the whole retained cast has been flushed, then
+ * reveals that fully flushed scrollable recording — no "one screen now, fills in
+ * later" race.
  *
  * SSR-safe: the xterm mount, the theme resolve (getComputedStyle), and the cast
  * fetch all live in effects (client-only); nothing non-deterministic at render.
@@ -25,12 +27,22 @@ import {
   type AsciicastEvent,
   type AsciicastHeader,
 } from "@cap/contracts";
-import { getSessionCast } from "@/lib/api/real";
+import {
+  getSessionCast,
+  sessionCastUnavailableReasonFromApiError,
+} from "@/lib/api/real";
 import { buildCastOps } from "./cast-log";
 
-type Status = "loading" | "empty" | "error" | "ready";
+type Status =
+  | "loading"
+  | "empty"
+  | "disabled"
+  | "too-large"
+  | "unavailable"
+  | "error"
+  | "ready";
 
-/** Generous scrollback so a long session's full history is retained, not truncated. */
+/** Generous UI scrollback for the retained recording; this does not imply audit completeness. */
 const LOG_SCROLLBACK = 100_000;
 const FONT_MONO =
   '"JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
@@ -113,8 +125,13 @@ export function SessionCastLog({
         headerRef.current = header;
         setStatus("ready");
       })
-      .catch(() => {
-        if (!cancelled) setStatus("error");
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const reason = sessionCastUnavailableReasonFromApiError(error);
+        if (reason === "disabled") setStatus("disabled");
+        else if (reason === "too_large") setStatus("too-large");
+        else if (reason === "unavailable") setStatus("unavailable");
+        else setStatus("error");
       });
     return () => {
       cancelled = true;
@@ -198,6 +215,33 @@ export function SessionCastLog({
       />
     );
   }
+  if (status === "disabled") {
+    return (
+      <CenteredFace
+        icon="▮"
+        title="终端历史暂未保留"
+        detail="为保证原生终端体验与容量安全，当前默认不保存完整 raw 终端记录；对话记录仍可正常回看。"
+      />
+    );
+  }
+  if (status === "too-large") {
+    return (
+      <CenteredFace
+        icon="!"
+        title="终端记录超过安全读取上限"
+        detail="该历史记录过大，服务端已拒绝整文件加载，以避免 API 或浏览器内存耗尽。"
+      />
+    );
+  }
+  if (status === "unavailable") {
+    return (
+      <CenteredFace
+        icon="!"
+        title="终端记录当前不可用"
+        detail="服务端无法安全读取该终端记录；这不表示任务没有产生输出。"
+      />
+    );
+  }
   if (status === "error") {
     return (
       <CenteredFace
@@ -227,8 +271,8 @@ export function SessionCastLog({
         ) : null}
         {/* Loading overlay while the cast is being paced into xterm. <Terminal>
             stays mounted UNDER it (so onReady fires and the watermark loop runs);
-            the overlay drops only on the final flush, revealing the COMPLETE,
-            scrolled-to-top log — never a partially-filled intermediate frame. */}
+            the overlay drops only on the final flush, revealing the fully flushed,
+            scrolled-to-top retained log — never a partially-filled intermediate frame. */}
         {!feedingDone ? (
           <div className="absolute inset-0 z-10 bg-[#050505]">
             <CenteredFace title="读取终端记录…" />

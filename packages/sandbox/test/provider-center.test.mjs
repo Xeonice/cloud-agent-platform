@@ -278,6 +278,25 @@ await test('candidate selector reports explicit-family no-candidate and stable-o
     ['terminal.websocket'],
   );
   assert.equal(selected.id, 'first');
+
+  const required = mod.selectSandboxProviderCandidate(
+    [
+      { id: 'first', provider: first, location: 'local', priority: 100 },
+      { id: 'second', provider: second, location: 'local', priority: 1 },
+    ],
+    ['terminal.websocket'],
+    { requiredProviderId: 'second' },
+  );
+  assert.equal(required.id, 'second');
+  assert.throws(
+    () =>
+      mod.selectSandboxProviderCandidate(
+        [{ id: 'first', provider: first, location: 'local' }],
+        ['terminal.websocket'],
+        { requiredProviderId: 'missing' },
+      ),
+    /Required sandbox provider "missing" is not configured/,
+  );
 });
 
 await test('provider descriptor binds local/cloud metadata to declared capabilities', () => {
@@ -428,6 +447,27 @@ await test('provision plan couples cloneSpec and required capabilities', () => {
   assert.notEqual(resourcePlan.workspace, workspace);
   assert.equal(Object.isFrozen(resourcePlan.resources), true);
   assert.equal(Object.isFrozen(resourcePlan.workspace), true);
+
+  const controller = new AbortController();
+  const onWorkspaceProgress = () => {};
+  const beforeWorkspaceBoundary = async () => {};
+  const explicitPlan = mod.buildSandboxProvisionPlan({
+    cloneSpec: null,
+    modelIntent: { kind: 'runtime-default' },
+    runtimeId: 'codex',
+    executionMode: 'headless-exec',
+    environment: { resources: { diskSizeGb: 1 } },
+    resources: null,
+    workspace: null,
+    cancellationSignal: controller.signal,
+    onWorkspaceProgress,
+    beforeWorkspaceBoundary,
+  });
+  assert.equal(explicitPlan.resources, undefined);
+  assert.equal(explicitPlan.workspace, null);
+  assert.equal(explicitPlan.cancellationSignal, controller.signal);
+  assert.equal(explicitPlan.onWorkspaceProgress, onWorkspaceProgress);
+  assert.equal(explicitPlan.beforeWorkspaceBoundary, beforeWorkspaceBoundary);
 });
 
 await test('provider router gates explicit resources and forwards immutable context', async () => {

@@ -16,6 +16,7 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   forbidOnly: true,
+  preserveOutput: "always",
   timeout: 90_000,
   reporter: [["list"]],
   outputDir: "./e2e/test-results/provider-terminal-story",

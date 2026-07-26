@@ -6,6 +6,7 @@ import type {
   SampledResources,
   SampledResourceStatus,
 } from '@cap/contracts';
+import { createAioHttpCommandExecutor } from '@cap/sandbox';
 
 /**
  * Background CPU/memory sampler for `cap-aio-<taskId>` sandbox containers
@@ -518,29 +519,19 @@ export class ResourceSamplerService implements OnModuleDestroy {
   }
 
   /**
-   * `POST <baseUrl>/v1/shell/exec` the {@link CODEX_PROC_PROBE}, bounded by the
-   * sample cadence, and parse codex's subtree reading from the AIO response (the
-   * live server NESTS the result under `data`). Returns null on a non-2xx, an
-   * unparseable body, or a `NONE` (codex not running yet).
+   * Execute {@link CODEX_PROC_PROBE} through the shared AIO command adapter,
+   * bounded by the sample cadence. The adapter pre-allocates a known REST shell
+   * session and exact-deletes it even if the exec response is lost, so a periodic
+   * sampler cannot accumulate `openhands-gem-*` sessions. Returns null on a
+   * non-zero/indeterminate result, unparseable output, or `NONE`.
    */
   private async execProcProbe(baseUrl: string): Promise<ProcProbeReading | null> {
-    const res = await fetch(`${baseUrl}/v1/shell/exec`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ command: CODEX_PROC_PROBE }),
-      signal: AbortSignal.timeout(this.cadenceMs),
+    const result = await createAioHttpCommandExecutor({ baseUrl }).exec({
+      command: CODEX_PROC_PROBE,
+      timeoutMs: this.cadenceMs,
     });
-    if (!res.ok) return null;
-    const raw = (await res.json().catch(() => undefined)) as
-      | Record<string, unknown>
-      | undefined;
-    const top = raw ?? {};
-    const d = ((top.data as Record<string, unknown>) ?? top) as Record<string, unknown>;
-    const output =
-      (typeof d.output === 'string' && d.output) ||
-      (typeof d.stdout === 'string' && d.stdout) ||
-      '';
-    return parseProcProbe(output);
+    if (result.timedOut || result.exitCode !== 0) return null;
+    return parseProcProbe(result.output || result.stdout);
   }
 
   /**

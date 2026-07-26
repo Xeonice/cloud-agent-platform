@@ -2,8 +2,9 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-const repoRoot = resolve(new URL('..', import.meta.url).pathname);
+const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const quickDeploy = resolve(repoRoot, 'scripts/quick-deploy.sh');
 const preflightLib = resolve(repoRoot, 'scripts/install-preflight.sh');
 const TEST_ADMISSION_ATTESTATION = JSON.stringify({
@@ -286,7 +287,7 @@ JSON
     if [ "$CAP_FAKE_BOXLITE_READY" = "1" ]; then echo '{"id":"cap-quick-deploy-preflight-test"}'; else echo '{}'; fi
     exit 0
     ;;
-  *"/v1/default/boxes/probe-box/executions/exec-probe"*)
+  *"/boxes/probe-box/executions/exec-probe"*)
     if [ "$CAP_FAKE_BOXLITE_READY" = "1" ]; then echo '{"exit_code":0}'; else echo 404; fi
     exit 0
     ;;
@@ -294,23 +295,23 @@ JSON
     echo 404
     exit 0
     ;;
-  *"/v1/default/boxes/probe-box/exec"*)
+  *"/boxes/probe-box/exec"*)
     if [ "$CAP_FAKE_BOXLITE_READY" = "1" ]; then echo '{"execution_id":"exec-probe"}'; else echo 404; fi
     exit 0
     ;;
-  *"/v1/default/boxes/probe-box/start"*)
+  *"/boxes/probe-box/start"*)
     if [ "$CAP_FAKE_BOXLITE_READY" = "1" ]; then echo '{"box_id":"probe-box","status":"running"}'; else echo 404; fi
     exit 0
     ;;
-  *"/v1/default/boxes/"*"/exec"*)
+  *"/boxes/"*"/exec"*)
     echo 404
     exit 0
     ;;
-  *"-w %{http_code}"*"/v1/default/boxes"*)
+  *"-w %{http_code}"*"/boxes"*)
     if [ "$CAP_FAKE_BOXLITE_READY" = "1" ]; then echo 200; else echo 404; fi
     exit 0
     ;;
-  *"/v1/default/boxes"*)
+  *"/boxes"*)
     if [ "$CAP_FAKE_BOXLITE_READY" = "1" ]; then echo '{"box_id":"probe-box"}'; else echo 404; fi
     exit 0
     ;;
@@ -920,6 +921,26 @@ for (const [value, pattern] of [
   assert(!/\{"name":"cap-quick-deploy-preflight-[0-9]+","image":"cap-boxlite:test","working_dir"/.test(log), 'BoxLite native create payload omits working_dir');
   assert(/runtime sandbox disk_size_gb\/rootfs\/source\/workspace\/tools probe passed/.test(combined), 'BoxLite readiness runs disk/rootfs/source/workspace/tools probe');
   assert(!combined.includes('box-secret-token'), 'BoxLite runtime probe output redacts token');
+}
+
+{
+  const tc = makeCase();
+  const result = runQuickDeploy(tc, {
+    CAP_FAKE_BOXLITE_READY: '1',
+    CAP_SANDBOX_PROVIDER: 'boxlite',
+    CAP_SANDBOX_IMAGE_DELIVERY: 'registry',
+    CAP_QUICK_DEPLOY_STOP_AFTER: 'provider-readiness',
+    BOXLITE_ENDPOINT: 'https://boxlite.example.test',
+    BOXLITE_API_TOKEN: 'box-secret-token',
+    BOXLITE_IMAGE: 'cap-boxlite:test',
+    BOXLITE_PATH_PREFIX: '',
+  });
+  const log = readLog(tc);
+  const envFile = readFileSync(join(tc.workdir, '.env'), 'utf8');
+  assert(result.status === 0, 'BoxLite native readiness accepts an explicitly empty path prefix');
+  assert(/\/v1\/boxes\/probe-box\/start/.test(log), 'empty BoxLite prefix uses the v0.9.7 local serve route');
+  assert(!/\/v1\/default\/boxes/.test(log), 'empty BoxLite prefix never falls back to default');
+  assert(/^BOXLITE_PATH_PREFIX=$/m.test(envFile), 'quick-deploy persists an explicitly empty BoxLite prefix');
 }
 
 {

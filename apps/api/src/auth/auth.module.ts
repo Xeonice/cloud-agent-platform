@@ -11,9 +11,9 @@ import { AuthSessionService } from './auth-session.service';
  * the `APP_GUARD` provider. The guard exempts `/health` (liveness probes) and the
  * local session entry points (`/auth/session`, `/auth/logout`, password/OTP
  * login, forced password change, admin reveal) so an unauthenticated operator can
- * complete login, plus `/internal/sandbox/approvals` for the connect-in AIO callback (whose
- * boundary is `cap-net` network isolation, not an operator principal —
- * migrate-execution-to-aio-sandbox 5.5). Every other request must resolve a VALID
+ * complete login, plus the dormant `/internal/sandbox/approvals` compatibility
+ * callback (whose controller enforces a private direct-peer boundary). Current
+ * bypass-mode images do not register a hook caller. Every other request must resolve a VALID
  * operator principal — a still-enabled local session (cookie or `bearer.<token>`
  * subprotocol), an API key, an MCP token on its reserved route, or, only when
  * `AUTH_TOKEN_LEGACY_ENABLED` is on, the legacy `AUTH_TOKEN` bearer — or it is

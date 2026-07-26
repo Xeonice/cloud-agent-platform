@@ -34,6 +34,7 @@ import {
 } from '../terminal/codex-launch';
 import {
   exitCodeFromExecBody,
+  selectLaunch,
   TASK_MODEL_MATERIAL_PATH,
 } from '@cap/sandbox';
 
@@ -110,10 +111,7 @@ function replaceRuntimeExecutable(
   executable: string,
 ): string {
   if (runtime.id === 'codex') {
-    if (line.includes('codex --no-alt-screen')) {
-      return line.replace('codex --no-alt-screen', `${executable} --no-alt-screen`);
-    }
-    return line.replace('codex exec', `${executable} exec`);
+    return line.replace('codex ', `${executable} `);
   }
   if (line.includes('claude --session-id')) {
     return line.replace('claude --session-id', `${executable} --session-id`);
@@ -219,6 +217,17 @@ function captureRealTmuxArgv(
 // 7.1 — codex headless / resume argv (golden)
 // ---------------------------------------------------------------------------
 
+test('CodexRuntime interactive launch uses only the composed bypass policy', () => {
+  const line = new CodexRuntime().buildLaunchLine(CTX);
+  const codexCmd = line.slice(line.indexOf('codex '));
+  assert.match(codexCmd, /--dangerously-bypass-approvals-and-sandbox/);
+  assert.doesNotMatch(codexCmd, /--no-alt-screen/);
+  assert.doesNotMatch(codexCmd, /--ask-for-approval/);
+  assert.doesNotMatch(codexCmd, /--sandbox danger-full-access/);
+  assert.doesNotMatch(codexCmd, /--dangerously-bypass-hook-trust/);
+  assert.doesNotMatch(codexCmd, /--full-auto/);
+});
+
 test('CodexRuntime.buildHeadlessLine uses the codex exec bypass flag, stdin-closed, skip-git', () => {
   const line = new CodexRuntime().buildHeadlessLine(CTX);
   assert.match(line, /codex exec --json/);
@@ -232,10 +241,12 @@ test('CodexRuntime.buildHeadlessLine uses the codex exec bypass flag, stdin-clos
   assert.doesNotMatch(line, /--dangerously-bypass-hook-trust/);
 });
 
-test('CodexRuntime.buildResumeLine is exec resume with --skip-git and NO -s', () => {
+test('CodexRuntime.buildResumeLine repeats YOLO bypass with --skip-git and NO -s', () => {
   const line = new CodexRuntime().buildResumeLine(CTX, 'sess-7');
-  assert.match(line, /codex exec resume sess-7/);
+  assert.match(line, /codex exec resume/);
+  assert.match(line, /sess-7/);
   assert.match(line, /--json/);
+  assert.match(line, /--dangerously-bypass-approvals-and-sandbox/);
   assert.match(line, /--skip-git-repo-check/);
   assert.match(line, /< \/dev\/null/);
   // exec resume REJECTS -s/--sandbox (sandbox inherited). Check the CODEX command
@@ -243,6 +254,13 @@ test('CodexRuntime.buildResumeLine is exec resume with --skip-git and NO -s', ()
   const codexCmd = line.slice(line.indexOf('codex exec resume'));
   assert.doesNotMatch(codexCmd, /(^|\s)-s(\s|$)/);
   assert.doesNotMatch(codexCmd, /--sandbox/);
+});
+
+test('CodexRuntime.buildResumeLine rejects shell-active session ids', () => {
+  assert.throws(
+    () => new CodexRuntime().buildResumeLine(CTX, 'session; touch /tmp/escaped'),
+    /safe runtime identifier/,
+  );
 });
 
 test('ClaudeCodeRuntime.buildHeadlessLine is claude -p stream-json with --session-id, stdin-closed', () => {
@@ -253,6 +271,72 @@ test('ClaudeCodeRuntime.buildHeadlessLine is claude -p stream-json with --sessio
   assert.match(line, /--dangerously-skip-permissions/);
   assert.match(line, new RegExp(`--session-id ${CTX.sessionId}`));
   assert.match(line, /< \/dev\/null/);
+  assert.doesNotMatch(line, /acceptEdits/);
+  assert.doesNotMatch(line, /--permission-mode/);
+});
+
+test('Claude interactive uses native terminal mode while headless launch bytes stay pinned', () => {
+  const runtime = new ClaudeCodeRuntime();
+  const interactive = runtime.buildLaunchLine(CTX);
+  const headless = runtime.buildHeadlessLine(CTX);
+  const resume = runtime.buildResumeLine(CTX, 'previous-session');
+
+  assert.doesNotMatch(interactive, /CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN/);
+  assert.match(interactive, /CLAUDE_CODE_SANDBOXED=1/);
+  assert.match(interactive, /CLAUDE_CONFIG_DIR=\/home\/gem\/\.claude/);
+  assert.match(interactive, /--dangerously-skip-permissions/);
+
+  for (const line of [headless, resume]) {
+    assert.match(line, /export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1/);
+    assert.match(line, /CLAUDE_CODE_SANDBOXED=1/);
+    assert.match(line, /CLAUDE_CONFIG_DIR=\/home\/gem\/\.claude/);
+    assert.match(line, /--dangerously-skip-permissions/);
+  }
+});
+
+test('ClaudeCodeRuntime.buildResumeLine retains resume plus bypass-permissions policy', () => {
+  const line = new ClaudeCodeRuntime().buildResumeLine(CTX, 'previous-session');
+  assert.match(line, /claude -p "\$P"/);
+  assert.match(line, /--resume previous-session/);
+  assert.match(line, /--output-format stream-json/);
+  assert.match(line, /--verbose/);
+  assert.match(line, /--dangerously-skip-permissions/);
+  assert.match(line, /< \/dev\/null/);
+  assert.doesNotMatch(line, /--session-id/);
+  assert.doesNotMatch(line, /acceptEdits/);
+  assert.doesNotMatch(line, /--permission-mode/);
+});
+
+test('every Claude launch mode carries exactly one bypass flag and no legacy permission mode', () => {
+  const runtime = new ClaudeCodeRuntime();
+  for (const line of [
+    runtime.buildLaunchLine(CTX),
+    runtime.buildHeadlessLine(CTX),
+    runtime.buildResumeLine(CTX, 'previous-session'),
+  ]) {
+    assert.equal(line.split('--dangerously-skip-permissions').length - 1, 1);
+    assert.doesNotMatch(line, /acceptEdits/);
+    assert.doesNotMatch(line, /--permission-mode/);
+  }
+});
+
+test('provider-neutral selector delegates real runtime policy without rewriting flags', () => {
+  for (const runtime of [new CodexRuntime(), new ClaudeCodeRuntime()]) {
+    const interactive = selectLaunch(runtime, 'interactive-pty', CTX, true);
+    assert.equal(interactive.line, runtime.buildLaunchLine(CTX));
+    assert.equal(
+      interactive.armAutoSubmit,
+      runtime.terminalStartup.promptSubmit === 'cr-on-quiesce',
+    );
+
+    const headless = selectLaunch(runtime, 'headless-exec', CTX, true);
+    assert.equal(headless.line, runtime.buildHeadlessLine(CTX));
+    assert.equal(headless.armAutoSubmit, false);
+    assert.deepEqual(headless.terminalStartup, {
+      replyToStartupDSR: false,
+      promptSubmit: 'none',
+    });
+  }
 });
 
 test('both runtimes declare headless-exec support', () => {
@@ -343,6 +427,15 @@ test('real tmux and shell boundary preserves one hostile model argv across both 
       false,
       `${runtime.id} resume must preserve the previously selected session model`,
     );
+    if (runtime.id === 'claude-code') {
+      assert.ok(resumed.argv.includes('--resume'));
+      assert.ok(resumed.argv.includes('--dangerously-skip-permissions'));
+      assert.equal(resumed.argv.includes('acceptEdits'), false);
+      assert.equal(resumed.argv.includes('--permission-mode'), false);
+    } else {
+      assert.ok(resumed.argv.includes('resume'));
+      assert.equal(resumed.argv.includes('--sandbox'), false);
+    }
   }
 });
 

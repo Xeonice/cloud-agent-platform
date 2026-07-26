@@ -32,6 +32,7 @@ function response(status, body = { data: { exit_code: 0, output: '' } }) {
   return {
     ok: status >= 200 && status < 300,
     status,
+    body,
     async json() {
       return body;
     },
@@ -152,9 +153,76 @@ function makeFetch(handler) {
     const call = { input, path: url.pathname, method: init.method ?? 'GET', body, init };
     calls.push(call);
     if (url.pathname === '/v1/docs') return response(200);
-    return handler?.(call) ?? response(200);
+    if (url.pathname === '/v1/shell/sessions/create') {
+      return response(200, {
+        success: true,
+        data: { session_id: body.id, working_dir: '/home/gem' },
+      });
+    }
+    if (call.method === 'DELETE' && url.pathname.startsWith('/v1/shell/sessions/')) {
+      return response(200, {
+        success: true,
+        data: { session_id: url.pathname.slice('/v1/shell/sessions/'.length) },
+      });
+    }
+    const result = handler?.(call) ?? response(200);
+    if (
+      url.pathname === '/v1/shell/exec' &&
+      result.ok &&
+      result.body &&
+      typeof result.body === 'object' &&
+      !Object.prototype.hasOwnProperty.call(result.body, 'success')
+    ) {
+      const data =
+        result.body.data && typeof result.body.data === 'object'
+          ? result.body.data
+          : result.body;
+      return response(result.status, {
+        success: true,
+        data: {
+          session_id: body.id,
+          command: body.command,
+          status: 'completed',
+          ...data,
+        },
+      });
+    }
+    return result;
   };
   return { fetch, calls };
+}
+
+function successfulAioShellResponse(
+  input,
+  init = {},
+  commandResult = { exit_code: 0, output: '' },
+) {
+  const url = new URL(input);
+  const body = init.body ? JSON.parse(init.body) : {};
+  if (url.pathname === '/v1/shell/sessions/create') {
+    return response(200, {
+      success: true,
+      data: { session_id: body.id, working_dir: '/home/gem' },
+    });
+  }
+  if (init.method === 'DELETE') {
+    return response(200, {
+      success: true,
+      data: { session_id: url.pathname.slice('/v1/shell/sessions/'.length) },
+    });
+  }
+  if (url.pathname === '/v1/shell/exec') {
+    return response(200, {
+      success: true,
+      data: {
+        session_id: body.id,
+        command: body.command,
+        status: 'completed',
+        ...commandResult,
+      },
+    });
+  }
+  return response(404, { success: false });
 }
 
 function makeProvider(options = {}) {
@@ -187,6 +255,14 @@ function isDeliveryCommand(command) {
     'git rev-parse HEAD',
     'push --force-with-lease',
   ].some((needle) => command.includes(needle));
+}
+
+function unwrapAioChildShellCommand(command) {
+  const prefix = "sh -lc '";
+  assert.equal(typeof command, 'string');
+  assert.equal(command.startsWith(prefix), true);
+  assert.equal(command.endsWith("'"), true);
+  return command.slice(prefix.length, -1).replaceAll("'\\''", "'");
 }
 
 await test('provisions AIO containers through provider hooks and descriptors', async () => {
@@ -1146,7 +1222,7 @@ await test('every AIO provision boundary fails closed before or after lease loss
   }
 });
 
-await test('guarded command boundaries stop before fetch or after one fetch without fixed sleeps', async () => {
+await test('guarded command boundaries stop before I/O or after exact session cleanup without fixed sleeps', async () => {
   for (const targetPosition of ['before', 'after']) {
     for (const failureKind of ['lease-loss', 'stop']) {
       const boundaryReached = deferred();
@@ -1166,10 +1242,11 @@ await test('guarded command boundaries stop before fetch or after one fetch with
           await releaseBoundary.promise;
           if (failureKind === 'lease-loss') throw failure;
         },
-        fetch: async () => {
+        fetch: async (input, init) => {
           fetchCalls += 1;
-          return response(200, {
-            data: { exit_code: 0, output: 'guarded command' },
+          return successfulAioShellResponse(input, init, {
+            exit_code: 0,
+            output: 'guarded command',
           });
         },
       });
@@ -1179,7 +1256,7 @@ await test('guarded command boundaries stop before fetch or after one fetch with
       if (failureKind === 'stop') cancellation.abort(failure);
       releaseBoundary.resolve();
       await assert.rejects(executing, (error) => error === failure);
-      assert.equal(fetchCalls, targetPosition === 'before' ? 0 : 1);
+      assert.equal(fetchCalls, targetPosition === 'before' ? 0 : 3);
     }
   }
 });
@@ -1279,10 +1356,11 @@ await test('guarded AIO command execution fences fetch and carries provider canc
     externalBoundaryGuard: async (event) => {
       events.push([event.action, event.position]);
     },
-    fetch: async (_input, init) => {
-      fetchSignal = init.signal;
-      return response(200, {
-        data: { exit_code: 0, output: 'guarded command' },
+    fetch: async (input, init) => {
+      if (init.method !== 'DELETE') fetchSignal = init.signal;
+      return successfulAioShellResponse(input, init, {
+        exit_code: 0,
+        output: 'guarded command',
       });
     },
   });
@@ -1512,7 +1590,9 @@ await test('uses lookup clone specs, delivers workspace changes, and scrubs fail
   await provider.provision(provisionContext('task-2'));
   assert.ok(
     commands.some((command) =>
-      command.includes("git clone --recursive -- 'https://example.invalid/repo.git'"),
+      unwrapAioChildShellCommand(command).includes(
+        "git clone --recursive -- 'https://example.invalid/repo.git'",
+      ),
     ),
   );
 
@@ -2218,7 +2298,9 @@ await test('covers workspace success, validation, and degradation paths', async 
   );
   assert.ok(
     commands.some((command) =>
-      command.includes("git clone --recursive -- 'https://example.invalid/repo.git'"),
+      unwrapAioChildShellCommand(command).includes(
+        "git clone --recursive -- 'https://example.invalid/repo.git'",
+      ),
     ),
   );
 
@@ -2428,6 +2510,1332 @@ await test('an unsupported workspace source fails closed before any container ex
     /workspace\.source\.archive/u,
   );
   assert.equal(docker.created.length, 0);
+});
+
+await test('provision cleanup preserves durable authorization and detached-transfer boundaries', async () => {
+  const failedWorkspace = {
+    status: 'failed',
+    stage: 'checkout',
+    cause: 'unknown',
+    retryable: false,
+  };
+
+  const missingAuthorization = makeProvider({
+    hooks: {
+      workspaceMaterialization: async () => failedWorkspace,
+    },
+  });
+  await assert.rejects(
+    () =>
+      missingAuthorization.provider.provision({
+        ...provisionContext('task-cleanup-authorization-required'),
+        workspace: {
+          repositoryUrl: 'https://code.example.test/org/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'main',
+          deadlineMs: 60_000,
+        },
+        ownership: ownership('owner-required', 'resource-required'),
+      }),
+    (error) =>
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error.primary?.code === 'sandbox_workspace_materialization_error',
+  );
+  assert.equal(missingAuthorization.docker.created[0].container.isRunning(), true);
+
+  const changedGeneration = makeProvider({
+    hooks: {
+      workspaceMaterialization: async () => failedWorkspace,
+    },
+  });
+  await assert.rejects(
+    () =>
+      changedGeneration.provider.provision({
+        ...provisionContext('task-cleanup-generation-changed'),
+        workspace: {
+          repositoryUrl: 'https://code.example.test/org/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'main',
+          deadlineMs: 60_000,
+        },
+        ownership: ownership('owner-current', 'resource-current'),
+        beforeSandboxCleanup: async () =>
+          cleanupAuthorization(
+            'task-cleanup-generation-changed',
+            'owner-current',
+            'resource-stale',
+          ),
+        afterSandboxCleanup: async () => {
+          assert.fail('a stale cleanup authorization must not be acknowledged');
+        },
+      }),
+    (error) =>
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error.primary?.code === 'sandbox_workspace_materialization_error',
+  );
+
+  const pendingPrimary = new core.SandboxCleanupCoordinationPendingError(
+    new Error('original pending cleanup'),
+  );
+  const alreadyPending = makeProvider({
+    hooks: {
+      workspaceMaterialization: async () => {
+        throw pendingPrimary;
+      },
+    },
+  });
+  await assert.rejects(
+    () =>
+      alreadyPending.provider.provision({
+        ...provisionContext('task-cleanup-primary-already-pending'),
+        workspace: {
+          repositoryUrl: 'https://code.example.test/org/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'main',
+          deadlineMs: 60_000,
+        },
+        ownership: ownership('owner-pending', 'resource-pending'),
+        beforeSandboxCleanup: async () => {
+          throw new Error('owner store unavailable');
+        },
+        afterSandboxCleanup: async () => undefined,
+      }),
+    (error) => error === pendingPrimary,
+  );
+
+  const acknowledgementFailure = makeProvider({
+    hooks: {
+      workspaceMaterialization: async () => failedWorkspace,
+    },
+  });
+  const acknowledgementAuthorization = cleanupAuthorization(
+    'task-cleanup-ack-failed',
+    'owner-ack',
+    'resource-ack',
+  );
+  await assert.rejects(
+    () =>
+      acknowledgementFailure.provider.provision({
+        ...provisionContext('task-cleanup-ack-failed'),
+        workspace: {
+          repositoryUrl: 'https://code.example.test/org/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'main',
+          deadlineMs: 60_000,
+        },
+        ownership: acknowledgementAuthorization.ownership,
+        beforeSandboxCleanup: async () => acknowledgementAuthorization,
+        afterSandboxCleanup: async () => {
+          throw new Error('owner acknowledgement unavailable');
+        },
+      }),
+    (error) =>
+      error?.code === 'sandbox_cleanup_coordination_pending' &&
+      error.primary?.code === 'sandbox_workspace_materialization_error',
+  );
+  assert.equal(
+    acknowledgementFailure.docker.created[0].container.isRemoved(),
+    true,
+  );
+
+  const detached = makeProvider({
+    hooks: {
+      workspaceMaterialization: async () => {
+        throw new core.SandboxWorkspaceTransferDetachedSignal({
+          taskId: 'task-detached-transfer',
+          jobId: 'workspace-transfer',
+          async probe() {
+            return { status: 'running' };
+          },
+          async kill() {},
+        });
+      },
+    },
+  });
+  await assert.rejects(
+    () =>
+      detached.provider.provision({
+        ...provisionContext('task-detached-transfer'),
+        workspace: {
+          repositoryUrl: 'https://code.example.test/org/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'main',
+          deadlineMs: 60_000,
+        },
+      }),
+    (error) => error?.name === 'SandboxWorkspaceTransferDetachedSignal',
+  );
+  assert.equal(detached.docker.created[0].container.isRunning(), true);
+  assert.equal(detached.docker.created[0].container.isRemoved(), false);
+});
+
+await test('failed workspace cleanup keeps its primary error when trim degrades', async () => {
+  const events = [];
+  const failedClone = makeProvider({
+    hooks: {
+      preStopTrim: async () => {
+        events.push('trim-failed');
+        throw new Error('trim unavailable');
+      },
+    },
+    fetchHandler(call) {
+      if (call.body?.command?.includes('git clone')) {
+        return response(200, {
+          data: { exit_code: 1, output: 'clone rejected' },
+        });
+      }
+      return response(200);
+    },
+  });
+  await assert.rejects(
+    () =>
+      failedClone.provider.provision(
+        provisionContext('task-failed-clone-trim', {
+          url: 'https://code.example.test/org/repo.git',
+        }),
+      ),
+    /AIO git materialization failed: clone rejected/u,
+  );
+  assert.deepEqual(events, ['trim-failed']);
+  assert.equal(failedClone.docker.created[0].container.isRunning(), false);
+  assert.equal(failedClone.docker.created[0].container.isRemoved(), true);
+
+  let undefinedRuntimeTrimCalled = false;
+  const undefinedRuntime = makeProvider({
+    hooks: {
+      preStopTrim: async () => {
+        undefinedRuntimeTrimCalled = true;
+      },
+    },
+    fetchHandler(call) {
+      return call.body?.command?.includes('git clone')
+        ? response(200, { data: { exit_code: 1, output: 'clone rejected' } })
+        : response(200);
+    },
+  });
+  await assert.rejects(
+    () =>
+      undefinedRuntime.provider.provision({
+        taskId: 'task-undefined-runtime-cleanup',
+        modelIntent: { kind: 'runtime-default' },
+        executionMode: 'interactive-pty',
+        cloneSpec: { url: 'https://code.example.test/org/repo.git' },
+      }),
+    /AIO git materialization failed/u,
+  );
+  assert.equal(undefinedRuntimeTrimCalled, false);
+});
+
+await test('public teardown force-removes the exact sandbox when private trim is unconfirmed', async () => {
+  const fixture = makeProvider({
+    hooks: {
+      preStopTrim: async () => {
+        throw new Error('private cleanup transport failed');
+      },
+    },
+  });
+  await fixture.provider.provision(
+    provisionContext('task-public-trim-unconfirmed'),
+  );
+  const container = fixture.docker.created[0].container;
+  assert.equal(container.isRunning(), true);
+
+  assert.deepEqual(
+    await fixture.provider.teardownSandbox('task-public-trim-unconfirmed'),
+    { kind: 'found-and-cleaned' },
+  );
+  assert.equal(container.isRemoved(), true);
+  assert.equal(container.isRunning(), false);
+});
+
+await test('canonical workspace reports failed results and carries explicit environment context', async () => {
+  const environment = {
+    environmentId: 'env-aio-explicit',
+    sourceKind: 'aio-docker-image',
+    sourceRef: 'cap-aio-sandbox:0.2.0',
+  };
+  const detachment = { park: true };
+  const captured = [];
+  const successful = makeProvider({
+    hooks: {
+      runtimePreflight: async () => ({
+        status: 'passed',
+        checkedAt: '2026-07-25T00:00:00.000Z',
+        runtimeId: 'codex',
+      }),
+      workspaceMaterialization: async (context) => {
+        captured.push(context);
+        return { status: 'succeeded', stage: 'complete' };
+      },
+    },
+  });
+  await successful.provider.provision({
+    ...provisionContext('task-explicit-environment'),
+    environment,
+    workspace: {
+      repositoryUrl: 'https://code.example.test/org/repo.git',
+      callerBranch: null,
+      resolvedBranch: 'main',
+      deadlineMs: 60_000,
+    },
+    workspaceTransferDetachment: detachment,
+  });
+  const selected = await successful.provider.getSelectedSandboxRun(
+    'task-explicit-environment',
+  );
+  assert.deepEqual(selected.environment, environment);
+  assert.deepEqual(selected.preflight.environment, environment);
+  assert.equal(captured[0].detachment, detachment);
+
+  const failed = makeProvider({
+    hooks: {
+      workspaceMaterialization: async () => ({
+        status: 'cancelled',
+        stage: 'workspace_transfer',
+      }),
+    },
+  });
+  await assert.rejects(
+    () =>
+      failed.provider.provision({
+        ...provisionContext('task-canonical-workspace-cancelled'),
+        workspace: {
+          repositoryUrl: 'https://code.example.test/org/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'main',
+          deadlineMs: 60_000,
+        },
+      }),
+    (error) =>
+      error?.code === 'sandbox_workspace_materialization_error' &&
+      error.failure?.status === 'cancelled',
+  );
+
+  const legacyAuth = makeProvider();
+  await assert.rejects(
+    () =>
+      legacyAuth.provider.provision(
+        provisionContext('task-legacy-clone-auth', {
+          url: 'https://code.example.test/org/repo.git',
+          authHeader: 'Authorization: Basic private-canary',
+        }),
+      ),
+    (error) =>
+      error?.code === 'sandbox_provider_configuration_error' &&
+      /Legacy raw-header Git clone is disabled/u.test(error.message) &&
+      !error.message.includes('private-canary'),
+  );
+});
+
+await test('guarded command and teardown authorization fail closed before provider I/O', async () => {
+  assert.throws(
+    () =>
+      mod.createAioHttpCommandExecutor({
+        baseUrl: 'http://sandbox.test',
+        externalBoundaryGuard: async () => undefined,
+      }),
+    /guarded command executor requires a task id/u,
+  );
+
+  const taskMismatch = makeProvider().provider;
+  await assert.rejects(
+    () =>
+      taskMismatch.teardownSandbox('task-auth-target', {
+        cleanupAuthorization: {
+          kind: 'legacy',
+          taskId: 'task-auth-other',
+          providerId: 'aio-local',
+        },
+      }),
+    /authorization does not match the selected run/u,
+  );
+  await assert.rejects(
+    () =>
+      taskMismatch.teardownSandbox('task-auth-target', {
+        cleanupAuthorization: {
+          kind: 'legacy',
+          taskId: 'task-auth-target',
+          providerId: 'boxlite',
+        },
+      }),
+    /authorization does not match the selected run/u,
+  );
+
+  const legacyCleanup = makeProvider();
+  await legacyCleanup.provider.provision(
+    provisionContext('task-legacy-cleanup-authorization'),
+  );
+  assert.deepEqual(
+    await legacyCleanup.provider.teardownSandbox(
+      'task-legacy-cleanup-authorization',
+      {
+        cleanupAuthorization: {
+          kind: 'legacy',
+          taskId: 'task-legacy-cleanup-authorization',
+          providerId: 'aio-local',
+        },
+      },
+    ),
+    { kind: 'found-and-cleaned' },
+  );
+});
+
+await test('credentialed delivery validates callback pairs and forwards cancellation', async () => {
+  const cancellation = new AbortController();
+  const plans = [];
+  const { provider } = makeProvider({
+    hooks: {
+      workspaceDelivery: async (context) => {
+        plans.push(context.plan);
+        return { hadChanges: false, commitSha: null, error: null };
+      },
+    },
+  });
+  const credential = core.createExactHostGitCredential(
+    'https://code.example.test/org/repo.git',
+    'Authorization: Basic delivery-contract-canary',
+  );
+  const base = {
+    branch: 'cap/delivery-contract',
+    commitMessage: 'validate delivery contract',
+    credential,
+  };
+
+  await assert.rejects(
+    () =>
+      provider.deliverWorkspaceChanges('task-delivery-contract', {
+        ...base,
+        beforeSandboxCleanup: async () => null,
+      }),
+    /cleanup callbacks must be provided together/u,
+  );
+  await assert.rejects(
+    () =>
+      provider.deliverWorkspaceChanges('task-delivery-contract', {
+        ...base,
+        ownership: ownership('owner-delivery', 'resource-delivery'),
+      }),
+    /requires owner generation callbacks/u,
+  );
+
+  assert.deepEqual(
+    await provider.deliverWorkspaceChanges('task-delivery-contract', {
+      ...base,
+      cancellationSignal: cancellation.signal,
+    }),
+    { hadChanges: false, commitSha: null, error: null },
+  );
+  assert.equal(plans.length, 1);
+  assert.equal(plans[0].cancellationSignal, cancellation.signal);
+});
+
+await test('credentialed delivery rejects success after fencing and forgets only its exact run', async () => {
+  const credential = core.createExactHostGitCredential(
+    'https://code.example.test/org/repo.git',
+    'Authorization: Basic delivery-fence-contract',
+  );
+  const exactOwnership = ownership(
+    'owner-delivery-success-fence',
+    'resource-delivery-success-fence',
+  );
+  const authorization = cleanupAuthorization(
+    'task-delivery-success-fence',
+    exactOwnership.ownerGeneration,
+    exactOwnership.resourceGeneration,
+  );
+  const successfulAfterFence = makeProvider({
+    hooks: {
+      workspaceDelivery: async (context) => {
+        const aborted = new AbortController();
+        aborted.abort();
+        await context.stageExecutor.execute({
+          stage: 'delivery_push',
+          request: { command: 'git push', timeoutMs: 1_000 },
+          signal: aborted.signal,
+          remainingTimeoutMs: 1_000,
+        });
+        return { hadChanges: false, commitSha: null, error: null };
+      },
+    },
+  });
+  await successfulAfterFence.provider.provision({
+    ...provisionContext('task-delivery-success-fence'),
+    workspace: null,
+    ownership: exactOwnership,
+    beforeSandboxCleanup: async () => authorization,
+    afterSandboxCleanup: async () => undefined,
+  });
+  await assert.rejects(
+    () =>
+      successfulAfterFence.provider.deliverWorkspaceChanges(
+        'task-delivery-success-fence',
+        {
+          branch: 'cap/delivery-success-fence',
+          commitMessage: 'must not report success after fencing',
+          credential,
+          ownership: exactOwnership,
+          beforeSandboxCleanup: async () => authorization,
+          afterSandboxCleanup: async () => undefined,
+        },
+      ),
+    /cannot retain a fenced sandbox/u,
+  );
+  assert.equal(
+    successfulAfterFence.provider.runs.has('task-delivery-success-fence'),
+    false,
+  );
+
+  const noTrackedRun = makeProvider({
+    hooks: {
+      workspaceDelivery: async (context) => {
+        const aborted = new AbortController();
+        aborted.abort();
+        await context.stageExecutor.execute({
+          stage: 'delivery_push',
+          request: { command: 'git push', timeoutMs: 1_000 },
+          signal: aborted.signal,
+          remainingTimeoutMs: 1_000,
+        });
+        return { hadChanges: false, commitSha: null, error: 'sandbox_fenced' };
+      },
+    },
+  });
+  assert.deepEqual(
+    await noTrackedRun.provider.deliverWorkspaceChanges(
+      'task-delivery-untracked',
+      {
+        branch: 'cap/delivery-untracked',
+        commitMessage: 'fence an untracked sandbox',
+        credential,
+      },
+    ),
+    { hadChanges: false, commitSha: null, error: 'sandbox_fenced' },
+  );
+
+  const currentRemoved = makeProvider({
+    hooks: {
+      workspaceDelivery: async (context) => {
+        const aborted = new AbortController();
+        aborted.abort();
+        await context.stageExecutor.execute({
+          stage: 'delivery_push',
+          request: { command: 'git push', timeoutMs: 1_000 },
+          signal: aborted.signal,
+          remainingTimeoutMs: 1_000,
+        });
+        return { hadChanges: false, commitSha: null, error: 'sandbox_fenced' };
+      },
+    },
+  });
+  await currentRemoved.provider.provision(
+    provisionContext('task-delivery-current-removed'),
+  );
+  const legacyAuthorization = {
+    kind: 'legacy',
+    taskId: 'task-delivery-current-removed',
+    providerId: 'aio-local',
+  };
+  await currentRemoved.provider.deliverWorkspaceChanges(
+    'task-delivery-current-removed',
+    {
+      branch: 'cap/delivery-current-removed',
+      commitMessage: 'remove current run during acknowledgement',
+      credential,
+      beforeSandboxCleanup: async () => legacyAuthorization,
+      afterSandboxCleanup: async () => {
+        currentRemoved.provider.runs.delete('task-delivery-current-removed');
+      },
+    },
+  );
+  assert.equal(
+    currentRemoved.provider.runs.has('task-delivery-current-removed'),
+    false,
+  );
+
+  const runWithoutPhysicalIdentity = makeProvider({
+    hooks: {
+      workspaceDelivery: async (context) => {
+        const aborted = new AbortController();
+        aborted.abort();
+        await context.stageExecutor.execute({
+          stage: 'delivery_push',
+          request: { command: 'git push', timeoutMs: 1_000 },
+          signal: aborted.signal,
+          remainingTimeoutMs: 1_000,
+        });
+        return { hadChanges: false, commitSha: null, error: 'sandbox_fenced' };
+      },
+    },
+  });
+  runWithoutPhysicalIdentity.provider.runs.set('task-delivery-no-identity', {
+    taskId: 'task-delivery-no-identity',
+    connection: {
+      taskId: 'task-delivery-no-identity',
+      baseUrl: 'http://cap-aio-task-delivery-no-identity:8080',
+      wsUrl: 'ws://cap-aio-task-delivery-no-identity:8080/v1/shell/ws',
+    },
+  });
+  await runWithoutPhysicalIdentity.provider.deliverWorkspaceChanges(
+    'task-delivery-no-identity',
+    {
+      branch: 'cap/delivery-no-identity',
+      commitMessage: 'forget logical-only run',
+      credential,
+    },
+  );
+  assert.equal(
+    runWithoutPhysicalIdentity.provider.runs.has('task-delivery-no-identity'),
+    false,
+  );
+
+  const resourceReplaced = makeProvider({
+    hooks: {
+      workspaceDelivery: async (context) => {
+        const aborted = new AbortController();
+        aborted.abort();
+        await context.stageExecutor.execute({
+          stage: 'delivery_push',
+          request: { command: 'git push', timeoutMs: 1_000 },
+          signal: aborted.signal,
+          remainingTimeoutMs: 1_000,
+        });
+        return { hadChanges: false, commitSha: null, error: 'sandbox_fenced' };
+      },
+    },
+  });
+  const replacedTaskId = 'task-delivery-resource-replaced';
+  const replacedOwnership = ownership('owner-old', 'resource-old');
+  const replacedAuthorization = cleanupAuthorization(
+    replacedTaskId,
+    replacedOwnership.ownerGeneration,
+    replacedOwnership.resourceGeneration,
+  );
+  resourceReplaced.provider.runs.set(replacedTaskId, {
+    taskId: replacedTaskId,
+    providerSandboxId: 'same-container-id',
+    ownership: replacedOwnership,
+    connection: {
+      taskId: replacedTaskId,
+      baseUrl: `http://cap-aio-${replacedTaskId}:8080`,
+      wsUrl: `ws://cap-aio-${replacedTaskId}:8080/v1/shell/ws`,
+    },
+  });
+  await resourceReplaced.provider.deliverWorkspaceChanges(replacedTaskId, {
+    branch: 'cap/delivery-resource-replaced',
+    commitMessage: 'preserve replacement generation',
+    credential,
+    ownership: replacedOwnership,
+    beforeSandboxCleanup: async () => replacedAuthorization,
+    afterSandboxCleanup: async () => {
+      resourceReplaced.provider.runs.set(replacedTaskId, {
+        ...resourceReplaced.provider.runs.get(replacedTaskId),
+        ownership: ownership('owner-new', 'resource-new'),
+      });
+    },
+  });
+  assert.equal(
+    resourceReplaced.provider.runs.get(replacedTaskId).ownership.resourceGeneration,
+    'resource-new',
+  );
+});
+
+await test('reattach preserves stale runs when an exact target no longer matches', async () => {
+  const taskId = 'task-reattach-target-mismatch';
+  const connection = {
+    taskId,
+    baseUrl: 'http://reattached',
+    wsUrl: 'ws://reattached',
+  };
+
+  const targetFallback = makeProvider();
+  targetFallback.controller.reattach = async () => connection;
+  targetFallback.controller.getProviderSandboxId = () => undefined;
+  assert.equal(
+    await targetFallback.provider.reattach(taskId, {
+      providerSandboxId: 'target-container-id',
+    }),
+    connection,
+  );
+  assert.equal(
+    targetFallback.provider.runs.get(taskId).providerSandboxId,
+    'target-container-id',
+  );
+
+  const logicalOnly = makeProvider();
+  logicalOnly.controller.reattach = async () => connection;
+  logicalOnly.controller.getProviderSandboxId = () => undefined;
+  assert.equal(await logicalOnly.provider.reattach(taskId), connection);
+  assert.equal(
+    Object.hasOwn(logicalOnly.provider.runs.get(taskId), 'providerSandboxId'),
+    false,
+  );
+
+  for (const fixture of [
+    {
+      name: 'provider id mismatch',
+      run: {
+        providerSandboxId: 'container-current',
+        ownership: ownership('owner-current', 'resource-current'),
+      },
+      target: { providerSandboxId: 'container-stale' },
+    },
+    {
+      name: 'owner generation mismatch',
+      run: {
+        providerSandboxId: 'container-current',
+        ownership: ownership('owner-current', 'resource-current'),
+      },
+      target: {
+        providerSandboxId: 'container-current',
+        ownership: ownership('owner-stale', 'resource-current'),
+      },
+    },
+    {
+      name: 'resource generation mismatch',
+      run: {
+        providerSandboxId: 'container-current',
+        ownership: ownership('owner-current', 'resource-current'),
+      },
+      target: {
+        providerSandboxId: 'container-current',
+        ownership: ownership('owner-current', 'resource-stale'),
+      },
+    },
+  ]) {
+    const candidate = makeProvider();
+    const run = {
+      taskId,
+      ...fixture.run,
+      connection: {
+        taskId,
+        baseUrl: `http://${fixture.name}`,
+        wsUrl: `ws://${fixture.name}`,
+      },
+    };
+    candidate.provider.runs.set(taskId, run);
+    candidate.controller.reattach = async () => null;
+    assert.equal(await candidate.provider.reattach(taskId, fixture.target), null);
+    assert.equal(candidate.provider.runs.get(taskId), run);
+  }
+});
+
+await test('provider fallback seams preserve primaries and validate declared hooks', async () => {
+  const primary = new Error('workspace primary failure');
+  const cleanupFailure = makeProvider({
+    hooks: {
+      workspaceMaterialization: async () => {
+        throw primary;
+      },
+    },
+  });
+  cleanupFailure.controller.teardownSandbox = async () => {
+    throw new Error('secondary cleanup failure');
+  };
+  await assert.rejects(
+    () =>
+      cleanupFailure.provider.provision({
+        ...provisionContext('task-cleanup-secondary-failure'),
+        workspace: {
+          repositoryUrl: 'https://code.example.test/org/repo.git',
+          callerBranch: null,
+          resolvedBranch: 'main',
+          deadlineMs: 60_000,
+        },
+      }),
+    (error) => error === primary,
+  );
+
+  const withoutDelivery = makeProvider().provider;
+  assert.deepEqual(
+    await withoutDelivery.deliverWorkspaceChanges('task-no-delivery-hook', {
+      branch: 'cap/no-delivery-hook',
+      commitMessage: 'must fail without hook',
+      credential: core.createExactHostGitCredential(
+        'https://code.example.test/org/repo.git',
+        'Authorization: Basic no-delivery-hook-canary',
+      ),
+    }),
+    {
+      hadChanges: false,
+      commitSha: null,
+      error: 'Credentialed delivery requires the staged workspace hook',
+    },
+  );
+
+  assert.throws(
+    () =>
+      new mod.AioSandboxProvider({
+        controller: makeProvider().controller,
+        capabilities: ['workspace.git.deliver'],
+      }),
+    /capability workspace\.git\.deliver requires its provider hook/u,
+  );
+
+  const mutableHooks = {
+    workspaceMaterialization: async () => ({
+      status: 'succeeded',
+      stage: 'complete',
+    }),
+  };
+  const snapshottedHooks = makeProvider({ hooks: mutableHooks });
+  delete mutableHooks.workspaceMaterialization;
+  await snapshottedHooks.provider.provision({
+    ...provisionContext('task-snapshotted-hooks'),
+    workspace: {
+      repositoryUrl: 'https://code.example.test/org/repo.git',
+      callerBranch: null,
+      resolvedBranch: 'main',
+      deadlineMs: 60_000,
+    },
+  });
+  assert.equal(
+    snapshottedHooks.provider
+      .getProviderCapabilities()
+      .includes('workspace.git.materialize'),
+    true,
+  );
+
+  const untracked = makeProvider();
+  assert.deepEqual(
+    await untracked.provider.teardownSandbox('task-untracked-remove', {
+      disposition: 'superseded-remove',
+    }),
+    { kind: 'already-absent' },
+  );
+
+  const trackedRemove = makeProvider();
+  const trackedDiagnostics = { mode: 'task' };
+  let receivedDiagnostics;
+  trackedRemove.provider.runs.set('task-tracked-remove', {
+    taskId: 'task-tracked-remove',
+    providerSandboxId: 'container-tracked-remove',
+    diagnostics: trackedDiagnostics,
+    connection: {
+      taskId: 'task-tracked-remove',
+      baseUrl: 'http://tracked-remove',
+      wsUrl: 'ws://tracked-remove',
+    },
+  });
+  trackedRemove.controller.removeSandboxAndConfirm = async (
+    _taskId,
+    _ownership,
+    _providerSandboxId,
+    diagnostics,
+  ) => {
+    receivedDiagnostics = diagnostics;
+    return { kind: 'already-absent' };
+  };
+  await trackedRemove.provider.teardownSandbox('task-tracked-remove', {
+    disposition: 'superseded-remove',
+  });
+  assert.equal(receivedDiagnostics, trackedDiagnostics);
+
+  const removeCalls = [];
+  const removeFallbacks = makeProvider();
+  removeFallbacks.controller.removeSandbox = async (taskId, options) => {
+    removeCalls.push([taskId, options]);
+  };
+  const runOwnership = ownership('owner-remove-run', 'resource-remove-run');
+  const diagnostics = { mode: 'task' };
+  removeFallbacks.provider.runs.set('task-remove-run-fallback', {
+    taskId: 'task-remove-run-fallback',
+    providerSandboxId: 'container-remove-run',
+    ownership: runOwnership,
+    diagnostics,
+    connection: {
+      taskId: 'task-remove-run-fallback',
+      baseUrl: 'http://remove-run',
+      wsUrl: 'ws://remove-run',
+    },
+  });
+  await removeFallbacks.provider.removeSandbox('task-remove-run-fallback');
+  const explicitOwnership = ownership(
+    'owner-remove-explicit',
+    'resource-remove-explicit',
+  );
+  await removeFallbacks.provider.removeSandbox('task-remove-explicit', {
+    ownership: explicitOwnership,
+    providerSandboxId: 'container-remove-explicit',
+  });
+  assert.deepEqual(removeCalls, [
+    [
+      'task-remove-run-fallback',
+      {
+        ownership: runOwnership,
+        providerSandboxId: 'container-remove-run',
+        diagnostics,
+      },
+    ],
+    [
+      'task-remove-explicit',
+      {
+        ownership: explicitOwnership,
+        providerSandboxId: 'container-remove-explicit',
+        diagnostics: undefined,
+      },
+    ],
+  ]);
+
+  const explicitNullEnvironment = makeProvider();
+  await explicitNullEnvironment.provider.provision({
+    ...provisionContext('task-explicit-null-environment'),
+    environment: null,
+  });
+
+  const originalFetch = globalThis.fetch;
+  const fetchCalls = [];
+  globalThis.fetch = async (input, init) => {
+    fetchCalls.push([input, init]);
+    return successfulAioShellResponse(input, init, {
+      exit_code: 0,
+      output: 'default fetch executed',
+    });
+  };
+  try {
+    const executor = mod.createAioHttpCommandExecutor({
+      baseUrl: 'http://default-fetch.test',
+    });
+    assert.equal(
+      (await executor.exec({ command: 'echo default-fetch' })).output,
+      'default fetch executed',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(fetchCalls.length, 3);
+  const createBody = JSON.parse(fetchCalls[0][1].body);
+  assert.match(createBody.id, /^[0-9a-f-]{36}$/u);
+  assert.deepEqual(JSON.parse(fetchCalls[1][1].body), {
+    id: createBody.id,
+    command: "sh -lc 'echo default-fetch'",
+    async_mode: false,
+  });
+  assert.equal(
+    fetchCalls[2][0],
+    `http://default-fetch.test/v1/shell/sessions/${createBody.id}`,
+  );
+});
+
+await test('AIO HTTP executor deletes the exact REST shell session after success and command failure', async () => {
+  const cases = [
+    { exitCode: 0, output: 'ok' },
+    { exitCode: 7, output: 'failed' },
+  ];
+
+  for (const testCase of cases) {
+    const calls = [];
+    let sessionId;
+    const executor = mod.createAioHttpCommandExecutor({
+      baseUrl: 'http://sandbox.test',
+      fetch: async (input, init = {}) => {
+        const call = { input, init };
+        calls.push(call);
+        const url = new URL(input);
+        const body = init.body ? JSON.parse(init.body) : {};
+        if (url.pathname === '/v1/shell/sessions/create') {
+          sessionId = body.id;
+        }
+        if (url.pathname === '/v1/shell/exec') {
+          return response(200, {
+            success: true,
+            data: {
+              session_id: body.id,
+              command: body.command,
+              status: 'completed',
+              exit_code: testCase.exitCode,
+              output: testCase.output,
+            },
+          });
+        }
+        if (init.method === 'DELETE') {
+          return response(200, {
+            success: true,
+            data: { session_id: sessionId },
+          });
+        }
+        return successfulAioShellResponse(input, init);
+      },
+    });
+
+    const result = await executor.exec({ command: 'printf canary' });
+    assert.equal(result.exitCode, testCase.exitCode);
+    assert.equal(result.output, testCase.output);
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].init.method, 'POST');
+    assert.equal(new URL(calls[0].input).pathname, '/v1/shell/sessions/create');
+    assert.equal(new URL(calls[1].input).pathname, '/v1/shell/exec');
+    assert.equal(
+      calls[2].input,
+      `http://sandbox.test/v1/shell/sessions/${sessionId}`,
+    );
+    assert.equal(calls[2].init.method, 'DELETE');
+    assert.ok(calls[2].init.signal instanceof AbortSignal);
+  }
+});
+
+await test('AIO HTTP executor isolates explicit exit commands in a child shell and preserves their exit status', async () => {
+  const calls = [];
+  const executor = mod.createAioHttpCommandExecutor({
+    baseUrl: 'http://sandbox.test',
+    fetch: async (input, init = {}) => {
+      calls.push({ input, init });
+      const url = new URL(input);
+      const body = init.body ? JSON.parse(init.body) : {};
+      if (url.pathname === '/v1/shell/exec') {
+        assert.equal(
+          body.command,
+          String.raw`sh -lc 'printf '\''before-exit\n'\''; exit 7'`,
+        );
+        return successfulAioShellResponse(input, init, {
+          exit_code: 7,
+          output: 'before-exit\n',
+        });
+      }
+      return successfulAioShellResponse(input, init);
+    },
+  });
+
+  const result = await executor.exec({
+    command: "printf 'before-exit\\n'; exit 7",
+  });
+  assert.equal(result.exitCode, 7);
+  assert.equal(result.output, 'before-exit\n');
+  assert.equal(calls.length, 3);
+  assert.equal(
+    new URL(calls[2].input).pathname,
+    `/v1/shell/sessions/${JSON.parse(calls[0].init.body).id}`,
+  );
+  assert.equal(calls[2].init.method, 'DELETE');
+});
+
+await test('AIO HTTP executor exact-deletes a preallocated session after a lost exec response', async () => {
+  const cancellation = new AbortController();
+  const calls = [];
+  const responseLoss = new Error('exec response lost after allocation');
+  let sessionId;
+  const executor = mod.createAioHttpCommandExecutor({
+    baseUrl: 'http://sandbox.test',
+    signal: cancellation.signal,
+    fetch: async (input, init = {}) => {
+      calls.push({ input, init });
+      const url = new URL(input);
+      const body = init.body ? JSON.parse(init.body) : {};
+      if (url.pathname === '/v1/shell/sessions/create') {
+        sessionId = body.id;
+        return successfulAioShellResponse(input, init);
+      }
+      if (url.pathname === '/v1/shell/exec') {
+        cancellation.abort(responseLoss);
+        throw responseLoss;
+      }
+      if (init.method === 'DELETE') {
+        return response(200, { success: true, data: { session_id: sessionId } });
+      }
+      throw new Error('unexpected AIO route');
+    },
+  });
+
+  await assert.rejects(() => executor.exec({ command: 'true' }), (error) => error === responseLoss);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2].init.method, 'DELETE');
+  assert.equal(calls[2].input, `http://sandbox.test/v1/shell/sessions/${sessionId}`);
+  assert.notEqual(calls[2].init.signal, cancellation.signal);
+  assert.equal(calls[2].init.signal.aborted, false);
+});
+
+await test('AIO HTTP executor exact-deletes its known id after the create response is lost', async () => {
+  const calls = [];
+  const responseLoss = new Error('create response lost after allocation');
+  let sessionId;
+  const executor = mod.createAioHttpCommandExecutor({
+    baseUrl: 'http://sandbox.test',
+    fetch: async (input, init = {}) => {
+      calls.push({ input, init });
+      const url = new URL(input);
+      const body = init.body ? JSON.parse(init.body) : {};
+      if (url.pathname === '/v1/shell/sessions/create') {
+        sessionId = body.id;
+        throw responseLoss;
+      }
+      if (init.method === 'DELETE') {
+        return response(200, {
+          success: true,
+          data: { session_id: sessionId },
+        });
+      }
+      throw new Error('exec must not run after a lost create response');
+    },
+  });
+
+  await assert.rejects(
+    () => executor.exec({ command: 'true' }),
+    (error) => error === responseLoss,
+  );
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].init.method, 'DELETE');
+  assert.equal(
+    calls[1].input,
+    `http://sandbox.test/v1/shell/sessions/${sessionId}`,
+  );
+});
+
+await test('AIO HTTP executor fails closed when exact REST shell cleanup is unconfirmed', async () => {
+  for (const cleanupResult of [
+    () => response(503, { success: false }),
+    () => response(200, { success: false }),
+    () => {
+      throw new Error('cleanup transport down');
+    },
+    () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        throw new Error('cleanup response was not JSON');
+      },
+    }),
+    () => response(200, {
+      success: true,
+      data: { session_id: '55555555-5555-4555-8555-555555555555' },
+    }),
+  ]) {
+    let callCount = 0;
+    const executor = mod.createAioHttpCommandExecutor({
+      baseUrl: 'http://sandbox.test',
+      fetch: async (input, init) => {
+        callCount += 1;
+        return init.method === 'DELETE'
+          ? cleanupResult()
+          : successfulAioShellResponse(input, init, {
+              exit_code: 0,
+              output: 'ok',
+            });
+      },
+    });
+    await assert.rejects(
+      () => executor.exec({ command: 'true' }),
+      /AIO shell session cleanup/u,
+    );
+    assert.equal(callCount, 5);
+  }
+});
+
+await test('AIO HTTP executor retries exact cleanup with a fresh timeout per attempt', async () => {
+  const calls = [];
+  const cleanupSignals = [];
+  let sessionId;
+  let cleanupAttempts = 0;
+  const executor = mod.createAioHttpCommandExecutor({
+    baseUrl: 'http://sandbox.test',
+    fetch: async (input, init = {}) => {
+      calls.push({ input, init });
+      const url = new URL(input);
+      const body = init.body ? JSON.parse(init.body) : {};
+      if (url.pathname === '/v1/shell/sessions/create') {
+        sessionId = body.id;
+        return successfulAioShellResponse(input, init);
+      }
+      if (url.pathname === '/v1/shell/exec') {
+        return successfulAioShellResponse(input, init, {
+          exit_code: 0,
+          output: 'ok',
+        });
+      }
+      cleanupAttempts += 1;
+      cleanupSignals.push(init.signal);
+      assert.equal(
+        input,
+        `http://sandbox.test/v1/shell/sessions/${sessionId}`,
+      );
+      if (cleanupAttempts === 1) throw new Error('cleanup transport down');
+      if (cleanupAttempts === 2) {
+        return response(503, { success: false });
+      }
+      return response(200, {
+        success: true,
+        data: { session_id: sessionId },
+      });
+    },
+  });
+
+  assert.equal((await executor.exec({ command: 'true' })).exitCode, 0);
+  assert.equal(calls.length, 5);
+  assert.equal(cleanupAttempts, 3);
+  assert.equal(new Set(cleanupSignals).size, 3);
+  for (const signal of cleanupSignals) {
+    assert.ok(signal instanceof AbortSignal);
+    assert.equal(signal.aborted, false);
+  }
+});
+
+await test('AIO HTTP executor preserves execution primary and attaches safe cleanup secondary evidence', async () => {
+  const primary = new Error('exec response lost');
+  const calls = [];
+  let sessionId;
+  const executor = mod.createAioHttpCommandExecutor({
+    baseUrl: 'http://sandbox.test',
+    fetch: async (input, init = {}) => {
+      calls.push({ input, init });
+      const url = new URL(input);
+      const body = init.body ? JSON.parse(init.body) : {};
+      if (url.pathname === '/v1/shell/sessions/create') {
+        sessionId = body.id;
+        return successfulAioShellResponse(input, init);
+      }
+      if (url.pathname === '/v1/shell/exec') throw primary;
+      assert.equal(
+        input,
+        `http://sandbox.test/v1/shell/sessions/${sessionId}`,
+      );
+      return response(503, { success: false });
+    },
+  });
+
+  await assert.rejects(
+    () => executor.exec({ command: 'true' }),
+    (error) => error === primary,
+  );
+  assert.equal(calls.length, 5);
+  assert.deepEqual(primary.aioShellCleanup, {
+    outcome: 'indeterminate',
+    cause: 'cleanup_unconfirmed',
+    retryable: true,
+  });
+  assert.equal(Object.keys(primary).includes('aioShellCleanup'), false);
+  assert.equal(Object.isFrozen(primary.aioShellCleanup), true);
+});
+
+await test('AIO HTTP executor accepts only pinned settled shell statuses', async () => {
+  for (const testCase of [
+    {
+      status: 'completed',
+      exitCode: 0,
+      expectedTimedOut: false,
+      expectedExitCode: 0,
+    },
+    {
+      status: 'no_change_timeout',
+      exitCode: -1,
+      expectedTimedOut: true,
+      expectedExitCode: Number.NaN,
+    },
+    {
+      status: 'hard_timeout',
+      exitCode: -1,
+      expectedTimedOut: true,
+      expectedExitCode: Number.NaN,
+    },
+    {
+      status: 'terminated',
+      exitCode: -1,
+      expectedTimedOut: false,
+      expectedExitCode: Number.NaN,
+    },
+  ]) {
+    const calls = [];
+    const executor = mod.createAioHttpCommandExecutor({
+      baseUrl: 'http://sandbox.test',
+      fetch: async (input, init = {}) => {
+        calls.push({ input, init });
+        return successfulAioShellResponse(input, init, {
+          status: testCase.status,
+          exit_code: testCase.exitCode,
+          output: testCase.status,
+        });
+      },
+    });
+    const result = await executor.exec({ command: 'true' });
+    assert.equal(result.timedOut, testCase.expectedTimedOut);
+    if (Number.isNaN(testCase.expectedExitCode)) {
+      assert.equal(Number.isNaN(result.exitCode), true);
+    } else {
+      assert.equal(result.exitCode, testCase.expectedExitCode);
+    }
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].init.method, 'DELETE');
+  }
+});
+
+await test('AIO HTTP executor rejects incomplete or unknown shell statuses and still exact-deletes', async () => {
+  for (const testCase of [
+    { status: 'running', exitCode: undefined, expected: /incomplete protocol response/u },
+    { status: 'paused', exitCode: undefined, expected: /invalid protocol response/u },
+    { status: '', exitCode: undefined, expected: /invalid protocol response/u },
+    { status: 7, exitCode: undefined, expected: /invalid protocol response/u },
+    { status: 'completed', exitCode: undefined, expected: /incomplete protocol response/u },
+    { status: 'completed', exitCode: -1, expected: /incomplete protocol response/u },
+  ]) {
+    const calls = [];
+    let sessionId;
+    const executor = mod.createAioHttpCommandExecutor({
+      baseUrl: 'http://sandbox.test',
+      fetch: async (input, init = {}) => {
+        calls.push({ input, init });
+        const url = new URL(input);
+        const body = init.body ? JSON.parse(init.body) : {};
+        if (url.pathname === '/v1/shell/sessions/create') sessionId = body.id;
+        return successfulAioShellResponse(input, init, {
+          status: testCase.status,
+          exit_code: testCase.exitCode,
+          output: 'partial',
+        });
+      },
+    });
+    await assert.rejects(
+      () => executor.exec({ command: 'true' }),
+      testCase.expected,
+    );
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].init.method, 'DELETE');
+    assert.equal(
+      calls[2].input,
+      `http://sandbox.test/v1/shell/sessions/${sessionId}`,
+    );
+  }
+});
+
+await test('AIO HTTP executor rejects malformed successful responses and still exact-deletes', async () => {
+  for (const invalidExecResponse of [
+    () => ({ ok: true, status: 200, async json() { throw new Error('bad json'); } }),
+    () => response(200, { success: false, data: null }),
+    () => response(200, { success: true, data: {} }),
+    ({ body }) => response(200, {
+      success: true,
+      data: {
+        session_id: '55555555-5555-4555-8555-555555555555',
+        command: body.command,
+        status: 'completed',
+      },
+    }),
+  ]) {
+    const calls = [];
+    let sessionId;
+    const executor = mod.createAioHttpCommandExecutor({
+      baseUrl: 'http://sandbox.test',
+      fetch: async (input, init = {}) => {
+        calls.push({ input, init });
+        const url = new URL(input);
+        const body = init.body ? JSON.parse(init.body) : {};
+        if (url.pathname === '/v1/shell/sessions/create') {
+          sessionId = body.id;
+          return successfulAioShellResponse(input, init);
+        }
+        if (url.pathname === '/v1/shell/exec') {
+          return invalidExecResponse({ body });
+        }
+        return response(200, { success: true, data: { session_id: sessionId } });
+      },
+    });
+    await assert.rejects(
+      () => executor.exec({ command: 'true' }),
+      /invalid protocol response/u,
+    );
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].init.method, 'DELETE');
+    assert.equal(
+      calls[2].input,
+      `http://sandbox.test/v1/shell/sessions/${sessionId}`,
+    );
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

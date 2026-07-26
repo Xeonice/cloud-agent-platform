@@ -4,7 +4,9 @@
 TBD - created by archiving change agent-control-platform. Update Purpose after archive.
 ## Requirements
 ### Requirement: SandboxProvider port exposing sandbox-mode as a capability
-The system SHALL define a `SandboxProvider` port abstraction whose `provision()` method accepts a `ProvisionContext` (which no longer carries a `taskToken`, since there is no dial-back to authenticate) and returns a `SandboxConnection { taskId, baseUrl, wsUrl }` rather than `void`, so that callers can address the provisioned sandbox by container name and open its terminal WebSocket. The port SHALL continue to expose the execution sandbox mode (one of `read-only`, `workspace-write`, `danger-full-access`) as an explicit capability via `getSandboxMode()`, but that mode SHALL be treated as INFORMATIONAL only — under AIO Sandbox the real isolation boundary is the container with `seccomp=unconfined` plus network isolation, not the reported mode. The concrete OS-isolating implementation SHALL remain deferrable and swappable without changing callers. `teardownSandbox` SHALL be unchanged.
+The system SHALL define a `SandboxProvider` port abstraction whose `provision()` method accepts a `ProvisionContext` (which no longer carries a `taskToken`, since there is no dial-back to authenticate) and returns a `SandboxConnection { taskId, baseUrl, wsUrl }` rather than `void`, so that callers can address the provisioned sandbox by container name and open its terminal WebSocket. Providers SHALL be exposed through provider descriptors that include an id, location (`local` or `cloud`), priority, supported capabilities, and the provider implementation. Capability selection SHALL be provider-neutral: callers declare required capabilities, the provider center SHALL consider only providers satisfying all required capabilities, and selection SHALL order candidates by priority with optional preferred-location tie-breaking. The port SHALL continue to expose the execution sandbox mode (one of `read-only`, `workspace-write`, `danger-full-access`) as an explicit capability via `getSandboxMode()`, but that mode SHALL be treated as INFORMATIONAL only and SHALL NOT be the scheduling boundary — under AIO Sandbox the real isolation boundary is the container with `seccomp=unconfined` plus network isolation, not the reported mode. The concrete OS-isolating implementation SHALL remain deferrable and swappable without changing callers. `teardownSandbox` SHALL be unchanged.
+
+Provider-neutral contracts and capability types SHALL live in `@cap/sandbox-core`. Provider registry, selection, lifecycle, workspace, readoption, selected-run routing, and shared terminal-session behavior SHALL live in the API-facing `@cap/sandbox` provider center. Concrete AIO, BoxLite, and cloud HTTP mechanics SHALL live in their owning provider packages. Internal scheduler, lifecycle, workspace-git, and AIO-local helpers SHALL NOT remain helper-only runtime packages, and conformance code SHALL be dev-only testkit or package test code rather than a production dependency. None of these layers SHALL require `@cap/api` internals.
 
 #### Scenario: provision returns a SandboxConnection, not void
 - **WHEN** a caller invokes `SandboxProvider.provision()` with a `ProvisionContext`
@@ -33,6 +35,21 @@ The system SHALL define a `SandboxProvider` port abstraction whose `provision()`
 - **WHEN** the `teardownSandbox` signature and behavior are inspected after the redesign
 - **THEN** they are unchanged from before the AIO migration
 
+#### Scenario: Provider selection is capability based
+- **WHEN** a task requires a set of sandbox capabilities
+- **THEN** the provider center only selects a provider whose descriptor advertises every required capability
+- **AND** if multiple providers qualify, priority and optional preferred location determine the winner
+
+#### Scenario: Local and cloud providers share the same port
+- **WHEN** local AIO, BoxLite, or cloud HTTP providers are configured
+- **THEN** the API consumes them through the same provider-center facade and `SandboxProvider` surface
+- **AND** it does not branch on concrete implementation classes to provision a task
+
+#### Scenario: Sandbox package boundaries match real extension points
+- **WHEN** sandbox provider logic and package manifests are inspected
+- **THEN** provider-neutral contracts live in `@cap/sandbox-core`, shared orchestration lives in `@cap/sandbox`, and backend mechanics live in concrete provider packages
+- **AND** helper-only packages are not production runtime dependencies, conformance is dev-only, and `@cap/api` imports only the provider-center surface
+
 ### Requirement: Path to restore OS-level isolation is preserved
 The `SandboxProvider` port SHALL be defined such that a future implementation can provide OS-level isolation (for example a Claude Code sandbox-runtime) by satisfying the same interface, without requiring changes to the port's consumers.
 
@@ -42,18 +59,7 @@ The `SandboxProvider` port SHALL be defined such that a future implementation ca
 - **AND** no consumer code requires modification to honor the stricter mode
 
 ### Requirement: The transcript read is generalized behind a runtime-declared source-read strategy
-The `SandboxProvider` port's transcript read (`readRolloutFromContainer`) SHALL be generalized so
-the read strategy is supplied by the task's runtime rather than baked as a single-newest-JSONL
-assumption. The provider SHALL resolve WHERE to read from the runtime's `transcriptArtifact(ctx)`
-and HOW to read from the runtime's declared `readTranscriptSource` strategy, and SHALL return a
-`TranscriptSource` (for codex/claude: `{ format, jsonl: string }`) rather than a bare string. For
-the codex and claude single-file path the produced source SHALL be byte-identical in `jsonl`
-content to the pre-refactor read — the same lexicographically-newest matching JSONL file's text —
-so the existing single-file behavior is preserved. A future multi-record runtime SHALL be able to
-supply a non-single-JSONL source through the SAME generalized read seam without breaking the
-codex/claude single-file path. The read SHALL remain non-throwing: a miss (no container, no
-matching file, unreadable) SHALL resolve to an absent source rather than an error, exactly as
-before.
+The `SandboxProvider` port's transcript read (`readRolloutFromContainer`) SHALL be generalized so the read strategy is supplied by the task's runtime rather than baked as a single-newest-JSONL assumption. The provider SHALL resolve WHERE to read from the runtime's `transcriptArtifact(ctx)` and HOW to read from the runtime's declared `readTranscriptSource` strategy, and SHALL return a `TranscriptSource` (for codex/claude: `{ format, jsonl: string }`) rather than a bare string. For the codex and claude single-file path the produced source SHALL be byte-identical in `jsonl` content to the pre-refactor read — the same lexicographically-newest matching JSONL file's text — so the existing single-file behavior is preserved. A future multi-record runtime SHALL be able to supply a non-single-JSONL source through the SAME generalized read seam without breaking the codex/claude single-file path. When multiple providers are available, transcript reads SHALL be routed through the provider/facade capable of materializing the retained source for the task and runtime. The API SHALL consume that provider-neutral `TranscriptSource` rather than assuming the local AIO retained container. The read SHALL remain non-throwing: a miss (no container, no matching file, unreadable, or no provider able to materialize the source) SHALL resolve to an absent source rather than an error, exactly as before.
 
 #### Scenario: Codex/claude single-file read returns the same content as before
 - **WHEN** the provider reads the transcript for a `codex` or `claude-code` task whose retained container holds the rollout
@@ -63,8 +69,13 @@ before.
 - **WHEN** a runtime declares a multi-record `readTranscriptSource` strategy
 - **THEN** the provider produces that runtime's non-single-JSONL `TranscriptSource` through the same generalized read path, and the codex/claude single-file path is unaffected
 
+#### Scenario: Transcript read is provider-neutral
+- **WHEN** the API reads a retained transcript for a task
+- **THEN** it requests the runtime-tagged source through the sandbox provider/facade seam
+- **AND** parsing is selected from the returned runtime format rather than from a concrete provider class
+
 #### Scenario: A read miss resolves to an absent source, never an error
-- **WHEN** the provider attempts the transcript read but the container is gone, no file matches the glob, or the file is unreadable
+- **WHEN** the provider attempts the transcript read but the container is gone, no file matches the glob, the file is unreadable, or no provider can materialize a retained transcript source for the task
 - **THEN** the read resolves to an absent source (the prior null-on-miss contract) rather than throwing
 
 ### Requirement: Provider selection produces a selected run context
@@ -171,6 +182,18 @@ failure and SHALL verify bounded events, stable correlation, primary/cleanup
 preservation, and secret absence. A provider SHALL NOT advertise a capability
 that does not pass its conformance scenario.
 
+Terminal conformance SHALL be stateful and SHALL exercise a real detached-session
+fixture through at least an owner PTY and two independently opened viewer PTYs. It
+SHALL prove distinct provider identities, attach-only current-screen restoration,
+absence of historical-prefix replay, continued live delta, input and resize routing,
+opaque-byte `onData`/`onBinary` input and correlated response routing, viewer-local
+backpressure, independent close/replacement, cancellation fencing,
+and task-teardown cleanup. It SHALL compare canonical terminal screen state after a
+fresh attach at the same geometry rather than treating the presence of any output
+as sufficient. Terminal conformance SHALL fail when an implementation aliases a
+shared transport, pauses peers, launches on viewer attach, duplicates live output,
+or leaks a provider-side terminal resource.
+
 Command-output conformance SHALL cover a fast command whose process settles
 before the output channel attaches, late replay, fragmented stdout/stderr, valid
 empty output, early output-channel close/error, a hanging channel, shared
@@ -199,7 +222,32 @@ post-fence Task-authority recheck before its provider method is called.
 #### Scenario: Terminal capability requires terminal conformance
 
 - **WHEN** a provider declares interactive terminal capability
-- **THEN** conformance verifies output, input, resize, close/replacement, and attach semantics
+- **THEN** conformance verifies output, input, terminal-protocol replies, authoritative resize, close/replacement, and attach-only semantics
+- **AND** it verifies fresh PTY identity, complete current-frame redraw, no historical prefix, exactly-once live continuation, opaque-byte mouse/input fidelity, independent backpressure, and bounded cleanup
+
+#### Scenario: Fresh terminal identities restore the same canonical frame
+
+- **WHEN** the conformance fixture opens two fresh viewer PTYs sequentially at identical rows and columns against an unchanged full-screen tmux session
+- **THEN** both viewer streams reconstruct the same canonical current screen, cursor, and alternate-screen state
+- **AND** each open reports a distinct provider PTY identity and neither stream depends on CAP replay data
+
+#### Scenario: Terminal live continuation is not replayed or duplicated
+
+- **WHEN** conformance emits a unique live marker after current-screen attach has settled
+- **THEN** every still-open viewer receives that marker once through its own provider transport
+- **AND** closing and freshly replacing one viewer restores the current frame without prepending the fixture's historical prefix
+
+#### Scenario: Terminal close and backpressure remain viewer-local
+
+- **WHEN** conformance pauses one viewer for backpressure and then closes it while another viewer and the owner remain open
+- **THEN** only the targeted viewer transport pauses and closes
+- **AND** the owner and peer viewer continue receiving a subsequent live marker
+
+#### Scenario: Terminal open races are cleanup-conformant
+
+- **WHEN** conformance injects cancellation, disconnect, timeout, or failure before a provider terminal open has fully attached
+- **THEN** late provider completion is fenced and any observed terminal identity is closed by exact identity
+- **AND** repeated close and cleanup settle without a ghost execution, dangling listener, or leaked authentication material
 
 #### Scenario: Command capability requires complete-output conformance
 
@@ -247,6 +295,12 @@ post-fence Task-authority recheck before its provider method is called.
 - **WHEN** AIO, cloud-http, and BoxLite are each eligible for task provisioning
 - **THEN** each family passes bounded start/settlement, output-completion, cancellation, cleanup, correlation, and secret-canary conformance
 - **AND** Guardrails supplies shared outer-boundary evidence where a provider has no finer native operation
+
+#### Scenario: AIO and BoxLite pass real fresh-attach conformance
+
+- **WHEN** AIO or BoxLite advertises interactive terminal capability in an enabled real-provider gate
+- **THEN** that provider passes the same fresh-identity, current-frame, no-history-prefix, live-delta, opaque-byte input, isolation, and resource-cleanup story against its supported native protocol
+- **AND** provider-specific implementation details do not weaken the shared terminal contract
 
 ### Requirement: Explicit provider selection constrains eligible providers
 
@@ -650,4 +704,143 @@ Archive-variant workspace materialization SHALL report byte-based transfer progr
 #### Scenario: Legacy admission skips progress silently
 - **WHEN** the deployment runs legacy admission with no provisioning work row
 - **THEN** the transfer proceeds normally and no progress write is attempted or errored
+
+### Requirement: `@cap/sandbox` is the API-facing provider center
+
+The API SHALL consume sandbox behavior through `@cap/sandbox` as the provider center and host harness boundary. Provider registry composition, selection, explicit provider-family constraints, owner pinning, readoption routing, selected-run aggregation, workspace helpers, lifecycle planning, command executor resolution, provider readiness, and provider-neutral terminal session behavior SHALL live behind that center rather than in API-local wiring or helper-only packages.
+
+#### Scenario: API imports sandbox behavior through the center
+- **WHEN** API sandbox, task, guardrail, terminal, and retention code imports sandbox-layer functionality
+- **THEN** it imports the API-facing surface from `@cap/sandbox`
+- **AND** it does not import scheduler, lifecycle, workspace-git, conformance, AIO-local, or provider-helper packages directly
+- **AND** it does not import concrete provider factories, provider env readers, provider terminal transports, or provider command executor implementations
+
+#### Scenario: Provider center owns selected-run routing
+- **WHEN** a lifecycle step needs terminal, command, workspace, retention, delivery, transcript, or teardown behavior for a task
+- **THEN** the provider center resolves the selected run or durable owner record
+- **AND** the step does not independently select a provider for an already-owned task
+
+#### Scenario: Provider center owns configured registry creation
+- **WHEN** the API binds the sandbox provider port
+- **THEN** API passes a neutral host harness into `@cap/sandbox`
+- **AND** `@cap/sandbox` composes AIO, BoxLite, cloud-http, and future provider descriptors according to configuration
+- **AND** API does not branch on provider family or provider capability implementation details
+
+### Requirement: Helper-only sandbox packages are not runtime extension packages
+
+Sandbox helper logic SHALL be located inside the owning package unless it represents a stable external extension boundary. Scheduler, lifecycle, workspace-git, AIO-local configuration, and conformance helpers SHALL NOT remain runtime packages solely to hold internal helper code.
+
+#### Scenario: Internal helpers move under owning packages
+- **WHEN** the sandbox package graph is inspected after the refactor
+- **THEN** scheduler, lifecycle, and workspace helper code is under `@cap/sandbox`
+- **AND** AIO local configuration/spec helper code is under `@cap/sandbox-provider-aio`
+- **AND** conformance helpers are dev-only testkit or test code rather than runtime dependencies
+
+### Requirement: Provider packages expose backend descriptors through a common center contract
+
+Each provider package SHALL expose descriptor factories and provider instances that the provider center can register without API-specific dependencies.
+
+#### Scenario: A provider registers without Nest dependencies
+- **WHEN** `@cap/sandbox` registers AIO or BoxLite provider descriptors
+- **THEN** the descriptor is created from provider package exports and injected hooks
+- **AND** the provider package does not import Nest, Prisma, API controllers, or API-local module wiring
+
+#### Scenario: Explicit provider family remains fail-closed
+- **WHEN** an operator explicitly selects a provider family and that provider cannot satisfy the required capabilities
+- **THEN** the provider center fails provisioning with an actionable provider-selection error
+- **AND** it does not silently fall back to another provider family
+
+### Requirement: Interactive terminal providers expose fresh disposable PTYs
+
+A provider that advertises interactive terminal capability SHALL allow CAP to
+open more than one terminal transport for the same live sandbox. Every open for a
+browser viewer SHALL create a fresh provider-side PTY identity and independent
+transport; it SHALL NOT reuse the task owner PTY, a previous viewer PTY, or a CAP
+snapshot/replay stream. The provider identity MAY be represented by a WebSocket
+session id, execution id, or another provider-native handle, but it SHALL be unique
+for concurrently live opens and remain internal to CAP diagnostics and cleanup.
+
+After CAP resizes the fresh outer PTY and issues an attach-only command for the
+existing exact named tmux session, the transport SHALL deliver tmux's complete
+current-screen redraw even when the agent is otherwise idle, then continue with
+subsequent live terminal bytes. It SHALL not prepend the detached pane's historical
+scrollback merely because the viewer is new.
+
+The viewer transport input seam SHALL accept opaque bytes, not only UTF-8 text. Each
+provider adapter SHALL preserve browser `onData` bytes, `onBinary` legacy mouse bytes,
+and correlated terminal-response bytes exactly through its native protocol to the outer
+PTY. A string-only native protocol SHALL NOT be assumed byte-preserving; its adapter
+MUST prove an explicit lossless encoding/decoding path or fail interactive-terminal
+conformance. Input authorization remains above the provider seam in the Gateway.
+
+#### Scenario: Concurrent opens have distinct provider identities
+
+- **WHEN** CAP opens two viewer terminals for the same live AIO or BoxLite sandbox
+- **THEN** the provider creates two distinct PTY identities and independently addressable transports
+- **AND** neither open replaces, resumes, or aliases the owner PTY or the other viewer PTY
+
+#### Scenario: Fresh attach reconstructs an idle current screen
+
+- **WHEN** a fresh provider PTY is resized and attached to an existing tmux session whose full-screen TUI is idle
+- **THEN** its output contains the complete tmux current-screen redraw, including the terminal control sequences needed to reconstruct cursor, style, and alternate-screen state
+- **AND** CAP does not need new agent output, a headless snapshot, or `session.log` tail replay to populate the viewer
+
+#### Scenario: Fresh attach does not replay terminal history
+
+- **WHEN** the detached pane has produced a long historical prefix before the fresh viewer attaches
+- **THEN** the fresh attachment restores the current visible frame without streaming that historical prefix as reconnect data
+- **AND** history markers that are no longer present in the current frame do not appear in the fresh attach stream
+
+#### Scenario: Attached viewer receives subsequent live delta once
+
+- **WHEN** a marker is emitted after the fresh attachment has completed its current-screen redraw
+- **THEN** that viewer receives the live marker without opening another PTY
+- **AND** the marker is not duplicated by a snapshot, tail replay, or second provider stream
+
+#### Scenario: Viewer input preserves opaque bytes
+
+- **WHEN** conformance writes a byte-oracle payload and a representative xterm legacy
+  mouse report through a viewer transport
+- **THEN** the attached PTY observes exactly the original bytes, including `0x00`,
+  `0x7f`, and values above `0x7f`, without UTF-8 expansion or replacement
+- **AND** neither AIO's JSON framing nor BoxLite's binary framing weakens that contract
+
+### Requirement: Disposable terminal lifecycle and flow control are isolated
+
+Every disposable provider terminal SHALL have an idempotent close path that
+releases only that PTY, its transport, timers, and cancellation listeners. Closing,
+pausing, replacing, or failing one viewer terminal SHALL NOT close or pause the task
+owner, the detached agent session, or another viewer terminal. A close or
+cancellation that races asynchronous provider-side terminal creation SHALL fence
+late completion: CAP SHALL not attach a late WebSocket or leave a ghost execution
+after the caller has closed the terminal.
+
+Normal task teardown SHALL close all remaining owner and viewer transports before
+or as part of provider sandbox cleanup. Providers SHALL supply bounded evidence
+that viewer resources were closed or became absent; an empty CAP in-memory map
+alone SHALL NOT count as provider cleanup proof.
+
+#### Scenario: Closing one viewer leaves the task and peers live
+
+- **WHEN** two viewers are attached and CAP closes one viewer transport
+- **THEN** only that provider PTY is released
+- **AND** the detached agent session, owner stream, and other viewer continue to receive live output
+
+#### Scenario: Slow-viewer backpressure is local
+
+- **WHEN** one viewer exceeds its unacknowledged-output high-water mark
+- **THEN** CAP pauses only that viewer's provider transport
+- **AND** the owner, agent, activity/classification path, optional bounded raw writers, and every other viewer continue without being paused by that viewer's backlog
+
+#### Scenario: Close during asynchronous open cannot create a ghost terminal
+
+- **WHEN** CAP closes or cancels a viewer while the provider-side PTY create request is still unresolved
+- **THEN** any late create result is fenced from attachment and is closed or removed by exact provider identity
+- **AND** repeated close calls do not create another terminal, throw a cleanup error, or notify the closed viewer again
+
+#### Scenario: Task teardown cleans every terminal identity
+
+- **WHEN** normal task teardown runs with an owner and one or more viewer PTYs still open
+- **THEN** provider cleanup closes or proves absent every terminal identity associated with the task
+- **AND** no viewer execution, WebSocket, timer, pause state, or cancellation listener remains after cleanup settles
 

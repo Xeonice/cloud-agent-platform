@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
+const core = await import(
+  new URL('../../sandbox-core/dist/index.js', import.meta.url).href
+);
 
 let passed = 0;
 let failed = 0;
@@ -17,10 +20,23 @@ async function test(name, fn) {
   }
 }
 
-function decodeEnvFile(command) {
-  const match = /printf %s '([A-Za-z0-9+/=]+)' \| base64 -d > '\/home\/gem\/\.cap\/image-env'/.exec(command);
-  assert(match, 'expected base64 write for image-env');
-  return Buffer.from(match[1], 'base64').toString('utf8');
+async function consumePrivateFiles(files) {
+  const writes = [];
+  const port = core.createSandboxRuntimePrivateFilePort({
+    rootDirectory: '/home/gem',
+    transport: {
+      async writeFile(request) {
+        writes.push({
+          path: request.path,
+          mode: request.mode,
+          content: Buffer.from(request.content).toString('utf8'),
+        });
+      },
+      async deleteFile() {},
+    },
+  });
+  for (const file of files) await port.writeFile(file);
+  return writes;
 }
 
 const profile = {
@@ -30,14 +46,23 @@ const profile = {
   ],
 };
 
-await test('image parameter setup writes a private CAP env file', () => {
+await test('image parameter setup writes a private CAP env file', async () => {
   const commands = mod.buildSandboxImageParameterSetupCommands(profile);
   assert.equal(commands.length, 1);
   assert.equal(commands[0].tolerateUnresolvedExit, false);
-  assert.match(commands[0].command, /mkdir -p '\/home\/gem\/\.cap'/);
-  assert.match(commands[0].command, /chmod 600 '\/home\/gem\/\.cap\/image-env'/);
+  assert.match(commands[0].command, /test -s '\/home\/gem\/\.cap\/image-env'/);
+  assert.match(commands[0].command, /stat -c %a/);
+  assert.doesNotMatch(commands[0].command, /base64|GCODE_TOKEN|tok'en-secret/u);
+  assert.doesNotMatch(
+    JSON.stringify(commands),
+    /tok'en-secret|dG9rJ2VuLXNlY3JldA==/u,
+  );
 
-  const envFile = decodeEnvFile(commands[0].command);
+  const writes = await consumePrivateFiles(commands[0].privateFiles);
+  assert.deepEqual(writes.map(({ path, mode }) => ({ path, mode })), [
+    { path: '/home/gem/.cap/image-env', mode: 0o600 },
+  ]);
+  const envFile = writes[0].content;
   assert.match(envFile, /export GCODE_API_BASE_URL='https:\/\/code\.example\/api\/v5'/);
   assert.match(envFile, /export GCODE_TOKEN='tok'\\''en-secret'/);
 });
@@ -75,10 +100,62 @@ await test('image parameter cleanup is best effort and never logs values', async
     },
   });
   assert.deepEqual(calls.map((call) => call.command), [
-    "rm -f '/home/gem/.cap/image-env' 2>/dev/null; true",
+    "rm -f '/home/gem/.cap/image-env' && test ! -e '/home/gem/.cap/image-env'",
   ]);
-  assert(warnings.some((message) => message.includes('exited 7')));
+  assert(warnings.some((message) => message.includes('was not confirmed')));
   assert(warnings.every((message) => !message.includes("tok'en-secret")));
+});
+
+await test('image parameter normalization and empty redaction are deterministic', async () => {
+  const normalized = mod.buildSandboxImageParameterSetupCommands({
+    parameters: [
+      { name: '_VALID_1', value: '', secret: true },
+      { name: '_VALID_1', value: 'ignored duplicate', secret: true },
+      { name: '1INVALID', value: 'ignored', secret: true },
+    ],
+  });
+  assert.equal(normalized.length, 1);
+  const writes = await consumePrivateFiles(normalized[0].privateFiles);
+  assert.equal(writes[0].content, "export _VALID_1=''\n");
+  assert.equal(mod.scrubSandboxImageParameterSecrets('', profile), '');
+  assert.equal(mod.scrubSandboxImageParameterSecrets('unchanged', null), 'unchanged');
+  assert.equal(
+    mod.scrubSandboxImageParameterSecrets('empty secret remains safe', {
+      parameters: [{ name: 'EMPTY_SECRET', value: '', secret: true }],
+    }),
+    'empty secret remains safe',
+  );
+});
+
+await test('image parameter cleanup tolerates success and thrown values', async () => {
+  const successfulWarnings = [];
+  await mod.removeSandboxImageParameterFileBestEffort({
+    taskId: 'task-success',
+    warn: (message) => successfulWarnings.push(message),
+    executor: { exec: async () => ({ exitCode: 0 }) },
+  });
+  assert.deepEqual(successfulWarnings, []);
+
+  for (const thrown of [new Error('transport down'), 'transport down']) {
+    const warnings = [];
+    await mod.removeSandboxImageParameterFileBestEffort({
+      taskId: 'task-throw',
+      warn: (message) => warnings.push(message),
+      executor: {
+        async exec() {
+          throw thrown;
+        },
+      },
+    });
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /did not settle/);
+    assert.doesNotMatch(warnings[0], /transport down/);
+  }
+
+  await mod.removeSandboxImageParameterFileBestEffort({
+    taskId: 'task-without-logger',
+    executor: { exec: async () => ({ exitCode: 9 }) },
+  });
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

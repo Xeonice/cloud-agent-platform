@@ -5,6 +5,11 @@ import {
   wrapHeadlessDetachedSession,
   wrapInDetachedSession,
 } from '../terminal/codex-launch';
+import {
+  assertNativeCodexInteractiveLaunchArgv,
+  createSandboxRuntimePrivateFile,
+  DEFAULT_CODEX_INTERACTIVE_LAUNCH_ARGV,
+} from '@cap/sandbox';
 import type {
   AgentRuntime,
   AuthMaterial,
@@ -55,18 +60,17 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   /**
-   * The codex launch argv — the SAME base string the `AioPtyClient` uses
-   * ({@link DEFAULT_CODEX_LAUNCH_ARGV}) and the derived image bakes as
+   * The codex launch argv — the SAME base string the provider-neutral sandbox
+   * session engine uses ({@link DEFAULT_CODEX_LAUNCH_ARGV}) and the derived image bakes as
    * `CODEX_LAUNCH_ARGV`. The launch uses Codex's documented YOLO-style bypass
    * flag (`--dangerously-bypass-approvals-and-sandbox`) so task agents do not
    * stop for per-command approvals inside the already-isolated per-task sandbox.
-   * `--no-alt-screen` runs the TUI INLINE (normal buffer) so the live xterm keeps a
-   * scrollable history — codex's default alternate screen has NO scrollback by spec,
-   * so operators could not scroll up in the live terminal (codex 0.131 flag:
-   * "inline mode, preserving terminal scrollback history").
+   * No terminal-mode override is applied: Codex may enter its default alternate
+   * screen and emit its native cursor, style, mouse, focus, and query sequences.
+   * Running-terminal history across reconnect is intentionally not synthesized.
    */
   static readonly DEFAULT_CODEX_LAUNCH_ARGV =
-    'codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox';
+    DEFAULT_CODEX_INTERACTIVE_LAUNCH_ARGV;
 
   /** The codex `~/.codex` directory the auth.json is written into. */
   private static readonly CODEX_HOME_DIR = '/home/gem/.codex';
@@ -91,9 +95,9 @@ export class CodexRuntime implements AgentRuntime {
 
   /** Resolve the base codex argv (env override wins), mirroring `launchCodex`. */
   private resolveArgv(): string {
-    return (
+    return assertNativeCodexInteractiveLaunchArgv(
       process.env['CODEX_LAUNCH_ARGV'] ??
-      CodexRuntime.DEFAULT_CODEX_LAUNCH_ARGV
+        CodexRuntime.DEFAULT_CODEX_LAUNCH_ARGV,
     );
   }
 
@@ -161,15 +165,17 @@ export class CodexRuntime implements AgentRuntime {
     const trustTable = `[projects."${ctx.workspaceDir}"]\ntrust_level = "trusted"\n`;
     let topLevel = '';
     let providerTable = '';
-    let authJsonCommand = '';
+    const privateFiles = [];
+    let hasOfficialAuthFile = false;
     if (material?.codexCompatible) {
       ({ topLevel, providerTable } = CodexRuntime.compatibleProviderToml(
         material.codexCompatible,
       ));
     } else if (material?.authJson) {
-      const authB64 = Buffer.from(material.authJson, 'utf8').toString('base64');
-      authJsonCommand =
-        ` && printf %s '${authB64}' | base64 -d > ${dir}/auth.json && chmod 600 ${dir}/auth.json`;
+      hasOfficialAuthFile = true;
+      privateFiles.push(
+        createSandboxRuntimePrivateFile(`${dir}/auth.json`, material.authJson),
+      );
     }
     // fix-codex-headless-subscription-auth: codex defaults to `cli_auth_credentials_store="auto"`
     // (OS keyring first); the keyring-less Linux sandbox then loads NO credential and every
@@ -177,23 +183,34 @@ export class CodexRuntime implements AgentRuntime {
     // `auth.json`. A top-level key — MUST precede any `[table]` (the trust/provider tables).
     const credStore = 'cli_auth_credentials_store = "file"\n';
     const configToml = credStore + topLevel + trustTable + providerTable;
-    const configB64 = Buffer.from(configToml, 'utf8').toString('base64');
+    privateFiles.unshift(
+      createSandboxRuntimePrivateFile(`${dir}/config.toml`, configToml),
+    );
+    const authVerification = hasOfficialAuthFile
+      ? ` && test -s ${dir}/auth.json && test "$(stat -c %a ${dir}/auth.json)" = 600`
+      : ` && rm -f ${dir}/auth.json`;
     commands.push({
       descriptor: { commandKind: 'credential_setup', ordinal: 1 },
       command:
-        `mkdir -p ${dir} && rm -f ${dir}/hooks.json && printf %s '${configB64}' | base64 -d > ${dir}/config.toml && chmod 600 ${dir}/config.toml` +
-        authJsonCommand,
+        `rm -f ${dir}/hooks.json && ` +
+        `test -s ${dir}/config.toml && test "$(stat -c %a ${dir}/config.toml)" = 600` +
+        authVerification,
       tolerateUnresolvedExit: false,
+      privateFiles,
     });
 
     // prompt-file write — OMITTED entirely when there is no prompt (codex opens a
     // blank composer), matching the prior `injectTaskPrompt` early-return.
     if (ctx.prompt) {
-      const promptB64 = Buffer.from(ctx.prompt, 'utf8').toString('base64');
       commands.push({
         descriptor: { commandKind: 'runtime_setup', ordinal: 2 },
-        command: `mkdir -p ${dir} && printf %s '${promptB64}' | base64 -d > ${CODEX_PROMPT_FILE_PATH} && chmod 600 ${CODEX_PROMPT_FILE_PATH}`,
+        command:
+          `test -s ${CODEX_PROMPT_FILE_PATH} && ` +
+          `test "$(stat -c %a ${CODEX_PROMPT_FILE_PATH})" = 600`,
         tolerateUnresolvedExit: false,
+        privateFiles: [
+          createSandboxRuntimePrivateFile(CODEX_PROMPT_FILE_PATH, ctx.prompt),
+        ],
       });
     }
     return { ok: true, commands };
@@ -236,12 +253,16 @@ export class CodexRuntime implements AgentRuntime {
 
   preStopTrimCommands(): readonly string[] {
     const dir = CodexRuntime.CODEX_HOME_DIR;
-    // Keep `sessions/` (rollout); drop caches + sqlite logs; zero auth.json. Trailing
-    // `true` + `2>/dev/null` keep it exit-0 best-effort. Byte-identical to the prior
-    // inline `trimCodexHomeBeforeStop`.
+    // Keep `sessions/` (rollout); drop caches + sqlite logs, the prompt, and
+    // config.toml (which may hold a compatible-provider bearer token), then
+    // remove auth.json and prove every credential-bearing path is absent. AIO
+    // may retain the stopped sandbox only after this command succeeds.
     return [
-      `rm -rf ${dir}/cache ${dir}/logs_*.sqlite ${dir}/logs_*.sqlite-shm ${dir}/logs_*.sqlite-wal 2>/dev/null; ` +
-        `: > ${dir}/auth.json 2>/dev/null; true`,
+      `rm -rf ${dir}/cache ${dir}/logs_*.sqlite ${dir}/logs_*.sqlite-shm ${dir}/logs_*.sqlite-wal && ` +
+        `rm -f ${dir}/config.toml ${CODEX_PROMPT_FILE_PATH} ${dir}/auth.json && ` +
+        `test ! -e ${dir}/config.toml && ` +
+        `test ! -e ${CODEX_PROMPT_FILE_PATH} && ` +
+        `test ! -e ${dir}/auth.json`,
     ];
   }
 
@@ -314,13 +335,31 @@ export class CodexRuntime implements AgentRuntime {
   /**
    * Headless resume: `codex exec resume <id>` continues a prior session. Note the flag
    * surface is NARROWER than `exec` — it rejects `-s/--sandbox` (sandbox is inherited from
-   * the original session) but still needs `--skip-git-repo-check` and `< /dev/null` (spike).
+   * the original session), but the YOLO bypass itself is accepted and MUST be repeated.
+   * Live verification against the pinned 0.144.1 CLI showed that relying on inherited
+   * approval policy can return exit 0 without performing tool calls. It also needs
+   * `--skip-git-repo-check` and `< /dev/null` (spike).
    */
   buildResumeLine(ctx: LaunchContext, prevSessionId: string): string {
     const ws = ctx.workspaceDir;
+    const sessionId = safeResumeSessionId(prevSessionId);
     const inner =
       `P="$(cat ${CODEX_PROMPT_FILE_PATH} 2>/dev/null)"; ` +
-      `codex exec resume ${prevSessionId} "$P" --json --skip-git-repo-check < /dev/null`;
+      `codex exec resume --json --dangerously-bypass-approvals-and-sandbox ` +
+      `--skip-git-repo-check ${sessionId} "$P" < /dev/null`;
     return wrapHeadlessDetachedSession(ctx.taskId, inner, ws);
   }
+}
+
+/**
+ * Resume ids are emitted by the runtime transcript and normally UUIDs. Keep the
+ * slightly wider documented Codex thread-name alphabet, but reject shell syntax:
+ * the value is embedded inside the single-quoted tmux command and therefore must
+ * remain one inert shell token.
+ */
+function safeResumeSessionId(value: string): string {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value)) {
+    throw new Error('Codex resume session id is not a safe runtime identifier');
+  }
+  return value;
 }

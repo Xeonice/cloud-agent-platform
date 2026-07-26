@@ -4,6 +4,7 @@ import { GuardrailsService } from '../guardrails/guardrails.service';
 import { TaskProvisioningDiagnosticsModule } from '../task-provisioning-diagnostics/task-provisioning-diagnostics.module';
 import { MetricsController } from './metrics.controller';
 import { MetricsService } from './metrics.service';
+import { TerminalDiagnosticsMetricsModule } from './terminal-diagnostics-metrics.module';
 import {
   DEFAULT_CADENCE_MS,
   ResourceSamplerService,
@@ -18,7 +19,8 @@ import {
  *    `AuthGuard`);
  *  - {@link MetricsService} which composes the exact derived-capacity block
  *    (from the guardrails semaphore + runner-minutes ledger) with the cached
- *    sampled-resource and provisioning-diagnostics blocks;
+ *    sampled-resource, provisioning-diagnostics, and identifier-free terminal-
+ *    diagnostics blocks;
  *  - {@link ResourceSamplerService}, the background CPU/memory sampler, fed the
  *    LIVE running-task-id set from the guardrails semaphore projection so it
  *    samples exactly the `cap-aio-<taskId>` containers that are actually
@@ -29,7 +31,11 @@ import {
  * module for its cache-only provisioning metrics collector.
  */
 @Module({
-  imports: [GuardrailsModule, TaskProvisioningDiagnosticsModule],
+  imports: [
+    GuardrailsModule,
+    TaskProvisioningDiagnosticsModule,
+    TerminalDiagnosticsMetricsModule,
+  ],
   controllers: [MetricsController],
   providers: [
     MetricsService,

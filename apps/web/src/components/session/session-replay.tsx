@@ -43,7 +43,7 @@ type Filter = (typeof FILTERS)[number];
 /** Replay-meta line text per terminal presentation state. */
 const META_BY_STATE: Record<ReplayPresentationState, (n: number) => string> = {
   completed: (n) => `已结束 · 只读 · ${n} 条记录`,
-  cancelled: () => "操作员已停止 · 只读 · 对话完整 / 终端为中断画面",
+  cancelled: () => "操作员已停止 · 只读 · 对话展示已观测到中断处的记录",
   failed: () => "失败 · 只读 · 对话到失败处",
   // `no-start` never reaches the available branch (it renders the empty state).
   "no-start": () => "未能启动 · 只读",

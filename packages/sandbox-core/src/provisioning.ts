@@ -255,11 +255,7 @@ function normalizeSandboxRepositoryUrl(value: string): string {
       'Sandbox workspace repositoryUrl must use HTTP or HTTPS',
     );
   }
-  if (parsed.hostname.length === 0) {
-    throw new SandboxProviderConfigurationError(
-      'Sandbox workspace repositoryUrl must include a host',
-    );
-  }
+  // A successfully parsed WHATWG HTTP(S) URL necessarily has a hostname.
   if (parsed.username.length > 0 || parsed.password.length > 0) {
     throw new SandboxProviderConfigurationError(
       'Sandbox workspace repositoryUrl must not contain userinfo',

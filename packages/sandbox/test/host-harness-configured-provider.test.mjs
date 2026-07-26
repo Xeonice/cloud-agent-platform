@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 
 const mod = await import(new URL('../dist/index.js', import.meta.url).href);
+const core = await import(
+  new URL('../../sandbox-core/dist/index.js', import.meta.url).href
+);
 
 let passed = 0;
 let failed = 0;
@@ -134,6 +137,26 @@ function makeExecutor(handler, metadataHandler) {
   };
 }
 
+function makeRuntimePrivateFileCapture() {
+  const writes = [];
+  return {
+    writes,
+    port: core.createSandboxRuntimePrivateFilePort({
+      rootDirectory: '/home/gem',
+      transport: {
+        async writeFile(request) {
+          writes.push({
+            path: request.path,
+            mode: request.mode,
+            content: Buffer.from(request.content).toString('utf8'),
+          });
+        },
+        async deleteFile() {},
+      },
+    }),
+  };
+}
+
 function makeLogger() {
   const logs = { debug: [], log: [], warn: [] };
   return {
@@ -158,11 +181,9 @@ function makeHost(options = {}) {
       trimCommands: [],
     });
   const taskRuntime = options.taskRuntime ?? defaultRuntime;
-  const persistedAuth = [];
   return {
     events,
     logs,
-    persistedAuth,
     host: {
       ownerStore: options.ownerStore,
       provisionLookup: {
@@ -184,6 +205,9 @@ function makeHost(options = {}) {
               getTaskImageParameterProfile:
                 options.getTaskImageParameterProfile,
             }
+          : {}),
+        ...(options.getResolvedEnvironment
+          ? { getResolvedEnvironment: options.getResolvedEnvironment }
           : {}),
         ...(options.getTaskSkills
           ? { getTaskSkills: options.getTaskSkills }
@@ -216,14 +240,6 @@ function makeHost(options = {}) {
           return options.material ?? { kind: 'auth-material' };
         },
       },
-      codexAuthSource:
-        'codexAuthSource' in options
-          ? options.codexAuthSource
-          : {
-              async persistRefreshedAuth(taskId, authJson) {
-                persistedAuth.push([taskId, authJson]);
-              },
-            },
       skillInstallers: options.skillInstallers,
       sessionIdForTask: options.sessionIdForTask ?? ((taskId) => `session-${taskId}`),
       transcriptSource: options.transcriptSource,
@@ -262,10 +278,10 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
           { command: 'setup-nan-ok', tolerateUnresolvedExit: true },
         ],
       },
-      trimCommands: ['trim-ok', 'trim-fail', 'trim-throw'],
+      trimCommands: ['trim-ok'],
     });
     const loggerState = makeLogger();
-    const { host, persistedAuth, logs } = makeHost({
+    const { host, logs } = makeHost({
       events,
       loggerState,
       defaultRuntime: runtime,
@@ -310,15 +326,6 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
       if (request.command === 'install-skill-throw < /dev/null') {
         throw new Error('installer timeout');
       }
-      if (request.command === 'cat /home/gem/.codex/auth.json 2>/dev/null') {
-        return { exitCode: 0, output: ' {"token":"secret"} \n' };
-      }
-      if (request.command === 'trim-fail') {
-        return { exitCode: 9, output: 'trim failed' };
-      }
-      if (request.command === 'trim-throw') {
-        throw new Error('trim timeout');
-      }
       return { exitCode: 0, output: '' };
     });
 
@@ -343,9 +350,11 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
     assert.match(preflight.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(preflight.runtimeId, 'codex');
     assert.equal(preflight.metadata.sandboxMetadata.dependencies.codex, '0.132.0');
+    const privateFiles = makeRuntimePrivateFileCapture();
     await hooks.runtimeSetup({
       taskId: 'task-1',
       executor,
+      runtimePrivateFiles: privateFiles.port,
       runtimeId: 'codex',
       executionMode: 'interactive-pty',
       modelIntent: { kind: 'runtime-default' },
@@ -371,7 +380,14 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
 
     await hooks.preStopTrim({ taskId: 'task-1', executor });
 
-    assert.deepEqual(persistedAuth, [['task-1', '{"token":"secret"}']]);
+    assert(
+      calls.every(
+        (call) =>
+          !call.command.includes('cat /home/gem/.codex/auth.json') &&
+          !call.command.includes('persistRefreshedAuth'),
+      ),
+      'the YOLO sandbox is never trusted to write an owner credential back',
+    );
     assert(calls.some((call) => call.command === 'node --version'));
     assert(
       calls.findIndex((call) => call.command === 'cat /etc/cap/sandbox-metadata.json') <
@@ -382,6 +398,9 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
       call.command.includes('/home/gem/.cap/image-env'),
     );
     assert(toolSetupIndex >= 0, 'AIO writes the CAP image parameter env file');
+    assert.equal(privateFiles.writes[0].path, '/home/gem/.cap/image-env');
+    assert.match(privateFiles.writes[0].content, /export GCODE_TOKEN='tool-secret'/u);
+    assert.doesNotMatch(JSON.stringify(calls), /tool-secret/u);
     assert(
       toolSetupIndex < calls.findIndex((call) => call.command === 'setup-ok'),
       'AIO writes image parameters before runtime setup',
@@ -394,9 +413,9 @@ await test('configured AIO provider hooks delegate runtime, skills, transcript, 
     assert(logs.debug.some((line) => line.includes('provisioned AIO image parameters')));
     assert(logs.warn.some((line) => line.includes('skill "skill-missing" is not allowlisted')));
     assert(logs.warn.some((line) => line.includes('installer exit_code 7')));
-    assert(logs.warn.some((line) => line.includes('installer timeout')));
-    assert(logs.warn.some((line) => line.includes('pre-stop HOME trim for task task-1 exited 9')));
-    assert(logs.warn.some((line) => line.includes('trim timeout')));
+    assert(logs.warn.some((line) => line.includes('preinstall failed/timed out')));
+    assert(logs.warn.every((line) => !line.includes('installer timeout')));
+    assert(calls.some((call) => call.command === 'trim-ok'));
     assert(events.some((event) => event[0] === 'artifact' && event[3] === 'session-task-1'));
     assert(
       events.some(
@@ -552,6 +571,7 @@ await test('configured AIO provider hooks fail closed and require an exact runti
         hooks.runtimeSetup({
           taskId: 'task-setup-fail',
           executor,
+          runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
           runtimeId: 'missing-runtime',
           executionMode: 'interactive-pty',
           modelIntent: { kind: 'runtime-default' },
@@ -565,6 +585,7 @@ await test('configured AIO provider hooks fail closed and require an exact runti
         hooks.runtimeSetup({
           taskId: 'task-setup-plan-fail',
           executor,
+          runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
           runtimeId: 'codex',
           executionMode: 'interactive-pty',
           modelIntent: { kind: 'runtime-default' },
@@ -573,7 +594,8 @@ await test('configured AIO provider hooks fail closed and require an exact runti
     );
     await hooks.skillPreinstall({ taskId: 'task-skills', executor });
 
-    assert(logs.warn.some((line) => line.includes('runtime lookup failed for task-fallback')));
+    assert(logs.warn.some((line) => line.includes('could not resolve AgentRuntime for AIO task task-fallback')));
+    assert(logs.warn.every((line) => !line.includes('runtime lookup failed')));
     assert.equal(
       logs.warn.some((line) => line.includes('could not resolve AgentRuntime "missing-runtime"')),
       false,
@@ -605,6 +627,7 @@ await test('configured AIO hooks cover setup command failures and optional auth/
         hooks.runtimeSetup({
           taskId: 'task-command-fail',
           executor,
+          runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
           runtimeId: 'codex',
           executionMode: 'interactive-pty',
           modelIntent: { kind: 'runtime-default' },
@@ -653,6 +676,7 @@ await test('configured AIO hooks cover setup command failures and optional auth/
         emptyHooks.runtimeSetup({
           taskId: 'task-empty-setup',
           executor: makeExecutor(async () => ({ exitCode: 1, output: '' })).executor,
+          runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
           runtimeId: 'codex',
           executionMode: 'interactive-pty',
           modelIntent: { kind: 'runtime-default' },
@@ -700,7 +724,12 @@ await test('configured AIO hooks cover setup command failures and optional auth/
     );
     assert(
       stringLookupFailure.logs.warn.some((line) =>
-        line.includes('runtime string lookup failed'),
+        line.includes('could not resolve AgentRuntime for AIO task task-string-runtime-error'),
+      ),
+    );
+    assert(
+      stringLookupFailure.logs.warn.every(
+        (line) => !line.includes('runtime string lookup failed'),
       ),
     );
 
@@ -764,7 +793,12 @@ await test('configured AIO hooks cover setup command failures and optional auth/
     ).hooks.skillPreinstall({ taskId: 'task-string-skill-error', executor });
     assert(
       stringSkillError.logs.warn.some((line) =>
-        line.includes('skills string failure'),
+        line.includes('could not resolve selected skills'),
+      ),
+    );
+    assert(
+      stringSkillError.logs.warn.every(
+        (line) => !line.includes('skills string failure'),
       ),
     );
 
@@ -793,105 +827,55 @@ await test('configured AIO hooks cover setup command failures and optional auth/
     });
     assert(
       quietSkillFail.logs.warn.some((line) =>
-        line.includes('installer string failure'),
+        line.includes('preinstall failed/timed out'),
+      ),
+    );
+    assert(
+      quietSkillFail.logs.warn.every(
+        (line) => !line.includes('installer string failure'),
       ),
     );
 
-    const noAuth = makeHost({ codexAuthSource: undefined });
-    await onlyProvider(mod.createConfiguredSandboxProvider(noAuth.host)).hooks.preStopTrim({
-      taskId: 'task-no-auth',
-      executor,
+    const strictTrimRuntime = makeRuntime('codex', {
+      trimCommands: ['remove-private-runtime-state'],
     });
-
-    const nonCodex = makeHost({
-      defaultRuntime: makeRuntime('codex'),
-      taskRuntime: makeRuntime('claude-code'),
+    const strictTrim = makeHost({
+      defaultRuntime: strictTrimRuntime,
+      taskRuntime: strictTrimRuntime,
     });
-    await onlyProvider(mod.createConfiguredSandboxProvider(nonCodex.host)).hooks.preStopTrim({
-      taskId: 'task-non-codex',
-      executor,
-    });
-
-    const authExit = makeHost();
-    await onlyProvider(mod.createConfiguredSandboxProvider(authExit.host)).hooks.preStopTrim({
-      taskId: 'task-auth-exit',
-      executor: makeExecutor(async (request) =>
-        request.command.includes('auth.json')
-          ? { exitCode: 1, output: '' }
-          : { exitCode: 0, output: '' },
-      ).executor,
-    });
-
-    const emptyAuth = makeHost();
-    await onlyProvider(mod.createConfiguredSandboxProvider(emptyAuth.host)).hooks.preStopTrim({
-      taskId: 'task-empty-auth',
-      executor: makeExecutor(async (request) =>
-        request.command.includes('auth.json')
-          ? { exitCode: 0, output: '   ' }
-          : { exitCode: 0, output: '' },
-      ).executor,
-    });
-
-    const persistFail = makeHost({
-      codexAuthSource: {
-        async persistRefreshedAuth() {
-          throw 'database down';
+    const strictTrimHooks = onlyProvider(
+      mod.createConfiguredSandboxProvider(strictTrim.host),
+    ).hooks;
+    for (const [taskId, result, expected] of [
+      [
+        'task-trim-exit',
+        async () => ({ exitCode: 9, output: 'private-secret-canary' }),
+        /was not confirmed/,
+      ],
+      [
+        'task-trim-timeout',
+        async () => ({ exitCode: 0, timedOut: true, output: 'private-secret-canary' }),
+        /was not confirmed/,
+      ],
+      [
+        'task-trim-throw',
+        async () => {
+          throw new Error('transport private-secret-canary');
         },
-      },
-    });
-    await onlyProvider(mod.createConfiguredSandboxProvider(persistFail.host)).hooks.preStopTrim({
-      taskId: 'task-persist-fail',
-      executor: makeExecutor(async (request) =>
-        request.command.includes('auth.json')
-          ? { exitCode: 0, output: '{"token":"secret"}' }
-          : { exitCode: 0, output: '' },
-      ).executor,
-    });
-    assert(
-      persistFail.logs.warn.some((line) =>
-        line.includes('codex auth refresh-persist skipped'),
-      ),
-    );
-
-    const persistFailError = makeHost({
-      codexAuthSource: {
-        async persistRefreshedAuth() {
-          throw new Error('database error down');
-        },
-      },
-    });
-    await onlyProvider(
-      mod.createConfiguredSandboxProvider(persistFailError.host),
-    ).hooks.preStopTrim({
-      taskId: 'task-persist-fail-error',
-      executor: makeExecutor(async (request) =>
-        request.command.includes('auth.json')
-          ? { exitCode: 0, output: '{"token":"secret"}' }
-          : { exitCode: 0, output: '' },
-      ).executor,
-    });
-    assert(
-      persistFailError.logs.warn.some((line) =>
-        line.includes('database error down'),
-      ),
-    );
-
-    const fallbackTrim = makeHost({
-      defaultRuntime: makeRuntime('codex', {
-        trimCommands: ['trim-string-throw'],
-      }),
-      resolveForTaskThrows: true,
-    });
-    await onlyProvider(mod.createConfiguredSandboxProvider(fallbackTrim.host)).hooks.preStopTrim({
-      taskId: 'task-fallback-trim',
-      executor: makeExecutor(async (request) => {
-        if (request.command === 'trim-string-throw') throw 'trim string failure';
-        return { exitCode: 0, output: '' };
-      }).executor,
-    });
-    assert(
-      fallbackTrim.logs.warn.some((line) => line.includes('trim string failure')),
-    );
+        /did not settle/,
+      ],
+    ]) {
+      await assert.rejects(
+        () =>
+          strictTrimHooks.preStopTrim({
+            taskId,
+            executor: makeExecutor(result).executor,
+          }),
+        (error) =>
+          expected.test(error?.message) &&
+          !error.message.includes('private-secret-canary'),
+      );
+    }
   });
 });
 
@@ -939,7 +923,7 @@ await test('runtime command failures are classified before provider redaction', 
           ],
         },
       });
-      const { host } = makeHost({
+      const { host, logs } = makeHost({
         defaultRuntime: runtime,
         taskRuntime: runtime,
       });
@@ -955,6 +939,7 @@ await test('runtime command failures are classified before provider redaction', 
           hooks.runtimeSetup({
             taskId: `task-${item.settlement}`,
             executor,
+            runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
             runtimeId: 'codex',
             executionMode: 'interactive-pty',
             modelIntent: { kind: 'runtime-default' },
@@ -1064,6 +1049,7 @@ await test('configured BoxLite provider delegates runtime setup through the same
       assert.equal(entry.priority, 77);
       assert(entry.capabilities.includes('workspace.git.deliver'));
 
+      const privateFiles = makeRuntimePrivateFileCapture();
       await entry.provider.runtimeSetup({
         taskId: 'box-task',
         modelIntent: { kind: 'runtime-default' },
@@ -1071,6 +1057,7 @@ await test('configured BoxLite provider delegates runtime setup through the same
         runtimeId: 'codex',
         sandbox: { id: 'box-task', status: 'running', image: 'boxlite-image:latest' },
         executor,
+        runtimePrivateFiles: privateFiles.port,
         workspacePath: '/workspace',
       });
 
@@ -1079,6 +1066,9 @@ await test('configured BoxLite provider delegates runtime setup through the same
         command.includes('/home/gem/.cap/image-env'),
       );
       assert(toolSetupIndex >= 0, 'BoxLite writes the CAP image parameter env file');
+      assert.equal(privateFiles.writes[0].path, '/home/gem/.cap/image-env');
+      assert.match(privateFiles.writes[0].content, /export GCODE_TOKEN='box-tool-secret'/u);
+      assert.doesNotMatch(JSON.stringify(calls), /box-tool-secret/u);
       assert.equal(commands.at(-1), 'boxlite-setup');
       assert(toolSetupIndex < commands.indexOf('boxlite-setup'));
       assert(events.some((event) => event[0] === 'plan' && event[2] === '/workspace'));
@@ -1271,6 +1261,604 @@ await test('configured provider family fails closed when explicit BoxLite config
       );
     },
   );
+});
+
+await test('configured BoxLite hooks resolve the frozen environment and runtime before retained cleanup', async () => {
+  await withEnv(
+    {
+      CAP_SANDBOX_PROVIDER: 'boxlite',
+      BOXLITE_ENDPOINT: 'http://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'token',
+      BOXLITE_IMAGE: 'boxlite-image:v1',
+      BOXLITE_CAPABILITIES:
+        'command.exec,lifecycle.readopt,transcript.retained-read,transcript.retained-source',
+      BOXLITE_WORKSPACE_PATH: '/home/gem/workspace',
+    },
+    async () => {
+      const environmentCalls = [];
+      const runtime = makeRuntime('codex', {
+        filenameGlob: /(^|\/)session-.*\.jsonl$/,
+      });
+      const { host, logs } = makeHost({
+        defaultRuntime: runtime,
+        taskRuntime: runtime,
+        getResolvedEnvironment: async (...args) => {
+          environmentCalls.push(args);
+          return {
+            id: 'box-env-v1',
+            providerId: 'boxlite',
+            providerFamily: 'boxlite',
+            runtimeId: 'codex',
+            sourceKind: 'boxlite-image',
+            sourceRef: 'boxlite-image:v1',
+          };
+        },
+      });
+      const provider = onlyProvider(mod.createConfiguredSandboxProvider(host));
+      const transcript = '{"type":"message"}\n';
+      const client = new mod.FakeBoxLiteClient({
+        execHandler: (request) => {
+          const result = {
+            exitCode: 0,
+            output: '',
+            stdout: '',
+            stderr: '',
+            timedOut: false,
+          };
+          if (request.command === 'cat /etc/cap/sandbox-metadata.json') {
+            result.output = JSON.stringify({
+              schemaVersion: 1,
+              sandboxVersion: 'v1.2.3',
+              dependencies: { codex: '0.132.0' },
+            });
+          } else if (request.command.startsWith('find ')) {
+            result.stdout = '/home/gem/.codex/sessions/session-final.jsonl\n';
+          } else if (request.command.includes('session-final.jsonl')) {
+            result.stdout = transcript;
+          } else if (request.command.includes('/home/gem/.cap/image-env')) {
+            result.exitCode = 8;
+          }
+          result.output ||= result.stdout;
+          return result;
+        },
+      });
+      provider.client = client;
+
+      await provider.provision({
+        taskId: 'box-hook-task',
+        cloneSpec: null,
+        modelIntent: { kind: 'runtime-default' },
+        runtimeId: 'codex',
+        executionMode: 'interactive-pty',
+      });
+      assert.deepEqual(environmentCalls, [
+        ['box-hook-task', 'boxlite', 'codex'],
+      ]);
+      assert.deepEqual(await provider.readRolloutFromContainer('box-hook-task'), {
+        format: 'codex-jsonl',
+        jsonl: transcript,
+      });
+      assert.equal(
+        (await provider.preflightRuntime({ taskId: 'box-hook-task' })).status,
+        'passed',
+      );
+
+      await provider.teardownSandbox('box-hook-task');
+      assert(
+        client.execCalls.some(
+          (call) =>
+            call.command.includes('/home/gem/.cap/image-env') &&
+            call.command.includes('rm -f'),
+        ),
+        'retained BoxLite cleanup removes the task image-parameter file',
+      );
+      assert(
+        logs.warn.some((line) =>
+          line.includes('image parameter cleanup for task box-hook-task failed'),
+        ),
+      );
+    },
+  );
+});
+
+await test('configured transcript hooks cover fallback and BoxLite retained-read edge outcomes', async () => {
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const runtime = makeRuntime('codex');
+    const loggerState = makeLogger();
+    const { host, logs } = makeHost({
+      defaultRuntime: runtime,
+      taskRuntime: runtime,
+      loggerState,
+      resolveThrowsFor: new Set(['missing-runtime']),
+    });
+    const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
+    assert.deepEqual(
+      await hooks.transcriptRead({
+        taskId: 'aio-runtime-fallback',
+        runtimeId: 'missing-runtime',
+        controller: {
+          readSingleNewestJsonl: async () => '{"fallback":true}\n',
+        },
+      }),
+      { format: 'codex-jsonl', jsonl: '{"fallback":true}\n' },
+    );
+    assert(logs.warn.some((line) => line.includes('missing-runtime')));
+  });
+
+  await withEnv(
+    {
+      CAP_SANDBOX_PROVIDER: 'boxlite',
+      BOXLITE_ENDPOINT: 'http://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'token',
+      BOXLITE_IMAGE: 'boxlite-image:v1',
+      BOXLITE_CAPABILITIES:
+        'command.exec,lifecycle.readopt,transcript.retained-read,transcript.retained-source',
+    },
+    async () => {
+      const supported = makeRuntime('codex', {
+        filenameGlob: /(^|\/)session-.*\.jsonl$/,
+      });
+      const unsupported = makeRuntime('provider-owned', {
+        readKind: 'provider-owned',
+      });
+      let mode = 'list-failed';
+      const { host } = makeHost({
+        defaultRuntime: supported,
+        taskRuntime: supported,
+        resolve: (id) => (id === 'provider-owned' ? unsupported : supported),
+      });
+      const provider = onlyProvider(mod.createConfiguredSandboxProvider(host));
+      const client = new mod.FakeBoxLiteClient({
+        execHandler: (request) => {
+          const result = {
+            exitCode: 0,
+            output: '',
+            stdout: '',
+            stderr: '',
+            timedOut: false,
+          };
+          if (request.command === 'cat /etc/cap/sandbox-metadata.json') {
+            result.output = JSON.stringify({
+              schemaVersion: 1,
+              sandboxVersion: 'v1.2.3',
+              dependencies: { codex: '0.132.0' },
+            });
+          } else if (request.command.startsWith('find ')) {
+            if (mode === 'list-failed') result.exitCode = 3;
+            else if (mode === 'no-match') result.stdout = '/tmp/not-a-session.txt\n';
+            else if (mode === 'list-output-fallback') {
+              result.output = '/home/gem/.codex/sessions/session-edge.jsonl\n';
+            }
+            else result.stdout = '/home/gem/.codex/sessions/session-edge.jsonl\n';
+          } else if (request.command.includes('session-edge.jsonl')) {
+            if (mode === 'read-failed') result.exitCode = 4;
+            else result.output = '{"outputFallback":true}\n';
+          }
+          result.output ||= result.stdout;
+          return result;
+        },
+      });
+      provider.client = client;
+      await provider.provision({
+        taskId: 'box-transcript-edges',
+        cloneSpec: null,
+        modelIntent: { kind: 'runtime-default' },
+        runtimeId: 'codex',
+        executionMode: 'interactive-pty',
+      });
+
+      assert.equal(
+        await provider.readRolloutFromContainer(
+          'box-transcript-edges',
+          'provider-owned',
+        ),
+        null,
+      );
+      for (const nextMode of ['list-failed', 'no-match', 'read-failed']) {
+        mode = nextMode;
+        assert.equal(
+          await provider.readRolloutFromContainer('box-transcript-edges', 'codex'),
+          null,
+        );
+      }
+      mode = 'output-fallback';
+      assert.deepEqual(
+        await provider.readRolloutFromContainer('box-transcript-edges', 'codex'),
+        {
+          format: 'codex-jsonl',
+          jsonl: '{"outputFallback":true}\n',
+        },
+      );
+      mode = 'list-output-fallback';
+      assert.deepEqual(
+        await provider.readRolloutFromContainer('box-transcript-edges', 'codex'),
+        {
+          format: 'codex-jsonl',
+          jsonl: '{"outputFallback":true}\n',
+        },
+      );
+      await provider.teardownSandbox('box-transcript-edges');
+    },
+  );
+});
+
+await test('configured setup hooks fail closed and suppress arbitrary private diagnostics', async () => {
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const runtime = makeRuntime('codex');
+    const loggerState = makeLogger();
+    const profileSecret = 'profile-secret-canary';
+    const { host, logs } = makeHost({
+      defaultRuntime: runtime,
+      taskRuntime: runtime,
+      loggerState,
+      getTaskImageParameterProfile: async (taskId) => {
+        if (taskId === 'profile-lookup-failed') {
+          throw 'profile lookup string failure';
+        }
+        if (taskId === 'profile-lookup-error') {
+          throw new Error('profile lookup error failure');
+        }
+        if (taskId === 'profile-absent') return undefined;
+        return {
+          parameters: [
+            { name: 'GCODE_TOKEN', value: profileSecret, secret: true },
+          ],
+        };
+      },
+    });
+    const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
+    const absentProfile = makeExecutor();
+    await hooks.runtimeSetup({
+      taskId: 'profile-absent',
+      executor: absentProfile.executor,
+      runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
+      runtimeId: 'codex',
+      executionMode: 'interactive-pty',
+      modelIntent: { kind: 'runtime-default' },
+    });
+    assert(
+      absentProfile.calls.every(
+        (request) => !request.command.includes('/home/gem/.cap/image-env'),
+      ),
+    );
+    await hooks.runtimeSetup({
+      taskId: 'profile-lookup-failed',
+      executor: makeExecutor().executor,
+      runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
+      runtimeId: 'codex',
+      executionMode: 'interactive-pty',
+      modelIntent: { kind: 'runtime-default' },
+    });
+    assert(logs.warn.some((line) => line.includes('could not resolve image parameters')));
+    assert(logs.warn.every((line) => !line.includes('profile lookup string failure')));
+    await hooks.runtimeSetup({
+      taskId: 'profile-lookup-error',
+      executor: makeExecutor().executor,
+      runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
+      runtimeId: 'codex',
+      executionMode: 'interactive-pty',
+      modelIntent: { kind: 'runtime-default' },
+    });
+    assert(logs.warn.every((line) => !line.includes('profile lookup error failure')));
+
+    const failingSetup = makeExecutor(async (request) =>
+      request.command.includes('/home/gem/.cap/image-env')
+        ? { exitCode: 9, output: `Bearer ${profileSecret}` }
+        : { exitCode: 0, output: '' },
+    );
+    await assert.rejects(
+      hooks.runtimeSetup({
+        taskId: 'profile-command-failed',
+        executor: failingSetup.executor,
+        runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
+        runtimeId: 'codex',
+        executionMode: 'interactive-pty',
+        modelIntent: { kind: 'runtime-default' },
+      }),
+      (error) =>
+        /image parameter setup for AIO task/.test(error?.message) &&
+        !error.message.includes(profileSecret) &&
+        !error.message.includes(Buffer.from(profileSecret).toString('base64')) &&
+        !error.message.includes(Buffer.from(profileSecret).toString('hex')),
+    );
+
+    const unresolvedImageSetup = makeExecutor(async (request) =>
+      request.command.includes('/home/gem/.cap/image-env')
+        ? { exitCode: Number.NaN, output: '   ' }
+        : { exitCode: 0, output: '' },
+    );
+    await assert.rejects(
+      hooks.runtimeSetup({
+        taskId: 'profile-command-unresolved',
+        executor: unresolvedImageSetup.executor,
+        runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
+        runtimeId: 'codex',
+        executionMode: 'interactive-pty',
+        modelIntent: { kind: 'runtime-default' },
+      }),
+      (error) =>
+        /exit_code NaN$/u.test(error?.message) && !error.message.includes(' - '),
+    );
+
+    const invalidMetadata = makeExecutor(undefined, async () => ({
+      exitCode: 0,
+      output: '{not-json',
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+    }));
+    await assert.rejects(
+      hooks.runtimePreflight({
+        taskId: 'invalid-metadata',
+        executor: invalidMetadata.executor,
+        runtimeId: 'codex',
+      }),
+      /sandbox metadata preflight for AIO task invalid-metadata failed/,
+    );
+
+    const cleanupFailure = makeExecutor(async (request) =>
+      request.command.includes('/home/gem/.cap/image-env')
+        ? { exitCode: 8, output: 'cleanup failed' }
+        : { exitCode: 1, output: '' },
+    );
+    await assert.rejects(
+      () =>
+        hooks.preStopTrim({
+          taskId: 'image-cleanup-failed',
+          executor: cleanupFailure.executor,
+        }),
+      (error) =>
+        error?.message ===
+          'image parameter cleanup for task image-cleanup-failed was not confirmed' &&
+        !error.message.includes('cleanup failed'),
+    );
+  });
+
+  await withEnv(
+    {
+      CAP_SANDBOX_PROVIDER: 'boxlite',
+      BOXLITE_ENDPOINT: 'http://boxlite.example.test',
+      BOXLITE_API_TOKEN: 'token',
+      BOXLITE_IMAGE: 'boxlite-image:v1',
+      BOXLITE_CAPABILITIES: 'command.exec',
+    },
+    async () => {
+      const environmentCalls = [];
+      const { host } = makeHost({
+        getResolvedEnvironment: async (...args) => {
+          environmentCalls.push(args);
+          return null;
+        },
+      });
+      const provider = onlyProvider(mod.createConfiguredSandboxProvider(host));
+      await assert.rejects(
+        provider.runtimeSetup({
+          taskId: 'box-missing-runtime',
+          modelIntent: { kind: 'runtime-default' },
+          executionMode: 'interactive-pty',
+          executor: makeExecutor().executor,
+          runtimePrivateFiles: makeRuntimePrivateFileCapture().port,
+          workspacePath: '/home/gem/workspace',
+          sandbox: {
+            id: 'box-missing-runtime',
+            image: 'boxlite-image:v1',
+            status: 'running',
+          },
+        }),
+        (error) => error?.phase === 'runtime-resolution',
+      );
+
+      provider.client = new mod.FakeBoxLiteClient({
+        execHandler: (request) => ({
+          exitCode: 0,
+          output:
+            request.command === 'cat /etc/cap/sandbox-metadata.json'
+              ? JSON.stringify({
+                  schemaVersion: 1,
+                  sandboxVersion: 'v1.2.3',
+                  dependencies: { codex: '0.132.0' },
+                })
+              : '',
+          stdout: '',
+          stderr: '',
+          timedOut: false,
+        }),
+      });
+      await assert.rejects(
+        provider.provision({
+          taskId: 'box-provision-missing-runtime',
+          cloneSpec: null,
+          modelIntent: { kind: 'runtime-default' },
+          executionMode: 'interactive-pty',
+        }),
+        (error) => error?.phase === 'runtime-resolution',
+      );
+      assert(
+        environmentCalls.some(
+          (args) =>
+            args[0] === 'box-provision-missing-runtime' && args[2] === null,
+        ),
+      );
+    },
+  );
+});
+
+await test('configured transcript fallback handles a default runtime string failure', async () => {
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const runtime = makeRuntime('codex');
+    let defaultLookups = 0;
+    const { host, logs } = makeHost({
+      defaultRuntime: runtime,
+      resolve(id) {
+        if (id === null && defaultLookups++ === 0) {
+          throw 'default runtime string failure';
+        }
+        return runtime;
+      },
+    });
+    const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
+    assert.equal(
+      await hooks.transcriptRead({
+        taskId: 'default-runtime-fallback',
+        controller: { readSingleNewestJsonl: async () => null },
+      }),
+      null,
+    );
+    assert(
+      logs.warn.some(
+        (line) =>
+          line.includes('AgentRuntime "default"') &&
+          line.includes('defaulting'),
+      ),
+    );
+    assert(
+      logs.warn.every((line) => !line.includes('default runtime string failure')),
+    );
+  });
+});
+
+await test('configured runtime preflight maps the claude alias to claude-code metadata', async () => {
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const runtime = makeRuntime('claude');
+    const { host } = makeHost({ defaultRuntime: runtime, taskRuntime: runtime });
+    const hooks = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks;
+    assert.equal(
+      (
+        await hooks.runtimePreflight({
+          taskId: 'claude-alias',
+          executor: makeExecutor().executor,
+          runtimeId: 'claude',
+        })
+      ).status,
+      'passed',
+    );
+  });
+});
+
+await test('configured router resolves immutable provider identity for readoption', async () => {
+  await withEnv(
+    {
+      CAP_SANDBOX_PROVIDER: 'auto',
+      CAP_SANDBOX_CLOUD_HTTP_BASE_URL: 'https://sandbox.example.test',
+      CAP_SANDBOX_CLOUD_HTTP_ID: 'cloud-only',
+    },
+    async () => {
+      const launchContexts = new Map([
+        [
+          'runtime-default-task',
+          {
+            modelIntent: { kind: 'runtime-default' },
+            ownerUserId: 'owner-1',
+            runtimeId: 'codex',
+            executionMode: 'interactive-pty',
+          },
+        ],
+        [
+          'explicit-task',
+          {
+            modelIntent: { kind: 'explicit', selector: 'provider/model:v1' },
+            environment: { providerId: 'cloud-only' },
+            ownerUserId: 'owner-1',
+            runtimeId: 'codex',
+            executionMode: 'interactive-pty',
+          },
+        ],
+        [
+          'missing-provider-task',
+          {
+            modelIntent: { kind: 'explicit', selector: 'provider/model:v1' },
+            ownerUserId: 'owner-1',
+            runtimeId: 'codex',
+            executionMode: 'interactive-pty',
+          },
+        ],
+      ]);
+      const { host } = makeHost({
+        launchContexts,
+        ownerStore: {
+          async getSandboxRunOwner(taskId) {
+            return {
+              taskId,
+              providerId: 'cloud-only',
+              createState: 'idle',
+              status: 'running',
+              cleanupAttemptInFlight: false,
+              cleanupAttemptCount: 0,
+            };
+          },
+        },
+      });
+      const router = mod.createConfiguredSandboxProvider(host);
+      const previousFetch = globalThis.fetch;
+      const requests = [];
+      globalThis.fetch = async (input, init) => {
+        requests.push([String(input), init?.method]);
+        return { status: 404, ok: false };
+      };
+      try {
+        assert.equal(await router.sandboxExists('runtime-default-task'), false);
+        assert.equal(await router.sandboxExists('explicit-task'), false);
+        await assert.rejects(
+          router.sandboxExists('missing-provider-task'),
+          (error) => error?.phase === 'snapshot',
+        );
+      } finally {
+        globalThis.fetch = previousFetch;
+      }
+      assert.equal(requests.length, 4, 'readoption reattach and existence probe both run');
+    },
+  );
+});
+
+await test('configured workspace hook preserves detached options and cancellation', async () => {
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const { host } = makeHost();
+    const hook = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks
+      .workspaceMaterialization;
+    const plan = {
+      repositoryUrl: 'https://example.test/repo.git',
+      callerBranch: null,
+      resolvedBranch: 'main',
+      deadlineMs: 60_000,
+    };
+    for (const detachedTransfer of [undefined, { pollIntervalMs: 5 }]) {
+      const cancellation = new AbortController();
+      cancellation.abort();
+      const result = await hook({
+        taskId: detachedTransfer ? 'detached-present' : 'detached-absent',
+        plan,
+        workspaceDir: '/home/gem/workspace',
+        stageExecutor: {
+          async execute() {
+            throw new Error('cancelled materialization must not execute a stage');
+          },
+        },
+        cancellationSignal: cancellation.signal,
+        ...(detachedTransfer === undefined ? {} : { detachedTransfer }),
+      });
+      assert.equal(result.status, 'cancelled');
+    }
+  });
+});
+
+await test('configured AIO environment lookup normalizes runtime identity', async () => {
+  await withEnv({ CAP_SANDBOX_PROVIDER: 'aio' }, async () => {
+    const calls = [];
+    const { host } = makeHost({
+      getResolvedEnvironment: async (...args) => {
+        calls.push(args);
+        return args[2] === null ? undefined : { id: 'environment-v1' };
+      },
+    });
+    const lookup = onlyProvider(mod.createConfiguredSandboxProvider(host)).hooks
+      .provisionLookup.getResolvedEnvironment;
+    assert.equal(await lookup('task-null-runtime', null), null);
+    assert.deepEqual(await lookup('task-runtime', 123), { id: 'environment-v1' });
+    assert.deepEqual(calls, [
+      ['task-null-runtime', 'aio', null],
+      ['task-runtime', 'aio', '123'],
+    ]);
+  });
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

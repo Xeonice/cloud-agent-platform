@@ -290,7 +290,6 @@ export class SandboxProviderRouter<
     const legacyProvisioning = legacyCreateFence
       ? createLegacyProvisioningInFlight(selected.id)
       : undefined;
-    let legacyCreateBoundaryEntered = false;
     let legacyCreateObserved = false;
     const providerCleanup = ownership
       ? this.createProviderContextCleanupCallbacks({
@@ -362,11 +361,8 @@ export class SandboxProviderRouter<
                 event.position === 'before'
               ) {
                 if (ownership === undefined) {
-                  if (!legacyCreateBoundaryEntered) {
-                    throw new Error(
-                      'Legacy sandbox invocation fence is not current',
-                    );
-                  }
+                  // The provider receives this context only after the router
+                  // successfully enters the legacy create fence below.
                   const current = await this.options.ownerStore
                     ?.validateLegacySandboxRunCreateFence?.({
                       taskId: ctx.taskId,
@@ -439,7 +435,6 @@ export class SandboxProviderRouter<
         if (entered !== true) {
           throw new Error('Sandbox create fence is no longer current');
         }
-        legacyCreateBoundaryEntered = true;
       }
       let connection: SandboxConnection;
     try {
@@ -479,25 +474,17 @@ export class SandboxProviderRouter<
         throw new SandboxCleanupCoordinationPendingError(error);
       }
       if (ownership) {
-        try {
-          await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
-            ownership,
-            disposition: 'superseded-remove',
-            diagnostics: ctx.diagnostics,
-          });
-        } finally {
-          this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
-        }
+        return await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
+          ownership,
+          disposition: 'superseded-remove',
+          diagnostics: ctx.diagnostics,
+        });
       }
       if (legacyProvisioning) {
-        try {
-          await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
-            disposition: 'superseded-remove',
-            diagnostics: ctx.diagnostics,
-          });
-        } finally {
-          this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
-        }
+        return await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
+          disposition: 'superseded-remove',
+          diagnostics: ctx.diagnostics,
+        });
       }
       this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
       throw error;
@@ -573,21 +560,17 @@ export class SandboxProviderRouter<
       if (ownership) {
         // Close the provider-return / owner-record crash gap.  The exact CAS is
         // stale after a takeover and therefore cannot delete the newer owner.
-        await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
+        return await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
           ownership,
           disposition: 'superseded-remove',
           diagnostics: ctx.diagnostics,
         });
       }
       if (legacyProvisioning) {
-        try {
-          await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
-            disposition: 'superseded-remove',
-            diagnostics: ctx.diagnostics,
-          });
-        } finally {
-          this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
-        }
+        return await this.rethrowPrimaryAfterCleanup(error, ctx.taskId, {
+          disposition: 'superseded-remove',
+          diagnostics: ctx.diagnostics,
+        });
       }
       this.forgetLegacyProvisioning(ctx.taskId, legacyProvisioning);
       throw error;
@@ -766,13 +749,16 @@ export class SandboxProviderRouter<
         if (createMayStillReturn) {
           // Deleting a currently visible resource is not enough while a
           // replayed create may still return after that delete.
-          const pending = cleanup.authorization.kind === 'generation'
-            ? await ownerStore.joinSandboxRunCleanup?.({
-                taskId,
-                providerId: cleanup.authorization.providerId,
-                ownership: cleanup.authorization.ownership,
-              })
-            : await beginSandboxRunCleanup(taskId);
+          // `createMayStillReturn` can only be true for generation authority.
+          const generationAuthorization = cleanup.authorization as Extract<
+            SandboxRunCleanupAuthorization,
+            { readonly kind: 'generation' }
+          >;
+          const pending = await ownerStore.joinSandboxRunCleanup?.({
+            taskId,
+            providerId: generationAuthorization.providerId,
+            ownership: generationAuthorization.ownership,
+          });
           if (pending?.kind === 'absent') {
             this.owners.delete(taskId);
             return routedCleanup(result, false);
@@ -1289,7 +1275,6 @@ export class SandboxProviderRouter<
           attemptPhysical?: SandboxPhysicalCleanupResult;
           attemptEvidence?: SandboxCleanupAttemptEvidence;
           afterPromise?: Promise<void>;
-          settlementAcknowledged: boolean;
           readonly confirmedAbsenceIsFinal: boolean;
         }
       | undefined;
@@ -1299,12 +1284,12 @@ export class SandboxProviderRouter<
     };
 
     const settle = async (
+      current: NonNullable<typeof active>,
       evidence: SandboxCleanupAttemptEvidence,
     ): Promise<boolean> => {
-      if (!active) return false;
       let result;
       try {
-        result = await settleAttempt(active.authorization, evidence);
+        result = await settleAttempt(current.authorization, evidence);
       } catch {
         coordinationPending = true;
         return false;
@@ -1313,15 +1298,14 @@ export class SandboxProviderRouter<
         coordinationPending = true;
         return false;
       }
-      active.settled = true;
-      active.settledEvidence = evidence;
+      current.settled = true;
+      current.settledEvidence = evidence;
       return true;
     };
 
     const acknowledgeProviderCleanupSettlement = async (
       current: NonNullable<typeof active>,
     ): Promise<boolean> => {
-      if (current.settlementAcknowledged) return true;
       if (current.afterSettlement) {
         try {
           await current.afterSettlement(
@@ -1331,7 +1315,6 @@ export class SandboxProviderRouter<
           return false;
         }
       }
-      current.settlementAcknowledged = true;
       return true;
     };
 
@@ -1379,7 +1362,10 @@ export class SandboxProviderRouter<
         return;
       }
       current.afterPromise = (async () => {
-        if (!current.settled && !(await settle(current.attemptEvidence!))) {
+        if (
+          !current.settled &&
+          !(await settle(current, current.attemptEvidence!))
+        ) {
           failCoordination();
           return;
         }
@@ -1450,7 +1436,6 @@ export class SandboxProviderRouter<
           confirmedAbsenceIsFinal: authorized.confirmedAbsenceIsFinal,
           settled: false,
           completed: false,
-          settlementAcknowledged: false,
         };
         return active.authorization;
       },
@@ -1476,17 +1461,18 @@ export class SandboxProviderRouter<
           return { kind: 'none' };
         }
         if (active.settled) {
-          if (!active.settledEvidence) {
-            return {
-              kind: 'coordination-pending',
-              authorization: active.authorization,
-            };
-          }
+          // `settle()` records these two fields in the same synchronous turn.
           const physical = sandboxPhysicalCleanupResultFromEvidence(
-            active.settledEvidence,
+            active.settledEvidence!,
           );
           return physical.outcome === 'succeeded'
-            ? { kind: 'none' }
+            ? {
+                // Settlement alone is not completion. A provider that did not
+                // await its cleanup callback must not expose a live result while
+                // the authoritative completion CAS is still in flight.
+                kind: 'coordination-pending',
+                authorization: active.authorization,
+              }
             : {
                 kind: 'settled-physical',
                 authorization: active.authorization,
@@ -1507,7 +1493,7 @@ export class SandboxProviderRouter<
           active.allocation.attemptId,
           unconfirmedCleanup(),
         );
-        if (!(await settle(evidence))) {
+        if (!(await settle(active, evidence))) {
           return {
             kind: 'coordination-pending',
             authorization: active.authorization,
@@ -1952,7 +1938,7 @@ export class SandboxProviderRouter<
           throw new SandboxCleanupCoordinationPendingError(error);
         }
         if (finalization.kind === 'settled-physical') {
-          await this.rethrowPrimaryAfterCleanup(error, taskId, {
+          return await this.rethrowPrimaryAfterCleanup(error, taskId, {
             cleanupAuthorization: finalization.authorization,
             disposition: 'superseded-remove',
           });
@@ -2406,7 +2392,7 @@ export class SandboxProviderRouter<
     return Object.freeze({
       args: Object.freeze({
         ...safeArgs,
-        ...(ownership ? { ownership } : {}),
+        ownership,
         beforeSandboxCleanup: cleanup.beforeSandboxCleanup,
         afterSandboxCleanup: cleanup.afterSandboxCleanup,
         settleSandboxCleanupAttempt: cleanup.settleSandboxCleanupAttempt,

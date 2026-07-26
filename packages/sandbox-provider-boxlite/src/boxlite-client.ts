@@ -459,8 +459,10 @@ export class BoxLiteRestClient implements BoxLiteClient {
         if (created) throw new BoxLitePartialCreateError(created, error);
         throw error;
       }
-      if (!created) throw new Error('BoxLite create returned no sandbox');
-      const sandbox = created;
+      // The external boundary either returns the sandbox produced by `run` or
+      // throws into the catch above. A successful boundary therefore always
+      // leaves the observed sandbox assigned.
+      const sandbox = created as BoxLiteSandbox;
       let startDiagnostic: BoxLiteProvisioningDiagnosticLifecycle | undefined;
       try {
         const started = await runSandboxExternalBoundary({
@@ -758,12 +760,21 @@ export class BoxLiteRestClient implements BoxLiteClient {
           throw error;
         }
         const attached = await attach.result;
-        const result = mergeExecOutput(polled, attached);
+        // `stopped` is produced only by the poll-error catch above, which
+        // throws before this success path can be reached.
+        const result = mergeExecOutput(
+          polled,
+          attached as Exclude<
+            BoxLiteNativeExecutionAttachResult,
+            { readonly kind: 'stopped' }
+          >,
+        );
         settleBoxLiteExecResultDiagnostic(
           settlementDiagnostic,
           result,
           budget.timeoutMs,
         );
+        budget.dispose();
         return result;
       } catch (error) {
         settleBoxLiteCommandRejectionDiagnostic(
@@ -772,9 +783,8 @@ export class BoxLiteRestClient implements BoxLiteClient {
           request.cancellationSignal,
           budget.timeoutMs,
         );
-        throw error;
-      } finally {
         budget.dispose();
+        throw error;
       }
     }
     const startDiagnostic = startBoxLiteProvisioningDiagnostic(
@@ -1314,28 +1324,20 @@ export class BoxLiteRestClient implements BoxLiteClient {
           });
           resolve({ kind: 'stopped' });
         } else {
-          if (!Number.isSafeInteger(exitCode)) {
-            diagnostic.settle({
-              outcome: 'degraded',
-              cause: 'protocol_failed',
-              retryable: false,
-              anomaly: 'attach_degraded',
-            });
-            resolve({ kind: 'degraded', settlement: 'protocol' });
-          } else {
-            const settledExitCode = exitCode as number;
-            successfulDrain = true;
-            diagnostic.succeed({ exitCode: settledExitCode });
-            resolve({
-              kind: 'success',
-              exitCode: settledExitCode,
-              output: {
-                stdout: finalStdout,
-                stderr: finalStderr,
-                output: `${finalStdout}${finalStderr}`,
-              },
-            });
-          }
+          // `success` is reachable only from `parseControlFrame`, which has
+          // already required a safe integer exit code.
+          const settledExitCode = exitCode as number;
+          successfulDrain = true;
+          diagnostic.succeed({ exitCode: settledExitCode });
+          resolve({
+            kind: 'success',
+            exitCode: settledExitCode,
+            output: {
+              stdout: finalStdout,
+              stderr: finalStderr,
+              output: `${finalStdout}${finalStderr}`,
+            },
+          });
         }
         if (socketAlreadyClosed) {
           detachSocketListeners(socket);
@@ -1393,15 +1395,10 @@ export class BoxLiteRestClient implements BoxLiteClient {
 
       function onMessage(raw: WebSocket.RawData, isBinary: boolean): void {
         if (settled) return;
-        const messageBudgetReason = budget.reason();
-        if (messageBudgetReason !== null) {
-          finish(
-            messageBudgetReason === 'cancellation'
-              ? 'cancelled'
-              : 'timed_out',
-          );
-          return;
-        }
+        // Refreshing the budget aborts `budget.signal` synchronously; its
+        // registered listener owns the terminal mapping.
+        budget.reason();
+        if (settled) return;
         try {
           if (!isBinary) {
             const text = rawToBuffer(raw).toString('utf8');
@@ -1450,14 +1447,9 @@ export class BoxLiteRestClient implements BoxLiteClient {
 
       stopAfterProcessFailure = () => {
         if (!settled) {
-          const reason = budget.reason();
-          finish(
-            reason === 'cancellation'
-              ? 'cancelled'
-              : reason === 'deadline'
-                ? 'timed_out'
-                : 'stopped',
-          );
+          // A terminal budget reason would already have fired the abort
+          // listener above. Reaching this branch means polling failed first.
+          finish('stopped');
         }
         return result;
       };
@@ -1527,7 +1519,10 @@ export function boxLiteHttpStatusFromError(
 function settleBoxLiteRequestDiagnostic(
   diagnostic: BoxLiteProvisioningDiagnosticLifecycle,
   error: unknown,
-  defaults: BoxLiteProvisioningDiagnosticFailureDefaults = {},
+  defaults: Pick<
+    BoxLiteProvisioningDiagnosticFailureDefaults,
+    'outcome' | 'cause' | 'retryable' | 'signal' | 'anomaly'
+  > = {},
 ): void {
   if (error instanceof BoxLiteHttpRequestError) {
     const {
@@ -1552,14 +1547,6 @@ function settleBoxLiteRequestDiagnostic(
     cause: 'protocol_failed',
     retryable: false,
     ...(defaults.signal === undefined ? {} : { signal: defaults.signal }),
-    ...(defaults.nativeState === undefined
-      ? {}
-      : { nativeState: defaults.nativeState }),
-    ...(defaults.anomaly === undefined ? {} : { anomaly: defaults.anomaly }),
-    ...(defaults.exitCode === undefined ? {} : { exitCode: defaults.exitCode }),
-    ...(defaults.timeoutMs === undefined
-      ? {}
-      : { timeoutMs: defaults.timeoutMs }),
   });
 }
 
@@ -1840,7 +1827,9 @@ function parseSandbox(raw: unknown): BoxLiteSandbox {
         ? record.taskId
         : typeof record.task_id === 'string'
           ? record.task_id
-          : undefined,
+          : typeof record.name === 'string'
+            ? record.name
+            : undefined,
     state:
       typeof record.state === 'string'
         ? record.state
@@ -1946,10 +1935,6 @@ export function parseBoxLiteNativeExecutionPollResult(
       ? { kind: 'pending', nativeState, exitCode: null }
       : invalidNativeExecutionPoll(nativeState, exitCode);
   }
-  if (nativeState === 'unknown') {
-    return invalidNativeExecutionPoll(nativeState, exitCode);
-  }
-
   const stdout = typeof record.stdout === 'string' ? record.stdout : '';
   const stderr = typeof record.stderr === 'string' ? record.stderr : '';
   const output =
@@ -2024,11 +2009,9 @@ function adaptBoxLiteNativeExecutionResult(
   ) {
     throw new SandboxCommandSettlementError('failed_without_exit');
   }
-  const exitCode =
-    parsed.exitCode ?? (parsed.nativeState === 'timed_out' ? 124 : null);
-  if (exitCode === null) {
-    throw new SandboxCommandSettlementError('protocol');
-  }
+  // Terminal failed/killed states without an exit code are rejected above;
+  // completed requires one in the parser, and timed_out maps to 124.
+  const exitCode = parsed.exitCode ?? 124;
   return {
     exitCode,
     stdout: parsed.stdout,
@@ -2056,7 +2039,10 @@ function invalidNativeExecutionPoll(
 }
 
 function readNativeExecutionState(record: Record<string, unknown>):
-  | { readonly valid: true; readonly nativeState: BoxLiteNativeExecutionState }
+  | {
+      readonly valid: true;
+      readonly nativeState: Exclude<BoxLiteNativeExecutionState, 'unknown'>;
+    }
   | { readonly valid: false } {
   const rawStates = [
     ...(hasOwn(record, 'status') ? [record.status] : []),
@@ -2075,7 +2061,10 @@ function readNativeExecutionState(record: Record<string, unknown>):
   if (normalized.some((state) => state === null)) {
     return { valid: false };
   }
-  const first = normalized[0] as BoxLiteNativeExecutionState;
+  const first = normalized[0] as Exclude<
+    BoxLiteNativeExecutionState,
+    'unknown'
+  >;
   if (normalized.some((state) => state !== first)) {
     return { valid: false };
   }
@@ -2087,7 +2076,7 @@ function readNativeExecutionState(record: Record<string, unknown>):
 
 function normalizeNativeExecutionState(
   raw: unknown,
-): BoxLiteNativeExecutionState | null {
+): Exclude<BoxLiteNativeExecutionState, 'unknown'> | null {
   if (typeof raw !== 'string') return null;
   switch (raw.trim().toLowerCase()) {
     case 'pending':
@@ -2138,7 +2127,10 @@ function hasOwn(record: Record<string, unknown>, key: string): boolean {
 
 function mergeExecOutput(
   polled: BoxLiteExecResult,
-  attached: BoxLiteNativeExecutionAttachResult,
+  attached: Exclude<
+    BoxLiteNativeExecutionAttachResult,
+    { readonly kind: 'stopped' }
+  >,
 ): BoxLiteExecResult {
   if (attached.kind !== 'success') {
     const settlement =
@@ -2146,9 +2138,7 @@ function mergeExecOutput(
         ? attached.settlement
         : attached.kind === 'timed_out'
           ? 'timeout'
-          : attached.kind === 'cancelled'
-            ? 'cancellation'
-            : 'protocol';
+          : 'cancellation';
     throw new SandboxCommandOutputSettlementError(settlement);
   }
   if (
@@ -2346,7 +2336,6 @@ function createNativeExecutionBudget(
       return terminalReason;
     },
     dispose() {
-      if (disposed) return;
       disposed = true;
       cancelDeadline?.();
       cancelDeadline = null;

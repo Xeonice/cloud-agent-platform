@@ -112,6 +112,25 @@ await test('config validates endpoint credentials image and capabilities', () =>
   assert(result.errors.some((entry) => entry.includes('BOXLITE_SANDBOX_HTTP_PROXY must be a valid proxy URL')));
 });
 
+await test('sandbox proxy configuration rejects userinfo without echoing credentials', () => {
+  const secret = 'proxy-password-canary';
+  const result = mod.readBoxLiteProviderConfig(
+    validEnv({
+      BOXLITE_SANDBOX_PROXY: `http://proxy-user:${secret}@proxy.example.test:7897`,
+      BOXLITE_SANDBOX_HTTP_PROXY: `http://proxy-user:${secret}@[`,
+    }),
+  );
+  assert.equal(result.status, 'invalid');
+  const serialized = JSON.stringify(result);
+  assert.match(serialized, /must not contain proxy credentials/u);
+  assert.match(serialized, /must be a valid proxy URL/u);
+  assert.doesNotMatch(serialized, new RegExp(secret, 'u'));
+  assert.doesNotMatch(
+    serialized,
+    new RegExp(Buffer.from(secret).toString('base64'), 'u'),
+  );
+});
+
 await test('config parses image map priority location and explicit capabilities', () => {
   const result = mod.readBoxLiteProviderConfig(validEnv({
     BOXLITE_IMAGE_MAP: 'codex=cap-boxlite-codex:1,claude=cap-boxlite-claude:1',
@@ -340,7 +359,17 @@ await test('descriptor factory registers only when env is valid', () => {
 });
 
 await test('descriptor factory installs default readiness preflight from capabilities', async () => {
-  const client = new mod.FakeBoxLiteClient();
+  const client = new mod.FakeBoxLiteClient({
+    execHandler: () => {
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        output: '',
+        timedOut: false,
+      };
+    },
+  });
   const descriptor = mod.defineBoxLiteSandboxProvider({
     config: validConfig({
       BOXLITE_CAPABILITIES: 'terminal.websocket,terminal.interactive,command.exec,workspace.git.materialize,workspace.git.deliver',
@@ -358,12 +387,15 @@ await test('descriptor factory installs default readiness preflight from capabil
       "test -d '/home/gem/workspace'",
       "command -v 'bash'",
       "command -v 'git'",
+      "command -v 'python3'",
       "command -v 'sh'",
+      mod.BOXLITE_TERMINAL_BYTE_BRIDGE_PROBE_COMMAND,
     ],
   );
   assert.deepEqual(mod.requiredToolsForBoxLiteCapabilities(descriptor.capabilities), [
     'bash',
     'git',
+    'python3',
     'sh',
   ]);
 });
@@ -1715,6 +1747,44 @@ await test('runtime preflight probes tools and caches by provider image runtime 
   assert.equal(first.status, 'passed');
   assert.equal(second, first);
   assert.equal(execCount, 3);
+});
+
+await test('runtime preflight fails closed when the image byte bridge is unavailable', async () => {
+  const context = (exitCode, output = '') => ({
+    provider: { getProviderId: () => 'boxlite-terminal-byte-bridge' },
+    sandbox: { id: 'bridge-box', image: 'terminal-image' },
+    executor: {
+      async exec(request) {
+        assert.equal(
+          request.command,
+          mod.BOXLITE_TERMINAL_BYTE_BRIDGE_PROBE_COMMAND,
+        );
+        return {
+          exitCode,
+          stdout: output,
+          stderr: '',
+          output,
+          timedOut: false,
+        };
+      },
+    },
+  });
+  const conforming = await mod.createBoxLiteRuntimePreflight({
+    requiredTools: [],
+    requireTerminalByteBridge: true,
+  })(context(0));
+  assert.equal(conforming.status, 'passed');
+  assert.equal(conforming.probes[0].name, 'terminal-byte-bridge');
+
+  const missingOutput = 'bridge missing';
+  const missing = await mod.createBoxLiteRuntimePreflight({
+    requiredTools: [],
+    requireTerminalByteBridge: true,
+  })(context(127, missingOutput));
+  assert.equal(missing.status, 'failed');
+  assert.match(missing.error, /cap-pty-byte-bridge/);
+  assert.equal(missing.probes[0].ok, false);
+  assert.equal(missing.probes[0].output, missingOutput);
 });
 
 await test('runtime preflight failure tears down the created sandbox and rejects provision', async () => {

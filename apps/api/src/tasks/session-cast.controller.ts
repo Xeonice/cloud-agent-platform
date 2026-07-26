@@ -1,10 +1,46 @@
-import { Controller, Get, Header, Param } from '@nestjs/common';
-import { readFile } from 'node:fs/promises';
+import {
+  Controller,
+  Get,
+  Header,
+  Param,
+  PayloadTooLargeException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { open } from 'node:fs/promises';
 import * as path from 'node:path';
 import { CAST_CONTENT_TYPE } from '@cap/contracts';
 import { resolveWorkspaceDir } from './session-transcript.service';
 import { SESSION_CAST_FILENAME } from '../terminal/snapshot';
+import {
+  readTerminalRecordingPolicy,
+  type TerminalRawArtifactPolicy,
+} from '../terminal/terminal-recording-policy';
 import { TasksService } from './tasks.service';
+
+export const SESSION_CAST_DISABLED_ERROR = Object.freeze({
+  code: 'terminal_raw_recording_disabled',
+  status: 'disabled',
+});
+
+export const SESSION_CAST_UNAVAILABLE_ERROR = Object.freeze({
+  code: 'terminal_raw_recording_unavailable',
+  status: 'unavailable',
+});
+
+export interface SessionCastFileHandle {
+  stat(): Promise<{ size: number }>;
+  read(
+    buffer: Buffer,
+    offset: number,
+    length: number,
+    position: number,
+  ): Promise<{ bytesRead: number }>;
+  close(): Promise<void>;
+}
+
+export type OpenSessionCastFile = (
+  castPath: string,
+) => Promise<SessionCastFileHandle>;
 
 /**
  * Read-only asciicast endpoint (session-terminal-replay, Track 3).
@@ -15,10 +51,11 @@ import { TasksService } from './tasks.service';
  * the task first (404 when unknown via `findById`), then reads the cast off the
  * durable volume (co-located with `session.log`).
  *
- * Empty-signal contract: a task with no recording (no PTY output, or a
- * pre-feature task) returns an EMPTY body (200) — the player renders the honest
- * empty face. A missing/unreadable file degrades to empty (never 500) so the tab
- * never breaks. The raw cast text is served as `text/plain` (asciicast JSONL).
+ * Raw recording is disabled by default. Disabled and oversized artifacts return
+ * explicit 503/413 errors; an enabled-but-missing artifact remains the existing
+ * empty-body signal. The reader opens one handle, stats it before allocation,
+ * and reads at most the configured production budget — never whole-file
+ * `readFile`, so a legacy multi-gigabyte cast cannot OOM the API process.
  */
 @Controller()
 export class SessionCastController {
@@ -30,15 +67,73 @@ export class SessionCastController {
     // 404 (NotFoundException) when the task does not exist — same as GET /tasks/:id.
     await this.tasksService.findById(id);
 
-    // Read the cast off the durable volume. `resolveWorkspaceDir(id)` roots the
-    // path (no manual join of unsanitized input → no path traversal). A missing/
-    // unreadable/empty file degrades to the honest "nothing to replay" empty body.
     const castPath = path.join(resolveWorkspaceDir(id), SESSION_CAST_FILENAME);
+    return readBoundedSessionCast(
+      castPath,
+      readTerminalRecordingPolicy().sessionCast,
+    );
+  }
+}
+
+export async function readBoundedSessionCast(
+  castPath: string,
+  policy: TerminalRawArtifactPolicy,
+  openFile: OpenSessionCastFile = async (target) => open(target, 'r'),
+): Promise<string> {
+  if (!policy.enabled) {
+    throw new ServiceUnavailableException(SESSION_CAST_DISABLED_ERROR);
+  }
+
+  let handle: SessionCastFileHandle;
+  try {
+    handle = await openFile(castPath);
+  } catch (error) {
+    if (isErrno(error, 'ENOENT')) return '';
+    throw new ServiceUnavailableException(SESSION_CAST_UNAVAILABLE_ERROR);
+  }
+
+  try {
+    const { size } = await handle.stat();
+    if (!Number.isSafeInteger(size) || size < 0 || size > policy.maxBytes) {
+      throw new PayloadTooLargeException({
+        code: 'terminal_raw_recording_too_large',
+        status: 'too_large',
+        maxBytes: policy.maxBytes,
+      });
+    }
+    if (size === 0) return '';
+
+    const buffer = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        size - offset,
+        offset,
+      );
+      if (bytesRead <= 0) break;
+      offset += bytesRead;
+    }
+    const text = buffer.subarray(0, offset).toString('utf8');
+    return text.trim().length > 0 ? text : '';
+  } catch (error) {
+    if (error instanceof PayloadTooLargeException) throw error;
+    throw new ServiceUnavailableException(SESSION_CAST_UNAVAILABLE_ERROR);
+  } finally {
     try {
-      const text = await readFile(castPath, 'utf8');
-      return text.trim().length > 0 ? text : '';
+      await handle.close();
     } catch {
-      return '';
+      // The bounded read result/error remains primary; close is best-effort.
     }
   }
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === code
+  );
 }

@@ -209,15 +209,80 @@ export type SandboxWorkspaceOperationFailure =
         | 'credential_cleanup';
     };
 
+const SANDBOX_WORKSPACE_FAILURE_STAGES = [
+  'credential_setup',
+  'remote_ref_resolution',
+  'workspace_transfer',
+  'checkout',
+  'submodules',
+  'credential_cleanup',
+] as const;
+
+const SANDBOX_WORKSPACE_FAILURE_CAUSES = [
+  'capacity_exhausted',
+  'timeout',
+  'authentication',
+  'tls_network',
+  'ref_not_found',
+  'unknown',
+] as const;
+
+function snapshotSandboxWorkspaceOperationFailure(
+  failure: SandboxWorkspaceOperationFailure,
+): SandboxWorkspaceOperationFailure {
+  if (failure.status === 'cancelled') {
+    return Object.freeze({ status: 'cancelled', stage: failure.stage });
+  }
+  return Object.freeze({
+    status: 'failed',
+    stage: failure.stage,
+    cause: failure.cause,
+    retryable: failure.retryable,
+  });
+}
+
+function isSandboxWorkspaceOperationFailure(
+  value: unknown,
+): value is SandboxWorkspaceOperationFailure {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const failure = value as Record<string, unknown>;
+  if (
+    typeof failure.stage !== 'string' ||
+    !SANDBOX_WORKSPACE_FAILURE_STAGES.includes(
+      failure.stage as (typeof SANDBOX_WORKSPACE_FAILURE_STAGES)[number],
+    )
+  ) {
+    return false;
+  }
+  if (failure.status === 'cancelled') {
+    return Object.keys(failure).length === 2;
+  }
+  return (
+    failure.status === 'failed' &&
+    typeof failure.cause === 'string' &&
+    SANDBOX_WORKSPACE_FAILURE_CAUSES.includes(
+      failure.cause as (typeof SANDBOX_WORKSPACE_FAILURE_CAUSES)[number],
+    ) &&
+    typeof failure.retryable === 'boolean' &&
+    Object.keys(failure).length === 4
+  );
+}
+
 /** Safe typed bridge from staged workspace helpers into provider admission. */
 export class SandboxWorkspaceMaterializationError extends SandboxCoreError {
-  constructor(readonly failure: SandboxWorkspaceOperationFailure) {
+  readonly failure: SandboxWorkspaceOperationFailure;
+
+  constructor(failure: SandboxWorkspaceOperationFailure) {
+    const snapshot = snapshotSandboxWorkspaceOperationFailure(failure);
     super(
-      failure.status === 'cancelled'
-        ? `Sandbox workspace materialization cancelled during ${failure.stage}`
-        : `Sandbox workspace materialization failed during ${failure.stage}: ${failure.cause}`,
+      snapshot.status === 'cancelled'
+        ? `Sandbox workspace materialization cancelled during ${snapshot.stage}`
+        : `Sandbox workspace materialization failed during ${snapshot.stage}: ${snapshot.cause}`,
       'sandbox_workspace_materialization_error',
     );
+    this.failure = snapshot;
   }
 }
 
@@ -229,7 +294,10 @@ export function isSandboxWorkspaceMaterializationError(
     (typeof error === 'object' &&
       error !== null &&
       (error as { code?: unknown }).code ===
-        'sandbox_workspace_materialization_error')
+        'sandbox_workspace_materialization_error' &&
+      isSandboxWorkspaceOperationFailure(
+        (error as { failure?: unknown }).failure,
+      ))
   );
 }
 
@@ -280,6 +348,7 @@ export function isSandboxRuntimeModelSetupError(
     error instanceof SandboxRuntimeModelSetupError ||
     (typeof error === 'object' &&
       error !== null &&
-      (error as { code?: unknown }).code === 'runtime_model_setup_failed')
+      (error as { code?: unknown }).code === 'runtime_model_setup_failed' &&
+      isRuntimeModelSetupFailurePhase((error as { phase?: unknown }).phase))
   );
 }

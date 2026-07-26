@@ -9,7 +9,7 @@
  *     a mid-turn `tool_use` is NOT done, and a clarifying-question ending IS done;
  *   - CLAUDE auth: the OAuth token is set and ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN/
  *     apiKeyHelper are UNSET on the launch env, with a missing token failing closed;
- *   - CLAUDE launch flags (bypass permissions, sandboxed/inline-buffer/config-dir env,
+ *   - CLAUDE launch flags (bypass permissions, native terminal, sandboxed/config-dir env,
  *     the `$(cat)` positional prompt) and the incompatible flags are absent;
  *   - CLAUDE autosubmit is a no-op (no CR injected, no DSR/CPR machinery).
  *
@@ -164,6 +164,26 @@ async function main() {
   const transcript = await import(
     pathToFileURL(join(base, 'claude-transcript.js')).href
   );
+  const { createSandboxRuntimePrivateFilePort } = await import(
+    pathToFileURL(join(repoRoot, 'packages/sandbox-core/dist/index.js')).href
+  );
+
+  const consumePrivateFiles = async (commands) => {
+    const files = new Map();
+    const port = createSandboxRuntimePrivateFilePort({
+      rootDirectory: '/home/gem',
+      transport: {
+        async writeFile(request) {
+          files.set(request.path, Buffer.from(request.content).toString('utf8'));
+        },
+        async deleteFile() {},
+      },
+    });
+    for (const command of commands) {
+      for (const file of command.privateFiles ?? []) await port.writeFile(file);
+    }
+    return files;
+  };
 
   const codex = new CodexRuntime();
   const claude = new ClaudeCodeRuntime();
@@ -229,9 +249,13 @@ async function main() {
   assert(
     codexLine.includes(CodexRuntime.DEFAULT_CODEX_LAUNCH_ARGV) ||
       codexLine.includes(
-        'codex --no-alt-screen -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox',
+        'codex -C /home/gem/workspace --dangerously-bypass-approvals-and-sandbox',
       ),
-    'codex launch line carries the default bypass argv (with --no-alt-screen)',
+    'codex launch line carries the native-terminal bypass argv',
+  );
+  assert(
+    !codexLine.includes('--no-alt-screen'),
+    'codex interactive launch does not force the inline/normal buffer',
   );
 
   // (codex's provision-time auth/config + prompt writes are now the pure
@@ -239,9 +263,9 @@ async function main() {
   // below; the dead `injectAuth` port method is removed in this refactor.)
 
   // terminalStartup (refactor-agent-runtime-policy-mechanism): codex DECLARES the
-  // DSR-reply + cr-on-quiesce policy the SHARED pty mechanism (AioPtyClient) reads;
+  // DSR-reply + cr-on-quiesce policy the shared provider-neutral session reads;
   // claude declares neither (its prompt auto-runs). The DSR/CPR/quiesce MECHANISM is
-  // unchanged and lives in the pty client — only its gate now reads this declared
+  // unchanged and lives in the session engine — only its gate now reads this declared
   // policy (no agent-identity branch; the dead `CodexRuntime.autoSubmit` is deleted).
   process.env['CODEX_AUTOSUBMIT_QUIESCE_MS'] = '20';
   assert(
@@ -321,10 +345,10 @@ async function main() {
     'claude launch line is `claude --session-id <uuid> --dangerously-skip-permissions "$P"`',
   );
   assert(
-    claudeLine.includes('CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1') &&
+    !claudeLine.includes('CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN') &&
       claudeLine.includes('CLAUDE_CODE_SANDBOXED=1') &&
       claudeLine.includes('CLAUDE_CONFIG_DIR=/home/gem/.claude'),
-    'claude launch env sets inline-buffer + sandboxed + config-dir flags',
+    'claude interactive launch allows native terminal mode while retaining sandboxed + config-dir env',
   );
   assert(
     claudeLine.includes('cat /home/gem/.claude/task-prompt.txt'),
@@ -483,12 +507,10 @@ async function main() {
   // wired into the resident-session `detectExit`.)
 
   // ---- 3.2 GOLDEN: sandboxSetupCommands / preStopTrimCommands emitters --------
-  // Byte-exact characterization of the pure setup/trim emitters (refactor step 3a/3b).
-  // Expected payloads are computed from LITERAL config/auth/prompt content, so a drift
-  // in the emitter's TOML/escaping/order fails here. Pins TRAP-1 (config+auth = ONE
-  // command), TRAP-2 (conditional prompt = dropped element), TRAP-3 (per-command
-  // tolerateUnresolvedExit), TRAP-5 (idempotency tokens).
-  const toB64 = (s) => Buffer.from(s, 'utf8').toString('base64');
+  // Characterize the pure setup/trim emitters. Private bytes live in opaque,
+  // serialization-redacted one-shot files and commands contain only fixed path/mode
+  // verification. Pins conditional prompt omission, per-command unresolved-exit
+  // policy, exact file contents, and the no-secret-command/argv boundary.
   const CXDIR = '/home/gem/.codex';
   const WS = '/home/gem/workspace';
   const CRED_STORE = 'cli_auth_credentials_store = "file"\n';
@@ -502,8 +524,13 @@ async function main() {
   );
   assert(
     cxNull.commands[0].command ===
-      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(CRED_STORE + TRUST)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml`,
-    'codex GOLDEN: trust-only config.toml command byte-exact',
+      `rm -f ${CXDIR}/hooks.json && test -s ${CXDIR}/config.toml && test "$(stat -c %a ${CXDIR}/config.toml)" = 600 && rm -f ${CXDIR}/auth.json`,
+    'codex GOLDEN: trust-only command contains paths and verification only',
+  );
+  const cxNullFiles = await consumePrivateFiles(cxNull.commands);
+  assert(
+    cxNullFiles.get(`${CXDIR}/config.toml`) === CRED_STORE + TRUST,
+    'codex GOLDEN: trust-only config.toml uses the private file channel',
   );
   assert(
     cxNull.commands[0].tolerateUnresolvedExit === false,
@@ -525,13 +552,26 @@ async function main() {
   assert(cxOff.ok === true && cxOff.commands.length === 2, 'codex setup (official + prompt) → 2 commands');
   assert(
     cxOff.commands[0].command ===
-      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(CRED_STORE + TRUST)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml && printf %s '${toB64(cxAuthJson)}' | base64 -d > ${CXDIR}/auth.json && chmod 600 ${CXDIR}/auth.json`,
-    'codex GOLDEN: official config+auth.json as ONE command byte-exact (TRAP-1)',
+      `rm -f ${CXDIR}/hooks.json && test -s ${CXDIR}/config.toml && test "$(stat -c %a ${CXDIR}/config.toml)" = 600 && test -s ${CXDIR}/auth.json && test "$(stat -c %a ${CXDIR}/auth.json)" = 600`,
+    'codex GOLDEN: official setup command contains no credential bytes',
   );
   assert(
     cxOff.commands[1].command ===
-      `mkdir -p ${CXDIR} && printf %s '${toB64(cxPrompt)}' | base64 -d > ${CXDIR}/task-prompt.txt && chmod 600 ${CXDIR}/task-prompt.txt`,
-    'codex GOLDEN: prompt-file write byte-exact',
+      `test -s ${CXDIR}/task-prompt.txt && test "$(stat -c %a ${CXDIR}/task-prompt.txt)" = 600`,
+    'codex GOLDEN: prompt setup command contains no prompt bytes',
+  );
+  const cxOffFiles = await consumePrivateFiles(cxOff.commands);
+  assert(
+    cxOffFiles.get(`${CXDIR}/config.toml`) === CRED_STORE + TRUST &&
+      cxOffFiles.get(`${CXDIR}/auth.json`) === cxAuthJson &&
+      cxOffFiles.get(`${CXDIR}/task-prompt.txt`) === cxPrompt,
+    'codex GOLDEN: config, auth, and prompt bytes use private files',
+  );
+  assert(
+    !JSON.stringify(cxOff).includes(cxAuthJson) &&
+      !JSON.stringify(cxOff).includes(cxPrompt) &&
+      !cxOff.commands.some((entry) => entry.command.includes('base64')),
+    'codex setup plan serialization and commands disclose no private bytes',
   );
   assert(
     cxOff.commands[1].descriptor.commandKind === 'runtime_setup' &&
@@ -553,17 +593,23 @@ async function main() {
   assert(cxComp.ok === true && cxComp.commands.length === 1, 'codex setup (compatible, no prompt) → 1 command (no auth.json)');
   assert(
     cxComp.commands[0].command ===
-      `mkdir -p ${CXDIR} && rm -f ${CXDIR}/hooks.json && printf %s '${toB64(COMPAT_TOML)}' | base64 -d > ${CXDIR}/config.toml && chmod 600 ${CXDIR}/config.toml`,
-    'codex GOLDEN: compatible config.toml (model_providers.cap, no auth.json) byte-exact',
+      `rm -f ${CXDIR}/hooks.json && test -s ${CXDIR}/config.toml && test "$(stat -c %a ${CXDIR}/config.toml)" = 600 && rm -f ${CXDIR}/auth.json`,
+    'codex GOLDEN: compatible setup command contains no apiKey',
+  );
+  const cxCompFiles = await consumePrivateFiles(cxComp.commands);
+  assert(
+    cxCompFiles.get(`${CXDIR}/config.toml`) === COMPAT_TOML &&
+      !JSON.stringify(cxComp).includes(COMPAT.apiKey),
+    'codex GOLDEN: compatible config uses a serialization-redacted private file',
   );
 
-  // codex trim — byte-exact (keeps sessions/, truncates auth.json with `: >`)
+  // codex trim — byte-exact (keeps sessions/ and proves private files absent)
   const cxTrim = codex.preStopTrimCommands();
   assert(
     cxTrim.length === 1 &&
       cxTrim[0] ===
-        `rm -rf ${CXDIR}/cache ${CXDIR}/logs_*.sqlite ${CXDIR}/logs_*.sqlite-shm ${CXDIR}/logs_*.sqlite-wal 2>/dev/null; : > ${CXDIR}/auth.json 2>/dev/null; true`,
-    'codex GOLDEN: pre-stop trim byte-exact (: > truncate, keeps sessions/)',
+        `rm -rf ${CXDIR}/cache ${CXDIR}/logs_*.sqlite ${CXDIR}/logs_*.sqlite-shm ${CXDIR}/logs_*.sqlite-wal && rm -f ${CXDIR}/config.toml ${CXDIR}/task-prompt.txt ${CXDIR}/auth.json && test ! -e ${CXDIR}/config.toml && test ! -e ${CXDIR}/task-prompt.txt && test ! -e ${CXDIR}/auth.json`,
+    'codex GOLDEN: pre-stop proves compatible key, prompt, and auth absent while keeping sessions/',
   );
   assert(
     codex.preflightProbes().map((p) => p.name).join(',') ===
@@ -610,7 +656,7 @@ async function main() {
   const clNoP = claude.sandboxSetupCommands({ taskId: 't', workspaceDir: WS, prompt: null }, { oauthToken: CLTOK });
   assert(clNoP.ok === true && clNoP.commands.length === 1, 'claude setup (token, no prompt) → 1 command');
   const clSnippet =
-    `export CLAUDE_CODE_OAUTH_TOKEN="$(printf %s '${toB64(CLTOK)}' | base64 -d)"\n` +
+    `export CLAUDE_CODE_OAUTH_TOKEN='${CLTOK}'\n` +
     'unset ANTHROPIC_API_KEY\nunset ANTHROPIC_AUTH_TOKEN\nunset apiKeyHelper\n';
   const clPreseed = JSON.stringify({
     theme: 'dark',
@@ -625,8 +671,8 @@ async function main() {
   });
   assert(
     clNoP.commands[0].command ===
-      `mkdir -p /home/gem/.claude && printf %s '${toB64(clSnippet)}' | base64 -d > /home/gem/.claude/launch-env.sh && chmod 600 /home/gem/.claude/launch-env.sh && printf %s '${toB64(clSettings)}' | base64 -d > /home/gem/.claude/settings.json && chmod 600 /home/gem/.claude/settings.json && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude.json && chmod 600 /home/gem/.claude.json && printf %s '${toB64(clPreseed)}' | base64 -d > /home/gem/.claude/.claude.json && chmod 600 /home/gem/.claude/.claude.json`,
-    'claude GOLDEN: launch-env.sh + settings.json + dual-path .claude.json command byte-exact',
+      `test -s /home/gem/.claude/launch-env.sh && test "$(stat -c %a /home/gem/.claude/launch-env.sh)" = 600 && test -s /home/gem/.claude/settings.json && test "$(stat -c %a /home/gem/.claude/settings.json)" = 600 && test -s /home/gem/.claude.json && test "$(stat -c %a /home/gem/.claude.json)" = 600 && test -s /home/gem/.claude/.claude.json && test "$(stat -c %a /home/gem/.claude/.claude.json)" = 600`,
+    'claude GOLDEN: setup command contains paths and mode verification only',
   );
   assert(
     clNoP.commands[0].command.includes('/home/gem/.claude/settings.json'),
@@ -638,19 +684,26 @@ async function main() {
   // (config-dir copy ignored); 2.1.207 reads only `$CLAUDE_CONFIG_DIR/.claude.json`
   // (HOME-root copy ignored — live-verified 2026-07-21). Seeding a single path is a
   // version cliff that blocks tasks on the first-run wizard.
-  const clPreseedWrite = (path) =>
-    `printf %s '${toB64(clPreseed)}' | base64 -d > ${path} && chmod 600 ${path}`;
+  const clFiles = await consumePrivateFiles(clNoP.commands);
   assert(
-    clNoP.commands[0].command.includes(clPreseedWrite('/home/gem/.claude.json')) &&
-      clNoP.commands[0].command.includes(clPreseedWrite('/home/gem/.claude/.claude.json')),
-    'claude GUARD: identical pre-seed .claude.json written to HOME root AND $CLAUDE_CONFIG_DIR, both chmod 600',
+    clFiles.get('/home/gem/.claude/launch-env.sh') === clSnippet &&
+      clFiles.get('/home/gem/.claude/settings.json') === clSettings &&
+      clFiles.get('/home/gem/.claude.json') === clPreseed &&
+      clFiles.get('/home/gem/.claude/.claude.json') === clPreseed,
+    'claude GUARD: token/settings and identical dual-path preseed use private 0600 files',
+  );
+  assert(
+    !JSON.stringify(clNoP).includes(CLTOK) &&
+      !clNoP.commands[0].command.includes(CLTOK) &&
+      !clNoP.commands[0].command.includes('base64'),
+    'claude setup plan serialization and command disclose no token or derived encoding',
   );
 
   // claude trim — keeps projects/
   assert(
     claude.preStopTrimCommands()[0] ===
-      `find /home/gem/.claude -mindepth 1 -maxdepth 1 ! -name projects -exec rm -rf {} + 2>/dev/null; true`,
-    'claude GOLDEN: pre-stop trim keeps projects/',
+      `find /home/gem/.claude -mindepth 1 -maxdepth 1 ! -name projects -exec rm -rf {} + && rm -f /home/gem/.claude.json && test ! -e /home/gem/.claude/launch-env.sh && test ! -e /home/gem/.claude/task-prompt.txt && test ! -e /home/gem/.claude.json`,
+    'claude GOLDEN: pre-stop keeps projects/ and proves private files absent',
   );
   assert(
     claude.preflightProbes().map((p) => p.name).join(',') ===

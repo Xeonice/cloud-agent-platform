@@ -49,7 +49,7 @@ Node/pnpm are workspace-managed (pnpm 10, Node ≥ 22). Run from the repo root.
 | Task | Command |
 | --- | --- |
 | Install | `pnpm install` |
-| Verify everything | `pnpm verify` (= `turbo typecheck lint build`) |
+| Verify everything | `pnpm verify` (= `turbo typecheck lint build` + terminal response-profile source conformance) |
 | Web dev server | `pnpm --filter @cap/web dev` (port 3000) |
 | Web production build | `pnpm --filter @cap/web build` |
 | Web typecheck | `pnpm --filter @cap/web typecheck` |
