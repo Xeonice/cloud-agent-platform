@@ -13,9 +13,12 @@ import {
 import {
   AIO_SANDBOX_WORKSPACE_DIR,
   AioSandboxContainerController,
+  BOXLITE_TERMINAL_BYTE_BRIDGE_PROBE_COMMAND,
   BoxLiteRestClient,
   createNonPersistingSandboxProvisioningDiagnosticObserver,
   readBoxLiteProviderConfig,
+  readBoxLiteRuntimeRequiredTools,
+  requiredToolsForBoxLiteCapabilities,
   resolveConfiguredProviderProvisioningPolicyForFamily,
   sourceChecksum,
   sourceDigest,
@@ -186,6 +189,18 @@ export class DefaultSandboxEnvironmentValidationRunner
         requiredCommands: requiredBoxLiteCommands({
           runtimeIds,
           workspacePath: configResult.config.workspacePath,
+          requiredTools: [
+            ...requiredToolsForBoxLiteCapabilities(
+              configResult.config.capabilities,
+            ),
+            ...readBoxLiteRuntimeRequiredTools(),
+          ],
+          requireTerminalByteBridge:
+            configResult.config.protocolMode === 'native' &&
+            (configResult.config.capabilities.includes('terminal.websocket') ||
+              configResult.config.capabilities.includes(
+                'terminal.interactive',
+              )),
         }),
         onCleanupError: () =>
           this.logger.error('BoxLite environment probe cleanup failed.'),
@@ -395,17 +410,41 @@ function requiredAioCommands(
   ];
 }
 
-function requiredBoxLiteCommands(args: {
+export function requiredBoxLiteCommands(args: {
   readonly runtimeIds: readonly string[];
   readonly workspacePath: string;
+  readonly requiredTools: readonly string[];
+  readonly requireTerminalByteBridge: boolean;
 }): readonly BoxLiteEnvironmentValidationCommand[] {
-  return [
+  const commands: BoxLiteEnvironmentValidationCommand[] = [
     { name: 'sandbox-metadata', command: `cat ${SANDBOX_METADATA_PATH}` },
     { name: 'workspace-path', command: `test -d ${args.workspacePath}` },
     { name: 'shell', command: 'command -v sh' },
     { name: 'git', command: 'command -v git' },
     ...runtimeCommands(args.runtimeIds),
+    ...[...new Set(args.requiredTools)].sort().map((tool) => ({
+      name: `required-tool:${tool}`,
+      command: requiredToolCommand(tool),
+    })),
   ];
+  if (args.requireTerminalByteBridge) {
+    commands.push({
+      name: 'terminal-byte-bridge',
+      command: BOXLITE_TERMINAL_BYTE_BRIDGE_PROBE_COMMAND,
+    });
+  }
+  return commands.filter(
+    (command, index) =>
+      commands.findIndex((candidate) => candidate.command === command.command) ===
+      index,
+  );
+}
+
+function requiredToolCommand(tool: string): string {
+  if (!/^[A-Za-z0-9._+-]+$/.test(tool)) {
+    throw new Error(`Invalid BoxLite required tool name: ${tool}`);
+  }
+  return `command -v ${tool}`;
 }
 
 function runtimeCommands(

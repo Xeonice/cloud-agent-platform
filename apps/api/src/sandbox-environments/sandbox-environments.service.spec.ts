@@ -1407,13 +1407,13 @@ test('retired environments are not resolved explicitly or as defaults', async ()
   );
 });
 
-test('v2 contract marks v1 ready environments stale and preserves current or draft rows', async () => {
-  assert.equal(SANDBOX_ENVIRONMENT_CONTRACT_VERSION, 'sandbox-environment-v2');
+test('v3 contract marks older ready environments stale and preserves current or draft rows', async () => {
+  assert.equal(SANDBOX_ENVIRONMENT_CONTRACT_VERSION, 'sandbox-environment-v3');
   const { service, rows } = buildService([
     makeEnvironment({
       id: ENV_A,
       status: 'ready',
-      contractVersion: 'sandbox-environment-v1',
+      contractVersion: 'sandbox-environment-v2',
     }),
     makeEnvironment({
       id: ENV_B,
@@ -1428,7 +1428,7 @@ test('v2 contract marks v1 ready environments stale and preserves current or dra
     makeEnvironment({
       id: ENV_D,
       status: 'draft',
-      contractVersion: 'sandbox-environment-v1',
+      contractVersion: 'sandbox-environment-v2',
     }),
   ]);
 

@@ -48,7 +48,7 @@ import {
   type SandboxEnvironmentValidationRunner,
 } from './sandbox-environments.validator';
 
-export const SANDBOX_ENVIRONMENT_CONTRACT_VERSION = 'sandbox-environment-v2';
+export const SANDBOX_ENVIRONMENT_CONTRACT_VERSION = 'sandbox-environment-v3';
 
 export interface SandboxTaskAdmissionResolution {
   readonly environment: ResolvedSandboxEnvironment | null;
