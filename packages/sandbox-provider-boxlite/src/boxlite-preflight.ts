@@ -85,7 +85,9 @@ export function createBoxLiteRuntimePreflight(
           ? undefined
           : boxLitePreflightError(failed.map((probe) => probe.name)),
     };
-    cache.set(cacheKey, preflight);
+    if (preflight.status === 'passed') {
+      cache.set(cacheKey, preflight);
+    }
     return preflight;
   };
 }

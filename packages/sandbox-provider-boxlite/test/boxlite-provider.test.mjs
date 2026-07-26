@@ -1749,6 +1749,43 @@ await test('runtime preflight probes tools and caches by provider image runtime 
   assert.equal(execCount, 3);
 });
 
+await test('runtime preflight retries failed probes and caches only a later pass', async () => {
+  let execCount = 0;
+  let toolAvailable = false;
+  const preflight = mod.createBoxLiteRuntimePreflight({
+    requiredTools: ['git'],
+    now: () => new Date('2026-06-27T00:00:00.000Z'),
+  });
+  const context = {
+    provider: { getProviderId: () => 'boxlite-retry-failed-preflight' },
+    sandbox: { id: 'retry-failed-preflight-box', image: 'runtime-image' },
+    runtimeId: 'codex',
+    executor: {
+      async exec(request) {
+        execCount += 1;
+        return {
+          exitCode: toolAvailable ? 0 : 1,
+          stdout: request.command,
+          stderr: '',
+          output: request.command,
+          timedOut: false,
+        };
+      },
+    },
+  };
+
+  const failed = await preflight(context);
+  toolAvailable = true;
+  const passed = await preflight(context);
+  const cachedPass = await preflight(context);
+
+  assert.equal(failed.status, 'failed');
+  assert.equal(passed.status, 'passed');
+  assert.equal(cachedPass, passed);
+  assert.notEqual(passed, failed);
+  assert.equal(execCount, 2);
+});
+
 await test('runtime preflight fails closed when the image byte bridge is unavailable', async () => {
   const context = (exitCode, output = '') => ({
     provider: { getProviderId: () => 'boxlite-terminal-byte-bridge' },
