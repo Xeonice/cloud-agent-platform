@@ -93,7 +93,7 @@ function buildController(): {
         isDefault: true,
         lastValidationId: null,
         lastValidatedAt: null,
-        contractVersion: 'sandbox-environment-v2',
+        contractVersion: 'sandbox-environment-v3',
         createdAt: new Date('2026-07-01T00:00:00.000Z'),
         updatedAt: new Date('2026-07-01T00:00:00.000Z'),
       };

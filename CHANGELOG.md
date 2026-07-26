@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.46.1](https://github.com/Xeonice/cloud-agent-platform/compare/v0.46.0...v0.46.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **api:** require complete BoxLite terminal environments ([#180](https://github.com/Xeonice/cloud-agent-platform/issues/180)) ([891f53e](https://github.com/Xeonice/cloud-agent-platform/commit/891f53edcec5b105e97b9fc4dc0b40b6e2cfd561))
+* **boxlite:** retry failed runtime preflight probes ([#180](https://github.com/Xeonice/cloud-agent-platform/issues/180)) ([f2f5951](https://github.com/Xeonice/cloud-agent-platform/commit/f2f595162873c60e2181005545825eacf6dfe2df))
+
+
+### Operational Notes
+
+* Managed sandbox environments validated under a pre-v3 contract are marked stale and must be revalidated after upgrading.
+* The BoxLite host daemon remains operator-supplied; this release does not change stock BoxLite 0.9.7 host file-size-limit behavior.
+
 ## [0.46.0](https://github.com/Xeonice/cloud-agent-platform/compare/v0.45.3...v0.46.0) (2026-07-26)
 
 

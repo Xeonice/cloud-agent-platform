@@ -4,9 +4,66 @@ import test from 'node:test';
 import {
   assertRuntimeDeclared,
   metadataFromProbes,
+  requiredBoxLiteCommands,
   runtimeArtifactChecksumFromProbes,
   runtimeArtifactChecksumsFromProbes,
 } from './sandbox-environments.validator';
+
+test('BoxLite environment validation mirrors terminal capability requirements', () => {
+  const commands = requiredBoxLiteCommands({
+    runtimeIds: ['codex', 'claude-code'],
+    workspacePath: '/home/gem/workspace',
+    requiredTools: ['sh', 'git', 'python3', 'codex', 'claude'],
+    requireTerminalByteBridge: true,
+  });
+
+  assert.ok(
+    commands.some(
+      (probe) =>
+        probe.name === 'required-tool:python3' &&
+        probe.command === 'command -v python3',
+    ),
+  );
+  assert.ok(
+    commands.some(
+      (probe) =>
+        probe.name === 'terminal-byte-bridge' &&
+        probe.command.includes('/usr/local/bin/cap-pty-byte-bridge'),
+    ),
+  );
+  assert.equal(
+    commands.filter((probe) => probe.command.includes('command -v codex')).length,
+    1,
+    'runtime and provider requirements do not duplicate the same probe',
+  );
+  assert.equal(
+    commands.filter((probe) => probe.command === 'command -v sh').length,
+    1,
+    'built-in and provider requirements do not duplicate the shell probe',
+  );
+
+  const withoutTerminalBridge = requiredBoxLiteCommands({
+    runtimeIds: ['codex'],
+    workspacePath: '/home/gem/workspace',
+    requiredTools: ['git'],
+    requireTerminalByteBridge: false,
+  });
+  assert.equal(
+    withoutTerminalBridge.some((probe) => probe.name === 'terminal-byte-bridge'),
+    false,
+  );
+
+  assert.throws(
+    () =>
+      requiredBoxLiteCommands({
+        runtimeIds: ['codex'],
+        workspacePath: '/home/gem/workspace',
+        requiredTools: ['git;id'],
+        requireTerminalByteBridge: false,
+      }),
+    /Invalid BoxLite required tool name/,
+  );
+});
 
 test('metadata probe accepts arbitrary declared custom dependency keys', () => {
   const metadata = metadataFromProbes([

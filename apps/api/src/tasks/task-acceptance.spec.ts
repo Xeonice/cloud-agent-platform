@@ -57,7 +57,7 @@ const EXPLICIT_MODEL_SNAPSHOT = buildRuntimeExecutionEnvironmentSnapshot({
   kind: 'managed',
   managedEnvironmentId: MANAGED_ENVIRONMENT_ID,
   validationId: VALIDATION_ID,
-  validationContractVersion: 'sandbox-environment-v2',
+  validationContractVersion: 'sandbox-environment-v3',
   provider: 'boxlite',
   providerFamily: 'boxlite',
   resources: Object.freeze({ diskSizeGb: 17 }),
